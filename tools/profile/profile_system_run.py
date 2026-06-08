@@ -1674,9 +1674,7 @@ def _parse_gpu_executor_trace(trace_path: Path | list[Path] | tuple[Path, ...]) 
     fg_raw_intervals: list[tuple[float, float]] = []
 
     fg_type_names = {
-        "process_force_greats",
-        "process_force_greats_bellman_fixed_gpu",
-        "solve_force_greats_bellman_fixed_stats_gpu",
+        "force_greats_response_frontier_score_batch",
     }
 
     def _batch_req_count(types: str) -> int:

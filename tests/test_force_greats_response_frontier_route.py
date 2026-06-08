@@ -158,14 +158,13 @@ def test_nojit_fixed_stats_score_matches_jit_score():
     assert evaluate_stats_score_nojit(stats, calc_song, ref_arrays) == evaluate_stats_score(stats, calc_song, ref_arrays)
 
 
-def test_process_force_greats_response_frontier_failure_raises_directly(monkeypatch):
+def test_fg_response_scoring_failure_raises_directly(monkeypatch):
     from gear_optimizer.helpers.song_helpers import force_greats
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
 
     def _boom(*_args, **_kwargs):
         raise RuntimeError("response frontier path failed")
 
-    monkeypatch.setattr(adapter, "process_force_greats_response_frontier_gpu", _boom)
+    monkeypatch.setattr(force_greats, "run_force_greats_response_frontier_for_ga_candidates", _boom)
 
     class _Registry:
         @staticmethod
@@ -187,7 +186,7 @@ def test_process_force_greats_response_frontier_failure_raises_directly(monkeypa
     ]
 
     with pytest.raises(RuntimeError, match="response frontier path failed"):
-        force_greats.process_force_greats(
+        force_greats.run_force_greats_response_frontier_for_ga_candidates(
             ga_candidates=ga_candidates,
             calc_song={"metadata": {}, "song_data": {}},
             ref_arrays={},
@@ -199,7 +198,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     seen = {}
     seen_bundle = object()
@@ -212,9 +211,9 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
 
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan_for_ga_candidates",
-        _fake_prepare_plan,
+        FgPlanner,
+        "plan_many",
+        staticmethod(_fake_prepare_plan),
     )
 
     cfg = configparser.ConfigParser()
@@ -258,13 +257,13 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan_for_ga_candidates",
-        lambda *_args, **_kwargs: "prepared-plan",
+        FgPlanner,
+        "plan_many",
+        staticmethod(lambda *_args, **_kwargs: "prepared-plan"),
     )
 
     cfg = configparser.ConfigParser()
@@ -319,7 +318,7 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     seen: dict[str, int] = {}
 
@@ -333,9 +332,9 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
     monkeypatch.setattr(stages, "select_top_base_ga_candidates", _top_base_selector)
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan_for_ga_candidates",
-        lambda *_args, **_kwargs: "prepared-plan",
+        FgPlanner,
+        "plan_many",
+        staticmethod(lambda *_args, **_kwargs: "prepared-plan"),
     )
 
     cfg = configparser.ConfigParser()
@@ -381,13 +380,13 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan_for_ga_candidates",
-        lambda *_args, **_kwargs: None,
+        FgPlanner,
+        "plan_many",
+        staticmethod(lambda *_args, **_kwargs: None),
     )
 
     cfg = configparser.ConfigParser()
@@ -454,9 +453,8 @@ def test_prepare_fg_static_sync_warms_jit_and_loads_canonical_scoring_bundle(mon
     assert seen == {"frontier": 1, "ftff": 1, "stat_keys": canonical_keys}
 
 
-def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier(monkeypatch):
+def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
     from gear_optimizer.helpers.song_helpers import force_greats
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
 
     seen: list[tuple[int, object]] = []
     registry = object()
@@ -468,13 +466,15 @@ def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier
         meta_primary_color,
         *,
         ga_registry=None,
-        score_prepared_batch=None,
+        scoring_bundle=None,
+        gpu_client=None,
     ):
         _ = (
             calc_song,
             ref_arrays,
             meta_primary_color,
-            score_prepared_batch,
+            scoring_bundle,
+            gpu_client,
         )
         seen.append((len(ga_candidates or []), ga_registry))
         return [
@@ -491,7 +491,7 @@ def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier
             }
         ]
 
-    monkeypatch.setattr(adapter, "process_force_greats_response_frontier_gpu", _fake_response_frontier)
+    monkeypatch.setattr(force_greats, "run_force_greats_response_frontier_for_ga_candidates", _fake_response_frontier)
 
     ga_candidates = [
         {
@@ -502,7 +502,7 @@ def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier
         }
     ]
 
-    out = force_greats.process_force_greats(
+    out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
         ga_candidates=ga_candidates,
         calc_song={"metadata": {}, "song_data": {}},
         ref_arrays={},
@@ -518,7 +518,8 @@ def test_process_force_greats_forwards_direct_ga_candidates_to_response_frontier
 def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    from gear_optimizer.solver.fg_response_scoring.reducer import materialize_force_payload_from_response_frontier
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -546,7 +547,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
     seen = {}
 
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "extract_fg_song_inputs",
         lambda calc_song: SimpleNamespace(
             timestamps=[0.0],
@@ -560,10 +561,10 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
         seen["frontier"] = kwargs["frontier"]
         return ({"forced_count": 1}, {"forced_count": 0}, {"forced_count": 1})
 
-    monkeypatch.setattr(adapter, "reconstruct_force_greats_response_trace", _fake_reconstruct_trace)
-    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
+    monkeypatch.setattr(reducer_mod, "reconstruct_force_greats_response_trace", _fake_reconstruct_trace)
+    monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
-    payload = adapter._force_payload_from_response_frontier(
+    payload = materialize_force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
         paired_base_score=1000,
@@ -587,7 +588,8 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
 def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    from gear_optimizer.solver.fg_response_scoring.reducer import materialize_force_payload_from_response_frontier
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -612,7 +614,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     )
 
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "extract_fg_song_inputs",
         lambda calc_song: SimpleNamespace(
             total_notes=1,
@@ -623,13 +625,13 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "reconstruct_force_greats_response_trace",
         lambda **_kwargs: ({"forced_count": 1}, {"forced_count": 0}, {"forced_count": 1}),
     )
-    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
+    monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
-    payload = adapter._force_payload_from_response_frontier(
+    payload = materialize_force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
         paired_base_score=1000,
@@ -646,7 +648,8 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
 
 
 def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    from gear_optimizer.solver.fg_response_scoring.reducer import materialize_force_payload_from_response_frontier
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _action_table,
         _edge_surface_option_details,
@@ -726,9 +729,9 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         },
     }
 
-    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 4321)
+    monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 4321)
 
-    payload = adapter._force_payload_from_response_frontier(
+    payload = materialize_force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1, "Rush": 9},
         paired_base_score=4000,
@@ -755,7 +758,10 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
 def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    from gear_optimizer.helpers.song_helpers import force_greats
+    import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
+    from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -782,18 +788,22 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
             real_fever_time=2.0,
         )
 
-    monkeypatch.setattr(adapter, "LOADOUTS_PER_SONG_LIMIT", 1)
-    monkeypatch.setattr(adapter, "eval_data_from_entry", lambda entry, primary: dict(entry["eval_data"]))
-    monkeypatch.setattr(adapter, "expected_selected_element", lambda entry, primary: str(entry["eval_data"]["Selected Element"]))
+    monkeypatch.setattr(reducer_mod, "LOADOUTS_PER_SONG_LIMIT", 1)
+    monkeypatch.setattr(planner_mod, "eval_data_from_entry", lambda entry, primary: dict(entry["eval_data"]))
+    monkeypatch.setattr(planner_mod, "expected_selected_element", lambda entry, primary: str(entry["eval_data"]["Selected Element"]))
     monkeypatch.setattr(
-        adapter,
-        "_base_stats_for_response_frontier",
-        lambda eval_data, selected: {"Perfect Points": int(eval_data["pp"])},
+        planner_mod.FgPlanner,
+        "base_stats_for_response_frontier",
+        staticmethod(lambda eval_data, selected: {"Perfect Points": int(eval_data["pp"])}),
     )
-    monkeypatch.setattr(adapter, "materialize_entry_names", lambda entry, mutate=True: (list(entry["gear"]), list(entry["minis"])))
-    monkeypatch.setattr(adapter, "extract_fg_song_inputs", lambda calc_song: SimpleNamespace(total_notes=1))
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
+        "materialize_entry_names",
+        lambda entry, mutate=True: (list(entry["gear"]), list(entry["minis"])),
+    )
+    monkeypatch.setattr(planner_mod, "extract_fg_song_inputs", lambda calc_song: SimpleNamespace(total_notes=1))
+    monkeypatch.setattr(
+        planner_mod,
         "prepare_force_greats_response_frontier_scoring_batch",
         lambda **kwargs: {"base_stats_list": list(kwargs["base_stats_list"])},
     )
@@ -809,7 +819,7 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
             "forced_counts": [1],
         }
 
-    monkeypatch.setattr(adapter, "_force_payload_from_response_frontier", _fake_force_payload)
+    monkeypatch.setattr(reducer_mod, "materialize_force_payload_from_response_frontier", _fake_force_payload)
 
     candidates = [
         {
@@ -826,12 +836,16 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
         },
     ]
 
-    out = adapter.process_force_greats_response_frontier_gpu(
+    monkeypatch.setattr(
+        GpuScoreEngine,
+        "score_plan",
+        staticmethod(lambda _plan, **kwargs: ([[_result(100, 10, 20), _result(90, 30, 40)]], [])),
+    )
+    out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
         candidates,
         calc_song=_minimal_fg_calc_song(),
         ref_arrays=_minimal_fg_ref_arrays(),
         meta_primary_color="Rush",
-        score_prepared_batch=lambda _batch, **_kwargs: [_result(100, 10, 20), _result(90, 30, 40)],
     )
 
     assert seen_payloads == [(100, None)]
@@ -878,18 +892,16 @@ def test_response_frontier_best_position_prune_matches_sort_reference_randomized
             np.testing.assert_array_equal(got, np.asarray(expected, dtype=np.int32))
 
 
-def test_response_frontier_compiled_group_builder_matches_prune_reference():
+@pytest.mark.gpu
+def test_response_frontier_gpu_group_builder_matches_prune_reference():
     from gear_optimizer.core.constants import GEM_SCALE_FEVER, GEM_STAT_TO_ELEMENT_SCALE, TOTAL_ROWS
     from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
-    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import (
-        best_response_positions_for_base_ftff,
-        prune_best_positions_by_frontier,
-        prune_dominated_ftff_response_positions,
+    from gear_optimizer.solver.taichi_gem.force_greats.response_group_build_kernels import (
+        build_response_group_rows_gpu,
     )
+    from tests.fg_group_build_reference import build_response_group_rows_reference
 
-    total_budget = 3
-    ft_values, ff_values, residual_values = ftff_combo_arrays(total_budget)
+    ft_values, ff_values, residual_values = ftff_combo_arrays(3)
     base_components = np.asarray(
         [
             [1, 2, 3, 10, 20, 0, 0],
@@ -905,70 +917,6 @@ def test_response_frontier_compiled_group_builder_matches_prune_reference():
             ff_stat = int(np.clip(int(base[6]) + int(ff) * GEM_SCALE_FEVER, 0, TOTAL_ROWS))
             frontier_idx_by_stat[ft_stat, ff_stat] = int((ft_stat // GEM_SCALE_FEVER + ff_stat // GEM_SCALE_FEVER) % 3)
 
-    def reference(*, primary_delta: np.ndarray, secondary_delta: np.ndarray, constant: bool):
-        meta_blocks = []
-        ft_blocks = []
-        ff_blocks = []
-        ft_stat_blocks = []
-        ff_stat_blocks = []
-        slices = []
-        start = 0
-        positions = np.arange(int(ft_values.shape[0]), dtype=np.int32)
-        for base in base_components:
-            base_pp, base_cm, base_fm, base_primary, base_secondary, base_ft, base_ff = (int(v) for v in base)
-            ft_stat_seq = np.clip(base_ft + ft_values * GEM_SCALE_FEVER, 0, TOTAL_ROWS).astype(np.int32)
-            ff_stat_seq = np.clip(base_ff + ff_values * GEM_SCALE_FEVER, 0, TOTAL_ROWS).astype(np.int32)
-            frontier_ids = np.ascontiguousarray(frontier_idx_by_stat[ft_stat_seq, ff_stat_seq], dtype=np.int32)
-            if constant:
-                best_positions, _ft, _ff = best_response_positions_for_base_ftff(
-                    total_budget=total_budget,
-                    base_ft=base_ft,
-                    base_ff=base_ff,
-                )
-                best_positions = prune_best_positions_by_frontier(
-                    positions=best_positions,
-                    frontier_ids=np.ascontiguousarray(frontier_ids[best_positions], dtype=np.int32),
-                    residuals=np.ascontiguousarray(residual_values[best_positions], dtype=np.int32),
-                )
-                primary_values = np.full((int(best_positions.shape[0]),), base_primary, dtype=np.int32)
-                secondary_values = np.full((int(best_positions.shape[0]),), base_secondary, dtype=np.int32)
-            else:
-                primary_seq = np.asarray(base_primary + primary_delta, dtype=np.int32)
-                secondary_seq = np.asarray(base_secondary + secondary_delta, dtype=np.int32)
-                best_positions = prune_dominated_ftff_response_positions(
-                    positions=positions,
-                    frontier_ids=frontier_ids,
-                    residuals=residual_values,
-                    primary_values=primary_seq,
-                    secondary_values=secondary_seq,
-                )
-                primary_values = np.ascontiguousarray(primary_seq[best_positions], dtype=np.int32)
-                secondary_values = np.ascontiguousarray(secondary_seq[best_positions], dtype=np.int32)
-            meta = np.empty((int(best_positions.shape[0]), 8), dtype=np.int32)
-            meta[:, 0] = residual_values[best_positions]
-            meta[:, 1] = base_pp
-            meta[:, 2] = base_cm
-            meta[:, 3] = base_fm
-            meta[:, 4] = primary_values
-            meta[:, 5] = secondary_values
-            meta[:, 6] = 4
-            meta[:, 7] = 9
-            meta_blocks.append(meta)
-            ft_blocks.append(np.ascontiguousarray(ft_values[best_positions], dtype=np.int32))
-            ff_blocks.append(np.ascontiguousarray(ff_values[best_positions], dtype=np.int32))
-            ft_stat_blocks.append(np.ascontiguousarray(ft_stat_seq[best_positions], dtype=np.int32))
-            ff_stat_blocks.append(np.ascontiguousarray(ff_stat_seq[best_positions], dtype=np.int32))
-            slices.append((start, int(best_positions.shape[0])))
-            start += int(best_positions.shape[0])
-        return (
-            np.concatenate(meta_blocks, axis=0),
-            np.concatenate(ft_blocks),
-            np.concatenate(ff_blocks),
-            np.concatenate(ft_stat_blocks),
-            np.concatenate(ff_stat_blocks),
-            np.asarray(slices, dtype=np.int32),
-        )
-
     cases = (
         (np.zeros_like(ft_values, dtype=np.int32), np.zeros_like(ff_values, dtype=np.int32), True),
         (
@@ -978,7 +926,7 @@ def test_response_frontier_compiled_group_builder_matches_prune_reference():
         ),
     )
     for primary_delta, secondary_delta, constant in cases:
-        got = response_frontier._build_response_group_rows_numba(
+        args = (
             base_components,
             np.ascontiguousarray(ft_values, dtype=np.int32),
             np.ascontiguousarray(ff_values, dtype=np.int32),
@@ -990,7 +938,8 @@ def test_response_frontier_compiled_group_builder_matches_prune_reference():
             4,
             9,
         )
-        expected = reference(primary_delta=primary_delta, secondary_delta=secondary_delta, constant=constant)
+        got = build_response_group_rows_gpu(*args)
+        expected = build_response_group_rows_reference(*args)
         for got_arr, expected_arr in zip(got, expected, strict=True):
             np.testing.assert_array_equal(got_arr, expected_arr)
 
@@ -1091,10 +1040,13 @@ def test_response_frontier_ftff_antichain_matches_naive_dominance():
     assert kept == naive
 
 
-def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
+def test_fg_response_scoring_uses_shared_solver(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    from gear_optimizer.helpers.song_helpers import force_greats
+    import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
+    from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -1152,25 +1104,34 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
         return [_result(base_stats, str(batch["selected_color"])) for base_stats in batch["base_stats_list"]]
 
     monkeypatch.setattr(
-        adapter,
+        planner_mod,
+        "extract_fg_song_inputs",
+        lambda _song: SimpleNamespace(total_notes=2),
+    )
+    monkeypatch.setattr(
+        reducer_mod,
         "extract_fg_song_inputs",
         lambda _song: SimpleNamespace(
-            total_notes=2,
             timestamps=[0.0, 1.0],
             perfect_candidates=[0.0, 1.0],
             great_candidates=[0.0, 1.0],
             use_forced_great_timing=True,
         ),
     )
-    monkeypatch.setattr(adapter, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
+    monkeypatch.setattr(planner_mod, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "reconstruct_force_greats_response_trace",
         lambda **_kwargs: ({"forced_count": 5}, {"forced_count": 0}),
     )
-    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 150)
+    monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 150)
 
-    out = adapter.process_force_greats_response_frontier_gpu(
+    monkeypatch.setattr(
+        GpuScoreEngine,
+        "score_plan",
+        staticmethod(lambda plan, **kwargs: ([_fake_score_batch(plan.prepared_batches[0].batch)], [])),
+    )
+    out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
         [
             {
                 "BaseScore": 100,
@@ -1195,7 +1156,6 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
         _minimal_fg_calc_song(),
         _minimal_fg_ref_arrays(),
         "Rush",
-        score_prepared_batch=_fake_score_batch,
     )
 
     assert len(calls) == 1
@@ -1223,14 +1183,15 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     assert out[0]["minis"] == ["M1"]
 
 
-def test_process_force_greats_uses_authoritative_paired_base_for_emit_gate(monkeypatch):
+def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
 
     monkeypatch.setattr(
-        adapter,
-        "_force_payload_from_response_frontier",
+        reducer_mod,
+        "materialize_force_payload_from_response_frontier",
         lambda **kwargs: {
             "BaseScore": kwargs["result"].exact_base,
             "RawBaseScore": kwargs["result"].raw_base,
@@ -1242,7 +1203,6 @@ def test_process_force_greats_uses_authoritative_paired_base_for_emit_gate(monke
     plan = SimpleNamespace(
         calc_song={},
         ref_arrays={},
-        variants=(),
         pending_jobs=((keep, {}, "Rush", {}, 100, "keep"), (drop, {}, "Rush", {}, 160, "drop")),
         prepared_batches=(SimpleNamespace(rows=(("keep", {}), ("drop", {}))),),
     )
@@ -1251,17 +1211,20 @@ def test_process_force_greats_uses_authoritative_paired_base_for_emit_gate(monke
         SimpleNamespace(best_score=150, raw_base=90, exact_base=160, exact_fg=150),
     ]
 
-    out = adapter.materialize_force_greats_response_frontier_plan_results(plan, [results])
+    out = FgResultReducer.materialize(plan, [results])
 
     assert [(row["gear"], row["base_score"], row["fg_score"]) for row in out] == [(["RawBaseInflated"], 100, 150)]
     assert keep["fg_base_score"] == 100
     assert out[0]["data"]["BaseScore"] == 100
 
 
-def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
+def test_fg_response_scoring_batches_candidates(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    from gear_optimizer.helpers.song_helpers import force_greats
+    import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
+    from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -1322,29 +1285,38 @@ def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
         return out
 
     monkeypatch.setattr(
-        adapter,
+        planner_mod,
+        "extract_fg_song_inputs",
+        lambda _song: SimpleNamespace(total_notes=2),
+    )
+    monkeypatch.setattr(
+        reducer_mod,
         "extract_fg_song_inputs",
         lambda _song: SimpleNamespace(
-            total_notes=2,
             timestamps=[0.0, 1.0],
             perfect_candidates=[0.0, 1.0],
             great_candidates=[0.0, 1.0],
             use_forced_great_timing=True,
         ),
     )
-    monkeypatch.setattr(adapter, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
+    monkeypatch.setattr(planner_mod, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "reconstruct_force_greats_response_trace",
         lambda **_kwargs: ({"forced_count": 5}, {"forced_count": 0}),
     )
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "score_force_greats_response_surface_exact",
         lambda stats, *_args, **_kwargs: int(stats["Rush"]) + 189,
     )
 
-    out = adapter.process_force_greats_response_frontier_gpu(
+    monkeypatch.setattr(
+        GpuScoreEngine,
+        "score_plan",
+        staticmethod(lambda plan, **kwargs: ([_fake_score_batch(plan.prepared_batches[0].batch)], [])),
+    )
+    out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
         [
             {
                 "BaseScore": 100,
@@ -1362,7 +1334,6 @@ def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
         _minimal_fg_calc_song(),
         _minimal_fg_ref_arrays(),
         "Rush",
-        score_prepared_batch=_fake_score_batch,
     )
 
     assert calls == [2]

@@ -25,6 +25,10 @@ from ..core.team_buff import (
 )
 from ..core.types import PersistenceEntry
 from .migrations import ensure_schema
+from .database_fg_summary import (
+    normalize_details_for_persistence as _normalize_details_for_persistence,
+    repair_base_loadout_fg_summaries as _repair_base_loadout_fg_summaries,
+)
 from .database_codecs import (
     _json_dumps_compact,
     _json_loads,
@@ -478,39 +482,8 @@ def _ensure_stats_in_details(
     except Exception as e:
         logger.warning(f"database:_ensure_stats_in_details: {e}")
     return details
-def _normalize_details_for_persistence(
-    details: Any,
-    *,
-    score: int,
-    fg_score: int,
-    force_data: Any,
-    preserve_attempt_meta: bool = False,
-) -> dict:
-    """
-    Normalize details payload before persistence.
-    Goals:
-    - Keep `details["ForceGreats"]["final_score"]` consistent with the persisted `fg_score` when FG ran.
-      (Some downstream consumers read this field and will otherwise treat FG as missing/zero.)
-    - Strip transient attempt counters from the stored payload unless the caller
-      explicitly asks to preserve them for a mirror write.
-    """
-    if not isinstance(details, dict):
-        return {}
-    out = dict(details)
-    if not preserve_attempt_meta:
-        out.pop("attempt_lifetime", None)
-        out.pop("attempts_first", None)
-    if force_data is None or int(fg_score or 0) <= 0:
-        return out
-    fg_meta = out.get("ForceGreats")
-    if not isinstance(fg_meta, dict):
-        return out
-    fg_out = dict(fg_meta)
-    fg_out["final_score"] = int(fg_score)
-    if out is details:
-        out = dict(out)
-    out["ForceGreats"] = fg_out
-    return out
+
+
 def _force_payload_base_score(force_data: Any) -> int:
     if not isinstance(force_data, dict):
         return 0
@@ -1452,6 +1425,9 @@ def save_team_buff_loadouts_batch(
                     (song_name, team_buff, song_name, team_buff, LOADOUTS_PER_SONG_LIMIT),
                 )
                 _log_timing("prune_team_buff_fg_loadouts", time.perf_counter() - _t_prfg0)
+        _t_repair0 = time.perf_counter()
+        _repair_base_loadout_fg_summaries(conn, song_name=song_name, team_buff=team_buff)
+        _log_timing("repair_base_fg_summaries", time.perf_counter() - _t_repair0)
         verify_integrity = env_flag("DB_VERIFY_WRITE_INTEGRITY", "0")
         if verify_integrity:
             strict = env_flag("DB_STRICT_WRITE_INTEGRITY", "0")

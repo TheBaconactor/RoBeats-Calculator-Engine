@@ -448,10 +448,10 @@ def test_fg_response_frontier_payload_load_is_not_a_production_api() -> None:
 
 
 def test_response_frontier_job_prep_has_no_scoring_cache_prebuild_route() -> None:
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.helpers.song_helpers import force_greats
 
-    assert not hasattr(response_frontier_adapter, "prebuild_response_frontier_job_caches")
-    assert not hasattr(response_frontier_adapter, "prebuild_force_greats_response_frontier_candidate_cache")
+    assert not hasattr(force_greats, "prebuild_response_frontier_job_caches")
+    assert not hasattr(force_greats, "prebuild_force_greats_response_frontier_candidate_cache")
 
 
 def test_fg_response_prebuild_dedupes_duplicate_bundle_keys(tmp_path: Path) -> None:
@@ -957,9 +957,19 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
         selected_color="Rush",
         primary_color="Rush",
         secondary_color="Flow",
-        kept_stat_keys=((0, 0),),
         scoring_bundle=bundle,
         scoring_bundle_ms=0.0,
+        base_components=np.zeros((1, 7), dtype=np.int32),
+        ft_values=np.asarray([0], dtype=np.int32),
+        ff_values=np.asarray([0], dtype=np.int32),
+        residual_values=np.asarray([0], dtype=np.int32),
+        frontier_idx_by_stat=frontier_idx_by_stat,
+        primary_ftff_delta_values=np.zeros(1, dtype=np.int32),
+        secondary_ftff_delta_values=np.zeros(1, dtype=np.int32),
+        score_elements_constant=True,
+        head_len=1,
+        body_total=0,
+        kept_stat_keys=((0, 0),),
         group_meta=np.asarray([[0, 0, 0, 0, 0, 0, 1, 0]], dtype=np.int32),
         group_ft=np.asarray([0], dtype=np.int32),
         group_ff=np.asarray([0], dtype=np.int32),
@@ -1003,7 +1013,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
         lambda *_a, **_k: FgResponseFrontierResult((surface,), {}, 1, 1, 0, 1, 1, 1, 0, 0.0),
     )
 
-    result = response_frontier.score_prepared_force_greats_response_frontier_batch_gpu(
+    result = response_frontier.score_prepared_force_greats_response_frontier_batch_sync(
         batch,
         include_forced_counts=False,
     )
@@ -1011,7 +1021,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
     assert result[0].best_score == 123
     assert result[0].forced_counts == ()
 
-    result_with_counts = response_frontier.score_prepared_force_greats_response_frontier_batch_gpu(
+    result_with_counts = response_frontier.score_prepared_force_greats_response_frontier_batch_sync(
         batch,
         include_forced_counts=True,
     )
@@ -1082,15 +1092,14 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
     assert seen["calc_song"] == {"song_data": {}}
     assert seen["ref_arrays"] == {"ref": batch.ref_arrays["ref"]}
     assert seen["stat_keys"] == canonical_keys
-    assert set(batch.kept_stat_keys).issubset(set(seen["stat_keys"]))
-    assert (TOTAL_ROWS, TOTAL_ROWS) not in set(batch.kept_stat_keys)
+    assert batch.kept_stat_keys == ()
     assert batch.scoring_bundle_ms >= 0.0
-    assert batch.scoring_surface_words.shape == (1, 8)
-    np.testing.assert_array_equal(batch.scoring_surface_head_coeffs, seen["bundle"].surface_head_coeffs)
-    assert batch.scoring_surface_counts.shape == (1, 3)
-    assert batch.scoring_surface_head_coeffs.shape == (1, 4)
-    assert batch.scoring_group_offsets.shape == batch.group_ft.shape
-    assert batch.scoring_group_lengths.shape == batch.group_ft.shape
+    assert batch.group_meta is None
+    assert batch.scoring_surface_words is None
+    assert batch.scoring_surface_counts is None
+    assert batch.scoring_surface_head_coeffs is None
+    assert batch.scoring_group_offsets is None
+    assert batch.scoring_group_lengths is None
 
 
 def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> None:
@@ -1138,8 +1147,9 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
     )
 
     assert batch.scoring_bundle is prewarmed_bundle
-    assert batch.kept_stat_keys == ((0, 0),)
-    np.testing.assert_array_equal(batch.scoring_surface_head_coeffs, prewarmed_bundle.surface_head_coeffs)
+    assert batch.kept_stat_keys == ()
+    assert batch.group_meta is None
+    assert batch.scoring_surface_head_coeffs is None
 
 
 def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -> None:
@@ -1175,6 +1185,29 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
 
     monkeypatch.setattr(response_frontier, "extract_fg_song_inputs", lambda _song: song_inputs)
 
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        response_frontier,
+        "build_prepared_force_greats_response_frontier_group_arrays_on_owner",
+        lambda batch: replace(
+            batch,
+            group_meta=np.asarray([[0, 0, 0, 0, 0, 0, 1, 0]], dtype=np.int32),
+            group_ft=np.asarray([0], dtype=np.int32),
+            group_ff=np.asarray([0], dtype=np.int32),
+            group_ft_stat=np.asarray([0], dtype=np.int32),
+            group_ff_stat=np.asarray([0], dtype=np.int32),
+            candidate_slices=((0, 1),),
+            kept_stat_keys=((0, 0),),
+            scoring_surface_words=surface_words[2:3],
+            scoring_surface_counts=surface_counts[2:3],
+            scoring_surface_head_coeffs=surface_head_coeffs[2:3],
+            scoring_group_offsets=np.asarray([0], dtype=np.int32),
+            scoring_group_lengths=np.asarray([1], dtype=np.int32),
+            scoring_unique_frontiers=1,
+        ),
+    )
+
     batch = response_frontier.prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=({"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0},),
         calc_song={"song_data": {}},
@@ -1183,15 +1216,18 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
         total_budget=0,
         scoring_bundle=prewarmed_bundle,
     )
+    assert batch.scoring_surface_words is None
 
-    np.testing.assert_array_equal(batch.scoring_surface_words, surface_words[2:3])
-    np.testing.assert_array_equal(batch.scoring_surface_counts, surface_counts[2:3])
-    assert batch.scoring_group_offsets.tolist() == [0]
-    assert batch.scoring_group_lengths.tolist() == [1]
-    np.testing.assert_array_equal(batch.scoring_surface_head_coeffs, surface_head_coeffs[2:3])
-    assert not hasattr(batch, "scoring_logical_owners")
-    assert not hasattr(batch, "scoring_logical_surfaces")
-    assert not hasattr(batch, "scoring_logical_work_cumsum")
+    built = response_frontier.build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
+
+    np.testing.assert_array_equal(built.scoring_surface_words, surface_words[2:3])
+    np.testing.assert_array_equal(built.scoring_surface_counts, surface_counts[2:3])
+    assert built.scoring_group_offsets.tolist() == [0]
+    assert built.scoring_group_lengths.tolist() == [1]
+    np.testing.assert_array_equal(built.scoring_surface_head_coeffs, surface_head_coeffs[2:3])
+    assert not hasattr(built, "scoring_logical_owners")
+    assert not hasattr(built, "scoring_logical_surfaces")
+    assert not hasattr(built, "scoring_logical_work_cumsum")
 
 
 def test_packed_scoring_batch_dedupes_and_coalesces_selected_segments() -> None:

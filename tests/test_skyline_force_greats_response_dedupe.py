@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
+import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
+import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
 from gear_optimizer.solver import skyline_force_greats as sfg
+from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
+from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
+from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+    FgResponseFrontierResult,
+    FgResponseFrontierSolveResult,
+    FgResponseInnerResult,
+    FgResponseSurface,
+)
 
 
 def _base_calc_song() -> dict[str, Any]:
@@ -29,7 +40,7 @@ def _stats(*, pp: int = 100) -> dict[str, int]:
     }
 
 
-def _prepared(*, pp: int, selected: str = "Power") -> dict[str, Any]:
+def _record(*, pp: int, selected: str = "Power") -> dict[str, Any]:
     base_stats = _stats(pp=pp)
     return {
         "data": {
@@ -39,57 +50,179 @@ def _prepared(*, pp: int, selected: str = "Power") -> dict[str, Any]:
             "FF": 0,
             "Selected Element": selected,
         },
-        "base_stats": dict(base_stats),
         "base_score": 1_000_000 + int(pp),
-        "selected_color": selected,
     }
 
 
-def test_skyline_response_batch_dedupes_identical_retained_responses(monkeypatch: Any) -> None:
-    solve_calls: list[dict[str, Any]] = []
-    sentinel_a = object()
-    sentinel_b = object()
-
-    def fake_solve(*, base_stats: dict[str, Any], **_kwargs: Any):
-        solve_calls.append(dict(base_stats))
-        return sentinel_a if int(base_stats["Perfect Points"]) == 100 else sentinel_b
-
-    monkeypatch.setattr(sfg, "solve_force_greats_response_frontier_batch_gpu", fake_solve)
-
-    results, stats = sfg._score_skyline_response_force_greats_batch(
-        prepared=[_prepared(pp=100), _prepared(pp=100), _prepared(pp=101)],
-        calc_song=_base_calc_song(),
-        ref_arrays={},
+def _solve_result(base_stats: dict[str, Any], *, selected_color: str) -> FgResponseFrontierSolveResult:
+    pp = int(base_stats["Perfect Points"])
+    surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, pp, 0, 0)
+    frontier = FgResponseFrontierResult(
+        first_frontier=(surface,),
+        state_frontiers={},
+        states_evaluated=1,
+        actions=1,
+        transitions_evaluated=1,
+        generated_surfaces=1,
+        retained_surfaces_total=1,
+        max_state_frontier=1,
+        non_fever_base=7,
+        seconds=0.0,
+    )
+    inner = FgResponseInnerResult(
+        best_score=1_000_200 + pp,
+        surface_index=0,
+        g_pp=0,
+        g_cm=0,
+        g_fm=0,
+        g_ov=1,
+        final_pp=0,
+        final_cm=0,
+        final_fm=0,
+        final_primary=0,
+        final_secondary=0,
+    )
+    return FgResponseFrontierSolveResult(
+        best_score=1_000_200 + pp,
+        ft=2,
+        ff=3,
+        gem_counts={"Perfect Points": pp, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 1},
+        stats={**base_stats, selected_color: int(base_stats.get(selected_color, 0) or 0) + 1},
+        surface=surface,
+        frontier=frontier,
+        inner=inner,
+        seconds=0.0,
+        forced_counts=(),
     )
 
-    assert solve_calls == [_stats(pp=100), _stats(pp=101)]
-    assert stats == {
+
+def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[str, Any]]]]:
+    prepare_calls: list[tuple[str, list[dict[str, Any]]]] = []
+
+    monkeypatch.setattr(
+        planner_mod,
+        "extract_fg_song_inputs",
+        lambda _song: SimpleNamespace(total_notes=2),
+    )
+    monkeypatch.setattr(
+        reducer_mod,
+        "extract_fg_song_inputs",
+        lambda _song: SimpleNamespace(
+            timestamps=[0.0, 1.0],
+            perfect_candidates=[0.0, 1.0],
+            great_candidates=[0.0, 1.0],
+            use_forced_great_timing=True,
+        ),
+    )
+    monkeypatch.setattr(
+        reducer_mod,
+        "reconstruct_force_greats_response_trace",
+        lambda **_kwargs: ({"forced_count": 1}, {"forced_count": 0}),
+    )
+    monkeypatch.setattr(
+        reducer_mod,
+        "score_force_greats_response_surface_exact",
+        lambda stats, *_args, **_kwargs: 1_000_200 + int(stats["Perfect Points"]),
+    )
+
+    def _fake_prepare(*, base_stats_list, selected_color, **_kwargs):
+        rows = [dict(base_stats) for base_stats in base_stats_list]
+        prepare_calls.append((str(selected_color or ""), rows))
+        return SimpleNamespace(base_stats_list=rows, selected_color=str(selected_color or ""))
+
+    def _fake_score_plan(plan, **_kwargs):
+        scored = []
+        for prepared in plan.prepared_batches:
+            selected_color = str(getattr(prepared.batch, "selected_color", "") or "")
+            scored.append(
+                [
+                    _solve_result(dict(base_stats), selected_color=selected_color)
+                    for _cache_key, base_stats in prepared.rows
+                ]
+            )
+        return scored
+
+    monkeypatch.setattr(planner_mod, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare)
+    monkeypatch.setattr(
+        GpuScoreEngine,
+        "score_plan",
+        staticmethod(lambda plan, **_kwargs: (_fake_score_plan(plan), [])),
+    )
+    return prepare_calls
+
+
+def test_skyline_scores_retained_candidates_through_shared_service(monkeypatch: Any) -> None:
+    prepare_calls = _install_shared_path_fakes(monkeypatch)
+    seen: dict[str, Any] = {}
+    original = FgResponseScoringService.score_candidates_with_stats
+
+    def _spy_score_candidates_with_stats(*args, **kwargs):
+        seen["mode"] = kwargs.get("mode")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        FgResponseScoringService,
+        "score_candidates_with_stats",
+        staticmethod(_spy_score_candidates_with_stats),
+    )
+    records = [_record(pp=100), _record(pp=100), _record(pp=101)]
+
+    summary, best_record = sfg.score_retained_skyline_force_greats(
+        records,
+        calc_song=_base_calc_song(),
+        ref_arrays={},
+        default_selected_color="Power",
+        use_gpu=True,
+    )
+
+    assert seen["mode"] == "skyline"
+    assert prepare_calls == [("Power", [_stats(pp=100), _stats(pp=101)])]
+    assert {
+        "candidate_count": summary["candidate_count"],
+        "exact_calls": summary["exact_calls"],
+        "response_frontier_calls": summary["response_frontier_calls"],
+        "gpu_batches": summary["gpu_batches"],
+        "batch_groups": summary["batch_groups"],
+        "fg_batch_input_genomes": summary["fg_batch_input_genomes"],
+        "fg_batch_unique_genomes": summary["fg_batch_unique_genomes"],
+        "fg_batch_deduped_genomes": summary["fg_batch_deduped_genomes"],
+        "fg_batch_dedupe_groups": summary["fg_batch_dedupe_groups"],
+        "fg_gains": summary["fg_gains"],
+        "best_fg_score": summary["best_fg_score"],
+    } == {
+        "candidate_count": 3,
+        "exact_calls": 3,
+        "response_frontier_calls": 3,
         "gpu_batches": 2,
-        "groups": 1,
-        "input_genomes": 3,
-        "unique_genomes": 2,
-        "deduped_genomes": 1,
-        "dedupe_groups": 1,
+        "batch_groups": 1,
+        "fg_batch_input_genomes": 3,
+        "fg_batch_unique_genomes": 2,
+        "fg_batch_deduped_genomes": 1,
+        "fg_batch_dedupe_groups": 1,
+        "fg_gains": 3,
+        "best_fg_score": 1_000_301,
     }
-    assert results == [sentinel_a, sentinel_a, sentinel_b]
+    assert best_record is records[2]
+    for record in records:
+        payload = record["force"]
+        assert record["data"]["force"] is payload
+        assert payload["ForceGreats"]["frontier_trace"] == [{"forced_count": 1}, {"forced_count": 0}]
+        assert payload["response_surface"] == [0, 0, 0, 0, 0, 0, 0, 0, int(record["data"]["BaseStats"]["Perfect Points"]), 0, 0]
+        assert record["fg_score"] == 1_000_200 + int(record["data"]["BaseStats"]["Perfect Points"])
 
 
-def test_skyline_response_batch_keeps_selected_color_responses_separate(monkeypatch: Any) -> None:
-    solve_calls: list[tuple[str, dict[str, Any]]] = []
+def test_skyline_mode_keeps_selected_color_responses_separate(monkeypatch: Any) -> None:
+    prepare_calls = _install_shared_path_fakes(monkeypatch)
 
-    def fake_solve(*, base_stats: dict[str, Any], selected_color: str, **_kwargs: Any):
-        solve_calls.append((str(selected_color), dict(base_stats)))
-        return object()
-
-    monkeypatch.setattr(sfg, "solve_force_greats_response_frontier_batch_gpu", fake_solve)
-
-    results, stats = sfg._score_skyline_response_force_greats_batch(
-        prepared=[_prepared(pp=100, selected="Power"), _prepared(pp=100, selected="Rush")],
+    rows, stats = FgResponseScoringService.score_candidates_with_stats(
+        [_record(pp=100, selected="Power"), _record(pp=100, selected="Rush")],
         calc_song=_base_calc_song(),
         ref_arrays={},
+        meta_primary_color="Power",
+        mode="skyline",
     )
 
-    assert solve_calls == [("Power", _stats(pp=100)), ("Rush", _stats(pp=100))]
+    assert prepare_calls == [("Power", [_stats(pp=100)]), ("Rush", [_stats(pp=100)])]
     assert stats == {
         "gpu_batches": 2,
         "groups": 2,
@@ -98,4 +231,4 @@ def test_skyline_response_batch_keeps_selected_color_responses_separate(monkeypa
         "deduped_genomes": 0,
         "dedupe_groups": 0,
     }
-    assert len(results) == 2
+    assert [row["selected"] for row in rows] == ["Power", "Rush"]

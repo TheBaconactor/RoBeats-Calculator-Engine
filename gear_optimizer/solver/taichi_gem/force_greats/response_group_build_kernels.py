@@ -1,12 +1,9 @@
-"""GPU (Taichi/Vulkan) port of the FG response-frontier group-row reduction.
+"""GPU (Taichi/Vulkan) FG response-frontier group-row reduction.
 
-Bit-exact reimplementation of `_build_response_group_rows_numba`
-(see response_frontier.py). Integer-only and serialized per candidate, so the
-Vulkan result is identical to the CPU/Numba oracle by construction.
-
-The Numba builder remains the parity oracle in tests. Production uses this GPU
-builder as the single group-row construction path; no toggles / no fallbacks
-(CLAUDE.md).
+Canonical production group-row builder: prunes FT/FF pairs per loadout and
+emits the packed arrays the GPU inner scorer consumes. Integer-only; tests
+compare against the prune-composition reference in `tests/fg_group_build_reference.py`.
+No toggles / no fallbacks (CLAUDE.md).
 
 Scratch (head/tail/next/ordered/best/keep_mask) lives in persistent Taichi fields,
 NOT in read/write ndarray kernel args: mixing read/write ndarray scratch with
@@ -352,7 +349,7 @@ def build_response_group_rows_gpu(
     head_len: int,
     body_total: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """GPU equivalent of `_build_response_group_rows_numba`; identical 6-tuple result.
+    """Build pruned group rows on the GPU owner thread.
 
     Returns (group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices).
     """

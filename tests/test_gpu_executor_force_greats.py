@@ -50,10 +50,10 @@ def test_execute_force_greats_response_frontier_score_batch_validates_required_p
 
 
 def test_execute_force_greats_response_frontier_score_batch_forwards_payload_to_runner():
-    calls: list[tuple[object, bool]] = []
+    calls: list[object] = []
 
-    def _run_payload(batch, *, include_forced_counts):
-        calls.append((batch, bool(include_forced_counts)))
+    def _run_payload(batch):
+        calls.append(batch)
         return [{"fg_score": 777}]
 
     batch = object()
@@ -61,7 +61,6 @@ def test_execute_force_greats_response_frontier_score_batch_forwards_payload_to_
         _request(
             {
                 "batch": batch,
-                "include_forced_counts": True,
             }
         ),
         in_process_queues=True,
@@ -72,7 +71,7 @@ def test_execute_force_greats_response_frontier_score_batch_forwards_payload_to_
 
     assert response.success is True
     assert response.result == [{"fg_score": 777}]
-    assert calls == [(batch, True)]
+    assert calls == [batch]
 
 
 def test_execute_force_greats_response_frontier_score_batch_records_owner_timing():

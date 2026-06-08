@@ -7,7 +7,7 @@ time *between* FG GPU jobs when many FG jobs are queued.
 This script:
   - Loads a real song .txt chart (calc_song) + ref arrays.
   - Pulls FG seed loadouts from the DB (team_buff_* tables when present).
-  - Runs the GPU `process_force_greats(...)` route for N jobs.
+  - Runs the GPU `run_force_greats_response_frontier_for_ga_candidates(...)` route for N jobs.
   - Optionally runs jobs concurrently to stress the GPU request queue and coalescing.
   - Writes a GPU executor trace CSV and prints a gap/utilization summary.
 
@@ -161,7 +161,7 @@ def main() -> int:
     from gear_optimizer.data.csv_parser import read_table
     from gear_optimizer.data.database import get_best_loadouts
     from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
-    from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
+    from gear_optimizer.helpers.song_helpers.force_greats import run_force_greats_response_frontier_for_ga_candidates
     from gear_optimizer.data.song_io import get_base_calc_song
 
     cfg = load_config()
@@ -234,11 +234,38 @@ def main() -> int:
             out[f"seed_{i}"] = e
         return out
 
+    def _make_ga_candidates(entries: dict) -> list[dict]:
+        candidates = []
+        for key, entry in entries.items():
+            eval_data = entry.get("Data") or entry.get("eval_data") or entry.get("details") or {}
+            if not isinstance(eval_data, dict) or not eval_data:
+                raise ValueError(f"FG benchmark seed {key!r} is missing eval data")
+            base_score = int(
+                entry.get("BaseScore")
+                or entry.get("base_score")
+                or entry.get("score")
+                or eval_data.get("BaseScore")
+                or eval_data.get("Score")
+                or 0
+            )
+            if base_score <= 0:
+                raise ValueError(f"FG benchmark seed {key!r} is missing a positive base score")
+            candidates.append(
+                {
+                    "BaseScore": int(base_score),
+                    "Gear": list(entry.get("Gear") or entry.get("gear") or []),
+                    "Minis": list(entry.get("Minis") or entry.get("minis") or []),
+                    "Data": dict(eval_data),
+                    "loadout_hash": str(entry.get("loadout_hash") or key),
+                }
+            )
+        return candidates
+
     def _run_one() -> float:
         entries = _make_entries()
         t0 = time.perf_counter()
-        process_force_greats(
-            entries,
+        run_force_greats_response_frontier_for_ga_candidates(
+            _make_ga_candidates(entries),
             calc_song,
             ref_arrays,
             p_color,

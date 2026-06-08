@@ -13,7 +13,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "load_database_progress_baseline": ("database_context", "load_database_progress_baseline"),
     "resolve_database_baseline_team_buff": ("database_context", "resolve_database_baseline_team_buff"),
     "setup_song_config": ("song_config", "setup_song_config"),
-    "process_force_greats": ("force_greats", "process_force_greats"),
+    "run_force_greats_response_frontier_for_ga_candidates": (
+        "force_greats",
+        "run_force_greats_response_frontier_for_ga_candidates",
+    ),
     "build_db_payload": ("persistence_payload", "build_db_payload"),
     "build_persistence_entries": ("persistence_canon", "build_persistence_entries"),
     "canonicalize_and_assemble": ("persistence_canon", "canonicalize_and_assemble"),

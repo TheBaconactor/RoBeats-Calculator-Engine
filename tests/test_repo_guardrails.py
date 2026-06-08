@@ -8,8 +8,7 @@ Rationale:
 - Removed GPU APIs (old batch gem solver) were expensive (host transfers + VRAM) and
   easy to accidentally re-wire back into production.
 - Scoring orchestration should not import `taichi_gem` internals directly; it should
-  go through `gear_optimizer.solver.taichi_gem.api`, `gear_optimizer.solver.taichi_gem.force_greats.api`,
-  and/or the GPU executor.
+  go through `gear_optimizer.solver.taichi_gem.api` and/or the GPU executor.
 """
 
 from __future__ import annotations
@@ -98,6 +97,8 @@ def test_non_skyline_compatibility_shims_stay_deleted() -> None:
         "gear_optimizer/solver/taichi_gem/api/gpu_prefetch.py",
         "gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu.py",
         "gear_optimizer/solver/taichi_gem/force_greats/response_inner.py",
+        "gear_optimizer/solver/taichi_gem/force_greats/api.py",
+        "gear_optimizer/helpers/song_helpers/force_greats/response_frontier_adapter.py",
         "scripts/profile/profile_ga_gpu.py",
         "scripts/profile/profile_main_hot.py",
         "scripts/regression/ga_gpu_integration.py",
@@ -152,17 +153,14 @@ def test_legacy_ftff_solver_api_stays_deleted() -> None:
 
 
 def _is_disallowed_taichi_gem_import(module: str) -> bool:
-    # The public GPU API surface is the `taichi_gem.api` and
-    # `taichi_gem.force_greats.api` packages (INCLUDING their submodules, e.g.
-    # `taichi_gem.api.timeline`), plus the `taichi_gem.runtime` module. Scoring
-    # may import from those. Everything DEEPER -- kernels, fields, force_greats
-    # internals, the bare taichi_gem package -- remains forbidden.
+    # The public GPU API surface is the `taichi_gem.api` package (INCLUDING its
+    # submodules, e.g. `taichi_gem.api.timeline`), plus `taichi_gem.runtime`.
+    # Scoring may import from those. Everything DEEPER -- kernels, fields,
+    # force_greats internals, the bare taichi_gem package -- remains forbidden.
     allowed_prefixes = (
         "gear_optimizer.solver.taichi_gem.api",
-        "gear_optimizer.solver.taichi_gem.force_greats.api",
         "gear_optimizer.solver.taichi_gem.runtime",
         "taichi_gem.api",
-        "taichi_gem.force_greats.api",
         "taichi_gem.runtime",
     )
     for prefix in allowed_prefixes:
@@ -198,7 +196,7 @@ def test_scoring_does_not_import_taichi_gem_internals() -> None:
                     offenders.append(f"{rel}:{node.lineno} from {node.module} import ...")
 
     assert not offenders, (
-        "Scoring code must import GPU functionality via taichi_gem.api/force_greats.api/gpu_executor, "
+        "Scoring code must import GPU functionality via taichi_gem.api/gpu_executor, "
         "not taichi_gem internals:\n" + "\n".join(offenders)
     )
 

@@ -41,7 +41,6 @@ from .base_stats import (
 from .scoring.stats_ops import apply_gems_to_base_stats
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
 from ..helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
-from ..helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
 from .gpu_tuning_policy import choose_ga_batch_runs
 
 # Optional: GPU-native GA dependencies are probed without importing Taichi eagerly.
@@ -221,9 +220,6 @@ def decode_gpu_native_ga_runs_payload(
     cfg_data: dict,
     base_stats_fixed: dict,
     fg_candidate_limit: int,
-    calc_song: dict | None = None,
-    ref_arrays: dict | None = None,
-    fg_group_meta_limit: int | None = None,
 ) -> tuple[dict, list, list, list[dict]]:
     """
     CPU-side decoding for the GPU-native GA multi-run payload.
@@ -237,20 +233,6 @@ def decode_gpu_native_ga_runs_payload(
     """
     if not _GPU_NATIVE_AVAILABLE:
         raise RuntimeError("GPU-native GA not available (missing dependencies)")
-
-    fg_group_meta_limit_i: int | None
-    try:
-        fg_group_meta_limit_i = None if fg_group_meta_limit is None else max(0, int(fg_group_meta_limit))
-    except Exception as e:
-        logger.debug(f"genetic:decode_gpu_native_ga_runs_payload: {e}")
-        fg_group_meta_limit_i = None
-
-    def _should_build_fg_group_meta(index: int, *, enabled: bool) -> bool:
-        if not bool(enabled):
-            return False
-        if fg_group_meta_limit_i is None:
-            return True
-        return int(index) < int(fg_group_meta_limit_i)
 
     runs_payload = np.asarray(runs_payload, dtype=np.int32)
     if runs_payload.ndim == 2:
@@ -272,7 +254,7 @@ def decode_gpu_native_ga_runs_payload(
         try:
             selected_n = int(runs_payload[0, 0])
         except Exception as e:
-            logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
+            logger.debug(f"genetic:decode_gpu_native_ga_runs_payload: {e}")
             selected_n = 0
         if selected_n < 0:
             selected_n = 0
@@ -384,14 +366,13 @@ def decode_gpu_native_ga_runs_payload(
         # - The GPU-selected payload already contains everything the in-flight pipeline needs
         #   (score + FT/FF + gem counts + selected element + (run,row) provenance).
         # - Reconstructing full per-candidate post-gem `Stats` is expensive.
-        # - ForceGreatsFinder grouping only needs `BaseStats`, so keep full `Stats`
+        # - Response-frontier FG only needs `BaseStats`, so keep full `Stats`
         #   reconstruction opt-in and carry only `BaseStats` on the hot path by default.
         # cfg-driven only; the ambient GA_DECODE_INCLUDE_STATS env override was removed.
         include_full_stats = bool(
             isinstance(cfg_data, dict)
             and (cfg_data.get("ga_require_full_stats") or cfg_data.get("fg_require_full_stats"))
         )
-        fg_group_meta_enabled = bool(isinstance(calc_song, dict) and calc_song and fg_group_meta_limit_i != 0)
         base_stats_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
 
         sel_color = str(cfg_data.get("selected_color", "") or "")
@@ -470,31 +451,15 @@ def decode_gpu_native_ga_runs_payload(
                 base_row_stats = base_stats_arr + item_stats_sum[i]
                 base_stats = build_stats_dict(base_row_stats)
                 data_obj["BaseStats"] = base_stats
-                if _should_build_fg_group_meta(i, enabled=fg_group_meta_enabled):
-                    fg_group_meta = build_fg_group_meta(
-                        base_stats=base_stats,
-                        calc_song=calc_song,
-                        ref_arrays=ref_arrays,
-                        selected_element=sel_color,
-                        center_ft=g_ft_i,
-                        center_ff=g_ff_i,
-                        primary_color=str(cfg_data.get("primary_color", "") or ""),
-                        secondary_color=str(cfg_data.get("secondary_color", "") or ""),
-                        run_idx=int(sel_run_idx[i]),
-                        row_idx=int(sel_rows[i]),
-                        prefer_grid=True,
-                    )
-                    if isinstance(fg_group_meta, dict):
-                        data_obj["_fg_group_meta"] = fg_group_meta
             except Exception as e:
-                logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
+                logger.debug(f"genetic:decode_gpu_native_ga_runs_payload: {e}")
             if include_full_stats and final_stats_mat is not None:
                 try:
                     row_stats = final_stats_mat[i]
                     current_stats = build_stats_dict(row_stats)
                     data_obj["Stats"] = current_stats
                 except Exception as e:
-                    logger.debug(f"genetic:_should_build_fg_group_meta: {e}")
+                    logger.debug(f"genetic:decode_gpu_native_ga_runs_payload: {e}")
 
             cand_data = {
                 "Score": score_val,

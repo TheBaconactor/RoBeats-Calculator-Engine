@@ -3,17 +3,9 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
-from gear_optimizer.core.parsing import env_flag, env_get
-from gear_optimizer.solver.force_greats_common import extract_base_stats
-from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
-from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
-from gear_optimizer.solver.taichi_gem.force_greats import (
-    FgResponseFrontierSolveResult,
-    FgResponseSurface,
-    reconstruct_force_greats_response_trace,
-    solve_force_greats_response_frontier_batch_gpu,
-)
+from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
+
+_TOPK_REFERENCE = 51
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -21,32 +13,6 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return int(default)
-
-
-def _candidate_base_stats(data: dict[str, Any], *, selected_color: str) -> dict[str, Any]:
-    base_stats = data.get("BaseStats")
-    if isinstance(base_stats, dict) and base_stats:
-        return dict(base_stats)
-
-    stats = data.get("Stats")
-    if not isinstance(stats, dict) or not stats:
-        raise ValueError("skyline FG candidate is missing Stats/BaseStats")
-
-    base_stats = extract_base_stats(
-        stats,
-        data.get("GemCounts") if isinstance(data.get("GemCounts"), dict) else {},
-        str(selected_color or data.get("Selected Element", "") or ""),
-        _safe_int(data.get("FT", 0), 0),
-        _safe_int(data.get("FF", 0), 0),
-    )
-    if not isinstance(base_stats, dict) or not base_stats:
-        raise ValueError("skyline FG candidate BaseStats extraction failed")
-    data["BaseStats"] = dict(base_stats)
-    return dict(base_stats)
-
-
-def _stable_int_mapping_key(values: dict[str, Any]) -> tuple[tuple[str, int], ...]:
-    return tuple(sorted((str(key), _safe_int(value, 0)) for key, value in dict(values or {}).items()))
 
 
 def _gem_count(gem_counts: Any, key: str) -> int:
@@ -94,133 +60,6 @@ def _genome_names(genome: Any, start: int, stop: int) -> list[str]:
     return [_item_name(item) for item in genome[start:stop]]
 
 
-def _surface_payload(surface: FgResponseSurface) -> dict[str, int]:
-    return {
-        "fever0": int(surface.fever0),
-        "fever1": int(surface.fever1),
-        "fever2": int(surface.fever2),
-        "fever3": int(surface.fever3),
-        "great0": int(surface.great0),
-        "great1": int(surface.great1),
-        "great2": int(surface.great2),
-        "great3": int(surface.great3),
-        "body_fever": int(surface.body_fever),
-        "body_great": int(surface.body_great),
-        "body_fever_great": int(surface.body_fever_great),
-    }
-
-
-def _materialize_force_payload(
-    *,
-    base_data: dict[str, Any],
-    base_stats: dict[str, Any],
-    fg_result: FgResponseFrontierSolveResult,
-    selected_color: str,
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    paired_base_score: int,
-) -> dict[str, Any]:
-    forced_counts = tuple(int(v) for v in fg_result.forced_counts)
-    if not forced_counts:
-        raise ValueError("skyline response frontier requires forced_counts on the solve result")
-    config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
-    base_score = int(paired_base_score)
-    if base_score <= 0:
-        raise ValueError("skyline response frontier requires a positive source paired base score.")
-    final_score_obj = score_force_greats_response_surface_exact(fg_result.stats, calc_song, ref_arrays, fg_result.surface)
-    if final_score_obj is None:
-        raise ValueError("skyline response frontier exact surface replay failed")
-    final_score = int(final_score_obj)
-    song_inputs = extract_fg_song_inputs(calc_song)
-    frontier_trace = reconstruct_force_greats_response_trace(
-        frontier=fg_result.frontier,
-        target_surface=fg_result.surface,
-        timestamps=song_inputs.timestamps,
-        perfect_candidate_timestamps=song_inputs.perfect_candidates,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        raw_fever_fill=float(fg_result.raw_fever_fill),
-        real_fever_time=float(fg_result.real_fever_time),
-        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-    )
-
-    force_payload = dict(base_data)
-    force_payload["BaseScore"] = int(base_score)
-    force_payload["Score"] = int(final_score)
-    force_payload["FT"] = int(fg_result.ft)
-    force_payload["FF"] = int(fg_result.ff)
-    force_payload["GemCounts"] = dict(fg_result.gem_counts)
-    force_payload["BaseStats"] = dict(base_stats)
-    force_payload["Stats"] = dict(fg_result.stats)
-    force_payload["Selected Element"] = str(selected_color or force_payload.get("Selected Element", "") or "")
-    force_payload["forced_counts"] = list(forced_counts)
-    force_payload["ForceGreats"] = {
-        "config": config,
-        "final_score": int(final_score),
-        "response_surface": _surface_payload(fg_result.surface),
-        "frontier_trace": list(frontier_trace),
-        "frontier_first_surfaces": int(len(fg_result.frontier.first_frontier)),
-        "frontier_states": int(fg_result.frontier.states_evaluated),
-        "frontier_max_state": int(fg_result.frontier.max_state_frontier),
-        "frontier_transitions": int(fg_result.frontier.transitions_evaluated),
-        "non_fever_base": int(fg_result.frontier.non_fever_base),
-    }
-    return force_payload
-
-
-def _empty_batch_stats() -> dict[str, int]:
-    return {
-        "gpu_batches": 0,
-        "groups": 0,
-        "input_genomes": 0,
-        "unique_genomes": 0,
-        "deduped_genomes": 0,
-        "dedupe_groups": 0,
-    }
-
-
-def _score_skyline_response_force_greats_batch(
-    *,
-    prepared: list[dict[str, Any]],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-) -> tuple[list[FgResponseFrontierSolveResult | None], dict[str, int]]:
-    if not prepared:
-        return [], _empty_batch_stats()
-
-    results: list[FgResponseFrontierSolveResult | None] = [None for _ in prepared]
-    result_cache: dict[tuple[Any, ...], FgResponseFrontierSolveResult | None] = {}
-    cache_member_counts: dict[tuple[Any, ...], int] = {}
-    result_cache_hits = 0
-
-    for idx, prep in enumerate(prepared):
-        base_stats = dict(prep["base_stats"])
-        selected_color = str(prep.get("selected_color", "") or "")
-        result_key = (selected_color, _stable_int_mapping_key(base_stats))
-        cache_member_counts[result_key] = int(cache_member_counts.get(result_key, 0)) + 1
-        if result_key in result_cache:
-            results[idx] = result_cache[result_key]
-            result_cache_hits += 1
-            continue
-
-        result = solve_force_greats_response_frontier_batch_gpu(
-            base_stats=base_stats,
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
-            selected_color=selected_color,
-        )
-        results[idx] = result
-        result_cache[result_key] = result
-
-    return results, {
-        "gpu_batches": int(len(result_cache)),
-        "groups": int(len({str(item.get("selected_color", "") or "") for item in prepared})),
-        "input_genomes": int(len(prepared)),
-        "unique_genomes": int(len(result_cache)),
-        "deduped_genomes": int(result_cache_hits),
-        "dedupe_groups": sum(1 for count in cache_member_counts.values() if int(count) > 1),
-    }
-
-
 def score_retained_skyline_force_greats(
     candidate_records: list[dict[str, Any]],
     *,
@@ -240,12 +79,7 @@ def score_retained_skyline_force_greats(
 
         status_cb = _noop_status_cb
 
-    telemetry_enabled = env_flag("SKYLINE_FG_TELEMETRY", "0")
-    try:
-        topk_reference = int(env_get("SKYLINE_FG_TOPK_REFERENCE", "51") or "51")
-    except (TypeError, ValueError):
-        topk_reference = 51
-    topk_reference = max(1, int(topk_reference))
+    topk_reference = int(_TOPK_REFERENCE)
 
     best_fg_score = max((_safe_int(rec.get("base_score", 0), 0) for rec in candidate_records), default=0)
     best_record: dict[str, Any] | None = None
@@ -254,60 +88,36 @@ def score_retained_skyline_force_greats(
             best_record = rec
             break
 
-    prepared: list[dict[str, Any]] = []
-    for idx, rec in enumerate(candidate_records):
-        data = rec.get("data")
-        if not isinstance(data, dict) or not data:
-            raise ValueError("skyline FG candidate record is missing data")
-
-        base_score = _safe_int(rec.get("base_score", data.get("BaseScore", data.get("Score", 0))), 0)
-        selected_color = str(data.get("Selected Element", "") or default_selected_color or "")
-        base_stats = _candidate_base_stats(data, selected_color=selected_color)
-        prepared.append(
-            {
-                "idx": int(idx),
-                "rec": rec,
-                "data": data,
-                "base_score": int(base_score),
-                "selected_color": selected_color,
-                "base_stats": base_stats,
-            }
-        )
-
     call_t0 = time.perf_counter()
-    fg_results, batch_stats = _score_skyline_response_force_greats_batch(
-        prepared=prepared,
+    scored_rows, batch_stats = FgResponseScoringService.score_candidates_with_stats(
+        candidate_records,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
+        meta_primary_color=default_selected_color,
+        gpu_client=None,
+        mode="skyline",
     )
     fg_elapsed_total = float(time.perf_counter() - call_t0)
-    fg_elapsed_each = float(fg_elapsed_total) / float(max(1, len(prepared)))
+    if len(scored_rows) != len(candidate_records):
+        raise RuntimeError("Skyline FG response-frontier scoring returned the wrong candidate count")
+    fg_elapsed_each = float(fg_elapsed_total) / float(max(1, len(scored_rows)))
 
     fg_gains = 0
     telemetry_rows: list[dict[str, Any]] = []
-    for idx, prep in enumerate(prepared):
-        rec = prep["rec"]
-        data = prep["data"]
-        base_score = int(prep["base_score"])
-        selected_color = str(prep["selected_color"])
-        base_stats = dict(prep["base_stats"])
-        fg_result = fg_results[idx] if idx < len(fg_results) else None
-
-        fg_score = base_score
-        fg_base_score = base_score
-        force_payload = None
-        if isinstance(fg_result, FgResponseFrontierSolveResult):
-            force_payload = _materialize_force_payload(
-                base_data=data,
-                base_stats=base_stats,
-                fg_result=fg_result,
-                selected_color=selected_color,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                paired_base_score=base_score,
-            )
-            fg_score = int(force_payload["Score"])
-            fg_base_score = int(force_payload["BaseScore"])
+    for idx, scored in enumerate(scored_rows):
+        rec = scored.get("record")
+        if rec is not candidate_records[idx]:
+            raise RuntimeError("Skyline FG response-frontier scoring changed candidate order")
+        data = rec.get("data")
+        if not isinstance(data, dict) or not data:
+            raise ValueError("skyline FG candidate record is missing data")
+        force_payload = scored.get("force")
+        if not isinstance(force_payload, dict) or not force_payload:
+            raise RuntimeError("Skyline FG response-frontier scoring did not materialize a force payload")
+        base_stats = dict(scored.get("base_stats") or {})
+        base_score = _safe_int(scored.get("base_score", force_payload.get("BaseScore", rec.get("base_score", 0))), 0)
+        fg_score = _safe_int(scored.get("fg_score", force_payload.get("Score", base_score)), base_score)
+        fg_base_score = _safe_int(force_payload.get("BaseScore", base_score), base_score)
 
         fg_delta = int(fg_score) - int(base_score)
         if fg_delta > 0:
@@ -322,9 +132,8 @@ def score_retained_skyline_force_greats(
         data["FGBaseScore"] = int(fg_base_score)
         data["FGUpperBound"] = int(fg_score)
         data["NativeFGWouldSkipByCeiling"] = False
-        if force_payload is not None:
-            data["force"] = force_payload
-            rec["force"] = force_payload
+        data["force"] = force_payload
+        rec["force"] = force_payload
 
         rec["fg_score"] = int(fg_score)
         rec["fg_delta"] = int(fg_delta)
@@ -389,20 +198,18 @@ def score_retained_skyline_force_greats(
 
     summary = {
         "candidate_count": int(len(candidate_records)),
-        "exact_calls": int(len(prepared)),
-        "response_frontier_calls": int(len(prepared)),
+        "exact_calls": int(len(scored_rows)),
+        "response_frontier_calls": int(len(scored_rows)),
         "gpu_batches": int(batch_stats.get("gpu_batches", 0) if isinstance(batch_stats, dict) else 0),
         "batch_groups": int(batch_stats.get("groups", 0) if isinstance(batch_stats, dict) else 0),
         "fg_batch_input_genomes": int(
-            batch_stats.get("input_genomes", len(prepared)) if isinstance(batch_stats, dict) else 0
+            batch_stats.get("input_genomes", len(scored_rows)) if isinstance(batch_stats, dict) else 0
         ),
         "fg_batch_unique_genomes": int(
-            batch_stats.get("unique_genomes", len(prepared)) if isinstance(batch_stats, dict) else 0
+            batch_stats.get("unique_genomes", len(scored_rows)) if isinstance(batch_stats, dict) else 0
         ),
         "fg_batch_deduped_genomes": int(batch_stats.get("deduped_genomes", 0) if isinstance(batch_stats, dict) else 0),
         "fg_batch_dedupe_groups": int(batch_stats.get("dedupe_groups", 0) if isinstance(batch_stats, dict) else 0),
-        "ceiling_pruning_enabled": False,
-        "hypothetical_skipped_by_ceiling": 0,
         "fg_gains": int(fg_gains),
         "best_fg_score": int(best_fg_score),
         "best_fg_base_score": _safe_int(best_record.get("fg_base_score", 0), 0) if best_record else 0,
@@ -420,6 +227,4 @@ def score_retained_skyline_force_greats(
         "fg_delta_p50": int(_percentile_int(deltas, 50.0)),
         "fg_delta_p95": int(_percentile_int(deltas, 95.0)),
     }
-    if telemetry_enabled:
-        summary["candidate_telemetry"] = list(telemetry_rows)
     return summary, best_record

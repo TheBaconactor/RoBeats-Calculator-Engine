@@ -33,7 +33,7 @@ from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, ge
 from gear_optimizer.helpers.song_helpers import (
     ReplayContext,
     canonicalize_and_assemble,
-    process_force_greats,
+    run_force_greats_response_frontier_for_ga_candidates,
 )
 from gear_optimizer.helpers.song_helpers.database_context import load_database_context
 from gear_optimizer.helpers.song_helpers.persistence_payload import build_db_payload
@@ -227,14 +227,14 @@ def main() -> int:
                 with open(log_fp, "a", encoding="utf-8", newline="\n") as logf:
                     logf.write(f"\n=== {song_name} ===\n")
                     with contextlib.redirect_stdout(logf), contextlib.redirect_stderr(logf):
-                        fg_variants = process_force_greats(
+                        fg_variants = run_force_greats_response_frontier_for_ga_candidates(
                             ga_candidates,
                             calc_song,
                             ref_arrays,
                             meta_primary,
                         )
             else:
-                fg_variants = process_force_greats(
+                fg_variants = run_force_greats_response_frontier_for_ga_candidates(
                     ga_candidates,
                     calc_song,
                     ref_arrays,

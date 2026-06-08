@@ -24,7 +24,7 @@ class _FakeFGGpuClient:
 
 def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
     registry = object()
@@ -48,9 +48,9 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
         return prepared_results[0]
 
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "materialize_force_greats_response_frontier_plan_results",
-        _fake_materialize_response_frontier_plan_results,
+        FgResultReducer,
+        "materialize",
+        staticmethod(_fake_materialize_response_frontier_plan_results),
     )
     monkeypatch.setattr(
         response_frontier,
@@ -89,19 +89,19 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     assert seen_adapter["plan"] is song.runtime.fg.fg_response_frontier_plan
     assert len(gpu_client.payloads) == 1
     assert gpu_client.payloads[0]["batch"] == "prepared-batch"
-    assert gpu_client.payloads[0]["include_forced_counts"] is False
+    assert "include_forced_counts" not in gpu_client.payloads[0]
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
 
 
 def test_native_fg_pipeline_does_not_expose_direct_force_greats_route():
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
-    assert not hasattr(fg_pipeline, "process_force_greats")
+    assert not hasattr(fg_pipeline, "run_force_greats_response_frontier_for_ga_candidates")
 
 
 def test_prepare_fg_job_accepts_owner_deferred_group_arrays(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     batch = SimpleNamespace(
         group_meta=None,
@@ -112,9 +112,7 @@ def test_prepare_fg_job_accepts_owner_deferred_group_arrays(monkeypatch):
         scoring_surface_head_coeff_ms=0.0,
         scoring_bundle_ms=0.0,
         scoring_setup_ms=0.0,
-        scoring_geometry_ms=0.0,
         scoring_group_build_ms=0.0,
-        scoring_concat_ms=0.0,
     )
     plan = SimpleNamespace(prepared_batches=[SimpleNamespace(batch=batch)])
 
@@ -124,9 +122,9 @@ def test_prepare_fg_job_accepts_owner_deferred_group_arrays(monkeypatch):
         lambda _song, *, fg_candidate_limit: ([{"candidate": 1}], 1, False),
     )
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan_for_ga_candidates",
-        lambda *_args, **_kwargs: plan,
+        FgPlanner,
+        "plan_many",
+        staticmethod(lambda *_args, **_kwargs: plan),
     )
 
     song = make_native_song(
@@ -156,18 +154,19 @@ def test_prepare_fg_job_accepts_owner_deferred_group_arrays(monkeypatch):
 
 
 def test_run_fg_job_sync_submits_all_prepared_batches_before_waiting(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
     class _AssertAllSubmittedFuture:
-        def __init__(self, client, result):
+        def __init__(self, client, batch, result):
             self.client = client
+            self.batch = batch
             self.result_rows = result
 
         def result(self):
             assert len(self.client.payloads) == 2
-            return _owner_result(self.client.payloads[-1]["batch"], self.result_rows)
+            return _owner_result(self.batch, self.result_rows)
 
     class _AssertAllSubmittedGpuClient:
         def __init__(self):
@@ -185,7 +184,7 @@ def test_run_fg_job_sync_submits_all_prepared_batches_before_waiting(monkeypatch
                     "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
                 }
             ]
-            return SimpleNamespace(future=_AssertAllSubmittedFuture(self, result))
+            return SimpleNamespace(future=_AssertAllSubmittedFuture(self, payload["batch"], result))
 
     gpu_client = _AssertAllSubmittedGpuClient()
 
@@ -195,9 +194,9 @@ def test_run_fg_job_sync_submits_all_prepared_batches_before_waiting(monkeypatch
         lambda _batch, inner_rows, **_kwargs: inner_rows,
     )
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "materialize_force_greats_response_frontier_plan_results",
-        lambda _plan, prepared_results: [row for rows in prepared_results for row in rows],
+        FgResultReducer,
+        "materialize",
+        staticmethod(lambda _plan, prepared_results: [row for rows in prepared_results for row in rows]),
     )
 
     song = make_native_song(
@@ -274,8 +273,8 @@ def test_run_fg_job_sync_rejects_invalid_owner_result(monkeypatch):
 
 
 def test_run_fg_job_sync_records_owner_exec_time_not_service_queue_wait(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
     class _TimedGpuClient:
@@ -294,9 +293,9 @@ def test_run_fg_job_sync_records_owner_exec_time_not_service_queue_wait(monkeypa
         lambda _batch, inner_rows, **_kwargs: inner_rows,
     )
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "materialize_force_greats_response_frontier_plan_results",
-        lambda _plan, prepared_results: prepared_results[0],
+        FgResultReducer,
+        "materialize",
+        staticmethod(lambda _plan, prepared_results: prepared_results[0]),
     )
 
     song = make_native_song(
@@ -327,7 +326,7 @@ def test_run_fg_job_sync_records_owner_exec_time_not_service_queue_wait(monkeypa
 
 def test_run_fg_job_sync_forces_response_frontier_direct_ga_candidates(monkeypatch):
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
     gpu_client = _FakeFGGpuClient(
@@ -350,9 +349,9 @@ def test_run_fg_job_sync_forces_response_frontier_direct_ga_candidates(monkeypat
         return prepared_results[0]
 
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "materialize_force_greats_response_frontier_plan_results",
-        _fake_materialize_response_frontier_plan_results,
+        FgResultReducer,
+        "materialize",
+        staticmethod(_fake_materialize_response_frontier_plan_results),
     )
     monkeypatch.setattr(
         response_frontier,
@@ -387,5 +386,5 @@ def test_run_fg_job_sync_forces_response_frontier_direct_ga_candidates(monkeypat
     assert seen_adapter["plan"] is song.runtime.fg.fg_response_frontier_plan
     assert len(gpu_client.payloads) == 1
     assert gpu_client.payloads[0]["batch"] == "prepared-batch"
-    assert gpu_client.payloads[0]["include_forced_counts"] is False
+    assert "include_forced_counts" not in gpu_client.payloads[0]
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 140

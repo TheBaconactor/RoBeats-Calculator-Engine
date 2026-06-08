@@ -138,7 +138,6 @@ def run_native_inflight_song_pipeline(
     fg_prep_inflight = fg_pipeline.prep_inflight
     fg_futures = fg_pipeline.futures
     active_runtime_reporter = ActiveRuntimeProgressReporter(_emit_progress)
-    post_emit_pending: deque[NativeSong] = deque()
     fg_workers = int(fg_pipeline.workers)
     fg_batch_max = int(fg_pipeline.batch_max)
     last_slot_block_t: float | None = None
@@ -330,7 +329,6 @@ def run_native_inflight_song_pipeline(
             or prepared
             or prep_inflight
             or pending_fg
-            or post_emit_pending
             or ga_inflight
             or decode_inflight
             or fg_prep_inflight
@@ -976,26 +974,6 @@ def run_native_inflight_song_pipeline(
                     )
                     if int(submitted_fg) > 0:
                         did_work = True
-            if post_emit_pending:
-                post_emit_budget = 1
-                if not (
-                    pending_tasks
-                    or prepared
-                    or prep_inflight
-                    or ga_inflight
-                    or decode_inflight
-                    or pending_fg
-                    or fg_prep_inflight
-                    or fg_futures
-                ):
-                    post_emit_budget = int(len(post_emit_pending))
-                while post_emit_budget > 0 and post_emit_pending:
-                    post_song = post_emit_pending.popleft()
-                    if bool(getattr(post_song.runtime.post, "deferred_post_emitted", False)):
-                        continue
-                    _emit_deferred_post_payload(post_song)
-                    did_work = True
-                    post_emit_budget -= 1
             active_runtime_reporter.emit(
                 ga_inflight=ga_inflight,
                 decode_inflight=decode_inflight,
@@ -1075,7 +1053,7 @@ def run_native_inflight_song_pipeline(
                 )
                 if (
                     no_active_work
-                    and (pending_tasks or prepared or pending_fg or fg_futures or post_emit_pending)
+                    and (pending_tasks or prepared or pending_fg or fg_futures)
                     and (time.monotonic() - last_stall_report) >= 10.0
                     and inflight_stall_debug_enabled()
                 ):
