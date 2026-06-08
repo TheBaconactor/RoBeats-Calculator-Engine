@@ -8,8 +8,7 @@ Rationale:
 - Removed GPU APIs (old batch gem solver) were expensive (host transfers + VRAM) and
   easy to accidentally re-wire back into production.
 - Scoring orchestration should not import `taichi_gem` internals directly; it should
-  go through `gear_optimizer.solver.taichi_gem.api`, `gear_optimizer.solver.taichi_gem.force_greats.api`,
-  and/or the GPU executor.
+  go through `gear_optimizer.solver.taichi_gem.api` and/or the GPU executor.
 """
 
 from __future__ import annotations

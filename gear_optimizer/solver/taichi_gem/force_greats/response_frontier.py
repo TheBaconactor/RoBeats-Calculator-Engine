@@ -27,7 +27,7 @@ from .response_cache import (
     load_response_frontier_scoring_bundle,
 )
 from .response_ftff_prune import element_ftff_delta
-from .response_inner_host import _score_response_group_meta_gpu
+from .response_inner_host import _score_response_group_meta_gpu  # noqa: F401
 from .response_types import (
     FgResponseFrontierResult,
     FgResponseFrontierSolveResult,
@@ -572,45 +572,9 @@ def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> FgResponseFrontierOwnerResult:
     """Canonical GPU-owner dispatch: build group rows, score, and return the enriched batch."""
-    built_batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
-    if built_batch.group_meta is None:
-        raise RuntimeError("response frontier GPU owner scoring requires built group rows")
-    surface_words = built_batch.scoring_surface_words
-    surface_counts = built_batch.scoring_surface_counts
-    surface_head_coeffs = built_batch.scoring_surface_head_coeffs
-    group_offsets = built_batch.scoring_group_offsets
-    group_lengths = built_batch.scoring_group_lengths
-    if int(group_offsets.shape[0]) != int(built_batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
-        built_batch.group_meta.shape[0]
-    ):
-        raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
-    if (
-        int(surface_words.ndim) != 2
-        or int(surface_words.shape[1]) != 8
-        or int(surface_counts.ndim) != 2
-        or int(surface_counts.shape[1]) != 3
-        or int(surface_head_coeffs.ndim) != 2
-        or int(surface_head_coeffs.shape[1]) != 4
-    ):
-        raise ValueError("response frontier prepared scoring arrays have invalid shape")
-    inner_rows, _logical_surface_rows = _score_response_group_meta_gpu(
-        group_meta=built_batch.group_meta,
-        group_offsets=group_offsets,
-        group_lengths=group_lengths,
-        primary_color=built_batch.primary_color,
-        secondary_color=built_batch.secondary_color,
-        selected_color=built_batch.selected_color,
-        ref_arrays=built_batch.ref_arrays,
-        surface_words=surface_words,
-        surface_counts=surface_counts,
-        surface_head_coeffs=surface_head_coeffs,
-    )
-    if int(inner_rows.shape[0]) != int(built_batch.group_meta.shape[0]):
-        raise ValueError("response frontier exact GPU batch returned the wrong number of group results")
-    return FgResponseFrontierOwnerResult(
-        batch=built_batch,
-        inner_rows=np.asarray(inner_rows, dtype=np.int32),
-    )
+    from gear_optimizer.solver.fg_response_scoring.gpu_kernel_runner import GpuResponseKernelRunner
+
+    return GpuResponseKernelRunner.score_batch_on_owner(batch)
 
 
 def materialize_force_greats_response_frontier_owner_result(
@@ -633,28 +597,13 @@ def run_prepared_force_greats_response_frontier_batches_via_client(
     *,
     include_forced_counts: bool = False,
 ) -> list[tuple[list[FgResponseFrontierSolveResult], dict[str, float]]]:
-    submitted: list[tuple[Any, dict[str, float]]] = []
-    for batch in batches:
-        timing: dict[str, float] = {}
-        handle = gpu_client.submit_force_greats_response_frontier_score_batch(
-            {
-                "batch": batch,
-                "timing": timing,
-            }
-        )
-        submitted.append((handle, timing))
+    from gear_optimizer.solver.fg_response_scoring.gpu_kernel_runner import GpuResponseKernelRunner
 
-    prepared_results: list[tuple[list[FgResponseFrontierSolveResult], dict[str, float]]] = []
-    for handle, timing in submitted:
-        owner_result = handle.future.result()
-        materialize_t0 = time.perf_counter()
-        results = materialize_force_greats_response_frontier_owner_result(
-            owner_result,
-            include_forced_counts=bool(include_forced_counts),
-        )
-        timing["materialize_s"] = max(0.0, time.perf_counter() - float(materialize_t0))
-        prepared_results.append((results, timing))
-    return prepared_results
+    return GpuResponseKernelRunner.run_batches_via_client(
+        gpu_client,
+        batches,
+        include_forced_counts=bool(include_forced_counts),
+    )
 
 
 def materialize_prepared_force_greats_response_frontier_batch_results(

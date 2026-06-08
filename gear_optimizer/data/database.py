@@ -25,6 +25,10 @@ from ..core.team_buff import (
 )
 from ..core.types import PersistenceEntry
 from .migrations import ensure_schema
+from .database_fg_summary import (
+    normalize_details_for_persistence as _normalize_details_for_persistence,
+    repair_base_loadout_fg_summaries as _repair_base_loadout_fg_summaries,
+)
 from .database_codecs import (
     _json_dumps_compact,
     _json_loads,
@@ -478,135 +482,6 @@ def _ensure_stats_in_details(
     except Exception as e:
         logger.warning(f"database:_ensure_stats_in_details: {e}")
     return details
-def _normalize_details_for_persistence(
-    details: Any,
-    *,
-    score: int,
-    fg_score: int,
-    force_data: Any,
-    preserve_attempt_meta: bool = False,
-) -> dict:
-    """
-    Normalize details payload before persistence.
-    Goals:
-    - Keep `details["ForceGreats"]["final_score"]` consistent with the persisted `fg_score` when FG ran.
-      (Some downstream consumers read this field and will otherwise treat FG as missing/zero.)
-    - Strip transient attempt counters from the stored payload unless the caller
-      explicitly asks to preserve them for a mirror write.
-    """
-    if not isinstance(details, dict):
-        return {}
-    out = dict(details)
-    if not preserve_attempt_meta:
-        out.pop("attempt_lifetime", None)
-        out.pop("attempts_first", None)
-    fg_meta = out.get("ForceGreats")
-    if not isinstance(fg_meta, dict):
-        return out
-    if force_data is None or int(fg_score or 0) <= int(score or 0):
-        out.pop("ForceGreats", None)
-        return out
-    fg_out = dict(fg_meta)
-    fg_out["final_score"] = int(fg_score)
-    if out is details:
-        out = dict(out)
-    out["ForceGreats"] = fg_out
-    return out
-
-
-def _normalize_base_details_force_summary(
-    details: Any,
-    *,
-    score: int,
-    fg_score: int,
-    has_paired_fg: bool,
-) -> dict:
-    if not isinstance(details, dict):
-        return {}
-    out = dict(details)
-    fg_meta = out.get("ForceGreats")
-    if not isinstance(fg_meta, dict):
-        return out
-    if not has_paired_fg or int(fg_score or 0) <= int(score or 0):
-        out.pop("ForceGreats", None)
-        return out
-    fg_out = dict(fg_meta)
-    fg_out["final_score"] = int(fg_score)
-    out["ForceGreats"] = fg_out
-    return out
-
-
-def _repair_base_loadout_fg_summaries(conn: sqlite3.Connection, *, song_name: str, team_buff: str) -> None:
-    """
-    Keep base-table FG summaries paired with materialized FG rows.
-
-    The base table is allowed to carry an embedded `fg_score` only when the matching
-    FG row still exists. FG pruning can remove that paired row after the first
-    invariant pass, so this repair must run after pruning too.
-    """
-    rows = conn.execute(
-        """
-        SELECT
-            b.loadout_hash,
-            b.score,
-            b.fg_score,
-            b.details_json,
-            COALESCE((
-                SELECT MAX(f.fg_score)
-                FROM team_buff_fg_loadouts f
-                WHERE f.song_name = b.song_name
-                AND f.team_buff = b.team_buff
-                AND f.loadout_hash = b.loadout_hash
-            ), 0) AS paired_fg_score
-        FROM team_buff_loadouts b
-        WHERE b.song_name = ?
-        AND b.team_buff = ?
-        AND (
-            b.fg_score > b.score
-            OR b.details_json LIKE '%ForceGreats%'
-        )
-        """,
-        (song_name, team_buff),
-    ).fetchall()
-    updates: list[tuple[int, str | None, str, str, str]] = []
-    for row in rows:
-        score = _safe_int_for_db(row["score"], 0)
-        fg_score = _safe_int_for_db(row["fg_score"], 0)
-        paired_fg_score = _safe_int_for_db(row["paired_fg_score"], 0)
-        has_paired_fg = paired_fg_score > score
-        normalized_fg_score = paired_fg_score if has_paired_fg else score
-
-        details = _json_loads(row["details_json"]) if row["details_json"] else {}
-        normalized_details = _normalize_base_details_force_summary(
-            details,
-            score=score,
-            fg_score=normalized_fg_score,
-            has_paired_fg=has_paired_fg,
-        )
-        normalized_details_json = _json_dumps_compact(normalized_details) if normalized_details else None
-        if int(normalized_fg_score) == int(fg_score) and normalized_details_json == row["details_json"]:
-            continue
-        updates.append(
-            (
-                int(normalized_fg_score),
-                normalized_details_json,
-                song_name,
-                team_buff,
-                str(row["loadout_hash"] or ""),
-            )
-        )
-    if updates:
-        conn.executemany(
-            """
-            UPDATE team_buff_loadouts
-            SET fg_score = ?,
-                details_json = ?
-            WHERE song_name = ?
-            AND team_buff = ?
-            AND loadout_hash = ?
-            """,
-            updates,
-        )
 
 
 def _force_payload_base_score(force_data: Any) -> int:

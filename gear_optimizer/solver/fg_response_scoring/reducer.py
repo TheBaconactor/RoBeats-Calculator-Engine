@@ -112,6 +112,8 @@ class FgResultReducer:
     def materialize(
         plan: FgResponseFrontierPreparedPlan,
         prepared_results: list[list[FgResponseFrontierSolveResult]],
+        *,
+        skyline: bool = False,
     ) -> list[dict[str, Any]]:
         calc_song = plan.calc_song
         ref_arrays = plan.ref_arrays
@@ -139,11 +141,13 @@ class FgResultReducer:
                 }
             )
 
-        loadout_limit = int(LOADOUTS_PER_SONG_LIMIT)
-        pending_variants.sort(key=lambda variant: int(variant["fg_score"]), reverse=True)
-        shortlisted = pending_variants[:loadout_limit]
+        pending_jobs = pending_variants if skyline else sorted(
+            pending_variants,
+            key=lambda variant: int(variant["fg_score"]),
+            reverse=True,
+        )[: int(LOADOUTS_PER_SONG_LIMIT)]
 
-        for item in shortlisted:
+        for item in pending_jobs:
             result = item["result"]
             payload = materialize_force_payload_from_response_frontier(
                 eval_data=item["eval_data"],
@@ -158,6 +162,22 @@ class FgResultReducer:
             entry = item["entry"]
             exact_fg_score = safe_int(payload.get("Score", 0), 0)
             exact_base_score = safe_int(payload.get("BaseScore", 0), 0)
+            if skyline:
+                variants.append(
+                    {
+                        "record": entry.get("_candidate_ref"),
+                        "data": payload,
+                        "force": payload,
+                        "base_stats": dict(item["base_stats"]),
+                        "selected": item["selected"],
+                        "base_score": int(exact_base_score),
+                        "fg_score": int(exact_fg_score),
+                        "fg_delta": int(exact_fg_score) - int(exact_base_score),
+                        "_entry_ref": entry,
+                        "_is_skyline": True,
+                    }
+                )
+                continue
             if exact_fg_score <= exact_base_score:
                 continue
             if exact_fg_score > safe_int(entry.get("fg_score", 0), 0):
@@ -177,46 +197,7 @@ class FgResultReducer:
                 }
             )
 
+        if skyline:
+            return variants
         variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
-        return variants[:loadout_limit]
-
-    @staticmethod
-    def materialize_skyline(
-        plan: FgResponseFrontierPreparedPlan,
-        prepared_results: list[list[FgResponseFrontierSolveResult]],
-    ) -> list[dict[str, Any]]:
-        calc_song = plan.calc_song
-        ref_arrays = plan.ref_arrays
-        result_cache = FgResultReducer._result_cache(plan, prepared_results)
-        rows: list[dict[str, Any]] = []
-
-        for entry, eval_data, selected, base_stats, paired_base_score, cache_key in plan.pending_jobs:
-            result = result_cache.get(cache_key)
-            if result is None:
-                raise ValueError("ForceGreats response frontier batch missed a skyline candidate result")
-            payload = materialize_force_payload_from_response_frontier(
-                eval_data=eval_data,
-                base_stats=base_stats,
-                paired_base_score=int(paired_base_score),
-                selected_element=selected,
-                result=result,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-            )
-            exact_fg_score = safe_int(payload.get("Score", 0), 0)
-            exact_base_score = safe_int(payload.get("BaseScore", 0), 0)
-            rows.append(
-                {
-                    "record": entry.get("_candidate_ref"),
-                    "data": payload,
-                    "force": payload,
-                    "base_stats": dict(base_stats),
-                    "selected": selected,
-                    "base_score": int(exact_base_score),
-                    "fg_score": int(exact_fg_score),
-                    "fg_delta": int(exact_fg_score) - int(exact_base_score),
-                    "_entry_ref": entry,
-                    "_is_skyline": True,
-                }
-            )
-        return rows
+        return variants[: int(LOADOUTS_PER_SONG_LIMIT)]

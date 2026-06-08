@@ -6,7 +6,7 @@ from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
 from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner, FgResponseFrontierPreparedPlan
 from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
 
-FgScoringMode = Literal["production", "sync", "bench", "skyline"]
+FgScoringMode = Literal["production", "sync", "skyline"]
 
 
 class FgResponseScoringService:
@@ -47,7 +47,7 @@ class FgResponseScoringService:
         gpu_client: Any | None = None,
         mode: FgScoringMode = "production",
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-        if mode in ("sync", "bench", "skyline") and gpu_client is not None:
+        if mode in ("sync", "skyline") and gpu_client is not None:
             raise ValueError(f"FgResponseScoringService mode={mode!r} requires gpu_client=None")
         if mode == "skyline":
             plan = FgPlanner.plan_skyline_candidate_records(
@@ -66,7 +66,7 @@ class FgResponseScoringService:
                 ga_registry=ga_registry,
                 scoring_bundle=scoring_bundle,
             )
-        effective_client = None if mode in ("sync", "bench", "skyline") else gpu_client
+        effective_client = None if mode in ("sync", "skyline") else gpu_client
         return (
             FgResponseScoringService.score_prepared_plan(
                 plan,
@@ -105,9 +105,7 @@ class FgResponseScoringService:
             gpu_client=gpu_client,
             include_forced_counts=bool(include_forced_counts),
         )
-        if mode == "skyline":
-            return FgResultReducer.materialize_skyline(plan, prepared_results)
-        return FgResultReducer.materialize(plan, prepared_results)
+        return FgResultReducer.materialize(plan, prepared_results, skyline=mode == "skyline")
 
     @staticmethod
     def score_prepared_plan_with_timings(

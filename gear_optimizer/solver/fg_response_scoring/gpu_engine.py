@@ -17,13 +17,9 @@ class GpuScoreEngine:
         gpu_client: Any | None,
         include_forced_counts: bool = False,
     ) -> tuple[list[list[FgResponseFrontierSolveResult]], list[dict[str, float]]]:
-        from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-            run_prepared_force_greats_response_frontier_batches_via_client,
-        )
-
         batches = [prepared.batch for prepared in plan.prepared_batches]
         if gpu_client is not None:
-            handles = run_prepared_force_greats_response_frontier_batches_via_client(
+            handles = GpuResponseKernelRunner.run_batches_via_client(
                 gpu_client,
                 batches,
                 include_forced_counts=bool(include_forced_counts),
