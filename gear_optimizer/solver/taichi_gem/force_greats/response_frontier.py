@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import time
 from typing import Any
 
@@ -42,7 +42,10 @@ __all__ = [
     "FgResponseInnerResult",
     "FgResponseSurface",
     "FgResponseFrontierPackedScoringBatch",
+    "FgResponseFrontierOwnerResult",
     "prepare_force_greats_response_frontier_scoring_batch",
+    "build_prepared_force_greats_response_frontier_group_arrays_on_owner",
+    "score_prepared_force_greats_response_frontier_batch_on_gpu_owner",
     "score_prepared_force_greats_response_frontier_batch_gpu",
     "reconstruct_force_greats_response_counts",
     "reconstruct_force_greats_response_trace",
@@ -63,27 +66,44 @@ class FgResponseFrontierPackedScoringBatch:
     selected_color: str
     primary_color: str
     secondary_color: str
-    kept_stat_keys: tuple[tuple[int, int], ...]
     scoring_bundle: FgResponseFrontierScoringBundle
     scoring_bundle_ms: float
-    group_meta: np.ndarray
-    group_ft: np.ndarray
-    group_ff: np.ndarray
-    group_ft_stat: np.ndarray
-    group_ff_stat: np.ndarray
-    candidate_slices: tuple[tuple[int, int], ...]
-    scoring_surface_words: np.ndarray
-    scoring_surface_counts: np.ndarray
-    scoring_surface_head_coeffs: np.ndarray
-    scoring_group_offsets: np.ndarray
-    scoring_group_lengths: np.ndarray
-    scoring_unique_frontiers: int
-    scoring_surface_compact_ms: float
-    scoring_surface_head_coeff_ms: float
+    # Host-side prep inputs; group rows and scoring surfaces are built on the GPU owner thread.
+    base_components: np.ndarray
+    ft_values: np.ndarray
+    ff_values: np.ndarray
+    residual_values: np.ndarray
+    frontier_idx_by_stat: np.ndarray
+    primary_ftff_delta_values: np.ndarray
+    secondary_ftff_delta_values: np.ndarray
+    score_elements_constant: bool
+    head_len: int
+    body_total: int
+    group_meta: np.ndarray | None = None
+    group_ft: np.ndarray | None = None
+    group_ff: np.ndarray | None = None
+    group_ft_stat: np.ndarray | None = None
+    group_ff_stat: np.ndarray | None = None
+    candidate_slices: tuple[tuple[int, int], ...] = ()
+    kept_stat_keys: tuple[tuple[int, int], ...] = ()
+    scoring_surface_words: np.ndarray | None = None
+    scoring_surface_counts: np.ndarray | None = None
+    scoring_surface_head_coeffs: np.ndarray | None = None
+    scoring_group_offsets: np.ndarray | None = None
+    scoring_group_lengths: np.ndarray | None = None
+    scoring_unique_frontiers: int = 0
+    scoring_surface_compact_ms: float = 0.0
+    scoring_surface_head_coeff_ms: float = 0.0
     scoring_setup_ms: float = 0.0
     scoring_geometry_ms: float = 0.0
     scoring_group_build_ms: float = 0.0
     scoring_concat_ms: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class FgResponseFrontierOwnerResult:
+    batch: FgResponseFrontierPackedScoringBatch
+    inner_rows: np.ndarray
 
 
 def _stats_after_ftff_for_inner(
@@ -694,6 +714,9 @@ def prepare_force_greats_response_frontier_scoring_batch(
     started: float | None = None,
     scoring_bundle: FgResponseFrontierScoringBundle | None = None,
 ) -> FgResponseFrontierPackedScoringBatch:
+    """Prepare the GA->FG candidate inputs (host, prep thread). The group rows + scoring
+    surfaces are built later on the GPU owner thread by
+    `score_prepared_force_greats_response_frontier_batch_gpu`."""
     setup_t0 = time.perf_counter()
     stats_inputs = tuple(dict(stats) for stats in (base_stats_list or []))
     if not stats_inputs:
@@ -745,10 +768,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
 
     head_len = min(int(song_inputs.total_notes), 100)
     body_total = max(0, int(song_inputs.total_notes) - 100)
-    setup_ms = float((time.perf_counter() - setup_t0) * 1000.0)
-    geometry_t0 = time.perf_counter()
     frontier_idx_by_stat = np.ascontiguousarray(scoring_bundle.frontier_idx_by_stat, dtype=np.int32)
-    geometry_ms = float((time.perf_counter() - geometry_t0) * 1000.0)
     primary_ftff_delta_values = np.asarray(
         (ft_values * int(primary_ft_delta)) + (ff_values * int(primary_ff_delta)),
         dtype=np.int32,
@@ -757,7 +777,41 @@ def prepare_force_greats_response_frontier_scoring_batch(
         (ft_values * int(secondary_ft_delta)) + (ff_values * int(secondary_ff_delta)),
         dtype=np.int32,
     )
-    group_build_t0 = time.perf_counter()
+    setup_ms = float((time.perf_counter() - setup_t0) * 1000.0)
+    return FgResponseFrontierPackedScoringBatch(
+        started=float(time.perf_counter() if started is None else started),
+        stats_inputs=stats_inputs,
+        calc_song=calc_song,
+        song_inputs=song_inputs,
+        ref_arrays=ref_arrays,
+        selected_color=str(selected_color or ""),
+        primary_color=primary_color,
+        secondary_color=secondary_color,
+        scoring_bundle=scoring_bundle,
+        scoring_bundle_ms=scoring_bundle_ms,
+        base_components=base_components,
+        ft_values=np.ascontiguousarray(ft_values, dtype=np.int32),
+        ff_values=np.ascontiguousarray(ff_values, dtype=np.int32),
+        residual_values=residual_values,
+        frontier_idx_by_stat=frontier_idx_by_stat,
+        primary_ftff_delta_values=primary_ftff_delta_values,
+        secondary_ftff_delta_values=secondary_ftff_delta_values,
+        score_elements_constant=bool(score_elements_constant),
+        head_len=int(head_len),
+        body_total=int(body_total),
+        scoring_setup_ms=setup_ms,
+    )
+
+
+def build_prepared_force_greats_response_frontier_group_arrays_on_owner(
+    batch: FgResponseFrontierPackedScoringBatch,
+) -> FgResponseFrontierPackedScoringBatch:
+    """Build response group rows + packed scoring surfaces on the GPU owner thread."""
+    if batch.group_meta is not None:
+        return batch
+    from .response_group_build_kernels import build_response_group_rows_gpu
+
+    gb_t0 = time.perf_counter()
     (
         group_meta,
         group_ft,
@@ -765,27 +819,27 @@ def prepare_force_greats_response_frontier_scoring_batch(
         group_ft_stat,
         group_ff_stat,
         candidate_slices_arr,
-    ) = _build_response_group_rows_numba(
-        base_components,
-        np.ascontiguousarray(ft_values, dtype=np.int32),
-        np.ascontiguousarray(ff_values, dtype=np.int32),
-        residual_values,
-        frontier_idx_by_stat,
-        np.ascontiguousarray(primary_ftff_delta_values, dtype=np.int32),
-        np.ascontiguousarray(secondary_ftff_delta_values, dtype=np.int32),
-        bool(score_elements_constant),
-        int(head_len),
-        int(body_total),
+    ) = build_response_group_rows_gpu(
+        batch.base_components,
+        batch.ft_values,
+        batch.ff_values,
+        batch.residual_values,
+        batch.frontier_idx_by_stat,
+        batch.primary_ftff_delta_values,
+        batch.secondary_ftff_delta_values,
+        bool(batch.score_elements_constant),
+        int(batch.head_len),
+        int(batch.body_total),
     )
-    group_build_ms = float((time.perf_counter() - group_build_t0) * 1000.0)
-    concat_t0 = time.perf_counter()
-    kept_stat_keys_tuple = _unique_response_stat_keys_tuple(
+    group_build_ms = float((time.perf_counter() - gb_t0) * 1000.0)
+    kept_stat_keys = _unique_response_stat_keys_tuple(
         group_ft_stat=group_ft_stat,
         group_ff_stat=group_ff_stat,
-        frontier_idx_by_stat=frontier_idx_by_stat,
+        frontier_idx_by_stat=batch.frontier_idx_by_stat,
     )
-    candidate_slices = tuple((int(row[0]), int(row[1])) for row in np.asarray(candidate_slices_arr, dtype=np.int32))
-    concat_ms = float((time.perf_counter() - concat_t0) * 1000.0)
+    candidate_slices = tuple(
+        (int(row[0]), int(row[1])) for row in np.asarray(candidate_slices_arr, dtype=np.int32)
+    )
     (
         scoring_surface_words,
         scoring_surface_counts,
@@ -796,29 +850,20 @@ def prepare_force_greats_response_frontier_scoring_batch(
         scoring_surface_compact_ms,
         scoring_surface_head_coeff_ms,
     ) = _pack_scoring_surfaces_for_batch(
-        scoring_bundle=scoring_bundle,
+        scoring_bundle=batch.scoring_bundle,
         group_meta=group_meta,
         group_ft_stat=group_ft_stat,
         group_ff_stat=group_ff_stat,
     )
-    return FgResponseFrontierPackedScoringBatch(
-        started=float(time.perf_counter() if started is None else started),
-        stats_inputs=stats_inputs,
-        calc_song=calc_song,
-        song_inputs=song_inputs,
-        ref_arrays=ref_arrays,
-        selected_color=str(selected_color or ""),
-        primary_color=primary_color,
-        secondary_color=secondary_color,
-        kept_stat_keys=kept_stat_keys_tuple,
-        scoring_bundle=scoring_bundle,
-        scoring_bundle_ms=scoring_bundle_ms,
+    return replace(
+        batch,
         group_meta=group_meta,
         group_ft=group_ft,
         group_ff=group_ff,
         group_ft_stat=group_ft_stat,
         group_ff_stat=group_ff_stat,
         candidate_slices=candidate_slices,
+        kept_stat_keys=kept_stat_keys,
         scoring_surface_words=scoring_surface_words,
         scoring_surface_counts=scoring_surface_counts,
         scoring_surface_head_coeffs=scoring_surface_head_coeffs,
@@ -827,11 +872,22 @@ def prepare_force_greats_response_frontier_scoring_batch(
         scoring_unique_frontiers=scoring_unique_frontiers,
         scoring_surface_compact_ms=scoring_surface_compact_ms,
         scoring_surface_head_coeff_ms=scoring_surface_head_coeff_ms,
-        scoring_setup_ms=setup_ms,
-        scoring_geometry_ms=geometry_ms,
         scoring_group_build_ms=group_build_ms,
-        scoring_concat_ms=concat_ms,
     )
+
+
+def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
+    batch: FgResponseFrontierPackedScoringBatch,
+    *,
+    include_forced_counts: bool = False,
+) -> FgResponseFrontierOwnerResult:
+    """Canonical GPU-owner dispatch: build group rows, score, and return the enriched batch."""
+    built_batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
+    inner_rows = score_prepared_force_greats_response_frontier_batch_raw_gpu(
+        built_batch,
+        include_forced_counts=bool(include_forced_counts),
+    )
+    return FgResponseFrontierOwnerResult(batch=built_batch, inner_rows=inner_rows)
 
 
 def score_prepared_force_greats_response_frontier_batch_raw_gpu(
@@ -840,6 +896,11 @@ def score_prepared_force_greats_response_frontier_batch_raw_gpu(
     include_forced_counts: bool = False,
 ) -> np.ndarray:
     _ = include_forced_counts
+    if batch.group_meta is None:
+        raise RuntimeError(
+            "response frontier raw GPU scoring requires owner-built group rows; "
+            "use score_prepared_force_greats_response_frontier_batch_on_gpu_owner()"
+        )
     surface_words = batch.scoring_surface_words
     surface_counts = batch.scoring_surface_counts
     surface_head_coeffs = batch.scoring_surface_head_coeffs
@@ -944,19 +1005,21 @@ def score_prepared_force_greats_response_frontier_batch_gpu(
     *,
     include_forced_counts: bool = False,
 ) -> list[FgResponseFrontierSolveResult]:
-    phase_t0 = time.perf_counter()
-    _scoring_bundle = batch.scoring_bundle
-    scoring_bundle_ms = (time.perf_counter() - phase_t0) * 1000.0
     payload_ms = 0.0
+    scoring_bundle_ms = float(batch.scoring_bundle_ms)
+    owner_t0 = time.perf_counter()
+    owner = score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
+        batch,
+        include_forced_counts=bool(include_forced_counts),
+    )
+    gpu_score_ms = float((time.perf_counter() - owner_t0) * 1000.0)
+    batch = owner.batch
     compact_ms = float(batch.scoring_surface_compact_ms)
     head_coeff_ms = float(batch.scoring_surface_head_coeff_ms)
     phase_t0 = time.perf_counter()
-    inner_rows = score_prepared_force_greats_response_frontier_batch_raw_gpu(batch)
-    gpu_score_ms = (time.perf_counter() - phase_t0) * 1000.0
-    phase_t0 = time.perf_counter()
     out = materialize_prepared_force_greats_response_frontier_batch_results(
         batch,
-        inner_rows,
+        owner.inner_rows,
         include_forced_counts=bool(include_forced_counts),
     )
     result_ms = (time.perf_counter() - phase_t0) * 1000.0

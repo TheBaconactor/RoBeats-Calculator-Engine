@@ -59,6 +59,31 @@ def test_progress_tracker_emit_error_item_progress_forwards_failure():
     ]
 
 
+def test_progress_tracker_emit_error_item_progress_dedupes_queue_key():
+    tracker = ProgressTracker()
+    events = []
+
+    def emit(**kwargs):
+        events.append(kwargs)
+
+    assert tracker.emit_error_item_progress(emit, {"_error": True, "_queue_key": "song-a", "_queue_label": "Song A"}) is True
+    assert tracker.emit_error_item_progress(emit, {"_error": True, "_queue_key": "song-a", "_queue_label": "Song A"}) is False
+    assert tracker.emit_error_item_progress(emit, {"_error": True, "_queue_key": "song-b", "_queue_label": "Song B"}) is True
+
+    assert events == [
+        {
+            "completed_delta": 1,
+            "failed_delta": 1,
+            "record_info": {"song": "Song A", "status": "FAILED"},
+        },
+        {
+            "completed_delta": 1,
+            "failed_delta": 1,
+            "record_info": {"song": "Song B", "status": "FAILED"},
+        },
+    ]
+
+
 def test_progress_tracker_emit_error_item_progress_ignores_suppressed_or_non_errors():
     tracker = ProgressTracker()
     events = []

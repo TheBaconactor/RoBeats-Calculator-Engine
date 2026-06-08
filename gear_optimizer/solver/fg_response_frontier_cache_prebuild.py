@@ -230,6 +230,43 @@ def _run_missing_fg_prebuild(
     results: list[FgResponseFrontierCacheBuildResult] = []
     worker_count = _PREBUILD_WORKERS
     build_paths, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(paths, ref_arrays)
+    if len(build_paths) == 1:
+        path = str(build_paths[0])
+        duplicate_paths = duplicate_paths_by_representative.get(path, ())
+        try:
+            result = build_fg_response_frontier_cache_for_path(path, ref_arrays, stat_keys=stat_keys)
+        except Exception as exc:
+            failures = 1 + int(len(duplicate_paths))
+            logger.warning("[FGResponseCache] Failed to prebuild %s: %s", path, exc)
+        else:
+            completed = 1
+            results.append(result)
+            source_counts[result.source] += 1
+            if duplicate_paths:
+                duplicate_source = "disk" if result.cache_file and os.path.exists(result.cache_file) else result.source
+                for duplicate_path in duplicate_paths:
+                    completed += 1
+                    duplicate_result = FgResponseFrontierCacheBuildResult(
+                        path=str(duplicate_path),
+                        source=str(duplicate_source),
+                        build_ms=0.0,
+                        cache_file=str(result.cache_file),
+                    )
+                    results.append(duplicate_result)
+                    source_counts[duplicate_source] += 1
+        elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
+        return (
+            FgResponseFrontierCachePrebuildSummary(
+                total=int(len(paths)),
+                completed=int(completed),
+                failures=int(failures),
+                built=int(source_counts.get("built", 0)),
+                disk=int(source_counts.get("disk", 0)),
+                memory=int(source_counts.get("memory", 0)),
+                elapsed_ms=elapsed_ms,
+            ),
+            results,
+        )
     if duplicate_paths_by_representative:
         duplicate_count = sum(len(values) for values in duplicate_paths_by_representative.values())
         logger.info(
@@ -324,7 +361,6 @@ def run_fg_response_frontier_cache_prebuild(
     stat_keys = all_response_stat_keys()
     queue_paths = [str(item[0]) for item in song_queue if isinstance(item, tuple) and item]
     paths = ordered_frontier_cache_song_paths(queue_paths=queue_paths, data_root=data_root)
-    paths = sorted(paths, key=_fg_response_frontier_prebuild_priority)
     if not paths:
         return FgResponseFrontierCachePrebuildSummary(total=0)
 
@@ -341,7 +377,8 @@ def run_fg_response_frontier_cache_prebuild(
     if int(removed_tmp) > 0:
         logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
 
-    run_summary, results = _run_missing_fg_prebuild(list(manifest_plan.missing_paths), ref_arrays, stat_keys)
+    missing_paths = sorted(manifest_plan.missing_paths, key=_fg_response_frontier_prebuild_priority)
+    run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
     _apply_manifest_results(plan=manifest_plan, results=results)
     elapsed_ms = float((time.perf_counter() - started) * 1000.0)
     return FgResponseFrontierCachePrebuildSummary(

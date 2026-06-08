@@ -546,7 +546,7 @@ def execute_force_greats_response_frontier_score_batch(
     try:
         if run_payload_fn is None:
             from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-                score_prepared_force_greats_response_frontier_batch_raw_gpu as run_payload_fn,
+                score_prepared_force_greats_response_frontier_batch_on_gpu_owner as run_payload_fn,
             )
 
         if timing is not None:

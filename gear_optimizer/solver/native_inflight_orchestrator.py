@@ -480,14 +480,27 @@ def run_native_inflight_song_pipeline(
                     if stopping and is_stop_abort_exception(prep_completion.error):
                         pass
                     else:
+                        bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
                         _post(
-                            build_native_task_error_payload(
-                                song_name=str(song.config.song_name),
-                                queue_key=str(song.config.task_key),
+                            build_native_song_error_payload(
+                                song,
                                 exc=prep_completion.error,
                                 trace=prep_completion.trace,
                             )
                         )
+                        try:
+                            ga_pipeline.release_slot(song, slot_pool)
+                        except Exception as e:
+                            logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                        if bundle_parent is not None:
+                            _advance_bundle(bundle_parent, song_name=str(song.config.song_name), failed=True)
+                        else:
+                            mark_song_completed(
+                                completed_songs=completed_songs,
+                                task_key=song.config.task_key,
+                                song_name=song.config.song_name,
+                                memory_resume_tracker=memory_resume_tracker,
+                            )
                 except Exception as exc:
                     logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {exc}")
             if ready_fg_from_prep and pending_fg and len(fg_futures) < fg_workers:

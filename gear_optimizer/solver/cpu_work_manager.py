@@ -39,6 +39,19 @@ def _emit_summary(*, phase: str, label: str, summary, elapsed_ms: float) -> None
     )
 
 
+def _cache_summary_line(*, label: str, summary, elapsed_ms: float) -> str:
+    return (
+        f"[Startup][Cache] {label} ready: total={int(summary.total)} "
+        f"built={int(summary.built)} disk={int(summary.disk)} memory={int(summary.memory)} "
+        f"failures={int(summary.failures)} elapsed={elapsed_ms / 1000.0:.1f}s"
+    )
+
+
+def _announce_cache_summary(stream: TextIO, *, label: str, summary, elapsed_ms: float) -> None:
+    stream.write(f"{_cache_summary_line(label=label, summary=summary, elapsed_ms=elapsed_ms)}\n")
+    stream.flush()
+
+
 def run_startup_cpu_work(
     *,
     cfg,
@@ -55,6 +68,14 @@ def run_startup_cpu_work(
         metrics={"phase": "frontier_caches"},
     )
     queue_items = list(song_queue or [])
+    if queue_items:
+        verify_message = (
+            f"[Startup][Cache] Verifying exact timeline + FG response frontier caches for "
+            f"{len(queue_items)} queued song(s) before scoring..."
+        )
+        stream.write(f"{verify_message}\n")
+        stream.flush()
+        logger.info(verify_message)
     timeline_t0 = time.perf_counter()
     timeline_summary = run_timeline_frontier_cache_prebuild(
         cfg=cfg,
@@ -63,6 +84,7 @@ def run_startup_cpu_work(
         data_root=data_root,
     )
     timeline_elapsed_ms = float((time.perf_counter() - timeline_t0) * 1000.0)
+    _announce_cache_summary(stream, label="Timeline frontier cache", summary=timeline_summary, elapsed_ms=timeline_elapsed_ms)
     fg_t0 = time.perf_counter()
     fg_summary = run_fg_response_frontier_cache_prebuild(
         cfg=cfg,
@@ -71,6 +93,7 @@ def run_startup_cpu_work(
         data_root=data_root,
     )
     fg_elapsed_ms = float((time.perf_counter() - fg_t0) * 1000.0)
+    _announce_cache_summary(stream, label="FG response-frontier cache", summary=fg_summary, elapsed_ms=fg_elapsed_ms)
     timeline_failures = int(timeline_summary.failures)
     fg_failures = int(fg_summary.failures)
     should_announce = bool(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def test_frontier_cache_prebuild_uses_queue_first_full_pool_scope(tmp_path: Path) -> None:
+def test_frontier_cache_prebuild_uses_queue_scope_when_queue_is_present(tmp_path: Path) -> None:
     from gear_optimizer.solver.timeline_frontier_cache_prebuild import ordered_frontier_cache_song_paths
 
     queued = tmp_path / "queued.txt"
@@ -14,7 +14,7 @@ def test_frontier_cache_prebuild_uses_queue_first_full_pool_scope(tmp_path: Path
 
     paths = ordered_frontier_cache_song_paths(queue_paths=(str(queued),), data_root=tmp_path / "Data")
 
-    assert paths == [str(queued), str(data_song)]
+    assert paths == [str(queued)]
 
 
 def test_frontier_cache_prebuild_scans_data_when_queue_is_empty(tmp_path: Path) -> None:

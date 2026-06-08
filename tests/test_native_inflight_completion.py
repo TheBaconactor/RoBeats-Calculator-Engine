@@ -239,6 +239,19 @@ def test_decode_handoff_starts_fg_prep_before_fg_worker_submission():
     assert "max_new=1" in src[prep_idx:submit_idx]
 
 
+def test_fg_prep_failure_uses_bundle_aware_error_and_resolves_owner():
+    src = inspect.getsource(run_native_inflight_song_pipeline)
+
+    prep_error_idx = src.index("if prep_completion.error is None:")
+    prep_error_block = src[prep_error_idx : src.index("if ready_fg_from_prep", prep_error_idx)]
+
+    assert "build_native_song_error_payload(" in prep_error_block
+    assert "build_native_task_error_payload(" not in prep_error_block
+    assert "_advance_bundle(bundle_parent" in prep_error_block
+    assert "mark_song_completed(" in prep_error_block
+    assert "ga_pipeline.release_slot(song, slot_pool)" in prep_error_block
+
+
 def test_song_prep_runway_fill_is_not_gated_by_ga_admission():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 

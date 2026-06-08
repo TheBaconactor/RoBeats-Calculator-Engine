@@ -88,6 +88,8 @@ def ordered_frontier_cache_song_paths(
 
     for path in queue_paths:
         add(path)
+    if ordered:
+        return ordered
     for path in iter_timeline_frontier_cache_song_paths(data_root=data_root):
         add(path)
     return ordered
@@ -186,6 +188,30 @@ def _run_missing_timeline_prebuild(paths: list[str], ref_arrays: dict) -> tuple[
     failures = 0
     completed = 0
     results: list[TimelineFrontierCacheBuildResult] = []
+    if len(paths) == 1:
+        path = str(paths[0])
+        try:
+            result = build_timeline_frontier_cache_for_path(path, ref_arrays)
+        except Exception as exc:
+            failures = 1
+            logger.warning("[TimelineCache] Failed to prebuild %s: %s", path, exc)
+        else:
+            completed = 1
+            results.append(result)
+            source_counts[result.source] += 1
+        elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
+        return (
+            TimelineFrontierCachePrebuildSummary(
+                total=int(len(paths)),
+                completed=int(completed),
+                failures=int(failures),
+                built=int(source_counts.get("built", 0)),
+                disk=int(source_counts.get("disk", 0)),
+                memory=int(source_counts.get("memory", 0)),
+                elapsed_ms=elapsed_ms,
+            ),
+            results,
+        )
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=max(1, int(os.cpu_count() or 1)),
         initializer=_init_prebuild_worker,

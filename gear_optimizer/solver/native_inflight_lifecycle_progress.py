@@ -19,6 +19,7 @@ class ProgressTracker:
     lock: threading.Lock = field(default_factory=threading.Lock)
     best: dict[str, tuple[int, int]] = field(default_factory=dict)
     valid: set[str] = field(default_factory=set)
+    failed_progress_keys: set[str] = field(default_factory=set)
 
     def snapshot(self, db_key: str) -> tuple[int, int, bool]:
         key = str(db_key or "").strip()
@@ -109,6 +110,17 @@ class ProgressTracker:
             or item.get("_queue_key")
         )
 
+    @staticmethod
+    def error_item_progress_key(item: dict) -> str:
+        return str(
+            item.get("_queue_key")
+            or item.get("queue_key")
+            or item.get("_queue_label")
+            or item.get("song")
+            or item.get("_song_name")
+            or ""
+        ).strip()
+
     def emit_error_item_progress(self, progress_cb: Callable[..., Any] | None, item: Any) -> bool:
         if not isinstance(item, dict) or not item.get("_error") or bool(item.get("_suppress_progress")):
             return False
@@ -117,6 +129,16 @@ class ProgressTracker:
         except Exception as e:
             logger.debug(f"native_inflight_lifecycle:emit_error_item_progress: {e}")
             song_label = None
+        try:
+            progress_key = self.error_item_progress_key(item)
+        except Exception as e:
+            logger.debug(f"native_inflight_lifecycle:emit_error_item_progress: {e}")
+            progress_key = ""
+        if progress_key:
+            with self.lock:
+                if progress_key in self.failed_progress_keys:
+                    return False
+                self.failed_progress_keys.add(progress_key)
         self.emit_progress(
             progress_cb,
             completed_delta=1,

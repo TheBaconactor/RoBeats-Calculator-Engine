@@ -438,9 +438,13 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         batch = getattr(prepared, "batch", None)
         if batch is None:
             continue
-        prepared_group_rows += int(getattr(getattr(batch, "group_meta", None), "shape", (0,))[0])
-        prepared_surface_rows += int(getattr(getattr(batch, "scoring_surface_words", None), "shape", (0,))[0])
-        prepared_logical_surface_rows += int(np.sum(getattr(batch, "scoring_group_lengths", ()), dtype=np.int64))
+        group_meta = getattr(batch, "group_meta", None)
+        surface_words = getattr(batch, "scoring_surface_words", None)
+        group_lengths = getattr(batch, "scoring_group_lengths", None)
+        prepared_group_rows += int(getattr(group_meta, "shape", (0,))[0])
+        prepared_surface_rows += int(getattr(surface_words, "shape", (0,))[0])
+        if group_lengths is not None:
+            prepared_logical_surface_rows += int(np.sum(group_lengths, dtype=np.int64))
         prepared_unique_frontiers += int(getattr(batch, "scoring_unique_frontiers", 0) or 0)
         prepared_compact_ms += float(getattr(batch, "scoring_surface_compact_ms", 0.0) or 0.0)
         prepared_head_coeff_ms += float(getattr(batch, "scoring_surface_head_coeff_ms", 0.0) or 0.0)

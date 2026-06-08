@@ -72,7 +72,9 @@ def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(mo
         announce_stream=stream,
     )
 
-    assert "[Startup][Cache]" not in stream.getvalue()
+    output = stream.getvalue()
+    assert "Verifying exact timeline + FG response frontier caches" in output
+    assert "Building and caching exact timeline + FG response frontiers" not in output
 
 
 def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeypatch) -> None:
@@ -100,7 +102,9 @@ def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeyp
         announce_stream=stream,
     )
 
-    assert stream.getvalue().count("[Startup][Cache]") == 1
+    output = stream.getvalue()
+    assert "Verifying exact timeline + FG response frontier caches" in output
+    assert "Building and caching exact timeline + FG response frontiers" in output
 
 
 def test_cpu_work_manager_reports_individual_phase_elapsed(monkeypatch) -> None:
@@ -141,6 +145,114 @@ def test_cpu_work_manager_reports_individual_phase_elapsed(monkeypatch) -> None:
         "timeline_frontier_cache": 250.0,
         "fg_response_frontier_cache": 750.0,
     }
+
+
+def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:
+    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
+
+    song_path = tmp_path / "Song.txt"
+    song_path.write_text("fake", encoding="utf-8")
+    built: list[str] = []
+
+    class _UnexpectedExecutor:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("single missing path must not spawn a process pool")
+
+    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", _UnexpectedExecutor)
+    monkeypatch.setattr(
+        prebuild,
+        "build_timeline_frontier_cache_for_path",
+        lambda path, _ref_arrays: built.append(str(path))
+        or prebuild.TimelineFrontierCacheBuildResult(
+            path=str(path),
+            source="disk",
+            build_ms=0.0,
+            cache_file="cache.npz",
+        ),
+    )
+
+    summary, results = prebuild._run_missing_timeline_prebuild([str(song_path)], {})
+
+    assert built == [str(song_path)]
+    assert summary.completed == 1
+    assert summary.disk == 1
+    assert results[0].path == str(song_path)
+
+
+def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+
+    song_path = tmp_path / "Song.txt"
+    song_path.write_text("fake", encoding="utf-8")
+    built: list[str] = []
+
+    class _UnexpectedExecutor:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("single missing path must not spawn a process pool")
+
+    monkeypatch.setattr(prebuild, "_dedupe_paths_by_response_bundle_key", lambda paths, _ref_arrays: (list(paths), {}))
+    monkeypatch.setattr(prebuild, "_build_prebuild_executor", lambda **_kwargs: _UnexpectedExecutor())
+    monkeypatch.setattr(
+        prebuild,
+        "build_fg_response_frontier_cache_for_path",
+        lambda path, _ref_arrays, *, stat_keys: built.append(str(path))
+        or prebuild.FgResponseFrontierCacheBuildResult(
+            path=str(path),
+            source="disk",
+            build_ms=0.0,
+            cache_file="cache.npz",
+        ),
+    )
+
+    summary, results = prebuild._run_missing_fg_prebuild([str(song_path)], {}, ((0, 0),))
+
+    assert built == [str(song_path)]
+    assert summary.completed == 1
+    assert summary.disk == 1
+    assert results[0].path == str(song_path)
+
+
+def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypatch, tmp_path: Path) -> None:
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+
+    song_a = tmp_path / "SongA.txt"
+    song_b = tmp_path / "SongB.txt"
+    song_a.write_text("fake", encoding="utf-8")
+    song_b.write_text("fake", encoding="utf-8")
+
+    class _Plan:
+        total_paths = 2
+        hit_paths = (str(song_a), str(song_b))
+        missing_paths = ()
+        key_by_norm_path = {}
+
+        @property
+        def hit_count(self) -> int:
+            return 2
+
+    monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
+    monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: _Plan())
+    monkeypatch.setattr(prebuild, "_apply_manifest_results", lambda **_kwargs: 0)
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
+        lambda: 0,
+    )
+
+    def _unexpected_priority(_path: str):
+        raise AssertionError("manifest hits must not parse songs for priority ordering")
+
+    monkeypatch.setattr(prebuild, "_fg_response_frontier_prebuild_priority", _unexpected_priority)
+
+    summary = prebuild.run_fg_response_frontier_cache_prebuild(
+        cfg=object(),
+        song_queue=[(str(song_a),), (str(song_b),)],
+        ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        data_root=tmp_path,
+    )
+
+    assert summary.total == 2
+    assert summary.completed == 2
+    assert summary.disk == 2
 
 
 def test_startup_frontier_cache_prebuild_has_no_scope_or_disable_flags() -> None:

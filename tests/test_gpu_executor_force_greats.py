@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import inspect
+
+from gear_optimizer.solver import gpu_executor_batching
 from gear_optimizer.solver.gpu_executor_batching import execute_force_greats_response_frontier_score_batch
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
@@ -11,6 +14,12 @@ def _request(payload: dict | None = None) -> GpuRequest:
         worker_id=3,
         payload=payload or {},
     )
+
+
+def test_execute_force_greats_response_frontier_score_batch_defaults_to_gpu_owner_runner():
+    src = inspect.getsource(gpu_executor_batching.execute_force_greats_response_frontier_score_batch)
+    assert "score_prepared_force_greats_response_frontier_batch_on_gpu_owner as run_payload_fn" in src
+    assert "score_prepared_force_greats_response_frontier_batch_raw_gpu as run_payload_fn" not in src
 
 
 def test_execute_force_greats_response_frontier_score_batch_requires_in_process_queues():
