@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from ....core.constants import LOADOUTS_PER_SONG_LIMIT
 from ....core.utils import safe_int
@@ -274,6 +274,33 @@ def prepare_force_greats_response_frontier_plan_for_ga_candidates(
     )
 
 
+def _score_prepared_batches_for_plan(
+    plan: FgResponseFrontierPreparedPlan,
+    *,
+    gpu_client: Any | None,
+) -> list[list[FgResponseFrontierSolveResult]]:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        run_prepared_force_greats_response_frontier_batch_via_client,
+        score_prepared_force_greats_response_frontier_batch_sync,
+    )
+
+    prepared_results: list[list[FgResponseFrontierSolveResult]] = []
+    for prepared in plan.prepared_batches:
+        if gpu_client is not None:
+            batch_results, _timing = run_prepared_force_greats_response_frontier_batch_via_client(
+                gpu_client,
+                prepared.batch,
+                include_forced_counts=False,
+            )
+        else:
+            batch_results = score_prepared_force_greats_response_frontier_batch_sync(
+                prepared.batch,
+                include_forced_counts=False,
+            )
+        prepared_results.append(batch_results)
+    return prepared_results
+
+
 def materialize_force_greats_response_frontier_plan_results(
     plan: FgResponseFrontierPreparedPlan,
     prepared_results: list[list[FgResponseFrontierSolveResult]],
@@ -353,16 +380,16 @@ def materialize_force_greats_response_frontier_plan_results(
     return variants[: int(LOADOUTS_PER_SONG_LIMIT)]
 
 
-def process_force_greats_response_frontier_gpu(
+def run_force_greats_response_frontier_for_ga_candidates(
     ga_candidates,
     calc_song,
     ref_arrays,
     meta_primary_color,
     *,
     ga_registry=None,
-    score_prepared_batch: Callable[..., list[FgResponseFrontierSolveResult]],
     scoring_bundle=None,
-):
+    gpu_client: Any | None = None,
+) -> list[dict[str, Any]]:
     plan = prepare_force_greats_response_frontier_plan_for_ga_candidates(
         ga_candidates,
         calc_song,
@@ -371,7 +398,5 @@ def process_force_greats_response_frontier_gpu(
         ga_registry=ga_registry,
         scoring_bundle=scoring_bundle,
     )
-    prepared_results = [
-        score_prepared_batch(prepared.batch, include_forced_counts=False) for prepared in plan.prepared_batches
-    ]
+    prepared_results = _score_prepared_batches_for_plan(plan, gpu_client=gpu_client)
     return materialize_force_greats_response_frontier_plan_results(plan, prepared_results)

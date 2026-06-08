@@ -39,7 +39,7 @@ def main() -> int:
     gpu_client.start(start_executor=True, in_process_queues=True)
 
     from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination
-    from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
+    from gear_optimizer.helpers.song_helpers.force_greats import run_force_greats_response_frontier_for_ga_candidates
     from gear_optimizer.core.constants import TOTAL_ROWS
 
     print("=== FG GPU Usage Profile (GpuExecutor + typeperf) ===")
@@ -123,18 +123,26 @@ def main() -> int:
             },
         }
 
-    print("Running Force Greats Finder (GPU via GpuExecutor)...")
+    ga_candidates = []
+    for key, entry in loadout_entries.items():
+        eval_data = entry.get("eval_data") or entry.get("details") or {}
+        ga_candidates.append(
+            {
+                "BaseScore": int(entry.get("score", 0) or 0),
+                "Gear": list(entry.get("gear") or []),
+                "Minis": list(entry.get("minis") or []),
+                "Data": dict(eval_data),
+                "loadout_hash": str(key),
+            }
+        )
+
+    print("Running Force Greats response frontier (GPU via GpuExecutor)...")
     t0 = time.perf_counter()
-    results = process_force_greats(
-        loadout_entries=loadout_entries,
-        manual_force_greats=False,
-        force_greats_config=[],
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        meta_primary_color="Rush",
-        build_details_fn=lambda x: x,
-        use_gpu=True,
-        perf_timing=True,
+    results = run_force_greats_response_frontier_for_ga_candidates(
+        ga_candidates,
+        calc_song,
+        ref_arrays,
+        "Rush",
         gpu_client=gpu_client,
     )
     dt = time.perf_counter() - t0

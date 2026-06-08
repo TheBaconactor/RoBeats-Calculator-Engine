@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from gear_optimizer.solver import skyline_force_greats as sfg
@@ -45,6 +46,15 @@ def _prepared(*, pp: int, selected: str = "Power") -> dict[str, Any]:
     }
 
 
+def _fake_score_batch(fake_solve):
+    def _score_batch(batch, **_kwargs):
+        base_stats = dict(batch.base_stats_list[0])
+        selected_color = str(getattr(batch, "selected_color", "") or "")
+        return [fake_solve(base_stats=base_stats, selected_color=selected_color)]
+
+    return _score_batch
+
+
 def test_skyline_response_batch_dedupes_identical_retained_responses(monkeypatch: Any) -> None:
     solve_calls: list[dict[str, Any]] = []
     sentinel_a = object()
@@ -54,7 +64,18 @@ def test_skyline_response_batch_dedupes_identical_retained_responses(monkeypatch
         solve_calls.append(dict(base_stats))
         return sentinel_a if int(base_stats["Perfect Points"]) == 100 else sentinel_b
 
-    monkeypatch.setattr(sfg, "solve_force_greats_response_frontier_batch_gpu", fake_solve)
+    def _fake_prepare(*, base_stats_list, selected_color, **_kwargs):
+        return SimpleNamespace(
+            base_stats_list=[dict(base_stats_list[0])],
+            selected_color=str(selected_color or ""),
+        )
+
+    monkeypatch.setattr(sfg, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare)
+    monkeypatch.setattr(
+        sfg,
+        "score_prepared_force_greats_response_frontier_batch_sync",
+        _fake_score_batch(fake_solve),
+    )
 
     results, stats = sfg._score_skyline_response_force_greats_batch(
         prepared=[_prepared(pp=100), _prepared(pp=100), _prepared(pp=101)],
@@ -81,7 +102,18 @@ def test_skyline_response_batch_keeps_selected_color_responses_separate(monkeypa
         solve_calls.append((str(selected_color), dict(base_stats)))
         return object()
 
-    monkeypatch.setattr(sfg, "solve_force_greats_response_frontier_batch_gpu", fake_solve)
+    def _fake_prepare(*, base_stats_list, selected_color, **_kwargs):
+        return SimpleNamespace(
+            base_stats_list=[dict(base_stats_list[0])],
+            selected_color=str(selected_color or ""),
+        )
+
+    monkeypatch.setattr(sfg, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare)
+    monkeypatch.setattr(
+        sfg,
+        "score_prepared_force_greats_response_frontier_batch_sync",
+        _fake_score_batch(fake_solve),
+    )
 
     results, stats = sfg._score_skyline_response_force_greats_batch(
         prepared=[_prepared(pp=100, selected="Power"), _prepared(pp=100, selected="Rush")],

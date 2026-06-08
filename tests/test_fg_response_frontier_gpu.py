@@ -13,6 +13,52 @@ def _ref_arrays():
     }
 
 
+def _prepare_and_score_sync(
+    *,
+    base_stats_list,
+    calc_song,
+    ref_arrays,
+    selected_color,
+    total_budget: int,
+    include_forced_counts: bool = True,
+):
+    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier as rf
+
+    batch = rf.prepare_force_greats_response_frontier_scoring_batch(
+        base_stats_list=base_stats_list,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_color=selected_color,
+        total_budget=int(total_budget),
+    )
+    return rf.score_prepared_force_greats_response_frontier_batch_sync(
+        batch,
+        include_forced_counts=bool(include_forced_counts),
+    )
+
+
+def _solve_one_batch(
+    *,
+    base_stats,
+    calc_song,
+    ref_arrays,
+    selected_color,
+    total_budget: int,
+    include_forced_counts: bool = True,
+):
+    results = _prepare_and_score_sync(
+        base_stats_list=[base_stats],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_color=selected_color,
+        total_budget=int(total_budget),
+        include_forced_counts=bool(include_forced_counts),
+    )
+    if not results:
+        raise ValueError("response frontier exact GPU batch produced no pair result")
+    return results[0]
+
+
 def _prebuild_response_bundle(calc_song, ref_arrays, base_stats_list, *, total_budget: int) -> None:
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
@@ -295,9 +341,6 @@ def _strip_trailing_zero_counts(counts):
 
 def test_response_frontier_exact_uses_natural_forced_great_cap_above_legacy_cap(tmp_path, monkeypatch):
     from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        solve_force_greats_response_frontier_batch_gpu,
-    )
 
     rows = 161
     ref_arrays = {
@@ -345,7 +388,7 @@ def test_response_frontier_exact_uses_natural_forced_great_cap_above_legacy_cap(
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
     _prebuild_response_bundle(calc_song, ref_arrays, [base_stats], total_budget=0)
-    result = solve_force_greats_response_frontier_batch_gpu(
+    result = _solve_one_batch(
         base_stats=base_stats,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
@@ -362,9 +405,6 @@ def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference(t
 
     from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
     from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        solve_force_greats_response_frontier_batch_gpu,
-    )
 
     rows = 161
     ref_arrays = {
@@ -424,7 +464,7 @@ def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference(t
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
     _prebuild_response_bundle(calc_song, ref_arrays, [base_stats], total_budget=budget)
-    result = solve_force_greats_response_frontier_batch_gpu(
+    result = _solve_one_batch(
         base_stats=base_stats,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
@@ -442,9 +482,6 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
     from gear_optimizer.solver.scoring.exact_rescore import (
         score_force_greats_response_surface_exact,
         score_force_greats_surface_base_exact,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        solve_force_greats_response_frontier_batch_gpu,
     )
 
     rows = 161
@@ -480,7 +517,7 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
     _prebuild_response_bundle(calc_song, ref_arrays, [base_stats], total_budget=3)
-    result = solve_force_greats_response_frontier_batch_gpu(
+    result = _solve_one_batch(
         base_stats=base_stats,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
@@ -495,11 +532,6 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
 
 
 def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        solve_force_greats_response_frontier_batch_gpu,
-        solve_force_greats_response_frontier_many_gpu,
-    )
-
     rows = 161
     ref_arrays = {
         "Perfect Points": np.linspace(0.0, 5.0, rows, dtype=np.float64),
@@ -534,7 +566,7 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
     _prebuild_response_bundle(calc_song, ref_arrays, [base_a, base_b], total_budget=3)
-    many = solve_force_greats_response_frontier_many_gpu(
+    many = _prepare_and_score_sync(
         base_stats_list=[base_a, base_b],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
@@ -542,7 +574,7 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
         total_budget=3,
     )
     singles = [
-        solve_force_greats_response_frontier_batch_gpu(
+        _solve_one_batch(
             base_stats=base,
             calc_song=calc_song,
             ref_arrays=ref_arrays,
@@ -566,10 +598,6 @@ def test_response_frontier_many_fast_path_matches_individual_exact_solves_with_f
 
     from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
     from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        solve_force_greats_response_frontier_many_gpu,
-    )
-
     rows = 161
     ref_arrays = {
         "Perfect Points": np.linspace(0.0, 5.0, rows, dtype=np.float64),
@@ -624,7 +652,7 @@ def test_response_frontier_many_fast_path_matches_individual_exact_solves_with_f
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
     _prebuild_response_bundle(calc_song, ref_arrays, [base_a, base_b], total_budget=budget)
-    results = solve_force_greats_response_frontier_many_gpu(
+    results = _prepare_and_score_sync(
         base_stats_list=[base_a, base_b],
         calc_song=calc_song,
         ref_arrays=ref_arrays,

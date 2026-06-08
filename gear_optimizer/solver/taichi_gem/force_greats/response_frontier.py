@@ -14,7 +14,6 @@ from gear_optimizer.core.constants import (
     TOTAL_ROWS,
 )
 from gear_optimizer.core.gem_defs import build_gem_counts
-from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
@@ -46,11 +45,11 @@ __all__ = [
     "prepare_force_greats_response_frontier_scoring_batch",
     "build_prepared_force_greats_response_frontier_group_arrays_on_owner",
     "score_prepared_force_greats_response_frontier_batch_on_gpu_owner",
-    "score_prepared_force_greats_response_frontier_batch_gpu",
+    "score_prepared_force_greats_response_frontier_batch_sync",
+    "materialize_force_greats_response_frontier_owner_result",
+    "run_prepared_force_greats_response_frontier_batch_via_client",
     "reconstruct_force_greats_response_counts",
     "reconstruct_force_greats_response_trace",
-    "solve_force_greats_response_frontier_batch_gpu",
-    "solve_force_greats_response_frontier_many_gpu",
 ]
 
 _ResponsePair = tuple[int, int, FgResponseFrontierResult, float, float]
@@ -292,298 +291,6 @@ def _unique_response_stat_keys_tuple(
     return tuple(zip((int(v) for v in unique_ft), (int(v) for v in unique_ff), strict=True))
 
 
-@jit(nopython=True, cache=True)
-def _clip_response_stat(value: int) -> int:
-    if int(value) < 0:
-        return 0
-    if int(value) > TOTAL_ROWS:
-        return TOTAL_ROWS
-    return int(value)
-
-
-@jit(nopython=True, cache=True)
-def _build_response_group_rows_numba(
-    base_components: np.ndarray,
-    ft_values: np.ndarray,
-    ff_values: np.ndarray,
-    residual_values: np.ndarray,
-    frontier_idx_by_stat: np.ndarray,
-    primary_ftff_delta_values: np.ndarray,
-    secondary_ftff_delta_values: np.ndarray,
-    score_elements_constant: bool,
-    head_len: int,
-    body_total: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    candidate_count = int(base_components.shape[0])
-    pair_count = int(ft_values.shape[0])
-    if candidate_count <= 0 or pair_count <= 0:
-        raise ValueError("response frontier exact group builder received no work")
-
-    max_frontier = -1
-    for ft_stat in range(int(frontier_idx_by_stat.shape[0])):
-        for ff_stat in range(int(frontier_idx_by_stat.shape[1])):
-            fid = int(frontier_idx_by_stat[ft_stat, ff_stat])
-            if fid > max_frontier:
-                max_frontier = fid
-    if max_frontier < 0:
-        raise ValueError("response frontier exact group builder received no loaded frontiers")
-
-    keep_mask = np.zeros((candidate_count, pair_count), dtype=np.bool_)
-    keep_counts = np.zeros((candidate_count,), dtype=np.int32)
-    head = np.empty((max_frontier + 1,), dtype=np.int32)
-    tail = np.empty((max_frontier + 1,), dtype=np.int32)
-    next_idx = np.empty((pair_count,), dtype=np.int32)
-    ordered_frontiers = np.empty((pair_count,), dtype=np.int32)
-    best_pos = np.empty((max_frontier + 1,), dtype=np.int32)
-    best_residual = np.empty((max_frontier + 1,), dtype=np.int32)
-
-    for candidate_idx in range(candidate_count):
-        base_primary = int(base_components[candidate_idx, 3])
-        base_secondary = int(base_components[candidate_idx, 4])
-        base_ft = int(base_components[candidate_idx, 5])
-        base_ff = int(base_components[candidate_idx, 6])
-        if bool(score_elements_constant):
-            for fid in range(max_frontier + 1):
-                best_pos[fid] = -1
-                best_residual[fid] = -2147483648
-            for pos in range(pair_count):
-                ft_stat = _clip_response_stat(base_ft + (int(ft_values[pos]) * GEM_SCALE_FEVER))
-                ff_stat = _clip_response_stat(base_ff + (int(ff_values[pos]) * GEM_SCALE_FEVER))
-                frontier_id = int(frontier_idx_by_stat[ft_stat, ff_stat])
-                if frontier_id < 0:
-                    raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
-                residual = int(residual_values[pos])
-                current_pos = int(best_pos[frontier_id])
-                if current_pos < 0 or residual > int(best_residual[frontier_id]) or (
-                    residual == int(best_residual[frontier_id]) and pos < current_pos
-                ):
-                    best_pos[frontier_id] = pos
-                    best_residual[frontier_id] = residual
-            kept_count = 0
-            for pos in range(pair_count):
-                ft_stat = _clip_response_stat(base_ft + (int(ft_values[pos]) * GEM_SCALE_FEVER))
-                ff_stat = _clip_response_stat(base_ff + (int(ff_values[pos]) * GEM_SCALE_FEVER))
-                frontier_id = int(frontier_idx_by_stat[ft_stat, ff_stat])
-                if int(best_pos[frontier_id]) == pos:
-                    keep_mask[candidate_idx, pos] = True
-                    kept_count += 1
-            keep_counts[candidate_idx] = kept_count
-            continue
-
-        for fid in range(max_frontier + 1):
-            head[fid] = -1
-            tail[fid] = -1
-        for pos in range(pair_count):
-            next_idx[pos] = -1
-        ordered_count = 0
-        for pos in range(pair_count):
-            ft_stat = _clip_response_stat(base_ft + (int(ft_values[pos]) * GEM_SCALE_FEVER))
-            ff_stat = _clip_response_stat(base_ff + (int(ff_values[pos]) * GEM_SCALE_FEVER))
-            frontier_id = int(frontier_idx_by_stat[ft_stat, ff_stat])
-            if frontier_id < 0:
-                raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
-            if int(head[frontier_id]) < 0:
-                head[frontier_id] = pos
-                tail[frontier_id] = pos
-                ordered_frontiers[ordered_count] = frontier_id
-                ordered_count += 1
-            else:
-                next_idx[int(tail[frontier_id])] = pos
-                tail[frontier_id] = pos
-
-        kept_count = 0
-        for order_idx in range(ordered_count):
-            frontier_id = int(ordered_frontiers[order_idx])
-            first = int(head[frontier_id])
-            first_primary = base_primary + int(primary_ftff_delta_values[first])
-            first_secondary = base_secondary + int(secondary_ftff_delta_values[first])
-            same_score_elements = True
-            best_idx = first
-            best_res = int(residual_values[first])
-            row = int(next_idx[first])
-            while row >= 0:
-                primary = base_primary + int(primary_ftff_delta_values[row])
-                secondary = base_secondary + int(secondary_ftff_delta_values[row])
-                if primary != first_primary or secondary != first_secondary:
-                    same_score_elements = False
-                    break
-                residual = int(residual_values[row])
-                if residual > best_res:
-                    best_idx = row
-                    best_res = residual
-                row = int(next_idx[row])
-            if same_score_elements:
-                keep_mask[candidate_idx, best_idx] = True
-                kept_count += 1
-                continue
-
-            row = first
-            while row >= 0:
-                row_residual = int(residual_values[row])
-                row_primary = base_primary + int(primary_ftff_delta_values[row])
-                row_secondary = base_secondary + int(secondary_ftff_delta_values[row])
-                dominated = False
-                other = first
-                while other >= 0:
-                    if other != row:
-                        other_residual = int(residual_values[other])
-                        other_primary = base_primary + int(primary_ftff_delta_values[other])
-                        other_secondary = base_secondary + int(secondary_ftff_delta_values[other])
-                        if (
-                            other_residual >= row_residual
-                            and other_primary >= row_primary
-                            and other_secondary >= row_secondary
-                            and (
-                                other_residual > row_residual
-                                or other_primary > row_primary
-                                or other_secondary > row_secondary
-                                or other < row
-                            )
-                        ):
-                            dominated = True
-                            break
-                    other = int(next_idx[other])
-                if not dominated:
-                    keep_mask[candidate_idx, row] = True
-                    kept_count += 1
-                row = int(next_idx[row])
-        keep_counts[candidate_idx] = kept_count
-
-    total_count = 0
-    for candidate_idx in range(candidate_count):
-        count = int(keep_counts[candidate_idx])
-        if count <= 0:
-            raise ValueError("response frontier exact GPU batch produced no pair result")
-        total_count += count
-
-    group_meta = np.empty((total_count, 8), dtype=np.int32)
-    group_ft = np.empty((total_count,), dtype=np.int32)
-    group_ff = np.empty((total_count,), dtype=np.int32)
-    group_ft_stat = np.empty((total_count,), dtype=np.int32)
-    group_ff_stat = np.empty((total_count,), dtype=np.int32)
-    candidate_slices = np.empty((candidate_count, 2), dtype=np.int32)
-    write = 0
-    for candidate_idx in range(candidate_count):
-        base_pp = int(base_components[candidate_idx, 0])
-        base_cm = int(base_components[candidate_idx, 1])
-        base_fm = int(base_components[candidate_idx, 2])
-        base_primary = int(base_components[candidate_idx, 3])
-        base_secondary = int(base_components[candidate_idx, 4])
-        base_ft = int(base_components[candidate_idx, 5])
-        base_ff = int(base_components[candidate_idx, 6])
-        candidate_start = write
-
-        for fid in range(max_frontier + 1):
-            head[fid] = -1
-            tail[fid] = -1
-            best_pos[fid] = -1
-            best_residual[fid] = -2147483648
-        for pos in range(pair_count):
-            next_idx[pos] = -1
-        ordered_count = 0
-        for pos in range(pair_count):
-            ft_stat = _clip_response_stat(base_ft + (int(ft_values[pos]) * GEM_SCALE_FEVER))
-            ff_stat = _clip_response_stat(base_ff + (int(ff_values[pos]) * GEM_SCALE_FEVER))
-            frontier_id = int(frontier_idx_by_stat[ft_stat, ff_stat])
-            if frontier_id < 0:
-                raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
-            if int(head[frontier_id]) < 0:
-                head[frontier_id] = pos
-                tail[frontier_id] = pos
-                ordered_frontiers[ordered_count] = frontier_id
-                ordered_count += 1
-            else:
-                next_idx[int(tail[frontier_id])] = pos
-                tail[frontier_id] = pos
-            if bool(score_elements_constant):
-                residual = int(residual_values[pos])
-                current_pos = int(best_pos[frontier_id])
-                if current_pos < 0 or residual > int(best_residual[frontier_id]) or (
-                    residual == int(best_residual[frontier_id]) and pos < current_pos
-                ):
-                    best_pos[frontier_id] = pos
-                    best_residual[frontier_id] = residual
-
-        for order_idx in range(ordered_count):
-            frontier_id = int(ordered_frontiers[order_idx])
-            if bool(score_elements_constant):
-                pos = int(best_pos[frontier_id])
-                if pos < 0:
-                    continue
-                ft = int(ft_values[pos])
-                ff = int(ff_values[pos])
-                ft_stat = _clip_response_stat(base_ft + (ft * GEM_SCALE_FEVER))
-                ff_stat = _clip_response_stat(base_ff + (ff * GEM_SCALE_FEVER))
-                group_meta[write, 0] = int(residual_values[pos])
-                group_meta[write, 1] = base_pp
-                group_meta[write, 2] = base_cm
-                group_meta[write, 3] = base_fm
-                group_meta[write, 4] = base_primary + int(primary_ftff_delta_values[pos])
-                group_meta[write, 5] = base_secondary + int(secondary_ftff_delta_values[pos])
-                group_meta[write, 6] = int(head_len)
-                group_meta[write, 7] = int(body_total)
-                group_ft[write] = ft
-                group_ff[write] = ff
-                group_ft_stat[write] = ft_stat
-                group_ff_stat[write] = ff_stat
-                write += 1
-                continue
-
-            row = int(head[frontier_id])
-            while row >= 0:
-                if bool(keep_mask[candidate_idx, row]):
-                    ft = int(ft_values[row])
-                    ff = int(ff_values[row])
-                    ft_stat = _clip_response_stat(base_ft + (ft * GEM_SCALE_FEVER))
-                    ff_stat = _clip_response_stat(base_ff + (ff * GEM_SCALE_FEVER))
-                    group_meta[write, 0] = int(residual_values[row])
-                    group_meta[write, 1] = base_pp
-                    group_meta[write, 2] = base_cm
-                    group_meta[write, 3] = base_fm
-                    group_meta[write, 4] = base_primary + int(primary_ftff_delta_values[row])
-                    group_meta[write, 5] = base_secondary + int(secondary_ftff_delta_values[row])
-                    group_meta[write, 6] = int(head_len)
-                    group_meta[write, 7] = int(body_total)
-                    group_ft[write] = ft
-                    group_ff[write] = ff
-                    group_ft_stat[write] = ft_stat
-                    group_ff_stat[write] = ff_stat
-                    write += 1
-                row = int(next_idx[row])
-        candidate_slices[candidate_idx, 0] = candidate_start
-        candidate_slices[candidate_idx, 1] = write - candidate_start
-    return group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices
-
-
-@jit(nopython=True, cache=True)
-def _requested_response_stat_keys_numba(
-    base_components: np.ndarray,
-    ft_values: np.ndarray,
-    ff_values: np.ndarray,
-) -> np.ndarray:
-    seen = np.zeros((TOTAL_ROWS + 1, TOTAL_ROWS + 1), dtype=np.bool_)
-    requested_count = 0
-    for candidate_idx in range(int(base_components.shape[0])):
-        base_ft = int(base_components[candidate_idx, 5])
-        base_ff = int(base_components[candidate_idx, 6])
-        for pos in range(int(ft_values.shape[0])):
-            ft_stat = _clip_response_stat(base_ft + (int(ft_values[pos]) * GEM_SCALE_FEVER))
-            ff_stat = _clip_response_stat(base_ff + (int(ff_values[pos]) * GEM_SCALE_FEVER))
-            if not seen[ft_stat, ff_stat]:
-                seen[ft_stat, ff_stat] = True
-                requested_count += 1
-
-    out = np.empty((requested_count, 2), dtype=np.int32)
-    write = 0
-    for ft_stat in range(TOTAL_ROWS + 1):
-        for ff_stat in range(TOTAL_ROWS + 1):
-            if seen[ft_stat, ff_stat]:
-                out[write, 0] = int(ft_stat)
-                out[write, 1] = int(ff_stat)
-                write += 1
-    return out
-
-
 _GROUP_ROW_BUILDER_WARMED = False
 
 
@@ -591,6 +298,8 @@ def warmup_response_frontier_group_builder() -> None:
     global _GROUP_ROW_BUILDER_WARMED
     if bool(_GROUP_ROW_BUILDER_WARMED):
         return
+    from .response_group_build_kernels import build_response_group_rows_gpu
+
     ft_values, ff_values, residual_values = ftff_combo_arrays(2)
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     for pos in range(int(ft_values.shape[0])):
@@ -600,12 +309,7 @@ def warmup_response_frontier_group_builder() -> None:
     base_components = np.asarray([[0, 0, 0, 1, 2, 0, 0]], dtype=np.int32)
     primary_delta = np.asarray(ft_values * GEM_STAT_TO_ELEMENT_SCALE, dtype=np.int32)
     secondary_delta = np.asarray(ff_values * GEM_STAT_TO_ELEMENT_SCALE, dtype=np.int32)
-    requested = _requested_response_stat_keys_numba(
-        np.ascontiguousarray(base_components, dtype=np.int32),
-        np.ascontiguousarray(ft_values, dtype=np.int32),
-        np.ascontiguousarray(ff_values, dtype=np.int32),
-    )
-    group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices = _build_response_group_rows_numba(
+    group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices = build_response_group_rows_gpu(
         np.ascontiguousarray(base_components, dtype=np.int32),
         np.ascontiguousarray(ft_values, dtype=np.int32),
         np.ascontiguousarray(ff_values, dtype=np.int32),
@@ -617,18 +321,8 @@ def warmup_response_frontier_group_builder() -> None:
         1,
         0,
     )
-    expected_requested = sorted(
-        (int(ft), int(ff))
-        for ft, ff in np.column_stack(
-            (
-                (ft_values * GEM_SCALE_FEVER).astype(np.int32, copy=False),
-                (ff_values * GEM_SCALE_FEVER).astype(np.int32, copy=False),
-            )
-        ).tolist()
-    )
     if (
-        sorted((int(row[0]), int(row[1])) for row in requested.tolist()) != expected_requested
-        or int(group_meta.shape[0]) != int(ft_values.shape[0])
+        int(group_meta.shape[0]) != int(ft_values.shape[0])
         or group_ft.tolist() != ft_values.astype(np.int32, copy=False).tolist()
         or group_ff.tolist() != ff_values.astype(np.int32, copy=False).tolist()
         or group_ft_stat.tolist() != (ft_values * GEM_SCALE_FEVER).astype(np.int32, copy=False).tolist()
@@ -716,7 +410,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
 ) -> FgResponseFrontierPackedScoringBatch:
     """Prepare the GA->FG candidate inputs (host, prep thread). The group rows + scoring
     surfaces are built later on the GPU owner thread by
-    `score_prepared_force_greats_response_frontier_batch_gpu`."""
+    `score_prepared_force_greats_response_frontier_batch_on_gpu_owner`."""
     setup_t0 = time.perf_counter()
     stats_inputs = tuple(dict(stats) for stats in (base_stats_list or []))
     if not stats_inputs:
@@ -882,32 +576,17 @@ def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
     include_forced_counts: bool = False,
 ) -> FgResponseFrontierOwnerResult:
     """Canonical GPU-owner dispatch: build group rows, score, and return the enriched batch."""
-    built_batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
-    inner_rows = score_prepared_force_greats_response_frontier_batch_raw_gpu(
-        built_batch,
-        include_forced_counts=bool(include_forced_counts),
-    )
-    return FgResponseFrontierOwnerResult(batch=built_batch, inner_rows=inner_rows)
-
-
-def score_prepared_force_greats_response_frontier_batch_raw_gpu(
-    batch: FgResponseFrontierPackedScoringBatch,
-    *,
-    include_forced_counts: bool = False,
-) -> np.ndarray:
     _ = include_forced_counts
-    if batch.group_meta is None:
-        raise RuntimeError(
-            "response frontier raw GPU scoring requires owner-built group rows; "
-            "use score_prepared_force_greats_response_frontier_batch_on_gpu_owner()"
-        )
-    surface_words = batch.scoring_surface_words
-    surface_counts = batch.scoring_surface_counts
-    surface_head_coeffs = batch.scoring_surface_head_coeffs
-    group_offsets = batch.scoring_group_offsets
-    group_lengths = batch.scoring_group_lengths
-    if int(group_offsets.shape[0]) != int(batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
-        batch.group_meta.shape[0]
+    built_batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
+    if built_batch.group_meta is None:
+        raise RuntimeError("response frontier GPU owner scoring requires built group rows")
+    surface_words = built_batch.scoring_surface_words
+    surface_counts = built_batch.scoring_surface_counts
+    surface_head_coeffs = built_batch.scoring_surface_head_coeffs
+    group_offsets = built_batch.scoring_group_offsets
+    group_lengths = built_batch.scoring_group_lengths
+    if int(group_offsets.shape[0]) != int(built_batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
+        built_batch.group_meta.shape[0]
     ):
         raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
     if (
@@ -920,20 +599,60 @@ def score_prepared_force_greats_response_frontier_batch_raw_gpu(
     ):
         raise ValueError("response frontier prepared scoring arrays have invalid shape")
     inner_rows, _logical_surface_rows = _score_response_group_meta_gpu(
-        group_meta=batch.group_meta,
+        group_meta=built_batch.group_meta,
         group_offsets=group_offsets,
         group_lengths=group_lengths,
-        primary_color=batch.primary_color,
-        secondary_color=batch.secondary_color,
-        selected_color=batch.selected_color,
-        ref_arrays=batch.ref_arrays,
+        primary_color=built_batch.primary_color,
+        secondary_color=built_batch.secondary_color,
+        selected_color=built_batch.selected_color,
+        ref_arrays=built_batch.ref_arrays,
         surface_words=surface_words,
         surface_counts=surface_counts,
         surface_head_coeffs=surface_head_coeffs,
     )
-    if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
+    if int(inner_rows.shape[0]) != int(built_batch.group_meta.shape[0]):
         raise ValueError("response frontier exact GPU batch returned the wrong number of group results")
-    return np.asarray(inner_rows, dtype=np.int32)
+    return FgResponseFrontierOwnerResult(
+        batch=built_batch,
+        inner_rows=np.asarray(inner_rows, dtype=np.int32),
+    )
+
+
+def materialize_force_greats_response_frontier_owner_result(
+    owner_result: FgResponseFrontierOwnerResult,
+    *,
+    include_forced_counts: bool = False,
+) -> list[FgResponseFrontierSolveResult]:
+    if not isinstance(owner_result, FgResponseFrontierOwnerResult):
+        raise RuntimeError("FG response frontier GPU owner returned an invalid owner result")
+    return materialize_prepared_force_greats_response_frontier_batch_results(
+        owner_result.batch,
+        owner_result.inner_rows,
+        include_forced_counts=bool(include_forced_counts),
+    )
+
+
+def run_prepared_force_greats_response_frontier_batch_via_client(
+    gpu_client: Any,
+    batch: FgResponseFrontierPackedScoringBatch,
+    *,
+    include_forced_counts: bool = False,
+) -> tuple[list[FgResponseFrontierSolveResult], dict[str, float]]:
+    timing: dict[str, float] = {}
+    handle = gpu_client.submit_force_greats_response_frontier_score_batch(
+        {
+            "batch": batch,
+            "include_forced_counts": bool(include_forced_counts),
+            "timing": timing,
+        }
+    )
+    materialize_t0 = time.perf_counter()
+    results = materialize_force_greats_response_frontier_owner_result(
+        handle.future.result(),
+        include_forced_counts=bool(include_forced_counts),
+    )
+    timing["materialize_s"] = max(0.0, time.perf_counter() - float(materialize_t0))
+    return results, timing
 
 
 def materialize_prepared_force_greats_response_frontier_batch_results(
@@ -1000,7 +719,7 @@ def materialize_prepared_force_greats_response_frontier_batch_results(
     return out
 
 
-def score_prepared_force_greats_response_frontier_batch_gpu(
+def score_prepared_force_greats_response_frontier_batch_sync(
     batch: FgResponseFrontierPackedScoringBatch,
     *,
     include_forced_counts: bool = False,
@@ -1045,51 +764,3 @@ def score_prepared_force_greats_response_frontier_batch_gpu(
         },
     )
     return out
-
-
-def solve_force_greats_response_frontier_many_gpu(
-    *,
-    base_stats_list: list[dict[str, Any]] | tuple[dict[str, Any], ...],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    selected_color: str,
-    total_budget: int = TOTAL_GEM_BUDGET,
-    include_forced_counts: bool = True,
-) -> list[FgResponseFrontierSolveResult]:
-    started = time.perf_counter()
-    stats_inputs = [dict(stats) for stats in (base_stats_list or [])]
-    if not stats_inputs:
-        return []
-
-    batch = prepare_force_greats_response_frontier_scoring_batch(
-        base_stats_list=stats_inputs,
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        selected_color=selected_color,
-        total_budget=int(total_budget),
-        started=started,
-    )
-    return score_prepared_force_greats_response_frontier_batch_gpu(
-        batch,
-        include_forced_counts=bool(include_forced_counts),
-    )
-
-
-def solve_force_greats_response_frontier_batch_gpu(
-    *,
-    base_stats: dict[str, Any],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    selected_color: str,
-    total_budget: int = TOTAL_GEM_BUDGET,
-) -> FgResponseFrontierSolveResult:
-    results = solve_force_greats_response_frontier_many_gpu(
-        base_stats_list=[base_stats],
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        selected_color=selected_color,
-        total_budget=int(total_budget),
-    )
-    if not results:
-        raise ValueError("response frontier exact GPU batch produced no pair result")
-    return results[0]

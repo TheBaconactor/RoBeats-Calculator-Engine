@@ -11,8 +11,9 @@ from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_
 from gear_optimizer.solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     FgResponseSurface,
+    prepare_force_greats_response_frontier_scoring_batch,
     reconstruct_force_greats_response_trace,
-    solve_force_greats_response_frontier_batch_gpu,
+    score_prepared_force_greats_response_frontier_batch_sync,
 )
 
 
@@ -202,12 +203,16 @@ def _score_skyline_response_force_greats_batch(
             result_cache_hits += 1
             continue
 
-        result = solve_force_greats_response_frontier_batch_gpu(
-            base_stats=base_stats,
+        batch = prepare_force_greats_response_frontier_scoring_batch(
+            base_stats_list=[base_stats],
             calc_song=calc_song,
             ref_arrays=ref_arrays,
             selected_color=selected_color,
         )
+        scored = score_prepared_force_greats_response_frontier_batch_sync(batch)
+        if not scored:
+            raise ValueError("response frontier exact GPU batch produced no pair result")
+        result = scored[0]
         results[idx] = result
         result_cache[result_key] = result
 

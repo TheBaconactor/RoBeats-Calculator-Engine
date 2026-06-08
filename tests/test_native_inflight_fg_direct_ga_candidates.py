@@ -96,7 +96,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
 def test_native_fg_pipeline_does_not_expose_direct_force_greats_route():
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
 
-    assert not hasattr(fg_pipeline, "process_force_greats")
+    assert not hasattr(fg_pipeline, "run_force_greats_response_frontier_for_ga_candidates")
 
 
 def test_prepare_fg_job_accepts_owner_deferred_group_arrays(monkeypatch):
@@ -155,21 +155,20 @@ def test_prepare_fg_job_accepts_owner_deferred_group_arrays(monkeypatch):
     assert song.runtime.fg.cpu_fg_prep_s >= 0.0
 
 
-def test_run_fg_job_sync_submits_all_prepared_batches_before_waiting(monkeypatch):
+def test_run_fg_job_sync_scores_each_prepared_batch_sequentially(monkeypatch):
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
-    class _AssertAllSubmittedFuture:
+    class _SequentialSubmitFuture:
         def __init__(self, client, result):
             self.client = client
             self.result_rows = result
 
         def result(self):
-            assert len(self.client.payloads) == 2
             return _owner_result(self.client.payloads[-1]["batch"], self.result_rows)
 
-    class _AssertAllSubmittedGpuClient:
+    class _SequentialSubmitGpuClient:
         def __init__(self):
             self.payloads = []
 
@@ -185,9 +184,9 @@ def test_run_fg_job_sync_submits_all_prepared_batches_before_waiting(monkeypatch
                     "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
                 }
             ]
-            return SimpleNamespace(future=_AssertAllSubmittedFuture(self, result))
+            return SimpleNamespace(future=_SequentialSubmitFuture(self, result))
 
-    gpu_client = _AssertAllSubmittedGpuClient()
+    gpu_client = _SequentialSubmitGpuClient()
 
     monkeypatch.setattr(
         response_frontier,

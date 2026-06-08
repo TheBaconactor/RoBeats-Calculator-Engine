@@ -1,36 +1,19 @@
-"""
-Keep the package import light; GPU dispatch is loaded only when the public
-entrypoint is actually called.
-"""
+"""ForceGreats response-frontier helpers."""
 
 from __future__ import annotations
 
-import logging
+from .response_frontier_adapter import (
+    FgResponseFrontierPreparedBatch,
+    FgResponseFrontierPreparedPlan,
+    materialize_force_greats_response_frontier_plan_results,
+    prepare_force_greats_response_frontier_plan_for_ga_candidates,
+    run_force_greats_response_frontier_for_ga_candidates,
+)
 
-__all__ = ["process_force_greats"]
-
-
-def process_force_greats(
-    ga_candidates,
-    calc_song,
-    ref_arrays,
-    meta_primary_color,
-    *,
-    ga_registry=None,
-):
-    from .response_frontier_adapter import process_force_greats_response_frontier_gpu
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        score_prepared_force_greats_response_frontier_batch_gpu,
-    )
-
-    total_entries = int(len(ga_candidates or ()))
-    logger = logging.getLogger(__name__)
-    logger.debug("[ForceGreats] Processing %s GA candidates...", total_entries)
-    return process_force_greats_response_frontier_gpu(
-        ga_candidates,
-        calc_song,
-        ref_arrays,
-        meta_primary_color,
-        ga_registry=ga_registry,
-        score_prepared_batch=score_prepared_force_greats_response_frontier_batch_gpu,
-    )
+__all__ = [
+    "FgResponseFrontierPreparedBatch",
+    "FgResponseFrontierPreparedPlan",
+    "materialize_force_greats_response_frontier_plan_results",
+    "prepare_force_greats_response_frontier_plan_for_ga_candidates",
+    "run_force_greats_response_frontier_for_ga_candidates",
+]

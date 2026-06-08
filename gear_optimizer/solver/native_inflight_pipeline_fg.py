@@ -468,8 +468,7 @@ def run_fg_job_sync(
     from gear_optimizer.solver.native_inflight_lifecycle import evaluate_fg_progress_record_update
     from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_job_sync, thread_cpu_time_s
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        FgResponseFrontierOwnerResult,
-        materialize_prepared_force_greats_response_frontier_batch_results,
+        run_prepared_force_greats_response_frontier_batch_via_client,
     )
 
     cpu_t0 = thread_cpu_time_s()
@@ -554,42 +553,19 @@ def run_fg_job_sync(
         )
     except Exception as e:
         logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
-    def _submit_prepared_fg_batch(batch, *, include_forced_counts: bool = False):
-        timing: dict[str, float] = {}
-        handle = gpu_client.submit_force_greats_response_frontier_score_batch(
-            {
-                "batch": batch,
-                "include_forced_counts": bool(include_forced_counts),
-                "timing": timing,
-            }
-        )
-        return handle, timing
-
-    def _materialize_prepared_fg_batch(handle, timing, *, include_forced_counts: bool = False):
-        owner_result = handle.future.result()
-        if not isinstance(owner_result, FgResponseFrontierOwnerResult):
-            raise RuntimeError("FG response frontier GPU owner returned an invalid owner result")
-        materialize_t0 = time.perf_counter()
-        results = materialize_prepared_force_greats_response_frontier_batch_results(
-            owner_result.batch,
-            owner_result.inner_rows,
-            include_forced_counts=bool(include_forced_counts),
-        )
-        timing["materialize_s"] = max(0.0, time.perf_counter() - float(materialize_t0))
-        return results
-
     prepared_plan = getattr(song.runtime.fg, "fg_response_frontier_plan", None)
     if prepared_plan is None:
         raise RuntimeError("FG response frontier run requires a prepared exact scoring plan")
     run_wall_t0 = time.perf_counter()
-    prepared_handles = [
-        _submit_prepared_fg_batch(prepared.batch, include_forced_counts=False)
-        for prepared in prepared_plan.prepared_batches
-    ]
-    prepared_results = [
-        _materialize_prepared_fg_batch(handle, timing, include_forced_counts=False)
-        for handle, timing in prepared_handles
-    ]
+    prepared_handles: list[tuple[list[Any], dict[str, float]]] = []
+    for prepared in prepared_plan.prepared_batches:
+        batch_results, timing = run_prepared_force_greats_response_frontier_batch_via_client(
+            gpu_client,
+            prepared.batch,
+            include_forced_counts=False,
+        )
+        prepared_handles.append((batch_results, timing))
+    prepared_results = [batch_results for batch_results, _timing in prepared_handles]
     fg_variants = response_frontier_adapter.materialize_force_greats_response_frontier_plan_results(
         prepared_plan,
         prepared_results,
@@ -598,7 +574,7 @@ def run_fg_job_sync(
         owner_run_s = sum(
             max(0.0, float(timing.get("owner_exec_s", 0.0) or 0.0))
             + max(0.0, float(timing.get("materialize_s", 0.0) or 0.0))
-            for _handle, timing in prepared_handles
+            for _batch_results, timing in prepared_handles
         )
         song.runtime.fg.fg_run_wall_s = (
             float(owner_run_s) if float(owner_run_s) > 0.0 else max(0.0, time.perf_counter() - float(run_wall_t0))
@@ -619,11 +595,11 @@ def run_fg_job_sync(
                 "fg_variants": int(len(getattr(song.runtime.fg, "fg_variants", None) or [])),
                 "owner_exec_ms": sum(
                     max(0.0, float(timing.get("owner_exec_s", 0.0) or 0.0)) * 1000.0
-                    for _handle, timing in prepared_handles
+                    for _batch_results, timing in prepared_handles
                 ),
                 "owner_queue_ms": sum(
                     max(0.0, float(timing.get("owner_queue_s", 0.0) or 0.0)) * 1000.0
-                    for _handle, timing in prepared_handles
+                    for _batch_results, timing in prepared_handles
                 ),
             },
         )

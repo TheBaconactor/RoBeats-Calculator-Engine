@@ -161,7 +161,7 @@ def main() -> int:
     from gear_optimizer.data.csv_parser import read_table
     from gear_optimizer.data.database import get_best_loadouts
     from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
-    from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
+    from gear_optimizer.helpers.song_helpers.force_greats import run_force_greats_response_frontier_for_ga_candidates
     from gear_optimizer.data.song_io import get_base_calc_song
 
     cfg = load_config()
@@ -237,8 +237,8 @@ def main() -> int:
     def _run_one() -> float:
         entries = _make_entries()
         t0 = time.perf_counter()
-        process_force_greats(
-            entries,
+        run_force_greats_response_frontier_for_ga_candidates(
+            list(entries.values()),
             calc_song,
             ref_arrays,
             p_color,
