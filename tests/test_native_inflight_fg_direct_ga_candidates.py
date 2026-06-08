@@ -89,7 +89,7 @@ def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
     assert seen_adapter["plan"] is song.runtime.fg.fg_response_frontier_plan
     assert len(gpu_client.payloads) == 1
     assert gpu_client.payloads[0]["batch"] == "prepared-batch"
-    assert gpu_client.payloads[0]["include_forced_counts"] is False
+    assert "include_forced_counts" not in gpu_client.payloads[0]
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
 
 
@@ -112,9 +112,7 @@ def test_prepare_fg_job_accepts_owner_deferred_group_arrays(monkeypatch):
         scoring_surface_head_coeff_ms=0.0,
         scoring_bundle_ms=0.0,
         scoring_setup_ms=0.0,
-        scoring_geometry_ms=0.0,
         scoring_group_build_ms=0.0,
-        scoring_concat_ms=0.0,
     )
     plan = SimpleNamespace(prepared_batches=[SimpleNamespace(batch=batch)])
 
@@ -388,5 +386,5 @@ def test_run_fg_job_sync_forces_response_frontier_direct_ga_candidates(monkeypat
     assert seen_adapter["plan"] is song.runtime.fg.fg_response_frontier_plan
     assert len(gpu_client.payloads) == 1
     assert gpu_client.payloads[0]["batch"] == "prepared-batch"
-    assert gpu_client.payloads[0]["include_forced_counts"] is False
+    assert "include_forced_counts" not in gpu_client.payloads[0]
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 140

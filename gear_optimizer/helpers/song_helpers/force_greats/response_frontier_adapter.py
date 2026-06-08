@@ -21,7 +21,6 @@ from .result_application import materialize_stats_from_payload
 
 @dataclass(frozen=True, slots=True)
 class FgResponseFrontierPreparedBatch:
-    selected: str
     rows: tuple[tuple[tuple[Any, ...], dict[str, Any]], ...]
     batch: Any
 
@@ -30,7 +29,6 @@ class FgResponseFrontierPreparedBatch:
 class FgResponseFrontierPreparedPlan:
     calc_song: dict[str, Any]
     ref_arrays: dict[str, Any]
-    variants: tuple[dict[str, Any], ...]
     pending_jobs: tuple[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], int, tuple[Any, ...]], ...]
     prepared_batches: tuple[FgResponseFrontierPreparedBatch, ...]
 
@@ -208,7 +206,6 @@ def _prepare_force_greats_response_frontier_plan_from_items(
     if int(song_inputs.total_notes) <= 0:
         raise ValueError("ForceGreats response frontier requires a song with at least one note")
 
-    variants: list[dict[str, Any]] = []
     pending_jobs: list[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], int, tuple[Any, ...]]] = []
     pending_by_selected: dict[str, list[tuple[tuple[Any, ...], dict[str, Any]]]] = {}
     pending_keys: set[tuple[Any, ...]] = set()
@@ -241,7 +238,6 @@ def _prepare_force_greats_response_frontier_plan_from_items(
         )
         prepared_batches.append(
             FgResponseFrontierPreparedBatch(
-                selected=str(selected or ""),
                 rows=tuple(rows),
                 batch=batch,
             )
@@ -250,7 +246,6 @@ def _prepare_force_greats_response_frontier_plan_from_items(
     return FgResponseFrontierPreparedPlan(
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        variants=tuple(variants),
         pending_jobs=tuple(pending_jobs),
         prepared_batches=tuple(prepared_batches),
     )
@@ -310,7 +305,7 @@ def materialize_force_greats_response_frontier_plan_results(
 ) -> list[dict[str, Any]]:
     calc_song = plan.calc_song
     ref_arrays = plan.ref_arrays
-    variants = list(plan.variants)
+    variants: list[dict[str, Any]] = []
     result_cache: dict[tuple[Any, ...], FgResponseFrontierSolveResult] = {}
     if len(prepared_results) != len(plan.prepared_batches):
         raise ValueError("ForceGreats response frontier plan received the wrong number of prepared result batches")

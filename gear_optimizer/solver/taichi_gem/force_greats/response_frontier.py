@@ -95,9 +95,7 @@ class FgResponseFrontierPackedScoringBatch:
     scoring_surface_compact_ms: float = 0.0
     scoring_surface_head_coeff_ms: float = 0.0
     scoring_setup_ms: float = 0.0
-    scoring_geometry_ms: float = 0.0
     scoring_group_build_ms: float = 0.0
-    scoring_concat_ms: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,11 +571,8 @@ def build_prepared_force_greats_response_frontier_group_arrays_on_owner(
 
 def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
     batch: FgResponseFrontierPackedScoringBatch,
-    *,
-    include_forced_counts: bool = False,
 ) -> FgResponseFrontierOwnerResult:
     """Canonical GPU-owner dispatch: build group rows, score, and return the enriched batch."""
-    _ = include_forced_counts
     built_batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
     if built_batch.group_meta is None:
         raise RuntimeError("response frontier GPU owner scoring requires built group rows")
@@ -658,7 +653,6 @@ def run_prepared_force_greats_response_frontier_batches_via_client(
         handle = gpu_client.submit_force_greats_response_frontier_score_batch(
             {
                 "batch": batch,
-                "include_forced_counts": bool(include_forced_counts),
                 "timing": timing,
             }
         )
@@ -749,10 +743,7 @@ def score_prepared_force_greats_response_frontier_batch_sync(
     payload_ms = 0.0
     scoring_bundle_ms = float(batch.scoring_bundle_ms)
     owner_t0 = time.perf_counter()
-    owner = score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
-        batch,
-        include_forced_counts=bool(include_forced_counts),
-    )
+    owner = score_prepared_force_greats_response_frontier_batch_on_gpu_owner(batch)
     gpu_score_ms = float((time.perf_counter() - owner_t0) * 1000.0)
     batch = owner.batch
     compact_ms = float(batch.scoring_surface_compact_ms)

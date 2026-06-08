@@ -1187,7 +1187,6 @@ def test_process_force_greats_uses_authoritative_paired_base_for_emit_gate(monke
     plan = SimpleNamespace(
         calc_song={},
         ref_arrays={},
-        variants=(),
         pending_jobs=((keep, {}, "Rush", {}, 100, "keep"), (drop, {}, "Rush", {}, 160, "drop")),
         prepared_batches=(SimpleNamespace(rows=(("keep", {}), ("drop", {}))),),
     )

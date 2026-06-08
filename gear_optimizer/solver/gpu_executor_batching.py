@@ -537,7 +537,6 @@ def execute_force_greats_response_frontier_score_batch(
             success=False,
             error="Invalid payload for FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH (expected prepared batch)",
         )
-    include_forced_counts = bool(payload.get("include_forced_counts", False))
     timing = payload.get("timing")
     if not isinstance(timing, dict):
         timing = None
@@ -554,7 +553,7 @@ def execute_force_greats_response_frontier_score_batch(
                 0.0,
                 (time.perf_counter_ns() - int(getattr(request, "submit_perf_ns", 0) or 0)) / 1_000_000_000.0,
             )
-        results = run_payload_fn(batch, include_forced_counts=bool(include_forced_counts))
+        results = run_payload_fn(batch)
         if timing is not None:
             timing["owner_exec_s"] = max(0.0, time.perf_counter() - float(exec_t0))
     except Exception as e:
