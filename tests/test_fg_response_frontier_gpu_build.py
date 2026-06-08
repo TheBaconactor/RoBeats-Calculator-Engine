@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_fg_response_first_frontier_reducer_uses_one_canonical_chunk() -> None:
@@ -164,7 +167,7 @@ def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> Non
     assert any((int(surface.fever0) & int(surface.great0)) != 0 for surface in frontier.first_frontier)
 
 
-def test_fg_response_trace_logs_closest_perfect_witness_for_selected_surface() -> None:
+def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
@@ -204,12 +207,15 @@ def test_fg_response_trace_logs_closest_perfect_witness_for_selected_surface() -
     assert trace[0]["activation_judgment"] == "perfect"
     assert trace[0]["fever_start_source"] == "perfect_window"
     assert trace[0]["fever_end_index"] == 4
-    assert 0.0 < trace[0]["activation_hit_offset_ms"] < 0.001
+    assert trace[0]["activation_hit_offset_ms"] == pytest.approx(250.0)
+    assert trace[0]["activation_hit_offset_lower_ms"] == pytest.approx(0.0002384185791015625)
+    assert trace[0]["activation_hit_offset_upper_ms"] == pytest.approx(500.0)
+    assert trace[0]["activation_hit_window_width_ms"] == pytest.approx(499.9997615814209)
 
 
-def test_fg_response_trace_witness_search_crosses_float32_left_boundary() -> None:
+def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
-        _closest_hit_time_for_exit,
+        _centered_hit_window_for_exit,
         _lower_bound_from,
     )
 
@@ -218,7 +224,7 @@ def test_fg_response_trace_witness_search_crosses_float32_left_boundary() -> Non
         dtype=np.float32,
     )
 
-    hit = _closest_hit_time_for_exit(
+    hit, lo, hi = _centered_hit_window_for_exit(
         timestamps,
         3,
         0,
@@ -230,7 +236,10 @@ def test_fg_response_trace_witness_search_crosses_float32_left_boundary() -> Non
     )
 
     assert _lower_bound_from(timestamps, hit + 58.48316925859451) == 2
-    assert 30.82 < (hit - 15.46399974822998) * 1000.0 < 30.84
+    assert _lower_bound_from(timestamps, lo + 58.48316925859451) == 2
+    assert _lower_bound_from(timestamps, hi + 58.48316925859451) == 2
+    assert lo <= hit <= hi
+    assert 20.0 < (hit - 15.46399974822998) * 1000.0 < 40.1
 
 
 def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_same_end() -> None:
@@ -302,7 +311,10 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
     assert trace[0]["activation_judgment"] == "late_great"
     assert trace[0]["fever_start_source"] == "activation_late_great"
     assert trace[0]["fever_end_index"] == 5
-    assert trace[0]["activation_hit_offset_ms"] == pytest.approx(400.00009536743164)
+    assert trace[0]["activation_hit_offset_ms"] == pytest.approx(450.0002861022949)
+    assert trace[0]["activation_hit_offset_lower_ms"] == pytest.approx(400.00009536743164)
+    assert trace[0]["activation_hit_offset_upper_ms"] == pytest.approx(500.0)
+    assert trace[0]["activation_hit_window_width_ms"] == pytest.approx(99.99966621398926)
 
 
 def test_force_greats_replay_uses_optimized_perfect_activation_edge() -> None:
@@ -408,6 +420,69 @@ def test_fg_response_numba_edge_end_does_not_let_prefix_great_carry_perfect_acti
     assert start_time == pytest.approx(2.0)
 
 
+def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_boundaries() -> None:
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+    from gear_optimizer.data.csv_parser import read_table
+    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _edge_end
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import _precompute_end_indices
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import _response_axes
+
+    calc_song = build_prepared_calc_song(
+        fp=str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt"),
+        cfg_dict={},
+    ).calc_song
+    ref_arrays = build_ref_arrays_from_stats(
+        read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")),
+        dtype=np.float64,
+    )
+    song_inputs, _raw_fill_by_ff, _non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
+    real_fever_time = float(real_time_by_ft[51])
+    real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx = _precompute_end_indices(
+        timestamps=song_inputs.timestamps,
+        perfect_candidate_timestamps=song_inputs.perfect_candidates,
+        great_candidate_timestamps=song_inputs.great_candidates,
+        real_times=np.asarray([real_fever_time], dtype=np.float64),
+    )
+    rt_idx = int(real_time_index[0])
+
+    for note_idx in range(int(song_inputs.timestamps.shape[0])):
+        timestamp_e, _timestamp_start, _timestamp_carry = _edge_end(
+            n=int(song_inputs.timestamps.shape[0]),
+            a=note_idx,
+            activation_great=False,
+            real_fever_time=real_fever_time,
+            use_forced_great_timing=False,
+            timestamps=song_inputs.timestamps,
+        )
+        perfect_e, _perfect_start, _perfect_carry = _edge_end(
+            n=int(song_inputs.timestamps.shape[0]),
+            a=note_idx,
+            activation_great=False,
+            real_fever_time=real_fever_time,
+            use_forced_great_timing=True,
+            timestamps=song_inputs.timestamps,
+            perfect_candidate_timestamps=song_inputs.perfect_candidates,
+            great_candidate_timestamps=song_inputs.great_candidates,
+        )
+        great_e, _great_start, _great_carry = _edge_end(
+            n=int(song_inputs.timestamps.shape[0]),
+            a=note_idx,
+            activation_great=True,
+            real_fever_time=real_fever_time,
+            use_forced_great_timing=True,
+            timestamps=song_inputs.timestamps,
+            perfect_candidate_timestamps=song_inputs.perfect_candidates,
+            great_candidate_timestamps=song_inputs.great_candidates,
+        )
+
+        assert int(timestamp_end_idx[rt_idx, note_idx]) == int(timestamp_e)
+        assert int(perfect_end_idx[rt_idx, note_idx]) == int(perfect_e)
+        assert int(great_end_idx[rt_idx, note_idx]) == int(great_e)
+
+    assert int(great_end_idx[rt_idx, 164]) == 842
+
+
 def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _action_table,
@@ -441,59 +516,6 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
     assert not any(int(k) == 1 and int(next_state) == 5 for k, next_state, _surface in options)
 
 
-def test_fg_response_branch_a_prunes_body_dominated_fever_great_overlap() -> None:
-    from numba.typed import List
-
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
-        _NUMBA_SURFACE_TYPE,
-        _numba_append_branch_a_body_prefix_surface,
-    )
-
-    bucket = List.empty_list(_NUMBA_SURFACE_TYPE)
-    width = 8
-    values = np.zeros((width * width,), dtype=np.int32)
-    stamps = np.zeros((width * width,), dtype=np.int32)
-
-    assert _numba_append_branch_a_body_prefix_surface(
-        bucket,
-        0,
-        np.uint64(10),
-        np.uint64(1),
-        np.uint64(0),
-        values,
-        stamps,
-        1,
-        width,
-    )
-    assert not _numba_append_branch_a_body_prefix_surface(
-        bucket,
-        0,
-        np.uint64(9),
-        np.uint64(3),
-        np.uint64(1),
-        values,
-        stamps,
-        1,
-        width,
-    )
-    assert _numba_append_branch_a_body_prefix_surface(
-        bucket,
-        0,
-        np.uint64(9),
-        np.uint64(0),
-        np.uint64(0),
-        values,
-        stamps,
-        1,
-        width,
-    )
-
-    assert list(bucket) == [
-        (0, 0, 0, 0, 10, 1, 0),
-        (0, 0, 0, 0, 9, 0, 0),
-    ]
-
-
 def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
     from numba.typed import List
 
@@ -511,6 +533,134 @@ def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
         (0, 0, 0, 0, 10, 1, 0),
         (0, 0, 0, 0, 9, 0, 0),
     ]
+
+
+def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:
+    from numba.typed import List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_SURFACE_TYPE,
+        _numba_append_branch_a_body_prefix_surface,
+        _numba_reduce,
+    )
+
+    bucket = List.empty_list(_NUMBA_SURFACE_TYPE)
+    width = 16
+    values = np.zeros((width * width,), dtype=np.int32)
+    stamps = np.zeros((width * width,), dtype=np.int32)
+
+    assert _numba_append_branch_a_body_prefix_surface(
+        bucket,
+        0,
+        np.uint64(10),
+        np.uint64(1),
+        np.uint64(0),
+        values,
+        stamps,
+        1,
+        width,
+    )
+    assert _numba_append_branch_a_body_prefix_surface(
+        bucket,
+        0,
+        np.uint64(9),
+        np.uint64(0),
+        np.uint64(0),
+        values,
+        stamps,
+        1,
+        width,
+    )
+    assert not _numba_append_branch_a_body_prefix_surface(
+        bucket,
+        1,
+        np.uint64(9),
+        np.uint64(3),
+        np.uint64(1),
+        values,
+        stamps,
+        1,
+        width,
+    )
+    assert _numba_append_branch_a_body_prefix_surface(
+        bucket,
+        1,
+        np.uint64(11),
+        np.uint64(4),
+        np.uint64(2),
+        values,
+        stamps,
+        1,
+        width,
+    )
+    assert not _numba_append_branch_a_body_prefix_surface(
+        bucket,
+        2,
+        np.uint64(11),
+        np.uint64(4),
+        np.uint64(2),
+        values,
+        stamps,
+        1,
+        width,
+    )
+
+    assert list(bucket) == [
+        (0, 0, 0, 0, 10, 1, 0),
+        (0, 0, 0, 0, 9, 0, 0),
+        (0, 0, 1, 0, 11, 4, 2),
+    ]
+    assert list(bucket) == list(_numba_reduce(bucket))
+
+
+def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+    from gear_optimizer.data.csv_parser import read_table
+    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+        build_force_greats_response_first_frontiers_gpu_batch,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        reconstruct_force_greats_response_trace,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import _response_axes
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+
+    calc_song = build_prepared_calc_song(
+        fp=str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt"),
+        cfg_dict={},
+    ).calc_song
+    ref_arrays = build_ref_arrays_from_stats(
+        read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")),
+        dtype=np.float64,
+    )
+    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
+    raw_fever_fill = float(raw_fill_by_ff[67])
+    non_fever_base = int(non_fever_base_by_ff[67])
+    real_fever_time = float(real_time_by_ft[51])
+
+    frontier = build_force_greats_response_first_frontiers_gpu_batch(
+        timestamps=song_inputs.timestamps,
+        perfect_candidate_timestamps=song_inputs.perfect_candidates,
+        great_candidate_timestamps=song_inputs.great_candidates,
+        geometries=((raw_fever_fill, non_fever_base, real_fever_time),),
+        use_forced_great_timing=song_inputs.use_forced_great_timing,
+    )[0]
+
+    previously_unwitnessable = FgResponseSurface(0, 0, 0, 0, 3, 0, 0, 0, 1256, 2, 2)
+    assert previously_unwitnessable not in frontier.first_frontier
+    assert frontier.first_frontier
+    for surface in frontier.first_frontier:
+        reconstruct_force_greats_response_trace(
+            frontier=frontier,
+            target_surface=surface,
+            timestamps=song_inputs.timestamps,
+            perfect_candidate_timestamps=song_inputs.perfect_candidates,
+            great_candidate_timestamps=song_inputs.great_candidates,
+            raw_fever_fill=raw_fever_fill,
+            real_fever_time=real_fever_time,
+            use_forced_great_timing=song_inputs.use_forced_great_timing,
+        )
 
 
 @pytest.mark.gpu
@@ -667,9 +817,23 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         use_forced_great_timing=True,
     )
     assert [row["forced_count"] for row in trace] == list(counts)
-    assert all("activation_ms" in row and "activation_hit_offset_ms" in row and "fever_end_index" in row for row in trace)
+    assert all(
+        "activation_ms" in row
+        and "activation_hit_offset_ms" in row
+        and "activation_hit_offset_lower_ms" in row
+        and "activation_hit_offset_upper_ms" in row
+        and "activation_hit_window_width_ms" in row
+        and "fever_end_index" in row
+        for row in trace
+    )
     assert all(
         row["activation_hit_offset_ms"] == pytest.approx(row["activation_hit_ms"] - row["activation_ms"])
+        for row in trace
+    )
+    assert all(
+        row["activation_hit_offset_lower_ms"]
+        <= row["activation_hit_offset_ms"]
+        <= row["activation_hit_offset_upper_ms"]
         for row in trace
     )
     state = 0

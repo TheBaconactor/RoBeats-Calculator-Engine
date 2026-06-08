@@ -135,6 +135,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
 
 def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, init_db
+    from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.pipeline import post_processor
 
@@ -144,6 +145,8 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
 
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert ref_arrays
+    calc_song = get_base_calc_song(r"Data\Hard\00 (Hard) by garlagan.txt", {})
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     force_payload = {
         "Score": 32521173,

@@ -24,6 +24,7 @@ from .fg_policy import (
     accumulate_fg_penalties,
     build_fg_result_dict,
     build_penalty_table_and_body,
+    compute_great_penalty_base,
     extract_fg_song_inputs,
     extract_song_meta,
     is_single_color_song,
@@ -176,11 +177,12 @@ def calculate_score_exact(
     fever_val_per_note = floor(base_f * combo_f * fever_f)
     body_score = (int(count_body_fever) * fever_val_per_note) + (int(count_body_normal) * combo_val_per_note)
 
-    factor = (combo_f - 1.0) * base_f / 100.0
     total_head = 0
+    combo_slope = (combo_f - 1.0) / 100.0
     for i, is_fever in enumerate(fever_mask_head):
-        ramp_val = base_f + (float(i + 1) * factor)
-        total_head += floor(ramp_val * fever_f) if bool(is_fever) else floor(ramp_val)
+        scaling = (combo_slope * float(i + 1)) + 1.0
+        perfect_value = base_f * scaling
+        total_head += floor(perfect_value * fever_f) if bool(is_fever) else floor(perfect_value)
 
     return int(body_score + total_head)
 
@@ -424,13 +426,14 @@ def _score_surface_counts_exact(
     fever_val = floor(base_value * combo_f * fever_f)
     score = (int(body_fever) * int(fever_val)) + (int(body_normal) * int(combo_val))
 
-    factor = (combo_f - 1.0) * base_value / 100.0
+    combo_slope = (combo_f - 1.0) / 100.0
     for i in range(head_len):
         word_idx = i // 32
         bit_idx = i % 32
-        ramp_val = base_value + (float(i + 1) * factor)
+        scaling = (combo_slope * float(i + 1)) + 1.0
+        perfect_value = base_value * scaling
         is_fever = ((int(words[word_idx]) >> int(bit_idx)) & 1) != 0
-        score += floor(ramp_val * fever_f) if is_fever else floor(ramp_val)
+        score += floor(perfect_value * fever_f) if is_fever else floor(perfect_value)
     return int(score)
 
 
@@ -507,11 +510,12 @@ def _score_timeline_frontier_payload_vectorized_result(
 
     words = np.asarray(payload.grid_frontier_masks_bits_pool[0, frontier_offset:frontier_limit, :4], dtype=np.uint64)
     head_len = min(max(0, int(total_notes)), 100)
-    factor = np.float64((float(combo_f) - 1.0) * float(base_value) / 100.0)
+    combo_slope = np.float64((float(combo_f) - 1.0) / 100.0)
     for i in range(head_len):
-        ramp_val = np.float64(float(base_value) + (float(i + 1) * float(factor)))
-        normal_score = np.int64(np.floor(ramp_val))
-        fever_score = np.int64(np.floor(ramp_val * fever_f))
+        scaling = np.float64((float(combo_slope) * float(i + 1)) + 1.0)
+        perfect_value = np.float64(float(base_value) * float(scaling))
+        normal_score = np.int64(np.floor(perfect_value))
+        fever_score = np.int64(np.floor(perfect_value * fever_f))
         if int(normal_score) == int(fever_score):
             scores = scores + normal_score
             continue
@@ -709,16 +713,7 @@ def score_force_greats_response_surface_exact(
     combo_val = floor(base_value * combo_f)
     fever_val = floor(base_value * combo_f * fever_f)
 
-    if bool(single_color):
-        great_head_base = (int(primary_val) * 2) + 150
-        great_raw = float(great_head_base)
-    else:
-        great_head_base = (
-            floor(float(primary_val) * (4.0 / 3.0))
-            + floor(float(secondary_val) * (2.0 / 3.0))
-            + 150
-        )
-        great_raw = (float(primary_val) * (4.0 / 3.0)) + (float(secondary_val) * (2.0 / 3.0)) + 150.0
+    great_head_base = compute_great_penalty_base(primary_val, secondary_val, single_color=bool(single_color))
 
     body_normal_great = int(body_great - body_fever_great)
     body_normal = int(body_total - body_fever)
@@ -728,8 +723,9 @@ def score_force_greats_response_surface_exact(
     score = 0
     score += int(body_fever) * int(fever_val)
     score += int(body_normal) * int(combo_val)
-    body_normal_penalty = max(0, int(combo_val) - int(floor(great_raw * combo_f)))
-    body_fever_penalty = max(0, int(fever_val) - int(floor(great_raw * combo_f * fever_f)))
+    great_base = float(great_head_base)
+    body_normal_penalty = max(0, int(combo_val) - int(floor(great_base * combo_f)))
+    body_fever_penalty = max(0, int(fever_val) - int(floor(great_base * combo_f * fever_f)))
     score -= int(body_normal_great) * int(body_normal_penalty)
     score -= int(body_fever_great) * int(body_fever_penalty)
 
@@ -745,15 +741,15 @@ def score_force_greats_response_surface_exact(
         safe_int(getattr(surface, "great2", 0), 0),
         safe_int(getattr(surface, "great3", 0), 0),
     )
-    factor = (combo_f - 1.0) * base_value / 100.0
+    combo_slope = (combo_f - 1.0) / 100.0
     for i in range(head_len):
         word_idx = i // 32
         bit_idx = i % 32
         is_fever = ((int(fever_words[word_idx]) >> int(bit_idx)) & 1) != 0
         is_great = ((int(great_words[word_idx]) >> int(bit_idx)) & 1) != 0
-        scaling = 1.0 + ((combo_f - 1.0) * float(i + 1) / 100.0)
-        ramp_val = base_value + (float(i + 1) * factor)
-        perfect_score = floor(ramp_val * fever_f) if is_fever else floor(ramp_val)
+        scaling = (combo_slope * float(i + 1)) + 1.0
+        perfect_value = base_value * scaling
+        perfect_score = floor(perfect_value * fever_f) if is_fever else floor(perfect_value)
         if is_great:
             great_score = float(great_head_base) * scaling
             great_score = floor(great_score * fever_f) if is_fever else floor(great_score)

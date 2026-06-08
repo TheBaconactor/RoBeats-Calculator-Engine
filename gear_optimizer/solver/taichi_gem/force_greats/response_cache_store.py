@@ -18,6 +18,7 @@ from .response_cache_types import (
     _BUNDLE_ARRAY_CACHE_MAX,
     _MEMORY_CACHE_MAX,
     _PAYLOAD_CACHE_MAX,
+    _SCORING_BUNDLE_ARRAY_NAMES,
     FgResponseFrontierCachePayload,
     FgResponseFrontierScoringBundle,
     _normalize_stat_key,
@@ -247,29 +248,30 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
         return None
 
 
-def _payload_disk_info_if_complete(
-    cache_key: tuple,
-    keys: Iterable[tuple[int, int]],
-) -> tuple[int, int, int] | None:
+def _npz_array_header(archive: zipfile.ZipFile, array_name: str) -> tuple[tuple[int, ...], np.dtype] | None:
+    try:
+        with archive.open(f"{array_name}.npy", mode="r") as handle:
+            version = np_format.read_magic(handle)
+            if version == (1, 0):
+                shape, _fortran_order, dtype = np_format.read_array_header_1_0(handle)
+            elif version == (2, 0):
+                shape, _fortran_order, dtype = np_format.read_array_header_2_0(handle)
+            else:
+                return None
+    except Exception:
+        return None
+    return tuple(int(dim) for dim in shape), np.dtype(dtype)
+
+
+def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) -> tuple[int, int, int] | None:
     requested = set(normalize_fg_response_stat_keys(keys))
-    path = _fg_response_disk_cache_path(cache_key)
     if not path.exists():
         return None
-    required = {
-        "version",
-        "stat_keys",
-        "frontier_ids",
-        "frontier_meta",
-        "first_offsets",
-        "first_counts",
-        "first_surface_chunk_offsets",
-        "first_surface_head_len",
-        "total_notes",
-        "long_notes",
-    }
+    required = {"version", *_SCORING_BUNDLE_ARRAY_NAMES}
     try:
         with np.load(path, allow_pickle=False) as data:
-            if not required.issubset(set(data.files)):
+            files = set(data.files)
+            if not required.issubset(files):
                 return None
             version = str(data["version"].item())
             if version != _fg_response_cache_version():
@@ -280,9 +282,26 @@ def _payload_disk_info_if_complete(
             chunk_offsets = np.asarray(data["first_surface_chunk_offsets"], dtype=np.int64).reshape(-1)
             first_offsets = np.asarray(data["first_offsets"], dtype=np.int64).reshape(-1)
             first_counts = np.asarray(data["first_counts"], dtype=np.int64).reshape(-1)
-            if int(stat_keys.shape[0]) != int(frontier_ids.shape[0]):
+            raw_fill_by_ff = np.asarray(data["raw_fill_by_ff"])
+            non_fever_base_by_ff = np.asarray(data["non_fever_base_by_ff"])
+            real_time_by_ft = np.asarray(data["real_time_by_ft"])
+            total_notes = int(np.asarray(data["total_notes"]).item())
+            long_notes = int(np.asarray(data["long_notes"]).item())
+            if int(stat_keys.ndim) != 2 or int(stat_keys.shape[1]) != 2:
+                return None
+            if int(frontier_ids.ndim) != 1 or int(stat_keys.shape[0]) != int(frontier_ids.shape[0]):
+                return None
+            if int(meta.ndim) != 2 or int(meta.shape[0]) <= 0:
                 return None
             if int(first_offsets.shape[0]) != int(meta.shape[0]) or int(first_counts.shape[0]) != int(meta.shape[0]):
+                return None
+            if int(raw_fill_by_ff.shape[0]) != TOTAL_ROWS + 1:
+                return None
+            if int(non_fever_base_by_ff.shape[0]) != TOTAL_ROWS + 1 or int(real_time_by_ft.shape[0]) != TOTAL_ROWS + 1:
+                return None
+            if total_notes < 0 or long_notes < 0 or long_notes > total_notes:
+                return None
+            if int(np.asarray(data["first_surface_head_len"]).item()) != min(total_notes, 100):
                 return None
             if int(chunk_offsets.shape[0]) < 2 or int(chunk_offsets[0]) != 0:
                 return None
@@ -290,14 +309,29 @@ def _payload_disk_info_if_complete(
                 return None
             if bool(np.any(first_offsets < 0)) or bool(np.any(first_counts <= 0)):
                 return None
-            if int(chunk_offsets[-1]) < int(np.max(first_offsets + first_counts)):
+            max_surface_end = int(np.max(first_offsets + first_counts))
+            if int(chunk_offsets[-1]) < max_surface_end:
                 return None
-            last_chunk = int(chunk_offsets.shape[0]) - 2
-            for chunk_idx in (0, last_chunk):
-                if _first_surface_pool_chunk_name(chunk_idx) not in data.files:
+            expected_files = set(required)
+            archive = data.zip
+            for chunk_idx in range(int(chunk_offsets.shape[0]) - 1):
+                start = int(chunk_offsets[int(chunk_idx)])
+                end = int(chunk_offsets[int(chunk_idx) + 1])
+                row_count = int(end - start)
+                pool_name = _first_surface_pool_chunk_name(chunk_idx)
+                coeff_name = _first_surface_head_coeff_chunk_name(chunk_idx)
+                expected_files.add(pool_name)
+                expected_files.add(coeff_name)
+                if pool_name not in files or coeff_name not in files:
                     return None
-                if _first_surface_head_coeff_chunk_name(chunk_idx) not in data.files:
+                pool_header = _npz_array_header(archive, pool_name)
+                coeff_header = _npz_array_header(archive, coeff_name)
+                if pool_header != ((row_count, 11), np.dtype(np.uint32)):
                     return None
+                if coeff_header != ((row_count, 4), np.dtype(np.uint16)):
+                    return None
+            if files != expected_files:
+                return None
             present: set[tuple[int, int]] = set()
             for idx, key_row in enumerate(stat_keys):
                 frontier_idx = int(frontier_ids[int(idx)])
@@ -307,8 +341,8 @@ def _payload_disk_info_if_complete(
             if not requested.issubset(present):
                 return None
             return (
-                int(np.asarray(data["total_notes"]).item()),
-                int(np.asarray(data["long_notes"]).item()),
+                int(total_notes),
+                int(long_notes),
                 int(len(requested)),
             )
     except Exception:
@@ -317,6 +351,21 @@ def _payload_disk_info_if_complete(
         except Exception:
             pass
         return None
+
+
+def fg_response_cache_file_is_complete(cache_file: str | Path, *, stat_keys: Iterable[tuple[int, int]]) -> bool:
+    try:
+        path = Path(cache_file)
+    except TypeError:
+        return False
+    return _payload_file_info_if_complete(path, stat_keys) is not None
+
+
+def _payload_disk_info_if_complete(
+    cache_key: tuple,
+    keys: Iterable[tuple[int, int]],
+) -> tuple[int, int, int] | None:
+    return _payload_file_info_if_complete(_fg_response_disk_cache_path(cache_key), keys)
 
 
 def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dict[str, np.ndarray]:

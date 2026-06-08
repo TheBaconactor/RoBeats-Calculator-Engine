@@ -566,15 +566,16 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
     payload = adapter._force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
+        paired_base_score=1000,
         selected_element="Rush",
         result=result,
         calc_song={"metadata": {}, "song_data": {}},
         ref_arrays={},
-        paired_base_score=1000,
         reconstruction_frontier=full_frontier,
     )
 
     assert seen["frontier"] is full_frontier
+    assert payload["BaseScore"] == 1000
     assert payload["forced_counts"] == [1, 0, 1]
     assert payload["ForceGreats"]["frontier_trace"] == [{"forced_count": 1}, {"forced_count": 0}, {"forced_count": 1}]
     assert payload["Score"] == 1230
@@ -631,13 +632,14 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     payload = adapter._force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
+        paired_base_score=1000,
         selected_element="Rush",
         result=result,
         calc_song={"metadata": {}, "song_data": {}},
         ref_arrays={},
-        paired_base_score=1000,
     )
 
+    assert payload["BaseScore"] == 1000
     assert payload["forced_counts"] == [1, 0, 1]
     assert payload["ForceGreats"]["frontier_trace"] == [{"forced_count": 1}, {"forced_count": 0}, {"forced_count": 1}]
     assert payload["Score"] == 1230
@@ -729,13 +731,14 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     payload = adapter._force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1, "Rush": 9},
+        paired_base_score=4000,
         selected_element="Rush",
         result=result,
         calc_song=calc_song,
         ref_arrays={},
-        paired_base_score=4000,
     )
 
+    assert payload["BaseScore"] == 4000
     trace = payload["ForceGreats"]["frontier_trace"]
     assert not frontier.state_frontiers
     assert payload["forced_counts"] == [int(target_option["k"])]
@@ -1220,7 +1223,7 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     assert out[0]["minis"] == ["M1"]
 
 
-def test_process_force_greats_uses_source_paired_base_for_emit_gate(monkeypatch):
+def test_process_force_greats_uses_authoritative_paired_base_for_emit_gate(monkeypatch):
     from types import SimpleNamespace
 
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
@@ -1229,7 +1232,7 @@ def test_process_force_greats_uses_source_paired_base_for_emit_gate(monkeypatch)
         adapter,
         "_force_payload_from_response_frontier",
         lambda **kwargs: {
-            "BaseScore": kwargs["paired_base_score"],
+            "BaseScore": kwargs["result"].exact_base,
             "RawBaseScore": kwargs["result"].raw_base,
             "Score": kwargs["result"].exact_fg,
         },
@@ -1240,12 +1243,12 @@ def test_process_force_greats_uses_source_paired_base_for_emit_gate(monkeypatch)
         calc_song={},
         ref_arrays={},
         variants=(),
-        pending_jobs=((keep, {}, "Rush", {}, "keep"), (drop, {}, "Rush", {}, "drop")),
+        pending_jobs=((keep, {}, "Rush", {}, 100, "keep"), (drop, {}, "Rush", {}, 160, "drop")),
         prepared_batches=(SimpleNamespace(rows=(("keep", {}), ("drop", {}))),),
     )
     results = [
-        SimpleNamespace(best_score=150, raw_base=200, exact_fg=150),
-        SimpleNamespace(best_score=150, raw_base=90, exact_fg=150),
+        SimpleNamespace(best_score=150, raw_base=200, exact_base=100, exact_fg=150),
+        SimpleNamespace(best_score=150, raw_base=90, exact_base=160, exact_fg=150),
     ]
 
     out = adapter.materialize_force_greats_response_frontier_plan_results(plan, [results])

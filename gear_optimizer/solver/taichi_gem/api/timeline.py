@@ -39,6 +39,38 @@ logger = logging.getLogger(__name__)
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
 
+_TIMELINE_FRONTIER_CACHE_ARRAY_NAMES = frozenset(
+    (
+        "version",
+        "frontier_pool_used",
+        "grid_count_body_fever",
+        "grid_count_body_normal",
+        "grid_head_len",
+        "grid_N_hn",
+        "grid_N_hf",
+        "grid_Sigma_hn",
+        "grid_Sigma_hf",
+        "grid_fever_masks_bits",
+        "grid_frontier_count",
+        "grid_frontier_offset",
+        "grid_frontier_body_fever_pool",
+        "grid_frontier_body_normal_pool",
+        "grid_frontier_masks_bits_pool",
+        "grid_sig0",
+        "grid_sig1",
+        "grid_gap",
+        "grid_fever_activations",
+        "group_n",
+        "group_count",
+        "group_starts",
+        "group_ends",
+        "group_base_t_ms",
+        "group_low_ms",
+        "group_high_ms",
+        "note_group_idx",
+    )
+)
+
 
 @ti.kernel
 def _upload_timeline_grid_slot_i32_kernel(
@@ -463,6 +495,63 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
         except Exception as e:
             logger.debug(f"timeline:_load_frontier_payload_from_disk: {e}")
         return None
+
+
+def timeline_frontier_cache_file_is_complete(cache_file: str | Path) -> bool:
+    try:
+        path = Path(cache_file)
+    except TypeError:
+        return False
+    if not path.exists():
+        return False
+    grid_shape = (TOTAL_ROWS + 1, TOTAL_ROWS + 1)
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            files = set(data.files)
+            if files != _TIMELINE_FRONTIER_CACHE_ARRAY_NAMES:
+                return False
+            version = str(data["version"].item())
+            if version != _FRONTIER_DISK_CACHE_VERSION:
+                return False
+            pool_used = int(np.asarray(data["frontier_pool_used"]).item())
+            if pool_used < 0:
+                return False
+            for name in (
+                "grid_count_body_fever",
+                "grid_count_body_normal",
+                "grid_head_len",
+                "grid_N_hn",
+                "grid_N_hf",
+                "grid_Sigma_hn",
+                "grid_Sigma_hf",
+                "grid_frontier_count",
+                "grid_frontier_offset",
+                "grid_sig0",
+                "grid_sig1",
+                "grid_gap",
+                "grid_fever_activations",
+            ):
+                if tuple(np.asarray(data[name]).shape) != grid_shape:
+                    return False
+            if tuple(np.asarray(data["grid_fever_masks_bits"]).shape) != (*grid_shape, 4):
+                return False
+            if tuple(np.asarray(data["grid_frontier_body_fever_pool"]).shape) != (pool_used,):
+                return False
+            if tuple(np.asarray(data["grid_frontier_body_normal_pool"]).shape) != (pool_used,):
+                return False
+            if tuple(np.asarray(data["grid_frontier_masks_bits_pool"]).shape) != (pool_used, 4):
+                return False
+            frontier_count = np.asarray(data["grid_frontier_count"], dtype=np.int64)
+            frontier_offset = np.asarray(data["grid_frontier_offset"], dtype=np.int64)
+            if bool(np.any(frontier_count < 0)) or bool(np.any(frontier_offset < 0)):
+                return False
+            if bool(np.any(frontier_offset + frontier_count > pool_used)):
+                return False
+            if _group_payload_from_npz(data, expected_n=None) is None:
+                return False
+    except Exception:
+        return False
+    return True
 
 
 def _get_cached_frontier_payload_with_source(

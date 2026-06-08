@@ -31,7 +31,7 @@ class FgResponseFrontierPreparedPlan:
     calc_song: dict[str, Any]
     ref_arrays: dict[str, Any]
     variants: tuple[dict[str, Any], ...]
-    pending_jobs: tuple[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], tuple[Any, ...]], ...]
+    pending_jobs: tuple[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], int, tuple[Any, ...]], ...]
     prepared_batches: tuple[FgResponseFrontierPreparedBatch, ...]
 
 
@@ -104,15 +104,31 @@ def _base_stats_for_response_frontier(eval_data: dict[str, Any], *, selected: st
     return dict(base_stats)
 
 
+def _paired_base_score_from_entry(entry: dict[str, Any], eval_data: dict[str, Any]) -> int:
+    for value in (
+        entry.get("fg_base_score"),
+        entry.get("base_score"),
+        entry.get("score"),
+        eval_data.get("fg_base_score"),
+        eval_data.get("BaseScore"),
+        eval_data.get("base_score"),
+        eval_data.get("score"),
+    ):
+        score = safe_int(value, 0)
+        if score > 0:
+            return int(score)
+    raise ValueError("ForceGreats response frontier candidate is missing paired source base score.")
+
+
 def _force_payload_from_response_frontier(
     *,
     eval_data: dict[str, Any],
     base_stats: dict[str, Any],
+    paired_base_score: int,
     selected_element: str,
     result: FgResponseFrontierSolveResult,
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
-    paired_base_score: int,
     reconstruction_frontier=None,
 ) -> dict[str, Any]:
     frontier = reconstruction_frontier or result.frontier
@@ -137,7 +153,7 @@ def _force_payload_from_response_frontier(
     config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
     paired_base = safe_int(paired_base_score, 0)
     if paired_base <= 0:
-        raise ValueError("ForceGreats response frontier requires a positive source paired base score.")
+        raise ValueError("ForceGreats response frontier is missing paired source base score.")
     final_score_obj = score_force_greats_response_surface_exact(result.stats, calc_song, ref_arrays, result.surface)
     if final_score_obj is None:
         raise ValueError("ForceGreats response frontier exact surface replay failed")
@@ -193,7 +209,7 @@ def _prepare_force_greats_response_frontier_plan_from_items(
         raise ValueError("ForceGreats response frontier requires a song with at least one note")
 
     variants: list[dict[str, Any]] = []
-    pending_jobs: list[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], tuple[Any, ...]]] = []
+    pending_jobs: list[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], int, tuple[Any, ...]]] = []
     pending_by_selected: dict[str, list[tuple[tuple[Any, ...], dict[str, Any]]]] = {}
     pending_keys: set[tuple[Any, ...]] = set()
     for _key, entry in entry_items:
@@ -204,11 +220,12 @@ def _prepare_force_greats_response_frontier_plan_from_items(
             raise ValueError("ForceGreats response frontier entry is missing eval data.")
         selected = expected_selected_element(entry, str(meta_primary_color or ""))
         base_stats = _base_stats_for_response_frontier(eval_data, selected=selected)
+        paired_base_score = _paired_base_score_from_entry(entry, eval_data)
         cache_key = (
             str(selected or ""),
             tuple(sorted((str(key), safe_int(value, 0)) for key, value in base_stats.items())),
         )
-        pending_jobs.append((entry, eval_data, selected, base_stats, cache_key))
+        pending_jobs.append((entry, eval_data, selected, base_stats, int(paired_base_score), cache_key))
         if cache_key not in pending_keys:
             pending_keys.add(cache_key)
             pending_by_selected.setdefault(str(selected or ""), []).append((cache_key, base_stats))
@@ -275,7 +292,7 @@ def materialize_force_greats_response_frontier_plan_results(
             result_cache[cache_key] = result
 
     pending_variants: list[dict[str, Any]] = []
-    for entry, eval_data, selected, base_stats, cache_key in plan.pending_jobs:
+    for entry, eval_data, selected, base_stats, paired_base_score, cache_key in plan.pending_jobs:
         result = result_cache.get(cache_key)
         if result is None:
             raise ValueError("ForceGreats response frontier batch missed a candidate result")
@@ -286,6 +303,7 @@ def materialize_force_greats_response_frontier_plan_results(
                 "eval_data": eval_data,
                 "selected": selected,
                 "base_stats": base_stats,
+                "paired_base_score": int(paired_base_score),
                 "result": result,
                 "gear": gear_names,
                 "minis": mini_names,
@@ -302,11 +320,11 @@ def materialize_force_greats_response_frontier_plan_results(
         payload = _force_payload_from_response_frontier(
             eval_data=item["eval_data"],
             base_stats=item["base_stats"],
+            paired_base_score=int(item["paired_base_score"]),
             selected_element=item["selected"],
             result=result,
             calc_song=calc_song,
             ref_arrays=ref_arrays,
-            paired_base_score=safe_int(item["entry"].get("base_score"), 0),
         )
 
         entry = item["entry"]

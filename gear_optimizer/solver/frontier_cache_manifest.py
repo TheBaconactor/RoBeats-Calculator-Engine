@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 _SCHEMA = 1
@@ -113,6 +113,7 @@ def build_manifest_plan(
     version_field: str,
     ref_sig_hex: str,
     stat_sig_hex: str | None = None,
+    cache_file_validator: Callable[[str], bool] | None = None,
 ) -> FrontierCacheManifestPlan:
     paths = [str(path) for path in list(song_paths or []) if str(path or "").strip()]
     if not paths:
@@ -138,7 +139,14 @@ def build_manifest_plan(
         )
         key_by_norm[normalize_manifest_path(abs_path)] = key
         cache_file = str((entries.get(key) or {}).get("cache_file", "") or "").strip()
-        if cache_file and os.path.exists(cache_file):
+        cache_hit = bool(cache_file and os.path.exists(cache_file))
+        if cache_hit and cache_file_validator is not None:
+            try:
+                cache_hit = bool(cache_file_validator(cache_file))
+            except Exception as exc:
+                logger.debug("frontier_cache_manifest:cache_file_validator: %s", exc)
+                cache_hit = False
+        if cache_hit:
             hits.append(song_path)
         else:
             misses.append(song_path)

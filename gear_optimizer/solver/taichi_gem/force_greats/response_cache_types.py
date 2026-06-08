@@ -11,7 +11,7 @@ from gear_optimizer.core.constants import TOTAL_ROWS
 
 from .response_types import FgResponseFrontierResult
 
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v11"
+_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v12"
 _MEMORY_CACHE_MAX = 4096
 _PAYLOAD_CACHE_MAX = 8
 _BUNDLE_ARRAY_CACHE_MAX = 2

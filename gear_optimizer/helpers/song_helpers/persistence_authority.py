@@ -135,6 +135,21 @@ def _canonical_force_payload(
     return out
 
 
+def _source_paired_base_score(entry: Mapping[str, Any], force_obj: Mapping[str, Any]) -> int:
+    for value in (
+        entry.get("fg_base_score"),
+        force_obj.get("BaseScore"),
+        force_obj.get("base_score"),
+    ):
+        try:
+            score = int(value or 0)
+        except (TypeError, ValueError):
+            score = 0
+        if score > 0:
+            return int(score)
+    return 0
+
+
 def _replay_force_payload(
     force_obj: Mapping[str, Any],
     *,
@@ -157,16 +172,6 @@ def _replay_force_payload(
     if not isinstance(fg_eval, dict):
         raise ValueError("Authoritative FG persistence could not replay ForceGreats.")
     return fg_eval
-
-
-def _source_fg_base_score(entry: Mapping[str, Any], force_obj: Mapping[str, Any]) -> int:
-    for source, field in ((entry, "fg_base_score"), (force_obj, "BaseScore"), (entry, "score")):
-        if field not in source:
-            continue
-        value = _to_int(source.get(field), field=field)
-        if value > 0:
-            return int(value)
-    raise ValueError("Authoritative FG persistence requires a positive source paired base score.")
 
 
 def assert_authoritative_fg_entry(
@@ -238,7 +243,9 @@ def canonicalize_authoritative_fg_entry(
 
     force_normalized = normalize_force_payload(force_obj)
     stats = _force_stats(force_normalized)
-    fg_base_score = _source_fg_base_score(out, force_normalized)
+    fg_base_score = _source_paired_base_score(out, force_normalized)
+    if fg_base_score <= 0:
+        raise ValueError("Authoritative FG persistence is missing paired source base score.")
     config = extract_fg_config(force_normalized)
     counts = _config_counts(config)
     if not counts or sum(int(value) for value in counts) <= 0:

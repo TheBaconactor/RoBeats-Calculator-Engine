@@ -105,13 +105,20 @@ def _stat_keys_signature(stat_keys: Iterable[tuple[int, int]]) -> str:
 
 
 def _build_manifest_plan(song_paths: Iterable[str], ref_arrays: dict, *, stat_keys: Iterable[tuple[int, int]]):
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import fg_response_cache_file_is_complete
+
+    stat_keys_tuple = tuple(stat_keys or ())
     return _shared_build_manifest_plan(
         song_paths,
         manifest_path=_manifest_path(),
         cache_version=_cache_version(),
         version_field="cache_version",
         ref_sig_hex=_ref_axes_signature(ref_arrays),
-        stat_sig_hex=_stat_keys_signature(stat_keys),
+        stat_sig_hex=_stat_keys_signature(stat_keys_tuple),
+        cache_file_validator=lambda cache_file: fg_response_cache_file_is_complete(
+            cache_file,
+            stat_keys=stat_keys_tuple,
+        ),
     )
 
 

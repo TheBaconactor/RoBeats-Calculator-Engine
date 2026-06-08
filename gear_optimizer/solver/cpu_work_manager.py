@@ -47,7 +47,6 @@ def run_startup_cpu_work(
     data_root,
     announce_stream: TextIO | None = None,
 ) -> None:
-    t0 = time.perf_counter()
     message = "[Startup][Cache] Building and caching exact timeline + FG response frontiers before scoring..."
     stream = announce_stream or sys.stdout
     emit_profile_event(
@@ -56,19 +55,22 @@ def run_startup_cpu_work(
         metrics={"phase": "frontier_caches"},
     )
     queue_items = list(song_queue or [])
+    timeline_t0 = time.perf_counter()
     timeline_summary = run_timeline_frontier_cache_prebuild(
         cfg=cfg,
         song_queue=queue_items,
         ref_arrays=ref_arrays,
         data_root=data_root,
     )
+    timeline_elapsed_ms = float((time.perf_counter() - timeline_t0) * 1000.0)
+    fg_t0 = time.perf_counter()
     fg_summary = run_fg_response_frontier_cache_prebuild(
         cfg=cfg,
         song_queue=queue_items,
         ref_arrays=ref_arrays,
         data_root=data_root,
     )
-    elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
+    fg_elapsed_ms = float((time.perf_counter() - fg_t0) * 1000.0)
     timeline_failures = int(timeline_summary.failures)
     fg_failures = int(fg_summary.failures)
     should_announce = bool(
@@ -85,13 +87,13 @@ def run_startup_cpu_work(
         phase="timeline_frontier_cache",
         label="Timeline frontier cache",
         summary=timeline_summary,
-        elapsed_ms=elapsed_ms,
+        elapsed_ms=timeline_elapsed_ms,
     )
     _emit_summary(
         phase="fg_response_frontier_cache",
         label="FG response-frontier cache",
         summary=fg_summary,
-        elapsed_ms=elapsed_ms,
+        elapsed_ms=fg_elapsed_ms,
     )
     if timeline_failures or fg_failures:
         raise RuntimeError(

@@ -103,6 +103,46 @@ def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeyp
     assert stream.getvalue().count("[Startup][Cache]") == 1
 
 
+def test_cpu_work_manager_reports_individual_phase_elapsed(monkeypatch) -> None:
+    from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
+    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
+
+    events: list[tuple[str, dict]] = []
+    perf_values = iter((100.0, 100.25, 200.0, 200.75))
+
+    monkeypatch.setattr(cpu_work_manager.time, "perf_counter", lambda: next(perf_values))
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "emit_profile_event",
+        lambda *, component, event, metrics: events.append((event, dict(metrics))),
+    )
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "run_timeline_frontier_cache_prebuild",
+        lambda **_kwargs: TimelineFrontierCachePrebuildSummary(total=1, completed=1, built=1),
+    )
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "run_fg_response_frontier_cache_prebuild",
+        lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=1),
+    )
+
+    cpu_work_manager.run_startup_cpu_work(
+        cfg=object(),
+        song_queue=[("Data/Easy/Fake.txt",)],
+        ref_arrays={},
+        data_root="Data",
+    )
+
+    done_metrics = [metrics for event, metrics in events if event == "startup_cpu_work_done"]
+    elapsed_by_phase = {str(metrics["phase"]): float(metrics["elapsed_ms"]) for metrics in done_metrics}
+    assert elapsed_by_phase == {
+        "timeline_frontier_cache": 250.0,
+        "fg_response_frontier_cache": 750.0,
+    }
+
+
 def test_startup_frontier_cache_prebuild_has_no_scope_or_disable_flags() -> None:
     forbidden = (
         "TimelineFrontierCachePrebuildScope",
@@ -217,3 +257,50 @@ def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> 
 
     assert result.source == "built"
     assert result.build_ms == 12.5
+
+
+def test_fg_response_manifest_treats_incomplete_cache_file_as_miss(monkeypatch, tmp_path: Path) -> None:
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+
+    cache_dir = tmp_path / "cache"
+    song_path = tmp_path / "Song.txt"
+    cache_path = tmp_path / "broken.npz"
+    song_path.write_text("fake", encoding="utf-8")
+    cache_path.write_text("not a complete npz", encoding="utf-8")
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(cache_dir))
+    ref_arrays = {"Fever Time": [1.0] * 161, "Fever Fill Rate": [1.0] * 161}
+    stat_keys = ((0, 0),)
+
+    plan = prebuild._build_manifest_plan([str(song_path)], ref_arrays, stat_keys=stat_keys)
+    prebuild._apply_manifest_results(
+        plan=plan,
+        results=[SimpleNamespace(path=str(song_path), source="disk", cache_file=str(cache_path))],
+    )
+
+    second_plan = prebuild._build_manifest_plan([str(song_path)], ref_arrays, stat_keys=stat_keys)
+
+    assert second_plan.hit_paths == ()
+    assert second_plan.missing_paths == (str(song_path),)
+
+
+def test_timeline_manifest_treats_incomplete_cache_file_as_miss(monkeypatch, tmp_path: Path) -> None:
+    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
+
+    cache_dir = tmp_path / "cache"
+    song_path = tmp_path / "Song.txt"
+    cache_path = tmp_path / "broken.npz"
+    song_path.write_text("fake", encoding="utf-8")
+    cache_path.write_text("not a complete npz", encoding="utf-8")
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(cache_dir))
+    ref_arrays = {"Fever Time": [1.0] * 161, "Fever Fill Rate": [1.0] * 161}
+
+    plan = prebuild._build_manifest_plan([str(song_path)], ref_arrays)
+    prebuild._apply_manifest_results(
+        plan=plan,
+        results=[SimpleNamespace(path=str(song_path), source="disk", cache_file=str(cache_path))],
+    )
+
+    second_plan = prebuild._build_manifest_plan([str(song_path)], ref_arrays)
+
+    assert second_plan.hit_paths == ()
+    assert second_plan.missing_paths == (str(song_path),)

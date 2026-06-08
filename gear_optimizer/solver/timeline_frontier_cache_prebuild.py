@@ -112,12 +112,15 @@ def _ref_axes_signature(ref_arrays: dict) -> str:
 
 
 def _build_manifest_plan(song_paths: Iterable[str], ref_arrays: dict):
+    from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_cache_file_is_complete
+
     return _shared_build_manifest_plan(
         song_paths,
         manifest_path=_manifest_path(),
         cache_version=_cache_version(),
         version_field="frontier_version",
         ref_sig_hex=_ref_axes_signature(ref_arrays),
+        cache_file_validator=timeline_frontier_cache_file_is_complete,
     )
 
 

@@ -69,6 +69,35 @@ def _write_song(path: Path, *, extra_tail: str = "") -> None:
     )
 
 
+def _remove_npz_array(path: Path, array_name: str) -> None:
+    import zipfile
+
+    tmp = path.with_name(f"{path.stem}.rewrite.npz")
+    drop_name = f"{array_name}.npy"
+    with zipfile.ZipFile(path, mode="r") as source:
+        with zipfile.ZipFile(tmp, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as target:
+            for member in source.infolist():
+                if member.filename == drop_name:
+                    continue
+                target.writestr(member, source.read(member.filename))
+    tmp.replace(path)
+
+
+def _add_npz_array(path: Path, array_name: str, array: np.ndarray) -> None:
+    import io
+    import zipfile
+
+    tmp = path.with_name(f"{path.stem}.rewrite.npz")
+    buffer = io.BytesIO()
+    np.save(buffer, np.asarray(array), allow_pickle=False)
+    with zipfile.ZipFile(path, mode="r") as source:
+        with zipfile.ZipFile(tmp, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as target:
+            for member in source.infolist():
+                target.writestr(member, source.read(member.filename))
+            target.writestr(f"{array_name}.npy", buffer.getvalue())
+    tmp.replace(path)
+
+
 def test_fg_response_frontier_payload_roundtrips_disk_cache(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
@@ -228,6 +257,54 @@ def test_fg_response_frontier_surface_chunk_loader_reads_requested_ranges(tmp_pa
     assert coeffs.dtype == np.dtype("int32")
 
 
+@pytest.mark.parametrize("cache_mutation", ("missing_core_array", "missing_surface_chunk", "extra_stale_array"))
+def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
+    tmp_path: Path,
+    monkeypatch,
+    cache_mutation: str,
+) -> None:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
+        _fg_response_disk_cache_path,
+        _payload_disk_info_if_complete,
+        _save_payload,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult, FgResponseSurface
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(response_cache_store, "_FIRST_SURFACE_CHUNK_ROWS", 1)
+    surfaces = (
+        FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0),
+        FgResponseSurface(2, 0, 0, 0, 0, 0, 0, 0, 20, 1, 0),
+        FgResponseSurface(3, 0, 0, 0, 0, 0, 0, 0, 30, 2, 1),
+    )
+    payload = FgResponseFrontierCachePayload(
+        frontier_by_key={(0, 0): FgResponseFrontierResult(surfaces, {}, 1, 2, 3, 4, 5, 6, 7, 0.0)},
+        raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
+        non_fever_base_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.int32),
+        real_time_by_ft=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
+        total_notes=3,
+        long_notes=0,
+        use_forced_great_timing=True,
+    )
+    cache_key = ("unit", "non-exact-bundle", cache_mutation)
+
+    _save_payload(cache_key, payload)
+    cache_path = _fg_response_disk_cache_path(cache_key)
+    if cache_mutation == "missing_core_array":
+        _remove_npz_array(cache_path, "raw_fill_by_ff")
+    elif cache_mutation == "missing_surface_chunk":
+        _remove_npz_array(cache_path, "first_surface_pool_chunk_00001")
+    elif cache_mutation == "extra_stale_array":
+        _add_npz_array(cache_path, "obsolete_array", np.asarray([1], dtype=np.int32))
+    else:
+        raise AssertionError(f"Unhandled cache mutation: {cache_mutation}")
+
+    assert _payload_disk_info_if_complete(cache_key, ((0, 0),)) is None
+
+
 def test_fg_response_frontier_scoring_bundle_does_not_unpack_payload_on_disk_hit(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -326,12 +403,11 @@ def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_
     assert int(bundle.surface_chunk_offsets[-1]) > 0
 
 
-def test_fg_response_frontier_scoring_bundle_requires_startup_built_cache(tmp_path: Path, monkeypatch) -> None:
+def test_fg_response_frontier_scoring_bundle_requires_startup_cache(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache.reset_fg_response_frontier_payload_cache()
-    monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: ((0, 0),))
 
     with pytest.raises(ValueError, match="Startup cache prebuild must build"):
         response_cache.load_response_frontier_scoring_bundle(
@@ -339,7 +415,7 @@ def test_fg_response_frontier_scoring_bundle_requires_startup_built_cache(tmp_pa
             _varying_ref_arrays(),
             stat_keys=((0, 0),),
         )
-    assert list(tmp_path.glob("*.npz")) == []
+    assert not list(tmp_path.glob("*.npz"))
 
 
 def test_fg_response_frontier_scoring_bundle_rejects_partial_runtime_cache(
@@ -349,7 +425,6 @@ def test_fg_response_frontier_scoring_bundle_rejects_partial_runtime_cache(
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache.reset_fg_response_frontier_payload_cache()
-    monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: ((0, 0), (3, 3)))
 
     response_cache.build_or_load_response_frontier_payload(
         _calc_song(),
@@ -358,7 +433,7 @@ def test_fg_response_frontier_scoring_bundle_rejects_partial_runtime_cache(
     )
     response_cache.reset_fg_response_frontier_payload_cache()
 
-    with pytest.raises(ValueError, match="does not cover requested stat keys"):
+    with pytest.raises(ValueError, match="all-FT/FF bundle"):
         response_cache.load_response_frontier_scoring_bundle(
             _calc_song(),
             _varying_ref_arrays(),
@@ -787,7 +862,7 @@ def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     assert offenders == []
 
 
-def test_fg_response_prebuild_balances_worker_count_and_reducer_width(monkeypatch) -> None:
+def test_fg_response_prebuild_uses_full_reducer_width_per_worker(monkeypatch) -> None:
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
     seen: dict[str, object] = {}
@@ -822,7 +897,6 @@ def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -
     canonical_keys = ((0, 0), (1, 1))
     bundle = object()
     seen: dict[str, object] = {}
-
     monkeypatch.setattr(response_ftff_prune, "warmup_response_ftff_prune", lambda: None)
     monkeypatch.setattr(response_frontier, "warmup_response_frontier_group_builder", lambda: None)
     monkeypatch.setattr(pipeline, "resolve_active_fg_calc_song", lambda _song: calc_song)

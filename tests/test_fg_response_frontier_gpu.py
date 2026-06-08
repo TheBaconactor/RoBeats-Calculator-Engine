@@ -242,6 +242,50 @@ def test_response_frontier_gpu_preserves_exact_best_on_high_surface_mixed_colors
     )
 
 
+def test_response_frontier_gpu_inner_matches_exact_replay_on_combo_floor_boundary():
+    from pathlib import Path
+
+    from gear_optimizer.data.csv_parser import read_table
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+    from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
+    from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu
+
+    refs = build_ref_arrays_from_stats(
+        read_table(str(Path.cwd() / "Data" / "Gear" / "Stats.txt")),
+        dtype=np.float64,
+    )
+    surface = FgResponseSurface(0, 0, 0, 0, 255, 0, 0, 0, 1255, 2, 2)
+    stats = {
+        "Perfect Points": 80,
+        "Combo Multiplier": 80,
+        "Fever Multiplier": 80,
+        "Fever Time": 51,
+        "Fever Fill Rate": 67,
+        "Beat": 80,
+        "Vibe": 80,
+    }
+    calc_song = {
+        "metadata": {"Primary Color": "Beat", "Secondary Color": "Vibe", "Long Notes": 0, "Last Note Time": 1585.0},
+        "song_data": {"timestamps": tuple(range(1586)), "fg_timestamps": tuple(range(1586))},
+    }
+
+    gpu = optimize_response_frontier_inner_exact_gpu(
+        (surface,),
+        total_notes=1586,
+        residual_budget=0,
+        stats_after_ftff=stats,
+        primary_color="Beat",
+        secondary_color="Vibe",
+        selected_color="Beat",
+        ref_arrays=refs,
+    )
+    exact = score_force_greats_response_surface_exact(stats, calc_song, refs, surface)
+
+    assert gpu.best_score == exact == 12345033
+    assert (gpu.surface_index, gpu.g_pp, gpu.g_cm, gpu.g_fm, gpu.g_ov) == (0, 0, 0, 0, 0)
+
+
 def _strip_trailing_zero_counts(counts):
     out = tuple(int(v) for v in counts)
     while out and out[-1] == 0:

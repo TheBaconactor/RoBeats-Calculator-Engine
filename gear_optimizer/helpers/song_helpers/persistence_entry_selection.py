@@ -53,14 +53,16 @@ def add_best_fg_entry(best_fg: dict | None, loadout_entries: dict | None, append
     best_fg_minis = best_fg.get("minis", [])
     best_fg_details = best_fg.get("details", {})
     best_fg_force = best_fg.get("force") if isinstance(best_fg.get("force"), dict) else None
+    base_score = _resolve_best_fg_base_score(best_fg, loadout_entries)
 
     append_entry(
-        _resolve_best_fg_base_score(best_fg, loadout_entries),
+        base_score,
         best_fg_gear,
         best_fg_minis,
         best_fg_details,
         best_fg.get("score", 0),
         best_fg_force,
+        fg_base_score_val=base_score,
     )
 
 

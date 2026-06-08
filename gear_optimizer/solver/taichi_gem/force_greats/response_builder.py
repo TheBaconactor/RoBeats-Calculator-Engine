@@ -166,10 +166,10 @@ def _trace_timing_fields(
     }
 
 
-def _closest_hit_time_for_exit(
+def _centered_hit_window_for_exit(
     timestamps: np.ndarray, n: int, activation_idx: int, chart_time: float,
     legal_lo: float, legal_hi: float, real_fever_time: float, target_end_idx: int,
-) -> float:
+) -> tuple[float, float, float]:
     target = max(0, min(int(target_end_idx), int(n)))
     lo = float(legal_lo)
     hi = float(legal_hi)
@@ -236,34 +236,41 @@ def _closest_hit_time_for_exit(
                 hi_order = int(mid) - 1
         return found
 
-    chart = float(chart_time)
-    hit = min(max(chart, lo), hi)
-    start_idx = _exit_idx(hit)
-    if int(start_idx) == int(target):
-        return float(hit)
-
     min_order = _float32_order(_ceil_hit(lo))
     max_order = _float32_order(_floor_hit(hi))
     if min_order > max_order:
-        raise ValueError("could not choose a closest-to-zero FG trace witness without changing the response surface")
+        raise ValueError("could not choose a centered FG trace witness without changing the response surface")
 
-    if int(start_idx) < int(target):
-        if _exit_idx(hi) < int(target):
-            raise ValueError("could not choose a closest-to-zero FG trace witness without changing the response surface")
-        start_order = max(min_order, _float32_order(_ceil_hit(hit)))
-        candidate_order = _first_order_with_exit_at_least(start_order, max_order, int(target))
-        candidate = None if candidate_order is None else _hit_from_order(int(candidate_order))
-        if candidate is not None and _exit_idx(candidate) == int(target):
-            return float(candidate)
-    else:
-        if _exit_idx(lo) > int(target):
-            raise ValueError("could not choose a closest-to-zero FG trace witness without changing the response surface")
-        start_order = min(max_order, _float32_order(_floor_hit(hit)))
-        candidate_order = _last_order_with_exit_at_most(min_order, start_order, int(target))
-        candidate = None if candidate_order is None else _hit_from_order(int(candidate_order))
-        if candidate is not None and _exit_idx(candidate) == int(target):
-            return float(candidate)
-    raise ValueError("closest-to-zero FG trace witness changed the response surface")
+    first_order = _first_order_with_exit_at_least(min_order, max_order, int(target))
+    last_order = _last_order_with_exit_at_most(min_order, max_order, int(target))
+    if first_order is None or last_order is None or int(first_order) > int(last_order):
+        raise ValueError("could not choose a centered FG trace witness without changing the response surface")
+
+    first_hit = _hit_from_order(int(first_order))
+    last_hit = _hit_from_order(int(last_order))
+    midpoint = float(np.float32((float(first_hit) + float(last_hit)) * 0.5))
+    midpoint_order = min(max(_float32_order(midpoint), int(first_order)), int(last_order))
+    midpoint_hit = _hit_from_order(int(midpoint_order))
+    if _exit_idx(midpoint_hit) == int(target):
+        return float(midpoint_hit), float(first_hit), float(last_hit)
+
+    candidate_order = (int(first_order) + int(last_order)) // 2
+    candidate = _hit_from_order(int(candidate_order))
+    if _exit_idx(candidate) == int(target):
+        return float(candidate), float(first_hit), float(last_hit)
+    raise ValueError("centered FG trace witness changed the response surface")
+
+
+def _hit_window_fields(*, hit: float, lo: float, hi: float, chart_time: float) -> dict[str, float]:
+    return {
+        "activation_hit_ms": float(hit) * 1000.0,
+        "activation_hit_offset_ms": (float(hit) - float(chart_time)) * 1000.0,
+        "activation_hit_window_lower_ms": float(lo) * 1000.0,
+        "activation_hit_window_upper_ms": float(hi) * 1000.0,
+        "activation_hit_offset_lower_ms": (float(lo) - float(chart_time)) * 1000.0,
+        "activation_hit_offset_upper_ms": (float(hi) - float(chart_time)) * 1000.0,
+        "activation_hit_window_width_ms": max(0.0, (float(hi) - float(lo)) * 1000.0),
+    }
 
 
 def _edge_surface_options(
@@ -398,7 +405,7 @@ def _edge_surface_option_details(
         )
         if fill != prev_fill or (start_time != prev_start_time and e != prev_e):
             chart_time = float(timestamps[int(a)])
-            closest_start_time = _closest_hit_time_for_exit(
+            centered_start_time, hit_lo, hit_hi = _centered_hit_window_for_exit(
                 timestamps, int(n), int(a), float(chart_time),
                 min(float(chart_time), float(perfect_ts[int(a)])),
                 max(float(chart_time), float(perfect_ts[int(a)])),
@@ -411,16 +418,20 @@ def _edge_surface_option_details(
                     "next_state": int(e),
                     "activation_index": int(a),
                     "activation_ms": float(chart_time) * 1000.0,
-                    "activation_hit_ms": float(closest_start_time) * 1000.0,
-                    "activation_hit_offset_ms": (float(closest_start_time) - float(chart_time)) * 1000.0,
                     "activation_judgment": "perfect",
+                    **_hit_window_fields(
+                        hit=float(centered_start_time),
+                        lo=float(hit_lo),
+                        hi=float(hit_hi),
+                        chart_time=float(chart_time),
+                    ),
                     "forced_start_index": int(forced_start),
                     "forced_prefix_count": int(forced_applied),
                     "fever_end_index": int(e),
                     "fever_end_ms": None if int(e) >= int(n) else float(timestamps[int(e)]) * 1000.0,
                     **_trace_timing_fields(
                         carry_idx=int(carry_idx),
-                        start_time=float(closest_start_time),
+                        start_time=float(centered_start_time),
                         chart_time=float(chart_time),
                         activation_idx=int(a),
                         activation_great=False,
@@ -450,7 +461,7 @@ def _edge_surface_option_details(
                 chart_time = float(timestamps[int(a)])
                 great_hi = float(great_ts[int(a)])
                 late_lo = float(np.float32(np.float32(perfect_ts[int(a)]) + np.float32(0.001)))
-                closest_activation_start_time = _closest_hit_time_for_exit(
+                centered_activation_start_time, hit_lo, hit_hi = _centered_hit_window_for_exit(
                     timestamps, int(n), int(a), float(chart_time),
                     float(late_lo), float(great_hi), float(real_fever_time), int(activation_e),
                 )
@@ -468,10 +479,13 @@ def _edge_surface_option_details(
                         "next_state": int(activation_e),
                         "activation_index": int(a),
                         "activation_ms": float(chart_time) * 1000.0,
-                        "activation_hit_ms": float(closest_activation_start_time) * 1000.0,
-                        "activation_hit_offset_ms": (float(closest_activation_start_time) - float(chart_time))
-                        * 1000.0,
                         "activation_judgment": "late_great",
+                        **_hit_window_fields(
+                            hit=float(centered_activation_start_time),
+                            lo=float(hit_lo),
+                            hi=float(hit_hi),
+                            chart_time=float(chart_time),
+                        ),
                         "forced_start_index": int(forced_start),
                         "forced_prefix_count": int(prefix_forced),
                         "fever_end_index": int(activation_e),
@@ -480,7 +494,7 @@ def _edge_surface_option_details(
                         else float(timestamps[int(activation_e)]) * 1000.0,
                         **_trace_timing_fields(
                             carry_idx=int(activation_carry_idx),
-                            start_time=float(closest_activation_start_time),
+                            start_time=float(centered_activation_start_time),
                             chart_time=float(chart_time),
                             activation_idx=int(a),
                             activation_great=True,

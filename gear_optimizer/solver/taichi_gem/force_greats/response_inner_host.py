@@ -11,6 +11,7 @@ from gear_optimizer.core.constants import (
     MAX_STAT_INDEX,
 )
 from gear_optimizer.core.jit_setup import jit
+from gear_optimizer.helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from gear_optimizer.solver.taichi_gem import api as gem_api
 from gear_optimizer.solver.scoring.fg_policy import is_single_color_song
 
@@ -36,6 +37,13 @@ _U16_HEAD_POS_SUM = np.ascontiguousarray(
 del _U16_HEAD_BITS
 _SURFACE_HEAD_COEFF_CACHE: OrderedDict[tuple[int, int, tuple[int, ...], tuple[int, ...]], np.ndarray] = OrderedDict()
 _SURFACE_HEAD_COEFF_CACHE_LOCK = threading.RLock()
+_EXACT_REPLAY_REF_NAMES = (
+    "Perfect Points",
+    "Combo Multiplier",
+    "Fever Multiplier",
+    "Fever Fill Rate",
+    "Fever Time",
+)
 
 
 def _color_flags(primary_color: str, secondary_color: str, selected_color: str) -> tuple[int, ...]:
@@ -64,6 +72,12 @@ def _validate_surface(surface: FgResponseSurface, *, body_total: int) -> None:
         raise ValueError("FG response surface body Fever-Great count exceeds its parent counts")
     if int(surface.body_fever) + int(surface.body_great) - int(surface.body_fever_great) > int(body_total):
         raise ValueError("FG response surface body categories exceed song body note count")
+
+
+def _response_inner_score_ref_arrays(ref_arrays: dict[str, Any]) -> dict[str, Any]:
+    if not all(name in ref_arrays for name in _EXACT_REPLAY_REF_NAMES):
+        return ref_arrays
+    return resolve_exact_replay_ref_arrays(ref_arrays)
 
 
 @jit(nopython=True, cache=True)
@@ -396,9 +410,10 @@ def _score_response_group_meta_gpu(
 
     gem_api.ensure_ready()
     flags = np.ascontiguousarray(np.asarray(_color_flags(primary_color, secondary_color, selected_color), dtype=np.int32))
-    ref_pp = np.ascontiguousarray(np.asarray(ref_arrays["Perfect Points"], dtype=np.float32))
-    ref_cm = np.ascontiguousarray(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32))
-    ref_fm = np.ascontiguousarray(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32))
+    exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
+    ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=np.float64))
+    ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=np.float64))
+    ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=np.float64))
     surface_words_all = np.ascontiguousarray(surface_words, dtype=np.uint32)
     surface_counts_all = np.ascontiguousarray(surface_counts, dtype=np.int32)
     group_meta_all = np.ascontiguousarray(group_meta, dtype=np.int32)
@@ -661,9 +676,10 @@ def _optimize_response_surfaces_gpu(
     flags_tuple = _color_flags(primary_color, secondary_color, selected_color)
     allow_pp = bool(int(flags_tuple[0]) != 0 or int(flags_tuple[1]) != 0)
     flags = np.ascontiguousarray(np.asarray(flags_tuple, dtype=np.int32))
-    ref_pp = np.ascontiguousarray(np.asarray(ref_arrays["Perfect Points"], dtype=np.float32))
-    ref_cm = np.ascontiguousarray(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32))
-    ref_fm = np.ascontiguousarray(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32))
+    exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
+    ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=np.float64))
+    ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=np.float64))
+    ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=np.float64))
     out_rows = np.zeros((len(groups), 11), dtype=np.int32)
     _fg_response_inner_group_kernel(
         int(len(groups)),

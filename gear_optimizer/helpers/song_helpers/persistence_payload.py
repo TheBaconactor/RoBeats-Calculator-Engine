@@ -181,6 +181,7 @@ def build_db_payload(
                 # "score" is intentionally the FG score in this list (historical naming).
                 "score": fg_score_i,
                 "base_score": base_score_i,
+                "fg_base_score": base_score_i,
                 "gear": fg_gear_names,
                 "minis": fg_mini_names,
                 "details": build_details_fn(force_payload),
@@ -322,6 +323,7 @@ def build_db_payload(
             updated_payload["best_fg"] = {
                 "score": best_fg_score,
                 "base_score": best_fg_entry.get("base_score", 0) or 0,
+                "fg_base_score": best_fg_entry.get("fg_base_score", best_fg_entry.get("base_score", 0)) or 0,
                 "gear": best_fg_entry.get("gear", []),
                 "minis": best_fg_entry.get("minis", []),
                 "details": best_fg_entry.get("details", {}),

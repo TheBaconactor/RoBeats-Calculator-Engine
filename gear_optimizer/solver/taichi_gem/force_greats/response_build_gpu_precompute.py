@@ -43,7 +43,7 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     if not prepared:
         empty = np.empty((0, 0), dtype=np.int32)
         return FirstOnlyCanonicalization([], {}, {}, empty, empty, empty)
-    real_times = np.asarray([item[2] for item in prepared], dtype=np.float32)
+    real_times = np.asarray([item[2] for item in prepared], dtype=np.float64)
     real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx = _precompute_end_indices(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidate_timestamps,
@@ -125,28 +125,31 @@ def _precompute_end_indices(
     great_candidate_timestamps: np.ndarray,
     real_times: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    unique_real_times, inverse = np.unique(np.asarray(real_times, dtype=np.float32), return_inverse=True)
+    unique_real_times, inverse = np.unique(np.asarray(real_times, dtype=np.float64), return_inverse=True)
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     perfect_ts = np.ascontiguousarray(np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1))
     great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
+    ts64 = np.asarray(ts, dtype=np.float64)
+    perfect_ts64 = np.asarray(perfect_ts, dtype=np.float64)
+    great_ts64 = np.asarray(great_ts, dtype=np.float64)
     timestamp_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0])), dtype=np.int32)
     perfect_end_idx = np.empty_like(timestamp_end_idx)
     great_end_idx = np.empty_like(timestamp_end_idx)
     for idx, real_time in enumerate(unique_real_times):
-        rt = np.float32(real_time)
-        timestamp_end_idx[idx] = np.searchsorted(ts, np.asarray(ts + rt, dtype=np.float32), side="left").astype(
+        rt = float(real_time)
+        timestamp_end_idx[idx] = np.searchsorted(ts, np.asarray(ts64 + rt, dtype=np.float32), side="left").astype(
             np.int32,
             copy=False,
         )
         perfect_end_idx[idx] = np.searchsorted(
             ts,
-            np.asarray(perfect_ts + rt, dtype=np.float32),
+            np.asarray(perfect_ts64 + rt, dtype=np.float32),
             side="left",
         ).astype(
             np.int32,
             copy=False,
         )
-        great_end_idx[idx] = np.searchsorted(ts, np.asarray(great_ts + rt, dtype=np.float32), side="left").astype(
+        great_end_idx[idx] = np.searchsorted(ts, np.asarray(great_ts64 + rt, dtype=np.float32), side="left").astype(
             np.int32,
             copy=False,
         )

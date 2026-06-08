@@ -1,8 +1,8 @@
 """
 GPU timeline parity test.
 
-Verifies that the GPU-computed 161×161 fever timeline grid matches the CPU reference
-for the fields that downstream kernels depend on (gap + fever activations).
+Verifies that GPU-uploaded timeline fields match the exact startup-built
+frontier payload used by runtime scoring.
 """
 
 import os
@@ -11,7 +11,7 @@ import sys
 import numpy as np
 import pytest
 
-# Add repo root to path for imports
+# Add repo root to path for imports.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 pytestmark = pytest.mark.gpu
@@ -60,28 +60,26 @@ def _create_mock_song(*, n_notes: int = 750):
     }
 
 
-def test_gpu_timeline_matches_cpu_gap_and_activations():
-    from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
-    from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
+def test_gpu_timeline_matches_cpu_gap_and_activations(monkeypatch, tmp_path):
+    from gear_optimizer.solver.taichi_gem.api.timeline import (
+        build_or_load_timeline_frontier_payload,
+        precompute_timeline_gpu,
+    )
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline_frontier_cache"))
     calc_song = _create_mock_song()
     ref_arrays = _create_mock_ref_arrays()
 
-    # CPU reference: minimal 161×161 grids (no per-cell fever_mask copies).
-    grid = get_song_timeline_grid(calc_song, ref_arrays)
-    cpu_min = grid.to_gpu_arrays_minimal()
-    cpu_gap = np.asarray(cpu_min["gap"], dtype=np.int32)
-    cpu_fevact = np.asarray(cpu_min["fever_activations"], dtype=np.int32)
+    prebuilt_frontier = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    cpu_gap = np.asarray(prebuilt_frontier.payload.grid_gap[0], dtype=np.int32)
+    cpu_fevact = np.asarray(prebuilt_frontier.payload.grid_fever_activations[0], dtype=np.int32)
 
-    # GPU path: compute and read back the same grids.
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0, prebuilt_frontier=prebuilt_frontier)
     gpu_gap = np.asarray(gpu_fields.grid_gap.to_numpy()[0], dtype=np.int32)
     gpu_fevact = np.asarray(gpu_fields.grid_fever_activations.to_numpy()[0], dtype=np.int32)
 
     assert cpu_gap.shape == gpu_gap.shape == (161, 161)
     assert cpu_fevact.shape == gpu_fevact.shape == (161, 161)
-
-    # Exact match (these are integer grids).
     assert np.array_equal(cpu_gap, gpu_gap)
     assert np.array_equal(cpu_fevact, gpu_fevact)

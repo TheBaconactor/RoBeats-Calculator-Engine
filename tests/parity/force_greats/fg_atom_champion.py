@@ -14,7 +14,7 @@ from gear_optimizer.core.constants import (
     MAX_STAT_INDEX,
     TOTAL_ROWS,
 )
-from gear_optimizer.solver.scoring.fg_policy import is_single_color_song
+from gear_optimizer.solver.scoring.fg_policy import compute_great_penalty_base, is_single_color_song
 from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _score_response_group_meta_gpu
 
 
@@ -76,13 +76,13 @@ def _atom_from_row(row: np.ndarray, *, surface_index: int) -> ChampionAtom:
     )
 
 
-def _lookup_ref(ref: np.ndarray, idx: int) -> np.float32:
+def _lookup_ref(ref: np.ndarray, idx: int) -> float:
     safe_idx = max(0, min(int(idx), TOTAL_ROWS))
-    return np.float32(ref[safe_idx])
+    return float(ref[safe_idx])
 
 
-def _f32_floor(value: np.float32 | float | int) -> int:
-    return int(floor(float(np.float32(value))))
+def _score_floor(value: float | int) -> int:
+    return int(floor(float(value)))
 
 
 def _bit(word: int, bit_idx: int) -> int:
@@ -97,9 +97,9 @@ def _score_surface_atom(
     body_total: int,
     primary_val: int,
     secondary_val: int,
-    pp_factor: np.float32,
-    combo_mul: np.float32,
-    fever_mul: np.float32,
+    pp_factor: float,
+    combo_mul: float,
+    fever_mul: float,
     single_color: bool,
 ) -> int:
     fever_words = tuple(int(v) for v in np.asarray(words[:4], dtype=np.uint32))
@@ -109,48 +109,35 @@ def _score_surface_atom(
     body_fever_great = int(counts[2])
     body_normal = max(0, int(body_total) - int(body_fever))
 
-    base_value = np.float32(np.float32((int(primary_val) * 2) + int(secondary_val)) + np.float32(pp_factor))
-    combo_f = np.float32(combo_mul)
-    fever_f = np.float32(fever_mul)
-    combo_val = _f32_floor(np.float32(base_value * combo_f))
-    fever_val = _f32_floor(np.float32(np.float32(base_value * combo_f) * fever_f))
+    base_value = float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor)
+    combo_f = float(combo_mul)
+    fever_f = float(fever_mul)
+    combo_val = _score_floor(base_value * combo_f)
+    fever_val = _score_floor(base_value * combo_f * fever_f)
     score = int(body_fever) * int(fever_val) + int(body_normal) * int(combo_val)
 
-    if bool(single_color):
-        great_head_base = (int(primary_val) * 2) + 150
-        great_raw = np.float32(great_head_base)
-    else:
-        great_head_base = (
-            _f32_floor(np.float32(np.float32(primary_val) * np.float32(4.0 / 3.0)))
-            + _f32_floor(np.float32(np.float32(secondary_val) * np.float32(2.0 / 3.0)))
-            + 150
-        )
-        great_raw = np.float32(
-            np.float32(np.float32(primary_val) * np.float32(4.0 / 3.0))
-            + np.float32(np.float32(secondary_val) * np.float32(2.0 / 3.0))
-            + np.float32(150.0)
-        )
+    great_head_base = compute_great_penalty_base(primary_val, secondary_val, single_color=bool(single_color))
+    great_base = float(great_head_base)
 
     if int(body_great) > 0:
         body_normal_great = max(0, int(body_great) - int(body_fever_great))
-        body_normal_penalty = max(0, int(combo_val) - _f32_floor(np.float32(great_raw * combo_f)))
-        body_fever_penalty = max(0, int(fever_val) - _f32_floor(np.float32(np.float32(great_raw * combo_f) * fever_f)))
+        body_normal_penalty = max(0, int(combo_val) - _score_floor(great_base * combo_f))
+        body_fever_penalty = max(0, int(fever_val) - _score_floor(great_base * combo_f * fever_f))
         score -= int(body_normal_great) * int(body_normal_penalty)
         score -= int(body_fever_great) * int(body_fever_penalty)
 
-    factor = np.float32(np.float32(combo_f - np.float32(1.0)) * base_value / np.float32(100.0))
-    combo_span = np.float32(combo_f - np.float32(1.0))
+    combo_slope = (combo_f - 1.0) / 100.0
     for i in range(max(0, min(int(head_len), 100))):
         word_idx = int(i // 32)
         bit_idx = int(i % 32)
         is_fever = _bit(fever_words[word_idx], bit_idx) != 0
         is_great = _bit(great_words[word_idx], bit_idx) != 0
-        ramp = np.float32(base_value + np.float32(np.float32(i + 1) * factor))
-        perfect_val = _f32_floor(np.float32(ramp * fever_f)) if is_fever else _f32_floor(ramp)
+        scaling = (combo_slope * float(i + 1)) + 1.0
+        perfect_value = base_value * scaling
+        perfect_val = _score_floor(perfect_value * fever_f) if is_fever else _score_floor(perfect_value)
         if is_great:
-            scaling = np.float32(np.float32(1.0) + np.float32(combo_span * np.float32(i + 1) / np.float32(100.0)))
-            great_val = np.float32(np.float32(great_head_base) * scaling)
-            great_score = _f32_floor(np.float32(great_val * fever_f)) if is_fever else _f32_floor(great_val)
+            great_value = float(great_head_base) * scaling
+            great_score = _score_floor(great_value * fever_f) if is_fever else _score_floor(great_value)
             perfect_val -= max(0, int(perfect_val) - int(great_score))
         score += int(perfect_val)
     return int(score)
@@ -251,9 +238,9 @@ def _score_atom_for_group(
         body_total=int(row[7]),
         primary_val=int(final_primary),
         secondary_val=int(final_secondary),
-        pp_factor=_lookup_ref(np.asarray(ref_arrays["Perfect Points"], dtype=np.float32), int(final_pp)),
-        combo_mul=_lookup_ref(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32), int(final_cm)),
-        fever_mul=_lookup_ref(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32), int(final_fm)),
+        pp_factor=_lookup_ref(np.asarray(ref_arrays["Perfect Points"], dtype=np.float64), int(final_pp)),
+        combo_mul=_lookup_ref(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float64), int(final_cm)),
+        fever_mul=_lookup_ref(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float64), int(final_fm)),
         single_color=is_single_color_song(primary_color, secondary_color),
     )
     return np.asarray(
