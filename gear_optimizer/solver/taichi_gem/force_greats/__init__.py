@@ -12,6 +12,7 @@ from .response_frontier import (
     reconstruct_force_greats_response_counts,
     reconstruct_force_greats_response_trace,
     run_prepared_force_greats_response_frontier_batch_via_client,
+    run_prepared_force_greats_response_frontier_batches_via_client,
     score_prepared_force_greats_response_frontier_batch_on_gpu_owner,
     score_prepared_force_greats_response_frontier_batch_sync,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "reconstruct_force_greats_response_counts",
     "reconstruct_force_greats_response_trace",
     "run_prepared_force_greats_response_frontier_batch_via_client",
+    "run_prepared_force_greats_response_frontier_batches_via_client",
     "score_prepared_force_greats_response_frontier_batch_on_gpu_owner",
     "score_prepared_force_greats_response_frontier_batch_sync",
 ]

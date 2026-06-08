@@ -155,20 +155,22 @@ def test_prepare_fg_job_accepts_owner_deferred_group_arrays(monkeypatch):
     assert song.runtime.fg.cpu_fg_prep_s >= 0.0
 
 
-def test_run_fg_job_sync_scores_each_prepared_batch_sequentially(monkeypatch):
+def test_run_fg_job_sync_submits_all_prepared_batches_before_waiting(monkeypatch):
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
-    class _SequentialSubmitFuture:
-        def __init__(self, client, result):
+    class _AssertAllSubmittedFuture:
+        def __init__(self, client, batch, result):
             self.client = client
+            self.batch = batch
             self.result_rows = result
 
         def result(self):
-            return _owner_result(self.client.payloads[-1]["batch"], self.result_rows)
+            assert len(self.client.payloads) == 2
+            return _owner_result(self.batch, self.result_rows)
 
-    class _SequentialSubmitGpuClient:
+    class _AssertAllSubmittedGpuClient:
         def __init__(self):
             self.payloads = []
 
@@ -184,9 +186,9 @@ def test_run_fg_job_sync_scores_each_prepared_batch_sequentially(monkeypatch):
                     "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
                 }
             ]
-            return SimpleNamespace(future=_SequentialSubmitFuture(self, result))
+            return SimpleNamespace(future=_AssertAllSubmittedFuture(self, payload["batch"], result))
 
-    gpu_client = _SequentialSubmitGpuClient()
+    gpu_client = _AssertAllSubmittedGpuClient()
 
     monkeypatch.setattr(
         response_frontier,

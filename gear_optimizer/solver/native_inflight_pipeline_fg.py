@@ -468,7 +468,7 @@ def run_fg_job_sync(
     from gear_optimizer.solver.native_inflight_lifecycle import evaluate_fg_progress_record_update
     from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_job_sync, thread_cpu_time_s
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        run_prepared_force_greats_response_frontier_batch_via_client,
+        run_prepared_force_greats_response_frontier_batches_via_client,
     )
 
     cpu_t0 = thread_cpu_time_s()
@@ -557,14 +557,13 @@ def run_fg_job_sync(
     if prepared_plan is None:
         raise RuntimeError("FG response frontier run requires a prepared exact scoring plan")
     run_wall_t0 = time.perf_counter()
-    prepared_handles: list[tuple[list[Any], dict[str, float]]] = []
-    for prepared in prepared_plan.prepared_batches:
-        batch_results, timing = run_prepared_force_greats_response_frontier_batch_via_client(
+    prepared_handles: list[tuple[list[Any], dict[str, float]]] = (
+        run_prepared_force_greats_response_frontier_batches_via_client(
             gpu_client,
-            prepared.batch,
+            [prepared.batch for prepared in prepared_plan.prepared_batches],
             include_forced_counts=False,
         )
-        prepared_handles.append((batch_results, timing))
+    )
     prepared_results = [batch_results for batch_results, _timing in prepared_handles]
     fg_variants = response_frontier_adapter.materialize_force_greats_response_frontier_plan_results(
         prepared_plan,

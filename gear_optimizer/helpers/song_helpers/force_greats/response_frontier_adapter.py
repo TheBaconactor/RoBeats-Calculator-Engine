@@ -280,23 +280,26 @@ def _score_prepared_batches_for_plan(
     gpu_client: Any | None,
 ) -> list[list[FgResponseFrontierSolveResult]]:
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        run_prepared_force_greats_response_frontier_batch_via_client,
+        run_prepared_force_greats_response_frontier_batches_via_client,
         score_prepared_force_greats_response_frontier_batch_sync,
     )
 
+    if gpu_client is not None:
+        return [
+            batch_results
+            for batch_results, _timing in run_prepared_force_greats_response_frontier_batches_via_client(
+                gpu_client,
+                [prepared.batch for prepared in plan.prepared_batches],
+                include_forced_counts=False,
+            )
+        ]
+
     prepared_results: list[list[FgResponseFrontierSolveResult]] = []
     for prepared in plan.prepared_batches:
-        if gpu_client is not None:
-            batch_results, _timing = run_prepared_force_greats_response_frontier_batch_via_client(
-                gpu_client,
-                prepared.batch,
-                include_forced_counts=False,
-            )
-        else:
-            batch_results = score_prepared_force_greats_response_frontier_batch_sync(
-                prepared.batch,
-                include_forced_counts=False,
-            )
+        batch_results = score_prepared_force_greats_response_frontier_batch_sync(
+            prepared.batch,
+            include_forced_counts=False,
+        )
         prepared_results.append(batch_results)
     return prepared_results
 

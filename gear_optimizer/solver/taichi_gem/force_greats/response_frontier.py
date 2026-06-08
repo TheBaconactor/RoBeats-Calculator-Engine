@@ -48,6 +48,7 @@ __all__ = [
     "score_prepared_force_greats_response_frontier_batch_sync",
     "materialize_force_greats_response_frontier_owner_result",
     "run_prepared_force_greats_response_frontier_batch_via_client",
+    "run_prepared_force_greats_response_frontier_batches_via_client",
     "reconstruct_force_greats_response_counts",
     "reconstruct_force_greats_response_trace",
 ]
@@ -638,21 +639,42 @@ def run_prepared_force_greats_response_frontier_batch_via_client(
     *,
     include_forced_counts: bool = False,
 ) -> tuple[list[FgResponseFrontierSolveResult], dict[str, float]]:
-    timing: dict[str, float] = {}
-    handle = gpu_client.submit_force_greats_response_frontier_score_batch(
-        {
-            "batch": batch,
-            "include_forced_counts": bool(include_forced_counts),
-            "timing": timing,
-        }
-    )
-    materialize_t0 = time.perf_counter()
-    results = materialize_force_greats_response_frontier_owner_result(
-        handle.future.result(),
+    return run_prepared_force_greats_response_frontier_batches_via_client(
+        gpu_client,
+        (batch,),
         include_forced_counts=bool(include_forced_counts),
-    )
-    timing["materialize_s"] = max(0.0, time.perf_counter() - float(materialize_t0))
-    return results, timing
+    )[0]
+
+
+def run_prepared_force_greats_response_frontier_batches_via_client(
+    gpu_client: Any,
+    batches: tuple[FgResponseFrontierPackedScoringBatch, ...] | list[FgResponseFrontierPackedScoringBatch],
+    *,
+    include_forced_counts: bool = False,
+) -> list[tuple[list[FgResponseFrontierSolveResult], dict[str, float]]]:
+    submitted: list[tuple[Any, dict[str, float]]] = []
+    for batch in batches:
+        timing: dict[str, float] = {}
+        handle = gpu_client.submit_force_greats_response_frontier_score_batch(
+            {
+                "batch": batch,
+                "include_forced_counts": bool(include_forced_counts),
+                "timing": timing,
+            }
+        )
+        submitted.append((handle, timing))
+
+    prepared_results: list[tuple[list[FgResponseFrontierSolveResult], dict[str, float]]] = []
+    for handle, timing in submitted:
+        owner_result = handle.future.result()
+        materialize_t0 = time.perf_counter()
+        results = materialize_force_greats_response_frontier_owner_result(
+            owner_result,
+            include_forced_counts=bool(include_forced_counts),
+        )
+        timing["materialize_s"] = max(0.0, time.perf_counter() - float(materialize_t0))
+        prepared_results.append((results, timing))
+    return prepared_results
 
 
 def materialize_prepared_force_greats_response_frontier_batch_results(
