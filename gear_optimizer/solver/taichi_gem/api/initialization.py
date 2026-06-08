@@ -138,7 +138,7 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
         logger.debug(f"initialization:hard_reset_taichi: {e}")
 
     try:
-        from ..force_greats.api import reset_force_greats_api_state as _reset_fg_api_state
+        from ..force_greats.fields import reset_force_greats_api_state as _reset_fg_api_state
 
         _reset_fg_api_state()
     except Exception as e:

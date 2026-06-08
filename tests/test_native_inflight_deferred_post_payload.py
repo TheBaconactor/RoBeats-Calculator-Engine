@@ -280,9 +280,10 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
 
 
 def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseFrontierOwnerResult
 
     song = make_native_song(
         song_name="pytest_native_inline_fg_runner",
@@ -296,9 +297,9 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
         fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
     )
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "materialize_force_greats_response_frontier_plan_results",
-        lambda _plan, prepared_results: prepared_results[0],
+        FgResultReducer,
+        "materialize",
+        staticmethod(lambda _plan, prepared_results: prepared_results[0]),
     )
     monkeypatch.setattr(
         response_frontier,
@@ -309,16 +310,19 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
     def _submit_score_batch(_payload):
         future = Future()
         future.set_result(
-            [
-                {
-                    "score": 111,
-                    "base_score": 111,
-                    "fg_score": 130,
-                    "gear": ["G1"],
-                    "minis": ["M1"],
-                    "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
-                }
-            ]
+            FgResponseFrontierOwnerResult(
+                batch=_payload["batch"],
+                inner_rows=[
+                    {
+                        "score": 111,
+                        "base_score": 111,
+                        "fg_score": 130,
+                        "gear": ["G1"],
+                        "minis": ["M1"],
+                        "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
+                    }
+                ],
+            )
         )
         return SimpleNamespace(future=future)
 

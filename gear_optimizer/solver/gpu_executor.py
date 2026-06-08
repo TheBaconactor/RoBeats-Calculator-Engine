@@ -133,12 +133,8 @@ def _request_work_units(request: GpuRequest) -> float:
 
 def _warmup_fg_response_frontier_runtime() -> None:
     from .taichi_gem.force_greats import fields as fg_fields
-    from gear_optimizer.helpers.song_helpers.force_greats.response_frontier_warmup import (
-        warmup_force_greats_response_frontier_runtime_imports,
-    )
 
     fg_fields.ensure_ready_with_warmup()
-    warmup_force_greats_response_frontier_runtime_imports()
 
 
 def is_gpu_worker_mode() -> bool:

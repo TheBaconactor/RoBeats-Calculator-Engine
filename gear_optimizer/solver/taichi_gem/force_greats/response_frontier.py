@@ -47,7 +47,6 @@ __all__ = [
     "score_prepared_force_greats_response_frontier_batch_on_gpu_owner",
     "score_prepared_force_greats_response_frontier_batch_sync",
     "materialize_force_greats_response_frontier_owner_result",
-    "run_prepared_force_greats_response_frontier_batch_via_client",
     "run_prepared_force_greats_response_frontier_batches_via_client",
     "reconstruct_force_greats_response_counts",
     "reconstruct_force_greats_response_trace",
@@ -628,19 +627,6 @@ def materialize_force_greats_response_frontier_owner_result(
     )
 
 
-def run_prepared_force_greats_response_frontier_batch_via_client(
-    gpu_client: Any,
-    batch: FgResponseFrontierPackedScoringBatch,
-    *,
-    include_forced_counts: bool = False,
-) -> tuple[list[FgResponseFrontierSolveResult], dict[str, float]]:
-    return run_prepared_force_greats_response_frontier_batches_via_client(
-        gpu_client,
-        (batch,),
-        include_forced_counts=bool(include_forced_counts),
-    )[0]
-
-
 def run_prepared_force_greats_response_frontier_batches_via_client(
     gpu_client: Any,
     batches: tuple[FgResponseFrontierPackedScoringBatch, ...] | list[FgResponseFrontierPackedScoringBatch],
@@ -740,7 +726,6 @@ def score_prepared_force_greats_response_frontier_batch_sync(
     *,
     include_forced_counts: bool = False,
 ) -> list[FgResponseFrontierSolveResult]:
-    payload_ms = 0.0
     scoring_bundle_ms = float(batch.scoring_bundle_ms)
     owner_t0 = time.perf_counter()
     owner = score_prepared_force_greats_response_frontier_batch_on_gpu_owner(batch)
@@ -759,7 +744,6 @@ def score_prepared_force_greats_response_frontier_batch_sync(
         component="fg_response_frontier",
         event="score_prepared_batch",
         metrics={
-            "payload_ms": float(payload_ms),
             "scoring_bundle_ms": float(scoring_bundle_ms),
             "scoring_bundle_prepare_ms": float(batch.scoring_bundle_ms),
             "compact_ms": float(compact_ms),

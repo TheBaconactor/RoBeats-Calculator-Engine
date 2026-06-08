@@ -284,9 +284,6 @@ def decode_ga_payload_sync(song: NativeSong, runs_payload: np.ndarray) -> tuple[
         cfg_data=decode_cfg_data,
         base_stats_fixed=gpu_inputs.fixed_stats,
         fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
-        calc_song=None,
-        ref_arrays=None,
-        fg_group_meta_limit=0,
     )
     out = (best_data, best_gear, best_minis, ga_candidates)
     try:
@@ -316,30 +313,9 @@ def prepare_fg_static_sync(song: NativeSong) -> None:
     Response-frontier FG consumes GA candidates directly. The late FG prep still owns
     candidate selection and any work that depends on GA output.
     """
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import warmup_response_frontier_group_builder
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-        all_response_stat_keys,
-        load_response_frontier_scoring_bundle,
-    )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import warmup_response_ftff_prune
+    from gear_optimizer.solver.fg_response_scoring.store import ResponseFrontierStore
 
-    warmup_response_ftff_prune()
-    warmup_response_frontier_group_builder()
-    fg_calc_song = resolve_active_fg_calc_song(song)
-    if not isinstance(fg_calc_song, dict):
-        raise RuntimeError("FG static prep requires a resolved calc song")
-    ref_arrays = getattr(getattr(song, "gpu_inputs", None), "ref_arrays", None)
-    if not isinstance(ref_arrays, dict):
-        raise RuntimeError("FG static prep requires reference arrays")
-    song.runtime.fg.fg_response_scoring_bundle = load_response_frontier_scoring_bundle(
-        fg_calc_song,
-        ref_arrays,
-        stat_keys=all_response_stat_keys(),
-    )
-    try:
-        song.runtime.fg.fg_static_prep_done = True
-    except AttributeError:
-        pass
+    ResponseFrontierStore.ensure_song_bundle(song)
 
 
 def prepare_ga_candidate_surface_for_fg(
@@ -404,10 +380,10 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     candidate_select_ms = (t_candidate_select - t_candidate_select0) * 1000.0
     hydrate_stats_ms = (t_select - t_candidate_select) * 1000.0
     plan_t0 = time.perf_counter()
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     runtime.fg.fg_response_frontier_plan = (
-        response_frontier_adapter.prepare_force_greats_response_frontier_plan_for_ga_candidates(
+        FgPlanner.plan_many(
             ga_candidates,
             resolve_active_fg_calc_song(song),
             getattr(song.gpu_inputs, "ref_arrays", None),
@@ -423,32 +399,12 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         )
     plan_ms = (time.perf_counter() - plan_t0) * 1000.0
     prepared_batches = tuple(getattr(runtime.fg.fg_response_frontier_plan, "prepared_batches", ()) or ())
-    prepared_group_rows = 0
-    prepared_surface_rows = 0
-    prepared_logical_surface_rows = 0
-    prepared_unique_frontiers = 0
-    prepared_compact_ms = 0.0
-    prepared_head_coeff_ms = 0.0
     prepared_bundle_ms = 0.0
-    prepared_setup_ms = 0.0
-    prepared_group_build_ms = 0.0
     for prepared in prepared_batches:
         batch = getattr(prepared, "batch", None)
         if batch is None:
             continue
-        group_meta = getattr(batch, "group_meta", None)
-        surface_words = getattr(batch, "scoring_surface_words", None)
-        group_lengths = getattr(batch, "scoring_group_lengths", None)
-        prepared_group_rows += int(getattr(group_meta, "shape", (0,))[0])
-        prepared_surface_rows += int(getattr(surface_words, "shape", (0,))[0])
-        if group_lengths is not None:
-            prepared_logical_surface_rows += int(np.sum(group_lengths, dtype=np.int64))
-        prepared_unique_frontiers += int(getattr(batch, "scoring_unique_frontiers", 0) or 0)
-        prepared_compact_ms += float(getattr(batch, "scoring_surface_compact_ms", 0.0) or 0.0)
-        prepared_head_coeff_ms += float(getattr(batch, "scoring_surface_head_coeff_ms", 0.0) or 0.0)
         prepared_bundle_ms += float(getattr(batch, "scoring_bundle_ms", 0.0) or 0.0)
-        prepared_setup_ms += float(getattr(batch, "scoring_setup_ms", 0.0) or 0.0)
-        prepared_group_build_ms += float(getattr(batch, "scoring_group_build_ms", 0.0) or 0.0)
     total_ms = (time.perf_counter() - t0) * 1000.0
     try:
         song.runtime.fg.fg_prep_wall_s = max(0.0, float(total_ms) / 1000.0)
@@ -482,15 +438,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
                 "ga_candidates": int(len(ga_candidates or [])),
                 "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
                 "prepared_batches": int(len(prepared_batches)),
-                "prepared_group_rows": int(prepared_group_rows),
-                "prepared_surface_rows": int(prepared_surface_rows),
-                "prepared_logical_surface_rows": int(prepared_logical_surface_rows),
-                "prepared_unique_frontiers": int(prepared_unique_frontiers),
                 "prepared_bundle_ms": float(prepared_bundle_ms),
-                "prepared_compact_ms": float(prepared_compact_ms),
-                "prepared_head_coeff_ms": float(prepared_head_coeff_ms),
-                "prepared_setup_ms": float(prepared_setup_ms),
-                "prepared_group_build_ms": float(prepared_group_build_ms),
             },
         )
     except Exception as e:

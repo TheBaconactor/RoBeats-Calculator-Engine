@@ -199,7 +199,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     seen = {}
     seen_bundle = object()
@@ -212,9 +212,9 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
 
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan_for_ga_candidates",
-        _fake_prepare_plan,
+        FgPlanner,
+        "plan_many",
+        staticmethod(_fake_prepare_plan),
     )
 
     cfg = configparser.ConfigParser()
@@ -258,13 +258,13 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan_for_ga_candidates",
-        lambda *_args, **_kwargs: "prepared-plan",
+        FgPlanner,
+        "plan_many",
+        staticmethod(lambda *_args, **_kwargs: "prepared-plan"),
     )
 
     cfg = configparser.ConfigParser()
@@ -319,7 +319,7 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     seen: dict[str, int] = {}
 
@@ -333,9 +333,9 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
     monkeypatch.setattr(stages, "select_top_base_ga_candidates", _top_base_selector)
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan_for_ga_candidates",
-        lambda *_args, **_kwargs: "prepared-plan",
+        FgPlanner,
+        "plan_many",
+        staticmethod(lambda *_args, **_kwargs: "prepared-plan"),
     )
 
     cfg = configparser.ConfigParser()
@@ -381,13 +381,13 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
     import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
     monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        response_frontier_adapter,
-        "prepare_force_greats_response_frontier_plan_for_ga_candidates",
-        lambda *_args, **_kwargs: None,
+        FgPlanner,
+        "plan_many",
+        staticmethod(lambda *_args, **_kwargs: None),
     )
 
     cfg = configparser.ConfigParser()
@@ -521,6 +521,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
     from types import SimpleNamespace
 
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -548,7 +549,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
     seen = {}
 
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "extract_fg_song_inputs",
         lambda calc_song: SimpleNamespace(
             timestamps=[0.0],
@@ -562,8 +563,8 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
         seen["frontier"] = kwargs["frontier"]
         return ({"forced_count": 1}, {"forced_count": 0}, {"forced_count": 1})
 
-    monkeypatch.setattr(adapter, "reconstruct_force_greats_response_trace", _fake_reconstruct_trace)
-    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
+    monkeypatch.setattr(reducer_mod, "reconstruct_force_greats_response_trace", _fake_reconstruct_trace)
+    monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
     payload = adapter._force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
@@ -590,6 +591,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     from types import SimpleNamespace
 
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -614,7 +616,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     )
 
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "extract_fg_song_inputs",
         lambda calc_song: SimpleNamespace(
             total_notes=1,
@@ -625,11 +627,11 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "reconstruct_force_greats_response_trace",
         lambda **_kwargs: ({"forced_count": 1}, {"forced_count": 0}, {"forced_count": 1}),
     )
-    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
+    monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
     payload = adapter._force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
@@ -649,6 +651,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
 
 def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _action_table,
         _edge_surface_option_details,
@@ -728,7 +731,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         },
     }
 
-    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 4321)
+    monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 4321)
 
     payload = adapter._force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
@@ -758,6 +761,9 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
     from types import SimpleNamespace
 
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
+    from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -784,18 +790,22 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
             real_fever_time=2.0,
         )
 
-    monkeypatch.setattr(adapter, "LOADOUTS_PER_SONG_LIMIT", 1)
-    monkeypatch.setattr(adapter, "eval_data_from_entry", lambda entry, primary: dict(entry["eval_data"]))
-    monkeypatch.setattr(adapter, "expected_selected_element", lambda entry, primary: str(entry["eval_data"]["Selected Element"]))
+    monkeypatch.setattr(reducer_mod, "LOADOUTS_PER_SONG_LIMIT", 1)
+    monkeypatch.setattr(planner_mod, "eval_data_from_entry", lambda entry, primary: dict(entry["eval_data"]))
+    monkeypatch.setattr(planner_mod, "expected_selected_element", lambda entry, primary: str(entry["eval_data"]["Selected Element"]))
     monkeypatch.setattr(
-        adapter,
-        "_base_stats_for_response_frontier",
-        lambda eval_data, selected: {"Perfect Points": int(eval_data["pp"])},
+        planner_mod.FgPlanner,
+        "base_stats_for_response_frontier",
+        staticmethod(lambda eval_data, selected: {"Perfect Points": int(eval_data["pp"])}),
     )
-    monkeypatch.setattr(adapter, "materialize_entry_names", lambda entry, mutate=True: (list(entry["gear"]), list(entry["minis"])))
-    monkeypatch.setattr(adapter, "extract_fg_song_inputs", lambda calc_song: SimpleNamespace(total_notes=1))
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
+        "materialize_entry_names",
+        lambda entry, mutate=True: (list(entry["gear"]), list(entry["minis"])),
+    )
+    monkeypatch.setattr(planner_mod, "extract_fg_song_inputs", lambda calc_song: SimpleNamespace(total_notes=1))
+    monkeypatch.setattr(
+        planner_mod,
         "prepare_force_greats_response_frontier_scoring_batch",
         lambda **kwargs: {"base_stats_list": list(kwargs["base_stats_list"])},
     )
@@ -811,7 +821,7 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
             "forced_counts": [1],
         }
 
-    monkeypatch.setattr(adapter, "_force_payload_from_response_frontier", _fake_force_payload)
+    monkeypatch.setattr(reducer_mod, "materialize_force_payload_from_response_frontier", _fake_force_payload)
 
     candidates = [
         {
@@ -829,9 +839,9 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
     ]
 
     monkeypatch.setattr(
-        adapter,
-        "_score_prepared_batches_for_plan",
-        lambda _plan, **kwargs: [[_result(100, 10, 20), _result(90, 30, 40)]],
+        GpuScoreEngine,
+        "score_plan",
+        staticmethod(lambda _plan, **kwargs: ([[_result(100, 10, 20), _result(90, 30, 40)]], [])),
     )
     out = adapter.run_force_greats_response_frontier_for_ga_candidates(
         candidates,
@@ -1036,6 +1046,9 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
     from types import SimpleNamespace
 
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
+    from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -1093,28 +1106,32 @@ def test_process_force_greats_uses_shared_response_frontier_solver(monkeypatch):
         return [_result(base_stats, str(batch["selected_color"])) for base_stats in batch["base_stats_list"]]
 
     monkeypatch.setattr(
-        adapter,
+        planner_mod,
+        "extract_fg_song_inputs",
+        lambda _song: SimpleNamespace(total_notes=2),
+    )
+    monkeypatch.setattr(
+        reducer_mod,
         "extract_fg_song_inputs",
         lambda _song: SimpleNamespace(
-            total_notes=2,
             timestamps=[0.0, 1.0],
             perfect_candidates=[0.0, 1.0],
             great_candidates=[0.0, 1.0],
             use_forced_great_timing=True,
         ),
     )
-    monkeypatch.setattr(adapter, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
+    monkeypatch.setattr(planner_mod, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "reconstruct_force_greats_response_trace",
         lambda **_kwargs: ({"forced_count": 5}, {"forced_count": 0}),
     )
-    monkeypatch.setattr(adapter, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 150)
+    monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 150)
 
     monkeypatch.setattr(
-        adapter,
-        "_score_prepared_batches_for_plan",
-        lambda plan, **kwargs: [_fake_score_batch(plan.prepared_batches[0].batch)],
+        GpuScoreEngine,
+        "score_plan",
+        staticmethod(lambda plan, **kwargs: ([_fake_score_batch(plan.prepared_batches[0].batch)], [])),
     )
     out = adapter.run_force_greats_response_frontier_for_ga_candidates(
         [
@@ -1172,10 +1189,11 @@ def test_process_force_greats_uses_authoritative_paired_base_for_emit_gate(monke
     from types import SimpleNamespace
 
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
 
     monkeypatch.setattr(
-        adapter,
-        "_force_payload_from_response_frontier",
+        reducer_mod,
+        "materialize_force_payload_from_response_frontier",
         lambda **kwargs: {
             "BaseScore": kwargs["result"].exact_base,
             "RawBaseScore": kwargs["result"].raw_base,
@@ -1206,6 +1224,9 @@ def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
     from types import SimpleNamespace
 
     from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter as adapter
+    import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
+    import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
+    from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -1266,32 +1287,36 @@ def test_process_force_greats_batches_response_frontier_candidates(monkeypatch):
         return out
 
     monkeypatch.setattr(
-        adapter,
+        planner_mod,
+        "extract_fg_song_inputs",
+        lambda _song: SimpleNamespace(total_notes=2),
+    )
+    monkeypatch.setattr(
+        reducer_mod,
         "extract_fg_song_inputs",
         lambda _song: SimpleNamespace(
-            total_notes=2,
             timestamps=[0.0, 1.0],
             perfect_candidates=[0.0, 1.0],
             great_candidates=[0.0, 1.0],
             use_forced_great_timing=True,
         ),
     )
-    monkeypatch.setattr(adapter, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
+    monkeypatch.setattr(planner_mod, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "reconstruct_force_greats_response_trace",
         lambda **_kwargs: ({"forced_count": 5}, {"forced_count": 0}),
     )
     monkeypatch.setattr(
-        adapter,
+        reducer_mod,
         "score_force_greats_response_surface_exact",
         lambda stats, *_args, **_kwargs: int(stats["Rush"]) + 189,
     )
 
     monkeypatch.setattr(
-        adapter,
-        "_score_prepared_batches_for_plan",
-        lambda plan, **kwargs: [_fake_score_batch(plan.prepared_batches[0].batch)],
+        GpuScoreEngine,
+        "score_plan",
+        staticmethod(lambda plan, **kwargs: ([_fake_score_batch(plan.prepared_batches[0].batch)], [])),
     )
     out = adapter.run_force_greats_response_frontier_for_ga_candidates(
         [

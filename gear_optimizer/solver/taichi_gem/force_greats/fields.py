@@ -23,12 +23,16 @@ def ensure_ready_with_warmup() -> None:
     """
     global _response_frontier_warmed
     from ..runtime import init_taichi, is_initialized
-    from gear_optimizer.helpers.song_helpers.force_greats.response_frontier_warmup import (
-        warmup_force_greats_response_frontier_runtime_imports,
-    )
-
     if not is_initialized():
         init_taichi()
     if not _response_frontier_warmed:
-        warmup_force_greats_response_frontier_runtime_imports()
+        from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+            FgResponseFrontierOwnerResult,
+            score_prepared_force_greats_response_frontier_batch_on_gpu_owner,
+        )
+
+        _ = (
+            FgResponseFrontierOwnerResult,
+            score_prepared_force_greats_response_frontier_batch_on_gpu_owner,
+        )
         _response_frontier_warmed = True

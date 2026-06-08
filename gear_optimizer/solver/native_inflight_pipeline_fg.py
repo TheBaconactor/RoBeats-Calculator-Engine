@@ -460,16 +460,13 @@ def run_fg_job_sync(
     progress_cb=None,
     progress_tracker: ProgressTracker | None = None,
 ) -> None:
-    from gear_optimizer.helpers.song_helpers.force_greats import response_frontier_adapter
+    from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
     from gear_optimizer.solver.native_inflight_fg_payload import (
         build_fg_persist_entries,
         build_fg_update_payload,
     )
     from gear_optimizer.solver.native_inflight_lifecycle import evaluate_fg_progress_record_update
     from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_job_sync, thread_cpu_time_s
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-        run_prepared_force_greats_response_frontier_batches_via_client,
-    )
 
     cpu_t0 = thread_cpu_time_s()
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
@@ -557,23 +554,16 @@ def run_fg_job_sync(
     if prepared_plan is None:
         raise RuntimeError("FG response frontier run requires a prepared exact scoring plan")
     run_wall_t0 = time.perf_counter()
-    prepared_handles: list[tuple[list[Any], dict[str, float]]] = (
-        run_prepared_force_greats_response_frontier_batches_via_client(
-            gpu_client,
-            [prepared.batch for prepared in prepared_plan.prepared_batches],
-            include_forced_counts=False,
-        )
-    )
-    prepared_results = [batch_results for batch_results, _timing in prepared_handles]
-    fg_variants = response_frontier_adapter.materialize_force_greats_response_frontier_plan_results(
+    fg_variants, prepared_handles = FgResponseScoringService.score_prepared_plan_with_timings(
         prepared_plan,
-        prepared_results,
+        gpu_client=gpu_client,
+        include_forced_counts=False,
     )
     try:
         owner_run_s = sum(
             max(0.0, float(timing.get("owner_exec_s", 0.0) or 0.0))
             + max(0.0, float(timing.get("materialize_s", 0.0) or 0.0))
-            for _batch_results, timing in prepared_handles
+            for timing in prepared_handles
         )
         song.runtime.fg.fg_run_wall_s = (
             float(owner_run_s) if float(owner_run_s) > 0.0 else max(0.0, time.perf_counter() - float(run_wall_t0))
@@ -594,11 +584,11 @@ def run_fg_job_sync(
                 "fg_variants": int(len(getattr(song.runtime.fg, "fg_variants", None) or [])),
                 "owner_exec_ms": sum(
                     max(0.0, float(timing.get("owner_exec_s", 0.0) or 0.0)) * 1000.0
-                    for _batch_results, timing in prepared_handles
+                    for timing in prepared_handles
                 ),
                 "owner_queue_ms": sum(
                     max(0.0, float(timing.get("owner_queue_s", 0.0) or 0.0)) * 1000.0
-                    for _batch_results, timing in prepared_handles
+                    for timing in prepared_handles
                 ),
             },
         )
