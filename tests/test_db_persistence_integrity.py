@@ -600,7 +600,7 @@ def test_team_buff_loadouts_downgrade_unmaterializable_fg_score(db_path):
                 "fg_score": 1500,
                 "gear": ["G1"],
                 "minis": ["M1"],
-                "details": {"tag": "phantom"},
+                "details": {"tag": "phantom", "ForceGreats": {"final_score": 1500}},
                 "force": None,
             }
         ],
@@ -610,17 +610,80 @@ def test_team_buff_loadouts_downgrade_unmaterializable_fg_score(db_path):
     conn = get_db_connection(db_path)
     try:
         row = conn.execute(
-            "SELECT score, fg_score FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            "SELECT score, fg_score, details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
             (song,),
         ).fetchone()
         assert row["score"] == 1000
         assert row["fg_score"] == 1000
+        assert "ForceGreats" not in json.loads(row["details_json"])
 
         fg_row = conn.execute(
             "SELECT score, fg_score FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
             (song,),
         ).fetchone()
         assert fg_row is None
+    finally:
+        conn.close()
+
+
+def test_team_buff_loadouts_downgrade_fg_score_after_fg_prune(db_path, monkeypatch):
+    from gear_optimizer.data import database
+
+    song = "FG Prune Phantom Score Song"
+    monkeypatch.setattr(database, "LOADOUTS_PER_SONG_LIMIT", 1)
+
+    database.save_team_buff_loadouts_batch(
+        song,
+        "T5",
+        [
+            {
+                "score": 1000,
+                "fg_score": 1100,
+                "gear": ["G_high_base"],
+                "minis": ["M1"],
+                "details": {"tag": "high_base", "ForceGreats": {"final_score": 1100}},
+                "force": _force_payload(1100, base_score=1000),
+            },
+            {
+                "score": 900,
+                "fg_score": 2000,
+                "gear": ["G_best_fg"],
+                "minis": ["M1"],
+                "details": {"tag": "best_fg"},
+                "force": _force_payload(2000, base_score=900),
+            },
+        ],
+        db_path=db_path,
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT score, fg_score, details_json, force_details_json
+            FROM team_buff_loadouts
+            WHERE song_name=? AND team_buff='T5'
+            """,
+            (song,),
+        ).fetchone()
+        assert row["score"] == 1000
+        assert row["fg_score"] == 1000
+        details = json.loads(row["details_json"])
+        assert details["tag"] == "high_base"
+        assert "ForceGreats" not in details
+        assert row["force_details_json"] is None
+
+        fg_row = conn.execute(
+            """
+            SELECT score, fg_score, force_details_json
+            FROM team_buff_fg_loadouts
+            WHERE song_name=? AND team_buff='T5'
+            """,
+            (song,),
+        ).fetchone()
+        assert fg_row["score"] == 900
+        assert fg_row["fg_score"] == 2000
+        assert json.loads(fg_row["force_details_json"])["Score"] == 2000
     finally:
         conn.close()
 
