@@ -32,12 +32,12 @@ def normalize_manifest_path(path_text: str) -> str:
     return os.path.abspath(str(path_text or "")).casefold()
 
 
-def _song_identity(path_text: str) -> tuple[str, int, int] | None:
+def _path_identity(path_text: str) -> tuple[str, int, int] | None:
     try:
         abs_path = os.path.abspath(str(path_text))
         st = os.stat(abs_path)
     except OSError as exc:
-        logger.debug("frontier_cache_manifest:_song_identity: %s", exc)
+        logger.debug("frontier_cache_manifest:_path_identity: %s", exc)
         return None
     mtime_ns_raw = getattr(st, "st_mtime_ns", None)
     mtime_ns = int(mtime_ns_raw) if isinstance(mtime_ns_raw, int) else int(float(st.st_mtime) * 1e9)
@@ -123,8 +123,9 @@ def build_manifest_plan(
     hits: list[str] = []
     misses: list[str] = []
     key_by_norm: dict[str, str] = {}
+    updated_entries = 0
     for song_path in paths:
-        identity = _song_identity(song_path)
+        identity = _path_identity(song_path)
         if identity is None:
             misses.append(song_path)
             continue
@@ -138,18 +139,43 @@ def build_manifest_plan(
             file_size=file_size,
         )
         key_by_norm[normalize_manifest_path(abs_path)] = key
-        cache_file = str((entries.get(key) or {}).get("cache_file", "") or "").strip()
-        cache_hit = bool(cache_file and os.path.exists(cache_file))
-        if cache_hit and cache_file_validator is not None:
+        entry = entries.get(key) or {}
+        cache_file = str(entry.get("cache_file", "") or "").strip()
+        cache_identity = _path_identity(cache_file) if cache_file else None
+        cache_hit = cache_identity is not None
+        if cache_hit:
+            _cache_abs_path, cache_mtime_ns, cache_size = cache_identity
+            entry_mtime_ns = entry.get("cache_mtime_ns")
+            entry_size = entry.get("cache_size")
+            if entry_mtime_ns is None or entry_size is None:
+                cache_hit = False
+            else:
+                try:
+                    cache_hit = int(entry_mtime_ns) == int(cache_mtime_ns) and int(entry_size) == int(cache_size)
+                except (TypeError, ValueError):
+                    cache_hit = False
+        if cache_identity is not None and not cache_hit and cache_file_validator is not None:
             try:
                 cache_hit = bool(cache_file_validator(cache_file))
             except Exception as exc:
                 logger.debug("frontier_cache_manifest:cache_file_validator: %s", exc)
                 cache_hit = False
+            if cache_hit:
+                cache_abs_path, cache_mtime_ns, cache_size = cache_identity
+                entries[key] = {
+                    "cache_file": str(cache_abs_path),
+                    "cache_mtime_ns": int(cache_mtime_ns),
+                    "cache_size": int(cache_size),
+                    "updated_at_ns": int(time.time_ns()),
+                }
+                updated_entries += 1
         if cache_hit:
             hits.append(song_path)
         else:
             misses.append(song_path)
+
+    if updated_entries > 0:
+        _save_manifest(manifest_path, cache_version=cache_version, version_field=version_field, entries=entries)
 
     return FrontierCacheManifestPlan(
         total_paths=len(paths),
@@ -166,6 +192,7 @@ def apply_manifest_results(
     cache_version: str,
     version_field: str,
     results: Iterable[object],
+    cache_file_validator: Callable[[str], bool] | None = None,
 ) -> int:
     entries = _load_manifest(manifest_path, cache_version=cache_version, version_field=version_field)
     updated = 0
@@ -174,12 +201,30 @@ def apply_manifest_results(
         song_path = str(getattr(item, "path", "") or "").strip()
         cache_file = str(getattr(item, "cache_file", "") or "").strip()
         source = str(getattr(item, "source", "") or "").strip().lower()
-        if source not in {"built", "disk", "memory"} or not song_path or not cache_file or not os.path.exists(cache_file):
+        if source not in {"built", "disk", "memory"} or not song_path or not cache_file:
+            continue
+        cache_identity = _path_identity(cache_file)
+        if cache_identity is None:
+            continue
+        if cache_file_validator is not None:
+            try:
+                if not bool(cache_file_validator(cache_file)):
+                    continue
+            except Exception as exc:
+                logger.debug("frontier_cache_manifest:apply_cache_file_validator: %s", exc)
+                continue
+        cache_abs_path, cache_mtime_ns, cache_size = cache_identity
+        if not os.path.exists(cache_abs_path):
             continue
         key = plan.key_by_norm_path.get(normalize_manifest_path(song_path))
         if not key:
             continue
-        entries[key] = {"cache_file": str(cache_file), "updated_at_ns": now_ns}
+        entries[key] = {
+            "cache_file": str(cache_abs_path),
+            "cache_mtime_ns": int(cache_mtime_ns),
+            "cache_size": int(cache_size),
+            "updated_at_ns": now_ns,
+        }
         updated += 1
 
     if updated > 0:

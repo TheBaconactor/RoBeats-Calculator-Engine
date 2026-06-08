@@ -127,12 +127,15 @@ def _build_manifest_plan(song_paths: Iterable[str], ref_arrays: dict):
 
 
 def _apply_manifest_results(*, plan, results: Iterable[object]) -> int:
+    from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_cache_file_is_complete
+
     return _shared_apply_manifest_results(
         plan=plan,
         manifest_path=_manifest_path(),
         cache_version=_cache_version(),
         version_field="frontier_version",
         results=results,
+        cache_file_validator=timeline_frontier_cache_file_is_complete,
     )
 
 

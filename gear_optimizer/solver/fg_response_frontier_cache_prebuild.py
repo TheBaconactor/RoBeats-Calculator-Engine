@@ -122,13 +122,20 @@ def _build_manifest_plan(song_paths: Iterable[str], ref_arrays: dict, *, stat_ke
     )
 
 
-def _apply_manifest_results(*, plan, results: Iterable[object]) -> int:
+def _apply_manifest_results(*, plan, results: Iterable[object], stat_keys: Iterable[tuple[int, int]]) -> int:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import fg_response_cache_file_is_complete
+
+    stat_keys_tuple = tuple(stat_keys or ())
     return _shared_apply_manifest_results(
         plan=plan,
         manifest_path=_manifest_path(),
         cache_version=_cache_version(),
         version_field="cache_version",
         results=results,
+        cache_file_validator=lambda cache_file: fg_response_cache_file_is_complete(
+            cache_file,
+            stat_keys=stat_keys_tuple,
+        ),
     )
 
 
@@ -379,7 +386,7 @@ def run_fg_response_frontier_cache_prebuild(
 
     missing_paths = sorted(manifest_plan.missing_paths, key=_fg_response_frontier_prebuild_priority)
     run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
-    _apply_manifest_results(plan=manifest_plan, results=results)
+    _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
     elapsed_ms = float((time.perf_counter() - started) * 1000.0)
     return FgResponseFrontierCachePrebuildSummary(
         total=int(manifest_plan.total_paths),

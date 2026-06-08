@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import json
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -387,6 +389,7 @@ def test_fg_response_manifest_treats_incomplete_cache_file_as_miss(monkeypatch, 
     prebuild._apply_manifest_results(
         plan=plan,
         results=[SimpleNamespace(path=str(song_path), source="disk", cache_file=str(cache_path))],
+        stat_keys=stat_keys,
     )
 
     second_plan = prebuild._build_manifest_plan([str(song_path)], ref_arrays, stat_keys=stat_keys)
@@ -416,3 +419,52 @@ def test_timeline_manifest_treats_incomplete_cache_file_as_miss(monkeypatch, tmp
 
     assert second_plan.hit_paths == ()
     assert second_plan.missing_paths == (str(song_path),)
+
+
+def test_manifest_identity_hit_does_not_validate_payload(tmp_path: Path) -> None:
+    from gear_optimizer.solver.frontier_cache_manifest import build_manifest_plan
+
+    song_path = tmp_path / "Song.txt"
+    cache_path = tmp_path / "cache.npz"
+    manifest_path = tmp_path / "manifest.json"
+    song_path.write_text("fake", encoding="utf-8")
+    cache_path.write_text("cache", encoding="utf-8")
+    st = os.stat(cache_path)
+
+    first_plan = build_manifest_plan(
+        [str(song_path)],
+        manifest_path=manifest_path,
+        cache_version="v1",
+        version_field="version",
+        ref_sig_hex="ref",
+    )
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "version": "v1",
+                "entries": {
+                    first_plan.key_by_norm_path[os.path.abspath(song_path).casefold()]: {
+                        "cache_file": str(cache_path),
+                        "cache_mtime_ns": int(st.st_mtime_ns),
+                        "cache_size": int(st.st_size),
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    second_plan = build_manifest_plan(
+        [str(song_path)],
+        manifest_path=manifest_path,
+        cache_version="v1",
+        version_field="version",
+        ref_sig_hex="ref",
+        cache_file_validator=lambda _path: (_ for _ in ()).throw(
+            AssertionError("identity hit must not validate payload")
+        ),
+    )
+
+    assert second_plan.hit_paths == (str(song_path),)
+    assert second_plan.missing_paths == ()
