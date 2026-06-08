@@ -250,16 +250,9 @@ class FgPlanner:
         )
 
     @staticmethod
-    def plan_for_native_song(song, *, fg_candidate_limit: int) -> FgResponseFrontierPreparedPlan:
-        from gear_optimizer.solver.native_inflight_pipeline import (
-            prepare_ga_candidate_surface_for_fg,
-            resolve_active_fg_calc_song,
-        )
+    def plan_prepared_ga_candidates(song, ga_candidates) -> FgResponseFrontierPreparedPlan:
+        from gear_optimizer.solver.native_inflight_pipeline import resolve_active_fg_calc_song
 
-        ga_candidates, _preselect_count, _hydrated = prepare_ga_candidate_surface_for_fg(
-            song,
-            fg_candidate_limit=int(fg_candidate_limit),
-        )
         calc_song = resolve_active_fg_calc_song(song)
         if not isinstance(calc_song, dict):
             raise RuntimeError("FG dynamic prep requires a resolved calc song")

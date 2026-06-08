@@ -382,16 +382,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     plan_t0 = time.perf_counter()
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
-    runtime.fg.fg_response_frontier_plan = (
-        FgPlanner.plan_many(
-            ga_candidates,
-            resolve_active_fg_calc_song(song),
-            getattr(song.gpu_inputs, "ref_arrays", None),
-            getattr(song.gpu_inputs, "meta_primary_color", ""),
-            ga_registry=getattr(song.gpu_inputs, "registry", None),
-            scoring_bundle=getattr(song.runtime.fg, "fg_response_scoring_bundle", None),
-        )
-    )
+    runtime.fg.fg_response_frontier_plan = FgPlanner.plan_prepared_ga_candidates(song, ga_candidates)
     if runtime.fg.fg_response_frontier_plan is None:
         raise RuntimeError(
             "FG dynamic prep did not materialize the exact response frontier plan "
