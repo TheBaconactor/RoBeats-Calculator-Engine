@@ -3,6 +3,13 @@ import pytest
 
 pytestmark = pytest.mark.gpu
 
+# GPU exact-replay tests need the timeline frontier prebuilt (same as production startup).
+# Isolated GPU unit tests do not run the full app prebuild; call this before real scoring.
+def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+
+    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+
 
 def _mock_song(*, name: str, n_notes: int = 16, duration: float = 60.0) -> dict:
     timestamps = np.linspace(0.0, float(duration), int(n_notes), dtype=np.float32)
@@ -91,6 +98,8 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
         "force": None,
     }
 
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+
     out = compute_team_buff_tier_leaderboards(
         entries=[entry_a, entry_b], calc_song=calc_song, ref_arrays=ref_arrays, cfg_dict=cfg_dict
     )
@@ -151,6 +160,8 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base():
         "force": None,
     }
 
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
         calc_song=calc_song,
@@ -188,6 +199,7 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
     }
 
     entry = {
+        "loadout_hash": "hash-identity",
         "score": 1,
         "fg_score": 0,
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
@@ -196,6 +208,8 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
         "details": {"Stats": stats},
         "force": None,
     }
+
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
@@ -234,9 +248,33 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
     }
 
     entries = [
-        {"score": 1, "fg_score": 0, "gear": ["B"], "minis": ["M2"], "details": {"Stats": stats}, "force": None},
-        {"score": 2, "fg_score": 0, "gear": ["A"], "minis": ["M1"], "details": {"Stats": stats}, "force": None},
-        {"score": 3, "fg_score": 0, "gear": ["C"], "minis": ["M3"], "details": {"Stats": stats}, "force": None},
+        {
+            "loadout_hash": "hash-b",
+            "score": 1,
+            "fg_score": 0,
+            "gear": ["B"],
+            "minis": ["M2"],
+            "details": {"Stats": stats},
+            "force": None,
+        },
+        {
+            "loadout_hash": "hash-a",
+            "score": 2,
+            "fg_score": 0,
+            "gear": ["A"],
+            "minis": ["M1"],
+            "details": {"Stats": stats},
+            "force": None,
+        },
+        {
+            "loadout_hash": "hash-c",
+            "score": 3,
+            "fg_score": 0,
+            "gear": ["C"],
+            "minis": ["M3"],
+            "details": {"Stats": stats},
+            "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+        },
     ]
 
     def fake_compute_team_buff_tier_leaderboards(**kwargs):
@@ -245,11 +283,18 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
             "tiers": {
                 "T5": {
                     "base_top51": [
-                        {"gear": ["B"], "minis": ["M2"], "score": 20, "fg_score": 0},
-                        {"gear": ["A"], "minis": ["M1"], "score": 10, "fg_score": 0},
+                        {"loadout_hash": "hash-b", "gear": ["B"], "minis": ["M2"], "score": 20, "fg_score": 0},
+                        {"loadout_hash": "hash-a", "gear": ["A"], "minis": ["M1"], "score": 10, "fg_score": 0},
                     ],
                     "fg_top51": [
-                        {"gear": ["C"], "minis": ["M3"], "score": 30, "fg_score": 40, "fg_base_score": 15},
+                        {
+                            "loadout_hash": "hash-c",
+                            "gear": ["C"],
+                            "minis": ["M3"],
+                            "score": 30,
+                            "fg_score": 40,
+                            "fg_base_score": 15,
+                        },
                     ],
                 }
             },
@@ -270,6 +315,105 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
     )
 
     assert [row["gear"][0] for row in batches["T5"]] == ["B", "A", "C"]
+
+
+def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_gear_minis(monkeypatch):
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    calc_song = _mock_song(name="pytest_team_buff_hash_collision", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    shared_stats = {
+        "Perfect Points": 120,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 200,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+    shared_gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
+    shared_minis = ["M1", "M2", "M3"]
+
+    entry_a = {
+        "loadout_hash": "hash-a",
+        "score": 100,
+        "fg_score": 0,
+        "gear": list(shared_gear),
+        "minis": list(shared_minis),
+        "details": {"Stats": dict(shared_stats), "Marker": "entry-a"},
+        "force": None,
+    }
+    entry_b = {
+        "loadout_hash": "hash-b",
+        "score": 101,
+        "fg_score": 250,
+        "gear": list(shared_gear),
+        "minis": list(shared_minis),
+        "details": {"Stats": dict(shared_stats), "Marker": "entry-b"},
+        "force": {
+            "Score": 250,
+            "BaseStats": dict(shared_stats),
+            "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 250, "Marker": "force-b"},
+        },
+    }
+
+    def _fake_compute_team_buff_tier_leaderboards(**kwargs):
+        return {
+            "meta": {"base_team_buff": "T5", "team_color": "Rush", "primary_color": "Rush", "secondary_color": "Flow"},
+            "tiers": {
+                "T5": {
+                    "base_top51": [
+                        {
+                            "loadout_hash": "hash-a",
+                            "gear": list(shared_gear),
+                            "minis": list(shared_minis),
+                            "score": 320,
+                            "fg_score": 0,
+                        }
+                    ],
+                    "fg_top51": [
+                        {
+                            "loadout_hash": "hash-b",
+                            "gear": list(shared_gear),
+                            "minis": list(shared_minis),
+                            "score": 300,
+                            "fg_score": 350,
+                            "fg_base_score": 300,
+                            "force_config": {"NonFever1": 1},
+                        }
+                    ],
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        _fake_compute_team_buff_tier_leaderboards,
+    )
+
+    batches = build_team_buff_tier_db_batches(
+        entries=[entry_a, entry_b],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5",),
+        limit=2,
+    )
+
+    rows = batches["T5"]
+    assert len(rows) == 2
+    base_row = next(row for row in rows if str(row.get("loadout_hash") or "") == "hash-a")
+    fg_row = next(row for row in rows if str(row.get("loadout_hash") or "") == "hash-b")
+    assert base_row.get("details", {}).get("Marker") == "entry-a"
+    assert base_row.get("force") is None
+    assert fg_row.get("details", {}).get("Marker") == "entry-b"
+    assert fg_row.get("force", {}).get("ForceGreats", {}).get("Marker") == "force-b"
 
 
 def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp():
@@ -297,6 +441,7 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
     }
 
     entry = {
+        "loadout_hash": "hash-missing-base",
         "score": 1,
         "fg_score": 2,
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
@@ -305,6 +450,8 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
         # Flat force payload as stored in DB; BaseStats also missing base effect to emulate repaired rows.
         "force": {"BaseStats": stats, "GemCounts": {"Perfect Points": 0}, "ForceGreats": {"config": {"NonFever1": 1}}},
     }
+
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
@@ -344,6 +491,7 @@ def test_team_buff_tiers_support_target_team_color_overrides():
         "Chill": 0,
     }
     entry = {
+        "loadout_hash": "hash-color-modes",
         "score": 0,
         "fg_score": 0,
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
@@ -351,6 +499,8 @@ def test_team_buff_tiers_support_target_team_color_overrides():
         "details": {"Stats": stats},
         "force": None,
     }
+
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     primary_batches = build_team_buff_tier_db_batches(
         entries=[entry],
@@ -419,6 +569,8 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score():
         "force": {"BaseStats": stats, "GemCounts": {"Perfect Points": 0}, "ForceGreats": {"config": {"NonFever1": 1}}},
     }
 
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
         calc_song=calc_song,
@@ -429,9 +581,11 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score():
 
     t5 = out["tiers"]["T5"]["base_top51"][0]
     t51 = out["tiers"]["T51"]["base_top51"][0]
+    t5_fg = out["tiers"]["T5"]["fg_top51"][0]
+    t51_fg = out["tiers"]["T51"]["fg_top51"][0]
 
     assert t5["score"] != t51["score"]
-    assert t5["fg_score"] != t51["fg_score"]
+    assert t5_fg["fg_score"] != t51_fg["fg_score"]
 
 
 def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(monkeypatch):
@@ -468,6 +622,8 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
         },
     }
 
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+
     expected_base = int(score_stats_exact(stats, calc_song, ref_arrays))
     expected_fg = int(evaluate_force_greats_exact(stats, calc_song, ref_arrays, [1])["final_score"])
 
@@ -482,11 +638,11 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
 
     tier = out["tiers"]["T5"]
     assert tier["base_top51"][0]["score"] == expected_base
-    assert tier["base_top51"][0]["fg_score"] == expected_fg
+    expected_paired_fg_base = int(score_stats_exact(stats, calc_song, ref_arrays))
     assert len(tier["fg_top51"]) == 1
     assert tier["fg_top51"][0]["fg_score"] == expected_fg
-    assert tier["fg_top51"][0]["fg_base_score"] == 90
-    assert tier["fg_top51"][0]["score"] == expected_base
+    assert tier["fg_top51"][0]["fg_base_score"] == expected_paired_fg_base
+    assert "score" not in tier["fg_top51"][0]
 
 
 @pytest.mark.parametrize("tier_name", ["NONE", "T1", "T10", "T20", "T50", "T51"])
@@ -530,6 +686,8 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
     tier_stats = dict(stats)
     for key in set(base_effect) | set(target_effect):
         tier_stats[key] = int(tier_stats.get(key, 0)) + int(target_effect.get(key, 0)) - int(base_effect.get(key, 0))
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+
     expected_base = int(score_stats_exact(tier_stats, calc_song, ref_arrays))
     expected_fg = int(evaluate_force_greats_exact(tier_stats, calc_song, ref_arrays, [1])["final_score"])
 
@@ -544,13 +702,12 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
 
     tier = out["tiers"][tier_name]
     assert tier["base_top51"][0]["score"] == expected_base
-    assert tier["base_top51"][0]["fg_score"] == expected_fg
-    if expected_fg > expected_base:
+    if expected_fg > 0:
         assert len(tier["fg_top51"]) == 1
         assert tier["fg_top51"][0]["fg_score"] == expected_fg
         assert tier["fg_top51"][0]["fg_base_score"] == expected_base
         assert tier["fg_top51"][0]["source_fg_base_score"] == 130
-        assert tier["fg_top51"][0]["score"] == expected_base
+        assert "score" not in tier["fg_top51"][0]
     else:
         assert tier["fg_top51"] == []
 
@@ -576,6 +733,7 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
         "Chill": 0,
     }
     entry = {
+        "loadout_hash": "hash-fg-base",
         "score": 100,
         "fg_score": 95,
         "fg_base_score": 90,
@@ -595,6 +753,7 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
                 "T5": {
                     "base_top51": [
                         {
+                            "loadout_hash": entry["loadout_hash"],
                             "gear": list(entry["gear"]),
                             "minis": list(entry["minis"]),
                             "score": 110,
@@ -603,6 +762,7 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
                     ],
                     "fg_top51": [
                         {
+                            "loadout_hash": entry["loadout_hash"],
                             "gear": list(entry["gear"]),
                             "minis": list(entry["minis"]),
                             "score": 110,
@@ -647,6 +807,7 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
     cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     entry = {
+        "loadout_hash": "hash-source-meta",
         "score": 100,
         "fg_score": 95,
         "fg_base_score": 90,
@@ -663,6 +824,7 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
                 "T10": {
                     "base_top51": [
                         {
+                            "loadout_hash": entry["loadout_hash"],
                             "gear": list(entry["gear"]),
                             "minis": list(entry["minis"]),
                             "score": 110,
@@ -671,6 +833,7 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
                     ],
                     "fg_top51": [
                         {
+                            "loadout_hash": entry["loadout_hash"],
                             "gear": list(entry["gear"]),
                             "minis": list(entry["minis"]),
                             "score": 110,
@@ -997,9 +1160,14 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
         "Chill": 49,
     }
 
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    apply_timing_envelope(calc_song)
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     exact = int(score_stats_exact(stats, calc_song, ref_arrays))
 
     entry = {
+        "loadout_hash": "hash-exact-rescore",
         "score": 0,
         "fg_score": 0,
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],

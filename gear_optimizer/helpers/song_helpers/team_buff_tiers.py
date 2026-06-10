@@ -318,6 +318,84 @@ def _apply_details_delta(details: object, delta: dict[str, int]) -> dict:
     return out
 
 
+def _fg_stats_at_tier(
+    fg: dict,
+    *,
+    delta_pp: int,
+    delta_primary: int,
+    delta_secondary: int,
+    primary_color: str,
+    secondary_color: str,
+) -> dict[str, int]:
+    stats = {
+        "Perfect Points": int(fg.get("pp", 0) or 0) + int(delta_pp),
+        "Combo Multiplier": int(fg.get("cm_stat", 0) or 0),
+        "Fever Multiplier": int(fg.get("fm_stat", 0) or 0),
+        "Fever Time": int(fg.get("ft_stat", 0) or 0),
+        "Fever Fill Rate": int(fg.get("ff_stat", 0) or 0),
+    }
+    if primary_color:
+        stats[primary_color] = int(fg.get("p_val", 0) or 0) + int(delta_primary)
+    if secondary_color:
+        stats[secondary_color] = int(fg.get("s_val", 0) or 0) + int(delta_secondary)
+    return stats
+
+
+def _fg_identity_details(force_out: object, calc_song: dict) -> dict[str, str]:
+    """Chart/loadout identity fields required by FG serialization (not meta scoring)."""
+    meta0 = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
+    chart_primary = _norm_text(meta0.get("Primary Color", ""))
+    chart_secondary = _norm_text(meta0.get("Secondary Color", ""))
+    selected = ""
+    if isinstance(force_out, dict):
+        selected = _norm_text(force_out.get("Selected Element") or force_out.get("SelectedElement") or "")
+    primary = chart_primary or selected
+    secondary = chart_secondary or primary or "General"
+    return {
+        "SelectedElement": selected or primary,
+        "PrimaryColor": primary,
+        "SecondaryColor": secondary,
+    }
+
+
+def _fg_paired_base_snapshot(fg: dict) -> dict:
+    """Stats slice used for paired FG base replay (force BaseStats when present)."""
+    return {
+        "pp": int(fg.get("base_pp", fg.get("pp", 0)) or 0),
+        "p_val": int(fg.get("base_p_val", fg.get("p_val", 0)) or 0),
+        "s_val": int(fg.get("base_s_val", fg.get("s_val", 0)) or 0),
+        "ft_stat": int(fg.get("base_ft_stat", fg.get("ft_stat", 0)) or 0),
+        "ff_stat": int(fg.get("base_ff_stat", fg.get("ff_stat", 0)) or 0),
+        "cm_stat": int(fg.get("base_cm_stat", fg.get("cm_stat", 0)) or 0),
+        "fm_stat": int(fg.get("base_fm_stat", fg.get("fm_stat", 0)) or 0),
+    }
+
+
+def _replay_fg_base_score(
+    fg: dict,
+    *,
+    delta_pp: int,
+    delta_primary: int,
+    delta_secondary: int,
+    primary_color: str,
+    secondary_color: str,
+    calc_song: dict,
+    ref_arrays: dict,
+) -> int:
+    """FG-surface replay: score the paired base allocation without forced greats."""
+    from ...solver.scoring.exact_rescore import score_stats_exact
+
+    stats = _fg_stats_at_tier(
+        _fg_paired_base_snapshot(fg),
+        delta_pp=delta_pp,
+        delta_primary=delta_primary,
+        delta_secondary=delta_secondary,
+        primary_color=primary_color,
+        secondary_color=secondary_color,
+    )
+    return int(score_stats_exact(stats, calc_song, ref_arrays))
+
+
 def _apply_force_delta(force_obj: object, *, delta: dict[str, int], fg_score: int) -> object:
     if not isinstance(force_obj, dict) or not force_obj:
         return force_obj
@@ -392,6 +470,7 @@ def compute_team_buff_tier_leaderboards(
     tiers: tuple[str, ...] = DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     base_team_color_override: object = None,
     target_team_color_override: object = None,
+    replay_surfaces: tuple[str, ...] = ("meta", "fg"),
 ) -> dict:
     """
     Re-score persisted entries under TeamBuff tiers and return per-tier leaderboards.
@@ -407,6 +486,8 @@ def compute_team_buff_tier_leaderboards(
     n = max(0, int(limit))
     if not entries or n <= 0:
         return {"tiers": {}, "meta": {"candidate_count": 0}}
+    replay_meta = "meta" in {str(s).strip().lower() for s in (replay_surfaces or ("meta", "fg"))}
+    replay_fg = "fg" in {str(s).strip().lower() for s in (replay_surfaces or ("meta", "fg"))}
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
 
     meta0 = calc_song.get("metadata", {}) or {}
@@ -474,6 +555,13 @@ def compute_team_buff_tier_leaderboards(
             fg_ff_stat = int(ff_idx)
             fg_cm_stat = _safe_int(stats_base.get("Combo Multiplier", 0), 0)
             fg_fm_stat = _safe_int(stats_base.get("Fever Multiplier", 0), 0)
+            fg_base_pp_stat = int(base_pp_stat)
+            fg_base_primary_val = int(base_primary_val)
+            fg_base_secondary_val = int(base_secondary_val)
+            fg_base_ft_stat = int(ft_idx)
+            fg_base_ff_stat = int(ff_idx)
+            fg_base_cm_stat = _safe_int(stats_base.get("Combo Multiplier", 0), 0)
+            fg_base_fm_stat = _safe_int(stats_base.get("Fever Multiplier", 0), 0)
             if fg_counts:
                 fg_stats0 = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
                 fg_stats = (
@@ -482,6 +570,12 @@ def compute_team_buff_tier_leaderboards(
                 if not isinstance(fg_stats, dict) or not fg_stats:
                     fg_stats = stats_base
 
+                force_base_raw = force_obj.get("BaseStats") if isinstance(force_obj, dict) else None
+                if isinstance(force_base_raw, dict) and force_base_raw:
+                    force_base_stats = _ensure_stats_include_base_effect(force_base_raw, base_effect)
+                else:
+                    force_base_stats = fg_stats
+
                 fg_pp_stat = _safe_int(fg_stats.get("Perfect Points", 0), 0)
                 fg_primary_val = _safe_int(fg_stats.get(primary_color, 0), 0) if primary_color else 0
                 fg_secondary_val = _safe_int(fg_stats.get(secondary_color, 0), 0) if secondary_color else 0
@@ -489,6 +583,14 @@ def compute_team_buff_tier_leaderboards(
                 fg_ff_stat = _safe_int(fg_stats.get("Fever Fill Rate", 0), 0)
                 fg_cm_stat = _safe_int(fg_stats.get("Combo Multiplier", 0), 0)
                 fg_fm_stat = _safe_int(fg_stats.get("Fever Multiplier", 0), 0)
+
+                fg_base_pp_stat = _safe_int(force_base_stats.get("Perfect Points", 0), 0)
+                fg_base_primary_val = _safe_int(force_base_stats.get(primary_color, 0), 0) if primary_color else 0
+                fg_base_secondary_val = _safe_int(force_base_stats.get(secondary_color, 0), 0) if secondary_color else 0
+                fg_base_ft_stat = _safe_int(force_base_stats.get("Fever Time", 0), 0)
+                fg_base_ff_stat = _safe_int(force_base_stats.get("Fever Fill Rate", 0), 0)
+                fg_base_cm_stat = _safe_int(force_base_stats.get("Combo Multiplier", 0), 0)
+                fg_base_fm_stat = _safe_int(force_base_stats.get("Fever Multiplier", 0), 0)
 
             per_entry.append(
                 {
@@ -518,6 +620,13 @@ def compute_team_buff_tier_leaderboards(
                         "ff_stat": int(fg_ff_stat),
                         "cm_stat": int(fg_cm_stat),
                         "fm_stat": int(fg_fm_stat),
+                        "base_pp": int(fg_base_pp_stat),
+                        "base_p_val": int(fg_base_primary_val),
+                        "base_s_val": int(fg_base_secondary_val),
+                        "base_ft_stat": int(fg_base_ft_stat),
+                        "base_ff_stat": int(fg_base_ff_stat),
+                        "base_cm_stat": int(fg_base_cm_stat),
+                        "base_fm_stat": int(fg_base_fm_stat),
                         "counts": fg_counts,
                         "config": (
                             (force_obj.get("ForceGreats", {}) or {}).get("config")
@@ -551,9 +660,9 @@ def compute_team_buff_tier_leaderboards(
             int(target_effect.get(secondary_color, 0) - base_effect.get(secondary_color, 0)) if secondary_color else 0,
         )
 
-    # Precompute all FG scores for retained rows using CPU exact replay.
+    # Precompute FG scores on the FG surface only (forced-greats replay).
     fg_scores_by_sid: dict[int, dict[str, list[int]]] = {}
-    have_fg = any(isinstance(e.get("fg"), dict) for e in per_entry)
+    have_fg = replay_fg and any(isinstance(e.get("fg"), dict) for e in per_entry)
     if have_fg:
         for sid, group_entries in per_entry_by_song_id.items():
             tier_to_scores: dict[str, list[int]] = {str(t): [0] * len(group_entries) for t in tier_list}
@@ -576,17 +685,14 @@ def compute_team_buff_tier_leaderboards(
                     counts0 = fg.get("counts")
                     if not isinstance(counts0, (list, tuple)) or not counts0:
                         continue
-                    stats = {
-                        "Perfect Points": int(fg.get("pp", 0) or 0) + int(dpp),
-                        "Combo Multiplier": int(fg.get("cm_stat", 0) or 0),
-                        "Fever Multiplier": int(fg.get("fm_stat", 0) or 0),
-                        "Fever Time": int(fg.get("ft_stat", 0) or 0),
-                        "Fever Fill Rate": int(fg.get("ff_stat", 0) or 0),
-                    }
-                    if primary_color:
-                        stats[primary_color] = int(fg.get("p_val", 0) or 0) + int(dp)
-                    if secondary_color:
-                        stats[secondary_color] = int(fg.get("s_val", 0) or 0) + int(ds)
+                    stats = _fg_stats_at_tier(
+                        fg,
+                        delta_pp=int(dpp),
+                        delta_primary=int(dp),
+                        delta_secondary=int(ds),
+                        primary_color=primary_color,
+                        secondary_color=secondary_color,
+                    )
                     replay = evaluate_force_greats_exact(stats, group_song, ref_arrays, list(counts0))
                     if isinstance(replay, dict):
                         out_list[idx] = int(replay.get("final_score", 0) or 0)
@@ -609,61 +715,62 @@ def compute_team_buff_tier_leaderboards(
                 continue
 
             base_scores: list[int] = []
-            for e in group_entries:
-                b = e.get("base") or {}
-                pp_stat = int(b.get("pp", 0) or 0) + int(delta_pp)
-                p_val = int(b.get("p_val", 0) or 0) + int(delta_primary)
-                s_val = int(b.get("s_val", 0) or 0) + int(delta_secondary)
-                stats = {
-                    "Perfect Points": int(pp_stat),
-                    "Combo Multiplier": int(b.get("cm_stat", 0) or 0),
-                    "Fever Multiplier": int(b.get("fm_stat", 0) or 0),
-                    "Fever Time": int(b.get("ft_idx", 0) or 0),
-                    "Fever Fill Rate": int(b.get("ff_idx", 0) or 0),
-                }
-                if primary_color:
-                    stats[primary_color] = int(p_val)
-                if secondary_color:
-                    stats[secondary_color] = int(s_val)
-                base_scores.append(int(score_stats_exact(stats, group_song, ref_arrays)))
+            if replay_meta:
+                for e in group_entries:
+                    b = e.get("base") or {}
+                    pp_stat = int(b.get("pp", 0) or 0) + int(delta_pp)
+                    p_val = int(b.get("p_val", 0) or 0) + int(delta_primary)
+                    s_val = int(b.get("s_val", 0) or 0) + int(delta_secondary)
+                    stats = {
+                        "Perfect Points": int(pp_stat),
+                        "Combo Multiplier": int(b.get("cm_stat", 0) or 0),
+                        "Fever Multiplier": int(b.get("fm_stat", 0) or 0),
+                        "Fever Time": int(b.get("ft_idx", 0) or 0),
+                        "Fever Fill Rate": int(b.get("ff_idx", 0) or 0),
+                    }
+                    if primary_color:
+                        stats[primary_color] = int(p_val)
+                    if secondary_color:
+                        stats[secondary_color] = int(s_val)
+                    base_scores.append(int(score_stats_exact(stats, group_song, ref_arrays)))
 
             fg_scores_for_tier = (fg_scores_by_sid.get(sid) or {}).get(str(tier)) if have_fg else None
 
-            for i, (e, base_score) in enumerate(zip(group_entries, base_scores)):
+            for i, e in enumerate(group_entries):
+                base_score = int(base_scores[i]) if replay_meta and i < len(base_scores) else 0
                 fg_score = 0
                 if fg_scores_for_tier is not None and i < int(len(fg_scores_for_tier)):
                     fg_score = int(fg_scores_for_tier[i] or 0)
                 fg = e.get("fg")
-                source_fg_base_compare_score = int(e.get("source_fg_base_score") or 0)
-                if source_fg_base_compare_score <= 0:
-                    source_fg_base_compare_score = int(base_score)
-                # Public derived-tier views should surface FG rows when the replayed
-                # target-tier FG score beats the replayed target-tier base score.
-                # Preserve the source compact DB pairing separately for debugging and
-                # baseline-tier canonical semantics.
-                fg_visibility_compare_score = int(base_score)
-                if str(tier).strip().upper() == str(base_team_buff).strip().upper():
-                    fg_visibility_compare_score = int(source_fg_base_compare_score)
 
-                out_row = {
-                    "loadout_hash": e.get("loadout_hash") or "",
-                    "gear": e.get("gear") or [],
-                    "minis": e.get("minis") or [],
-                    "score": int(base_score),
-                    "fg_score": int(fg_score) if int(fg_score) > 0 else 0,
-                    "source_score": int(e.get("source_score") or 0),
-                    "source_fg_score": int(e.get("source_fg_score") or 0),
-                }
-                base_ranked.append(out_row)
-
-                if isinstance(fg, dict) and int(fg_score) > int(fg_visibility_compare_score):
-                    fg_ranked.append(
+                if replay_meta:
+                    base_ranked.append(
                         {
                             "loadout_hash": e.get("loadout_hash") or "",
                             "gear": e.get("gear") or [],
                             "minis": e.get("minis") or [],
                             "score": int(base_score),
-                            "fg_base_score": int(fg_visibility_compare_score),
+                            "source_score": int(e.get("source_score") or 0),
+                        }
+                    )
+
+                if replay_fg and isinstance(fg, dict) and int(fg_score) > 0:
+                    fg_base_score = _replay_fg_base_score(
+                        fg,
+                        delta_pp=int(delta_pp),
+                        delta_primary=int(delta_primary),
+                        delta_secondary=int(delta_secondary),
+                        primary_color=primary_color,
+                        secondary_color=secondary_color,
+                        calc_song=group_song,
+                        ref_arrays=ref_arrays,
+                    )
+                    fg_ranked.append(
+                        {
+                            "loadout_hash": e.get("loadout_hash") or "",
+                            "gear": e.get("gear") or [],
+                            "minis": e.get("minis") or [],
+                            "fg_base_score": int(fg_base_score),
                             "fg_score": int(fg_score),
                             "source_score": int(e.get("source_score") or 0),
                             "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
@@ -708,6 +815,7 @@ def build_team_buff_tier_db_batches(
     tiers: tuple[str, ...] = DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     base_team_color_override: object = None,
     target_team_color_override: object = None,
+    replay_surface: str = "both",
 ) -> dict[str, list[dict]]:
     """
     Return DB-ready entry batches per tier.
@@ -716,9 +824,15 @@ def build_team_buff_tier_db_batches(
         { "T5": [ {score, fg_score, gear, minis, details, force}, ... ], ... }
 
     Selection:
-    - union(top-N by base score, top-N by FG score) per tier
+    - meta: top-N by replayed base score only
+    - fg: top-N by replayed FG score only
+    - both: union(top-N base, top-N FG) for persistence canonicalization
     """
     tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
+    surface = str(replay_surface or "both").strip().lower()
+    if surface not in {"meta", "fg", "both"}:
+        surface = "both"
+    replay_surfaces = ("meta", "fg") if surface == "both" else (surface,)
 
     payload = compute_team_buff_tier_leaderboards(
         entries=entries,
@@ -729,6 +843,7 @@ def build_team_buff_tier_db_batches(
         tiers=tier_list,
         base_team_color_override=base_team_color_override,
         target_team_color_override=target_team_color_override,
+        replay_surfaces=replay_surfaces,
     )
 
     base_team_color, target_team_color = _resolve_team_colors_for_tiering(
@@ -740,21 +855,20 @@ def build_team_buff_tier_db_batches(
     base_team_buff = _resolve_base_team_buff(cfg_dict)
     base_effect = _team_buff_effect(base_team_buff, base_team_color)
 
-    # Match replay rows back to persisted entries using order-invariant gear/mini names.
-    def _stable_key_from_payload(e: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        return (
-            tuple(sorted(_flat_item_names(e.get("gear")))),
-            tuple(sorted(_representative_mini_names_from_any(e.get("minis")))),
-        )
+    # Match replay rows back to persisted entries by loadout_hash (primary DB key).
+    def _loadout_hash_from_payload(e: dict) -> str:
+        return _norm_text(e.get("loadout_hash", ""))
 
-    orig_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], dict] = {}
+    orig_by_hash: dict[str, dict] = {}
     for e in entries or []:
         if not isinstance(e, dict):
             continue
-        k = _stable_key_from_payload(e)
-        current = orig_by_key.get(k)
+        h = _loadout_hash_from_payload(e)
+        if not h:
+            continue
+        current = orig_by_hash.get(h)
         if not isinstance(current, dict) or _entry_origin_priority(e) > _entry_origin_priority(current):
-            orig_by_key[k] = e
+            orig_by_hash[h] = e
 
     batches: dict[str, list[dict]] = {}
     for tier, tier_payload in (payload.get("tiers") or {}).items():
@@ -767,120 +881,154 @@ def build_team_buff_tier_db_batches(
         base_top = tier_payload.get("base_top51") or []
         fg_top = tier_payload.get("fg_top51") or []
 
-        base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
-        fg_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
-        fg_base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
-        source_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
-        source_fg_base_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
-        source_fg_score_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], int] = {}
-        ordered_keys: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
-        ordered_key_set: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+        if surface == "meta":
+            selected_rows = [r for r in base_top if isinstance(r, dict)]
+        elif surface == "fg":
+            selected_rows = [r for r in fg_top if isinstance(r, dict)]
+        else:
+            base_score_by_hash: dict[str, int] = {}
+            fg_score_by_hash: dict[str, int] = {}
+            fg_base_score_by_hash: dict[str, int] = {}
+            source_score_by_hash: dict[str, int] = {}
+            source_fg_base_score_by_hash: dict[str, int] = {}
+            source_fg_score_by_hash: dict[str, int] = {}
+            ordered_hashes: list[str] = []
+            ordered_hash_set: set[str] = set()
 
-        for r in base_top:
-            if not isinstance(r, dict):
-                continue
-            k = _stable_key_from_payload(r)
-            base_score_by_key[k] = _safe_int(r.get("score"), 0)
-            fg_score_by_key[k] = _safe_int(r.get("fg_score"), 0)
-            if "source_score" in r:
-                source_score_by_key[k] = _safe_int(r.get("source_score"), 0)
-            if "source_fg_base_score" in r:
-                source_fg_base_score_by_key[k] = _safe_int(r.get("source_fg_base_score"), 0)
-            if "source_fg_score" in r:
-                source_fg_score_by_key[k] = _safe_int(r.get("source_fg_score"), 0)
-            if k not in ordered_key_set:
-                ordered_keys.append(k)
-                ordered_key_set.add(k)
+            for r in base_top:
+                if not isinstance(r, dict):
+                    continue
+                h = _loadout_hash_from_payload(r)
+                if not h:
+                    continue
+                base_score_by_hash[h] = _safe_int(r.get("score"), 0)
+                fg_score_by_hash[h] = _safe_int(r.get("fg_score"), 0)
+                if "source_score" in r:
+                    source_score_by_hash[h] = _safe_int(r.get("source_score"), 0)
+                if "source_fg_base_score" in r:
+                    source_fg_base_score_by_hash[h] = _safe_int(r.get("source_fg_base_score"), 0)
+                if "source_fg_score" in r:
+                    source_fg_score_by_hash[h] = _safe_int(r.get("source_fg_score"), 0)
+                if h not in ordered_hash_set:
+                    ordered_hashes.append(h)
+                    ordered_hash_set.add(h)
 
-        for r in fg_top:
-            if not isinstance(r, dict):
-                continue
-            k = _stable_key_from_payload(r)
-            fg_score_by_key[k] = _safe_int(r.get("fg_score"), 0)
-            fg_base_score_by_key[k] = _safe_int(r.get("fg_base_score"), 0)
-            if k not in base_score_by_key:
-                base_score_by_key[k] = _safe_int(r.get("score"), 0)
-            if "source_score" in r:
-                source_score_by_key[k] = _safe_int(r.get("source_score"), 0)
-            if "source_fg_base_score" in r:
-                source_fg_base_score_by_key[k] = _safe_int(r.get("source_fg_base_score"), 0)
-            if "source_fg_score" in r:
-                source_fg_score_by_key[k] = _safe_int(r.get("source_fg_score"), 0)
-            if k not in ordered_key_set:
-                ordered_keys.append(k)
-                ordered_key_set.add(k)
+            for r in fg_top:
+                if not isinstance(r, dict):
+                    continue
+                h = _loadout_hash_from_payload(r)
+                if not h:
+                    continue
+                fg_score_by_hash[h] = _safe_int(r.get("fg_score"), 0)
+                fg_base_score_by_hash[h] = _safe_int(r.get("fg_base_score"), 0)
+                if h not in base_score_by_hash:
+                    base_score_by_hash[h] = _safe_int(r.get("score"), 0)
+                if "source_score" in r:
+                    source_score_by_hash[h] = _safe_int(r.get("source_score"), 0)
+                if "source_fg_base_score" in r:
+                    source_fg_base_score_by_hash[h] = _safe_int(r.get("source_fg_base_score"), 0)
+                if "source_fg_score" in r:
+                    source_fg_score_by_hash[h] = _safe_int(r.get("source_fg_score"), 0)
+                if h not in ordered_hash_set:
+                    ordered_hashes.append(h)
+                    ordered_hash_set.add(h)
 
-        selected_keys = set(base_score_by_key.keys()) | set(fg_score_by_key.keys())
-        if len(ordered_key_set) < len(selected_keys):
-            ordered_keys.extend(sorted(selected_keys - ordered_key_set))
+            selected_hashes = set(base_score_by_hash.keys()) | set(fg_score_by_hash.keys())
+            if len(ordered_hash_set) < len(selected_hashes):
+                ordered_hashes.extend(sorted(selected_hashes - ordered_hash_set))
+            selected_rows = []
+            for h in ordered_hashes:
+                orig = orig_by_hash.get(h)
+                if not isinstance(orig, dict):
+                    continue
+                selected_rows.append(
+                    {
+                        "_hash": h,
+                        "_orig": orig,
+                        "score": int(base_score_by_hash.get(h, 0) or 0),
+                        "fg_score": int(fg_score_by_hash.get(h, 0) or 0),
+                        "fg_base_score": int(fg_base_score_by_hash.get(h, 0) or 0),
+                        "source_score": int(source_score_by_hash.get(h, orig.get("source_score", 0)) or 0),
+                        "source_fg_base_score": int(
+                            source_fg_base_score_by_hash.get(h, orig.get("source_fg_base_score", 0)) or 0
+                        ),
+                        "source_fg_score": int(source_fg_score_by_hash.get(h, orig.get("source_fg_score", 0)) or 0),
+                    }
+                )
+
         out_entries: list[dict] = []
-        for k in ordered_keys:
-            orig = orig_by_key.get(k)
-            if not isinstance(orig, dict):
-                continue
+        for r in selected_rows:
+            if surface == "both":
+                orig = r.get("_orig")
+                if not isinstance(orig, dict):
+                    continue
+                score_out = int(r.get("score") or 0)
+                fg_score_out = int(r.get("fg_score") or 0)
+                fg_base_score_out = int(r.get("fg_base_score") or 0)
+            else:
+                h = _loadout_hash_from_payload(r)
+                orig = orig_by_hash.get(h)
+                if not isinstance(orig, dict):
+                    continue
+                score_out = _safe_int(r.get("score"), 0)
+                fg_score_out = _safe_int(r.get("fg_score"), 0)
+                fg_base_score_out = _safe_int(r.get("fg_base_score"), 0)
 
-            score_out = int(base_score_by_key.get(k, 0) or 0)
-            fg_score_out = int(fg_score_by_key.get(k, 0) or 0)
-            fg_base_score_out = int(fg_base_score_by_key.get(k, 0) or 0)
+            details_out: dict = {}
+            force_out: object = None
+            if surface in {"meta", "both"}:
+                details_base = orig.get("details") or {}
+                if not isinstance(details_base, dict):
+                    details_base = {}
+                if isinstance(details_base, dict):
+                    stats0 = details_base.get("Stats")
+                    if isinstance(stats0, dict) and stats0:
+                        details_base = dict(details_base)
+                        details_base["Stats"] = _ensure_stats_include_base_effect(stats0, base_effect)
+                details_out = _apply_details_delta(details_base, delta_map)
 
-            # Keep payloads internally consistent: adjust Stats + FG score fields for this tier.
-            details_base = orig.get("details") or {}
-            if not isinstance(details_base, dict):
-                details_base = {}
-            if isinstance(details_base, dict):
-                stats0 = details_base.get("Stats")
-                if isinstance(stats0, dict) and stats0:
-                    details_base = dict(details_base)
-                    details_base["Stats"] = _ensure_stats_include_base_effect(stats0, base_effect)
-            details_out = _apply_details_delta(details_base, delta_map)
+            if surface in {"fg", "both"}:
+                force_base = orig.get("force")
+                if isinstance(force_base, dict) and base_effect:
+                    force_base_obj = force_base
+                    force_base = dict(force_base_obj)
+                    bs = force_base.get("BaseStats")
+                    if isinstance(bs, dict) and bs:
+                        force_base["BaseStats"] = _ensure_stats_include_base_effect(bs, base_effect)
+                    det = force_base.get("details")
+                    if isinstance(det, dict):
+                        st = det.get("Stats")
+                        if isinstance(st, dict) and st:
+                            det_out = dict(det)
+                            det_out["Stats"] = _ensure_stats_include_base_effect(st, base_effect)
+                            force_base["details"] = det_out
+                force_out = _apply_force_delta(
+                    force_base,
+                    delta=delta_map,
+                    fg_score=fg_score_out,
+                )
 
-            force_base = orig.get("force")
-            # If the persisted BaseStats payload is missing the base TeamBuff effect, add it first so
-            # the tier delta map can't create negative stats.
-            if isinstance(force_base, dict) and base_effect:
-                force_base_obj = force_base
-                force_base = dict(force_base_obj)
-                bs = force_base.get("BaseStats")
-                if isinstance(bs, dict) and bs:
-                    force_base["BaseStats"] = _ensure_stats_include_base_effect(bs, base_effect)
-                det = force_base.get("details")
-                if isinstance(det, dict):
-                    st = det.get("Stats")
-                    if isinstance(st, dict) and st:
-                        det_out = dict(det)
-                        det_out["Stats"] = _ensure_stats_include_base_effect(st, base_effect)
-                        force_base["details"] = det_out
-            force_out = _apply_force_delta(
-                force_base,
-                delta=delta_map,
-                fg_score=fg_score_out,
-            )
-
-            out_row = {
+            out_row: dict = {
                 "loadout_hash": str(orig.get("loadout_hash") or ""),
-                "score": score_out,
-                "fg_score": fg_score_out,
-                "fg_base_score": fg_base_score_out,
                 "gear": _flat_item_names(orig.get("gear")),
                 "minis": _representative_mini_names_from_any(orig.get("minis")),
-                "details": details_out,
-                "force": force_out,
             }
-            source_meta_by_key = {
-                "source_score": source_score_by_key,
-                "source_fg_base_score": source_fg_base_score_by_key,
-                "source_fg_score": source_fg_score_by_key,
-            }
-            for src_key, src_map in source_meta_by_key.items():
-                if k in src_map:
-                    out_row[src_key] = int(src_map.get(k, 0) or 0)
-                    continue
-                if src_key in orig:
-                    try:
-                        out_row[src_key] = int(orig.get(src_key, 0) or 0)
-                    except Exception as e:
-                        logger.debug(f"team_buff_tiers:_stable_key_from_payload: {e}")
-                        out_row[src_key] = 0
+            if surface in {"meta", "both"}:
+                out_row["score"] = score_out
+                out_row["details"] = details_out
+            if surface in {"fg", "both"}:
+                out_row["fg_score"] = fg_score_out
+                out_row["fg_base_score"] = fg_base_score_out
+                out_row["force"] = force_out
+                if surface == "fg":
+                    out_row["details"] = _fg_identity_details(force_out, calc_song)
+            if surface == "both":
+                for src_key in ("source_score", "source_fg_base_score", "source_fg_score"):
+                    out_row[src_key] = int(r.get(src_key, 0) or 0)
+            else:
+                for src_key in ("source_score", "source_fg_base_score", "source_fg_score"):
+                    if src_key in r:
+                        out_row[src_key] = _safe_int(r.get(src_key), 0)
 
             out_entries.append(out_row)
         batches[str(tier)] = out_entries
