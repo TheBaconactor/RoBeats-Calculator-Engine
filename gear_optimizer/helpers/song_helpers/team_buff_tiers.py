@@ -11,9 +11,10 @@ from ...core.team_buff import (
     resolve_team_color_from_cfg_dict,
     team_buff_effect,
 )
-from ...core.utils import safe_int as _safe_int
+from ...core.utils import get_selected_element, safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
 from .fg_config import has_valid_fg_config
+from .force_greats.result_application import materialize_stats_from_payload
 from .ref_array_builder import resolve_exact_replay_ref_arrays
 
 
@@ -22,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 def _norm_text(v: object) -> str:
     return str(v or "").strip()
+
+
+def _loadout_hash(entry: dict) -> str:
+    return _norm_text(entry.get("loadout_hash", ""))
 
 
 _MINI_LITERAL_RE = re.compile(r"""['"]([^'"]+)['"]""")
@@ -174,10 +179,6 @@ def _resolve_team_colors_for_tiering(
     return str(base_team_color), str(target_team_color)
 
 
-def _team_buff_effect(team_buff: str, team_color: str) -> dict[str, int]:
-    return team_buff_effect(team_buff, team_color)
-
-
 def _dict_cfg_to_counts(cfg: dict) -> list[int]:
     if not isinstance(cfg, dict) or not cfg:
         return []
@@ -238,29 +239,10 @@ def _entry_origin_priority(entry: dict) -> tuple[int, int, int]:
 
 
 def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
-    """Compute FG Stats from a flat force payload when possible."""
     if not isinstance(force_obj, dict) or not force_obj:
         return fallback_stats if isinstance(fallback_stats, dict) else {}
-    base_stats = force_obj.get("BaseStats")
-    if not isinstance(base_stats, dict) or not base_stats:
-        return fallback_stats if isinstance(fallback_stats, dict) else {}
-    gem_counts = force_obj.get("GemCounts") or {}
-    if not isinstance(gem_counts, dict):
-        gem_counts = {}
-    try:
-        from .force_greats.result_application import apply_gems_to_base_fast
-
-        sel = force_obj.get("Selected Element") or force_obj.get("SelectedElement") or ""
-        ft_val = int(force_obj.get("FT", 0) or 0)
-        ff_val = int(force_obj.get("FF", 0) or 0)
-        g_pp = int(gem_counts.get("Perfect Points", 0) or 0)
-        g_cm = int(gem_counts.get("Combo Multiplier", 0) or 0)
-        g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
-        g_ov = int(gem_counts.get("Element", 0) or 0)
-        return apply_gems_to_base_fast(base_stats, str(sel), ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
-    except Exception as e:
-        logger.debug(f"team_buff_tiers:_force_payload_stats: {e}")
-        return fallback_stats if isinstance(fallback_stats, dict) else {}
+    stats = materialize_stats_from_payload(force_obj, mutate_payload=False)
+    return stats if isinstance(stats, dict) and stats else (fallback_stats if isinstance(fallback_stats, dict) else {})
 
 
 def _team_buff_delta_map(
@@ -270,8 +252,8 @@ def _team_buff_delta_map(
     base_team_color: str,
     target_team_color: str,
 ) -> dict[str, int]:
-    base = _team_buff_effect(base_team_buff, base_team_color)
-    target = _team_buff_effect(target_team_buff, target_team_color)
+    base = team_buff_effect(base_team_buff, base_team_color)
+    target = team_buff_effect(target_team_buff, target_team_color)
     keys = set(base.keys()) | set(target.keys())
     out: dict[str, int] = {}
     for k in keys:
@@ -316,6 +298,54 @@ def _apply_details_delta(details: object, delta: dict[str, int]) -> dict:
     if isinstance(stats, dict) and stats:
         out["Stats"] = _apply_stat_delta(stats, delta)
     return out
+
+
+def _replay_stat_slice(
+    stats: dict,
+    *,
+    primary_color: str,
+    secondary_color: str,
+) -> dict[str, int]:
+    return {
+        "pp": _safe_int(stats.get("Perfect Points", 0), 0),
+        "p_val": _safe_int(stats.get(primary_color, 0), 0) if primary_color else 0,
+        "s_val": _safe_int(stats.get(secondary_color, 0), 0) if secondary_color else 0,
+        "ft_stat": _safe_int(stats.get("Fever Time", 0), 0),
+        "ff_stat": _safe_int(stats.get("Fever Fill Rate", 0), 0),
+        "cm_stat": _safe_int(stats.get("Combo Multiplier", 0), 0),
+        "fm_stat": _safe_int(stats.get("Fever Multiplier", 0), 0),
+    }
+
+
+def _fg_replay_snapshot(
+    *,
+    fg_stats: dict,
+    paired_base_stats: dict,
+    primary_color: str,
+    secondary_color: str,
+    counts: list[int],
+    config: object,
+) -> dict:
+    fg = _replay_stat_slice(fg_stats, primary_color=primary_color, secondary_color=secondary_color)
+    base = _replay_stat_slice(paired_base_stats, primary_color=primary_color, secondary_color=secondary_color)
+    return {
+        "pp": int(fg["pp"]),
+        "p_val": int(fg["p_val"]),
+        "s_val": int(fg["s_val"]),
+        "ft_stat": int(fg["ft_stat"]),
+        "ff_stat": int(fg["ff_stat"]),
+        "cm_stat": int(fg["cm_stat"]),
+        "fm_stat": int(fg["fm_stat"]),
+        "base_pp": int(base["pp"]),
+        "base_p_val": int(base["p_val"]),
+        "base_s_val": int(base["s_val"]),
+        "base_ft_stat": int(base["ft_stat"]),
+        "base_ff_stat": int(base["ff_stat"]),
+        "base_cm_stat": int(base["cm_stat"]),
+        "base_fm_stat": int(base["fm_stat"]),
+        "counts": counts,
+        "config": config,
+    }
 
 
 def _fg_stats_at_tier(
@@ -363,9 +393,7 @@ def _fg_identity_details(force_out: object, calc_song: dict) -> dict[str, str]:
     meta0 = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
     chart_primary = _norm_text(meta0.get("Primary Color", ""))
     chart_secondary = _norm_text(meta0.get("Secondary Color", ""))
-    selected = ""
-    if isinstance(force_out, dict):
-        selected = _norm_text(force_out.get("Selected Element") or force_out.get("SelectedElement") or "")
+    selected = _norm_text(get_selected_element(force_out, "") if isinstance(force_out, dict) else "")
     primary = chart_primary or selected
     secondary = chart_secondary or primary or "General"
     return {
@@ -373,32 +401,6 @@ def _fg_identity_details(force_out: object, calc_song: dict) -> dict[str, str]:
         "PrimaryColor": primary,
         "SecondaryColor": secondary,
     }
-
-
-def _replay_fg_base_score(
-    fg: dict,
-    *,
-    delta_pp: int,
-    delta_primary: int,
-    delta_secondary: int,
-    primary_color: str,
-    secondary_color: str,
-    calc_song: dict,
-    ref_arrays: dict,
-) -> int:
-    """FG-surface replay: score the paired base allocation without forced greats."""
-    from ...solver.scoring.exact_rescore import score_stats_exact
-
-    stats = _fg_stats_at_tier(
-        fg,
-        delta_pp=delta_pp,
-        delta_primary=delta_primary,
-        delta_secondary=delta_secondary,
-        primary_color=primary_color,
-        secondary_color=secondary_color,
-        paired_base=True,
-    )
-    return int(score_stats_exact(stats, calc_song, ref_arrays))
 
 
 def _apply_force_delta(force_obj: object, *, delta: dict[str, int], fg_score: int) -> object:
@@ -507,7 +509,7 @@ def compute_team_buff_tier_leaderboards(
     )
     base_team_buff = _resolve_base_team_buff(cfg_dict)
 
-    base_effect = _team_buff_effect(base_team_buff, base_team_color)
+    base_effect = team_buff_effect(base_team_buff, base_team_color)
     tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
 
     try:
@@ -537,32 +539,15 @@ def compute_team_buff_tier_leaderboards(
         gear = _flat_item_names(entry.get("gear") or [])
         minis = _representative_mini_names_from_any(entry.get("minis") or [])
 
-        ft_idx = _safe_int(stats_base.get("Fever Time", 0), 0)
-        ff_idx = _safe_int(stats_base.get("Fever Fill Rate", 0), 0)
-        cm_stat = _safe_int(stats_base.get("Combo Multiplier", 0), 0)
-        fm_stat = _safe_int(stats_base.get("Fever Multiplier", 0), 0)
+        base_slice = _replay_stat_slice(
+            stats_base,
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+        )
 
-        base_pp_stat = _safe_int(stats_base.get("Perfect Points", 0), 0)
-        base_primary_val = _safe_int(stats_base.get(primary_color, 0), 0) if primary_color else 0
-        base_secondary_val = _safe_int(stats_base.get(secondary_color, 0), 0) if secondary_color else 0
-
-        # Optional FG stats snapshot (may have a different gem allocation than base).
         force_obj = entry.get("force")
         fg_counts = _extract_force_config_counts(force_obj) if isinstance(force_obj, dict) else []
-        fg_pp_stat = int(base_pp_stat)
-        fg_primary_val = int(base_primary_val)
-        fg_secondary_val = int(base_secondary_val)
-        fg_ft_stat = int(ft_idx)
-        fg_ff_stat = int(ff_idx)
-        fg_cm_stat = _safe_int(stats_base.get("Combo Multiplier", 0), 0)
-        fg_fm_stat = _safe_int(stats_base.get("Fever Multiplier", 0), 0)
-        fg_base_pp_stat = int(base_pp_stat)
-        fg_base_primary_val = int(base_primary_val)
-        fg_base_secondary_val = int(base_secondary_val)
-        fg_base_ft_stat = int(ft_idx)
-        fg_base_ff_stat = int(ff_idx)
-        fg_base_cm_stat = _safe_int(stats_base.get("Combo Multiplier", 0), 0)
-        fg_base_fm_stat = _safe_int(stats_base.get("Fever Multiplier", 0), 0)
+        fg_snapshot = None
         if fg_counts:
             fg_stats0 = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
             fg_stats = (
@@ -577,194 +562,135 @@ def compute_team_buff_tier_leaderboards(
             else:
                 force_base_stats = fg_stats
 
-            fg_pp_stat = _safe_int(fg_stats.get("Perfect Points", 0), 0)
-            fg_primary_val = _safe_int(fg_stats.get(primary_color, 0), 0) if primary_color else 0
-            fg_secondary_val = _safe_int(fg_stats.get(secondary_color, 0), 0) if secondary_color else 0
-            fg_ft_stat = _safe_int(fg_stats.get("Fever Time", 0), 0)
-            fg_ff_stat = _safe_int(fg_stats.get("Fever Fill Rate", 0), 0)
-            fg_cm_stat = _safe_int(fg_stats.get("Combo Multiplier", 0), 0)
-            fg_fm_stat = _safe_int(fg_stats.get("Fever Multiplier", 0), 0)
-
-            fg_base_pp_stat = _safe_int(force_base_stats.get("Perfect Points", 0), 0)
-            fg_base_primary_val = _safe_int(force_base_stats.get(primary_color, 0), 0) if primary_color else 0
-            fg_base_secondary_val = _safe_int(force_base_stats.get(secondary_color, 0), 0) if secondary_color else 0
-            fg_base_ft_stat = _safe_int(force_base_stats.get("Fever Time", 0), 0)
-            fg_base_ff_stat = _safe_int(force_base_stats.get("Fever Fill Rate", 0), 0)
-            fg_base_cm_stat = _safe_int(force_base_stats.get("Combo Multiplier", 0), 0)
-            fg_base_fm_stat = _safe_int(force_base_stats.get("Fever Multiplier", 0), 0)
+            fg_snapshot = _fg_replay_snapshot(
+                fg_stats=fg_stats,
+                paired_base_stats=force_base_stats,
+                primary_color=primary_color,
+                secondary_color=secondary_color,
+                counts=fg_counts,
+                config=(
+                    (force_obj.get("ForceGreats", {}) or {}).get("config")
+                    if isinstance(force_obj, dict)
+                    else None
+                ),
+            )
 
         per_entry.append(
             {
                 "loadout_hash": _norm_text(entry.get("loadout_hash", "")),
-                "song": calc_song,
                 "gear": gear,
                 "minis": minis,
                 "source_score": _safe_int(entry.get("score"), 0),
                 "source_fg_base_score": _safe_int(entry.get("fg_base_score"), _safe_int(entry.get("score"), 0)),
                 "source_fg_score": _safe_int(entry.get("fg_score"), 0),
-                "base": {
-                    "cm_stat": int(cm_stat),
-                    "fm_stat": int(fm_stat),
-                    "ft_stat": int(ft_idx),
-                    "ff_stat": int(ff_idx),
-                    "pp": int(base_pp_stat),
-                    "p_val": int(base_primary_val),
-                    "s_val": int(base_secondary_val),
-                },
-                "fg": None
-                if not fg_counts
-                else {
-                    "pp": int(fg_pp_stat),
-                    "p_val": int(fg_primary_val),
-                    "s_val": int(fg_secondary_val),
-                    "ft_stat": int(fg_ft_stat),
-                    "ff_stat": int(fg_ff_stat),
-                    "cm_stat": int(fg_cm_stat),
-                    "fm_stat": int(fg_fm_stat),
-                    "base_pp": int(fg_base_pp_stat),
-                    "base_p_val": int(fg_base_primary_val),
-                    "base_s_val": int(fg_base_secondary_val),
-                    "base_ft_stat": int(fg_base_ft_stat),
-                    "base_ff_stat": int(fg_base_ff_stat),
-                    "base_cm_stat": int(fg_base_cm_stat),
-                    "base_fm_stat": int(fg_base_fm_stat),
-                    "counts": fg_counts,
-                    "config": (
-                        (force_obj.get("ForceGreats", {}) or {}).get("config")
-                        if isinstance(force_obj, dict)
-                        else None
-                    ),
-                },
+                "base": base_slice,
+                "fg": fg_snapshot,
             }
         )
 
-    # Compute tiered scores for all retained entries.
     from ...solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact_batch
-
-    # Group by calc_song object so repeated exact replays share the same frontier cache.
-    per_entry_by_song_id: dict[int, list[dict]] = {}
-    song_by_id: dict[int, dict] = {}
-    for e in per_entry:
-        song0 = e.get("song")
-        if not isinstance(song0, dict):
-            continue
-        sid = int(id(song0))
-        song_by_id.setdefault(sid, song0)
-        per_entry_by_song_id.setdefault(sid, []).append(e)
 
     tier_deltas: dict[str, tuple[int, int, int]] = {}
     for tier in tier_list:
-        target_effect = _team_buff_effect(tier, target_team_color)
+        delta_map = _team_buff_delta_map(
+            base_team_buff=base_team_buff,
+            target_team_buff=str(tier),
+            base_team_color=base_team_color,
+            target_team_color=target_team_color,
+        )
         tier_deltas[str(tier)] = (
-            int(target_effect.get("Perfect Points", 0) - base_effect.get("Perfect Points", 0)),
-            int(target_effect.get(primary_color, 0) - base_effect.get(primary_color, 0)) if primary_color else 0,
-            int(target_effect.get(secondary_color, 0) - base_effect.get(secondary_color, 0)) if secondary_color else 0,
+            int(delta_map.get("Perfect Points", 0)),
+            int(delta_map.get(primary_color, 0)) if primary_color else 0,
+            int(delta_map.get(secondary_color, 0)) if secondary_color else 0,
         )
 
-    # Precompute FG scores on the FG surface only (forced-greats replay).
-    fg_scores_by_sid: dict[int, dict[str, list[int]]] = {}
+    meta_scores_by_tier: dict[str, list[int]] = {}
+    if replay_meta and per_entry:
+        for tier in tier_list:
+            dpp, dp, ds = tier_deltas[str(tier)]
+            tier_stats = [
+                _fg_stats_at_tier(
+                    e.get("base") or {},
+                    delta_pp=int(dpp),
+                    delta_primary=int(dp),
+                    delta_secondary=int(ds),
+                    primary_color=primary_color,
+                    secondary_color=secondary_color,
+                )
+                for e in per_entry
+            ]
+            meta_scores_by_tier[str(tier)] = [
+                int(s) for s in score_stats_exact_batch(tier_stats, calc_song, ref_arrays)
+            ]
+    else:
+        meta_scores_by_tier = {str(t): [0] * len(per_entry) for t in tier_list}
+
+    fg_scores_by_tier: dict[str, list[int]] = {str(t): [0] * len(per_entry) for t in tier_list}
     have_fg = replay_fg and any(isinstance(e.get("fg"), dict) for e in per_entry)
     if have_fg:
-        for sid, group_entries in per_entry_by_song_id.items():
-            tier_to_scores: dict[str, list[int]] = {str(t): [0] * len(group_entries) for t in tier_list}
-
-            group_song = song_by_id.get(sid)
-            if not isinstance(group_song, dict):
-                fg_scores_by_sid[sid] = tier_to_scores
-                continue
-
-            for t in tier_list:
-                tier_key = str(t)
-                out_list = tier_to_scores.get(tier_key)
-                if out_list is None:
+        for tier in tier_list:
+            dpp, dp, ds = tier_deltas[str(tier)]
+            out_list = fg_scores_by_tier[str(tier)]
+            for idx, e in enumerate(per_entry):
+                fg = e.get("fg")
+                if not isinstance(fg, dict):
                     continue
-                dpp, dp, ds = tier_deltas[str(t)]
-                for idx, e in enumerate(group_entries):
-                    fg = e.get("fg")
-                    if not isinstance(fg, dict):
-                        continue
-                    counts0 = fg.get("counts")
-                    if not isinstance(counts0, (list, tuple)) or not counts0:
-                        continue
-                    stats = _fg_stats_at_tier(
-                        fg,
-                        delta_pp=int(dpp),
-                        delta_primary=int(dp),
-                        delta_secondary=int(ds),
-                        primary_color=primary_color,
-                        secondary_color=secondary_color,
-                    )
-                    replay = evaluate_force_greats_exact(stats, group_song, ref_arrays, list(counts0))
-                    if isinstance(replay, dict):
-                        out_list[idx] = int(replay.get("final_score", 0) or 0)
-
-            fg_scores_by_sid[sid] = tier_to_scores
-    else:
-        for sid, group_entries in per_entry_by_song_id.items():
-            fg_scores_by_sid[sid] = {str(t): [0] * len(group_entries) for t in tier_list}
+                counts0 = fg.get("counts")
+                if not isinstance(counts0, (list, tuple)) or not counts0:
+                    continue
+                stats = _fg_stats_at_tier(
+                    fg,
+                    delta_pp=int(dpp),
+                    delta_primary=int(dp),
+                    delta_secondary=int(ds),
+                    primary_color=primary_color,
+                    secondary_color=secondary_color,
+                )
+                replay = evaluate_force_greats_exact(stats, calc_song, ref_arrays, list(counts0))
+                if isinstance(replay, dict):
+                    out_list[idx] = int(replay.get("final_score", 0) or 0)
 
     tiers_out: dict[str, dict] = {}
     for tier in tier_list:
         delta_pp, delta_primary, delta_secondary = tier_deltas[str(tier)]
+        base_scores = meta_scores_by_tier.get(str(tier), [])
+        fg_scores_for_tier = fg_scores_by_tier.get(str(tier)) if have_fg else None
 
         base_ranked: list[dict] = []
         fg_ranked: list[dict] = []
 
-        for sid, group_entries in per_entry_by_song_id.items():
-            group_song = song_by_id.get(sid)
-            if not isinstance(group_song, dict) or not group_entries:
-                continue
+        for i, e in enumerate(per_entry):
+            base_score = int(base_scores[i]) if replay_meta and i < len(base_scores) else 0
+            fg_score = 0
+            if fg_scores_for_tier is not None and i < len(fg_scores_for_tier):
+                fg_score = int(fg_scores_for_tier[i] or 0)
+            fg = e.get("fg")
 
-            base_scores: list[int] = []
             if replay_meta:
-                tier_stats = [
-                    _fg_stats_at_tier(
-                        e.get("base") or {},
-                        delta_pp=int(delta_pp),
-                        delta_primary=int(delta_primary),
-                        delta_secondary=int(delta_secondary),
-                        primary_color=primary_color,
-                        secondary_color=secondary_color,
-                    )
-                    for e in group_entries
-                ]
-                base_scores = [int(s) for s in score_stats_exact_batch(tier_stats, group_song, ref_arrays)]
+                base_ranked.append(
+                    {
+                        "loadout_hash": e.get("loadout_hash") or "",
+                        "gear": e.get("gear") or [],
+                        "minis": e.get("minis") or [],
+                        "score": int(base_score),
+                        "source_score": int(e.get("source_score") or 0),
+                    }
+                )
 
-            fg_scores_for_tier = (fg_scores_by_sid.get(sid) or {}).get(str(tier)) if have_fg else None
-
-            for i, e in enumerate(group_entries):
-                base_score = int(base_scores[i]) if replay_meta and i < len(base_scores) else 0
-                fg_score = 0
-                if fg_scores_for_tier is not None and i < int(len(fg_scores_for_tier)):
-                    fg_score = int(fg_scores_for_tier[i] or 0)
-                fg = e.get("fg")
-
-                if replay_meta:
-                    base_ranked.append(
-                        {
-                            "loadout_hash": e.get("loadout_hash") or "",
-                            "gear": e.get("gear") or [],
-                            "minis": e.get("minis") or [],
-                            "score": int(base_score),
-                            "source_score": int(e.get("source_score") or 0),
-                        }
-                    )
-
-                if replay_fg and isinstance(fg, dict) and int(fg_score) > 0:
-                    fg_ranked.append(
-                        {
-                            "loadout_hash": e.get("loadout_hash") or "",
-                            "gear": e.get("gear") or [],
-                            "minis": e.get("minis") or [],
-                            "fg_score": int(fg_score),
-                            "source_score": int(e.get("source_score") or 0),
-                            "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
-                            "source_fg_score": int(e.get("source_fg_score") or 0),
-                            "force_config": fg.get("config"),
-                            "_replay_fg": fg,
-                            "_replay_song": group_song,
-                        }
-                    )
+            if replay_fg and isinstance(fg, dict) and int(fg_score) > 0:
+                fg_ranked.append(
+                    {
+                        "loadout_hash": e.get("loadout_hash") or "",
+                        "gear": e.get("gear") or [],
+                        "minis": e.get("minis") or [],
+                        "fg_score": int(fg_score),
+                        "source_score": int(e.get("source_score") or 0),
+                        "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
+                        "source_fg_score": int(e.get("source_fg_score") or 0),
+                        "force_config": fg.get("config"),
+                        "_replay_fg": fg,
+                    }
+                )
 
         base_top = nsmallest(
             int(n),
@@ -776,24 +702,31 @@ def compute_team_buff_tier_leaderboards(
             fg_ranked,
             key=lambda r: (-int(r.get("fg_score", 0) or 0), str(r.get("loadout_hash") or "")),
         )
+        paired_stats: list[dict[str, int]] = []
+        paired_rows: list[dict] = []
         fg_top: list[dict] = []
         for row in fg_top_raw:
             fg_snap = row.pop("_replay_fg", None)
-            replay_song = row.pop("_replay_song", None)
-            if isinstance(fg_snap, dict) and isinstance(replay_song, dict):
-                row["fg_base_score"] = _replay_fg_base_score(
-                    fg_snap,
-                    delta_pp=int(delta_pp),
-                    delta_primary=int(delta_primary),
-                    delta_secondary=int(delta_secondary),
-                    primary_color=primary_color,
-                    secondary_color=secondary_color,
-                    calc_song=replay_song,
-                    ref_arrays=ref_arrays,
+            if isinstance(fg_snap, dict):
+                paired_rows.append(row)
+                paired_stats.append(
+                    _fg_stats_at_tier(
+                        fg_snap,
+                        delta_pp=int(delta_pp),
+                        delta_primary=int(delta_primary),
+                        delta_secondary=int(delta_secondary),
+                        primary_color=primary_color,
+                        secondary_color=secondary_color,
+                        paired_base=True,
+                    )
                 )
             else:
                 row["fg_base_score"] = 0
             fg_top.append(row)
+        if paired_stats:
+            fg_base_scores = score_stats_exact_batch(paired_stats, calc_song, ref_arrays)
+            for row, score in zip(paired_rows, fg_base_scores):
+                row["fg_base_score"] = int(score)
         tiers_out[str(tier)] = {"base_top51": base_top, "fg_top51": fg_top}
 
     return {
@@ -851,24 +784,24 @@ def build_team_buff_tier_db_batches(
         replay_surfaces=replay_surfaces,
     )
 
-    base_team_color, target_team_color = _resolve_team_colors_for_tiering(
-        cfg_dict,
-        calc_song,
-        base_team_color_override=base_team_color_override,
-        target_team_color_override=target_team_color_override,
-    )
-    base_team_buff = _resolve_base_team_buff(cfg_dict)
-    base_effect = _team_buff_effect(base_team_buff, base_team_color)
-
-    # Match replay rows back to persisted entries by loadout_hash (primary DB key).
-    def _loadout_hash_from_payload(e: dict) -> str:
-        return _norm_text(e.get("loadout_hash", ""))
+    payload_meta = payload.get("meta") or {}
+    base_team_buff = _norm_text(payload_meta.get("base_team_buff")) or _resolve_base_team_buff(cfg_dict)
+    base_team_color = _norm_text(payload_meta.get("base_team_color"))
+    target_team_color = _norm_text(payload_meta.get("target_team_color"))
+    if not base_team_color or not target_team_color:
+        base_team_color, target_team_color = _resolve_team_colors_for_tiering(
+            cfg_dict,
+            calc_song,
+            base_team_color_override=base_team_color_override,
+            target_team_color_override=target_team_color_override,
+        )
+    base_effect = team_buff_effect(base_team_buff, base_team_color)
 
     orig_by_hash: dict[str, dict] = {}
     for e in entries or []:
         if not isinstance(e, dict):
             continue
-        h = _loadout_hash_from_payload(e)
+        h = _loadout_hash(e)
         if not h:
             continue
         current = orig_by_hash.get(h)
@@ -903,7 +836,7 @@ def build_team_buff_tier_db_batches(
             for r in base_top:
                 if not isinstance(r, dict):
                     continue
-                h = _loadout_hash_from_payload(r)
+                h = _loadout_hash(r)
                 if not h:
                     continue
                 base_score_by_hash[h] = _safe_int(r.get("score"), 0)
@@ -921,7 +854,7 @@ def build_team_buff_tier_db_batches(
             for r in fg_top:
                 if not isinstance(r, dict):
                     continue
-                h = _loadout_hash_from_payload(r)
+                h = _loadout_hash(r)
                 if not h:
                     continue
                 fg_score_by_hash[h] = _safe_int(r.get("fg_score"), 0)
@@ -971,7 +904,7 @@ def build_team_buff_tier_db_batches(
                 fg_score_out = int(r.get("fg_score") or 0)
                 fg_base_score_out = int(r.get("fg_base_score") or 0)
             else:
-                h = _loadout_hash_from_payload(r)
+                h = _loadout_hash(r)
                 orig = orig_by_hash.get(h)
                 if not isinstance(orig, dict):
                     continue
