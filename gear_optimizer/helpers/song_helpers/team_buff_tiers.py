@@ -772,6 +772,8 @@ def build_team_buff_tier_db_batches(
         surface = "both"
     replay_surfaces = ("meta", "fg") if surface == "both" else (surface,)
 
+    from ...solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
+
     payload = compute_team_buff_tier_leaderboards(
         entries=entries,
         calc_song=calc_song,
@@ -924,6 +926,18 @@ def build_team_buff_tier_db_batches(
                         details_base = dict(details_base)
                         details_base["Stats"] = _ensure_stats_include_base_effect(stats0, base_effect)
                 details_out = _apply_details_delta(details_base, delta_map)
+                # Recompute the per-note timeline trace for the tier-shifted stats so the
+                # base note graph reflects this tier rather than the frozen baseline
+                # witnesses (issue #38, point 4 — base surface). Additive only: the row's
+                # `score` already comes from the leaderboard; this attaches a TimelineFrontier
+                # whose frontier_trace the consumer uses to draw an exact per-tier graph.
+                trace_stats = details_out.get("Stats") if isinstance(details_out, dict) else None
+                if isinstance(trace_stats, dict) and trace_stats:
+                    timeline_frontier = score_stats_exact_with_timeline_trace(
+                        trace_stats, calc_song, ref_arrays
+                    ).get("TimelineFrontier")
+                    if isinstance(timeline_frontier, dict) and timeline_frontier.get("frontier_trace"):
+                        details_out["TimelineFrontier"] = timeline_frontier
 
             if surface in {"fg", "both"}:
                 force_base = orig.get("force")

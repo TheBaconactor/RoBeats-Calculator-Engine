@@ -225,6 +225,11 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
     out = batches["T5"][0]
     assert out["gear"] == entry["gear"]
     assert out["minis"] == ["M1", "M2", "M3"]
+    # Issue #38 (base surface): each emitted base row carries a per-tier timeline trace so the
+    # note graph can be drawn for this tier (recomputed from the tier-shifted stats, additive).
+    timeline_frontier = (out.get("details") or {}).get("TimelineFrontier")
+    assert isinstance(timeline_frontier, dict), "base row must attach a recomputed TimelineFrontier"
+    assert timeline_frontier.get("frontier_trace"), "TimelineFrontier must carry a non-empty frontier_trace"
 
 
 def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_and_fg_rows(monkeypatch):
