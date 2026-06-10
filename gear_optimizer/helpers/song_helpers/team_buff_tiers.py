@@ -926,6 +926,16 @@ def build_team_buff_tier_db_batches(
                         details_base = dict(details_base)
                         details_base["Stats"] = _ensure_stats_include_base_effect(stats0, base_effect)
                 details_out = _apply_details_delta(details_base, delta_map)
+                # `_apply_details_delta` copies the baseline (T5) details verbatim except for
+                # Stats, so `details_out` inherits the baseline TimelineFrontier — a per-note
+                # trace that is WRONG for this (shifted) tier. Drop it unconditionally: the
+                # per-tier graph must come from the fresh exact recompute below, never from the
+                # stale baseline witness. Fail safe — any TimelineFrontier a consumer sees is
+                # guaranteed to be for THIS tier; if the recompute cannot produce one, the row
+                # carries none and the consumer omits the graph rather than drawing another
+                # tier's timing (issue #38, base surface).
+                if isinstance(details_out, dict):
+                    details_out.pop("TimelineFrontier", None)
                 # Recompute the per-note timeline trace for the tier-shifted stats so the
                 # base note graph reflects this tier rather than the frozen baseline
                 # witnesses (issue #38, point 4 — base surface). Additive only: the row's
