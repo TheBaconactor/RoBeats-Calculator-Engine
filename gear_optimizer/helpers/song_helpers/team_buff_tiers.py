@@ -326,18 +326,35 @@ def _fg_stats_at_tier(
     delta_secondary: int,
     primary_color: str,
     secondary_color: str,
+    paired_base: bool = False,
 ) -> dict[str, int]:
+    if paired_base:
+        pp = int(fg.get("base_pp", fg.get("pp", 0)) or 0)
+        p_val = int(fg.get("base_p_val", fg.get("p_val", 0)) or 0)
+        s_val = int(fg.get("base_s_val", fg.get("s_val", 0)) or 0)
+        ft_stat = int(fg.get("base_ft_stat", fg.get("ft_stat", 0)) or 0)
+        ff_stat = int(fg.get("base_ff_stat", fg.get("ff_stat", 0)) or 0)
+        cm_stat = int(fg.get("base_cm_stat", fg.get("cm_stat", 0)) or 0)
+        fm_stat = int(fg.get("base_fm_stat", fg.get("fm_stat", 0)) or 0)
+    else:
+        pp = int(fg.get("pp", 0) or 0)
+        p_val = int(fg.get("p_val", 0) or 0)
+        s_val = int(fg.get("s_val", 0) or 0)
+        ft_stat = int(fg.get("ft_stat", 0) or 0)
+        ff_stat = int(fg.get("ff_stat", 0) or 0)
+        cm_stat = int(fg.get("cm_stat", 0) or 0)
+        fm_stat = int(fg.get("fm_stat", 0) or 0)
     stats = {
-        "Perfect Points": int(fg.get("pp", 0) or 0) + int(delta_pp),
-        "Combo Multiplier": int(fg.get("cm_stat", 0) or 0),
-        "Fever Multiplier": int(fg.get("fm_stat", 0) or 0),
-        "Fever Time": int(fg.get("ft_stat", 0) or 0),
-        "Fever Fill Rate": int(fg.get("ff_stat", 0) or 0),
+        "Perfect Points": pp + int(delta_pp),
+        "Combo Multiplier": cm_stat,
+        "Fever Multiplier": fm_stat,
+        "Fever Time": ft_stat,
+        "Fever Fill Rate": ff_stat,
     }
     if primary_color:
-        stats[primary_color] = int(fg.get("p_val", 0) or 0) + int(delta_primary)
+        stats[primary_color] = p_val + int(delta_primary)
     if secondary_color:
-        stats[secondary_color] = int(fg.get("s_val", 0) or 0) + int(delta_secondary)
+        stats[secondary_color] = s_val + int(delta_secondary)
     return stats
 
 
@@ -358,19 +375,6 @@ def _fg_identity_details(force_out: object, calc_song: dict) -> dict[str, str]:
     }
 
 
-def _fg_paired_base_snapshot(fg: dict) -> dict:
-    """Stats slice used for paired FG base replay (force BaseStats when present)."""
-    return {
-        "pp": int(fg.get("base_pp", fg.get("pp", 0)) or 0),
-        "p_val": int(fg.get("base_p_val", fg.get("p_val", 0)) or 0),
-        "s_val": int(fg.get("base_s_val", fg.get("s_val", 0)) or 0),
-        "ft_stat": int(fg.get("base_ft_stat", fg.get("ft_stat", 0)) or 0),
-        "ff_stat": int(fg.get("base_ff_stat", fg.get("ff_stat", 0)) or 0),
-        "cm_stat": int(fg.get("base_cm_stat", fg.get("cm_stat", 0)) or 0),
-        "fm_stat": int(fg.get("base_fm_stat", fg.get("fm_stat", 0)) or 0),
-    }
-
-
 def _replay_fg_base_score(
     fg: dict,
     *,
@@ -386,12 +390,13 @@ def _replay_fg_base_score(
     from ...solver.scoring.exact_rescore import score_stats_exact
 
     stats = _fg_stats_at_tier(
-        _fg_paired_base_snapshot(fg),
+        fg,
         delta_pp=delta_pp,
         delta_primary=delta_primary,
         delta_secondary=delta_secondary,
         primary_color=primary_color,
         secondary_color=secondary_color,
+        paired_base=True,
     )
     return int(score_stats_exact(stats, calc_song, ref_arrays))
 
