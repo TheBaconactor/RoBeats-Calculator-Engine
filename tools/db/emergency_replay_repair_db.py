@@ -81,41 +81,6 @@ def _build_song_header_index(root: Path) -> dict[str, Path]:
     _SONG_HEADER_INDEX_CACHE[root] = out
     return out
 
-def _forced_counts_from_payload(force_payload: dict[str, Any]) -> list[int]:
-    raw = force_payload.get("forced_counts")
-    if isinstance(raw, list):
-        return [_safe_int(v, 0) for v in raw]
-
-    fg = force_payload.get("ForceGreats")
-    if not isinstance(fg, dict):
-        nested = force_payload.get("details")
-        if isinstance(nested, dict):
-            fg = nested.get("ForceGreats")
-    cfg = (fg or {}).get("config") if isinstance(fg, dict) else None
-    if not isinstance(cfg, dict):
-        return []
-
-    pairs: list[tuple[int, int]] = []
-    for key, value in cfg.items():
-        k = str(key or "")
-        if not k.lower().startswith("nonfever"):
-            continue
-        idx_txt = k[len("NonFever") :]
-        try:
-            idx = int(idx_txt)
-        except Exception:
-            continue
-        if idx > 0:
-            pairs.append((idx, _safe_int(value, 0)))
-    if not pairs:
-        return []
-    max_idx = max(i for i, _ in pairs)
-    out = [0] * max_idx
-    for idx, value in pairs:
-        out[idx - 1] = int(value)
-    return out
-
-
 def _load_json(value: Any) -> Any:
     if not value:
         return {}
@@ -144,7 +109,8 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
         _unpack_stats_after_load,
     )
     from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
+    from gear_optimizer.helpers.song_helpers.fg_config import require_response_surface
+    from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 
     cfg_dict = cfg_to_dict(load_config())
     ref_arrays = _get_team_buff_ref_arrays_cached()
@@ -239,13 +205,13 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
                     continue
 
                 replay_base = _score_fixed_stats(stats, calc_song, ref_arrays)
-                fg_replay = evaluate_force_greats_exact(
-                    stats, calc_song, ref_arrays, _forced_counts_from_payload(force_payload)
+                replay_fg_obj = score_force_greats_response_surface_exact(
+                    stats, calc_song, ref_arrays, require_response_surface(force_payload)
                 )
-                if not isinstance(fg_replay, dict) or "final_score" not in fg_replay:
+                if replay_fg_obj is None:
                     bad_songs.add(song_name)
                     continue
-                replay_fg = int(fg_replay.get("final_score", 0) or 0)
+                replay_fg = int(replay_fg_obj)
                 counts["fg_checked"] += 1
 
                 if replay_fg <= replay_base:
@@ -260,11 +226,7 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
                 force_out["Score"] = int(replay_fg)
                 fg_meta = dict(force_out.get("ForceGreats") or {})
                 fg_meta["final_score"] = int(replay_fg)
-                if fg_replay.get("config_dict"):
-                    fg_meta["config"] = dict(fg_replay.get("config_dict") or {})
                 force_out["ForceGreats"] = fg_meta
-                if fg_replay.get("config_counts") is not None:
-                    force_out["forced_counts"] = [int(v) for v in (fg_replay.get("config_counts") or [])]
 
                 fg_details["BaseScore"] = int(replay_base)
                 details_json = _json_dumps_compact(_pack_stats_for_storage(_strip_computed_details_fields(fg_details)))

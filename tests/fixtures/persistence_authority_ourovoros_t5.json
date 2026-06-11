@@ -71,7 +71,7 @@
   "fg_entry": {
     "loadout_hash": "e3bcc05d06b34e92a37dcd627fd15c60",
     "expected_score": 7702562,
-    "expected_fg_score": 7713308,
+    "expected_fg_score": 9120758,
     "gear": [
       "Legendary Flow Commander's Helmet",
       "Legendary Beat Cyborg's Control Panel",
@@ -169,6 +169,19 @@
       "forced_counts": [
         0,
         1,
+        0
+      ],
+      "response_surface": [
+        4294967295,
+        4294967295,
+        4294967295,
+        15,
+        0,
+        0,
+        0,
+        0,
+        290,
+        0,
         0
       ]
     }

@@ -90,12 +90,8 @@ def test_authoritative_fg_preserves_source_paired_base_score(monkeypatch):
     )
     monkeypatch.setattr(
         authority,
-        "evaluate_force_greats_exact",
-        lambda *_args, **_kwargs: {
-            "final_score": 150,
-            "config_counts": [1],
-            "config_dict": {"NonFever1": 1},
-        },
+        "score_force_greats_response_surface_exact",
+        lambda *_args, **_kwargs: 150,
     )
 
     entry = {
@@ -108,6 +104,7 @@ def test_authoritative_fg_preserves_source_paired_base_score(monkeypatch):
             "Score": 1,
             "Stats": {"Perfect Points": 0},
             "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 1},
+            "response_surface": [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
         },
     }
 

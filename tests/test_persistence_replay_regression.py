@@ -223,6 +223,10 @@ def _stale_00_hard_fg_force_payload() -> dict:
             "final_score": 32521173,
         },
         "forced_counts": [5, 0],
+        # Canonical FG scoring replays the persisted response surface (head bits 0-99
+        # fever + all 1090 body notes fever on the 1190-note chart). The stale Score /
+        # final_score above are intentionally inconsistent; canonicalization repairs them.
+        "response_surface": [4294967295, 4294967295, 4294967295, 15, 0, 0, 0, 0, 1090, 0, 0],
     }
 
 
@@ -261,6 +265,19 @@ def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
     build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
 
 
+def _expected_00_hard_surface_fg_score(calc_song: dict, ref_arrays: dict) -> int:
+    from gear_optimizer.helpers.song_helpers.fg_config import require_response_surface
+    from gear_optimizer.helpers.song_helpers.persistence_payload import normalize_force_payload
+    from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
+
+    force_norm = normalize_force_payload(_stale_00_hard_fg_force_payload())
+    return int(
+        score_force_greats_response_surface_exact(
+            force_norm["Stats"], calc_song, ref_arrays, require_response_surface(force_norm)
+        )
+    )
+
+
 def test_authoritative_fg_canonicalization_replays_00_hard_force_payload_directly():
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.data.song_io import get_base_calc_song
@@ -279,12 +296,13 @@ def test_authoritative_fg_canonicalization_replays_00_hard_force_payload_directl
 
     row = out[0]
     force = row["force"]
+    expected_fg = _expected_00_hard_surface_fg_score(calc_song, ref_arrays)
     assert row["score"] == 32367815
     assert row["fg_base_score"] == 32518595
-    assert row["fg_score"] == 32521173
+    assert row["fg_score"] == expected_fg
     assert force["BaseScore"] == 32518595
-    assert force["Score"] == 32521173
-    assert force["ForceGreats"]["final_score"] == 32521173
+    assert force["Score"] == expected_fg
+    assert force["ForceGreats"]["final_score"] == expected_fg
 
 
 def test_db_equal_fg_upsert_preserves_source_00_hard_paired_base_score(tmp_path, monkeypatch):
@@ -305,8 +323,14 @@ def test_db_equal_fg_upsert_preserves_source_00_hard_paired_base_score(tmp_path,
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert ref_arrays
     _prebuild_timeline_frontier(calc_song, ref_arrays)
+    expected_fg = _expected_00_hard_surface_fg_score(calc_song, ref_arrays)
     canonical = canonicalize_authoritative_fg_entries([stale], calc_song=calc_song, ref_arrays=ref_arrays)
     save_loadouts_batch(song, canonical)
+    # Equal-fg upsert: a second canonical save must keep the SOURCE paired base.
+    canonical_again = canonicalize_authoritative_fg_entries(
+        [_stale_00_hard_fg_entry()], calc_song=calc_song, ref_arrays=ref_arrays
+    )
+    save_loadouts_batch(song, canonical_again)
 
     with get_db_connection(str(db_path)) as conn:
         row = conn.execute(
@@ -317,9 +341,9 @@ def test_db_equal_fg_upsert_preserves_source_00_hard_paired_base_score(tmp_path,
 
     assert row is not None
     assert int(row["score"]) == 32518595
-    assert int(row["fg_score"]) == 32521173
+    assert int(row["fg_score"]) == expected_fg
     details = json.loads(row["details_json"])
     force = json.loads(row["force_details_json"])
     assert int(details["BaseScore"]) == 32518595
     assert int(force["BaseScore"]) == 32518595
-    assert int(force["Score"]) == 32521173
+    assert int(force["Score"]) == expected_fg

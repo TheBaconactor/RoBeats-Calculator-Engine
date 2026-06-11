@@ -13,7 +13,7 @@ from ...core.team_buff import (
 )
 from ...core.utils import get_selected_element, safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
-from .fg_config import has_valid_fg_config
+from .fg_config import has_valid_fg_config, require_response_surface
 from .force_greats.result_application import materialize_stats_from_payload
 from .ref_array_builder import resolve_exact_replay_ref_arrays
 
@@ -179,55 +179,6 @@ def _resolve_team_colors_for_tiering(
     return str(base_team_color), str(target_team_color)
 
 
-def _dict_cfg_to_counts(cfg: dict) -> list[int]:
-    if not isinstance(cfg, dict) or not cfg:
-        return []
-    pairs: list[tuple[int, int]] = []
-    for k, v in cfg.items():
-        if not isinstance(k, str) or not k.startswith("NonFever"):
-            continue
-        try:
-            idx = int(k.replace("NonFever", "")) - 1
-        except Exception as e:
-            logger.debug(f"team_buff_tiers:_dict_cfg_to_counts: {e}")
-            continue
-        try:
-            val = int(v)
-        except Exception as e:
-            logger.debug(f"team_buff_tiers:_dict_cfg_to_counts: {e}")
-            val = 0
-        pairs.append((idx, val))
-    if not pairs:
-        return []
-    pairs.sort(key=lambda x: x[0])
-    max_idx = pairs[-1][0]
-    out = [0] * (max_idx + 1)
-    for idx, v in pairs:
-        if 0 <= idx < len(out):
-            out[idx] = max(0, int(v))
-    return out
-
-
-def _extract_force_config_counts(force_obj: dict) -> list[int]:
-    if not isinstance(force_obj, dict) or not force_obj:
-        return []
-
-    fg_meta = force_obj.get("ForceGreats")
-    if not isinstance(fg_meta, dict):
-        details = force_obj.get("details") or {}
-        fg_meta = details.get("ForceGreats") if isinstance(details, dict) else None
-    if not isinstance(fg_meta, dict):
-        return []
-
-    cfg = fg_meta.get("config") or {}
-    counts = _dict_cfg_to_counts(cfg if isinstance(cfg, dict) else {})
-    if not counts:
-        return []
-    if sum(int(x) for x in counts) <= 0:
-        return []
-    return counts
-
-
 def _entry_origin_priority(entry: dict) -> tuple[int, int, int]:
     force_obj = entry.get("force")
     has_force = 1 if isinstance(force_obj, dict) and has_valid_fg_config(force_obj) else 0
@@ -323,7 +274,7 @@ def _fg_replay_snapshot(
     paired_base_stats: dict,
     primary_color: str,
     secondary_color: str,
-    counts: list[int],
+    surface: object,
     config: object,
 ) -> dict:
     fg = _replay_stat_slice(fg_stats, primary_color=primary_color, secondary_color=secondary_color)
@@ -343,7 +294,7 @@ def _fg_replay_snapshot(
         "base_ff_stat": int(base["ff_stat"]),
         "base_cm_stat": int(base["cm_stat"]),
         "base_fm_stat": int(base["fm_stat"]),
-        "counts": counts,
+        "surface": surface,
         "config": config,
     }
 
@@ -404,59 +355,14 @@ def _fg_identity_details(force_out: object, calc_song: dict) -> dict[str, str]:
 
 
 def _apply_force_delta(force_obj: object, *, delta: dict[str, int], fg_score: int) -> object:
+    """Update a flat persisted FG payload (force_details_json) with the replayed score/tier delta."""
     if not isinstance(force_obj, dict) or not force_obj:
         return force_obj
-
-    # Nested force payload format: `{score, gear, minis, details: {...}}`
-    if isinstance(force_obj.get("details"), dict):
-        if not delta:
-            # Still update the score if present to prevent stale payloads.
-            out0 = dict(force_obj)
-            if "score" in out0:
-                out0["score"] = int(fg_score)
-            details0 = out0.get("details")
-            if isinstance(details0, dict):
-                fg0 = details0.get("ForceGreats")
-                if isinstance(fg0, dict):
-                    fg0_out = dict(fg0)
-                    fg0_out["final_score"] = int(fg_score)
-                    details0_out = dict(details0)
-                    details0_out["ForceGreats"] = fg0_out
-                    out0["details"] = details0_out
-            return out0
-
-        out = dict(force_obj)
-        if "score" in out:
-            out["score"] = int(fg_score)
-        details = out.get("details")
-        if isinstance(details, dict) and details:
-            details_out = dict(details)
-            stats = details_out.get("Stats")
-            if isinstance(stats, dict) and stats:
-                details_out["Stats"] = _apply_stat_delta(stats, delta)
-            fg = details_out.get("ForceGreats")
-            if isinstance(fg, dict):
-                fg_out = dict(fg)
-                fg_out["final_score"] = int(fg_score)
-                details_out["ForceGreats"] = fg_out
-            out["details"] = details_out
-        return out
-
-    # New format: flat raw FG payload (persisted in force_details_json)
-    if not delta:
-        out0 = dict(force_obj)
-        out0["Score"] = int(fg_score)
-        fg0 = out0.get("ForceGreats")
-        if isinstance(fg0, dict):
-            fg0_out = dict(fg0)
-            fg0_out["final_score"] = int(fg_score)
-            out0["ForceGreats"] = fg0_out
-        return out0
 
     out = dict(force_obj)
     out["Score"] = int(fg_score)
     base_stats = out.get("BaseStats")
-    if isinstance(base_stats, dict) and base_stats:
+    if delta and isinstance(base_stats, dict) and base_stats:
         out["BaseStats"] = _apply_stat_delta(base_stats, delta)
     fg = out.get("ForceGreats")
     if isinstance(fg, dict):
@@ -487,7 +393,9 @@ def compute_team_buff_tier_leaderboards(
 
     This is designed for post-processing:
     - Uses the existing gem allocations (Stats in details) as-is.
-    - Uses the existing ForceGreats config (force_details_json) as-is.
+    - Scores the persisted FG response surface exactly (the canonical FG
+      representation; tier deltas never shift FT/FF, so the fever timeline is
+      tier-invariant and only stat values re-derive).
     - Produces top-N lists by base score and FG score per tier.
     """
     n = max(0, int(limit))
@@ -546,17 +454,16 @@ def compute_team_buff_tier_leaderboards(
         )
 
         force_obj = entry.get("force")
-        fg_counts = _extract_force_config_counts(force_obj) if isinstance(force_obj, dict) else []
         fg_snapshot = None
-        if fg_counts:
-            fg_stats0 = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
+        if isinstance(force_obj, dict) and has_valid_fg_config(force_obj):
+            fg_stats0 = _force_payload_stats(force_obj, stats_base)
             fg_stats = (
                 _ensure_stats_include_base_effect(fg_stats0, base_effect) if isinstance(fg_stats0, dict) else {}
             )
             if not isinstance(fg_stats, dict) or not fg_stats:
                 fg_stats = stats_base
 
-            force_base_raw = force_obj.get("BaseStats") if isinstance(force_obj, dict) else None
+            force_base_raw = force_obj.get("BaseStats")
             if isinstance(force_base_raw, dict) and force_base_raw:
                 force_base_stats = _ensure_stats_include_base_effect(force_base_raw, base_effect)
             else:
@@ -567,12 +474,8 @@ def compute_team_buff_tier_leaderboards(
                 paired_base_stats=force_base_stats,
                 primary_color=primary_color,
                 secondary_color=secondary_color,
-                counts=fg_counts,
-                config=(
-                    (force_obj.get("ForceGreats", {}) or {}).get("config")
-                    if isinstance(force_obj, dict)
-                    else None
-                ),
+                surface=require_response_surface(force_obj),
+                config=(force_obj.get("ForceGreats", {}) or {}).get("config"),
             )
 
         per_entry.append(
@@ -588,7 +491,10 @@ def compute_team_buff_tier_leaderboards(
             }
         )
 
-    from ...solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact_batch
+    from ...solver.scoring.exact_rescore import (
+        score_force_greats_response_surface_exact,
+        score_stats_exact_batch,
+    )
 
     tier_deltas: dict[str, tuple[int, int, int]] = {}
     for tier in tier_list:
@@ -635,9 +541,6 @@ def compute_team_buff_tier_leaderboards(
                 fg = e.get("fg")
                 if not isinstance(fg, dict):
                     continue
-                counts0 = fg.get("counts")
-                if not isinstance(counts0, (list, tuple)) or not counts0:
-                    continue
                 stats = _fg_stats_at_tier(
                     fg,
                     delta_pp=int(dpp),
@@ -646,9 +549,15 @@ def compute_team_buff_tier_leaderboards(
                     primary_color=primary_color,
                     secondary_color=secondary_color,
                 )
-                replay = evaluate_force_greats_exact(stats, calc_song, ref_arrays, list(counts0))
-                if isinstance(replay, dict):
-                    out_list[idx] = int(replay.get("final_score", 0) or 0)
+                replay_score = score_force_greats_response_surface_exact(
+                    stats, calc_song, ref_arrays, fg["surface"]
+                )
+                if replay_score is None:
+                    raise ValueError(
+                        "FG response surface tier replay failed for loadout "
+                        f"{e.get('loadout_hash')!r} at tier {tier!r}."
+                    )
+                out_list[idx] = int(replay_score)
 
     tiers_out: dict[str, dict] = {}
     for tier in tier_list:

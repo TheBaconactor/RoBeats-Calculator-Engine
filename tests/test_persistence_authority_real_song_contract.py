@@ -7,40 +7,20 @@ from typing import Any
 import numpy as np
 
 from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
+from gear_optimizer.helpers.song_helpers.fg_config import require_response_surface
 from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn, normalize_force_payload
 from gear_optimizer.data.song_io import get_base_calc_song
-from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
+from gear_optimizer.solver.scoring.exact_rescore import (
+    score_force_greats_response_surface_exact,
+    score_stats_exact,
+)
 from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
 
 def _fixture_payload(filename: str) -> dict[str, Any]:
     fixture_path = Path(__file__).resolve().parent / "fixtures" / str(filename)
     return json.loads(fixture_path.read_text(encoding="utf-8"))
-
-
-def _force_counts_from_config(config: Any) -> list[int]:
-    if not isinstance(config, dict) or not config:
-        return []
-    pairs: list[tuple[int, int]] = []
-    for key, value in config.items():
-        if not isinstance(key, str) or not key.startswith("NonFever"):
-            continue
-        try:
-            idx = int(str(key).replace("NonFever", "").strip())
-            forced = int(value or 0)
-        except Exception:
-            continue
-        if idx <= 0:
-            continue
-        pairs.append((idx, max(0, forced)))
-    if not pairs:
-        return []
-    max_idx = max(idx for idx, _ in pairs)
-    out = [0] * max_idx
-    for idx, forced in pairs:
-        out[idx - 1] = forced
-    return out
 
 
 def _row_signature(row: dict[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -217,11 +197,11 @@ def test_persistence_authority_contract_real_song_ourovoros_t5():
     force_norm = normalize_force_payload(fg_row.get("force"))
     force_stats = dict(force_norm.get("Stats") or {})
     assert force_stats
-    force_cfg = ((force_norm.get("ForceGreats") or {}).get("config")) or {}
-    force_counts = _force_counts_from_config(force_cfg)
-    force_eval = evaluate_force_greats_exact(force_stats, calc_song, ref_arrays, force_counts)
-    assert isinstance(force_eval, dict)
-    fg_exact = int(force_eval.get("final_score") or 0)
+    fg_exact = int(
+        score_force_greats_response_surface_exact(
+            force_stats, calc_song, ref_arrays, require_response_surface(force_norm)
+        )
+    )
     assert fg_exact > int(fg_row["score"])
     assert int(fg_row["fg_score"]) == fg_exact
     assert int(fg_row["fg_score"]) == int(fg_entry["expected_fg_score"])
@@ -364,11 +344,12 @@ def test_persistence_authority_contract_real_song_ourovoros_runtime_float32_refs
 
         force_stats = dict(force_norm.get("Stats") or {})
         assert force_stats
-        force_cfg = ((force_norm.get("ForceGreats") or {}).get("config")) or {}
-        force_counts = _force_counts_from_config(force_cfg)
-        force_eval = evaluate_force_greats_exact(force_stats, calc_song, runtime_ref_arrays, force_counts)
-        assert isinstance(force_eval, dict)
-        assert int(runtime_row.get("fg_score") or 0) == int(force_eval.get("final_score") or 0)
+        fg_exact = int(
+            score_force_greats_response_surface_exact(
+                force_stats, calc_song, runtime_ref_arrays, require_response_surface(force_norm)
+            )
+        )
+        assert int(runtime_row.get("fg_score") or 0) == fg_exact
         assert int(runtime_row.get("fg_score") or 0) == int(authoritative_row.get("fg_score") or 0)
 
 

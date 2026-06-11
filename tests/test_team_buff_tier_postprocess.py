@@ -3,6 +3,23 @@ import pytest
 
 pytestmark = pytest.mark.gpu
 
+# Persisted FG payloads carry the response surface (the canonical exact FG
+# representation); fixtures mirror that contract. Head-only bits keep the
+# surface valid for <100-note mock songs (body counts must stay 0).
+_FG_TEST_SURFACE = [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+
+
+def _fg_test_surface() -> list[int]:
+    return list(_FG_TEST_SURFACE)
+
+
+def _expected_fg_surface_score(stats: dict, calc_song: dict, ref_arrays: dict) -> int:
+    from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+
+    return int(score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, FgResponseSurface(*_FG_TEST_SURFACE)))
+
+
 # GPU exact-replay tests need the timeline frontier prebuilt (same as production startup).
 # Isolated GPU unit tests do not run the full app prebuild; call this before real scoring.
 def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
@@ -83,10 +100,9 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
         "minis": ["A7", "A8", "A9"],
         "details": {"Stats": stats_a},
         "force": {
-            "details": {
-                "Stats": stats_a,
-                "ForceGreats": {"config": {"NonFever1": 1}},
-            }
+            "Stats": stats_a,
+            "ForceGreats": {"config": {"NonFever1": 1}},
+            "response_surface": _fg_test_surface(),
         },
     }
     entry_b = {
@@ -278,7 +294,7 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
             "gear": ["C"],
             "minis": ["M3"],
             "details": {"Stats": stats},
-            "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+            "force": {"ForceGreats": {"config": {"NonFever1": 1}}, "response_surface": _fg_test_surface()},
         },
     ]
 
@@ -365,6 +381,7 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
             "Score": 250,
             "BaseStats": dict(shared_stats),
             "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 250, "Marker": "force-b"},
+            "response_surface": _fg_test_surface(),
         },
     }
 
@@ -453,7 +470,12 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
         "minis": ["M1", "M2", "M3"],
         "details": {"Stats": stats},
         # Flat force payload as stored in DB; BaseStats also missing base effect to emulate repaired rows.
-        "force": {"BaseStats": stats, "GemCounts": {"Perfect Points": 0}, "ForceGreats": {"config": {"NonFever1": 1}}},
+        "force": {
+            "BaseStats": stats,
+            "GemCounts": {"Perfect Points": 0},
+            "ForceGreats": {"config": {"NonFever1": 1}},
+            "response_surface": _fg_test_surface(),
+        },
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
@@ -571,7 +593,12 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score():
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
         "minis": ["M1", "M2", "M3"],
         "details": {"Stats": stats},
-        "force": {"BaseStats": stats, "GemCounts": {"Perfect Points": 0}, "ForceGreats": {"config": {"NonFever1": 1}}},
+        "force": {
+            "BaseStats": stats,
+            "GemCounts": {"Perfect Points": 0},
+            "ForceGreats": {"config": {"NonFever1": 1}},
+            "response_surface": _fg_test_surface(),
+        },
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
@@ -593,10 +620,42 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score():
     assert t5_fg["fg_score"] != t51_fg["fg_score"]
 
 
+def test_team_buff_tier_replay_requires_persisted_response_surface():
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+
+    calc_song = _mock_song(name="pytest_team_buff_missing_surface", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {"Perfect Points": 100, "Combo Multiplier": 0, "Fever Multiplier": 0,
+             "Fever Fill Rate": 0, "Fever Time": 0, "Rush": 150, "Flow": 0,
+             "Beat": 0, "Vibe": 0, "Chill": 0}
+    entry = {
+        "score": 100,
+        "fg_score": 95,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": dict(stats)},
+        # Valid FG config but no persisted response_surface: invalid FG state.
+        "force": {"Stats": dict(stats), "ForceGreats": {"config": {"NonFever1": 1}}},
+    }
+
+    with pytest.raises(ValueError, match="response_surface"):
+        compute_team_buff_tier_leaderboards(
+            entries=[entry],
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            cfg_dict=cfg_dict,
+            tiers=("T5",),
+            limit=1,
+        )
+
+
 def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
-    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     calc_song = _mock_song(name="pytest_team_buff_fg_base_context", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
@@ -624,13 +683,14 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
         "force": {
             "Stats": dict(stats),
             "ForceGreats": {"config": {"NonFever1": 1}},
+            "response_surface": _fg_test_surface(),
         },
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     expected_base = int(score_stats_exact(stats, calc_song, ref_arrays))
-    expected_fg = int(evaluate_force_greats_exact(stats, calc_song, ref_arrays, [1])["final_score"])
+    expected_fg = _expected_fg_surface_score(stats, calc_song, ref_arrays)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
@@ -655,7 +715,7 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.core.team_buff import team_buff_effect
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
-    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     calc_song = _mock_song(name=f"pytest_team_buff_derived_fg_visibility_{tier_name}", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
@@ -683,6 +743,7 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
         "force": {
             "Stats": dict(stats),
             "ForceGreats": {"config": {"NonFever1": 1}},
+            "response_surface": _fg_test_surface(),
         },
     }
 
@@ -694,7 +755,7 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
     _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     expected_base = int(score_stats_exact(tier_stats, calc_song, ref_arrays))
-    expected_fg = int(evaluate_force_greats_exact(tier_stats, calc_song, ref_arrays, [1])["final_score"])
+    expected_fg = _expected_fg_surface_score(tier_stats, calc_song, ref_arrays)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
@@ -748,6 +809,7 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
         "force": {
             "Stats": dict(stats),
             "ForceGreats": {"config": {"NonFever1": 1}},
+            "response_surface": _fg_test_surface(),
         },
     }
 
@@ -819,7 +881,7 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
         "minis": ["M1", "M2", "M3"],
         "details": {"Stats": {}},
-        "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+        "force": {"ForceGreats": {"config": {"NonFever1": 1}}, "response_surface": _fg_test_surface()},
     }
 
     def _fake_compute_team_buff_tier_leaderboards(**kwargs):
@@ -915,6 +977,7 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
                     "config": {"NonFever1": 1},
                     "final_score": fg_score,
                 },
+                "response_surface": _fg_test_surface(),
             },
         }
 
@@ -1042,7 +1105,11 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
             "gear": [gear_name, "G2", "G3", "G4", "G5", "G6"],
             "minis": [mini_name, "M2", "M3"],
             "details": {"Stats": dict(stats)},
-            "force": {"Stats": dict(stats), "ForceGreats": {"config": {"NonFever1": 1}}},
+            "force": {
+                "Stats": dict(stats),
+                "ForceGreats": {"config": {"NonFever1": 1}},
+                "response_surface": _fg_test_surface(),
+            },
         }
 
     entry_a = _entry("hash-a", "GA", "MA")

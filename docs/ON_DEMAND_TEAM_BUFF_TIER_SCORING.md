@@ -15,7 +15,11 @@ When you need tiered leaderboards, compute them **on demand** from the persisted
 On-demand recompute uses **CPU exact replay** via `gear_optimizer/helpers/song_helpers/team_buff_tiers.py`:
 
 - Base score: `solver.scoring.exact_rescore.score_fixed_value_exact(...)`
-- FG score: `solver.scoring.exact_rescore.evaluate_force_greats_exact(...)`
+- FG score: `solver.scoring.exact_rescore.score_force_greats_response_surface_exact(...)` over the
+  persisted `response_surface` (the canonical exact FG representation). FG rows without a persisted
+  surface fail loudly. Tier deltas never shift FT/FF, so the fever/great timeline is tier-invariant
+  and the baseline-tier replay is bit-exact to the persisted `fg_score`. See
+  `docs/Implementation Records/FG_TIER_REPLAY_RESPONSE_SURFACE_AUTHORITY.md`.
 
 Production FG optimization itself remains GPU Bellman-only; tier recompute does not call the removed
 finder GPU API.

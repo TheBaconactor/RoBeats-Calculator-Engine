@@ -174,7 +174,21 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
         },
         "ForceGreats": {"config": {"NonFever1": 5, "NonFever2": 0}, "final_score": 32521173},
         "forced_counts": [5, 0],
+        # Canonical FG scoring replays the persisted response surface (head bits 0-99
+        # fever + all 1090 body notes fever on the 1190-note chart).
+        "response_surface": [4294967295, 4294967295, 4294967295, 15, 0, 0, 0, 0, 1090, 0, 0],
     }
+
+    from gear_optimizer.helpers.song_helpers.fg_config import require_response_surface
+    from gear_optimizer.helpers.song_helpers.persistence_payload import normalize_force_payload
+    from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
+
+    force_norm = normalize_force_payload(dict(force_payload))
+    expected_fg = int(
+        score_force_greats_response_surface_exact(
+            force_norm["Stats"], calc_song, ref_arrays, require_response_surface(force_norm)
+        )
+    )
 
     monkeypatch.setattr(post_processor, "print_results", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -244,7 +258,7 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
     stored_details = json.loads(str(row["details_json"] or "{}"))
     stored_force = json.loads(str(row["force_details_json"] or "{}"))
     assert int(row["score"]) == 32518595
-    assert int(row["fg_score"]) == 32521173
+    assert int(row["fg_score"]) == expected_fg
     assert int(stored_details["BaseScore"]) == 32518595
     assert int(stored_force["BaseScore"]) == 32518595
-    assert int(stored_force["Score"]) == 32521173
+    assert int(stored_force["Score"]) == expected_fg

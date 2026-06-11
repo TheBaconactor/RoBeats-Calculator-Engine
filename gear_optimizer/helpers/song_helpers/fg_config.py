@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 import logging
 
+from ...solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
 
 logger = logging.getLogger(__name__)
@@ -62,3 +63,23 @@ def has_valid_fg_config(container: Any) -> bool:
     if isinstance(container, dict):
         return is_nonzero_fg_config(container)
     return False
+
+
+def require_response_surface(force_obj: Any) -> FgResponseSurface:
+    """
+    Return the persisted FG response surface from a force payload.
+
+    The response surface is the canonical exact FG representation (it encodes
+    Fever+Great overlap; forced-count configs cannot). Every persisted FG payload
+    carries one, so a valid FG payload without it is invalid state.
+    """
+    payload = _coerce_dict(force_obj)
+    surface_obj = payload.get("response_surface")
+    if surface_obj is None:
+        surface_obj = _coerce_dict(payload.get("ForceGreats")).get("response_surface")
+    field_count = len(FgResponseSurface._fields)
+    if not isinstance(surface_obj, (list, tuple)) or len(surface_obj) != field_count:
+        raise ValueError(
+            f"FG payload requires a persisted {field_count}-value response_surface; got {surface_obj!r}."
+        )
+    return FgResponseSurface(*[int(value) for value in surface_obj])
