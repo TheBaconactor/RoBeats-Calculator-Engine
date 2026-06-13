@@ -47,6 +47,7 @@ from gear_optimizer.data.csv_parser import (
     load_all_minis_list,
     read_table,
 )
+from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.core.utils import safe_int, cfg_to_dict
 from gear_optimizer.solver.scoring import FG_CACHE
 from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
@@ -355,6 +356,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 loop_forever = False
             eval_cpu_limit = int(runtime_settings.eval_cpu_cores)
             self._maybe_autoset_gpu_song_slots(cfg)
+            sync_exported_game_data()
             stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
             self._disable_inputs_to_prevent_taint(cfg)
             ref_arrays = self._preload_ref_arrays(stats_table)

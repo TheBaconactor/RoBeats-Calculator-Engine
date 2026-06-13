@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import multiprocessing
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -106,35 +105,15 @@ def run() -> int:
         return 1
 
 
-def _sync_optimizer_csvs_from_exported_data(repo_root: Path) -> None:
-    exporter = repo_root / "tools" / "data" / "export_game_data_gear_minis.py"
-    exported_data = repo_root / "Data" / "exported_game_data.json"
-    gears_out = repo_root / "Data" / "Gear" / "Gears.csv"
-    minis_out = repo_root / "Data" / "Gear" / "Minis.csv"
-
-    if not exporter.exists():
-        raise FileNotFoundError(f"Missing exporter script: {exporter}")
-    if not exported_data.exists():
-        raise FileNotFoundError(f"Missing exported game data: {exported_data}")
-
-    cmd = [
-        sys.executable,
-        str(exporter),
-        "--input",
-        str(exported_data),
-        "--gears-out",
-        str(gears_out),
-        "--minis-out",
-        str(minis_out),
-    ]
-    print("Syncing optimizer gear/mini CSVs from exported_game_data.json ...")
-    subprocess.run(cmd, check=True, cwd=str(repo_root))
-
-
 def sync_data() -> int:
     common_init()
     try:
-        _sync_optimizer_csvs_from_exported_data(REPO_ROOT)
+        from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
+
+        print("Syncing optimizer gear/mini CSVs from exported_game_data.json ...")
+        result = sync_exported_game_data(force=True)
+        if not result.synced:
+            raise RuntimeError(f"Forced exported-game-data sync did not run: {result.reason}")
         return 0
     except Exception as exc:
         print(f"Fatal Error: {exc}")
@@ -149,8 +128,10 @@ def meta() -> int:
     print()
     try:
         from gear_optimizer.data.database import init_db
+        from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
         from general_meta import export_general_meta_json, run_general_meta
 
+        sync_exported_game_data()
         find_and_cache_paths()
         cfg = load_config(get_config_path(str(REPO_ROOT / "config.ini")))
         paths = load_paths_cache()

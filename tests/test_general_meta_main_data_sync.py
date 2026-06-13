@@ -6,46 +6,15 @@ import sys
 from pathlib import Path
 
 import gear_optimizer.cli as optimizer_cli
+from gear_optimizer.data.exported_game_data_sync import (
+    ExportedGameDataPaths,
+    default_exported_game_data_paths,
+    sync_exported_game_data,
+)
 
 
-def test_sync_optimizer_csvs_from_exported_data_invokes_exporter(monkeypatch, tmp_path: Path) -> None:
-    repo_root = tmp_path
-    exporter = repo_root / "tools" / "data" / "export_game_data_gear_minis.py"
-    exported_data = repo_root / "Data" / "exported_game_data.json"
-    gears_out = repo_root / "Data" / "Gear" / "Gears.csv"
-    minis_out = repo_root / "Data" / "Gear" / "Minis.csv"
-
-    exporter.parent.mkdir(parents=True, exist_ok=True)
-    exported_data.parent.mkdir(parents=True, exist_ok=True)
-    exporter.write_text("print('ok')\n", encoding="utf-8")
-    exported_data.write_text("{}", encoding="utf-8")
-
-    captured: dict[str, object] = {}
-
-    def _fake_run(cmd, check, cwd):
-        captured["cmd"] = cmd
-        captured["check"] = check
-        captured["cwd"] = cwd
-        return None
-
-    monkeypatch.setattr(optimizer_cli.subprocess, "run", _fake_run)
-
-    optimizer_cli._sync_optimizer_csvs_from_exported_data(repo_root)
-
-    cmd = captured["cmd"]
-    assert isinstance(cmd, list)
-    assert "--input" in cmd
-    assert str(exported_data) in cmd
-    assert "--gears-out" in cmd
-    assert str(gears_out) in cmd
-    assert "--minis-out" in cmd
-    assert str(minis_out) in cmd
-    assert captured["check"] is True
-    assert captured["cwd"] == str(repo_root)
-
-
-def test_export_game_data_gear_minis_runs_as_direct_script(tmp_path: Path) -> None:
-    payload = {
+def _sample_payload() -> dict:
+    return {
         "gears": {
             "1": {
                 "gears": [
@@ -69,59 +38,120 @@ def test_export_game_data_gear_minis_runs_as_direct_script(tmp_path: Path) -> No
             }
         },
     }
-    input_path = tmp_path / "exported_game_data.json"
-    gears_out = tmp_path / "Gears.csv"
-    minis_out = tmp_path / "Minis.csv"
-    input_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    script = Path(__file__).resolve().parents[1] / "tools" / "data" / "export_game_data_gear_minis.py"
+
+def _paths(tmp_path: Path) -> ExportedGameDataPaths:
+    data_dir = tmp_path / "Data"
+    bin_dir = tmp_path / "bin"
+    return ExportedGameDataPaths(
+        exported_json=data_dir / "exported_game_data.json",
+        gears_csv=data_dir / "Gear" / "Gears.csv",
+        minis_csv=data_dir / "Gear" / "Minis.csv",
+        sync_state=bin_dir / "exported_game_data_sync_state.json",
+    )
+
+
+def test_sync_data_forces_sync(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_sync(*, force: bool = False):
+        captured["force"] = force
+        return type("Result", (), {"synced": True, "reason": "forced"})()
+
+    monkeypatch.setattr(
+        "gear_optimizer.data.exported_game_data_sync.sync_exported_game_data",
+        _fake_sync,
+    )
+
+    assert optimizer_cli.sync_data() == 0
+    assert captured["force"] is True
+
+
+def test_sync_exported_game_data_skips_when_unchanged(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths.exported_json.parent.mkdir(parents=True, exist_ok=True)
+    paths.exported_json.write_text(json.dumps(_sample_payload()), encoding="utf-8")
+
+    first = sync_exported_game_data(paths=paths)
+    second = sync_exported_game_data(paths=paths)
+
+    assert first.synced is True
+    assert first.gear_count == 1
+    assert first.mini_count == 1
+    assert second.synced is False
+    assert second.reason == "up_to_date"
+
+
+def test_sync_exported_game_data_runs_when_export_changes(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths.exported_json.parent.mkdir(parents=True, exist_ok=True)
+    paths.exported_json.write_text(json.dumps(_sample_payload()), encoding="utf-8")
+    sync_exported_game_data(paths=paths)
+
+    changed = _sample_payload()
+    changed["gears"]["1"]["gears"][0]["stats"]["ColorBlue"] = 9
+    paths.exported_json.write_text(json.dumps(changed), encoding="utf-8")
+
+    result = sync_exported_game_data(paths=paths)
+
+    assert result.synced is True
+    assert result.reason == "exported_game_data_changed"
+    assert "9" in paths.gears_csv.read_text(encoding="utf-8")
+
+
+def test_sync_module_main_runs(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths.exported_json.parent.mkdir(parents=True, exist_ok=True)
+    paths.exported_json.write_text(json.dumps(_sample_payload()), encoding="utf-8")
+
     completed = subprocess.run(
         [
             sys.executable,
-            str(script),
+            "-m",
+            "gear_optimizer.data.exported_game_data_sync",
             "--input",
-            str(input_path),
+            str(paths.exported_json),
             "--gears-out",
-            str(gears_out),
+            str(paths.gears_csv),
             "--minis-out",
-            str(minis_out),
+            str(paths.minis_csv),
+            "--force",
         ],
-        cwd=str(tmp_path),
+        cwd=str(Path(__file__).resolve().parents[1]),
         capture_output=True,
         text=True,
         check=False,
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "Direct Script Shirt" in gears_out.read_text(encoding="utf-8")
-    assert "Direct Script Mini" in minis_out.read_text(encoding="utf-8")
+    assert "Direct Script Shirt" in paths.gears_csv.read_text(encoding="utf-8")
+    assert "Direct Script Mini" in paths.minis_csv.read_text(encoding="utf-8")
+    assert (paths.exported_json.parent / "exported_game_data_sync_state.json").is_file()
+
+
+def test_default_paths_match_repo_layout() -> None:
+    paths = default_exported_game_data_paths()
+    repo_root = Path(__file__).resolve().parents[1]
+    assert paths.exported_json == repo_root / "Data" / "exported_game_data.json"
+    assert paths.gears_csv == repo_root / "Data" / "Gear" / "Gears.csv"
+    assert paths.minis_csv == repo_root / "Data" / "Gear" / "Minis.csv"
 
 
 def test_checked_in_optimizer_csvs_match_exported_game_data(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    script = repo_root / "tools" / "data" / "export_game_data_gear_minis.py"
     exported_data = repo_root / "Data" / "exported_game_data.json"
     gears_out = tmp_path / "Gears.csv"
     minis_out = tmp_path / "Minis.csv"
-
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(script),
-            "--input",
-            str(exported_data),
-            "--gears-out",
-            str(gears_out),
-            "--minis-out",
-            str(minis_out),
-        ],
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
+    paths = ExportedGameDataPaths(
+        exported_json=exported_data,
+        gears_csv=gears_out,
+        minis_csv=minis_out,
+        sync_state=tmp_path / "sync_state.json",
     )
 
-    assert completed.returncode == 0, completed.stderr
+    result = sync_exported_game_data(paths=paths, force=True)
+
+    assert result.synced is True
     assert gears_out.read_text(encoding="utf-8") == (repo_root / "Data" / "Gear" / "Gears.csv").read_text(
         encoding="utf-8"
     )

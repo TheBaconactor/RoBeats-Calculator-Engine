@@ -93,7 +93,7 @@ def _assert_known_mini_names(
         preview += ", ..."
     raise RuntimeError(
         f"Missing mini stats in GeneralMeta input ({context}): {preview}. "
-        "Refresh optimizer CSVs from Data/exported_game_data.json before running GeneralMeta."
+        "Refresh optimizer CSVs from exported_game_data.json (auto-synced on startup)."
     )
 
 

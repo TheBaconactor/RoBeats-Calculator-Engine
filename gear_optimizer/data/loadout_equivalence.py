@@ -80,6 +80,13 @@ def get_gears_by_name_cached() -> Dict[str, dict]:
     return gears
 
 
+def clear_gear_mini_csv_caches() -> None:
+    global _MINIS_BY_NAME_CACHE, _GEARS_BY_NAME_CACHE, _MINI_SIG_TO_NAMES_CACHE
+    _MINIS_BY_NAME_CACHE = None
+    _GEARS_BY_NAME_CACHE = None
+    _MINI_SIG_TO_NAMES_CACHE = {}
+
+
 def extract_song_colors(details: Any) -> tuple[str, str, str]:
     """
     Extract (primary_color, secondary_color, selected_color) from a details dict.
