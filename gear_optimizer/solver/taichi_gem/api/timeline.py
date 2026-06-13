@@ -56,8 +56,6 @@ _TIMELINE_FRONTIER_CACHE_ARRAY_NAMES = frozenset(
         "grid_frontier_body_fever_pool",
         "grid_frontier_body_normal_pool",
         "grid_frontier_masks_bits_pool",
-        "grid_sig0",
-        "grid_sig1",
         "grid_gap",
         "grid_fever_activations",
         "group_n",
@@ -97,16 +95,6 @@ def _upload_timeline_grid_slot_i8_kernel(
     dst: ti.template(),
     song_slot: ti.i32,
     src: ti.types.ndarray(dtype=ti.i8, ndim=2),
-):
-    for ft, ff in ti.ndrange(fields.GRID_SIZE, fields.GRID_SIZE):
-        dst[song_slot, ft, ff] = src[ft, ff]
-
-
-@ti.kernel
-def _upload_timeline_grid_slot_u64_kernel(
-    dst: ti.template(),
-    song_slot: ti.i32,
-    src: ti.types.ndarray(dtype=ti.u64, ndim=2),
 ):
     for ft, ff in ti.ndrange(fields.GRID_SIZE, fields.GRID_SIZE):
         dst[song_slot, ft, ff] = src[ft, ff]
@@ -182,12 +170,6 @@ def _upload_timeline_frontier_payload_slot(
         upload_bytes += int(src.nbytes)
         _upload_timeline_grid_slot_i8_kernel(dst, song_slot_i, src)
 
-    def upload_u64_grid(dst, arr: np.ndarray) -> None:
-        nonlocal upload_bytes
-        src = _slot_payload(arr, source_slot_i, np.uint64)
-        upload_bytes += int(src.nbytes)
-        _upload_timeline_grid_slot_u64_kernel(dst, song_slot_i, src)
-
     upload_i32_grid(fields.grid_count_body_fever, payload.grid_count_body_fever)
     upload_i32_grid(fields.grid_count_body_normal, payload.grid_count_body_normal)
     upload_i8_grid(fields.grid_head_len, payload.grid_head_len)
@@ -202,8 +184,6 @@ def _upload_timeline_frontier_payload_slot(
 
     upload_i32_grid(fields.grid_frontier_count, payload.grid_frontier_count)
     upload_i32_grid(fields.grid_frontier_offset, payload.grid_frontier_offset)
-    upload_u64_grid(fields.grid_sig0, payload.grid_sig0)
-    upload_u64_grid(fields.grid_sig1, payload.grid_sig1)
     upload_i32_grid(fields.grid_gap, payload.grid_gap)
     upload_i32_grid(fields.grid_fever_activations, payload.grid_fever_activations)
 
@@ -236,7 +216,7 @@ _ceiling_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 _CEILING_FRONTIER_PAYLOAD_CACHE_MAX = 8
 _ceiling_frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
 _ceiling_payload_cache_lock = threading.RLock()
-_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v4"
+_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v5"
 
 
 @dataclass(frozen=True)
@@ -428,8 +408,6 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
             grid_frontier_body_fever_pool = np.asarray(data["grid_frontier_body_fever_pool"], dtype=np.int32)
             grid_frontier_body_normal_pool = np.asarray(data["grid_frontier_body_normal_pool"], dtype=np.int32)
             grid_frontier_masks_bits_pool = np.asarray(data["grid_frontier_masks_bits_pool"], dtype=np.uint32)
-            grid_sig0 = np.asarray(data["grid_sig0"], dtype=np.uint64)
-            grid_sig1 = np.asarray(data["grid_sig1"], dtype=np.uint64)
             grid_gap = np.asarray(data["grid_gap"], dtype=np.int32)
             grid_fever_activations = np.asarray(data["grid_fever_activations"], dtype=np.int32)
 
@@ -460,10 +438,6 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
                 grid_frontier_body_normal_pool = np.expand_dims(grid_frontier_body_normal_pool, axis=0)
             if grid_frontier_masks_bits_pool.ndim == 2:
                 grid_frontier_masks_bits_pool = np.expand_dims(grid_frontier_masks_bits_pool, axis=0)
-            if grid_sig0.ndim == 2:
-                grid_sig0 = np.expand_dims(grid_sig0, axis=0)
-            if grid_sig1.ndim == 2:
-                grid_sig1 = np.expand_dims(grid_sig1, axis=0)
             if grid_gap.ndim == 2:
                 grid_gap = np.expand_dims(grid_gap, axis=0)
             if grid_fever_activations.ndim == 2:
@@ -482,8 +456,6 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
                 grid_frontier_body_fever_pool=grid_frontier_body_fever_pool,
                 grid_frontier_body_normal_pool=grid_frontier_body_normal_pool,
                 grid_frontier_masks_bits_pool=grid_frontier_masks_bits_pool,
-                grid_sig0=grid_sig0,
-                grid_sig1=grid_sig1,
                 grid_gap=grid_gap,
                 grid_fever_activations=grid_fever_activations,
                 frontier_pool_used=int(data["frontier_pool_used"].item()),
@@ -526,8 +498,6 @@ def timeline_frontier_cache_file_is_complete(cache_file: str | Path) -> bool:
                 "grid_Sigma_hf",
                 "grid_frontier_count",
                 "grid_frontier_offset",
-                "grid_sig0",
-                "grid_sig1",
                 "grid_gap",
                 "grid_fever_activations",
             ):
@@ -638,8 +608,6 @@ def _save_frontier_payload_to_disk(
             grid_frontier_masks_bits_pool=np.asarray(
                 payload.grid_frontier_masks_bits_pool[source_slot_i, :pool_used, :], dtype=np.uint32
             ),
-            grid_sig0=np.asarray(payload.grid_sig0[source_slot_i], dtype=np.uint64),
-            grid_sig1=np.asarray(payload.grid_sig1[source_slot_i], dtype=np.uint64),
             grid_gap=np.asarray(payload.grid_gap[source_slot_i], dtype=np.int32),
             grid_fever_activations=np.asarray(payload.grid_fever_activations[source_slot_i], dtype=np.int32),
             **save_kwargs,

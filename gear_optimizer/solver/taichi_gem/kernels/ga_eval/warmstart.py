@@ -27,7 +27,6 @@ def ga_find_best_combo_warmstart_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    prune_plateaus: ti.template(),  # 0 = disabled, 1 = prune timeline plateaus via dominated representatives
     use_exact_inner_solver: ti.template(),  # retained ABI flag; production requires exact inner solving
     reuse_exact_eval_results: ti.template(),
 ):
@@ -128,7 +127,6 @@ def ga_find_best_combo_warmstart_kernel(
                 base_ff_stat,
                 max_ft_gems,
                 max_ff_gems,
-                prune_plateaus,
                 use_exact_inner_solver,
                 False,
                 cull_threshold,

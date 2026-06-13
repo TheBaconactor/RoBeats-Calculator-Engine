@@ -71,8 +71,6 @@ class TimelineFrontierGridPayload:
     grid_frontier_body_fever_pool: np.ndarray
     grid_frontier_body_normal_pool: np.ndarray
     grid_frontier_masks_bits_pool: np.ndarray
-    grid_sig0: np.ndarray
-    grid_sig1: np.ndarray
     grid_gap: np.ndarray
     grid_fever_activations: np.ndarray
     frontier_pool_used: int
@@ -1201,8 +1199,6 @@ def build_timeline_frontier_grid_payload(
     grid_frontier_masks_bits_pool = np.zeros(
         (payload_slots, MAX_TIMELINE_FRONTIER_SURFACES, 4), dtype=np.uint32
     )
-    grid_sig0 = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.uint64)
-    grid_sig1 = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.uint64)
     grid_gap = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
     grid_fever_activations = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
 
@@ -1356,8 +1352,6 @@ def build_timeline_frontier_grid_payload(
     dense_masks = np.zeros((*dense_shape, 4), dtype=np.uint32)
     dense_frontier_count = np.zeros(dense_shape, dtype=np.int32)
     dense_frontier_offset = np.zeros(dense_shape, dtype=np.int32)
-    dense_sig0 = np.zeros(dense_shape, dtype=np.uint64)
-    dense_sig1 = np.zeros(dense_shape, dtype=np.uint64)
     dense_gap = np.zeros(dense_shape, dtype=np.int32)
     dense_fever_activations = np.zeros(dense_shape, dtype=np.int32)
 
@@ -1397,8 +1391,6 @@ def build_timeline_frontier_grid_payload(
         dense_masks[d_i, f_i, 3] = np.uint32(int(canonical.head_bits[3]))
         dense_frontier_count[d_i, f_i] = int(len(pack.surfaces))
         dense_frontier_offset[d_i, f_i] = int(offset)
-        dense_sig0[d_i, f_i] = np.uint64(int(pack.sig0))
-        dense_sig1[d_i, f_i] = np.uint64(int(pack.sig1))
         dense_gap[d_i, f_i] = int(canonical.gap)
         dense_fever_activations[d_i, f_i] = int(canonical.fever_activations)
 
@@ -1414,8 +1406,6 @@ def build_timeline_frontier_grid_payload(
     grid_fever_masks_bits[payload_slot_i] = dense_masks[grid_d_idx, grid_f_idx]
     grid_frontier_count[payload_slot_i] = dense_frontier_count[grid_d_idx, grid_f_idx]
     grid_frontier_offset[payload_slot_i] = dense_frontier_offset[grid_d_idx, grid_f_idx]
-    grid_sig0[payload_slot_i] = dense_sig0[grid_d_idx, grid_f_idx]
-    grid_sig1[payload_slot_i] = dense_sig1[grid_d_idx, grid_f_idx]
     grid_gap[payload_slot_i] = dense_gap[grid_d_idx, grid_f_idx]
     grid_fever_activations[payload_slot_i] = dense_fever_activations[grid_d_idx, grid_f_idx]
 
@@ -1446,8 +1436,6 @@ def build_timeline_frontier_grid_payload(
         grid_frontier_body_fever_pool=grid_frontier_body_fever_pool,
         grid_frontier_body_normal_pool=grid_frontier_body_normal_pool,
         grid_frontier_masks_bits_pool=grid_frontier_masks_bits_pool,
-        grid_sig0=grid_sig0,
-        grid_sig1=grid_sig1,
         grid_gap=grid_gap,
         grid_fever_activations=grid_fever_activations,
         frontier_pool_used=int(pool_cursor),

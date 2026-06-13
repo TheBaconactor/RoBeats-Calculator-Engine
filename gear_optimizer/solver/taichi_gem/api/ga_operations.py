@@ -38,7 +38,6 @@ except ModuleNotFoundError as exc:  # pragma: no cover - CPU-only import/test pa
 from ..ga_chunking import compute_ga_combo_chunk
 from .common_operations import compute_array_sig, probability_to_u32_fp
 logger = logging.getLogger(__name__)
-_GA_PLATEAU_PRUNE_ENABLED: int = 0  # plateau pruning off (was GPU_NATIVE_GA_PLATEAU_PRUNE; not proven bit-exact+faster)
 _GA_COMBO_CHUNK_MIN: int = 1024  # exact-combo dispatch chunk floor (TDR-safe)
 _GA_COMBO_CHUNK_MAX: int = 4096  # exact-combo dispatch chunk ceiling (TDR-safe)
 _GA_COMBO_TAIL_MERGE_MAX: int = 256  # merge a trailing remainder up to this size into the last chunk
@@ -551,7 +550,6 @@ def ga_evaluate_prepared_population(
     total_budget_i = int(total_budget)
     gem_scale_fever_i = int(gem_scale_fever)
     song_slot_i = int(song_slot)
-    prune_plateaus_i = _GA_PLATEAU_PRUNE_ENABLED
     max_ft_gems_i = int(total_budget_i) if max_ft_gems_global is None else int(max_ft_gems_global)
     max_ff_gems_i = int(total_budget_i) if max_ff_gems_global is None else int(max_ff_gems_global)
     max_ft_gems_i = max(0, min(int(total_budget_i), int(max_ft_gems_i)))
@@ -607,7 +605,6 @@ def ga_evaluate_prepared_population(
             int(is_p_ov),
             int(is_s_ov),
             song_slot_i,
-            int(prune_plateaus_i),
             use_exact_inner_solver_i,
             1,  # GPU-side exact-eval dedup: reuse rep result for duplicate genome_base_stats
         )

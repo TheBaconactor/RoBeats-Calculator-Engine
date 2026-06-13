@@ -135,9 +135,8 @@ def _calc_song(*, n_notes: int = 400) -> dict:
 def _make_exhaustive_reference_kernel():
     """Test-local exhaustive oracle: the production eval loop with cull threshold 0.
 
-    Single pass over ALL combos (no chunking), identical lane striding, identical
-    plateau-prune template value, writing the same lane fields so the production
-    finalize kernel performs the same reduction.
+    Single pass over ALL combos (no chunking), identical lane striding, writing
+    the same lane fields so the production finalize kernel performs the same reduction.
     """
     import taichi as ti
 
@@ -166,7 +165,6 @@ def _make_exhaustive_reference_kernel():
         is_p_ov: ti.i32,
         is_s_ov: ti.i32,
         song_slot: ti.i32,
-        prune_plateaus: ti.template(),
     ):
         GEM_STAT_TO_ELEMENT: ti.i32 = 3
         w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ft << 1) + is_s_ft)
@@ -233,7 +231,6 @@ def _make_exhaustive_reference_kernel():
                     base_ff_stat,
                     max_ft_gems,
                     max_ff_gems,
-                    prune_plateaus,
                     True,
                     False,
                     0,
@@ -387,7 +384,6 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
 
     gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
     from gear_optimizer.solver.taichi_gem.api.ga_operations import (
-        _GA_PLATEAU_PRUNE_ENABLED,
         _ensure_ftff_combo_tables,
     )
     from gear_optimizer.solver.taichi_gem.kernels import (
@@ -458,7 +454,6 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
             is_p_ov,
             is_s_ov,
             _SONG_SLOT,
-            _GA_PLATEAU_PRUNE_ENABLED,
         )
         ga_finalize_warmstart_lane_best_kernel(_N_GENOMES)
 

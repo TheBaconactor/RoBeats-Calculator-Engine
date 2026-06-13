@@ -39,16 +39,8 @@ from .initialization import (
 )
 
 # Cache environment variables at module load time to avoid per-call overhead.
-#
-# Plateau pruning removes duplicate score states produced by mathematically
-# identical gem continuations. Set SKYLINE_GPU_PLATEAU_PRUNE=0 to disable for
-# diagnostics.
 
 logger = logging.getLogger(__name__)
-_SKYLINE_PLATEAU_PRUNE_ENABLED: int = 1
-_plateau_prune_raw = str(env_get("SKYLINE_GPU_PLATEAU_PRUNE", "1") or "1").strip().lower()
-if _plateau_prune_raw in {"0", "false", "no", "off"}:
-    _SKYLINE_PLATEAU_PRUNE_ENABLED = 0
 
 _SKYLINE_COMBO_CHUNK_MIN: int = max(64, int(env_get("SKYLINE_GPU_COMBO_CHUNK_MIN", "1024") or 1024))
 _SKYLINE_COMBO_CHUNK_MAX: int = max(
@@ -713,9 +705,6 @@ def skyline_evaluate_population(
     song_slot_i = int(song_slot)
     score_cull_threshold_i = -1 if score_cull_threshold is None else int(score_cull_threshold)
 
-    # Use cached module-level plateau prune setting (avoids per-call os.environ overhead)
-    prune_plateaus_i = _SKYLINE_PLATEAU_PRUNE_ENABLED
-
     use_timing_response_antichain = (
         timing_response_combo_ft is not None
         and timing_response_combo_ff is not None
@@ -799,7 +788,6 @@ def skyline_evaluate_population(
             int(is_p_ov),
             int(is_s_ov),
             song_slot_i,
-            int(prune_plateaus_i),
             use_exact_inner_solver_i,
             int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
             int(bool(use_timing_response_antichain)),

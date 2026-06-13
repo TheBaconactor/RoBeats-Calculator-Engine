@@ -13,19 +13,6 @@ MAX_STAT = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
 
 
 @ti.func
-def same_grid_sig(song_slot: ti.i32, sig0: ti.u64, sig1: ti.u64, ft_i: ti.i32, ff_i: ti.i32) -> ti.i32:
-    same = ti.i32(0)
-    frontier_count = ti.cast(kernels_helpers.grid_frontier_count[song_slot, ft_i, ff_i], ti.i32)
-    if frontier_count <= 1:
-        same = ti.cast(
-            (kernels_helpers.grid_sig0[song_slot, ft_i, ff_i] == sig0)
-            & (kernels_helpers.grid_sig1[song_slot, ft_i, ff_i] == sig1),
-            ti.i32,
-        )
-    return same
-
-
-@ti.func
 def solve_combo_warmstart_preloaded(
     genome_idx: ti.i32,
     combo_idx: ti.i32,
@@ -55,7 +42,6 @@ def solve_combo_warmstart_preloaded(
     base_ff_stat: ti.i32,
     max_ft_gems: ti.i32,
     max_ff_gems: ti.i32,
-    prune_plateaus: ti.template(),
     use_exact_inner_solver: ti.template(),
     use_timing_response_antichain: ti.template(),
     score_cull_threshold: ti.i32,
@@ -84,62 +70,10 @@ def solve_combo_warmstart_preloaded(
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
+        # Incumbent-based upper-bound cull (score_cull_threshold) is the only gate here;
+        # the former timeline-plateau prune was removed (bit-exact but perf-neutral on
+        # both GA and Skyline -- see docs/Implementation Records).
         pruned: ti.i32 = 0
-        if ti.static(prune_plateaus):
-            sig0 = kernels_helpers.grid_sig0[song_slot, ft_idx, ff_idx]
-            sig1 = kernels_helpers.grid_sig1[song_slot, ft_idx, ff_idx]
-
-            if pruned == 0 and w_ft == 0 and ft > 0:
-                ft2 = ft - 1
-                ff2 = ff
-                if ff2 <= ti.min(combo_budget - ft2, max_ff_gems):
-                    ft2_val = ft_stat_val - gem_scale_fever
-                    ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
-                    if same_grid_sig(song_slot, sig0, sig1, ft2_idx, ff_idx) != 0:
-                        pruned = 1
-
-            if pruned == 0 and w_ff == 0 and ff > 0:
-                ft2 = ft
-                ff2 = ff - 1
-                if ff2 <= ti.min(combo_budget - ft2, max_ff_gems):
-                    ff2_val = ff_stat_val - gem_scale_fever
-                    ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
-                    if same_grid_sig(song_slot, sig0, sig1, ft_idx, ff2_idx) != 0:
-                        pruned = 1
-
-            if pruned == 0 and w_ft > w_ff and ff > 0 and (ft + 1) <= max_ft_gems:
-                ft2 = ft + 1
-                ff2 = ff - 1
-                if ff2 <= ti.min(combo_budget - ft2, max_ff_gems):
-                    ft2_val = ft_stat_val + gem_scale_fever
-                    ff2_val = ff_stat_val - gem_scale_fever
-                    ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
-                    ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
-                    if same_grid_sig(song_slot, sig0, sig1, ft2_idx, ff2_idx) != 0:
-                        pruned = 1
-
-            if pruned == 0 and w_ff > w_ft and ft > 0 and (ff + 1) <= max_ff_gems:
-                ft2 = ft - 1
-                ff2 = ff + 1
-                if ff2 <= ti.min(combo_budget - ft2, max_ff_gems):
-                    ft2_val = ft_stat_val - gem_scale_fever
-                    ff2_val = ff_stat_val + gem_scale_fever
-                    ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
-                    ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
-                    if same_grid_sig(song_slot, sig0, sig1, ft2_idx, ff2_idx) != 0:
-                        pruned = 1
-
-            if pruned == 0 and w_ff == w_ft and w_ft != 0 and ft > 0 and (ff + 1) <= max_ff_gems:
-                ft2 = ft - 1
-                ff2 = ff + 1
-                if ff2 <= ti.min(combo_budget - ft2, max_ff_gems):
-                    ft2_val = ft_stat_val - gem_scale_fever
-                    ff2_val = ff_stat_val + gem_scale_fever
-                    ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
-                    ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
-                    if same_grid_sig(song_slot, sig0, sig1, ft2_idx, ff2_idx) != 0:
-                        pruned = 1
-
         if pruned == 0:
             count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
             count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]

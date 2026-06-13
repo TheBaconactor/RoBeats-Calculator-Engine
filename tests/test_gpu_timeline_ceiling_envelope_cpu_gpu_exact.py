@@ -341,7 +341,10 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
     identical per-cell signatures (mask bits, counts, gap, activations).
     """
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
+    from gear_optimizer.solver.taichi_gem.api.timeline import (
+        build_or_load_timeline_frontier_payload,
+        precompute_timeline_gpu,
+    )
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
@@ -385,7 +388,8 @@ def test_gpu_ceiling_timeline_matches_cpu_reference(monkeypatch) -> None:
     cells = [(10, 10), (80, 80), (160, 40), (120, 30)]
 
     monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+    _prebuilt = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0, prebuilt_frontier=_prebuilt)
     cpu_payload = _cpu_ceiling_frontier_payload(calc_song, ref_arrays)
 
     head_len_grid = np.asarray(gpu_fields.grid_head_len.to_numpy()[0], dtype=np.int32)
@@ -447,7 +451,10 @@ def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
     repeated requests of the same song and reference arrays.
     """
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
+    from gear_optimizer.solver.taichi_gem.api.timeline import (
+        build_or_load_timeline_frontier_payload,
+        precompute_timeline_gpu,
+    )
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
@@ -489,8 +496,9 @@ def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
     }
 
     monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=1)
+    _prebuilt = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0, prebuilt_frontier=_prebuilt)
+    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=1, prebuilt_frontier=_prebuilt)
 
     def _eq(field) -> bool:
         arr = field.to_numpy()
@@ -502,7 +510,5 @@ def test_gpu_ceiling_timeline_dedup_matches_baseline(monkeypatch) -> None:
     assert _eq(gpu_fields.grid_count_body_normal)
     assert _eq(gpu_fields.grid_gap)
     assert _eq(gpu_fields.grid_fever_activations)
-    assert _eq(gpu_fields.grid_sig0)
-    assert _eq(gpu_fields.grid_sig1)
     assert _eq(gpu_fields.grid_frontier_count)
     assert _eq(gpu_fields.grid_frontier_offset)

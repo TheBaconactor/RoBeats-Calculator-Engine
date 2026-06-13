@@ -55,8 +55,6 @@ def test_frontier_payload_build_is_single_slot_compact() -> None:
     assert int(payload.grid_frontier_body_fever_pool.shape[0]) == 1
     assert int(payload.grid_frontier_body_normal_pool.shape[0]) == 1
     assert int(payload.grid_frontier_masks_bits_pool.shape[0]) == 1
-    assert int(payload.grid_sig0.shape[0]) == 1
-    assert int(payload.grid_sig1.shape[0]) == 1
     assert int(payload.grid_gap.shape[0]) == 1
     assert int(payload.grid_fever_activations.shape[0]) == 1
 
