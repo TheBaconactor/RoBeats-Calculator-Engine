@@ -107,8 +107,10 @@ from .ga_eval import (
     # GPU-side island migration
     ga_island_migration_runs_kernel,
     # Exact GA evaluation
+    ga_compute_exact_eval_rep_kernel,
     ga_finalize_warmstart_lane_best_kernel,
     ga_find_best_combo_warmstart_kernel,
+    ga_scatter_dup_results_kernel,
 )
 
 # Import timeline kernel
@@ -196,6 +198,8 @@ __all__ = [
     # Exact GA evaluation
     "ga_find_best_combo_warmstart_kernel",
     "ga_finalize_warmstart_lane_best_kernel",
+    "ga_compute_exact_eval_rep_kernel",
+    "ga_scatter_dup_results_kernel",
     # Timeline kernels
     "binary_search_left_from",
     "binary_search_left",

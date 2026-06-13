@@ -166,3 +166,41 @@ def ga_finalize_warmstart_lane_best_kernel(n_genomes: ti.i32):
             kernels_helpers.chunk_best_key[g] = best_key
             for i in ti.static(range(4)):
                 kernels_helpers.chunk_best_results[g, i] = kernels_helpers.ga_warmstart_lane_best_results[g, best_lane, i]
+
+
+@ti.kernel
+def ga_compute_exact_eval_rep_kernel(n_genomes: ti.i32):
+    # GPU-side exact-eval dedup: rep[g] = lowest-index genome with identical
+    # genome_base_stats (the full per-genome eval input), else g itself. The exact
+    # eval reads ONLY genome_base_stats[g] per row (combos/grid/refs are shared), so
+    # identical 7-tuples => identical result => a duplicate can reuse its rep's result.
+    # Replaces the removed HOST rep-map (which cost more than it saved); this is O(g)
+    # per row but tiny vs the O(n_combos) exact eval it lets us skip.
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g in range(n_genomes):
+        s = kernels_helpers.genome_base_stats[g]
+        rep = g
+        for j in range(g):
+            t = kernels_helpers.genome_base_stats[j]
+            same = 1
+            for k in ti.static(range(7)):
+                if s[k] != t[k]:
+                    same = 0
+            if same == 1:
+                rep = j
+                break
+        kernels_helpers.ga_exact_eval_rep_idx[g] = rep
+
+
+@ti.kernel
+def ga_scatter_dup_results_kernel(n_genomes: ti.i32):
+    # After eval+finalize, copy each duplicate genome's winning key/results from its
+    # representative (the row that was actually evaluated). Bit-exact: the rep's result
+    # is independent of the skipped duplicates (per-genome incumbent, no cross-row state).
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g in range(n_genomes):
+        rep = kernels_helpers.ga_exact_eval_rep_idx[g]
+        if rep != g:
+            kernels_helpers.chunk_best_key[g] = kernels_helpers.chunk_best_key[rep]
+            for i in ti.static(range(4)):
+                kernels_helpers.chunk_best_results[g, i] = kernels_helpers.chunk_best_results[rep, i]
