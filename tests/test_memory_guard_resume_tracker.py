@@ -18,7 +18,20 @@ def test_resume_tracker_replace_errors_do_not_raise(tmp_path, monkeypatch):
             (str(tmp_path / "song2.txt"), "Song2", "Hard"),
         ]
         tracker.prime(queue, {"ctx": "x"})
-        tracker.mark_completed("Song1")
+        tracker.mark_completed(song_path=str(tmp_path / "song1.txt"))
 
         assert [entry["song"] for entry in tracker.pending] == ["Song2"]
         assert not list(tmp_path.glob("resume.json.*.tmp"))
+
+
+def test_resume_tracker_mark_completed_prefers_path_over_name(tmp_path):
+    resume_path = tmp_path / "resume.json"
+    tracker = memory.MemoryGuardResumeTracker(str(resume_path))
+    queue = [
+        (str(tmp_path / "alpha.txt"), "Shared Name", "Hard"),
+        (str(tmp_path / "beta.txt"), "Shared Name", "Hard"),
+    ]
+    tracker.prime(queue, {"ctx": "x"})
+    tracker.mark_completed(song_path=str(tmp_path / "beta.txt"), song_name="Shared Name")
+
+    assert [entry["path"] for entry in tracker.pending] == [str(tmp_path / "alpha.txt")]

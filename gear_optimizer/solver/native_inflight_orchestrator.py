@@ -17,7 +17,7 @@ import traceback
 from collections import deque
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.domain.jobs import extract_repeat_context, task_queue_label, task_song_name
+from gear_optimizer.domain.jobs import extract_repeat_context, task_file_path, task_queue_label, task_song_name
 from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
 from gear_optimizer.solver.native_inflight_config import (
     default_worker_threads,
@@ -240,6 +240,7 @@ def run_native_inflight_song_pipeline(
                         completed_songs=completed_songs,
                         task_key=nxt_key,
                         song_name=task_song_name(nxt),
+                        song_path=task_file_path(nxt),
                         memory_resume_tracker=memory_resume_tracker,
                     )
                 submitted_any = True
@@ -415,6 +416,7 @@ def run_native_inflight_song_pipeline(
                             completed_songs=completed_songs,
                             task_key=task_key,
                             song_name=song_name,
+                            song_path=task_file_path(task),
                             memory_resume_tracker=memory_resume_tracker,
                         )
             ready_fg_from_prep = False
@@ -457,6 +459,7 @@ def run_native_inflight_song_pipeline(
                                 completed_songs=completed_songs,
                                 task_key=song.config.task_key,
                                 song_name=song.config.song_name,
+                                song_path=song.config.fp,
                                 memory_resume_tracker=memory_resume_tracker,
                             )
                 except Exception as exc:
@@ -544,6 +547,7 @@ def run_native_inflight_song_pipeline(
                                 completed_songs=completed_songs,
                                 task_key=song.config.task_key,
                                 song_name=song.config.song_name,
+                                song_path=song.config.fp,
                                 memory_resume_tracker=memory_resume_tracker,
                             )
                         did_work = True
@@ -604,6 +608,7 @@ def run_native_inflight_song_pipeline(
                             completed_songs=completed_songs,
                             task_key=song.config.task_key,
                             song_name=song.config.song_name,
+                            song_path=song.config.fp,
                             memory_resume_tracker=memory_resume_tracker,
                         )
                     continue
@@ -657,6 +662,7 @@ def run_native_inflight_song_pipeline(
                             completed_songs=completed_songs,
                             task_key=song.config.task_key,
                             song_name=song.config.song_name,
+                            song_path=song.config.fp,
                             memory_resume_tracker=memory_resume_tracker,
                         )
                     continue

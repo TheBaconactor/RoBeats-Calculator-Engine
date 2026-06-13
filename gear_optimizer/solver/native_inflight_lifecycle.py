@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from gear_optimizer.domain.jobs import task_queue_label, task_song_name
+from gear_optimizer.domain.jobs import task_file_path, task_queue_label, task_song_name
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import inflight_shutdown_debug_enabled
@@ -189,6 +189,7 @@ def prime_native_inflight_prepared_queue(
                     completed_songs=completed_songs,
                     task_key=task_key,
                     song_name=song_name,
+                    song_path=task_file_path(first),
                     memory_resume_tracker=memory_resume_tracker,
                 )
     return int(prepared_count)

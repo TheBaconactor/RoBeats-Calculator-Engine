@@ -1,5 +1,6 @@
 from collections import deque
 
+from gear_optimizer.domain.jobs import task_file_path
 from gear_optimizer.solver.native_inflight_lifecycle import InflightBundleTracker
 from gear_optimizer.solver.native_inflight_config import make_native_song
 
@@ -36,10 +37,10 @@ def _bundle_task():
 
 class _MemoryResume:
     def __init__(self):
-        self.completed: list[str] = []
+        self.completed: list[tuple[str | None, str | None]] = []
 
-    def mark_completed(self, song_name):
-        self.completed.append(str(song_name))
+    def mark_completed(self, *, song_path=None, song_name=None):
+        self.completed.append((song_path, song_name))
 
 
 def test_bundle_tracker_materializes_and_binds_repeat_context():
@@ -93,7 +94,7 @@ def test_bundle_tracker_advances_repeats_then_marks_parent_complete():
 
     assert tracker.advance(parent, song_name="Bundle Song", failed=True) is True
     assert completed == {"Bundle Song"}
-    assert memory_resume.completed == ["Bundle Song"]
+    assert memory_resume.completed == [(task_file_path(parent), "Bundle Song")]
     assert callbacks == [("Bundle Song", {"Bundle Song"})]
     assert progress[-1] == {
         "completed_delta": 1,

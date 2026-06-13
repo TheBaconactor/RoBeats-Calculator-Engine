@@ -24,7 +24,6 @@ from gear_optimizer.data.database import (
     init_db,
     get_evolution_db_path,
     get_song_names_present_in_db,
-    get_song_names_with_persisted_loadouts,
 )
 from gear_optimizer.core.memory import (
     set_memory_watchdog_limit,
@@ -54,6 +53,8 @@ from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.app_stop_control import StopController
 from gear_optimizer.song_queue import (
+    SongQueueItem,
+    finalize_song_queue,
     infer_song_difficulty_from_path,
 )
 from gear_optimizer.ui.progress import (
@@ -557,46 +558,19 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return int(limit)
         song_queue_limit = _read_song_queue_limit()
 
-        def _queue_path_key(item: tuple[str, str, str]) -> str:
-            return os.path.abspath(str(item[0] or "")).casefold()
+        _presence_lookup_cache: dict[tuple[str, ...], set[str]] = {}
 
-        def _prioritize_missing_first(
-            queue: list[tuple[str, str, str]],
-            present: set[str],
-            *,
-            sort_key: typing.Callable[[tuple[str, str, str]], tuple[str, str, str]] | None = None,
-        ) -> list[tuple[str, str, str]]:
-            missing = [item for item in queue if item[1] not in present]
-            existing = [item for item in queue if item[1] in present]
-            if sort_key is not None:
-                try:
-                    missing = sorted(missing, key=sort_key)
-                    existing = sorted(existing, key=sort_key)
-                except (ValueError, TypeError):
-                    pass
-            return missing + existing
-
-        _presence_lookup_cache: dict[tuple[tuple[str, ...], bool], set[str]] = {}
-        def _lookup_song_presence(
-            song_names: typing.Iterable[str],
-            *,
-            require_loadouts: bool = False,
-        ) -> set[str]:
+        def _lookup_song_presence(song_names: typing.Iterable[str]) -> set[str]:
             names = tuple(sorted({str(name or "").strip() for name in (song_names or []) if str(name or "").strip()}))
             if not names:
                 return set()
-            cache_key = (names, bool(require_loadouts))
-            cached = _presence_lookup_cache.get(cache_key)
+            cached = _presence_lookup_cache.get(names)
             if cached is not None:
                 return cached
-            if require_loadouts:
-                present = get_song_names_with_persisted_loadouts(names)
-            else:
-                present = get_song_names_present_in_db(names)
-            _presence_lookup_cache[cache_key] = present
+            present = get_song_names_present_in_db(names)
+            _presence_lookup_cache[names] = present
             return present
-        resume_seed_queue: list[tuple[str, str, str]] = []
-        resume_names_present: set[str] = set()
+        resume_seed_queue: list[SongQueueItem] = []
         ignore_resume = bool(self._current_runtime_settings(cfg).ignore_resume_queue)
         if truthy(env_get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
             ignore_resume = True
@@ -604,17 +578,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             resume_seed_queue = load_memory_guard_resume_queue(resume_context)
             if resume_seed_queue:
                 logger.info(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
-                try:
-                    resume_names_present = _lookup_song_presence((item[1] for item in resume_seed_queue))
-                    if resume_names_present:
-                        resume_seed_queue = _prioritize_missing_first(resume_seed_queue, resume_names_present)
-                except Exception as exc:
-                    logging.warning(
-                        f"[DB] Failed to prioritize resume queue: {type(exc).__name__}: {exc}",
-                    )
         diff = self._current_runtime_settings(cfg).calculate_song.difficulty or "All"
         search_dir = paths.get(diff, SCRIPT_DIR)
-        song_queue: list[tuple[str, str, str]] = []
+        song_queue: list[SongQueueItem] = []
         seen_paths = set()
         if diff_lower not in ("easy", "normal", "hard"):
             data_root = PATHS.data_dir
@@ -661,68 +627,40 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             return []
         logger.info(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={diff})")
         song_names_present_in_db: set[str] = set()
-        song_names_present_loaded = False
         try:
             song_names_present_in_db = _lookup_song_presence((item[1] for item in song_queue))
-            song_names_present_loaded = True
-            if song_names_present_in_db:
-                song_queue = _prioritize_missing_first(song_queue, song_names_present_in_db)
         except Exception as exc:
             logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
-        apply_limit = not resume_seed_queue
-        if apply_limit:
-            if song_queue_limit > 0 and len(song_queue) > song_queue_limit:
-                def _queue_sort_key(item: tuple[str, str, str]) -> tuple[str, str, str]:
-                    return (
-                        str(item[1] or "").casefold(),
-                        str(item[2] or "").casefold(),
-                        _queue_path_key(item),
-                    )
-                present = song_names_present_in_db if song_names_present_loaded else set()
-                if present:
-                    song_queue = _prioritize_missing_first(song_queue, present, sort_key=_queue_sort_key)
-                else:
-                    try:
-                        song_queue = sorted(song_queue, key=_queue_sort_key)
-                    except (ValueError, TypeError):
-                        pass
-                song_queue = song_queue[: int(song_queue_limit)]
-                logger.info(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(song_queue)} song(s)")
+
+        finalized = finalize_song_queue(
+            discovered_queue=song_queue,
+            resume_queue=resume_seed_queue or None,
+            song_queue_limit=song_queue_limit,
+            present_names=song_names_present_in_db,
+        )
         if resume_seed_queue:
-            try:
-                if song_names_present_loaded and not song_names_present_in_db:
-                    present_with_loadouts: set[str] = set()
-                else:
-                    # Stub songs rows do not count; only persisted loadouts block prepend.
-                    present_with_loadouts = _lookup_song_presence(
-                        (item[1] for item in song_queue),
-                        require_loadouts=True,
-                    )
-                resume_paths = {_queue_path_key(item) for item in resume_seed_queue}
-                new_outside_resume = [
-                    item
-                    for item in song_queue
-                    if _queue_path_key(item) not in resume_paths and item[1] not in present_with_loadouts
-                ]
-            except Exception as exc:
-                logging.warning(f"[DB] Failed to detect new songs outside resume queue: {type(exc).__name__}: {exc}")
-                new_outside_resume = []
-            if new_outside_resume:
+            logger.info(
+                f"[Queue] Resume merge: discovered={len(song_queue)} resume={len(resume_seed_queue)} "
+                f"prepended={finalized.prepended_count} merged={len(finalized.queue)}"
+            )
+            if finalized.prepended_count > 0:
                 logger.info(
-                    f"[Queue] Prepending {len(new_outside_resume)} discovered song(s) "
-                    f"without persisted loadouts ahead of resume queue."
+                    f"[Queue] Prepending {finalized.prepended_count} discovered chart(s) outside resume file "
+                    f"ahead of resume queue."
                 )
-            merged_queue = list(new_outside_resume) + list(resume_seed_queue)
-            if song_queue_limit > 0 and len(merged_queue) > song_queue_limit:
-                merged_queue = merged_queue[: int(song_queue_limit)]
+        if finalized.limit_applied:
+            if resume_seed_queue:
                 logger.info(
-                    f"[Queue] SongQueueLimit={song_queue_limit}: running {len(merged_queue)} song(s) (resume+new)"
+                    f"[Queue] SongQueueLimit={song_queue_limit}: running {len(finalized.queue)} song(s) (resume+new)"
                 )
-            return merged_queue
+            else:
+                logger.info(
+                    f"[Queue] SongQueueLimit={song_queue_limit}: running {len(finalized.queue)} song(s)"
+                )
         if not filter_search:
-            return song_queue
-        logger.info(f"Found {len(song_queue)} songs to process.")
-        return song_queue
+            return finalized.queue
+        logger.info(f"Found {len(finalized.queue)} songs to process.")
+        return finalized.queue
     def _normalize_song_label(self, label: str) -> str:
         s = str(label or "").strip()
         if not s:

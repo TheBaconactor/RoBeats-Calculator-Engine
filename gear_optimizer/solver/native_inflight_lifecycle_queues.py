@@ -16,6 +16,7 @@ from gear_optimizer.domain.jobs import (
     extract_repeat_bundle,
     is_repeat_context,
     materialize_repeat_task,
+    task_file_path,
     task_queue_label,
 )
 from gear_optimizer.solver.native_inflight_config import NativeSong
@@ -364,7 +365,10 @@ class InflightBundleTracker:
         bundle_key = task_queue_label(parent_task)
         self.completed_songs.add(bundle_key)
         if self.memory_resume_tracker:
-            self.memory_resume_tracker.mark_completed(song_name)
+            self.memory_resume_tracker.mark_completed(
+                song_path=task_file_path(parent_task),
+                song_name=song_name,
+            )
         if self.bundle_completed_cb is not None:
             try:
                 self.bundle_completed_cb(bundle_key, self.completed_songs)

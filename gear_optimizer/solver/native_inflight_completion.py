@@ -82,13 +82,14 @@ def mark_song_completed(
     completed_songs: set[str],
     task_key: str,
     song_name: str,
+    song_path: str | None = None,
     memory_resume_tracker=None,
     bundle_completed_cb=None,
 ) -> None:
     key = str(task_key)
     completed_songs.add(key)
     if memory_resume_tracker:
-        memory_resume_tracker.mark_completed(str(song_name))
+        memory_resume_tracker.mark_completed(song_path=song_path, song_name=str(song_name))
     if bundle_completed_cb is not None:
         try:
             bundle_completed_cb(key, completed_songs)
@@ -130,6 +131,7 @@ def emit_deferred_post_payload(
             completed_songs=completed_songs,
             task_key=song.config.task_key,
             song_name=song.config.song_name,
+            song_path=song.config.fp,
             memory_resume_tracker=memory_resume_tracker,
             bundle_completed_cb=bundle_completed_cb,
         )
@@ -163,6 +165,7 @@ def finish_deferred_fg_completion(
             completed_songs=completed_songs,
             task_key=song.config.task_key,
             song_name=song.config.song_name,
+            song_path=song.config.fp,
             memory_resume_tracker=memory_resume_tracker,
             bundle_completed_cb=bundle_completed_cb,
         )

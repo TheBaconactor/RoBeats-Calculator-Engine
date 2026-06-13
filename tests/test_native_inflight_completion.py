@@ -49,8 +49,8 @@ class _MemoryResumeTracker:
     def __init__(self):
         self.completed = []
 
-    def mark_completed(self, song_name):
-        self.completed.append(song_name)
+    def mark_completed(self, *, song_path=None, song_name=None):
+        self.completed.append((song_path, song_name))
 
 
 def test_mark_song_completed_updates_set_resume_tracker_and_callback():
@@ -62,12 +62,13 @@ def test_mark_song_completed_updates_set_resume_tracker_and_callback():
         completed_songs=completed,
         task_key="song-a",
         song_name="Song A",
+        song_path="C:/songs/song-a.txt",
         memory_resume_tracker=memory,
         bundle_completed_cb=lambda key, done: callbacks.append((key, set(done))),
     )
 
     assert completed == {"song-a"}
-    assert memory.completed == ["Song A"]
+    assert memory.completed == [("C:/songs/song-a.txt", "Song A")]
     assert callbacks == [("song-a", {"song-a"})]
 
 
@@ -83,7 +84,7 @@ def test_mark_song_completed_without_callback_preserves_failure_branch_behavior(
     )
 
     assert completed == {"song-b"}
-    assert memory.completed == ["Song B"]
+    assert memory.completed == [(None, "Song B")]
 
 
 class _ProgressTracker:
@@ -131,7 +132,7 @@ def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_complete
     assert posted[0]["_deferred_post"] is True
     assert song.runtime.post.deferred_post_emitted is True
     assert completed == {"song-c"}
-    assert memory.completed == ["Song C"]
+    assert memory.completed == [("", "Song C")]
     assert bundle_callbacks == [("song-c", {"song-c"})]
     assert progress.done == [("progress-cb", "song-c")]
 
@@ -205,7 +206,7 @@ def test_finish_deferred_fg_completion_marks_drain_at_end_song_done():
     assert finished is True
     assert song.runtime.post.await_fg_completion_progress is False
     assert completed == {"song-drain-fg"}
-    assert memory.completed == ["Song Drain FG"]
+    assert memory.completed == [("", "Song Drain FG")]
     assert progress.done == [("progress-cb", "song-drain-fg")]
 
 

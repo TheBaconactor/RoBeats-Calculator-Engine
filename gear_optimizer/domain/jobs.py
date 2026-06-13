@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Mapping, Sequence
@@ -111,6 +112,12 @@ def materialize_repeat_task(task: tuple, repeat_ctx: dict) -> tuple:
         extras.append(extra)
     extras.append(dict(repeat_ctx or {}))
     return tuple(prefix + extras)
+
+
+def task_file_path(task: Sequence[Any] | Any) -> str:
+    if not _is_task_sequence(task) or len(task) <= int(LegacyTaskIndex.FILE_PATH):
+        return ""
+    return os.path.abspath(str(task[int(LegacyTaskIndex.FILE_PATH)] or ""))
 
 
 def task_song_name(task: Sequence[Any] | Any) -> str:

@@ -21,6 +21,8 @@ import tempfile
 import threading
 import time
 
+from gear_optimizer.song_queue import normalize_queue_item, queue_path_key
+
 try:
     import psutil
 except ImportError:
@@ -329,7 +331,7 @@ def load_memory_guard_resume_queue(expected_context=None):
             continue
         if not os.path.exists(fp):
             continue
-        pending.append((fp, song_name, diff))
+        pending.append(normalize_queue_item((fp, song_name, diff)))
     return pending
 
 
@@ -367,32 +369,39 @@ class MemoryGuardResumeTracker:
             self._since_write = 0
             self._last_write_t = time.monotonic()
 
-    def mark_completed(self, song_name):
-        """Remove completed song from pending queue."""
-        if not song_name:
-            return
-        norm = song_name.strip().lower()
-        if not norm:
+    def mark_completed(self, *, song_path: str | None = None, song_name: str | None = None):
+        """Remove completed chart from pending queue (path-keyed; name is legacy fallback)."""
+        path_key = queue_path_key((str(song_path or ""), "", "")) if song_path else ""
+        norm_name = str(song_name or "").strip().lower()
+        if not path_key and not norm_name:
             return
         with self.lock:
             for idx, entry in enumerate(self.pending):
-                if entry.get("song", "").strip().lower() == norm:
-                    self.pending.pop(idx)
-                    self._since_write += 1
-                    should_write = self._write_every_n <= 1 and self._write_every_sec <= 0.0
-                    if not should_write:
-                        if self._since_write >= int(self._write_every_n):
-                            should_write = True
-                        elif self._write_every_sec > 0.0 and (time.monotonic() - self._last_write_t) >= float(
-                            self._write_every_sec
-                        ):
-                            should_write = True
+                entry_path = queue_path_key((str(entry.get("path", "")), "", ""))
+                if path_key:
+                    matched = entry_path == path_key
+                elif norm_name:
+                    matched = entry.get("song", "").strip().lower() == norm_name
+                else:
+                    matched = False
+                if not matched:
+                    continue
+                self.pending.pop(idx)
+                self._since_write += 1
+                should_write = self._write_every_n <= 1 and self._write_every_sec <= 0.0
+                if not should_write:
+                    if self._since_write >= int(self._write_every_n):
+                        should_write = True
+                    elif self._write_every_sec > 0.0 and (time.monotonic() - self._last_write_t) >= float(
+                        self._write_every_sec
+                    ):
+                        should_write = True
 
-                    if should_write:
-                        self._write_locked()
-                        self._since_write = 0
-                        self._last_write_t = time.monotonic()
-                    break
+                if should_write:
+                    self._write_locked()
+                    self._since_write = 0
+                    self._last_write_t = time.monotonic()
+                break
 
     def _write_locked(self):
         """Write resume queue to disk (must be called with lock held)."""
