@@ -14,6 +14,7 @@ from gear_optimizer.core.team_buff import (
     team_buff_effect,
 )
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
+from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.data.db_manager import EvolutionDbManager
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
@@ -93,7 +94,7 @@ def _assert_known_mini_names(
         preview += ", ..."
     raise RuntimeError(
         f"Missing mini stats in GeneralMeta input ({context}): {preview}. "
-        "Refresh optimizer CSVs from exported_game_data.json (auto-synced on startup)."
+        "Refresh optimizer CSVs from exported_game_data.json (auto-synced before GeneralMeta and optimizer startup)."
     )
 
 
@@ -190,6 +191,8 @@ def run_general_meta(cfg, paths: dict) -> dict:
     print("\n" + "=" * 60)
     print("GENERAL META - Cross-Song Optimization")
     print("=" * 60)
+
+    sync_exported_game_data()
 
     stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
     stat_names = [

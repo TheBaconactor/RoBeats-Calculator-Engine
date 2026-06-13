@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 import gear_optimizer.cli as optimizer_cli
 from gear_optimizer.data.exported_game_data_sync import (
     ExportedGameDataPaths,
@@ -49,6 +51,44 @@ def _paths(tmp_path: Path) -> ExportedGameDataPaths:
         minis_csv=data_dir / "Gear" / "Minis.csv",
         sync_state=bin_dir / "exported_game_data_sync_state.json",
     )
+
+
+def test_run_general_meta_syncs_before_loading_gears(monkeypatch) -> None:
+    import sys
+    import types
+
+    sync_calls: list[bool] = []
+
+    def _fake_sync(*, force: bool = False):
+        sync_calls.append(force)
+        return type("Result", (), {"synced": False, "reason": "up_to_date"})()
+
+    class _StopAfterSync(Exception):
+        pass
+
+    fake_db_manager = types.ModuleType("gear_optimizer.data.db_manager")
+
+    class _FakeEvolutionDbManager:
+        @classmethod
+        def from_env(cls):
+            return cls()
+
+    fake_db_manager.EvolutionDbManager = _FakeEvolutionDbManager
+    monkeypatch.setitem(sys.modules, "gear_optimizer.data.db_manager", fake_db_manager)
+
+    from general_meta.app import run_general_meta
+
+    monkeypatch.setattr("general_meta.app.sync_exported_game_data", _fake_sync)
+    monkeypatch.setattr("general_meta.app.read_table", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        "general_meta.app.load_all_gears_list",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(_StopAfterSync()),
+    )
+
+    with pytest.raises(_StopAfterSync):
+        run_general_meta(None, {})
+
+    assert sync_calls == [False]
 
 
 def test_sync_data_forces_sync(monkeypatch) -> None:
