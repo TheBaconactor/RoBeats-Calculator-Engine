@@ -377,6 +377,31 @@ def ga_seed_rng_runs_kernel(n_genomes_total: ti.i32, n_genomes_per_run: ti.i32, 
             if s == ti.u32(0):
                 s = ti.u32(1)
             kernels_helpers.ga_rng_state[g] = s
+
+
+@ti.kernel
+def ga_seed_rng_runs_indexed_kernel(
+    n_genomes_total: ti.i32,
+    n_genomes_per_run: ti.i32,
+    seed_base: ti.u32,
+    run_idx_start: ti.i32,
+):
+    """
+    Initialize packed runs with the same per-run seed sequence used by one-run dispatches.
+    Run r is seeded with seed_base + run_idx_start + r and run-local genome indexing.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    if n_genomes_per_run > 0:
+        for g in range(n_genomes_total):
+            run = g // n_genomes_per_run
+            local_g = g - run * n_genomes_per_run
+            run_seed = seed_base + ti.cast(run_idx_start + run, ti.u32)
+            s = run_seed ^ (ti.cast(local_g, ti.u32) * ti.u32(747796405)) ^ ti.u32(2891336453)
+            if s == ti.u32(0):
+                s = ti.u32(1)
+            kernels_helpers.ga_rng_state[g] = s
+
+
 @ti.kernel
 def ga_load_initial_populations_batch_kernel(
     run_idx_start: ti.i32,
@@ -588,6 +613,7 @@ def ga_aggregate_and_init_best_kernel(
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
         kernels_helpers.chunk_best_key[g] = ti.u64(0)
+        kernels_helpers.ga_eval_incumbent_score[g] = 0
         kernels_helpers.chunk_best_results[g, 0] = 0
         kernels_helpers.chunk_best_results[g, 1] = 0
         kernels_helpers.chunk_best_results[g, 2] = 0

@@ -253,6 +253,56 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
     assert len(song.runtime.decode.ga_candidates or []) == 1
 
 
+def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatch):
+    # Fused GA->FG handoff (Slice 3): the GPU owner scores FG in the GA turn, so FG
+    # prep only builds the plan -- it does NOT prefetch any owner BUILD/SCORE round
+    # trip (the former prefetch_group_builds + finalize_prefetched_group_builds step is
+    # deleted). A passed gpu_client is accepted but unused for scoring.
+    import configparser
+
+    import gear_optimizer.solver.native_inflight_pipeline as stages
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
+    from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
+
+    monkeypatch.setattr(stages, "hydrate_fg_candidate_stats", lambda *args, **kwargs: None)
+    monkeypatch.setattr(FgPlanner, "plan_many", staticmethod(lambda *_args, **_kwargs: "raw-plan"))
+
+    # The owner BUILD/SCORE prefetch is deleted: these methods no longer exist.
+    assert not hasattr(FgResponseScoringService, "prefetch_group_builds")
+    assert not hasattr(FgResponseScoringService, "finalize_prefetched_group_builds")
+
+    cfg = configparser.ConfigParser()
+    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
+    song = make_native_song(
+        cfg=cfg,
+        calc_song={"metadata": {}, "song_data": {}},
+        cfg_dict={},
+        ga_candidates=[
+            {
+                "Score": 100,
+                "BaseScore": 100,
+                "GenomeIDs": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+                "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"},
+            }
+        ],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        db_key="song-db-key",
+        gears_by_name={},
+        minis_by_name={},
+        effective_difficulty="Hard",
+        registry=None,
+        fixed_stats={},
+        cfg_data={},
+        ref_arrays={},
+        song_slot=1,
+    )
+
+    stages.prepare_fg_job_sync(song, gpu_client=object())
+
+    assert song.runtime.fg.fg_response_frontier_plan == "raw-plan"
+
+
 def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(monkeypatch):
     import configparser
 

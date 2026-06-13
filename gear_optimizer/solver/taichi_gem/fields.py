@@ -13,12 +13,15 @@ from .runtime import is_initialized, init_taichi
 IS_METAL = False
 logger = logging.getLogger(__name__)
 GRID_SIZE = 161  # Timeline grid dimension (161x161 = 26,521 entries per song)
-MAX_GENOMES = 4096  # Support up to 4096 unique genomes per batch
+MAX_GENOMES = 4608  # Active-population genome pool. Sized to fit a full GA batch
+# at production q24 geometry: 6 runs x 705 genomes = 4230 <= 4608 (was 4096, which
+# only fit 5 of the 6 runs and capped batch width below the genome-unification target).
+# +~25MB VRAM on the 24GB RX 7900 XTX across all MAX_GENOMES-sized buffers.
 MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native GA representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
-MAX_EVALS_PER_DISPATCH = 4_194_304  # Upper bound used for chunking (genomes * FT/FF combos)
+MAX_EVALS_PER_DISPATCH = 8_388_608  # Upper bound used for chunking (genomes * FT/FF combos)
 def _clamp_song_slots(n: int) -> int:
     if n < 2:
         return 2
@@ -94,8 +97,6 @@ ga_global_best_genome: ti.Field = None  # (MAX_SLOTS,) i32 - item IDs of best ge
 ga_global_best_results: ti.Field = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
 ga_global_best_scan_key: ti.Field = None  # (1,) u64 - reduction key ((score+1)<<32)|inv_genome_idx
 ga_global_best_packed: ti.Field = None  # (17,) i32 - packed [score, genome_ids(9), results(7)] for single download
-ga_run_payload_packed: ti.Field = None  # (MAX_GENOMES+1, 17) i32 - [score, slot_ids(9), result(7)]
-ga_run_payload_download_staging_256: ti.Field = None  # (<=257, 17) i32
 DEFAULT_MAX_GA_RUNS = 128  # Stores up to this many GA runs before a flush/download.
 DEFAULT_MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE.
 MAX_GA_RUNS = DEFAULT_MAX_GA_RUNS
@@ -106,15 +107,8 @@ MAX_GA_RUN_GENOMES = DEFAULT_MAX_GA_RUN_GENOMES
 _REQUESTED_MAX_GA_RUNS: int | None = None
 _REQUESTED_MAX_GA_RUN_GENOMES: int | None = None
 ga_runs_payload_packed: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32
-GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES = 256  # Small staging buffer for compact run payload downloads.
-ga_runs_payload_download_staging_16: ti.Field = None  # (<=16, <=max_genomes+1, 17) i32
-ga_runs_payload_download_staging_64: ti.Field = None  # (<=64, <=max_genomes+1, 17) i32
-ga_runs_payload_download_staging_128: ti.Field = None  # (<=128, <=max_genomes+1, 17) i32
 ga_fg_candidates_packed: ti.Field = (
     None  # (MAX_SONG_SLOTS, MAX_GA_RUNS, GA_FG_CANDIDATES_PER_RUN+1, GA_FG_CANDIDATE_COLS) i32
-)
-ga_fg_candidates_download_staging: ti.Field = (
-    None  # (MAX_GA_RUNS, GA_FG_CANDIDATES_PER_RUN+1, GA_FG_CANDIDATE_COLS) i32
 )
 GA_FG_SELECTED_PAYLOAD_COLS = 2 + (1 + MAX_SLOTS + 7 + 7)  # (run,row) + packed candidate row (24)
 GA_FG_SELECTED_MAX = 5000  # GPU GA->FG selection buffer capacity (safety bound; production funnel is LOADOUTS_PER_SONG_LIMIT).
@@ -130,6 +124,13 @@ SKYLINE_FG_SELECTED_PAYLOAD_COLS = GA_FG_SELECTED_PAYLOAD_COLS
 SKYLINE_FG_SELECTED_MAX = GA_FG_SELECTED_MAX
 SKYLINE_FG_SELECTED_HASH_SIZE = GA_FG_SELECTED_HASH_SIZE
 SKYLINE_FG_SELECTED_STUBS_MAX = GA_FG_SELECTED_STUBS_MAX
+# GA->FG effective-dedup equivalence tables (Slice 1). Per-item i32 lookups the
+# select kernel uses to fold name/color-equivalent loadouts before the top-N cut:
+#   gear id  -> name rank (same gear Name => same rank)
+#   mini id  -> effective signature id for the song's color context
+# Uploaded once per (registry, color-context) at the ga_upload_item_stats site.
+ga_fg_gear_name_rank: ti.Field = None  # (MAX_ITEMS,) i32 gear id -> name rank
+ga_fg_mini_sig_id: ti.Field = None  # (MAX_ITEMS,) i32 mini id -> color-folded sig id
 ga_fg_select_hash_used: ti.Field = None  # (HASH_SIZE,) i32 occupancy
 ga_fg_select_hash_keys: ti.Field = None  # (HASH_SIZE, 9) i32
 ga_fg_select_stub_count: ti.Field = None  # (1,) i32
@@ -153,6 +154,7 @@ genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm,
 genome_result_stats_download_staging_256: ti.Field = None  # (256,) vec7 i32
 genome_result_stats_download_staging_1024: ti.Field = None  # (1024,) vec7 i32
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
+ga_eval_incumbent_score: ti.Field = None  # (MAX_GENOMES,) i32 shared exact-score incumbent for UB combo culling
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
 timing_response_combo_ft: ti.Field = None  # (MAX_TIMING_RESPONSE_COMBOS,) i32 FT gems per antichain entry
@@ -184,14 +186,10 @@ skyline_global_best_genome: ti.Field = None
 skyline_global_best_results: ti.Field = None
 skyline_global_best_scan_key: ti.Field = None
 skyline_global_best_packed: ti.Field = None
-skyline_run_payload_packed: ti.Field = None
-skyline_run_payload_download_staging_256: ti.Field = None
 skyline_runs_payload_packed: ti.Field = None
-skyline_runs_payload_download_staging_16: ti.Field = None
-skyline_runs_payload_download_staging_64: ti.Field = None
-skyline_runs_payload_download_staging_128: ti.Field = None
 skyline_fg_candidates_packed: ti.Field = None
-skyline_fg_candidates_download_staging: ti.Field = None
+skyline_fg_gear_name_rank: ti.Field = None
+skyline_fg_mini_sig_id: ti.Field = None
 skyline_fg_select_hash_used: ti.Field = None
 skyline_fg_select_hash_keys: ti.Field = None
 skyline_fg_select_stub_count: ti.Field = None
@@ -218,12 +216,9 @@ def _sync_skyline_aliases() -> None:
     global skyline_exact_eval_rep_idx, skyline_exact_eval_unique_count
     global skyline_global_best_score, skyline_global_best_genome, skyline_global_best_results
     global skyline_global_best_scan_key, skyline_global_best_packed
-    global skyline_run_payload_packed, skyline_run_payload_download_staging_256
     global skyline_runs_payload_packed
-    global skyline_runs_payload_download_staging_16
-    global skyline_runs_payload_download_staging_64
-    global skyline_runs_payload_download_staging_128
-    global skyline_fg_candidates_packed, skyline_fg_candidates_download_staging
+    global skyline_fg_candidates_packed
+    global skyline_fg_gear_name_rank, skyline_fg_mini_sig_id
     global skyline_fg_select_hash_used, skyline_fg_select_hash_keys
     global skyline_fg_select_stub_count, skyline_fg_select_stub_run, skyline_fg_select_stub_row
     global skyline_fg_select_stub_score, skyline_fg_select_stub_ids
@@ -251,14 +246,10 @@ def _sync_skyline_aliases() -> None:
     skyline_global_best_results = ga_global_best_results
     skyline_global_best_scan_key = ga_global_best_scan_key
     skyline_global_best_packed = ga_global_best_packed
-    skyline_run_payload_packed = ga_run_payload_packed
-    skyline_run_payload_download_staging_256 = ga_run_payload_download_staging_256
     skyline_runs_payload_packed = ga_runs_payload_packed
-    skyline_runs_payload_download_staging_16 = ga_runs_payload_download_staging_16
-    skyline_runs_payload_download_staging_64 = ga_runs_payload_download_staging_64
-    skyline_runs_payload_download_staging_128 = ga_runs_payload_download_staging_128
     skyline_fg_candidates_packed = ga_fg_candidates_packed
-    skyline_fg_candidates_download_staging = ga_fg_candidates_download_staging
+    skyline_fg_gear_name_rank = ga_fg_gear_name_rank
+    skyline_fg_mini_sig_id = ga_fg_mini_sig_id
     skyline_fg_select_hash_used = ga_fg_select_hash_used
     skyline_fg_select_hash_keys = ga_fg_select_hash_keys
     skyline_fg_select_stub_count = ga_fg_select_stub_count
@@ -311,6 +302,7 @@ def reset_fields_state() -> None:
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
+    global ga_eval_incumbent_score
     global ftff_combo_ft, ftff_combo_ff
     global timing_response_combo_ft, timing_response_combo_ff
     global timing_response_genome_offset, timing_response_genome_length
@@ -319,13 +311,8 @@ def reset_fields_state() -> None:
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
     global ga_global_best_packed
     global ga_runs_payload_packed
-    global ga_run_payload_packed
-    global ga_run_payload_download_staging_256
-    global \
-        ga_runs_payload_download_staging_16, \
-        ga_runs_payload_download_staging_64, \
-        ga_runs_payload_download_staging_128
-    global ga_fg_candidates_packed, ga_fg_candidates_download_staging
+    global ga_fg_candidates_packed
+    global ga_fg_gear_name_rank, ga_fg_mini_sig_id
     global ga_fg_select_hash_used, ga_fg_select_hash_keys
     global ga_fg_select_stub_count, ga_fg_select_stub_run, ga_fg_select_stub_row, ga_fg_select_stub_score
     global ga_fg_select_stub_ids
@@ -392,13 +379,9 @@ def reset_fields_state() -> None:
     ga_global_best_scan_key = None
     ga_global_best_packed = None
     ga_runs_payload_packed = None
-    ga_run_payload_packed = None
-    ga_run_payload_download_staging_256 = None
-    ga_runs_payload_download_staging_16 = None
-    ga_runs_payload_download_staging_64 = None
-    ga_runs_payload_download_staging_128 = None
     ga_fg_candidates_packed = None
-    ga_fg_candidates_download_staging = None
+    ga_fg_gear_name_rank = None
+    ga_fg_mini_sig_id = None
     ga_fg_select_hash_used = None
     ga_fg_select_hash_keys = None
     ga_fg_select_stub_count = None
@@ -416,6 +399,7 @@ def reset_fields_state() -> None:
     genome_result_stats_download_staging_256 = None
     genome_result_stats_download_staging_1024 = None
     chunk_best_key = None
+    ga_eval_incumbent_score = None
     chunk_best_score = None
     chunk_best_idx = None
     chunk_best_results = None
@@ -520,19 +504,15 @@ def allocate_fields():
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
+    global ga_eval_incumbent_score
     global ftff_combo_ft, ftff_combo_ff
     global timing_response_combo_ft, timing_response_combo_ff
     global timing_response_genome_offset, timing_response_genome_length
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
     global ga_global_best_packed
     global ga_runs_payload_packed
-    global ga_run_payload_packed
-    global ga_run_payload_download_staging_256
-    global \
-        ga_runs_payload_download_staging_16, \
-        ga_runs_payload_download_staging_64, \
-        ga_runs_payload_download_staging_128
-    global ga_fg_candidates_packed, ga_fg_candidates_download_staging
+    global ga_fg_candidates_packed
+    global ga_fg_gear_name_rank, ga_fg_mini_sig_id
     global ga_fg_select_hash_used, ga_fg_select_hash_keys
     global ga_fg_select_stub_count, ga_fg_select_stub_run, ga_fg_select_stub_row, ga_fg_select_stub_score
     global ga_fg_select_stub_ids
@@ -582,6 +562,7 @@ def allocate_fields():
     genome_result_stats_download_staging_256 = ti.Vector.field(n=7, dtype=ti.i32, shape=256)
     genome_result_stats_download_staging_1024 = ti.Vector.field(n=7, dtype=ti.i32, shape=1024)
     chunk_best_key = ti.field(dtype=ti.u64, shape=MAX_GENOMES)
+    ga_eval_incumbent_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     chunk_best_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     chunk_best_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ftff_combo_ft = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
@@ -597,31 +578,13 @@ def allocate_fields():
     ga_global_best_scan_key = ti.field(dtype=ti.u64, shape=1)
     ga_global_best_packed = ti.field(dtype=ti.i32, shape=17)  # [score, genome_ids(9), results(7)]
     _payload_cols = 1 + MAX_SLOTS + 7
-    ga_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, _payload_cols))
-    _run_staging_genomes = min(int(MAX_GENOMES), int(GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES))
-    ga_run_payload_download_staging_256 = ti.field(dtype=ti.i32, shape=(_run_staging_genomes + 1, _payload_cols))
     ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, _payload_cols))
-    _staging_genomes = min(int(MAX_GA_RUN_GENOMES), int(GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES))
-    ga_runs_payload_download_staging_16 = ti.field(
-        dtype=ti.i32,
-        shape=(min(int(MAX_GA_RUNS), 16), _staging_genomes + 1, _payload_cols),
-    )
-    ga_runs_payload_download_staging_64 = ti.field(
-        dtype=ti.i32,
-        shape=(min(int(MAX_GA_RUNS), 64), _staging_genomes + 1, _payload_cols),
-    )
-    ga_runs_payload_download_staging_128 = ti.field(
-        dtype=ti.i32,
-        shape=(min(int(MAX_GA_RUNS), 128), _staging_genomes + 1, _payload_cols),
-    )
     ga_fg_candidates_packed = ti.field(
         dtype=ti.i32,
         shape=(MAX_SONG_SLOTS, MAX_GA_RUNS, int(GA_FG_CANDIDATES_PER_RUN) + 1, int(GA_FG_CANDIDATE_COLS)),
     )
-    ga_fg_candidates_download_staging = ti.field(
-        dtype=ti.i32,
-        shape=(MAX_GA_RUNS, int(GA_FG_CANDIDATES_PER_RUN) + 1, int(GA_FG_CANDIDATE_COLS)),
-    )
+    ga_fg_gear_name_rank = ti.field(dtype=ti.i32, shape=int(MAX_ITEMS))
+    ga_fg_mini_sig_id = ti.field(dtype=ti.i32, shape=int(MAX_ITEMS))
     ga_fg_select_hash_used = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_HASH_SIZE))
     ga_fg_select_hash_keys = ti.field(dtype=ti.i32, shape=(int(GA_FG_SELECTED_HASH_SIZE), 9))
     ga_fg_select_stub_count = ti.field(dtype=ti.i32, shape=1)
@@ -775,6 +738,7 @@ def bind_fields(kernels_module):
     target.slot_count = slot_count
     target.genome_result_stats = genome_result_stats
     target.chunk_best_key = chunk_best_key
+    target.ga_eval_incumbent_score = ga_eval_incumbent_score
     target.chunk_best_score = chunk_best_score
     target.chunk_best_idx = chunk_best_idx
     target.ftff_combo_ft = ftff_combo_ft
@@ -786,9 +750,9 @@ def bind_fields(kernels_module):
     target.ga_global_best_scan_key = ga_global_best_scan_key
     target.ga_global_best_packed = ga_global_best_packed
     target.ga_runs_payload_packed = ga_runs_payload_packed
-    target.ga_run_payload_packed = ga_run_payload_packed
     target.ga_fg_candidates_packed = ga_fg_candidates_packed
-    target.ga_fg_candidates_download_staging = ga_fg_candidates_download_staging
+    target.ga_fg_gear_name_rank = ga_fg_gear_name_rank
+    target.ga_fg_mini_sig_id = ga_fg_mini_sig_id
     target.ga_fg_select_hash_used = ga_fg_select_hash_used
     target.ga_fg_select_hash_keys = ga_fg_select_hash_keys
     target.ga_fg_select_stub_count = ga_fg_select_stub_count
@@ -820,9 +784,9 @@ def bind_fields(kernels_module):
     target.skyline_global_best_scan_key = skyline_global_best_scan_key
     target.skyline_global_best_packed = skyline_global_best_packed
     target.skyline_runs_payload_packed = skyline_runs_payload_packed
-    target.skyline_run_payload_packed = skyline_run_payload_packed
     target.skyline_fg_candidates_packed = skyline_fg_candidates_packed
-    target.skyline_fg_candidates_download_staging = skyline_fg_candidates_download_staging
+    target.skyline_fg_gear_name_rank = skyline_fg_gear_name_rank
+    target.skyline_fg_mini_sig_id = skyline_fg_mini_sig_id
     target.skyline_fg_select_hash_used = skyline_fg_select_hash_used
     target.skyline_fg_select_hash_keys = skyline_fg_select_hash_keys
     target.skyline_fg_select_stub_count = skyline_fg_select_stub_count

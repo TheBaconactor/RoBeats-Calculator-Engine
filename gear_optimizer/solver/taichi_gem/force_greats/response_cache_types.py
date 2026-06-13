@@ -30,7 +30,7 @@ _SCORING_BUNDLE_ARRAY_NAMES = frozenset(
         "frontier_meta",
         "first_offsets",
         "first_counts",
-        "first_surface_chunk_offsets",
+        "first_surface_row_count",
     )
 )
 
@@ -109,7 +109,7 @@ class FgResponseFrontierScoringBundle:
     surface_head_coeffs: np.ndarray
     frontier_offsets: np.ndarray
     frontier_lengths: np.ndarray
-    surface_chunk_offsets: np.ndarray
+    surface_row_count: int
     total_notes: int
     long_notes: int
     use_forced_great_timing: bool

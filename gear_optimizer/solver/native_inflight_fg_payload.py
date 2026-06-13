@@ -120,11 +120,7 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
         if not isinstance(data, dict):
             data = {}
         if (not gear_names and not mini_names) and isinstance(v.get("_entry_ref"), dict):
-            try:
-                gear_names, mini_names = materialize_entry_names(v.get("_entry_ref"), mutate=True)
-            except Exception as e:
-                logger.debug(f"native_inflight_fg_payload:build_fg_persist_entries: {e}")
-                gear_names, mini_names = [], []
+            gear_names, mini_names = materialize_entry_names(v.get("_entry_ref"), mutate=True)
         details = build_details(data) if callable(build_details) else {}
         if not isinstance(details, dict):
             details = {}
@@ -140,6 +136,11 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
             force_obj = None
         if force_obj is None:
             continue
+        if not gear_names and not mini_names:
+            raise RuntimeError(
+                f"FG persist entry for {song.config.song_name!r} has no resolvable gear/mini names; "
+                "refusing to persist a loadout without an identity"
+            )
         entries.append(
             {
                 "score": int(base_score),

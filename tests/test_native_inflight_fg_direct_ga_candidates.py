@@ -1,96 +1,155 @@
-from concurrent.futures import Future
+"""FG worker contract for the fused GA->FG owner continuation (Slice 3).
+
+The GPU owner scores FG in the GA turn and hands back an owner score map
+(base_components_7tuple -> FgFusedOwnerScoreRow). ``run_fg_job_sync`` no longer
+submits BUILD/SCORE owner requests; it materializes the prepared plan against the
+owner map off the owner's critical path. These tests pin that contract with fakes
+(no GPU).
+"""
+
 from types import SimpleNamespace
+
+import numpy as np
 
 from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
-def _owner_result(batch, inner_rows):
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseFrontierOwnerResult
-
-    return FgResponseFrontierOwnerResult(batch=batch, inner_rows=inner_rows)
-
-
-class _FakeFGGpuClient:
-    def __init__(self, result):
-        self.payloads = []
-        self._result = result
-
-    def submit_force_greats_response_frontier_score_batch(self, payload):
-        self.payloads.append(payload)
-        future = Future()
-        future.set_result(_owner_result(payload["batch"], self._result))
-        return SimpleNamespace(future=future)
-
-
-def test_run_fg_job_sync_forwards_direct_ga_candidates(monkeypatch):
-    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
-    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
-    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
-
-    registry = object()
-    gpu_client = _FakeFGGpuClient(
-        [
-            {
-                "score": 100,
-                "base_score": 100,
-                "fg_score": 130,
-                "gear": ["G1"],
-                "minis": ["M1"],
-                "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
-            }
-        ]
+def _prepared_batch(base_components, rows):
+    # Minimal SURFACES_PACKED-stage stand-in carrying the fields the fused
+    # materializer reads: base_components (keys the owner-map lookup) + the
+    # per-candidate rows + the song-level batch context.
+    return SimpleNamespace(
+        base_components=np.asarray(base_components, dtype=np.int32),
+        selected_color="Rush",
+        calc_song={"metadata": {}, "song_data": {}},
+        ref_arrays={"Perfect Points": []},
+        scoring_bundle=object(),
+        started=0.0,
     )
 
-    seen_adapter: dict[str, object] = {}
 
-    def _fake_materialize_response_frontier_plan_results(plan, prepared_results):
-        seen_adapter["plan"] = plan
-        return prepared_results[0]
+def _owner_row(fg_score):
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgFusedOwnerScoreRow
 
-    monkeypatch.setattr(
-        FgResultReducer,
-        "materialize",
-        staticmethod(_fake_materialize_response_frontier_plan_results),
-    )
-    monkeypatch.setattr(
-        response_frontier,
-        "materialize_prepared_force_greats_response_frontier_batch_results",
-        lambda _batch, inner_rows, **_kwargs: inner_rows,
+    # The inner_row[0] is the solved best_score; the fused materializer / fake
+    # solve-result builder below reads it as the fg score signal.
+    return FgFusedOwnerScoreRow(
+        ft=1,
+        ff=2,
+        ft_stat=3,
+        ff_stat=6,
+        inner_row=(int(fg_score), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        surface=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
     )
 
-    song = make_native_song(
+
+def _make_fg_song(plan, owner_score_map, **overrides):
+    kwargs = dict(
         fg_prep_future=None,
-        fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
+        fg_response_frontier_plan=plan,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         effective_difficulty="Hard",
-        ga_candidates=[
-            {
-                "BaseScore": 99,
-                "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"},
-            }
-        ],
-        registry=registry,
+        ga_candidates=[],
+        registry=None,
         fixed_stats={},
         cfg_data={"selected_color": "Rush"},
         ref_arrays={"Perfect Points": []},
         calc_song={"metadata": {}, "song_data": {}},
         prev_record=None,
         db_best_fg_score=0,
-        song_name="AfterLife (Hard) by KepoWorld",
-        db_key="afterlife-hard",
-        fp="Data/Hard/AfterLife (Hard) by KepoWorld.txt",
+        song_name="Fused FG (Hard) by pytest",
+        db_key="fused-fg-hard",
+        fp="Data/Hard/Fused FG (Hard) by pytest.txt",
         cfg_dict={},
         fg_variants=[],
     )
+    kwargs.update(overrides)
+    song = make_native_song(**kwargs)
+    song.runtime.fg.fg_owner_score_map = owner_score_map
+    return song
 
-    fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
 
-    assert seen_adapter["plan"] is song.runtime.fg.fg_response_frontier_plan
-    assert len(gpu_client.payloads) == 1
-    assert gpu_client.payloads[0]["batch"] == "prepared-batch"
-    assert "include_forced_counts" not in gpu_client.payloads[0]
+def test_run_fg_job_sync_materializes_from_owner_score_map(monkeypatch):
+    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
+    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
+
+    base_components = [(10, 11, 12, 13, 14, 15, 16)]
+    owner_map = {(10, 11, 12, 13, 14, 15, 16): _owner_row(130)}
+    plan = SimpleNamespace(
+        prepared_batches=[
+            SimpleNamespace(
+                batch=_prepared_batch(base_components, rows=[("ck0", {"Perfect Points": 1})]),
+                rows=(("ck0", {"Perfect Points": 1}),),
+            )
+        ]
+    )
+
+    seen: dict[str, object] = {}
+
+    # The fused materializer builds a solve result per batch row from the owner row;
+    # fake it to surface the inner_row[0] as the fg score so we can assert wiring.
+    def _fake_build(*, score_row, **_kwargs):
+        return SimpleNamespace(best_score=int(score_row.inner_row[0]))
+
+    monkeypatch.setattr(response_frontier, "build_fused_owner_solve_result_from_score_row", _fake_build)
+
+    def _fake_materialize(plan_arg, prepared_results):
+        seen["plan"] = plan_arg
+        seen["results"] = prepared_results
+        return [{"fg_score": int(prepared_results[0][0].best_score)}]
+
+    monkeypatch.setattr(FgResultReducer, "materialize", staticmethod(_fake_materialize))
+
+    song = _make_fg_song(plan, owner_map)
+    fg_pipeline.run_fg_job_sync(song, gpu_client=None)
+
+    assert seen["plan"] is plan
+    assert int(seen["results"][0][0].best_score) == 130
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
+
+
+def test_run_fg_job_sync_requires_owner_score_map():
+    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+
+    plan = SimpleNamespace(
+        prepared_batches=[
+            SimpleNamespace(
+                batch=_prepared_batch([(1, 2, 3, 4, 5, 6, 7)], rows=[("ck0", {"Perfect Points": 1})]),
+                rows=(("ck0", {"Perfect Points": 1}),),
+            )
+        ]
+    )
+    song = _make_fg_song(plan, owner_score_map=None)
+
+    try:
+        fg_pipeline.run_fg_job_sync(song, gpu_client=None)
+    except RuntimeError as exc:
+        assert "owner fg score map" in str(exc).lower()
+    else:
+        raise AssertionError("expected a missing owner FG score map to fail loudly")
+
+
+def test_materialize_from_owner_score_map_fails_on_missing_base_components():
+    from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
+
+    base_components = [(1, 2, 3, 4, 5, 6, 7)]
+    plan = SimpleNamespace(
+        prepared_batches=[
+            SimpleNamespace(
+                batch=_prepared_batch(base_components, rows=[("ck0", {"Perfect Points": 1})]),
+                rows=(("ck0", {"Perfect Points": 1}),),
+            )
+        ]
+    )
+    # Owner map does NOT contain the batch's base_components -> must fail loudly.
+    try:
+        FgResponseScoringService.materialize_from_owner_score_map(plan, {(9, 9, 9, 9, 9, 9, 9): _owner_row(1)})
+    except RuntimeError as exc:
+        assert "missing base_components" in str(exc).lower()
+    else:
+        raise AssertionError("expected a missing owner-map base_components row to fail loudly")
 
 
 def test_native_fg_pipeline_does_not_expose_direct_force_greats_route():
@@ -99,33 +158,18 @@ def test_native_fg_pipeline_does_not_expose_direct_force_greats_route():
     assert not hasattr(fg_pipeline, "run_force_greats_response_frontier_for_ga_candidates")
 
 
-def test_prepare_fg_job_accepts_owner_deferred_group_arrays(monkeypatch):
+def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
-    batch = SimpleNamespace(
-        group_meta=None,
-        scoring_surface_words=None,
-        scoring_group_lengths=None,
-        scoring_unique_frontiers=0,
-        scoring_surface_compact_ms=0.0,
-        scoring_surface_head_coeff_ms=0.0,
-        scoring_bundle_ms=0.0,
-        scoring_setup_ms=0.0,
-        scoring_group_build_ms=0.0,
-    )
-    plan = SimpleNamespace(prepared_batches=[SimpleNamespace(batch=batch)])
+    plan = SimpleNamespace(prepared_batches=[SimpleNamespace(batch=SimpleNamespace())])
 
     monkeypatch.setattr(
         fg_pipeline,
         "prepare_ga_candidate_surface_for_fg",
         lambda _song, *, fg_candidate_limit: ([{"candidate": 1}], 1, False),
     )
-    monkeypatch.setattr(
-        FgPlanner,
-        "plan_many",
-        staticmethod(lambda *_args, **_kwargs: plan),
-    )
+    monkeypatch.setattr(FgPlanner, "plan_many", staticmethod(lambda *_args, **_kwargs: plan))
 
     song = make_native_song(
         fg_prep_future=None,
@@ -140,251 +184,16 @@ def test_prepare_fg_job_accepts_owner_deferred_group_arrays(monkeypatch):
         calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         prev_record=None,
         db_best_fg_score=0,
-        song_name="Deferred Owner Batch (Hard) by pytest",
-        db_key="deferred-owner-batch-hard",
-        fp="Data/Hard/Deferred Owner Batch (Hard) by pytest.txt",
+        song_name="Prep No RoundTrip (Hard) by pytest",
+        db_key="prep-no-roundtrip-hard",
+        fp="Data/Hard/Prep No RoundTrip (Hard) by pytest.txt",
         cfg_dict={},
         fg_variants=[],
     )
 
-    fg_pipeline.prepare_fg_job_sync(song, gpu_client=None)
+    # gpu_client is accepted but unused: the fused handoff prefetches NO owner
+    # BUILD/SCORE during prep (the owner already scored in the GA turn).
+    fg_pipeline.prepare_fg_job_sync(song, gpu_client=object())
 
     assert song.runtime.fg.fg_response_frontier_plan is plan
     assert song.runtime.fg.cpu_fg_prep_s >= 0.0
-
-
-def test_run_fg_job_sync_submits_all_prepared_batches_before_waiting(monkeypatch):
-    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
-    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
-    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
-
-    class _AssertAllSubmittedFuture:
-        def __init__(self, client, batch, result):
-            self.client = client
-            self.batch = batch
-            self.result_rows = result
-
-        def result(self):
-            assert len(self.client.payloads) == 2
-            return _owner_result(self.batch, self.result_rows)
-
-    class _AssertAllSubmittedGpuClient:
-        def __init__(self):
-            self.payloads = []
-
-        def submit_force_greats_response_frontier_score_batch(self, payload):
-            self.payloads.append(payload)
-            result = [
-                {
-                    "score": 100,
-                    "base_score": 100,
-                    "fg_score": 120 + len(self.payloads),
-                    "gear": ["G1"],
-                    "minis": ["M1"],
-                    "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
-                }
-            ]
-            return SimpleNamespace(future=_AssertAllSubmittedFuture(self, payload["batch"], result))
-
-    gpu_client = _AssertAllSubmittedGpuClient()
-
-    monkeypatch.setattr(
-        response_frontier,
-        "materialize_prepared_force_greats_response_frontier_batch_results",
-        lambda _batch, inner_rows, **_kwargs: inner_rows,
-    )
-    monkeypatch.setattr(
-        FgResultReducer,
-        "materialize",
-        staticmethod(lambda _plan, prepared_results: [row for rows in prepared_results for row in rows]),
-    )
-
-    song = make_native_song(
-        fg_prep_future=None,
-        fg_response_frontier_plan=SimpleNamespace(
-            prepared_batches=[
-                SimpleNamespace(batch="prepared-batch-a"),
-                SimpleNamespace(batch="prepared-batch-b"),
-            ]
-        ),
-        meta_primary_color="Rush",
-        meta_secondary_color="Flow",
-        effective_difficulty="Hard",
-        ga_candidates=[],
-        registry=None,
-        fixed_stats={},
-        cfg_data={"selected_color": "Rush"},
-        ref_arrays={"Perfect Points": []},
-        calc_song={"metadata": {}, "song_data": {}},
-        prev_record=None,
-        db_best_fg_score=0,
-        song_name="Two Batch FG (Hard) by pytest",
-        db_key="two-batch-fg-hard",
-        fp="Data/Hard/Two Batch FG (Hard) by pytest.txt",
-        cfg_dict={},
-        fg_variants=[],
-    )
-
-    fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
-
-    assert [payload["batch"] for payload in gpu_client.payloads] == [
-        "prepared-batch-a",
-        "prepared-batch-b",
-    ]
-    assert [int(variant["fg_score"]) for variant in song.runtime.fg.fg_variants] == [121, 122]
-
-
-def test_run_fg_job_sync_rejects_invalid_owner_result(monkeypatch):
-    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
-
-    class _InvalidOwnerGpuClient:
-        def submit_force_greats_response_frontier_score_batch(self, payload):
-            future = Future()
-            future.set_result([{"fg_score": 1}])
-            return SimpleNamespace(future=future)
-
-    song = make_native_song(
-        fg_prep_future=None,
-        fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
-        meta_primary_color="Rush",
-        meta_secondary_color="Flow",
-        effective_difficulty="Hard",
-        ga_candidates=[],
-        registry=None,
-        fixed_stats={},
-        cfg_data={"selected_color": "Rush"},
-        ref_arrays={"Perfect Points": []},
-        calc_song={"metadata": {}, "song_data": {}},
-        prev_record=None,
-        db_best_fg_score=0,
-        song_name="Invalid Owner Result (Hard) by pytest",
-        db_key="invalid-owner-result-hard",
-        fp="Data/Hard/Invalid Owner Result (Hard) by pytest.txt",
-        cfg_dict={},
-        fg_variants=[],
-    )
-
-    try:
-        fg_pipeline.run_fg_job_sync(song, gpu_client=_InvalidOwnerGpuClient())
-    except RuntimeError as exc:
-        assert "invalid owner result" in str(exc).lower()
-    else:
-        raise AssertionError("expected invalid owner result to fail loudly")
-
-
-def test_run_fg_job_sync_records_owner_exec_time_not_service_queue_wait(monkeypatch):
-    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
-    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
-    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
-
-    class _TimedGpuClient:
-        def submit_force_greats_response_frontier_score_batch(self, payload):
-            payload["timing"]["owner_queue_s"] = 12.0
-            payload["timing"]["owner_exec_s"] = 0.25
-            future = Future()
-            future.set_result(
-                _owner_result(payload["batch"], [{"fg_score": 150, "data": {"ForceGreats": {"config": {"NonFever1": 1}}}}])
-            )
-            return SimpleNamespace(future=future)
-
-    monkeypatch.setattr(
-        response_frontier,
-        "materialize_prepared_force_greats_response_frontier_batch_results",
-        lambda _batch, inner_rows, **_kwargs: inner_rows,
-    )
-    monkeypatch.setattr(
-        FgResultReducer,
-        "materialize",
-        staticmethod(lambda _plan, prepared_results: prepared_results[0]),
-    )
-
-    song = make_native_song(
-        fg_prep_future=None,
-        fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
-        meta_primary_color="Rush",
-        meta_secondary_color="Flow",
-        effective_difficulty="Hard",
-        ga_candidates=[],
-        registry=None,
-        fixed_stats={},
-        cfg_data={"selected_color": "Rush"},
-        ref_arrays={"Perfect Points": []},
-        calc_song={"metadata": {}, "song_data": {}},
-        prev_record=None,
-        db_best_fg_score=0,
-        song_name="Timed FG (Hard) by pytest",
-        db_key="timed-fg-hard",
-        fp="Data/Hard/Timed FG (Hard) by pytest.txt",
-        cfg_dict={},
-        fg_variants=[],
-    )
-
-    fg_pipeline.run_fg_job_sync(song, gpu_client=_TimedGpuClient())
-
-    assert 0.25 <= song.runtime.fg.fg_run_wall_s < 1.0
-
-
-def test_run_fg_job_sync_forces_response_frontier_direct_ga_candidates(monkeypatch):
-    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
-    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
-    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
-
-    gpu_client = _FakeFGGpuClient(
-        [
-            {
-                "score": 100,
-                "base_score": 100,
-                "fg_score": 140,
-                "gear": ["G1"],
-                "minis": ["M1"],
-                "data": {"ForceGreats": {"config": {"NonFever1": 2}}},
-            }
-        ]
-    )
-
-    seen_adapter: dict[str, object] = {}
-
-    def _fake_materialize_response_frontier_plan_results(plan, prepared_results):
-        seen_adapter["plan"] = plan
-        return prepared_results[0]
-
-    monkeypatch.setattr(
-        FgResultReducer,
-        "materialize",
-        staticmethod(_fake_materialize_response_frontier_plan_results),
-    )
-    monkeypatch.setattr(
-        response_frontier,
-        "materialize_prepared_force_greats_response_frontier_batch_results",
-        lambda _batch, inner_rows, **_kwargs: inner_rows,
-    )
-
-    song = make_native_song(
-        fg_prep_future=None,
-        meta_primary_color="Rush",
-        meta_secondary_color="Flow",
-        effective_difficulty="Hard",
-        ga_candidates=[{"BaseScore": 100, "Data": {"Stats": {"Perfect Points": 1}, "Selected Element": "Rush"}}],
-        registry=None,
-        fixed_stats={},
-        cfg_data={"selected_color": "Rush"},
-        ref_arrays={"Perfect Points": []},
-        calc_song={"metadata": {}, "song_data": {}},
-        fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
-        prev_record=None,
-        db_best_fg_score=0,
-        song_name="AfterLife (Hard) by KepoWorld",
-        db_key="afterlife-hard",
-        fp="Data/Hard/AfterLife (Hard) by KepoWorld.txt",
-        cfg_dict={},
-        fg_variants=[],
-        song_slot=9,
-    )
-
-    fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
-
-    assert seen_adapter["plan"] is song.runtime.fg.fg_response_frontier_plan
-    assert len(gpu_client.payloads) == 1
-    assert gpu_client.payloads[0]["batch"] == "prepared-batch"
-    assert "include_forced_counts" not in gpu_client.payloads[0]
-    assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 140

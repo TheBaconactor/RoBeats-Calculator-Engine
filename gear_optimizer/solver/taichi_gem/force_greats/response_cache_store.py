@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 import zipfile
 from collections import OrderedDict
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Iterable
 
 import numpy as np
 from numpy.lib import format as np_format
@@ -34,31 +35,110 @@ _frontier_cache_lock = threading.RLock()
 _RESPONSE_BUNDLE_BUILD_PARALLELISM = 1
 _response_bundle_build_slots = threading.BoundedSemaphore(int(_RESPONSE_BUNDLE_BUILD_PARALLELISM))
 _NPZ_FAST_COMPRESS_LEVEL = 1
-# Row granularity for on-disk first-surface npz members. This is a fetch-granularity knob
-# (smaller chunks -> more members but less over-read per live fetch), not a GPU/TDR dispatch
-# bound -- these rows never size a kernel launch.
-_FIRST_SURFACE_CHUNK_ROWS = 32768
+# Scoring surfaces (the first-frontier pool + head coeffs) live in uncompressed, C-order,
+# memmap-able sidecar .npy files next to the bundle .npz. The reader pages only the requested
+# rows through the OS mmap instead of inflating + fully materializing the whole pool, which is
+# what made the per-song disk load (Issue #34) bandwidth-bound. The bundle .npz keeps every
+# non-surface metadata array plus a `first_surface_row_count` scalar that pins the sidecar shape.
+_SURFACE_POOL_SIDECAR_SUFFIX = ".surf_pool.npy"
+_SURFACE_COEFF_SIDECAR_SUFFIX = ".surf_coeffs.npy"
+_SURFACE_POOL_COLUMNS = 11
+_SURFACE_COEFF_COLUMNS = 4
 
 
-def _first_surface_pool_chunk_name(chunk_idx: int) -> str:
-    return f"first_surface_pool_chunk_{int(chunk_idx):05d}"
+class FgResponseSurfaceSidecarError(RuntimeError):
+    """A current-version bundle .npz exists but its uncompressed surface sidecar is missing or
+    disagrees in shape/dtype/row-count. This is a desync (e.g. interrupted migration), not a cache
+    miss -- it must surface loudly so the human re-runs the re-pack, never silently rebuild."""
 
 
-def _first_surface_head_coeff_chunk_name(chunk_idx: int) -> str:
-    return f"first_surface_head_coeffs_chunk_{int(chunk_idx):05d}"
+def _surface_sidecar_paths(bundle_path: Path) -> tuple[Path, Path]:
+    """Return (pool_sidecar, coeff_sidecar) paths for a bundle .npz path.
+
+    Both sidecars share the bundle digest stem so they migrate/evict as one unit.
+    """
+    base = Path(bundle_path)
+    if base.suffix != ".npz":
+        raise ValueError(f"FG response frontier bundle path must be a .npz: {base}")
+    stem = base.name[: -len(".npz")]
+    return (
+        base.with_name(f"{stem}{_SURFACE_POOL_SIDECAR_SUFFIX}"),
+        base.with_name(f"{stem}{_SURFACE_COEFF_SIDECAR_SUFFIX}"),
+    )
 
 
-def _named_row_chunks(
-    rows: np.ndarray,
-    name_fn: Callable[[int], str],
-    transform: Callable[[np.ndarray], np.ndarray],
-) -> dict[str, np.ndarray]:
-    row_count = int(rows.shape[0])
-    chunks: dict[str, np.ndarray] = {}
-    for chunk_idx, start in enumerate(range(0, row_count, int(_FIRST_SURFACE_CHUNK_ROWS))):
-        end = min(row_count, int(start) + int(_FIRST_SURFACE_CHUNK_ROWS))
-        chunks[name_fn(chunk_idx)] = transform(rows[int(start) : int(end)])
-    return chunks
+def _surface_sidecar_paths_for_key(cache_key: tuple) -> tuple[Path, Path]:
+    return _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
+
+
+def _save_surface_sidecar_atomic(path: Path, array: np.ndarray) -> None:
+    """Write `array` as an uncompressed C-order .npy via tmp + os.replace.
+
+    Uncompressed so the reader can `np.load(..., mmap_mode="r")` and page rows lazily.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp")
+    try:
+        with open(tmp, "wb") as handle:
+            np_format.write_array(handle, np.ascontiguousarray(array), allow_pickle=False)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            Path(tmp).unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def _surface_sidecar_header(path: Path) -> tuple[tuple[int, ...], np.dtype] | None:
+    try:
+        with open(path, "rb") as handle:
+            version = np_format.read_magic(handle)
+            if version == (1, 0):
+                shape, _fortran_order, dtype = np_format.read_array_header_1_0(handle)
+            elif version == (2, 0):
+                shape, _fortran_order, dtype = np_format.read_array_header_2_0(handle)
+            else:
+                return None
+    except Exception:
+        return None
+    return tuple(int(dim) for dim in shape), np.dtype(dtype)
+
+
+def _open_surface_sidecar_memmap(path: Path, *, columns: int, dtype: np.dtype, row_count: int) -> np.ndarray:
+    """Open a surface sidecar read-only memmap and fail loud on any shape/dtype/row-count drift."""
+    if not path.exists():
+        raise FgResponseSurfaceSidecarError(f"FG response frontier surface sidecar is missing: {path}")
+    memmap = np.load(path, mmap_mode="r", allow_pickle=False)
+    if int(memmap.ndim) != 2 or int(memmap.shape[1]) != int(columns):
+        raise FgResponseSurfaceSidecarError(f"FG response frontier surface sidecar has invalid shape: {path}")
+    if memmap.dtype != np.dtype(dtype):
+        raise FgResponseSurfaceSidecarError(f"FG response frontier surface sidecar has invalid dtype: {path}")
+    if int(memmap.shape[0]) != int(row_count):
+        raise FgResponseSurfaceSidecarError(
+            "FG response frontier surface sidecar row count disagrees with bundle metadata: "
+            f"{int(memmap.shape[0])} != {int(row_count)} ({path})"
+        )
+    return memmap
+
+
+def _gather_surface_ranges(
+    memmap: np.ndarray,
+    *,
+    ranges: tuple[tuple[int, int], ...],
+    out: np.ndarray,
+) -> None:
+    """Slice-copy each [start, start+count) row block out of the memmap into `out`, range order preserved."""
+    row_count = int(memmap.shape[0])
+    out_cursor = 0
+    for start, count in ranges:
+        end = int(start) + int(count)
+        if end > row_count:
+            raise ValueError("FG response surface range exceeds cached rows")
+        out[out_cursor : out_cursor + int(count)] = memmap[int(start) : end]
+        out_cursor += int(count)
+    if out_cursor != int(out.shape[0]):
+        raise ValueError("FG response surface gather produced the wrong row count")
 
 
 def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:
@@ -72,25 +152,22 @@ def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:
     return np.asarray(array, dtype=np.uint8)
 
 
-def _persisted_packed_frontiers(packed_frontiers: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    first_surface_pool = np.asfortranarray(np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32))
-    row_count = int(first_surface_pool.shape[0])
-    chunk_offsets = np.asarray(
-        list(range(0, row_count, int(_FIRST_SURFACE_CHUNK_ROWS))) + [row_count],
-        dtype=np.int32,
-    )
+def _persisted_packed_frontier_metadata(
+    packed_frontiers: dict[str, np.ndarray],
+    *,
+    surface_row_count: int,
+) -> dict[str, np.ndarray]:
+    """Slim-.npz metadata for a packed bundle. Surfaces live in the sidecars, not here.
+
+    `first_surface_row_count` pins the pool/coeff sidecar shape so the reader can fail loud
+    on any sidecar/npz desync without re-deriving the row count from per-chunk offsets.
+    """
     return {
         "frontier_meta": np.asfortranarray(np.asarray(packed_frontiers["frontier_meta"], dtype=np.int32)),
         "first_offsets": np.asarray(packed_frontiers["first_offsets"], dtype=np.int32),
         "first_counts": np.asarray(packed_frontiers["first_counts"], dtype=np.int32),
-        "first_surface_chunk_offsets": chunk_offsets,
-        **_named_row_chunks(first_surface_pool, _first_surface_pool_chunk_name, np.asfortranarray),
+        "first_surface_row_count": np.asarray(int(surface_row_count), dtype=np.int64),
     }
-
-
-def _persisted_surface_head_coeff_chunks(first_surface_head_coeffs: np.ndarray) -> dict[str, np.ndarray]:
-    coeffs = np.ascontiguousarray(np.asarray(first_surface_head_coeffs, dtype=np.uint16))
-    return _named_row_chunks(coeffs, _first_surface_head_coeff_chunk_name, np.ascontiguousarray)
 
 
 def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
@@ -144,6 +221,7 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
     from .response_inner_host import _precompute_surface_head_coeffs
 
     path = _fg_response_disk_cache_path(cache_key)
+    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(path)
     tmp: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,7 +230,10 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
         frontier_id_by_object = {id(frontier): idx for idx, frontier in enumerate(frontiers)}
         sorted_items = sorted(payload.frontier_by_key.items())
         packed_frontiers = _pack_frontiers(frontiers)
-        first_surface_pool = np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32)
+        first_surface_pool = np.ascontiguousarray(
+            np.asarray(packed_frontiers["first_surface_pool"], dtype=np.uint32)
+        )
+        surface_row_count = int(first_surface_pool.shape[0])
         stat_keys = np.asarray([key for key, _frontier in sorted_items], dtype=np.int32)
         first_surface_head_len = min(int(payload.total_notes), 100)
         first_surface_head_coeffs = _precompute_surface_head_coeffs(
@@ -161,6 +242,10 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
         )
         if bool(np.any(first_surface_head_coeffs < 0)) or bool(np.any(first_surface_head_coeffs > np.iinfo(np.uint16).max)):
             raise ValueError("FG response surface head coefficients exceed persisted uint16 bounds")
+        first_surface_head_coeffs = np.ascontiguousarray(np.asarray(first_surface_head_coeffs, dtype=np.uint16))
+        # Sidecars first (atomic each), then the slim .npz last: a present .npz implies present sidecars.
+        _save_surface_sidecar_atomic(pool_sidecar, first_surface_pool)
+        _save_surface_sidecar_atomic(coeff_sidecar, first_surface_head_coeffs)
         _save_npz_fast_compressed(
             tmp,
             {
@@ -180,8 +265,7 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
                     "FG response first surface head length",
                     np.asarray(int(first_surface_head_len), dtype=np.int32),
                 ),
-                **_persisted_packed_frontiers(packed_frontiers),
-                **_persisted_surface_head_coeff_chunks(first_surface_head_coeffs),
+                **_persisted_packed_frontier_metadata(packed_frontiers, surface_row_count=surface_row_count),
             },
         )
         tmp.replace(path)
@@ -211,6 +295,7 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
     from .response_cache_serde import _unpack_frontiers
 
     path = _fg_response_disk_cache_path(cache_key)
+    pool_sidecar, _coeff_sidecar = _surface_sidecar_paths(path)
     if not path.exists():
         return None
     try:
@@ -220,7 +305,7 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
                 return None
             stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
             frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
-            frontiers = _unpack_frontiers(data)
+            frontiers = _unpack_frontiers(data, pool_sidecar=pool_sidecar)
             frontier_by_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
             for idx, key_row in enumerate(stat_keys):
                 frontier_idx = int(frontier_ids[idx])
@@ -240,6 +325,11 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
             if payload.raw_fill_by_ff.shape[0] != TOTAL_ROWS + 1 or payload.real_time_by_ft.shape[0] != TOTAL_ROWS + 1:
                 return None
             return payload
+    except FgResponseSurfaceSidecarError:
+        # A current-version .npz whose surface sidecar is gone/mismatched is a desync, not a cache
+        # miss. Surface it loudly (forces a re-pack) instead of deleting the .npz and silently
+        # rebuilding from scratch.
+        raise
     except Exception:
         try:
             path.unlink(missing_ok=True)
@@ -248,30 +338,18 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
         return None
 
 
-def _npz_array_header(archive: zipfile.ZipFile, array_name: str) -> tuple[tuple[int, ...], np.dtype] | None:
-    try:
-        with archive.open(f"{array_name}.npy", mode="r") as handle:
-            version = np_format.read_magic(handle)
-            if version == (1, 0):
-                shape, _fortran_order, dtype = np_format.read_array_header_1_0(handle)
-            elif version == (2, 0):
-                shape, _fortran_order, dtype = np_format.read_array_header_2_0(handle)
-            else:
-                return None
-    except Exception:
-        return None
-    return tuple(int(dim) for dim in shape), np.dtype(dtype)
-
-
 def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) -> tuple[int, int, int] | None:
     requested = set(normalize_fg_response_stat_keys(keys))
     if not path.exists():
         return None
     required = {"version", *_SCORING_BUNDLE_ARRAY_NAMES}
+    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(path)
     try:
         with np.load(path, allow_pickle=False) as data:
             files = set(data.files)
-            if not required.issubset(files):
+            # Slim .npz: exactly the metadata set, no surface chunk members. The surfaces are the two
+            # uncompressed sidecars validated below.
+            if files != required:
                 return None
             version = str(data["version"].item())
             if version != _fg_response_cache_version():
@@ -279,7 +357,7 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
             stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
             frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
             meta = np.asarray(data["frontier_meta"], dtype=np.int32)
-            chunk_offsets = np.asarray(data["first_surface_chunk_offsets"], dtype=np.int64).reshape(-1)
+            surface_row_count = int(np.asarray(data["first_surface_row_count"]).item())
             first_offsets = np.asarray(data["first_offsets"], dtype=np.int64).reshape(-1)
             first_counts = np.asarray(data["first_counts"], dtype=np.int64).reshape(-1)
             raw_fill_by_ff = np.asarray(data["raw_fill_by_ff"])
@@ -303,34 +381,18 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
                 return None
             if int(np.asarray(data["first_surface_head_len"]).item()) != min(total_notes, 100):
                 return None
-            if int(chunk_offsets.shape[0]) < 2 or int(chunk_offsets[0]) != 0:
-                return None
-            if bool(np.any(chunk_offsets[1:] < chunk_offsets[:-1])):
+            if surface_row_count < 0:
                 return None
             if bool(np.any(first_offsets < 0)) or bool(np.any(first_counts <= 0)):
                 return None
             max_surface_end = int(np.max(first_offsets + first_counts))
-            if int(chunk_offsets[-1]) < max_surface_end:
+            if surface_row_count < max_surface_end:
                 return None
-            expected_files = set(required)
-            archive = data.zip
-            for chunk_idx in range(int(chunk_offsets.shape[0]) - 1):
-                start = int(chunk_offsets[int(chunk_idx)])
-                end = int(chunk_offsets[int(chunk_idx) + 1])
-                row_count = int(end - start)
-                pool_name = _first_surface_pool_chunk_name(chunk_idx)
-                coeff_name = _first_surface_head_coeff_chunk_name(chunk_idx)
-                expected_files.add(pool_name)
-                expected_files.add(coeff_name)
-                if pool_name not in files or coeff_name not in files:
-                    return None
-                pool_header = _npz_array_header(archive, pool_name)
-                coeff_header = _npz_array_header(archive, coeff_name)
-                if pool_header != ((row_count, 11), np.dtype(np.uint32)):
-                    return None
-                if coeff_header != ((row_count, 4), np.dtype(np.uint16)):
-                    return None
-            if files != expected_files:
+            pool_header = _surface_sidecar_header(pool_sidecar)
+            coeff_header = _surface_sidecar_header(coeff_sidecar)
+            if pool_header != ((surface_row_count, _SURFACE_POOL_COLUMNS), np.dtype(np.uint32)):
+                return None
+            if coeff_header != ((surface_row_count, _SURFACE_COEFF_COLUMNS), np.dtype(np.uint16)):
                 return None
             present: set[tuple[int, int]] = set()
             for idx, key_row in enumerate(stat_keys):
@@ -413,56 +475,15 @@ def _normalize_surface_ranges(ranges: Iterable[tuple[int, int]]) -> tuple[tuple[
     return tuple(normalized)
 
 
-def _chunk_span_for_range(offsets: np.ndarray, start: int, end: int) -> tuple[int, int]:
-    first_chunk = int(np.searchsorted(offsets, int(start), side="right") - 1)
-    last_chunk = int(np.searchsorted(offsets, int(end) - 1, side="right") - 1)
-    return first_chunk, last_chunk
-
-
-def _surface_chunk_indices_for_ranges(chunk_offsets: np.ndarray, ranges: tuple[tuple[int, int], ...]) -> tuple[int, ...]:
-    offsets = np.asarray(chunk_offsets, dtype=np.int64).reshape(-1)
-    if int(offsets.shape[0]) < 2 or int(offsets[0]) != 0 or bool(np.any(offsets[1:] < offsets[:-1])):
-        raise ValueError("FG response surface chunk offsets are invalid")
-    total_rows = int(offsets[-1])
-    needed: set[int] = set()
-    for start, count in ranges:
-        end = int(start) + int(count)
-        if end > total_rows:
-            raise ValueError("FG response surface range exceeds cached rows")
-        first_chunk, last_chunk = _chunk_span_for_range(offsets, int(start), end)
-        if first_chunk < 0 or last_chunk >= int(offsets.shape[0]) - 1:
-            raise ValueError("FG response surface range resolved outside chunk offsets")
-        needed.update(range(first_chunk, last_chunk + 1))
-    return tuple(sorted(needed))
-
-
-def _copy_chunked_rows(
-    *,
-    out: np.ndarray,
-    column_count: int,
-    chunk_offsets: np.ndarray,
-    chunks: dict[int, np.ndarray],
-    ranges: tuple[tuple[int, int], ...],
-) -> None:
-    offsets = np.asarray(chunk_offsets, dtype=np.int64).reshape(-1)
-    out_cursor = 0
-    for start, count in ranges:
-        end = int(start) + int(count)
-        first_chunk, last_chunk = _chunk_span_for_range(offsets, int(start), end)
-        for chunk_idx in range(first_chunk, last_chunk + 1):
-            chunk_start = int(offsets[int(chunk_idx)])
-            chunk_end = int(offsets[int(chunk_idx) + 1])
-            copy_start = max(int(start), chunk_start)
-            copy_end = min(end, chunk_end)
-            chunk = np.asarray(chunks[int(chunk_idx)])
-            if int(chunk.ndim) != 2 or int(chunk.shape[1]) != int(column_count):
-                raise ValueError("FG response surface chunk shape is invalid")
-            local_start = int(copy_start) - chunk_start
-            local_end = int(copy_end) - chunk_start
-            out[out_cursor : out_cursor + (copy_end - copy_start)] = chunk[local_start:local_end]
-            out_cursor += int(copy_end - copy_start)
-    if out_cursor != int(out.shape[0]):
-        raise ValueError("FG response surface chunk copy produced the wrong row count")
+def _surface_row_count_for_key(cache_key: tuple) -> int:
+    row_count = int(
+        np.asarray(
+            _load_bundle_array_members(cache_key, names=("first_surface_row_count",))["first_surface_row_count"]
+        ).item()
+    )
+    if row_count < 0:
+        raise ValueError("FG response frontier bundle has a negative surface row count")
+    return int(row_count)
 
 
 def load_first_surface_scoring_rows(
@@ -471,47 +492,39 @@ def load_first_surface_scoring_rows(
 ) -> tuple[np.ndarray, np.ndarray]:
     started = time.perf_counter()
     normalized = _normalize_surface_ranges(ranges)
-    offsets = np.asarray(
-        _load_bundle_array_members(cache_key, names=("first_surface_chunk_offsets",))["first_surface_chunk_offsets"],
-        dtype=np.int64,
-    )
-    chunk_indices = _surface_chunk_indices_for_ranges(offsets, normalized)
-    pool_names = tuple(_first_surface_pool_chunk_name(chunk_idx) for chunk_idx in chunk_indices)
-    coeff_names = tuple(_first_surface_head_coeff_chunk_name(chunk_idx) for chunk_idx in chunk_indices)
-    loaded = _load_bundle_array_members(cache_key, names=pool_names + coeff_names)
-    pool_chunks = {chunk_idx: np.asarray(loaded[_first_surface_pool_chunk_name(chunk_idx)], dtype=np.uint32) for chunk_idx in chunk_indices}
-    coeff_chunks = {
-        chunk_idx: np.asarray(loaded[_first_surface_head_coeff_chunk_name(chunk_idx)], dtype=np.int32)
-        for chunk_idx in chunk_indices
-    }
+    surface_row_count = _surface_row_count_for_key(cache_key)
+    pool_sidecar, coeff_sidecar = _surface_sidecar_paths_for_key(cache_key)
     row_count = sum(int(count) for _start, count in normalized)
-    rows = np.empty((int(row_count), 11), dtype=np.uint32)
-    coeffs = np.empty((int(row_count), 4), dtype=np.int32)
-    _copy_chunked_rows(
-        out=rows,
-        column_count=11,
-        chunk_offsets=offsets,
-        chunks=pool_chunks,
-        ranges=normalized,
+    rows = np.empty((int(row_count), _SURFACE_POOL_COLUMNS), dtype=np.uint32)
+    coeff_rows = np.empty((int(row_count), _SURFACE_COEFF_COLUMNS), dtype=np.uint16)
+    load_t0 = time.perf_counter()
+    pool_memmap = _open_surface_sidecar_memmap(
+        pool_sidecar, columns=_SURFACE_POOL_COLUMNS, dtype=np.dtype(np.uint32), row_count=surface_row_count
     )
-    _copy_chunked_rows(
-        out=coeffs,
-        column_count=4,
-        chunk_offsets=offsets,
-        chunks=coeff_chunks,
-        ranges=normalized,
+    coeff_memmap = _open_surface_sidecar_memmap(
+        coeff_sidecar, columns=_SURFACE_COEFF_COLUMNS, dtype=np.dtype(np.uint16), row_count=surface_row_count
     )
+    load_ms = float((time.perf_counter() - load_t0) * 1000.0)
+    copy_t0 = time.perf_counter()
+    # Slice-copy out of the read-only memmaps into freshly-owned contiguous arrays so the returned
+    # arrays never alias a memmap (which could be evicted/closed across songs).
+    _gather_surface_ranges(pool_memmap, ranges=normalized, out=rows)
+    _gather_surface_ranges(coeff_memmap, ranges=normalized, out=coeff_rows)
+    copy_ms = float((time.perf_counter() - copy_t0) * 1000.0)
+    coeffs = np.ascontiguousarray(coeff_rows, dtype=np.int32)
     emit_profile_event(
         component="fg_response_cache",
         event="surface_chunk_load",
         metrics={
             "ranges": int(len(normalized)),
-            "chunks": int(len(chunk_indices)),
+            "chunks": 0,
             "rows": int(row_count),
+            "load_ms": float(load_ms),
+            "copy_ms": float(copy_ms),
             "elapsed_ms": float((time.perf_counter() - started) * 1000.0),
         },
     )
-    return np.ascontiguousarray(rows, dtype=np.uint32), np.ascontiguousarray(coeffs, dtype=np.int32)
+    return np.ascontiguousarray(rows, dtype=np.uint32), coeffs
 
 
 def _invalidate_bundle_array_views(bundle_key: tuple) -> None:

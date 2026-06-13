@@ -9,11 +9,16 @@ class _FakeGpuApi:
     def __init__(self, *, fail_once: bool = True) -> None:
         self.generate_calls = 0
         self.upload_calls = 0
+        self.timeline_calls = 0
+        self.item_stats_upload_calls = 0
+        self.base_fixed_stats_upload_calls = 0
+        self.fg_effective_tables_upload_calls = 0
         self.reset_calls = 0
         self.evaluate_calls = 0
         self.next_generation_calls = 0
         self.fused_refresh_next_generation_calls = 0
         self.refresh_scores_and_update_runs_best_calls = 0
+        self.seed_indexed_calls: list[dict] = []
         self._fail_once = bool(fail_once)
         self._current_population = np.zeros((8, 9), dtype=np.int32)
         self._staged_population = np.zeros((1, 8, 9), dtype=np.int32)
@@ -29,10 +34,20 @@ class _FakeGpuApi:
     def _ensure_ftff_combo_tables(self, _total_budget, **_kwargs):
         return 1
 
+    def precompute_timeline_gpu(self, *_args, **_kwargs):
+        self.timeline_calls += 1
+        return int(_kwargs.get("song_slot", 0) or 0)
+
     def ga_upload_item_stats(self, *_args, **_kwargs):
+        self.item_stats_upload_calls += 1
         return None
 
     def ga_upload_base_fixed_stats(self, *_args, **_kwargs):
+        self.base_fixed_stats_upload_calls += 1
+        return None
+
+    def ga_upload_fg_effective_tables(self, *_args, **_kwargs):
+        self.fg_effective_tables_upload_calls += 1
         return None
 
     def ga_upload_init_heuristic_topk(self, *_args, **_kwargs):
@@ -68,6 +83,10 @@ class _FakeGpuApi:
         return int(n_runs * n_genomes_per_run)
 
     def ga_seed_rng_runs(self, *_args, **_kwargs):
+        return None
+
+    def ga_seed_rng_runs_indexed(self, *_args, **_kwargs):
+        self.seed_indexed_calls.append(dict(_kwargs))
         return None
 
     def ga_prepare_population_base_stats(self, *_args, **_kwargs):
@@ -155,6 +174,8 @@ def test_run_gpu_native_ga_requires_explicit_seed(monkeypatch):
             slot_start=np.zeros((9,), dtype=np.int32),
             slot_count=np.zeros((9,), dtype=np.int32),
             base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
+        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
             n_generations=1,
             initial_populations=None,
             num_runs=1,
@@ -186,6 +207,8 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
         slot_start=np.zeros((9,), dtype=np.int32),
         slot_count=np.zeros((9,), dtype=np.int32),
         base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
+        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
         n_generations=1,
         initial_populations=None,
         num_runs=2,
@@ -205,6 +228,90 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
     assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
     assert fake_gpu.upload_calls == 0
     assert "use_base_candidate_cache" not in fake_gpu.last_evaluate_kwargs
+
+
+def test_gpu_native_ga_uploads_slot_timeline_and_global_static_in_request(monkeypatch):
+    # The slot-warm side channel is gone: every GA request restores its slot
+    # timeline and global static buffers in-request on the owner (the per-slot
+    # upload helpers content-skip when the slot already holds this song).
+    from gear_optimizer.solver import genetic_pipeline as genetic
+
+    fake_gpu = _FakeGpuApi(fail_once=False)
+    _install_fake_taichi_modules(monkeypatch, fake_gpu)
+
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
+
+    out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
+        calc_song={
+            "metadata": {"Song Name": "in-request-upload", "Difficulty": "Hard"},
+            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
+        },
+        ref_arrays=_ref_arrays(),
+        song_slot=3,
+        item_stats=np.zeros((16, 10), dtype=np.int32),
+        slot_start=np.zeros((9,), dtype=np.int32),
+        slot_count=np.zeros((9,), dtype=np.int32),
+        base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
+        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
+        n_generations=1,
+        initial_populations=None,
+        num_runs=1,
+        n_genomes=8,
+        color_flags={},
+        cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
+        ga_seed=123,
+    )
+
+    assert isinstance(out, np.ndarray)
+    assert fake_gpu.timeline_calls == 1
+    assert fake_gpu.item_stats_upload_calls == 1
+    assert fake_gpu.base_fixed_stats_upload_calls == 1
+
+
+def test_gpu_native_ga_batched_runs_use_indexed_seed_series(monkeypatch):
+    from gear_optimizer.solver import genetic_pipeline as genetic
+
+    fake_gpu = _FakeGpuApi(fail_once=False)
+    _install_fake_taichi_modules(monkeypatch, fake_gpu)
+
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
+
+    out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
+        calc_song={
+            "metadata": {"Song Name": "indexed-seed-batch", "Difficulty": "Hard"},
+            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
+        },
+        ref_arrays=_ref_arrays(),
+        song_slot=1,
+        item_stats=np.zeros((16, 10), dtype=np.int32),
+        slot_start=np.zeros((9,), dtype=np.int32),
+        slot_count=np.zeros((9,), dtype=np.int32),
+        base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
+        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
+        n_generations=1,
+        initial_populations=None,
+        num_runs=3,
+        n_genomes=8,
+        color_flags={},
+        cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51},
+        ga_seed=123,
+    )
+
+    assert isinstance(out, np.ndarray)
+    assert fake_gpu.seed_indexed_calls == [
+        {
+            "n_runs": 3,
+            "n_genomes_per_run": 8,
+            "seed_base": 123,
+            "run_idx_start": 0,
+        }
+    ]
 
 
 def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
@@ -229,6 +336,8 @@ def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
         slot_start=np.zeros((9,), dtype=np.int32),
         slot_count=np.zeros((9,), dtype=np.int32),
         base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
+        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
         n_generations=3,
         initial_populations=None,
         num_runs=1,
@@ -266,6 +375,8 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
             slot_start=np.zeros((9,), dtype=np.int32),
             slot_count=np.zeros((9,), dtype=np.int32),
             base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
+        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
             n_generations=3,
             initial_populations=None,
             num_runs=1,
@@ -302,6 +413,8 @@ def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypat
             slot_start=np.zeros((9,), dtype=np.int32),
             slot_count=np.zeros((9,), dtype=np.int32),
             base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
+        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
             n_generations=3,
             initial_populations=None,
             num_runs=3,
@@ -349,6 +462,8 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
         slot_start=np.zeros((9,), dtype=np.int32),
         slot_count=np.zeros((9,), dtype=np.int32),
         base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
+        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
         n_generations=1,
         initial_populations=None,
         num_runs=3,
@@ -397,6 +512,8 @@ def test_run_gpu_native_ga_hybrid_multirun_emits_phase_events(monkeypatch):
         slot_start=np.zeros((9,), dtype=np.int32),
         slot_count=np.zeros((9,), dtype=np.int32),
         base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
+        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
+        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
         n_generations=1,
         initial_populations=None,
         num_runs=3,

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -280,49 +279,3 @@ def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTrac
                     mark_valid=bool(baseline_valid),
                 )
     return record_info
-
-
-@dataclass
-class GAQueueLimitController:
-    base_limit: int
-    pressure_window_s: float
-    extra_free_on_slot_pressure: int
-    fg_slot_reserve: int
-    song_slot_limit: int
-    monotonic: Callable[[], float] = field(default=time.monotonic, repr=False)
-    _cache_key: tuple[bool, int, int, int, int] | None = field(default=None, init=False, repr=False)
-    _cache_value: int = field(default=1, init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        self.base_limit = max(1, int(self.base_limit))
-        self.pressure_window_s = max(0.0, float(self.pressure_window_s))
-        self.extra_free_on_slot_pressure = max(0, int(self.extra_free_on_slot_pressure))
-        self.fg_slot_reserve = max(0, int(self.fg_slot_reserve))
-        self.song_slot_limit = max(1, int(self.song_slot_limit))
-        self._cache_value = int(self.base_limit)
-
-    def effective_limit(self, *, last_slot_block_t: float | None) -> int:
-        extra_free = 0
-        slot_pressure_active = False
-        if last_slot_block_t is not None and float(self.pressure_window_s) > 0.0:
-            try:
-                if (float(self.monotonic()) - float(last_slot_block_t)) <= float(self.pressure_window_s):
-                    slot_pressure_active = True
-                    extra_free = max(int(extra_free), int(self.extra_free_on_slot_pressure))
-            except Exception as e:
-                logger.debug(f"native_inflight_lifecycle:GAQueueLimitController.effective_limit: {e}")
-        cache_key = (
-            bool(slot_pressure_active),
-            int(extra_free),
-            int(self.fg_slot_reserve),
-            int(self.song_slot_limit),
-            int(self.base_limit),
-        )
-        if cache_key == self._cache_key:
-            return int(self._cache_value)
-        min_free = int(self.fg_slot_reserve) + int(extra_free)
-        min_free = max(0, min(int(min_free), max(0, int(self.song_slot_limit) - 1)))
-        limit_from_free = max(1, int(self.song_slot_limit) - int(min_free))
-        self._cache_value = max(1, min(int(self.base_limit), int(limit_from_free)))
-        self._cache_key = cache_key
-        return int(self._cache_value)

@@ -133,14 +133,22 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
     assert first.cache_source == "built"
     assert first.disk_path.exists()
     assert len(list(tmp_path.glob("*.npz"))) == 1
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _surface_sidecar_paths
+
+    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(first.disk_path)
+    assert pool_sidecar.exists()
+    assert coeff_sidecar.exists()
     with np.load(first.disk_path, allow_pickle=False) as data:
         assert data["stat_keys"].dtype == np.dtype("uint8")
         assert data["stat_keys"].flags.f_contiguous
         assert data["frontier_meta"].flags.f_contiguous
+        # Surfaces live in the uncompressed sidecars, not the slim .npz.
         assert "first_surface_pool" not in data.files
-        assert data["first_surface_chunk_offsets"].dtype == np.dtype("int32")
-        assert data["first_surface_pool_chunk_00000"].dtype == np.dtype("uint32")
-        assert data["first_surface_pool_chunk_00000"].flags.f_contiguous
+        assert "first_surface_chunk_offsets" not in data.files
+        assert "first_surface_pool_chunk_00000" not in data.files
+        assert "first_surface_head_coeffs_chunk_00000" not in data.files
+        surface_row_count = int(data["first_surface_row_count"])
+        assert surface_row_count > 0
         assert not {
             "state_offsets",
             "state_counts",
@@ -149,6 +157,14 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
             "state_surface_counts",
             "state_surface_pool",
         }.intersection(data.files)
+    # Pool sidecar: uncompressed, C-order, uint32 N x 11; coeff sidecar uint16 N x 4.
+    pool = np.load(pool_sidecar, mmap_mode="r", allow_pickle=False)
+    assert pool.dtype == np.dtype("uint32")
+    assert pool.shape == (surface_row_count, 11)
+    assert pool.flags.c_contiguous
+    coeffs = np.load(coeff_sidecar, mmap_mode="r", allow_pickle=False)
+    assert coeffs.dtype == np.dtype("uint16")
+    assert coeffs.shape == (surface_row_count, 4)
 
     def _raise_build(*_args, **_kwargs):
         raise AssertionError("warm sparse bundle should load without rebuilding frontiers")
@@ -164,9 +180,11 @@ def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Pa
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_surfaces import SurfaceRowsFirstFrontier
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
+        _fg_response_disk_cache_path,
         _load_bundle_array_members,
         _load_payload,
         _save_payload,
+        _surface_sidecar_paths,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult
@@ -201,16 +219,19 @@ def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Pa
             "frontier_meta",
             "first_offsets",
             "first_counts",
-            "first_surface_chunk_offsets",
-            "first_surface_pool_chunk_00000",
+            "first_surface_row_count",
         ),
     )
     assert arrays["frontier_ids"].tolist() == [0, 1]
     assert arrays["frontier_meta"].shape[0] == 2
     assert arrays["first_offsets"].tolist() == [0, 0]
     assert arrays["first_counts"].tolist() == [2, 2]
-    assert arrays["first_surface_chunk_offsets"].tolist() == [0, 2]
-    assert arrays["first_surface_pool_chunk_00000"].shape == (2, 11)
+    assert int(arrays["first_surface_row_count"]) == 2
+
+    pool_sidecar, _coeff_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
+    pool = np.load(pool_sidecar, mmap_mode="r", allow_pickle=False)
+    assert pool.shape == (2, 11)
+    assert pool.dtype == np.dtype("uint32")
 
     loaded = _load_payload(cache_key)
     assert loaded is not None
@@ -221,7 +242,6 @@ def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Pa
 
 def test_fg_response_frontier_surface_chunk_loader_reads_requested_ranges(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
         _save_payload,
         load_first_surface_scoring_rows,
@@ -230,7 +250,6 @@ def test_fg_response_frontier_surface_chunk_loader_reads_requested_ranges(tmp_pa
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult, FgResponseSurface
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(response_cache_store, "_FIRST_SURFACE_CHUNK_ROWS", 1)
     surfaces = (
         FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0),
         FgResponseSurface(2, 0, 0, 0, 0, 0, 0, 0, 20, 1, 0),
@@ -257,24 +276,23 @@ def test_fg_response_frontier_surface_chunk_loader_reads_requested_ranges(tmp_pa
     assert coeffs.dtype == np.dtype("int32")
 
 
-@pytest.mark.parametrize("cache_mutation", ("missing_core_array", "missing_surface_chunk", "extra_stale_array"))
+@pytest.mark.parametrize("cache_mutation", ("missing_core_array", "missing_surface_sidecar", "extra_stale_array"))
 def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
     tmp_path: Path,
     monkeypatch,
     cache_mutation: str,
 ) -> None:
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
         _fg_response_disk_cache_path,
         _payload_disk_info_if_complete,
         _save_payload,
+        _surface_sidecar_paths,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult, FgResponseSurface
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(response_cache_store, "_FIRST_SURFACE_CHUNK_ROWS", 1)
     surfaces = (
         FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0),
         FgResponseSurface(2, 0, 0, 0, 0, 0, 0, 0, 20, 1, 0),
@@ -295,8 +313,9 @@ def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
     cache_path = _fg_response_disk_cache_path(cache_key)
     if cache_mutation == "missing_core_array":
         _remove_npz_array(cache_path, "raw_fill_by_ff")
-    elif cache_mutation == "missing_surface_chunk":
-        _remove_npz_array(cache_path, "first_surface_pool_chunk_00001")
+    elif cache_mutation == "missing_surface_sidecar":
+        pool_sidecar, _coeff_sidecar = _surface_sidecar_paths(cache_path)
+        pool_sidecar.unlink()
     elif cache_mutation == "extra_stale_array":
         _add_npz_array(cache_path, "obsolete_array", np.asarray([1], dtype=np.int32))
     else:
@@ -331,7 +350,7 @@ def test_fg_response_frontier_scoring_bundle_does_not_unpack_payload_on_disk_hit
 
     assert set(bundle.frontier_idx_by_key) == set(keys)
     assert bundle.surface_words.shape == (0, 8)
-    assert int(bundle.surface_chunk_offsets[-1]) > 0
+    assert int(bundle.surface_row_count) > 0
 
 
 def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
@@ -346,12 +365,18 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
 
     first = response_cache.build_or_load_response_frontier_payload(_calc_song(), _varying_ref_arrays(), stat_keys=keys)
     assert first.cache_source == "built"
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _surface_sidecar_paths
+
+    _pool_sidecar, coeff_sidecar = _surface_sidecar_paths(first.disk_path)
     with np.load(first.disk_path, allow_pickle=False) as data:
         assert "first_surface_head_len" in data.files
         assert "first_surface_head_coeffs" not in data.files
-        assert "first_surface_head_coeffs_chunk_00000" in data.files
+        assert "first_surface_head_coeffs_chunk_00000" not in data.files
         assert data["first_surface_head_len"].dtype == np.dtype("uint8")
-        assert data["first_surface_head_coeffs_chunk_00000"].dtype == np.dtype("uint16")
+    # Head coeffs persist uint16 in the uncompressed coeff sidecar (read back as int32).
+    persisted_coeffs = np.load(coeff_sidecar, mmap_mode="r", allow_pickle=False)
+    assert persisted_coeffs.dtype == np.dtype("uint16")
+    assert persisted_coeffs.shape[1] == 4
 
     response_cache.reset_fg_response_frontier_payload_cache()
 
@@ -400,7 +425,7 @@ def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_
 
     assert set(bundle.frontier_idx_by_key) == set(keys)
     assert bundle.surface_words.shape == (0, 8)
-    assert int(bundle.surface_chunk_offsets[-1]) > 0
+    assert int(bundle.surface_row_count) > 0
 
 
 def test_fg_response_frontier_scoring_bundle_requires_startup_cache(tmp_path: Path, monkeypatch) -> None:

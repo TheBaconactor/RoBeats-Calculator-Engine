@@ -3,26 +3,20 @@ import configparser
 from gear_optimizer.solver.native_inflight_orchestrator import (
     continuous_fg_allow_not_ready,
     continuous_fg_prep_start_budget,
-    continuous_ga_should_yield_to_fg,
-    continuous_fg_should_fill_song_lanes,
     continuous_fg_submit_budget,
-    continuous_fg_should_start,
-    continuous_ga_warm_queue_limit,
+    ga_admission_fg_backlog_limit,
+    ga_should_pause_for_fg_backlog,
 )
-from gear_optimizer.solver.native_inflight_lifecycle import BubbleTracker, GAQueueLimitController
+from gear_optimizer.solver.native_inflight_lifecycle import BubbleTracker
 from gear_optimizer.solver.native_inflight_scheduler_policy import (
     closed_loop_bubble_kpi,
     count_active_song_lanes,
     default_prime_target,
-    read_continuous_fg_adaptive_max_burst,
-    read_continuous_ga_dispatch_burst,
-    read_fg_ga_credit_budget,
     read_fg_scheduler_mode,
-    read_fg_slot_reserve,
-    read_inflight_target_song_lanes,
     read_prime_target,
 )
 from gear_optimizer.solver.native_inflight_config import (
+    default_worker_threads,
     first_task_config,
     inflight_shutdown_debug_enabled,
     inflight_stall_debug_enabled,
@@ -47,23 +41,6 @@ def _cfg_with_iteration_engine(**pairs: str) -> configparser.ConfigParser:
     return cfg
 
 
-def test_ga_queue_limit_controller_reserves_slots_and_applies_slot_pressure_window():
-    now_box = {"now": 10.0}
-    controller = GAQueueLimitController(
-        base_limit=12,
-        pressure_window_s=2.0,
-        extra_free_on_slot_pressure=2,
-        fg_slot_reserve=1,
-        song_slot_limit=5,
-        monotonic=lambda: float(now_box["now"]),
-    )
-
-    assert controller.effective_limit(last_slot_block_t=None) == 4
-    assert controller.effective_limit(last_slot_block_t=9.0) == 2
-
-    now_box["now"] = 12.5
-    assert controller.effective_limit(last_slot_block_t=9.0) == 4
-
 def test_count_active_song_lanes_deduplicates_ga_decode_and_fg_keys():
     ga_song = make_native_song(task_key="song-a", song_name="Song A")
     decode_song = make_native_song(task_key="song-a", song_name="Song A")
@@ -79,39 +56,8 @@ def test_count_active_song_lanes_deduplicates_ga_decode_and_fg_keys():
     )
 
 
-def test_read_fg_scheduler_mode_defaults_to_continuous(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_FG_SCHEDULER", raising=False)
+def test_read_fg_scheduler_mode_defaults_to_continuous():
     assert read_fg_scheduler_mode() == "continuous"
-
-
-def test_read_fg_scheduler_mode_is_fixed_to_continuous(monkeypatch):
-    monkeypatch.setenv("INFLIGHT_FG_SCHEDULER", "backlog")
-    assert read_fg_scheduler_mode() == "continuous"
-
-
-def test_read_fg_ga_credit_budget_default_and_overrides(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_FG_GA_CREDIT_BUDGET", raising=False)
-    monkeypatch.delenv("INFLIGHT_GA_CREDIT_BUDGET", raising=False)
-
-    cfg = _cfg_with_iteration_engine()
-    budget, explicit = read_fg_ga_credit_budget(cfg, default_budget=24)
-    assert budget == 24
-    assert explicit is False
-
-    monkeypatch.setenv("INFLIGHT_GA_CREDIT_BUDGET", "88")
-    budget, explicit = read_fg_ga_credit_budget(cfg, default_budget=24)
-    assert budget == 24
-    assert explicit is False
-
-    cfg_cfg = _cfg_with_iteration_engine(InFlight_FGGACreditBudget="77")
-    budget, explicit = read_fg_ga_credit_budget(cfg_cfg, default_budget=24)
-    assert budget == 77
-    assert explicit is True
-
-    monkeypatch.setenv("INFLIGHT_FG_GA_CREDIT_BUDGET", "91")
-    budget, explicit = read_fg_ga_credit_budget(cfg_cfg, default_budget=24)
-    assert budget == 91
-    assert explicit is True
 
 
 def test_read_ga_multi_start_uses_runtime_ga_settings():
@@ -120,248 +66,130 @@ def test_read_ga_multi_start_uses_runtime_ga_settings():
     assert read_ga_multi_start(cfg) == 4
 
 
-def testcontinuous_fg_should_start_on_ready_fg_or_slot_pressure():
+def test_ga_admission_fg_backlog_limit_sizes_to_fg_stage_steady_state():
+    # Steady state is every FG worker busy plus a full prep runway; the bound
+    # must sit above that so it only binds when FG genuinely falls behind.
+    assert ga_admission_fg_backlog_limit(fg_workers=2, fg_prep_workers=2) == 6
+    assert ga_admission_fg_backlog_limit(fg_workers=2, fg_prep_workers=4) == 8
+    # Tiny pools still keep a usable allowance.
+    assert ga_admission_fg_backlog_limit(fg_workers=1, fg_prep_workers=1) == 5
+
+
+def test_ga_pauses_only_when_fg_debt_exceeds_the_bound():
     assert (
-        continuous_fg_should_start(
-            pending_fg_count=3,
-            ready_fg_count=1,
-            ga_credit=0,
-            oldest_wait_s=0.0,
-            blocked_on_slot=False,
-            no_ga_remaining=False,
-            aging_trigger_s=0.75,
-            aging_hard_s=2.5,
-            ga_queue_limit=12,
-            fg_slot_reserve=0,
+        ga_should_pause_for_fg_backlog(
+            pending_fg_count=4,
+            fg_inflight_count=2,
+            backlog_limit=6,
+        )
+        is False
+    )
+    assert (
+        ga_should_pause_for_fg_backlog(
+            pending_fg_count=5,
+            fg_inflight_count=2,
+            backlog_limit=6,
         )
         is True
     )
     assert (
-        continuous_fg_should_start(
-            pending_fg_count=3,
-            ready_fg_count=1,
-            ga_credit=9,
-            oldest_wait_s=0.0,
-            blocked_on_slot=False,
-            no_ga_remaining=False,
-            aging_trigger_s=0.75,
-            aging_hard_s=2.5,
-            ga_queue_limit=12,
-            fg_slot_reserve=0,
-        )
-        is True
-    )
-    assert (
-        continuous_fg_should_start(
-            pending_fg_count=3,
-            ready_fg_count=1,
-            ga_credit=9,
-            oldest_wait_s=3.0,
-            blocked_on_slot=False,
-            no_ga_remaining=False,
-            aging_trigger_s=0.75,
-            aging_hard_s=2.5,
-            ga_queue_limit=12,
-            fg_slot_reserve=0,
-        )
-        is True
-    )
-    assert (
-        continuous_fg_should_start(
-            pending_fg_count=1,
-            ready_fg_count=0,
-            ga_credit=9,
-            oldest_wait_s=0.0,
-            blocked_on_slot=True,
-            no_ga_remaining=False,
-            aging_trigger_s=0.75,
-            aging_hard_s=2.5,
-            ga_queue_limit=12,
-            fg_slot_reserve=0,
-        )
-        is True
-    )
-
-
-def test_continuous_fg_should_probe_pending_fg_while_ga_can_continue():
-    base = {
-        "pending_fg_count": 3,
-        "ready_fg_count": 0,
-        "blocked_on_slot": False,
-        "no_ga_remaining": False,
-        "aging_trigger_s": 0.75,
-        "aging_hard_s": 2.5,
-        "ga_queue_limit": 12,
-        "fg_slot_reserve": 0,
-    }
-
-    assert continuous_fg_should_start(**base, ga_credit=0, oldest_wait_s=0.0) is True
-    assert continuous_fg_should_start(**base, ga_credit=9, oldest_wait_s=3.0) is True
-
-
-def test_continuous_fg_should_not_start_without_pending():
-    assert (
-        continuous_fg_should_start(
+        ga_should_pause_for_fg_backlog(
             pending_fg_count=0,
+            fg_inflight_count=0,
+            backlog_limit=6,
+        )
+        is False
+    )
+
+
+def test_continuous_fg_allows_unready_jobs_only_for_final_drain():
+    assert continuous_fg_allow_not_ready(no_ga_remaining=True) is True
+    assert continuous_fg_allow_not_ready(no_ga_remaining=False) is False
+
+
+def test_continuous_fg_submit_budget_fills_free_workers_with_ready_songs():
+    assert (
+        continuous_fg_submit_budget(
+            pending_fg_count=8,
+            ready_fg_count=8,
+            fg_inflight_count=0,
+            fg_workers=4,
+            fg_batch_max=4,
+            no_ga_remaining=False,
+        )
+        == 4
+    )
+    assert (
+        continuous_fg_submit_budget(
+            pending_fg_count=8,
+            ready_fg_count=3,
+            fg_inflight_count=2,
+            fg_workers=4,
+            fg_batch_max=4,
+            no_ga_remaining=False,
+        )
+        == 2
+    )
+
+
+def test_continuous_fg_submit_budget_mid_run_is_capped_by_ready_songs():
+    # A worker handed a not-yet-ready song would block on its prep future while
+    # GA still feeds the owner; mid-run budget never exceeds the ready count.
+    assert (
+        continuous_fg_submit_budget(
+            pending_fg_count=8,
             ready_fg_count=0,
-            ga_credit=0,
-            oldest_wait_s=10.0,
-            blocked_on_slot=True,
+            fg_inflight_count=0,
+            fg_workers=4,
+            fg_batch_max=4,
+            no_ga_remaining=False,
+        )
+        == 0
+    )
+
+
+def test_continuous_fg_submit_budget_honors_end_of_run_drain():
+    assert (
+        continuous_fg_submit_budget(
+            pending_fg_count=5,
+            ready_fg_count=0,
+            fg_inflight_count=0,
+            fg_workers=4,
+            fg_batch_max=4,
             no_ga_remaining=True,
-            aging_trigger_s=0.75,
-            aging_hard_s=2.5,
-            ga_queue_limit=12,
-            fg_slot_reserve=0,
         )
-        is False
+        == 4
     )
-
-
-def test_continuous_fg_allows_unready_jobs_only_for_final_drain_or_slot_pressure():
-    assert (
-        continuous_fg_allow_not_ready(
-            blocked_on_slot=False,
-            no_ga_remaining=True,
-        )
-        is True
-    )
-    assert (
-        continuous_fg_allow_not_ready(
-            blocked_on_slot=True,
-            no_ga_remaining=False,
-        )
-        is True
-    )
-    assert (
-        continuous_fg_allow_not_ready(
-            blocked_on_slot=False,
-            no_ga_remaining=False,
-        )
-        is False
-    )
-
-
-def testcontinuous_fg_should_start_when_reserved_capacity_has_ready_fg():
-    assert (
-        continuous_fg_should_start(
-            pending_fg_count=3,
-            ready_fg_count=1,
-            ga_credit=9,
-            oldest_wait_s=0.0,
-            blocked_on_slot=False,
-            no_ga_remaining=False,
-            aging_trigger_s=0.75,
-            aging_hard_s=2.5,
-            ga_queue_limit=4,
-            fg_slot_reserve=1,
-        )
-        is True
-    )
-
-
-def testcontinuous_fg_submit_budget_respects_reserved_capacity_ready_fg():
-    budget = continuous_fg_submit_budget(
-        pending_fg_count=3,
-        ready_fg_count=1,
-        fg_inflight_count=0,
-        fg_workers=2,
-        fg_batch_max=2,
-        no_ga_remaining=False,
-        blocked_on_slot=False,
-        oldest_wait_s=0.0,
-        aging_trigger_s=0.75,
-        aging_hard_s=2.5,
-        ga_queue_limit=4,
-        adaptive_max_burst=3,
-        fg_slot_reserve=1,
-    )
-    assert budget == 1
-
-
-def test_read_continuous_ga_dispatch_burst_defaults_and_env_override(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_CONTINUOUS_GA_BURST", raising=False)
-    cfg = _cfg_with_iteration_engine()
-    assert read_continuous_ga_dispatch_burst(cfg, default_burst=2) == 2
-
-    cfg2 = _cfg_with_iteration_engine(InFlight_ContinuousGABurst="5")
-    assert read_continuous_ga_dispatch_burst(cfg2, default_burst=2) == 5
-
-    monkeypatch.setenv("INFLIGHT_CONTINUOUS_GA_BURST", "7")
-    assert read_continuous_ga_dispatch_burst(cfg2, default_burst=2) == 7
-
-
-def test_read_continuous_fg_adaptive_max_burst_defaults_and_overrides(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_FG_ADAPTIVE_MAX_BURST", raising=False)
-
-    cfg = _cfg_with_iteration_engine()
-    assert read_continuous_fg_adaptive_max_burst(cfg) == 3
-
-    cfg2 = _cfg_with_iteration_engine(InFlight_FGAdaptiveMaxBurst="6")
-    assert read_continuous_fg_adaptive_max_burst(cfg2) == 6
-
-    monkeypatch.setenv("INFLIGHT_FG_ADAPTIVE_MAX_BURST", "4")
-    assert read_continuous_fg_adaptive_max_burst(cfg2) == 4
-
-
-def test_read_fg_slot_reserve_ratio_and_absolute_override(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_FG_SLOT_RESERVE", raising=False)
-    monkeypatch.delenv("INFLIGHT_FG_SLOT_RESERVE_RATIO", raising=False)
-
-    cfg_ratio = _cfg_with_iteration_engine(InFlight_FGSlotReserveRatio="0.2")
-    reserve = read_fg_slot_reserve(cfg_ratio, inflight_limit=12, song_slot_limit=23)
-    assert reserve == 5
-
-    cfg_abs = _cfg_with_iteration_engine(InFlight_FGSlotReserve="2")
-    reserve = read_fg_slot_reserve(cfg_abs, inflight_limit=12, song_slot_limit=23)
-    assert reserve == 2
-
-    monkeypatch.setenv("INFLIGHT_FG_SLOT_RESERVE", "0")
-    reserve = read_fg_slot_reserve(cfg_abs, inflight_limit=12, song_slot_limit=23)
-    assert reserve == 0
 
 
 def test_first_task_config_extracts_legacy_task_config():
-    task = (None, "Song", "Hard", {"IterationEngine": {"InFlight_PrimeTarget": "6"}})
+    task = (None, "Song", "Hard", {"IterationEngine": {"SomeSetting": "6"}})
     cfg = first_task_config([task])
 
     assert cfg is not None
-    assert cfg.get("IterationEngine", "InFlight_PrimeTarget") == "6"
+    assert cfg.get("IterationEngine", "SomeSetting") == "6"
     assert first_task_config([]) is None
 
 
-def test_read_inflight_worker_count_honors_config_env_and_ga_seed(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_PREP_WORKERS", raising=False)
-    cfg = _cfg_with_iteration_engine(InFlight_PrepWorkers="3")
-
+def test_read_inflight_worker_count_uses_canonical_cpu_sizing_and_ga_seed():
     assert (
         read_inflight_worker_count(
-            cfg,
-            config_key="InFlight_PrepWorkers",
-            env_key="INFLIGHT_PREP_WORKERS",
             inflight_limit=8,
             kind="prep",
         )
-        == 3
+        == default_worker_threads(inflight_limit=8, kind="prep")
     )
 
-    monkeypatch.setenv("INFLIGHT_PREP_WORKERS", "5")
     assert (
         read_inflight_worker_count(
-            cfg,
-            config_key="InFlight_PrepWorkers",
-            env_key="INFLIGHT_PREP_WORKERS",
             inflight_limit=8,
-            kind="prep",
+            kind="decode",
         )
-        == 5
+        == default_worker_threads(inflight_limit=8, kind="decode")
     )
 
-    monkeypatch.setenv("INFLIGHT_PREP_WORKERS", "0")
     assert (
         read_inflight_worker_count(
-            _cfg_with_iteration_engine(),
-            config_key="InFlight_PrepWorkers",
-            env_key="INFLIGHT_PREP_WORKERS",
             inflight_limit=8,
             kind="prep",
             ga_seed="fixed",
@@ -370,17 +198,9 @@ def test_read_inflight_worker_count_honors_config_env_and_ga_seed(monkeypatch):
     )
 
 
-def test_read_db_prefetch_workers_defaults_from_fg_prep_and_honors_overrides(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_DB_PREFETCH_WORKERS", raising=False)
-
-    assert read_db_prefetch_workers(_cfg_with_iteration_engine(), fg_prep_workers=2) == 2
-    assert read_db_prefetch_workers(_cfg_with_iteration_engine(), fg_prep_workers=9) == 4
-
-    cfg = _cfg_with_iteration_engine(InFlight_DBPrefetchWorkers="6")
-    assert read_db_prefetch_workers(cfg, fg_prep_workers=2) == 6
-
-    monkeypatch.setenv("INFLIGHT_DB_PREFETCH_WORKERS", "7")
-    assert read_db_prefetch_workers(cfg, fg_prep_workers=2) == 7
+def test_read_db_prefetch_workers_defaults_from_fg_prep():
+    assert read_db_prefetch_workers(fg_prep_workers=2) == 2
+    assert read_db_prefetch_workers(fg_prep_workers=9) == 4
 
 
 def test_read_inflight_loop_observer_settings_reads_env_values():
@@ -400,20 +220,17 @@ def test_read_inflight_loop_observer_settings_reads_env_values():
 def test_read_inflight_runtime_settings_reads_static_runtime_env_values():
     values = {
         "GPU_EXECUTOR_INIT_TIMEOUT_SEC": "42.5",
-        "INFLIGHT_GA_QUEUE_DEBUG": "1",
     }
 
     settings = read_inflight_runtime_settings(env_get_fn=lambda name, default=None: values.get(name, default))
 
     assert settings.gpu_executor_init_timeout_sec == 42.5
-    assert settings.ga_queue_debug is True
 
 
 def test_read_inflight_runtime_settings_uses_legacy_init_timeout_failure_default():
     settings = read_inflight_runtime_settings(env_get_fn=lambda _name, _default=None: "bad")
 
     assert settings.gpu_executor_init_timeout_sec == 180.0
-    assert settings.ga_queue_debug is False
 
 
 def test_inflight_dynamic_debug_helpers_read_current_env_value():
@@ -436,162 +253,14 @@ def test_read_inflight_loop_observer_settings_uses_safe_defaults_for_invalid_val
     assert negative.profile_max_songs == 0
 
 
-def test_read_inflight_target_song_lanes_defaults_and_overrides(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_TARGET_SONG_LANES", raising=False)
-
-    cfg = _cfg_with_iteration_engine()
-    assert read_inflight_target_song_lanes(cfg, inflight_limit=1) == 1
-    assert read_inflight_target_song_lanes(cfg, inflight_limit=4) == 2
-
-    cfg2 = _cfg_with_iteration_engine(InFlight_TargetSongLanes="3")
-    assert read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 3
-
-    monkeypatch.setenv("INFLIGHT_TARGET_SONG_LANES", "9")
-    assert read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 4
-
-    monkeypatch.setenv("INFLIGHT_TARGET_SONG_LANES", "0")
-    assert read_inflight_target_song_lanes(cfg2, inflight_limit=4) == 1
-
-
-def testcontinuous_fg_should_fill_song_lanes_before_fg_when_safe():
-    assert (
-        continuous_fg_should_fill_song_lanes(
-            target_song_lanes=2,
-            active_song_lanes=1,
-            ready_ga_count=1,
-            blocked_on_slot=False,
-            no_ga_remaining=False,
-            oldest_wait_s=0.2,
-            aging_hard_s=2.5,
-        )
-        is True
-    )
-
-
-def testcontinuous_fg_should_fill_song_lanes_respects_fairness_and_capacity():
-    base = {
-        "target_song_lanes": 2,
-        "active_song_lanes": 1,
-        "ready_ga_count": 1,
-        "blocked_on_slot": False,
-        "no_ga_remaining": False,
-        "oldest_wait_s": 0.2,
-        "aging_hard_s": 2.5,
-    }
-
-    for override in (
-        {"target_song_lanes": 1},
-        {"active_song_lanes": 2},
-        {"ready_ga_count": 0},
-        {"blocked_on_slot": True},
-        {"no_ga_remaining": True},
-        {"oldest_wait_s": 2.5},
-    ):
-        args = dict(base)
-        args.update(override)
-        assert continuous_fg_should_fill_song_lanes(**args) is False
-
-
-def test_continuous_fg_lane_fill_yields_to_ready_fg_backlog():
-    assert (
-        continuous_fg_should_fill_song_lanes(
-            target_song_lanes=2,
-            active_song_lanes=1,
-            ready_ga_count=1,
-            pending_fg_count=4,
-            ready_fg_count=1,
-            blocked_on_slot=False,
-            no_ga_remaining=False,
-            oldest_wait_s=0.1,
-            aging_trigger_s=0.75,
-            aging_hard_s=2.5,
-        )
-        is False
-    )
-
-
-def test_continuous_fg_lane_fill_yields_to_aged_fg_backlog_even_if_ready_hint_lags():
-    assert (
-        continuous_fg_should_fill_song_lanes(
-            target_song_lanes=2,
-            active_song_lanes=1,
-            ready_ga_count=1,
-            pending_fg_count=4,
-            ready_fg_count=0,
-            blocked_on_slot=False,
-            no_ga_remaining=False,
-            oldest_wait_s=0.8,
-            aging_trigger_s=0.75,
-            aging_hard_s=2.5,
-        )
-        is False
-    )
-
-
-def test_continuous_ga_yields_to_ready_fg_before_more_ga():
-    assert (
-        continuous_ga_should_yield_to_fg(
-            pending_fg_count=2,
-            ready_fg_count=1,
-            fg_prep_inflight_count=0,
-            fg_inflight_count=0,
-            fg_worker_count=4,
-            blocked_on_slot=False,
-        )
-        is True
-    )
-
-
-def test_continuous_ga_keeps_feeding_while_fg_prep_has_not_aged():
-    assert (
-        continuous_ga_should_yield_to_fg(
-            pending_fg_count=2,
-            ready_fg_count=0,
-            fg_prep_inflight_count=4,
-            fg_inflight_count=0,
-            fg_worker_count=4,
-            blocked_on_slot=False,
-        )
-        is False
-    )
-
-
-def test_continuous_ga_keeps_feeding_when_unready_fg_prep_debt_is_aged():
-    assert (
-        continuous_ga_should_yield_to_fg(
-            pending_fg_count=4,
-            ready_fg_count=0,
-            fg_prep_inflight_count=4,
-            fg_inflight_count=0,
-            fg_worker_count=4,
-            blocked_on_slot=False,
-        )
-        is False
-    )
-
-
-def test_continuous_ga_yields_to_aged_fg_debt_even_when_fg_workers_are_full():
-    assert (
-        continuous_ga_should_yield_to_fg(
-            pending_fg_count=8,
-            ready_fg_count=8,
-            fg_prep_inflight_count=0,
-            fg_inflight_count=8,
-            fg_worker_count=8,
-            blocked_on_slot=False,
-        )
-        is True
-    )
-
-
-def test_continuous_fg_prep_start_budget_uses_song_lane_runway_not_worker_count():
+def test_continuous_fg_prep_start_budget_fills_the_prep_worker_runway():
     assert (
         continuous_fg_prep_start_budget(
             pending_fg_count=6,
             fg_prep_inflight_count=0,
-            target_song_lanes=2,
+            fg_prep_worker_count=6,
         )
-        == 2
+        == 6
     )
 
 
@@ -599,191 +268,22 @@ def test_continuous_fg_prep_start_budget_stops_when_runway_is_full():
     assert (
         continuous_fg_prep_start_budget(
             pending_fg_count=6,
-            fg_prep_inflight_count=2,
-            target_song_lanes=2,
+            fg_prep_inflight_count=6,
+            fg_prep_worker_count=6,
         )
         == 0
     )
 
 
-def testcontinuous_ga_warm_queue_limit_keeps_tiny_runway_when_fg_has_not_started():
-    limit = continuous_ga_warm_queue_limit(
-        ga_queue_limit=12,
-        inflight_limit=4,
-        prepared_count=4,
-        prep_inflight_count=2,
-        decode_inflight_count=0,
-        pending_fg_count=0,
-        fg_prep_inflight_count=0,
-        fg_inflight_count=0,
-        target_song_lanes=2,
-        active_song_lanes=0,
-        dispatch_burst=2,
+def test_continuous_fg_prep_start_budget_clamps_to_pending():
+    assert (
+        continuous_fg_prep_start_budget(
+            pending_fg_count=1,
+            fg_prep_inflight_count=0,
+            fg_prep_worker_count=4,
+        )
+        == 1
     )
-    assert limit == 2
-
-
-def testcontinuous_ga_warm_queue_limit_keeps_tiny_runway_during_decode_handoff_before_fg_owner_turn():
-    limit = continuous_ga_warm_queue_limit(
-        ga_queue_limit=12,
-        inflight_limit=4,
-        prepared_count=4,
-        prep_inflight_count=2,
-        decode_inflight_count=1,
-        pending_fg_count=0,
-        fg_prep_inflight_count=0,
-        fg_inflight_count=0,
-        target_song_lanes=2,
-        active_song_lanes=2,
-        dispatch_burst=2,
-    )
-    assert limit == 2
-
-
-def testcontinuous_ga_warm_queue_limit_keeps_tiny_runway_once_fg_owner_turn_is_active():
-    limit = continuous_ga_warm_queue_limit(
-        ga_queue_limit=12,
-        inflight_limit=4,
-        prepared_count=4,
-        prep_inflight_count=2,
-        decode_inflight_count=1,
-        pending_fg_count=2,
-        fg_prep_inflight_count=1,
-        fg_inflight_count=1,
-        target_song_lanes=2,
-        active_song_lanes=2,
-        dispatch_burst=2,
-    )
-    assert limit == 2
-
-
-def testcontinuous_ga_warm_queue_limit_still_uses_tiny_runway_when_staging_is_below_conveyor():
-    shallow_limit = continuous_ga_warm_queue_limit(
-        ga_queue_limit=12,
-        inflight_limit=4,
-        prepared_count=1,
-        prep_inflight_count=0,
-        decode_inflight_count=0,
-        pending_fg_count=0,
-        fg_prep_inflight_count=0,
-        fg_inflight_count=0,
-        target_song_lanes=2,
-        active_song_lanes=0,
-        dispatch_burst=2,
-    )
-    assert shallow_limit == 2
-
-
-def testcontinuous_fg_submit_budget_fills_ready_worker_capacity():
-    control_budget = continuous_fg_submit_budget(
-        pending_fg_count=8,
-        ready_fg_count=8,
-        fg_inflight_count=0,
-        fg_workers=4,
-        fg_batch_max=4,
-        no_ga_remaining=False,
-        blocked_on_slot=False,
-        oldest_wait_s=0.0,
-        aging_trigger_s=0.75,
-        aging_hard_s=2.5,
-        ga_queue_limit=12,
-        adaptive_max_burst=3,
-        fg_slot_reserve=0,
-    )
-    assert control_budget == 4
-
-    adaptive_budget = continuous_fg_submit_budget(
-        pending_fg_count=8,
-        ready_fg_count=8,
-        fg_inflight_count=0,
-        fg_workers=4,
-        fg_batch_max=4,
-        no_ga_remaining=False,
-        blocked_on_slot=False,
-        oldest_wait_s=0.0,
-        aging_trigger_s=0.75,
-        aging_hard_s=2.5,
-        ga_queue_limit=12,
-        adaptive_max_burst=3,
-        fg_slot_reserve=0,
-    )
-    assert adaptive_budget == 4
-
-
-def testcontinuous_fg_submit_budget_probes_pending_fg_while_ga_can_continue():
-    budget = continuous_fg_submit_budget(
-        pending_fg_count=8,
-        ready_fg_count=0,
-        fg_inflight_count=0,
-        fg_workers=4,
-        fg_batch_max=4,
-        no_ga_remaining=False,
-        blocked_on_slot=False,
-        oldest_wait_s=3.0,
-        aging_trigger_s=0.75,
-        aging_hard_s=2.5,
-        ga_queue_limit=12,
-        adaptive_max_burst=3,
-        fg_slot_reserve=0,
-    )
-    assert budget == 1
-
-
-def testcontinuous_fg_submit_budget_allows_eight_ready_fg_jobs_inflight():
-    budget = continuous_fg_submit_budget(
-        pending_fg_count=16,
-        ready_fg_count=16,
-        fg_inflight_count=0,
-        fg_workers=8,
-        fg_batch_max=8,
-        no_ga_remaining=False,
-        blocked_on_slot=False,
-        oldest_wait_s=0.0,
-        aging_trigger_s=0.75,
-        aging_hard_s=2.5,
-        ga_queue_limit=16,
-        adaptive_max_burst=3,
-        fg_slot_reserve=0,
-    )
-    assert budget == 8
-
-
-def testcontinuous_fg_submit_budget_adaptive_smooths_when_prep_backlog_exists():
-    adaptive_budget = continuous_fg_submit_budget(
-        pending_fg_count=16,
-        ready_fg_count=6,
-        fg_inflight_count=0,
-        fg_workers=8,
-        fg_batch_max=8,
-        no_ga_remaining=False,
-        blocked_on_slot=False,
-        oldest_wait_s=0.0,
-        aging_trigger_s=0.75,
-        aging_hard_s=2.5,
-        ga_queue_limit=16,
-        adaptive_max_burst=3,
-        fg_slot_reserve=0,
-    )
-    assert adaptive_budget == 3
-
-
-def testcontinuous_fg_submit_budget_honors_end_of_run_drain():
-    budget = continuous_fg_submit_budget(
-        pending_fg_count=5,
-        ready_fg_count=0,
-        fg_inflight_count=0,
-        fg_workers=4,
-        fg_batch_max=4,
-        no_ga_remaining=True,
-        blocked_on_slot=False,
-        oldest_wait_s=0.0,
-        aging_trigger_s=0.75,
-        aging_hard_s=2.5,
-        ga_queue_limit=12,
-        adaptive_max_burst=3,
-        fg_slot_reserve=0,
-    )
-    assert budget == 4
 
 
 def test_default_prime_target_scales_small_inflight_runs_without_exceeding_buffers():
@@ -799,20 +299,10 @@ def test_default_prime_target_clamps_to_pending_and_prep_limits():
     assert default_prime_target(inflight_limit=4, prep_limit=16, pending_count=0) == 0
 
 
-def test_read_prime_target_defaults_and_honors_config_env_overrides(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_PRIME_TARGET", raising=False)
+def test_read_prime_target_uses_canonical_default():
+    assert read_prime_target(inflight_limit=2, prep_limit=8, pending_count=20) == 4
 
-    cfg = _cfg_with_iteration_engine()
-    assert read_prime_target(cfg, inflight_limit=2, prep_limit=8, pending_count=20) == 4
-
-    cfg_explicit = _cfg_with_iteration_engine(InFlight_PrimeTarget="6")
-    assert read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 6
-
-    monkeypatch.setenv("INFLIGHT_PRIME_TARGET", "9")
-    assert read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 8
-
-    monkeypatch.setenv("INFLIGHT_PRIME_TARGET", "0")
-    assert read_prime_target(cfg_explicit, inflight_limit=2, prep_limit=8, pending_count=20) == 4
+    assert read_prime_target(inflight_limit=4, prep_limit=6, pending_count=20) == 6
 
 
 def test_read_inflight_event_wait_settings_are_hardwired(monkeypatch):

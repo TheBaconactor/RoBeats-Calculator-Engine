@@ -8,9 +8,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
-from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
-from gear_optimizer.core.utils import safe_int
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import NativeSong, read_db_prefetch_workers
 
@@ -25,7 +23,6 @@ class NativeFGPipelineSettings:
     workers: int
     batch_max: int
     prep_workers: int
-    ga_credit_budget: int
     db_prefetch_workers: int = 1
 
 
@@ -47,58 +44,56 @@ class NativeFGJobCompletion:
 
 
 def read_native_fg_pipeline_settings(
-    cfg0: Any,
     *,
     inflight_limit: int,
-    ga_credit_budget_cfg: int,
     default_worker_threads: Callable[..., int],
 ) -> NativeFGPipelineSettings:
     inflight_limit_i = max(1, int(inflight_limit))
-    fg_workers_default = 2 if int(inflight_limit_i) > 1 else 1
-    fg_workers = fg_workers_default
-    if cfg0 is not None:
-        try:
-            fg_workers = safe_int(
-                cfg0.get("IterationEngine", "InFlight_FGWorkers", fallback=str(fg_workers_default)),
-                fg_workers_default,
-            )
-        except (ValueError, TypeError):
-            fg_workers = fg_workers_default
-    raw = env_get("INFLIGHT_FG_WORKERS")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            fg_workers = int(raw)
-        except (ValueError, TypeError):
-            pass
+    # FG jobs are host-only materialization since the fused GA->FG handoff (the GA
+    # turn already carries the owner score map). Two workers keep materialization
+    # off the orchestrator loop while bounding GIL pressure on the GPU owner.
+    fg_workers = 2 if int(inflight_limit_i) > 1 else 1
     fg_workers = max(1, min(int(fg_workers), int(inflight_limit_i), 8))
-    fg_batch_max = int(fg_workers)
-    try:
-        raw = env_get("INFLIGHT_FG_BATCH_MAX")
-        if raw is not None and str(raw).strip() != "":
-            fg_batch_max = int(raw)
-    except (ValueError, TypeError):
-        fg_batch_max = int(fg_workers)
-    fg_batch_max = max(1, min(int(fg_batch_max), int(fg_workers), 8))
-    # Dynamic FG response-frontier prep is memory-bandwidth heavy exact packing.
-    # Parallel producers inflate wall time and starve the single GPU owner, so
-    # the canonical production path keeps one dynamic prep producer.
-    _ = default_worker_threads
-    fg_prep_workers = 1
-    db_prefetch_workers = read_db_prefetch_workers(cfg0, fg_prep_workers=int(fg_prep_workers))
+    fg_batch_max = max(1, min(int(fg_workers), 8))
+    # Dynamic FG prep owns worker-readiness: candidate selection and exact-plan
+    # construction happen before a song can be handed to an FG worker. Size this
+    # runway from the CPU-aware policy.
+    fg_prep_workers = int(
+        default_worker_threads(
+            inflight_limit=int(inflight_limit_i),
+            kind="fg_prep",
+        )
+    )
+    fg_prep_workers = max(1, min(int(fg_prep_workers), int(inflight_limit_i), 8))
+    db_prefetch_workers = read_db_prefetch_workers(fg_prep_workers=int(fg_prep_workers))
     return NativeFGPipelineSettings(
         workers=int(fg_workers),
         batch_max=int(fg_batch_max),
         prep_workers=int(fg_prep_workers),
-        ga_credit_budget=max(1, int(ga_credit_budget_cfg)),
         db_prefetch_workers=int(db_prefetch_workers),
     )
+
+
+def _remove_song_by_identity(songs: deque[NativeSong], song: NativeSong) -> bool:
+    """Remove a song from a conveyor deque by identity, tolerating absence.
+
+    `deque.remove` compares via `__eq__` and formats the not-found ValueError
+    with `repr(value)`; NativeSong is a deep dataclass whose repr renders the
+    full song payload (ref arrays, FG plans) — tens of seconds of CPU per miss.
+    """
+    for idx, existing in enumerate(songs):
+        if existing is song:
+            del songs[idx]
+            return True
+    return False
 
 
 class NativeFGPipeline:
     """
     Host-side ForceGreats pipeline for native in-flight mode.
-    The pipeline owns FG queueing, FG prep workers, FG worker submissions, and
-    FG fairness credit. GPU execution still goes through the shared single owner.
+    The pipeline owns FG queueing, FG prep workers, and FG worker submissions.
+    FG jobs never touch the GPU owner: the fused GA turn already scored FG, so
+    workers only materialize plans against the owner score map.
     """
 
     def __init__(self, settings: NativeFGPipelineSettings) -> None:
@@ -106,8 +101,6 @@ class NativeFGPipeline:
         self.pending: deque[NativeSong] = deque()
         self.prep_inflight: deque[NativeSong] = deque()
         self.futures: deque[tuple[NativeSong, concurrent.futures.Future, float]] = deque()
-        self.ga_credit_budget = max(1, int(settings.ga_credit_budget))
-        self.ga_credit = int(self.ga_credit_budget)
         self.executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, int(settings.workers)),
             thread_name_prefix="FG",
@@ -147,14 +140,8 @@ class NativeFGPipeline:
         self.pending.appendleft(song)
 
     def _claim_pending_song(self, song: NativeSong) -> NativeSong:
-        try:
-            self.pending.remove(song)
-        except ValueError:
-            pass
-        try:
-            self.prep_inflight.remove(song)
-        except ValueError:
-            pass
+        _remove_song_by_identity(self.pending, song)
+        _remove_song_by_identity(self.prep_inflight, song)
         return song
 
     def start_prep(
@@ -303,9 +290,9 @@ class NativeFGPipeline:
     def pop_next(self, *, allow_not_ready: bool) -> NativeSong | None:
         """
         Pick a song for FG submission.
-        Normally, only pop songs whose FG prep is complete. When slot pressure
-        blocks GA, allow a not-yet-ready song so the FG worker can wait on prep
-        instead of losing the job or stalling the owner loop.
+        Normally, only pop songs whose FG prep is complete. During the final FG
+        drain (no GA work left), allow a not-yet-ready song so the FG worker can
+        wait on prep instead of serializing behind the scheduler loop.
         """
         for candidate in list(self.pending):
             runtime = getattr(candidate, "runtime", candidate)
@@ -380,7 +367,6 @@ class NativeFGPipeline:
         if register_future is not None:
             register_future(future)
         self.futures.append((song, future, t_submit))
-        self.note_fg_submit()
         return future
 
     def replace_futures(self, futures: deque[tuple[NativeSong, concurrent.futures.Future, float]]) -> None:
@@ -408,19 +394,6 @@ class NativeFGPipeline:
                 still_pending.append((song, future, submit_t0))
         self.replace_futures(still_pending)
         return completions
-
-    def note_ga_submit(self) -> None:
-        if self.pending:
-            self.ga_credit = max(-int(self.ga_credit_budget), int(self.ga_credit) - 1)
-        else:
-            self.ga_credit = int(self.ga_credit_budget)
-
-    def note_fg_submit(self) -> None:
-        self.ga_credit = int(self.ga_credit_budget)
-
-    def reset_credit_if_empty(self) -> None:
-        if not self.pending:
-            self.ga_credit = int(self.ga_credit_budget)
 
     def active_song_keys(self) -> set[str]:
         keys: set[str] = set()
@@ -544,30 +517,30 @@ def run_fg_job_sync(
             component="inflight_fg_worker",
             event="dispatch_start",
             song_key=song_key,
-            metrics={
-                "song_slot": int(getattr(song.runtime, "song_slot", 0) or 0),
-            },
+            metrics={},
         )
     except Exception as e:
         logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
     prepared_plan = getattr(song.runtime.fg, "fg_response_frontier_plan", None)
     if prepared_plan is None:
         raise RuntimeError("FG response frontier run requires a prepared exact scoring plan")
+    owner_score_map = getattr(song.runtime.fg, "fg_owner_score_map", None)
+    if owner_score_map is None:
+        raise RuntimeError(
+            "FG response frontier run requires the fused owner FG score map from the GA "
+            f"turn for {song_key} (Slice 3 fused handoff)"
+        )
     run_wall_t0 = time.perf_counter()
-    fg_variants, prepared_handles = FgResponseScoringService.score_prepared_plan_with_timings(
+    # Fused GA->FG handoff (Slice 3): the GPU owner already scored FG in the GA turn.
+    # Here, off the owner's critical path, materialize the plan against the owner score
+    # map (host-only: paired-base + winner gate + exact rescore). No owner round-trip.
+    fg_variants = FgResponseScoringService.materialize_from_owner_score_map(
         prepared_plan,
-        gpu_client=gpu_client,
+        owner_score_map,
         include_forced_counts=False,
     )
     try:
-        owner_run_s = sum(
-            max(0.0, float(timing.get("owner_exec_s", 0.0) or 0.0))
-            + max(0.0, float(timing.get("materialize_s", 0.0) or 0.0))
-            for timing in prepared_handles
-        )
-        song.runtime.fg.fg_run_wall_s = (
-            float(owner_run_s) if float(owner_run_s) > 0.0 else max(0.0, time.perf_counter() - float(run_wall_t0))
-        )
+        song.runtime.fg.fg_run_wall_s = max(0.0, time.perf_counter() - float(run_wall_t0))
     except AttributeError:
         pass
     song.runtime.fg.fg_variants = list(fg_variants or [])
@@ -582,14 +555,6 @@ def run_fg_job_sync(
             song_key=song_key,
             metrics={
                 "fg_variants": int(len(getattr(song.runtime.fg, "fg_variants", None) or [])),
-                "owner_exec_ms": sum(
-                    max(0.0, float(timing.get("owner_exec_s", 0.0) or 0.0)) * 1000.0
-                    for timing in prepared_handles
-                ),
-                "owner_queue_ms": sum(
-                    max(0.0, float(timing.get("owner_queue_s", 0.0) or 0.0)) * 1000.0
-                    for timing in prepared_handles
-                ),
             },
         )
     except Exception as e:

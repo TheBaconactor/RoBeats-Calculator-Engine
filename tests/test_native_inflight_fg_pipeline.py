@@ -17,92 +17,69 @@ from gear_optimizer.solver.native_inflight_pipeline import (
 from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
-def test_read_native_fg_pipeline_settings_defaults_and_overrides(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_FG_WORKERS", raising=False)
-    monkeypatch.delenv("INFLIGHT_FG_BATCH_MAX", raising=False)
-    monkeypatch.delenv("INFLIGHT_FG_PREP_WORKERS", raising=False)
+def test_read_native_fg_pipeline_settings_uses_canonical_sizing():
+    sizing_calls: list[dict[str, int | str]] = []
 
-    def obsolete_fg_prep_sizer(**_kwargs):
-        raise AssertionError("dynamic FG prep workers are canonical, not CPU-scaled")
+    def fg_prep_sizer(**kwargs):
+        sizing_calls.append(dict(kwargs))
+        return 6
 
     single_song_settings = read_native_fg_pipeline_settings(
-        None,
         inflight_limit=1,
-        ga_credit_budget_cfg=12,
-        default_worker_threads=obsolete_fg_prep_sizer,
+        default_worker_threads=fg_prep_sizer,
     )
 
     assert single_song_settings.workers == 1
     assert single_song_settings.batch_max == 1
     assert single_song_settings.prep_workers == 1
-    assert single_song_settings.ga_credit_budget == 12
     assert single_song_settings.db_prefetch_workers == 1
 
     settings = read_native_fg_pipeline_settings(
-        None,
         inflight_limit=8,
-        ga_credit_budget_cfg=12,
-        default_worker_threads=obsolete_fg_prep_sizer,
+        default_worker_threads=fg_prep_sizer,
     )
 
     assert settings.workers == 2
     assert settings.batch_max == 2
-    assert settings.prep_workers == 1
-    assert settings.ga_credit_budget == 12
-    assert settings.db_prefetch_workers == 1
+    assert settings.prep_workers == 6
+    assert settings.db_prefetch_workers == 4
+    assert sizing_calls[-1] == {"inflight_limit": 8, "kind": "fg_prep"}
 
-    monkeypatch.setenv("INFLIGHT_FG_WORKERS", "9")
-    monkeypatch.setenv("INFLIGHT_FG_BATCH_MAX", "6")
-    monkeypatch.setenv("INFLIGHT_FG_PREP_WORKERS", "7")
     settings = read_native_fg_pipeline_settings(
-        None,
         inflight_limit=5,
-        ga_credit_budget_cfg=2,
-        default_worker_threads=obsolete_fg_prep_sizer,
+        default_worker_threads=fg_prep_sizer,
     )
 
-    assert settings.workers == 5
-    assert settings.batch_max == 5
-    assert settings.prep_workers == 1
-    assert settings.ga_credit_budget == 2
-    assert settings.db_prefetch_workers == 1
+    assert settings.workers == 2
+    assert settings.batch_max == 2
+    assert settings.prep_workers == 5
+    assert settings.db_prefetch_workers == 4
 
-    monkeypatch.setenv("INFLIGHT_FG_WORKERS", "12")
-    monkeypatch.setenv("INFLIGHT_FG_BATCH_MAX", "12")
-    monkeypatch.setenv("INFLIGHT_FG_PREP_WORKERS", "12")
     settings = read_native_fg_pipeline_settings(
-        None,
         inflight_limit=16,
-        ga_credit_budget_cfg=2,
-        default_worker_threads=obsolete_fg_prep_sizer,
+        default_worker_threads=fg_prep_sizer,
     )
 
-    assert settings.workers == 8
-    assert settings.batch_max == 8
-    assert settings.prep_workers == 1
-    assert settings.db_prefetch_workers == 1
+    assert settings.workers == 2
+    assert settings.batch_max == 2
+    assert settings.prep_workers == 6
+    assert settings.db_prefetch_workers == 4
 
 
-def test_read_native_fg_pipeline_settings_includes_db_prefetch(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_FG_WORKERS", raising=False)
-    monkeypatch.delenv("INFLIGHT_FG_BATCH_MAX", raising=False)
-    monkeypatch.delenv("INFLIGHT_FG_PREP_WORKERS", raising=False)
-    monkeypatch.delenv("INFLIGHT_FG_STATIC_PREP_MAX_INFLIGHT", raising=False)
-    monkeypatch.delenv("INFLIGHT_DB_PREFETCH_WORKERS", raising=False)
-    monkeypatch.setenv("INFLIGHT_DB_PREFETCH_WORKERS", "6")
-
+def test_read_native_fg_pipeline_settings_uses_canonical_db_prefetch():
     settings = read_native_fg_pipeline_settings(
-        None,
         inflight_limit=8,
-        ga_credit_budget_cfg=2,
         default_worker_threads=lambda **_kwargs: 3,
     )
 
-    assert settings.prep_workers == 1
-    assert settings.db_prefetch_workers == 6
+    assert settings.prep_workers == 3
+    assert settings.db_prefetch_workers == 3
 
 
-def test_inflight_ga_pipeline_active_count_ignores_completed_futures():
+def test_inflight_ga_pipeline_inflight_counts_done_unprocessed_futures():
+    # GA admission gates on SLOT HOLDERS: a song whose future completed but
+    # whose completion has not been processed still holds its slot, so it must
+    # stay in (and be counted by) the inflight conveyor until popped.
     pipeline = InflightGAPipeline()
     active_song = make_native_song(task_key="ga-active", song_name="GA Active")
     done_song = make_native_song(task_key="ga-done", song_name="GA Done")
@@ -114,15 +91,14 @@ def test_inflight_ga_pipeline_active_count_ignores_completed_futures():
     pipeline.track_submitted(done_song, done_future, register_future=lambda _future: None)
 
     assert len(pipeline.inflight) == 2
-    assert pipeline.active_count() == 1
 
-    active_future.set_result({"ok": True})
+    completions = pipeline.pop_completed_runs()
+    assert [c.song for c in completions] == [done_song]
+    assert len(pipeline.inflight) == 1
 
-    assert pipeline.active_count() == 0
 
-
-def test_native_fg_pipeline_queue_pop_credit_and_submit():
-    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=1, ga_credit_budget=2))
+def test_native_fg_pipeline_queue_pop_and_submit():
+    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=1))
     try:
         song = make_native_song(
             task_key="song-a",
@@ -138,11 +114,6 @@ def test_native_fg_pipeline_queue_pop_credit_and_submit():
         assert pipeline.ready_count() == 1
         assert abs(pipeline.oldest_wait_s(11.25) - 1.25) < 1e-9
 
-        pipeline.note_ga_submit()
-        assert pipeline.ga_credit == 1
-        pipeline.note_ga_submit()
-        assert pipeline.ga_credit == 0
-
         popped = pipeline.pop_next(allow_not_ready=False)
         assert popped is song
         assert len(pipeline.pending) == 0
@@ -151,14 +122,13 @@ def test_native_fg_pipeline_queue_pop_credit_and_submit():
 
         assert future.result(timeout=2) == ("song-a", 7)
         assert len(pipeline.futures) == 1
-        assert pipeline.ga_credit == 2
     finally:
         pipeline.shutdown_fg(wait=True, cancel_futures=True)
         pipeline.shutdown_prep(wait=True, cancel_futures=True)
 
 
-def test_native_fg_pipeline_does_not_pop_unready_without_slot_pressure():
-    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=1, batch_max=1, prep_workers=1, ga_credit_budget=1))
+def test_native_fg_pipeline_does_not_pop_unready_outside_final_drain():
+    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=1, batch_max=1, prep_workers=1))
     try:
         prep_future = Future()
         song = make_native_song(task_key="song-b", song_name="Song B", fg_prep_future=prep_future, fg_queued_t0=None)
@@ -181,7 +151,7 @@ def test_native_fg_pipeline_does_not_pop_unready_without_slot_pressure():
 
 
 def test_native_fg_pipeline_pop_next_claims_prep_ownership():
-    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=1, batch_max=1, prep_workers=1, ga_credit_budget=1))
+    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=1, batch_max=1, prep_workers=1))
     try:
         prep_future = Future()
         prep_future.set_result(None)
@@ -198,7 +168,7 @@ def test_native_fg_pipeline_pop_next_claims_prep_ownership():
 
 
 def test_native_fg_pipeline_pop_completed_jobs_keeps_future_result_policy_external():
-    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=1, ga_credit_budget=1))
+    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=1))
     try:
         completed_song = make_native_song(task_key="fg-done", song_name="FG Done")
         pending_song = make_native_song(task_key="fg-pending", song_name="FG Pending")
@@ -226,7 +196,7 @@ def test_native_fg_pipeline_pop_completed_jobs_keeps_future_result_policy_extern
 
 
 def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
-    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=2, ga_credit_budget=1))
+    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=2))
     release = threading.Event()
     started_keys: list[str] = []
     lock = threading.Lock()
@@ -284,7 +254,7 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
 
 
 def test_native_fg_pipeline_finish_completed_prep_owns_future_drain_state():
-    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=2, ga_credit_budget=1))
+    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=2))
     try:
         success_future = Future()
         success_future.set_result(None)
@@ -375,3 +345,35 @@ def test_run_fg_job_sync_requires_dynamic_prep_future_to_materialize_plan():
     assert "completed without the exact response frontier plan" in str(excinfo.value.__cause__)
     assert song.runtime.fg.fg_prep_future is None
     assert song.runtime.fg.fg_dynamic_prep_done is False
+
+
+def test_claim_pending_song_never_invokes_song_equality_or_repr():
+    class _HostileSong:
+        # deque.remove would trip both hazards: __eq__ while scanning past other
+        # queued songs, and repr() rendered into the not-found ValueError message
+        # (a full NativeSong repr is tens of seconds of CPU, paid per claim).
+        def __eq__(self, other):
+            raise AssertionError("song equality must not be used by claim")
+
+        def __repr__(self):
+            raise AssertionError("song repr must not be rendered by claim")
+
+        __hash__ = object.__hash__
+
+    pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=1, batch_max=1, prep_workers=1))
+    try:
+        other = _HostileSong()
+        target = _HostileSong()
+        pipeline.pending.append(other)
+        pipeline.pending.append(target)
+        # target is intentionally NOT in prep_inflight: prep typically finished
+        # before the claim, so the removal there must tolerate absence cheaply.
+        claimed = pipeline._claim_pending_song(target)
+
+        assert claimed is target
+        assert len(pipeline.pending) == 1
+        assert pipeline.pending[0] is other
+        assert len(pipeline.prep_inflight) == 0
+    finally:
+        pipeline.shutdown_fg(wait=True, cancel_futures=True)
+        pipeline.shutdown_prep(wait=True, cancel_futures=True)

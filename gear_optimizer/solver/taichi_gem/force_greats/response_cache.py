@@ -324,7 +324,7 @@ def _materialize_scoring_bundle_from_arrays(
         surface_head_coeffs=surface_head_coeffs,
         frontier_offsets=np.asarray(arrays["first_offsets"], dtype=np.int32),
         frontier_lengths=np.asarray(arrays["first_counts"], dtype=np.int32),
-        surface_chunk_offsets=np.asarray(arrays["first_surface_chunk_offsets"], dtype=np.int64),
+        surface_row_count=int(np.asarray(arrays["first_surface_row_count"]).item()),
         total_notes=int(total_notes),
         long_notes=int(np.asarray(arrays["long_notes"]).item()),
         use_forced_great_timing=bool(int(np.asarray(arrays["use_forced_great_timing"]).item())),

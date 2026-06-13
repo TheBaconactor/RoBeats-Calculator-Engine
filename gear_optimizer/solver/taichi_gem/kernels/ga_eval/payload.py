@@ -3,7 +3,8 @@ Taichi Kernels - Pack GA snapshots for CPU download.
 
 Includes:
 - ga_pack_fg_candidates_table_segmented_kernel
-- ga_copy_fg_candidates_table_to_download_staging_kernel
+- ga_select_top_base_fg_candidate_coords_kernel
+- ga_copy_fg_selected_payload_to_download_staging_kernel
 """
 
 import taichi as ti
@@ -31,6 +32,22 @@ def _sort3_i32(a: ti.i32, b: ti.i32, c: ti.i32) -> ti.types.vector(3, ti.i32):
     if x1 < x0:
         x0, x1 = x1, x0
     return ti.Vector([x0, x1, x2])
+
+
+@ti.func
+def _sort6_i32(
+    a0: ti.i32, a1: ti.i32, a2: ti.i32, a3: ti.i32, a4: ti.i32, a5: ti.i32
+) -> ti.types.vector(6, ti.i32):
+    # Ascending sort of 6 int32 via an insertion network (deterministic, branch
+    # only on value). Matches Python ``sorted`` for the gear-rank effective key.
+    v = ti.Vector([a0, a1, a2, a3, a4, a5])
+    for i in ti.static(range(1, 6)):
+        for j in ti.static(range(i, 0, -1)):
+            if v[j] < v[j - 1]:
+                tmp = v[j - 1]
+                v[j - 1] = v[j]
+                v[j] = tmp
+    return v
 
 
 @ti.func
@@ -126,51 +143,6 @@ def _bubble_fg_candidate_up(
             top_idx[cur] = idx_tmp
             cur -= 1
     return cur
-
-
-@ti.kernel
-def ga_pack_and_store_run_payload_segmented_kernel(
-    run_idx: ti.i32,
-    start_offset: ti.i32,
-    n_genomes: ti.i32,
-    n_slots: ti.i32,
-):
-    """
-    Pack a GA snapshot for a run stored at an offset into the active population arrays.
-
-    This is used when multiple independent runs are packed contiguously into
-    `population_indices`/`ga_scores`/`genome_result_stats`.
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-
-    # Row 0: best genome for this run (single thread, deterministic scan)
-    for _ in range(1):
-        best_score: ti.i32 = -1
-        best_g: ti.i32 = start_offset
-        for local_g in range(n_genomes):
-            g = start_offset + local_g
-            score = kernels_helpers.ga_scores[g]
-            if score > best_score:
-                best_score = score
-                best_g = g
-
-        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0] = best_score
-        for s in range(n_slots):
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] = kernels_helpers.population_indices[best_g, s]
-        res_best = kernels_helpers.genome_result_stats[best_g]
-        for r in ti.static(range(7)):
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + r] = res_best[r]
-
-    # Rows 1..n_genomes: per-genome snapshot for this run
-    for local_g in range(n_genomes):
-        g = start_offset + local_g
-        out_row = local_g + 1
-        kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 0] = kernels_helpers.ga_scores[g]
-        for s in range(n_slots):
-            kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + s] = kernels_helpers.population_indices[g, s]
-        res = kernels_helpers.genome_result_stats[g]
-        for r in ti.static(range(7)):
-            kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + n_slots + r] = res[r]
 
 
 @ti.kernel
@@ -440,24 +412,6 @@ def ga_pack_fg_candidates_table_segmented_kernel(
             )
 
 
-@ti.kernel
-def ga_copy_fg_candidates_table_to_download_staging_kernel(table_slot: ti.i32, n_runs: ti.i32):
-    """
-    Copy a single table slot slice from `ga_fg_candidates_packed` into `ga_fg_candidates_download_staging`.
-
-    Vulkan `to_numpy()` transfers the full field shape. Keeping the download staging field
-    slot-less avoids transferring all (MAX_SONG_SLOTS, ...) table slots when callers want one.
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    K = ti.static(_GA_FG_CANDIDATES_PER_RUN)
-    rows = ti.static(K + 1)
-    for r, row in ti.ndrange(n_runs, rows):
-        for c in ti.static(range(_GA_FG_COLS)):
-            kernels_helpers.ga_fg_candidates_download_staging[r, row, c] = kernels_helpers.ga_fg_candidates_packed[
-                table_slot, r, row, c
-            ]
-
-
 # ============================================================================
 # GPU-side GA->FG candidate selection (avoid CPU downloads for funnel selection)
 # ============================================================================
@@ -575,13 +529,13 @@ def ga_select_top_base_fg_candidate_coords_kernel(
             if score <= 0:
                 continue
 
-            # Canonical key: 6 gear + sorted 3 minis.
-            g0 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 0]
-            g1 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 1]
-            g2 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 2]
-            g3 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 3]
-            g4 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 4]
-            g5 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 5]
+            # Raw genome ids: 6 gear (slot order) + 3 minis sorted by id.
+            gid0 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 0]
+            gid1 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 1]
+            gid2 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 2]
+            gid3 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 3]
+            gid4 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 4]
+            gid5 = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 5]
             mm = _sort3_i32(
                 kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 6],
                 kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 1 + 7],
@@ -591,7 +545,36 @@ def ga_select_top_base_fg_candidate_coords_kernel(
             m1 = mm[1]
             m2 = mm[2]
 
-            h = _hash9_i32(g0, g1, g2, g3, g4, g5, m0, m1, m2)
+            # EFFECTIVE dedup key (Slice 1): fold name/color-equivalent loadouts by
+            # mapping each gear id -> name rank and each mini id -> color-folded sig
+            # id, then sorting each group. This MATCHES the CPU reference
+            # fg_effective_dedup._effective_key (gear ranks sorted; mini sigs sorted)
+            # EXACTLY. The raw ids above are still stored in stub_ids for the
+            # canonical-IDs tie-break in _better_base.
+            ek = _sort6_i32(
+                kernels_helpers.ga_fg_gear_name_rank[gid0],
+                kernels_helpers.ga_fg_gear_name_rank[gid1],
+                kernels_helpers.ga_fg_gear_name_rank[gid2],
+                kernels_helpers.ga_fg_gear_name_rank[gid3],
+                kernels_helpers.ga_fg_gear_name_rank[gid4],
+                kernels_helpers.ga_fg_gear_name_rank[gid5],
+            )
+            es = _sort3_i32(
+                kernels_helpers.ga_fg_mini_sig_id[m0],
+                kernels_helpers.ga_fg_mini_sig_id[m1],
+                kernels_helpers.ga_fg_mini_sig_id[m2],
+            )
+            ek0 = ek[0]
+            ek1 = ek[1]
+            ek2 = ek[2]
+            ek3 = ek[3]
+            ek4 = ek[4]
+            ek5 = ek[5]
+            es0 = es[0]
+            es1 = es[1]
+            es2 = es[2]
+
+            h = _hash9_i32(ek0, ek1, ek2, ek3, ek4, ek5, es0, es1, es2)
             mask = kernels_helpers.ga_fg_select_hash_used.shape[0] - 1
             pos = ti.cast(h & ti.u32(mask), ti.i32)
 
@@ -603,27 +586,27 @@ def ga_select_top_base_fg_candidate_coords_kernel(
                     idx = kernels_helpers.ga_fg_select_stub_count[0]
                     # Store stub index + 1 (0 means empty).
                     kernels_helpers.ga_fg_select_hash_used[pos] = idx + 1
-                    kernels_helpers.ga_fg_select_hash_keys[pos, 0] = g0
-                    kernels_helpers.ga_fg_select_hash_keys[pos, 1] = g1
-                    kernels_helpers.ga_fg_select_hash_keys[pos, 2] = g2
-                    kernels_helpers.ga_fg_select_hash_keys[pos, 3] = g3
-                    kernels_helpers.ga_fg_select_hash_keys[pos, 4] = g4
-                    kernels_helpers.ga_fg_select_hash_keys[pos, 5] = g5
-                    kernels_helpers.ga_fg_select_hash_keys[pos, 6] = m0
-                    kernels_helpers.ga_fg_select_hash_keys[pos, 7] = m1
-                    kernels_helpers.ga_fg_select_hash_keys[pos, 8] = m2
+                    kernels_helpers.ga_fg_select_hash_keys[pos, 0] = ek0
+                    kernels_helpers.ga_fg_select_hash_keys[pos, 1] = ek1
+                    kernels_helpers.ga_fg_select_hash_keys[pos, 2] = ek2
+                    kernels_helpers.ga_fg_select_hash_keys[pos, 3] = ek3
+                    kernels_helpers.ga_fg_select_hash_keys[pos, 4] = ek4
+                    kernels_helpers.ga_fg_select_hash_keys[pos, 5] = ek5
+                    kernels_helpers.ga_fg_select_hash_keys[pos, 6] = es0
+                    kernels_helpers.ga_fg_select_hash_keys[pos, 7] = es1
+                    kernels_helpers.ga_fg_select_hash_keys[pos, 8] = es2
 
                     if idx < kernels_helpers.ga_fg_select_stub_run.shape[0]:
                         kernels_helpers.ga_fg_select_stub_run[idx] = r
                         kernels_helpers.ga_fg_select_stub_row[idx] = row_idx
                         kernels_helpers.ga_fg_select_stub_score[idx] = score
 
-                        kernels_helpers.ga_fg_select_stub_ids[idx, 0] = g0
-                        kernels_helpers.ga_fg_select_stub_ids[idx, 1] = g1
-                        kernels_helpers.ga_fg_select_stub_ids[idx, 2] = g2
-                        kernels_helpers.ga_fg_select_stub_ids[idx, 3] = g3
-                        kernels_helpers.ga_fg_select_stub_ids[idx, 4] = g4
-                        kernels_helpers.ga_fg_select_stub_ids[idx, 5] = g5
+                        kernels_helpers.ga_fg_select_stub_ids[idx, 0] = gid0
+                        kernels_helpers.ga_fg_select_stub_ids[idx, 1] = gid1
+                        kernels_helpers.ga_fg_select_stub_ids[idx, 2] = gid2
+                        kernels_helpers.ga_fg_select_stub_ids[idx, 3] = gid3
+                        kernels_helpers.ga_fg_select_stub_ids[idx, 4] = gid4
+                        kernels_helpers.ga_fg_select_stub_ids[idx, 5] = gid5
                         kernels_helpers.ga_fg_select_stub_ids[idx, 6] = m0
                         kernels_helpers.ga_fg_select_stub_ids[idx, 7] = m1
                         kernels_helpers.ga_fg_select_stub_ids[idx, 8] = m2
@@ -632,26 +615,40 @@ def ga_select_top_base_fg_candidate_coords_kernel(
                     handled = 1
                     break
 
-                # Occupied: check full key match.
+                # Occupied: check full effective-key match.
                 if (
-                    kernels_helpers.ga_fg_select_hash_keys[pos, 0] == g0
-                    and kernels_helpers.ga_fg_select_hash_keys[pos, 1] == g1
-                    and kernels_helpers.ga_fg_select_hash_keys[pos, 2] == g2
-                    and kernels_helpers.ga_fg_select_hash_keys[pos, 3] == g3
-                    and kernels_helpers.ga_fg_select_hash_keys[pos, 4] == g4
-                    and kernels_helpers.ga_fg_select_hash_keys[pos, 5] == g5
-                    and kernels_helpers.ga_fg_select_hash_keys[pos, 6] == m0
-                    and kernels_helpers.ga_fg_select_hash_keys[pos, 7] == m1
-                    and kernels_helpers.ga_fg_select_hash_keys[pos, 8] == m2
+                    kernels_helpers.ga_fg_select_hash_keys[pos, 0] == ek0
+                    and kernels_helpers.ga_fg_select_hash_keys[pos, 1] == ek1
+                    and kernels_helpers.ga_fg_select_hash_keys[pos, 2] == ek2
+                    and kernels_helpers.ga_fg_select_hash_keys[pos, 3] == ek3
+                    and kernels_helpers.ga_fg_select_hash_keys[pos, 4] == ek4
+                    and kernels_helpers.ga_fg_select_hash_keys[pos, 5] == ek5
+                    and kernels_helpers.ga_fg_select_hash_keys[pos, 6] == es0
+                    and kernels_helpers.ga_fg_select_hash_keys[pos, 7] == es1
+                    and kernels_helpers.ga_fg_select_hash_keys[pos, 8] == es2
                 ):
                     idx = entry - 1
                     if 0 <= idx and idx < kernels_helpers.ga_fg_select_stub_run.shape[0]:
                         # Keep max score for this key (tie-break by earliest scan: only update on strictly better score).
+                        # On a strictly-better occurrence we ALSO refresh the stored
+                        # raw ids so stub_ids tracks the KEPT (max-score, earliest)
+                        # occurrence, matching the CPU reference's best_ids_by_key.
+                        # The canonical-IDs tie-break in _better_base then compares
+                        # the same raw ids on both sides.
                         prev_score = kernels_helpers.ga_fg_select_stub_score[idx]
                         if score > prev_score:
                             kernels_helpers.ga_fg_select_stub_run[idx] = r
                             kernels_helpers.ga_fg_select_stub_row[idx] = row_idx
                             kernels_helpers.ga_fg_select_stub_score[idx] = score
+                            kernels_helpers.ga_fg_select_stub_ids[idx, 0] = gid0
+                            kernels_helpers.ga_fg_select_stub_ids[idx, 1] = gid1
+                            kernels_helpers.ga_fg_select_stub_ids[idx, 2] = gid2
+                            kernels_helpers.ga_fg_select_stub_ids[idx, 3] = gid3
+                            kernels_helpers.ga_fg_select_stub_ids[idx, 4] = gid4
+                            kernels_helpers.ga_fg_select_stub_ids[idx, 5] = gid5
+                            kernels_helpers.ga_fg_select_stub_ids[idx, 6] = m0
+                            kernels_helpers.ga_fg_select_stub_ids[idx, 7] = m1
+                            kernels_helpers.ga_fg_select_stub_ids[idx, 8] = m2
                     handled = 1  # Already present; treat as handled.
                     break
                 pos = (pos + 1) & mask

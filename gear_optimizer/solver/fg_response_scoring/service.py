@@ -3,7 +3,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
-from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner, FgResponseFrontierPreparedPlan
+from gear_optimizer.solver.fg_response_scoring.planner import (
+    FgPlanner,
+    FgResponseFrontierPreparedPlan,
+)
 from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
 
 FgScoringMode = Literal["production", "sync", "skyline"]
@@ -93,6 +96,66 @@ class FgResponseScoringService:
         }
 
     @staticmethod
+    def materialize_from_owner_score_map(
+        plan: FgResponseFrontierPreparedPlan,
+        owner_score_map: dict[tuple[int, ...], Any],
+        *,
+        include_forced_counts: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Reduce a prepared plan against the fused owner-scored FG result map.
+
+        The canonical production FG materialization for the fused GA->FG handoff
+        (Slice 3). The GPU owner already scored FG straight from the device
+        base_stats7 in the GA turn and handed back ``owner_score_map``
+        ({base_components_7tuple -> FgFusedOwnerScoreRow}). Here, off the owner's
+        critical path, each prepared batch row's solve result is rebuilt from the map
+        (keyed by the batch's ``base_components``, which the owner scored over the
+        identical payload), then the shared reducer applies paired-base authority +
+        the winner gate + exact surface rescore. No GPU work.
+        """
+        from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+            build_fused_owner_solve_result_from_score_row,
+        )
+
+        if owner_score_map is None:
+            raise RuntimeError(
+                "FG fused materialization requires the owner FG score map from the GA turn"
+            )
+
+        prepared_results = []
+        for prepared in plan.prepared_batches:
+            batch = prepared.batch
+            base_components = batch.base_components
+            rows = list(prepared.rows)
+            if int(base_components.shape[0]) != len(rows):
+                raise RuntimeError(
+                    "FG fused materialization: prepared batch base_components/rows length mismatch"
+                )
+            batch_results = []
+            for row_idx, (_cache_key, base_stats) in enumerate(rows):
+                bc_key = tuple(int(v) for v in base_components[int(row_idx)].tolist())
+                score_row = owner_score_map.get(bc_key)
+                if score_row is None:
+                    raise RuntimeError(
+                        "FG fused materialization: owner score map missing base_components "
+                        f"{bc_key} (the owner did not score this candidate in the GA turn)"
+                    )
+                batch_results.append(
+                    build_fused_owner_solve_result_from_score_row(
+                        score_row=score_row,
+                        base_stats=base_stats,
+                        selected_color=batch.selected_color,
+                        calc_song=batch.calc_song,
+                        ref_arrays=batch.ref_arrays,
+                        scoring_bundle=batch.scoring_bundle,
+                        started=batch.started,
+                        include_forced_counts=bool(include_forced_counts),
+                    )
+                )
+            prepared_results.append(batch_results)
+        return FgResultReducer.materialize(plan, prepared_results)
+
+    @staticmethod
     def score_prepared_plan(
         plan: FgResponseFrontierPreparedPlan,
         *,
@@ -100,23 +163,21 @@ class FgResponseScoringService:
         include_forced_counts: bool = False,
         mode: FgScoringMode = "production",
     ) -> list[dict[str, Any]]:
+        # Synchronous owner-thread FG scoring path: skyline (the test-only GA
+        # alternative) and the non-native helper route here with gpu_client=None. The
+        # production native in-flight FG path is the FUSED owner continuation (the GPU
+        # owner scores FG in the GA turn; materialize_from_owner_score_map reduces it),
+        # which never submits a separate FG batch request -- so an FG GPU client is no
+        # longer a scoring route. A passed gpu_client is therefore an invalid call.
+        if gpu_client is not None:
+            raise ValueError(
+                "FgResponseScoringService.score_prepared_plan no longer scores via a GPU "
+                "client; the production native FG path uses the fused owner continuation "
+                "(materialize_from_owner_score_map). Pass gpu_client=None."
+            )
         prepared_results, _timings = GpuScoreEngine.score_plan(
             plan,
-            gpu_client=gpu_client,
+            gpu_client=None,
             include_forced_counts=bool(include_forced_counts),
         )
         return FgResultReducer.materialize(plan, prepared_results, skyline=mode == "skyline")
-
-    @staticmethod
-    def score_prepared_plan_with_timings(
-        plan: FgResponseFrontierPreparedPlan,
-        *,
-        gpu_client: Any | None,
-        include_forced_counts: bool = False,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, float]]]:
-        prepared_results, timings = GpuScoreEngine.score_plan(
-            plan,
-            gpu_client=gpu_client,
-            include_forced_counts=bool(include_forced_counts),
-        )
-        return FgResultReducer.materialize(plan, prepared_results), timings

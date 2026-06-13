@@ -71,6 +71,7 @@ from .kernels_helpers import (
 # Import GA kernels
 from .kernels_ga import (
     ga_seed_rng_runs_kernel,
+    ga_seed_rng_runs_indexed_kernel,
     ga_load_initial_populations_batch_kernel,
     ga_generate_initial_populations_kernel,
     ga_upload_item_stats_and_slots_kernel,
@@ -98,9 +99,7 @@ from .kernels_solvers_batch import (
 # Import GA evaluation & reduction kernels
 from .ga_eval import (
     ga_refresh_scores_and_update_runs_best_kernel,
-    ga_pack_and_store_run_payload_segmented_kernel,
     ga_pack_fg_candidates_table_segmented_kernel,
-    ga_copy_fg_candidates_table_to_download_staging_kernel,
     ga_select_top_base_fg_candidate_coords_kernel,
     ga_copy_fg_selected_payload_to_download_staging_kernel,
     ga_init_runs_best_kernel,
@@ -164,6 +163,7 @@ __all__ = [
     "_xorshift32",
     # GA kernels
     "ga_seed_rng_runs_kernel",
+    "ga_seed_rng_runs_indexed_kernel",
     "ga_load_initial_populations_batch_kernel",
     "ga_generate_initial_populations_kernel",
     "ga_upload_item_stats_and_slots_kernel",
@@ -186,9 +186,7 @@ __all__ = [
     "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
     "ga_refresh_scores_and_update_runs_best_kernel",
-    "ga_pack_and_store_run_payload_segmented_kernel",
     "ga_pack_fg_candidates_table_segmented_kernel",
-    "ga_copy_fg_candidates_table_to_download_staging_kernel",
     "ga_select_top_base_fg_candidate_coords_kernel",
     "ga_copy_fg_selected_payload_to_download_staging_kernel",
     "ga_init_runs_best_kernel",
@@ -233,25 +231,24 @@ try:
         SKYLINE_INIT_global_best_kernel,
         skyline_pack_global_best_kernel,
         skyline_update_global_best_kernel,
-        skyline_pack_and_store_run_payload_kernel,
-        skyline_pack_and_store_run_payload_segmented_kernel,
         skyline_pack_fg_candidates_table_segmented_kernel,
-        skyline_pack_run_payload_kernel,
-        skyline_copy_run_payload_to_download_staging_kernel,
-        skyline_copy_runs_payload_to_download_staging_kernel,
-        skyline_copy_fg_candidates_table_to_download_staging_kernel,
-        skyline_select_fg_candidates_coords_kernel,
+        skyline_select_top_base_fg_candidate_coords_kernel,
         skyline_copy_fg_selected_payload_to_download_staging_kernel,
         SKYLINE_INIT_runs_best_kernel,
         skyline_update_runs_best_kernel,
-        skyline_store_runs_payload_snapshot_segmented_kernel,
         skyline_find_island_elites_kernel,
-        skyline_island_migration_kernel,
         skyline_island_migration_runs_kernel,
         skyline_write_best_and_update_global_kernel,
     )
-except ImportError:
-    pass
+except ImportError as _skyline_import_error:
+    # The skyline kernels are installed from the GA kernel source
+    # (skyline_eval/_from_ga.py); an ImportError here means the skyline surface
+    # drifted from the GA source. Swallowing it would silently disable every
+    # skyline kernel AND the production registry-solve path that uses them.
+    raise RuntimeError(
+        "skyline kernel surface failed to import; it must stay in exact lockstep "
+        "with the GA kernel source (see kernels/skyline_eval/_from_ga.py)"
+    ) from _skyline_import_error
 else:
     _SKYLINE_KERNEL_REEXPORTS = {
         "skyline_seed_rng_kernel": skyline_seed_rng_kernel,
@@ -289,24 +286,14 @@ else:
         "SKYLINE_INIT_global_best_kernel": SKYLINE_INIT_global_best_kernel,
         "skyline_pack_global_best_kernel": skyline_pack_global_best_kernel,
         "skyline_update_global_best_kernel": skyline_update_global_best_kernel,
-        "skyline_pack_and_store_run_payload_kernel": skyline_pack_and_store_run_payload_kernel,
-        "skyline_pack_and_store_run_payload_segmented_kernel": skyline_pack_and_store_run_payload_segmented_kernel,
         "skyline_pack_fg_candidates_table_segmented_kernel": skyline_pack_fg_candidates_table_segmented_kernel,
-        "skyline_pack_run_payload_kernel": skyline_pack_run_payload_kernel,
-        "skyline_copy_run_payload_to_download_staging_kernel": skyline_copy_run_payload_to_download_staging_kernel,
-        "skyline_copy_runs_payload_to_download_staging_kernel": skyline_copy_runs_payload_to_download_staging_kernel,
-        "skyline_copy_fg_candidates_table_to_download_staging_kernel": (
-            skyline_copy_fg_candidates_table_to_download_staging_kernel
-        ),
-        "skyline_select_fg_candidates_coords_kernel": skyline_select_fg_candidates_coords_kernel,
+        "skyline_select_top_base_fg_candidate_coords_kernel": skyline_select_top_base_fg_candidate_coords_kernel,
         "skyline_copy_fg_selected_payload_to_download_staging_kernel": (
             skyline_copy_fg_selected_payload_to_download_staging_kernel
         ),
         "SKYLINE_INIT_runs_best_kernel": SKYLINE_INIT_runs_best_kernel,
         "skyline_update_runs_best_kernel": skyline_update_runs_best_kernel,
-        "skyline_store_runs_payload_snapshot_segmented_kernel": skyline_store_runs_payload_snapshot_segmented_kernel,
         "skyline_find_island_elites_kernel": skyline_find_island_elites_kernel,
-        "skyline_island_migration_kernel": skyline_island_migration_kernel,
         "skyline_island_migration_runs_kernel": skyline_island_migration_runs_kernel,
         "skyline_write_best_and_update_global_kernel": skyline_write_best_and_update_global_kernel,
     }

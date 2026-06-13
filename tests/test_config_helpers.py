@@ -21,7 +21,6 @@ def _build_config() -> configparser.ConfigParser:
             "IterationEngine": {
                 "ForceGreatsDebug": "false",
                 "GPU_SongSlots": "4",
-                "InFlight_GA_QueueMult": "7",
                 "GPU_GA_TournamentK": "9",
                 "GPU_GA_MutationRate": "1.5",
                 "GPU_GA_ImmigrantRate": "-1",
@@ -61,7 +60,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     ie = read_iteration_engine_settings(cfg)
 
     assert gpu.gpu_song_slots == 4
-    assert gpu.ga_queue_mult == 7
 
     assert ga.tournament_k == 8
     assert ga.mutation_rate == 1.0
@@ -74,7 +72,6 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert inflight.songs == 0
     assert inflight.song_file_cache_max == 0
     assert inflight.team_buff_calc_cache_max == 5
-    assert inflight.ga_queue_mult == 7
 
     assert calc.difficulty == "All"
     assert calc.song_name == "pytest song"

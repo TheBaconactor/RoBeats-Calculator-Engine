@@ -19,22 +19,17 @@ GA and FG are one product outcome.
 
 1. Continuous dual-queue dispatch (reduced GA burstiness)
 - File: `gear_optimizer/solver/native_inflight_orchestrator.py`
-- Added `InFlight_ContinuousGABurst` / `INFLIGHT_CONTINUOUS_GA_BURST` (default `2`).
-- In continuous mode, GA submits are now capped per scheduler cycle so FG gets frequent dispatch opportunities.
+- In continuous mode, GA submits use the canonical burst cap of `2` per scheduler cycle so FG gets frequent dispatch
+  opportunities.
 
 2. FG slot partitioning (hard reserve instead of implicit single-slot behavior)
 - File: `gear_optimizer/solver/native_inflight_orchestrator.py`
-- Added:
-  - `InFlight_FGSlotReserve` / `INFLIGHT_FG_SLOT_RESERVE` (absolute)
-  - `InFlight_FGSlotReserveRatio` / `INFLIGHT_FG_SLOT_RESERVE_RATIO` (default ratio `0.20`)
-- GA queue depth now respects an FG slot partition to reduce slot-pressure oscillation.
+- GA queue depth now respects a canonical FG slot partition to reduce slot-pressure oscillation.
 
 3. Adaptive continuous FG submit budget
 - File: `gear_optimizer/solver/native_inflight_orchestrator.py`
-- Added:
-  - `InFlight_FGAdaptiveSubmit` / `INFLIGHT_FG_ADAPTIVE_SUBMIT` (default `true`)
-  - `InFlight_FGAdaptiveMaxBurst` / `INFLIGHT_FG_ADAPTIVE_MAX_BURST` (default `3`)
-- FG submit budget now scales by queue pressure/aging/slot pressure rather than defaulting to one job in most continuous-mode cycles.
+- FG submit budget now scales by queue pressure/aging/slot pressure with a canonical max burst of `3`, rather than
+  defaulting to one job in most continuous-mode cycles.
 
 4. Fused FG breakpoint+solve promotion for in-process runs
 - File: `gear_optimizer/helpers/song_helpers/force_greats/gpu_dispatch.py`
@@ -181,21 +176,9 @@ Control settings used:
 - separate DB per run
 - stage profile enabled for integrated FG accounting
 
-Baseline knobs (single-submit control behavior):
-
-- `INFLIGHT_CONTINUOUS_GA_BURST=32`
-- `INFLIGHT_FG_SLOT_RESERVE=1`
-- `INFLIGHT_FG_ADAPTIVE_SUBMIT=0`
-- `INFLIGHT_FG_ADAPTIVE_MAX_BURST=1`
-- `FG_FUSED_PAYLOADS_PER_REQUEST=64`
-
-Candidate knobs (new architecture):
-
-- `INFLIGHT_CONTINUOUS_GA_BURST=2`
-- `INFLIGHT_FG_SLOT_RESERVE_RATIO=0.20`
-- `INFLIGHT_FG_ADAPTIVE_SUBMIT=1`
-- `INFLIGHT_FG_ADAPTIVE_MAX_BURST=3`
-- `FG_FUSED_PAYLOADS_PER_REQUEST` unset (dynamic default)
+The original A/B run compared a single-submit control against the now-canonical continuous scheduler behavior. Those
+scheduler controls have since been hardwired; current production does not expose tuning flags for GA burst, FG slot
+reserve, or adaptive FG burst.
 
 ## Latest measured result (February 9, 2026)
 

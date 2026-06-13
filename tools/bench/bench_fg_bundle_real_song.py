@@ -9,17 +9,14 @@ This script:
   - Pulls FG seed loadouts from the DB (team_buff_* tables when present).
   - Runs the GPU `run_force_greats_response_frontier_for_ga_candidates(...)` route for N jobs.
   - Optionally runs jobs concurrently to stress the GPU request queue and coalescing.
-  - Writes a GPU executor trace CSV and prints a gap/utilization summary.
 
 Examples:
   python tools/bench/bench_fg_bundle_real_song.py --song-fp "Data/Normal/Insight by Haywyre.txt" --jobs 100 --workers 12
-  python tools/bench/bench_fg_bundle_real_song.py --jobs 100 --workers 12 --trace artifacts/bench/fg_bundle/gpu_trace.csv
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import os
 import sys
 import time
@@ -69,68 +66,6 @@ def _resolve_song_fp(cfg_dict: dict, song_fp: str | None) -> str:
     )
 
 
-def _analyze_trace(trace_path: str) -> None:
-    if not trace_path or not os.path.isfile(trace_path):
-        return
-
-    rows: list[dict] = []
-    with open(trace_path, "r", encoding="utf-8") as fh:
-        rdr = csv.DictReader(fh)
-        for r in rdr:
-            try:
-                r["rel_ts"] = float(r.get("rel_ts", 0.0) or 0.0)
-                r["wait_sec"] = float(r.get("wait_sec", 0.0) or 0.0)
-                r["exec_sec"] = float(r.get("exec_sec", 0.0) or 0.0)
-            except Exception:
-                continue
-            rows.append(r)
-    if not rows:
-        return
-
-    fg_exec = [r for r in rows if r.get("event") == "exec" and "fg_" in str(r.get("types") or "")]
-    if not fg_exec:
-        print(f"[fg-bundle] trace={trace_path} (no fg exec rows)")
-        return
-
-    start = min(float(r["rel_ts"]) - float(r["exec_sec"]) for r in fg_exec)
-    end = max(float(r["rel_ts"]) for r in fg_exec)
-
-    window = []
-    for r in rows:
-        rt = float(r["rel_ts"])
-        if rt < start - 0.001 or rt > end + 0.001:
-            continue
-        window.append(r)
-
-    wait_total = sum(float(r["wait_sec"]) for r in window if r.get("event") == "wait")
-    exec_total = sum(float(r["exec_sec"]) for r in window if r.get("event") == "exec")
-    busy = exec_total / (exec_total + wait_total) * 100.0 if (exec_total + wait_total) > 0 else 0.0
-    print(
-        f"[fg-bundle] trace_fg_window={start:.3f}s->{end:.3f}s dur={end-start:.3f}s "
-        f"executor_wait={wait_total:.3f}s exec={exec_total:.3f}s busy={busy:.1f}%"
-    )
-
-    # Gap analysis between exec intervals.
-    intervals = []
-    for r in window:
-        if r.get("event") != "exec":
-            continue
-        e = float(r["rel_ts"])
-        s = e - float(r["exec_sec"])
-        intervals.append((s, e, str(r.get("types") or "")))
-    intervals.sort()
-    gaps = []
-    for (_s0, e0, _t0), (s1, _e1, _t1) in zip(intervals, intervals[1:]):
-        gaps.append(max(0.0, s1 - e0))
-    if gaps:
-        gaps_sorted = sorted(gaps)
-        p50 = gaps_sorted[len(gaps_sorted) // 2] * 1000.0
-        p95 = gaps_sorted[int(0.95 * (len(gaps_sorted) - 1))] * 1000.0
-        mx = max(gaps_sorted) * 1000.0
-        sm = sum(gaps_sorted)
-        print(f"[fg-bundle] gaps n={len(gaps_sorted)} sum={sm:.3f}s p50={p50:.2f}ms p95={p95:.2f}ms max={mx:.2f}ms")
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--song-fp", default="", help="Chart .txt path (defaults from config.ini if resolvable).")
@@ -138,8 +73,6 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=12, help="CPU worker threads (FG jobs in flight).")
     ap.add_argument("--candidate-limit", type=int, default=0, help="Override FG_CandidateLimit (0=use config).")
     ap.add_argument("--team-buff", default="", help="Override TeamBuff tier (e.g., NONE/T1/T5/T10/T20/T50/T51).")
-    ap.add_argument("--trace", default="artifacts/bench/fg_bundle/gpu_executor_trace.csv", help="GPU trace CSV path.")
-    ap.add_argument("--no-trace", action="store_true", help="Disable GPU executor trace output.")
     ap.add_argument("--no-profiler", action="store_true", help="Disable GPU_PROFILER (DebugProfile gate still applies).")
     ap.add_argument("--debug-profile", action="store_true", help="Enable METAFINDER_DEBUG_PROFILE=1 for this run.")
     args = ap.parse_args()
@@ -152,8 +85,6 @@ def main() -> int:
     os.environ.setdefault("GPU_EXECUTOR_PROFILE", "1")
     os.environ.setdefault("GPU_SERVICE_PROFILE", "1")
     os.environ.setdefault("GPU_SERVICE_PROFILE_PRINT", "1")
-    if not args.no_trace:
-        os.environ["GPU_EXECUTOR_TRACE_PATH"] = str(args.trace)
 
     from gear_optimizer.core.config import load_config
     from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
@@ -300,8 +231,6 @@ def main() -> int:
             f"p50={p50:.3f}s p95={p95:.3f}s max={max(durs_sorted):.3f}s"
         )
 
-    if not args.no_trace:
-        _analyze_trace(str(args.trace))
     return 0
 
 

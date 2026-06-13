@@ -11,7 +11,7 @@ import importlib
 
 import numpy as np
 
-from ..core.parsing import env_flag, env_get
+from ..core.parsing import env_flag, env_get, env_str
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +38,9 @@ from .base_stats import (
     build_base_fixed_stats_array,
     build_stats_dict,
 )
+from .force_greats_common import FG_BASE_STATS7_KEY
 from .scoring.stats_ops import apply_gems_to_base_stats
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
-from ..helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from .gpu_tuning_policy import choose_ga_batch_runs
 
 # Optional: GPU-native GA dependencies are probed without importing Taichi eagerly.
@@ -350,6 +350,11 @@ def decode_gpu_native_ga_runs_payload(
         scores_vec = np.asarray(packed[:, 0], dtype=np.int32)
         genome_ids_mat = np.asarray(packed[:, 1 : 1 + n_slots], dtype=np.int32)
         results_mat = np.asarray(packed[:, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32)
+        # Device-computed base_stats7 (pack kernel cols): [pp, cm, fm, p_val, s_val, ft, ff].
+        # This is the FG scoring input source (Slice 2); it is bit-exact equal to the
+        # host BaseStats-dict 7-vector (tests/test_gpu_base_stats7_equivalence.py). It is
+        # carried per candidate so the FG funnel does not re-derive it on the host.
+        base_stats7_mat = np.asarray(packed[:, 1 + n_slots + 7 : 1 + n_slots + 7 + 7], dtype=np.int32)
         dedup_indices, dedup_stats = select_exact_unique_row_indices(
             genome_ids_mat=genome_ids_mat,
             scores=scores_vec,
@@ -361,6 +366,7 @@ def decode_gpu_native_ga_runs_payload(
             scores_vec = scores_vec[dedup_indices]
             sel_run_idx = sel_run_idx[dedup_indices]
             sel_rows = sel_rows[dedup_indices]
+            base_stats7_mat = base_stats7_mat[dedup_indices]
 
         # PERF/CPU NOTE:
         # - The GPU-selected payload already contains everything the in-flight pipeline needs
@@ -444,6 +450,9 @@ def decode_gpu_native_ga_runs_payload(
                 "BaseScore": score_val,
                 "_ga_gpu_run_idx": int(sel_run_idx[i]),
                 "_ga_gpu_row_idx": int(sel_rows[i]),
+                # Device-computed FG base components for this loadout (Slice 2 scoring input
+                # source); consumed by the FG planner via FgPlanner._device_base_stats7_for_entry.
+                FG_BASE_STATS7_KEY: tuple(int(v) for v in base_stats7_mat[i].tolist()),
             }
             data_obj["GenomeIDs"] = list(genome_ids)
 
@@ -470,14 +479,30 @@ def decode_gpu_native_ga_runs_payload(
             }
             unique_evaluated.append(cand_data)
 
-        unique_evaluated = select_top_base_ga_candidates(
-            unique_evaluated,
-            limit=int(eff_limit),
-            registry=registry,
-            primary_color=str(cfg_data.get("primary_color", "") or ""),
-            secondary_color=str(cfg_data.get("secondary_color", "") or ""),
-            selected_color=str(sel_color or ""),
-        )
+        # Gated DEBUG instrumentation (OFF by default): capture the raw GA->FG
+        # candidate pool (the funnel INPUT) for Slice 1 tie analysis. Enabled only
+        # when FG_SELECT_TIE_DUMP names a JSONL path.
+        _tie_dump_path = env_str("FG_SELECT_TIE_DUMP", "")
+        if _tie_dump_path:
+            from .fg_effective_dedup import dump_candidate_pool_jsonl
+
+            dump_candidate_pool_jsonl(
+                _tie_dump_path,
+                registry=registry,
+                candidates=unique_evaluated,
+                primary_color=str(cfg_data.get("primary_color", "") or ""),
+                secondary_color=str(cfg_data.get("secondary_color", "") or ""),
+                selected_color=str(sel_color or ""),
+                limit=int(eff_limit),
+            )
+
+        # No host select here: decode returns the raw GPU-deduped candidate pool.
+        # The single canonical color-folded select lives at the FG-prep funnel layer
+        # (prepare_ga_candidate_surface_for_fg). Slice 1 STEP A proved on all 96 real
+        # pools that color-folding this raw pool yields the identical selected set as
+        # the former decode-side name-only select followed by the FG-prep select
+        # (fold(name-dedup-51) == fold-direct-51), so removing this select is
+        # bit-exact for best_fg_score.
 
         max_candidate_score = max((int(c.get("BaseScore") or c.get("Score") or 0) for c in unique_evaluated), default=0)
         if int(max_candidate_score) > int(best_global_score):
@@ -498,6 +523,138 @@ def decode_gpu_native_ga_runs_payload(
 
         return best_data, list(best_gear), list(best_minis), unique_evaluated
     raise ValueError(f"runs_payload must be a 2D selected payload, got ndim={runs_payload.ndim}")
+
+
+def score_fused_fg_from_selected_payload(
+    *,
+    runs_payload: "np.ndarray",
+    fg_scoring_bundle: object,
+    fg_calc_song: dict,
+    ref_arrays: dict,
+    cfg_data: dict,
+) -> dict:
+    """Fused GA->FG owner step: score FG straight from the selected payload (Slice 3).
+
+    Runs on the GPU-owner thread immediately after the GA pack/select, BEFORE the
+    payload leaves the owner for async decode/persistence. It slices each selected
+    candidate's device ``base_stats7`` (== base_components) from the payload and runs
+    the FG response-frontier BUILD + SCORE on the owner, returning a map
+    ``base_components_7tuple -> FgFusedOwnerScoreRow`` the driver materializes off the
+    owner's critical path (the driver re-derives the same 7-tuples from the same
+    payload, so the lookup is exact; the SCORE is a pure function of base_components).
+
+    Required state (no fallback): the song-level FG scoring bundle + resolved FG calc
+    song are prepared pre-GA (prepare_fg_static_sync / resolve_active_fg_calc_song) and
+    attached to the GA request payload. Their absence fails loudly here.
+    """
+    if fg_scoring_bundle is None:
+        raise ValueError(
+            "fused GA->FG handoff requires the song-level FG scoring bundle on the GA "
+            "request (prepare_fg_static_sync must run pre-GA)"
+        )
+    if not isinstance(fg_calc_song, dict):
+        raise ValueError("fused GA->FG handoff requires a resolved FG calc song on the GA request")
+    if not isinstance(ref_arrays, dict):
+        raise ValueError("fused GA->FG handoff requires reference arrays")
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        score_fused_owner_base_components_on_gpu_owner,
+    )
+
+    payload = np.asarray(runs_payload, dtype=np.int32)
+    if payload.ndim != 2 or int(payload.shape[0]) < 1:
+        raise ValueError("fused GA->FG handoff requires a 2D selected payload")
+
+    selected_n = int(payload[0, 0])
+    if selected_n <= 0:
+        return {}
+    max_rows = int(payload.shape[0]) - 1
+    if selected_n > max_rows:
+        selected_n = max_rows
+
+    # Candidate rows 1..selected_n; base_stats7 occupies the last 7 cols of each
+    # 26-wide row: [run_idx, row_idx, score, ids(9), results(7), base_stats7(7)] ->
+    # base_stats7 starts at col 2 + 1 + 9 + 7 = 19. Same layout the pack kernel writes
+    # (payload.py) and decode consumes (decode_gpu_native_ga_runs_payload).
+    base_stats7_col0 = 2 + 1 + 9 + 7
+    cand_rows = payload[1 : 1 + selected_n]
+    if int(cand_rows.shape[1]) < base_stats7_col0 + 7:
+        raise ValueError(
+            f"fused GA->FG handoff: selected payload rows too narrow for base_stats7 "
+            f"({cand_rows.shape[1]} < {base_stats7_col0 + 7})"
+        )
+    base_components = np.ascontiguousarray(
+        cand_rows[:, base_stats7_col0 : base_stats7_col0 + 7], dtype=np.int32
+    )
+
+    total_budget = int((cfg_data or {}).get("TotalBudget", 90) or 90)
+    selected_color = str((cfg_data or {}).get("selected_color", "") or "")
+
+    return score_fused_owner_base_components_on_gpu_owner(
+        base_components=base_components,
+        calc_song=fg_calc_song,
+        ref_arrays=ref_arrays,
+        selected_color=selected_color,
+        scoring_bundle=fg_scoring_bundle,
+        total_budget=int(total_budget),
+    )
+
+
+def upload_ga_song_slot_timeline_state(
+    *,
+    calc_song: dict,
+    ref_arrays: dict,
+    song_slot: int,
+    setup_phase_emitter=None,
+) -> None:
+    """Precompute timeline state for one GPU song slot."""
+    if not _GPU_NATIVE_AVAILABLE:
+        raise RuntimeError("GPU-native GA not available (missing dependencies)")
+    try:
+        gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
+    except Exception as exc:
+        raise RuntimeError(f"GPU-native GA requires taichi_gem api: {exc}") from exc
+
+    song_slot = int(song_slot)
+    if song_slot < 0:
+        song_slot = 0
+
+    t_phase = time.perf_counter()
+    gpu_api.precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
+    if setup_phase_emitter is not None:
+        setup_phase_emitter(phase="precompute_timeline_gpu", start=t_phase)
+
+
+def upload_ga_global_static_state(
+    *,
+    item_stats: "np.ndarray",
+    slot_start: "np.ndarray",
+    slot_count: "np.ndarray",
+    base_fixed_stats_arr: "np.ndarray",
+    fg_gear_name_rank: "np.ndarray",
+    fg_mini_sig_id: "np.ndarray",
+    setup_phase_emitter=None,
+) -> None:
+    """Upload GA global item/base-stat buffers immediately before a GA run."""
+    if not _GPU_NATIVE_AVAILABLE:
+        raise RuntimeError("GPU-native GA not available (missing dependencies)")
+    try:
+        gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
+    except Exception as exc:
+        raise RuntimeError(f"GPU-native GA requires taichi_gem api: {exc}") from exc
+
+    t_phase = time.perf_counter()
+    gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
+    if setup_phase_emitter is not None:
+        setup_phase_emitter(phase="ga_upload_item_stats", start=t_phase)
+    t_phase = time.perf_counter()
+    gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
+    if setup_phase_emitter is not None:
+        setup_phase_emitter(phase="ga_upload_base_fixed_stats", start=t_phase)
+    t_phase = time.perf_counter()
+    gpu_api.ga_upload_fg_effective_tables(fg_gear_name_rank, fg_mini_sig_id)
+    if setup_phase_emitter is not None:
+        setup_phase_emitter(phase="ga_upload_fg_effective_tables", start=t_phase)
 
 
 def run_gpu_native_ga_runs_payload_prebuilt(
@@ -523,6 +680,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     color_flags: dict | None = None,
     cfg_data: dict | None = None,
     ga_seed: int | None = None,
+    fg_gear_name_rank: "np.ndarray | None" = None,
+    fg_mini_sig_id: "np.ndarray | None" = None,
     abort_requested=None,
 ) -> "np.ndarray":
     """
@@ -546,13 +705,19 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     except Exception as exc:
         raise ValueError("GPU-native GA requires an integer per-run ga_seed") from exc
 
+    if fg_gear_name_rank is None or fg_mini_sig_id is None:
+        raise ValueError(
+            "GPU-native GA requires fg_gear_name_rank/fg_mini_sig_id effective-dedup "
+            "tables for the song's color context (built at prep via "
+            "fg_effective_dedup.effective_tables_for_context)"
+        )
+
     if not _GPU_NATIVE_AVAILABLE:
         raise RuntimeError("GPU-native GA not available (missing dependencies)")
 
     # Import on-demand so the app can auto-size GPU_SONG_SLOTS before Taichi fields allocate.
     try:
         gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
-        precompute_timeline_gpu = gpu_api.precompute_timeline_gpu
         gpu_fields = importlib.import_module("gear_optimizer.solver.taichi_gem.fields")
     except Exception as exc:
         raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
@@ -681,10 +846,18 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     # logging when disabled; aggregated result is written to GA_LOOP_PROFILE_PATH (one JSON line
     # per GA request) only when enabled.
     ga_loop_profile = env_flag("GA_LOOP_PROFILE", "0")
+    # Sub-flag (gated DEBUG, OFF by default): on sampled generations, sync AFTER each
+    # production kernel (prepare / evaluate / fused refresh+nextgen) to attribute GPU exec
+    # time per kernel family WITHOUT un-fusing the loop. Adds a few syncs on sampled gens
+    # only; the fused production call is unchanged. This is the stable alternative to the
+    # Taichi Vulkan kernel profiler, which segfaults on AMD/Vulkan teardown here.
+    ga_loop_profile_perkernel = bool(ga_loop_profile and env_flag("GA_LOOP_PROFILE_PERKERNEL", "0"))
     _lp_warmup_gens = max(0, int(env_get("GA_LOOP_PROFILE_WARMUP_GENS", "8") or "8"))
     _lp_sample_every = max(1, int(env_get("GA_LOOP_PROFILE_SAMPLE_EVERY", "8") or "8"))
     _lp_acc = {"samples": 0, "host_enqueue_s": 0.0, "gpu_exec_s": 0.0, "host_max_s": 0.0, "gpu_max_s": 0.0,
-               "prep_host_s": 0.0, "eval_host_s": 0.0, "rest_host_s": 0.0}
+               "prep_host_s": 0.0, "eval_host_s": 0.0, "rest_host_s": 0.0,
+               # Per-kernel GPU-exec accumulators (ga_loop_profile_perkernel only):
+               "pk_samples": 0, "pk_prep_gpu_s": 0.0, "pk_eval_gpu_s": 0.0, "pk_fused_gpu_s": 0.0}
     _lp_ti = None
     if ga_loop_profile:
         import taichi as _lp_ti
@@ -694,18 +867,26 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
 
     def _restore_song_gpu_state() -> None:
-        # Rebuild Taichi/GA static state for this song slot after hard resets.
-        t_phase = time.perf_counter()
-        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
-        _emit_ga_setup_phase(phase="precompute_timeline_gpu", start=t_phase)
-        t_phase = time.perf_counter()
-        gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
-        _emit_ga_setup_phase(phase="ga_upload_item_stats", start=t_phase)
-        t_phase = time.perf_counter()
-        gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
-        _emit_ga_setup_phase(phase="ga_upload_base_fixed_stats", start=t_phase)
+        upload_ga_song_slot_timeline_state(
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            song_slot=song_slot,
+            setup_phase_emitter=_emit_ga_setup_phase,
+        )
+        upload_ga_global_static_state(
+            item_stats=item_stats,
+            slot_start=slot_start,
+            slot_count=slot_count,
+            base_fixed_stats_arr=base_fixed_stats_arr,
+            fg_gear_name_rank=fg_gear_name_rank,
+            fg_mini_sig_id=fg_mini_sig_id,
+            setup_phase_emitter=_emit_ga_setup_phase,
+        )
 
-    # Load refs/timeline + upload static per-song GA data once.
+    # Load refs/timeline + upload static per-song GA data once, in-request on the
+    # owner. The per-slot upload helpers content-skip when the slot already holds
+    # this song's state, so the request is self-sufficient without a separate
+    # slot-warm side channel.
     _raise_if_abort_requested(abort_requested, "before GPU-native GA setup")
     t_setup_total = time.perf_counter()
     _restore_song_gpu_state()
@@ -773,10 +954,13 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         n_combos = 0
     _emit_ga_setup_phase(phase="ensure_ftff_combo_tables", start=t_phase, combos=int(n_combos))
 
+    # Batch width is sized by genome capacity only (MAX_GENOMES pool); the
+    # eval budget is NOT a factor -- combo chunking inside
+    # ga_evaluate_prepared_population owns TDR/dispatch-length safety and
+    # accumulates bit-exactly across chunks. Co-batch up to num_runs at once.
     batch_runs_default = choose_ga_batch_runs(
         n_genomes=int(n_genomes),
-        n_combos=int(n_combos),
-        max_evals_per_dispatch=int(gpu_fields.MAX_EVALS_PER_DISPATCH),
+        num_runs=int(num_runs),
         max_genomes=int(gpu_fields.MAX_GENOMES),
         batch_runs_override=int(_GPU_NATIVE_GA_BATCH_RUNS),
     ).batch_runs
@@ -933,10 +1117,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         n_genomes_per_run=int(n_genomes),
                         n_slots=int(n_slots),
                     )
-                    gpu_api.ga_seed_rng_runs(
+                    gpu_api.ga_seed_rng_runs_indexed(
                         n_runs=int(batch_len),
                         n_genomes_per_run=int(n_genomes),
-                        seed=int((int(seed_base) + int(global_run_idx)) & 0xFFFFFFFF),
+                        seed_base=int(seed_base),
+                        run_idx_start=int(global_run_idx),
                     )
 
                     n_total = int(batch_len) * int(n_genomes)
@@ -998,9 +1183,15 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 _lp_h0 = time.perf_counter()
                         t0 = time.perf_counter() if phase_timing else 0.0
                         gpu_api.ga_prepare_population_base_stats(**prepare_kwargs)
+                        if _lp_sample and ga_loop_profile_perkernel:
+                            _lp_ti.sync()
+                            _lp_pk_after_prep = time.perf_counter()
                         if _lp_sample:
                             _lp_t_prep = time.perf_counter()
                         gpu_api.ga_evaluate_prepared_population(**eval_kwargs)
+                        if _lp_sample and ga_loop_profile_perkernel:
+                            _lp_ti.sync()
+                            _lp_pk_after_eval = time.perf_counter()
                         if _lp_sample:
                             _lp_t_eval = time.perf_counter()
                         _sync()
@@ -1083,6 +1274,16 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 is_p_ov=is_p_ov,
                                 is_s_ov=is_s_ov,
                             )
+                        if _lp_sample and ga_loop_profile_perkernel:
+                            # GPU exec of the (fused) refresh+update+next-generation kernel.
+                            # In the production fused path this single dispatch also absorbs
+                            # the standalone next-generation kernel (fused_refresh_next_done).
+                            _lp_ti.sync()
+                            _lp_pk_after_fused = time.perf_counter()
+                            _lp_acc["pk_samples"] += 1
+                            _lp_acc["pk_prep_gpu_s"] += _lp_pk_after_prep - _lp_h0
+                            _lp_acc["pk_eval_gpu_s"] += _lp_pk_after_eval - _lp_pk_after_prep
+                            _lp_acc["pk_fused_gpu_s"] += _lp_pk_after_fused - _lp_pk_after_eval
                         _sync()
                         _raise_if_abort_requested(
                             abort_requested, f"after GPU-native GA runs-best update generation {int(gen)}"
@@ -1294,6 +1495,12 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             # (reducing per-gen submits helps); <<0.5 => GPU-bound (fusion will not help).
             "host_fraction": _lp_host_total / max(1e-9, _lp_host_total + _lp_gpu_total),
         }
+        _lp_pk_n = int(_lp_acc["pk_samples"])
+        if _lp_pk_n > 0:
+            _lp_rec["pk_samples"] = _lp_pk_n
+            _lp_rec["pk_prep_gpu_mean_ms"] = 1000.0 * float(_lp_acc["pk_prep_gpu_s"]) / _lp_pk_n
+            _lp_rec["pk_eval_gpu_mean_ms"] = 1000.0 * float(_lp_acc["pk_eval_gpu_s"]) / _lp_pk_n
+            _lp_rec["pk_fused_gpu_mean_ms"] = 1000.0 * float(_lp_acc["pk_fused_gpu_s"]) / _lp_pk_n
         _lp_path = str(env_get("GA_LOOP_PROFILE_PATH", "") or "").strip()
         if _lp_path:
             try:

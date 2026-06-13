@@ -8,7 +8,7 @@ the `_extends` inheritance mechanism described below.
 
 ```
 config.ini                                    Production defaults (GPU-first, full queue)
-config.profile.ini                            Developer profile override (lower loop count)
+config.profile.ini                            Production-shaped profile config (single pass)
 
 configs/
   common/

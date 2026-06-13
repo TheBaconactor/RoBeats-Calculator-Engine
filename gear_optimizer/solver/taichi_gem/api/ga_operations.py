@@ -22,8 +22,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - CPU-only import/test pa
     if exc.name != "taichi":
         raise
     fields = SimpleNamespace(
-        MAX_EVALS_PER_DISPATCH=4_194_304,
-        MAX_GENOMES=4096,
+        MAX_EVALS_PER_DISPATCH=8_388_608,  # keep in sync with fields.MAX_EVALS_PER_DISPATCH (CPU-only import shim)
+        MAX_GENOMES=4608,  # keep in sync with fields.MAX_GENOMES (CPU-only import shim)
         MAX_GA_RUNS=128,
         MAX_GA_RUN_GENOMES=1024,
         ITEM_STAT_DIM=10,
@@ -160,11 +160,13 @@ def _ga_eval_budget() -> int:
 kernels = get_kernels()
 _ITEM_STATS_CACHE: dict = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
 _BASE_FIXED_STATS_CACHE: tuple | None = None
+_FG_EFFECTIVE_TABLES_CACHE: dict = {"sig": None, "rank_id": None, "sig_id": None}
 def reset_ga_upload_caches() -> None:
     """Reset upload caches after ti.reset() or when switching songs."""
-    global _ITEM_STATS_CACHE, _BASE_FIXED_STATS_CACHE
+    global _ITEM_STATS_CACHE, _BASE_FIXED_STATS_CACHE, _FG_EFFECTIVE_TABLES_CACHE
     _ITEM_STATS_CACHE = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
     _BASE_FIXED_STATS_CACHE = None
+    _FG_EFFECTIVE_TABLES_CACHE = {"sig": None, "rank_id": None, "sig_id": None}
 def ga_upload_initial_populations(populations_np: np.ndarray, *, n_runs: int, n_genomes: int, n_slots: int = 9) -> None:
     """
     Upload a batch of initial populations for multi-start GA runs.
@@ -311,6 +313,35 @@ def ga_seed_rng_runs(*, n_runs: int, n_genomes_per_run: int, seed: int) -> None:
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
     kernels.ga_seed_rng_runs_kernel(int(n_total), int(n_genomes_per_run), np.uint32(seed))
+
+
+def ga_seed_rng_runs_indexed(
+    *,
+    n_runs: int,
+    n_genomes_per_run: int,
+    seed_base: int,
+    run_idx_start: int,
+) -> None:
+    """
+    Seed packed runs with the per-run seed sequence used by one-run dispatch.
+    Run r gets seed_base + run_idx_start + r.
+    """
+    ensure_ready()
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+    n_total = n_runs * n_genomes_per_run
+    if n_total > fields.MAX_GENOMES:
+        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+    kernels.ga_seed_rng_runs_indexed_kernel(
+        int(n_total),
+        int(n_genomes_per_run),
+        np.uint32(int(seed_base) & 0xFFFFFFFF),
+        int(run_idx_start),
+    )
+
+
 def ga_upload_item_stats(
     item_stats_np: np.ndarray,
     slot_start_np: np.ndarray,
@@ -384,6 +415,54 @@ def ga_upload_base_fixed_stats(base_stats_np: np.ndarray) -> None:
     buf[: len(base_stats_np)] = np.asarray(base_stats_np, dtype=np.int32)
     fields.base_fixed_stats.from_numpy(buf)
     _BASE_FIXED_STATS_CACHE = key
+def ga_upload_fg_effective_tables(gear_name_rank_np: np.ndarray, mini_sig_id_np: np.ndarray) -> None:
+    """
+    Upload the GA->FG effective-dedup equivalence tables (Slice 1).
+
+    These per-item i32 lookups let ga_select_top_base_fg_candidate_coords_kernel
+    fold name/color-equivalent loadouts before the top-N cut, matching the CPU
+    reference fg_effective_dedup.select_top_base_fg_candidates_reference exactly.
+
+    Args:
+        gear_name_rank_np: (n_items,) int32 - gear id -> name rank (0 for ids that
+            are not gear; the kernel only reads gear-slot ids for gear positions).
+        mini_sig_id_np: (n_items,) int32 - mini id -> color-folded effective sig id
+            for THIS song's color context (rebuilt per color combination).
+
+    Both are padded to (MAX_ITEMS,) and cached by content signature to avoid
+    redundant device transfers across songs sharing a registry + color context.
+    """
+    global _FG_EFFECTIVE_TABLES_CACHE
+    ensure_ready()
+    rank_src = np.asarray(gear_name_rank_np, dtype=np.int32).reshape(-1)
+    sig_src = np.asarray(mini_sig_id_np, dtype=np.int32).reshape(-1)
+    if int(rank_src.shape[0]) > int(fields.MAX_ITEMS):
+        raise ValueError(
+            f"gear_name_rank too large: {rank_src.shape[0]} > MAX_ITEMS={fields.MAX_ITEMS}"
+        )
+    if int(sig_src.shape[0]) > int(fields.MAX_ITEMS):
+        raise ValueError(
+            f"mini_sig_id too large: {sig_src.shape[0]} > MAX_ITEMS={fields.MAX_ITEMS}"
+        )
+    if (
+        _FG_EFFECTIVE_TABLES_CACHE.get("rank_id") == id(gear_name_rank_np)
+        and _FG_EFFECTIVE_TABLES_CACHE.get("sig_id") == id(mini_sig_id_np)
+    ):
+        return
+    sig = compute_array_sig(rank_src, sig_src)
+    if _FG_EFFECTIVE_TABLES_CACHE.get("sig") == sig:
+        _FG_EFFECTIVE_TABLES_CACHE["rank_id"] = id(gear_name_rank_np)
+        _FG_EFFECTIVE_TABLES_CACHE["sig_id"] = id(mini_sig_id_np)
+        return  # Already uploaded
+    rank_buf = np.zeros(int(fields.MAX_ITEMS), dtype=np.int32)
+    sig_buf = np.zeros(int(fields.MAX_ITEMS), dtype=np.int32)
+    rank_buf[: rank_src.shape[0]] = rank_src
+    sig_buf[: sig_src.shape[0]] = sig_src
+    fields.ga_fg_gear_name_rank.from_numpy(rank_buf)
+    fields.ga_fg_mini_sig_id.from_numpy(sig_buf)
+    _FG_EFFECTIVE_TABLES_CACHE["sig"] = sig
+    _FG_EFFECTIVE_TABLES_CACHE["rank_id"] = id(gear_name_rank_np)
+    _FG_EFFECTIVE_TABLES_CACHE["sig_id"] = id(mini_sig_id_np)
 def ga_prepare_population_base_stats(
     n_genomes: int,
     n_slots: int = 9,
@@ -785,24 +864,6 @@ def ga_update_runs_best(*, run_idx_start: int, n_runs: int, n_genomes_per_run: i
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
     kernels.ga_update_runs_best_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
-def ga_store_run_payload_segmented(*, run_idx: int, start_offset: int, n_genomes: int, n_slots: int = 9) -> None:
-    """
-    Store a GA run snapshot into the multi-run buffer for a run stored at an offset.
-    """
-    ensure_ready()
-    run_idx = int(run_idx)
-    start_offset = int(start_offset)
-    n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-    if run_idx < 0 or run_idx >= fields.MAX_GA_RUNS:
-        raise ValueError(f"run_idx out of range: {run_idx} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
-    if n_genomes < 0 or n_genomes > fields.MAX_GA_RUN_GENOMES:
-        raise ValueError(
-            f"n_genomes out of range for run buffer: {n_genomes} (MAX_GA_RUN_GENOMES={fields.MAX_GA_RUN_GENOMES})"
-        )
-    if start_offset < 0 or (start_offset + n_genomes) > fields.MAX_GENOMES:
-        raise ValueError(f"Invalid start_offset/n_genomes: start={start_offset} n_genomes={n_genomes}")
-    kernels.ga_pack_and_store_run_payload_segmented_kernel(run_idx, start_offset, n_genomes, n_slots)
 def ga_pack_fg_candidates_table_segmented(
     *,
     table_slot: int,

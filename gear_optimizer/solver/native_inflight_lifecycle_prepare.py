@@ -18,6 +18,7 @@ from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_le
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.item_registry import ItemRegistry
+from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
 from gear_optimizer.solver.native_inflight_config import (
     NativeSong,
     NativeSongConfig,
@@ -289,6 +290,12 @@ def prepare_native_song(task: tuple) -> NativeSong:
         init_heuristic_k = 0
         init_heuristic_copies = 0
     color_flags = build_color_flags(p_color, s_color, selected_color)
+    fg_gear_name_rank, fg_mini_sig_id = effective_tables_for_context(
+        registry,
+        primary_color=str(p_color or ""),
+        secondary_color=str(s_color or ""),
+        selected_color=str(selected_color or ""),
+    )
     elite_count = max(0, int(ga_runtime_settings.elite_count))
     song = NativeSong(
         config=NativeSongConfig(
@@ -333,6 +340,8 @@ def prepare_native_song(task: tuple) -> NativeSong:
             init_heuristic_topk=init_heuristic_topk,
             init_heuristic_k=int(init_heuristic_k),
             init_heuristic_copies=int(init_heuristic_copies),
+            fg_gear_name_rank=fg_gear_name_rank,
+            fg_mini_sig_id=fg_mini_sig_id,
         ),
         runtime=NativeSongRuntimeState(
             db=NativeSongDBState(

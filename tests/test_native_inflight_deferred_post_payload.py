@@ -280,11 +280,23 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
 
 
 def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
+    # Fused GA->FG handoff (Slice 3): run_fg_job_sync materializes from the owner FG
+    # score map (no client SCORE submission). Records the FG progress info as before.
+    import numpy as np
+
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
     from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseFrontierOwnerResult
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgFusedOwnerScoreRow
 
+    base_components = (5, 6, 7, 8, 9, 10, 11)
+    owner_map = {
+        base_components: FgFusedOwnerScoreRow(
+            ft=1, ff=2, ft_stat=3, ff_stat=6,
+            inner_row=(130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            surface=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        )
+    }
     song = make_native_song(
         song_name="pytest_native_inline_fg_runner",
         task_key="pytest_native_inline_fg_runner",
@@ -294,41 +306,47 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
         db_best_score=100,
         db_best_fg_score=100,
         db_baseline_valid=True,
-        fg_response_frontier_plan=SimpleNamespace(prepared_batches=[SimpleNamespace(batch="prepared-batch")]),
+        fg_response_frontier_plan=SimpleNamespace(
+            prepared_batches=[
+                SimpleNamespace(
+                    batch=SimpleNamespace(
+                        base_components=np.asarray([base_components], dtype=np.int32),
+                        selected_color="Rush",
+                        calc_song={"metadata": {}, "song_data": {}},
+                        ref_arrays={},
+                        scoring_bundle=object(),
+                        started=0.0,
+                    ),
+                    rows=(("ck0", {"Perfect Points": 1}),),
+                )
+            ]
+        ),
     )
+    song.runtime.fg.fg_owner_score_map = owner_map
+
     monkeypatch.setattr(
         FgResultReducer,
         "materialize",
-        staticmethod(lambda _plan, prepared_results: prepared_results[0]),
+        staticmethod(
+            lambda _plan, prepared_results: [
+                {
+                    "score": 111,
+                    "base_score": 111,
+                    "fg_score": int(prepared_results[0][0].best_score),
+                    "gear": ["G1"],
+                    "minis": ["M1"],
+                    "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
+                }
+            ]
+        ),
     )
     monkeypatch.setattr(
         response_frontier,
-        "materialize_prepared_force_greats_response_frontier_batch_results",
-        lambda _batch, inner_rows, **_kwargs: inner_rows,
+        "build_fused_owner_solve_result_from_score_row",
+        lambda *, score_row, **_kwargs: SimpleNamespace(best_score=int(score_row.inner_row[0])),
     )
 
-    def _submit_score_batch(_payload):
-        future = Future()
-        future.set_result(
-            FgResponseFrontierOwnerResult(
-                batch=_payload["batch"],
-                inner_rows=[
-                    {
-                        "score": 111,
-                        "base_score": 111,
-                        "fg_score": 130,
-                        "gear": ["G1"],
-                        "minis": ["M1"],
-                        "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
-                    }
-                ],
-            )
-        )
-        return SimpleNamespace(future=future)
-
-    gpu_client = SimpleNamespace(submit_force_greats_response_frontier_score_batch=_submit_score_batch)
-
-    fg_pipeline.run_fg_job_sync(song, gpu_client=gpu_client)
+    fg_pipeline.run_fg_job_sync(song, gpu_client=None)
 
     assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
     assert song.runtime.db.record_info["song"] == "pytest_native_inline_fg_runner"

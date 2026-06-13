@@ -30,7 +30,6 @@ from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.solver.gpu_executor_batching import (
     COALESCABLE_REQUEST_TYPES,
     is_ga_recovery_request as _is_ga_recovery_request,
-    is_no_batch_request_type as _is_no_batch_request_type,
     ResponseDeliveryTracker,
     execute_request_from_dispatch as _execute_request_from_dispatch,
     plan_execution_units as _plan_execution_units,
@@ -54,10 +53,8 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     ExecutorHeartbeatWriter,
     LiveReporter,
     pop_staged_request as _pop_staged_request,
-    prefetch_fg_continuation_requests as _prefetch_fg_continuation_requests,
     prefetch_ga_recovery_requests as _prefetch_ga_recovery_requests,
     stage_request as _stage_request,
-    staged_fg_continuation_index as _staged_fg_continuation_index,
     staged_ga_recovery_index as _staged_ga_recovery_index,
     stamp_request_dequeue as _stamp_request_dequeue,
     build_taichi_init_failure_report as _build_taichi_init_failure_report,
@@ -95,7 +92,6 @@ from gear_optimizer.solver.gpu_executor_batching import (
     execute_gpu_native_ga_run_chunk as _execute_gpu_native_ga_run_chunk,
 )
 from gear_optimizer.solver.gpu_executor_batching import (
-    execute_force_greats_response_frontier_score_batch as _execute_force_greats_response_frontier_score_batch_request,
     execute_gpu_native_ga_run as _execute_gpu_native_ga_run_request,
 )
 from gear_optimizer.solver.gpu_executor_lifecycle import (
@@ -107,7 +103,6 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
 from gear_optimizer.core.parsing import env_get
 _ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
-FG_CONTINUATION_GRACE_S = 0.250
 
 
 def _request_work_units(request: GpuRequest) -> float:
@@ -192,13 +187,26 @@ class GpuExecutor:
         self._dispatch = {
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
             GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
-            GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH: (
-                self._execute_force_greats_response_frontier_score_batch
-            ),
         }
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
         """Dispatch a single request to the appropriate executor handler."""
         return _execute_request_from_dispatch(request, dispatch=self._dispatch)
+    def _maybe_dump_kernel_profiler_on_owner_thread(self) -> None:
+        """Gated DEBUG instrumentation: write the kernel-profiler snapshot from the owner thread.
+
+        OFF unless TAICHI_KERNEL_PROFILER_PATH is set (and TAICHI_KERNEL_PROFILER=1 enabled
+        profiling at init). Must run on this (owner) thread because the Taichi/Vulkan runtime
+        is thread-owned; cross-thread profiler reads during shutdown segfault.
+        """
+        try:
+            settings = _load_executor_stop_profiler_settings(env_flag_fn=env_flag, env_config=ENV)
+        except Exception as e:
+            logger.debug(f"gpu_executor:_maybe_dump_kernel_profiler_on_owner_thread: {e}")
+            return
+        dump_path = str(getattr(settings, "kernel_profiler_dump_path", "") or "").strip()
+        if not dump_path:
+            return
+        _print_taichi_kernel_profiler(enabled=False, dump_path=dump_path)
     def start(self, *, in_process: bool = False):
         """Start the GPU executor thread in the main process."""
         if self._running:
@@ -271,6 +279,10 @@ class GpuExecutor:
             _release_windows_timer_period_1ms()
             self._high_res_timer_enabled = False
         stop_profiler_settings = _load_executor_stop_profiler_settings(env_flag_fn=env_flag, env_config=ENV)
+        # NOTE: the structured FILE dump (kernel_profiler_dump_path) runs on the OWNER thread
+        # at the SHUTDOWN break (_maybe_dump_kernel_profiler_on_owner_thread); doing Taichi
+        # profiler reads here (a different thread) races Vulkan teardown. Only the optional
+        # human stdout table is emitted from stop().
         _print_taichi_kernel_profiler(enabled=bool(stop_profiler_settings.print_taichi_kernel_profiler))
         logger.debug("[GpuExecutor] Stopped. Processed %s requests.", self._requests_processed)
     def register_worker(self) -> tuple:
@@ -466,6 +478,12 @@ class GpuExecutor:
                     continue
                 if any(r.request_type == GpuRequestType.SHUTDOWN for r in batch):
                     self._write_heartbeat(phase="stopping", batch=batch, force=True)
+                    # Gated DEBUG instrumentation (OFF by default): snapshot the Taichi
+                    # kernel profiler to TAICHI_KERNEL_PROFILER_PATH HERE, on the owner
+                    # thread where the Taichi/Vulkan runtime lives and is still fully alive.
+                    # Doing it from the external stop() (a different thread) races Vulkan
+                    # teardown and segfaults. No-op unless the dump path is set.
+                    self._maybe_dump_kernel_profiler_on_owner_thread()
                     self._running = False
                     break
                 self._write_heartbeat(phase="running", batch=batch)
@@ -520,20 +538,14 @@ class GpuExecutor:
                     if not requests:
                         return
                     if request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
+                        # Each GA run carries its own fused GA->FG owner continuation
+                        # (Slice 3): the owner scores FG in the GA turn and returns it
+                        # with the payload. There is no separate FG batch request to
+                        # interleave between GA runs anymore.
                         for req in requests:
                             exec_started = perf_counter()
                             responses = list(handler([req]) or [])
                             _deliver_group_responses(request_type, [req], responses, perf_counter() - exec_started)
-                            fg_req = self._pop_ready_fg_continuation(
-                                batch_max_size=batch_max,
-                                grace_s=FG_CONTINUATION_GRACE_S,
-                            )
-                            while True:
-                                if fg_req is None:
-                                    break
-                                batch.append(fg_req)
-                                _execute_single_request(fg_req)
-                                fg_req = self._pop_ready_fg_continuation_nowait(batch_max_size=batch_max)
                         return
                     exec_started = perf_counter()
                     responses = list(handler(requests) or [])
@@ -602,84 +614,9 @@ class GpuExecutor:
             is_ga_recovery_request=_is_ga_recovery_request,
             empty_exception=queue.Empty,
         )
-    def _prefetch_fg_continuation_requests(self, *, deadline: float, batch_max_size: int) -> None:
-        _prefetch_fg_continuation_requests(
-            in_process_queues=bool(self._in_process_queues),
-            staged_requests=self._staged_requests,
-            deadline=float(deadline),
-            batch_max_size=int(batch_max_size),
-            pop_queue_request=self._pop_queue_request,
-            perf_counter_fn=perf_counter,
-            empty_exception=queue.Empty,
-        )
-    def _pop_ready_fg_continuation_nowait(self, *, batch_max_size: int) -> GpuRequest | None:
-        if not self._in_process_queues:
-            return None
-        target = max(2, int(batch_max_size))
-        while len(self._staged_requests) < target:
-            if self._staged_requests:
-                first_type = self._staged_requests[0].request_type
-                if first_type == GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH:
-                    return _pop_staged_request(self._staged_requests, index=0)
-                fg_idx = _staged_fg_continuation_index(list(self._staged_requests))
-                if fg_idx is not None:
-                    return _pop_staged_request(self._staged_requests, index=int(fg_idx))
-                if first_type != GpuRequestType.GPU_NATIVE_GA_RUN:
-                    return None
-                if any(
-                    req.request_type in (GpuRequestType.SHUTDOWN, GpuRequestType.LOAD_REF_ARRAYS)
-                    for req in list(self._staged_requests)[1:]
-                ):
-                    return None
-            try:
-                _stage_request(self._staged_requests, self._pop_queue_request(0.0))
-            except queue.Empty:
-                return None
-        return None
-    def _pop_ready_fg_continuation(self, *, batch_max_size: int, grace_s: float) -> GpuRequest | None:
-        selected = self._pop_ready_fg_continuation_nowait(batch_max_size=int(batch_max_size))
-        if selected is not None:
-            return selected
-        if (not self._in_process_queues) or float(grace_s) <= 0.0:
-            return None
-        if self._staged_fg_continuation_blocked():
-            return None
-
-        target = max(2, int(batch_max_size))
-        deadline = perf_counter() + float(grace_s)
-        while len(self._staged_requests) < target:
-            if self._staged_fg_continuation_blocked():
-                return None
-            remaining = float(deadline - perf_counter())
-            if remaining <= 0.0:
-                return None
-            try:
-                _stage_request(self._staged_requests, self._pop_queue_request(remaining))
-            except queue.Empty:
-                return None
-            selected = self._pop_ready_fg_continuation_nowait(batch_max_size=int(batch_max_size))
-            if selected is not None:
-                return selected
-            if self._staged_fg_continuation_blocked():
-                return None
-        return None
-    def _staged_fg_continuation_blocked(self) -> bool:
-        staged = list(self._staged_requests)
-        if not staged:
-            return False
-        first_type = staged[0].request_type
-        if first_type == GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH:
-            return False
-        if first_type != GpuRequestType.GPU_NATIVE_GA_RUN:
-            return True
-        return any(
-            req.request_type in (GpuRequestType.SHUTDOWN, GpuRequestType.LOAD_REF_ARRAYS)
-            for req in staged[1:]
-        )
     def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
         if not self._staged_requests:
             _stage_request(self._staged_requests, self._pop_queue_request(timeout))
-        self._prefetch_fg_continuation_requests(deadline=deadline, batch_max_size=int(batch_max_size))
         self._prefetch_ga_recovery_requests(deadline=deadline, batch_max_size=int(batch_max_size))
         if (
             self._in_process_queues
@@ -693,10 +630,6 @@ class GpuExecutor:
             )
             if recovery_idx is not None:
                 return _pop_staged_request(self._staged_requests, index=int(recovery_idx))
-        if self._in_process_queues and self._staged_requests:
-            fg_idx = _staged_fg_continuation_index(list(self._staged_requests))
-            if fg_idx is not None:
-                return _pop_staged_request(self._staged_requests, index=int(fg_idx))
         return _pop_staged_request(self._staged_requests, index=0)
     def _pop_followup_request(self, timeout: float) -> "GpuRequest":
         if self._staged_requests:
@@ -776,12 +709,7 @@ class GpuExecutor:
                 if request.request_type == GpuRequestType.SHUTDOWN:
                     batch.append(request)
                     return batch
-                if batch and _is_no_batch_request_type(request.request_type):
-                    _stage_request(self._staged_requests, request, front=True)
-                    break
                 batch.append(request)
-                if _is_no_batch_request_type(request.request_type):
-                    break
                 deadline = _extend_inprocess_after_first_deadline(
                     deadline,
                     in_process_queues=bool(self._in_process_queues),
@@ -818,15 +746,6 @@ class GpuExecutor:
     def _execute_gpu_native_ga_run(self, request: GpuRequest) -> GpuResponse:
         """Execute a full GPU-native GA run on the GPU-owner thread."""
         return _execute_gpu_native_ga_run_request(
-            request,
-            in_process_queues=bool(self._in_process_queues),
-            abort_requested=self.abort_requested,
-            raise_if_abort_requested=self._raise_if_abort_requested,
-        )
-
-    def _execute_force_greats_response_frontier_score_batch(self, request: GpuRequest) -> GpuResponse:
-        """Execute exact response-frontier FG scoring on the GPU-owner thread."""
-        return _execute_force_greats_response_frontier_score_batch_request(
             request,
             in_process_queues=bool(self._in_process_queues),
             abort_requested=self.abort_requested,

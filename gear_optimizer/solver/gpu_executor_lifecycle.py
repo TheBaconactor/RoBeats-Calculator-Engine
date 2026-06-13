@@ -40,6 +40,13 @@ class ExecutorStartSettings:
 @dataclass(frozen=True)
 class ExecutorStopProfilerSettings:
     print_taichi_kernel_profiler: bool
+    # Gated DEBUG instrumentation (OFF by default): when TAICHI_KERNEL_PROFILER_PATH names
+    # a file, executor stop ALSO writes a structured per-kernel GPU-time aggregation there
+    # (name -> launch count, total/avg ms) computed from the live Taichi kernel-profiler
+    # records before runtime teardown. The C++ print_kernel_profiler_info() stdout is lost
+    # at interpreter/atexit teardown; this file dump is the reliable capture for GA
+    # work-density attribution. Requires TAICHI_KERNEL_PROFILER=1 at init.
+    kernel_profiler_dump_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -103,6 +110,7 @@ def load_executor_stop_profiler_settings(
 ) -> ExecutorStopProfilerSettings:
     return ExecutorStopProfilerSettings(
         print_taichi_kernel_profiler=bool(env_flag_fn("TAICHI_KERNEL_PROFILER_PRINT")),
+        kernel_profiler_dump_path=str(env_get("TAICHI_KERNEL_PROFILER_PATH") or "").strip(),
     )
 
 
@@ -291,17 +299,93 @@ def warmup_sentinel_is_fresh(
     return True
 
 
+def _dump_kernel_profiler_records(ti: Any, dump_path: str) -> bool:
+    """Write a structured per-kernel GPU-time aggregation to ``dump_path``.
+
+    Gated DEBUG instrumentation (OFF unless TAICHI_KERNEL_PROFILER_PATH is set). Reads the
+    live Taichi kernel-profiler traced records (one per kernel launch, device exec time in
+    ms) and aggregates by kernel name into launch count + total/avg/min/max ms, plus the
+    overall device total. Written as JSON so GA work-density attribution survives the loss
+    of the C++ print_kernel_profiler_info() stdout at teardown.
+    """
+    prog = ti.lang.impl.get_runtime().prog
+    try:
+        prog.sync_kernel_profiler()
+    except Exception as e:
+        logger.debug(f"gpu_executor_lifecycle:_dump_kernel_profiler_records sync: {e}")
+    records = prog.get_kernel_profiler_records()
+    agg: dict[str, dict[str, float]] = {}
+    for r in records:
+        name = str(r.name)
+        kt = float(r.kernel_time)
+        row = agg.get(name)
+        if row is None:
+            agg[name] = {"count": 1, "total_ms": kt, "min_ms": kt, "max_ms": kt}
+        else:
+            row["count"] += 1
+            row["total_ms"] += kt
+            row["min_ms"] = min(row["min_ms"], kt)
+            row["max_ms"] = max(row["max_ms"], kt)
+    rows = []
+    for name, row in agg.items():
+        count = int(row["count"])
+        total_ms = float(row["total_ms"])
+        rows.append(
+            {
+                "kernel": name,
+                "count": count,
+                "total_ms": round(total_ms, 4),
+                "avg_ms": round(total_ms / count, 5) if count else 0.0,
+                "min_ms": round(float(row["min_ms"]), 5),
+                "max_ms": round(float(row["max_ms"]), 5),
+            }
+        )
+    rows.sort(key=lambda d: d["total_ms"], reverse=True)
+    try:
+        device_total_s = float(prog.kernel_profiler_total_time())
+    except Exception as e:
+        logger.debug(f"gpu_executor_lifecycle:_dump_kernel_profiler_records total: {e}")
+        device_total_s = 0.0
+    payload = {
+        "device": str(prog.get_kernel_profiler_device_name()) if hasattr(prog, "get_kernel_profiler_device_name") else "",
+        "device_total_ms": round(device_total_s * 1000.0, 3),
+        "n_kernels": len(rows),
+        "n_launches": int(sum(d["count"] for d in rows)),
+        "kernels": rows,
+    }
+    out = Path(dump_path)
+    if out.parent and not out.parent.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logger.info(
+        "[KernelProfiler] wrote %s kernels / %s launches / %.1f ms device total -> %s",
+        payload["n_kernels"],
+        payload["n_launches"],
+        payload["device_total_ms"],
+        dump_path,
+    )
+    return True
+
+
 def print_taichi_kernel_profiler(
     *,
     enabled: bool,
+    dump_path: str = "",
     import_module_fn: Callable[[str], Any] = importlib.import_module,
 ) -> bool:
-    if not bool(enabled):
+    dump_path = str(dump_path or "").strip()
+    if not bool(enabled) and not dump_path:
         return False
     try:
         ti = import_module_fn("taichi")
         ti.sync()
-        ti.profiler.print_kernel_profiler_info()
+        if dump_path:
+            try:
+                _dump_kernel_profiler_records(ti, dump_path)
+            except Exception as e:
+                logger.debug(f"gpu_executor_lifecycle:print_taichi_kernel_profiler dump: {e}")
+        if bool(enabled):
+            ti.profiler.print_kernel_profiler_info()
         return True
     except Exception as e:
         logger.debug(f"gpu_executor_lifecycle:print_taichi_kernel_profiler: {e}")
@@ -404,66 +488,6 @@ def staged_ga_recovery_index(
         if is_ga_recovery_request(staged):
             return int(idx)
     return None
-
-
-def staged_fg_continuation_index(staged_requests: Sequence[Any]) -> int | None:
-    if not staged_requests:
-        return None
-    first_request = staged_requests[0]
-    if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
-        return None
-
-    for idx, staged in enumerate(staged_requests):
-        if idx == 0:
-            continue
-        request_type = getattr(staged, "request_type", None)
-        if request_type in (GpuRequestType.SHUTDOWN, GpuRequestType.LOAD_REF_ARRAYS):
-            return None
-        if request_type == GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH:
-            return int(idx)
-    return None
-
-
-def prefetch_fg_continuation_requests(
-    *,
-    in_process_queues: bool,
-    staged_requests: Any,
-    deadline: float,
-    batch_max_size: int,
-    pop_queue_request: Callable[[float], Any],
-    perf_counter_fn: Callable[[], float],
-    empty_exception: type[BaseException],
-) -> None:
-    if not bool(in_process_queues):
-        return
-    if not staged_requests:
-        return
-    try:
-        first_request = staged_requests[0]
-    except (IndexError, AttributeError):
-        return
-    if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
-        return
-    if staged_fg_continuation_index(list(staged_requests)) is not None:
-        return
-
-    target = max(2, int(batch_max_size))
-    while len(staged_requests) < int(target):
-        remaining = float(deadline - perf_counter_fn())
-        if remaining <= 0.0:
-            break
-        try:
-            request = pop_queue_request(remaining)
-        except empty_exception:
-            break
-        staged_requests.append(request)
-        request_type = getattr(request, "request_type", None)
-        if request_type in (
-            GpuRequestType.SHUTDOWN,
-            GpuRequestType.LOAD_REF_ARRAYS,
-            GpuRequestType.FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH,
-        ):
-            break
 
 
 def prefetch_ga_recovery_requests(

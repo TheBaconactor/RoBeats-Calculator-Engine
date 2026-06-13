@@ -126,6 +126,7 @@ slot_count = None  # (MAX_SLOTS,) per-slot item count
 genome_result_stats = None
 # [score, ft, ff, pp, cm, fm, ov]
 chunk_best_key = None  # u64 packed key per genome for safe reduction
+ga_eval_incumbent_score = None  # (MAX_GENOMES,) i32 shared exact-score incumbent for UB combo culling
 chunk_best_score = None  # (MAX_GENOMES,) i32 best score per genome
 chunk_best_idx = None  # (MAX_GENOMES,) i32 winning combo index
 ftff_combo_ft = None  # (MAX_FTFF_COMBOS,) i32
@@ -143,13 +144,16 @@ ga_global_best_results = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for 
 ga_global_best_scan_key = None  # (1,) u64 - reduction key ((score+1)<<32)|inv_genome_idx
 ga_global_best_packed = None  # (17,) i32 - packed [score, genome_ids(9), results(7)] for single download
 ga_runs_payload_packed = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32 - packed snapshots per run
-ga_run_payload_packed = None  # (MAX_GENOMES+1, 17) i32 - packed snapshot payload for one-shot downloads
 ga_fg_candidates_packed = None  # (MAX_SONG_SLOTS, MAX_GA_RUNS, K+1, 24) i32 - compact GA->FG candidate table
-ga_fg_candidates_download_staging = None  # (MAX_GA_RUNS, K+1, 24) i32 - single-slot download staging
+
+# GA->FG effective-dedup equivalence tables (Slice 1): per-item i32 lookups the
+# select kernel uses to fold name/color-equivalent loadouts before the top-N cut.
+ga_fg_gear_name_rank = None  # (MAX_ITEMS,) i32 - gear id -> name rank
+ga_fg_mini_sig_id = None  # (MAX_ITEMS,) i32 - mini id -> color-folded effective sig id
 
 # GPU-side GA->FG candidate selection (avoid downloading full candidate tables)
 ga_fg_select_hash_used = None  # (HASH_SIZE,) i32 - open-addressing value (0=empty, else stub_index+1)
-ga_fg_select_hash_keys = None  # (HASH_SIZE, 9) i32 - canonical (gear+minis) key
+ga_fg_select_hash_keys = None  # (HASH_SIZE, 9) i32 - effective (gear-rank+mini-sig) key
 ga_fg_select_stub_count = None  # (1,) i32 - number of unique stubs
 ga_fg_select_stub_run = None  # (STUBS_MAX,) i32
 ga_fg_select_stub_row = None  # (STUBS_MAX,) i32
@@ -167,9 +171,9 @@ skyline_global_best_results = None
 skyline_global_best_scan_key = None
 skyline_global_best_packed = None
 skyline_runs_payload_packed = None
-skyline_run_payload_packed = None
 skyline_fg_candidates_packed = None
-skyline_fg_candidates_download_staging = None
+skyline_fg_gear_name_rank = None
+skyline_fg_mini_sig_id = None
 skyline_fg_select_hash_used = None
 skyline_fg_select_hash_keys = None
 skyline_fg_select_stub_count = None

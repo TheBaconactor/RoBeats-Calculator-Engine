@@ -186,22 +186,15 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 return
         except Exception as e:
             logger.debug(f"app:_maybe_autoset_gpu_song_slots: {e}")
-        ga_queue_mult = int(runtime_settings.gpu.ga_queue_mult)
-        raw = env_get("INFLIGHT_GA_QUEUE_MULT")
-        if raw is not None and str(raw).strip() != "":
-            try:
-                ga_queue_mult = int(raw)
-            except Exception as e:
-                logger.debug(f"app:_maybe_autoset_gpu_song_slots: {e}")
-        if ga_queue_mult <= 0:
-            ga_queue_mult = 2
-        ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
+        from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT
+
+        ga_queue_mult = int(CANONICAL_GA_QUEUE_MULT)
         required = int(inflight_songs) * int(ga_queue_mult) + 2
         slots = min(max(24, int(required)), 256)
         os.environ["GPU_SONG_SLOTS"] = str(slots)
         try:
             logger.debug(
-                "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, InFlight_GA_QueueMult={}). Set GPU_SONG_SLOTS to override.".format(
+                "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, canonical_ga_queue_mult={}). Set GPU_SONG_SLOTS to override.".format(
                     int(slots),
                     int(inflight_songs),
                     int(ga_queue_mult),

@@ -6,8 +6,6 @@ import os
 import time
 from typing import Any, Optional
 
-import numpy as np
-
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
@@ -264,10 +262,23 @@ class InFlightStageProfiler:
             pass
 
 
-def decode_ga_payload_sync(song: NativeSong, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
+def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list, list, list[dict]]:
     cpu_t0 = thread_cpu_time_s()
     gpu_inputs = getattr(song, "gpu_inputs", song)
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
+    # The fused GA->FG owner continuation (Slice 3) returns
+    # {runs_payload, fg_owner_score}: the GA payload plus the owner-scored FG result
+    # map. Unpack the map onto the song for the FG worker; decode consumes the payload.
+    if not isinstance(ga_result, dict) or "runs_payload" not in ga_result:
+        raise RuntimeError(
+            "GPU-native GA result must be a fused {runs_payload, fg_owner_score} dict "
+            f"for {song_key}"
+        )
+    runs_payload = ga_result["runs_payload"]
+    try:
+        song.runtime.fg.fg_owner_score_map = ga_result.get("fg_owner_score")
+    except AttributeError:
+        pass
     try:
         emit_profile_event(
             component="inflight_decode",
@@ -325,12 +336,12 @@ def prepare_ga_candidate_surface_for_fg(
 ) -> tuple[list[dict], int, bool]:
     runtime = getattr(song, "runtime", song)
     gpu_inputs = getattr(song, "gpu_inputs", song)
-    source_candidates = (
-        runtime.decode.ga_persistence_candidates
-        if isinstance(getattr(runtime.decode, "ga_persistence_candidates", None), list)
-        and getattr(runtime.decode, "ga_persistence_candidates", None)
-        else runtime.decode.ga_candidates
-    )
+    # ``ga_candidates`` carries the raw GPU-deduped candidate pool from decode (no
+    # decode-side select anymore). This is the single canonical color-folded select
+    # over that raw pool -- the FG funnel + persistence authority. It runs exactly
+    # once per song (prepare_fg_job_sync, or build_deferred_post_payload when FG is
+    # skipped), then overwrites ga_candidates with the selected surface below.
+    source_candidates = runtime.decode.ga_candidates
     preselect_count = len(source_candidates or [])
     selected = select_top_base_ga_candidates(
         list(source_candidates or []),
@@ -382,6 +393,11 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     plan_t0 = time.perf_counter()
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
+    # Fused GA->FG handoff (Slice 3): the GPU owner scores FG in the GA turn from the
+    # device base_stats7, so FG prep only builds the plan (candidate select + per-batch
+    # base_components, paired-base + cache_key dedup). The plan's base_components key the
+    # lookup into the owner score map at materialize time; no BUILD/SCORE owner round-trip
+    # is prefetched here anymore (the former prefetch_group_builds + finalize step is gone).
     runtime.fg.fg_response_frontier_plan = FgPlanner.plan_prepared_ga_candidates(song, ga_candidates)
     if runtime.fg.fg_response_frontier_plan is None:
         raise RuntimeError(

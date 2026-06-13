@@ -21,7 +21,6 @@ from gear_optimizer.solver.native_inflight_lifecycle_prepare import (
 )
 from gear_optimizer.solver.native_inflight_lifecycle_progress import (
     ActiveRuntimeProgressReporter,
-    GAQueueLimitController,
     ProgressTracker,
     evaluate_fg_progress_record_update,
 )
@@ -297,34 +296,50 @@ def shutdown_native_inflight_resources(
     gpu_client,
     gpu_executor,
 ) -> None:
-    """Shutdown native in-flight resources in dependency order."""
+    """Shut down native in-flight resources: worker executors concurrently
+    (ThreadPoolExecutor + as_completed), then post_sender / gpu_client /
+    gpu_executor sequentially after the join."""
+    import concurrent.futures
+
     shutdown_debug = inflight_shutdown_debug_enabled()
-    _shutdown_step(
-        "fg_executor.shutdown",
-        lambda: fg_pipeline.shutdown_fg(wait=True, cancel_futures=True),
-        shutdown_debug=shutdown_debug,
-    )
-    _shutdown_step(
-        "decode_executor.shutdown",
-        lambda: decode_queue.shutdown(wait=True, cancel_futures=True),
-        shutdown_debug=shutdown_debug,
-    )
+    parallel_steps: list[tuple[str, Callable[[], None]]] = [
+        (
+            "fg_executor.shutdown",
+            lambda: fg_pipeline.shutdown_fg(wait=True, cancel_futures=True),
+        ),
+        (
+            "decode_executor.shutdown",
+            lambda: decode_queue.shutdown(wait=True, cancel_futures=True),
+        ),
+        (
+            "fg_prep_executor.shutdown",
+            lambda: fg_pipeline.shutdown_prep(wait=True, cancel_futures=True),
+        ),
+        (
+            "prep_executor.shutdown",
+            lambda: prep_queue.shutdown(wait=True, cancel_futures=True),
+        ),
+    ]
     if db_persistence is not None:
-        _shutdown_step(
-            "db_prefetch.shutdown",
-            lambda: db_persistence.shutdown_prefetch(wait=True, cancel_futures=True),
-            shutdown_debug=shutdown_debug,
+        parallel_steps.append(
+            (
+                "db_prefetch.shutdown",
+                lambda: db_persistence.shutdown_prefetch(wait=True, cancel_futures=True),
+            )
         )
-    _shutdown_step(
-        "fg_prep_executor.shutdown",
-        lambda: fg_pipeline.shutdown_prep(wait=True, cancel_futures=True),
-        shutdown_debug=shutdown_debug,
-    )
-    _shutdown_step(
-        "prep_executor.shutdown",
-        lambda: prep_queue.shutdown(wait=True, cancel_futures=True),
-        shutdown_debug=shutdown_debug,
-    )
+
+    if parallel_steps:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(parallel_steps)) as pool:
+            futures = {
+                pool.submit(_shutdown_step, label, action, shutdown_debug=shutdown_debug): label
+                for label, action in parallel_steps
+            }
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.debug(f"native_inflight_lifecycle:shutdown_parallel: {e}")
+
     if post_sender is not None:
         _shutdown_step("post_sender.close", lambda: post_sender.close(timeout=10.0), shutdown_debug=shutdown_debug)
     _shutdown_step("gpu_client.close", lambda: gpu_client.close(timeout=2.0), shutdown_debug=shutdown_debug)
@@ -340,7 +355,6 @@ __all__ = [
     "ActiveRuntimeProgressReporter",
     "BubbleTracker",
     "CachedRuntimeSignal",
-    "GAQueueLimitController",
     "GpuAbortRequester",
     "InflightBundleTracker",
     "PostSender",

@@ -288,96 +288,14 @@ def _edge_surface_options(
     timestamps: np.ndarray,
     perfect_candidate_timestamps: np.ndarray | None = None,
     great_candidate_timestamps: np.ndarray | None = None,
-) -> list[tuple[int, int, FgResponseSurface]]:
-    out: list[tuple[int, int, FgResponseSurface]] = []
-    fills = first_fill if first else later_fill
-    forced_values = first_forced if first else later_forced
-    prev_fill = -1
-    prev_start_time = -1.0
-    prev_e = -1
-    for action_idx, k in enumerate(actions):
-        fill = int(fills[action_idx])
-        a = int(fill if first else int(i) + fill)
-        if a >= n:
-            break
-        forced_start = 0 if first else int(i) + 1
-        forced_applied = int(forced_values[action_idx])
-        e, start_time, _ = _edge_end(
-            n=int(n),
-            a=int(a),
-            activation_great=False,
-            real_fever_time=float(real_fever_time),
-            use_forced_great_timing=bool(use_forced_great_timing),
-            timestamps=timestamps,
-            perfect_candidate_timestamps=perfect_candidate_timestamps,
-            great_candidate_timestamps=great_candidate_timestamps,
-        )
-        skip_contiguous = fill == prev_fill and (start_time == prev_start_time or e == prev_e)
-        if skip_contiguous:
-            prev_fill = fill
-            prev_start_time = start_time
-            prev_e = e
-        else:
-            great_end = min(int(n), int(forced_start) + int(forced_applied))
-            out.append(
-                (
-                    int(k),
-                    int(e),
-                    _edge_surface(
-                        n=int(n),
-                        fever_start=int(a),
-                        fever_end=int(e),
-                        great_start=int(forced_start),
-                        great_end=int(great_end),
-                    ),
-                )
-            )
-        if bool(use_forced_great_timing) and int(k) > 0 and int(action_idx) > 0 and int(fills[action_idx - 1]) == int(fill):
-            prefix_forced = min(max(0, int(k) - 1), max(0, int(a) - int(forced_start)))
-            activation_e, _activation_start_time, _ = _edge_end(
-                n=int(n),
-                a=int(a),
-                activation_great=True,
-                real_fever_time=float(real_fever_time),
-                use_forced_great_timing=bool(use_forced_great_timing),
-                timestamps=timestamps,
-                perfect_candidate_timestamps=perfect_candidate_timestamps,
-                great_candidate_timestamps=great_candidate_timestamps,
-            )
-            if int(activation_e) > int(e):
-                activation_surface = _edge_surface(
-                    n=int(n),
-                    fever_start=int(a),
-                    fever_end=int(activation_e),
-                    great_start=int(forced_start),
-                    great_end=min(int(n), int(forced_start) + int(prefix_forced)),
-                    activation_great_idx=int(a),
-                )
-                candidate = (int(k), int(activation_e), activation_surface)
-                if candidate not in out:
-                    out.append(candidate)
-        prev_fill = fill
-        prev_start_time = start_time
-        prev_e = e
-    return out
-
-
-def _edge_surface_option_details(
-    *,
-    i: int,
-    first: bool,
-    n: int,
-    actions: list[int],
-    later_fill: list[int],
-    first_fill: list[int],
-    later_forced: list[int],
-    first_forced: list[int],
-    real_fever_time: float,
-    use_forced_great_timing: bool,
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray | None = None,
-    great_candidate_timestamps: np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
+    """Enumerate candidate fever sections with their response-surface edges.
+
+    Witness timing fields are intentionally absent here: computing the centered
+    activation witness (`_centered_hit_window_for_exit`) is the expensive part
+    and only sections accepted into the final trace need it. Callers attach it
+    with `_option_with_witness` once an option is accepted.
+    """
     out: list[dict[str, Any]] = []
     fills = first_fill if first else later_fill
     forced_values = first_forced if first else later_forced
@@ -405,12 +323,6 @@ def _edge_surface_option_details(
         )
         if fill != prev_fill or (start_time != prev_start_time and e != prev_e):
             chart_time = float(timestamps[int(a)])
-            centered_start_time, hit_lo, hit_hi = _centered_hit_window_for_exit(
-                timestamps, int(n), int(a), float(chart_time),
-                min(float(chart_time), float(perfect_ts[int(a)])),
-                max(float(chart_time), float(perfect_ts[int(a)])),
-                float(real_fever_time), int(e),
-            )
             great_end = min(int(n), int(forced_start) + int(forced_applied))
             out.append(
                 {
@@ -419,23 +331,10 @@ def _edge_surface_option_details(
                     "activation_index": int(a),
                     "activation_ms": float(chart_time) * 1000.0,
                     "activation_judgment": "perfect",
-                    **_hit_window_fields(
-                        hit=float(centered_start_time),
-                        lo=float(hit_lo),
-                        hi=float(hit_hi),
-                        chart_time=float(chart_time),
-                    ),
                     "forced_start_index": int(forced_start),
                     "forced_prefix_count": int(forced_applied),
                     "fever_end_index": int(e),
                     "fever_end_ms": None if int(e) >= int(n) else float(timestamps[int(e)]) * 1000.0,
-                    **_trace_timing_fields(
-                        carry_idx=int(carry_idx),
-                        start_time=float(centered_start_time),
-                        chart_time=float(chart_time),
-                        activation_idx=int(a),
-                        activation_great=False,
-                    ),
                     "surface": _edge_surface(
                         n=int(n),
                         fever_start=int(a),
@@ -443,6 +342,15 @@ def _edge_surface_option_details(
                         great_start=int(forced_start),
                         great_end=int(great_end),
                     ),
+                    "_witness": {
+                        "activation_idx": int(a),
+                        "chart_time": float(chart_time),
+                        "lo": min(float(chart_time), float(perfect_ts[int(a)])),
+                        "hi": max(float(chart_time), float(perfect_ts[int(a)])),
+                        "target_end": int(e),
+                        "carry_idx": int(carry_idx),
+                        "activation_great": False,
+                    },
                 }
             )
         if bool(use_forced_great_timing) and int(k) > 0 and int(action_idx) > 0 and int(fills[action_idx - 1]) == int(fill):
@@ -461,10 +369,6 @@ def _edge_surface_option_details(
                 chart_time = float(timestamps[int(a)])
                 great_hi = float(great_ts[int(a)])
                 late_lo = float(np.float32(np.float32(perfect_ts[int(a)]) + np.float32(0.001)))
-                centered_activation_start_time, hit_lo, hit_hi = _centered_hit_window_for_exit(
-                    timestamps, int(n), int(a), float(chart_time),
-                    float(late_lo), float(great_hi), float(real_fever_time), int(activation_e),
-                )
                 activation_surface = _edge_surface(
                     n=int(n),
                     fever_start=int(a),
@@ -480,32 +384,116 @@ def _edge_surface_option_details(
                         "activation_index": int(a),
                         "activation_ms": float(chart_time) * 1000.0,
                         "activation_judgment": "late_great",
-                        **_hit_window_fields(
-                            hit=float(centered_activation_start_time),
-                            lo=float(hit_lo),
-                            hi=float(hit_hi),
-                            chart_time=float(chart_time),
-                        ),
                         "forced_start_index": int(forced_start),
                         "forced_prefix_count": int(prefix_forced),
                         "fever_end_index": int(activation_e),
                         "fever_end_ms": None
                         if int(activation_e) >= int(n)
                         else float(timestamps[int(activation_e)]) * 1000.0,
-                        **_trace_timing_fields(
-                            carry_idx=int(activation_carry_idx),
-                            start_time=float(centered_activation_start_time),
-                            chart_time=float(chart_time),
-                            activation_idx=int(a),
-                            activation_great=True,
-                        ),
                         "surface": activation_surface,
+                        "_witness": {
+                            "activation_idx": int(a),
+                            "chart_time": float(chart_time),
+                            "lo": float(late_lo),
+                            "hi": float(great_hi),
+                            "target_end": int(activation_e),
+                            "carry_idx": int(activation_carry_idx),
+                            "activation_great": True,
+                        },
                     }
                 )
         prev_fill = fill
         prev_start_time = start_time
         prev_e = e
     return out
+
+
+def _option_with_witness(
+    option: dict[str, Any],
+    *,
+    timestamps: np.ndarray,
+    n: int,
+    real_fever_time: float,
+) -> dict[str, Any]:
+    """Attach the centered activation-witness fields to one accepted option.
+
+    Produces the historical field layout (witness hit-window fields after the
+    judgment, timing fields after fever_end_ms) so persisted trace rows are
+    unchanged.
+    """
+    w = option["_witness"]
+    centered_start_time, hit_lo, hit_hi = _centered_hit_window_for_exit(
+        timestamps, int(n), int(w["activation_idx"]), float(w["chart_time"]),
+        float(w["lo"]), float(w["hi"]),
+        float(real_fever_time), int(w["target_end"]),
+    )
+    return {
+        "k": option["k"],
+        "next_state": option["next_state"],
+        "activation_index": option["activation_index"],
+        "activation_ms": option["activation_ms"],
+        "activation_judgment": option["activation_judgment"],
+        **_hit_window_fields(
+            hit=float(centered_start_time),
+            lo=float(hit_lo),
+            hi=float(hit_hi),
+            chart_time=float(w["chart_time"]),
+        ),
+        "forced_start_index": option["forced_start_index"],
+        "forced_prefix_count": option["forced_prefix_count"],
+        "fever_end_index": option["fever_end_index"],
+        "fever_end_ms": option["fever_end_ms"],
+        **_trace_timing_fields(
+            carry_idx=int(w["carry_idx"]),
+            start_time=float(centered_start_time),
+            chart_time=float(w["chart_time"]),
+            activation_idx=int(w["activation_idx"]),
+            activation_great=bool(w["activation_great"]),
+        ),
+        "surface": option["surface"],
+    }
+
+
+def _edge_surface_option_details(
+    *,
+    i: int,
+    first: bool,
+    n: int,
+    actions: list[int],
+    later_fill: list[int],
+    first_fill: list[int],
+    later_forced: list[int],
+    first_forced: list[int],
+    real_fever_time: float,
+    use_forced_great_timing: bool,
+    timestamps: np.ndarray,
+    perfect_candidate_timestamps: np.ndarray | None = None,
+    great_candidate_timestamps: np.ndarray | None = None,
+) -> list[dict[str, Any]]:
+    """Full option details (surface edge + witness fields) for every option."""
+    return [
+        _option_with_witness(
+            option,
+            timestamps=timestamps,
+            n=int(n),
+            real_fever_time=float(real_fever_time),
+        )
+        for option in _edge_surface_options(
+            i=int(i),
+            first=bool(first),
+            n=int(n),
+            actions=actions,
+            later_fill=later_fill,
+            first_fill=first_fill,
+            later_forced=later_forced,
+            first_forced=first_forced,
+            real_fever_time=float(real_fever_time),
+            use_forced_great_timing=bool(use_forced_great_timing),
+            timestamps=timestamps,
+            perfect_candidate_timestamps=perfect_candidate_timestamps,
+            great_candidate_timestamps=great_candidate_timestamps,
+        )
+    ]
 
 
 def reconstruct_force_greats_response_counts(
@@ -623,13 +611,31 @@ def reconstruct_force_greats_response_trace(
 
     memo: set[tuple[int, bool, tuple[int, ...]]] = set()
 
+    def _accepted_section(option: dict[str, Any], edge: FgResponseSurface) -> dict[str, Any]:
+        # The centered witness is computed only here — for sections accepted
+        # into the final trace — not for every option the DFS explores.
+        section = dict(
+            _option_with_witness(
+                option,
+                timestamps=ts,
+                n=int(n),
+                real_fever_time=float(real_fever_time),
+            )
+        )
+        section.pop("surface", None)
+        section["forced_count"] = int(section.pop("k"))
+        section["body_fever"] = int(edge.body_fever)
+        section["body_great"] = int(edge.body_great)
+        section["body_fever_great"] = int(edge.body_fever_great)
+        return section
+
     def _search(state: int, first: bool, remaining: tuple[int, ...]) -> tuple[dict[str, Any], ...] | None:
         if _empty(remaining):
             return ()
         key = (int(state), bool(first), remaining)
         if key in memo:
             return None
-        for option in _edge_surface_option_details(
+        for option in _edge_surface_options(
             i=int(state),
             first=bool(first),
             n=int(n),
@@ -648,19 +654,13 @@ def reconstruct_force_greats_response_trace(
             next_remaining = _subtract_edge(remaining, edge)
             if next_remaining is None:
                 continue
-            section = dict(option)
-            section.pop("surface", None)
-            section["forced_count"] = int(section.pop("k"))
-            section["body_fever"] = int(edge.body_fever)
-            section["body_great"] = int(edge.body_great)
-            section["body_fever_great"] = int(edge.body_fever_great)
             if _empty(next_remaining):
-                return (section,)
+                return (_accepted_section(option, edge),)
             if int(option["next_state"]) >= int(n):
                 continue
             tail = _search(int(option["next_state"]), False, next_remaining)
             if tail is not None:
-                return (section,) + tail
+                return (_accepted_section(option, edge),) + tail
         memo.add(key)
         return None
 

@@ -301,19 +301,26 @@ class ItemRegistry:
             out: list[dict] = []
             out_append = out.append
             for item_id in ids[:9]:
-                try:
-                    idx = int(item_id)
-                except Exception as e:
-                    logger.debug(f"item_registry:decode_genome: {e}")
+                idx = int(item_id)
+                if idx == 0:
                     out_append({})
                     continue
-                if 0 <= idx < n:
-                    out_append(id_list[idx])
-                else:
-                    out_append({})
+                if idx < 0 or idx >= n:
+                    raise ValueError(f"genome references unknown item id {idx} (registry has {n} ids)")
+                out_append(id_list[idx])
             return out
         id_to_item = self.id_to_item
-        return [id_to_item.get(int(item_id), {}) for item_id in ids[:9]]
+        out_dicts: list[dict] = []
+        for item_id in ids[:9]:
+            idx = int(item_id)
+            if idx == 0:
+                out_dicts.append({})
+                continue
+            item = id_to_item.get(idx)
+            if item is None:
+                raise ValueError(f"genome references unknown item id {idx}")
+            out_dicts.append(item)
+        return out_dicts
 
     def decode_names(self, ids: np.ndarray) -> list[str]:
         """
@@ -327,22 +334,25 @@ class ItemRegistry:
             out: list[str] = []
             out_append = out.append
             for item_id in ids[:9]:
-                try:
-                    idx = int(item_id)
-                except Exception as e:
-                    logger.debug(f"item_registry:decode_names: {e}")
+                idx = int(item_id)
+                if idx == 0:
                     out_append("None")
                     continue
-                if 0 <= idx < n:
-                    out_append(name_list[idx])
-                else:
-                    out_append("None")
+                if idx < 0 or idx >= n:
+                    raise ValueError(f"genome references unknown item id {idx} (registry has {n} ids)")
+                out_append(name_list[idx])
             return out
-        # Fallback to dict lookups; this preserves exact semantics but may be slower.
+        # Dict-lookup route preserves the same semantics when decode lists are absent.
         id_to_item = self.id_to_item
         out2: list[str] = []
         for item_id in ids[:9]:
-            item = id_to_item.get(int(item_id), {})
+            idx = int(item_id)
+            if idx == 0:
+                out2.append("None")
+                continue
+            item = id_to_item.get(idx)
+            if item is None:
+                raise ValueError(f"genome references unknown item id {idx}")
             out2.append(item.get("Name", "None") if item else "None")
         return out2
 

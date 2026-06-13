@@ -117,6 +117,17 @@ class InflightGAPipeline:
 
     @staticmethod
     def build_payload(song: NativeSong) -> dict[str, Any]:
+        # Song-level FG response-frontier inputs for the FUSED GA->FG handoff
+        # (Slice 3). All candidate-independent and prepared pre-GA by
+        # prepare_fg_static_sync (the scoring bundle) + resolve_active_fg_calc_song
+        # (the FG calc song). The owner scores FG straight from the GA pack/select
+        # device base_stats7 in the same owner turn, so these MUST be attached to the
+        # GA request. The fused score requires the bundle; its absence fails loudly in
+        # the owner handler (required state, no fallback).
+        from gear_optimizer.solver.native_inflight_pipeline import resolve_active_fg_calc_song
+
+        fg_scoring_bundle = getattr(song.runtime.fg, "fg_response_scoring_bundle", None)
+        fg_calc_song = resolve_active_fg_calc_song(song)
         return {
             "calc_song": song.gpu_inputs.calc_song,
             "ref_arrays": song.gpu_inputs.ref_arrays,
@@ -139,6 +150,10 @@ class InflightGAPipeline:
             "color_flags": dict(song.gpu_inputs.color_flags),
             "cfg_data": dict(song.gpu_inputs.cfg_data),
             "ga_seed": song.config.ga_seed,
+            "fg_gear_name_rank": song.gpu_inputs.fg_gear_name_rank,
+            "fg_mini_sig_id": song.gpu_inputs.fg_mini_sig_id,
+            "fg_scoring_bundle": fg_scoring_bundle,
+            "fg_calc_song": fg_calc_song,
         }
 
     @staticmethod
@@ -156,21 +171,6 @@ class InflightGAPipeline:
         self.mark_submitted(song, future)
         register_future(song.runtime.ga.ga_future)
         self.inflight.append(song)
-
-    def active_count(self) -> int:
-        active = 0
-        for song in self.inflight:
-            future = song.runtime.ga.ga_future
-            if future is None:
-                continue
-            try:
-                if future.done():
-                    continue
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:active_count: {e}")
-                continue
-            active += 1
-        return int(active)
 
     def pop_completed_runs(self) -> list[GARunCompletion]:
         completions: list[GARunCompletion] = []
@@ -195,5 +195,7 @@ class InflightGAPipeline:
         song.runtime.decode.best_data = best_data
         song.runtime.decode.best_gear = best_gear
         song.runtime.decode.best_minis = best_minis
+        # Raw GPU-deduped candidate pool (decode no longer selects). The single
+        # canonical color-folded select runs later at the FG-prep funnel layer
+        # (prepare_ga_candidate_surface_for_fg) and overwrites this in place.
         song.runtime.decode.ga_candidates = list(ga_candidates or [])
-        song.runtime.decode.ga_persistence_candidates = list(ga_candidates or [])

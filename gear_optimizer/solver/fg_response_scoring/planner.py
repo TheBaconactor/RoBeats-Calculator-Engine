@@ -10,16 +10,17 @@ from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
     ga_candidate_key,
 )
 from gear_optimizer.helpers.song_helpers.force_greats.entry_utils import eval_data_from_entry, expected_selected_element
-from gear_optimizer.solver.force_greats_common import extract_base_stats
+from gear_optimizer.solver.force_greats_common import FG_BASE_STATS7_KEY, extract_base_stats
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+    FgResponseFrontierPackedScoringBatch,
     prepare_force_greats_response_frontier_scoring_batch,
 )
 
 @dataclass(frozen=True, slots=True)
 class FgResponseFrontierPreparedBatch:
     rows: tuple[tuple[tuple[Any, ...], dict[str, Any]], ...]
-    batch: Any
+    batch: FgResponseFrontierPackedScoringBatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +140,29 @@ class FgPlanner:
         return dict(base_stats)
 
     @staticmethod
+    def _device_base_stats7_for_entry(entry: dict[str, Any], eval_data: dict[str, Any]) -> Any:
+        """Device base_stats7 for the FG scoring input when the candidate carries one.
+
+        GPU-native GA candidates carry the on-device base_stats7 (decode attaches it to
+        ``eval_data``); that vector is the authoritative scoring input for the fused
+        handoff. DB-best / skyline / previous-record candidates have no payload row, so
+        this returns ``None`` and the canonical constructor derives the 7-vector from
+        their ``BaseStats`` dict (see response_frontier_base_components_row). Both are
+        canonical sources, distinguished by candidate origin, not a fallback. The
+        production GA path additionally asserts presence in
+        ``plan_prepared_ga_candidates`` (the only payload-sourced caller)."""
+        del entry  # origin is enforced by the production caller, not inferred here
+        raw = eval_data.get(FG_BASE_STATS7_KEY)
+        if raw is None:
+            return None
+        seq = tuple(int(v) for v in raw)
+        if len(seq) != 7:
+            raise ValueError(
+                f"FG candidate device base_stats7 must have 7 components, got {len(seq)}"
+            )
+        return seq
+
+    @staticmethod
     def _paired_base_score_from_entry(entry: dict[str, Any], eval_data: dict[str, Any]) -> int:
         for value in (
             entry.get("fg_base_score"),
@@ -169,6 +193,14 @@ class FgPlanner:
 
         pending_jobs: list[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], int, tuple[Any, ...]]] = []
         pending_by_selected: dict[str, list[tuple[tuple[Any, ...], dict[str, Any]]]] = {}
+        # Per-representative device base_stats7 (or None for dict-sourced candidates),
+        # aligned 1:1 with each pending_by_selected[selected] list. This is the Slice 2
+        # FG scoring input source: the GPU-native pack kernel's on-device base_stats7,
+        # carried through decode on each candidate's eval_data. The full BaseStats dict
+        # still drives cache_key dedup + persistence; only the scored 7-vector switches
+        # source. base_stats7 is bit-exact equal to the dict-derived 7-vector
+        # (tests/test_gpu_base_stats7_equivalence.py).
+        base_stats7_by_selected: dict[str, list[Any]] = {}
         pending_keys: set[tuple[Any, ...]] = set()
         for _key, entry in entry_items:
             if not isinstance(entry, dict):
@@ -178,6 +210,7 @@ class FgPlanner:
                 raise ValueError("ForceGreats response frontier entry is missing eval data.")
             selected = expected_selected_element(entry, str(meta_primary_color or ""))
             base_stats = FgPlanner.base_stats_for_response_frontier(eval_data, selected=selected)
+            base_stats7 = FgPlanner._device_base_stats7_for_entry(entry, eval_data)
             paired_base_score = FgPlanner._paired_base_score_from_entry(entry, eval_data)
             cache_key = (
                 str(selected or ""),
@@ -187,11 +220,13 @@ class FgPlanner:
             if cache_key not in pending_keys:
                 pending_keys.add(cache_key)
                 pending_by_selected.setdefault(str(selected or ""), []).append((cache_key, base_stats))
+                base_stats7_by_selected.setdefault(str(selected or ""), []).append(base_stats7)
 
         prepared_batches: list[FgResponseFrontierPreparedBatch] = []
         for selected, rows in pending_by_selected.items():
             batch = prepare_force_greats_response_frontier_scoring_batch(
                 base_stats_list=[base_stats for _cache_key, base_stats in rows],
+                base_stats7_list=list(base_stats7_by_selected.get(selected, [])),
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
                 selected_color=selected,

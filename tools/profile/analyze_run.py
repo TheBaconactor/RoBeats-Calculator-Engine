@@ -16,8 +16,6 @@ from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _sa
 
 
 DEFAULT_THRESHOLDS = {
-    "idle_no_work_p95_ms": 50.0,
-    "idle_coalesce_p95_ms": 20.0,
     "fg_prep_cpu_share": 0.30,
     "gpu_underutilized_pct": 70.0,
     "backlog_active_min_sec": 10.0,
@@ -118,43 +116,15 @@ def _summarize_backlog(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _collect_metrics(summary: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
-    trace = summary.get("gpu_executor_trace_summary") or {}
     stage = summary.get("inflight_stage_profile") or {}
-    gpu_phase = summary.get("gpu_phase_summary") or {}
     gpu_summary = summary.get("gpu_summary") or {}
-    req_summary = summary.get("gpu_request_type_summary") or {}
-    perf = summary.get("perf_stdout_summary") or {}
     events_summary = summary.get("profile_events_summary") or {}
-    env_overrides = ((summary.get("effective_settings") or {}).get("env_overrides") or {})
 
     stage_total_wall_s = _safe_float(stage.get("total_wall_s", 0.0), _safe_float(summary.get("elapsed_sec", 0.0), 0.0))
     underfed_total_s = _safe_float(((stage.get("stages") or {}).get("underfed_wait") or {}).get("total_s", 0.0), 0.0)
     fg_prep_cpu_s = _safe_float(((stage.get("stages") or {}).get("fg_prep") or {}).get("cpu_total_s", 0.0), 0.0)
 
-    idle_no_work_p95_ms = _safe_float((trace.get("idle_no_work_gap_sec") or {}).get("p95", 0.0), 0.0) * 1000.0
-    idle_coalesce_p95_ms = _safe_float((trace.get("idle_coalesce_gap_sec") or {}).get("p95", 0.0), 0.0) * 1000.0
-    exec_batch_mean = _safe_float((trace.get("exec_batch_reqs") or {}).get("mean", 0.0), 0.0)
-    fg_exec_events = _safe_int(trace.get("fg_exec_events", 0), 0)
-    fg_intervals_count = int(len(trace.get("fg_intervals") or []))
-
-    fg_weighted_mean = gpu_phase.get("fg_weighted_mean")
-    util_mean = _safe_float(fg_weighted_mean, -1.0)
-    if util_mean < 0.0:
-        util_mean = _safe_float((gpu_summary.get("target_engine_util_pct_max") or {}).get("mean", 0.0), 0.0)
-
-    by_type = req_summary.get("by_type") or {}
-    fg_labels_present = any(("fg_" in str(k)) or ("force_great" in str(k)) for k in by_type.keys())
-    if not fg_labels_present:
-        fg_labels_present = bool(_safe_int((perf.get("fg_task_trace") or {}).get("count_start", 0), 0) > 0)
-    ga_labels_present = any(("gpu_native_ga_run" in str(k)) or ("ga_" in str(k)) for k in by_type.keys())
-    perf_ga_phase_count = _safe_int((perf.get("ga_gpu_phases") or {}).get("count", 0), 0)
-    events_ga_phase_count = _safe_int((events_summary.get("ga_gpu_phases") or {}).get("count", 0), 0)
-    ga_phase_requested = str(env_overrides.get("GPU_NATIVE_GA_PHASE_TIMING", "") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    util_mean = _safe_float((gpu_summary.get("target_engine_util_pct_max") or {}).get("mean", 0.0), 0.0)
 
     backlog = _summarize_backlog(events)
     if backlog.get("count", 0) < 2 and isinstance(events_summary, dict):
@@ -169,17 +139,8 @@ def _collect_metrics(summary: dict[str, Any], events: list[dict[str, Any]]) -> d
         }
 
     return {
-        "idle_no_work_p95_ms": float(idle_no_work_p95_ms),
-        "idle_coalesce_p95_ms": float(idle_coalesce_p95_ms),
         "underfed_wait_share": float((underfed_total_s / stage_total_wall_s) if stage_total_wall_s > 0 else 0.0),
         "fg_prep_cpu_share": float((fg_prep_cpu_s / stage_total_wall_s) if stage_total_wall_s > 0 else 0.0),
-        "exec_batch_mean": float(exec_batch_mean),
-        "fg_exec_events": int(fg_exec_events),
-        "fg_intervals_count": int(fg_intervals_count),
-        "fg_labels_present": bool(fg_labels_present),
-        "ga_labels_present": bool(ga_labels_present),
-        "ga_phase_count": int(max(perf_ga_phase_count, events_ga_phase_count)),
-        "ga_phase_requested": bool(ga_phase_requested),
         "gpu_util_mean_pct": float(util_mean),
         "backlog": backlog,
     }
@@ -210,43 +171,6 @@ def detect_anomalies(summary: dict[str, Any], events: list[dict[str, Any]], thre
     t.update({k: _safe_float(v, t.get(k, 0.0)) for k, v in (thresholds or {}).items()})
 
     out: list[dict[str, Any]] = []
-
-    idle_no_work = _safe_float(metrics.get("idle_no_work_p95_ms", 0.0), 0.0)
-    underfed_share = _safe_float(metrics.get("underfed_wait_share", 0.0), 0.0)
-    if idle_no_work > t["idle_no_work_p95_ms"] and underfed_share > 0.10:
-        sev = _clamp01(((idle_no_work / t["idle_no_work_p95_ms"]) - 1.0) * 0.65 + ((underfed_share / 0.10) - 1.0) * 0.35)
-        conf = _clamp01(0.65 + min(0.35, underfed_share))
-        out.append(
-            _mk_anomaly(
-                aid="cpu_feed_starvation",
-                severity=sev,
-                confidence=conf,
-                summary="CPU feed starvation: idle-no-work and underfed waits are both elevated.",
-                evidence_path="gpu_executor_trace_summary.idle_no_work_gap_sec.p95",
-                evidence={
-                    "idle_no_work_p95_ms": float(idle_no_work),
-                    "underfed_wait_share": float(underfed_share),
-                },
-            )
-        )
-
-    idle_coalesce = _safe_float(metrics.get("idle_coalesce_p95_ms", 0.0), 0.0)
-    batch_mean = _safe_float(metrics.get("exec_batch_mean", 0.0), 0.0)
-    if idle_coalesce > t["idle_coalesce_p95_ms"] and batch_mean > 0.0 and batch_mean < 2.0:
-        sev = _clamp01(((idle_coalesce / t["idle_coalesce_p95_ms"]) - 1.0) * 0.7 + ((2.0 - batch_mean) / 2.0) * 0.3)
-        out.append(
-            _mk_anomaly(
-                aid="coalesce_gap_overhead",
-                severity=sev,
-                confidence=0.70,
-                summary="Coalescing overhead: coalesce waits are high while effective batch size is low.",
-                evidence_path="gpu_executor_trace_summary.idle_coalesce_gap_sec.p95",
-                evidence={
-                    "idle_coalesce_p95_ms": float(idle_coalesce),
-                    "exec_batch_mean": float(batch_mean),
-                },
-            )
-        )
 
     fg_prep_share = _safe_float(metrics.get("fg_prep_cpu_share", 0.0), 0.0)
     if fg_prep_share > t["fg_prep_cpu_share"]:
@@ -304,48 +228,11 @@ def detect_anomalies(summary: dict[str, Any], events: list[dict[str, Any]], thre
                 severity=sev,
                 confidence=0.70,
                 summary="GPU underutilized while backlog remains active.",
-                evidence_path="gpu_phase_summary.fg_weighted_mean",
+                evidence_path="gpu_summary.target_engine_util_pct_max.mean",
                 evidence={
                     "gpu_util_mean_pct": float(util_mean),
                     "backlog_active_sec": float(backlog_active),
                     "backlog_max": float(backlog_max),
-                },
-            )
-        )
-
-    fg_labels_present = bool(metrics.get("fg_labels_present", False))
-    fg_exec_events = _safe_int(metrics.get("fg_exec_events", 0), 0)
-    fg_intervals_count = _safe_int(metrics.get("fg_intervals_count", 0), 0)
-    if fg_labels_present and (fg_exec_events <= 0 or fg_intervals_count <= 0):
-        out.append(
-            _mk_anomaly(
-                aid="instrumentation_gap",
-                severity=0.95,
-                confidence=0.95,
-                summary="Instrumentation gap: FG labels are present but FG execution intervals are unresolved.",
-                evidence_path="gpu_executor_trace_summary.fg_exec_events",
-                evidence={
-                    "fg_labels_present": bool(fg_labels_present),
-                    "fg_exec_events": int(fg_exec_events),
-                    "fg_intervals_count": int(fg_intervals_count),
-                },
-            )
-        )
-
-    ga_labels_present = bool(metrics.get("ga_labels_present", False))
-    ga_phase_count = _safe_int(metrics.get("ga_phase_count", 0), 0)
-    ga_phase_requested = bool(metrics.get("ga_phase_requested", False))
-    if ga_labels_present and ga_phase_requested and ga_phase_count <= 0:
-        out.append(
-            _mk_anomaly(
-                aid="ga_phase_observability_gap",
-                severity=0.90,
-                confidence=0.95,
-                summary="Instrumentation gap: native-GA requests are present but GA phase timings are missing.",
-                evidence_path="perf_stdout_summary.ga_gpu_phases.count",
-                evidence={
-                    "ga_labels_present": bool(ga_labels_present),
-                    "ga_phase_count": int(ga_phase_count),
                 },
             )
         )

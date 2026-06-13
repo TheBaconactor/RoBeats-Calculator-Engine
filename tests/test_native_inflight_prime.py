@@ -63,6 +63,16 @@ def test_prime_native_inflight_prepared_queue_prepares_initial_backlog():
     assert [record[1]["song"] for record in stage_profiler.records] == ["A", "B"]
 
 
+def test_prime_native_inflight_prepared_queue_has_no_warm_side_channel():
+    # The slot-warm side channel is gone: priming appends straight to the
+    # prepared conveyor; the GA request itself restores slot state in-request.
+    import inspect
+
+    src = inspect.getsource(prime_native_inflight_prepared_queue)
+    assert "on_prepared" not in src
+    assert "slot_warm" not in src
+
+
 def test_prime_native_inflight_prepared_queue_posts_error_and_marks_task_completed():
     pending = deque([_task("Broken")])
     prepared = deque()

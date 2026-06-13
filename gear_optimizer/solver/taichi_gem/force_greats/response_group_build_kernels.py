@@ -12,6 +12,12 @@ read-only ndarray inputs triggers a device-buffer aliasing bug across launches
 this package (response_inner_host) pass only read-only input ndarrays + write-only
 output ndarrays, which is the pattern mirrored here.
 
+Parallelism: the outer candidate loop runs PARALLEL (one GPU thread per candidate);
+every scratch buffer is per-candidate-slabbed so threads never share state. Each
+candidate's inner reduction stays serial within its thread, so per-candidate results
+(including all order-dependent tie-breaks) are bit-identical to the serialized
+original, and emit ranges are disjoint via the host-computed prefix sum.
+
 Two-phase count-then-emit (host computes the exclusive prefix sum of keep_counts
 between launches, because the total output length is data-dependent).
 """
@@ -44,10 +50,11 @@ _FFS = 3
 
 # Persistent scratch fields (allocated lazily on first use via an independent
 # FieldsBuilder tree, so this module is self-contained and does not require
-# wiring into the main fields allocation).
+# wiring into the main fields allocation). All candidate-scoped scratch is
+# slabbed per candidate so the outer candidate loop can run in parallel.
 _FB = None
-_sf = None  # scratch_frontier (_MAX_FRONTIERS, 4)
-_sp = None  # scratch_pos (_MAX_PAIRS, 2)
+_sf = None  # scratch_frontier (_MAX_CAND, _MAX_FRONTIERS, 4)
+_sp = None  # scratch_pos (_MAX_CAND, _MAX_PAIRS, 2)
 _km = None  # keep_mask (_MAX_CAND, _MAX_PAIRS)
 _kc = None  # keep_counts (_MAX_CAND,)
 _wb = None  # write_base (_MAX_CAND,)
@@ -79,8 +86,8 @@ def _ensure_fields() -> None:
     wb = ti.field(ti.i32)
     err = ti.field(ti.i32)
     fb = ti.FieldsBuilder()
-    fb.dense(ti.ij, (_MAX_FRONTIERS, 4)).place(sf)
-    fb.dense(ti.ij, (_MAX_PAIRS, 2)).place(sp)
+    fb.dense(ti.ijk, (_MAX_CAND, _MAX_FRONTIERS, 4)).place(sf)
+    fb.dense(ti.ijk, (_MAX_CAND, _MAX_PAIRS, 2)).place(sp)
     fb.dense(ti.ij, (_MAX_CAND, _MAX_PAIRS)).place(km)
     fb.dense(ti.i, _MAX_CAND).place(kc)
     fb.dense(ti.i, _MAX_CAND).place(wb)
@@ -113,7 +120,6 @@ def _fg_count_group_rows_kernel(
     primary_ftff_delta_values: ti.types.ndarray(dtype=ti.i32, ndim=1),
     secondary_ftff_delta_values: ti.types.ndarray(dtype=ti.i32, ndim=1),
 ):
-    ti.loop_config(serialize=True)
     for candidate_idx in range(candidate_count):
         base_primary = base_components[candidate_idx, 3]
         base_secondary = base_components[candidate_idx, 4]
@@ -123,8 +129,8 @@ def _fg_count_group_rows_kernel(
             _km[candidate_idx, pos] = 0
         if score_elements_constant != 0:
             for fid in range(max_frontier + 1):
-                _sf[fid, _BP] = -1
-                _sf[fid, _BR] = _INT_MIN
+                _sf[candidate_idx, fid, _BP] = -1
+                _sf[candidate_idx, fid, _BR] = _INT_MIN
             for pos in range(pair_count):
                 ft_stat = _clip_stat(base_ft + ft_values[pos] * GEM_SCALE_FEVER)
                 ff_stat = _clip_stat(base_ff + ff_values[pos] * GEM_SCALE_FEVER)
@@ -133,29 +139,29 @@ def _fg_count_group_rows_kernel(
                     _err[0] = 1
                 else:
                     residual = residual_values[pos]
-                    current_pos = _sf[frontier_id, _BP]
+                    current_pos = _sf[candidate_idx, frontier_id, _BP]
                     if (
                         current_pos < 0
-                        or residual > _sf[frontier_id, _BR]
-                        or (residual == _sf[frontier_id, _BR] and pos < current_pos)
+                        or residual > _sf[candidate_idx, frontier_id, _BR]
+                        or (residual == _sf[candidate_idx, frontier_id, _BR] and pos < current_pos)
                     ):
-                        _sf[frontier_id, _BP] = pos
-                        _sf[frontier_id, _BR] = residual
+                        _sf[candidate_idx, frontier_id, _BP] = pos
+                        _sf[candidate_idx, frontier_id, _BR] = residual
             kept_count = 0
             for pos in range(pair_count):
                 ft_stat = _clip_stat(base_ft + ft_values[pos] * GEM_SCALE_FEVER)
                 ff_stat = _clip_stat(base_ff + ff_values[pos] * GEM_SCALE_FEVER)
                 frontier_id = frontier_idx_by_stat[ft_stat, ff_stat]
-                if frontier_id >= 0 and _sf[frontier_id, _BP] == pos:
+                if frontier_id >= 0 and _sf[candidate_idx, frontier_id, _BP] == pos:
                     _km[candidate_idx, pos] = 1
                     kept_count += 1
             _kc[candidate_idx] = kept_count
         else:
             for fid in range(max_frontier + 1):
-                _sf[fid, _H] = -1
-                _sf[fid, _T] = -1
+                _sf[candidate_idx, fid, _H] = -1
+                _sf[candidate_idx, fid, _T] = -1
             for pos in range(pair_count):
-                _sp[pos, _NX] = -1
+                _sp[candidate_idx, pos, _NX] = -1
             ordered_count = 0
             for pos in range(pair_count):
                 ft_stat = _clip_stat(base_ft + ft_values[pos] * GEM_SCALE_FEVER)
@@ -164,24 +170,24 @@ def _fg_count_group_rows_kernel(
                 if frontier_id < 0:
                     _err[0] = 1
                 else:
-                    if _sf[frontier_id, _H] < 0:
-                        _sf[frontier_id, _H] = pos
-                        _sf[frontier_id, _T] = pos
-                        _sp[ordered_count, _OF] = frontier_id
+                    if _sf[candidate_idx, frontier_id, _H] < 0:
+                        _sf[candidate_idx, frontier_id, _H] = pos
+                        _sf[candidate_idx, frontier_id, _T] = pos
+                        _sp[candidate_idx, ordered_count, _OF] = frontier_id
                         ordered_count += 1
                     else:
-                        _sp[_sf[frontier_id, _T], _NX] = pos
-                        _sf[frontier_id, _T] = pos
+                        _sp[candidate_idx, _sf[candidate_idx, frontier_id, _T], _NX] = pos
+                        _sf[candidate_idx, frontier_id, _T] = pos
             kept_count = 0
             for order_idx in range(ordered_count):
-                frontier_id = _sp[order_idx, _OF]
-                first = _sf[frontier_id, _H]
+                frontier_id = _sp[candidate_idx, order_idx, _OF]
+                first = _sf[candidate_idx, frontier_id, _H]
                 first_primary = base_primary + primary_ftff_delta_values[first]
                 first_secondary = base_secondary + secondary_ftff_delta_values[first]
                 same_score_elements = 1
                 best_idx = first
                 best_res = residual_values[first]
-                row = _sp[first, _NX]
+                row = _sp[candidate_idx, first, _NX]
                 while row >= 0:
                     primary = base_primary + primary_ftff_delta_values[row]
                     secondary = base_secondary + secondary_ftff_delta_values[row]
@@ -192,7 +198,7 @@ def _fg_count_group_rows_kernel(
                     if residual > best_res:
                         best_idx = row
                         best_res = residual
-                    row = _sp[row, _NX]
+                    row = _sp[candidate_idx, row, _NX]
                 if same_score_elements != 0:
                     _km[candidate_idx, best_idx] = 1
                     kept_count += 1
@@ -222,11 +228,11 @@ def _fg_count_group_rows_kernel(
                                 ):
                                     dominated = 1
                                     break
-                            other = _sp[other, _NX]
+                            other = _sp[candidate_idx, other, _NX]
                         if dominated == 0:
                             _km[candidate_idx, row] = 1
                             kept_count += 1
-                        row = _sp[row, _NX]
+                        row = _sp[candidate_idx, row, _NX]
             _kc[candidate_idx] = kept_count
 
 
@@ -248,7 +254,6 @@ def _fg_emit_group_rows_kernel(
     group_meta: ti.types.ndarray(dtype=ti.i32, ndim=2),
     group_ftff: ti.types.ndarray(dtype=ti.i32, ndim=2),
 ):
-    ti.loop_config(serialize=True)
     for candidate_idx in range(candidate_count):
         base_pp = base_components[candidate_idx, 0]
         base_cm = base_components[candidate_idx, 1]
@@ -259,12 +264,12 @@ def _fg_emit_group_rows_kernel(
         base_ff = base_components[candidate_idx, 6]
         write = _wb[candidate_idx]
         for fid in range(max_frontier + 1):
-            _sf[fid, _H] = -1
-            _sf[fid, _T] = -1
-            _sf[fid, _BP] = -1
-            _sf[fid, _BR] = _INT_MIN
+            _sf[candidate_idx, fid, _H] = -1
+            _sf[candidate_idx, fid, _T] = -1
+            _sf[candidate_idx, fid, _BP] = -1
+            _sf[candidate_idx, fid, _BR] = _INT_MIN
         for pos in range(pair_count):
-            _sp[pos, _NX] = -1
+            _sp[candidate_idx, pos, _NX] = -1
         ordered_count = 0
         for pos in range(pair_count):
             ft_stat = _clip_stat(base_ft + ft_values[pos] * GEM_SCALE_FEVER)
@@ -273,28 +278,28 @@ def _fg_emit_group_rows_kernel(
             if frontier_id < 0:
                 _err[0] = 1
             else:
-                if _sf[frontier_id, _H] < 0:
-                    _sf[frontier_id, _H] = pos
-                    _sf[frontier_id, _T] = pos
-                    _sp[ordered_count, _OF] = frontier_id
+                if _sf[candidate_idx, frontier_id, _H] < 0:
+                    _sf[candidate_idx, frontier_id, _H] = pos
+                    _sf[candidate_idx, frontier_id, _T] = pos
+                    _sp[candidate_idx, ordered_count, _OF] = frontier_id
                     ordered_count += 1
                 else:
-                    _sp[_sf[frontier_id, _T], _NX] = pos
-                    _sf[frontier_id, _T] = pos
+                    _sp[candidate_idx, _sf[candidate_idx, frontier_id, _T], _NX] = pos
+                    _sf[candidate_idx, frontier_id, _T] = pos
                 if score_elements_constant != 0:
                     residual = residual_values[pos]
-                    current_pos = _sf[frontier_id, _BP]
+                    current_pos = _sf[candidate_idx, frontier_id, _BP]
                     if (
                         current_pos < 0
-                        or residual > _sf[frontier_id, _BR]
-                        or (residual == _sf[frontier_id, _BR] and pos < current_pos)
+                        or residual > _sf[candidate_idx, frontier_id, _BR]
+                        or (residual == _sf[candidate_idx, frontier_id, _BR] and pos < current_pos)
                     ):
-                        _sf[frontier_id, _BP] = pos
-                        _sf[frontier_id, _BR] = residual
+                        _sf[candidate_idx, frontier_id, _BP] = pos
+                        _sf[candidate_idx, frontier_id, _BR] = residual
         for order_idx in range(ordered_count):
-            frontier_id = _sp[order_idx, _OF]
+            frontier_id = _sp[candidate_idx, order_idx, _OF]
             if score_elements_constant != 0:
-                pos = _sf[frontier_id, _BP]
+                pos = _sf[candidate_idx, frontier_id, _BP]
                 if pos >= 0:
                     ft = ft_values[pos]
                     ff = ff_values[pos]
@@ -314,7 +319,7 @@ def _fg_emit_group_rows_kernel(
                     group_ftff[write, _FFS] = ff_stat
                     write += 1
             else:
-                row = _sf[frontier_id, _H]
+                row = _sf[candidate_idx, frontier_id, _H]
                 while row >= 0:
                     if _km[candidate_idx, row] != 0:
                         ft = ft_values[row]
@@ -334,7 +339,7 @@ def _fg_emit_group_rows_kernel(
                         group_ftff[write, _FTS] = ft_stat
                         group_ftff[write, _FFS] = ff_stat
                         write += 1
-                    row = _sp[row, _NX]
+                    row = _sp[candidate_idx, row, _NX]
 
 
 def build_response_group_rows_gpu(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -11,8 +12,9 @@ from .response_cache_keys import (
     fg_response_frontier_geometry_cache_key,
 )
 from .response_cache_store import (
-    _first_surface_pool_chunk_name,
     _frontier_is_complete,
+    _open_surface_sidecar_memmap,
+    _SURFACE_POOL_COLUMNS,
     load_first_surface_scoring_rows,
     _memory_get,
     _memory_put,
@@ -159,18 +161,22 @@ def _pack_frontiers(frontiers: tuple[FgResponseFrontierResult, ...]) -> dict[str
     }
 
 
-def _unpack_frontiers(data: object) -> tuple[FgResponseFrontierResult, ...]:
+def _unpack_frontiers(data: object, *, pool_sidecar: Path) -> tuple[FgResponseFrontierResult, ...]:
     meta = np.asarray(data["frontier_meta"], dtype=np.int32)
     first_offsets = np.asarray(data["first_offsets"], dtype=np.int32)
     first_counts = np.asarray(data["first_counts"], dtype=np.int32)
-    chunk_offsets = np.asarray(data["first_surface_chunk_offsets"], dtype=np.int64).reshape(-1)
-    if int(chunk_offsets.shape[0]) < 2:
-        raise ValueError("FG response frontier chunked surface cache is empty")
-    first_pool = np.empty((int(chunk_offsets[-1]), 11), dtype=np.uint32)
-    for chunk_idx in range(int(chunk_offsets.shape[0]) - 1):
-        start = int(chunk_offsets[int(chunk_idx)])
-        end = int(chunk_offsets[int(chunk_idx) + 1])
-        first_pool[start:end] = np.asarray(data[_first_surface_pool_chunk_name(chunk_idx)], dtype=np.uint32)
+    surface_row_count = int(np.asarray(data["first_surface_row_count"]).item())
+    # Single canonical surface store: the build/prewarm path reads the SAME uncompressed pool
+    # sidecar as the hot scoring path. Materialize it once into a C-order array (mirrors the
+    # original full-pool allocation) so the long-lived FgResponseSurface tuples never alias the
+    # read-only memmap.
+    pool_memmap = _open_surface_sidecar_memmap(
+        pool_sidecar,
+        columns=_SURFACE_POOL_COLUMNS,
+        dtype=np.dtype(np.uint32),
+        row_count=surface_row_count,
+    )
+    first_pool = np.ascontiguousarray(pool_memmap, dtype=np.uint32)
 
     out: list[FgResponseFrontierResult] = []
     surface_cache: dict[tuple[int, ...], FgResponseSurface] = {}

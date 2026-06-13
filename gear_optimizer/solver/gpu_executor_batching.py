@@ -248,8 +248,6 @@ GA_RECOVERY_REQUEST_TYPES = frozenset()
 
 COALESCABLE_REQUEST_TYPES = frozenset({GpuRequestType.GPU_NATIVE_GA_RUN})
 
-NO_BATCH_REQUEST_TYPES = frozenset()
-NO_BATCH_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in NO_BATCH_REQUEST_TYPES})
 GA_RECOVERY_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in GA_RECOVERY_REQUEST_TYPES})
 
 
@@ -261,10 +259,6 @@ def request_type_in(request_type: Any, request_types: frozenset[GpuRequestType],
     except (AttributeError, TypeError):
         value = ""
     return value in request_type_values
-
-
-def is_no_batch_request_type(request_type: Any) -> bool:
-    return request_type_in(request_type, NO_BATCH_REQUEST_TYPES, NO_BATCH_REQUEST_TYPE_VALUES)
 
 
 def is_ga_recovery_request_type(request_type: Any) -> bool:
@@ -414,6 +408,7 @@ def execute_gpu_native_ga_run(
     abort_requested: Callable[[], bool],
     raise_if_abort_requested: Callable[[], None],
     run_payload_fn: Callable[..., Any] | None = None,
+    fused_fg_fn: Callable[..., Any] | None = None,
 ) -> GpuResponse:
     if not bool(in_process_queues):
         return GpuResponse(
@@ -453,6 +448,10 @@ def execute_gpu_native_ga_run(
     color_flags = payload.get("color_flags") or {}
     cfg_data = payload.get("cfg_data") or {}
     ga_seed = payload.get("ga_seed")
+    fg_gear_name_rank = payload.get("fg_gear_name_rank")
+    fg_mini_sig_id = payload.get("fg_mini_sig_id")
+    fg_scoring_bundle = payload.get("fg_scoring_bundle")
+    fg_calc_song = payload.get("fg_calc_song")
 
     if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
         return GpuResponse(
@@ -486,11 +485,32 @@ def execute_gpu_native_ga_run(
             color_flags=dict(color_flags),
             cfg_data=dict(cfg_data),
             ga_seed=int(ga_seed) if ga_seed is not None else None,
+            fg_gear_name_rank=fg_gear_name_rank,
+            fg_mini_sig_id=fg_mini_sig_id,
             abort_requested=abort_requested,
         )
         if n_genomes is not None:
             kwargs["n_genomes"] = int(n_genomes)
         runs_payload = run_payload_fn(**kwargs)
+
+        # FUSED GA->FG owner continuation (Slice 3): immediately after the GA
+        # pack/select, on the SAME owner thread, score FG straight from the selected
+        # payload's device base_stats7 and hand a compact per-base_components result
+        # map back with the payload. The driver materializes it off the owner's
+        # critical path. This replaces the per-song decode->FG-prep->BUILD->SCORE
+        # driver round-trip (the fg_owner_queue) with one fused owner turn.
+        if fused_fg_fn is None:
+            from gear_optimizer.solver.genetic_pipeline import (
+                score_fused_fg_from_selected_payload as fused_fg_fn,
+            )
+
+        fg_owner_score = fused_fg_fn(
+            runs_payload=runs_payload,
+            fg_scoring_bundle=fg_scoring_bundle,
+            fg_calc_song=fg_calc_song,
+            ref_arrays=ref_arrays,
+            cfg_data=dict(cfg_data),
+        )
     except Exception as e:
         return GpuResponse(
             request_id=request.request_id,
@@ -501,75 +521,9 @@ def execute_gpu_native_ga_run(
     return GpuResponse(
         request_id=request.request_id,
         success=True,
-        result=runs_payload,
+        result={"runs_payload": runs_payload, "fg_owner_score": fg_owner_score},
     )
 
-
-def execute_force_greats_response_frontier_score_batch(
-    request: GpuRequest,
-    *,
-    in_process_queues: bool,
-    abort_requested: Callable[[], bool],
-    raise_if_abort_requested: Callable[[], None],
-    run_payload_fn: Callable[..., Any] | None = None,
-) -> GpuResponse:
-    if not bool(in_process_queues):
-        return GpuResponse(
-            request_id=request.request_id,
-            success=False,
-            error="FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH requires in-process queues (avoid IPC pickling)",
-        )
-
-    try:
-        raise_if_abort_requested()
-    except Exception as e:
-        return GpuResponse(
-            request_id=request.request_id,
-            success=False,
-            error=str(e),
-        )
-
-    payload = request.payload or {}
-    batch = payload.get("batch")
-    if batch is None:
-        return GpuResponse(
-            request_id=request.request_id,
-            success=False,
-            error="Invalid payload for FORCE_GREATS_RESPONSE_FRONTIER_SCORE_BATCH (expected prepared batch)",
-        )
-    timing = payload.get("timing")
-    if not isinstance(timing, dict):
-        timing = None
-
-    exec_t0 = time.perf_counter()
-    try:
-        if run_payload_fn is None:
-            from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-                score_prepared_force_greats_response_frontier_batch_on_gpu_owner as run_payload_fn,
-            )
-
-        if timing is not None:
-            timing["owner_queue_s"] = max(
-                0.0,
-                (time.perf_counter_ns() - int(getattr(request, "submit_perf_ns", 0) or 0)) / 1_000_000_000.0,
-            )
-        results = run_payload_fn(batch)
-        if timing is not None:
-            timing["owner_exec_s"] = max(0.0, time.perf_counter() - float(exec_t0))
-    except Exception as e:
-        if timing is not None:
-            timing["owner_exec_s"] = max(0.0, time.perf_counter() - float(exec_t0))
-        return GpuResponse(
-            request_id=request.request_id,
-            success=False,
-            error=f"{type(e).__name__}: {e}",
-        )
-
-    return GpuResponse(
-        request_id=request.request_id,
-        success=True,
-        result=results,
-    )
 
 # ---- merged from gpu_executor_native_ga_batch.py ----
 from dataclasses import dataclass

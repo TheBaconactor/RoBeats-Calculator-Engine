@@ -513,7 +513,7 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
         great_candidate_timestamps=great_candidates,
     )
 
-    assert not any(int(k) == 1 and int(next_state) == 5 for k, next_state, _surface in options)
+    assert not any(int(option["k"]) == 1 and int(option["next_state"]) == 5 for option in options)
 
 
 def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
@@ -841,7 +841,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
     surface = _EMPTY_SURFACE
     for count in counts:
         edge_match = None
-        for k, next_state, edge in _edge_surface_options(
+        for option in _edge_surface_options(
             i=state,
             first=first,
             n=int(timestamps.shape[0]),
@@ -855,8 +855,8 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
             timestamps=timestamps,
             great_candidate_timestamps=great_candidates,
         ):
-            if int(k) == int(count):
-                edge_match = (int(next_state), edge)
+            if int(option["k"]) == int(count):
+                edge_match = (int(option["next_state"]), option["surface"])
                 break
         assert edge_match is not None
         state, edge = edge_match

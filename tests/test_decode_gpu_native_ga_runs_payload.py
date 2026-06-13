@@ -36,7 +36,12 @@ def _candidate_key(cand: dict, registry: ItemRegistry) -> tuple[int, ...]:
     return _canon_ids_key(registry.encode_genome(list(gear) + list(minis)))
 
 
-def test_decode_gpu_native_ga_runs_payload_uses_configured_fg_candidate_limit():
+def test_decode_gpu_native_ga_runs_payload_caps_raw_rows_to_fg_candidate_limit():
+    # Decode no longer applies the host effective-select (that moved to the single
+    # canonical FG-prep funnel select). It returns the RAW GPU-deduped pool: the
+    # header best candidate prepended, plus the candidate rows capped at
+    # fg_candidate_limit. With 81 distinct input rows whose global-best is beyond
+    # the cap, decode returns best + fg_limit rows = fg_limit + 1.
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     base_stats = {
         "Perfect Points": 1,
@@ -108,7 +113,8 @@ def test_decode_gpu_native_ga_runs_payload_uses_configured_fg_candidate_limit():
         fg_candidate_limit=int(fg_limit),
     )
 
-    assert len(decoded) == fg_limit
+    # best candidate (header, the global-best beyond the row cap) + fg_limit rows.
+    assert len(decoded) == fg_limit + 1
 
 
 def test_decode_gpu_native_ga_runs_payload_includes_header_best_candidate():
@@ -217,7 +223,13 @@ def test_decode_gpu_native_ga_runs_payload_rejects_legacy_raw_runs_payload():
         )
 
 
-def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
+def test_decode_raw_pool_then_fg_prep_select_matches_canonical_selector():
+    # Decode returns the RAW GPU-deduped pool (no effective-fold); the single
+    # canonical color-folded select runs downstream at the FG-prep funnel layer.
+    # This pins the funnel composition: select(decode(payload)) == the canonical
+    # host select over the same candidates. The payload candidate rows here are the
+    # canonical-selected set, so feeding decode's output back through the selector
+    # must reproduce it exactly (the selector is idempotent on its own output).
     rng = np.random.default_rng(12345)
 
     def rand_stats() -> dict:
@@ -385,7 +397,20 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
         fg_candidate_limit=fg_candidate_limit,
     )
 
-    assert [_candidate_key(c, registry) for c in decoded] == [_candidate_key(c, registry) for c in expected]
+    # Funnel composition: the canonical color-folded select over decode's RAW pool
+    # reproduces the canonical-selected set (matches what FG-prep does in production
+    # via prepare_ga_candidate_surface_for_fg). Compare as SETS of canonical ids.
+    funnel = select_top_base_ga_candidates(
+        list(decoded),
+        limit=int(fg_candidate_limit),
+        registry=registry,
+        primary_color="Rush",
+        secondary_color="Flow",
+        selected_color="Rush",
+    )
+    assert {_candidate_key(c, registry) for c in funnel} == {
+        _candidate_key(c, registry) for c in expected
+    }
 
 
 def test_decode_gpu_native_ga_runs_payload_rejects_candidate_score_above_header_best():

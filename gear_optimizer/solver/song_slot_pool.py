@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections import deque
 
 
+class NoFreeSongSlotError(RuntimeError):
+    """Raised when all nonzero GPU song slots are reserved."""
+
+
 class SongSlotPool:
     def __init__(self, max_song_slots: int):
         # Slot 0 is reserved; allocate 1..N-1.
@@ -11,7 +15,7 @@ class SongSlotPool:
 
     def acquire(self) -> int:
         if not self._free:
-            raise RuntimeError("No free GPU song slots")
+            raise NoFreeSongSlotError("No free GPU song slots")
         return int(self._free.popleft())
 
     def release(self, slot_id: int) -> None:

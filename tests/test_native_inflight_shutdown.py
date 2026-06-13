@@ -73,12 +73,18 @@ def test_shutdown_native_inflight_resources_uses_dependency_order(monkeypatch):
         gpu_executor=_GpuExecutor(calls),
     )
 
-    assert calls == [
-        "fg:{'wait': True, 'cancel_futures': True}",
-        "decode:{'wait': True, 'cancel_futures': True}",
-        "db:{'wait': True, 'cancel_futures': True}",
-        "fg_prep:{'wait': True, 'cancel_futures': True}",
-        "prep:{'wait': True, 'cancel_futures': True}",
+    # The executor group shuts down in parallel (intra-group order is not
+    # deterministic); all of it must complete before the ordered GPU tail.
+    assert sorted(calls[:5]) == sorted(
+        [
+            "fg:{'wait': True, 'cancel_futures': True}",
+            "decode:{'wait': True, 'cancel_futures': True}",
+            "db:{'wait': True, 'cancel_futures': True}",
+            "fg_prep:{'wait': True, 'cancel_futures': True}",
+            "prep:{'wait': True, 'cancel_futures': True}",
+        ]
+    )
+    assert calls[5:] == [
         "post:{'timeout': 10.0}",
         "gpu_client:{'timeout': 2.0}",
         "gpu_executor.stop",
@@ -99,11 +105,13 @@ def test_shutdown_native_inflight_resources_continues_after_shutdown_failure(mon
         gpu_executor=_GpuExecutor(calls, running=False),
     )
 
-    assert calls == [
-        "fg:{'wait': True, 'cancel_futures': True}",
-        "decode:{'wait': True, 'cancel_futures': True}",
-        "db:{'wait': True, 'cancel_futures': True}",
-        "fg_prep:{'wait': True, 'cancel_futures': True}",
-        "prep:{'wait': True, 'cancel_futures': True}",
-        "gpu_client:{'timeout': 2.0}",
-    ]
+    assert sorted(calls[:5]) == sorted(
+        [
+            "fg:{'wait': True, 'cancel_futures': True}",
+            "decode:{'wait': True, 'cancel_futures': True}",
+            "db:{'wait': True, 'cancel_futures': True}",
+            "fg_prep:{'wait': True, 'cancel_futures': True}",
+            "prep:{'wait': True, 'cancel_futures': True}",
+        ]
+    )
+    assert calls[5:] == ["gpu_client:{'timeout': 2.0}"]

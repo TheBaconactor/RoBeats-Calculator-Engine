@@ -249,15 +249,47 @@ def test_fg_prep_failure_uses_bundle_aware_error_and_resolves_owner():
     assert "build_native_task_error_payload(" not in prep_error_block
     assert "_advance_bundle(bundle_parent" in prep_error_block
     assert "mark_song_completed(" in prep_error_block
-    assert "ga_pipeline.release_slot(song, slot_pool)" in prep_error_block
+    # The slot was already released at GA completion; FG-stage errors must not
+    # touch the slot pool.
+    assert "release_slot" not in prep_error_block
 
 
 def test_song_prep_runway_fill_is_not_gated_by_ga_admission():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 
     first_fill_idx = src.index("if _fill_song_prep_runway():")
-    ga_yield_idx = src.index("if continuous_ga_should_yield_to_fg(")
-    inner_fill_idx = src.index("if _fill_song_prep_runway():", ga_yield_idx)
+    backlog_gate_idx = src.index("if ga_should_pause_for_fg_backlog(")
+    inner_fill_idx = src.index("if _fill_song_prep_runway():", backlog_gate_idx)
 
-    assert first_fill_idx < ga_yield_idx < inner_fill_idx
+    assert first_fill_idx < backlog_gate_idx < inner_fill_idx
     assert "pending_tasks and (len(prepared) + len(prep_inflight) < icfg.prep_limit)" not in src
+
+
+def test_ga_admission_reserves_slot_fail_loud_before_payload_submit():
+    src = inspect.getsource(run_native_inflight_song_pipeline)
+
+    can_submit_idx = src.index("if can_submit_ga:")
+    reserve_idx = src.index("ga_pipeline.reserve_slot(song, slot_pool)", can_submit_idx)
+    payload_idx = src.index("payload = ga_pipeline.build_payload(song)", can_submit_idx)
+
+    # Admission implies a free slot (queue limit <= usable slots): the reserve is
+    # unguarded so NoFreeSongSlotError raises loudly, and there is no slot-warm
+    # side channel left in the conveyor.
+    assert reserve_idx < payload_idx
+    assert "slot_warm" not in src
+    assert "try:" not in src[can_submit_idx:reserve_idx]
+
+
+def test_ga_completion_releases_slot_before_decode_handoff():
+    src = inspect.getsource(run_native_inflight_song_pipeline)
+
+    ga_done_idx = src.index("song.runtime.ga.ga_future = None")
+    release_idx = src.index("ga_pipeline.release_slot(song, slot_pool)", ga_done_idx)
+    decode_idx = src.index("decode_queue.submit(", ga_done_idx)
+
+    # The GA request (GA loop + fused FG owner score + payload download) is the
+    # only device consumer of the slot; it returns to the conveyor before any
+    # host-side stage starts.
+    assert release_idx < decode_idx
+    assert "keep_slot_for_fg" not in src
+    assert "fg_hold" not in src

@@ -252,16 +252,13 @@ class IterationEngineSettings:
 @dataclass(frozen=True, slots=True)
 class GPUExecutionSettings:
     gpu_song_slots: int = 0
-    ga_queue_mult: int = 0
     @classmethod
     def from_config(cls, cfg: Any) -> "GPUExecutionSettings":
         if cfg is None:
             return cls()
         gpu_song_slots = cfg_get_int(cfg, "IterationEngine", "GPU_SongSlots", 0, clamp_min=0)
-        ga_queue_mult = cfg_get_int(cfg, "IterationEngine", "InFlight_GA_QueueMult", 0, clamp_min=0)
         return cls(
             gpu_song_slots=int(gpu_song_slots),
-            ga_queue_mult=int(ga_queue_mult),
         )
 @dataclass(frozen=True, slots=True)
 class GASettings:
@@ -330,7 +327,6 @@ class InflightSettings:
     songs: int = 0
     song_file_cache_max: int = 0
     team_buff_calc_cache_max: int = 0
-    ga_queue_mult: int = 0
     @classmethod
     def from_config(cls, cfg: Any) -> "InflightSettings":
         if cfg is None:
@@ -344,12 +340,10 @@ class InflightSettings:
             0,
             clamp_min=0,
         )
-        ga_queue_mult = cfg_get_int(cfg, "IterationEngine", "InFlight_GA_QueueMult", 0, clamp_min=0)
         return cls(
             songs=int(songs),
             song_file_cache_max=int(song_file_cache_max),
             team_buff_calc_cache_max=int(team_buff_calc_cache_max),
-            ga_queue_mult=int(ga_queue_mult),
         )
 @dataclass(frozen=True, slots=True)
 class CalculateSongSettings:

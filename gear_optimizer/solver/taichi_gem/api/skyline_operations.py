@@ -533,6 +533,34 @@ def skyline_upload_base_fixed_stats(base_stats_np: np.ndarray) -> None:
     _BASE_FIXED_STATS_CACHE = key
 
 
+def skyline_upload_fg_effective_tables(gear_name_rank_np: np.ndarray, mini_sig_id_np: np.ndarray) -> None:
+    """
+    Upload the skyline GA->FG effective-dedup equivalence tables (Slice 1 mirror).
+
+    Mirrors ga_upload_fg_effective_tables; the skyline fields alias the GA fields
+    (fields.skyline_fg_gear_name_rank is fields.ga_fg_gear_name_rank), so this
+    writes the same device tables the skyline select kernel reads. Kept in lockstep
+    with the GA upload so the skyline select kernel never reads an unbound table.
+    """
+    ensure_ready()
+    rank_src = np.asarray(gear_name_rank_np, dtype=np.int32).reshape(-1)
+    sig_src = np.asarray(mini_sig_id_np, dtype=np.int32).reshape(-1)
+    if int(rank_src.shape[0]) > int(fields.MAX_ITEMS):
+        raise ValueError(
+            f"gear_name_rank too large: {rank_src.shape[0]} > MAX_ITEMS={fields.MAX_ITEMS}"
+        )
+    if int(sig_src.shape[0]) > int(fields.MAX_ITEMS):
+        raise ValueError(
+            f"mini_sig_id too large: {sig_src.shape[0]} > MAX_ITEMS={fields.MAX_ITEMS}"
+        )
+    rank_buf = np.zeros(int(fields.MAX_ITEMS), dtype=np.int32)
+    sig_buf = np.zeros(int(fields.MAX_ITEMS), dtype=np.int32)
+    rank_buf[: rank_src.shape[0]] = rank_src
+    sig_buf[: sig_src.shape[0]] = sig_src
+    fields.skyline_fg_gear_name_rank.from_numpy(rank_buf)
+    fields.skyline_fg_mini_sig_id.from_numpy(sig_buf)
+
+
 def skyline_aggregate_stats(
     n_genomes: int,
     n_slots: int = 9,
@@ -1463,80 +1491,6 @@ def skyline_download_results(n_genomes: int) -> np.ndarray:
     return np.asarray(results_np, dtype=np.int32)
 
 
-def skyline_download_run_payload(
-    *, n_genomes: int, n_slots: int = 9
-) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Download a skyline run snapshot with a single GPU->CPU transfer.
-
-    Returns:
-        (best_score, best_genome_ids, best_results, population_indices, results, scores)
-    """
-    ensure_ready()
-    n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-    kernels.skyline_pack_run_payload_kernel(n_genomes, n_slots)
-    packed_full = None
-    try:
-        cols = 1 + n_slots + 7
-        rows = n_genomes + 1
-        staging = getattr(fields, "skyline_run_payload_download_staging_256", None)
-        if staging is not None:
-            shape = getattr(staging, "shape", None)
-            if shape and len(shape) >= 2 and rows <= int(shape[0]):
-                try:
-                    full_shape = getattr(fields.skyline_run_payload_packed, "shape", None)
-                    full_elems = int(full_shape[0]) * int(full_shape[1]) if full_shape is not None else 0
-                except Exception as e:
-                    logger.debug(f"skyline_operations:skyline_download_run_payload: {e}")
-                    full_elems = 0
-                try:
-                    staging_elems = int(shape[0]) * int(shape[1])
-                except Exception as e:
-                    logger.debug(f"skyline_operations:skyline_download_run_payload: {e}")
-                    staging_elems = 0
-                if full_elems <= 0 or staging_elems <= 0 or full_elems > staging_elems:
-                    kernels.skyline_copy_run_payload_to_download_staging_kernel(staging, int(n_genomes), int(n_slots))
-                    packed_full = staging.to_numpy()
-    except Exception as e:
-        logger.debug(f"skyline_operations:skyline_download_run_payload: {e}")
-        packed_full = None
-
-    if packed_full is None:
-        packed_full = fields.skyline_run_payload_packed.to_numpy()
-
-    cols = 1 + n_slots + 7
-    rows = n_genomes + 1
-    packed = packed_full[:rows, :cols]
-
-    best_score = int(packed[0, 0])
-    best_genome_ids = np.asarray(packed[0, 1 : 1 + n_slots], dtype=np.int32).copy()
-    best_results = np.asarray(packed[0, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32).copy()
-
-    pop_snapshot = np.asarray(packed[1 : n_genomes + 1, 1 : 1 + n_slots], dtype=np.int32).copy()
-    results = np.asarray(packed[1 : n_genomes + 1, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32).copy()
-    scores = np.asarray(packed[1 : n_genomes + 1, 0], dtype=np.int32).copy()
-
-    return best_score, best_genome_ids, best_results, pop_snapshot, results, scores
-
-
-def skyline_store_run_payload(*, run_idx: int, n_genomes: int, n_slots: int = 9) -> None:
-    """
-    Store a skyline run snapshot into the GPU multi-run buffer (no CPU readback).
-    """
-    ensure_ready()
-    run_idx = int(run_idx)
-    n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-    if run_idx < 0 or run_idx >= fields.MAX_SKYLINE_RUNS:
-        raise ValueError(f"run_idx out of range: {run_idx} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
-    if n_genomes < 0 or n_genomes > fields.MAX_SKYLINE_RUN_GENOMES:
-        raise ValueError(
-            f"n_genomes out of range for run buffer: {n_genomes} (MAX_SKYLINE_RUN_GENOMES={fields.MAX_SKYLINE_RUN_GENOMES})"
-        )
-    kernels.skyline_pack_and_store_run_payload_kernel(run_idx, n_genomes, n_slots)
-
-
 def SKYLINE_INIT_runs_best(*, run_idx_start: int, n_runs: int, n_slots: int = 9) -> None:
     """
     Initialize per-run best rows (row 0) for multi-run payload packing.
@@ -1579,148 +1533,6 @@ def skyline_update_runs_best(*, run_idx_start: int, n_runs: int, n_genomes_per_r
     kernels.skyline_update_runs_best_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
 
 
-def skyline_store_runs_payload_snapshot_segmented(
-    *, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int = 9
-) -> None:
-    """
-    Store per-genome snapshot rows (1..n_genomes) into the multi-run buffer for packed execution.
-
-    This does not touch each run's row 0 best.
-    """
-    ensure_ready()
-    run_idx_start = int(run_idx_start)
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_slots = int(n_slots)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-    if run_idx_start < 0 or run_idx_start >= fields.MAX_SKYLINE_RUNS:
-        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
-    if run_idx_start + n_runs > fields.MAX_SKYLINE_RUNS:
-        raise ValueError(
-            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})"
-        )
-    if n_genomes_per_run < 0 or n_genomes_per_run > fields.MAX_SKYLINE_RUN_GENOMES:
-        raise ValueError(
-            f"n_genomes_per_run out of range: {n_genomes_per_run} (MAX_SKYLINE_RUN_GENOMES={fields.MAX_SKYLINE_RUN_GENOMES})"
-        )
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-    kernels.skyline_store_runs_payload_snapshot_segmented_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
-
-
-def skyline_store_run_payload_segmented(*, run_idx: int, start_offset: int, n_genomes: int, n_slots: int = 9) -> None:
-    """
-    Store a skyline run snapshot into the multi-run buffer for a run stored at an offset.
-    """
-    ensure_ready()
-    run_idx = int(run_idx)
-    start_offset = int(start_offset)
-    n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-    if run_idx < 0 or run_idx >= fields.MAX_SKYLINE_RUNS:
-        raise ValueError(f"run_idx out of range: {run_idx} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
-    if n_genomes < 0 or n_genomes > fields.MAX_SKYLINE_RUN_GENOMES:
-        raise ValueError(
-            f"n_genomes out of range for run buffer: {n_genomes} (MAX_SKYLINE_RUN_GENOMES={fields.MAX_SKYLINE_RUN_GENOMES})"
-        )
-    if start_offset < 0 or (start_offset + n_genomes) > fields.MAX_GENOMES:
-        raise ValueError(f"Invalid start_offset/n_genomes: start={start_offset} n_genomes={n_genomes}")
-    kernels.skyline_pack_and_store_run_payload_segmented_kernel(run_idx, start_offset, n_genomes, n_slots)
-
-
-def skyline_download_runs_payload(*, n_runs: int, n_genomes: int, n_slots: int = 9) -> np.ndarray:
-    """
-    Download stored skyline run snapshots from the GPU multi-run buffer in one transfer.
-
-    Returns:
-        np.ndarray[int32] with shape (n_runs, n_genomes+1, 1+n_slots+7)
-    """
-    ensure_ready()
-    n_runs = int(n_runs)
-    n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-    if n_runs < 0 or n_runs > fields.MAX_SKYLINE_RUNS:
-        raise ValueError(f"n_runs out of range: {n_runs} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
-    if n_genomes < 0 or n_genomes > fields.MAX_SKYLINE_RUN_GENOMES:
-        raise ValueError(
-            f"n_genomes out of range for run buffer: {n_genomes} (MAX_SKYLINE_RUN_GENOMES={fields.MAX_SKYLINE_RUN_GENOMES})"
-        )
-
-    cols = 1 + n_slots + 7
-    n_rows = n_genomes + 1
-
-    perf = env_flag("PERF_TIMING")
-    t_total = time.perf_counter() if perf else 0.0
-
-    out = None
-    mode = "full"
-    copy_ms = 0.0
-
-    try:
-        full_shape = getattr(fields.skyline_runs_payload_packed, "shape", None)
-        full_elems = int(full_shape[0]) * int(full_shape[1]) * int(full_shape[2]) if full_shape is not None else 0
-
-        staging_candidates = [
-            ("staging_16", fields.skyline_runs_payload_download_staging_16),
-            ("staging_64", fields.skyline_runs_payload_download_staging_64),
-            ("staging_128", fields.skyline_runs_payload_download_staging_128),
-        ]
-        best = None
-        for name, fld in staging_candidates:
-            if fld is None:
-                continue
-            shape = getattr(fld, "shape", None)
-            if not shape or len(shape) < 3:
-                continue
-            if n_runs <= int(shape[0]) and n_rows <= int(shape[1]):
-                elems = int(shape[0]) * int(shape[1]) * int(shape[2])
-                if best is None or elems < best[0]:
-                    best = (elems, name, fld, shape)
-
-        if best is not None and full_elems > int(best[0]):
-            _, name, fld, shape = best
-            mode = str(name)
-            t_copy = time.perf_counter() if perf else 0.0
-            kernels.skyline_copy_runs_payload_to_download_staging_kernel(fld, int(n_runs), int(n_genomes), int(n_slots))
-            copy_ms = (time.perf_counter() - t_copy) * 1000.0 if perf else 0.0
-            out = fld.to_numpy()
-    except Exception as e:
-        logger.debug(f"skyline_operations:skyline_download_runs_payload: {e}")
-        out = None
-
-    if out is None:
-        out = fields.skyline_runs_payload_packed.to_numpy()
-
-    view = out[:n_runs, :n_rows, :cols]
-    total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
-    if perf:
-        try:
-            shape = getattr(view, "shape", None)
-            elems = int(shape[0]) * int(shape[1]) * int(shape[2]) if shape is not None else 0
-            view_bytes_i32 = elems * 4
-        except Exception as e:
-            logger.debug(f"skyline_operations:skyline_download_runs_payload: {e}")
-            view_bytes_i32 = 0
-        try:
-            out_shape = getattr(out, "shape", None)
-            out_elems = int(out_shape[0]) * int(out_shape[1]) * int(out_shape[2]) if out_shape is not None else 0
-            transfer_bytes_i32 = out_elems * 4
-        except Exception as e:
-            logger.debug(f"skyline_operations:skyline_download_runs_payload: {e}")
-            transfer_bytes_i32 = 0
-        print(
-            "[PERF][GADownloadRunsPayload] "
-            f"runs={n_runs} pop={n_genomes} mode={mode} copy={copy_ms:.1f}ms total={total_ms:.1f}ms "
-            f"view_bytes={view_bytes_i32} transfer_bytes={transfer_bytes_i32}"
-        )
-
-    if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:
-        return view
-    return np.ascontiguousarray(view, dtype=np.int32)
-
-
 def skyline_pack_fg_candidates_table_segmented(
     *,
     table_slot: int,
@@ -1747,8 +1559,6 @@ def skyline_pack_fg_candidates_table_segmented(
 ) -> None:
     """
     Pack a compact skyline->FG candidate table for packed multi-run execution.
-
-    This is intended to replace large `skyline_download_runs_payload()` transfers.
     """
     ensure_ready()
     table_slot = int(table_slot)
@@ -1827,7 +1637,7 @@ def skyline_download_fg_selected_payload(
     t_total = time.perf_counter() if perf else 0.0
 
     # Select coordinates on GPU, then copy only the selected candidates into a bounded staging field.
-    kernels.skyline_select_fg_candidates_coords_kernel(
+    kernels.skyline_select_top_base_fg_candidate_coords_kernel(
         int(table_slot),
         int(n_runs),
         int(limit),
@@ -1988,29 +1798,6 @@ def skyline_download_island_elite_indices(n_elites: int) -> np.ndarray:
     return np.asarray(out[:n_elites], dtype=np.int32)
 
 
-def skyline_island_migration(n_genomes: int, n_islands: int, migrate_count: int, n_slots: int = 9) -> None:
-    """
-    GPU-side island migration using ring topology.
-
-    Migrates top-k genomes from each island to the next island (ring topology),
-    replacing the worst-k genomes in the destination. This eliminates the expensive
-    CPU round-trip (download scores, download population, upload patched population)
-    that was previously required for migration.
-
-    Prerequisites:
-    - Call skyline_upload_island_boundaries() first
-    - skyline_scores must be populated from evaluation
-
-    Args:
-        n_genomes: Total population size
-        n_islands: Number of islands
-        migrate_count: Number of genomes to migrate per island (max 8)
-        n_slots: Number of equipment slots per genome (default 9)
-    """
-    ensure_ready()
-    kernels.skyline_island_migration_kernel(int(n_genomes), int(n_islands), int(migrate_count), int(n_slots))
-
-
 def skyline_island_migration_runs(
     *, n_runs: int, n_genomes_per_run: int, n_islands: int, migrate_count: int, n_slots: int = 9
 ) -> None:
@@ -2104,6 +1891,9 @@ def warmup_skyline_live_request_kernels() -> None:
     slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
     skyline_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
     skyline_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
+    skyline_upload_fg_effective_tables(
+        np.zeros((1,), dtype=np.int32), np.zeros((1,), dtype=np.int32)
+    )
     skyline_upload_island_boundaries(np.array([0, int(n_genomes)], dtype=np.int32))
 
     skyline_generate_initial_populations(
@@ -2204,6 +1994,9 @@ def warmup_skyline_kernels() -> None:
     slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
     skyline_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
     skyline_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
+    skyline_upload_fg_effective_tables(
+        np.zeros((1,), dtype=np.int32), np.zeros((1,), dtype=np.int32)
+    )
 
     # Upload a trivial island boundary table so island-based kernels have valid ranges.
     n_islands = 2
@@ -2326,6 +2119,9 @@ def warmup_skyline_kernels_light() -> None:
     slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
     skyline_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
     skyline_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
+    skyline_upload_fg_effective_tables(
+        np.zeros((1,), dtype=np.int32), np.zeros((1,), dtype=np.int32)
+    )
 
     skyline_upload_island_boundaries(np.array([0, int(n_genomes)], dtype=np.int32))
     pop = np.zeros((int(n_genomes), int(n_slots)), dtype=np.int32)

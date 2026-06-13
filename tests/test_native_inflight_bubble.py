@@ -13,8 +13,6 @@ def test_bubble_tracker_snapshot_owns_kpi_shape():
         gpu_idle=True,
         last_progress=10.0,
         oldest_fg_wait_s=1.5,
-        lane_fill_hold_count=4,
-        target_song_lanes=5,
     )
 
     assert snapshot["idle_sec"] == 3.0
@@ -22,8 +20,6 @@ def test_bubble_tracker_snapshot_owns_kpi_shape():
     assert snapshot["ready_ga_count"] == 2
     assert snapshot["ready_fg_count"] == 1
     assert snapshot["active_song_lanes"] == 3
-    assert snapshot["icfg.target_song_lanes"] == 5
-    assert snapshot["lane_fill_hold_count"] == 4
     assert snapshot["backlog_count"] == 8
     assert snapshot["gpu_idle"] == 1
 
@@ -79,8 +75,6 @@ def test_bubble_tracker_snapshot_from_pipeline_counts_owns_backlog_and_idle_shap
         fg_futures_count=0,
         last_progress=12.0,
         oldest_fg_wait_s=2.0,
-        lane_fill_hold_count=11,
-        target_song_lanes=12,
     )
 
     assert snapshot["ready_ga_count"] == 2
@@ -89,18 +83,15 @@ def test_bubble_tracker_snapshot_from_pipeline_counts_owns_backlog_and_idle_shap
     assert snapshot["backlog_count"] == 40
     assert snapshot["gpu_idle"] == 1
     assert snapshot["idle_sec"] == 3.0
-    assert snapshot["lane_fill_hold_count"] == 11
-    assert snapshot["icfg.target_song_lanes"] == 12
 
 
 def test_bubble_tracker_finish_active_before_summary():
     tracker = BubbleTracker(active_started=2.0, total_idle_s=1.0, peak_kpi=7.0)
 
     tracker.finish_active(now_mono=5.0)
-    summary = tracker.summary(active_song_lanes=2, target_song_lanes=4)
+    summary = tracker.summary(active_song_lanes=2)
 
     assert tracker.active_started is None
     assert summary["bubble_total_idle_sec"] == 4.0
     assert summary["bubble_peak_kpi"] == 7.0
     assert summary["active_song_lanes"] == 2
-    assert summary["icfg.target_song_lanes"] == 4

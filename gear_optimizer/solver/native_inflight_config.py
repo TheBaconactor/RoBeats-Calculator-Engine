@@ -15,11 +15,14 @@ from typing import Any
 
 from gear_optimizer.core.config import GASettings as GARuntimeSettings
 from gear_optimizer.core.parsing import env_get
-from gear_optimizer.core.utils import cfg_from_dict, safe_int
+from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.domain.jobs import task_cfg_dict
 from gear_optimizer.solver.inflight_utils import _truthy
 
 logger = logging.getLogger(__name__)
+
+CANONICAL_GA_QUEUE_MULT = 2
+CANONICAL_PREP_BUFFER_MULT = 4
 
 
 def _scheduler_policy():
@@ -56,53 +59,22 @@ def default_worker_threads(*, inflight_limit: int, kind: str) -> int:
 
 
 def read_inflight_worker_count(
-    cfg0: Any,
     *,
-    config_key: str,
-    env_key: str,
     inflight_limit: int,
     kind: str,
     ga_seed: str = "",
 ) -> int:
-    workers = 0
-    if cfg0 is not None:
-        try:
-            workers = safe_int(cfg0.get("IterationEngine", str(config_key), fallback="0"), 0)
-        except (configparser.Error, ValueError, TypeError):
-            workers = 0
-    raw = env_get(str(env_key))
-    if raw is not None and str(raw).strip() != "":
-        try:
-            workers = int(raw)
-        except (ValueError, TypeError):
-            pass
-    if workers <= 0:
-        if str(ga_seed or "").strip() and str(kind or "").strip().lower() == "prep":
-            return 1
-        workers = default_worker_threads(inflight_limit=int(inflight_limit), kind=str(kind))
+    if str(ga_seed or "").strip() and str(kind or "").strip().lower() == "prep":
+        return 1
+    workers = default_worker_threads(inflight_limit=int(inflight_limit), kind=str(kind))
     return max(1, int(workers))
 
 
 def read_db_prefetch_workers(
-    cfg0: Any,
     *,
     fg_prep_workers: int,
 ) -> int:
-    workers = 0
-    if cfg0 is not None:
-        try:
-            workers = safe_int(cfg0.get("IterationEngine", "InFlight_DBPrefetchWorkers", fallback="0"), 0)
-        except (configparser.Error, ValueError, TypeError):
-            workers = 0
-    raw = env_get("INFLIGHT_DB_PREFETCH_WORKERS")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            workers = int(raw)
-        except (ValueError, TypeError):
-            pass
-    if workers <= 0:
-        workers = max(1, min(int(fg_prep_workers), 4))
-    return max(1, int(workers))
+    return max(1, min(int(fg_prep_workers), 4))
 
 
 def read_ga_multi_start(cfg0: Any) -> int:
@@ -122,38 +94,22 @@ class InflightConfig:
     inflight_limit: int
     max_song_slots: int
     song_slot_limit: int
-    target_song_lanes: int
-    ga_queue_mult: int
     ga_queue_limit: int
     prep_buffer_mult: int
     prep_limit: int
     prep_workers: int
     decode_workers: int
-    fg_aging_trigger_s: float
-    fg_aging_hard_s: float
     fg_scheduler_norm: str
-    fg_ga_credit_budget_cfg: int
-    continuous_ga_dispatch_burst: int
-    fg_adaptive_submit_max_burst: int
-    inflight_fg_hold_slots: bool
-    fg_slot_reserve: int
-    ga_queue_limit_base: int
-    ga_queue_extra_free_on_slot_pressure: int
-    ga_queue_pressure_window_s: float
-    ga_slack_slots: int
-    fg_hold_budget: int
     stage_profile_enabled: bool
     stage_profile_path: str | None
     runtime: "InflightRuntimeSettings"
     loop_observer: "InflightLoopObserverSettings"
-    fg_decision_debug: bool
     fg_submit_debug: bool
 
 
 @dataclass(frozen=True)
 class InflightRuntimeSettings:
     gpu_executor_init_timeout_sec: float
-    ga_queue_debug: bool
 
 
 def read_inflight_runtime_settings(
@@ -167,7 +123,6 @@ def read_inflight_runtime_settings(
 
     return InflightRuntimeSettings(
         gpu_executor_init_timeout_sec=float(gpu_executor_init_timeout_sec),
-        ga_queue_debug=_truthy(env_get_fn("INFLIGHT_GA_QUEUE_DEBUG", "0")),
     )
 
 
@@ -265,193 +220,35 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             pass
 
     scheduler_policy = _scheduler_policy()
-    target_song_lanes = scheduler_policy.read_inflight_target_song_lanes(
-        cfg0,
-        inflight_limit=int(inflight_limit),
-    )
 
-    ga_queue_mult = 0
-    if cfg0 is not None:
-        try:
-            ga_queue_mult = safe_int(cfg0.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0)
-        except (configparser.Error, ValueError, TypeError):
-            ga_queue_mult = 0
-    raw = env_get("INFLIGHT_GA_QUEUE_MULT")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            ga_queue_mult = int(raw)
-        except (ValueError, TypeError):
-            pass
-    if ga_queue_mult <= 0:
-        ga_queue_mult = 2
-    ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
-    ga_queue_limit = max(1, int(inflight_limit) * int(ga_queue_mult))
+    # The owner must never be request-starved while prepared GA work exists: keep
+    # the GA queue as deep as the slot pool allows. Slots release at GA completion
+    # (the fused GA turn is the only device consumer), so every usable slot can sit
+    # in the GA conveyor.
+    ga_queue_limit = max(1, int(inflight_limit) * int(CANONICAL_GA_QUEUE_MULT))
     ga_queue_limit = min(int(ga_queue_limit), int(song_slot_limit))
 
-    prep_buffer_mult = 0
-    if cfg0 is not None:
-        try:
-            prep_buffer_mult = safe_int(cfg0.get("IterationEngine", "InFlight_PrepBufferMult", fallback="0"), 0)
-        except (configparser.Error, ValueError, TypeError):
-            prep_buffer_mult = 0
-    raw = env_get("INFLIGHT_PREP_BUFFER_MULT")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            prep_buffer_mult = int(raw)
-        except (ValueError, TypeError):
-            pass
-    if prep_buffer_mult <= 0:
-        prep_buffer_mult = 4
-    prep_buffer_mult = max(1, min(int(prep_buffer_mult), 16))
+    prep_buffer_mult = int(CANONICAL_PREP_BUFFER_MULT)
     prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
     ga_seed = str(env_get("GA_SEED") or "").strip()
     prep_workers = read_inflight_worker_count(
-        cfg0,
-        config_key="InFlight_PrepWorkers",
-        env_key="INFLIGHT_PREP_WORKERS",
         inflight_limit=int(inflight_limit),
         kind="prep",
         ga_seed=ga_seed,
     )
     decode_workers = read_inflight_worker_count(
-        cfg0,
-        config_key="InFlight_DecodeWorkers",
-        env_key="INFLIGHT_DECODE_WORKERS",
         inflight_limit=int(inflight_limit),
         kind="decode",
     )
 
-    fg_aging_trigger_ms = 750.0
-    fg_aging_hard_ms = 2500.0
-    try:
-        if cfg0 is not None:
-            if cfg0.has_option("IterationEngine", "InFlight_FGAgingTriggerMs"):
-                fg_aging_trigger_ms = float(cfg0.get("IterationEngine", "InFlight_FGAgingTriggerMs", fallback="750"))
-            if cfg0.has_option("IterationEngine", "InFlight_FGAgingHardMs"):
-                fg_aging_hard_ms = float(cfg0.get("IterationEngine", "InFlight_FGAgingHardMs", fallback="2500"))
-    except (configparser.Error, ValueError, TypeError):
-        fg_aging_trigger_ms = 750.0
-        fg_aging_hard_ms = 2500.0
-    raw = env_get("INFLIGHT_FG_AGING_TRIGGER_MS")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            fg_aging_trigger_ms = float(raw)
-        except (ValueError, TypeError):
-            pass
-    raw = env_get("INFLIGHT_FG_AGING_HARD_MS")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            fg_aging_hard_ms = float(raw)
-        except (ValueError, TypeError):
-            pass
-    fg_aging_trigger_s = max(0.0, float(fg_aging_trigger_ms) / 1000.0)
-    fg_aging_hard_s = max(0.0, float(fg_aging_hard_ms) / 1000.0)
-    if fg_aging_hard_s > 0.0 and fg_aging_hard_s < fg_aging_trigger_s:
-        fg_aging_hard_s = float(fg_aging_trigger_s)
-
     fg_scheduler_norm = scheduler_policy.read_fg_scheduler_mode()
 
-    fg_ga_credit_budget_cfg, _fg_ga_credit_explicit = scheduler_policy.read_fg_ga_credit_budget(
-        cfg0,
-        default_budget=max(1, int(inflight_limit)),
-    )
-    continuous_ga_dispatch_burst = scheduler_policy.read_continuous_ga_dispatch_burst(
-        cfg0,
-        default_burst=2,
-    )
-    fg_adaptive_submit_max_burst = scheduler_policy.read_continuous_fg_adaptive_max_burst(cfg0)
-
     try:
-        msg = f"[InFlight][FG] scheduler={fg_scheduler_norm}"
-        msg += (
-            f" (GA_CreditBudget={int(fg_ga_credit_budget_cfg)}, "
-            f"GA_DispatchBurst={int(continuous_ga_dispatch_burst)}, "
-            f"FG_AdaptiveMaxBurst={int(fg_adaptive_submit_max_burst)}, "
-            f"TargetSongLanes={int(target_song_lanes)}, "
-            f"InFlight_FGAgingTriggerMs={int(fg_aging_trigger_s * 1000.0)}, "
-            f"InFlight_FGAgingHardMs={int(fg_aging_hard_s * 1000.0)})"
+        logger.debug(
+            f"[InFlight][FG] scheduler={fg_scheduler_norm} (GA_QueueLimit={int(ga_queue_limit)})"
         )
-        logger.debug(msg)
     except (ValueError, TypeError):
         pass
-
-    fg_slot_reserve = scheduler_policy.read_fg_slot_reserve(
-        cfg0,
-        inflight_limit=int(inflight_limit),
-        song_slot_limit=int(song_slot_limit),
-    )
-    if fg_slot_reserve:
-        ga_queue_limit = min(int(ga_queue_limit), max(1, int(song_slot_limit) - int(fg_slot_reserve)))
-
-    ga_queue_limit_base = int(ga_queue_limit)
-
-    ga_queue_extra_free_on_slot_pressure = 1
-    try:
-        if cfg0 is not None:
-            ga_queue_extra_free_on_slot_pressure = safe_int(
-                cfg0.get("IterationEngine", "InFlight_GA_ExtraFreeSlotsOnSlotPressure", fallback="1"),
-                1,
-            )
-    except (configparser.Error, ValueError, TypeError):
-        ga_queue_extra_free_on_slot_pressure = 1
-    raw = env_get("INFLIGHT_GA_EXTRA_FREE_SLOTS_ON_SLOT_PRESSURE")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            ga_queue_extra_free_on_slot_pressure = int(raw)
-        except (ValueError, TypeError):
-            pass
-    ga_queue_extra_free_on_slot_pressure = max(0, min(int(ga_queue_extra_free_on_slot_pressure), 8))
-
-    ga_queue_pressure_window_s = 1.5
-    try:
-        if cfg0 is not None:
-            ga_queue_pressure_window_s = float(
-                cfg0.get("IterationEngine", "InFlight_GA_SlotPressureWindowSec", fallback="1.5")
-            )
-    except (configparser.Error, ValueError, TypeError):
-        ga_queue_pressure_window_s = 1.5
-    raw = env_get("INFLIGHT_GA_SLOT_PRESSURE_WINDOW_SEC")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            ga_queue_pressure_window_s = float(raw)
-        except (ValueError, TypeError):
-            pass
-    ga_queue_pressure_window_s = max(0.0, min(float(ga_queue_pressure_window_s), 60.0))
-
-    ga_slack_slots = 0
-    try:
-        ga_slack_slots = max(0, int(song_slot_limit) - int(ga_queue_limit))
-    except (ValueError, TypeError):
-        ga_slack_slots = 0
-
-    fg_hold_budget = int(ga_slack_slots)
-    inflight_fg_hold_slots = True
-
-    if inflight_fg_hold_slots and int(in_flight_songs) > 1:
-        if int(fg_hold_budget) <= 0:
-            required_gpu_slots = None
-            try:
-                required_usable = int(ga_queue_limit)
-                required_gpu_slots = int(required_usable) + 1
-            except (ValueError, TypeError):
-                required_gpu_slots = None
-            try:
-                msg = (
-                    "[InFlight][WARN] Slot pressure: FG slot holds requested by native scheduler with "
-                    f"usable_slots={int(song_slot_limit)} ga_queue_limit={int(ga_queue_limit)} slack={int(ga_slack_slots)}; "
-                    "FG slot reuse is impossible with the current GA queue depth."
-                )
-                if required_gpu_slots is not None:
-                    msg += f" (For full slot reuse: set GPU_SONG_SLOTS>={int(required_gpu_slots)} or reduce InFlight_GA_QueueMult.)"
-                logger.debug(msg)
-            except (ValueError, TypeError):
-                pass
-            inflight_fg_hold_slots = False
-            fg_hold_budget = 0
-            try:
-                logger.debug("[InFlight][Auto] Disabling FG slot holds (no slack song slots available).")
-            except (ValueError, TypeError):
-                pass
 
     try:
         from gear_optimizer.solver.taichi_gem import fields as gpu_fields
@@ -484,7 +281,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
             stage_profile_path = None
 
-    fg_decision_debug = _truthy(env_get("INFLIGHT_FG_DECISION_DEBUG", "0"))
     fg_submit_debug = _truthy(env_get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
     runtime = read_inflight_runtime_settings()
     loop_observer = read_inflight_loop_observer_settings()
@@ -496,31 +292,16 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         inflight_limit=inflight_limit,
         max_song_slots=max_song_slots,
         song_slot_limit=song_slot_limit,
-        target_song_lanes=target_song_lanes,
-        ga_queue_mult=ga_queue_mult,
         ga_queue_limit=ga_queue_limit,
         prep_buffer_mult=prep_buffer_mult,
         prep_limit=prep_limit,
         prep_workers=prep_workers,
         decode_workers=decode_workers,
-        fg_aging_trigger_s=fg_aging_trigger_s,
-        fg_aging_hard_s=fg_aging_hard_s,
         fg_scheduler_norm=fg_scheduler_norm,
-        fg_ga_credit_budget_cfg=fg_ga_credit_budget_cfg,
-        continuous_ga_dispatch_burst=continuous_ga_dispatch_burst,
-        fg_adaptive_submit_max_burst=fg_adaptive_submit_max_burst,
-        inflight_fg_hold_slots=inflight_fg_hold_slots,
-        fg_slot_reserve=fg_slot_reserve,
-        ga_queue_limit_base=ga_queue_limit_base,
-        ga_queue_extra_free_on_slot_pressure=ga_queue_extra_free_on_slot_pressure,
-        ga_queue_pressure_window_s=ga_queue_pressure_window_s,
-        ga_slack_slots=ga_slack_slots,
-        fg_hold_budget=fg_hold_budget,
         stage_profile_enabled=stage_profile_enabled,
         stage_profile_path=stage_profile_path,
         runtime=runtime,
         loop_observer=loop_observer,
-        fg_decision_debug=fg_decision_debug,
         fg_submit_debug=fg_submit_debug,
     )
 
@@ -582,6 +363,10 @@ class NativeSongGPUInputs:
     init_heuristic_topk: Optional[np.ndarray] = None
     init_heuristic_k: int = 0
     init_heuristic_copies: int = 25
+    # GA->FG effective-dedup equivalence tables for this song's color context
+    # (Slice 1). Built at prep, uploaded by the GA run before candidate select.
+    fg_gear_name_rank: Optional[np.ndarray] = None
+    fg_mini_sig_id: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -602,7 +387,6 @@ class NativeSongDecodeState:
     decode_future: Optional[concurrent.futures.Future] = None
     decode_submit_t0: float | None = None
     ga_candidates: Optional[list[JsonDict]] = None
-    ga_persistence_candidates: Optional[list[JsonDict]] = None
     fg_surface_prepared: bool = False
     best_data: Optional[JsonDict] = None
     best_gear: Optional[list[Any]] = None
@@ -621,6 +405,11 @@ class NativeSongFGState:
     fg_prep_submit_t0: float | None = None
     fg_response_scoring_bundle: Any | None = None
     fg_response_frontier_plan: Any | None = None
+    # Slice 3 fused GA->FG handoff: the owner-scored per-base_components FG result map
+    # ({base_components_7tuple -> FgFusedOwnerScoreRow}) returned by the GA run on the
+    # owner thread. The FG worker materializes from this instead of submitting
+    # BUILD+SCORE owner requests. Set by decode_ga_payload_sync from the GA response.
+    fg_owner_score_map: Any | None = None
     cpu_fg_prep_s: float = 0.0
     fg_prep_wall_s: float = 0.0
     cpu_fg_run_s: float = 0.0
@@ -683,7 +472,13 @@ _FIELD_PATH_BY_NAME = {
 }
 
 
-@dataclass
+# eq=False (identity equality/hash): conveyor deques remove songs by identity,
+# and the auto-generated value __eq__ would recurse into NativeSongGPUInputs'
+# numpy fields (ambiguous-truth crash) and, on a not-found miss, into the deep
+# repr (a proven multi-second stall). No code compares NativeSong by value.
+# This enforces the identity-conveyor invariant at the producer rather than per
+# call site (see _remove_song_by_identity for the absence-tolerant variant).
+@dataclass(eq=False)
 class NativeSong:
     config: NativeSongConfig
     gpu_inputs: NativeSongGPUInputs
