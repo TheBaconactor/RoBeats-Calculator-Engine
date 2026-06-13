@@ -619,7 +619,9 @@ def _score_response_group_meta_gpu(
             metrics={
                 "phase": "score_loop",
                 "n_chunks": int(_n_chunks),
+                "n_groups": int(group_count),
                 "logical_surface_rows": int(logical_surface_rows),
+                "total_work": int(total_work),
                 "plan_ms": _acc_plan * 1000.0,
                 "enqueue_ms": _acc_enqueue * 1000.0,
                 "sync_ms": _acc_sync * 1000.0,
