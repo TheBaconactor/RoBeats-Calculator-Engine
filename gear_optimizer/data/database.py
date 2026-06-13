@@ -1745,6 +1745,7 @@ def get_best_loadouts(
         pass
 from . import pending_fg_jobs as _pending_fg_jobs
 get_song_names_present_in_db = _pending_fg_jobs.get_song_names_present_in_db
+get_song_names_with_persisted_loadouts = _pending_fg_jobs.get_song_names_with_persisted_loadouts
 upsert_pending_fg_job = _pending_fg_jobs.upsert_pending_fg_job
 delete_pending_fg_job = _pending_fg_jobs.delete_pending_fg_job
 list_pending_fg_jobs = _pending_fg_jobs.list_pending_fg_jobs

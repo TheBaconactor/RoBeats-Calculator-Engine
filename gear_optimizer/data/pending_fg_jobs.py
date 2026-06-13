@@ -12,11 +12,19 @@ from .database import get_db_connection, get_db_connection_cached, get_evolution
 logger = logging.getLogger(__name__)
 
 
-def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[str] = None) -> set[str]:
+def get_song_names_present_in_db(
+    song_names: Iterable[str],
+    db_path: Optional[str] = None,
+    *,
+    require_loadouts: bool = False,
+) -> set[str]:
     """
     Return the subset of song names that are already present in the DB.
 
-    Presence is defined as having a row in `songs` OR any row in the loadout tables.
+    By default, presence is defined as having a row in `songs` OR any row in the
+    loadout tables. When ``require_loadouts=True``, only persisted loadout rows
+    count as present so stub ``songs`` rows without optimization output are treated
+    as missing.
     """
     names = [name for name in (song_names or []) if name]
     if not names:
@@ -35,14 +43,15 @@ def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[st
         batch = names[offset : offset + batch_size]
         placeholders = ",".join("?" for _ in batch)
 
-        try:
-            rows = conn.execute(
-                f"SELECT name FROM songs WHERE name IN ({placeholders})",
-                batch,
-            ).fetchall()
-            present.update(row[0] for row in rows if row and row[0])
-        except sqlite3.Error:
-            pass
+        if not require_loadouts:
+            try:
+                rows = conn.execute(
+                    f"SELECT name FROM songs WHERE name IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                present.update(row[0] for row in rows if row and row[0])
+            except sqlite3.Error:
+                pass
 
         for table in ("team_buff_loadouts", "team_buff_fg_loadouts"):
             try:
@@ -55,6 +64,14 @@ def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[st
                 continue
 
     return present
+
+
+def get_song_names_with_persisted_loadouts(
+    song_names: Iterable[str],
+    db_path: Optional[str] = None,
+) -> set[str]:
+    """Return song names that already have persisted base or FG loadout rows."""
+    return get_song_names_present_in_db(song_names, db_path, require_loadouts=True)
 
 
 def upsert_pending_fg_job(song_name: str, candidates: List[Dict[str, Any]]) -> None:
