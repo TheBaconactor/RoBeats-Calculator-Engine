@@ -11,6 +11,16 @@ from .parsing import env_flag, env_get
 _PROFILE_EVENT_LOCK = threading.Lock()
 
 
+def profile_events_active() -> bool:
+    """True when profile events will actually be written (output path configured).
+
+    Mirrors the write gate in ``emit_profile_event`` so hot paths can skip
+    building metrics / per-iteration timing when profiling is off. A configured
+    path is the real gate (the flag alone writes nothing without a path).
+    """
+    return bool(str(env_get("METAFINDER_PROFILE_EVENTS_PATH") or env_get("PROFILE_EVENTS_PATH") or "").strip())
+
+
 def emit_profile_event(
     *,
     component: str,

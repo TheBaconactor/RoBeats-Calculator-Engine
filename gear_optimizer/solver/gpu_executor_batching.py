@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
 
@@ -491,7 +492,24 @@ def execute_gpu_native_ga_run(
         )
         if n_genomes is not None:
             kwargs["n_genomes"] = int(n_genomes)
+
+        # Gated owner-thread phase profiling for the fused GA->FG continuation
+        # (docs/research/GPU_FUSED_FG_OWNER_GAP_REVIEW_REQUEST_20260613.md). OFF
+        # unless METAFINDER_PROFILE_EVENTS_PATH is set; pure measurement, no behavior change.
+        _prof = profile_events_active()
+        _prof_song_key = ""
+        if _prof and isinstance(calc_song, dict):
+            _prof_song_key = f"{calc_song.get('Song_Name', '')}|{calc_song.get('Difficulty', '')}"
+
+        _t_ga = time.perf_counter() if _prof else 0.0
         runs_payload = run_payload_fn(**kwargs)
+        if _prof:
+            emit_profile_event(
+                component="fg_fused",
+                event="fg_owner_phase",
+                song_key=_prof_song_key,
+                metrics={"phase": "ga_run_total", "total_ms": (time.perf_counter() - _t_ga) * 1000.0},
+            )
 
         # FUSED GA->FG owner continuation (Slice 3): immediately after the GA
         # pack/select, on the SAME owner thread, score FG straight from the selected
@@ -504,6 +522,7 @@ def execute_gpu_native_ga_run(
                 score_fused_fg_from_selected_payload as fused_fg_fn,
             )
 
+        _t_fg = time.perf_counter() if _prof else 0.0
         fg_owner_score = fused_fg_fn(
             runs_payload=runs_payload,
             fg_scoring_bundle=fg_scoring_bundle,
@@ -511,6 +530,13 @@ def execute_gpu_native_ga_run(
             ref_arrays=ref_arrays,
             cfg_data=dict(cfg_data),
         )
+        if _prof:
+            emit_profile_event(
+                component="fg_fused",
+                event="fg_owner_phase",
+                song_key=_prof_song_key,
+                metrics={"phase": "fg_block_total", "total_ms": (time.perf_counter() - _t_fg) * 1000.0},
+            )
     except Exception as e:
         return GpuResponse(
             request_id=request.request_id,

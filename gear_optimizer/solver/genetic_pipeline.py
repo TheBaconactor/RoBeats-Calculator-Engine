@@ -32,7 +32,7 @@ from ..core.constants import (
 )
 from ..core.gem_defs import build_gem_counts, build_gem_details
 from ..core.color_flags import normalize_color_flags
-from ..core.profile_events import emit_profile_event
+from ..core.profile_events import emit_profile_event, profile_events_active
 from .base_stats import (
     COLOR_TO_STAT_INDEX,
     build_base_fixed_stats_array,
@@ -1458,11 +1458,19 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
             local_run_idx += int(batch_len)
 
+        _prof_dl = profile_events_active()
+        _t_dl = time.perf_counter() if _prof_dl else 0.0
         selected_payload = gpu_api.ga_download_fg_selected_payload(
             table_slot=int(song_slot),
             n_runs=int(seg_len),
             limit=int(fg_candidate_limit),
         )
+        if _prof_dl:
+            emit_profile_event(
+                component="fg_fused",
+                event="fg_owner_phase",
+                metrics={"phase": "download", "total_ms": (time.perf_counter() - _t_dl) * 1000.0},
+            )
         payload_segments.append(selected_payload)
         run_start_global += seg_len
 

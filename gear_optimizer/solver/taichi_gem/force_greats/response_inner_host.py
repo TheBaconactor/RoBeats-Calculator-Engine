@@ -1,5 +1,6 @@
 from collections import OrderedDict
 import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -11,6 +12,7 @@ from gear_optimizer.core.constants import (
     MAX_STAT_INDEX,
 )
 from gear_optimizer.core.jit_setup import jit
+from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
 from gear_optimizer.helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from gear_optimizer.solver.taichi_gem import api as gem_api
 from gear_optimizer.solver.scoring.fg_policy import is_single_color_song
@@ -548,8 +550,16 @@ def _score_response_group_meta_gpu(
     chunk_capacity = max(1, min(int(max_surface_dispatch_rows), int(logical_surface_rows)))
     chunk_scores = np.empty((chunk_capacity,), dtype=np.int32)
     chunk_details = np.empty((chunk_capacity, 9), dtype=np.int32)
+    # Gated owner-thread phase profiling: split the chunk loop into plan/enqueue/
+    # GPU-sync/host-reduce to decide A (move host work off owner) vs B (pipeline the
+    # loop). OFF unless METAFINDER_PROFILE_EVENTS_PATH is set; no behavior change.
+    _prof = profile_events_active()
+    _acc_plan = _acc_enqueue = _acc_sync = _acc_reduce = 0.0
+    _n_chunks = 0
     chunk_start = 0
     while chunk_start < int(logical_surface_rows):
+        if _prof:
+            _t0 = time.perf_counter()
         row_stop = min(int(logical_surface_rows), int(chunk_start) + int(max_surface_dispatch_rows))
         work_limit = int(logical_work_cumsum_all[int(chunk_start)]) + int(max_surface_dispatch_work)
         work_stop = int(np.searchsorted(logical_work_cumsum_all, work_limit, side="right") - 1)
@@ -561,6 +571,8 @@ def _score_response_group_meta_gpu(
             raise ValueError("response frontier logical surface chunk planner produced an empty chunk")
         scores_view = chunk_scores[:row_count]
         details_view = chunk_details[:row_count]
+        if _prof:
+            _t1 = time.perf_counter()
         _fg_response_inner_batch_kernel(
             int(row_count),
             surface_words_all,
@@ -578,7 +590,11 @@ def _score_response_group_meta_gpu(
             details_view,
             bool(allow_pp),
         )
+        if _prof:
+            _t2 = time.perf_counter()
         ti.sync()
+        if _prof:
+            _t3 = time.perf_counter()
         _reduce_response_inner_chunk_jit(
             int(row_count),
             scores_view,
@@ -588,7 +604,28 @@ def _score_response_group_meta_gpu(
             best_scores,
             out_rows,
         )
+        if _prof:
+            _t4 = time.perf_counter()
+            _acc_plan += _t1 - _t0
+            _acc_enqueue += _t2 - _t1
+            _acc_sync += _t3 - _t2
+            _acc_reduce += _t4 - _t3
+            _n_chunks += 1
         chunk_start = int(chunk_stop)
+    if _prof:
+        emit_profile_event(
+            component="fg_fused",
+            event="fg_owner_phase",
+            metrics={
+                "phase": "score_loop",
+                "n_chunks": int(_n_chunks),
+                "logical_surface_rows": int(logical_surface_rows),
+                "plan_ms": _acc_plan * 1000.0,
+                "enqueue_ms": _acc_enqueue * 1000.0,
+                "sync_ms": _acc_sync * 1000.0,
+                "reduce_ms": _acc_reduce * 1000.0,
+            },
+        )
     return out_rows, int(logical_surface_rows)
 
 

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
 from gear_optimizer.core.constants import (
     GEM_SCALE_FEVER,
     GEM_STAT_TO_ELEMENT_SCALE,
@@ -713,8 +713,24 @@ def build_prepared_force_greats_response_frontier_group_arrays_on_owner(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> FgResponseFrontierPackedScoringBatch:
     """Build response group rows on the GPU owner and pack scoring surfaces."""
+    _prof = profile_events_active()
+    _t0 = time.perf_counter() if _prof else 0.0
     built = build_prepared_force_greats_response_frontier_group_rows_on_owner(batch)
-    return pack_prepared_force_greats_response_frontier_scoring_surfaces(built)
+    if _prof:
+        _t_build_done = time.perf_counter()
+        emit_profile_event(
+            component="fg_fused",
+            event="fg_owner_phase",
+            metrics={"phase": "build", "total_ms": (_t_build_done - _t0) * 1000.0},
+        )
+    packed = pack_prepared_force_greats_response_frontier_scoring_surfaces(built)
+    if _prof:
+        emit_profile_event(
+            component="fg_fused",
+            event="fg_owner_phase",
+            metrics={"phase": "pack", "total_ms": (time.perf_counter() - _t_build_done) * 1000.0},
+        )
+    return packed
 
 
 def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
@@ -969,8 +985,23 @@ def score_fused_owner_base_components_on_gpu_owner(
         scoring_bundle=scoring_bundle,
     )
     built = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
+    _prof_sc = profile_events_active()
+    _t_score = time.perf_counter() if _prof_sc else 0.0
     owner = score_prepared_force_greats_response_frontier_batch_on_gpu_owner(built)
+    if _prof_sc:
+        _t_score_done = time.perf_counter()
+        emit_profile_event(
+            component="fg_fused",
+            event="fg_owner_phase",
+            metrics={"phase": "score_total", "total_ms": (_t_score_done - _t_score) * 1000.0},
+        )
     score_rows = resolve_fused_owner_score_rows_from_batch(owner.batch, owner.inner_rows)
+    if _prof_sc:
+        emit_profile_event(
+            component="fg_fused",
+            event="fg_owner_phase",
+            metrics={"phase": "resolve", "total_ms": (time.perf_counter() - _t_score_done) * 1000.0},
+        )
     if len(score_rows) != len(unique_rows):
         raise ValueError(
             "fused owner FG score produced a different row count than the deduped "
