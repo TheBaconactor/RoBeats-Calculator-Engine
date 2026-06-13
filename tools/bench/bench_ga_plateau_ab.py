@@ -244,7 +244,7 @@ def _run_ga_ab(ctx, args) -> None:
 
 
 # --------------------------- Skyline arm ---------------------------
-def _sky_measure(setting_value, *, n_genomes, cf12, warmups, timed):
+def _sky_measure(setting_value, *, n_genomes, cf12, warmups, timed, cull_threshold=None):
     has_flag = hasattr(skyline_operations, "_SKYLINE_PLATEAU_PRUNE_ENABLED")
     orig = getattr(skyline_operations, "_SKYLINE_PLATEAU_PRUNE_ENABLED", None)
     if has_flag:
@@ -253,7 +253,7 @@ def _sky_measure(setting_value, *, n_genomes, cf12, warmups, timed):
     def _eval():
         skyline_operations.skyline_evaluate_population(
             n_genomes, 9, total_budget=90, gem_scale_fever=3,
-            materialize_mode="results", **cf12,
+            materialize_mode="results", score_cull_threshold=cull_threshold, **cf12,
         )
         ti.sync()
 
@@ -282,22 +282,21 @@ def _run_skyline_ab(ctx, args) -> None:
     )
     skyline_operations.skyline_load_initial_population(run_idx=0, n_genomes=n, n_slots=9)
 
-    assert int(getattr(skyline_operations, "_SKYLINE_PLATEAU_PRUNE_ENABLED", 1)) == 1, "expected Skyline plateau default ON (or flag removed)"
-    r_off, t_off = _sky_measure(0, n_genomes=n, cf12=ctx["cf12"], warmups=args.warmups, timed=args.timed)
-    r_on, t_on = _sky_measure(1, n_genomes=n, cf12=ctx["cf12"], warmups=args.warmups, timed=args.timed)
-    identical = bool(r_off.shape == r_on.shape and np.array_equal(r_off, r_on))
+    # Score-cull A/B: external cull OFF (-1) vs an ORACLE global incumbent (best-1).
+    # This is the *ceiling* of a running-incumbent cull (perfect incumbent from gen 0),
+    # measured on top of the existing per-lane local cull. If even this is marginal, a
+    # real ramping incumbent is not worth wiring.
+    r_off, t_off = _sky_measure(0, n_genomes=n, cf12=ctx["cf12"], warmups=args.warmups, timed=args.timed, cull_threshold=None)
     best_off = int(r_off[:, 0].max()) if r_off.size else -1
+    r_on, t_on = _sky_measure(0, n_genomes=n, cf12=ctx["cf12"], warmups=args.warmups, timed=args.timed, cull_threshold=best_off - 1)
     best_on = int(r_on[:, 0].max()) if r_on.size else -1
-    print("\n=== Skyline plateau-prune A/B ===")
+    print("\n=== Skyline score-cull A/B (oracle global incumbent = ceiling) ===")
     print(f"config: sky_genomes={n} notes={args.notes} budget=90 timed={args.timed}")
-    print(f"plateau OFF: best_score={best_off} time_ms min={min(t_off):.1f} median={statistics.median(t_off):.1f} all={[round(x, 1) for x in t_off]}")
-    print(f"plateau ON : best_score={best_on} time_ms min={min(t_on):.1f} median={statistics.median(t_on):.1f} all={[round(x, 1) for x in t_on]}")
-    print(f"RESULTS BYTE-IDENTICAL (=> score & gem-split parity): {identical}")
-    if min(t_on) > 0:
-        print(f"min-time delta (ON vs OFF): {(min(t_off) - min(t_on)) / min(t_off) * 100.0:+.1f}%  (positive = ON faster)")
-    if not identical and r_off.shape == r_on.shape:
-        diff_rows = sorted({int(r) for r, _ in np.argwhere(r_off != r_on)})
-        print(f"DIVERGENCE rows (first 12): {diff_rows[:12]}")
+    print(f"cull OFF (thr=-1)   : best_score={best_off} time_ms min={min(t_off):.1f} median={statistics.median(t_off):.1f} all={[round(x, 1) for x in t_off]}")
+    print(f"cull ON  (thr=best-1): best_score={best_on} time_ms min={min(t_on):.1f} median={statistics.median(t_on):.1f} all={[round(x, 1) for x in t_on]}")
+    print(f"MAX preserved (cull lossless for best_score): {best_off == best_on}")
+    if min(t_off) > 0:
+        print(f"min-time delta (cull vs off): {(min(t_off) - min(t_on)) / min(t_off) * 100.0:+.1f}%  (positive = cull faster)")
 
 
 def main() -> None:
