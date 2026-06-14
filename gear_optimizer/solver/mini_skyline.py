@@ -30,6 +30,14 @@ def _item_vec_5(item: dict) -> tuple[int, int, int, int, int]:
 
 
 def _lane_base_init(item: dict, p_color: str, s_color: str) -> int:
+    # KNOWN BOUNDED LIMITATION: the elemental stats (P, S) are folded into the single
+    # lane scalar 2P+S, which is exact for the BASE score but lossy for ForceGreats on
+    # two-color songs -- the FG head-note Great penalty is floor(4P/3)+floor(2S/3)+150,
+    # a function of 2P+S EXCEPT for the per-term floor wobble (+-1, head notes only).
+    # So base-equal (P,S)-twins kept as one survivor by the combined skyline can differ
+    # in FG by a noise-level amount (measured max ~25 pts ~0.001%, never flips a winner).
+    # Bounded + tested in tests/test_skyline_fg_fold_bound.py; the strict-exact fix is to
+    # carry (P,S) and keep a 2-D (P,S)-Pareto per cell (widens the frontier).
     primary = int(item.get(p_color, 0) or 0) if p_color else 0
     secondary = int(item.get(s_color, 0) or 0) if s_color and s_color != p_color else 0
     return (2 * primary) + secondary
