@@ -30,7 +30,7 @@ def materialize_force_payload_from_response_frontier(
     frontier = reconstruction_frontier or result.frontier
     song_inputs = extract_fg_song_inputs(calc_song)
     frontier_trace = reconstruct_force_greats_response_trace(
-        frontier=frontier,
+        non_fever_base=int(frontier.non_fever_base),
         target_surface=result.surface,
         timestamps=song_inputs.timestamps,
         perfect_candidate_timestamps=song_inputs.perfect_candidates,

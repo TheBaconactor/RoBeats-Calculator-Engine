@@ -45,7 +45,6 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         reconstruct_force_greats_response_trace,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult
     from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
         force_greats_note_graph,
         reconcile_force_greats_note_graph,
@@ -62,21 +61,9 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
     saw_witness = False
     for opt in options:
         surface = opt["surface"]
-        frontier = FgResponseFrontierResult(
-            first_frontier=(surface,),
-            state_frontiers={},
-            states_evaluated=1,
-            actions=len(actions),
-            transitions_evaluated=1,
-            generated_surfaces=1,
-            retained_surfaces_total=1,
-            max_state_frontier=1,
-            non_fever_base=non_fever_base,
-            seconds=0.0,
-        )
         try:
             trace = reconstruct_force_greats_response_trace(
-                frontier=frontier,
+                non_fever_base=non_fever_base,
                 target_surface=surface,
                 timestamps=timestamps,
                 great_candidate_timestamps=great_candidates,
@@ -116,6 +103,35 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
     # body-count + witness reconciliation is proven directly below (standalone single-surface
     # frontiers only reconstruct head-reaching edges; body coverage is the synthetic test).
     _ = (saw_body_fever, saw_witness)
+
+
+def test_reconstruct_force_greats_response_trace_is_stats_free():
+    """The FG note-graph trace reconstruction takes NO stat/tier input — only the surface, song
+    timing, and FT/FF fever geometry. This is why the FG witness is tier-invariant: a TeamBuff
+    tier delta cannot reach any input of this function (it shifts only Perfect Points + colors).
+    Guards against anyone re-introducing a stats/frontier dependency that would make the persisted
+    FG trace tier-dependent. (The misleading `frontier: FgResponseFrontierResult` parameter that
+    once implied a GPU-search dependency is gone — the primitive consumes only `non_fever_base`.)"""
+    import inspect
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        reconstruct_force_greats_response_trace,
+    )
+
+    params = set(inspect.signature(reconstruct_force_greats_response_trace).parameters)
+    assert params == {
+        "non_fever_base",
+        "target_surface",
+        "timestamps",
+        "perfect_candidate_timestamps",
+        "great_candidate_timestamps",
+        "raw_fever_fill",
+        "real_fever_time",
+        "use_forced_great_timing",
+    }
+    # no stat vector, base_value, perfect-points, element color, or frontier/DP object
+    for stat_like in ("stats", "base_value", "perfect_points", "frontier", "tier", "team_buff"):
+        assert stat_like not in params
 
 
 def _words_from_indices(indices):

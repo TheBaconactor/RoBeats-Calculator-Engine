@@ -936,6 +936,44 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
     assert row["source_fg_score"] == 95
 
 
+def test_fg_note_graph_trace_is_tier_invariant():
+    """A TeamBuff tier delta shifts only Perfect Points + the two element colors; the fever
+    geometry (Fever Time / Fever Fill Rate) and combo/fever multipliers are carried UNCHANGED at
+    every tier. Because the FG note-graph trace is reconstructed from the frozen response_surface
+    + song timing + FT/FF fever geometry (all tier-invariant) and is purely structural (the
+    renderer applies per-tier stats at draw time), the persisted baseline FG frontier_trace is the
+    exact witness at every tier -- so no per-tier FG re-search or trace recompute is needed
+    (contrast the base TimelineFrontier, whose argmax winning surface IS tier-dependent). This
+    test pins the structural reason; test_reconstruct_force_greats_response_trace_is_stats_free
+    (tests/test_fg_note_graph.py) pins that the reconstruction primitive takes no stat/tier input."""
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import _fg_stats_at_tier
+
+    snapshot = {"pp": 100, "p_val": 50, "s_val": 20, "ft_stat": 12, "ff_stat": 34, "cm_stat": 5, "fm_stat": 3}
+
+    def at(delta_pp: int, delta_primary: int, delta_secondary: int) -> dict:
+        return _fg_stats_at_tier(
+            snapshot,
+            delta_pp=delta_pp,
+            delta_primary=delta_primary,
+            delta_secondary=delta_secondary,
+            primary_color="Rush",
+            secondary_color="Flow",
+        )
+
+    none_tier, t1, t50 = at(0, 0, 0), at(25, 35, 10), at(10, 15, 5)
+
+    # the fever geometry + multipliers that drive the FG note-graph trace are identical per tier
+    for s in (none_tier, t1, t50):
+        assert s["Fever Time"] == snapshot["ft_stat"]
+        assert s["Fever Fill Rate"] == snapshot["ff_stat"]
+        assert s["Combo Multiplier"] == snapshot["cm_stat"]
+        assert s["Fever Multiplier"] == snapshot["fm_stat"]
+    # only Perfect Points + element colors move with the tier (these feed per-note SCORE values,
+    # which the renderer computes from stats -- not the structural trace)
+    assert (t1["Perfect Points"], t1["Rush"], t1["Flow"]) == (125, 85, 30)
+    assert (t50["Perfect Points"], t50["Rush"], t50["Flow"]) == (110, 65, 25)
+
+
 def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_target_team_color(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.core.team_buff import team_buff_effect

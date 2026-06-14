@@ -878,6 +878,16 @@ def build_team_buff_tier_db_batches(
                     delta=delta_map,
                     fg_score=fg_score_out,
                 )
+                # NB: unlike the base TimelineFrontier above, the FG note-graph trace
+                # (ForceGreats.frontier_trace) is NOT recomputed per tier — it is tier-invariant.
+                # The base witness is the argmax surface in the (FT,FF) cell, which CAN change per
+                # tier as base_value shifts; the FG witness is reconstructed from the FROZEN
+                # response_surface plus song timing and FT/FF fever geometry, none of which a tier
+                # delta touches (it shifts only Perfect Points + element colors, never FT/FF). The
+                # trace is also purely structural (activation indices / judgments / timing offsets,
+                # no score values — the renderer applies per-tier stats), so the persisted baseline
+                # trace is already the exact per-tier witness. See test_fg_note_graph_trace_is_tier_invariant
+                # and docs TIER_REPLAY_BASE_FRONTIER_TRACE.md (FG section).
 
             out_row: dict = {
                 "loadout_hash": str(orig.get("loadout_hash") or ""),

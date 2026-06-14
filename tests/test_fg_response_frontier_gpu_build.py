@@ -194,7 +194,7 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
         if int(surface.fever0) == 0b1100 and int(surface.great0) == 0
     )
     trace = reconstruct_force_greats_response_trace(
-        frontier=frontier,
+        non_fever_base=int(frontier.non_fever_base),
         target_surface=target,
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
@@ -298,7 +298,7 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
     assert int(target.fever0) & int(target.great0) & 0b00100
 
     trace = reconstruct_force_greats_response_trace(
-        frontier=frontier,
+        non_fever_base=int(frontier.non_fever_base),
         target_surface=target,
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
@@ -652,7 +652,7 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     assert frontier.first_frontier
     for surface in frontier.first_frontier:
         reconstruct_force_greats_response_trace(
-            frontier=frontier,
+            non_fever_base=int(frontier.non_fever_base),
             target_surface=surface,
             timestamps=song_inputs.timestamps,
             perfect_candidate_timestamps=song_inputs.perfect_candidates,
@@ -802,7 +802,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         use_forced_great_timing=True,
     )
     trace = reconstruct_force_greats_response_trace(
-        frontier=slim,
+        non_fever_base=int(slim.non_fever_base),
         target_surface=target,
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,

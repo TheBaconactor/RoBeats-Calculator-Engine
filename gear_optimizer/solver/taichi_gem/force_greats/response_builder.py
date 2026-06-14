@@ -507,8 +507,10 @@ def reconstruct_force_greats_response_counts(
     real_fever_time: float,
     use_forced_great_timing: bool = True,
 ) -> tuple[int, ...]:
+    # Thin adapter for the solve path, which has the full frontier in hand; forward only
+    # the one field the reconstruction primitive consumes (its `non_fever_base`).
     trace = reconstruct_force_greats_response_trace(
-        frontier=frontier,
+        non_fever_base=int(frontier.non_fever_base),
         target_surface=target_surface,
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidate_timestamps,
@@ -522,7 +524,7 @@ def reconstruct_force_greats_response_counts(
 
 def reconstruct_force_greats_response_trace(
     *,
-    frontier: FgResponseFrontierResult,
+    non_fever_base: int,
     target_surface: FgResponseSurface,
     timestamps: Any,
     perfect_candidate_timestamps: Any | None = None,
@@ -548,7 +550,7 @@ def reconstruct_force_greats_response_trace(
 
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=float(raw_fever_fill),
-        non_fever_base=int(frontier.non_fever_base),
+        non_fever_base=int(non_fever_base),
         use_forced_great_timing=bool(use_forced_great_timing),
     )
 

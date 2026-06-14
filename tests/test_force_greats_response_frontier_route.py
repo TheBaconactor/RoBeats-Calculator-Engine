@@ -608,7 +608,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
     )
 
     def _fake_reconstruct_trace(**kwargs):
-        seen["frontier"] = kwargs["frontier"]
+        seen["non_fever_base"] = kwargs["non_fever_base"]
         return ({"forced_count": 1}, {"forced_count": 0}, {"forced_count": 1})
 
     monkeypatch.setattr(reducer_mod, "reconstruct_force_greats_response_trace", _fake_reconstruct_trace)
@@ -625,7 +625,9 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
         reconstruction_frontier=full_frontier,
     )
 
-    assert seen["frontier"] is full_frontier
+    # The supplied reconstruction_frontier (non_fever_base=11) is honored over the scoring
+    # frontier (non_fever_base=7): the trace primitive receives the override's non_fever_base.
+    assert seen["non_fever_base"] == full_frontier.non_fever_base
     assert payload["BaseScore"] == 1000
     assert payload["forced_counts"] == [1, 0, 1]
     assert payload["ForceGreats"]["frontier_trace"] == [{"forced_count": 1}, {"forced_count": 0}, {"forced_count": 1}]
