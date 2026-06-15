@@ -39,6 +39,7 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     timestamps: np.ndarray,
     perfect_candidate_timestamps: np.ndarray,
     great_candidate_timestamps: np.ndarray,
+    perfect_floor_timestamps: np.ndarray,
 ) -> FirstOnlyCanonicalization:
     if not prepared:
         empty = np.empty((0, 0), dtype=np.int32)
@@ -48,6 +49,7 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
+        perfect_floor_timestamps=perfect_floor_timestamps,
         real_times=real_times,
     )
     if len(prepared) == 1:
@@ -123,12 +125,20 @@ def _precompute_end_indices(
     timestamps: np.ndarray,
     perfect_candidate_timestamps: np.ndarray,
     great_candidate_timestamps: np.ndarray,
+    perfect_floor_timestamps: np.ndarray,
     real_times: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     unique_real_times, inverse = np.unique(np.asarray(real_times, dtype=np.float64), return_inverse=True)
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     perfect_ts = np.ascontiguousarray(np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1))
     great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
+    # Endpoint-early fever inclusion (issue #42): a later note is in fever iff its EARLIEST
+    # legal hit precedes the cutoff, so the fever boundary searches the monotone earliest-
+    # Perfect floor envelope, not chart. `floor_ts` is prebuilt prefix-max-monotone and shares
+    # the candidate's quantized int-ms lattice (bit-consistent with the searched values).
+    floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
+    if int(floor_ts.shape[0]) != int(ts.shape[0]):
+        raise ValueError("perfect_floor_timestamps length must match timestamps")
     ts64 = np.asarray(ts, dtype=np.float64)
     perfect_ts64 = np.asarray(perfect_ts, dtype=np.float64)
     great_ts64 = np.asarray(great_ts, dtype=np.float64)
@@ -137,19 +147,19 @@ def _precompute_end_indices(
     great_end_idx = np.empty_like(timestamp_end_idx)
     for idx, real_time in enumerate(unique_real_times):
         rt = float(real_time)
-        timestamp_end_idx[idx] = np.searchsorted(ts, np.asarray(ts64 + rt, dtype=np.float32), side="left").astype(
+        timestamp_end_idx[idx] = np.searchsorted(floor_ts, np.asarray(ts64 + rt, dtype=np.float32), side="left").astype(
             np.int32,
             copy=False,
         )
         perfect_end_idx[idx] = np.searchsorted(
-            ts,
+            floor_ts,
             np.asarray(perfect_ts64 + rt, dtype=np.float32),
             side="left",
         ).astype(
             np.int32,
             copy=False,
         )
-        great_end_idx[idx] = np.searchsorted(ts, np.asarray(great_ts64 + rt, dtype=np.float32), side="left").astype(
+        great_end_idx[idx] = np.searchsorted(floor_ts, np.asarray(great_ts64 + rt, dtype=np.float32), side="left").astype(
             np.int32,
             copy=False,
         )

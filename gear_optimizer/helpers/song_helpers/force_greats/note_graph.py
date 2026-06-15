@@ -4,7 +4,12 @@ Produces, per note, exactly the fields the game's client `NoteTimeGraph`
 (`ReplicatedStorage/Lobby/UI/NoteTimeGraph.lua`) renders for a registered hit:
 
     HitTime    -> hit_time_ms   (note position on the song timeline, ms)
-    Delta      -> delta_ms       (hit timing offset, ms; +late / -early)
+    Delta      -> delta_ms       (hit timing offset, ms; +late / -early). Carries the exact
+                                  offset for every note whose timing is load-bearing: the
+                                  activation witness (fever-start, hit late) and any
+                                  endpoint-early fever note (issue #42 -- a note at/after the
+                                  fever cutoff that is in fever only because it is hit early).
+                                  Notes whose timing does not matter stay at 0.
     NoteResult -> note_result    ("Perfect" | "Great"; never "Miss" -- the
                                   optimizer's solution assumes every note is hit)
     Fever      -> fever           (bool; the game draws the fever bar across the
@@ -19,7 +24,10 @@ are derived frontend-side from the persisted stats.
 Two graphs per loadout, matching the intended software behavior:
   * BASE = timeline frontier            -> base_note_graph(...)
         all notes Perfect; selected activation witnesses carry exact `delta_ms`
-        when a compact timeline trace is available.
+        when a compact timeline trace is available. The last note of each fever
+        run is also a witness (`is_fever_end_witness`) carrying `fever_end_ms`,
+        the largest-cushion fever cutoff time -- symmetric to the activation
+        witness that anchors where fever starts.
   * FG   = fg frontier + timeline       -> force_greats_note_graph(...)
         per-note Perfect/Great + fever; optimized activation hits are timing
         WITNESSES (Perfect-window or Late-Great, carrying exact `delta_ms`);
@@ -44,6 +52,13 @@ __all__ = [
     "reconcile_force_greats_note_graph",
 ]
 
+# Perfect-window lower bound (ms), matching the scoring envelope (timing_envelope.py): a normal
+# note can legally be hit as early as -20 ms; a held tail (note_type == 3) as early as -40 ms
+# (the Perfect window is widened x2 for held tails).
+_PERFECT_LOWER_MS = -20
+_HELD_TAIL_TYPE = 3
+_HELD_TAIL_TIME_MULT = 2
+
 
 def _hit_time_ms(timestamps: np.ndarray, idx: int) -> float:
     return float(timestamps[int(idx)]) * 1000.0
@@ -62,10 +77,81 @@ def _perfect_note_graph(total_notes: int, timestamps: Sequence[float] | np.ndarr
             "delta_ms": 0.0,
             "fever": False,
             "is_activation_witness": False,
+            "is_fever_end_witness": False,
+            "fever_end_ms": None,
             "section": 0,
         }
         for i in range(n)
     ]
+
+
+def _mark_endpoint_early_hits(
+    notes: list[dict[str, Any]],
+    *,
+    activation_index: int,
+    fever_end_index: int,
+    total_notes: int,
+    fever_window_end_ms: float | None,
+    note_types: Sequence[int] | np.ndarray | None,
+) -> None:
+    """Issue #42 endpoint-early inclusion, shown as a LEGAL early hit per note for the frontend.
+
+    A fever note whose chart time is at/after the fever cutoff is in fever ONLY because it is hit
+    EARLY (its corrected event time slips before the cutoff). Show the latest legal hit just
+    inside the cutoff (``event = cutoff - 1ms``), CLAMPED to the note's own held-tail-aware Perfect
+    lower bound (-20, or -40 for a held tail) so the displayed offset is ALWAYS a legal hit. The
+    prior unclamped ``cutoff - hit - 1`` could fall BELOW the lower bound for a tight cutoff (e.g.
+    -20.5 ms on a -20 ms note) -- "hit each note at its shown delta" must stay legal.
+
+    ``note_types`` is REQUIRED runtime song data, but only load-bearing when a note is actually
+    clawed in (chart >= cutoff): the lower bound is never guessed. If a clawed-in note is found and
+    ``note_types`` is missing or shorter than ``total_notes``, this FAILS LOUD rather than display
+    a possibly-false hit. Notes comfortably inside the cutoff keep ``delta_ms = 0``; Great
+    selectors (``delta_ms is None``) and the activation witness are left untouched. The clamped hit
+    reproduces the scored fever set under the monotonic replay (up to the sub-ms seam between the
+    raw chart time shown and the scoring's int-ms lattice).
+    """
+    if fever_window_end_ms is None:
+        return
+    cutoff = float(fever_window_end_ms)
+    nt = None if note_types is None else np.asarray(note_types).reshape(-1)
+    for j in range(max(0, int(activation_index)), min(int(fever_end_index), int(total_notes))):
+        note = notes[j]
+        if note["delta_ms"] is None or note["is_activation_witness"]:
+            continue
+        hit = float(note["hit_time_ms"])
+        if hit >= cutoff:
+            if nt is None or int(nt.shape[0]) <= j:
+                raise ValueError(
+                    "note_graph: note_types (length == total_notes) is required to display an "
+                    "endpoint-early hit at the note's legal lower bound -- it is never guessed"
+                )
+            legal_low = _PERFECT_LOWER_MS * (_HELD_TAIL_TIME_MULT if int(nt[j]) == _HELD_TAIL_TYPE else 1)
+            note["delta_ms"] = max(float(legal_low), cutoff - hit - 1.0)
+
+
+def _mark_fever_end_witness(
+    notes: list[dict[str, Any]],
+    *,
+    activation_index: int,
+    fever_end_index: int,
+    total_notes: int,
+    fever_window_end_ms: float | None,
+    section: int,
+) -> None:
+    """Mark the last note of the fever run as the fever-end witness.
+
+    Anchors where fever ends with the largest-cushion cutoff (``fever_window_end_ms``) -- the
+    same latest-legal convention the activation witness uses for where fever starts. Shared by
+    the base and FG note graphs so the two stay symmetric. ``last_fever`` is ``min(e, n) - 1``,
+    always ``< n``, so only the lower bound is checked.
+    """
+    last_fever = min(int(fever_end_index), int(total_notes)) - 1
+    if int(activation_index) <= last_fever:
+        notes[last_fever]["is_fever_end_witness"] = True
+        if fever_window_end_ms is not None:
+            notes[last_fever]["fever_end_ms"] = float(fever_window_end_ms)
+        notes[last_fever]["section"] = int(section)
 
 
 def timeline_frontier_note_graph(
@@ -73,8 +159,14 @@ def timeline_frontier_note_graph(
     frontier_trace: Sequence[Mapping[str, Any]],
     total_notes: int,
     timestamps: Sequence[float] | np.ndarray,
+    note_types: Sequence[int] | np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
-    """BASE note-graph from the selected timeline-frontier witness trace."""
+    """BASE note-graph from the selected timeline-frontier witness trace.
+
+    ``note_types`` is runtime song data (like ``timestamps``) needed to show a clawed-in
+    endpoint-early note's held-tail-aware LEGAL early hit; it is required (fails loud) only when a
+    note is actually clawed in -- never guessed.
+    """
 
     n = int(total_notes)
     notes = _perfect_note_graph(n, timestamps)
@@ -90,6 +182,18 @@ def timeline_frontier_note_graph(
             notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
             notes[a]["is_activation_witness"] = True
             notes[a]["section"] = section
+        # The last note of the fever run is the fever-end witness (largest-cushion cutoff);
+        # any fever note at/after that cutoff is shown with its legal early hit (issue #42).
+        # Together the per-note timing reproduces the scored fever set.
+        fever_end_ms = sec.get("fever_window_end_ms")
+        _mark_fever_end_witness(
+            notes, activation_index=a, fever_end_index=e, total_notes=n,
+            fever_window_end_ms=fever_end_ms, section=section,
+        )
+        _mark_endpoint_early_hits(
+            notes, activation_index=a, fever_end_index=e, total_notes=n,
+            fever_window_end_ms=fever_end_ms, note_types=note_types,
+        )
     return notes
 
 
@@ -99,8 +203,13 @@ def base_note_graph(
     timestamps: Sequence[float] | np.ndarray,
     is_fever_mask: Sequence[bool] | np.ndarray,
     frontier_trace: Sequence[Mapping[str, Any]] | None = None,
+    note_types: Sequence[int] | np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
     """BASE note-graph (timeline frontier): every note Perfect, with fever windows.
+
+    The mask path (no ``frontier_trace``) needs no ``note_types`` (no endpoint-early offsets); the
+    trace path delegates to ``timeline_frontier_note_graph``, which REQUIRES ``note_types`` and
+    fails loud if it is absent -- the held-tail-aware lower bound is never guessed.
 
     `is_fever_mask` is the full per-note fever mask produced deterministically by
     `gear_optimizer.solver.fever_timeline.calculate_fever_timeline_indices` from the
@@ -112,6 +221,7 @@ def base_note_graph(
             frontier_trace=frontier_trace,
             total_notes=int(total_notes),
             timestamps=timestamps,
+            note_types=note_types,
         )
     n = int(total_notes)
     fev = np.asarray(is_fever_mask).reshape(-1)
@@ -128,8 +238,13 @@ def force_greats_note_graph(
     frontier_trace: Sequence[Mapping[str, Any]],
     total_notes: int,
     timestamps: Sequence[float] | np.ndarray,
+    note_types: Sequence[int] | np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
     """FG note-graph (fg frontier + timeline frontier) from the persisted witness trace.
+
+    ``note_types`` is runtime song data (like ``timestamps``) needed to show a clawed-in
+    endpoint-early note's held-tail-aware LEGAL early hit; required (fails loud) only when a note
+    is actually clawed in -- never guessed.
 
     `frontier_trace` is the per-loadout `ForceGreats.frontier_trace` (list of section
     dicts emitted by `reconstruct_force_greats_response_trace`). Each section carries a
@@ -162,6 +277,14 @@ def force_greats_note_graph(
             if notes[j]["section"] == 0:
                 notes[j]["section"] = section
 
+        # Fever-end witness: last note of the fever run, carrying the largest-cushion
+        # cutoff (`fever_window_end_ms`). Symmetric to the base note-graph.
+        fever_end_ms = sec.get("fever_window_end_ms")
+        _mark_fever_end_witness(
+            notes, activation_index=a, fever_end_index=e, total_notes=n,
+            fever_window_end_ms=fever_end_ms, section=section,
+        )
+
         activation_judgment = str(sec.get("activation_judgment", ""))
         if activation_judgment == "late_great" and 0 <= a < n:
             notes[a]["note_result"] = "Great"             # activation Late Great = the WITNESS
@@ -176,6 +299,14 @@ def force_greats_note_graph(
             notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
             notes[a]["is_activation_witness"] = True
             notes[a]["section"] = section
+
+        # Endpoint-early (issue #42): any Perfect fever note at/after the cutoff is shown with
+        # its legal early hit, so per-note timing reproduces the scored fever set. Great
+        # selectors (delta_ms None) are skipped.
+        _mark_endpoint_early_hits(
+            notes, activation_index=a, fever_end_index=e, total_notes=n,
+            fever_window_end_ms=fever_end_ms, note_types=note_types,
+        )
 
     return notes
 

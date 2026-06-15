@@ -114,7 +114,17 @@ def prepare_grouped_timing_windows(
         group_starts = np.asarray([0], dtype=np.int32)
         group_ends = np.asarray([1], dtype=np.int32)
     else:
-        boundaries = np.nonzero(ts_ms[1:] != ts_ms[:-1])[0].astype(np.int32) + 1
+        # Group consecutive notes that share BOTH a quantized timestamp AND a Perfect window.
+        # A held tail (wider [-40,+80] window) chorded with a narrower note thus lands in its
+        # OWN group, keeping its full reach instead of being capped to the chord intersection
+        # (the game registers each lane's hit independently). For chords whose members share one
+        # window (the common case) this is identical to grouping by timestamp alone, so non-
+        # held-tail charts are bit-unchanged.
+        boundaries = np.nonzero(
+            (ts_ms[1:] != ts_ms[:-1])
+            | (note_low_ms[1:] != note_low_ms[:-1])
+            | (note_high_ms[1:] != note_high_ms[:-1])
+        )[0].astype(np.int32) + 1
         group_count = int(boundaries.shape[0]) + 1
         group_starts = np.empty(group_count, dtype=np.int32)
         group_ends = np.empty(group_count, dtype=np.int32)
@@ -303,6 +313,65 @@ def generate_perfect_timing_events_ms(prepared: dict, *, seed: int) -> np.ndarra
     return event_ms
 
 
+def _perfect_window_edges_ms(
+    ts_sec: np.ndarray,
+    note_types: np.ndarray | None,
+    *,
+    perfect_lower_ms: int = -20,
+    perfect_upper_ms: int = 40,
+    held_tail_type: int = 3,
+    held_tail_time_multiplier: int = 2,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-note Perfect (low, high) window edges in ms, held-tail-aware.
+
+    Shared by the latest-candidate (high) and earliest-floor (low) FG envelopes so both see the
+    SAME per-note windows. A held tail keeps its full [-40,+80] reach -- NOT collapsed to a chord
+    intersection. Assumes ``ts_sec`` non-empty (callers guard ``n <= 0``).
+    """
+    n = int(ts_sec.shape[0])
+    if note_types is None or len(note_types) != n:
+        nt = np.ones(n, dtype=np.int16)
+    else:
+        nt = np.asarray(note_types, dtype=np.int16)
+    low, high = build_per_note_perfect_window_ms(
+        nt,
+        perfect_lower_ms=int(perfect_lower_ms),
+        perfect_upper_ms=int(perfect_upper_ms),
+        held_tail_type=int(held_tail_type),
+        held_tail_time_multiplier=int(held_tail_time_multiplier),
+    )
+    return np.asarray(low, dtype=np.int32), np.asarray(high, dtype=np.int32)
+
+
+def _emit_pernote_edge_envelope_sec(
+    ts_sec: np.ndarray, edge_ms: np.ndarray, *, prefix_max: bool = False, quantize_ms: bool = True
+) -> np.ndarray:
+    """Per-note envelope (seconds): each note takes its OWN quantized chart ms + its OWN window
+    edge, with NO chord-group collapse.
+
+    The game registers every note's hit independently (per lane/track, confirmed against the
+    decompiled server), so a held tail (Perfect window [-40,+80]) that shares a timestamp with a
+    narrower note keeps its individual reach. The previous chord-intersection collapse
+    (`prepare_grouped_timing_windows`: group_low=max(lows), group_high=min(highs)) lost the held
+    tail's wider early/late reach and UNDER-counted fever when a chord-tied held tail was the
+    activation (its +80 latest hit capped to the chord's +40) or a boundary note (its -40
+    earliest capped to -20). For solo notes and chords WITHOUT a held tail this is bit-identical
+    to the old grouped emit (each member's quantized ms equals the group base, and the group edge
+    equals every member's edge). ``prefix_max`` keeps the floor monotone (searchsortable); it is
+    pointwise <= chart, so the boundary only ever moves later -> never a regression.
+    """
+    if quantize_ms:
+        q_ms = floor_to_int_ms(ts_sec)
+    else:
+        q_ms = (np.asarray(ts_sec, dtype=np.float32) * np.float32(1000.0)).astype(np.int32)
+    event_ms = (np.asarray(q_ms, dtype=np.int32) + np.asarray(edge_ms, dtype=np.int32)).astype(np.int32)
+    if prefix_max:
+        np.maximum.accumulate(event_ms, out=event_ms)
+    out = event_ms.astype(np.float32)
+    out *= np.float32(0.001)
+    return out
+
+
 def build_great_candidate_envelope_sec(
     timestamps_sec: np.ndarray,
     note_types: np.ndarray | None,
@@ -343,7 +412,7 @@ def build_great_candidate_envelope_sec(
         held_tail_type=held_tail_type,
         held_tail_time_multiplier=held_tail_time_multiplier,
     )
-    great_low_ms, great_high_ms = build_per_note_great_window_ms(
+    _great_low_ms, great_high_ms = build_per_note_great_window_ms(
         nt,
         perfect_low_ms=perfect_low_ms,
         perfect_upper_ms=int(perfect_upper_ms),
@@ -353,27 +422,11 @@ def build_great_candidate_envelope_sec(
         held_tail_type=int(held_tail_type),
         held_tail_time_multiplier=int(held_tail_time_multiplier),
     )
-    prepared = prepare_grouped_timing_windows(
-        ts_sec,
-        note_low_ms=np.asarray(great_low_ms, dtype=np.int32),
-        note_high_ms=np.asarray(great_high_ms, dtype=np.int32),
-        quantize_ms=bool(quantize_ms),
+    # Per-note (NOT chord-collapsed): a held tail's widened late-Great reach is its own, so a
+    # chord-tied held-tail late-Great activation is not capped to the chord intersection.
+    return _emit_pernote_edge_envelope_sec(
+        ts_sec, np.asarray(great_high_ms, dtype=np.int32), prefix_max=False, quantize_ms=quantize_ms
     )
-
-    group_starts = np.asarray(prepared["group_starts"], dtype=np.int32)
-    group_ends = np.asarray(prepared["group_ends"], dtype=np.int32)
-    group_base_t = np.asarray(prepared["group_base_t"], dtype=np.int32)
-    group_high = np.asarray(prepared["group_high"], dtype=np.int32)
-
-    event_ms = np.empty(int(n), dtype=np.int32)
-    for g in range(int(group_starts.shape[0])):
-        s = int(group_starts[g])
-        e = int(group_ends[g])
-        event_ms[s:e] = int(group_base_t[g]) + int(group_high[g])
-
-    out = event_ms.astype(np.float32)
-    out *= np.float32(0.001)
-    return out
 
 
 def build_perfect_candidate_envelope_sec(
@@ -386,46 +439,66 @@ def build_perfect_candidate_envelope_sec(
     held_tail_time_multiplier: int = 2,
     quantize_ms: bool = True,
 ) -> np.ndarray:
-    """Build latest valid Perfect-candidate envelope timestamps per chord group."""
+    """Build the latest valid Perfect-candidate envelope (per-note `chart + Perfect upper`).
+
+    Per-note, NOT chord-collapsed: a held-tail activation keeps its own +80 latest-hit reach
+    (the chord intersection would cap it to a tighter chord member's +40 and under-count fever).
+    """
 
     ts_sec = np.asarray(timestamps_sec, dtype=np.float32)
     n = int(ts_sec.shape[0])
     if n <= 0:
         return ts_sec.astype(np.float32, copy=False)
-
-    if note_types is None or len(note_types) != n:
-        nt = np.ones(n, dtype=np.int16)
-    else:
-        nt = np.asarray(note_types, dtype=np.int16)
-
-    perfect_low_ms, perfect_high_ms = build_per_note_perfect_window_ms(
-        nt,
-        perfect_lower_ms=int(perfect_lower_ms),
-        perfect_upper_ms=int(perfect_upper_ms),
-        held_tail_type=int(held_tail_type),
-        held_tail_time_multiplier=int(held_tail_time_multiplier),
-    )
-    prepared = prepare_grouped_timing_windows(
+    _low, high = _perfect_window_edges_ms(
         ts_sec,
-        note_low_ms=np.asarray(perfect_low_ms, dtype=np.int32),
-        note_high_ms=np.asarray(perfect_high_ms, dtype=np.int32),
-        quantize_ms=bool(quantize_ms),
+        note_types,
+        perfect_lower_ms=perfect_lower_ms,
+        perfect_upper_ms=perfect_upper_ms,
+        held_tail_type=held_tail_type,
+        held_tail_time_multiplier=held_tail_time_multiplier,
     )
+    return _emit_pernote_edge_envelope_sec(ts_sec, high, prefix_max=False, quantize_ms=quantize_ms)
 
-    group_starts = np.asarray(prepared["group_starts"], dtype=np.int32)
-    group_ends = np.asarray(prepared["group_ends"], dtype=np.int32)
-    group_base_t = np.asarray(prepared["group_base_t"], dtype=np.int32)
-    group_high = np.asarray(prepared["group_high"], dtype=np.int32)
 
-    event_ms = np.empty(int(n), dtype=np.int32)
-    for g in range(int(group_starts.shape[0])):
-        s = int(group_starts[g])
-        e = int(group_ends[g])
-        event_ms[s:e] = int(group_base_t[g]) + int(group_high[g])
+def build_perfect_floor_envelope_sec(
+    timestamps_sec: np.ndarray,
+    note_types: np.ndarray | None,
+    *,
+    perfect_lower_ms: int = -20,
+    perfect_upper_ms: int = 40,
+    held_tail_type: int = 3,
+    held_tail_time_multiplier: int = 2,
+    quantize_ms: bool = True,
+) -> np.ndarray:
+    """Earliest legal Perfect-hit envelope (per-note `chart + Perfect lower`), monotone via a
+    prefix-max.
 
-    out = event_ms.astype(np.float32)
-    out *= np.float32(0.001)
-    return out
+    Issue #42 fever-boundary search basis for FG. `floor[i] = chart[i] + per-note Perfect LOWER
+    bound` (held-tail-aware: a held tail keeps its own -40, NOT the chord intersection's -20),
+    then `maximum.accumulate` so a single `searchsorted` is exact even when a held tail's wider
+    early edge makes the raw floor dip below an earlier note. With the FG activation fixed at its
+    latest Perfect (optimal), a later note is in fever iff its earliest legal hit precedes the
+    cutoff, so the fever extent is `searchsorted(this_envelope, perfect_candidate[a] +
+    real_fever_time)`.
+
+    Per-note (NOT chord-collapsed) and bit-consistent with the candidate: both share the SAME
+    quantized int-ms chart (`floor_to_int_ms`) and the SAME `* float32(0.001)` conversion, and
+    the floor is pointwise <= the candidate, so searchsorted never spuriously off-by-ones.
+    """
+
+    ts_sec = np.asarray(timestamps_sec, dtype=np.float32)
+    n = int(ts_sec.shape[0])
+    if n <= 0:
+        return ts_sec.astype(np.float32, copy=False)
+    low, _high = _perfect_window_edges_ms(
+        ts_sec,
+        note_types,
+        perfect_lower_ms=perfect_lower_ms,
+        perfect_upper_ms=perfect_upper_ms,
+        held_tail_type=held_tail_type,
+        held_tail_time_multiplier=held_tail_time_multiplier,
+    )
+    return _emit_pernote_edge_envelope_sec(ts_sec, low, prefix_max=True, quantize_ms=quantize_ms)
 
 
 def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | None:
@@ -471,10 +544,11 @@ def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | 
         song_data.pop("_note_types_sig", None)
 
     song_data["fg_timestamps"] = chart_ts
-    song_data["fg_perfect_candidate_timestamps"] = build_perfect_candidate_envelope_sec(
-        chart_ts,
-        note_types,
-    )
+    # Candidate (latest Perfect) + floor (earliest Perfect, issue #42 fever-boundary basis), both
+    # per-note (not chord-collapsed, so a chord-tied held tail keeps its [-40,+80] reach). Route
+    # through the canonical builders so production scores the exact path the tests validate.
+    song_data["fg_perfect_candidate_timestamps"] = build_perfect_candidate_envelope_sec(chart_ts, note_types)
+    song_data["fg_perfect_floor_timestamps"] = build_perfect_floor_envelope_sec(chart_ts, note_types)
     song_data["fg_great_candidate_timestamps"] = build_great_candidate_envelope_sec(
         chart_ts,
         note_types,

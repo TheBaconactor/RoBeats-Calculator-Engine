@@ -48,9 +48,14 @@ def _edge_end(
     timestamps: np.ndarray,
     perfect_candidate_timestamps: np.ndarray | None = None,
     great_candidate_timestamps: np.ndarray | None = None,
+    perfect_floor_timestamps: np.ndarray,
 ) -> tuple[int, float, int]:
     perfect_ts = timestamps if perfect_candidate_timestamps is None else perfect_candidate_timestamps
     great_ts = timestamps if great_candidate_timestamps is None else great_candidate_timestamps
+    # Endpoint-early fever inclusion (issue #42): the boundary searches the earliest-Perfect
+    # floor envelope, not chart, so a boundary note within early-hit reach of the cutoff is
+    # counted in fever. The cutoff VALUE (start_time = latest Perfect / late Great) is unchanged.
+    floor_ts = perfect_floor_timestamps
     start_time = float(perfect_ts[int(a)])
     carry_idx = -1
     if bool(use_forced_great_timing) and bool(activation_great) and int(a) < int(n):
@@ -58,7 +63,7 @@ def _edge_end(
         if activation_t > start_time:
             start_time = activation_t
             carry_idx = int(a)
-    e = _lower_bound_from(timestamps, start_time + float(real_fever_time))
+    e = _lower_bound_from(floor_ts, start_time + float(real_fever_time))
     if e <= int(a):
         e = int(a) + 1
     if e > int(n):
@@ -169,15 +174,19 @@ def _trace_timing_fields(
 def _centered_hit_window_for_exit(
     timestamps: np.ndarray, n: int, activation_idx: int, chart_time: float,
     legal_lo: float, legal_hi: float, real_fever_time: float, target_end_idx: int,
+    perfect_floor_timestamps: np.ndarray,
 ) -> tuple[float, float, float]:
     target = max(0, min(int(target_end_idx), int(n)))
     lo = float(legal_lo)
     hi = float(legal_hi)
     if lo > hi:
         raise ValueError("FG response trace received an empty activation witness interval")
+    # The exit must search the same earliest-Perfect floor envelope the surface boundary
+    # used (issue #42), so the centered witness reproduces the (floor-based) target_end.
+    floor_ts = perfect_floor_timestamps
 
     def _exit_idx(hit: float) -> int:
-        end_idx = _lower_bound_from(timestamps, hit + float(real_fever_time))
+        end_idx = _lower_bound_from(floor_ts, hit + float(real_fever_time))
         if end_idx <= int(activation_idx):
             end_idx = min(int(n), int(activation_idx) + 1)
         return int(end_idx)
@@ -288,6 +297,7 @@ def _edge_surface_options(
     timestamps: np.ndarray,
     perfect_candidate_timestamps: np.ndarray | None = None,
     great_candidate_timestamps: np.ndarray | None = None,
+    perfect_floor_timestamps: np.ndarray,
 ) -> list[dict[str, Any]]:
     """Enumerate candidate fever sections with their response-surface edges.
 
@@ -320,6 +330,7 @@ def _edge_surface_options(
             timestamps=timestamps,
             perfect_candidate_timestamps=perfect_candidate_timestamps,
             great_candidate_timestamps=great_candidate_timestamps,
+            perfect_floor_timestamps=perfect_floor_timestamps,
         )
         if fill != prev_fill or (start_time != prev_start_time and e != prev_e):
             chart_time = float(timestamps[int(a)])
@@ -364,6 +375,7 @@ def _edge_surface_options(
                 timestamps=timestamps,
                 perfect_candidate_timestamps=perfect_candidate_timestamps,
                 great_candidate_timestamps=great_candidate_timestamps,
+                perfect_floor_timestamps=perfect_floor_timestamps,
             )
             if int(activation_e) > int(e):
                 chart_time = float(timestamps[int(a)])
@@ -414,6 +426,7 @@ def _option_with_witness(
     timestamps: np.ndarray,
     n: int,
     real_fever_time: float,
+    perfect_floor_timestamps: np.ndarray,
 ) -> dict[str, Any]:
     """Attach the centered activation-witness fields to one accepted option.
 
@@ -426,6 +439,7 @@ def _option_with_witness(
         timestamps, int(n), int(w["activation_idx"]), float(w["chart_time"]),
         float(w["lo"]), float(w["hi"]),
         float(real_fever_time), int(w["target_end"]),
+        perfect_floor_timestamps,
     )
     return {
         "k": option["k"],
@@ -443,6 +457,13 @@ def _option_with_witness(
         "forced_prefix_count": option["forced_prefix_count"],
         "fever_end_index": option["fever_end_index"],
         "fever_end_ms": option["fever_end_ms"],
+        # Largest-cushion fever cutoff: the LATEST legal activation hit (`hit_hi`) plus the
+        # fever duration -- this is the boundary `_edge_end` actually used to compute
+        # `fever_end_index`, and it matches the base trace's `fever_window_end_ms`. It must NOT
+        # use the centered display hit (which is earlier), or `_mark_endpoint_early_hits` would
+        # flag notes reachable at delta 0 by hitting the activation late. Stats-free /
+        # tier-invariant (start time + FT-derived duration).
+        "fever_window_end_ms": (float(hit_hi) + float(real_fever_time)) * 1000.0,
         **_trace_timing_fields(
             carry_idx=int(w["carry_idx"]),
             start_time=float(centered_start_time),
@@ -469,6 +490,7 @@ def _edge_surface_option_details(
     timestamps: np.ndarray,
     perfect_candidate_timestamps: np.ndarray | None = None,
     great_candidate_timestamps: np.ndarray | None = None,
+    perfect_floor_timestamps: np.ndarray,
 ) -> list[dict[str, Any]]:
     """Full option details (surface edge + witness fields) for every option."""
     return [
@@ -477,6 +499,7 @@ def _edge_surface_option_details(
             timestamps=timestamps,
             n=int(n),
             real_fever_time=float(real_fever_time),
+            perfect_floor_timestamps=perfect_floor_timestamps,
         )
         for option in _edge_surface_options(
             i=int(i),
@@ -492,6 +515,7 @@ def _edge_surface_option_details(
             timestamps=timestamps,
             perfect_candidate_timestamps=perfect_candidate_timestamps,
             great_candidate_timestamps=great_candidate_timestamps,
+            perfect_floor_timestamps=perfect_floor_timestamps,
         )
     ]
 
@@ -503,6 +527,7 @@ def reconstruct_force_greats_response_counts(
     timestamps: Any,
     perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
+    perfect_floor_timestamps: Any,
     raw_fever_fill: float,
     real_fever_time: float,
     use_forced_great_timing: bool = True,
@@ -515,6 +540,7 @@ def reconstruct_force_greats_response_counts(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
+        perfect_floor_timestamps=perfect_floor_timestamps,
         raw_fever_fill=float(raw_fever_fill),
         real_fever_time=float(real_fever_time),
         use_forced_great_timing=bool(use_forced_great_timing),
@@ -529,6 +555,7 @@ def reconstruct_force_greats_response_trace(
     timestamps: Any,
     perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
+    perfect_floor_timestamps: Any,
     raw_fever_fill: float,
     real_fever_time: float,
     use_forced_great_timing: bool = True,
@@ -547,6 +574,11 @@ def reconstruct_force_greats_response_trace(
     )
     if int(great_ts.shape[0]) != n:
         raise ValueError("great_candidate_timestamps length must match timestamps")
+    # perfect_floor is the issue-#42 fever-boundary basis and is REQUIRED (no chart fallback):
+    # silently searching chart would under-count endpoint-early fever -- a wrong best_fg_score.
+    floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
+    if int(floor_ts.shape[0]) != n:
+        raise ValueError("perfect_floor_timestamps length must match timestamps")
 
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=float(raw_fever_fill),
@@ -622,6 +654,7 @@ def reconstruct_force_greats_response_trace(
                 timestamps=ts,
                 n=int(n),
                 real_fever_time=float(real_fever_time),
+                perfect_floor_timestamps=floor_ts,
             )
         )
         section.pop("surface", None)
@@ -651,6 +684,7 @@ def reconstruct_force_greats_response_trace(
             timestamps=ts,
             perfect_candidate_timestamps=perfect_ts,
             great_candidate_timestamps=great_ts,
+            perfect_floor_timestamps=floor_ts,
         ):
             edge = option["surface"]
             next_remaining = _subtract_edge(remaining, edge)

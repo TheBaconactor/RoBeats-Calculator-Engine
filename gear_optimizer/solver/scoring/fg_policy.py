@@ -32,6 +32,7 @@ class FGSongInputs:
     timestamps: Any
     perfect_candidates: Any
     great_candidates: Any
+    perfect_floor: Any
     use_forced_great_timing: bool
     total_notes: int
     long_notes: int
@@ -63,6 +64,10 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
         timestamps = ()
     perfect_candidates = song_data.get("fg_perfect_candidate_timestamps", timestamps)
     great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
+    # Earliest-Perfect floor envelope: the carry-aware fever-boundary search basis (issue
+    # #42). Falls back to chart when no timing envelope is applied (degenerate no-offset
+    # case, matching perfect_candidates), i.e. lo == 0 == no endpoint-early gain.
+    perfect_floor = song_data.get("fg_perfect_floor_timestamps", timestamps)
     use_forced_great_timing = bool(song_data.get("fg_great_candidate_timestamps") is not None)
 
     try:
@@ -82,6 +87,7 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
         timestamps=timestamps,
         perfect_candidates=perfect_candidates,
         great_candidates=great_candidates,
+        perfect_floor=perfect_floor,
         use_forced_great_timing=bool(use_forced_great_timing),
         total_notes=int(total_notes),
         long_notes=int(long_notes),
