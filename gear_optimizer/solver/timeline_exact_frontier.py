@@ -904,7 +904,7 @@ def _build_exact_timeline_frontier_from_context(
     )
 
 
-def _activation_offset_for_exit(
+def _activation_offset_band_for_exit(
     ctx: _GroupedTimelineContext,
     *,
     activation_group: int,
@@ -912,12 +912,16 @@ def _activation_offset_for_exit(
     act_hi: int,
     exit_group: int,
     d_ms: int,
-) -> int:
-    def _closest_offset_to_zero(lo: int, hi: int) -> int:
-        if int(lo) <= 0 <= int(hi):
-            return 0
-        return int(lo) if abs(int(lo)) <= abs(int(hi)) else int(hi)
+) -> tuple[int, int]:
+    """Feasible activation Perfect-hit offset band that produces this first exit.
 
+    Returns the inclusive ``(lo, hi)`` offset interval (relative to the activation
+    note's chart time) for which the carry-aware fever window first leaves fever at
+    ``exit_group``. ``hi`` is the latest Perfect activation that still yields this
+    surface (the largest-cushion witness); ``lo`` is the earliest. Raises when the
+    interval is empty, which is an impossible internal state for a surface that was
+    retained on the exact frontier.
+    """
     s = int(activation_group)
     g = int(exit_group)
     lo = int(act_lo)
@@ -925,19 +929,19 @@ def _activation_offset_for_exit(
     if lo > hi:
         raise ValueError("timeline frontier trace received an empty activation band")
     if g <= s or s + 1 >= int(ctx.gcount):
-        return _closest_offset_to_zero(lo, hi)
+        return lo, hi
     if g >= int(ctx.gcount):
         survive_lo = max(lo, int(ctx.exit_need_prefix_current[s, int(ctx.gcount) - 1]) - int(d_ms))
         if survive_lo > hi:
             raise ValueError("timeline frontier trace could not choose a terminal activation offset")
-        return _closest_offset_to_zero(int(survive_lo), hi)
+        return int(survive_lo), hi
 
     delta = int(ctx.exit_delta[s, g])
     r_lo = max(lo, int(ctx.exit_need_prefix_prev[s, g]) - int(d_ms))
     r_hi = min(hi, int(ctx.group_high_ms[g]) + delta - int(d_ms))
     if r_lo > r_hi:
         raise ValueError("timeline frontier trace could not choose an activation offset")
-    return _closest_offset_to_zero(int(r_lo), int(r_hi))
+    return int(r_lo), int(r_hi)
 
 
 def _subtract_timeline_edge(
@@ -1075,7 +1079,7 @@ def reconstruct_timeline_frontier_trace(
                 continue
 
             activation_ms = int(ctx.group_base_t_ms[g_act])
-            activation_offset_ms = _activation_offset_for_exit(
+            offset_lo, offset_hi = _activation_offset_band_for_exit(
                 ctx,
                 activation_group=g_act,
                 act_lo=int(act_lo),
@@ -1083,6 +1087,11 @@ def reconstruct_timeline_frontier_trace(
                 exit_group=int(exit_group),
                 d_ms=d_ms_i,
             )
+            # Largest-cushion witness (issue #41): report the band's upper end (the
+            # latest Perfect activation yielding this exit); fever_window_end_ms pins
+            # the displayed duration to d_ms regardless of boundary-note timing.
+            activation_offset_ms = offset_hi
+            activation_hit_ms = float(activation_ms + activation_offset_ms)
             if int(boundary_note) >= n or int(exit_group) >= int(ctx.gcount):
                 fever_end_ms: float | None = None
             else:
@@ -1090,14 +1099,21 @@ def reconstruct_timeline_frontier_trace(
             section = {
                 "activation_index": int(activation_note),
                 "activation_ms": float(activation_ms),
-                "activation_hit_ms": float(activation_ms + activation_offset_ms),
+                "activation_hit_ms": activation_hit_ms,
                 "activation_hit_offset_ms": float(activation_offset_ms),
+                "activation_hit_offset_lower_ms": float(offset_lo),
+                "activation_hit_offset_upper_ms": float(offset_hi),
+                "activation_hit_window_lower_ms": float(activation_ms + offset_lo),
+                "activation_hit_window_upper_ms": float(activation_ms + offset_hi),
+                "activation_hit_window_width_ms": float(max(0, offset_hi - offset_lo)),
+                "activation_hit_offset_kind": "largest_cushion",
                 "activation_judgment": "perfect",
                 "fever_start_source": "perfect_window",
                 "fever_start_note_index": int(activation_note),
-                "fever_start_hit_ms": float(activation_ms + activation_offset_ms),
+                "fever_start_hit_ms": activation_hit_ms,
                 "fever_end_index": int(boundary_note),
                 "fever_end_ms": fever_end_ms,
+                "fever_window_end_ms": activation_hit_ms + float(d_ms_i),
                 "forced_count": 0,
                 "forced_start_index": int(activation_note),
                 "forced_prefix_count": 0,

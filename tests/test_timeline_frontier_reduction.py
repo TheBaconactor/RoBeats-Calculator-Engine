@@ -24,6 +24,16 @@ def _score(surface: TimelineExactSignature, *, head_len: int, normal: int, fever
     return fever * (fever_head + surface.body_fever) + normal * (normal_head + surface.body_normal)
 
 
+def _assert_witness_consistent(row: dict, *, d_ms: float) -> None:
+    """Invariants every largest-cushion trace section must satisfy (issue #41)."""
+    assert row["activation_judgment"] == "perfect"
+    assert row["activation_hit_offset_kind"] == "largest_cushion"
+    assert row["activation_hit_offset_ms"] == row["activation_hit_offset_upper_ms"]
+    assert row["activation_hit_offset_lower_ms"] <= row["activation_hit_offset_upper_ms"]
+    assert row["activation_hit_ms"] == row["activation_ms"] + row["activation_hit_offset_ms"]
+    assert row["fever_window_end_ms"] == row["activation_hit_ms"] + float(d_ms)
+
+
 def test_timeline_surface_dominance_reduction_is_lossless_for_positive_score_weights() -> None:
     surfaces = (
         TimelineExactSignature(4, (0b0001, 0, 0, 0), 3, 7, 1, 4),
@@ -105,7 +115,7 @@ def test_timeline_frontier_trace_reconstructs_selected_surface() -> None:
     fever_bits = [0, 0, 0, 0]
     body_fever = 0
     for row in trace:
-        assert row["activation_judgment"] == "perfect"
+        _assert_witness_consistent(row, d_ms=110.0)
         assert -20 <= row["activation_hit_offset_ms"] <= 40
         for note_idx in range(int(row["activation_index"]), min(int(row["fever_end_index"]), target.head_len)):
             fever_bits[note_idx // 32] |= 1 << (note_idx % 32)
@@ -115,7 +125,7 @@ def test_timeline_frontier_trace_reconstructs_selected_surface() -> None:
     assert body_fever == target.body_fever
 
 
-def test_timeline_frontier_trace_logs_smallest_positive_offset_when_zero_changes_surface() -> None:
+def test_timeline_frontier_trace_logs_largest_cushion_offset_when_zero_changes_surface() -> None:
     group_starts = np.array([0, 1, 2], dtype=np.int32)
     group_ends = np.array([1, 2, 3], dtype=np.int32)
     group_base_t_ms = np.array([0, 1000, 2000], dtype=np.int32)
@@ -137,9 +147,73 @@ def test_timeline_frontier_trace_logs_smallest_positive_offset_when_zero_changes
         target_surface=target,
     )
 
+    # The feasible activation band for this terminal exit is [1, 500]; on-chart (0)
+    # would not reach note #2. The witness reports the largest-cushion end (500),
+    # not the smallest-positive offset, and pins the window end to hit + d_ms.
     assert len(trace) == 1
+    _assert_witness_consistent(trace[0], d_ms=1000.0)
     assert trace[0]["fever_end_index"] == 3
-    assert trace[0]["activation_hit_offset_ms"] == 1.0
+    assert trace[0]["activation_hit_offset_ms"] == 500.0
+    assert trace[0]["activation_hit_offset_lower_ms"] == 1.0
+    assert trace[0]["activation_hit_ms"] == 1500.0
+
+
+def test_timeline_frontier_trace_witness_reproduces_carry_dependent_exit() -> None:
+    # Regression for issue #41: a route whose feasible activation band includes
+    # offsets that do NOT reproduce the fever extent under game-style
+    # activation-only timing. The old closest-to-zero choice returned +18ms, which
+    # under activation-only timing exits one note early (misleading witness). The
+    # largest-cushion witness (+40ms) reproduces the exact fever extent.
+    group_base_t_ms = np.array([0, 347, 603, 675], dtype=np.int32)
+    n = 4
+    group_starts = np.arange(n, dtype=np.int32)
+    group_ends = np.arange(1, n + 1, dtype=np.int32)
+    group_low_ms = np.full(n, -20, dtype=np.int32)
+    group_high_ms = np.full(n, 40, dtype=np.int32)
+    note_group_idx = np.arange(n, dtype=np.int32)
+
+    ctx = _build_grouped_timeline_context(
+        n,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+    )
+    d_ms = 219
+    pack = _build_exact_timeline_frontier_from_context(ctx, fill_count=2, d_ms=d_ms)
+
+    trace = reconstruct_timeline_frontier_trace(
+        total_notes=n,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+        fill_count=2,
+        d_ms=d_ms,
+        target_surface=pack.canonical,
+    )
+
+    assert len(trace) == 1
+    row = trace[0]
+    _assert_witness_consistent(row, d_ms=float(d_ms))
+    a = int(row["activation_index"])
+    fe = int(row["fever_end_index"])
+    assert (a, fe) == (1, 3)
+    # Largest cushion = +40ms, not the misleading closest-to-zero (+18ms).
+    assert row["activation_hit_offset_ms"] == 40.0
+    # The reported offset reproduces the fever extent under activation-only timing.
+    chart = group_base_t_ms.astype(np.int64)
+    threshold = int(chart[a]) + int(row["activation_hit_offset_ms"]) + d_ms
+    activation_only_exit = int(np.searchsorted(chart, threshold, side="left"))
+    assert activation_only_exit == fe
+    # On-chart activation (0ms) would exit one note early -> not a valid witness.
+    assert int(np.searchsorted(chart, int(chart[a]) + 0 + d_ms, side="left")) < fe
+    # Window is internally consistent: duration is exactly d_ms.
+    assert row["fever_window_end_ms"] == row["activation_hit_ms"] + float(d_ms)
 
 
 def test_vectorized_exit_enumerator_matches_scalar_reference() -> None:
