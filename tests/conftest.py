@@ -61,10 +61,6 @@ def _configure_test_db_path() -> None:
 
 _configure_test_db_path()
 
-# Keep CPU/GPU parity tests stable: default the GPU timeline to deterministic mode.
-# Dedicated tests explicitly enable analytical timing-envelope ceiling mode when needed.
-os.environ.setdefault("GPU_TIMELINE_CEILING_ENVELOPE", "0")
-
 
 @pytest.fixture
 def prebuild_timeline_frontier():
@@ -72,8 +68,8 @@ def prebuild_timeline_frontier():
     Prebuild the candidate-independent timeline frontier before GPU exact replay.
 
     Isolated GPU unit tests do not run the full-app startup prebuild; tests that call
-    score_stats_exact / evaluate_force_greats_exact with GPU_TIMELINE_CEILING_ENVELOPE=1
-    must invoke this first or they raise MissingFrontierCacheError.
+    score_stats_exact / evaluate_force_greats_exact must invoke this first or they
+    raise MissingFrontierCacheError.
     """
 
     def _run(calc_song: dict, ref_arrays: dict) -> None:

@@ -55,12 +55,11 @@ def test_stats_and_timeline_cache_keys_are_stable_with_timing_envelope() -> None
     assert _song_timing_cache_key(calc_song_a) == _song_timing_cache_key(calc_song_b)
 
 
-def test_timeline_cache_key_ignores_retired_window_gate_metadata(monkeypatch) -> None:
+def test_timeline_cache_key_ignores_retired_window_gate_metadata() -> None:
     calc_song_a = _calc_song()
     calc_song_b = _calc_song()
     apply_timing_envelope(calc_song_a)
     apply_timing_envelope(calc_song_b)
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
 
     calc_song_a.setdefault("metadata", {})["TimelineAnalysisMaxWindows"] = 0
     calc_song_b.setdefault("metadata", {})["TimelineAnalysisMaxWindows"] = 3

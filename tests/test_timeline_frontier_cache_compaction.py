@@ -131,7 +131,7 @@ def test_frontier_disk_cache_persists_group_payload_and_reuses_it(tmp_path: Path
     def _raise_group_build(*_args, **_kwargs):
         raise AssertionError("group payload should come from disk cache")
 
-    monkeypatch.setattr(timeline_api, "_get_or_build_ceiling_group_payload", _raise_group_build)
+    monkeypatch.setattr(timeline_api, "_get_or_build_frontier_group_payload", _raise_group_build)
     context = timeline_api._timeline_payload_context(calc_song, ref_arrays, ref_sig=None)
     loaded = context["group_payload"]
     assert int(loaded["n"]) == 6

@@ -3,7 +3,7 @@ Timing-envelope preparation and reduced exact timeline analysis.
 
 This module owns the deterministic Perfect-window model used by both:
 
-- base GPU timeline ceiling precompute, and
+- base GPU exact timeline-frontier construction, and
 - FG exact-DP frontier analysis.
 
 The contract is intentionally narrower than full timing exactness: for fixed
@@ -190,71 +190,6 @@ def prepare_perfect_timing_envelope(
         note_high_ms=np.asarray(perfect_high_ms, dtype=np.int32),
         quantize_ms=quantize_ms,
     )
-
-
-def compute_fever_timeline_signature(
-    event_ms: np.ndarray,
-    *,
-    non_fever_base: int,
-    real_fever_time_ms: int,
-) -> tuple[tuple[int, int, int, bytes], np.ndarray, int, int]:
-    """
-    Build a compact score-relevant signature for fixed stats on one event-time stream.
-    """
-
-    ev = np.asarray(event_ms, dtype=np.int32)
-    total_notes = int(ev.shape[0])
-    head_limit = min(total_notes, 100)
-    fever_mask_head = np.zeros(head_limit, dtype=np.bool_)
-
-    current_note_idx = 0
-    fever_section = 0
-    count_body_fever = 0
-    while current_note_idx < total_notes:
-        fever_section += 1
-        notes_to_fill = int(non_fever_base) - 1 if fever_section == 1 else int(non_fever_base)
-        end_normal_idx = current_note_idx + notes_to_fill
-        if end_normal_idx > total_notes:
-            end_normal_idx = total_notes
-        current_note_idx = end_normal_idx
-        if current_note_idx >= total_notes:
-            break
-
-        if current_note_idx > 0:
-            fever_start = int(current_note_idx)
-            end_ms = int(ev[fever_start]) + int(real_fever_time_ms)
-            # Contiguous fever run: the first note at/after fever_start whose event reaches the
-            # cutoff. Independent per-lane sampling can leave `ev` non-monotone, so this must be a
-            # contiguous first-exit (a global searchsorted assumes a sorted stream); for a monotone
-            # stream -- the deterministic ceiling envelope -- the two coincide exactly.
-            exits = ev[fever_start:] >= end_ms
-            fever_end_idx = fever_start + int(np.argmax(exits)) if bool(exits.any()) else total_notes
-
-            if fever_start < head_limit:
-                head_s = max(0, fever_start)
-                head_e = min(head_limit, fever_end_idx)
-                if head_e > head_s:
-                    fever_mask_head[head_s:head_e] = True
-
-            if fever_end_idx > 100:
-                body_start = max(100, fever_start)
-                if fever_end_idx > body_start:
-                    count_body_fever += int(fever_end_idx - body_start)
-
-            current_note_idx = fever_end_idx
-        else:
-            break
-
-    count_body_normal = max(0, int(total_notes - head_limit - int(count_body_fever)))
-    head_u8 = np.asarray(fever_mask_head, dtype=np.uint8)
-    packed_head = np.packbits(head_u8, bitorder="little")
-    signature = (
-        int(head_u8.shape[0]),
-        int(count_body_fever),
-        int(count_body_normal),
-        bytes(packed_head.tobytes()),
-    )
-    return signature, fever_mask_head, int(count_body_fever), int(count_body_normal)
 
 
 def _perfect_window_edges_ms(

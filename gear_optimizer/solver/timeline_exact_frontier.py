@@ -5,9 +5,9 @@ This module builds the non-dominated symbolic fever frontier for a fixed song an
 one timing cell `(fill_count, d_ms)`, then expands it to a full 161x161 payload for
 GPU upload.
 
-The frontier is loadout-independent. The canonical representative is chosen by the
-same deterministic structural comparator used by the old ceiling kernel, but the
-full non-dominated surface set is retained for exact scoring.
+The frontier is loadout-independent. The canonical representative is chosen by a
+deterministic structural comparator, while the full non-dominated surface set is
+retained for exact scoring.
 """
 
 from __future__ import annotations
