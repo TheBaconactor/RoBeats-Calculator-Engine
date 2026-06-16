@@ -780,6 +780,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         "song_data": {
             "timestamps": timestamps,
             "fg_timestamps": timestamps,
+            "fg_perfect_floor_timestamps": timestamps,
             "fg_great_candidate_timestamps": great_candidates,
         },
     }

@@ -14,7 +14,6 @@ hard activation-window cap.
 
 from __future__ import annotations
 
-import threading
 import logging
 
 import numpy as np
@@ -256,60 +255,6 @@ def compute_fever_timeline_signature(
         bytes(packed_head.tobytes()),
     )
     return signature, fever_mask_head, int(count_body_fever), int(count_body_normal)
-
-
-def generate_perfect_timing_events_ms(prepared: dict, *, seed: int) -> np.ndarray:
-    """
-    Sample one legal Perfect-window hit offset per chord-group and return the resulting
-    per-note event times in integer ms.
-
-    Same-timestamp lanes are sampled INDEPENDENTLY -- the decompiled server clamps each event
-    to its OWN note window and floors only the inter-event meter delta at 0 (no forced-monotone
-    event coupling; see ServerPlayerNoteSequenceInfo:push_note_sequence), so the returned stream
-    may be non-monotone and ``compute_fever_timeline_signature`` walks it with a contiguous
-    first-exit. Used by tests/benchmarks as a sampled reference against the deterministic ceiling
-    envelope; production scoring uses the deterministic envelope directly.
-    """
-
-    n = int(prepared.get("n", 0) or 0)
-    if n <= 0:
-        return np.zeros((0,), dtype=np.int32)
-
-    group_starts = np.asarray(prepared["group_starts"], dtype=np.int32)
-    group_ends = np.asarray(prepared["group_ends"], dtype=np.int32)
-    group_base_t = np.asarray(prepared["group_base_t"], dtype=np.int32)
-    group_low = np.asarray(prepared["group_low"], dtype=np.int32)
-    group_high = np.asarray(prepared["group_high"], dtype=np.int32)
-    group_count = int(group_starts.shape[0])
-
-    rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
-
-    tls = getattr(generate_perfect_timing_events_ms, "_tls", None)
-    if tls is None:
-        tls = threading.local()
-        setattr(generate_perfect_timing_events_ms, "_tls", tls)
-
-    event_ms = getattr(tls, "event_ms", None)
-    if event_ms is None or int(getattr(event_ms, "shape", (0,))[0]) < int(n):
-        event_ms = np.empty(int(n), dtype=np.int32)
-        setattr(tls, "event_ms", event_ms)
-    event_ms = event_ms[:n]
-
-    # Each chord-group is an INDEPENDENT lane hit: the game clamps every event to its own note
-    # window and never forces a later note's event forward (it floors only the inter-event meter
-    # delta at 0), so sample each group's offset independently within its OWN [g_low, g_high].
-    # Carrying a previous group's offset (the old monotone chain) would, for same-timestamp split
-    # groups sharing base_t, force an offset past this note's g_high -- an illegal out-of-window hit.
-    for g in range(group_count):
-        s = int(group_starts[g])
-        e = int(group_ends[g])
-        base_t = int(group_base_t[g])
-        g_low = int(group_low[g])
-        g_high = int(group_high[g])
-        off = int(rng.integers(g_low, g_high + 1, endpoint=False))
-        event_ms[s:e] = base_t + off
-
-    return event_ms
 
 
 def _perfect_window_edges_ms(
