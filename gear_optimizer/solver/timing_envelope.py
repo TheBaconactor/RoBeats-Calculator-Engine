@@ -224,7 +224,12 @@ def compute_fever_timeline_signature(
         if current_note_idx > 0:
             fever_start = int(current_note_idx)
             end_ms = int(ev[fever_start]) + int(real_fever_time_ms)
-            fever_end_idx = int(np.searchsorted(ev, end_ms, side="left"))
+            # Contiguous fever run: the first note at/after fever_start whose event reaches the
+            # cutoff. Independent per-lane sampling can leave `ev` non-monotone, so this must be a
+            # contiguous first-exit (a global searchsorted assumes a sorted stream); for a monotone
+            # stream -- the deterministic ceiling envelope -- the two coincide exactly.
+            exits = ev[fever_start:] >= end_ms
+            fever_end_idx = fever_start + int(np.argmax(exits)) if bool(exits.any()) else total_notes
 
             if fever_start < head_limit:
                 head_s = max(0, fever_start)
@@ -255,10 +260,15 @@ def compute_fever_timeline_signature(
 
 def generate_perfect_timing_events_ms(prepared: dict, *, seed: int) -> np.ndarray:
     """
-    Generate monotone Perfect event times in integer ms for a prepared envelope.
+    Sample one legal Perfect-window hit offset per chord-group and return the resulting
+    per-note event times in integer ms.
 
-    This is used by tests/benchmarks as a sampled reference against the deterministic
-    ceiling envelope. Production scoring uses the deterministic envelope directly.
+    Same-timestamp lanes are sampled INDEPENDENTLY -- the decompiled server clamps each event
+    to its OWN note window and floors only the inter-event meter delta at 0 (no forced-monotone
+    event coupling; see ServerPlayerNoteSequenceInfo:push_note_sequence), so the returned stream
+    may be non-monotone and ``compute_fever_timeline_signature`` walks it with a contiguous
+    first-exit. Used by tests/benchmarks as a sampled reference against the deterministic ceiling
+    envelope; production scoring uses the deterministic envelope directly.
     """
 
     n = int(prepared.get("n", 0) or 0)
@@ -285,30 +295,19 @@ def generate_perfect_timing_events_ms(prepared: dict, *, seed: int) -> np.ndarra
         setattr(tls, "event_ms", event_ms)
     event_ms = event_ms[:n]
 
-    prev_event_ms: int | None = None
+    # Each chord-group is an INDEPENDENT lane hit: the game clamps every event to its own note
+    # window and never forces a later note's event forward (it floors only the inter-event meter
+    # delta at 0), so sample each group's offset independently within its OWN [g_low, g_high].
+    # Carrying a previous group's offset (the old monotone chain) would, for same-timestamp split
+    # groups sharing base_t, force an offset past this note's g_high -- an illegal out-of-window hit.
     for g in range(group_count):
         s = int(group_starts[g])
         e = int(group_ends[g])
         base_t = int(group_base_t[g])
         g_low = int(group_low[g])
         g_high = int(group_high[g])
-
-        if prev_event_ms is None:
-            eff_low = g_low
-        else:
-            required_off = int(prev_event_ms) - base_t
-            eff_low = max(g_low, required_off)
-
-        if eff_low <= g_high:
-            off = int(rng.integers(eff_low, g_high + 1, endpoint=False))
-        else:
-            off = g_high
-            if prev_event_ms is not None and base_t + off < int(prev_event_ms):
-                off = int(prev_event_ms) - base_t
-
-        event = base_t + off
-        event_ms[s:e] = event
-        prev_event_ms = event
+        off = int(rng.integers(g_low, g_high + 1, endpoint=False))
+        event_ms[s:e] = base_t + off
 
     return event_ms
 
