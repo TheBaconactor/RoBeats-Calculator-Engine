@@ -86,6 +86,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     timestamps: Any,
     perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
+    perfect_floor_timestamps: Any,
     geometries: Any,
     use_forced_great_timing: bool = True,
 ) -> tuple[FgResponseFrontierResult, ...]:
@@ -110,6 +111,11 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
         great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
         if int(great_ts.shape[0]) != n:
             raise ValueError("great_candidate_timestamps length must match timestamps")
+    # perfect_floor (issue #42 fever-boundary basis) is REQUIRED: no chart fallback, since
+    # silently searching chart would under-count endpoint-early fever -- a wrong best_fg_score.
+    floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
+    if int(floor_ts.shape[0]) != n:
+        raise ValueError("perfect_floor_timestamps length must match timestamps")
 
     prepared = []
     action_table_cache: dict[
@@ -162,6 +168,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=ts,
         perfect_candidate_timestamps=perfect_ts,
         great_candidate_timestamps=great_ts,
+        perfect_floor_timestamps=floor_ts,
     )
     prepared = canonical.prepared
     duplicate_sources_by_source = canonical.duplicate_sources_by_source
@@ -241,6 +248,7 @@ def build_force_greats_response_first_frontiers_gpu_batch(
     timestamps: Any,
     perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
+    perfect_floor_timestamps: Any,
     geometries: Any,
     use_forced_great_timing: bool = True,
 ) -> tuple[FgResponseFrontierResult, ...]:
@@ -248,6 +256,7 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
+        perfect_floor_timestamps=perfect_floor_timestamps,
         geometries=geometries,
         use_forced_great_timing=bool(use_forced_great_timing),
     )

@@ -55,6 +55,27 @@ def _build_timeline_frontier_cache_for_path_shared(song_path_text: str) -> Timel
     return build_timeline_frontier_cache_for_path(song_path_text, shared)
 
 
+def _prebuild_max_workers() -> int:
+    """Worker count for the timeline-frontier prebuild process pool.
+
+    The binding limit is GPU + numba-runtime contention at startup, NOT per-worker RAM
+    (measured ~0.4 GB/worker): one worker per logical CPU floods the shared numba cache and
+    single GPU and fails the mass-rebuild that follows a cache-version bump -- observed
+    cpu_count=32 -> 304 built / 1931 failures, vs 8 workers -> 250/250 built, 0 failures,
+    +3 GB RAM. Cap concurrency to the tested-safe level, with a low-RAM guard (~1.5 GB/worker)
+    for small hosts.
+    """
+    cpu = max(1, int(os.cpu_count() or 1))
+    cap = min(cpu, 8)
+    try:
+        import psutil
+
+        cap = min(cap, max(1, int(float(psutil.virtual_memory().available) / 1e9 / 1.5)))
+    except Exception:
+        pass
+    return max(1, cap)
+
+
 def iter_timeline_frontier_cache_song_paths(
     data_root: str | os.PathLike[str] | None = None,
     difficulties: Iterable[str] = DIFFICULTIES,
@@ -216,7 +237,7 @@ def _run_missing_timeline_prebuild(paths: list[str], ref_arrays: dict) -> tuple[
             results,
         )
     with concurrent.futures.ProcessPoolExecutor(
-        max_workers=max(1, int(os.cpu_count() or 1)),
+        max_workers=_prebuild_max_workers(),
         initializer=_init_prebuild_worker,
         initargs=(dict(ref_arrays or {}),),
     ) as executor:

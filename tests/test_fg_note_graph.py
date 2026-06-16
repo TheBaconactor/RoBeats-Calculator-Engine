@@ -37,6 +37,7 @@ def _build_options(n, non_fever_base, real_fever_time):
         use_forced_great_timing=True,
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
     )
     return timestamps, great_candidates, actions, options
 
@@ -67,6 +68,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
                 target_surface=surface,
                 timestamps=timestamps,
                 great_candidate_timestamps=great_candidates,
+                perfect_floor_timestamps=timestamps,
                 raw_fever_fill=1.0,
                 real_fever_time=real_fever_time,
                 use_forced_great_timing=True,
@@ -125,6 +127,7 @@ def test_reconstruct_force_greats_response_trace_is_stats_free():
         "timestamps",
         "perfect_candidate_timestamps",
         "great_candidate_timestamps",
+        "perfect_floor_timestamps",
         "raw_fever_fill",
         "real_fever_time",
         "use_forced_great_timing",
@@ -221,6 +224,120 @@ def test_fg_note_graph_body_counts_synthetic():
     )
 
 
+def test_fg_note_graph_marks_fever_end_witness():
+    """FG note-graph tags the last note of each fever run with the cutoff ms, like base."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 130
+    ts = (np.arange(n) * 0.1).astype(np.float32)
+    trace = [
+        {"section": 1, "activation_index": 50, "fever_end_index": 56,
+         "forced_start_index": 0, "forced_prefix_count": 0,
+         "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
+         "fever_window_end_ms": 5590.0},
+        {"section": 2, "activation_index": 110, "fever_end_index": 116,
+         "forced_start_index": 100, "forced_prefix_count": 0,
+         "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
+         "fever_window_end_ms": 11590.0},
+    ]
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts)
+
+    # Last note of each run ([50,56) -> 55; [110,116) -> 115) is the fever-end witness.
+    ends = [x["note_index"] for x in g if x["is_fever_end_witness"]]
+    assert ends == [55, 115]
+    assert g[55]["fever_end_ms"] == pytest.approx(5590.0)
+    assert g[115]["fever_end_ms"] == pytest.approx(11590.0)
+    assert g[55]["fever"] is True and g[115]["fever"] is True
+    # No score-contributing flag on either frontier.
+    assert all("contributes_to_max_score" not in x for x in g)
+
+
+def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
+    """Issue #42: a fever note at/after the cutoff carries its legal EARLY delta, so replaying
+    each note at its shown delta reproduces the scored fever set (frontend self-consistency)."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+        base_note_graph,
+        force_greats_note_graph,
+    )
+
+    n = 10
+    ts = np.asarray([0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.245, 1.5, 1.7], dtype=np.float32)
+    fg_trace = [{
+        "section": 1, "activation_index": 2, "fever_end_index": 8,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
+        "fever_window_end_ms": 1240.0,
+    }]
+    base_trace = [{
+        "section": 1, "activation_index": 2, "fever_end_index": 8,
+        "activation_hit_offset_ms": 40.0, "fever_window_end_ms": 1240.0,
+    }]
+
+    nt = np.ones(n, dtype=np.int16)  # all-normal notes for this case
+    for g in (
+        force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
+        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool), frontier_trace=base_trace, note_types=nt),
+    ):
+        # note 7 @ chart 1245ms is past the 1240ms cutoff -> in fever ONLY via an early hit.
+        assert g[7]["fever"] is True
+        assert g[7]["is_fever_end_witness"] is True
+        assert g[7]["delta_ms"] == pytest.approx(-6.0, abs=1e-3)        # 1240 - 1245 - 1, legal early
+        # its event lands inside the window -> displayed per-note timing is self-consistent.
+        assert g[7]["hit_time_ms"] + g[7]["delta_ms"] < 1240.0
+        # comfortably-inside fever notes untouched (delta 0); activation keeps its +40.
+        assert g[6]["fever"] is True and g[6]["delta_ms"] == 0.0
+        assert g[2]["is_activation_witness"] is True and g[2]["delta_ms"] == pytest.approx(40.0)
+
+
+def test_endpoint_early_delta_never_below_legal_lower_bound():
+    """Issue #42 reconstruction legality: the displayed endpoint-early `delta_ms` is clamped to
+    the note's own Perfect lower bound (-20, or -40 for a held tail). The prior `cutoff - hit - 1`
+    could fall BELOW it (e.g. -20.5 ms on a -20 ms note) -- an illegal hit that "replay each note
+    at its shown delta" must never produce. Needs `note_types` for the held-tail bound."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+        base_note_graph,
+        force_greats_note_graph,
+    )
+
+    # note 3 @ chart 1019.5ms is 19.5ms past a 1000ms cutoff -> unclamped delta = 1000-1019.5-1 = -20.5.
+    n = 5
+    ts = np.asarray([0.0, 0.1, 0.2, 1.0195, 1.5], dtype=np.float32)
+    fg_trace = [{
+        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
+        "fever_window_end_ms": 1000.0,
+    }]
+    base_trace = [{
+        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "activation_hit_offset_ms": 40.0, "fever_window_end_ms": 1000.0,
+    }]
+    mask = np.zeros(n, bool)
+
+    # Normal note: -20.5 is below the -20 lower bound -> must clamp to exactly -20 (legal).
+    nt_normal = [1, 1, 1, 1, 1]
+    for g in (
+        force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt_normal),
+        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=base_trace, note_types=nt_normal),
+    ):
+        assert g[3]["delta_ms"] >= -20.0                  # never below the Perfect lower bound
+        assert g[3]["delta_ms"] == pytest.approx(-20.0)   # clamped to the bound
+
+    # Held tail (note_type 3, window [-40,+80]): -20.5 is legal (>= -40) -> kept, not clamped.
+    nt = [1, 1, 1, 3, 1]
+    for g in (
+        force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
+        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=base_trace, note_types=nt),
+    ):
+        assert g[3]["delta_ms"] >= -40.0                  # never below the held-tail lower bound
+        assert g[3]["delta_ms"] == pytest.approx(-20.5)   # legal for a held tail -> unclamped
+
+    # FAIL LOUD: a clawed-in note with NO note_types must raise -- never guess a (possibly false)
+    # bound. (A graph with no clawed-in note does not need note_types -- not asserted here.)
+    with pytest.raises(ValueError):
+        force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts)
+
+
 def test_base_note_graph_maps_fever_timeline():
     from gear_optimizer.helpers.song_helpers.force_greats.note_graph import base_note_graph
 
@@ -256,6 +373,35 @@ def test_base_note_graph_uses_timeline_frontier_trace_witness():
     assert [g["fever"] for g in graph] == [False, False, True, True, True, False]
     assert graph[2]["delta_ms"] == pytest.approx(40.0)
     assert graph[2]["is_activation_witness"] is True
+
+
+def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import base_note_graph
+
+    n = 6
+    ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
+    mask = np.zeros(n, dtype=np.bool_)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 2,
+            "activation_hit_offset_ms": 40.0,
+            "fever_end_index": 5,
+            "fever_window_end_ms": 440.0,
+        }
+    ]
+
+    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=trace)
+
+    # Fever run is notes [2, 5); the last fevered note (4) is the fever-end witness,
+    # carrying the largest-cushion cutoff time. No score-contributing flag exists.
+    assert [g["is_fever_end_witness"] for g in graph] == [False, False, False, False, True, False]
+    assert graph[4]["fever_end_ms"] == pytest.approx(440.0)
+    assert graph[4]["fever"] is True
+    assert graph[2]["is_activation_witness"] is True
+    assert graph[2]["is_fever_end_witness"] is False
+    assert graph[0]["fever_end_ms"] is None
+    assert all("contributes_to_max_score" not in g for g in graph)
 
 
 def test_base_note_graph_matches_production_fever_timeline():

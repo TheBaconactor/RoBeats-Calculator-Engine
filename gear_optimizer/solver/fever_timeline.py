@@ -258,6 +258,7 @@ def calculate_force_greats_timeline_indices(
     song_timestamps,
     perfect_candidate_timestamps,
     great_candidate_timestamps,
+    perfect_floor_timestamps,
     total_notes,
     fever_fill_rate,
     fever_time_stat,
@@ -369,7 +370,13 @@ def calculate_force_greats_timeline_indices(
         if use_forced_great_timing and carry_time > start_time:
             start_time = carry_time
         end_time = start_time + real_fever_time
-        fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+        # Endpoint-early fever inclusion (issue #42): search the earliest-Perfect floor
+        # envelope, not chart, so a boundary note within early-hit reach is counted in fever.
+        # Cast the key to float32 to match the GPU precompute (`_precompute_end_indices`) and
+        # the CPU witness (`_lower_bound_from`), which both search this float32 floor with a
+        # float32-cast value; `real_fever_time` is float64, so an un-cast key would diverge by
+        # one index at a float32-ULP boundary (the prefix-max floor packs values tightly).
+        fever_end_idx = int(np.searchsorted(perfect_floor_timestamps, np.float32(end_time), side="left"))
         if fever_end_idx <= current_idx:
             fever_end_idx = min(total_notes, current_idx + 1)
         is_fever[current_idx:fever_end_idx] = True

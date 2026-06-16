@@ -75,7 +75,7 @@ song_total_notes = None  # scalar i32
 song_long_notes = None  # scalar i32
 song_last_note_time = None  # scalar f32
 
-# Chord-grouped chart data for analytical timing-envelope ceiling computation.
+# Chord-grouped chart data for exact timing-frontier computation.
 song_note_group_idx = None  # (MAX_SONG_NOTES,) i32: note_idx -> group_idx
 song_group_starts = None  # (MAX_SONG_NOTES,) i32: group_idx -> first note_idx
 song_group_base_t_ms = None  # (MAX_SONG_NOTES,) i32: group_idx -> chart time in integer ms

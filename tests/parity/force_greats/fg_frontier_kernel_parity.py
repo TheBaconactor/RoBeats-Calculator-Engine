@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 
+from gear_optimizer.solver.timing_envelope import build_perfect_floor_envelope_sec
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
     _compact_first_frontier_action_arrays,
@@ -60,6 +61,9 @@ def build_kernel_args(
         )
         if int(great_ts.shape[0]) != n:
             raise ValueError("great_candidate_timestamps length must match timestamps")
+    floor_ts = np.ascontiguousarray(
+        np.asarray(build_perfect_floor_envelope_sec(ts, None), dtype=np.float32).reshape(-1)
+    )
 
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=float(raw_fever_fill),
@@ -82,6 +86,7 @@ def build_kernel_args(
         timestamps=ts,
         perfect_candidate_timestamps=perfect_ts,
         great_candidate_timestamps=great_ts,
+        perfect_floor_timestamps=floor_ts,
         real_times=real_times,
     )
 

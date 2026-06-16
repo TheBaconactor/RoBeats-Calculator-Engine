@@ -26,16 +26,16 @@ def _count_head_fever(bits_u32: np.ndarray, head_len: int) -> int:
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_gpu_timeline_ceiling_envelope_never_reduces_fever_notes(monkeypatch) -> None:
+def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
     """
-    Ceiling envelope is intended as a deterministic upper envelope over exact chart timestamps.
-
-    This test ensures the Taichi kernel runs and that, for a representative synthetic chart,
-    ceiling mode does not reduce the total number of fever notes (head + body) vs the
-    deterministic (no-offset) timeline.
+    Exact frontier smoke: build the candidate-independent payload, upload it, and
+    verify representative cells expose retained fever surfaces.
     """
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
+    from gear_optimizer.solver.taichi_gem.api.timeline import (
+        build_or_load_timeline_frontier_payload,
+        precompute_timeline_gpu,
+    )
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
@@ -53,7 +53,7 @@ def test_gpu_timeline_ceiling_envelope_never_reduces_fever_notes(monkeypatch) ->
 
     calc_song = {
         "metadata": {
-            "Song Name": "CeilingEnvelope Timeline Smoke",
+            "Song Name": "TimelineFrontier Timeline Smoke",
             "Difficulty": "Hard",
             "Primary Color": "Beat",
             "Secondary Color": "Flow",
@@ -94,19 +94,13 @@ def test_gpu_timeline_ceiling_envelope_never_reduces_fever_notes(monkeypatch) ->
             out[(ft_idx, ff_idx)] = int(head_fever + body_fever)
         return out
 
-    # Deterministic baseline.
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "0")
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
-    det = _read_total_fever()
+    prebuilt = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    assert int(prebuilt.payload.frontier_pool_used) > 0
 
-    # Ceiling mode.
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
-    ceil = _read_total_fever()
+    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0, prebuilt_frontier=prebuilt)
+    total_fever = _read_total_fever()
+    frontier_count_grid = np.asarray(gpu_fields.grid_frontier_count.to_numpy()[0], dtype=np.int32)
 
-    improved = 0
-    for k in det:
-        assert ceil[k] >= det[k], f"ceiling reduced fever notes for {k}: det={det[k]} ceil={ceil[k]}"
-        if ceil[k] > det[k]:
-            improved += 1
-    assert improved >= 1, f"expected ceiling to improve at least one cell; det={det} ceil={ceil}"
+    for cell in ftff_samples:
+        assert int(frontier_count_grid[cell[0], cell[1]]) > 0, f"missing retained frontier for cell {cell}"
+    assert any(v > 0 for v in total_fever.values()), f"expected at least one fever note; got {total_fever}"
