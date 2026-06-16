@@ -216,7 +216,13 @@ _frontier_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 _FRONTIER_PAYLOAD_CACHE_MAX = 8
 _frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
 _frontier_payload_cache_lock = threading.RLock()
-_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v5"
+# Bump whenever the base frontier OUTPUT changes in a way the cache key does NOT capture.
+# The key (_frontier_payload_cache_key -> song_key) hashes raw song inputs + window settings,
+# NOT the grouping/DP logic, so a pure logic change is invisible to it and only the version
+# invalidates stale disk payloads. v6: the chord-tied held-tail grouping split (issue #42 /
+# PR #45) changed the base frontier for held-tail-chord songs without touching any key input,
+# so pre-fix v5 payloads in bin/timeline_frontier_cache/ must not be reused.
+_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v6"
 
 
 @dataclass(frozen=True)
