@@ -11,7 +11,16 @@ from gear_optimizer.core.constants import TOTAL_ROWS
 
 from .response_types import FgResponseFrontierResult
 
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v12"
+# Bump whenever the FG response-frontier bundle OUTPUT changes via code (not the chart file).
+# The per-song disk digest captures perfect_floor / candidate timestamps, but the prebuild's
+# coarse manifest (frontier_cache_manifest._manifest_key) keys ONLY on cache_version + chart
+# path/mtime/size + ref/stat sigs -- it never parses the chart. So an FG-output code change with
+# an unchanged chart file and an unbumped version makes the prebuild false-hit stale bundles
+# (built=0) while runtime computes the new perfect_floor-keyed digest and fail-louds on a missing
+# scoring bundle. This is the FG analog of timeline._FRONTIER_DISK_CACHE_VERSION.
+# v12 -> v13: issue #42 endpoint-early fever -> perfect_floor envelope (build_perfect_floor_envelope_sec)
+#             changed the bundle output; the v12 bundles predate it.
+_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v13"
 _MEMORY_CACHE_MAX = 4096
 _PAYLOAD_CACHE_MAX = 8
 _BUNDLE_ARRAY_CACHE_MAX = 2
