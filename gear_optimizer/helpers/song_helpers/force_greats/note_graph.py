@@ -94,40 +94,74 @@ def _mark_endpoint_early_hits(
     fever_window_end_ms: float | None,
     note_types: Sequence[int] | np.ndarray | None,
 ) -> None:
-    """Issue #42 endpoint-early inclusion, shown as a LEGAL early hit per note for the frontend.
+    """Issue #42 endpoint-early inclusion, shown as the LARGEST-CUSHION legal hit per note.
 
     A fever note whose chart time is at/after the fever cutoff is in fever ONLY because it is hit
-    EARLY (its corrected event time slips before the cutoff). Show the latest legal hit just
-    inside the cutoff (``event = cutoff - 1ms``), CLAMPED to the note's own held-tail-aware Perfect
-    lower bound (-20, or -40 for a held tail) so the displayed offset is ALWAYS a legal hit. The
-    prior unclamped ``cutoff - hit - 1`` could fall BELOW the lower bound for a tight cutoff (e.g.
-    -20.5 ms on a -20 ms note) -- "hit each note at its shown delta" must stay legal.
+    EARLY (its corrected event time slips before the cutoff). The shown offset is the timing with
+    the MOST error margin: the CENTER of the note's legal in-fever hit range, in hit-time space.
+    For a clawed note with chart time ``hit``:
+
+      * ``legal_low_hit = hit + legal_low``        earliest legal Perfect hit (held-tail-aware
+        lower bound: -20 normal, -40 held tail)
+      * ``upper_hit = cutoff - 1ms``               latest hit still inside the fever cutoff
+      * ``lo_hit = max(legal_low_hit, prev_hit)``  also >= the previous shown hit (monotonic order)
+      * if ``lo_hit >= upper_hit`` (degenerate / no room): ``shown_hit = max(legal_low_hit,
+        upper_hit)`` -- preserves the old cliff-edge clamp in the tight-margin edge case.
+      * else: ``shown_hit = 0.5 * (lo_hit + upper_hit)`` -- the largest-cushion center.
+
+    ``delta_ms = shown_hit - hit``. This is DISPLAY-ONLY: it changes only the per-note timing
+    offset shown, never the fever/great set or any score (the note graph is not on the scoring
+    path; ``reconcile_*`` checks fever/great positions + counts, not deltas). The shown hit stays
+    LEGAL (``delta >= legal_low``), IN-FEVER (``shown_hit <= cutoff - 1``), and MONOTONIC
+    (``>= prev shown hit``).
+
+    Monotonicity is tracked across ALL notes of the section left-to-right: each note's shown hit is
+    ``hit_time_ms + delta_ms`` (treating ``None``/unset delta as 0; the activation witness
+    contributes its nominal time + its load-bearing delta). The clawed note's shown hit must be
+    ``>= prev_hit``.
 
     ``note_types`` is REQUIRED runtime song data, but only load-bearing when a note is actually
     clawed in (chart >= cutoff): the lower bound is never guessed. If a clawed-in note is found and
     ``note_types`` is missing or shorter than ``total_notes``, this FAILS LOUD rather than display
     a possibly-false hit. Notes comfortably inside the cutoff keep ``delta_ms = 0``; Great
-    selectors (``delta_ms is None``) and the activation witness are left untouched. The clamped hit
-    reproduces the scored fever set under the monotonic replay (up to the sub-ms seam between the
-    raw chart time shown and the scoring's int-ms lattice).
+    selectors (``delta_ms is None``) and the activation witness are left untouched.
     """
     if fever_window_end_ms is None:
         return
     cutoff = float(fever_window_end_ms)
+    upper_hit = cutoff - 1.0  # latest hit still inside the fever cutoff
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
+    prev_hit = -np.inf  # running largest shown hit across the section (monotonic order)
     for j in range(max(0, int(activation_index)), min(int(fever_end_index), int(total_notes))):
         note = notes[j]
-        if note["delta_ms"] is None or note["is_activation_witness"]:
-            continue
+        delta = note["delta_ms"]
         hit = float(note["hit_time_ms"])
-        if hit >= cutoff:
-            if nt is None or int(nt.shape[0]) <= j:
-                raise ValueError(
-                    "note_graph: note_types (length == total_notes) is required to display an "
-                    "endpoint-early hit at the note's legal lower bound -- it is never guessed"
-                )
-            legal_low = _PERFECT_LOWER_MS * (_HELD_TAIL_TIME_MULT if int(nt[j]) == _HELD_TAIL_TYPE else 1)
-            note["delta_ms"] = max(float(legal_low), cutoff - hit - 1.0)
+        if delta is None:
+            # Great selector: no timing witness; does not move the monotonic frontier.
+            continue
+        if note["is_activation_witness"]:
+            # Score-determining witness: untouched, but its shown hit advances the frontier.
+            prev_hit = max(prev_hit, hit + float(delta))
+            continue
+        if hit < cutoff:
+            # Comfortably inside the cutoff: delta stays 0; advances the frontier at its chart time.
+            prev_hit = max(prev_hit, hit + float(delta))
+            continue
+        # Clawed-in note: shown with the largest-cushion legal in-fever hit.
+        if nt is None or int(nt.shape[0]) <= j:
+            raise ValueError(
+                "note_graph: note_types (length == total_notes) is required to display an "
+                "endpoint-early hit at the note's legal lower bound -- it is never guessed"
+            )
+        legal_low = _PERFECT_LOWER_MS * (_HELD_TAIL_TIME_MULT if int(nt[j]) == _HELD_TAIL_TYPE else 1)
+        legal_low_hit = hit + float(legal_low)
+        lo_hit = max(legal_low_hit, prev_hit)
+        if lo_hit >= upper_hit:
+            shown_hit = max(legal_low_hit, upper_hit)  # tight edge: preserve the old clamp
+        else:
+            shown_hit = 0.5 * (lo_hit + upper_hit)  # largest cushion = center of the legal range
+        note["delta_ms"] = shown_hit - hit
+        prev_hit = shown_hit
 
 
 def _mark_fever_end_witness(
@@ -183,8 +217,9 @@ def timeline_frontier_note_graph(
             notes[a]["is_activation_witness"] = True
             notes[a]["section"] = section
         # The last note of the fever run is the fever-end witness (largest-cushion cutoff);
-        # any fever note at/after that cutoff is shown with its legal early hit (issue #42).
-        # Together the per-note timing reproduces the scored fever set.
+        # any fever note at/after that cutoff is shown with its LARGEST-CUSHION legal early hit --
+        # the center of its legal in-fever range, the timing with the most error margin (issue #42).
+        # Display-only: the per-note timing keeps the scored fever set unchanged.
         fever_end_ms = sec.get("fever_window_end_ms")
         _mark_fever_end_witness(
             notes, activation_index=a, fever_end_index=e, total_notes=n,
@@ -300,9 +335,10 @@ def force_greats_note_graph(
             notes[a]["is_activation_witness"] = True
             notes[a]["section"] = section
 
-        # Endpoint-early (issue #42): any Perfect fever note at/after the cutoff is shown with
-        # its legal early hit, so per-note timing reproduces the scored fever set. Great
-        # selectors (delta_ms None) are skipped.
+        # Endpoint-early (issue #42): any Perfect fever note at/after the cutoff is shown with its
+        # LARGEST-CUSHION legal early hit -- the center of its legal in-fever range (most error
+        # margin), display-only so the scored fever set is unchanged. Great selectors (delta_ms
+        # None) are skipped.
         _mark_endpoint_early_hits(
             notes, activation_index=a, fever_end_index=e, total_notes=n,
             fever_window_end_ms=fever_end_ms, note_types=note_types,
