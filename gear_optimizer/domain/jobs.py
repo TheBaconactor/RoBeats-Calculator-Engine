@@ -6,10 +6,16 @@ from enum import IntEnum
 from typing import Any, Mapping, Sequence
 
 
-LEGACY_TASK_FIXED_FIELD_COUNT = 14
+# NOTE: This "task tuple" shape is a fixed-field ABI used across the runtime
+# pipeline (app -> execution -> engine). The code originally named it "legacy"
+# when refactoring toward typed `SongJob`/`SharedRunContext` while keeping the
+# tuple as the durable interchange format.
+TASK_FIXED_FIELD_COUNT = 14
+# Backwards-compatible alias (kept to avoid churn across the codebase).
+LEGACY_TASK_FIXED_FIELD_COUNT = TASK_FIXED_FIELD_COUNT
 
 
-class LegacyTaskIndex(IntEnum):
+class TaskIndex(IntEnum):
     FILE_PATH = 0
     SONG_NAME = 1
     DIFFICULTY = 2
@@ -25,6 +31,9 @@ class LegacyTaskIndex(IntEnum):
     PARALLEL_WORKERS = 12
     FG_DEBUG = 13
 
+
+# Backwards-compatible alias.
+LegacyTaskIndex = TaskIndex
 
 @dataclass(frozen=True, slots=True)
 class SongJob:
@@ -62,11 +71,14 @@ class SharedRunContext:
 
 
 @dataclass(frozen=True, slots=True)
-class LegacySongTaskView:
+class SongTaskView:
     job: SongJob
     context: SharedRunContext
     extras: tuple[Any, ...]
 
+
+# Backwards-compatible alias.
+LegacySongTaskView = SongTaskView
 
 def _is_task_sequence(task: Any) -> bool:
     return isinstance(task, (tuple, list))
@@ -77,18 +89,18 @@ def is_repeat_context(extra: Any) -> bool:
 
 
 def extract_repeat_context(task: Sequence[Any] | Any) -> dict | None:
-    if not _is_task_sequence(task) or len(task) <= LEGACY_TASK_FIXED_FIELD_COUNT:
+    if not _is_task_sequence(task) or len(task) <= TASK_FIXED_FIELD_COUNT:
         return None
-    for extra in task[LEGACY_TASK_FIXED_FIELD_COUNT:]:
+    for extra in task[TASK_FIXED_FIELD_COUNT:]:
         if is_repeat_context(extra):
             return extra
     return None
 
 
 def extract_repeat_bundle(task: Sequence[Any] | Any) -> dict | None:
-    if not _is_task_sequence(task) or len(task) <= LEGACY_TASK_FIXED_FIELD_COUNT:
+    if not _is_task_sequence(task) or len(task) <= TASK_FIXED_FIELD_COUNT:
         return None
-    for extra in task[LEGACY_TASK_FIXED_FIELD_COUNT:]:
+    for extra in task[TASK_FIXED_FIELD_COUNT:]:
         if not isinstance(extra, dict):
             continue
         if not bool(extra.get("repeat_bundle")):
@@ -102,9 +114,9 @@ def extract_repeat_bundle(task: Sequence[Any] | Any) -> dict | None:
 def materialize_repeat_task(task: tuple, repeat_ctx: dict) -> tuple:
     if not _is_task_sequence(task):
         return task
-    prefix = list(task[:LEGACY_TASK_FIXED_FIELD_COUNT])
+    prefix = list(task[:TASK_FIXED_FIELD_COUNT])
     extras: list[Any] = []
-    for extra in task[LEGACY_TASK_FIXED_FIELD_COUNT:]:
+    for extra in task[TASK_FIXED_FIELD_COUNT:]:
         if is_repeat_context(extra):
             continue
         if isinstance(extra, dict) and bool(extra.get("repeat_bundle")):
@@ -115,27 +127,27 @@ def materialize_repeat_task(task: tuple, repeat_ctx: dict) -> tuple:
 
 
 def task_file_path(task: Sequence[Any] | Any) -> str:
-    if not _is_task_sequence(task) or len(task) <= int(LegacyTaskIndex.FILE_PATH):
+    if not _is_task_sequence(task) or len(task) <= int(TaskIndex.FILE_PATH):
         return ""
-    return os.path.abspath(str(task[int(LegacyTaskIndex.FILE_PATH)] or ""))
+    return os.path.abspath(str(task[int(TaskIndex.FILE_PATH)] or ""))
 
 
 def task_song_name(task: Sequence[Any] | Any) -> str:
-    if not _is_task_sequence(task) or len(task) <= int(LegacyTaskIndex.SONG_NAME):
+    if not _is_task_sequence(task) or len(task) <= int(TaskIndex.SONG_NAME):
         return ""
-    return str(task[int(LegacyTaskIndex.SONG_NAME)] or "").strip()
+    return str(task[int(TaskIndex.SONG_NAME)] or "").strip()
 
 
 def task_difficulty(task: Sequence[Any] | Any) -> str:
-    if not _is_task_sequence(task) or len(task) <= int(LegacyTaskIndex.DIFFICULTY):
+    if not _is_task_sequence(task) or len(task) <= int(TaskIndex.DIFFICULTY):
         return ""
-    return str(task[int(LegacyTaskIndex.DIFFICULTY)] or "")
+    return str(task[int(TaskIndex.DIFFICULTY)] or "")
 
 
 def task_cfg_dict(task: Sequence[Any] | Any) -> dict:
-    if not _is_task_sequence(task) or len(task) <= int(LegacyTaskIndex.CFG_DICT):
+    if not _is_task_sequence(task) or len(task) <= int(TaskIndex.CFG_DICT):
         return {}
-    cfg_dict = task[int(LegacyTaskIndex.CFG_DICT)]
+    cfg_dict = task[int(TaskIndex.CFG_DICT)]
     return cfg_dict if isinstance(cfg_dict, dict) else {}
 
 
@@ -203,7 +215,7 @@ def effective_task_count(tasks: list[Any]) -> int:
 
 
 def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_task_tuple") -> SongJob:
-    if not _is_task_sequence(task) or len(task) < LEGACY_TASK_FIXED_FIELD_COUNT:
+    if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
         raise ValueError("legacy song task must contain the 16-field production prefix")
 
     repeat_ctx = extract_repeat_context(task)
@@ -231,9 +243,9 @@ def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_t
             repeat_total = len(runs) if isinstance(runs, list) else 0
 
     return SongJob(
-        file_path=task[int(LegacyTaskIndex.FILE_PATH)],
-        song_name=str(task[int(LegacyTaskIndex.SONG_NAME)] or ""),
-        difficulty=str(task[int(LegacyTaskIndex.DIFFICULTY)] or ""),
+        file_path=task[int(TaskIndex.FILE_PATH)],
+        song_name=str(task[int(TaskIndex.SONG_NAME)] or ""),
+        difficulty=str(task[int(TaskIndex.DIFFICULTY)] or ""),
         repeat_index=max(0, int(repeat_index)),
         repeat_total=max(0, int(repeat_total)),
         ga_seed=ga_seed,
@@ -243,44 +255,50 @@ def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_t
 
 
 def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
-    if not _is_task_sequence(task) or len(task) < LEGACY_TASK_FIXED_FIELD_COUNT:
+    if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
         raise ValueError("legacy song task must contain the 16-field production prefix")
 
     try:
-        ga_depth = int(task[int(LegacyTaskIndex.GA_DEPTH)] or 0)
+        ga_depth = int(task[int(TaskIndex.GA_DEPTH)] or 0)
     except (ValueError, TypeError):
         ga_depth = 0
     try:
-        parallel_workers = int(task[int(LegacyTaskIndex.PARALLEL_WORKERS)] or 0)
+        parallel_workers = int(task[int(TaskIndex.PARALLEL_WORKERS)] or 0)
     except (ValueError, TypeError):
         parallel_workers = 0
 
     return SharedRunContext(
-        cfg_dict=task[int(LegacyTaskIndex.CFG_DICT)],
-        paths=task[int(LegacyTaskIndex.PATHS)],
-        ref_arrays=task[int(LegacyTaskIndex.REF_ARRAYS)],
-        all_gears=task[int(LegacyTaskIndex.ALL_GEARS)],
-        all_minis=task[int(LegacyTaskIndex.ALL_MINIS)],
-        gears_by_name=task[int(LegacyTaskIndex.GEARS_BY_NAME)],
-        minis_by_name=task[int(LegacyTaskIndex.MINIS_BY_NAME)],
+        cfg_dict=task[int(TaskIndex.CFG_DICT)],
+        paths=task[int(TaskIndex.PATHS)],
+        ref_arrays=task[int(TaskIndex.REF_ARRAYS)],
+        all_gears=task[int(TaskIndex.ALL_GEARS)],
+        all_minis=task[int(TaskIndex.ALL_MINIS)],
+        gears_by_name=task[int(TaskIndex.GEARS_BY_NAME)],
+        minis_by_name=task[int(TaskIndex.MINIS_BY_NAME)],
         ga_depth=ga_depth,
-        status_queue=task[int(LegacyTaskIndex.STATUS_QUEUE)],
+        status_queue=task[int(TaskIndex.STATUS_QUEUE)],
         parallel_workers=parallel_workers,
-        fg_debug=bool(task[int(LegacyTaskIndex.FG_DEBUG)]),
+        fg_debug=bool(task[int(TaskIndex.FG_DEBUG)]),
     )
 
 
-def task_tuple_to_legacy_view(task: Sequence[Any]) -> LegacySongTaskView:
-    if not _is_task_sequence(task) or len(task) < LEGACY_TASK_FIXED_FIELD_COUNT:
+def task_tuple_to_view(task: Sequence[Any]) -> SongTaskView:
+    if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
         raise ValueError("legacy song task must contain the 16-field production prefix")
-    return LegacySongTaskView(
+    return SongTaskView(
         job=task_tuple_to_song_job(task),
         context=task_tuple_to_shared_context(task),
-        extras=tuple(task[LEGACY_TASK_FIXED_FIELD_COUNT:]),
+        extras=tuple(task[TASK_FIXED_FIELD_COUNT:]),
     )
 
+#
+# Backwards-compatible name (kept for existing call sites).
+#
+def task_tuple_to_legacy_view(task: Sequence[Any]) -> LegacySongTaskView:
+    return task_tuple_to_view(task)
 
-def legacy_task_tuple_from_job_context(
+
+def task_tuple_from_job_context(
     job: SongJob,
     context: SharedRunContext,
     *extras: Any,
@@ -302,3 +320,28 @@ def legacy_task_tuple_from_job_context(
         context.fg_debug,
         *extras,
     )
+
+#
+# Backwards-compatible name (kept for existing call sites).
+#
+def legacy_task_tuple_from_job_context(
+    job: SongJob,
+    context: SharedRunContext,
+    *extras: Any,
+) -> tuple[Any, ...]:
+    return task_tuple_from_job_context(job, context, *extras)
+
+
+def ensure_task_tuple(task: Sequence[Any]) -> tuple[Any, ...]:
+    """Validate the task tuple ABI and return it as an immutable tuple.
+
+    Historically we "canonicalized" tasks by unpacking them into a typed view and
+    rebuilding the tuple. That roundtrip is semantically identity for valid tasks
+    (it exists to validate the fixed-field ABI). This helper keeps the validation
+    but avoids rebuilding/allocating a new tuple.
+    """
+    if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
+        raise ValueError("song task must contain the fixed-field production prefix")
+    # Ensure we can interpret it as a view (type/shape validation).
+    task_tuple_to_view(task)
+    return tuple(task)
