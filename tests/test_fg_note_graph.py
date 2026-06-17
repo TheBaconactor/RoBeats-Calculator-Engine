@@ -414,6 +414,32 @@ def test_endpoint_early_delta_is_largest_cushion_center():
     assert shown6 == pytest.approx(1395.5, abs=1e-3)
 
 
+def test_endpoint_early_degenerate_clamp_is_monotonic():
+    """Degenerate branch (no in-fever room) must keep the prev_hit floor so shown hits stay
+    non-decreasing. A normal note clawed in at the ~1ms boundary (shown ~cutoff-0.5) followed by a
+    held tail whose own legal_low_hit is lower would, under a prev_hit-blind clamp, be shown EARLIER
+    -- breaking monotonicity. The fix clamps to lo_hit (>= prev_hit)."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 4
+    ts = np.asarray([0.0, 0.1, 1.0195, 1.030], dtype=np.float32)  # idx2 normal @1019.5, idx3 held @1030
+    cutoff = 1000.0
+    trace = [{
+        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.asarray([1, 1, 1, 3], dtype=np.int16)  # idx2 normal (-20), idx3 held tail (-40)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+    s2 = g[2]["hit_time_ms"] + g[2]["delta_ms"]
+    s3 = g[3]["hit_time_ms"] + g[3]["delta_ms"]
+    assert s3 >= s2                       # MONOTONIC across the degenerate clamp (the regression guard)
+    assert s2 < cutoff and s3 < cutoff    # both still land in fever
+    assert g[2]["delta_ms"] >= -20.0      # normal-note legal bound
+    assert g[3]["delta_ms"] >= -40.0      # held-tail legal bound
+
+
 def test_base_note_graph_maps_fever_timeline():
     from gear_optimizer.helpers.song_helpers.force_greats.note_graph import base_note_graph
 

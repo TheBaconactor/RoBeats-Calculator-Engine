@@ -99,21 +99,25 @@ def _mark_endpoint_early_hits(
     A fever note whose chart time is at/after the fever cutoff is in fever ONLY because it is hit
     EARLY (its corrected event time slips before the cutoff). The shown offset is the timing with
     the MOST error margin: the CENTER of the note's legal in-fever hit range, in hit-time space.
+    (This center sense of "largest cushion" is DISTINCT from the edge-anchored ``largest_cushion``
+    activation_hit_offset_kind elsewhere, which denotes the LATEST legal hit / band edge -- here the
+    endpoint note is shown at the range's center, not its edge.)
     For a clawed note with chart time ``hit``:
 
       * ``legal_low_hit = hit + legal_low``        earliest legal Perfect hit (held-tail-aware
         lower bound: -20 normal, -40 held tail)
       * ``upper_hit = cutoff - 1ms``               latest hit still inside the fever cutoff
       * ``lo_hit = max(legal_low_hit, prev_hit)``  also >= the previous shown hit (monotonic order)
-      * if ``lo_hit >= upper_hit`` (degenerate / no room): ``shown_hit = max(legal_low_hit,
-        upper_hit)`` -- preserves the old cliff-edge clamp in the tight-margin edge case.
+      * if ``lo_hit >= upper_hit`` (degenerate / no in-fever room): ``shown_hit = lo_hit`` -- the
+        legal + monotonic floor; for a valid trace ``lo_hit < cutoff``, so the note still lands in
+        fever, within ~1ms of the cutoff.
       * else: ``shown_hit = 0.5 * (lo_hit + upper_hit)`` -- the largest-cushion center.
 
     ``delta_ms = shown_hit - hit``. This is DISPLAY-ONLY: it changes only the per-note timing
     offset shown, never the fever/great set or any score (the note graph is not on the scoring
     path; ``reconcile_*`` checks fever/great positions + counts, not deltas). The shown hit stays
-    LEGAL (``delta >= legal_low``), IN-FEVER (``shown_hit <= cutoff - 1``), and MONOTONIC
-    (``>= prev shown hit``).
+    LEGAL (``delta >= legal_low``), IN-FEVER (``shown_hit < cutoff``; the center case is
+    ``<= cutoff - 1``), and MONOTONIC (``>= prev shown hit``, including the degenerate clamp).
 
     Monotonicity is tracked across ALL notes of the section left-to-right: each note's shown hit is
     ``hit_time_ms + delta_ms`` (treating ``None``/unset delta as 0; the activation witness
@@ -139,12 +143,9 @@ def _mark_endpoint_early_hits(
         if delta is None:
             # Great selector: no timing witness; does not move the monotonic frontier.
             continue
-        if note["is_activation_witness"]:
-            # Score-determining witness: untouched, but its shown hit advances the frontier.
-            prev_hit = max(prev_hit, hit + float(delta))
-            continue
-        if hit < cutoff:
-            # Comfortably inside the cutoff: delta stays 0; advances the frontier at its chart time.
+        if note["is_activation_witness"] or hit < cutoff:
+            # Not re-centered: a score-determining activation witness (left untouched) or a note
+            # comfortably inside the cutoff (no claw). Its shown hit advances the monotonic frontier.
             prev_hit = max(prev_hit, hit + float(delta))
             continue
         # Clawed-in note: shown with the largest-cushion legal in-fever hit.
@@ -157,7 +158,7 @@ def _mark_endpoint_early_hits(
         legal_low_hit = hit + float(legal_low)
         lo_hit = max(legal_low_hit, prev_hit)
         if lo_hit >= upper_hit:
-            shown_hit = max(legal_low_hit, upper_hit)  # tight edge: preserve the old clamp
+            shown_hit = lo_hit  # no in-fever room: keep the legal + monotonic floor (>= prev_hit, < cutoff)
         else:
             shown_hit = 0.5 * (lo_hit + upper_hit)  # largest cushion = center of the legal range
         note["delta_ms"] = shown_hit - hit
