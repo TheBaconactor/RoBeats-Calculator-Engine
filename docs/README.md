@@ -17,7 +17,6 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 - [ARCHITECTURE.md](ARCHITECTURE.md) - system overview and package boundaries.
 - [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) - SQLite schema and persistence layout.
 - [FEVER_TIMELINE_MATH.md](FEVER_TIMELINE_MATH.md) - fever timeline and scoring math.
-- [HUMAN_HIT_SIM.md](HUMAN_HIT_SIM.md) - hit simulation behavior and settings.
 - [STATS_VERIFIER.md](STATS_VERIFIER.md) - stats and loadout verification notes.
 - [FORMULA EXPLANATION.txt](FORMULA%20EXPLANATION.txt) - legacy formula reference.
 

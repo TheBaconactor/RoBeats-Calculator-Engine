@@ -384,9 +384,8 @@ def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | 
     """
     Attach deterministic timing-envelope streams to a calc_song.
 
-    This replaces production HumanHitSim usage. Base scoring keeps chart
-    timestamps; FG receives chart timestamps plus a deterministic late Great
-    candidate envelope for carry-aware exact DP.
+    Base scoring keeps chart timestamps; FG receives chart timestamps plus a
+    deterministic late Great candidate envelope for carry-aware exact DP.
     """
 
     if not isinstance(calc_song, dict):
@@ -439,17 +438,6 @@ def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | 
     meta["TimingEnvelopeMode"] = "perfect_window"
     meta["TimingEnvelopeFGPerfect"] = "perfect_upper"
     meta["TimingEnvelopeFGCarry"] = "late_upper"
-    for key in (
-        "HumanHitSimApplied",
-        "HumanHitSimPlanned",
-        "HumanHitSimSeed",
-        "HumanHitSimApplyTo",
-        "HumanHitSimDistribution",
-        "HumanHitSimGreatMode",
-        "HumanHitSimSeedIsRandom",
-        "HumanHitSimDebug",
-    ):
-        meta.pop(key, None)
     calc_song["metadata"] = meta
     calc_song["song_data"] = song_data
     return {"mode": "fg", "notes": int(chart_ts.shape[0]), "great_mode": "late_upper"}
