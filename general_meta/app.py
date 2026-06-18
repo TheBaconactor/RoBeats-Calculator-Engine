@@ -15,7 +15,6 @@ from gear_optimizer.core.team_buff import (
 )
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
-from gear_optimizer.data.db_manager import EvolutionDbManager
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
@@ -26,6 +25,7 @@ from .analysis import (
     format_gem_counts,
     sort_gears_by_slot,
 )
+from .db import prepare_team_buff_tier_replay
 from .song_scan import get_songs_by_elemental_combo
 
 
@@ -110,7 +110,6 @@ def _serialize_details_json(details: object) -> str | None:
 def _build_replayed_loadout_rows_for_song(
     song: dict,
     *,
-    db_manager: EvolutionDbManager,
     team_color: str,
     cfg_dict: dict | None,
     ref_arrays: dict | None,
@@ -120,7 +119,7 @@ def _build_replayed_loadout_rows_for_song(
     if not song_name or not song_file:
         return cfg_dict, ref_arrays, {}
 
-    cfg_dict_out, ref_arrays_out, entries, calc_song, _ = db_manager._prepare_team_buff_tier_replay(
+    cfg_dict_out, ref_arrays_out, entries, calc_song, _ = prepare_team_buff_tier_replay(
         song_name=song_name,
         song_file=song_file,
         limit=int(LOADOUTS_PER_SONG_LIMIT),
@@ -304,7 +303,6 @@ def run_general_meta(cfg, paths: dict) -> dict:
     baseline_label = team_buff_display_label(baseline_team_buff, default="T5")
     default_team_buff_label = team_buff_display_label("T5", default="T5")
     print(f"\nPreparing TeamBuff tier replay seed rows (baseline TeamBuff={baseline_label})...")
-    db_manager = EvolutionDbManager.from_env()
     replay_cfg_dict: dict | None = None
     replay_ref_arrays: dict | None = None
     song_tier_rows_cache: dict[str, dict[str, list[dict]]] = {}
@@ -351,7 +349,6 @@ def run_general_meta(cfg, paths: dict) -> dict:
             if rows_by_tier is None:
                 replay_cfg_dict, replay_ref_arrays, rows_by_tier = _build_replayed_loadout_rows_for_song(
                     song,
-                    db_manager=db_manager,
                     team_color=team_color,
                     cfg_dict=replay_cfg_dict,
                     ref_arrays=replay_ref_arrays,

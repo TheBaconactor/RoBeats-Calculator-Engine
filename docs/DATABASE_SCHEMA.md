@@ -177,15 +177,6 @@ Order:
 When loading via `gear_optimizer.data.database.get_best_loadouts(...)` (or via the manager), this is unpacked back into
 `details["Stats"]` for consumers.
 
-### HumanHitSim Context (`details_json.hs`)
-
-To make on-demand recomputation deterministic when `HumanHitSim.Seed=0` (random-per-run), rows persist a compact timing
-context:
-
-- `details_json.hs = [seed, apply_to_code, dist_code, great_mode_code]`
-
-This is used by on-demand tier recomputation to re-apply HumanHitSim per persisted row before scoring.
-
 ### Packed Gem Counts and Colors
 
 Current writes also compact common per-row context:

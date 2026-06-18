@@ -62,7 +62,7 @@ DB selection:
 - Default: uses `evolution.db`.
 - Override: pass `--db path/to/dbfile.db` (sets `EVOLUTION_DB_PATH` for the process).
 
-Config selection (affects HumanHitSim semantics and tier baseline resolution):
+Config selection:
 
 - Default: uses repo `config.ini` resolution.
 - Override: pass `--config path/to/config.ini` (sets `METAFINDER_CONFIG_PATH` for the process).
@@ -115,11 +115,8 @@ The result shape is:
 
 This repo intentionally avoids persisting derived tiers to keep DB size and per-song CPU cost low.
 
-## HumanHitSim Recompute (Seeded)
+## Timing Replay
 
-When HumanHitSim is enabled with `HumanHitSim.Seed=0`, the optimizer chooses a different random seed per run. To make
-on-demand recomputation deterministic, persisted rows include a compact timing context:
-
-- `details_json.hs = [seed, apply_to_code, dist_code, great_mode_code]`
-
-This allows tier recompute to re-apply HumanHitSim per persisted row before scoring (without changing DB keys).
+On-demand recomputation uses the same chart timing and timing-envelope/frontier
+semantics as the optimizer. Persisted DB rows are not a source of sampled timing
+state.

@@ -131,7 +131,7 @@ def calculate_fever_timeline_indices(
             start_time = song_timestamps[current_note_idx]
             end_time = start_time + real_fever_time
             # Use side="left" to find first note where time >= end_time (not >)
-            fever_end_idx = np.searchsorted(song_timestamps, end_time, side="left")
+            fever_end_idx = np.searchsorted(song_timestamps, np.float32(end_time), side="left")
             is_fever[current_note_idx:fever_end_idx] = True
             current_note_idx = fever_end_idx
             last_fever_end_idx = fever_end_idx  # Update last fever end
@@ -189,7 +189,7 @@ def calculate_non_fever_sections(
 
         start_time = song_timestamps[current_idx]
         end_time = start_time + real_fever_time
-        fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+        fever_end_idx = int(np.searchsorted(song_timestamps, np.float32(end_time), side="left"))
         if fever_end_idx <= current_idx:
             fever_end_idx = min(total_notes, current_idx + 1)
         current_idx = fever_end_idx
@@ -243,7 +243,7 @@ def calculate_fever_activations_grid(
                     fever_activations += 1
                     start_time = song_timestamps[current_note_idx]
                     end_time = start_time + real_fever_time
-                    fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+                    fever_end_idx = int(np.searchsorted(song_timestamps, np.float32(end_time), side="left"))
                     current_note_idx = fever_end_idx
                     last_fever_end_idx = fever_end_idx
                 else:
@@ -258,6 +258,7 @@ def calculate_force_greats_timeline_indices(
     song_timestamps,
     perfect_candidate_timestamps,
     great_candidate_timestamps,
+    perfect_floor_timestamps,
     total_notes,
     fever_fill_rate,
     fever_time_stat,
@@ -356,8 +357,13 @@ def calculate_force_greats_timeline_indices(
         section_start_out[section_count] = section_start
         section_forced_out[section_count] = forced_applied
         section_fill_penalty_out[section_count] = fill_penalty_notes
-        # NOTE: skip_wasted is ONLY for fever fill calculation (section 0 needs fewer notes to fill).
-        # It should NOT be used to offset great penalty indices - greats always start at section_start.
+        # NOTE: skip_wasted controls BOTH the fever fill adjustment (section 1
+        # needs one fewer fill-contributing note) AND the great penalty index
+        # offset (section 1 penalties start at section_start + 0, sections 2+
+        # start at section_start + 1). The forced-great placement rule is the
+        # same: forced_start = section_start if skip_wasted else section_start + 1.
+        # These two offsets MUST stay consistent - see fg_policy.py
+        # accumulate_forced_score_penalty for the penalty-side reader.
         section_skip_wasted_out[section_count] = non_fever_section == 1
         section_count += 1
 
@@ -369,7 +375,13 @@ def calculate_force_greats_timeline_indices(
         if use_forced_great_timing and carry_time > start_time:
             start_time = carry_time
         end_time = start_time + real_fever_time
-        fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+        # Endpoint-early fever inclusion (issue #42): search the earliest-Perfect floor
+        # envelope, not chart, so a boundary note within early-hit reach is counted in fever.
+        # Cast the key to float32 to match the GPU precompute (`_precompute_end_indices`) and
+        # the CPU witness (`_lower_bound_from`), which both search this float32 floor with a
+        # float32-cast value; `real_fever_time` is float64, so an un-cast key would diverge by
+        # one index at a float32-ULP boundary (the prefix-max floor packs values tightly).
+        fever_end_idx = int(np.searchsorted(perfect_floor_timestamps, np.float32(end_time), side="left"))
         if fever_end_idx <= current_idx:
             fever_end_idx = min(total_notes, current_idx + 1)
         is_fever[current_idx:fever_end_idx] = True

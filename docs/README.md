@@ -17,7 +17,6 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 - [ARCHITECTURE.md](ARCHITECTURE.md) - system overview and package boundaries.
 - [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) - SQLite schema and persistence layout.
 - [FEVER_TIMELINE_MATH.md](FEVER_TIMELINE_MATH.md) - fever timeline and scoring math.
-- [HUMAN_HIT_SIM.md](HUMAN_HIT_SIM.md) - hit simulation behavior and settings.
 - [STATS_VERIFIER.md](STATS_VERIFIER.md) - stats and loadout verification notes.
 - [FORMULA EXPLANATION.txt](FORMULA%20EXPLANATION.txt) - legacy formula reference.
 
@@ -34,7 +33,7 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 - [PHD_PERFORMANCE_HOMEWORK.md](PHD_PERFORMANCE_HOMEWORK.md) - standalone PhD-level homework focused on multiplicative throughput speedups via scientific/mathematical reductions.
 - [TAICHI_PORT_ROADMAP.md](TAICHI_PORT_ROADMAP.md) - Taichi/Vulkan roadmap and constraints.
 - [OPTIMIZATION_ANALYSIS.md](OPTIMIZATION_ANALYSIS.md) - optimization findings and tradeoffs.
-- [ANALYTICAL_TIMING_ENVELOPE_CEILING_GPU_TIMELINE.md](Implementation%20Records/ANALYTICAL_TIMING_ENVELOPE_CEILING_GPU_TIMELINE.md) - current deterministic timing-envelope ceiling and GPU integration notes.
+- [TIMING_ENVELOPE_EXACT_FRONTIER.md](Implementation%20Records/TIMING_ENVELOPE_EXACT_FRONTIER.md) - current exact timing-frontier model and GPU integration notes.
 - [REFACTORING_VALIDATION.md](REFACTORING_VALIDATION.md) - refactor validation notes and historical context.
 - [DUPLICATION_REDUCTION.md](DUPLICATION_REDUCTION.md) - duplication cleanup map.
 

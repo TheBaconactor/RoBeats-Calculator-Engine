@@ -444,6 +444,7 @@ def _solve_result_from_row(
             timestamps=song_inputs.timestamps,
             perfect_candidate_timestamps=song_inputs.perfect_candidates,
             great_candidate_timestamps=song_inputs.great_candidates,
+            perfect_floor_timestamps=song_inputs.perfect_floor,
             raw_fever_fill=float(raw_fill),
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),

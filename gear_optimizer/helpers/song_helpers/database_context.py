@@ -106,7 +106,6 @@ def load_database_context(
     gears_by_name,
     minis_by_name,
     *,
-    allow_fallback: bool = True,
     team_buff: str = "T5",
 ):
     """
@@ -150,7 +149,6 @@ def load_database_context(
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
         team_buff=str(team_buff or "T5"),
-        allow_fallback=allow_fallback,
     )
     if best_loadouts:
         prev_record = best_loadouts[0]
@@ -172,7 +170,7 @@ def load_database_context(
             tag = f"[DB pid={pid}]" if pid is not None else "[DB]"
             print(f"{tag} Found previous best (Base: {prev_base}, FG: {prev_best_fg})")
     try:
-        conn = get_db_connection_cached(allow_fallback=allow_fallback)
+        conn = get_db_connection_cached()
         _maybe_wal_maintenance(conn)
     except Exception as e:
         logger.debug(f"database_context:load_database_context: {e}")
@@ -185,7 +183,6 @@ def load_database_progress_baseline(
     gears_by_name,
     minis_by_name,
     *,
-    allow_fallback: bool = True,
     team_buff: str = "T5",
 ):
     """
@@ -219,13 +216,10 @@ def load_database_progress_baseline(
             found_song_name,
             gears_by_name,
             minis_by_name,
-            allow_fallback=allow_fallback,
             team_buff=str(team_buff or "T5"),
         )
     except sqlite3.Error:
-        if not allow_fallback:
-            return _invalid_baseline_result()
-        raise
+        return _invalid_baseline_result()
 
     try:
         (
@@ -233,10 +227,10 @@ def load_database_progress_baseline(
             prev_attempts_first,
             db_best_score,
             db_best_fg_score,
-        ) = get_song_counters(str(found_song_name or "").strip(), allow_fallback=allow_fallback)
+        ) = get_song_counters(str(found_song_name or "").strip())
         baseline_valid = True
         if not db_best_fg_score:
-            conn = get_db_connection_cached(allow_fallback=allow_fallback)
+            conn = get_db_connection_cached()
             row = conn.execute(
                 """
                 SELECT MAX(fg_score)
@@ -252,9 +246,7 @@ def load_database_progress_baseline(
                     logger.debug(f"database_context:load_database_progress_baseline: {e}")
                     db_best_fg_score = 0
     except sqlite3.Error:
-        if not allow_fallback:
-            return _invalid_baseline_result()
-        baseline_valid = True
+        return _invalid_baseline_result()
 
     if not db_best_score and isinstance(prev_record, dict):
         try:

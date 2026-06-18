@@ -93,6 +93,7 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
         frontiers = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             geometries=((2.1, 3, 10.0), (2.2, 3, 11.0)),
             use_forced_great_timing=True,
         )
@@ -139,6 +140,7 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
         frontiers = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             geometries=((2.1, 3, 10.0), (2.2, 3, 11.0)),
             use_forced_great_timing=True,
         )
@@ -160,6 +162,7 @@ def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> Non
     frontier = build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         geometries=((2.25, 3, 1.0),),
         use_forced_great_timing=True,
     )[0]
@@ -184,6 +187,7 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         geometries=((2.25, 3, 1.0),),
         use_forced_great_timing=True,
     )[0]
@@ -199,6 +203,7 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         raw_fever_fill=2.25,
         real_fever_time=1.0,
         use_forced_great_timing=True,
@@ -233,6 +238,7 @@ def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> 
         15.504000663757324,
         58.48316925859451,
         2,
+        timestamps,
     )
 
     assert _lower_bound_from(timestamps, hit + 58.48316925859451) == 2
@@ -257,6 +263,7 @@ def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_sam
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         geometries=((2.25, 3, 1.0),),
         use_forced_great_timing=True,
     )[0]
@@ -286,6 +293,7 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         geometries=((2.25, 3, 1.0),),
         use_forced_great_timing=True,
     )[0]
@@ -303,6 +311,7 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         raw_fever_fill=2.25,
         real_fever_time=1.0,
         use_forced_great_timing=True,
@@ -319,11 +328,13 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
 
 def test_force_greats_replay_uses_optimized_perfect_activation_edge() -> None:
     from gear_optimizer.solver.scoring.exact_rescore import _compute_force_greats_timeline
+    from gear_optimizer.solver.timing_envelope import build_perfect_floor_envelope_sec
 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
     perfect_candidates = timestamps.copy()
     perfect_candidates[2] = np.float32(2.5)
     great_candidates = timestamps.copy()
+    perfect_floor = build_perfect_floor_envelope_sec(timestamps, None)
 
     (
         fever_mask_head,
@@ -335,6 +346,7 @@ def test_force_greats_replay_uses_optimized_perfect_activation_edge() -> None:
         timestamps,
         perfect_candidates,
         great_candidates,
+        perfect_floor,
         int(timestamps.shape[0]),
         1.5,
         4.0 / 3.0,
@@ -362,6 +374,7 @@ def test_fg_response_first_frontier_emits_activation_great_body_overlap() -> Non
     frontier = build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         geometries=((102.25, 103, 1.0),),
         use_forced_great_timing=True,
     )[0]
@@ -385,6 +398,7 @@ def test_fg_response_edge_end_does_not_let_prefix_great_carry_perfect_activation
         use_forced_great_timing=True,
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
     )
 
     assert edge_end == 3
@@ -442,6 +456,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
         timestamps=song_inputs.timestamps,
         perfect_candidate_timestamps=song_inputs.perfect_candidates,
         great_candidate_timestamps=song_inputs.great_candidates,
+        perfect_floor_timestamps=song_inputs.perfect_floor,
         real_times=np.asarray([real_fever_time], dtype=np.float64),
     )
     rt_idx = int(real_time_index[0])
@@ -454,6 +469,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
             real_fever_time=real_fever_time,
             use_forced_great_timing=False,
             timestamps=song_inputs.timestamps,
+            perfect_floor_timestamps=song_inputs.perfect_floor,
         )
         perfect_e, _perfect_start, _perfect_carry = _edge_end(
             n=int(song_inputs.timestamps.shape[0]),
@@ -464,6 +480,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
             timestamps=song_inputs.timestamps,
             perfect_candidate_timestamps=song_inputs.perfect_candidates,
             great_candidate_timestamps=song_inputs.great_candidates,
+            perfect_floor_timestamps=song_inputs.perfect_floor,
         )
         great_e, _great_start, _great_carry = _edge_end(
             n=int(song_inputs.timestamps.shape[0]),
@@ -474,13 +491,14 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
             timestamps=song_inputs.timestamps,
             perfect_candidate_timestamps=song_inputs.perfect_candidates,
             great_candidate_timestamps=song_inputs.great_candidates,
+            perfect_floor_timestamps=song_inputs.perfect_floor,
         )
 
         assert int(timestamp_end_idx[rt_idx, note_idx]) == int(timestamp_e)
         assert int(perfect_end_idx[rt_idx, note_idx]) == int(perfect_e)
         assert int(great_end_idx[rt_idx, note_idx]) == int(great_e)
 
-    assert int(great_end_idx[rt_idx, 164]) == 842
+    assert int(great_end_idx[rt_idx, 164]) == 845
 
 
 def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
@@ -511,6 +529,7 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
         use_forced_great_timing=True,
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
     )
 
     assert not any(int(option["k"]) == 1 and int(option["next_state"]) == 5 for option in options)
@@ -643,6 +662,7 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
         timestamps=song_inputs.timestamps,
         perfect_candidate_timestamps=song_inputs.perfect_candidates,
         great_candidate_timestamps=song_inputs.great_candidates,
+        perfect_floor_timestamps=song_inputs.timestamps,
         geometries=((raw_fever_fill, non_fever_base, real_fever_time),),
         use_forced_great_timing=song_inputs.use_forced_great_timing,
     )[0]
@@ -657,6 +677,7 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
             timestamps=song_inputs.timestamps,
             perfect_candidate_timestamps=song_inputs.perfect_candidates,
             great_candidate_timestamps=song_inputs.great_candidates,
+            perfect_floor_timestamps=song_inputs.timestamps,
             raw_fever_fill=raw_fever_fill,
             real_fever_time=real_fever_time,
             use_forced_great_timing=song_inputs.use_forced_great_timing,
@@ -724,6 +745,7 @@ def test_fg_response_first_frontier_batch_uses_slim_exact_route(monkeypatch) -> 
     slim = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         geometries=geometries,
         use_forced_great_timing=True,
     )
@@ -743,6 +765,7 @@ def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> Non
     slim = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         geometries=geometries,
         use_forced_great_timing=True,
     )
@@ -787,6 +810,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
     slim = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         geometries=((raw_fever_fill, non_fever_base, real_fever_time),),
         use_forced_great_timing=True,
     )[0]
@@ -797,6 +821,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         target_surface=target,
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
         use_forced_great_timing=True,
@@ -806,6 +831,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         target_surface=target,
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=timestamps,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
         use_forced_great_timing=True,
@@ -854,6 +880,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
             use_forced_great_timing=True,
             timestamps=timestamps,
             great_candidate_timestamps=great_candidates,
+            perfect_floor_timestamps=timestamps,
         ):
             if int(option["k"]) == int(count):
                 edge_match = (int(option["next_state"]), option["surface"])

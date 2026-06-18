@@ -74,7 +74,6 @@ class StageTiming(TypedDict, total=False):
     cpu_setup_sec: float
     cpu_db_load_sec: float
     cpu_prep_sec: float
-    cpu_human_hit_sim_sec: float
     gpu_timeline_precompute_sec: float
     cpu_ga_wall_sec: float
     cpu_fg_wall_sec: float
@@ -134,6 +133,5 @@ class SongResultPayload(TypedDict, total=False):
 # ----------------------------- GPU IPC payloads -----------------------------
 
 BoolFlags = Tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]
-
 
 

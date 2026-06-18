@@ -25,7 +25,7 @@ def test_get_db_connection_cached_strict_does_not_create_fallback(tmp_path, monk
     monkeypatch.setattr(db, "get_db_connection_readonly", _raise_locked)
 
     with pytest.raises(sqlite3.OperationalError, match="locked"):
-        db.get_db_connection_cached(str(db_path), allow_fallback=False)
+        db.get_db_connection_cached(str(db_path))
 
     assert getattr(db._DB_TLS, "fallback_conn", None) is None
 
@@ -59,7 +59,6 @@ def test_load_database_progress_baseline_marks_invalid_when_strict_read_fails(mo
         "Song A",
         {},
         {},
-        allow_fallback=False,
     )
 
     assert result == (None, {}, 0, 0, 0, 0, False)
