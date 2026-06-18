@@ -976,6 +976,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
             timestamps=np.asarray([0.0], dtype=np.float32),
             perfect_candidates=np.asarray([0.0], dtype=np.float32),
             great_candidates=np.asarray([0.0], dtype=np.float32),
+            perfect_floor=np.asarray([0.0], dtype=np.float32),
             use_forced_great_timing=True,
         ),
         ref_arrays={},
@@ -1069,6 +1070,7 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
         timestamps=np.asarray([0.0], dtype=np.float32),
         perfect_candidates=np.asarray([0.0], dtype=np.float32),
         great_candidates=np.asarray([0.0], dtype=np.float32),
+        perfect_floor=np.asarray([0.0], dtype=np.float32),
     )
     seen: dict[str, object] = {}
     canonical_keys = (
@@ -1141,6 +1143,7 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
         timestamps=np.asarray([0.0], dtype=np.float32),
         perfect_candidates=np.asarray([0.0], dtype=np.float32),
         great_candidates=np.asarray([0.0], dtype=np.float32),
+        perfect_floor=np.asarray([0.0], dtype=np.float32),
     )
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 0
@@ -1191,6 +1194,7 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
         timestamps=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
         perfect_candidates=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
         great_candidates=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
+        perfect_floor=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
     )
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 1

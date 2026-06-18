@@ -327,7 +327,7 @@ Given a song and loadout, find the forced-Great configuration $(k_1, \ldots, k_S
 
 ### Q2: Interaction with HitSim Timing
 
-When HumanHitSim is active, the Great judgment has a **candidate timestamp** (the time the note would have been hit as a Great). If this timestamp is later than the Perfect hit time, it can further delay fever activation via a **carry time** mechanism:
+Under the timing-envelope model, the Great judgment has a **candidate timestamp**. If this timestamp is later than the Perfect hit time, it can further delay fever activation via a **carry time** mechanism:
 
 ```
 carry_time = max(carry_time, great_candidate_timestamp[last_forced_note])

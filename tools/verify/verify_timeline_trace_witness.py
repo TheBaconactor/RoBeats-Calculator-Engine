@@ -35,7 +35,7 @@ from gear_optimizer.solver.timeline_exact_frontier import (
     reconstruct_timeline_frontier_trace,
 )
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope, floor_to_int_ms
-from gear_optimizer.solver.taichi_gem.api.timeline import _get_or_build_ceiling_group_payload
+from gear_optimizer.solver.taichi_gem.api.timeline import _get_or_build_frontier_group_payload
 
 CARRY_L, CARRY_U = -40, 80
 DEFAULT_SONGS = [
@@ -65,7 +65,7 @@ def verify_song(song_rel: str) -> tuple[int, int]:
     fill_counts = np.maximum(np.ceil(np.float32(non_fever_cas) * ref_ff).astype(np.int32), 1)
     d_ms_values = np.maximum(np.ceil(np.float32(fever_time_cas) * ref_ft * np.float32(1000.0)).astype(np.int32), 0)
 
-    gp = _get_or_build_ceiling_group_payload(("verify", song_rel), timestamps=ts, note_types=song_data.get("note_types"))
+    gp = _get_or_build_frontier_group_payload(("verify", song_rel), timestamps=ts, note_types=song_data.get("note_types"))
     gs = np.asarray(gp["group_starts"], dtype=np.int32)
     ge = np.asarray(gp["group_ends"], dtype=np.int32)
     gb = np.asarray(gp["group_base_t_ms"], dtype=np.int32)

@@ -107,9 +107,9 @@ Expected behavior:
 
 ## Verification
 
-- `python -m py_compile gear_optimizer/solver/timeline_exact_frontier.py gear_optimizer/solver/taichi_gem/api/timeline.py gear_optimizer/solver/taichi_gem/api/fixed_scoring.py gear_optimizer/solver/taichi_gem/fields.py gear_optimizer/solver/taichi_gem/kernels/kernels_helpers.py gear_optimizer/solver/taichi_gem/kernels/kernels_scoring.py gear_optimizer/solver/taichi_gem/kernels/kernels_timeline.py gear_optimizer/solver/taichi_gem/kernels_metal.py gear_optimizer/solver/taichi_gem/kernels/__init__.py tests/test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_timeline_frontier_reduction.py`
+- `python -m py_compile gear_optimizer/solver/timeline_exact_frontier.py gear_optimizer/solver/taichi_gem/api/timeline.py gear_optimizer/solver/taichi_gem/api/fixed_scoring.py gear_optimizer/solver/taichi_gem/fields.py gear_optimizer/solver/taichi_gem/kernels/kernels_helpers.py gear_optimizer/solver/taichi_gem/kernels/kernels_scoring.py gear_optimizer/solver/taichi_gem/kernels/kernels_timeline.py gear_optimizer/solver/taichi_gem/kernels_metal.py gear_optimizer/solver/taichi_gem/kernels/__init__.py tests/test_gpu_timeline_frontier_cpu_gpu_exact.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_timeline_frontier_reduction.py`
 - `python -m pytest -q tests/test_timeline_frontier_reduction.py --tb=short` -> 2 passed
-- `python -m pytest -m gpu -q tests/test_parity_smoke.py::test_gem_solver_cpu_gpu_exact_parity_smoke tests/test_gpu_integration.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py --tb=short` -> 7 passed
+- `python -m pytest -m gpu -q tests/test_parity_smoke.py::test_gem_solver_cpu_gpu_exact_parity_smoke tests/test_gpu_integration.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_gpu_timeline_frontier_cpu_gpu_exact.py --tb=short` -> 7 passed
 
 ## Phase Timing Investigation
 
@@ -207,7 +207,7 @@ The older `InFlight_FGStaticPrepMaxInflight` / `INFLIGHT_FG_STATIC_PREP_MAX_INFL
 Verification after this scheduler refactor:
 
 - `python -m py_compile gear_optimizer/solver/taichi_gem/api/timeline.py gear_optimizer/solver/native_inflight_orchestrator.py gear_optimizer/solver/native_inflight_stages.py gear_optimizer/solver/native_inflight_types.py tests/test_native_inflight_continuous_scheduler.py`
-- `python -m pytest -q tests/test_native_inflight_continuous_scheduler.py tests/test_timeline_frontier_reduction.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py --tb=short` -> 45 passed
+- `python -m pytest -q tests/test_native_inflight_continuous_scheduler.py tests/test_timeline_frontier_reduction.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_gpu_timeline_frontier_cpu_gpu_exact.py --tb=short` -> 45 passed
 
 ## Production Whole-Pool Frontier Cache
 
@@ -310,7 +310,7 @@ Verification:
 - temp-cache `CpuWorkManager.run_startup(...)` smoke with `TimelineFrontierCachePrebuildScope=queue`, `Workers=0 (auto/all cores)`, `MaxSongs=1` -> passed
 - temp-cache manual first pass: `python tools/dev/prebuild_timeline_frontiers.py --difficulty Easy --limit 1 --workers 1` -> `built`, about `463 ms` timeline
 - temp-cache manual second pass: same command -> `disk`, `0.0 ms` timeline build/load and about `0.5 ms` total song check
-- `python -m pytest -q tests/test_native_inflight_continuous_scheduler.py tests/test_timeline_frontier_reduction.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_gpu_timeline_ceiling_envelope_cpu_gpu_exact.py --tb=short` -> 45 passed
+- `python -m pytest -q tests/test_native_inflight_continuous_scheduler.py tests/test_timeline_frontier_reduction.py tests/test_gpu_timeline_frontier_exact_bnb.py tests/test_gpu_timeline_frontier_cpu_gpu_exact.py --tb=short` -> 45 passed
 
 ## Startup Manifest Fast-Hit (Warm Cache)
 

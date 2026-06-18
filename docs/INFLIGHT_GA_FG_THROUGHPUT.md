@@ -91,7 +91,7 @@ The earlier "heavy throughput regression" from the reverted hot-path "preselecte
 Controlled benchmark:
 
 - config: `artifacts/bench/config_fg_regression_bench.ini`
-- `HumanHitSim.Enabled=false`
+- `legacy sampled timing.Enabled=false`
 - `SONG_REPEATS=1`
 - `GA_SEED=12345`
 - `song_limit=20`
@@ -172,7 +172,7 @@ Control settings used:
 - `SONG_QUEUE_LIMIT=100`
 - `SONG_REPEATS=1`
 - fixed `GA_SEED=12345`
-- `HumanHitSim.Enabled=false` (in benchmark config)
+- `legacy sampled timing.Enabled=false` (in benchmark config)
 - separate DB per run
 - stage profile enabled for integrated FG accounting
 
@@ -265,7 +265,7 @@ Tools:
 Controls used for this declaration runset:
 
 - workload: `SONG_QUEUE_LIMIT=50`
-- determinism: fixed `GA_SEED` per cohort, `HumanHitSim.Seed=12345`, `PYTHONHASHSEED=0`
+- determinism: fixed `GA_SEED` per cohort, `legacy sampled timing.Seed=12345`, `PYTHONHASHSEED=0`
 - pipeline: native in-flight single coordinator
 - audit safety: `FG_DOWNLOAD_TOPK=0` (avoid reduced-download artifacts during quality audits)
 

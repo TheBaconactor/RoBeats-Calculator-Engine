@@ -211,12 +211,18 @@ def _upload_timeline_frontier_payload_slot(
 # ============================================================================
 
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
-_CEILING_GROUP_PAYLOAD_CACHE_MAX = 32
-_ceiling_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
-_CEILING_FRONTIER_PAYLOAD_CACHE_MAX = 8
-_ceiling_frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
-_ceiling_payload_cache_lock = threading.RLock()
-_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v5"
+_FRONTIER_GROUP_PAYLOAD_CACHE_MAX = 32
+_frontier_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
+_FRONTIER_PAYLOAD_CACHE_MAX = 8
+_frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
+_frontier_payload_cache_lock = threading.RLock()
+# Bump whenever the base frontier OUTPUT changes in a way the cache key does NOT capture.
+# The key (_frontier_payload_cache_key -> song_key) hashes raw song inputs + window settings,
+# NOT the grouping/DP logic, so a pure logic change is invisible to it and only the version
+# invalidates stale disk payloads. v6: the chord-tied held-tail grouping split (issue #42 /
+# PR #45) changed the base frontier for held-tail-chord songs without touching any key input,
+# so pre-fix v5 payloads in bin/timeline_frontier_cache/ must not be reused.
+_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v6"
 
 
 @dataclass(frozen=True)
@@ -347,8 +353,8 @@ def _group_payload_from_npz(data: object, *, expected_n: int | None = None) -> d
 
 
 def _group_cache_get(base_song_key: tuple, *, expected_n: int) -> dict | None:
-    with _ceiling_payload_cache_lock:
-        cached = _ceiling_group_payload_cache.get(base_song_key)
+    with _frontier_payload_cache_lock:
+        cached = _frontier_group_payload_cache.get(base_song_key)
         if not isinstance(cached, dict):
             return None
         try:
@@ -359,16 +365,16 @@ def _group_cache_get(base_song_key: tuple, *, expected_n: int) -> dict | None:
         except Exception as e:
             logger.debug(f"timeline:_group_cache_get: {e}")
             return None
-        _ceiling_group_payload_cache.move_to_end(base_song_key)
+        _frontier_group_payload_cache.move_to_end(base_song_key)
         return cached
 
 
 def _group_cache_put(base_song_key: tuple, payload: dict) -> None:
-    with _ceiling_payload_cache_lock:
-        _ceiling_group_payload_cache[base_song_key] = payload
-        _ceiling_group_payload_cache.move_to_end(base_song_key)
-        while len(_ceiling_group_payload_cache) > int(_CEILING_GROUP_PAYLOAD_CACHE_MAX):
-            _ceiling_group_payload_cache.popitem(last=False)
+    with _frontier_payload_cache_lock:
+        _frontier_group_payload_cache[base_song_key] = payload
+        _frontier_group_payload_cache.move_to_end(base_song_key)
+        while len(_frontier_group_payload_cache) > int(_FRONTIER_GROUP_PAYLOAD_CACHE_MAX):
+            _frontier_group_payload_cache.popitem(last=False)
 
 
 def _load_group_payload_from_frontier_disk(cache_key: tuple, *, expected_n: int) -> dict | None:
@@ -531,17 +537,17 @@ def _get_cached_frontier_payload_with_source(
     ref_ff: np.ndarray,
 ) -> tuple[TimelineFrontierGridPayload | None, str]:
     cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
-    with _ceiling_payload_cache_lock:
-        cached = _ceiling_frontier_payload_cache.get(cache_key)
+    with _frontier_payload_cache_lock:
+        cached = _frontier_payload_cache.get(cache_key)
         if isinstance(cached, TimelineFrontierGridPayload):
-            _ceiling_frontier_payload_cache.move_to_end(cache_key)
+            _frontier_payload_cache.move_to_end(cache_key)
             return cached, "memory"
 
     cached = _load_frontier_payload_from_disk(cache_key)
     if isinstance(cached, TimelineFrontierGridPayload):
-        with _ceiling_payload_cache_lock:
-            _ceiling_frontier_payload_cache[cache_key] = cached
-            _ceiling_frontier_payload_cache.move_to_end(cache_key)
+        with _frontier_payload_cache_lock:
+            _frontier_payload_cache[cache_key] = cached
+            _frontier_payload_cache.move_to_end(cache_key)
         return cached, "disk"
     return None, "missing"
 
@@ -686,14 +692,14 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
     return key
 
 
-def _get_or_build_ceiling_group_payload(
+def _get_or_build_frontier_group_payload(
     base_song_key: tuple,
     *,
     timestamps: np.ndarray,
     note_types: object,
 ) -> dict:
     """
-    Prepare and cache chord-group payloads used by the analytical timing-envelope ceiling kernel.
+    Prepare and cache chord-group payloads used by the exact timeline frontier.
 
     This CPU preprocessing is a pure function of chart timestamps + note types (and the
     fixed Perfect window constants). Caching avoids recomputing grouping + dense note->group
@@ -737,7 +743,7 @@ def _get_or_build_ceiling_group_payload(
                 if group_count == 1 or bool(np.all(group_starts[1:] == group_ends[:-1])):
                     is_partition = True
         except Exception as e:
-            logger.debug(f"timeline:_get_or_build_ceiling_group_payload: {e}")
+            logger.debug(f"timeline:_get_or_build_frontier_group_payload: {e}")
             is_partition = False
 
         if is_partition:
@@ -780,7 +786,7 @@ def _get_or_build_ceiling_group_payload(
     return payload
 
 
-def _get_or_build_ceiling_frontier_payload_with_source(
+def _get_or_build_frontier_payload_with_source(
     song_key: tuple,
     *,
     song_slot: int,
@@ -793,7 +799,7 @@ def _get_or_build_ceiling_frontier_payload_with_source(
     ref_ff: np.ndarray,
 ) -> tuple[TimelineFrontierGridPayload, str]:
     """Build and cache the packed exact frontier grid for a song/ref signature."""
-    global _ceiling_frontier_payload_cache
+    global _frontier_payload_cache
 
     cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
     cached, cache_source = _get_cached_frontier_payload_with_source(
@@ -821,15 +827,15 @@ def _get_or_build_ceiling_frontier_payload_with_source(
     )
 
     _save_frontier_payload_to_disk(cache_key, payload, group_payload=group_payload)
-    with _ceiling_payload_cache_lock:
-        cached = _ceiling_frontier_payload_cache.get(cache_key)
+    with _frontier_payload_cache_lock:
+        cached = _frontier_payload_cache.get(cache_key)
         if isinstance(cached, TimelineFrontierGridPayload):
-            _ceiling_frontier_payload_cache.move_to_end(cache_key)
+            _frontier_payload_cache.move_to_end(cache_key)
             return cached, "memory"
-        _ceiling_frontier_payload_cache[cache_key] = payload
-        _ceiling_frontier_payload_cache.move_to_end(cache_key)
-        while len(_ceiling_frontier_payload_cache) > int(_CEILING_FRONTIER_PAYLOAD_CACHE_MAX):
-            _ceiling_frontier_payload_cache.popitem(last=False)
+        _frontier_payload_cache[cache_key] = payload
+        _frontier_payload_cache.move_to_end(cache_key)
+        while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
+            _frontier_payload_cache.popitem(last=False)
 
     return payload, "built"
 
@@ -895,7 +901,7 @@ def _timeline_payload_context(
                     "Timeline frontier group payload is missing. Startup cache prebuild must build the "
                     "candidate-independent all-FT/FF timeline frontier before runtime scoring."
                 )
-            group_payload = _get_or_build_ceiling_group_payload(
+            group_payload = _get_or_build_frontier_group_payload(
                 base_song_key[:-1],
                 timestamps=np.asarray(lookup["timestamps"], dtype=np.float32),
                 note_types=lookup.get("note_types", None),
@@ -930,8 +936,8 @@ def timeline_frontier_payload_cache_info(calc_song: dict, ref_arrays: dict) -> T
     cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
 
     cache_source = "missing"
-    with _ceiling_payload_cache_lock:
-        cached = _ceiling_frontier_payload_cache.get(cache_key)
+    with _frontier_payload_cache_lock:
+        cached = _frontier_payload_cache.get(cache_key)
         if isinstance(cached, TimelineFrontierGridPayload):
             cache_source = "memory"
     disk_path = _frontier_disk_cache_path(cache_key)
@@ -968,7 +974,7 @@ def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -
     )
     if payload is None:
         ctx = _timeline_payload_context(calc_song, ref_arrays, lookup_ctx=lookup)
-        payload, cache_source = _get_or_build_ceiling_frontier_payload_with_source(
+        payload, cache_source = _get_or_build_frontier_payload_with_source(
             ctx["song_key"],
             song_slot=0,
             total_notes=int(ctx["total_notes"]),
@@ -1160,8 +1166,8 @@ def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_s
 def reset_timeline_state() -> None:
     """Reset module-level timeline upload caches after `ti.reset()`."""
     global _gpu_timeline_song_id_by_slot
-    global _ceiling_group_payload_cache, _ceiling_frontier_payload_cache
+    global _frontier_group_payload_cache, _frontier_payload_cache
     _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS
-    with _ceiling_payload_cache_lock:
-        _ceiling_group_payload_cache.clear()
-        _ceiling_frontier_payload_cache.clear()
+    with _frontier_payload_cache_lock:
+        _frontier_group_payload_cache.clear()
+        _frontier_payload_cache.clear()

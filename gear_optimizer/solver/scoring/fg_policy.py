@@ -32,6 +32,7 @@ class FGSongInputs:
     timestamps: Any
     perfect_candidates: Any
     great_candidates: Any
+    perfect_floor: Any
     use_forced_great_timing: bool
     total_notes: int
     long_notes: int
@@ -61,9 +62,23 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
     timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
     if timestamps is None:
         timestamps = ()
+    has_perfect_candidates = "fg_perfect_candidate_timestamps" in song_data
+    has_great_candidates = "fg_great_candidate_timestamps" in song_data
     perfect_candidates = song_data.get("fg_perfect_candidate_timestamps", timestamps)
     great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
-    use_forced_great_timing = bool(song_data.get("fg_great_candidate_timestamps") is not None)
+    # Earliest-Perfect floor envelope: the carry-aware fever-boundary search basis (issue
+    # #42). If an FG timing envelope is present, the floor is REQUIRED; silently searching chart
+    # would under-count endpoint-early fever and produce a plausible but wrong best_fg_score.
+    if "fg_perfect_floor_timestamps" in song_data:
+        perfect_floor = song_data["fg_perfect_floor_timestamps"]
+    elif has_perfect_candidates or has_great_candidates:
+        raise ValueError(
+            "fg_perfect_floor_timestamps is required when FG timing candidate timestamps are present"
+        )
+    else:
+        # Explicit degenerate baseline: no timing envelope applied, so chart is the floor.
+        perfect_floor = timestamps
+    use_forced_great_timing = bool(has_great_candidates)
 
     try:
         total_notes = int(len(timestamps))
@@ -82,6 +97,7 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
         timestamps=timestamps,
         perfect_candidates=perfect_candidates,
         great_candidates=great_candidates,
+        perfect_floor=perfect_floor,
         use_forced_great_timing=bool(use_forced_great_timing),
         total_notes=int(total_notes),
         long_notes=int(long_notes),

@@ -1211,7 +1211,7 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
     assert int(rows[2].get("fg_base_score") or 0) == 190
 
 
-def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypatch):
+def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore():
     """
     Regression test: GPU f32 fixed scoring can diverge at floor boundaries.
     Tier postprocess now uses CPU exact replay as the retained-row authority.
@@ -1219,9 +1219,6 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
-
-    # Enable the ceiling kernel (tests default it off for most of the suite).
-    monkeypatch.setenv("GPU_TIMELINE_CEILING_ENVELOPE", "1")
 
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert isinstance(ref_arrays, dict) and ref_arrays

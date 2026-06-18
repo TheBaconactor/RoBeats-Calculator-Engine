@@ -5,9 +5,9 @@ This module builds the non-dominated symbolic fever frontier for a fixed song an
 one timing cell `(fill_count, d_ms)`, then expands it to a full 161x161 payload for
 GPU upload.
 
-The frontier is loadout-independent. The canonical representative is chosen by the
-same deterministic structural comparator used by the old ceiling kernel, but the
-full non-dominated surface set is retained for exact scoring.
+The frontier is loadout-independent. The canonical representative is chosen by a
+deterministic structural comparator, while the full non-dominated surface set is
+retained for exact scoring.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import time
 from typing import Iterable
 
 import numpy as np
+from numba import jit
 
 from gear_optimizer.core.profile_events import emit_profile_event
 
@@ -89,9 +90,9 @@ class _GroupedTimelineContext:
     head_len: int
     total_body: int
     max_pow: int
-    jump_b: list[list[int]]
-    jump_a_lo: list[list[int]]
-    jump_a_hi: list[list[int]]
+    jump_b: np.ndarray
+    jump_a_lo: np.ndarray
+    jump_a_hi: np.ndarray
     exit_lower: np.ndarray
     exit_cap: np.ndarray
     exit_delta: np.ndarray
@@ -285,9 +286,9 @@ def _enumerate_first_exit_boundary_intervals_from_activation_band(
             lower_const = max(_CARRY_L, int(group_low[g]))
             survivor_cap_const = min(_CARRY_U, int(group_high[g]))
         else:
+            # True delta (no >=1 clamp): 0 for same-timestamp split groups; >=1 (bit-identical)
+            # for every distinct-timestamp adjacency. Mirrors the context-build path.
             delta = int(group_base[g]) - int(group_base[g - 1])
-            if delta < 1:
-                delta = 1
             lower_const = max(_CARRY_L, max(int(group_low[g]), int(lower_const) - int(delta)))
             survivor_cap_const = min(_CARRY_U, max(int(group_high[g]), int(survivor_cap_const) - int(delta)))
 
@@ -315,6 +316,95 @@ def _enumerate_first_exit_boundary_intervals_from_activation_band(
     return out
 
 
+@jit(nopython=True, cache=True)
+def _exit_intervals_jit(
+    s, lo_band, hi_band, d_ms, gcount, n, carry_u, group_base_s,
+    group_starts, group_high, exit_delta_s, exit_lower_s, exit_cap_s,
+    exit_need_prefix_prev_s, exit_need_prefix_current_s, future_high_s1,
+    out_bnote, out_egroup, out_elo, out_ehi,
+):
+    """numba kernel for the first-exit boundary enumeration (main case: s+1 < gcount, lo<=hi,
+    handled by the wrapper). Fills out_* scratch arrays, returns the exit count. Bit-identical
+    to the prior numpy/Python path (the row enumerator is the cross-checked reference)."""
+    # Early-out: no future group can be in fever.
+    if future_high_s1 < group_base_s + lo_band + d_ms:
+        last_idx = gcount - 1
+        lds = exit_delta_s[last_idx]
+        c0 = exit_need_prefix_current_s[last_idx] - d_ms
+        survive_lo = lo_band if lo_band > c0 else c0
+        x_hi = hi_band - lds
+        el = exit_lower_s[last_idx]
+        sl2 = survive_lo - lds
+        end_lo = el if el > sl2 else sl2
+        scc = exit_cap_s[last_idx]
+        c2 = x_hi + d_ms - 1
+        m = scc if scc < c2 else c2
+        end_hi = x_hi if x_hi > m else m
+        out_bnote[0] = n
+        out_egroup[0] = gcount
+        out_elo[0] = end_lo
+        out_ehi[0] = end_hi
+        return 1
+
+    start = s + 1
+    target = hi_band + d_ms
+    # searchsorted(exit_need_prefix_current_s[start:gcount], target, side="right") (monotone row)
+    loi = start
+    hii = gcount
+    while loi < hii:
+        mid = (loi + hii) >> 1
+        if exit_need_prefix_current_s[mid] <= target:
+            loi = mid + 1
+        else:
+            hii = mid
+    keep_count = loi - start
+    stopped = keep_count < (gcount - start)
+    process_stop = (start + keep_count + 1) if stopped else gcount
+
+    cnt = 0
+    g = start
+    while g < process_stop:
+        delta = exit_delta_s[g]
+        gh = group_high[g]
+        c_rlo = exit_need_prefix_prev_s[g] - d_ms
+        r_lo = lo_band if lo_band > c_rlo else c_rlo
+        c_rhi = gh + delta - d_ms
+        r_hi = hi_band if hi_band < c_rhi else c_rhi
+        ex_hi = carry_u if carry_u < gh else gh
+        c_elo = r_lo - delta + d_ms
+        lower = exit_lower_s[g]
+        ex_lo = lower if lower > c_elo else c_elo
+        if r_lo <= r_hi and ex_lo <= ex_hi:
+            out_bnote[cnt] = group_starts[g]
+            out_egroup[cnt] = g
+            out_elo[cnt] = ex_lo
+            out_ehi[cnt] = ex_hi
+            cnt += 1
+        g += 1
+
+    if stopped:
+        return cnt
+
+    last_idx = gcount - 1
+    lds = exit_delta_s[last_idx]
+    c0 = exit_need_prefix_current_s[last_idx] - d_ms
+    survive_lo = lo_band if lo_band > c0 else c0
+    x_hi = hi_band - lds
+    el = exit_lower_s[last_idx]
+    sl2 = survive_lo - lds
+    end_lo = el if el > sl2 else sl2
+    scc = exit_cap_s[last_idx]
+    c2 = x_hi + d_ms - 1
+    m = scc if scc < c2 else c2
+    end_hi = x_hi if x_hi > m else m
+    out_bnote[cnt] = n
+    out_egroup[cnt] = gcount
+    out_elo[cnt] = end_lo
+    out_ehi[cnt] = end_hi
+    cnt += 1
+    return cnt
+
+
 def _enumerate_first_exit_boundary_intervals_from_context(
     ctx: _GroupedTimelineContext,
     *,
@@ -322,63 +412,38 @@ def _enumerate_first_exit_boundary_intervals_from_context(
     act_lo: int,
     act_hi: int,
     d_ms: int,
+    scratch: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> list[tuple[int, int, int, int]]:
     n = int(ctx.total_notes)
-    group_starts = ctx.group_starts
-    group_high = ctx.group_high_ms
     gcount = int(ctx.gcount)
     s = int(activation_group)
     lo_band = int(act_lo)
     hi_band = int(act_hi)
     if lo_band > hi_band or s < 0 or s >= gcount:
         return []
-
     if s + 1 >= gcount:
-        return [(int(n), int(gcount), int(lo_band), int(hi_band))]
-
-    if int(ctx.future_high_abs_suffix[s + 1]) < int(ctx.group_base_t_ms[s]) + int(lo_band) + int(d_ms):
-        last_idx = int(gcount - 1)
-        last_delta_sum = int(ctx.exit_delta[s, last_idx])
-        survive_lo = max(int(lo_band), int(ctx.exit_need_prefix_current[s, last_idx]) - int(d_ms))
-        x_hi = int(hi_band) - int(last_delta_sum)
-        end_lo = max(int(ctx.exit_lower[s, last_idx]), int(survive_lo) - int(last_delta_sum))
-        survivor_cap_const = int(ctx.exit_cap[s, last_idx])
-        end_hi = max(int(x_hi), min(int(survivor_cap_const), int(x_hi) + int(d_ms) - 1))
-        return [(int(n), int(gcount), int(end_lo), int(end_hi))]
-
-    out: list[tuple[int, int, int, int]] = []
-    start = s + 1
-    need_current = ctx.exit_need_prefix_current[s, start:gcount]
-    keep_count = int(np.searchsorted(need_current, np.int32(int(hi_band) + int(d_ms)), side="right"))
-    stopped = keep_count < int(need_current.shape[0])
-    process_stop = int(start + keep_count + 1) if stopped else int(gcount)
-
-    if process_stop > start:
-        sl = slice(start, process_stop)
-        delta = ctx.exit_delta[s, sl]
-        lower = ctx.exit_lower[s, sl].astype(np.int32, copy=False)
-        prev_need = ctx.exit_need_prefix_prev[s, sl]
-        group_high_sl = group_high[sl]
-        r_lo_arr = np.maximum(np.int32(lo_band), prev_need - np.int32(d_ms))
-        r_hi_arr = np.minimum(np.int32(hi_band), group_high_sl + delta - np.int32(d_ms))
-        exit_hi_arr = np.minimum(np.int32(_CARRY_U), group_high_sl)
-        exit_lo_arr = np.maximum(lower, r_lo_arr - delta + np.int32(d_ms))
-        valid = np.nonzero((r_lo_arr <= r_hi_arr) & (exit_lo_arr <= exit_hi_arr))[0]
-        for rel in valid.tolist():
-            g = int(start + int(rel))
-            out.append((int(group_starts[g]), int(g), int(exit_lo_arr[rel]), int(exit_hi_arr[rel])))
-
-    if stopped:
-        return out
-
-    last_delta_sum = int(ctx.exit_delta[s, gcount - 1])
-    survive_lo = max(int(lo_band), int(ctx.exit_need_prefix_current[s, gcount - 1]) - int(d_ms))
-    x_hi = int(hi_band) - int(last_delta_sum)
-    end_lo = max(int(ctx.exit_lower[s, gcount - 1]), int(survive_lo) - int(last_delta_sum))
-    survivor_cap_const = int(ctx.exit_cap[s, gcount - 1])
-    end_hi = max(int(x_hi), min(int(survivor_cap_const), int(x_hi) + int(d_ms) - 1))
-    out.append((int(n), int(gcount), int(end_lo), int(end_hi)))
-    return out
+        return [(n, gcount, lo_band, hi_band)]
+    if scratch is None:
+        cap = gcount + 1
+        scratch = (
+            np.empty(cap, dtype=np.int64),
+            np.empty(cap, dtype=np.int64),
+            np.empty(cap, dtype=np.int64),
+            np.empty(cap, dtype=np.int64),
+        )
+    out_bnote, out_egroup, out_elo, out_ehi = scratch
+    count = _exit_intervals_jit(
+        s, lo_band, hi_band, int(d_ms), gcount, n, int(_CARRY_U),
+        int(ctx.group_base_t_ms[s]), ctx.group_starts, ctx.group_high_ms,
+        ctx.exit_delta[s], ctx.exit_lower[s], ctx.exit_cap[s],
+        ctx.exit_need_prefix_prev[s], ctx.exit_need_prefix_current[s],
+        int(ctx.future_high_abs_suffix[s + 1]),
+        out_bnote, out_egroup, out_elo, out_ehi,
+    )
+    return [
+        (int(out_bnote[i]), int(out_egroup[i]), int(out_elo[i]), int(out_ehi[i]))
+        for i in range(int(count))
+    ]
 
 
 def _transition_cache_key(*, activation_group: int, act_lo: int, act_hi: int, d_ms: int) -> tuple[int, int, int, int]:
@@ -393,6 +458,7 @@ def _cached_first_exit_boundary_intervals(
     act_hi: int,
     d_ms: int,
     transition_cache: dict[tuple[int, int, int, int], tuple[tuple[int, int, int, int], ...]] | None = None,
+    scratch: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> tuple[tuple[int, int, int, int], ...]:
     key = _transition_cache_key(
         activation_group=int(activation_group),
@@ -411,6 +477,7 @@ def _cached_first_exit_boundary_intervals(
             act_lo=int(act_lo),
             act_hi=int(act_hi),
             d_ms=int(d_ms),
+            scratch=scratch,
         )
     )
     if transition_cache is not None:
@@ -448,9 +515,9 @@ def _build_grouped_timeline_context(
             head_len=0,
             total_body=0,
             max_pow=1,
-            jump_b=[],
-            jump_a_lo=[],
-            jump_a_hi=[],
+            jump_b=np.zeros((0, 1), dtype=np.int32),
+            jump_a_lo=np.zeros((0, 1), dtype=np.int32),
+            jump_a_hi=np.zeros((0, 1), dtype=np.int32),
             exit_lower=np.zeros((0, 0), dtype=np.int16),
             exit_cap=np.zeros((0, 0), dtype=np.int16),
             exit_delta=np.zeros((0, 0), dtype=np.int32),
@@ -494,35 +561,37 @@ def _build_grouped_timeline_context(
             head_range_masks[start_note, end_note, 3] = np.uint32(m3)
 
     delta_from_prev = np.zeros(gcount, dtype=np.int32)
-    for g in range(1, gcount):
-        delta = int(group_base[g]) - int(group_base[g - 1])
-        if delta < 1:
-            delta = 1
-        delta_from_prev[g] = int(delta)
+    if gcount > 1:
+        # True inter-group time delta. 0 for same-timestamp groups (a held tail split into its
+        # own group, sharing the chord's ms). NO clamp to >=1: clamping would model simultaneous
+        # notes as 1 ms apart and make `carry_pos` (clamped) diverge from the unclamped
+        # `exit_delta` below, corrupting the exit arithmetic. Group timestamps are non-decreasing,
+        # so delta is always >= 0; for every distinct-timestamp adjacency (all of them on a chart
+        # with no held-tail-mixed chord) delta is already >= 1, making this bit-identical there.
+        delta_from_prev[1:] = group_base[1:].astype(np.int32) - group_base[:-1].astype(np.int32)
 
+    # Binary-lifting jump tables as 2D int32 arrays (was list-of-lists): vectorized build +
+    # numba-friendly random access in _propagate_band_to_group.
     max_pow = max(1, int(gcount).bit_length())
-    jump_b = [[0] * max_pow for _ in range(gcount)]
-    jump_a_lo = [[0] * max_pow for _ in range(gcount)]
-    jump_a_hi = [[0] * max_pow for _ in range(gcount)]
-
-    for g in range(0, gcount - 1):
-        delta = int(delta_from_prev[g + 1])
-        jump_b[g][0] = int(delta)
-        jump_a_lo[g][0] = int(group_low[g + 1])
-        jump_a_hi[g][0] = int(group_high[g + 1])
-
+    jump_b = np.zeros((gcount, max_pow), dtype=np.int32)
+    jump_a_lo = np.zeros((gcount, max_pow), dtype=np.int32)
+    jump_a_hi = np.zeros((gcount, max_pow), dtype=np.int32)
+    if gcount > 1:
+        jump_b[: gcount - 1, 0] = delta_from_prev[1:]
+        jump_a_lo[: gcount - 1, 0] = group_low[1:]
+        jump_a_hi[: gcount - 1, 0] = group_high[1:]
     for p2 in range(1, max_pow):
         step = 1 << (p2 - 1)
         span = 1 << p2
-        for g in range(0, gcount):
-            end = g + span
-            mid = g + step
-            if end >= gcount or mid >= gcount:
-                continue
-            b2 = int(jump_b[mid][p2 - 1])
-            jump_b[g][p2] = int(jump_b[g][p2 - 1]) + int(b2)
-            jump_a_lo[g][p2] = max(int(jump_a_lo[mid][p2 - 1]), int(jump_a_lo[g][p2 - 1]) - int(b2))
-            jump_a_hi[g][p2] = max(int(jump_a_hi[mid][p2 - 1]), int(jump_a_hi[g][p2 - 1]) - int(b2))
+        last = gcount - span  # valid g are [0, last): need g+span < gcount (=> mid=g+step < gcount)
+        if last <= 0:
+            continue
+        g = np.arange(last)
+        mid = g + step
+        b2 = jump_b[mid, p2 - 1]
+        jump_b[g, p2] = jump_b[g, p2 - 1] + b2
+        jump_a_lo[g, p2] = np.maximum(jump_a_lo[mid, p2 - 1], jump_a_lo[g, p2 - 1] - b2)
+        jump_a_hi[g, p2] = np.maximum(jump_a_hi[mid, p2 - 1], jump_a_hi[g, p2 - 1] - b2)
 
     exit_lower = np.zeros((gcount, gcount), dtype=np.int16)
     exit_cap = np.zeros((gcount, gcount), dtype=np.int16)
@@ -665,6 +734,32 @@ def _empty_frontier_pack() -> TimelineFrontierPack:
     )
 
 
+@jit(nopython=True, cache=True)
+def _propagate_band_jit(jump_b, jump_a_lo, jump_a_hi, start_g, lo, hi, target_g):
+    """Binary-lifting band carry from start_g to target_g. Returns (1, 0) for an empty band
+    (out_lo > out_hi), matching the Python reference. Pure numeric -> numba nopython."""
+    g = start_g
+    out_lo = lo
+    out_hi = hi
+    dist = target_g - start_g
+    p2 = 0
+    while dist != 0:
+        if dist & 1:
+            b = jump_b[g, p2]
+            tlo = out_lo - b
+            vlo = jump_a_lo[g, p2]
+            out_lo = vlo if vlo > tlo else tlo
+            thi = out_hi - b
+            vhi = jump_a_hi[g, p2]
+            out_hi = vhi if vhi > thi else thi
+            g += 1 << p2
+            if out_lo > out_hi:
+                return 1, 0
+        dist >>= 1
+        p2 += 1
+    return out_lo, out_hi
+
+
 def _propagate_band_to_group(
     ctx: _GroupedTimelineContext,
     start_g: int,
@@ -680,26 +775,13 @@ def _propagate_band_to_group(
         cached = propagation_cache.get(cache_key)
         if cached is not None:
             return cached
-    g = int(start_g)
-    out_lo = int(lo)
-    out_hi = int(hi)
-    dist = int(target_g - start_g)
-    p2 = 0
-    while dist:
-        if dist & 1:
-            b = int(ctx.jump_b[g][p2])
-            out_lo = max(int(ctx.jump_a_lo[g][p2]), int(out_lo) - int(b))
-            out_hi = max(int(ctx.jump_a_hi[g][p2]), int(out_hi) - int(b))
-            g += 1 << p2
-            if out_lo > out_hi:
-                if propagation_cache is not None:
-                    propagation_cache[cache_key] = (1, 0)
-                return 1, 0
-        dist >>= 1
-        p2 += 1
+    out_lo, out_hi = _propagate_band_jit(
+        ctx.jump_b, ctx.jump_a_lo, ctx.jump_a_hi, int(start_g), int(lo), int(hi), int(target_g)
+    )
+    result = (int(out_lo), int(out_hi))
     if propagation_cache is not None:
-        propagation_cache[cache_key] = (int(out_lo), int(out_hi))
-    return int(out_lo), int(out_hi)
+        propagation_cache[cache_key] = result
+    return result
 
 
 def _build_exact_timeline_frontier_from_context(
@@ -723,6 +805,16 @@ def _build_exact_timeline_frontier_from_context(
     total_body = int(ctx.total_body)
     fill_count_i = max(1, int(fill_count))
     d_ms_i = max(0, int(d_ms))
+
+    # Reused scratch for the exit-enumeration kernel (max exits = gcount+1), so the many
+    # per-build enumerations don't each allocate output arrays.
+    _exit_cap = int(gcount) + 1
+    exit_scratch = (
+        np.empty(_exit_cap, dtype=np.int64),
+        np.empty(_exit_cap, dtype=np.int64),
+        np.empty(_exit_cap, dtype=np.int64),
+        np.empty(_exit_cap, dtype=np.int64),
+    )
 
     all_normal_cache: dict[int, TimelineExactSignature] = {}
 
@@ -795,6 +887,7 @@ def _build_exact_timeline_frontier_from_context(
             act_hi=int(act_hi),
             d_ms=int(d_ms_i),
             transition_cache=transition_cache,
+            scratch=exit_scratch,
         )
         if exit_trace is not None:
             exit_trace.append(

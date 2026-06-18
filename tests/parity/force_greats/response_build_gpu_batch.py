@@ -8,6 +8,7 @@ import taichi as ti
 
 from gear_optimizer.solver.taichi_gem.runtime import init_taichi
 
+from gear_optimizer.solver.timing_envelope import build_perfect_floor_envelope_sec
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import (
     _batch_chunk_size,
@@ -29,6 +30,7 @@ def _build_force_greats_response_frontiers_gpu_batch(
     timestamps: Any,
     perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
+    perfect_floor_timestamps: Any | None = None,
     geometries: Any,
     use_forced_great_timing: bool = True,
     materialize_state_frontiers: bool = True,
@@ -56,6 +58,14 @@ def _build_force_greats_response_frontiers_gpu_batch(
         great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
         if int(great_ts.shape[0]) != n:
             raise ValueError("great_candidate_timestamps length must match timestamps")
+    if perfect_floor_timestamps is None:
+        # Mirror production: the earliest-Perfect floor envelope (issue #42) built from the
+        # same chart, so this parity reference uses the same fever boundary as the GPU path.
+        floor_ts = np.ascontiguousarray(np.asarray(build_perfect_floor_envelope_sec(ts, None), dtype=np.float32).reshape(-1))
+    else:
+        floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
+        if int(floor_ts.shape[0]) != n:
+            raise ValueError("perfect_floor_timestamps length must match timestamps")
 
     prepared = []
     action_table_cache: dict[tuple[float, int, bool], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -96,6 +106,7 @@ def _build_force_greats_response_frontiers_gpu_batch(
             timestamps=ts,
             perfect_candidate_timestamps=perfect_ts,
             great_candidate_timestamps=great_ts,
+            perfect_floor_timestamps=floor_ts,
         )
         prepared = _canonical.prepared
         duplicate_sources_by_source = _canonical.duplicate_sources_by_source
@@ -126,6 +137,7 @@ def _build_force_greats_response_frontiers_gpu_batch(
                 timestamps=ts,
                 perfect_candidate_timestamps=perfect_ts,
                 great_candidate_timestamps=great_ts,
+                perfect_floor_timestamps=floor_ts,
                 real_times=real_times,
             )
             if not bool(materialize_state_frontiers):
