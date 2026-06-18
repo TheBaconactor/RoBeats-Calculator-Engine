@@ -132,7 +132,7 @@ def get_db_connection_readonly(db_path: Optional[str] = None, *, timeout: float 
         logger.warning(f"database:get_db_connection_readonly: {e}")
     return conn
 _DB_TLS = threading.local()
-def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: bool = True) -> sqlite3.Connection:
+def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connection:
     """
     Return a per-thread cached SQLite connection.
     This keeps exact query semantics while avoiding per-call reconnect + PRAGMA + migration
@@ -180,7 +180,6 @@ def get_song_counters(
     *,
     conn: Optional[sqlite3.Connection] = None,
     db_path: Optional[str] = None,
-    allow_fallback: bool = True,
 ) -> tuple[int, int, int, int]:
     """
     Fetch per-song attempt counters and best scores from `songs`.
@@ -191,7 +190,7 @@ def get_song_counters(
     if not song_name:
         return (0, 0, 0, 0)
     if conn is None:
-        conn = get_db_connection_cached(db_path or get_evolution_db_path(), allow_fallback=allow_fallback)
+        conn = get_db_connection_cached(db_path or get_evolution_db_path())
     try:
         row = conn.execute(
             """
@@ -225,9 +224,7 @@ def get_song_counters(
             best_fg_score = 0
         return (attempt_lifetime, attempts_first, best_score, best_fg_score)
     except sqlite3.Error:
-        if not allow_fallback:
-            raise
-        return (0, 0, 0, 0)
+        raise
 def update_song_counters(
     song_name: str,
     *,
@@ -1549,8 +1546,6 @@ def get_best_loadouts(
     gears_by_name: Optional[Dict[str, Any]] = None,
     minis_by_name: Optional[Dict[str, Any]] = None,
     team_buff: str = "T5",
-    *,
-    allow_fallback: bool = True,
     db_path: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -1580,7 +1575,7 @@ def get_best_loadouts(
         "yes",
         "on",
     }
-    conn = get_db_connection_cached(resolved_db_path, allow_fallback=allow_fallback)
+    conn = get_db_connection_cached(resolved_db_path)
     try:
         results: list[dict[str, Any]] = []
         by_hash: dict[str, dict[str, Any]] = {}
@@ -1736,11 +1731,8 @@ def get_best_loadouts(
                 if entry.get("force") is None and force_obj is not None:
                     entry["force"] = force_obj
         return results
-    except (sqlite3.Error, json.JSONDecodeError) as e:
-        if not allow_fallback and isinstance(e, sqlite3.Error):
-            raise
-        print(f"[DB] Error retrieving loadouts: {e}")
-        return []
+    except (sqlite3.Error, json.JSONDecodeError):
+        raise
     finally:
         pass
 from . import pending_fg_jobs as _pending_fg_jobs
