@@ -131,7 +131,7 @@ def calculate_fever_timeline_indices(
             start_time = song_timestamps[current_note_idx]
             end_time = start_time + real_fever_time
             # Use side="left" to find first note where time >= end_time (not >)
-            fever_end_idx = np.searchsorted(song_timestamps, end_time, side="left")
+            fever_end_idx = np.searchsorted(song_timestamps, np.float32(end_time), side="left")
             is_fever[current_note_idx:fever_end_idx] = True
             current_note_idx = fever_end_idx
             last_fever_end_idx = fever_end_idx  # Update last fever end
@@ -189,7 +189,7 @@ def calculate_non_fever_sections(
 
         start_time = song_timestamps[current_idx]
         end_time = start_time + real_fever_time
-        fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+        fever_end_idx = int(np.searchsorted(song_timestamps, np.float32(end_time), side="left"))
         if fever_end_idx <= current_idx:
             fever_end_idx = min(total_notes, current_idx + 1)
         current_idx = fever_end_idx
@@ -243,7 +243,7 @@ def calculate_fever_activations_grid(
                     fever_activations += 1
                     start_time = song_timestamps[current_note_idx]
                     end_time = start_time + real_fever_time
-                    fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+                    fever_end_idx = int(np.searchsorted(song_timestamps, np.float32(end_time), side="left"))
                     current_note_idx = fever_end_idx
                     last_fever_end_idx = fever_end_idx
                 else:
@@ -357,8 +357,13 @@ def calculate_force_greats_timeline_indices(
         section_start_out[section_count] = section_start
         section_forced_out[section_count] = forced_applied
         section_fill_penalty_out[section_count] = fill_penalty_notes
-        # NOTE: skip_wasted is ONLY for fever fill calculation (section 0 needs fewer notes to fill).
-        # It should NOT be used to offset great penalty indices - greats always start at section_start.
+        # NOTE: skip_wasted controls BOTH the fever fill adjustment (section 1
+        # needs one fewer fill-contributing note) AND the great penalty index
+        # offset (section 1 penalties start at section_start + 0, sections 2+
+        # start at section_start + 1). The forced-great placement rule is the
+        # same: forced_start = section_start if skip_wasted else section_start + 1.
+        # These two offsets MUST stay consistent - see fg_policy.py
+        # accumulate_forced_score_penalty for the penalty-side reader.
         section_skip_wasted_out[section_count] = non_fever_section == 1
         section_count += 1
 

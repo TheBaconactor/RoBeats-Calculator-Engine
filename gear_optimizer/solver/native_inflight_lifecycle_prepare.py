@@ -169,7 +169,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
         cfg=cfg,
-        allow_fallback=False,
         cache_db_context=True,
     )
     calc_song = prepared_core.calc_song

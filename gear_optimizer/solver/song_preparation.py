@@ -130,7 +130,6 @@ def build_prepared_song_core(
     minis_by_name: dict,
     cfg: Any | None = None,
     preloaded_calc_song: dict[str, Any] | None = None,
-    allow_fallback: bool = False,
     cache_db_context: bool = False,
 ) -> PreparedSongCore:
     cfg_obj = cfg if cfg is not None else cfg_from_dict(cfg_dict)
@@ -159,7 +158,6 @@ def build_prepared_song_core(
         cfg_dict=cfg_dict,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
-        allow_fallback=bool(allow_fallback),
         cache_db_context=bool(cache_db_context),
     )
     db_load_sec = time.perf_counter() - t_db0

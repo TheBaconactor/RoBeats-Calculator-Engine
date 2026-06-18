@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 import hashlib
+import logging
 from typing import Any
 
 import numpy as np
@@ -10,6 +11,7 @@ import numpy as np
 from gear_optimizer.core.constants import GEM_SCALE_FEVER, MAX_STAT_INDEX, TOTAL_GEM_BUDGET
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 
+logger = logging.getLogger(__name__)
 
 _GRID = int(MAX_STAT_INDEX) + 1
 _ANTICHAIN_TABLE_CACHE_MAX = 4
@@ -289,6 +291,11 @@ def _reference_blocker(ref_arrays: dict[str, Any]) -> str:
         if arr.shape[0] <= int(MAX_STAT_INDEX):
             return f"missing_ref_array_{key}"
         if np.any(np.diff(arr[: int(MAX_STAT_INDEX) + 1]) < 0):
+            logger.warning(
+                "_reference_blocker: %s reference array is non-monotone over [0..MAX_STAT_INDEX] "
+                "- timing response antichain disabled. Data integrity issue.",
+                key,
+            )
             return f"nonmonotone_ref_array_{key}"
     return ""
 

@@ -113,7 +113,6 @@ def load_prepared_song_db_context(
     cfg_dict: Mapping[str, Any] | None,
     gears_by_name: dict,
     minis_by_name: dict,
-    allow_fallback: bool,
     cache_db_context: bool = False,
 ) -> PreparedSongDbContext:
     baseline_team_buff = resolve_database_baseline_team_buff(cfg, cfg_dict=cfg_dict)
@@ -147,7 +146,6 @@ def load_prepared_song_db_context(
         db_key,
         gears_by_name,
         minis_by_name,
-        allow_fallback=bool(allow_fallback),
         team_buff=str(baseline_team_buff or "T5"),
     )
 

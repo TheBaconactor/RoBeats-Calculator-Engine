@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, replace
 from typing import Any
@@ -16,6 +17,7 @@ from gear_optimizer.core.constants import (
 from gear_optimizer.core.jit_setup import HAS_NUMBA, jit
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 
+logger = logging.getLogger(__name__)
 
 _GRID = int(MAX_STAT_INDEX) + 1
 _STAT_GRID_SIZE = _GRID * _GRID * _GRID
@@ -287,6 +289,11 @@ def _fast_path_blocker(*, flags: dict[str, int], ref_arrays: dict[str, Any]) -> 
             return f"missing_ref_array_{key}"
         visible = arr[: int(MAX_STAT_INDEX) + 1]
         if np.any(np.diff(visible) < 0):
+            logger.warning(
+                "_fast_path_blocker: %s reference array is non-monotone over [0..MAX_STAT_INDEX] "
+                "- response envelope fast-prune disabled. Data integrity issue.",
+                key,
+            )
             return f"nonmonotone_ref_array_{key}"
     fever = np.asarray(ref_arrays.get("Fever Multiplier"), dtype=np.float64).reshape(-1)
     if np.min(fever[: int(MAX_STAT_INDEX) + 1]) < 1.0:

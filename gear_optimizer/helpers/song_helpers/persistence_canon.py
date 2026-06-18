@@ -270,6 +270,22 @@ def _canonicalize_entries(
     return out
 
 
+def canonicalize_baseline_entries(
+    entries: list[dict[str, Any]],
+    *,
+    replay_ctx: ReplayContext,
+) -> list[dict[str, Any]]:
+    """
+    Replay-canonicalize persisted baseline loadout entries against authoritative Stats.
+
+    Public surface for callers (e.g. GeneralMeta) that read seed loadouts from the DB and
+    need them canonicalized before a TeamBuff tier replay, without going through the full
+    persistence-assembly gateway. Fails loudly via the underlying replay if an entry cannot
+    be canonicalized.
+    """
+    return _canonicalize_entries(list(entries), replay_ctx=replay_ctx)
+
+
 def _dedupe_entries(entries: list[dict[str, Any]]) -> list[dict]:
     persist_entries: list[dict] = []
     entry_index_by_hash: dict[str, int] = {}

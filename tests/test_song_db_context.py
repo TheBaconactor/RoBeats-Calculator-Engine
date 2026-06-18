@@ -15,7 +15,6 @@ def test_cached_db_context_uses_baseline_team_buff_key(monkeypatch):
         gears_by_name,
         minis_by_name,
         *,
-        allow_fallback=True,
         team_buff="T5",
     ):
         calls.append(str(team_buff))
@@ -31,7 +30,6 @@ def test_cached_db_context_uses_baseline_team_buff_key(monkeypatch):
         cfg_dict={},
         gears_by_name={},
         minis_by_name={},
-        allow_fallback=False,
         cache_db_context=True,
     )
     cached = song_db_context.load_prepared_song_db_context(
@@ -41,7 +39,6 @@ def test_cached_db_context_uses_baseline_team_buff_key(monkeypatch):
         cfg_dict={},
         gears_by_name={},
         minis_by_name={},
-        allow_fallback=False,
         cache_db_context=True,
     )
 
@@ -73,7 +70,6 @@ def test_prepared_db_context_preserves_attempts(monkeypatch):
         cfg_dict={},
         gears_by_name={},
         minis_by_name={},
-        allow_fallback=False,
     )
 
     assert ctx.db_key == "song"
