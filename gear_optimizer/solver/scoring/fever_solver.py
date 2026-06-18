@@ -38,14 +38,16 @@ from ..scoring_core import (
     optimize_core_jit,
 )
 from ..base_stats import build_base_fixed_stats_dict, build_stats_array
+from ..candidate_cache import base_candidate_cache_key, base_payload_from_result, get_candidate_cache
 from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 
 from .stats_scoring import evaluate_stats_score
 from .stats_ops import apply_gems_to_base_stats
 
 
-
 logger = logging.getLogger(__name__)
+
+
 def precompute_fever_timelines(
     base_stats,
     calc_song,
@@ -270,6 +272,22 @@ def solve_best_fever_combination(
     best_tuple = None
 
     flags = build_color_flags(p_color, s_color, selected_color)
+    candidate_cache = get_candidate_cache()
+    cache_key = base_candidate_cache_key(
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        base_stats=base_stats,
+        primary_color=str(p_color or ""),
+        secondary_color=str(s_color or ""),
+        selected_color=str(selected_color or ""),
+        flags=flags,
+        total_budget=int(TOTAL_GEM_BUDGET),
+        gem_scale_fever=int(GEM_SCALE_FEVER),
+    )
+    cached_result = candidate_cache.get_base(cache_key)
+    if cached_result is not None:
+        return cached_result
+
     is_p_pp = flags["is_p_pp"]
     is_s_pp = flags["is_s_pp"]
     is_p_cm = flags["is_p_cm"]
@@ -458,7 +476,7 @@ def solve_best_fever_combination(
         )
 
         gem_counts = build_gem_counts(g_pp, g_cm, g_fm, g_ov)
-        return {
+        result = {
             "Score": score,
             "FT": ft,
             "FF": ff,
@@ -477,5 +495,10 @@ def solve_best_fever_combination(
             "Stats": final_stats,
             "Selected Element": selected_color,
         }
+        candidate_cache.put_base(
+            cache_key,
+            base_payload_from_result(result=result, selected_color=str(selected_color or "")),
+        )
+        return result
 
     return {}

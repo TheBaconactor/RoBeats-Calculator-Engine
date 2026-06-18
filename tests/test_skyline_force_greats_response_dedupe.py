@@ -3,9 +3,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
+
 import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
 import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
 from gear_optimizer.solver import skyline_force_greats as sfg
+from gear_optimizer.solver.candidate_cache import reset_candidate_cache_for_tests
+from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
 from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
@@ -25,6 +29,17 @@ def _base_calc_song() -> dict[str, Any]:
             "Last Note Time": 1.0,
         },
         "song_data": {"timestamps": [0.0, 1.0]},
+    }
+
+
+def _ref_arrays() -> dict[str, np.ndarray]:
+    base = np.linspace(1.0, 2.0, 161, dtype=np.float32)
+    return {
+        "Perfect Points": base,
+        "Combo Multiplier": base + np.float32(0.1),
+        "Fever Multiplier": base + np.float32(0.2),
+        "Fever Time": base + np.float32(0.3),
+        "Fever Fill Rate": base + np.float32(0.4),
     }
 
 
@@ -125,10 +140,28 @@ def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[st
         lambda stats, *_args, **_kwargs: 1_000_200 + int(stats["Perfect Points"]),
     )
 
-    def _fake_prepare(*, base_stats_list, selected_color, **_kwargs):
+    def _fake_prepare(*, base_stats_list, selected_color, **kwargs):
         rows = [dict(base_stats) for base_stats in base_stats_list]
         prepare_calls.append((str(selected_color or ""), rows))
-        return SimpleNamespace(base_stats_list=rows, selected_color=str(selected_color or ""))
+        calc_song = kwargs.get("calc_song") or _base_calc_song()
+        metadata = dict((calc_song.get("metadata") if isinstance(calc_song, dict) else {}) or {})
+        base_components = np.asarray(
+            [
+                response_frontier_base_components_row(
+                    base_stats,
+                    None,
+                    primary_color=str(metadata.get("Primary Color", "") or ""),
+                    secondary_color=str(metadata.get("Secondary Color", "") or ""),
+                )
+                for base_stats in rows
+            ],
+            dtype=np.int32,
+        )
+        return SimpleNamespace(
+            base_stats_list=rows,
+            selected_color=str(selected_color or ""),
+            base_components=base_components,
+        )
 
     def _fake_score_plan(plan, **_kwargs):
         scored = []
@@ -151,7 +184,8 @@ def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[st
     return prepare_calls
 
 
-def test_skyline_scores_retained_candidates_through_shared_service(monkeypatch: Any) -> None:
+def test_skyline_scores_retained_candidates_through_shared_service(tmp_path: Any, monkeypatch: Any) -> None:
+    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     prepare_calls = _install_shared_path_fakes(monkeypatch)
     seen: dict[str, Any] = {}
     original = FgResponseScoringService.score_candidates_with_stats
@@ -170,7 +204,7 @@ def test_skyline_scores_retained_candidates_through_shared_service(monkeypatch: 
     summary, best_record = sfg.score_retained_skyline_force_greats(
         records,
         calc_song=_base_calc_song(),
-        ref_arrays={},
+        ref_arrays=_ref_arrays(),
         default_selected_color="Power",
         use_gpu=True,
     )
@@ -207,17 +241,30 @@ def test_skyline_scores_retained_candidates_through_shared_service(monkeypatch: 
         payload = record["force"]
         assert record["data"]["force"] is payload
         assert payload["ForceGreats"]["frontier_trace"] == [{"forced_count": 1}, {"forced_count": 0}]
-        assert payload["response_surface"] == [0, 0, 0, 0, 0, 0, 0, 0, int(record["data"]["BaseStats"]["Perfect Points"]), 0, 0]
+        assert payload["response_surface"] == [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            int(record["data"]["BaseStats"]["Perfect Points"]),
+            0,
+            0,
+        ]
         assert record["fg_score"] == 1_000_200 + int(record["data"]["BaseStats"]["Perfect Points"])
 
 
-def test_skyline_mode_keeps_selected_color_responses_separate(monkeypatch: Any) -> None:
+def test_skyline_mode_keeps_selected_color_responses_separate(tmp_path: Any, monkeypatch: Any) -> None:
+    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     prepare_calls = _install_shared_path_fakes(monkeypatch)
 
     rows, stats = FgResponseScoringService.score_candidates_with_stats(
         [_record(pp=100, selected="Power"), _record(pp=100, selected="Rush")],
         calc_song=_base_calc_song(),
-        ref_arrays={},
+        ref_arrays=_ref_arrays(),
         meta_primary_color="Power",
         mode="skyline",
     )

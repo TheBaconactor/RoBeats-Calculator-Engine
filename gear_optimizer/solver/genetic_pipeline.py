@@ -51,7 +51,6 @@ except Exception as e:
     _GPU_NATIVE_AVAILABLE = False
 
 
-
 def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
     # cfg-driven only (config.ini GPU_GA_NoveltyRepairAttempts -> ga_novelty_repair_attempts);
     # the ambient GPU_GA_NOVELTY_REPAIR_ATTEMPTS env override was removed.
@@ -212,6 +211,7 @@ if _GPU_NATIVE_AVAILABLE:
             if k_eff < heuristic_k:
                 topk[slot_i, k_eff:heuristic_k] = sel[-1]
         return topk
+
 
 def decode_gpu_native_ga_runs_payload(
     *,
@@ -560,6 +560,7 @@ def score_fused_fg_from_selected_payload(
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         score_fused_owner_base_components_on_gpu_owner,
     )
+    from gear_optimizer.solver.candidate_cache import fg_candidate_cache_key, get_candidate_cache
 
     payload = np.asarray(runs_payload, dtype=np.int32)
     if payload.ndim != 2 or int(payload.shape[0]) < 1:
@@ -583,12 +584,29 @@ def score_fused_fg_from_selected_payload(
             f"fused GA->FG handoff: selected payload rows too narrow for base_stats7 "
             f"({cand_rows.shape[1]} < {base_stats7_col0 + 7})"
         )
-    base_components = np.ascontiguousarray(
-        cand_rows[:, base_stats7_col0 : base_stats7_col0 + 7], dtype=np.int32
-    )
+    base_components = np.ascontiguousarray(cand_rows[:, base_stats7_col0 : base_stats7_col0 + 7], dtype=np.int32)
 
     total_budget = int((cfg_data or {}).get("TotalBudget", 90) or 90)
     selected_color = str((cfg_data or {}).get("selected_color", "") or "")
+    candidate_cache = get_candidate_cache()
+    missing_components: list[tuple[int, ...]] = []
+    seen_missing: set[tuple[int, ...]] = set()
+    for row in base_components:
+        component_key = tuple(int(v) for v in row.tolist())
+        cache_key = fg_candidate_cache_key(
+            calc_song=fg_calc_song,
+            ref_arrays=ref_arrays,
+            selected_color=selected_color,
+            base_components=component_key,
+            total_budget=int(total_budget),
+        )
+        if candidate_cache.get_fg(cache_key) is None and component_key not in seen_missing:
+            seen_missing.add(component_key)
+            missing_components.append(component_key)
+
+    if not missing_components:
+        return {}
+    base_components = np.ascontiguousarray(missing_components, dtype=np.int32)
 
     return score_fused_owner_base_components_on_gpu_owner(
         base_components=base_components,
@@ -854,10 +872,21 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     ga_loop_profile_perkernel = bool(ga_loop_profile and env_flag("GA_LOOP_PROFILE_PERKERNEL", "0"))
     _lp_warmup_gens = max(0, int(env_get("GA_LOOP_PROFILE_WARMUP_GENS", "8") or "8"))
     _lp_sample_every = max(1, int(env_get("GA_LOOP_PROFILE_SAMPLE_EVERY", "8") or "8"))
-    _lp_acc = {"samples": 0, "host_enqueue_s": 0.0, "gpu_exec_s": 0.0, "host_max_s": 0.0, "gpu_max_s": 0.0,
-               "prep_host_s": 0.0, "eval_host_s": 0.0, "rest_host_s": 0.0,
-               # Per-kernel GPU-exec accumulators (ga_loop_profile_perkernel only):
-               "pk_samples": 0, "pk_prep_gpu_s": 0.0, "pk_eval_gpu_s": 0.0, "pk_fused_gpu_s": 0.0}
+    _lp_acc = {
+        "samples": 0,
+        "host_enqueue_s": 0.0,
+        "gpu_exec_s": 0.0,
+        "host_max_s": 0.0,
+        "gpu_max_s": 0.0,
+        "prep_host_s": 0.0,
+        "eval_host_s": 0.0,
+        "rest_host_s": 0.0,
+        # Per-kernel GPU-exec accumulators (ga_loop_profile_perkernel only):
+        "pk_samples": 0,
+        "pk_prep_gpu_s": 0.0,
+        "pk_eval_gpu_s": 0.0,
+        "pk_fused_gpu_s": 0.0,
+    }
     _lp_ti = None
     if ga_loop_profile:
         import taichi as _lp_ti
@@ -1172,9 +1201,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
                     for gen in range(int(n_generations)):
                         _raise_if_abort_requested(abort_requested, f"before GPU-native GA generation {int(gen)}")
-                        _lp_sample = bool(
-                            ga_loop_profile and gen >= _lp_warmup_gens and (gen % _lp_sample_every) == 0
-                        )
+                        _lp_sample = bool(ga_loop_profile and gen >= _lp_warmup_gens and (gen % _lp_sample_every) == 0)
                         if _lp_sample:
                             if env_flag("GA_LOOP_PROFILE_NOSYNC", "0"):
                                 _lp_h0 = time.perf_counter()  # measure host in the production stream (no drain)
@@ -1217,9 +1244,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             and gen < (int(n_generations) - 1)
                         )
                         fuse_refresh_with_next = (
-                            not bool(phase_timing)
-                            and not bool(is_migration_gen)
-                            and gen < int(n_generations) - 1
+                            not bool(phase_timing) and not bool(is_migration_gen) and gen < int(n_generations) - 1
                         )
                         fused_refresh_next_done = False
                         t0 = time.perf_counter() if phase_timing else 0.0
@@ -1514,6 +1539,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             try:
                 import json as _lp_json
                 import os as _lp_os
+
                 _lp_dir = _lp_os.path.dirname(_lp_os.path.abspath(_lp_path))
                 if _lp_dir:
                     _lp_os.makedirs(_lp_dir, exist_ok=True)

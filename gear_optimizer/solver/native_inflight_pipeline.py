@@ -270,10 +270,7 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
     # {runs_payload, fg_owner_score}: the GA payload plus the owner-scored FG result
     # map. Unpack the map onto the song for the FG worker; decode consumes the payload.
     if not isinstance(ga_result, dict) or "runs_payload" not in ga_result:
-        raise RuntimeError(
-            "GPU-native GA result must be a fused {runs_payload, fg_owner_score} dict "
-            f"for {song_key}"
-        )
+        raise RuntimeError(f"GPU-native GA result must be a fused {{runs_payload, fg_owner_score}} dict for {song_key}")
     runs_payload = ga_result["runs_payload"]
     try:
         song.runtime.fg.fg_owner_score_map = ga_result.get("fg_owner_score")
@@ -296,6 +293,51 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
         base_stats_fixed=gpu_inputs.fixed_stats,
         fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
+    from gear_optimizer.solver.candidate_cache import (
+        base_candidate_cache_key,
+        base_payload_from_result_tuple,
+        get_candidate_cache,
+    )
+
+    candidate_cache = get_candidate_cache()
+    calc_song = getattr(gpu_inputs, "calc_song", None)
+    ref_arrays = getattr(gpu_inputs, "ref_arrays", None)
+    flags = dict(getattr(gpu_inputs, "color_flags", {}) or {})
+    if isinstance(calc_song, dict) and isinstance(ref_arrays, dict) and flags:
+        for candidate in ga_candidates or []:
+            data = candidate.get("Data") if isinstance(candidate, dict) else None
+            if not isinstance(data, dict):
+                continue
+            base_stats = data.get("BaseStats")
+            if not isinstance(base_stats, dict) or not base_stats:
+                continue
+            gem_counts = data.get("GemCounts") if isinstance(data.get("GemCounts"), dict) else {}
+            result_tuple = (
+                int(data.get("BaseScore", data.get("Score", 0)) or 0),
+                int(data.get("FT", 0) or 0),
+                int(data.get("FF", 0) or 0),
+                int(gem_counts.get("Perfect Points", 0) or 0),
+                int(gem_counts.get("Combo Multiplier", 0) or 0),
+                int(gem_counts.get("Fever Multiplier", 0) or 0),
+                int(gem_counts.get("Overflow", 0) or 0),
+            )
+            cache_key = base_candidate_cache_key(
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                base_stats=base_stats,
+                primary_color=str(getattr(gpu_inputs, "meta_primary_color", "") or ""),
+                secondary_color=str(getattr(gpu_inputs, "meta_secondary_color", "") or ""),
+                selected_color=str(decode_cfg_data.get("selected_color", "") or ""),
+                flags=flags,
+            )
+            candidate_cache.put_base(
+                cache_key,
+                base_payload_from_result_tuple(
+                    result=result_tuple,
+                    base_stats=base_stats,
+                    selected_color=str(decode_cfg_data.get("selected_color", "") or ""),
+                ),
+            )
     out = (best_data, best_gear, best_minis, ga_candidates)
     try:
         cpu_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))

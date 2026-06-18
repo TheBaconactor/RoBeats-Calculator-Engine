@@ -3,6 +3,9 @@ from gear_optimizer.solver.native_inflight_config import make_native_song
 import pytest
 import numpy as np
 
+from gear_optimizer.solver.candidate_cache import reset_candidate_cache_for_tests
+from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
+
 
 def _minimal_fg_calc_song(note_count: int = 4) -> dict:
     timestamps = np.linspace(0.0, 1.0, int(note_count), dtype=np.float32)
@@ -24,7 +27,32 @@ def _minimal_fg_ref_arrays() -> dict[str, np.ndarray]:
         "Perfect Points": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
         "Fever Multiplier": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
+        "Fever Time": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
     }
+
+
+def _fake_fg_prepared_batch(base_stats_list, selected_color: str = "Rush"):
+    from types import SimpleNamespace
+
+    rows = [dict(base_stats) for base_stats in base_stats_list]
+    base_components = np.asarray(
+        [
+            response_frontier_base_components_row(
+                base_stats,
+                None,
+                primary_color="Rush",
+                secondary_color="Flow",
+            )
+            for base_stats in rows
+        ],
+        dtype=np.int32,
+    )
+    return SimpleNamespace(
+        base_stats_list=rows,
+        selected_color=str(selected_color or ""),
+        base_components=base_components,
+    )
 
 
 def test_ftff_response_position_prune_matches_pair_prune_with_canonical_frontier_keys():
@@ -72,7 +100,9 @@ def test_ftff_response_position_prune_matches_pair_prune_with_canonical_frontier
         frontier_ids=np.asarray([frontier_classes[frontier_idx] for frontier_idx, *_rest in rows], dtype=np.int32),
         residuals=np.asarray([residual for _frontier_idx, residual, _primary, _secondary in rows], dtype=np.int32),
         primary_values=np.asarray([primary for _frontier_idx, _residual, primary, _secondary in rows], dtype=np.int32),
-        secondary_values=np.asarray([secondary for _frontier_idx, _residual, _primary, secondary in rows], dtype=np.int32),
+        secondary_values=np.asarray(
+            [secondary for _frontier_idx, _residual, _primary, secondary in rows], dtype=np.int32
+        ),
     )
 
     assert got.tolist() == [int(pair[0]) for pair in expected]
@@ -155,7 +185,9 @@ def test_nojit_fixed_stats_score_matches_jit_score():
         "Flow": 83,
     }
 
-    assert evaluate_stats_score_nojit(stats, calc_song, ref_arrays) == evaluate_stats_score(stats, calc_song, ref_arrays)
+    assert evaluate_stats_score_nojit(stats, calc_song, ref_arrays) == evaluate_stats_score(
+        stats, calc_song, ref_arrays
+    )
 
 
 def test_fg_response_scoring_failure_raises_directly(monkeypatch):
@@ -478,7 +510,9 @@ def test_prepare_fg_static_sync_warms_jit_and_loads_canonical_scoring_bundle(mon
 
     monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _fake_load_bundle)
     monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: canonical_keys)
-    monkeypatch.setattr(response_frontier, "warmup_response_frontier_group_builder", lambda: seen.__setitem__("frontier", 1))
+    monkeypatch.setattr(
+        response_frontier, "warmup_response_frontier_group_builder", lambda: seen.__setitem__("frontier", 1)
+    )
     monkeypatch.setattr(response_ftff_prune, "warmup_response_ftff_prune", lambda: seen.__setitem__("ftff", 1))
 
     cfg = configparser.ConfigParser()
@@ -807,7 +841,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     assert trace[0]["forced_count"] == int(target_option["k"])
 
 
-def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypatch):
+def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from gear_optimizer.helpers.song_helpers import force_greats
@@ -823,6 +857,7 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
 
     surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     scoring_frontier = FgResponseFrontierResult((surface,), {}, 1, 1, 1, 1, 1, 1, 3, 0.0)
+    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
 
     def _result(best_score: int, ft_stat: int, ff_stat: int):
         return FgResponseFrontierSolveResult(
@@ -842,7 +877,9 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
 
     monkeypatch.setattr(reducer_mod, "LOADOUTS_PER_SONG_LIMIT", 1)
     monkeypatch.setattr(planner_mod, "eval_data_from_entry", lambda entry, primary: dict(entry["eval_data"]))
-    monkeypatch.setattr(planner_mod, "expected_selected_element", lambda entry, primary: str(entry["eval_data"]["Selected Element"]))
+    monkeypatch.setattr(
+        planner_mod, "expected_selected_element", lambda entry, primary: str(entry["eval_data"]["Selected Element"])
+    )
     monkeypatch.setattr(
         planner_mod.FgPlanner,
         "base_stats_for_response_frontier",
@@ -857,7 +894,10 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
     monkeypatch.setattr(
         planner_mod,
         "prepare_force_greats_response_frontier_scoring_batch",
-        lambda **kwargs: {"base_stats_list": list(kwargs["base_stats_list"])},
+        lambda **kwargs: _fake_fg_prepared_batch(
+            kwargs["base_stats_list"],
+            str(kwargs.get("selected_color") or ""),
+        ),
     )
 
     seen_payloads = []
@@ -867,8 +907,12 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(monkeypa
         return {
             "BaseScore": 60,
             "Score": int(result.best_score),
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Overflow": 0},
             "ForceGreats": {"config": {"NonFever1": 1}},
             "forced_counts": [1],
+            "response_surface": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         }
 
     monkeypatch.setattr(reducer_mod, "materialize_force_payload_from_response_frontier", _fake_force_payload)
@@ -1075,10 +1119,7 @@ def test_response_frontier_ftff_antichain_matches_naive_dominance():
 
     naive = []
     for pair in pairs:
-        if any(
-            response_pair_dominates(other, pair, primary_color="Rush", secondary_color="Flow")
-            for other in naive
-        ):
+        if any(response_pair_dominates(other, pair, primary_color="Rush", secondary_color="Flow") for other in naive):
             continue
         naive = [
             other
@@ -1092,7 +1133,7 @@ def test_response_frontier_ftff_antichain_matches_naive_dominance():
     assert kept == naive
 
 
-def test_fg_response_scoring_uses_shared_solver(monkeypatch):
+def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from gear_optimizer.helpers.song_helpers import force_greats
@@ -1107,6 +1148,7 @@ def test_fg_response_scoring_uses_shared_solver(monkeypatch):
     )
 
     calls = []
+    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
 
     def _result(base_stats, selected_color):
         surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
@@ -1150,10 +1192,10 @@ def test_fg_response_scoring_uses_shared_solver(monkeypatch):
 
     def _fake_prepare_batch(*, base_stats_list, calc_song, ref_arrays, selected_color, **_kwargs):
         calls.append((list(base_stats_list), selected_color, calc_song, ref_arrays))
-        return {"base_stats_list": list(base_stats_list), "selected_color": selected_color}
+        return _fake_fg_prepared_batch(base_stats_list, str(selected_color or ""))
 
     def _fake_score_batch(batch, **_kwargs):
-        return [_result(base_stats, str(batch["selected_color"])) for base_stats in batch["base_stats_list"]]
+        return [_result(base_stats, str(batch.selected_color)) for base_stats in batch.base_stats_list]
 
     monkeypatch.setattr(
         planner_mod,
@@ -1235,12 +1277,13 @@ def test_fg_response_scoring_uses_shared_solver(monkeypatch):
     assert out[0]["minis"] == ["M1"]
 
 
-def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(monkeypatch):
+def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
 
+    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     monkeypatch.setattr(
         reducer_mod,
         "materialize_force_payload_from_response_frontier",
@@ -1248,15 +1291,28 @@ def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(monkey
             "BaseScore": kwargs["result"].exact_base,
             "RawBaseScore": kwargs["result"].raw_base,
             "Score": kwargs["result"].exact_fg,
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Overflow": 0},
+            "forced_counts": [],
+            "response_surface": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            "ForceGreats": {},
         },
     )
     keep = {"base_score": 100, "gear": ["RawBaseInflated"], "minis": ["M1"], "fg_score": 0, "_source": "ga"}
     drop = {"base_score": 160, "gear": ["BelowSourcePair"], "minis": ["M2"], "fg_score": 0, "_source": "ga"}
+    keep_stats = {"Perfect Points": 0}
+    drop_stats = {"Perfect Points": 1}
     plan = SimpleNamespace(
-        calc_song={},
-        ref_arrays={},
-        pending_jobs=((keep, {}, "Rush", {}, 100, "keep"), (drop, {}, "Rush", {}, 160, "drop")),
-        prepared_batches=(SimpleNamespace(rows=(("keep", {}), ("drop", {}))),),
+        calc_song=_minimal_fg_calc_song(),
+        ref_arrays=_minimal_fg_ref_arrays(),
+        pending_jobs=((keep, {}, "Rush", keep_stats, 100, "keep"), (drop, {}, "Rush", drop_stats, 160, "drop")),
+        prepared_batches=(
+            SimpleNamespace(
+                batch=_fake_fg_prepared_batch([keep_stats, drop_stats], "Rush"),
+                rows=(("keep", keep_stats), ("drop", drop_stats)),
+            ),
+        ),
     )
     results = [
         SimpleNamespace(best_score=150, raw_base=200, exact_base=100, exact_fg=150),
@@ -1270,7 +1326,7 @@ def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(monkey
     assert out[0]["data"]["BaseScore"] == 100
 
 
-def test_fg_response_scoring_batches_candidates(monkeypatch):
+def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from gear_optimizer.helpers.song_helpers import force_greats
@@ -1285,15 +1341,16 @@ def test_fg_response_scoring_batches_candidates(monkeypatch):
     )
 
     calls: list[int] = []
+    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
 
     def _fake_prepare_batch(*, base_stats_list, calc_song, ref_arrays, selected_color, **_kwargs):
         _ = (calc_song, ref_arrays, selected_color)
         calls.append(len(base_stats_list))
-        return {"base_stats_list": list(base_stats_list)}
+        return _fake_fg_prepared_batch(base_stats_list, str(selected_color or ""))
 
     def _fake_score_batch(batch, **_kwargs):
         out = []
-        for idx, base_stats in enumerate(batch["base_stats_list"]):
+        for idx, base_stats in enumerate(batch.base_stats_list):
             surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, idx, 0)
             frontier = FgResponseFrontierResult(
                 first_frontier=(surface,),

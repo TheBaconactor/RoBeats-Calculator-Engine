@@ -62,6 +62,7 @@ from gear_optimizer.solver.timing_response_antichain import (
     build_timing_response_antichain_table,
     timing_response_phase_counts,
 )
+
 LaneAwareMiniSkylineStats = _LaneAwareMiniSkylineStats_common
 _SLOTS = GEAR_SLOTS
 _BitPack = _BitPack_common
@@ -321,10 +322,9 @@ def _dp_gear_ff_base_frontier_with_codes(
         # is sorted by timing cell, not by the old (PP,CM,FM,FT) grouping.
         stat_span = int(MAX_STAT_INDEX) + 1
         key4 = (
-            ((stats[:, 0].astype(np.int64, copy=False) * np.int64(stat_span) + stats[:, 1])
-             * np.int64(stat_span) + stats[:, 2])
-            * np.int64(stat_span) + stats[:, 3]
-        )
+            (stats[:, 0].astype(np.int64, copy=False) * np.int64(stat_span) + stats[:, 1]) * np.int64(stat_span)
+            + stats[:, 2]
+        ) * np.int64(stat_span) + stats[:, 3]
         _, sizes = np.unique(key4, return_counts=True)
         sizes = sizes.astype(np.int32, copy=False)
     else:
@@ -809,6 +809,9 @@ def _evaluate_pairs_exact(
     calc_song: dict,
     ref_arrays: dict,
     flags: dict[str, int],
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
     song_slot: int,
     gpu_client: Any | None = None,
     gear_ids: np.ndarray,
@@ -842,7 +845,12 @@ def _evaluate_pairs_exact(
         and int(start_cells.shape[0]) == total
         and int(timing_response_table.kept_combo_count) <= int(_max_timing_response_combos())
     )
-    if ft_caps is not None and ff_caps is not None and int(ft_caps.shape[0]) == total and int(ff_caps.shape[0]) == total:
+    if (
+        ft_caps is not None
+        and ff_caps is not None
+        and int(ft_caps.shape[0]) == total
+        and int(ff_caps.shape[0]) == total
+    ):
         if use_timing_antichain and start_cells is not None and timing_response_table is not None:
             rows_for_sort = timing_response_table.cell_to_row[start_cells]
             lens_for_sort = timing_response_table.lengths_by_row[rows_for_sort]
@@ -928,6 +936,9 @@ def _evaluate_pairs_exact(
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         flags=flags,
+        primary_color=str(primary_color or ""),
+        secondary_color=str(secondary_color or ""),
+        selected_color=str(selected_color or ""),
         song_slot=int(song_slot),
         candidate_total=total,
         candidate_batches=_candidate_batches(),
@@ -937,6 +948,7 @@ def _evaluate_pairs_exact(
         status_label="exact_skyline combined-skyline",
         status_every=max_batch * 32,
     )
+
 
 def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, list, None, list, list, list[dict]]:
     solve_started = time.perf_counter()
@@ -1204,9 +1216,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                 flags=ctx.color_flags,
             )
             _record_phase(phase_seconds, "timing_response_antichain_build_cpu", phase_started)
-            if (
-                timing_response_table is not None
-                and int(timing_response_table.kept_combo_count) > int(_max_timing_response_combos())
+            if timing_response_table is not None and int(timing_response_table.kept_combo_count) > int(
+                _max_timing_response_combos()
             ):
                 timing_response_table = None
                 timing_response_stats = TimingResponseAntichainStats(
@@ -1222,8 +1233,8 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             for name, count in timing_response_phase_counts(timing_response_stats).items():
                 phase_counts[name] = int(count)
             if timing_response_stats.enabled:
-                ratio = (
-                    float(timing_response_stats.legal_combo_count) / float(max(1, timing_response_stats.kept_combo_count))
+                ratio = float(timing_response_stats.legal_combo_count) / float(
+                    max(1, timing_response_stats.kept_combo_count)
                 )
                 phase_counts["timing_response_antichain_ratio_x100"] = int(round(ratio * 100.0))
                 status_cb(
@@ -1247,6 +1258,9 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             calc_song=ctx.calc_song,
             ref_arrays=ctx.ref_arrays,
             flags=ctx.color_flags,
+            primary_color=str(ctx.p_color or ""),
+            secondary_color=str(ctx.s_color or ""),
+            selected_color=str(ctx.selected_color or ""),
             song_slot=int(ctx.song_slot),
             gpu_client=ctx.gpu_client,
             gear_ids=gear_ids,
@@ -1287,6 +1301,9 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
                     calc_song=ctx.calc_song,
                     ref_arrays=ctx.ref_arrays,
                     flags=ctx.color_flags,
+                    primary_color=str(ctx.p_color or ""),
+                    secondary_color=str(ctx.s_color or ""),
+                    selected_color=str(ctx.selected_color or ""),
                     song_slot=int(ctx.song_slot),
                     gpu_client=ctx.gpu_client,
                     gear_ids=gear_ids,

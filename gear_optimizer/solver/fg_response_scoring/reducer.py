@@ -5,6 +5,12 @@ from typing import Any
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
+from gear_optimizer.solver.candidate_cache import (
+    fg_candidate_cache_key,
+    fg_payload_from_materialized,
+    get_candidate_cache,
+    materialize_fg_payload_from_cache,
+)
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
@@ -93,6 +99,28 @@ def materialize_force_payload_from_response_frontier(
 
 class FgResultReducer:
     @staticmethod
+    def fg_candidate_cache_keys(plan: FgResponseFrontierPreparedPlan) -> dict[tuple[Any, ...], tuple[Any, ...]]:
+        keys: dict[tuple[Any, ...], tuple[Any, ...]] = {}
+        for prepared in plan.prepared_batches:
+            batch = prepared.batch
+            base_components = batch.base_components
+            rows = list(prepared.rows)
+            if int(base_components.shape[0]) != len(rows):
+                raise RuntimeError("FG candidate cache: prepared batch base_components/rows length mismatch")
+            for row_idx, (planner_key, _base_stats) in enumerate(rows):
+                semantic_key = fg_candidate_cache_key(
+                    calc_song=plan.calc_song,
+                    ref_arrays=plan.ref_arrays,
+                    selected_color=str(batch.selected_color or ""),
+                    base_components=tuple(int(v) for v in base_components[int(row_idx)].tolist()),
+                )
+                previous = keys.get(planner_key)
+                if previous is not None and previous != semantic_key:
+                    raise RuntimeError("FG candidate cache: planner key maps to multiple semantic keys")
+                keys[planner_key] = semantic_key
+        return keys
+
+    @staticmethod
     def _result_cache(
         plan: FgResponseFrontierPreparedPlan,
         prepared_results: list[list[FgResponseFrontierSolveResult]],
@@ -114,17 +142,32 @@ class FgResultReducer:
         prepared_results: list[list[FgResponseFrontierSolveResult]],
         *,
         skyline: bool = False,
+        cached_payloads: dict[tuple[Any, ...], dict[str, Any]] | None = None,
+        result_cache_override: dict[tuple[Any, ...], FgResponseFrontierSolveResult] | None = None,
     ) -> list[dict[str, Any]]:
         calc_song = plan.calc_song
         ref_arrays = plan.ref_arrays
         variants: list[dict[str, Any]] = []
-        result_cache = FgResultReducer._result_cache(plan, prepared_results)
+        result_cache = (
+            dict(result_cache_override)
+            if result_cache_override is not None
+            else FgResultReducer._result_cache(plan, prepared_results)
+        )
+        cached_payloads = dict(cached_payloads or {})
+        fg_cache_keys = FgResultReducer.fg_candidate_cache_keys(plan)
+        candidate_cache = get_candidate_cache()
 
         pending_variants: list[dict[str, Any]] = []
         for entry, eval_data, selected, base_stats, paired_base_score, cache_key in plan.pending_jobs:
-            result = result_cache.get(cache_key)
-            if result is None:
-                raise ValueError("ForceGreats response frontier batch missed a candidate result")
+            cached_payload = cached_payloads.get(cache_key)
+            result = None
+            if cached_payload is not None:
+                fg_score = int(cached_payload["raw_best_score"])
+            else:
+                result = result_cache.get(cache_key)
+                if result is None:
+                    raise ValueError("ForceGreats response frontier batch missed a candidate result")
+                fg_score = int(result.best_score)
             gear_names, mini_names = materialize_entry_names(entry, mutate=True)
             pending_variants.append(
                 {
@@ -134,30 +177,58 @@ class FgResultReducer:
                     "base_stats": base_stats,
                     "paired_base_score": int(paired_base_score),
                     "result": result,
+                    "cached_payload": cached_payload,
                     "gear": gear_names,
                     "minis": mini_names,
-                    "fg_score": int(result.best_score),
+                    "fg_score": int(fg_score),
+                    "cache_key": cache_key,
                     "_is_ga": str(entry.get("_source") or "") == "ga",
                 }
             )
 
-        pending_jobs = pending_variants if skyline else sorted(
-            pending_variants,
-            key=lambda variant: int(variant["fg_score"]),
-            reverse=True,
-        )[: int(LOADOUTS_PER_SONG_LIMIT)]
+        pending_jobs = (
+            pending_variants
+            if skyline
+            else sorted(
+                pending_variants,
+                key=lambda variant: int(variant["fg_score"]),
+                reverse=True,
+            )[: int(LOADOUTS_PER_SONG_LIMIT)]
+        )
 
         for item in pending_jobs:
             result = item["result"]
-            payload = materialize_force_payload_from_response_frontier(
-                eval_data=item["eval_data"],
-                base_stats=item["base_stats"],
-                paired_base_score=int(item["paired_base_score"]),
-                selected_element=item["selected"],
-                result=result,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-            )
+            cached_payload = item.get("cached_payload")
+            if cached_payload is not None:
+                payload = materialize_fg_payload_from_cache(
+                    cached=cached_payload,
+                    eval_data=item["eval_data"],
+                    base_stats=item["base_stats"],
+                    paired_base_score=int(item["paired_base_score"]),
+                    selected_element=item["selected"],
+                )
+            else:
+                if result is None:
+                    raise ValueError("ForceGreats response frontier cache miss is missing a solve result")
+                payload = materialize_force_payload_from_response_frontier(
+                    eval_data=item["eval_data"],
+                    base_stats=item["base_stats"],
+                    paired_base_score=int(item["paired_base_score"]),
+                    selected_element=item["selected"],
+                    result=result,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                )
+                semantic_key = fg_cache_keys.get(item["cache_key"])
+                if semantic_key is None:
+                    raise ValueError("ForceGreats response frontier cache admission is missing a semantic key")
+                candidate_cache.put_fg(
+                    semantic_key,
+                    fg_payload_from_materialized(
+                        raw_best_score=int(result.best_score),
+                        payload=payload,
+                    ),
+                )
 
             entry = item["entry"]
             exact_fg_score = safe_int(payload.get("Score", 0), 0)

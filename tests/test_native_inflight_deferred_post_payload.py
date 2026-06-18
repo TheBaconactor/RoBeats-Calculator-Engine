@@ -279,20 +279,37 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
     assert int(payload["fg_variants"][0]["fg_score"]) == 130
 
 
-def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
+def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
     # Fused GA->FG handoff (Slice 3): run_fg_job_sync materializes from the owner FG
     # score map (no client SCORE submission). Records the FG progress info as before.
     import numpy as np
 
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+    from gear_optimizer.solver.candidate_cache import reset_candidate_cache_for_tests
     from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgFusedOwnerScoreRow
 
+    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
+    calc_song = {
+        "metadata": {
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": 0.0,
+        },
+        "song_data": {"timestamps": [0.0], "fg_timestamps": [0.0]},
+    }
+    ref_arrays = _ref_arrays()
     base_components = (5, 6, 7, 8, 9, 10, 11)
+    planner_key = ("ck0",)
+    base_stats = {"Perfect Points": 1}
     owner_map = {
         base_components: FgFusedOwnerScoreRow(
-            ft=1, ff=2, ft_stat=3, ff_stat=6,
+            ft=1,
+            ff=2,
+            ft_stat=3,
+            ff_stat=6,
             inner_row=(130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
             surface=(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
@@ -307,19 +324,22 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
         db_best_fg_score=100,
         db_baseline_valid=True,
         fg_response_frontier_plan=SimpleNamespace(
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            pending_jobs=(({"loadout_hash": "ck0"}, {}, "Rush", base_stats, 111, planner_key),),
             prepared_batches=[
                 SimpleNamespace(
                     batch=SimpleNamespace(
                         base_components=np.asarray([base_components], dtype=np.int32),
                         selected_color="Rush",
-                        calc_song={"metadata": {}, "song_data": {}},
-                        ref_arrays={},
+                        calc_song=calc_song,
+                        ref_arrays=ref_arrays,
                         scoring_bundle=object(),
                         started=0.0,
                     ),
-                    rows=(("ck0", {"Perfect Points": 1}),),
+                    rows=((planner_key, base_stats),),
                 )
-            ]
+            ],
         ),
     )
     song.runtime.fg.fg_owner_score_map = owner_map
@@ -328,11 +348,17 @@ def test_native_inflight_fg_worker_records_progress_info(monkeypatch):
         FgResultReducer,
         "materialize",
         staticmethod(
-            lambda _plan, prepared_results: [
+            lambda _plan, prepared_results, **kwargs: [
                 {
                     "score": 111,
                     "base_score": 111,
-                    "fg_score": int(prepared_results[0][0].best_score),
+                    "fg_score": int(
+                        (
+                            prepared_results[0][0]
+                            if prepared_results
+                            else next(iter(kwargs["result_cache_override"].values()))
+                        ).best_score
+                    ),
                     "gear": ["G1"],
                     "minis": ["M1"],
                     "data": {"ForceGreats": {"config": {"NonFever1": 1}}},

@@ -11,7 +11,37 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from gear_optimizer.solver.candidate_cache import reset_candidate_cache_for_tests
 from gear_optimizer.solver.native_inflight_config import make_native_song
+
+
+def _calc_song():
+    timestamps = np.asarray([0.0, 1.0], dtype=np.float32)
+    return {
+        "metadata": {
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": 1.0,
+        },
+        "song_data": {
+            "timestamps": timestamps,
+            "fg_timestamps": timestamps,
+            "fg_perfect_candidate_timestamps": timestamps,
+            "fg_great_candidate_timestamps": timestamps,
+        },
+    }
+
+
+def _ref_arrays():
+    base = np.linspace(1.0, 2.0, 161, dtype=np.float32)
+    return {
+        "Perfect Points": base,
+        "Combo Multiplier": base + np.float32(0.1),
+        "Fever Multiplier": base + np.float32(0.2),
+        "Fever Time": base + np.float32(0.3),
+        "Fever Fill Rate": base + np.float32(0.4),
+    }
 
 
 def _prepared_batch(base_components, rows):
@@ -21,10 +51,28 @@ def _prepared_batch(base_components, rows):
     return SimpleNamespace(
         base_components=np.asarray(base_components, dtype=np.int32),
         selected_color="Rush",
-        calc_song={"metadata": {}, "song_data": {}},
-        ref_arrays={"Perfect Points": []},
+        calc_song=_calc_song(),
+        ref_arrays=_ref_arrays(),
         scoring_bundle=object(),
         started=0.0,
+    )
+
+
+def _prepared_plan(base_components, base_stats=None):
+    planner_key = ("ck0",)
+    stats = dict(base_stats or {"Perfect Points": 1})
+    entry = {"loadout_hash": "ck0"}
+    eval_data = {"BaseStats": dict(stats), "Selected Element": "Rush"}
+    return SimpleNamespace(
+        calc_song=_calc_song(),
+        ref_arrays=_ref_arrays(),
+        pending_jobs=((entry, eval_data, "Rush", stats, 100, planner_key),),
+        prepared_batches=[
+            SimpleNamespace(
+                batch=_prepared_batch(base_components, rows=[(planner_key, stats)]),
+                rows=((planner_key, stats),),
+            )
+        ],
     )
 
 
@@ -70,21 +118,15 @@ def _make_fg_song(plan, owner_score_map, **overrides):
     return song
 
 
-def test_run_fg_job_sync_materializes_from_owner_score_map(monkeypatch):
+def test_run_fg_job_sync_materializes_from_owner_score_map(tmp_path, monkeypatch):
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
     from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
+    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     base_components = [(10, 11, 12, 13, 14, 15, 16)]
     owner_map = {(10, 11, 12, 13, 14, 15, 16): _owner_row(130)}
-    plan = SimpleNamespace(
-        prepared_batches=[
-            SimpleNamespace(
-                batch=_prepared_batch(base_components, rows=[("ck0", {"Perfect Points": 1})]),
-                rows=(("ck0", {"Perfect Points": 1}),),
-            )
-        ]
-    )
+    plan = _prepared_plan(base_components)
 
     seen: dict[str, object] = {}
 
@@ -95,8 +137,11 @@ def test_run_fg_job_sync_materializes_from_owner_score_map(monkeypatch):
 
     monkeypatch.setattr(response_frontier, "build_fused_owner_solve_result_from_score_row", _fake_build)
 
-    def _fake_materialize(plan_arg, prepared_results):
+    def _fake_materialize(plan_arg, prepared_results, **_kwargs):
         seen["plan"] = plan_arg
+        result_cache = dict(_kwargs.get("result_cache_override") or {})
+        if result_cache:
+            prepared_results = [[next(iter(result_cache.values()))]]
         seen["results"] = prepared_results
         return [{"fg_score": int(prepared_results[0][0].best_score)}]
 
@@ -131,18 +176,12 @@ def test_run_fg_job_sync_requires_owner_score_map():
         raise AssertionError("expected a missing owner FG score map to fail loudly")
 
 
-def test_materialize_from_owner_score_map_fails_on_missing_base_components():
+def test_materialize_from_owner_score_map_fails_on_missing_base_components(tmp_path):
     from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
 
+    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     base_components = [(1, 2, 3, 4, 5, 6, 7)]
-    plan = SimpleNamespace(
-        prepared_batches=[
-            SimpleNamespace(
-                batch=_prepared_batch(base_components, rows=[("ck0", {"Perfect Points": 1})]),
-                rows=(("ck0", {"Perfect Points": 1}),),
-            )
-        ]
-    )
+    plan = _prepared_plan(base_components)
     # Owner map does NOT contain the batch's base_components -> must fail loudly.
     try:
         FgResponseScoringService.materialize_from_owner_score_map(plan, {(9, 9, 9, 9, 9, 9, 9): _owner_row(1)})
