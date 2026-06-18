@@ -64,16 +64,6 @@ def _hit_time_ms(timestamps: np.ndarray, idx: int) -> float:
     return float(timestamps[int(idx)]) * 1000.0
 
 
-def _apply_activation_offset_band(note: dict[str, Any], sec: Mapping[str, Any]) -> None:
-    """Persist the legal activation timing band when the trace carries it (issue #41)."""
-    lo = sec.get("activation_hit_offset_lower_ms")
-    hi = sec.get("activation_hit_offset_upper_ms")
-    if lo is None or hi is None:
-        return
-    note["delta_ms_lower"] = float(lo)
-    note["delta_ms_upper"] = float(hi)
-
-
 def _perfect_note_graph(total_notes: int, timestamps: Sequence[float] | np.ndarray) -> list[dict[str, Any]]:
     n = int(total_notes)
     ts = np.asarray(timestamps).reshape(-1)
@@ -169,15 +159,9 @@ def _mark_endpoint_early_hits(
         lo_hit = max(legal_low_hit, prev_hit)
         if lo_hit >= upper_hit:
             shown_hit = lo_hit  # no in-fever room: keep the legal + monotonic floor (>= prev_hit, < cutoff)
-            band_lo_hit = lo_hit
-            band_hi_hit = lo_hit
         else:
             shown_hit = 0.5 * (lo_hit + upper_hit)  # largest cushion = center of the legal range
-            band_lo_hit = lo_hit
-            band_hi_hit = upper_hit
         note["delta_ms"] = shown_hit - hit
-        note["delta_ms_lower"] = band_lo_hit - hit
-        note["delta_ms_upper"] = band_hi_hit - hit
         prev_hit = shown_hit
 
 
@@ -233,7 +217,6 @@ def timeline_frontier_note_graph(
             notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
             notes[a]["is_activation_witness"] = True
             notes[a]["section"] = section
-            _apply_activation_offset_band(notes[a], sec)
         # The last note of the fever run is the fever-end witness (largest-cushion cutoff);
         # any fever note at/after that cutoff is shown with its LARGEST-CUSHION legal early hit --
         # the center of its legal in-fever range, the timing with the most error margin (issue #42).
@@ -344,7 +327,6 @@ def force_greats_note_graph(
             notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
             notes[a]["is_activation_witness"] = True
             notes[a]["section"] = section
-            _apply_activation_offset_band(notes[a], sec)
         elif (
             activation_judgment == "perfect"
             and 0 <= a < n
@@ -353,7 +335,6 @@ def force_greats_note_graph(
             notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
             notes[a]["is_activation_witness"] = True
             notes[a]["section"] = section
-            _apply_activation_offset_band(notes[a], sec)
 
         # Endpoint-early (issue #42): any Perfect fever note at/after the cutoff is shown with its
         # LARGEST-CUSHION legal early hit -- the center of its legal in-fever range (most error

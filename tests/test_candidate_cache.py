@@ -43,7 +43,6 @@ def _calc_song() -> dict:
             "fg_timestamps": timestamps,
             "fg_perfect_candidate_timestamps": timestamps,
             "fg_great_candidate_timestamps": timestamps + np.float32(0.015),
-            "fg_perfect_floor_timestamps": timestamps,
         },
     }
 
