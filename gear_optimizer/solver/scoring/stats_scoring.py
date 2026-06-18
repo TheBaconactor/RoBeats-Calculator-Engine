@@ -297,7 +297,7 @@ def _calculate_fever_timeline_indices_python(
             fever_activations += 1
             start_time = float(song_timestamps[current_note_idx])
             end_time = start_time + float(real_fever_time)
-            fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+            fever_end_idx = int(np.searchsorted(song_timestamps, np.float32(end_time), side="left"))
             is_fever[current_note_idx:fever_end_idx] = True
             current_note_idx = int(fever_end_idx)
             last_fever_end_idx = int(fever_end_idx)
