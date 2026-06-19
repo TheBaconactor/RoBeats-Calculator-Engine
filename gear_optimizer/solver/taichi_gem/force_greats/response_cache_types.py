@@ -28,7 +28,15 @@ from .response_types import FgResponseFrontierResult
 # v15 -> v16: issue #44 early-Great FLOOR corrected -75 -> cumulative -95 (held -190) to match the
 #             game's get_note_times/timedelta_to_result (great_lower = perfect_lower + great_extra).
 #             Captures legal early-Great fever for notes 75-95ms past a cutoff; v15 under-included it.
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v16"
+# v16 -> v17: body-pair radix correctness. The build packs (normal_great, body_fever_great) as
+#             normal_great*pair_mod + body_fever_great; pair_mod was sized to the SECTION COUNT, but
+#             the issue-#44 early-Great band makes body_fever_great exceed that, so the pack aliased
+#             onto a phantom (normal_great+1, ...) surface -- silently OVER-scoring some cells and
+#             crashing trace reconstruction. pair_mod now sizes to the geometry's true max
+#             body_fever_great (= section_bound*(1+early_Great_band)); best_fg_score drops to the
+#             correct value on aliased cells, so v16 bundles are wrong and must rebuild. (Latent
+#             since #44 at -75; -95's wider band made it reproduce.)
+_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v17"
 _MEMORY_CACHE_MAX = 4096
 _PAYLOAD_CACHE_MAX = 8
 _BUNDLE_ARRAY_CACHE_MAX = 2

@@ -223,6 +223,85 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
     assert trace[0]["activation_hit_window_width_ms"] == pytest.approx(499.9997615814209)
 
 
+def test_body_pair_radix_round_trips_high_fever_great_counts() -> None:
+    """Issue #44 radix: the body skyline packs (normal_great, body_fever_great) as
+    normal_great*pair_mod + body_fever_great. With pair_mod sized past the geometry's max
+    body_fever_great, every distinct (normal_great, fever_great) -- including the high fever-great
+    counts the early-Great band produces -- must get its OWN slot and decode back exactly, with no
+    aliasing onto a phantom cell."""
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _numba_touch_body_candidate,
+    )
+
+    pair_mod = 20  # exceeds the max planted fever_great (15) -> the pack is injective
+    n = 60
+    pair_size = (n + 1) * pair_mod
+    best_fever_by_pair = np.zeros(pair_size, dtype=np.int32)
+    pair_stamp = np.zeros(pair_size, dtype=np.int32)
+    touched_pair = np.empty(pair_size, dtype=np.int32)
+
+    # (normal_great, fever_great, body_fever); fever_great up to 15 -- a bare section-count radix
+    # (~5) would alias several of these onto one another.
+    planted = [(2, 11, 100), (3, 14, 90), (5, 7, 80), (0, 15, 70), (9, 3, 60)]
+    touched = 0
+    for normal_great, fever_great, body_fever in planted:
+        touched = _numba_touch_body_candidate(
+            np.uint64(body_fever),
+            np.uint64(normal_great + fever_great),  # body_great
+            np.uint64(fever_great),                 # body_fever_great
+            np.uint64(0),
+            np.uint64(0),
+            np.uint64(0),
+            int(pair_mod),
+            1,
+            pair_stamp,
+            best_fever_by_pair,
+            touched_pair,
+            int(touched),
+        )
+
+    assert int(touched) == len(planted)  # no two distinct pairs collided onto one slot
+    decoded = {}
+    for i in range(int(touched)):
+        idx = int(touched_pair[i])
+        decoded[(idx // pair_mod, idx % pair_mod)] = int(best_fever_by_pair[idx])
+    assert decoded == {(ng, fg): bf for ng, fg, bf in planted}
+
+
+def test_body_pair_radix_guard_fails_loud_when_fever_great_exceeds_modulus() -> None:
+    """Issue #44 radix safety net: when body_fever_great >= pair_mod the pack stops being injective
+    and would silently alias onto a phantom (normal_great+1, ...) surface that over-scores and
+    breaks trace reconstruction. The build must FAIL LOUD instead. The chosen pair_idx (3*5+11 = 26)
+    stays inside pair_size (205), so the pre-existing pair-size guard does NOT catch it -- only the
+    dedicated radix guard does."""
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _numba_touch_body_candidate,
+    )
+
+    pair_mod = 5
+    n = 40
+    pair_size = (n + 1) * pair_mod
+    best_fever_by_pair = np.zeros(pair_size, dtype=np.int32)
+    pair_stamp = np.zeros(pair_size, dtype=np.int32)
+    touched_pair = np.empty(pair_size, dtype=np.int32)
+
+    with pytest.raises(ValueError, match="fever-great"):
+        _numba_touch_body_candidate(
+            np.uint64(100),
+            np.uint64(14),  # body_great = 14
+            np.uint64(11),  # body_fever_great = 11 >= pair_mod = 5
+            np.uint64(0),
+            np.uint64(0),
+            np.uint64(0),
+            int(pair_mod),
+            1,
+            pair_stamp,
+            best_fever_by_pair,
+            touched_pair,
+            0,
+        )
+
+
 def test_fg_response_trace_witness_search_centers_float32_surface_interval() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _centered_hit_window_for_exit,
