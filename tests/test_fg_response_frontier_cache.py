@@ -557,6 +557,40 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
     assert len(list(tmp_path.glob("*.npz"))) == 2
 
 
+def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
+        _FG_RESPONSE_CACHE_VERSION,
+    )
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+
+    def _plant(digest: str, version: str) -> None:
+        np.savez(str(tmp_path / f"{digest}.npz"), version=np.array(version), payload=np.arange(3))
+        np.save(str(tmp_path / f"{digest}{store._SURFACE_POOL_SIDECAR_SUFFIX}"), np.zeros((2, 11), np.int32))
+        np.save(str(tmp_path / f"{digest}{store._SURFACE_COEFF_SIDECAR_SUFFIX}"), np.zeros((2, 4), np.float32))
+
+    _plant("stale_a", "fg-response-frontier-legacy-v1")
+    _plant("stale_b", "fg-response-frontier-legacy-v2")
+    _plant("current", _FG_RESPONSE_CACHE_VERSION)
+
+    removed = store.purge_stale_version_cache_files()
+
+    assert removed == 6  # two superseded entries x (bundle + pool sidecar + coeff sidecar)
+    assert (tmp_path / "current.npz").exists()
+    assert (tmp_path / f"current{store._SURFACE_POOL_SIDECAR_SUFFIX}").exists()
+    assert (tmp_path / f"current{store._SURFACE_COEFF_SIDECAR_SUFFIX}").exists()
+    assert not (tmp_path / "stale_a.npz").exists()
+    assert not (tmp_path / "stale_b.npz").exists()
+    assert not list(tmp_path.glob("stale_*.surf_*.npy"))
+    assert (
+        (tmp_path / store._PURGED_VERSION_MARKER).read_text(encoding="utf-8").strip()
+        == _FG_RESPONSE_CACHE_VERSION
+    )
+    # The marker gates the rescan: a second call short-circuits without re-reading bundles.
+    assert store.purge_stale_version_cache_files() == 0
+
+
 def test_fg_response_frontier_uint8_persistence_bounds_fail_loud() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _as_uint8_exact
 
