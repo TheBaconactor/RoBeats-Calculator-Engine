@@ -384,25 +384,30 @@ def build_great_floor_envelope_sec(
     timestamps_sec: np.ndarray,
     note_types: np.ndarray | None,
     *,
+    perfect_lower_ms: int = -20,
     great_lower_ms: int = -75,
     held_tail_type: int = 3,
     held_tail_time_multiplier: int = 2,
     quantize_ms: bool = True,
 ) -> np.ndarray:
-    """Earliest legal GREAT-hit envelope (per-note `chart + Great lower`), monotone via a
+    """Earliest legal GREAT-hit envelope (per-note `chart + cumulative Great-lower`), monotone via a
     prefix-max.
 
-    Issue #44 greats-side fever-boundary basis. The decompiled `GearStats` base Great window
-    is `[-75ms, +150ms]` (held tail Type==2 doubles both edges -> `-150`); a boundary note
-    sitting 20-75ms past a fever cutoff is out of Perfect reach (`chart-20 >= cutoff`) but
-    still reachable INTO fever as a Great (`chart-75 < cutoff`). So the maximal early-Great
-    fever extent is `searchsorted(this_envelope, perfect_candidate[a] + real_fever_time)`,
-    exactly mirroring the earliest-Perfect `build_perfect_floor_envelope_sec` with the wider
-    Great lower edge. `great_lower_ms` is the ABSOLUTE early edge (-75), NOT
-    `perfect_lower + (-75)` (the unused `build_per_note_great_window_ms(great_mode="early")`
-    helper has that off-by-perfect-low bug and must not be used here).
+    Issue #44 greats-side fever-boundary basis. VERIFIED against the decompiled game (place
+    706824758): the judgment windows are CUMULATIVE. `GearStats.get_note_times` builds the Great
+    lower boundary by ADDING the per-tier Great extra to the Perfect lower boundary
+    (`great_lower = perfect_lower + great_lower_extra = -20 + (-75) = -95`), and both
+    `SPUtil.timedelta_to_result` (the scorer) and `NoteTimeGraph` (renders "-95ms (Great)") put the
+    early-Great edge at **-95** (held tail ×2 = -190), NOT -75. This matches the candidate's own
+    `build_per_note_great_window_ms`, which already cumulates (`perfect_low + great_lower`).
 
-    Per-note (NOT chord-collapsed: a held tail keeps its own -150) and bit-consistent with the
+    So the earliest a boundary note can be hit as a Great is `chart - 95`; a note sitting 20-95ms
+    past a fever cutoff is out of Perfect reach (`chart-20 >= cutoff`) but still reachable INTO fever
+    as a Great (`chart-95 < cutoff`). The maximal early-Great fever extent is
+    `searchsorted(this_envelope, perfect_candidate[a] + real_fever_time)`, mirroring the
+    earliest-Perfect `build_perfect_floor_envelope_sec` with the cumulative Great lower edge.
+
+    Per-note (NOT chord-collapsed: a held tail keeps its own -190) and bit-consistent with the
     Perfect floor/candidate -- same quantized int-ms chart (`floor_to_int_ms`) and same
     `* float32(0.001)` conversion. Pointwise `<= perfect_floor` (Great reaches earlier), so the
     fever boundary it produces is always `>= e_perfect`: a pure additional reachable surface,
@@ -419,7 +424,10 @@ def build_great_floor_envelope_sec(
         nt = np.asarray(note_types, dtype=np.int16)
     is_tail = nt == int(held_tail_type)
     mult = np.where(is_tail, int(held_tail_time_multiplier), 1).astype(np.int32)
-    great_low_ms = (int(great_lower_ms) * mult).astype(np.int32)
+    # Cumulative early-Great edge = perfect_lower + great_lower_extra (game get_note_times), ×2 on
+    # held tails -> -95 / -190. (Was raw -75: it dropped the Perfect-lower offset and under-included
+    # legal early-Great fever for notes 75-95ms past a cutoff.)
+    great_low_ms = ((int(perfect_lower_ms) + int(great_lower_ms)) * mult).astype(np.int32)
     return _emit_pernote_edge_envelope_sec(ts_sec, great_low_ms, prefix_max=True, quantize_ms=quantize_ms)
 
 
@@ -471,9 +479,9 @@ def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | 
     song_data["fg_perfect_candidate_timestamps"] = build_perfect_candidate_envelope_sec(chart_ts, note_types)
     song_data["fg_perfect_floor_timestamps"] = build_perfect_floor_envelope_sec(chart_ts, note_types)
     # Earliest-Great floor (issue #44): the greats-side fever-boundary basis. A boundary note
-    # 20-75ms past a cutoff is reachable into fever only as a Great; this envelope (chart - 75,
-    # held tail -150, prefix-max) is searched for the extended fever end. Pointwise <= the
-    # Perfect floor, so it only ever ADDS reachable surfaces on top of #42.
+    # 20-95ms past a cutoff is reachable into fever only as a Great; this envelope (chart - 95,
+    # held tail -190 = cumulative perfect_lower + great_lower_extra, prefix-max) is searched for the
+    # extended fever end. Pointwise <= the Perfect floor, so it only ever ADDS surfaces on top of #42.
     song_data["fg_great_floor_timestamps"] = build_great_floor_envelope_sec(chart_ts, note_types)
     song_data["fg_great_candidate_timestamps"] = build_great_candidate_envelope_sec(
         chart_ts,
