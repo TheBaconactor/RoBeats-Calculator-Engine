@@ -54,10 +54,12 @@ def _resolve_prebuild_reducer_threads(worker_count: int | None = None) -> int:
 
 
 def _resolve_prebuild_worker_count() -> int:
-    # Each song build parallelizes across its FT/FF geometries. 1 worker leaves cores idle in the
-    # per-song prep/serialize gaps (bursty CPU); too many under-threads the dense bursts. 2 workers
-    # balances overlap vs burst-width — measured fastest on a same-sample 1/2/3-worker A/B.
-    return 2
+    # The per-song body-tail build is a strictly sequential DP, so cross-song overlap (more worker
+    # processes) is the only parallelism lever. On a 32-logical-core box, 2 workers measured only ~50%
+    # CPU (the sequential DP phases stall the rest), so 4 workers overlaps twice as many songs' DPs to
+    # fill the cores. The head-reduce thread budget is unchanged (reducer threads = cpu // workers, so
+    # 4x8 == 2x16 == 32). (2 was an earlier 1/2/3 A/B winner sized for a 16-thread CPU.)
+    return 4
 
 
 _PREBUILD_WORKERS = _resolve_prebuild_worker_count()
