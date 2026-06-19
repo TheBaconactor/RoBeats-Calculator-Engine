@@ -216,7 +216,7 @@ def effective_task_count(tasks: list[Any]) -> int:
 
 def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_task_tuple") -> SongJob:
     if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
-        raise ValueError("legacy song task must contain the 16-field production prefix")
+        raise ValueError(f"song task must contain the {TASK_FIXED_FIELD_COUNT}-field production prefix")
 
     repeat_ctx = extract_repeat_context(task)
     repeat_bundle = extract_repeat_bundle(task)
@@ -256,7 +256,7 @@ def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_t
 
 def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
     if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
-        raise ValueError("legacy song task must contain the 16-field production prefix")
+        raise ValueError(f"song task must contain the {TASK_FIXED_FIELD_COUNT}-field production prefix")
 
     try:
         ga_depth = int(task[int(TaskIndex.GA_DEPTH)] or 0)
@@ -284,7 +284,7 @@ def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
 
 def task_tuple_to_view(task: Sequence[Any]) -> SongTaskView:
     if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
-        raise ValueError("legacy song task must contain the 16-field production prefix")
+        raise ValueError(f"song task must contain the {TASK_FIXED_FIELD_COUNT}-field production prefix")
     return SongTaskView(
         job=task_tuple_to_song_job(task),
         context=task_tuple_to_shared_context(task),

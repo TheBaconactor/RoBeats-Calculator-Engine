@@ -48,12 +48,16 @@ def _prebuild_cpu_count() -> int:
     return max(1, int(os.cpu_count() or 1))
 
 
-def _resolve_prebuild_reducer_threads() -> int:
-    return _prebuild_cpu_count()
+def _resolve_prebuild_reducer_threads(worker_count: int | None = None) -> int:
+    workers = max(1, int(worker_count if worker_count is not None else _resolve_prebuild_worker_count()))
+    return max(1, _prebuild_cpu_count() // workers)
 
 
 def _resolve_prebuild_worker_count() -> int:
-    return 3 if _prebuild_cpu_count() >= 8 else 2 if _prebuild_cpu_count() >= 4 else 1
+    # Each song build parallelizes across its FT/FF geometries. 1 worker leaves cores idle in the
+    # per-song prep/serialize gaps (bursty CPU); too many under-threads the dense bursts. 2 workers
+    # balances overlap vs burst-width — measured fastest on a same-sample 1/2/3-worker A/B.
+    return 2
 
 
 _PREBUILD_WORKERS = _resolve_prebuild_worker_count()
@@ -145,7 +149,7 @@ def _build_prebuild_executor(
     ref_arrays: dict,
     stat_keys: tuple[tuple[int, int], ...],
 ) -> concurrent.futures.ProcessPoolExecutor:
-    reducer_threads = _resolve_prebuild_reducer_threads()
+    reducer_threads = _resolve_prebuild_reducer_threads(worker_count)
     return concurrent.futures.ProcessPoolExecutor(
         max_workers=max(1, int(worker_count)),
         initializer=_init_prebuild_worker,

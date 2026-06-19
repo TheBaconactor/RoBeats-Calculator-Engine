@@ -38,6 +38,7 @@ def _build_options(n, non_fever_base, real_fever_time):
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
     )
     return timestamps, great_candidates, actions, options
 
@@ -69,6 +70,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
                 timestamps=timestamps,
                 great_candidate_timestamps=great_candidates,
                 perfect_floor_timestamps=timestamps,
+                great_floor_timestamps=timestamps,
                 raw_fever_fill=1.0,
                 real_fever_time=real_fever_time,
                 use_forced_great_timing=True,
@@ -128,6 +130,7 @@ def test_reconstruct_force_greats_response_trace_is_stats_free():
         "perfect_candidate_timestamps",
         "great_candidate_timestamps",
         "perfect_floor_timestamps",
+        "great_floor_timestamps",
         "raw_fever_fill",
         "real_fever_time",
         "use_forced_great_timing",

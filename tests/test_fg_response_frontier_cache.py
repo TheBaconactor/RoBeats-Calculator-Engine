@@ -887,7 +887,7 @@ def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     assert offenders == []
 
 
-def test_fg_response_prebuild_uses_full_reducer_width_per_worker(monkeypatch) -> None:
+def test_fg_response_prebuild_uses_one_full_width_worker(monkeypatch) -> None:
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
     seen: dict[str, object] = {}
@@ -906,8 +906,8 @@ def test_fg_response_prebuild_uses_full_reducer_width_per_worker(monkeypatch) ->
         stat_keys=((0, 0),),
     )
 
-    assert worker_count == 3
-    assert seen["max_workers"] == 3
+    assert worker_count == 1
+    assert seen["max_workers"] == 1
     assert seen["initargs"][2] == 32
 
 
@@ -977,6 +977,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
             perfect_candidates=np.asarray([0.0], dtype=np.float32),
             great_candidates=np.asarray([0.0], dtype=np.float32),
             perfect_floor=np.asarray([0.0], dtype=np.float32),
+            great_floor=np.asarray([0.0], dtype=np.float32),
             use_forced_great_timing=True,
         ),
         ref_arrays={},
@@ -1071,6 +1072,7 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
         perfect_candidates=np.asarray([0.0], dtype=np.float32),
         great_candidates=np.asarray([0.0], dtype=np.float32),
         perfect_floor=np.asarray([0.0], dtype=np.float32),
+        great_floor=np.asarray([0.0], dtype=np.float32),
     )
     seen: dict[str, object] = {}
     canonical_keys = (
@@ -1144,6 +1146,7 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
         perfect_candidates=np.asarray([0.0], dtype=np.float32),
         great_candidates=np.asarray([0.0], dtype=np.float32),
         perfect_floor=np.asarray([0.0], dtype=np.float32),
+        great_floor=np.asarray([0.0], dtype=np.float32),
     )
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 0
@@ -1195,6 +1198,7 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
         perfect_candidates=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
         great_candidates=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
         perfect_floor=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
+        great_floor=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
     )
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 1

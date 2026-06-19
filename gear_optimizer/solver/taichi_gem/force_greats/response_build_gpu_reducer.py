@@ -5,6 +5,7 @@ import os
 
 import numpy as np
 
+from . import response_build_gpu_numba as _rb_numba
 from .response_build_gpu_numba import _first_frontier_from_precomputed_end_indices_numba
 from .response_build_gpu_surfaces import SurfaceRowsFirstFrontier
 from .response_types import FgResponseFrontierResult
@@ -47,6 +48,7 @@ def _first_frontier_result_from_precomputed_end_indices(
     timestamp_end_idx: np.ndarray,
     perfect_end_idx: np.ndarray,
     great_end_idx: np.ndarray,
+    great_floor_end_idx: np.ndarray,
     real_time_idx: int,
     use_forced_great_timing: bool,
 ) -> FgResponseFrontierResult:
@@ -66,8 +68,14 @@ def _first_frontier_result_from_precomputed_end_indices(
             timestamp_end_idx,
             perfect_end_idx,
             great_end_idx,
+            great_floor_end_idx,
             int(real_time_idx),
             1 if bool(use_forced_great_timing) else 0,
+            # Issue #44 Route A: head cone-dominance size gate, read LIVE from the module constant so
+            # the losslessness verifiers (tools/verify/validate_cone_lossless.py, measure_cone_pareto.py)
+            # can disable the prune via monkeypatch (no njit recompile) to recover the full reduce-only
+            # frontier. Production always gets the default _HEAD_FILTER_MIN_SURFACES.
+            int(_rb_numba._HEAD_FILTER_MIN_SURFACES),
         )
     )
     return FgResponseFrontierResult(
@@ -96,6 +104,7 @@ def _first_frontier_results_for_precomputed_range(
     timestamp_end_idx: np.ndarray,
     perfect_end_idx: np.ndarray,
     great_end_idx: np.ndarray,
+    great_floor_end_idx: np.ndarray,
     real_time_index: np.ndarray,
     use_forced_great_timing: bool,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
@@ -122,6 +131,7 @@ def _first_frontier_results_for_precomputed_range(
                     timestamp_end_idx=timestamp_end_idx,
                     perfect_end_idx=perfect_end_idx,
                     great_end_idx=great_end_idx,
+                    great_floor_end_idx=great_floor_end_idx,
                     real_time_idx=int(real_time_index[int(local_idx)]),
                     use_forced_great_timing=bool(use_forced_great_timing),
                 ),

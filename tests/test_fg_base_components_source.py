@@ -43,6 +43,7 @@ def _song_inputs() -> SimpleNamespace:
         perfect_candidates=np.asarray([0.0, 1.0], dtype=np.float32),
         great_candidates=np.asarray([0.0, 1.0], dtype=np.float32),
         perfect_floor=np.asarray([0.0, 1.0], dtype=np.float32),
+        great_floor=np.asarray([0.0, 1.0], dtype=np.float32),
     )
 
 

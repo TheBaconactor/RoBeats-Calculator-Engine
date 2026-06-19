@@ -20,7 +20,12 @@ from .response_types import FgResponseFrontierResult
 # scoring bundle. This is the FG analog of timeline._FRONTIER_DISK_CACHE_VERSION.
 # v12 -> v13: issue #42 endpoint-early fever -> perfect_floor envelope (build_perfect_floor_envelope_sec)
 #             changed the bundle output; the v12 bundles predate it.
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v13"
+# v13 -> v14: issue #44 greats-side endpoint-early fever -> early-Great floor (build_great_floor_envelope_sec)
+#             adds early-Great extended surfaces to the bundle; the v13 bundles predate them.
+# v14 -> v15: issue #44 Route A head upper-envelope prune (_numba_head_envelope_filter) shrinks the
+#             cached frontier to the parametric envelope (same best_fg_score, far fewer surfaces); the
+#             v14 bundles carry the un-pruned early-Great cascade, so rebuild to gain the perf win.
+_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v15"
 _MEMORY_CACHE_MAX = 4096
 _PAYLOAD_CACHE_MAX = 8
 _BUNDLE_ARRAY_CACHE_MAX = 2

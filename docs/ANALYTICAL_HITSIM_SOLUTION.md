@@ -1,15 +1,14 @@
 # Analytical HitSim Solution: Complete Specification
 
-This document is a future-state design spec for an *analytical* replacement for Monte Carlo
-HitSim repeats (`SongRepeats`). It targets the Analytical HitSim problem defined in
-`docs/ANALYTICAL_HITSIM_PROBLEM.md` and is written to match the repo’s current timing/fever
-mechanics (chord grouping, monotonic event times, `side="left"` fever-end search).
+This document is analytical background and historical design notes for an exact hit-timing solver.
+It targets the Analytical HitSim problem defined in `docs/ANALYTICAL_HITSIM_PROBLEM.md` and is written
+to match the repo’s timing/fever mechanics (chord grouping, monotonic event times, `side="left"`
+fever-end search).
 
-Status (2026-03-23): the algorithm described here is not yet integrated into the production
-scoring path. A production "ceiling" implementation is now integrated into the GPU fever timeline
-precompute path behind `GPU_TIMELINE_CEILING_HITSIM` (default: enabled) via
-`compute_timeline_grid_ceiling_hitsim_kernel`. The full Q1 interval DP and Q2 expected-value
-variants in this document remain design notes / future work.
+Status (current): production timing is **exact-frontier** based (symbolic non-dominated fever
+surfaces per `(fill_count, d_ms)`), not Monte Carlo repeats and not a “ceiling” approximation path.
+The Q1 interval-DP and Q2 expected-value material below should be treated as math/design reference
+(not the canonical description of the shipped timing implementation).
 
 ---
 
@@ -48,9 +47,10 @@ The first fever activation index is fully determined by `fill_count`. Every subs
 activation depends on the previous fever window's end index, which depends on hit
 timestamps. The score is maximized by maximizing the number of notes in fever.
 
-**Goal:** replace the current Monte Carlo approach (multiple random HitSim seeds via
-`SongRepeats`) with a single deterministic computation that finds the optimal (Q1) or
-expected (Q2) score.
+**Historical goal (sampling era):** replace Monte Carlo HitSim repeats (`SongRepeats`) with a
+single deterministic computation that finds the optimal (Q1) or expected (Q2) score. In the
+current exact era, production is frontier-based; keep reading for analytical background rather
+than a description of the shipped pipeline.
 
 ---
 
@@ -792,12 +792,12 @@ This solution synthesizes two independent research responses:
 
 ## 15. Performance Benchmarks
 
-### Measurement Setup (Prototype DP, Not Shipped Kernel)
+### Measurement Setup (Prototype DP; historical context)
 
 The timings in this section were measured in a pure-Python prototype of the Q1 interval-DP described
-in this document (no Numba, no Taichi), on Ryzen 8840HS, single thread. These numbers are intended
-to size the opportunity relative to Monte Carlo sampling; the shipped production path is the GPU
-ceiling timeline kernel described earlier in this doc and in the implementation record.
+in this document (no Numba, no Taichi), on Ryzen 8840HS, single thread. These numbers are retained
+as historical context to size the opportunity versus sampling-era Monte Carlo repeats; they are not
+claims about the current frontier-based production implementation.
 
 Song: *Everything Will Freeze (Vocal) [EXTENDED CUT] (Hard)* — N=4387, NPS=22.69, the
 highest-density chart in the test library. `(ft_idx=80, ff_idx=160)` used throughout
@@ -864,11 +864,9 @@ value but computing the exact same optimal fever assignment.
 
 ## 16. Production GPU Architecture and Downsides
 
-As implemented (2026-03-23), the repo ships a production "ceiling" GPU timeline kernel behind
-`GPU_TIMELINE_CEILING_HITSIM` (default enabled) via `compute_timeline_grid_ceiling_hitsim_kernel`.
-The current kernel uses CPU chord-group preprocessing (`prepare_perfect_hit_simulation`) and uploads
-group/window arrays to GPU, then uses a boundary-band interval scan to find fever ends. See
-`docs/Implementation Records/ANALYTICAL_HITSIM_CEILING_GPU_TIMELINE.md` for the canonical behavior record.
+This section is retained as historical GPU-architecture discussion from the sampling/ceiling era.
+The current production timing model is exact-frontier based; do not treat the kernel notes below as
+the canonical description of the shipped timing implementation.
 
 ### Target Architecture
 

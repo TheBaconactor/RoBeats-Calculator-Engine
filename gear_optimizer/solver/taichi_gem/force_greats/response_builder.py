@@ -117,6 +117,8 @@ def _edge_surface(
     great_start: int,
     great_end: int,
     activation_great_idx: int = -1,
+    early_great_start: int = -1,
+    early_great_end: int = -1,
 ) -> FgResponseSurface:
     f0, f1, f2, f3 = _range_head_mask(fever_start, fever_end, n=int(n))
     g0, g1, g2, g3 = _range_head_mask(great_start, great_end, n=int(n))
@@ -132,6 +134,19 @@ def _edge_surface(
         if int(activation_great_idx) < int(great_start) or int(activation_great_idx) >= int(great_end):
             body_great += 1
             body_fever_great += 1
+    # Issue #44 early-Great tail [early_great_start, early_great_end): boundary notes pulled into
+    # fever ONLY as Greats. In-fever-and-Great, disjoint from the forced-Great prefix, so OR into
+    # the Great mask and add to both body_great and body_fever_great.
+    if int(early_great_end) > int(early_great_start):
+        e0, e1, e2, e3 = _range_head_mask(int(early_great_start), int(early_great_end), n=int(n))
+        g0 |= e0
+        g1 |= e1
+        g2 |= e2
+        g3 |= e3
+        body_great += _range_body_count(int(early_great_start), int(early_great_end), n=int(n))
+        body_fever_great += _range_body_overlap_count(
+            fever_start, fever_end, int(early_great_start), int(early_great_end), n=int(n)
+        )
     return FgResponseSurface(
         f0,
         f1,
@@ -298,6 +313,7 @@ def _edge_surface_options(
     perfect_candidate_timestamps: np.ndarray | None = None,
     great_candidate_timestamps: np.ndarray | None = None,
     perfect_floor_timestamps: np.ndarray,
+    great_floor_timestamps: np.ndarray,
 ) -> list[dict[str, Any]]:
     """Enumerate candidate fever sections with their response-surface edges.
 
@@ -314,6 +330,43 @@ def _edge_surface_options(
     prev_e = -1
     perfect_ts = timestamps if perfect_candidate_timestamps is None else perfect_candidate_timestamps
     great_ts = timestamps if great_candidate_timestamps is None else great_candidate_timestamps
+
+    def _great_floor_end(start_time: float, a: int) -> int:
+        # Issue #44: the early-Great extended fever end -- searchsorted of the earliest-Great
+        # floor at the SAME cutoff `start_time + rft`, clamped to (a, n]. Always >= the Perfect/
+        # late end (Great reaches earlier).
+        ee = _lower_bound_from(great_floor_timestamps, float(start_time) + float(real_fever_time))
+        if int(ee) <= int(a):
+            ee = int(a) + 1
+        if int(ee) > int(n):
+            ee = int(n)
+        return int(ee)
+
+    def _early_great_options(base: dict[str, Any], base_e: int, eg_e: int, *, a: int,
+                             forced_start: int, forced_great_end: int, activation_great_idx: int) -> None:
+        # One Pareto surface per end ee in (base_e, eg_e]; the tail [base_e, ee) is fever-great.
+        # The activation witness is unchanged (it still reproduces the Perfect/late extent
+        # base_e), so reuse the base witness (its target_end is already base_e).
+        for ee in range(int(base_e) + 1, int(eg_e) + 1):
+            opt = dict(base)
+            opt["next_state"] = int(ee)
+            opt["fever_end_index"] = int(ee)
+            opt["fever_end_ms"] = None if int(ee) >= int(n) else float(timestamps[int(ee)]) * 1000.0
+            opt["early_great_start"] = int(base_e)
+            opt["early_great_end"] = int(ee)
+            opt["surface"] = _edge_surface(
+                n=int(n),
+                fever_start=int(a),
+                fever_end=int(ee),
+                great_start=int(forced_start),
+                great_end=int(forced_great_end),
+                activation_great_idx=int(activation_great_idx),
+                early_great_start=int(base_e),
+                early_great_end=int(ee),
+            )
+            opt["_witness"] = dict(base["_witness"])
+            out.append(opt)
+
     for action_idx, k in enumerate(actions):
         fill = int(fills[action_idx])
         a = int(fill if first else int(i) + fill)
@@ -364,6 +417,12 @@ def _edge_surface_options(
                     },
                 }
             )
+            # Issue #44: early-Great extension of the Perfect-activation section.
+            _early_great_options(
+                out[-1], int(e), _great_floor_end(float(start_time), int(a)),
+                a=int(a), forced_start=int(forced_start), forced_great_end=int(great_end),
+                activation_great_idx=-1,
+            )
         if bool(use_forced_great_timing) and int(k) > 0 and int(action_idx) > 0 and int(fills[action_idx - 1]) == int(fill):
             prefix_forced = min(max(0, int(k) - 1), max(0, int(a) - int(forced_start)))
             activation_e, _activation_start_time, activation_carry_idx = _edge_end(
@@ -413,6 +472,14 @@ def _edge_surface_options(
                             "activation_great": True,
                         },
                     }
+                )
+                # Issue #44: early-Great extension of the late-Great-activation section.
+                _early_great_options(
+                    out[-1], int(activation_e),
+                    _great_floor_end(float(_activation_start_time), int(a)),
+                    a=int(a), forced_start=int(forced_start),
+                    forced_great_end=min(int(n), int(forced_start) + int(prefix_forced)),
+                    activation_great_idx=int(a),
                 )
         prev_fill = fill
         prev_start_time = start_time
@@ -471,6 +538,11 @@ def _option_with_witness(
             activation_idx=int(w["activation_idx"]),
             activation_great=bool(w["activation_great"]),
         ),
+        # Issue #44: the early-Great tail [early_great_start, early_great_end) -- boundary notes
+        # this section pulls into fever as Greats (default -1/-1 = none). The per-note early-Great
+        # hit offsets are stamped by the note-graph layer (like #42's endpoint-early Perfect hits).
+        "early_great_start": int(option.get("early_great_start", -1)),
+        "early_great_end": int(option.get("early_great_end", -1)),
         "surface": option["surface"],
     }
 
@@ -491,6 +563,7 @@ def _edge_surface_option_details(
     perfect_candidate_timestamps: np.ndarray | None = None,
     great_candidate_timestamps: np.ndarray | None = None,
     perfect_floor_timestamps: np.ndarray,
+    great_floor_timestamps: np.ndarray,
 ) -> list[dict[str, Any]]:
     """Full option details (surface edge + witness fields) for every option."""
     return [
@@ -516,6 +589,7 @@ def _edge_surface_option_details(
             perfect_candidate_timestamps=perfect_candidate_timestamps,
             great_candidate_timestamps=great_candidate_timestamps,
             perfect_floor_timestamps=perfect_floor_timestamps,
+            great_floor_timestamps=great_floor_timestamps,
         )
     ]
 
@@ -528,6 +602,7 @@ def reconstruct_force_greats_response_counts(
     perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
     perfect_floor_timestamps: Any,
+    great_floor_timestamps: Any,
     raw_fever_fill: float,
     real_fever_time: float,
     use_forced_great_timing: bool = True,
@@ -541,6 +616,7 @@ def reconstruct_force_greats_response_counts(
         perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
         perfect_floor_timestamps=perfect_floor_timestamps,
+        great_floor_timestamps=great_floor_timestamps,
         raw_fever_fill=float(raw_fever_fill),
         real_fever_time=float(real_fever_time),
         use_forced_great_timing=bool(use_forced_great_timing),
@@ -556,6 +632,7 @@ def reconstruct_force_greats_response_trace(
     perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
     perfect_floor_timestamps: Any,
+    great_floor_timestamps: Any,
     raw_fever_fill: float,
     real_fever_time: float,
     use_forced_great_timing: bool = True,
@@ -579,6 +656,11 @@ def reconstruct_force_greats_response_trace(
     floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
     if int(floor_ts.shape[0]) != n:
         raise ValueError("perfect_floor_timestamps length must match timestamps")
+    # great_floor is the issue-#44 greats-side fever-boundary basis, REQUIRED for the same reason:
+    # the early-Great extended surfaces cannot be reconstructed without it.
+    great_floor_ts = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
+    if int(great_floor_ts.shape[0]) != n:
+        raise ValueError("great_floor_timestamps length must match timestamps")
 
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=float(raw_fever_fill),
@@ -685,6 +767,7 @@ def reconstruct_force_greats_response_trace(
             perfect_candidate_timestamps=perfect_ts,
             great_candidate_timestamps=great_ts,
             perfect_floor_timestamps=floor_ts,
+            great_floor_timestamps=great_floor_ts,
         ):
             edge = option["surface"]
             next_remaining = _subtract_edge(remaining, edge)
