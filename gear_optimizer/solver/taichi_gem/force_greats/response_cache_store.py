@@ -134,16 +134,20 @@ def purge_stale_version_cache_files() -> int:
         try:
             with np.load(npz, allow_pickle=False) as bundle:
                 version = str(bundle["version"].item()) if "version" in bundle.files else None
-        except (OSError, ValueError, EOFError, zipfile.BadZipFile):
-            version = None  # corrupt/unreadable bundle: keep it rather than guess it stale
+        except Exception:
+            # Any unreadable/corrupt bundle (bad zip, corrupt member, IO error): keep it rather than
+            # crash the whole sweep. This is the documented FS boundary, matching the bundle readers.
+            version = None
         if version is None or version == current:
             continue
         for stale in (npz, *_surface_sidecar_paths(npz)):
             try:
                 stale.unlink()
                 removed += 1
+            except FileNotFoundError:
+                pass  # already absent: nothing to remove, not a retry-worthy failure
             except OSError:
-                purge_complete = False  # locked/in-use: retry next prebuild, do not mark done
+                purge_complete = False  # locked/in-use: leave marker unwritten, retry next prebuild
     if purge_complete:
         try:
             marker.write_text(current, encoding="utf-8")
