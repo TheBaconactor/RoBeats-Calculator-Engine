@@ -114,8 +114,9 @@ def purge_stale_version_cache_files() -> int:
     Old-version bundles are already dead weight — the reader rejects any version mismatch — so left
     alone they accumulate ~one full pool per version bump. This sweeps them exactly once per version
     change, guarded by a `.purged_version` marker so the routine startup path stays O(1). Returns the
-    number of files removed. Filesystem-boundary best-effort: unreadable bundles are left in place
-    rather than guessed at, and per-file unlink errors are tolerated (retried on the next bump).
+    number of files removed. Filesystem-boundary best-effort: unreadable/corrupt bundles are left in
+    place rather than guessed at, and if any unlink fails (e.g. a locked file) the marker is left
+    unwritten so the sweep retries on the next prebuild instead of permanently stranding the file.
     """
     directory = _fg_response_disk_cache_dir()
     if not directory.exists():
@@ -128,12 +129,13 @@ def purge_stale_version_cache_files() -> int:
     except OSError:
         pass
     removed = 0
+    purge_complete = True
     for npz in directory.glob("*.npz"):
         try:
             with np.load(npz, allow_pickle=False) as bundle:
                 version = str(bundle["version"].item()) if "version" in bundle.files else None
-        except Exception:
-            version = None
+        except (OSError, ValueError, EOFError, zipfile.BadZipFile):
+            version = None  # corrupt/unreadable bundle: keep it rather than guess it stale
         if version is None or version == current:
             continue
         for stale in (npz, *_surface_sidecar_paths(npz)):
@@ -141,11 +143,12 @@ def purge_stale_version_cache_files() -> int:
                 stale.unlink()
                 removed += 1
             except OSError:
-                pass
-    try:
-        marker.write_text(current, encoding="utf-8")
-    except OSError:
-        pass
+                purge_complete = False  # locked/in-use: retry next prebuild, do not mark done
+    if purge_complete:
+        try:
+            marker.write_text(current, encoding="utf-8")
+        except OSError:
+            pass
     return removed
 
 

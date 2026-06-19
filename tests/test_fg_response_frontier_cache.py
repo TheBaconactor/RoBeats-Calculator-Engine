@@ -566,29 +566,36 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
 
-    def _plant(digest: str, version: str) -> None:
-        np.savez(str(tmp_path / f"{digest}.npz"), version=np.array(version), payload=np.arange(3))
+    def _plant(digest: str, version: str | None) -> None:
+        members = {"payload": np.arange(3)}
+        if version is not None:
+            members["version"] = np.array(version)
+        np.savez(str(tmp_path / f"{digest}.npz"), **members)
         np.save(
             str(tmp_path / f"{digest}{store._SURFACE_POOL_SIDECAR_SUFFIX}"),
             np.zeros((2, store._SURFACE_POOL_COLUMNS), np.int32),
         )
         np.save(
             str(tmp_path / f"{digest}{store._SURFACE_COEFF_SIDECAR_SUFFIX}"),
-            np.zeros((2, store._SURFACE_COEFF_COLUMNS), np.float32),
+            np.zeros((2, store._SURFACE_COEFF_COLUMNS), np.uint16),
         )
 
     _plant("stale_a", "fg-response-frontier-legacy-v1")
     _plant("stale_b", "fg-response-frontier-legacy-v2")
     _plant("current", _FG_RESPONSE_CACHE_VERSION)
+    _plant("noversion", None)  # missing version field: must be kept, never guessed stale
 
     removed = store.purge_stale_version_cache_files()
 
     assert removed == 6  # two superseded entries x (bundle + pool sidecar + coeff sidecar)
-    # Exactly the current entry survives, plus the purge marker; both stale versions are gone.
+    # The current entry AND the version-less entry survive (never guess-delete), plus the marker.
     assert {p.name for p in tmp_path.iterdir()} == {
         "current.npz",
         f"current{store._SURFACE_POOL_SIDECAR_SUFFIX}",
         f"current{store._SURFACE_COEFF_SIDECAR_SUFFIX}",
+        "noversion.npz",
+        f"noversion{store._SURFACE_POOL_SIDECAR_SUFFIX}",
+        f"noversion{store._SURFACE_COEFF_SIDECAR_SUFFIX}",
         store._PURGED_VERSION_MARKER,
     }
     assert (
@@ -619,9 +626,11 @@ def test_compress_cache_dir_sidecars_preserves_memmap_bytes(tmp_path: Path, monk
     # The whole point: NTFS compression must never alter the bytes the scorer memmaps.
     mm = np.load(sidecar, mmap_mode="r")
     try:
-        assert np.array_equal(np.asarray(mm), arr)
+        same = bool(np.array_equal(np.asarray(mm), arr))
     finally:
+        mm._mmap.close()  # release the file handle before tmp_path teardown (Windows WinError 32)
         del mm
+    assert same, "NTFS compression altered the memmapped bytes"
     # On NTFS the on-disk footprint shrinks; on a non-NTFS volume compact no-ops (size unchanged).
     get_compressed = ctypes.windll.kernel32.GetCompressedFileSizeW
     get_compressed.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
