@@ -887,7 +887,7 @@ def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     assert offenders == []
 
 
-def test_fg_response_prebuild_uses_one_full_width_worker(monkeypatch) -> None:
+def test_fg_response_prebuild_uses_two_workers_split_reducer_width(monkeypatch) -> None:
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
     seen: dict[str, object] = {}
@@ -906,9 +906,10 @@ def test_fg_response_prebuild_uses_one_full_width_worker(monkeypatch) -> None:
         stat_keys=((0, 0),),
     )
 
-    assert worker_count == 1
-    assert seen["max_workers"] == 1
-    assert seen["initargs"][2] == 32
+    # 2 song-build workers, reducer threads split across them (cpu_count // workers = 32 // 2 = 16).
+    assert worker_count == 2
+    assert seen["max_workers"] == 2
+    assert seen["initargs"][2] == 16
 
 
 def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -> None:
