@@ -368,6 +368,7 @@ def run_fg_response_frontier_cache_prebuild(
     del cfg
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         cleanup_fg_response_frontier_cache_temp_files,
+        compress_cache_dir_sidecars,
         purge_stale_version_cache_files,
     )
 
@@ -400,6 +401,9 @@ def run_fg_response_frontier_cache_prebuild(
     missing_paths = sorted(manifest_plan.missing_paths, key=_fg_response_frontier_prebuild_priority)
     run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
     _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
+    if int(run_summary.built) > 0:
+        # Bulk-compress newly written sidecars once (NTFS WOF XPRESS16K, ~6x, memmap preserved).
+        compress_cache_dir_sidecars()
     elapsed_ms = float((time.perf_counter() - started) * 1000.0)
     return FgResponseFrontierCachePrebuildSummary(
         total=int(manifest_plan.total_paths),

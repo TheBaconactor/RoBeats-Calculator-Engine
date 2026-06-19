@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import sys
 import threading
 import time
 from pathlib import Path
@@ -589,6 +590,39 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
     )
     # The marker gates the rescan: a second call short-circuits without re-reading bundles.
     assert store.purge_stale_version_cache_files() == 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="NTFS WOF compression is Windows-only")
+def test_compress_cache_dir_sidecars_preserves_memmap_bytes(tmp_path: Path, monkeypatch) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    arr = np.zeros((50000, 11), dtype=np.uint32)
+    arr[:, 4] = np.arange(50000) % 33
+    arr[:, 8] = 452 + (np.arange(50000) % 600)
+    sidecar = tmp_path / f"deadbeefdeadbeef{store._SURFACE_POOL_SIDECAR_SUFFIX}"
+    store._save_surface_sidecar_atomic(sidecar, arr)
+    logical = sidecar.stat().st_size
+
+    store.compress_cache_dir_sidecars()
+
+    # The whole point: NTFS compression must never alter the bytes the scorer memmaps.
+    mm = np.load(sidecar, mmap_mode="r")
+    try:
+        assert np.array_equal(np.asarray(mm), arr)
+    finally:
+        del mm
+    # On NTFS the on-disk footprint shrinks; on a non-NTFS volume compact no-ops (size unchanged).
+    get_compressed = ctypes.windll.kernel32.GetCompressedFileSizeW
+    get_compressed.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    get_compressed.restype = wintypes.DWORD
+    high = wintypes.DWORD(0)
+    low = get_compressed(str(sidecar), ctypes.byref(high))
+    on_disk = (high.value << 32) | low
+    assert on_disk <= logical
 
 
 def test_fg_response_frontier_uint8_persistence_bounds_fail_loud() -> None:

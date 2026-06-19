@@ -77,29 +77,28 @@ def _surface_sidecar_paths_for_key(cache_key: tuple) -> tuple[Path, Path]:
     return _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
 
 
-_compressed_dirs: set[str] = set()
-_compressed_dirs_lock = threading.Lock()
+def compress_cache_dir_sidecars() -> None:
+    """Best-effort: bulk-compress the cache directory with NTFS WOF XPRESS16K (~6x measured) at the
+    end of a prebuild.
 
-
-def _ensure_cache_dir_compressed(directory: Path) -> None:
-    """Best-effort: mark the cache directory NTFS-compressed so newly written sidecars land
-    compressed on disk (~4x measured) while remaining `np.load(mmap_mode="r")`-able. Windows-only,
-    runs once per directory; a harmless no-op elsewhere or if `compact` is unavailable. The .npy
-    payload stays uncompressed at the numpy layer — only the filesystem compresses the bytes, so the
-    memmap fast-path is unchanged (the OS decompresses pages on fault and caches them in RAM)."""
+    The `.npy` payload stays uncompressed at the numpy layer, so files remain
+    `np.load(mmap_mode="r")`-able — WOF decompresses pages on fault, and the scorer's sparse row
+    reads cost only ~0.2ms more (verified bit-identical, memmap intact). One bulk `compact` pass
+    (~1 min / 90 GB at ~1.4 GB/s) instead of per-file subprocess spawns; already-compressed files
+    are skipped so re-running each build is cheap. Windows-only; a harmless no-op elsewhere or if
+    `compact` is unavailable. OS/filesystem boundary, not an optimizer invariant.
+    """
     if sys.platform != "win32":
         return
-    key = os.path.abspath(str(directory))
-    with _compressed_dirs_lock:
-        if key in _compressed_dirs:
-            return
-        _compressed_dirs.add(key)
+    directory = _fg_response_disk_cache_dir()
+    if not directory.exists():
+        return
     try:
         subprocess.run(
-            ["compact", "/c", "/q", key],
+            ["compact", "/c", "/exe:XPRESS16K", "/s:" + str(directory)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=30,
+            timeout=3600,
             check=False,
         )
     except Exception:
@@ -162,11 +161,10 @@ def _save_surface_sidecar_atomic(path: Path, array: np.ndarray) -> None:
     """Write `array` as an uncompressed C-order .npy via tmp + os.replace.
 
     Uncompressed at the numpy layer so the reader can `np.load(..., mmap_mode="r")` and page rows
-    lazily; the parent dir is NTFS-compressed so the bytes stay small on disk (see
-    `_ensure_cache_dir_compressed`).
+    lazily; on-disk size is reclaimed by the bulk NTFS pass at prebuild-end (see
+    `compress_cache_dir_sidecars`), which keeps the bytes small while preserving the memmap path.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    _ensure_cache_dir_compressed(path.parent)
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp")
     try:
         with open(tmp, "wb") as handle:
