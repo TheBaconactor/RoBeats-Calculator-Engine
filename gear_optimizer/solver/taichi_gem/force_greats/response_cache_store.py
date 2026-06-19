@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
 import time
 import zipfile
@@ -14,7 +16,11 @@ from numpy.lib import format as np_format
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.profile_events import emit_profile_event
 
-from .response_cache_keys import _fg_response_disk_cache_path, _fg_response_cache_version
+from .response_cache_keys import (
+    _fg_response_disk_cache_dir,
+    _fg_response_disk_cache_path,
+    _fg_response_cache_version,
+)
 from .response_cache_types import (
     _BUNDLE_ARRAY_CACHE_MAX,
     _MEMORY_CACHE_MAX,
@@ -71,12 +77,96 @@ def _surface_sidecar_paths_for_key(cache_key: tuple) -> tuple[Path, Path]:
     return _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
 
 
+_compressed_dirs: set[str] = set()
+_compressed_dirs_lock = threading.Lock()
+
+
+def _ensure_cache_dir_compressed(directory: Path) -> None:
+    """Best-effort: mark the cache directory NTFS-compressed so newly written sidecars land
+    compressed on disk (~4x measured) while remaining `np.load(mmap_mode="r")`-able. Windows-only,
+    runs once per directory; a harmless no-op elsewhere or if `compact` is unavailable. The .npy
+    payload stays uncompressed at the numpy layer — only the filesystem compresses the bytes, so the
+    memmap fast-path is unchanged (the OS decompresses pages on fault and caches them in RAM)."""
+    if sys.platform != "win32":
+        return
+    key = os.path.abspath(str(directory))
+    with _compressed_dirs_lock:
+        if key in _compressed_dirs:
+            return
+        _compressed_dirs.add(key)
+    try:
+        subprocess.run(
+            ["compact", "/c", "/q", key],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+_PURGED_VERSION_MARKER = ".purged_version"
+
+
+def purge_stale_version_cache_files() -> int:
+    """Delete on-disk cache entries whose embedded version != the current cache version.
+
+    Old-version bundles are already dead weight — the reader rejects any version mismatch — so left
+    alone they accumulate ~one full pool per version bump. This sweeps them exactly once per version
+    change, guarded by a `.purged_version` marker so the routine startup path stays O(1). Returns the
+    number of files removed. Filesystem-boundary best-effort: unreadable bundles are left in place
+    rather than guessed at, and per-file unlink errors are tolerated (retried on the next bump).
+    """
+    directory = _fg_response_disk_cache_dir()
+    if not directory.exists():
+        return 0
+    current = _fg_response_cache_version()
+    marker = directory / _PURGED_VERSION_MARKER
+    try:
+        if marker.read_text(encoding="utf-8").strip() == current:
+            return 0
+    except OSError:
+        pass
+    removed = 0
+    for npz in directory.glob("*.npz"):
+        try:
+            with np.load(npz, allow_pickle=False) as bundle:
+                version = str(bundle["version"]) if "version" in bundle.files else None
+        except Exception:
+            version = None
+        if version is None or version == current:
+            continue
+        digest = npz.name.split(".", 1)[0]
+        for stale in (
+            npz,
+            directory / f"{digest}{_SURFACE_POOL_SIDECAR_SUFFIX}",
+            directory / f"{digest}{_SURFACE_COEFF_SIDECAR_SUFFIX}",
+        ):
+            try:
+                stale.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+            else:
+                removed += 1
+    try:
+        marker.write_text(current, encoding="utf-8")
+    except OSError:
+        pass
+    return removed
+
+
 def _save_surface_sidecar_atomic(path: Path, array: np.ndarray) -> None:
     """Write `array` as an uncompressed C-order .npy via tmp + os.replace.
 
-    Uncompressed so the reader can `np.load(..., mmap_mode="r")` and page rows lazily.
+    Uncompressed at the numpy layer so the reader can `np.load(..., mmap_mode="r")` and page rows
+    lazily; the parent dir is NTFS-compressed so the bytes stay small on disk (see
+    `_ensure_cache_dir_compressed`).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_cache_dir_compressed(path.parent)
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp")
     try:
         with open(tmp, "wb") as handle:

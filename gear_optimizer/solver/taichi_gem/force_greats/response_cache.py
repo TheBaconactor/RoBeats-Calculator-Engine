@@ -39,6 +39,7 @@ from .response_cache_store import (
     _scoring_bundle_memory_get,
     _scoring_bundle_memory_put,
     load_first_surface_scoring_rows,
+    purge_stale_version_cache_files,
     reset_fg_response_frontier_payload_cache,
 )
 from .response_cache_types import (
@@ -73,6 +74,7 @@ __all__ = [
     "load_first_surface_scoring_rows",
     "load_response_frontier_scoring_bundle",
     "normalize_fg_response_stat_keys",
+    "purge_stale_version_cache_files",
     "reset_fg_response_frontier_payload_cache",
 ]
 

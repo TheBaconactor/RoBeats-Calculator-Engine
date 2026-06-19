@@ -366,7 +366,10 @@ def run_fg_response_frontier_cache_prebuild(
     data_root: str | os.PathLike[str] | None = None,
 ) -> FgResponseFrontierCachePrebuildSummary:
     del cfg
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import cleanup_fg_response_frontier_cache_temp_files
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        cleanup_fg_response_frontier_cache_temp_files,
+        purge_stale_version_cache_files,
+    )
 
     started = time.perf_counter()
     stat_keys = all_response_stat_keys()
@@ -387,6 +390,12 @@ def run_fg_response_frontier_cache_prebuild(
     removed_tmp = cleanup_fg_response_frontier_cache_temp_files()
     if int(removed_tmp) > 0:
         logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
+
+    removed_stale = purge_stale_version_cache_files()
+    if int(removed_stale) > 0:
+        logger.info(
+            "[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale)
+        )
 
     missing_paths = sorted(manifest_plan.missing_paths, key=_fg_response_frontier_prebuild_priority)
     run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
