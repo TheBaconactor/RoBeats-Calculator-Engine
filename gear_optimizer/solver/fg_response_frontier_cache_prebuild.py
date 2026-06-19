@@ -401,10 +401,11 @@ def run_fg_response_frontier_cache_prebuild(
     missing_paths = sorted(manifest_plan.missing_paths, key=_fg_response_frontier_prebuild_priority)
     run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
     _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
+    elapsed_ms = float((time.perf_counter() - started) * 1000.0)
     if int(run_summary.built) > 0:
         # Bulk-compress newly written sidecars once (NTFS WOF XPRESS16K, ~6x, memmap preserved).
+        # Housekeeping after the timed region so elapsed_ms reflects build cost, not compaction.
         compress_cache_dir_sidecars()
-    elapsed_ms = float((time.perf_counter() - started) * 1000.0)
     return FgResponseFrontierCachePrebuildSummary(
         total=int(manifest_plan.total_paths),
         completed=int(manifest_hits + run_summary.completed),

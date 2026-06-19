@@ -131,25 +131,17 @@ def purge_stale_version_cache_files() -> int:
     for npz in directory.glob("*.npz"):
         try:
             with np.load(npz, allow_pickle=False) as bundle:
-                version = str(bundle["version"]) if "version" in bundle.files else None
+                version = str(bundle["version"].item()) if "version" in bundle.files else None
         except Exception:
             version = None
         if version is None or version == current:
             continue
-        digest = npz.name.split(".", 1)[0]
-        for stale in (
-            npz,
-            directory / f"{digest}{_SURFACE_POOL_SIDECAR_SUFFIX}",
-            directory / f"{digest}{_SURFACE_COEFF_SIDECAR_SUFFIX}",
-        ):
+        for stale in (npz, *_surface_sidecar_paths(npz)):
             try:
                 stale.unlink()
-            except FileNotFoundError:
-                pass
+                removed += 1
             except OSError:
                 pass
-            else:
-                removed += 1
     try:
         marker.write_text(current, encoding="utf-8")
     except OSError:
