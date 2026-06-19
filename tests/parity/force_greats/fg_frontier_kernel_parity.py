@@ -14,7 +14,10 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.solver.timing_envelope import build_perfect_floor_envelope_sec
+from gear_optimizer.solver.timing_envelope import (
+    build_great_floor_envelope_sec,
+    build_perfect_floor_envelope_sec,
+)
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
     _compact_first_frontier_action_arrays,
@@ -23,6 +26,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute
     _precompute_end_indices,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    _HEAD_FILTER_MIN_SURFACES,
     _first_frontier_from_precomputed_end_indices_numba,
 )
 
@@ -64,6 +68,9 @@ def build_kernel_args(
     floor_ts = np.ascontiguousarray(
         np.asarray(build_perfect_floor_envelope_sec(ts, None), dtype=np.float32).reshape(-1)
     )
+    great_floor_ts = np.ascontiguousarray(
+        np.asarray(build_great_floor_envelope_sec(ts, None), dtype=np.float32).reshape(-1)
+    )
 
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=float(raw_fever_fill),
@@ -82,11 +89,18 @@ def build_kernel_args(
     )
 
     real_times = np.asarray([float(real_fever_time)], dtype=np.float32)
-    real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx = _precompute_end_indices(
+    (
+        real_time_index,
+        timestamp_end_idx,
+        perfect_end_idx,
+        great_end_idx,
+        great_floor_end_idx,
+    ) = _precompute_end_indices(
         timestamps=ts,
         perfect_candidate_timestamps=perfect_ts,
         great_candidate_timestamps=great_ts,
         perfect_floor_timestamps=floor_ts,
+        great_floor_timestamps=great_floor_ts,
         real_times=real_times,
     )
 
@@ -105,6 +119,7 @@ def build_kernel_args(
         "timestamp_end_idx": timestamp_end_idx,
         "perfect_end_idx": perfect_end_idx,
         "great_end_idx": great_end_idx,
+        "great_floor_end_idx": great_floor_end_idx,
         "real_time_idx": int(real_time_index[0]),
         "use_forced_great_timing_i": 1 if bool(use_forced_great_timing) else 0,
     }
@@ -127,6 +142,8 @@ def numba_first_frontier(args: dict[str, Any]):
         args["timestamp_end_idx"],
         args["perfect_end_idx"],
         args["great_end_idx"],
+        args["great_floor_end_idx"],
         int(args["real_time_idx"]),
         int(args["use_forced_great_timing_i"]),
+        int(_HEAD_FILTER_MIN_SURFACES),
     )

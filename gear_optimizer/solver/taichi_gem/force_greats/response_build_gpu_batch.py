@@ -87,6 +87,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
     perfect_floor_timestamps: Any,
+    great_floor_timestamps: Any,
     geometries: Any,
     use_forced_great_timing: bool = True,
 ) -> tuple[FgResponseFrontierResult, ...]:
@@ -116,6 +117,12 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
     if int(floor_ts.shape[0]) != n:
         raise ValueError("perfect_floor_timestamps length must match timestamps")
+    # great_floor (issue #44 greats-side fever-boundary basis) is REQUIRED for the same fail-loud
+    # reason as perfect_floor: searching only the Perfect floor would miss the early-Great
+    # boundary surfaces -> an under-counted best_fg_score.
+    great_floor_ts = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
+    if int(great_floor_ts.shape[0]) != n:
+        raise ValueError("great_floor_timestamps length must match timestamps")
 
     prepared = []
     action_table_cache: dict[
@@ -169,6 +176,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
         perfect_candidate_timestamps=perfect_ts,
         great_candidate_timestamps=great_ts,
         perfect_floor_timestamps=floor_ts,
+        great_floor_timestamps=great_floor_ts,
     )
     prepared = canonical.prepared
     duplicate_sources_by_source = canonical.duplicate_sources_by_source
@@ -198,6 +206,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         timestamp_end_idx=canonical.timestamp_end_idx,
                         perfect_end_idx=canonical.perfect_end_idx,
                         great_end_idx=canonical.great_end_idx,
+                        great_floor_end_idx=canonical.great_floor_end_idx,
                         real_time_index=real_time_index,
                         use_forced_great_timing=bool(use_forced_great_timing),
                     ),
@@ -224,6 +233,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         timestamp_end_idx=canonical.timestamp_end_idx,
                         perfect_end_idx=canonical.perfect_end_idx,
                         great_end_idx=canonical.great_end_idx,
+                        great_floor_end_idx=canonical.great_floor_end_idx,
                         real_time_index=real_time_index,
                         use_forced_great_timing=bool(use_forced_great_timing),
                     )
@@ -249,6 +259,7 @@ def build_force_greats_response_first_frontiers_gpu_batch(
     perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
     perfect_floor_timestamps: Any,
+    great_floor_timestamps: Any,
     geometries: Any,
     use_forced_great_timing: bool = True,
 ) -> tuple[FgResponseFrontierResult, ...]:
@@ -257,6 +268,7 @@ def build_force_greats_response_first_frontiers_gpu_batch(
         perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
         perfect_floor_timestamps=perfect_floor_timestamps,
+        great_floor_timestamps=great_floor_timestamps,
         geometries=geometries,
         use_forced_great_timing=bool(use_forced_great_timing),
     )

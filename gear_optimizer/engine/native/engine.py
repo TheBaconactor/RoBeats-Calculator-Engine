@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
-from gear_optimizer.domain.jobs import legacy_task_tuple_from_job_context, task_tuple_to_legacy_view
+from gear_optimizer.domain.jobs import ensure_task_tuple
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,5 +38,4 @@ class NativeOptimizationEngine:
 
     @staticmethod
     def _canonical_task_tuple(task: tuple) -> tuple[Any, ...]:
-        view = task_tuple_to_legacy_view(task)
-        return legacy_task_tuple_from_job_context(view.job, view.context, *view.extras)
+        return ensure_task_tuple(task)

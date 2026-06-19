@@ -264,6 +264,8 @@ The current implementation mitigates the explosion with hard caps:
 
 These caps are heuristic. They discard potentially optimal high-count configurations for songs with many sections. The cap of 5 for 4+ sections is particularly aggressive — it reduces the search space but may miss the true optimum.
 
+Note: in current production, FG evaluation is organized around exact, score-sufficient frontiers (a response-frontier bundle plus exact inner solve). Any remaining bounds are GPU-safety/workload guards, not “human hit sim” style probabilistic simulation.
+
 ---
 
 ## Structural Properties to Exploit

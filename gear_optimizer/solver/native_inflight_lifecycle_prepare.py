@@ -14,7 +14,7 @@ from gear_optimizer.core.config import GASettings as GARuntimeSettings
 from gear_optimizer.core.gem_defs import UserGemsSettings
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.utils import cfg_from_dict
-from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_legacy_view
+from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_view
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.item_registry import ItemRegistry
@@ -142,7 +142,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import initialize_pools
 
-    task_view = task_tuple_to_legacy_view(task)
+    task_view = task_tuple_to_view(task)
     job = task_view.job
     seed_plan = seed_plan_from_song_job(job)
     task_key = seed_plan.queue_label

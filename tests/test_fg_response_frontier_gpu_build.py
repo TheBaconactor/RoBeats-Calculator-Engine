@@ -94,6 +94,7 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            great_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             geometries=((2.1, 3, 10.0), (2.2, 3, 11.0)),
             use_forced_great_timing=True,
         )
@@ -141,6 +142,7 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
             timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             great_candidate_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            great_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
             geometries=((2.1, 3, 10.0), (2.2, 3, 11.0)),
             use_forced_great_timing=True,
         )
@@ -163,6 +165,7 @@ def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> Non
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         geometries=((2.25, 3, 1.0),),
         use_forced_great_timing=True,
     )[0]
@@ -188,6 +191,7 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         geometries=((2.25, 3, 1.0),),
         use_forced_great_timing=True,
     )[0]
@@ -204,6 +208,7 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         raw_fever_fill=2.25,
         real_fever_time=1.0,
         use_forced_great_timing=True,
@@ -264,6 +269,7 @@ def test_fg_response_late_great_activation_is_dominated_when_perfect_reaches_sam
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         geometries=((2.25, 3, 1.0),),
         use_forced_great_timing=True,
     )[0]
@@ -294,6 +300,7 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         geometries=((2.25, 3, 1.0),),
         use_forced_great_timing=True,
     )[0]
@@ -312,6 +319,7 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         raw_fever_fill=2.25,
         real_fever_time=1.0,
         use_forced_great_timing=True,
@@ -375,6 +383,7 @@ def test_fg_response_first_frontier_emits_activation_great_body_overlap() -> Non
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         geometries=((102.25, 103, 1.0),),
         use_forced_great_timing=True,
     )[0]
@@ -452,11 +461,12 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
     )
     song_inputs, _raw_fill_by_ff, _non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
     real_fever_time = float(real_time_by_ft[51])
-    real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx = _precompute_end_indices(
+    real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx, _great_floor_end_idx = _precompute_end_indices(
         timestamps=song_inputs.timestamps,
         perfect_candidate_timestamps=song_inputs.perfect_candidates,
         great_candidate_timestamps=song_inputs.great_candidates,
         perfect_floor_timestamps=song_inputs.perfect_floor,
+        great_floor_timestamps=song_inputs.great_floor,
         real_times=np.asarray([real_fever_time], dtype=np.float64),
     )
     rt_idx = int(real_time_index[0])
@@ -530,6 +540,7 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
     )
 
     assert not any(int(option["k"]) == 1 and int(option["next_state"]) == 5 for option in options)
@@ -663,6 +674,7 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
         perfect_candidate_timestamps=song_inputs.perfect_candidates,
         great_candidate_timestamps=song_inputs.great_candidates,
         perfect_floor_timestamps=song_inputs.timestamps,
+        great_floor_timestamps=song_inputs.timestamps,
         geometries=((raw_fever_fill, non_fever_base, real_fever_time),),
         use_forced_great_timing=song_inputs.use_forced_great_timing,
     )[0]
@@ -678,80 +690,11 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
             perfect_candidate_timestamps=song_inputs.perfect_candidates,
             great_candidate_timestamps=song_inputs.great_candidates,
             perfect_floor_timestamps=song_inputs.timestamps,
+            great_floor_timestamps=song_inputs.timestamps,
             raw_fever_fill=raw_fever_fill,
             real_fever_time=real_fever_time,
             use_forced_great_timing=song_inputs.use_forced_great_timing,
         )
-
-
-@pytest.mark.gpu
-def test_fg_response_frontier_gpu_batch_materializes_state_frontiers() -> None:
-    from tests.parity.force_greats.response_build_gpu_batch import build_force_greats_response_frontiers_gpu_batch
-
-    timestamps = np.asarray([0.0, 0.18, 0.41, 0.64, 0.95, 1.21, 1.5], dtype=np.float32)
-    great_candidates = timestamps + np.asarray([0.0, 0.05, 0.0, 0.03, 0.0, 0.04, 0.0], dtype=np.float32)
-    geometry = (2.25, 7, 0.55)
-
-    frontier = build_force_greats_response_frontiers_gpu_batch(
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidates,
-        geometries=(geometry,),
-        use_forced_great_timing=True,
-    )[0]
-
-    assert frontier.first_frontier
-    assert frontier.state_frontiers
-
-
-@pytest.mark.gpu
-def test_fg_response_frontier_gpu_sparse_body_materializes_state_frontiers() -> None:
-    from tests.parity.force_greats.response_build_gpu_batch import build_force_greats_response_frontiers_gpu_batch
-
-    timestamps = np.asarray([float(idx) * 0.11 for idx in range(140)], dtype=np.float32)
-    great_candidates = timestamps + np.asarray([0.0 if idx % 3 else 0.025 for idx in range(140)], dtype=np.float32)
-    geometries = (
-        (101.25, 108, 0.72),
-        (103.5, 112, 0.91),
-    )
-
-    frontiers = build_force_greats_response_frontiers_gpu_batch(
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidates,
-        geometries=geometries,
-        use_forced_great_timing=True,
-    )
-
-    assert all(frontier.first_frontier for frontier in frontiers)
-    assert all(frontier.state_frontiers for frontier in frontiers)
-
-
-@pytest.mark.gpu
-def test_fg_response_first_frontier_batch_uses_slim_exact_route(monkeypatch) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
-    from tests.parity.force_greats import response_build_gpu_batch as parity_response_build_gpu_batch
-
-    timestamps = np.asarray([float(idx) * 0.11 for idx in range(140)], dtype=np.float32)
-    great_candidates = timestamps + np.asarray([0.0 if idx % 3 else 0.025 for idx in range(140)], dtype=np.float32)
-    geometries = ((101.25, 108, 0.72),)
-
-    full = parity_response_build_gpu_batch.build_force_greats_response_frontiers_gpu_batch(
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidates,
-        geometries=geometries,
-        use_forced_great_timing=True,
-    )
-    assert not hasattr(response_build_gpu_batch, "_frontier_from_edge_arrays")
-    assert not hasattr(response_build_gpu_batch, "build_force_greats_response_frontiers_gpu_batch")
-    slim = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
-        timestamps=timestamps,
-        great_candidate_timestamps=great_candidates,
-        perfect_floor_timestamps=timestamps,
-        geometries=geometries,
-        use_forced_great_timing=True,
-    )
-
-    assert tuple(frontier.first_frontier for frontier in slim) == tuple(frontier.first_frontier for frontier in full)
-    assert all(not frontier.state_frontiers for frontier in slim)
 
 
 @pytest.mark.gpu
@@ -766,6 +709,7 @@ def test_fg_response_first_frontier_batch_matches_full_state_head_route() -> Non
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         geometries=geometries,
         use_forced_great_timing=True,
     )
@@ -811,6 +755,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         geometries=((raw_fever_fill, non_fever_base, real_fever_time),),
         use_forced_great_timing=True,
     )[0]
@@ -822,6 +767,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
         use_forced_great_timing=True,
@@ -832,6 +778,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
         use_forced_great_timing=True,
@@ -881,6 +828,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
             timestamps=timestamps,
             great_candidate_timestamps=great_candidates,
             perfect_floor_timestamps=timestamps,
+            great_floor_timestamps=timestamps,
         ):
             if int(option["k"]) == int(count):
                 edge_match = (int(option["next_state"]), option["surface"])

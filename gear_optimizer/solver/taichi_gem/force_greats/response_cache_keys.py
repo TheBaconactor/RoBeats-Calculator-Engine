@@ -43,6 +43,9 @@ def fg_response_frontier_song_cache_key(calc_song: dict[str, Any]) -> tuple:
     perfect_candidates = np.asarray(song_inputs.perfect_candidates, dtype=np.float32).reshape(-1)
     great_candidates = np.asarray(song_inputs.great_candidates, dtype=np.float32).reshape(-1)
     perfect_floor = np.asarray(song_inputs.perfect_floor, dtype=np.float32).reshape(-1)
+    # Issue #44: the early-Great floor is part of the frontier inputs, so it joins the cache key.
+    # Pre-#44 bundles (built without the early-Great surfaces) thus cannot be silently reused.
+    great_floor = np.asarray(song_inputs.great_floor, dtype=np.float32).reshape(-1)
     return (
         int(song_inputs.total_notes),
         int(song_inputs.long_notes),
@@ -52,6 +55,7 @@ def fg_response_frontier_song_cache_key(calc_song: dict[str, Any]) -> tuple:
         bytes(array_sig16(perfect_candidates)),
         bytes(array_sig16(great_candidates)),
         bytes(array_sig16(perfect_floor)),
+        bytes(array_sig16(great_floor)),
     )
 
 

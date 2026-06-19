@@ -604,6 +604,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
             perfect_candidates=[0.0],
             great_candidates=[0.0],
             perfect_floor=[0.0],
+            great_floor=[0.0],
             use_forced_great_timing=True,
         ),
     )
@@ -675,6 +676,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
             perfect_candidates=[0.0],
             great_candidates=[0.0],
             perfect_floor=[0.0],
+            great_floor=[0.0],
             use_forced_great_timing=True,
         ),
     )
@@ -740,6 +742,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
             timestamps=timestamps,
             great_candidate_timestamps=great_candidates,
             perfect_floor_timestamps=timestamps,
+            great_floor_timestamps=timestamps,
         )
         if row["activation_judgment"] == "late_great"
     )
@@ -781,6 +784,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
             "timestamps": timestamps,
             "fg_timestamps": timestamps,
             "fg_perfect_floor_timestamps": timestamps,
+            "fg_great_floor_timestamps": timestamps,
             "fg_great_candidate_timestamps": great_candidates,
         },
     }
@@ -1172,6 +1176,7 @@ def test_fg_response_scoring_uses_shared_solver(monkeypatch):
             perfect_candidates=[0.0, 1.0],
             great_candidates=[0.0, 1.0],
             perfect_floor=[0.0, 1.0],
+            great_floor=[0.0, 1.0],
             use_forced_great_timing=True,
         ),
     )
@@ -1354,6 +1359,7 @@ def test_fg_response_scoring_batches_candidates(monkeypatch):
             perfect_candidates=[0.0, 1.0],
             great_candidates=[0.0, 1.0],
             perfect_floor=[0.0, 1.0],
+            great_floor=[0.0, 1.0],
             use_forced_great_timing=True,
         ),
     )

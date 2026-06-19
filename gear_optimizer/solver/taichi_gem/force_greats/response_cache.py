@@ -12,6 +12,7 @@ from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
 from .response_build_gpu_batch import build_force_greats_response_first_frontiers_gpu_batch
+from .response_build_gpu_numba import _HEAD_DOM_C, _HEAD_DOM_F
 from .response_cache_keys import (
     _fg_response_disk_cache_dir,
     _fg_response_disk_cache_path,
@@ -37,7 +38,9 @@ from .response_cache_store import (
     _save_payload,
     _scoring_bundle_memory_get,
     _scoring_bundle_memory_put,
+    compress_cache_dir_sidecars,
     load_first_surface_scoring_rows,
+    purge_stale_version_cache_files,
     reset_fg_response_frontier_payload_cache,
 )
 from .response_cache_types import (
@@ -62,6 +65,7 @@ __all__ = [
     "_fg_response_disk_cache_path",
     "build_or_load_response_frontier_payload",
     "cleanup_fg_response_frontier_cache_temp_files",
+    "compress_cache_dir_sidecars",
     "fg_response_frontier_bundle_cache_key",
     "fg_response_frontier_geometry_cache_key",
     "fg_response_frontier_payload_cache_info",
@@ -72,6 +76,7 @@ __all__ = [
     "load_first_surface_scoring_rows",
     "load_response_frontier_scoring_bundle",
     "normalize_fg_response_stat_keys",
+    "purge_stale_version_cache_files",
     "reset_fg_response_frontier_payload_cache",
 ]
 
@@ -139,12 +144,39 @@ def _merge_payloads(
     )
 
 
+def _assert_head_dominance_box_covers(ref_arrays: dict[str, Any]) -> None:
+    """Fail loud if a gear rebalance pushes the combo/fever multipliers outside the lossless
+    head-dominance box (_HEAD_DOM_C/_HEAD_DOM_F). The 16-corner prune is exact ONLY while the box is
+    a superset of the realizable (c, f) cone, so a stale box must never silently under-cover.
+
+    Axis-only refs (the cache unit tests pass just Fever Time / Fever Fill Rate) carry no gear
+    (c, f) cone to validate -- the prune still uses the _HEAD_DOM_* box constants -- so there is
+    nothing to check and the guard is a no-op."""
+    cm_lut = ref_arrays.get("Combo Multiplier")
+    fm_lut = ref_arrays.get("Fever Multiplier")
+    if cm_lut is None or fm_lut is None:
+        return
+    cm = np.asarray(cm_lut, dtype=np.float64)
+    fm = np.asarray(fm_lut, dtype=np.float64)
+    if cm.size == 0 or fm.size == 0:
+        return
+    if not (_HEAD_DOM_C[0] <= float(cm.min()) and float(cm.max()) <= _HEAD_DOM_C[1]
+            and _HEAD_DOM_F[0] <= float(fm.min()) and float(fm.max()) <= _HEAD_DOM_F[1]):
+        raise ValueError(
+            f"FG head-dominance box combo{_HEAD_DOM_C} fever{_HEAD_DOM_F} no longer covers the gear's "
+            f"combo-mul [{float(cm.min()):.4f},{float(cm.max()):.4f}] / fever-mul "
+            f"[{float(fm.min()):.4f},{float(fm.max()):.4f}] -- update _HEAD_DOM_C/_HEAD_DOM_F in "
+            f"response_build_gpu_numba.py (the lossless head prune requires the box to be a superset)."
+        )
+
+
 def _build_response_frontier_cache_payload(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> tuple[FgResponseFrontierCachePayload, str]:
+    _assert_head_dominance_box_covers(ref_arrays)
     keys = normalize_fg_response_stat_keys(stat_keys)
     song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
     frontier_by_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
@@ -177,6 +209,7 @@ def _build_response_frontier_cache_payload(
             perfect_candidate_timestamps=song_inputs.perfect_candidates,
             great_candidate_timestamps=song_inputs.great_candidates,
             perfect_floor_timestamps=song_inputs.perfect_floor,
+            great_floor_timestamps=song_inputs.great_floor,
             geometries=tuple(item[1] for item in missing_items),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
         )

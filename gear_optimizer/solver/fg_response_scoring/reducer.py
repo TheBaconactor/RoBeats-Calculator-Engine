@@ -36,6 +36,7 @@ def materialize_force_payload_from_response_frontier(
         perfect_candidate_timestamps=song_inputs.perfect_candidates,
         great_candidate_timestamps=song_inputs.great_candidates,
         perfect_floor_timestamps=song_inputs.perfect_floor,
+        great_floor_timestamps=song_inputs.great_floor,
         raw_fever_fill=float(result.raw_fever_fill),
         real_fever_time=float(result.real_fever_time),
         use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
