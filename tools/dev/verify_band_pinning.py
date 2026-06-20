@@ -43,5 +43,7 @@ if __name__ == "__main__":
     for name, aff in sorted(seen.items()):
         cover |= aff
         print(f"  {name}: affinity=0x{aff:08X}  ({bin(aff).count('1')} cores)")
+    from gear_optimizer.core.cpu_affinity import logical_core_count
+
     print(f"distinct band masks: {len(set(seen.values()))} (want {w})")
-    print(f"union covers 0x{cover:08X}  = {bin(cover).count('1')} of 32 logical cores")
+    print(f"union covers 0x{cover:X}  = {bin(cover).count('1')} of {logical_core_count()} logical cores")

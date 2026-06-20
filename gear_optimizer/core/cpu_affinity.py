@@ -141,9 +141,15 @@ def pin_current_process_to_core_band(index: int, total: int) -> None:
     i9-13900K: unpinned -> E-cores at 100%, P-cores idle). The only reliable way to use ALL cores is to
     pin workers across the core space explicitly -- a hard mask the scheduler cannot migrate off. Also
     clears EcoQoS execution-speed throttling + lifts priority so an E-core band still runs at full
-    clock. No-op off Windows, where the hybrid-scheduling problem does not exist and workers use every
-    core by default."""
+    clock. Machine-agnostic by design: a no-op off Windows and on non-hybrid CPUs (uniform cores have
+    no E-cores to park on and the OS already spreads work across them all), it engages the hard split
+    only on a hybrid CPU where it is actually needed."""
     if sys.platform != "win32":
+        return
+    if _performance_core_mask() is None:
+        # Not a hybrid CPU (or undetectable): uniform cores have no E-core-parking problem and the OS
+        # uses them all already; hard bands would only remove its freedom to work-steal across cores.
+        # Stay unpinned so the worker pool fills the whole CPU via the OS scheduler.
         return
     try:
         import ctypes
