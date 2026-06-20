@@ -159,6 +159,10 @@ def pin_current_process_to_core_band(index: int, total: int) -> None:
         return
     try:
         ncpu = logical_core_count()
+        if ncpu > 64:
+            # >64 logical processors -> Windows processor groups; a single 64-bit affinity mask can't
+            # address them, so the band scheme would silently drop cores. Leave placement to the OS.
+            return
         total = max(1, int(total))
         index = int(index) % total
         lo = (index * ncpu) // total
