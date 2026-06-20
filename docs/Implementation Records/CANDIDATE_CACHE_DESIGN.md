@@ -36,6 +36,12 @@ The cache validates every payload on put, get, and disk load. Unknown namespaces
 invalid key shapes, corrupt JSON, missing payload fields, negative counts, and
 malformed response surfaces fail loudly.
 
+Gem allocation payloads use the same canonical `GemCounts` shape as production
+solver output: `Perfect Points`, `Combo Multiplier`, `Fever Multiplier`, and
+`Element`. Legacy/alias elemental keys such as `Overflow` are accepted only as
+input aliases at the cache boundary and are normalized to `Element`; conflicting
+aliases, negative counts, and missing gem categories are invalid cache material.
+
 ## Keys
 
 ### Base
@@ -79,6 +85,10 @@ Base entries store the exact result fields consumed downstream:
 - final 10-stat `Stats`
 - `Selected Element`
 - compatibility fields such as `config`, `FT_gems`, and `FF_gems`
+
+The Base `config` gem allocation is validated against `FT`, `FF`, and canonical
+`GemCounts` on put/get/load so disk rows cannot silently reconstruct a smaller
+shape than a fresh Base solve.
 
 On a hit, `solve_best_fever_combination` and Skyline batch evaluation return the same
 shape they would have produced from a fresh exact solve.

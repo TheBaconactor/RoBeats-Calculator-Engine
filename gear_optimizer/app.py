@@ -39,7 +39,7 @@ from gear_optimizer.domain.jobs import (
     SharedRunContext,
     SongJob,
     effective_task_count,
-    legacy_task_tuple_from_job_context,
+    task_tuple_from_job_context,
 )
 from gear_optimizer.data.song_io import scan_song_header
 from gear_optimizer.data.csv_parser import (
@@ -767,7 +767,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 repeat_bundle=repeat_bundle is not None,
                 queue_source="app_prepare_tasks",
             )
-            tasks.append(legacy_task_tuple_from_job_context(job, run_context, *extras))
+            tasks.append(task_tuple_from_job_context(job, run_context, *extras))
 
         ga_seed_base: int | None = None
         raw_ga_seed = env_get("GA_SEED")

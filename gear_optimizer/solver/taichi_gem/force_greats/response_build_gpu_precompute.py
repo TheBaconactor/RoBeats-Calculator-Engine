@@ -31,6 +31,7 @@ class FirstOnlyCanonicalization:
     timestamp_end_idx: np.ndarray
     perfect_end_idx: np.ndarray
     great_end_idx: np.ndarray
+    great_floor_end_idx: np.ndarray
 
 
 def _canonicalize_first_only_prepared_items_with_end_indices(
@@ -40,16 +41,19 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     perfect_candidate_timestamps: np.ndarray,
     great_candidate_timestamps: np.ndarray,
     perfect_floor_timestamps: np.ndarray,
+    great_floor_timestamps: np.ndarray,
 ) -> FirstOnlyCanonicalization:
     if not prepared:
         empty = np.empty((0, 0), dtype=np.int32)
-        return FirstOnlyCanonicalization([], {}, {}, empty, empty, empty)
+        empty3 = np.empty((0, 0, 2), dtype=np.int32)
+        return FirstOnlyCanonicalization([], {}, {}, empty, empty, empty, empty3)
     real_times = np.asarray([item[2] for item in prepared], dtype=np.float64)
-    real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx = _precompute_end_indices(
+    real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx, great_floor_end_idx = _precompute_end_indices(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
         perfect_floor_timestamps=perfect_floor_timestamps,
+        great_floor_timestamps=great_floor_timestamps,
         real_times=real_times,
     )
     if len(prepared) == 1:
@@ -61,14 +65,18 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             timestamp_end_idx,
             perfect_end_idx,
             great_end_idx,
+            great_floor_end_idx,
         )
     end_class_by_index = np.empty((int(timestamp_end_idx.shape[0]),), dtype=np.int32)
-    end_class_by_signature: dict[tuple[bytes, bytes, bytes], int] = {}
+    end_class_by_signature: dict[tuple[bytes, bytes, bytes, bytes], int] = {}
     for idx in range(int(timestamp_end_idx.shape[0])):
         signature = (
             np.ascontiguousarray(timestamp_end_idx[idx], dtype=np.int32).tobytes(),
             np.ascontiguousarray(perfect_end_idx[idx], dtype=np.int32).tobytes(),
             np.ascontiguousarray(great_end_idx[idx], dtype=np.int32).tobytes(),
+            # Issue #44: the early-Great extended fever-end is part of an item's end-class, so
+            # geometries that differ ONLY in their great_floor boundary are not wrongly deduped.
+            np.ascontiguousarray(great_floor_end_idx[idx], dtype=np.int32).tobytes(),
         )
         class_idx = end_class_by_signature.get(signature)
         if class_idx is None:
@@ -116,6 +124,7 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
         timestamp_end_idx,
         perfect_end_idx,
         great_end_idx,
+        great_floor_end_idx,
     )
 
 
@@ -126,8 +135,9 @@ def _precompute_end_indices(
     perfect_candidate_timestamps: np.ndarray,
     great_candidate_timestamps: np.ndarray,
     perfect_floor_timestamps: np.ndarray,
+    great_floor_timestamps: np.ndarray,
     real_times: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     unique_real_times, inverse = np.unique(np.asarray(real_times, dtype=np.float64), return_inverse=True)
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     perfect_ts = np.ascontiguousarray(np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1))
@@ -139,33 +149,43 @@ def _precompute_end_indices(
     floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
     if int(floor_ts.shape[0]) != int(ts.shape[0]):
         raise ValueError("perfect_floor_timestamps length must match timestamps")
+    # Greats-side endpoint-early fever inclusion (issue #44): a boundary note 20-75ms past the
+    # cutoff is out of Perfect reach but reachable into fever as a GREAT, so its EXTENDED fever
+    # boundary searches the earliest-Great floor (chart - 75 / held tail -150, prefix-max). It
+    # is pointwise <= the Perfect floor, so great_floor_end_idx >= perfect/great_end_idx -- a
+    # pure additional reachable end the kernel emits as a great-in-fever surface.
+    great_floor_ts = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
+    if int(great_floor_ts.shape[0]) != int(ts.shape[0]):
+        raise ValueError("great_floor_timestamps length must match timestamps")
     ts64 = np.asarray(ts, dtype=np.float64)
     perfect_ts64 = np.asarray(perfect_ts, dtype=np.float64)
     great_ts64 = np.asarray(great_ts, dtype=np.float64)
     timestamp_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0])), dtype=np.int32)
     perfect_end_idx = np.empty_like(timestamp_end_idx)
     great_end_idx = np.empty_like(timestamp_end_idx)
+    # [..., 0] = extended end for a Perfect activation (cutoff = perfect_candidate + rt);
+    # [..., 1] = extended end for a late-Great activation (cutoff = great_candidate + rt).
+    great_floor_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0]), 2), dtype=np.int32)
     for idx, real_time in enumerate(unique_real_times):
         rt = float(real_time)
+        perfect_cutoff = np.asarray(perfect_ts64 + rt, dtype=np.float32)
+        great_cutoff = np.asarray(great_ts64 + rt, dtype=np.float32)
         timestamp_end_idx[idx] = np.searchsorted(floor_ts, np.asarray(ts64 + rt, dtype=np.float32), side="left").astype(
             np.int32,
             copy=False,
         )
-        perfect_end_idx[idx] = np.searchsorted(
-            floor_ts,
-            np.asarray(perfect_ts64 + rt, dtype=np.float32),
-            side="left",
-        ).astype(
-            np.int32,
-            copy=False,
+        perfect_end_idx[idx] = np.searchsorted(floor_ts, perfect_cutoff, side="left").astype(np.int32, copy=False)
+        great_end_idx[idx] = np.searchsorted(floor_ts, great_cutoff, side="left").astype(np.int32, copy=False)
+        great_floor_end_idx[idx, :, 0] = np.searchsorted(great_floor_ts, perfect_cutoff, side="left").astype(
+            np.int32, copy=False
         )
-        great_end_idx[idx] = np.searchsorted(floor_ts, np.asarray(great_ts64 + rt, dtype=np.float32), side="left").astype(
-            np.int32,
-            copy=False,
+        great_floor_end_idx[idx, :, 1] = np.searchsorted(great_floor_ts, great_cutoff, side="left").astype(
+            np.int32, copy=False
         )
     return (
         np.ascontiguousarray(inverse.astype(np.int32, copy=False)),
         np.ascontiguousarray(timestamp_end_idx),
         np.ascontiguousarray(perfect_end_idx),
         np.ascontiguousarray(great_end_idx),
+        np.ascontiguousarray(great_floor_end_idx),
     )

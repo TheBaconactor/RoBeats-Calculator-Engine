@@ -147,18 +147,20 @@ def main() -> int:
     real_fever_time = 5.0  # seconds (representative mid fever-time window)
     real_times = np.asarray([real_fever_time], dtype=np.float64)
 
-    _, _, perfect_end_floor, _ = _precompute_end_indices(
+    _, _, perfect_end_floor, _, _ = _precompute_end_indices(
         timestamps=chart,
         perfect_candidate_timestamps=perfect_cand,
         great_candidate_timestamps=perfect_cand,
         perfect_floor_timestamps=floor,          # REAL floor (the fix)
+        great_floor_timestamps=floor,            # unused here (#42 reads perfect_end only)
         real_times=real_times,
     )
-    _, _, perfect_end_chart, _ = _precompute_end_indices(
+    _, _, perfect_end_chart, _, _ = _precompute_end_indices(
         timestamps=chart,
         perfect_candidate_timestamps=perfect_cand,
         great_candidate_timestamps=perfect_cand,
         perfect_floor_timestamps=chart,          # chart as floor (pre-fix / degenerate)
+        great_floor_timestamps=chart,            # unused here (#42 reads perfect_end only)
         real_times=real_times,
     )
     pef = perfect_end_floor[0].astype(np.int64)
@@ -199,18 +201,20 @@ def main() -> int:
         )
         found = False
         for rft in (1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0):
-            _, _, pe_f, _ = _precompute_end_indices(
+            _, _, pe_f, _, _ = _precompute_end_indices(
                 timestamps=chart,
                 perfect_candidate_timestamps=perfect_cand,
                 great_candidate_timestamps=perfect_cand,
                 perfect_floor_timestamps=floor,
+                great_floor_timestamps=floor,            # unused here (#42 reads perfect_end only)
                 real_times=np.asarray([rft], dtype=np.float64),
             )
-            _, _, pe_c, _ = _precompute_end_indices(
+            _, _, pe_c, _, _ = _precompute_end_indices(
                 timestamps=chart,
                 perfect_candidate_timestamps=perfect_cand,
                 great_candidate_timestamps=perfect_cand,
                 perfect_floor_timestamps=chart,
+                great_floor_timestamps=chart,            # unused here (#42 reads perfect_end only)
                 real_times=np.asarray([rft], dtype=np.float64),
             )
             d = pe_f[0].astype(np.int64) - pe_c[0].astype(np.int64)

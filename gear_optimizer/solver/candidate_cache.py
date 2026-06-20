@@ -13,6 +13,7 @@ import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
+from gear_optimizer.core.gem_defs import GemKey, build_gem_counts
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.utils import timing_envelope_timing_context
 from gear_optimizer.solver.force_greats_common import STAT_KEYS
@@ -26,6 +27,12 @@ _CANDIDATE_CACHE_VERSION = "candidate-cache-v1"
 _BASE_NAMESPACE = "base"
 _FG_NAMESPACE = "fg"
 _DISK_FLUSH_BATCH_ROWS = 512
+_GEM_COUNT_KEYS = (
+    GemKey.PP.value,
+    GemKey.CM.value,
+    GemKey.FM.value,
+)
+_ELEMENT_GEM_ALIASES = (GemKey.ELEMENT.value, "Overflow", "Element Overflow", "ElementOverflow", "OV")
 
 
 def _candidate_cache_dir() -> Path:
@@ -67,6 +74,39 @@ def _stats_tuple(stats: dict[str, Any] | tuple[Any, ...] | list[Any] | np.ndarra
 def _stats_dict(stats: dict[str, Any] | tuple[Any, ...] | list[Any] | np.ndarray) -> dict[str, int]:
     values = _stats_tuple(stats)
     return {name: int(values[idx]) for idx, name in enumerate(STAT_KEYS)}
+
+
+def _normalize_gem_counts(gem_counts: Any, *, context: str) -> dict[str, int]:
+    if not isinstance(gem_counts, dict):
+        raise ValueError(f"{context} candidate cache payload requires GemCounts")
+    out: dict[str, int] = {}
+    missing = [key for key in _GEM_COUNT_KEYS if key not in gem_counts]
+    if missing:
+        raise ValueError(f"{context} candidate cache payload GemCounts missing required keys: {missing}")
+    for key in _GEM_COUNT_KEYS:
+        value = int(gem_counts[key])
+        if value < 0:
+            raise ValueError(f"{context} candidate cache payload has negative GemCounts[{key!r}]")
+        out[key] = value
+
+    element_values: list[tuple[str, int]] = []
+    for alias in _ELEMENT_GEM_ALIASES:
+        if alias in gem_counts:
+            value = int(gem_counts[alias])
+            if value < 0:
+                raise ValueError(f"{context} candidate cache payload has negative GemCounts[{alias!r}]")
+            element_values.append((alias, value))
+    if not element_values:
+        raise ValueError(f"{context} candidate cache payload GemCounts missing required key: {GemKey.ELEMENT.value}")
+    first_value = int(element_values[0][1])
+    for alias, value in element_values[1:]:
+        if int(value) != first_value:
+            raise ValueError(
+                f"{context} candidate cache payload has conflicting elemental gem counts: "
+                f"{element_values[0][0]}={first_value}, {alias}={value}"
+            )
+    out[GemKey.ELEMENT.value] = first_value
+    return out
 
 
 def _ref_arrays_key(ref_arrays: dict[str, Any]) -> tuple[bytes, ...]:
@@ -153,11 +193,12 @@ def base_payload_from_result(
     result: dict[str, Any],
     selected_color: str,
 ) -> dict[str, Any]:
+    gem_counts = _normalize_gem_counts(result.get("GemCounts") or result.get("gem_counts") or {}, context="base")
     payload = {
         "Score": int(result.get("Score", result.get("BaseScore", 0)) or 0),
         "FT": int(result.get("FT", 0) or 0),
         "FF": int(result.get("FF", 0) or 0),
-        "GemCounts": dict(result.get("GemCounts") or result.get("gem_counts") or {}),
+        "GemCounts": gem_counts,
         "Stats": _stats_dict(result.get("Stats") or {}),
         "Selected Element": str(result.get("Selected Element", selected_color) or selected_color or ""),
     }
@@ -167,7 +208,7 @@ def base_payload_from_result(
         "PP Gems": int(payload["GemCounts"].get("Perfect Points", 0) or 0),
         "CM Gems": int(payload["GemCounts"].get("Combo Multiplier", 0) or 0),
         "FM Gems": int(payload["GemCounts"].get("Fever Multiplier", 0) or 0),
-        "Overflow Gems": int(payload["GemCounts"].get("Overflow", 0) or 0),
+        "Overflow Gems": int(payload["GemCounts"].get(GemKey.ELEMENT.value, 0) or 0),
     }
     payload["FT_gems"] = int(payload["FT"])
     payload["FF_gems"] = int(payload["FF"])
@@ -185,12 +226,7 @@ def base_payload_from_result_tuple(
     if len(row) != 7:
         raise ValueError(f"base candidate cache result tuple needs 7 values, got {len(row)}")
     score, ft, ff, g_pp, g_cm, g_fm, g_ov = row
-    gem_counts = {
-        "Perfect Points": int(g_pp),
-        "Combo Multiplier": int(g_cm),
-        "Fever Multiplier": int(g_fm),
-        "Overflow": int(g_ov),
-    }
+    gem_counts = build_gem_counts(g_pp, g_cm, g_fm, g_ov)
     stats = apply_gems_to_base_stats(
         _stats_dict(base_stats),
         str(selected_color or ""),
@@ -221,12 +257,13 @@ def fg_payload_from_materialized(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     force = dict(payload.get("ForceGreats") or {})
+    gem_counts = _normalize_gem_counts(payload.get("GemCounts") or {}, context="FG")
     cached = {
         "raw_best_score": int(raw_best_score),
         "exact_score": int(payload.get("Score", 0) or 0),
         "FT": int(payload.get("FT", 0) or 0),
         "FF": int(payload.get("FF", 0) or 0),
-        "GemCounts": dict(payload.get("GemCounts") or {}),
+        "GemCounts": gem_counts,
         "forced_counts": [int(v) for v in payload.get("forced_counts", [])],
         "response_surface": [int(v) for v in payload.get("response_surface", [])],
         "ForceGreats": force,
@@ -254,7 +291,7 @@ def materialize_fg_payload_from_cache(
         int(gem_counts.get("Perfect Points", 0) or 0),
         int(gem_counts.get("Combo Multiplier", 0) or 0),
         int(gem_counts.get("Fever Multiplier", 0) or 0),
-        int(gem_counts.get("Overflow", 0) or 0),
+        int(gem_counts.get(GemKey.ELEMENT.value, 0) or 0),
     )
     force = dict(cached["ForceGreats"])
     force["final_score"] = int(cached["exact_score"])
@@ -279,17 +316,34 @@ def _validate_base_payload(payload: dict[str, Any]) -> dict[str, Any]:
     for field in ("Score", "FT", "FF"):
         if int(payload.get(field, -1)) < 0:
             raise ValueError(f"base candidate cache payload has invalid {field}")
-    if not isinstance(payload.get("GemCounts"), dict):
-        raise ValueError("base candidate cache payload requires GemCounts")
+    gem_counts = _normalize_gem_counts(payload.get("GemCounts"), context="base")
     _stats_tuple(payload.get("Stats") or {})
     if not str(payload.get("Selected Element", "") or ""):
         raise ValueError("base candidate cache payload requires Selected Element")
+    config = payload.get("config")
+    if not isinstance(config, dict):
+        raise ValueError("base candidate cache payload requires config")
+    expected_config = {
+        "FT Gems": int(payload["FT"]),
+        "FF Gems": int(payload["FF"]),
+        "PP Gems": int(gem_counts[GemKey.PP.value]),
+        "CM Gems": int(gem_counts[GemKey.CM.value]),
+        "FM Gems": int(gem_counts[GemKey.FM.value]),
+        "Overflow Gems": int(gem_counts[GemKey.ELEMENT.value]),
+    }
+    for key, expected in expected_config.items():
+        actual = int(config.get(key, -1))
+        if actual != expected:
+            raise ValueError(
+                f"base candidate cache payload config[{key!r}]={actual} does not match expected {expected}"
+            )
     out = _copy_payload(payload)
     out["Score"] = int(out["Score"])
     out["FT"] = int(out["FT"])
     out["FF"] = int(out["FF"])
     out["Stats"] = _stats_dict(out["Stats"])
-    out["GemCounts"] = {str(k): int(v) for k, v in out["GemCounts"].items()}
+    out["GemCounts"] = gem_counts
+    out["config"] = expected_config
     out["gem_counts"] = dict(out["GemCounts"])
     out["FT_gems"] = int(out["FT"])
     out["FF_gems"] = int(out["FF"])
@@ -302,9 +356,7 @@ def _validate_fg_payload(payload: dict[str, Any]) -> dict[str, Any]:
     for field in ("raw_best_score", "exact_score", "FT", "FF"):
         if int(payload.get(field, -1)) < 0:
             raise ValueError(f"FG candidate cache payload has invalid {field}")
-    gem_counts = payload.get("GemCounts")
-    if not isinstance(gem_counts, dict):
-        raise ValueError("FG candidate cache payload requires GemCounts")
+    gem_counts = _normalize_gem_counts(payload.get("GemCounts"), context="FG")
     force = payload.get("ForceGreats")
     if not isinstance(force, dict):
         raise ValueError("FG candidate cache payload requires ForceGreats")
@@ -314,12 +366,15 @@ def _validate_fg_payload(payload: dict[str, Any]) -> dict[str, Any]:
     forced_counts = payload.get("forced_counts")
     if not isinstance(forced_counts, list):
         raise ValueError("FG candidate cache payload requires forced_counts")
+    for value in forced_counts:
+        if int(value) < 0:
+            raise ValueError("FG candidate cache payload has negative forced_counts")
     out = _copy_payload(payload)
     out["raw_best_score"] = int(out["raw_best_score"])
     out["exact_score"] = int(out["exact_score"])
     out["FT"] = int(out["FT"])
     out["FF"] = int(out["FF"])
-    out["GemCounts"] = {str(k): int(v) for k, v in out["GemCounts"].items()}
+    out["GemCounts"] = gem_counts
     out["response_surface"] = [int(v) for v in out["response_surface"]]
     out["forced_counts"] = [int(v) for v in out["forced_counts"]]
     return out

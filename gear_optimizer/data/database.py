@@ -65,7 +65,7 @@ def get_evolution_db_path() -> str:
     Returns:
         str: Path to evolution database file
     """
-    env_path = str(os.getenv("EVOLUTION_DB_PATH", "") or "").strip()
+    env_path = str(env_get("EVOLUTION_DB_PATH", "") or "").strip()
     if env_path:
         return env_path
     try:

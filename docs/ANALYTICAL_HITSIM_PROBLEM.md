@@ -6,11 +6,13 @@ A rhythm game scores players based on how accurately they hit notes at prescribe
 
 **The complication:** In the real game, players don't hit notes at exactly the chart time. They hit within a timing window (e.g. -20ms to +40ms for a "Perfect" judgment). The exact hit time doesn't affect the per-note judgment (all times in the window are "Perfect"), but it **does** affect when fever activates and ends, because fever duration is measured in **wall-clock seconds**, not note counts. Small timing offsets can push notes in or out of fever windows at the boundaries.
 
-Historically, the optimizer handled this via **Monte Carlo sampling**: run multiple hit-timing seeds (`SongRepeats`) and keep the best result. This is expensive and still probabilistic.
+This repo is now in the **exact era**: production does not rely on heuristic “human hit sim” sampling. Instead, it constructs and scores **exact non-dominated surfaces** and prunes by dominance.
 
-As of 2026-03-23, the repo also ships a deterministic, one-shot **ceiling** fever timeline on the GPU behind `GPU_TIMELINE_CEILING_HITSIM` (default: enabled). That ceiling mode is designed as an upper-envelope approximation of best-case fever boundaries under the modeled Perfect timing window.
+At a high level, the production path uses **two exact frontiers**:
+- **Timing-envelope frontier:** for each song and each `(fill_count, d_ms)` cell, construct the exact non-dominated fever-timeline surfaces induced by the allowed timing window / carry constraints, then prune dominated surfaces.
+- **FG response frontier:** Force Greats uses a score-sufficient response-frontier bundle (a non-dominated set of FG surfaces/responses) so downstream scoring operates on retained exact surfaces rather than heuristic caps or probabilistic simulation.
 
-This document defines the underlying **analytical HitSim problem** (exact optimum and expected-value variants) that motivates both the historical Monte Carlo approach and the production ceiling approximation.
+This document defines the underlying **analytical hit-timing problem** (exact optimum and expected-value variants) as math/background. It should not be read as describing a sampling-era production implementation.
 
 ---
 

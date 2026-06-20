@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import sys
 import threading
 import time
 from pathlib import Path
@@ -557,6 +558,93 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
     assert len(list(tmp_path.glob("*.npz"))) == 2
 
 
+def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
+        _FG_RESPONSE_CACHE_VERSION,
+    )
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+
+    def _plant(digest: str, version: str | None, *, sidecars: bool = True) -> None:
+        members = {"payload": np.arange(3)}
+        if version is not None:
+            members["version"] = np.array(version)
+        np.savez(str(tmp_path / f"{digest}.npz"), **members)
+        if sidecars:
+            np.save(
+                str(tmp_path / f"{digest}{store._SURFACE_POOL_SIDECAR_SUFFIX}"),
+                np.zeros((2, store._SURFACE_POOL_COLUMNS), np.int32),
+            )
+            np.save(
+                str(tmp_path / f"{digest}{store._SURFACE_COEFF_SIDECAR_SUFFIX}"),
+                np.zeros((2, store._SURFACE_COEFF_COLUMNS), np.uint16),
+            )
+
+    _plant("stale_a", "fg-response-frontier-legacy-v1")
+    _plant("stale_b", "fg-response-frontier-legacy-v2")
+    _plant("stale_c", "fg-response-frontier-legacy-v1", sidecars=False)  # sidecars already evicted
+    _plant("current", _FG_RESPONSE_CACHE_VERSION)
+    _plant("noversion", None)  # missing version field: must be kept, never guessed stale
+
+    removed = store.purge_stale_version_cache_files()
+
+    # stale_a + stale_b delete 3 files each; stale_c deletes only its .npz. Its already-absent
+    # sidecars are not failures, so the marker is still written below (purge_complete-flag guard).
+    assert removed == 7
+    # The current entry AND the version-less entry survive (never guess-delete), plus the marker.
+    assert {p.name for p in tmp_path.iterdir()} == {
+        "current.npz",
+        f"current{store._SURFACE_POOL_SIDECAR_SUFFIX}",
+        f"current{store._SURFACE_COEFF_SIDECAR_SUFFIX}",
+        "noversion.npz",
+        f"noversion{store._SURFACE_POOL_SIDECAR_SUFFIX}",
+        f"noversion{store._SURFACE_COEFF_SIDECAR_SUFFIX}",
+        store._PURGED_VERSION_MARKER,
+    }
+    assert (
+        (tmp_path / store._PURGED_VERSION_MARKER).read_text(encoding="utf-8").strip()
+        == _FG_RESPONSE_CACHE_VERSION
+    )
+    # The marker gates the rescan: a second call short-circuits without re-reading bundles.
+    assert store.purge_stale_version_cache_files() == 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="NTFS WOF compression is Windows-only")
+def test_compress_cache_dir_sidecars_preserves_memmap_bytes(tmp_path: Path, monkeypatch) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    arr = np.zeros((50000, 11), dtype=np.uint32)
+    arr[:, 4] = np.arange(50000) % 33
+    arr[:, 8] = 452 + (np.arange(50000) % 600)
+    sidecar = tmp_path / f"deadbeefdeadbeef{store._SURFACE_POOL_SIDECAR_SUFFIX}"
+    store._save_surface_sidecar_atomic(sidecar, arr)
+    logical = sidecar.stat().st_size
+
+    store.compress_cache_dir_sidecars()
+
+    # The whole point: NTFS compression must never alter the bytes the scorer memmaps.
+    mm = np.load(sidecar, mmap_mode="r")
+    try:
+        same = bool(np.array_equal(np.asarray(mm), arr))
+    finally:
+        mm._mmap.close()  # release the file handle before tmp_path teardown (Windows WinError 32)
+        del mm
+    assert same, "NTFS compression altered the memmapped bytes"
+    # On NTFS the on-disk footprint shrinks; on a non-NTFS volume compact no-ops (size unchanged).
+    get_compressed = ctypes.windll.kernel32.GetCompressedFileSizeW
+    get_compressed.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    get_compressed.restype = wintypes.DWORD
+    high = wintypes.DWORD(0)
+    low = get_compressed(str(sidecar), ctypes.byref(high))
+    on_disk = (high.value << 32) | low
+    assert on_disk <= logical
+
+
 def test_fg_response_frontier_uint8_persistence_bounds_fail_loud() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _as_uint8_exact
 
@@ -887,7 +975,7 @@ def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     assert offenders == []
 
 
-def test_fg_response_prebuild_uses_full_reducer_width_per_worker(monkeypatch) -> None:
+def test_fg_response_prebuild_uses_two_workers_split_reducer_width(monkeypatch) -> None:
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
     seen: dict[str, object] = {}
@@ -906,9 +994,10 @@ def test_fg_response_prebuild_uses_full_reducer_width_per_worker(monkeypatch) ->
         stat_keys=((0, 0),),
     )
 
-    assert worker_count == 3
-    assert seen["max_workers"] == 3
-    assert seen["initargs"][2] == 32
+    # 2 song-build workers, reducer threads split across them (cpu_count // workers = 32 // 2 = 16).
+    assert worker_count == 2
+    assert seen["max_workers"] == 2
+    assert seen["initargs"][2] == 16
 
 
 def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -> None:
@@ -977,6 +1066,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
             perfect_candidates=np.asarray([0.0], dtype=np.float32),
             great_candidates=np.asarray([0.0], dtype=np.float32),
             perfect_floor=np.asarray([0.0], dtype=np.float32),
+            great_floor=np.asarray([0.0], dtype=np.float32),
             use_forced_great_timing=True,
         ),
         ref_arrays={},
@@ -1071,6 +1161,7 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
         perfect_candidates=np.asarray([0.0], dtype=np.float32),
         great_candidates=np.asarray([0.0], dtype=np.float32),
         perfect_floor=np.asarray([0.0], dtype=np.float32),
+        great_floor=np.asarray([0.0], dtype=np.float32),
     )
     seen: dict[str, object] = {}
     canonical_keys = (
@@ -1144,6 +1235,7 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
         perfect_candidates=np.asarray([0.0], dtype=np.float32),
         great_candidates=np.asarray([0.0], dtype=np.float32),
         perfect_floor=np.asarray([0.0], dtype=np.float32),
+        great_floor=np.asarray([0.0], dtype=np.float32),
     )
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 0
@@ -1195,6 +1287,7 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
         perfect_candidates=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
         great_candidates=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
         perfect_floor=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
+        great_floor=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
     )
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 1

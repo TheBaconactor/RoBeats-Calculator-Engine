@@ -175,5 +175,5 @@ def test_materialize_repeat_task_replaces_bundle_metadata_with_one_repeat_contex
 
 
 def test_short_legacy_tuple_is_rejected_at_the_adapter_boundary():
-    with pytest.raises(ValueError, match="16-field production prefix"):
+    with pytest.raises(ValueError, match="14-field production prefix"):
         task_tuple_to_song_job(("too", "short"))

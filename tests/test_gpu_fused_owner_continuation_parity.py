@@ -108,8 +108,8 @@ def _ref_arrays() -> dict[str, np.ndarray]:
     rows = 161
     return {
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float64),
-        "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
-        "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float64),
+        "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
+        "Fever Multiplier": np.linspace(3.0, 5.4, rows, dtype=np.float64),
         "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64),
         "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64),
     }
@@ -251,9 +251,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
         return tuple(int(x) for x in ids)
 
     def _result_signature(result, base_stats) -> tuple:
-        exact = score_force_greats_response_surface_exact(
-            result.stats, calc_song, ref_arrays, result.surface
-        )
+        exact = score_force_greats_response_surface_exact(result.stats, calc_song, ref_arrays, result.surface)
         return (
             int(result.best_score),
             int(result.ft),
@@ -276,9 +274,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
         # --- Pre-fusion route: build plan, score via the sync (owner) SCORE path to
         # RAW per-batch solve results, map back to each candidate by cache_key. ---
         prefusion_candidates = [copy.deepcopy(c) for c in decoded]
-        prefusion_plan = FgPlanner.plan_many(
-            prefusion_candidates, calc_song, ref_arrays, _PRIMARY_COLOR
-        )
+        prefusion_plan = FgPlanner.plan_many(prefusion_candidates, calc_song, ref_arrays, _PRIMARY_COLOR)
         prefusion_results, _timings = GpuScoreEngine.score_plan(prefusion_plan, gpu_client=None)
         prefusion_result_by_cache_key: dict = {}
         for prepared, results in zip(prefusion_plan.prepared_batches, prefusion_results, strict=True):
@@ -328,9 +324,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
             fused_by_key[_entry_key(entry)] = _result_signature(solve_result, base_stats)
 
     assert prefusion_by_key, "pre-fusion route produced no candidate results to compare"
-    assert set(prefusion_by_key) == set(fused_by_key), (
-        "fused and pre-fusion routes scored different candidate sets"
-    )
+    assert set(prefusion_by_key) == set(fused_by_key), "fused and pre-fusion routes scored different candidate sets"
     mismatches: list[str] = []
     for entry_key, pre_sig in prefusion_by_key.items():
         fused_sig = fused_by_key.get(entry_key)

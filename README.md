@@ -96,10 +96,17 @@ export EVOLUTION_DB_PATH=/path/to/evolution.db
 # Deterministic testing
 export GA_SEED=42
 
-# Profiling / timing (opt-in)
+# Profiling / timing (opt-in; gated)
+# First enable the profiling gate:
+export METAFINDER_DEBUG_PROFILE=1
+# (Alias: export DEBUG_PROFILE=1)
+#
+# Then turn on individual probes:
 export PERF_TIMING=1
 export GPU_PROFILER=1
 export GPU_EXECUTOR_PROFILE=1
+
+Note: without the debug-profile gate, some profiling flags are intentionally ignored by production code.
 ```
 
 ---

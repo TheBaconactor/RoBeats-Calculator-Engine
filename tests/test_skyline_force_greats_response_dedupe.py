@@ -127,6 +127,7 @@ def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[st
             perfect_candidates=[0.0, 1.0],
             great_candidates=[0.0, 1.0],
             perfect_floor=[0.0, 1.0],
+            great_floor=[0.0, 1.0],
             use_forced_great_timing=True,
         ),
     )

@@ -115,8 +115,8 @@ def _ref_arrays() -> dict[str, np.ndarray]:
     rows = 161
     return {
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float64),
-        "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
-        "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float64),
+        "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
+        "Fever Multiplier": np.linspace(3.0, 5.4, rows, dtype=np.float64),
         "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64),
         "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64),
     }
@@ -230,9 +230,7 @@ def real_ga_run():
     assert selected_n > 0, "real GA produced an empty selected payload"
 
     cand_rows = selected_payload[1 : 1 + selected_n]
-    payload_base_stats7 = np.asarray(
-        cand_rows[:, _BASE_STATS7_COL0 : _BASE_STATS7_COL0 + 7], dtype=np.int32
-    )
+    payload_base_stats7 = np.asarray(cand_rows[:, _BASE_STATS7_COL0 : _BASE_STATS7_COL0 + 7], dtype=np.int32)
 
     _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
         runs_payload=selected_payload,
@@ -275,9 +273,7 @@ def test_payload_base_stats7_matches_host_base_components_on_real_ga(real_ga_run
             int(v) for v in payload_base_stats7[i].tolist()
         ), f"decoded candidate {i} did not carry the payload base_stats7 on its Data"
 
-        host_vec = _host_base_components_from_dict(
-            base_stats, primary=_PRIMARY_COLOR, secondary=_SECONDARY_COLOR
-        )
+        host_vec = _host_base_components_from_dict(base_stats, primary=_PRIMARY_COLOR, secondary=_SECONDARY_COLOR)
         payload_vec = tuple(int(v) for v in payload_base_stats7[i].tolist())
         if host_vec != payload_vec:
             mismatches.append(
@@ -318,8 +314,7 @@ def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> Non
     device_candidates = [copy.deepcopy(c) for c in decoded]
     assert device_candidates, "no GA candidates decoded"
     assert any(
-        isinstance(c.get("Data"), dict) and c["Data"].get(FG_BASE_STATS7_KEY) is not None
-        for c in device_candidates
+        isinstance(c.get("Data"), dict) and c["Data"].get(FG_BASE_STATS7_KEY) is not None for c in device_candidates
     ), "fixture produced no candidate carrying device base_stats7"
 
     # Pre-Slice-2 behaviour: strip the device vector so the planner derives
@@ -362,6 +357,5 @@ def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> Non
 
     assert any(row for row in device_scores), "device scoring produced no solve results"
     assert device_scores == dict_scores, (
-        "FG raw scores differ between device base_stats7 and host dict derivation — "
-        "Slice 2 swap is NOT bit-exact"
+        "FG raw scores differ between device base_stats7 and host dict derivation — Slice 2 swap is NOT bit-exact"
     )

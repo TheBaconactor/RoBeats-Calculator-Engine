@@ -13,6 +13,7 @@ from gear_optimizer.solver.candidate_cache import (
     fg_candidate_cache_key,
     reset_candidate_cache_for_tests,
 )
+from gear_optimizer.core.gem_defs import build_gem_counts
 from gear_optimizer.solver.solver_common import batched_registry_eval
 from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
 from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
@@ -43,6 +44,8 @@ def _calc_song() -> dict:
             "fg_timestamps": timestamps,
             "fg_perfect_candidate_timestamps": timestamps,
             "fg_great_candidate_timestamps": timestamps + np.float32(0.015),
+            "fg_perfect_floor_timestamps": timestamps,
+            "fg_great_floor_timestamps": timestamps,
         },
     }
 
@@ -86,12 +89,7 @@ def _fg_cached_payload() -> dict:
         "exact_score": 140,
         "FT": 1,
         "FF": 2,
-        "GemCounts": {
-            "Perfect Points": 3,
-            "Combo Multiplier": 4,
-            "Fever Multiplier": 5,
-            "Overflow": 6,
-        },
+        "GemCounts": build_gem_counts(3, 4, 5, 6),
         "forced_counts": [1, 0],
         "response_surface": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         "ForceGreats": {
@@ -190,12 +188,7 @@ def test_candidate_cache_keeps_base_and_fg_separate_and_reloads_disk(tmp_path):
                 "Score": 123,
                 "FT": 1,
                 "FF": 2,
-                "GemCounts": {
-                    "Perfect Points": 3,
-                    "Combo Multiplier": 4,
-                    "Fever Multiplier": 5,
-                    "Overflow": 6,
-                },
+                "GemCounts": build_gem_counts(3, 4, 5, 6),
                 "Stats": _base_stats(),
                 "Selected Element": "Rush",
             },
@@ -260,12 +253,7 @@ def test_candidate_cache_reuses_semantically_compatible_cross_song_keys(tmp_path
                 "Score": 123,
                 "FT": 1,
                 "FF": 2,
-                "GemCounts": {
-                    "Perfect Points": 3,
-                    "Combo Multiplier": 4,
-                    "Fever Multiplier": 5,
-                    "Overflow": 6,
-                },
+                "GemCounts": build_gem_counts(3, 4, 5, 6),
                 "Stats": _base_stats(),
                 "Selected Element": "Rush",
             },
@@ -304,12 +292,7 @@ def test_fg_reducer_admits_miss_then_service_hit_skips_scorer(tmp_path, monkeypa
     def _fake_materialize_force_payload(**kwargs):
         from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 
-        gem_counts = {
-            "Perfect Points": 3,
-            "Combo Multiplier": 4,
-            "Fever Multiplier": 5,
-            "Overflow": 6,
-        }
+        gem_counts = build_gem_counts(3, 4, 5, 6)
         final_stats = apply_gems_to_base_stats(
             dict(kwargs["base_stats"]),
             str(kwargs["selected_element"]),
@@ -318,7 +301,7 @@ def test_fg_reducer_admits_miss_then_service_hit_skips_scorer(tmp_path, monkeypa
             int(gem_counts["Perfect Points"]),
             int(gem_counts["Combo Multiplier"]),
             int(gem_counts["Fever Multiplier"]),
-            int(gem_counts["Overflow"]),
+            int(gem_counts["Element"]),
         )
         payload = dict(kwargs["eval_data"])
         payload.update(
@@ -374,6 +357,59 @@ def test_fg_reducer_admits_miss_then_service_hit_skips_scorer(tmp_path, monkeypa
         "ForceGreats",
     ):
         assert cached_payload[field] == fresh_payload[field]
+
+
+def test_candidate_cache_rejects_incomplete_and_negative_payloads(tmp_path):
+    db_path = tmp_path / "candidate_cache.sqlite3"
+    cache = CandidateCache(db_path)
+    calc_song = _calc_song()
+    ref_arrays = _ref_arrays()
+    base_key = base_candidate_cache_key(
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        base_stats=_base_stats(),
+        primary_color="Rush",
+        secondary_color="Flow",
+        selected_color="Rush",
+        flags={"is_p_pp": 0, "is_s_pp": 0},
+    )
+    fg_key = fg_candidate_cache_key(
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_color="Rush",
+        base_components=(10, 20, 30, 80, 90, 40, 50),
+    )
+
+    incomplete_base = {
+        "Score": 123,
+        "FT": 1,
+        "FF": 2,
+        "GemCounts": build_gem_counts(3, 4, 5, 6),
+        "Stats": _base_stats(),
+        "Selected Element": "Rush",
+    }
+    with pytest.raises(ValueError, match="requires config"):
+        cache.put_base(base_key, incomplete_base)
+
+    invalid_base = base_payload_from_result(
+        result={
+            "Score": 123,
+            "FT": 1,
+            "FF": 2,
+            "GemCounts": build_gem_counts(3, 4, 5, 6),
+            "Stats": _base_stats(),
+            "Selected Element": "Rush",
+        },
+        selected_color="Rush",
+    )
+    invalid_base["GemCounts"]["Element"] = -1
+    with pytest.raises(ValueError, match="negative GemCounts"):
+        cache.put_base(base_key, invalid_base)
+
+    invalid_fg = _fg_cached_payload()
+    invalid_fg["forced_counts"] = [1, -1]
+    with pytest.raises(ValueError, match="negative forced_counts"):
+        cache.put_fg(fg_key, invalid_fg)
 
 
 def test_base_batch_cache_hit_skips_registry_dispatch_after_disk_reload(tmp_path, monkeypatch):

@@ -29,6 +29,8 @@ def _calc_song():
             "fg_timestamps": timestamps,
             "fg_perfect_candidate_timestamps": timestamps,
             "fg_great_candidate_timestamps": timestamps,
+            "fg_perfect_floor_timestamps": timestamps,
+            "fg_great_floor_timestamps": timestamps,
         },
     }
 

@@ -162,7 +162,7 @@ Extract:
 
 Extract:
 - `_create_random_genome_fn()` - Random genome creation logic
-- `_create_heuristic_genome_fn()` - Heuristic genome creation logic
+- `_create_guided_genome_fn()` - Guided genome creation logic
 
 ### Priority 3: Minor Code Quality Improvements
 

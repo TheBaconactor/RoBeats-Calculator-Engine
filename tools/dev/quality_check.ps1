@@ -67,9 +67,7 @@ if ($CI) {
     "pytest",
     "tests/test_repo_guardrails.py",
     "tests/test_native_inflight_fg_persistence_consistency.py",
-    "tests/test_gpu_ga_eval_race_free.py",
-    "tests/test_fg_bellman_fixed_gpu.py",
-    "tests/test_gpu_persistence_stats_match_kernel.py",
+    "tests/test_gpu_ga_eval_incumbent_cull.py",
     "-q",
     "--tb=short"
   )

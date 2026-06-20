@@ -33,6 +33,7 @@ class FGSongInputs:
     perfect_candidates: Any
     great_candidates: Any
     perfect_floor: Any
+    great_floor: Any
     use_forced_great_timing: bool
     total_notes: int
     long_notes: int
@@ -78,6 +79,19 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
     else:
         # Explicit degenerate baseline: no timing envelope applied, so chart is the floor.
         perfect_floor = timestamps
+    # Earliest-Great floor (issue #44 greats-side endpoint-early fever). REQUIRED whenever an FG
+    # timing envelope is present, same fail-loud rule as perfect_floor: silently searching chart
+    # (or the Perfect floor) would miss the early-Great boundary surfaces -> a wrong best_fg_score.
+    if "fg_great_floor_timestamps" in song_data:
+        great_floor = song_data["fg_great_floor_timestamps"]
+    elif has_perfect_candidates or has_great_candidates:
+        raise ValueError(
+            "fg_great_floor_timestamps is required when FG timing candidate timestamps are present"
+        )
+    else:
+        # Degenerate baseline (no envelope): chart is the floor, so the Great boundary collapses
+        # onto the Perfect one and no early-Great surface is reachable.
+        great_floor = timestamps
     use_forced_great_timing = bool(has_great_candidates)
 
     try:
@@ -98,6 +112,7 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
         perfect_candidates=perfect_candidates,
         great_candidates=great_candidates,
         perfect_floor=perfect_floor,
+        great_floor=great_floor,
         use_forced_great_timing=bool(use_forced_great_timing),
         total_notes=int(total_notes),
         long_notes=int(long_notes),

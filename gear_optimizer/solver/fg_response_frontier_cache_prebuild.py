@@ -48,12 +48,16 @@ def _prebuild_cpu_count() -> int:
     return max(1, int(os.cpu_count() or 1))
 
 
-def _resolve_prebuild_reducer_threads() -> int:
-    return _prebuild_cpu_count()
+def _resolve_prebuild_reducer_threads(worker_count: int | None = None) -> int:
+    workers = max(1, int(worker_count if worker_count is not None else _resolve_prebuild_worker_count()))
+    return max(1, _prebuild_cpu_count() // workers)
 
 
 def _resolve_prebuild_worker_count() -> int:
-    return 3 if _prebuild_cpu_count() >= 8 else 2 if _prebuild_cpu_count() >= 4 else 1
+    # Each song build parallelizes across its FT/FF geometries. 1 worker leaves cores idle in the
+    # per-song prep/serialize gaps (bursty CPU); too many under-threads the dense bursts. 2 workers
+    # balances overlap vs burst-width — measured fastest on a same-sample 1/2/3-worker A/B.
+    return 2
 
 
 _PREBUILD_WORKERS = _resolve_prebuild_worker_count()
@@ -145,7 +149,7 @@ def _build_prebuild_executor(
     ref_arrays: dict,
     stat_keys: tuple[tuple[int, int], ...],
 ) -> concurrent.futures.ProcessPoolExecutor:
-    reducer_threads = _resolve_prebuild_reducer_threads()
+    reducer_threads = _resolve_prebuild_reducer_threads(worker_count)
     return concurrent.futures.ProcessPoolExecutor(
         max_workers=max(1, int(worker_count)),
         initializer=_init_prebuild_worker,
@@ -362,7 +366,11 @@ def run_fg_response_frontier_cache_prebuild(
     data_root: str | os.PathLike[str] | None = None,
 ) -> FgResponseFrontierCachePrebuildSummary:
     del cfg
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import cleanup_fg_response_frontier_cache_temp_files
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        cleanup_fg_response_frontier_cache_temp_files,
+        compress_cache_dir_sidecars,
+        purge_stale_version_cache_files,
+    )
 
     started = time.perf_counter()
     stat_keys = all_response_stat_keys()
@@ -384,10 +392,20 @@ def run_fg_response_frontier_cache_prebuild(
     if int(removed_tmp) > 0:
         logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
 
+    removed_stale = purge_stale_version_cache_files()
+    if int(removed_stale) > 0:
+        logger.info(
+            "[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale)
+        )
+
     missing_paths = sorted(manifest_plan.missing_paths, key=_fg_response_frontier_prebuild_priority)
     run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
     _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
     elapsed_ms = float((time.perf_counter() - started) * 1000.0)
+    if int(run_summary.built) > 0:
+        # Bulk-compress newly written sidecars once (NTFS WOF XPRESS16K, ~6x, memmap preserved).
+        # Housekeeping after the timed region so elapsed_ms reflects build cost, not compaction.
+        compress_cache_dir_sidecars()
     return FgResponseFrontierCachePrebuildSummary(
         total=int(manifest_plan.total_paths),
         completed=int(manifest_hits + run_summary.completed),

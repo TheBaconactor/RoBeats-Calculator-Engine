@@ -15,7 +15,7 @@ replace GA:
   ("Allowed to be wrong" is confined to SPEED-only guidance — the incumbent and visit order; the pruning
   rule must be an admissible bound or lossless dominance, so there is nothing to verify.)
 - **Self-contained** = pure function of cold static inputs (gear pool, mini pool, chart, config). No GA
-  results, no DB, no persisted candidate set. A cold heuristic computed at solve time (incumbent/order) is fine.
+  results, no DB, no persisted candidate set. A cold ordering rule computed at solve time (incumbent/order) is fine.
 - **Speed bar = a corpus throughput SLO you set, NOT "GA-speed per song."** Judge against GA's
   cost-to-a-CORRECT-answer (its restarts + its wrongness on breakpoint songs), not its best-case raw speed.
   Whether it reaches near-GA is **measured, not promised** (§3).
