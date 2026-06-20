@@ -10,6 +10,7 @@ from gear_optimizer.solver.candidate_cache import (
     CandidateCache,
     base_candidate_cache_key,
     base_payload_from_result,
+    base_payload_from_result_tuple,
     fg_candidate_cache_key,
     reset_candidate_cache_for_tests,
 )
@@ -532,3 +533,19 @@ def test_fused_fg_selected_payload_cache_hit_skips_owner_scoring_after_disk_relo
         )
         == {}
     )
+
+
+def test_base_payload_tuple_preserves_overflow_element_gems():
+    # F1 regression: the GA-decode admission path (base_payload_from_result_tuple) must
+    # carry the elemental/overflow gem count losslessly under the canonical key "Element".
+    # The bug read it via the non-existent alias "Overflow", silently storing 0.
+    payload = base_payload_from_result_tuple(
+        result=(1000, 1, 2, 3, 4, 5, 6),  # score, ft, ff, pp, cm, fm, ov
+        base_stats=_base_stats(),
+        selected_color="Rush",
+    )
+    assert payload["GemCounts"]["Element"] == 6
+    assert payload["config"]["Overflow Gems"] == 6
+    assert payload["gem_counts"]["Element"] == 6
+    # Overflow gems land on the selected element's stat (base Rush 80 + 6 * elemental scale).
+    assert payload["Stats"]["Rush"] > _base_stats()["Rush"]

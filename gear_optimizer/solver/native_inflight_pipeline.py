@@ -293,6 +293,7 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
         base_stats_fixed=gpu_inputs.fixed_stats,
         fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
     )
+    from gear_optimizer.core.gem_defs import GemKey
     from gear_optimizer.solver.candidate_cache import (
         base_candidate_cache_key,
         base_payload_from_result_tuple,
@@ -319,7 +320,7 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
                 int(gem_counts.get("Perfect Points", 0) or 0),
                 int(gem_counts.get("Combo Multiplier", 0) or 0),
                 int(gem_counts.get("Fever Multiplier", 0) or 0),
-                int(gem_counts.get("Overflow", 0) or 0),
+                int(gem_counts.get(GemKey.ELEMENT.value, 0) or 0),
             )
             cache_key = base_candidate_cache_key(
                 calc_song=calc_song,
