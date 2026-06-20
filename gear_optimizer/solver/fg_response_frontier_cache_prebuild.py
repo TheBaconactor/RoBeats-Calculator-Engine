@@ -245,6 +245,28 @@ def build_fg_response_frontier_cache_for_path(
     )
 
 
+def ensure_response_frontier_cache_for_calc_song(
+    calc_song: dict,
+    ref_arrays: dict,
+    *,
+    stat_keys: Iterable[tuple[int, int]] | None = None,
+) -> None:
+    """Ensure the response-frontier bundle exists for an already-prepared calc_song.
+
+    In-memory owner entry for callers that hold a prepared calc_song (e.g. fixed-0ms
+    tier replay) rather than a song path. The candidate-independent all-FT/FF bundle is
+    keyed by the song's timing context, so a chart-only (zero_ms) calc_song builds its
+    own bundle distinct from the perfect_window one. Idempotent; keeps the single
+    production owner of ``build_or_load_response_frontier_payload`` intact.
+    """
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        build_or_load_response_frontier_payload,
+    )
+
+    keys = tuple(stat_keys) if stat_keys is not None else all_response_stat_keys()
+    build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
+
+
 def _fg_response_frontier_prebuild_priority(path_text: str) -> tuple[int, str]:
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope

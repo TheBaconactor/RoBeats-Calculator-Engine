@@ -403,8 +403,10 @@ def compute_team_buff_tier_leaderboards(
     toggle):
     - "perfect_window" (default): envelope-optimal exact replay (above).
     - "zero_ms" (issue #51): every hit at chart time. Base uses the fixed chart-time fever
-      timeline; FG collapses to base (a Great is unreachable at chart time, so the FG optimum
-      forces zero greats -- FG 0ms == base 0ms exactly).
+      timeline; FG re-optimizes each loadout's surface at chart timing (the persisted
+      Perfect-window surface is not valid at 0ms) and re-scores it across tiers. Forcing
+      greats still helps at 0ms (it shifts fever activation via fill length), so FG 0ms is
+      not base 0ms.
     """
     n = max(0, int(limit))
     if not entries or n <= 0:
@@ -558,40 +560,54 @@ def compute_team_buff_tier_leaderboards(
     have_fg = replay_fg and any(isinstance(e.get("fg"), dict) for e in per_entry)
     if have_fg:
         fg_indices = [idx for idx, e in enumerate(per_entry) if isinstance(e.get("fg"), dict)]
+        if timing_mode == "zero_ms":
+            # Re-optimize each loadout's FG surface at fixed chart timing (issue #51). Forcing
+            # greats still helps at 0ms -- it changes the fill length, which shifts where fever
+            # activates and can align fever windows better with note clusters (a count effect,
+            # independent of hit-offset) -- so FG 0ms is NOT base 0ms and the surface must be
+            # rebuilt. The persisted surface is the Perfect-window optimum (invalid at 0ms), so it
+            # is rebuilt once from each loadout's base FG stats. Tier deltas never shift FT/FF, so
+            # the rebuilt surface is tier-invariant and only stat values re-derive per tier.
+            from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_response_surfaces
+
+            base_fg_stats = [
+                _fg_stats_at_tier(
+                    per_entry[idx]["fg"],
+                    delta_pp=0,
+                    delta_primary=0,
+                    delta_secondary=0,
+                    primary_color=primary_color,
+                    secondary_color=secondary_color,
+                )
+                for idx in fg_indices
+            ]
+            rebuilt = build_fixed_timing_response_surfaces(base_fg_stats, calc_song, ref_arrays, primary_color)
+            fg_surface_by_idx = {idx: surface for idx, surface in zip(fg_indices, rebuilt, strict=True)}
+        else:
+            fg_surface_by_idx = {idx: per_entry[idx]["fg"]["surface"] for idx in fg_indices}
+
         for tier in tier_list:
             dpp, dp, ds = tier_deltas[str(tier)]
             out_list = fg_scores_by_tier[str(tier)]
-            tier_fg_stats = [
-                _fg_stats_at_tier(
-                    per_entry[idx]["fg"],
+            for idx in fg_indices:
+                e = per_entry[idx]
+                stats = _fg_stats_at_tier(
+                    e["fg"],
                     delta_pp=int(dpp),
                     delta_primary=int(dp),
                     delta_secondary=int(ds),
                     primary_color=primary_color,
                     secondary_color=secondary_color,
                 )
-                for idx in fg_indices
-            ]
-            if timing_mode == "zero_ms":
-                # At fixed 0ms timing a Great is unreachable (a chart-time hit is a Perfect) and
-                # forcing greats only ever costs the great penalty with no fever reach to buy back,
-                # so the FG optimum forces zero greats: FG 0ms == base 0ms exactly. Score FG via the
-                # base 0ms scorer on the FG loadout's stats -- no GPU surface rebuild. The equivalence
-                # is pinned against the canonical builder in tests/test_fixed_timing_zero_ms_fg_gpu.py.
-                scores = score_stats_fixed_timing_exact_batch(tier_fg_stats, calc_song, ref_arrays)
-                for idx, score in zip(fg_indices, scores, strict=True):
-                    out_list[idx] = int(score)
-            else:
-                for idx, stats in zip(fg_indices, tier_fg_stats, strict=True):
-                    replay_score = score_force_greats_response_surface_exact(
-                        stats, calc_song, ref_arrays, per_entry[idx]["fg"]["surface"]
+                replay_score = score_force_greats_response_surface_exact(
+                    stats, calc_song, ref_arrays, fg_surface_by_idx[idx]
+                )
+                if replay_score is None:
+                    raise ValueError(
+                        "FG response surface tier replay failed for loadout "
+                        f"{e.get('loadout_hash')!r} at tier {tier!r}."
                     )
-                    if replay_score is None:
-                        raise ValueError(
-                            "FG response surface tier replay failed for loadout "
-                            f"{per_entry[idx].get('loadout_hash')!r} at tier {tier!r}."
-                        )
-                    out_list[idx] = int(replay_score)
+                out_list[idx] = int(replay_score)
 
     tiers_out: dict[str, dict] = {}
     for tier in tier_list:
