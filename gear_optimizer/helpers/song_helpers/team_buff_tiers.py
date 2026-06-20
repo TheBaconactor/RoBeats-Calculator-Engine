@@ -384,6 +384,7 @@ def compute_team_buff_tier_leaderboards(
     base_team_color_override: object = None,
     target_team_color_override: object = None,
     replay_surfaces: tuple[str, ...] = ("meta", "fg"),
+    timing_mode: str = "perfect_window",
 ) -> dict:
     """
     Re-score persisted entries under TeamBuff tiers and return per-tier leaderboards.
@@ -397,10 +398,20 @@ def compute_team_buff_tier_leaderboards(
       representation; tier deltas never shift FT/FF, so the fever timeline is
       tier-invariant and only stat values re-derive).
     - Produces top-N lists by base score and FG score per tier.
+
+    ``timing_mode`` selects which timing model the replay answers (a semantic input, not a
+    toggle):
+    - "perfect_window" (default): envelope-optimal exact replay (above).
+    - "zero_ms" (issue #51): every hit at chart time. Base uses the fixed chart-time fever
+      timeline; FG collapses to base (a Great is unreachable at chart time, so the FG optimum
+      forces zero greats -- FG 0ms == base 0ms exactly).
     """
     n = max(0, int(limit))
     if not entries or n <= 0:
         return {"tiers": {}, "meta": {"candidate_count": 0}}
+    timing_mode = str(timing_mode or "perfect_window").strip().lower()
+    if timing_mode not in {"perfect_window", "zero_ms"}:
+        raise ValueError(f"compute_team_buff_tier_leaderboards: unknown timing_mode {timing_mode!r}")
     replay_meta = "meta" in {str(s).strip().lower() for s in (replay_surfaces or ("meta", "fg"))}
     replay_fg = "fg" in {str(s).strip().lower() for s in (replay_surfaces or ("meta", "fg"))}
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
@@ -423,7 +434,7 @@ def compute_team_buff_tier_leaderboards(
     try:
         from ...solver.timing_envelope import apply_timing_envelope
 
-        apply_timing_envelope(calc_song)
+        apply_timing_envelope(calc_song, mode=timing_mode)
     except Exception as e:
         logger.debug(f"team_buff_tiers:compute_team_buff_tier_leaderboards: {e}")
 
@@ -494,7 +505,21 @@ def compute_team_buff_tier_leaderboards(
     from ...solver.scoring.exact_rescore import (
         score_force_greats_response_surface_exact,
         score_stats_exact_batch,
+        score_stats_fixed_timing_exact_batch,
     )
+
+    # Base-meta scoring is one canonical exact replay per timing mode (a semantic input,
+    # not a toggle): the Perfect-window timing frontier (perfect_window) vs the fixed
+    # chart-time timeline (zero_ms). FG re-optimization is selected separately below.
+    if timing_mode == "zero_ms":
+
+        def _base_score_batch(rows):
+            return score_stats_fixed_timing_exact_batch(rows, calc_song, ref_arrays)
+
+    else:
+
+        def _base_score_batch(rows):
+            return score_stats_exact_batch(rows, calc_song, ref_arrays)
 
     tier_deltas: dict[str, tuple[int, int, int]] = {}
     for tier in tier_list:
@@ -525,39 +550,48 @@ def compute_team_buff_tier_leaderboards(
                 )
                 for e in per_entry
             ]
-            meta_scores_by_tier[str(tier)] = [
-                int(s) for s in score_stats_exact_batch(tier_stats, calc_song, ref_arrays)
-            ]
+            meta_scores_by_tier[str(tier)] = [int(s) for s in _base_score_batch(tier_stats)]
     else:
         meta_scores_by_tier = {str(t): [0] * len(per_entry) for t in tier_list}
 
     fg_scores_by_tier: dict[str, list[int]] = {str(t): [0] * len(per_entry) for t in tier_list}
     have_fg = replay_fg and any(isinstance(e.get("fg"), dict) for e in per_entry)
     if have_fg:
+        fg_indices = [idx for idx, e in enumerate(per_entry) if isinstance(e.get("fg"), dict)]
         for tier in tier_list:
             dpp, dp, ds = tier_deltas[str(tier)]
             out_list = fg_scores_by_tier[str(tier)]
-            for idx, e in enumerate(per_entry):
-                fg = e.get("fg")
-                if not isinstance(fg, dict):
-                    continue
-                stats = _fg_stats_at_tier(
-                    fg,
+            tier_fg_stats = [
+                _fg_stats_at_tier(
+                    per_entry[idx]["fg"],
                     delta_pp=int(dpp),
                     delta_primary=int(dp),
                     delta_secondary=int(ds),
                     primary_color=primary_color,
                     secondary_color=secondary_color,
                 )
-                replay_score = score_force_greats_response_surface_exact(
-                    stats, calc_song, ref_arrays, fg["surface"]
-                )
-                if replay_score is None:
-                    raise ValueError(
-                        "FG response surface tier replay failed for loadout "
-                        f"{e.get('loadout_hash')!r} at tier {tier!r}."
+                for idx in fg_indices
+            ]
+            if timing_mode == "zero_ms":
+                # At fixed 0ms timing a Great is unreachable (a chart-time hit is a Perfect) and
+                # forcing greats only ever costs the great penalty with no fever reach to buy back,
+                # so the FG optimum forces zero greats: FG 0ms == base 0ms exactly. Score FG via the
+                # base 0ms scorer on the FG loadout's stats -- no GPU surface rebuild. The equivalence
+                # is pinned against the canonical builder in tests/test_fixed_timing_zero_ms_fg_gpu.py.
+                scores = score_stats_fixed_timing_exact_batch(tier_fg_stats, calc_song, ref_arrays)
+                for idx, score in zip(fg_indices, scores, strict=True):
+                    out_list[idx] = int(score)
+            else:
+                for idx, stats in zip(fg_indices, tier_fg_stats, strict=True):
+                    replay_score = score_force_greats_response_surface_exact(
+                        stats, calc_song, ref_arrays, per_entry[idx]["fg"]["surface"]
                     )
-                out_list[idx] = int(replay_score)
+                    if replay_score is None:
+                        raise ValueError(
+                            "FG response surface tier replay failed for loadout "
+                            f"{per_entry[idx].get('loadout_hash')!r} at tier {tier!r}."
+                        )
+                    out_list[idx] = int(replay_score)
 
     tiers_out: dict[str, dict] = {}
     for tier in tier_list:
@@ -633,7 +667,7 @@ def compute_team_buff_tier_leaderboards(
                 row["fg_base_score"] = 0
             fg_top.append(row)
         if paired_stats:
-            fg_base_scores = score_stats_exact_batch(paired_stats, calc_song, ref_arrays)
+            fg_base_scores = _base_score_batch(paired_stats)
             for row, score in zip(paired_rows, fg_base_scores):
                 row["fg_base_score"] = int(score)
         tiers_out[str(tier)] = {"base_top51": base_top, "fg_top51": fg_top}

@@ -352,6 +352,92 @@ def score_stats_exact_batch(
     return scores
 
 
+def score_stats_fixed_timing_exact(
+    stats: Mapping[str, Any],
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+) -> int:
+    """Exact f64 base replay under fixed 0ms timing (see ``*_batch``)."""
+    return int(score_stats_fixed_timing_exact_batch([stats], calc_song, ref_arrays)[0])
+
+
+def score_stats_fixed_timing_exact_batch(
+    stats_rows: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+) -> list[int]:
+    """
+    Exact f64 base replay under FIXED 0ms timing (issue #51, ``timing_mode=zero_ms``).
+
+    Every hit lands at chart time (delta=0), so the fever timeline is the single
+    deterministic chart-time timeline from ``calculate_fever_timeline_indices`` --
+    NOT the Perfect-window timing frontier used by ``score_stats_exact_batch``. This
+    path therefore depends on no timing-envelope stream or frontier payload.
+    """
+    if not stats_rows:
+        return []
+
+    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
+    song_dict = calc_song if isinstance(calc_song, dict) else dict(calc_song)
+    song_data = song_dict.get("song_data", {}) or {}
+    timestamps = song_data.get("chart_timestamps")
+    if timestamps is None:
+        timestamps = song_data.get("timestamps", song_data.get("fg_timestamps", ()))
+    timestamps = np.asarray(timestamps, dtype=np.float32)
+    total_notes = int(timestamps.shape[0])
+    if total_notes <= 0:
+        return [0 for _stats in stats_rows]
+
+    metadata = song_dict.get("metadata", {}) or {}
+    long_notes = safe_int(metadata.get("Long Notes"), 0)
+    default_last_note = float(timestamps[-1]) if total_notes else 0.0
+    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
+
+    ft_axis = ref_arrays["Fever Time"]
+    ff_axis = ref_arrays["Fever Fill Rate"]
+    mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+
+    scores: list[int] = []
+    for stats in stats_rows:
+        (
+            _ref_arrays,
+            primary_val,
+            secondary_val,
+            pp_factor,
+            combo_mul,
+            fever_mul,
+            ft_idx,
+            ff_idx,
+        ) = _score_stat_inputs(stats, song_dict, ref_arrays)
+        base_value = float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor)
+        ft_factor = lookup_reference_py(int(ft_idx), ft_axis, TOTAL_ROWS)
+        ff_factor = lookup_reference_py(int(ff_idx), ff_axis, TOTAL_ROWS)
+        # fever_mask_head is a view into mask_buffer; calculate_score_exact consumes it
+        # fully before the next iteration overwrites the buffer.
+        fever_mask_head, count_body_fever, count_body_normal, _activations, _last_end = (
+            calculate_fever_timeline_indices(
+                timestamps,
+                total_notes,
+                ff_factor,
+                ft_factor,
+                long_notes,
+                last_note_time,
+                mask_buffer,
+            )
+        )
+        scores.append(
+            calculate_score_exact(
+                base_value,
+                float(combo_mul),
+                float(fever_mul),
+                fever_mask_head,
+                int(count_body_fever),
+                int(count_body_normal),
+            )
+        )
+    return scores
+
+
 def _frontier_replay_refs(ref_arrays: Mapping[str, Any]) -> dict[str, Any]:
     frontier_refs = dict(resolve_exact_replay_ref_arrays(ref_arrays))
     for axis in ("Fever Time", "Fever Fill Rate"):

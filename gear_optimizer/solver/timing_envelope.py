@@ -431,16 +431,32 @@ def build_great_floor_envelope_sec(
     return _emit_pernote_edge_envelope_sec(ts_sec, great_low_ms, prefix_max=True, quantize_ms=quantize_ms)
 
 
-def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | None:
+def apply_timing_envelope(
+    calc_song: dict, *, attach_fg: bool = True, mode: str = "perfect_window"
+) -> dict | None:
     """
     Attach deterministic timing-envelope streams to a calc_song.
 
-    Base scoring keeps chart timestamps; FG receives chart timestamps plus a
-    deterministic late Great candidate envelope for carry-aware exact DP.
+    ``mode`` selects the timing model this calc_song is prepared for. It is a
+    semantic input (each mode is one canonical preparation), not a perf flag:
+
+    - ``"perfect_window"`` (default): base scoring keeps chart timestamps; FG
+      receives chart timestamps plus the deterministic Perfect/Great candidate +
+      floor envelopes for carry-aware exact DP.
+    - ``"zero_ms"`` (issue #51 fixed timing): every hit lands at chart time. Base
+      keeps chart timestamps; FG is prepared WITHOUT the Perfect-window envelope
+      streams, so ``extract_fg_song_inputs`` falls back to chart timestamps for
+      every activation/boundary decision and disables forced-great carry -- the
+      canonical chart-only FG path. ``TimingEnvelopeMode="zero_ms"`` is stamped so
+      cache signatures stay disjoint from the envelope path.
     """
 
     if not isinstance(calc_song, dict):
         return None
+    timing_mode = str(mode or "perfect_window").strip().lower()
+    if timing_mode not in {"perfect_window", "zero_ms"}:
+        raise ValueError(f"apply_timing_envelope: unknown timing mode {mode!r}")
+
     song_data = calc_song.get("song_data", {}) or {}
     timestamps = song_data.get("chart_timestamps", song_data.get("timestamps"))
     if timestamps is None:
@@ -455,6 +471,33 @@ def apply_timing_envelope(calc_song: dict, *, attach_fg: bool = True) -> dict | 
     except Exception as e:
         logger.debug(f"timing_envelope:apply_timing_envelope: {e}")
         song_data.pop("_chart_timestamps_sig", None)
+
+    if timing_mode == "zero_ms":
+        # Fixed 0ms timing: no Perfect-window envelope. Drop any FG candidate/floor
+        # streams so extract_fg_song_inputs uses its chart-timestamp fallback (the
+        # canonical chart-only FG build) and disables forced-great carry.
+        for _stream in (
+            "fg_perfect_candidate_timestamps",
+            "fg_perfect_floor_timestamps",
+            "fg_great_floor_timestamps",
+            "fg_great_candidate_timestamps",
+            "_note_types_sig",
+        ):
+            song_data.pop(_stream, None)
+        song_data["fg_timestamps"] = chart_ts
+        meta = dict(calc_song.get("metadata", {}) or {})
+        meta["TimingEnvelopeApplied"] = True
+        meta["TimingEnvelopeMode"] = "zero_ms"
+        meta["TimingEnvelopeFGPerfect"] = "chart"
+        meta["TimingEnvelopeFGCarry"] = "none"
+        calc_song["metadata"] = meta
+        calc_song["song_data"] = song_data
+        return {
+            "mode": "fg" if attach_fg else "base",
+            "notes": int(chart_ts.shape[0]),
+            "timing_mode": "zero_ms",
+        }
+
     if not attach_fg:
         calc_song["song_data"] = song_data
         return {"mode": "base", "notes": int(chart_ts.shape[0])}
