@@ -8,14 +8,14 @@ GROUND TRUTH = the decompiled server scorer (place 706824758 Spotco_Robeats_dev,
     `get_verified_event_time` clamps only to +-(okay width=380ms) -> a no-op for any
     legal hit, so the verified time IS the chosen hit offset;
   * the judgment is assigned SEPARATELY from the offset by `timedelta_to_result`
-    against the base windows Perfect [-20,+40], **Great [-75,+150]**, Okay [-140,+240]
-    (held tail Type==2 multiplies BOTH edges x2).
+    against the CUMULATIVE windows Perfect [-20,+40], **Great [-95,+190]**, Okay [-235,+430]
+    (`get_note_times` ADDS each tier's gear-stat extra to the prior boundary; held tail x2).
 
 So a note sitting D ms PAST the fever cutoff can still be pulled into fever by hitting
 it early, and the *best* judgment that still reaches fever depends on D:
   * D <= 20ms  -> Perfect-fever  (issue #42, already landed: perfect_floor = chart-20)
-  * 20 < D <= 75ms -> **Great-fever** (issue #44, THIS FILE: great_floor = chart-75)
-  * 75 < D <= 140ms -> Okay-fever   (out of #44 scope; documented follow-up)
+  * 20 < D <= 95ms -> **Great-fever** (issue #44, THIS FILE: great_floor = chart-95)
+  * 95 < D <= 235ms -> Okay-fever   (out of #44 scope; documented follow-up)
 
 Unlike #42 (a monotone floor shift, pure gain because Perfect-fever >= Perfect-non-
 fever pointwise) the greats-side is a SCORE/PENALTY PARETO tradeoff: the extra boundary
@@ -25,11 +25,11 @@ surfaces (fever end extended from `e_perfect` to each `e` in `(e_perfect, e_grea
 the extra notes [e_perfect, e) marked great-in-fever) and let the exact rescore pick the
 winner per stat cell.
 
-THE FORMULA (proven here, mirrors #42 with the wider Great lower edge): with the
+THE FORMULA (proven here, mirrors #42 with the cumulative Great lower edge): with the
 activation fixed at its latest Perfect (optimal for extent), the maximal fever extent
 allowing early-Great boundary hits is
     e_great = searchsorted(prefix_max(chart + great_lo), perfect_candidate[a] + rft)
-with great_lo = -75ms (held tail -150). e_perfect uses perfect_lo = -20 (held -40). The
+with great_lo = -95ms (held tail -190). e_perfect uses perfect_lo = -20 (held -40). The
 notes [e_perfect, e_great) are reachable into fever ONLY as Greats; [a, e_perfect) stay
 Perfect.
 """
@@ -40,12 +40,16 @@ from math import floor
 
 import numpy as np
 
-# Base judgment-window edges (ms), decompiled GearStats 3rd anchor; held tail (note_type
-# 3) doubles every edge. Negative = early.
+# CUMULATIVE judgment-window edges (ms), from the decompiled game's GearStats.get_note_times +
+# SPUtil.timedelta_to_result (place 706824758): each tier ADDS its gear-stat extra to the previous
+# boundary (great = perfect +- great_extra, okay = great +- okay_extra). Held tail (note_type 3)
+# doubles every edge. Negative = early. (NoteTimeGraph renders "-95ms (Great)" / "+190ms (Great)".)
 PERFECT_LO_MS = -20
 PERFECT_HI_MS = 40
-GREAT_LO_MS = -75
-GREAT_HI_MS = 150
+GREAT_LO_MS = -95   # = perfect_lower(-20) + great_lower_extra(-75)
+GREAT_HI_MS = 190   # = perfect_upper(+40) + great_upper_extra(+150)
+OKAY_LO_MS = -235   # = great_lower(-95) + okay_lower_extra(-140)
+OKAY_HI_MS = 430    # = great_upper(+190) + okay_upper_extra(+240)
 HELD_TAIL_TYPE = 3
 HELD_TAIL_MULT = 2
 
@@ -86,7 +90,10 @@ def _greedy_extent(chart_ms, a, rft_ms, lo, hi=PERFECT_HI_MS):
 
 
 def _exhaustive_extent(chart_ms, a, rft_ms, lo, hi=PERFECT_HI_MS):
-    """Assumption-free: every monotonic per-note offset assignment over a coarse grid."""
+    """Assumption-free: every monotonic per-note offset assignment over a 5ms grid (step 5 keeps
+    BOTH each note's floor `lo` and the activation's `hi=+40` as grid points). Exponential in n, so
+    the caller restricts it to the small (n<=5) cases; the held-tail n=6 case is covered by the
+    fast `formula==greedy` check instead."""
     n = len(chart_ms)
     lo_arr = _lo_array(chart_ms, lo)
     hi_arr = _lo_array(chart_ms, hi)
@@ -111,9 +118,9 @@ def _floor_extent(chart_ms, a, rft_ms, lo, hi=PERFECT_HI_MS):
 
 
 # Constructed case: a boundary note 50ms past the latest-Perfect cutoff -- out of Perfect
-# reach (50 > 20) but inside Great reach (50 < 75).
+# reach (50 > 20) but inside Great reach (50 < 95).
 #   activation idx 2 @ 200ms; latest-Perfect start = 240; rft = 1000 => cutoff = 1240.
-#   boundary @ 1290ms: chart-20=1270 >= 1240 (no Perfect) but chart-75=1215 < 1240 (Great in).
+#   boundary @ 1290ms: chart-20=1270 >= 1240 (no Perfect) but chart-95=1195 < 1240 (Great in).
 _CHART_MS = [0, 100, 200, 400, 600, 800, 1000, 1290, 1600]
 _ACTIVATION = 2
 _RFT_MS = 1000
@@ -123,15 +130,21 @@ _VALIDATION_CASES = [
     ([0, 300, 600, 1310, 1700], [1, 1, 1, 1, 1], 1, 1000),
     ([0, 100, 1280, 1330, 1700], [1, 1, 1, 1, 1], 0, 1200),
     ([0, 50, 100, 1300, 1700], [1, 1, 1, 1, 1], 2, 1100),
-    # Held tail (idx 4) reaches -150 early; sits earlier-effective than idx 3 -> the raw
+    # Held tail (idx 4) reaches -190 early; sits earlier-effective than idx 3 -> the raw
     # great floor dips and only the prefix-max keeps searchsorted exact.
     ([0, 100, 200, 1300, 1305, 1700], [1, 1, 1, 1, 3, 1], 2, 1000),
 ]
 
 
 def test_great_greedy_matches_exhaustive():
-    """The greedy great-extent ground truth equals assumption-free monotonic brute force."""
+    """The greedy great-extent ground truth equals assumption-free monotonic brute force.
+
+    Restricted to n<=5 cases: the brute force is exponential in n and the cumulative -95/-190 early
+    range widens the per-note grid, so the n=6 held-tail case would be prohibitively slow here (it
+    is validated by `test_great_floor_formula_matches_ground_truth` via greedy==floor instead)."""
     for chart, types, a, rft in _VALIDATION_CASES:
+        if len(chart) > 5:
+            continue
         great_lo = _per_note_lo(types, GREAT_LO_MS)
         assert _greedy_extent(chart, a, rft, lo=great_lo) == _exhaustive_extent(
             chart, a, rft, lo=great_lo
@@ -157,7 +170,7 @@ def test_constructed_case_exposes_the_greats_gap():
     e_perfect = _floor_extent(_CHART_MS, _ACTIVATION, _RFT_MS, lo=perfect_lo)
     e_great = _floor_extent(_CHART_MS, _ACTIVATION, _RFT_MS, lo=great_lo)
     assert e_perfect == 5  # notes 2..6 (idx 7 @ 1290 is 50ms past cutoff: no Perfect)
-    assert e_great == 6  # idx 7 pulled in via a legal -75ms Great hit
+    assert e_great == 6  # idx 7 pulled in via a legal -95ms Great hit
     assert e_great - e_perfect == 1
 
 
@@ -195,7 +208,7 @@ def _judge(offset, note_type):
         return "perfect"
     if GREAT_LO_MS * mult <= offset <= GREAT_HI_MS * mult:
         return "great"
-    if -140 * mult <= offset <= 240 * mult:
+    if OKAY_LO_MS * mult <= offset <= OKAY_HI_MS * mult:
         return "okay"
     return "miss"
 

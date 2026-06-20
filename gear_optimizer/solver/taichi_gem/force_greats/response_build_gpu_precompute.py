@@ -149,10 +149,11 @@ def _precompute_end_indices(
     floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
     if int(floor_ts.shape[0]) != int(ts.shape[0]):
         raise ValueError("perfect_floor_timestamps length must match timestamps")
-    # Greats-side endpoint-early fever inclusion (issue #44): a boundary note 20-75ms past the
+    # Greats-side endpoint-early fever inclusion (issue #44): a boundary note 20-95ms past the
     # cutoff is out of Perfect reach but reachable into fever as a GREAT, so its EXTENDED fever
-    # boundary searches the earliest-Great floor (chart - 75 / held tail -150, prefix-max). It
-    # is pointwise <= the Perfect floor, so great_floor_end_idx >= perfect/great_end_idx -- a
+    # boundary searches the earliest-Great floor (chart - 95 / held tail -190, prefix-max; the
+    # cumulative perfect_lower + great_lower_extra edge). It is pointwise <= the Perfect floor, so
+    # great_floor_end_idx >= perfect/great_end_idx -- a
     # pure additional reachable end the kernel emits as a great-in-fever surface.
     great_floor_ts = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
     if int(great_floor_ts.shape[0]) != int(ts.shape[0]):
