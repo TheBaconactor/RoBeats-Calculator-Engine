@@ -82,7 +82,6 @@ def _init_prebuild_worker(
     total_workers: int = 1,
 ) -> None:
     import multiprocessing as mp
-    import os
 
     from gear_optimizer.core.cpu_affinity import pin_current_process_to_core_band
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
@@ -90,11 +89,15 @@ def _init_prebuild_worker(
     # Hard-pin this worker to its own core band so the pool spans every P+E core (see
     # pin_current_process_to_core_band). ProcessPoolExecutor names spawned workers "...-<seq>" with a
     # unique incrementing seq, so seq % total_workers -> a distinct band per worker, no shared counter.
+    # If the name carries no ordinal (unexpected), leave this worker UNPINNED rather than guess a band:
+    # a guessed band would collide with a sibling and silently leave cores uncovered, whereas unpinned
+    # is merely suboptimal -- and pinning here is best-effort, never correctness.
     try:
         seq = int(mp.current_process().name.rsplit("-", 1)[-1])
     except (ValueError, IndexError, AttributeError):
-        seq = os.getpid()
-    pin_current_process_to_core_band(seq, int(total_workers))
+        seq = None
+    if seq is not None:
+        pin_current_process_to_core_band(seq, int(total_workers))
 
     global _PREBUILD_WORKER_REF_ARRAYS, _PREBUILD_WORKER_STAT_KEYS
     _PREBUILD_WORKER_REF_ARRAYS = dict(ref_arrays or {})

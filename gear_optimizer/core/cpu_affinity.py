@@ -6,8 +6,9 @@ at a throttled clock (~4.2 GHz instead of the P-cores' ~5.5 GHz). That silently 
 build. This forces the fast P-cores and lifts the process out of EcoQoS so they clock up.
 
 Strictly an OS/hardware boundary helper: a no-op off Windows, on a non-hybrid CPU, or if anything
-fails — it must never break startup. Child worker processes (ProcessPool spawn) inherit the parent's
-affinity, so calling this once at process start covers the whole build.
+fails — it must never break startup. pin_to_performance_cores keeps the lightweight main process on
+the P-cores; the FG prebuild's worker pool re-pins each worker across its own P+E core band
+(pin_current_process_to_core_band) so the heavy build uses every core.
 """
 from __future__ import annotations
 
@@ -62,36 +63,41 @@ def _performance_core_mask() -> tuple[int, list[int]] | None:
     return (mask, p_logical) if mask else None
 
 
+def _apply_affinity_mask(mask: int) -> None:
+    """Confine this process to `mask` and let it boost: set the hard affinity mask, lift priority out
+    of background, and clear EcoQoS execution-speed throttling so the masked cores (incl. E-cores) run
+    at full clock. The single home for the kernel32 affinity/priority/throttle sequence."""
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    hproc = k.GetCurrentProcess()
+    k.SetProcessAffinityMask.restype = wintypes.BOOL
+    k.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
+    k.SetProcessAffinityMask(hproc, int(mask))
+    # ABOVE_NORMAL signals "not background", so the scheduler keeps the process on the fast cores.
+    k.SetPriorityClass(hproc, 0x00008000)
+
+    # Clear EcoQoS EXECUTION_SPEED throttling (StateMask=0) so the masked cores boost, not eco-park.
+    class _PowerThrottle(ctypes.Structure):
+        _fields_ = [("Version", wintypes.DWORD), ("ControlMask", wintypes.DWORD), ("StateMask", wintypes.DWORD)]
+
+    st = _PowerThrottle(1, 0x1, 0)  # version=1, control=EXECUTION_SPEED, state=0(off)
+    k.SetProcessInformation(hproc, 4, ctypes.byref(st), ctypes.sizeof(st))  # 4 = ProcessPowerThrottling
+
+
 def pin_to_performance_cores() -> None:
-    """Best-effort: confine this process (and inherited workers) to the P-cores at full clock."""
+    """Best-effort: confine this MAIN process to the P-cores at full clock. The FG prebuild's worker
+    pool then re-pins each worker across its own P+E core band (pin_current_process_to_core_band) so the
+    heavy build uses every core; this call keeps the lightweight main/coordination process fast."""
     if sys.platform != "win32":
         return
     try:
-        import ctypes
-        from ctypes import wintypes
-
         found = _performance_core_mask()
         if found is None:
             return
         mask, p_logical = found
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-        hproc = k.GetCurrentProcess()
-
-        k.SetProcessAffinityMask.restype = wintypes.BOOL
-        k.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
-        k.SetProcessAffinityMask(hproc, mask)
-
-        # ABOVE_NORMAL keeps the system responsive while signalling "not background".
-        k.SetPriorityClass(hproc, 0x00008000)
-
-        # Explicitly clear EcoQoS execution-speed throttling so the P-cores boost (StateMask=0 with
-        # the EXECUTION_SPEED control bit = "do not throttle").
-        class _PowerThrottle(ctypes.Structure):
-            _fields_ = [("Version", wintypes.DWORD), ("ControlMask", wintypes.DWORD), ("StateMask", wintypes.DWORD)]
-
-        st = _PowerThrottle(1, 0x1, 0)  # version=1, control=EXECUTION_SPEED, state=0(off)
-        k.SetProcessInformation(hproc, 4, ctypes.byref(st), ctypes.sizeof(st))  # 4 = ProcessPowerThrottling
-
+        _apply_affinity_mask(mask)
         logger.info("CPU: pinned to %d performance cores %s, EcoQoS throttling off.", len(p_logical), p_logical)
     except Exception as e:  # fail-safe: scheduling is an optimization, never block startup
         logger.debug("pin_to_performance_cores skipped: %s", e)
@@ -152,9 +158,6 @@ def pin_current_process_to_core_band(index: int, total: int) -> None:
         # Stay unpinned so the worker pool fills the whole CPU via the OS scheduler.
         return
     try:
-        import ctypes
-        from ctypes import wintypes
-
         ncpu = logical_core_count()
         total = max(1, int(total))
         index = int(index) % total
@@ -165,20 +168,7 @@ def pin_current_process_to_core_band(index: int, total: int) -> None:
             mask |= 1 << cpu
         if mask == 0:
             return
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-        hproc = k.GetCurrentProcess()
-        k.SetProcessAffinityMask.restype = wintypes.BOOL
-        k.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
-        k.SetProcessAffinityMask(hproc, mask)
-
-        # ABOVE_NORMAL + clear EcoQoS so the band (incl. E-cores) runs at full clock, not parked/eco.
-        k.SetPriorityClass(hproc, 0x00008000)
-
-        class _PowerThrottle(ctypes.Structure):
-            _fields_ = [("Version", wintypes.DWORD), ("ControlMask", wintypes.DWORD), ("StateMask", wintypes.DWORD)]
-
-        st = _PowerThrottle(1, 0x1, 0)
-        k.SetProcessInformation(hproc, 4, ctypes.byref(st), ctypes.sizeof(st))
+        _apply_affinity_mask(mask)
         logger.debug("CPU: worker %d/%d pinned to logical cores [%d,%d), EcoQoS off.", index, total, lo, hi)
     except Exception as e:  # fail-safe: scheduling is an optimization, never block the build
         logger.debug("pin_current_process_to_core_band skipped: %s", e)
