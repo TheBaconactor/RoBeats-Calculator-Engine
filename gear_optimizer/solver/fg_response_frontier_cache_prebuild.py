@@ -45,11 +45,13 @@ class FgResponseFrontierCachePrebuildSummary:
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
 def _prebuild_cpu_count() -> int:
-    # Size to the cores this process can actually use (the P-cores after pin_to_performance_cores),
-    # not every logical CPU -- otherwise reducer-thread budgets oversubscribe the pinned P-cores.
-    from gear_optimizer.core.cpu_affinity import usable_core_count
+    # All logical cores: the prebuild workers hard-pin themselves across distinct P AND E core bands
+    # (pin_current_process_to_core_band), so reducer-thread + worker budgets size to every core, not
+    # just the main process's P-core affinity. (On a non-hybrid CPU the band pin is a no-op and workers
+    # use all cores anyway, so this is correct everywhere.)
+    from gear_optimizer.core.cpu_affinity import logical_core_count
 
-    return max(1, usable_core_count())
+    return max(1, logical_core_count())
 
 
 def _resolve_prebuild_reducer_threads(worker_count: int | None = None) -> int:
@@ -59,11 +61,14 @@ def _resolve_prebuild_reducer_threads(worker_count: int | None = None) -> int:
 
 def _resolve_prebuild_worker_count() -> int:
     # The per-song body-tail build is a strictly sequential DP, so cross-song overlap (more worker
-    # processes) is the only parallelism lever. With the process pinned to the performance cores
-    # (pin_to_performance_cores; e.g. 8 P-cores / 16 logical on an i9-13900K), 4 workers overlap 4
-    # songs' sequential DPs across them -- measured ~3x the throughput and ~82% CPU vs 2 workers'
-    # ~50% (which left the fast cores half-idle). Reducer threads = usable_core_count // workers.
-    return 4
+    # processes) is the only parallelism lever. Each worker hard-pins itself to its own ~4-logical-core
+    # band spanning P AND E (pin_current_process_to_core_band), so the count is one worker per 4 logical
+    # cores -- e.g. 8 on an i9-13900K (32 logical) -> every P+E core at full clock, vs the old 4 workers
+    # over only the 16 P logicals. Reducer threads = logical_core_count // workers (~4). (An unpinned
+    # build can't do this: Windows parks all the workers on the E-cores only.)
+    from gear_optimizer.core.cpu_affinity import logical_core_count
+
+    return max(1, logical_core_count() // 4)
 
 
 _PREBUILD_WORKERS = _resolve_prebuild_worker_count()
@@ -74,8 +79,22 @@ def _init_prebuild_worker(
     ref_arrays: dict,
     stat_keys: tuple[tuple[int, int], ...],
     reducer_threads: int = 1,
+    total_workers: int = 1,
 ) -> None:
+    import multiprocessing as mp
+    import os
+
+    from gear_optimizer.core.cpu_affinity import pin_current_process_to_core_band
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
+
+    # Hard-pin this worker to its own core band so the pool spans every P+E core (see
+    # pin_current_process_to_core_band). ProcessPoolExecutor names spawned workers "...-<seq>" with a
+    # unique incrementing seq, so seq % total_workers -> a distinct band per worker, no shared counter.
+    try:
+        seq = int(mp.current_process().name.rsplit("-", 1)[-1])
+    except (ValueError, IndexError, AttributeError):
+        seq = os.getpid()
+    pin_current_process_to_core_band(seq, int(total_workers))
 
     global _PREBUILD_WORKER_REF_ARRAYS, _PREBUILD_WORKER_STAT_KEYS
     _PREBUILD_WORKER_REF_ARRAYS = dict(ref_arrays or {})
@@ -159,7 +178,7 @@ def _build_prebuild_executor(
     return concurrent.futures.ProcessPoolExecutor(
         max_workers=max(1, int(worker_count)),
         initializer=_init_prebuild_worker,
-        initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), int(reducer_threads)),
+        initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), int(reducer_threads), int(worker_count)),
     )
 
 

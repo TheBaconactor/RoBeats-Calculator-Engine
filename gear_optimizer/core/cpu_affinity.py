@@ -123,3 +123,56 @@ def usable_core_count() -> int:
         except Exception:
             pass
     return max(1, int(os.cpu_count() or 1))
+
+
+def logical_core_count() -> int:
+    """Total logical processors on the machine (all P + E), regardless of the current affinity mask."""
+    import os
+
+    return max(1, int(os.cpu_count() or 1))
+
+
+def pin_current_process_to_core_band(index: int, total: int) -> None:
+    """Hard-pin THIS process to a contiguous band of logical cores, so that `total` sibling workers
+    collectively cover every core (P and E).
+
+    Why a hard split: when a background compute process is left free to choose, the Windows hybrid
+    scheduler parks it on the slow E-cores even with EcoQoS throttling cleared (measured on the
+    i9-13900K: unpinned -> E-cores at 100%, P-cores idle). The only reliable way to use ALL cores is to
+    pin workers across the core space explicitly -- a hard mask the scheduler cannot migrate off. Also
+    clears EcoQoS execution-speed throttling + lifts priority so an E-core band still runs at full
+    clock. No-op off Windows, where the hybrid-scheduling problem does not exist and workers use every
+    core by default."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        ncpu = logical_core_count()
+        total = max(1, int(total))
+        index = int(index) % total
+        lo = (index * ncpu) // total
+        hi = max(lo + 1, ((index + 1) * ncpu) // total)
+        mask = 0
+        for cpu in range(lo, min(hi, ncpu)):
+            mask |= 1 << cpu
+        if mask == 0:
+            return
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        hproc = k.GetCurrentProcess()
+        k.SetProcessAffinityMask.restype = wintypes.BOOL
+        k.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
+        k.SetProcessAffinityMask(hproc, mask)
+
+        # ABOVE_NORMAL + clear EcoQoS so the band (incl. E-cores) runs at full clock, not parked/eco.
+        k.SetPriorityClass(hproc, 0x00008000)
+
+        class _PowerThrottle(ctypes.Structure):
+            _fields_ = [("Version", wintypes.DWORD), ("ControlMask", wintypes.DWORD), ("StateMask", wintypes.DWORD)]
+
+        st = _PowerThrottle(1, 0x1, 0)
+        k.SetProcessInformation(hproc, 4, ctypes.byref(st), ctypes.sizeof(st))
+        logger.debug("CPU: worker %d/%d pinned to logical cores [%d,%d), EcoQoS off.", index, total, lo, hi)
+    except Exception as e:  # fail-safe: scheduling is an optimization, never block the build
+        logger.debug("pin_current_process_to_core_band skipped: %s", e)
