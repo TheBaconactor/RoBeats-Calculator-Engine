@@ -186,17 +186,23 @@ def _numba_mark_early_great_reachable(
     activation_great_i: int,
     great_floor_end_idx,
     real_time_idx: int,
-) -> None:
+) -> int:
     """Issue #44: every early-Great extended end e in (base_e, eg_e] becomes a section boundary,
     so mark it reachable for the downstream DP. No-op when the Great floor reaches no further
-    than the Perfect/late boundary (the common case)."""
+    than the Perfect/late boundary (the common case).
+
+    Returns the early-Great band width `eg_e - base_e` (0 in the common case). The caller maxes this
+    over every enumerated activation to size the body-pair radix `pair_mod`: each section contributes
+    at most `1 + band_width` fever-greats (one boundary Great plus the band's `end_e - edge_e` extras,
+    line ~1398), so the radix must clear `(sections) * (1 + max band width)`."""
     if int(base_e) < 0 or int(activation) < 0 or int(activation) >= int(n):
-        return
+        return 0
     eg_e = _numba_great_floor_extended_end(
         int(n), int(activation), int(activation_great_i), great_floor_end_idx, int(real_time_idx)
     )
     for e in range(int(base_e) + 1, int(eg_e) + 1):
         reachable[int(e)] = True
+    return max(0, int(eg_e) - int(base_e))
 
 
 @njit(cache=True, nogil=True)
@@ -586,6 +592,14 @@ def _numba_touch_body_candidate(
     if body_fever_great > body_great:
         return int(touched_count)
     normal_great = int(body_great - body_fever_great)
+    # Fail loud on radix overflow. The pack normal_great*pair_mod + body_fever_great is injective
+    # ONLY while body_fever_great < pair_mod; otherwise it silently ALIASES onto a different
+    # (normal_great, fever_great) cell -- a phantom surface that the decoder later materialises with
+    # the wrong Great counts (it scores higher, wins, and corrupts best_fg_score / breaks trace
+    # reconstruction). pair_mod is sized to this geometry's true max body_fever_great, so this must
+    # never fire; raising beats silently mis-scoring.
+    if int(body_fever_great) < 0 or int(body_fever_great) >= int(pair_mod):
+        raise ValueError("FG response body skyline fever-great exceeded pair radix")
     pair_idx = int(normal_great) * int(pair_mod) + int(body_fever_great)
     if int(pair_idx) < 0 or int(pair_idx) >= int(best_fever_by_pair.shape[0]):
         raise ValueError("FG response body skyline pair bound was too small")
@@ -2116,6 +2130,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
 
     reachable = np.zeros(int(n) + 1, dtype=np.bool_)
     reachable[int(n)] = True
+    # Issue #44: widest early-Great band over every enumerated activation -> sizes the body-pair radix.
+    max_eg_width = 0
     for action_idx in range(int(action_count)):
         edge_e = _numba_first_edge_from_precomputed(
             int(n),
@@ -2130,10 +2146,10 @@ def _first_frontier_from_precomputed_end_indices_numba(
         )
         if int(edge_e) >= 0:
             reachable[int(edge_e)] = True
-            _numba_mark_early_great_reachable(
+            max_eg_width = max(max_eg_width, _numba_mark_early_great_reachable(
                 reachable, int(n), int(first_fill[int(action_idx)]), int(edge_e), 0,
                 great_floor_end_idx, int(real_time_idx),
-            )
+            ))
         activation_e, _prefix_forced = _numba_first_activation_edge_from_precomputed(
             int(n),
             int(action_idx),
@@ -2147,10 +2163,10 @@ def _first_frontier_from_precomputed_end_indices_numba(
         )
         if int(activation_e) >= 0 and int(activation_e) > int(edge_e):
             reachable[int(activation_e)] = True
-            _numba_mark_early_great_reachable(
+            max_eg_width = max(max_eg_width, _numba_mark_early_great_reachable(
                 reachable, int(n), int(first_fill[int(action_idx)]), int(activation_e), 1,
                 great_floor_end_idx, int(real_time_idx),
-            )
+            ))
 
     for state_i in range(int(n)):
         if not reachable[state_i]:
@@ -2170,10 +2186,10 @@ def _first_frontier_from_precomputed_end_indices_numba(
             )
             if int(edge_e) >= 0:
                 reachable[int(edge_e)] = True
-                _numba_mark_early_great_reachable(
+                max_eg_width = max(max_eg_width, _numba_mark_early_great_reachable(
                     reachable, int(n), int(state_i) + int(later_fill[int(action_idx)]), int(edge_e), 0,
                     great_floor_end_idx, int(real_time_idx),
-                )
+                ))
             activation_e, _prefix_forced = _numba_later_activation_edge_from_precomputed(
                 int(n),
                 int(state_i),
@@ -2188,17 +2204,26 @@ def _first_frontier_from_precomputed_end_indices_numba(
             )
             if int(activation_e) >= 0 and int(activation_e) > int(edge_e):
                 reachable[int(activation_e)] = True
-                _numba_mark_early_great_reachable(
+                max_eg_width = max(max_eg_width, _numba_mark_early_great_reachable(
                     reachable, int(n), int(state_i) + int(later_fill[int(action_idx)]), int(activation_e), 1,
                     great_floor_end_idx, int(real_time_idx),
-                )
+                ))
 
     states_evaluated = 0
     retained_total = 1
     max_state_frontier = 1
     generated_surfaces = 0
     min_later_fill = max(1, int(later_fill[0]) if int(action_count) > 0 else 1)
-    pair_mod = min(int(n) + 1, int(n) // int(min_later_fill) + 4)
+    # Body-pair radix sizing. pair_idx packs (normal_great, body_fever_great) as
+    # normal_great*pair_mod + body_fever_great, injective only while body_fever_great < pair_mod.
+    # body_fever_great sums, per section, <=1 boundary Great plus the issue-#44 early-Great band
+    # (<= max_eg_width extras), over at most `section_bound` sections -> true max is
+    # section_bound*(1 + max_eg_width). Size pair_mod one past that. max_eg_width == 0 on the common
+    # (no early-Great) path, collapsing this to the pre-#44 section-count bound (zero regression).
+    # Capped at n+1 since body_fever_great <= body_great <= n always. (Before this fix pair_mod was
+    # the bare section count, so a wide early-Great band overflowed the radix and aliased silently.)
+    section_bound = int(n) // int(min_later_fill) + 4
+    pair_mod = min(int(n) + 1, int(section_bound) * (1 + int(max_eg_width)) + 1)
     pair_size = (int(n) + 1) * int(pair_mod)
     best_fever_by_pair = np.zeros(int(pair_size), dtype=np.int32)
     pair_stamp = np.zeros(int(pair_size), dtype=np.int32)
