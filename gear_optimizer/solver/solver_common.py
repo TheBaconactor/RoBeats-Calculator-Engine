@@ -15,6 +15,7 @@ from gear_optimizer.core.parsing import env_get
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
 from gear_optimizer.solver.candidate_cache import (
     base_candidate_cache_key,
+    base_candidate_const_key,
     base_payload_from_result_tuple,
     get_candidate_cache,
 )
@@ -361,6 +362,22 @@ def batched_registry_eval(
         enabled=_env_enabled("SKYLINE_BATCH_PREFETCH", "1"),
         thread_name_prefix="SkylineBatchPrep",
     )
+
+    # Loop-invariant cache setup: hash the chart + ref arrays ONCE here, not once per
+    # (millions of) candidates. The per-candidate key is just this prefix + the stats tuple.
+    candidate_cache = get_candidate_cache()
+    base_const_key = base_candidate_const_key(
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        primary_color=str(primary_color or ""),
+        secondary_color=str(secondary_color or ""),
+        selected_color=str(selected_color or ""),
+        flags=flags,
+        total_budget=int(TOTAL_GEM_BUDGET),
+        gem_scale_fever=int(GEM_SCALE_FEVER),
+    )
+    item_stats_all = np.asarray(gpu_arrays["item_stats"], dtype=np.int32)
+
     for candidate_batch in batch_iter:
         max_ft_gems_global = None
         max_ff_gems_global = None
@@ -401,31 +418,22 @@ def batched_registry_eval(
             continue
         batch_ids = np.asarray(batch_ids, dtype=np.int32)
         row_count = int(batch_ids.shape[0])
-        item_stats = np.asarray(gpu_arrays["item_stats"], dtype=np.int32)
-        base_rows = np.asarray(base_fixed_stats_arr, dtype=np.int32).reshape(1, -1) + item_stats[batch_ids].sum(axis=1)
-        candidate_cache = get_candidate_cache()
+        base_rows = (
+            np.asarray(base_fixed_stats_arr, dtype=np.int32).reshape(1, -1)
+            + item_stats_all[batch_ids].sum(axis=1)
+        )
         cache_keys = [
-            base_candidate_cache_key(
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                base_stats=base_rows[idx],
-                primary_color=str(primary_color or ""),
-                secondary_color=str(secondary_color or ""),
-                selected_color=str(selected_color or ""),
-                flags=flags,
-                total_budget=int(TOTAL_GEM_BUDGET),
-                gem_scale_fever=int(GEM_SCALE_FEVER),
-            )
+            base_candidate_cache_key(const_key=base_const_key, base_stats=base_rows[idx])
             for idx in range(row_count)
         ]
         scores = np.full((row_count,), -1, dtype=np.int64)
         missing_indices: list[int] = []
         for idx, cache_key in enumerate(cache_keys):
-            cached = candidate_cache.get_base(cache_key)
-            if cached is None:
+            cached_score = candidate_cache.get_base_score(cache_key)
+            if cached_score is None:
                 missing_indices.append(idx)
             else:
-                scores[idx] = int(cached["Score"])
+                scores[idx] = cached_score
 
         admit_misses = score_cull_threshold is None
         if missing_indices:

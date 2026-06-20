@@ -23,7 +23,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
     fg_response_frontier_song_cache_key,
 )
 
-_CANDIDATE_CACHE_VERSION = "candidate-cache-v1"
+_CANDIDATE_CACHE_VERSION = "candidate-cache-v2"
 _BASE_NAMESPACE = "base"
 _FG_NAMESPACE = "fg"
 _DISK_FLUSH_BATCH_ROWS = 512
@@ -137,11 +137,10 @@ def _base_song_key(calc_song: dict[str, Any]) -> tuple[Any, ...]:
     ) + timing_envelope_timing_context(calc_song)
 
 
-def base_candidate_cache_key(
+def base_candidate_const_key(
     *,
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
-    base_stats: dict[str, Any] | tuple[Any, ...] | list[Any] | np.ndarray,
     primary_color: str,
     secondary_color: str,
     selected_color: str,
@@ -149,13 +148,19 @@ def base_candidate_cache_key(
     total_budget: int = TOTAL_GEM_BUDGET,
     gem_scale_fever: int = GEM_SCALE_FEVER,
 ) -> tuple[Any, ...]:
+    """Loop-invariant prefix of the base candidate key (everything except per-candidate stats).
+
+    `_base_song_key` hashes the full chart and `_ref_arrays_key` hashes the five reference
+    arrays -- both constant across every candidate of a single solve. Hoist this out of
+    per-candidate loops and append the stats tuple via ``base_candidate_cache_key`` so the
+    expensive hashing happens once, not once per (millions of) candidates.
+    """
     flags_key = tuple(sorted((str(k), int(v)) for k, v in (flags or {}).items()))
     return (
         _CANDIDATE_CACHE_VERSION,
         _BASE_NAMESPACE,
         _base_song_key(calc_song),
         _ref_arrays_key(ref_arrays),
-        _stats_tuple(base_stats),
         str(primary_color or ""),
         str(secondary_color or ""),
         str(selected_color or ""),
@@ -163,6 +168,39 @@ def base_candidate_cache_key(
         int(total_budget),
         int(gem_scale_fever),
     )
+
+
+def base_candidate_cache_key(
+    *,
+    base_stats: dict[str, Any] | tuple[Any, ...] | list[Any] | np.ndarray,
+    const_key: tuple[Any, ...] | None = None,
+    calc_song: dict[str, Any] | None = None,
+    ref_arrays: dict[str, Any] | None = None,
+    primary_color: str = "",
+    secondary_color: str = "",
+    selected_color: str = "",
+    flags: dict[str, int] | None = None,
+    total_budget: int = TOTAL_GEM_BUDGET,
+    gem_scale_fever: int = GEM_SCALE_FEVER,
+) -> tuple[Any, ...]:
+    """Full base candidate key = constant prefix + per-candidate stats tuple (stats last).
+
+    Pass a precomputed ``const_key`` from :func:`base_candidate_const_key` on the hot path to
+    skip re-hashing the chart/ref arrays. Otherwise the prefix is built from the song/ref/flag
+    kwargs (fail-loud: a missing chart raises in ``_base_song_key``).
+    """
+    if const_key is None:
+        const_key = base_candidate_const_key(
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+            selected_color=selected_color,
+            flags=flags or {},
+            total_budget=total_budget,
+            gem_scale_fever=gem_scale_fever,
+        )
+    return const_key + (_stats_tuple(base_stats),)
 
 
 def fg_candidate_cache_key(
@@ -469,6 +507,21 @@ class CandidateCache:
                 return None
             self.base_hits += 1
             return _validate_base_payload(payload)
+
+    def get_base_score(self, key: tuple[Any, ...]) -> int | None:
+        """Score-only read for the bulk frontier path.
+
+        The bulk skyline eval only needs each candidate's score, and the payload was already
+        validated on admission, so skip the per-read ``_validate_base_payload`` deep copy +
+        JSON round-trip -- that overhead is what makes a million-candidate warm pass crawl.
+        """
+        with self._lock:
+            payload = self._base.get(key)
+            if payload is None:
+                self.base_misses += 1
+                return None
+            self.base_hits += 1
+            return int(payload["Score"])
 
     def put_base(self, key: tuple[Any, ...], payload: dict[str, Any]) -> None:
         payload = _validate_base_payload(payload)
