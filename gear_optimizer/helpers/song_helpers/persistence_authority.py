@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ...core.utils import require_int
+
 from ...solver.scoring.exact_rescore import (
     score_force_greats_response_surface_exact,
     score_stats_exact,
@@ -10,13 +12,6 @@ from ...solver.scoring.exact_rescore import (
 )
 from .fg_config import extract_fg_config, has_valid_fg_config, require_response_surface
 from .persistence_payload import normalize_force_payload
-
-
-def _to_int(value: Any, *, field: str) -> int:
-    try:
-        return int(value or 0)
-    except Exception as exc:
-        raise ValueError(f"Invalid integer for authoritative persistence field {field!r}: {value!r}") from exc
 
 
 def _config_counts(config: Mapping[str, Any]) -> list[int]:
@@ -28,7 +23,7 @@ def _config_counts(config: Mapping[str, Any]) -> list[int]:
             idx = int(key.replace("NonFever", "")) - 1
         except Exception as exc:
             raise ValueError(f"Invalid ForceGreats section key {key!r}.") from exc
-        pairs.append((idx, max(0, _to_int(value, field=key))))
+        pairs.append((idx, max(0, require_int(value, field=key))))
     if not pairs:
         return []
 
@@ -149,7 +144,7 @@ def assert_authoritative_fg_entry(
     base_stats = _details_stats(entry)
     if base_stats:
         expected_score = int(score_stats_exact(base_stats, calc_song, ref_arrays))
-        actual_score = _to_int(entry.get("score"), field="score")
+        actual_score = require_int(entry.get("score"), field="score")
         if actual_score != expected_score:
             raise AssertionError(
                 "Persistence base score is not authoritative "
@@ -166,12 +161,12 @@ def assert_authoritative_fg_entry(
     fg_eval = _replay_force_payload(force_obj, stats=stats, calc_song=calc_song, ref_arrays=ref_arrays, counts=counts)
     expected_fg = int(fg_eval.get("final_score", 0) or 0)
 
-    actual_base = _to_int(entry.get("fg_base_score"), field="fg_base_score")
-    actual_fg = _to_int(entry.get("fg_score"), field="fg_score")
-    force_base = _to_int(force_obj.get("BaseScore"), field="force.BaseScore")
-    force_score = _to_int(force_obj.get("Score"), field="force.Score")
+    actual_base = require_int(entry.get("fg_base_score"), field="fg_base_score")
+    actual_fg = require_int(entry.get("fg_score"), field="fg_score")
+    force_base = require_int(force_obj.get("BaseScore"), field="force.BaseScore")
+    force_score = require_int(force_obj.get("Score"), field="force.Score")
     fg_meta = force_obj.get("ForceGreats")
-    meta_final = _to_int((fg_meta or {}).get("final_score"), field="force.ForceGreats.final_score")
+    meta_final = require_int((fg_meta or {}).get("final_score"), field="force.ForceGreats.final_score")
 
     if actual_base <= 0 or force_base != actual_base:
         raise AssertionError(

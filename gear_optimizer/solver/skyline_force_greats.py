@@ -3,22 +3,16 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
+from gear_optimizer.core.utils import safe_int
 from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
 
 _TOPK_REFERENCE = 51
 
 
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return int(default)
-
-
 def _gem_count(gem_counts: Any, key: str) -> int:
     if not isinstance(gem_counts, dict):
         return 0
-    return _safe_int(gem_counts.get(key, 0), 0)
+    return safe_int(gem_counts.get(key, 0), 0)
 
 
 def _percentile_int(values: list[int], pct: float) -> int:
@@ -41,7 +35,7 @@ def _int_list(values: Any) -> list[int]:
         values = values.tolist()
     if not isinstance(values, (list, tuple)):
         return []
-    return [_safe_int(value, 0) for value in values]
+    return [safe_int(value, 0) for value in values]
 
 
 def _item_name(item: Any) -> str:
@@ -81,10 +75,10 @@ def score_retained_skyline_force_greats(
 
     topk_reference = int(_TOPK_REFERENCE)
 
-    best_fg_score = max((_safe_int(rec.get("base_score", 0), 0) for rec in candidate_records), default=0)
+    best_fg_score = max((safe_int(rec.get("base_score", 0), 0) for rec in candidate_records), default=0)
     best_record: dict[str, Any] | None = None
     for rec in candidate_records:
-        if _safe_int(rec.get("base_score", 0), 0) == int(best_fg_score):
+        if safe_int(rec.get("base_score", 0), 0) == int(best_fg_score):
             best_record = rec
             break
 
@@ -115,9 +109,9 @@ def score_retained_skyline_force_greats(
         if not isinstance(force_payload, dict) or not force_payload:
             raise RuntimeError("Skyline FG response-frontier scoring did not materialize a force payload")
         base_stats = dict(scored.get("base_stats") or {})
-        base_score = _safe_int(scored.get("base_score", force_payload.get("BaseScore", rec.get("base_score", 0))), 0)
-        fg_score = _safe_int(scored.get("fg_score", force_payload.get("Score", base_score)), base_score)
-        fg_base_score = _safe_int(force_payload.get("BaseScore", base_score), base_score)
+        base_score = safe_int(scored.get("base_score", force_payload.get("BaseScore", rec.get("base_score", 0))), 0)
+        fg_score = safe_int(scored.get("fg_score", force_payload.get("Score", base_score)), base_score)
+        fg_base_score = safe_int(force_payload.get("BaseScore", base_score), base_score)
 
         fg_delta = int(fg_score) - int(base_score)
         if fg_delta > 0:
@@ -142,15 +136,15 @@ def score_retained_skyline_force_greats(
 
         force_counts = []
         force_gem_counts = {}
-        force_ft = _safe_int(data.get("FT", 0), 0)
-        force_ff = _safe_int(data.get("FF", 0), 0)
+        force_ft = safe_int(data.get("FT", 0), 0)
+        force_ff = safe_int(data.get("FF", 0), 0)
         if isinstance(force_payload, dict):
             force_counts = _int_list(force_payload.get("forced_counts"))
             force_gem_counts = (
                 dict(force_payload.get("GemCounts") or {}) if isinstance(force_payload.get("GemCounts"), dict) else {}
             )
-            force_ft = _safe_int(force_payload.get("FT", force_ft), force_ft)
-            force_ff = _safe_int(force_payload.get("FF", force_ff), force_ff)
+            force_ft = safe_int(force_payload.get("FT", force_ft), force_ft)
+            force_ff = safe_int(force_payload.get("FF", force_ff), force_ff)
 
         rank = int(idx + 1)
         telemetry_rows.append(
@@ -212,7 +206,7 @@ def score_retained_skyline_force_greats(
         "fg_batch_dedupe_groups": int(batch_stats.get("dedupe_groups", 0) if isinstance(batch_stats, dict) else 0),
         "fg_gains": int(fg_gains),
         "best_fg_score": int(best_fg_score),
-        "best_fg_base_score": _safe_int(best_record.get("fg_base_score", 0), 0) if best_record else 0,
+        "best_fg_base_score": safe_int(best_record.get("fg_base_score", 0), 0) if best_record else 0,
         "topk_reference": int(topk_reference),
         "topk_best_fg_score": int(topk_best),
         "best_outside_topk_fg_score": int(outside_best_row["fg_score"]) if outside_best_row else 0,

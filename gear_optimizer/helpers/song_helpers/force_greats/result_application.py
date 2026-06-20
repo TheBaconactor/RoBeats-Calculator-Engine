@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ....core.utils import get_selected_element
+from ....core.gem_defs import element_gem_count
+from ....core.utils import get_selected_element, safe_int
 from ....solver.scoring.stats_ops import apply_gems_to_base_stats
 
 logger = logging.getLogger(__name__)
@@ -30,20 +31,6 @@ def apply_gems_to_base_fast(
         int(g_ov),
         add_missing_element_key=True,
     )
-
-
-def _coerce_int(value: Any, default: int = 0) -> int:
-    try:
-        if value is None:
-            return int(default)
-        return int(value)
-    except Exception as e:
-        logger.debug(f"result_application:_coerce_int: {e}")
-        try:
-            return int(float(value))
-        except Exception as e:
-            logger.debug(f"result_application:_coerce_int: {e}")
-            return int(default)
 
 
 def materialize_stats_from_payload(
@@ -75,23 +62,20 @@ def materialize_stats_from_payload(
     if not isinstance(gem_counts, dict):
         gem_counts = {}
 
-    ft_val = _coerce_int(
+    ft_val = safe_int(
         ft_override if ft_override is not None else payload.get("FT", gem_counts.get("Fever Time", 0)),
         0,
     )
-    ff_val = _coerce_int(
+    ff_val = safe_int(
         ff_override
         if ff_override is not None
         else payload.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))),
         0,
     )
-    g_pp = _coerce_int(gem_counts.get("Perfect Points", 0), 0)
-    g_cm = _coerce_int(gem_counts.get("Combo Multiplier", 0), 0)
-    g_fm = _coerce_int(gem_counts.get("Fever Multiplier", 0), 0)
-    g_ov = _coerce_int(
-        gem_counts.get("Element", gem_counts.get("Element Overflow", gem_counts.get("ElementOverflow", 0))),
-        0,
-    )
+    g_pp = safe_int(gem_counts.get("Perfect Points", 0), 0)
+    g_cm = safe_int(gem_counts.get("Combo Multiplier", 0), 0)
+    g_fm = safe_int(gem_counts.get("Fever Multiplier", 0), 0)
+    g_ov = element_gem_count(gem_counts)
     selected = str(selected_element if selected_element is not None else get_selected_element(payload, "")).strip()
     computed = apply_gems_to_base_fast(base_stats, selected, ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
 

@@ -9,6 +9,7 @@ from gear_optimizer.core.constants import (
     GEM_SCALE_NORMAL,
     GEM_STAT_TO_ELEMENT_SCALE,
 )
+from gear_optimizer.core.gem_defs import element_gem_count
 
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ def extract_base_stats(
         g_pp = int(gem_counts.get("Perfect Points", 0) or 0)
         g_cm = int(gem_counts.get("Combo Multiplier", 0) or 0)
         g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
-        g_ov = int(gem_counts.get("Element", 0) or 0)
+        g_ov = element_gem_count(gem_counts)
         deltas = {
             "Perfect Points": g_pp * int(GEM_SCALE_NORMAL),
             "Chill": g_pp * int(GEM_STAT_TO_ELEMENT_SCALE),

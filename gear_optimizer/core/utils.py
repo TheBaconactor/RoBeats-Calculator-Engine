@@ -98,6 +98,20 @@ def safe_int(val, default=0):
         return default
 
 
+def require_int(value, *, field):
+    """Fail-loud int coercion for internal / authoritative state (issue #56 B3).
+
+    Unlike `safe_int`, this RAISES instead of returning a default, so a bad value on an
+    internal invariant or an authoritative persistence field is surfaced loudly rather
+    than silently masked. Use it on internal authority paths; use `safe_int` at external
+    boundaries (config, malformed user/DB input, display).
+    """
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid integer for {field}: {value!r}") from exc
+
+
 def safe_float(val, default=0.0):
     """
     Safely convert a value to a float with fallback.

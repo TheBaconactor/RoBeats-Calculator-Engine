@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 import logging
 
 import numpy as np
 
 from ...core.constants import SKIP_ITEM_KEYS
-from ...core.utils import get_selected_element
+from ...core.gem_defs import element_gem_count
+from ...core.utils import get_selected_element, safe_int
 from ...solver.base_stats import build_base_fixed_stats_list, build_stats_dict
 from ...solver.scoring.exact_rescore import score_stats_exact_batch
 from ...solver.scoring.stats_ops import apply_gems_to_base_stats
@@ -14,14 +15,6 @@ from ...solver.scoring.stats_ops import apply_gems_to_base_stats
 
 
 logger = logging.getLogger(__name__)
-def _int(v: Any, default: int = 0) -> int:
-    try:
-        return int(v or 0)
-    except Exception as e:
-        logger.debug(f"fg_candidate_stats:_int: {e}")
-        return int(default)
-
-
 def _as_genome(candidate: dict) -> list[dict]:
     genome = candidate.get("Genome")
     if isinstance(genome, list) and genome:
@@ -122,10 +115,10 @@ def hydrate_fg_candidate_stats(
         if not isinstance(gem_counts, dict):
             gem_counts = {}
 
-        g_pp = _int(gem_counts.get("Perfect Points", 0), 0)
-        g_cm = _int(gem_counts.get("Combo Multiplier", 0), 0)
-        g_fm = _int(gem_counts.get("Fever Multiplier", 0), 0)
-        g_ov = _int(gem_counts.get("Element", gem_counts.get("Element Overflow", 0)), 0)
+        g_pp = safe_int(gem_counts.get("Perfect Points", 0), 0)
+        g_cm = safe_int(gem_counts.get("Combo Multiplier", 0), 0)
+        g_fm = safe_int(gem_counts.get("Fever Multiplier", 0), 0)
+        g_ov = element_gem_count(gem_counts)
 
         sel = get_selected_element(data, "") or get_selected_element(cand, "") or str(selected_color or "")
         stats_existing = data.get("Stats")
@@ -184,7 +177,7 @@ def hydrate_fg_candidate_stats(
                     add_missing_element_key=False,
                 )
 
-        raw_ga_search_score = _int(
+        raw_ga_search_score = safe_int(
             cand.get("RawGASearchScore", cand.get("BaseScore", cand.get("Score", 0) or 0)),
             0,
         )

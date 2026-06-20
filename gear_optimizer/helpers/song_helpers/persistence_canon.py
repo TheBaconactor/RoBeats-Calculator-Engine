@@ -6,6 +6,7 @@ from typing import Any
 import logging
 
 from ...core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+from ...core.utils import safe_int
 from .fg_config import has_valid_fg_config
 from .item_utils import names_list
 from .persistence_entry_merge import merge_persist_entry, resolve_loadout_hash
@@ -29,14 +30,6 @@ class ReplayContext:
     cfg_dict: dict
 
 
-def _to_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value or 0)
-    except Exception as e:
-        logger.warning(f"persistence_canon:_to_int: {e}")
-        return int(default)
-
-
 def _details_have_stats(details_obj: Any) -> bool:
     if not isinstance(details_obj, dict) or not details_obj:
         return False
@@ -57,14 +50,14 @@ def _normalize_entry_shape(
     eval_data_obj: Any = None,
 ) -> dict[str, Any]:
     details_dict = dict(details_obj) if isinstance(details_obj, dict) else {}
-    details_dict["attempt_lifetime"] = _to_int(details_dict.get("attempt_lifetime", 0), 0)
-    details_dict["attempts_first"] = _to_int(details_dict.get("attempts_first", 0), 0)
+    details_dict["attempt_lifetime"] = safe_int(details_dict.get("attempt_lifetime", 0), 0)
+    details_dict["attempts_first"] = safe_int(details_dict.get("attempts_first", 0), 0)
 
-    score_i = _to_int(score_val, 0)
+    score_i = safe_int(score_val, 0)
     force_out = dict(force_obj) if isinstance(force_obj, dict) else None
     if isinstance(force_out, dict):
         force_out = normalize_force_payload(force_out)
-    fg_score_i = _to_int(fg_score_val, 0)
+    fg_score_i = safe_int(fg_score_val, 0)
     if fg_score_i > 0 and not (isinstance(force_out, dict) and has_valid_fg_config(force_out)):
         fg_score_i = 0
         force_out = None
@@ -82,7 +75,7 @@ def _normalize_entry_shape(
         "force": force_out,
     }
     if fg_base_score_val is not None:
-        out["fg_base_score"] = _to_int(fg_base_score_val, 0)
+        out["fg_base_score"] = safe_int(fg_base_score_val, 0)
     elif fg_score_i > 0 and force_out is not None:
         out["fg_base_score"] = int(score_i)
 
@@ -177,7 +170,7 @@ def _ensure_stats_or_fail(
 
 def _canonicalize_entry_from_row(entry: dict[str, Any], row: Mapping[str, Any]) -> dict[str, Any]:
     merged = dict(entry)
-    merged["score"] = _to_int(row.get("score", merged.get("score", 0)), _to_int(merged.get("score", 0), 0))
+    merged["score"] = safe_int(row.get("score", merged.get("score", 0)), safe_int(merged.get("score", 0), 0))
     row_details = row.get("details")
     if isinstance(row_details, dict):
         merged["details"] = row_details
@@ -185,11 +178,11 @@ def _canonicalize_entry_from_row(entry: dict[str, Any], row: Mapping[str, Any]) 
     row_force = row.get("force")
     if isinstance(row_force, dict) and has_valid_fg_config(row_force):
         merged["force"] = row_force
-        merged["fg_score"] = _to_int(row.get("fg_score", merged.get("fg_score", 0)), 0)
+        merged["fg_score"] = safe_int(row.get("fg_score", merged.get("fg_score", 0)), 0)
         if "fg_base_score" in row:
-            merged["fg_base_score"] = _to_int(row.get("fg_base_score", merged.get("score", 0)), 0)
+            merged["fg_base_score"] = safe_int(row.get("fg_base_score", merged.get("score", 0)), 0)
         elif "fg_base_score" not in merged:
-            merged["fg_base_score"] = _to_int(merged.get("score", 0), 0)
+            merged["fg_base_score"] = safe_int(merged.get("score", 0), 0)
     else:
         merged["force"] = None
         merged["fg_score"] = 0

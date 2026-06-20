@@ -12,7 +12,7 @@ from .constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     SKIP_ITEM_KEYS,
 )
-from .gem_defs import ELEMENT_STAT_KEYS, GemKey
+from .gem_defs import ELEMENT_STAT_KEYS, GemKey, element_gem_count
 from .team_buff import team_buff_effect, resolve_baseline_team_buff_from_cfg_dict, resolve_team_color_from_cfg_dict
 from .config_adapter import UserGemSettings
 
@@ -104,7 +104,7 @@ def compute_full_stats(gear_names, mini_names, gem_counts, selected_element, gea
     g_fm = gem_counts.get(GemKey.FM.value, 0) or 0
     g_ft = gem_counts.get(GemKey.FT.value, 0) or 0
     g_ff = gem_counts.get(GemKey.FF.value, 0) or 0
-    g_ov = gem_counts.get(GemKey.ELEMENT.value, 0) or gem_counts.get("Element Overflow", 0) or 0
+    g_ov = element_gem_count(gem_counts)
 
     # Stat gem scaling
     stats[GemKey.PP.value] = stats.get(GemKey.PP.value, 0) + g_pp * GEM_SCALE_NORMAL

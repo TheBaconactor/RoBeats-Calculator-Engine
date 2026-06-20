@@ -14,7 +14,7 @@ from urllib.parse import quote
 import logging
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
 from ..core.fallback_monitor import warn_fallback
-from ..core.gem_defs import fg_score_from_force
+from ..core.gem_defs import element_gem_count, fg_score_from_force
 from ..core.parsing import env_flag
 from ..core.utils import safe_int as _safe_int_for_db
 from ..core.team_buff import (
@@ -397,7 +397,7 @@ def _get_overflow_from_details(details):
     gem_counts = details.get("GemCounts", {})
     if not gem_counts:
         return 0
-    return gem_counts.get("Element", 0)
+    return element_gem_count(gem_counts)
 def _ensure_stats_in_details(
     details: dict,
     gear: list,

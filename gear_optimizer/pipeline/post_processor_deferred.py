@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from gear_optimizer.core.fallback_monitor import FallbackAwareConfigParser
-from gear_optimizer.core.utils import cfg_from_dict
+from gear_optimizer.core.utils import cfg_from_dict, safe_int
 from gear_optimizer.helpers.song_helpers.persistence_canon import (
     ReplayContext,
     canonicalize_and_assemble,
@@ -48,14 +48,6 @@ class DeferredPostContext:
     db_best_fg_score: int
 
 
-def _safe_int(value: Any, *, context: str) -> int:
-    try:
-        return int(value or 0)
-    except Exception as exc:
-        logger.warning("post_processor_deferred:%s: %s", context, exc)
-        return 0
-
-
 def build_deferred_post_context(item: dict[str, Any]) -> DeferredPostContext:
     cfg_dict = item.get("cfg_dict") or {}
     cfg = cfg_from_dict(cfg_dict) if cfg_dict else FallbackAwareConfigParser()
@@ -75,46 +67,41 @@ def build_deferred_post_context(item: dict[str, Any]) -> DeferredPostContext:
         run_score_value = best_data.get("BaseScore") or best_data.get("Score", 0) or 0
     else:
         run_score_value = 0
-    run_score = _safe_int(run_score_value, context="build_deferred_post_context.run_score")
+    run_score = safe_int(run_score_value)
     run_best_fg = best_fg_improving_score_from_variants(fg_variants)
 
-    prev_best_score = _safe_int(
+    prev_best_score = safe_int(
         (prev_record or {}).get("score", 0) if isinstance(prev_record, dict) else 0,
-        context="build_deferred_post_context.prev_best_score",
     )
-    prev_best_fg = _safe_int(item.get("db_best_fg_score", 0), context="build_deferred_post_context.db_best_fg_score")
+    prev_best_fg = safe_int(item.get("db_best_fg_score", 0))
     if prev_best_fg <= 0:
-        prev_best_fg = _safe_int(
+        prev_best_fg = safe_int(
             (prev_record or {}).get("fg_score", 0) if isinstance(prev_record, dict) else 0,
-            context="build_deferred_post_context.prev_best_fg",
         )
 
     record_improved = (run_score > prev_best_score) or (run_best_fg > prev_best_fg)
 
-    attempt_lifetime = _safe_int(item.get("attempt_lifetime", 0), context="build_deferred_post_context.attempt_lifetime")
+    attempt_lifetime = safe_int(item.get("attempt_lifetime", 0))
     if attempt_lifetime <= 0 and isinstance(prev_record, dict):
         attempt_lifetime = (
-            _safe_int(
+            safe_int(
                 (prev_record.get("details") or {}).get("attempt_lifetime", 0)
                 if isinstance(prev_record.get("details"), dict)
                 else 0,
-                context="build_deferred_post_context.prev_attempt_lifetime",
             )
             + 1
         )
     if attempt_lifetime <= 0:
         attempt_lifetime = 1
 
-    prev_attempts_first = _safe_int(
+    prev_attempts_first = safe_int(
         item.get("prev_attempts_first", 0),
-        context="build_deferred_post_context.prev_attempts_first",
     )
     if prev_attempts_first <= 0 and isinstance(prev_record, dict):
-        prev_attempts_first = _safe_int(
+        prev_attempts_first = safe_int(
             (prev_record.get("details") or {}).get("attempts_first", 0)
             if isinstance(prev_record.get("details"), dict)
             else 0,
-            context="build_deferred_post_context.prev_record_attempts_first",
         )
 
     attempts_first = 1 if record_improved else (int(prev_attempts_first or 0) + 1 if prev_attempts_first else 1)

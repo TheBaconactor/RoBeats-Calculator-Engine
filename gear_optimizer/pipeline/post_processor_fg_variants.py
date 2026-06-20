@@ -1,17 +1,8 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
-
-def _int_or_zero(value: Any, *, context: str) -> int:
-    try:
-        return int(value or 0)
-    except Exception as exc:
-        logger.warning("post_processor_fg_variants:%s: %s", context, exc)
-        return 0
+from gear_optimizer.core.utils import safe_int
 
 
 def _force_greats_config_total(data: dict[str, Any]) -> int:
@@ -35,11 +26,11 @@ def best_fg_improving_score_from_variants(variants: list[dict[str, Any]] | None)
         if _force_greats_config_total(data) <= 0:
             continue
 
-        fg_score = _int_or_zero(variant.get("fg_score", 0), context="best_fg_improving_score_from_variants")
+        fg_score = safe_int(variant.get("fg_score", 0))
         base_score = variant.get("base_score")
         if base_score is None:
             base_score = variant.get("score", 0)
-        base_score_i = _int_or_zero(base_score, context="best_fg_improving_score_from_variants")
+        base_score_i = safe_int(base_score)
         if fg_score <= base_score_i:
             continue
         if fg_score > best:
@@ -52,8 +43,8 @@ def best_fg_improving_score_from_persist_entries(entries: list[dict[str, Any]] |
     for entry in entries or []:
         if not isinstance(entry, dict):
             continue
-        score = _int_or_zero(entry.get("score", 0), context="best_fg_improving_score_from_persist_entries")
-        fg_score = _int_or_zero(entry.get("fg_score", 0), context="best_fg_improving_score_from_persist_entries")
+        score = safe_int(entry.get("score", 0))
+        fg_score = safe_int(entry.get("fg_score", 0))
         if fg_score <= score:
             continue
         if not entry.get("force"):
@@ -71,8 +62,8 @@ def fg_variants_from_persist_entries(entries: list[dict[str, Any]] | None) -> li
         details = entry.get("details") or {}
         if not isinstance(details, dict):
             details = {}
-        fg_score = _int_or_zero(entry.get("fg_score", 0), context="fg_variants_from_persist_entries")
-        base_score = _int_or_zero(entry.get("score", 0), context="fg_variants_from_persist_entries")
+        fg_score = safe_int(entry.get("fg_score", 0))
+        base_score = safe_int(entry.get("score", 0))
         data = dict(details)
         data["Score"] = fg_score or base_score
         variants.append(

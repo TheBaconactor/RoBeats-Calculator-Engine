@@ -153,6 +153,21 @@ def build_gem_counts(g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict[str, in
     }
 
 
+def element_gem_count(gem_counts: Mapping[str, Any] | None) -> int:
+    """Single canonical reader for the elemental/overflow gem count.
+
+    Production gem dicts come from ``build_gem_counts``, which keys this under the
+    canonical ``GemKey.ELEMENT.value``. This is the one authoritative INTERNAL reader;
+    legacy spellings ("Overflow"/"Element Overflow"/"ElementOverflow"/"OV") are NOT
+    tolerated here — normalize them to the canonical key at the explicit external
+    DB-decode boundary instead (issue #56 Category A: kill the alias soup that produced
+    the issue #46 F1 parity bug).
+    """
+    if not isinstance(gem_counts, Mapping):
+        return 0
+    return int(gem_counts.get(GemKey.ELEMENT.value, 0) or 0)
+
+
 def build_gem_details(g_ft: int, g_ff: int, g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict[str, int]:
     return {
         "FeverGems": int(g_ft),

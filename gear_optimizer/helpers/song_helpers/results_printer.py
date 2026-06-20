@@ -1,5 +1,6 @@
 import logging
-from ...core.utils import get_selected_element
+from ...core.gem_defs import element_gem_count
+from ...core.utils import get_selected_element, safe_int
 from .fg_config import has_valid_fg_config
 
 
@@ -31,17 +32,6 @@ def print_results(
       score when provided (deferred-FG safe).
     """
 
-    def _coerce_int_score(v) -> int:
-        try:
-            return int(v or 0)
-        except Exception as e:
-            logger.debug(f"results_printer:_coerce_int_score: {e}")
-            try:
-                return int(float(v or 0))
-            except Exception as e:
-                logger.debug(f"results_printer:_coerce_int_score: {e}")
-                return 0
-
     def _extract_final_score(entry: dict) -> int:
         # Prefer wrapper-level `fg_score` for cached FG reuse entries; fall back to inner `data`.
         try:
@@ -70,9 +60,9 @@ def print_results(
                 score_val = None
         if (not score_val) and isinstance(data.get("ForceGreats"), dict):
             score_val = data.get("ForceGreats", {}).get("final_score")
-        return _coerce_int_score(score_val)
+        return safe_int(score_val)
 
-    base_score_run = _coerce_int_score(best_data.get("BaseScore") or best_data.get("Score", 0))
+    base_score_run = safe_int(best_data.get("BaseScore") or best_data.get("Score", 0))
     best_fg_score_found = 0
     best_fg_entry = None
 
@@ -88,7 +78,7 @@ def print_results(
     db_best_base_score = 0
     db_best_base_entry = None
     if isinstance(prev_record, dict) and prev_record:
-        db_best_base_score = _coerce_int_score(prev_record.get("score", 0))
+        db_best_base_score = safe_int(prev_record.get("score", 0))
         if db_best_base_score > 0:
             details_obj = prev_record.get("details") or {}
             if not isinstance(details_obj, dict):
@@ -135,7 +125,7 @@ def print_results(
     # DB already contains a valid improving FG record. If the caller provides `db_best_fg_score`,
     # use it as a floor so we don't misleadingly print FG=0.
     fg_score_to_print = int(best_fg_score_found or 0)
-    db_best_fg_score_int = _coerce_int_score(db_best_fg_score)
+    db_best_fg_score_int = safe_int(db_best_fg_score)
     if db_best_fg_score_int > fg_score_to_print:
         fg_score_to_print = db_best_fg_score_int
 
@@ -297,7 +287,7 @@ def _print_gem_allocation(data):
     print(f"Gem Allocation -> Fever Multiplier: {gem_counts.get('Fever Multiplier', 0)}")
     print(f"Gem Allocation -> Combo Multiplier: {gem_counts.get('Combo Multiplier', 0)}")
     print(f"Gem Allocation -> Perfect Points: {gem_counts.get('Perfect Points', 0)}")
-    print(f"Gem Allocation -> {sel_el} (Overflow): {gem_counts.get('Element', 0)}")
+    print(f"Gem Allocation -> {sel_el} (Overflow): {element_gem_count(gem_counts)}")
 
 
 def _print_detailed_debug(found_song_name, entry, ref_arrays, calc_song, cfg):
