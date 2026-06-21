@@ -24,6 +24,7 @@ def _solve_fixed_timing_response_results(
     calc_song: Mapping[str, Any],
     ref_arrays: Mapping[str, Any],
     selected_color: str,
+    total_budget: int = 0,
 ) -> tuple[list[Any], dict[str, Any], dict[str, Any]]:
     """Solve the re-optimized fixed-0ms FG response frontier (one result per stats row).
 
@@ -55,12 +56,13 @@ def _solve_fixed_timing_response_results(
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         selected_color=str(selected_color or ""),
-        total_budget=0,  # gems fixed: recompute, do NOT re-solve gear -- only re-optimize FG placement
+        total_budget=int(total_budget),  # 0 = gems-fixed replay; >0 = lossless-exact gem RE-SOLVE
     )
-    # Score the collapsed (gems-fixed) frontier on native CPU f64. This on-demand serving shape
-    # is tiny and latency-sensitive: CPU doubles are exact and faster here than emulating f64 on
-    # the GPU (which Metal/MoltenVK can't do natively), and they parallelize across cores instead
-    # of serializing on the single GPU owner. The heavy offline GA->FG search keeps the GPU path.
+    # Score the frontier on native CPU f64. This on-demand serving shape is latency-sensitive: CPU
+    # doubles are exact and (per the Task C benchmark) faster here than emulating f64 on the GPU
+    # (which Metal/MoltenVK can't do natively), and they parallelize across cores instead of
+    # serializing on the single GPU owner. At total_budget>0 the CPU gem-search
+    # (response_inner_cpu_search) re-solves gems exactly. The heavy offline GA keeps the GPU path.
     results = score_prepared_force_greats_response_frontier_batch_cpu_sync(batch, include_forced_counts=False)
     if len(results) != len(rows):
         raise ValueError(
@@ -99,6 +101,7 @@ def build_fixed_timing_fg_replays(
     calc_song: Mapping[str, Any],
     ref_arrays: Mapping[str, Any],
     selected_color: str,
+    total_budget: int = 0,
 ) -> list[dict[str, Any]]:
     """Re-optimized fixed-0ms FG replay per loadout: surface + full ``force`` payload.
 
@@ -125,7 +128,9 @@ def build_fixed_timing_fg_replays(
     from ...solver.scoring.exact_rescore import score_stats_fixed_timing_exact_batch
     from .reducer import materialize_force_payload_from_response_frontier
 
-    results, cs, refs = _solve_fixed_timing_response_results(fg_rows, calc_song, ref_arrays, selected_color)
+    results, cs, refs = _solve_fixed_timing_response_results(
+        fg_rows, calc_song, ref_arrays, selected_color, total_budget=int(total_budget)
+    )
     # Paired base = each loadout's NON-FG base score under the same fixed-0ms timeline; the
     # materializer requires it (>0) as the FG row's source base score.
     paired_base_scores = score_stats_fixed_timing_exact_batch(base_rows, cs, refs)

@@ -501,6 +501,9 @@ def compute_team_buff_tier_leaderboards(
                 "source_fg_score": _safe_int(entry.get("fg_score"), 0),
                 "base": base_slice,
                 "fg": fg_snapshot,
+                # original entry (gear/minis as stat-dicts) for the zero_ms gem re-solve genome;
+                # per_entry is filtered (entries may be skipped) so it is NOT 1:1 with `entries`.
+                "_entry": entry,
             }
         )
 
@@ -537,8 +540,118 @@ def compute_team_buff_tier_leaderboards(
             int(delta_map.get(secondary_color, 0)) if secondary_color else 0,
         )
 
+    # zero_ms only: shared re-solve context for BOTH the meta and FG branches (Lossless-Exact
+    # Replay, issue #51). The gem-less ``fixed_stats`` (song base incl. baseline team buff) and the
+    # rehydrated ``cfg`` feed a per-(loadout, tier) RE-SOLVE so the served gems/stats/score equal a
+    # native zero_ms optimization of the exact config rather than the inherited Perfect-window gems.
+    # Computed ONCE here and consumed by the meta re-solve (below) and the FG branch (further below)
+    # so the two surfaces share one canonical fixed-stats source. ``zero_ms_tier_delta_map`` is the
+    # baseline->tier stat delta applied to the gem-less fixed stats; built by DIRECT assignment (NOT
+    # accumulate) so primary_color == secondary_color overwrites (matching _fg_stats_at_tier) and
+    # never doubles the delta.
+    zero_ms_cfg = None
+    zero_ms_fixed_stats: dict | None = None
+    zero_ms_tier_delta_map: dict[str, dict[str, int]] = {}
+    if timing_mode == "zero_ms":
+        from ...core.utils import cfg_from_dict
+        from ...data.csv_parser import get_fixed_stats
+        from .song_config import apply_baseline_team_buff_config
+
+        zero_ms_cfg = cfg_from_dict(cfg_dict)
+        apply_baseline_team_buff_config(zero_ms_cfg, calc_song)
+        zero_ms_fixed_stats = get_fixed_stats(zero_ms_cfg)
+        for tier in tier_list:
+            dpp, dp, ds = tier_deltas[str(tier)]
+            delta_map_tier: dict[str, int] = {"Perfect Points": int(dpp)}
+            if primary_color:
+                delta_map_tier[primary_color] = int(dp)
+            if secondary_color:
+                delta_map_tier[secondary_color] = int(ds)
+            zero_ms_tier_delta_map[str(tier)] = delta_map_tier
+
     meta_scores_by_tier: dict[str, list[int]] = {}
-    if replay_meta and per_entry:
+    # zero_ms only (empty otherwise): per-(tier, loadout) RE-SOLVED base/meta payload (re-solved
+    # GemCounts/Stats/Score under chart-fixed timing) keyed by (tier, loadout_hash), so the DB-batch
+    # builder can graft the re-solved gems/stats onto the served base details instead of the
+    # inherited Perfect-window ones (the base analog of zero_ms_fg_force_by_hash).
+    zero_ms_base_by_hash: dict[tuple[str, str], dict] = {}
+    if replay_meta and per_entry and timing_mode == "zero_ms":
+        # Lossless-Exact Replay (zero_ms), base/meta surface: per (loadout, tier) RE-SOLVE the base
+        # gem allocation from GEM-LESS fixed stats + full budget via the EXHAUSTIVE CPU-exact search
+        # (build_candidate_payload_exact_cpu -> solve_best_fever_combination_exact_cpu), so the served
+        # base gems/stats/score == a native zero_ms optimization of that exact config, not the
+        # inherited Perfect-window gems. Per tier because the optimal gems differ per tier. Mirrors
+        # the FG branch below. (Feeding gem-FULL stats + a budget would double-count gems -> ~63%
+        # score inflation; the gem-less fixed stats + genome are merged internally by
+        # build_candidate_payload_exact_cpu via _add_genome_item_stats.)
+        from ...solver.solver_common import (
+            build_candidate_payload_exact_cpu,
+            build_solver_cfg_data,
+            build_solver_override_cfg,
+        )
+        from .fg_exact_resolve import apply_stat_delta as _apply_fixed_stat_delta, entry_genome
+
+        for tier in tier_list:
+            tier_delta_map = zero_ms_tier_delta_map[str(tier)]
+            target_fixed = _apply_fixed_stat_delta(zero_ms_fixed_stats, tier_delta_map)
+            out_scores: list[int] = [0] * len(per_entry)
+            for idx, e in enumerate(per_entry):
+                # per_entry is FILTERED (entries may be skipped); index its stored original entry,
+                # NOT entries[idx], which would be the wrong loadout when any entry was skipped.
+                entry = e["_entry"]
+                base_details = entry.get("details") if isinstance(entry.get("details"), dict) else {}
+                selected_element = (
+                    str(get_selected_element(base_details, primary_color) or primary_color or "").strip()
+                )
+                cfg_data = build_solver_cfg_data(
+                    zero_ms_cfg,
+                    p_color=primary_color,
+                    s_color=secondary_color,
+                    selected_color=selected_element,
+                )
+                override_cfg = build_solver_override_cfg(
+                    cfg_data,
+                    p_color=primary_color,
+                    selected_color=selected_element,
+                )
+                resolved = build_candidate_payload_exact_cpu(
+                    cfg=zero_ms_cfg,
+                    base_stats_fixed=target_fixed,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    genome=entry_genome(entry),
+                    override_cfg=override_cfg,
+                )
+                resolved_stats = dict(resolved.get("Stats") or {})
+                if not resolved_stats:
+                    raise ValueError(
+                        "zero_ms base re-solve returned no Stats for loadout "
+                        f"{e.get('loadout_hash')!r} at tier {tier!r}."
+                    )
+                # The served meta score is the resolved stats re-scored by the SAME zero_ms exact
+                # scorer the leaderboard uses (_base_score_batch == score_stats_fixed_timing_exact),
+                # so serving == the exact within-loadout re-solve by construction (delta=0). NOT
+                # resolved["Score"], which is the f32 search score and can differ slightly from the
+                # f64 replay.
+                exact_score = int(_base_score_batch([resolved_stats])[0])
+                out_scores[idx] = exact_score
+                loadout_hash = _norm_text(e.get("loadout_hash"))
+                if not loadout_hash:
+                    # Fail loud: this entry got a RE-SOLVED zero_ms base score (above) but has no
+                    # loadout_hash to key its witness, so the DB-batch graft can never find the
+                    # re-solved gems/stats and would serve the INHERITED Perfect-window gems paired
+                    # with this re-solved score -- a wrong, money-losing pairing. An un-keyable
+                    # leaderboard entry cannot be served consistently; do not silently skip.
+                    raise ValueError(
+                        "zero_ms base re-solve produced an un-keyable leaderboard entry "
+                        f"(empty loadout_hash) for song {_norm_text(meta0.get('Song Name'))!r} "
+                        f"[{_norm_text(meta0.get('Difficulty'))}] at per_entry index {idx} "
+                        f"(tier {tier!r})."
+                    )
+                resolved["Score"] = exact_score
+                zero_ms_base_by_hash[(str(tier), loadout_hash)] = resolved
+            meta_scores_by_tier[str(tier)] = out_scores
+    elif replay_meta and per_entry:
         for tier in tier_list:
             dpp, dp, ds = tier_deltas[str(tier)]
             tier_stats = [
@@ -561,80 +674,74 @@ def compute_team_buff_tier_leaderboards(
     # ForceGreats.frontier_trace = 0ms note-graph witness) keyed by loadout_hash, so the
     # DB-batch builder can carry a per-loadout 0ms witness instead of the persisted
     # Perfect-window one. Tier-invariant (only stat values re-derive per tier).
-    zero_ms_fg_force_by_hash: dict[str, dict] = {}
+    zero_ms_fg_force_by_hash: dict[tuple[str, str], dict] = {}  # keyed by (tier, loadout_hash)
     have_fg = replay_fg and any(isinstance(e.get("fg"), dict) for e in per_entry)
     if have_fg:
         fg_indices = [idx for idx, e in enumerate(per_entry) if isinstance(e.get("fg"), dict)]
         if timing_mode == "zero_ms":
-            # Re-optimize each loadout's FG surface at fixed chart timing (issue #51). Forcing
-            # greats still helps at 0ms -- it changes the fill length, which shifts where fever
-            # activates and can align fever windows better with note clusters (a count effect,
-            # independent of hit-offset) -- so FG 0ms is NOT base 0ms and the surface must be
-            # rebuilt. The persisted surface is the Perfect-window optimum (invalid at 0ms), so it
-            # is rebuilt once from each loadout's base FG stats. Tier deltas never shift FT/FF, so
-            # the rebuilt surface is tier-invariant and only stat values re-derive per tier.
-            from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_fg_replays
+            # Lossless-Exact Replay (zero_ms): per (loadout, tier) RE-SOLVE the FG gem allocation at
+            # chart timing from GEM-LESS fixed stats + budget (fg_exact_resolve -> the CPU native-f64
+            # search), so the served gems/stats/score == a native zero_ms optimization of that exact
+            # config, not the inherited Perfect-window gems. Per tier because the optimal gems differ
+            # per tier. (Feeding gem-FULL stats + a budget would double-count gems -> score inflation.)
+            # Reuses the shared zero_ms_cfg/zero_ms_fixed_stats/zero_ms_tier_delta_map computed once
+            # above (the same gem-less fixed-stats source the base/meta re-solve uses).
+            from .fg_exact_resolve import resolve_fg_force_for_loadouts
 
-            base_fg_stats = [
-                _fg_stats_at_tier(
-                    per_entry[idx]["fg"],
-                    delta_pp=0,
-                    delta_primary=0,
-                    delta_secondary=0,
-                    primary_color=primary_color,
-                    secondary_color=secondary_color,
+            # per_entry is filtered (some entries skipped) -> index its stored original entry, NOT
+            # `entries[idx]`, which would be the wrong loadout when any entry was skipped.
+            fg_entries = [per_entry[idx]["_entry"] for idx in fg_indices]
+            for tier in tier_list:
+                tier_delta_map = zero_ms_tier_delta_map[str(tier)]
+                forces = resolve_fg_force_for_loadouts(
+                    entries=fg_entries,
+                    fixed_stats=zero_ms_fixed_stats,
+                    tier_delta=tier_delta_map,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    selected_color=primary_color,
                 )
-                for idx in fg_indices
-            ]
-            base_paired_stats = [
-                _fg_stats_at_tier(
-                    per_entry[idx]["fg"],
-                    delta_pp=0,
-                    delta_primary=0,
-                    delta_secondary=0,
-                    primary_color=primary_color,
-                    secondary_color=secondary_color,
-                    paired_base=True,
-                )
-                for idx in fg_indices
-            ]
-            replays = build_fixed_timing_fg_replays(
-                fg_stats_list=base_fg_stats,
-                base_stats_list=base_paired_stats,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                selected_color=primary_color,
-            )
-            fg_surface_by_idx = {idx: replay["surface"] for idx, replay in zip(fg_indices, replays, strict=True)}
-            for idx, replay in zip(fg_indices, replays, strict=True):
-                loadout_hash = _norm_text(per_entry[idx].get("loadout_hash"))
-                if loadout_hash:
-                    zero_ms_fg_force_by_hash[loadout_hash] = replay["force"]
+                out_list = fg_scores_by_tier[str(tier)]
+                for idx, force in zip(fg_indices, forces, strict=True):
+                    out_list[idx] = int(force["Score"])
+                    loadout_hash = _norm_text(per_entry[idx].get("loadout_hash"))
+                    if not loadout_hash:
+                        # Fail loud (mirrors the base re-solve above): this FG entry got a RE-SOLVED
+                        # zero_ms FG score but has no loadout_hash to key its witness, so the DB-batch
+                        # graft can never find the re-solved FG gems/stats/force and would serve the
+                        # INHERITED Perfect-window FG payload paired with this re-solved FG score -- a
+                        # wrong, money-losing pairing. Do not silently skip.
+                        raise ValueError(
+                            "zero_ms FG re-solve produced an un-keyable leaderboard entry "
+                            f"(empty loadout_hash) for song {_norm_text(meta0.get('Song Name'))!r} "
+                            f"[{_norm_text(meta0.get('Difficulty'))}] at per_entry index {idx} "
+                            f"(tier {tier!r})."
+                        )
+                    zero_ms_fg_force_by_hash[(str(tier), loadout_hash)] = force
         else:
             fg_surface_by_idx = {idx: per_entry[idx]["fg"]["surface"] for idx in fg_indices}
-
-        for tier in tier_list:
-            dpp, dp, ds = tier_deltas[str(tier)]
-            out_list = fg_scores_by_tier[str(tier)]
-            for idx in fg_indices:
-                e = per_entry[idx]
-                stats = _fg_stats_at_tier(
-                    e["fg"],
-                    delta_pp=int(dpp),
-                    delta_primary=int(dp),
-                    delta_secondary=int(ds),
-                    primary_color=primary_color,
-                    secondary_color=secondary_color,
-                )
-                replay_score = score_force_greats_response_surface_exact(
-                    stats, calc_song, ref_arrays, fg_surface_by_idx[idx]
-                )
-                if replay_score is None:
-                    raise ValueError(
-                        "FG response surface tier replay failed for loadout "
-                        f"{e.get('loadout_hash')!r} at tier {tier!r}."
+            for tier in tier_list:
+                dpp, dp, ds = tier_deltas[str(tier)]
+                out_list = fg_scores_by_tier[str(tier)]
+                for idx in fg_indices:
+                    e = per_entry[idx]
+                    stats = _fg_stats_at_tier(
+                        e["fg"],
+                        delta_pp=int(dpp),
+                        delta_primary=int(dp),
+                        delta_secondary=int(ds),
+                        primary_color=primary_color,
+                        secondary_color=secondary_color,
                     )
-                out_list[idx] = int(replay_score)
+                    replay_score = score_force_greats_response_surface_exact(
+                        stats, calc_song, ref_arrays, fg_surface_by_idx[idx]
+                    )
+                    if replay_score is None:
+                        raise ValueError(
+                            "FG response surface tier replay failed for loadout "
+                            f"{e.get('loadout_hash')!r} at tier {tier!r}."
+                        )
+                    out_list[idx] = int(replay_score)
 
     tiers_out: dict[str, dict] = {}
     for tier in tier_list:
@@ -729,6 +836,11 @@ def compute_team_buff_tier_leaderboards(
         # zero_ms only (empty otherwise): per-loadout rebuilt FG force payloads carrying the
         # chart-fixed note-graph witness; consumed by build_team_buff_tier_db_batches.
         "zero_ms_fg_force_by_hash": zero_ms_fg_force_by_hash,
+        # zero_ms only (empty otherwise): per-(tier, loadout) RE-SOLVED base/meta payloads
+        # (re-solved GemCounts/Stats/Score under chart-fixed timing); consumed by
+        # build_team_buff_tier_db_batches to graft the re-solved base gems/stats onto the served
+        # base details. Base analog of zero_ms_fg_force_by_hash (kept SEPARATE from FG).
+        "zero_ms_base_by_hash": zero_ms_base_by_hash,
     }
 
 
@@ -792,6 +904,7 @@ def build_team_buff_tier_db_batches(
         timing_mode=timing_mode,
     )
     zero_ms_fg_force_by_hash = payload.get("zero_ms_fg_force_by_hash") or {}
+    zero_ms_base_by_hash = payload.get("zero_ms_base_by_hash") or {}
 
     payload_meta = payload.get("meta") or {}
     base_team_buff = _norm_text(payload_meta.get("base_team_buff")) or _resolve_base_team_buff(cfg_dict)
@@ -932,7 +1045,37 @@ def build_team_buff_tier_db_batches(
                     if isinstance(stats0, dict) and stats0:
                         details_base = dict(details_base)
                         details_base["Stats"] = _ensure_stats_include_base_effect(stats0, base_effect)
-                details_out = _apply_details_delta(details_base, delta_map)
+                base_witness = (
+                    zero_ms_base_by_hash.get((str(tier), _norm_text(orig.get("loadout_hash"))))
+                    if is_zero_ms
+                    else None
+                )
+                if is_zero_ms and isinstance(base_witness, dict):
+                    # Lossless-Exact Replay (base/meta): the witness is the per-(tier, loadout)
+                    # RE-SOLVED base payload (re-solved gems + tier-shifted stats under chart-fixed
+                    # timing). SKIP the tier stat-delta -- the witness Stats are already at this tier
+                    # -- and overwrite the inherited Stats/GemCounts with the re-solved ones, so the
+                    # served base details match the re-solved gems behind the served base score
+                    # (atomic with the meta_scores_by_tier re-solve above). The score itself is set
+                    # via score_out below; this only flows the gems/stats. Mirrors the FG witness
+                    # graft (kept SEPARATE from FG -- base details, FG force).
+                    details_out = dict(details_base)
+                    for det_key in ("Stats", "GemCounts"):
+                        # Fail loud: a present base witness MUST carry the re-solved keys it overwrites.
+                        # build_candidate_payload_exact_cpu always returns Stats+GemCounts today, so this
+                        # never fires on valid data -- it is a regression tripwire. Falling back to the
+                        # inherited (Perfect-window) value would serve a wrong gem/stat pairing behind the
+                        # re-solved zero_ms base score (money-losing). Do not silently skip.
+                        if det_key not in base_witness:
+                            raise ValueError(
+                                "zero_ms base witness is missing required re-solved key "
+                                f"{det_key!r} for tier {str(tier)!r} loadout_hash "
+                                f"{_norm_text(orig.get('loadout_hash'))!r}; refusing to serve "
+                                "inherited Perfect-window gems behind a re-solved zero_ms score."
+                            )
+                        details_out[det_key] = base_witness[det_key]
+                else:
+                    details_out = _apply_details_delta(details_base, delta_map)
                 # `_apply_details_delta` copies the baseline (T5) details verbatim except for
                 # Stats, so `details_out` inherits the baseline TimelineFrontier — a per-note
                 # trace that is WRONG for this (shifted) tier. Drop it unconditionally: the
@@ -976,31 +1119,58 @@ def build_team_buff_tier_db_batches(
                             det_out["Stats"] = _ensure_stats_include_base_effect(st, base_effect)
                             force_base["details"] = det_out
                 if is_zero_ms:
-                    # zero_ms (issue #51): the loadout identity is timing-invariant — same gear,
-                    # gems, and stats as Perfect-window — so keep the PERSISTED force (its
-                    # GemCounts/Stats/BaseStats are the real allocation) and graft ONLY the
-                    # forced-greats TIMING fields that 0ms re-optimizes: the chart-fixed note-graph
-                    # trace, the 0ms forced-counts config, and the rebuilt response surface. The
-                    # rebuilt witness is a total_budget=0 recompute, so its own GemCounts are 0 and
-                    # must NOT be shown. No witness (or no persisted force) -> force_out=None and the
-                    # consumer drops the FG card rather than drawing Perfect-window timing.
-                    witness = zero_ms_fg_force_by_hash.get(_norm_text(orig.get("loadout_hash")))
+                    # Lossless-Exact Replay: the witness is the per-(tier, loadout) RE-SOLVED FG force
+                    # (re-solved gems + tier-shifted stats + chart-fixed frontier_trace). Flow ALL
+                    # re-solved fields onto the persisted force -- gems/stats/score, not just timing --
+                    # and skip the tier stat-delta below (the witness is already at this tier). No
+                    # witness (or no persisted force) -> force_out=None and the consumer drops the card.
+                    witness = zero_ms_fg_force_by_hash.get((str(tier), _norm_text(orig.get("loadout_hash"))))
                     if isinstance(force_base, dict) and isinstance(witness, dict):
                         force_base = dict(force_base)
                         witness_fg = witness.get("ForceGreats") if isinstance(witness.get("ForceGreats"), dict) else {}
                         fg_meta = dict(force_base.get("ForceGreats") or {})
-                        for fg_key in ("frontier_trace", "config", "non_fever_base", "frontier_first_surfaces"):
+                        for fg_key in ("frontier_trace", "config", "non_fever_base", "frontier_first_surfaces", "final_score"):
                             if fg_key in witness_fg:
                                 fg_meta[fg_key] = witness_fg[fg_key]
                         force_base["ForceGreats"] = fg_meta
-                        for top_key in ("response_surface", "forced_counts"):
+                        # Fail loud: a present FG witness MUST carry the re-solved gem/stat/score payload
+                        # it overwrites (GemCounts/Stats/Score). resolve_fg_force_for_loadouts ->
+                        # build_fixed_timing_fg_replays always materializes these (shape identical to a
+                        # persisted FG row), so this never fires on valid data -- it is a regression
+                        # tripwire. Falling back to the inherited (Perfect-window) value would serve a
+                        # wrong gem/stat pairing behind the re-solved zero_ms FG score (money-losing).
+                        for req_key in ("GemCounts", "Stats", "Score"):
+                            if req_key not in witness:
+                                raise ValueError(
+                                    "zero_ms FG witness is missing required re-solved key "
+                                    f"{req_key!r} for tier {str(tier)!r} loadout_hash "
+                                    f"{_norm_text(orig.get('loadout_hash'))!r}; refusing to serve "
+                                    "inherited Perfect-window FG gems behind a re-solved zero_ms score."
+                                )
+                        for top_key in ("response_surface", "forced_counts", "GemCounts", "Stats", "BaseStats", "Score", "FT", "FF"):
                             if top_key in witness:
                                 force_base[top_key] = witness[top_key]
+                        det = force_base.get("details")
+                        if isinstance(det, dict):
+                            det_out = dict(det)
+                            for det_key in ("GemCounts", "Stats"):
+                                # Required: the details view must mirror the re-solved gem/stat payload
+                                # asserted present above. Same regression tripwire (never fires on valid
+                                # data); never serve inherited gems behind a re-solved FG score.
+                                if det_key not in witness:
+                                    raise ValueError(
+                                        "zero_ms FG witness is missing required re-solved details key "
+                                        f"{det_key!r} for tier {str(tier)!r} loadout_hash "
+                                        f"{_norm_text(orig.get('loadout_hash'))!r}; refusing to serve "
+                                        "inherited Perfect-window FG gems behind a re-solved zero_ms score."
+                                    )
+                                det_out[det_key] = witness[det_key]
+                            force_base["details"] = det_out
                     else:
                         force_base = None
                 force_out = _apply_force_delta(
                     force_base,
-                    delta=delta_map,
+                    delta={} if is_zero_ms else delta_map,
                     fg_score=fg_score_out,
                 )
                 # NB: unlike the base TimelineFrontier above, the FG note-graph trace
