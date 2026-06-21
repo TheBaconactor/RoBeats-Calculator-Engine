@@ -557,6 +557,11 @@ def compute_team_buff_tier_leaderboards(
         meta_scores_by_tier = {str(t): [0] * len(per_entry) for t in tier_list}
 
     fg_scores_by_tier: dict[str, list[int]] = {str(t): [0] * len(per_entry) for t in tier_list}
+    # zero_ms only: full rebuilt FG ``force`` payloads (with the chart-fixed
+    # ForceGreats.frontier_trace = 0ms note-graph witness) keyed by loadout_hash, so the
+    # DB-batch builder can carry a per-loadout 0ms witness instead of the persisted
+    # Perfect-window one. Tier-invariant (only stat values re-derive per tier).
+    zero_ms_fg_force_by_hash: dict[str, dict] = {}
     have_fg = replay_fg and any(isinstance(e.get("fg"), dict) for e in per_entry)
     if have_fg:
         fg_indices = [idx for idx, e in enumerate(per_entry) if isinstance(e.get("fg"), dict)]
@@ -568,7 +573,7 @@ def compute_team_buff_tier_leaderboards(
             # rebuilt. The persisted surface is the Perfect-window optimum (invalid at 0ms), so it
             # is rebuilt once from each loadout's base FG stats. Tier deltas never shift FT/FF, so
             # the rebuilt surface is tier-invariant and only stat values re-derive per tier.
-            from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_response_surfaces
+            from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_fg_replays
 
             base_fg_stats = [
                 _fg_stats_at_tier(
@@ -581,8 +586,30 @@ def compute_team_buff_tier_leaderboards(
                 )
                 for idx in fg_indices
             ]
-            rebuilt = build_fixed_timing_response_surfaces(base_fg_stats, calc_song, ref_arrays, primary_color)
-            fg_surface_by_idx = {idx: surface for idx, surface in zip(fg_indices, rebuilt, strict=True)}
+            base_paired_stats = [
+                _fg_stats_at_tier(
+                    per_entry[idx]["fg"],
+                    delta_pp=0,
+                    delta_primary=0,
+                    delta_secondary=0,
+                    primary_color=primary_color,
+                    secondary_color=secondary_color,
+                    paired_base=True,
+                )
+                for idx in fg_indices
+            ]
+            replays = build_fixed_timing_fg_replays(
+                fg_stats_list=base_fg_stats,
+                base_stats_list=base_paired_stats,
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                selected_color=primary_color,
+            )
+            fg_surface_by_idx = {idx: replay["surface"] for idx, replay in zip(fg_indices, replays, strict=True)}
+            for idx, replay in zip(fg_indices, replays, strict=True):
+                loadout_hash = _norm_text(per_entry[idx].get("loadout_hash"))
+                if loadout_hash:
+                    zero_ms_fg_force_by_hash[loadout_hash] = replay["force"]
         else:
             fg_surface_by_idx = {idx: per_entry[idx]["fg"]["surface"] for idx in fg_indices}
 
@@ -699,6 +726,9 @@ def compute_team_buff_tier_leaderboards(
             "secondary_color": secondary_color,
         },
         "tiers": tiers_out,
+        # zero_ms only (empty otherwise): per-loadout rebuilt FG force payloads carrying the
+        # chart-fixed note-graph witness; consumed by build_team_buff_tier_db_batches.
+        "zero_ms_fg_force_by_hash": zero_ms_fg_force_by_hash,
     }
 
 
@@ -713,6 +743,7 @@ def build_team_buff_tier_db_batches(
     base_team_color_override: object = None,
     target_team_color_override: object = None,
     replay_surface: str = "both",
+    timing_mode: str = "perfect_window",
 ) -> dict[str, list[dict]]:
     """
     Return DB-ready entry batches per tier.
@@ -724,8 +755,23 @@ def build_team_buff_tier_db_batches(
     - meta: top-N by replayed base score only
     - fg: top-N by replayed FG score only
     - both: union(top-N base, top-N FG) for persistence canonicalization
+
+    ``timing_mode`` selects the timing model (a semantic input, not a toggle; see
+    ``compute_team_buff_tier_leaderboards``):
+    - "perfect_window" (default): envelope-optimal exact replay. Persistence
+      canonicalization always uses this.
+    - "zero_ms" (issue #51): every hit at chart time. Scores come from the 0ms
+      leaderboards; the base note graph is the chart-fixed timeline (no Perfect-window
+      ``TimelineFrontier`` is attached, so the renderer draws delta=0 from ``Stats``), and
+      each FG row carries the rebuilt 0ms ``force`` (chart-fixed ``frontier_trace``) rather
+      than the persisted Perfect-window one. zero_ms is an on-demand ranking mode and must
+      NOT be persisted to the canonical leaderboards.
     """
     tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
+    timing_mode = str(timing_mode or "perfect_window").strip().lower()
+    if timing_mode not in {"perfect_window", "zero_ms"}:
+        raise ValueError(f"build_team_buff_tier_db_batches: unknown timing_mode {timing_mode!r}")
+    is_zero_ms = timing_mode == "zero_ms"
     surface = str(replay_surface or "both").strip().lower()
     if surface not in {"meta", "fg", "both"}:
         surface = "both"
@@ -743,7 +789,9 @@ def build_team_buff_tier_db_batches(
         base_team_color_override=base_team_color_override,
         target_team_color_override=target_team_color_override,
         replay_surfaces=replay_surfaces,
+        timing_mode=timing_mode,
     )
+    zero_ms_fg_force_by_hash = payload.get("zero_ms_fg_force_by_hash") or {}
 
     payload_meta = payload.get("meta") or {}
     base_team_buff = _norm_text(payload_meta.get("base_team_buff")) or _resolve_base_team_buff(cfg_dict)
@@ -900,8 +948,12 @@ def build_team_buff_tier_db_batches(
                 # witnesses (issue #38, point 4 — base surface). Additive only: the row's
                 # `score` already comes from the leaderboard; this attaches a TimelineFrontier
                 # whose frontier_trace the consumer uses to draw an exact per-tier graph.
+                # zero_ms (issue #51): the Perfect-window timing frontier does not apply at fixed
+                # 0ms timing, so attach NO TimelineFrontier — the row carries Stats only and the
+                # consumer reconstructs the deterministic chart-time timeline (every note delta=0)
+                # from those stats. Fail safe: never a Perfect-window trace under a 0ms score.
                 trace_stats = details_out.get("Stats") if isinstance(details_out, dict) else None
-                if isinstance(trace_stats, dict) and trace_stats:
+                if not is_zero_ms and isinstance(trace_stats, dict) and trace_stats:
                     timeline_frontier = score_stats_exact_with_timeline_trace(
                         trace_stats, calc_song, ref_arrays
                     ).get("TimelineFrontier")
@@ -909,20 +961,29 @@ def build_team_buff_tier_db_batches(
                         details_out["TimelineFrontier"] = timeline_frontier
 
             if surface in {"fg", "both"}:
-                force_base = orig.get("force")
-                if isinstance(force_base, dict) and base_effect:
-                    force_base_obj = force_base
-                    force_base = dict(force_base_obj)
-                    bs = force_base.get("BaseStats")
-                    if isinstance(bs, dict) and bs:
-                        force_base["BaseStats"] = _ensure_stats_include_base_effect(bs, base_effect)
-                    det = force_base.get("details")
-                    if isinstance(det, dict):
-                        st = det.get("Stats")
-                        if isinstance(st, dict) and st:
-                            det_out = dict(det)
-                            det_out["Stats"] = _ensure_stats_include_base_effect(st, base_effect)
-                            force_base["details"] = det_out
+                if is_zero_ms:
+                    # zero_ms (issue #51): carry the REBUILT 0ms FG force (its
+                    # ForceGreats.frontier_trace is the chart-fixed note-graph witness, valid at
+                    # 0ms — the persisted Perfect-window trace is not). Its BaseStats already
+                    # include the base team-buff effect (applied when the leaderboard rebuilt it),
+                    # so only the per-tier delta remains. A missing witness yields force_out=None,
+                    # and the consumer drops the FG card rather than drawing Perfect-window timing.
+                    force_base = zero_ms_fg_force_by_hash.get(_norm_text(orig.get("loadout_hash")))
+                else:
+                    force_base = orig.get("force")
+                    if isinstance(force_base, dict) and base_effect:
+                        force_base_obj = force_base
+                        force_base = dict(force_base_obj)
+                        bs = force_base.get("BaseStats")
+                        if isinstance(bs, dict) and bs:
+                            force_base["BaseStats"] = _ensure_stats_include_base_effect(bs, base_effect)
+                        det = force_base.get("details")
+                        if isinstance(det, dict):
+                            st = det.get("Stats")
+                            if isinstance(st, dict) and st:
+                                det_out = dict(det)
+                                det_out["Stats"] = _ensure_stats_include_base_effect(st, base_effect)
+                                force_base["details"] = det_out
                 force_out = _apply_force_delta(
                     force_base,
                     delta=delta_map,

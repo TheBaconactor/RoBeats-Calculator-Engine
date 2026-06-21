@@ -29,7 +29,7 @@ from .response_cache import (
     load_response_frontier_scoring_bundle,
 )
 from .response_ftff_prune import element_ftff_delta
-from .response_inner_host import _score_response_group_meta_gpu  # noqa: F401
+from .response_inner_host import _score_response_group_meta_cpu, _score_response_group_meta_gpu  # noqa: F401
 from .response_types import (
     FgResponseFrontierResult,
     FgResponseFrontierSolveResult,
@@ -62,7 +62,9 @@ __all__ = [
     "pack_prepared_force_greats_response_frontier_scoring_surfaces",
     "finalize_prepared_force_greats_response_frontier_batch_for_gpu_score",
     "score_prepared_force_greats_response_frontier_batch_on_gpu_owner",
+    "score_prepared_force_greats_response_frontier_batch_on_cpu_owner",
     "score_prepared_force_greats_response_frontier_batch_sync",
+    "score_prepared_force_greats_response_frontier_batch_cpu_sync",
     "materialize_force_greats_response_frontier_owner_result",
     "reconstruct_force_greats_response_counts",
     "reconstruct_force_greats_response_trace",
@@ -779,6 +781,77 @@ def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
     return FgResponseFrontierOwnerResult(
         batch=batch,
         inner_rows=np.asarray(inner_rows, dtype=np.int32),
+    )
+
+
+def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
+    batch: FgResponseFrontierPackedScoringBatch,
+) -> FgResponseFrontierOwnerResult:
+    """Score a finalized batch with native CPU f64 (no GPU). Same exact algorithm and
+    arithmetic as the GPU owner, for the gems-fixed (zero_ms / total_budget == 0) on-demand
+    serving shape: tiny per-request work where CPU doubles are lower-latency than emulating
+    f64 on a GPU and parallelize across cores instead of serializing on the single GPU."""
+    if fg_batch_stage(batch) is not FgBatchStage.SURFACES_PACKED:
+        raise RuntimeError(
+            "FG response frontier CPU owner score requires a finalized batch "
+            "(group rows built and scoring surfaces packed before submit)"
+        )
+    surface_words = batch.scoring_surface_words
+    surface_counts = batch.scoring_surface_counts
+    surface_head_coeffs = batch.scoring_surface_head_coeffs
+    group_offsets = batch.scoring_group_offsets
+    group_lengths = batch.scoring_group_lengths
+    if int(group_offsets.shape[0]) != int(batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
+        batch.group_meta.shape[0]
+    ):
+        raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
+    if (
+        int(surface_words.ndim) != 2
+        or int(surface_words.shape[1]) != 8
+        or int(surface_counts.ndim) != 2
+        or int(surface_counts.shape[1]) != 3
+        or int(surface_head_coeffs.ndim) != 2
+        or int(surface_head_coeffs.shape[1]) != 4
+    ):
+        raise ValueError("response frontier prepared scoring arrays have invalid shape")
+    inner_rows, _logical_surface_rows = _score_response_group_meta_cpu(
+        group_meta=batch.group_meta,
+        group_offsets=group_offsets,
+        group_lengths=group_lengths,
+        primary_color=batch.primary_color,
+        secondary_color=batch.secondary_color,
+        selected_color=batch.selected_color,
+        ref_arrays=batch.ref_arrays,
+        surface_words=surface_words,
+        surface_counts=surface_counts,
+        surface_head_coeffs=surface_head_coeffs,
+    )
+    if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
+        raise ValueError("response frontier exact CPU batch returned the wrong number of group results")
+    return FgResponseFrontierOwnerResult(
+        batch=batch,
+        inner_rows=np.asarray(inner_rows, dtype=np.int32),
+    )
+
+
+def score_prepared_force_greats_response_frontier_batch_cpu_sync(
+    batch: FgResponseFrontierPackedScoringBatch,
+    *,
+    include_forced_counts: bool = False,
+) -> list[FgResponseFrontierSolveResult]:
+    """Native-f64 CPU twin of ``score_prepared_force_greats_response_frontier_batch_sync``.
+
+    Enumeration (group rows + packed surfaces) is identical to the GPU path; only the inner
+    surface scoring runs on CPU doubles. For the gems-fixed (residual_budget == 0) zero_ms
+    rebuild this returns bit-identical results to the GPU owner, with no GPU f64 dependency.
+    """
+    if batch.scoring_surface_words is None:
+        batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
+    owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(batch)
+    return materialize_prepared_force_greats_response_frontier_batch_results(
+        owner.batch,
+        owner.inner_rows,
+        include_forced_counts=bool(include_forced_counts),
     )
 
 

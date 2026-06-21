@@ -19,27 +19,27 @@ from typing import Any, Mapping
 from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 
 
-def build_fixed_timing_response_surfaces(
+def _solve_fixed_timing_response_results(
     stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
     calc_song: Mapping[str, Any],
     ref_arrays: Mapping[str, Any],
     selected_color: str,
-) -> list[Any]:
-    """Re-optimized fixed-0ms FG response surface per loadout (one per stats row).
+) -> tuple[list[Any], dict[str, Any], dict[str, Any]]:
+    """Solve the re-optimized fixed-0ms FG response frontier (one result per stats row).
 
-    ``calc_song`` MUST carry chart-only timing (prepare it with
-    ``apply_timing_envelope(mode="zero_ms")``): the builder reads its chart timestamps
-    for every FG activation/boundary decision. Returns one ``FgResponseSurface`` per
-    input stats row, in order.
+    Returns ``(results, calc_song, ref_arrays)`` where ``calc_song``/``ref_arrays`` are the
+    exact (chart-only, resolved) objects the solve ran against, so downstream exact replay /
+    trace reconstruction scores the identical timing model. ``calc_song`` MUST already carry
+    chart-only timing (prepare it with ``apply_timing_envelope(mode="zero_ms")``).
     """
     rows = [dict(stats) for stats in (stats_list or [])]
     if not rows:
-        return []
+        return [], dict(calc_song), resolve_exact_replay_ref_arrays(ref_arrays)
 
     from ..fg_response_frontier_cache_prebuild import ensure_response_frontier_cache_for_calc_song
     from ..taichi_gem.force_greats.response_frontier import (
         prepare_force_greats_response_frontier_scoring_batch,
-        score_prepared_force_greats_response_frontier_batch_sync,
+        score_prepared_force_greats_response_frontier_batch_cpu_sync,
     )
 
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
@@ -57,10 +57,89 @@ def build_fixed_timing_response_surfaces(
         selected_color=str(selected_color or ""),
         total_budget=0,  # gems fixed: recompute, do NOT re-solve gear -- only re-optimize FG placement
     )
-    results = score_prepared_force_greats_response_frontier_batch_sync(batch, include_forced_counts=False)
+    # Score the collapsed (gems-fixed) frontier on native CPU f64. This on-demand serving shape
+    # is tiny and latency-sensitive: CPU doubles are exact and faster here than emulating f64 on
+    # the GPU (which Metal/MoltenVK can't do natively), and they parallelize across cores instead
+    # of serializing on the single GPU owner. The heavy offline GA->FG search keeps the GPU path.
+    results = score_prepared_force_greats_response_frontier_batch_cpu_sync(batch, include_forced_counts=False)
     if len(results) != len(rows):
         raise ValueError(
             "fixed-timing FG surface build produced a different row count than the stats batch "
             f"({len(results)} != {len(rows)})"
         )
+    return results, calc_song, ref_arrays
+
+
+def build_fixed_timing_response_surfaces(
+    stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+    selected_color: str,
+) -> list[Any]:
+    """Re-optimized fixed-0ms FG response surface per loadout (one per stats row).
+
+    ``calc_song`` MUST carry chart-only timing (prepare it with
+    ``apply_timing_envelope(mode="zero_ms")``): the builder reads its chart timestamps
+    for every FG activation/boundary decision. Returns one ``FgResponseSurface`` per
+    input stats row, in order.
+    """
+    rows = [dict(stats) for stats in (stats_list or [])]
+    if not rows:
+        return []
+    results, _calc_song, _ref_arrays = _solve_fixed_timing_response_results(
+        rows, calc_song, ref_arrays, selected_color
+    )
     return [result.surface for result in results]
+
+
+def build_fixed_timing_fg_replays(
+    *,
+    fg_stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    base_stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+    selected_color: str,
+) -> list[dict[str, Any]]:
+    """Re-optimized fixed-0ms FG replay per loadout: surface + full ``force`` payload.
+
+    Returns one ``{"surface": FgResponseSurface, "force": <payload>}`` per stats row, in
+    order. The ``force`` payload is produced by the single canonical FG materializer
+    (``materialize_force_payload_from_response_frontier``) so its shape is identical to a
+    persisted FG row -- it carries the chart-fixed ``ForceGreats.frontier_trace`` (the 0ms
+    note-graph witness), the rebuilt ``response_surface``/forced-count ``config``, and the
+    re-derived ``Stats``. ``fg_stats_list`` is the FG-evaluated stats batch (the surface
+    solve input); ``base_stats_list`` is the paired non-FG base stats for each loadout (its
+    0ms base score is the materializer's required paired base). ``calc_song`` MUST carry
+    chart-only timing (``apply_timing_envelope(mode="zero_ms")``).
+    """
+    fg_rows = [dict(stats) for stats in (fg_stats_list or [])]
+    base_rows = [dict(stats) for stats in (base_stats_list or [])]
+    if not fg_rows:
+        return []
+    if len(base_rows) != len(fg_rows):
+        raise ValueError(
+            "build_fixed_timing_fg_replays: base_stats_list and fg_stats_list lengths differ "
+            f"({len(base_rows)} != {len(fg_rows)})"
+        )
+
+    from ...solver.scoring.exact_rescore import score_stats_fixed_timing_exact_batch
+    from .reducer import materialize_force_payload_from_response_frontier
+
+    results, cs, refs = _solve_fixed_timing_response_results(fg_rows, calc_song, ref_arrays, selected_color)
+    # Paired base = each loadout's NON-FG base score under the same fixed-0ms timeline; the
+    # materializer requires it (>0) as the FG row's source base score.
+    paired_base_scores = score_stats_fixed_timing_exact_batch(base_rows, cs, refs)
+
+    replays: list[dict[str, Any]] = []
+    for result, base_stats, paired_base in zip(results, base_rows, paired_base_scores, strict=True):
+        force = materialize_force_payload_from_response_frontier(
+            eval_data={},
+            base_stats=dict(base_stats),
+            paired_base_score=int(paired_base),
+            selected_element=str(selected_color or ""),
+            result=result,
+            calc_song=cs,
+            ref_arrays=refs,
+        )
+        replays.append({"surface": result.surface, "force": force})
+    return replays
