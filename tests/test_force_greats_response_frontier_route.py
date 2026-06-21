@@ -3,7 +3,6 @@ from gear_optimizer.solver.native_inflight_config import make_native_song
 import pytest
 import numpy as np
 
-from gear_optimizer.solver.candidate_cache import reset_candidate_cache_for_tests
 from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 
 
@@ -865,7 +864,6 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
 
     surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     scoring_frontier = FgResponseFrontierResult((surface,), {}, 1, 1, 1, 1, 1, 1, 3, 0.0)
-    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
 
     def _result(best_score: int, ft_stat: int, ff_stat: int):
         return FgResponseFrontierSolveResult(
@@ -1156,7 +1154,6 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
     )
 
     calls = []
-    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
 
     def _result(base_stats, selected_color):
         surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
@@ -1293,7 +1290,6 @@ def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(tmp_pa
     from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
 
-    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     monkeypatch.setattr(
         reducer_mod,
         "materialize_force_payload_from_response_frontier",
@@ -1351,7 +1347,6 @@ def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
     )
 
     calls: list[int] = []
-    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
 
     def _fake_prepare_batch(*, base_stats_list, calc_song, ref_arrays, selected_color, **_kwargs):
         _ = (calc_song, ref_arrays, selected_color)

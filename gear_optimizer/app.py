@@ -348,9 +348,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             cfg = load_config()
             runtime_settings = self._current_runtime_settings(cfg)
             self._runtime_settings = runtime_settings
-            from gear_optimizer.solver.candidate_cache import get_candidate_cache
-
-            get_candidate_cache()
             paths = load_paths_cache()
             set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
             db_display_name = os.path.basename(get_evolution_db_path())

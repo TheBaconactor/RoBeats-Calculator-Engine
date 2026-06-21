@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from gear_optimizer.solver.candidate_cache import get_candidate_cache
 from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
 from gear_optimizer.solver.fg_response_scoring.planner import (
     FgPlanner,
@@ -15,44 +14,6 @@ FgScoringMode = Literal["production", "sync", "skyline"]
 
 class FgResponseScoringService:
     """One FG response-frontier entrypoint: plan → score → reduce."""
-
-    @staticmethod
-    def _cached_payloads_and_miss_plan(
-        plan: FgResponseFrontierPreparedPlan,
-    ) -> tuple[dict[tuple[Any, ...], dict[str, Any]], FgResponseFrontierPreparedPlan | None]:
-        semantic_keys = FgResultReducer.fg_candidate_cache_keys(plan)
-        candidate_cache = get_candidate_cache()
-        cached_payloads: dict[tuple[Any, ...], dict[str, Any]] = {}
-        miss_items: list[tuple[str, dict[str, Any]]] = []
-        seen: set[tuple[Any, ...]] = set()
-        for entry, _eval_data, _selected, _base_stats, _paired_base_score, planner_key in plan.pending_jobs:
-            if planner_key in seen:
-                continue
-            seen.add(planner_key)
-            semantic_key = semantic_keys.get(planner_key)
-            if semantic_key is None:
-                raise RuntimeError("FG candidate cache lookup is missing a semantic key")
-            cached = candidate_cache.get_fg(semantic_key)
-            if cached is None:
-                miss_items.append((str(entry.get("loadout_hash") or repr(planner_key)), entry))
-            else:
-                cached_payloads[planner_key] = cached
-
-        if not miss_items:
-            return cached_payloads, None
-        if not cached_payloads:
-            return cached_payloads, plan
-
-        default_selected = str(plan.pending_jobs[0][2] or "") if plan.pending_jobs else ""
-        scoring_bundle = plan.prepared_batches[0].batch.scoring_bundle if plan.prepared_batches else None
-        miss_plan = FgPlanner._plan_from_items(
-            miss_items,
-            plan.calc_song,
-            plan.ref_arrays,
-            default_selected,
-            scoring_bundle=scoring_bundle,
-        )
-        return cached_payloads, miss_plan
 
     @staticmethod
     def score_candidates(
@@ -159,10 +120,8 @@ class FgResponseScoringService:
         if owner_score_map is None:
             raise RuntimeError("FG fused materialization requires the owner FG score map from the GA turn")
 
-        cached_payloads, miss_plan = FgResponseScoringService._cached_payloads_and_miss_plan(plan)
-        result_cache = {}
         prepared_results = []
-        for prepared in () if miss_plan is None else miss_plan.prepared_batches:
+        for prepared in plan.prepared_batches:
             batch = prepared.batch
             base_components = batch.base_components
             rows = list(prepared.rows)
@@ -190,14 +149,7 @@ class FgResponseScoringService:
                     )
                 )
             prepared_results.append(batch_results)
-        if miss_plan is not None:
-            result_cache = FgResultReducer._result_cache(miss_plan, prepared_results)
-        return FgResultReducer.materialize(
-            plan,
-            [],
-            cached_payloads=cached_payloads,
-            result_cache_override=result_cache,
-        )
+        return FgResultReducer.materialize(plan, prepared_results)
 
     @staticmethod
     def score_prepared_plan(
@@ -219,19 +171,9 @@ class FgResponseScoringService:
                 "client; the production native FG path uses the fused owner continuation "
                 "(materialize_from_owner_score_map). Pass gpu_client=None."
             )
-        cached_payloads, miss_plan = FgResponseScoringService._cached_payloads_and_miss_plan(plan)
-        result_cache = {}
-        if miss_plan is not None:
-            prepared_results, _timings = GpuScoreEngine.score_plan(
-                miss_plan,
-                gpu_client=None,
-                include_forced_counts=bool(include_forced_counts),
-            )
-            result_cache = FgResultReducer._result_cache(miss_plan, prepared_results)
-        return FgResultReducer.materialize(
+        prepared_results, _timings = GpuScoreEngine.score_plan(
             plan,
-            [],
-            skyline=mode == "skyline",
-            cached_payloads=cached_payloads,
-            result_cache_override=result_cache,
+            gpu_client=None,
+            include_forced_counts=bool(include_forced_counts),
         )
+        return FgResultReducer.materialize(plan, prepared_results, skyline=mode == "skyline")

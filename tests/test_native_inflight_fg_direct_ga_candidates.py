@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from gear_optimizer.solver.candidate_cache import reset_candidate_cache_for_tests
 from gear_optimizer.solver.native_inflight_config import make_native_song
 
 
@@ -125,7 +124,6 @@ def test_run_fg_job_sync_materializes_from_owner_score_map(tmp_path, monkeypatch
     from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
-    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     base_components = [(10, 11, 12, 13, 14, 15, 16)]
     owner_map = {(10, 11, 12, 13, 14, 15, 16): _owner_row(130)}
     plan = _prepared_plan(base_components)
@@ -181,7 +179,6 @@ def test_run_fg_job_sync_requires_owner_score_map():
 def test_materialize_from_owner_score_map_fails_on_missing_base_components(tmp_path):
     from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
 
-    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     base_components = [(1, 2, 3, 4, 5, 6, 7)]
     plan = _prepared_plan(base_components)
     # Owner map does NOT contain the batch's base_components -> must fail loudly.

@@ -285,12 +285,10 @@ def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
     import numpy as np
 
     from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
-    from gear_optimizer.solver.candidate_cache import reset_candidate_cache_for_tests
     from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgFusedOwnerScoreRow
 
-    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     calc_song = {
         "metadata": {
             "Primary Color": "Rush",

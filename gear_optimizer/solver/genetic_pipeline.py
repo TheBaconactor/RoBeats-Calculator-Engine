@@ -560,7 +560,6 @@ def score_fused_fg_from_selected_payload(
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         score_fused_owner_base_components_on_gpu_owner,
     )
-    from gear_optimizer.solver.candidate_cache import fg_candidate_cache_key, get_candidate_cache
 
     payload = np.asarray(runs_payload, dtype=np.int32)
     if payload.ndim != 2 or int(payload.shape[0]) < 1:
@@ -588,25 +587,6 @@ def score_fused_fg_from_selected_payload(
 
     total_budget = int((cfg_data or {}).get("TotalBudget", 90) or 90)
     selected_color = str((cfg_data or {}).get("selected_color", "") or "")
-    candidate_cache = get_candidate_cache()
-    missing_components: list[tuple[int, ...]] = []
-    seen_missing: set[tuple[int, ...]] = set()
-    for row in base_components:
-        component_key = tuple(int(v) for v in row.tolist())
-        cache_key = fg_candidate_cache_key(
-            calc_song=fg_calc_song,
-            ref_arrays=ref_arrays,
-            selected_color=selected_color,
-            base_components=component_key,
-            total_budget=int(total_budget),
-        )
-        if candidate_cache.get_fg(cache_key) is None and component_key not in seen_missing:
-            seen_missing.add(component_key)
-            missing_components.append(component_key)
-
-    if not missing_components:
-        return {}
-    base_components = np.ascontiguousarray(missing_components, dtype=np.int32)
 
     return score_fused_owner_base_components_on_gpu_owner(
         base_components=base_components,

@@ -8,7 +8,6 @@ import numpy as np
 import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
 import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
 from gear_optimizer.solver import skyline_force_greats as sfg
-from gear_optimizer.solver.candidate_cache import reset_candidate_cache_for_tests
 from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
 from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
@@ -187,7 +186,6 @@ def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[st
 
 
 def test_skyline_scores_retained_candidates_through_shared_service(tmp_path: Any, monkeypatch: Any) -> None:
-    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     prepare_calls = _install_shared_path_fakes(monkeypatch)
     seen: dict[str, Any] = {}
     original = FgResponseScoringService.score_candidates_with_stats
@@ -260,7 +258,6 @@ def test_skyline_scores_retained_candidates_through_shared_service(tmp_path: Any
 
 
 def test_skyline_mode_keeps_selected_color_responses_separate(tmp_path: Any, monkeypatch: Any) -> None:
-    reset_candidate_cache_for_tests(tmp_path / "candidate_cache.sqlite3")
     prepare_calls = _install_shared_path_fakes(monkeypatch)
 
     rows, stats = FgResponseScoringService.score_candidates_with_stats(

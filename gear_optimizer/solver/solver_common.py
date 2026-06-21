@@ -13,12 +13,7 @@ from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
 from gear_optimizer.core.gem_defs import UserGemsSettings
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
-from gear_optimizer.solver.candidate_cache import (
-    base_candidate_cache_key,
-    base_candidate_const_key,
-    base_payload_from_result_tuple,
-    get_candidate_cache,
-)
+
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.force_greats_common import extract_base_stats
 from gear_optimizer.solver.item_registry import ItemRegistry
@@ -362,22 +357,6 @@ def batched_registry_eval(
         enabled=_env_enabled("SKYLINE_BATCH_PREFETCH", "1"),
         thread_name_prefix="SkylineBatchPrep",
     )
-
-    # Loop-invariant cache setup: hash the chart + ref arrays ONCE here, not once per
-    # (millions of) candidates. The per-candidate key is just this prefix + the stats tuple.
-    candidate_cache = get_candidate_cache()
-    base_const_key = base_candidate_const_key(
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        primary_color=str(primary_color or ""),
-        secondary_color=str(secondary_color or ""),
-        selected_color=str(selected_color or ""),
-        flags=flags,
-        total_budget=int(TOTAL_GEM_BUDGET),
-        gem_scale_fever=int(GEM_SCALE_FEVER),
-    )
-    item_stats_all = np.asarray(gpu_arrays["item_stats"], dtype=np.int32)
-
     for candidate_batch in batch_iter:
         max_ft_gems_global = None
         max_ff_gems_global = None
@@ -416,46 +395,8 @@ def batched_registry_eval(
             raise ValueError(f"candidate batch must have 3 or 5 fields, got {len(candidate_batch)}")
         if batch_ids.size == 0:
             continue
-        batch_ids = np.asarray(batch_ids, dtype=np.int32)
-        row_count = int(batch_ids.shape[0])
-        base_rows = (
-            np.asarray(base_fixed_stats_arr, dtype=np.int32).reshape(1, -1)
-            + item_stats_all[batch_ids].sum(axis=1)
-        )
-        cache_keys = [
-            base_candidate_cache_key(const_key=base_const_key, base_stats=base_rows[idx])
-            for idx in range(row_count)
-        ]
-        scores = np.full((row_count,), -1, dtype=np.int64)
-        missing_indices: list[int] = []
-        for idx, cache_key in enumerate(cache_keys):
-            cached_score = candidate_cache.get_base_score(cache_key)
-            if cached_score is None:
-                missing_indices.append(idx)
-            else:
-                scores[idx] = cached_score
-
-        admit_misses = score_cull_threshold is None
-        if missing_indices:
-            miss_idx = np.asarray(missing_indices, dtype=np.intp)
-            req_batch_ids = np.ascontiguousarray(batch_ids[miss_idx], dtype=np.int32)
-            req_timing_response_genome_offsets = (
-                None
-                if timing_response_genome_offsets is None
-                else np.ascontiguousarray(np.asarray(timing_response_genome_offsets, dtype=np.int32)[miss_idx])
-            )
-            req_timing_response_genome_lengths = (
-                None
-                if timing_response_genome_lengths is None
-                else np.ascontiguousarray(np.asarray(timing_response_genome_lengths, dtype=np.int32)[miss_idx])
-            )
-        else:
-            req_batch_ids = np.zeros((0, int(batch_ids.shape[1])), dtype=np.int32)
-            req_timing_response_genome_offsets = None
-            req_timing_response_genome_lengths = None
-
         req = RegistrySolveRequest(
-            population_indices=req_batch_ids.copy(),
+            population_indices=batch_ids.copy(),
             item_stats=gpu_arrays["item_stats"],
             slot_start=gpu_arrays["slot_start"],
             slot_count=gpu_arrays["slot_count"],
@@ -471,30 +412,15 @@ def batched_registry_eval(
             max_ff_gems_global=max_ff_gems_global,
             timing_response_combo_ft=timing_response_combo_ft,
             timing_response_combo_ff=timing_response_combo_ff,
-            timing_response_genome_offsets=req_timing_response_genome_offsets,
-            timing_response_genome_lengths=req_timing_response_genome_lengths,
+            timing_response_genome_offsets=timing_response_genome_offsets,
+            timing_response_genome_lengths=timing_response_genome_lengths,
             timing_response_max_combos=timing_response_max_combos,
             timing_response_cache_key=timing_response_cache_key,
             score_cull_threshold=score_cull_threshold,
-            score_only=not bool(admit_misses),
+            score_only=True,
         )
-        if missing_indices:
-            results = dispatch_registry_solve(req, gpu_client=gpu_client)
-            miss_scores = _coerce_registry_scores(results, expected_rows=int(req_batch_ids.shape[0]))
-            scores[miss_idx] = miss_scores
-            if admit_misses:
-                result_rows = np.asarray(results, dtype=np.int64)
-                if result_rows.ndim != 2 or int(result_rows.shape[1]) < 7:
-                    raise ValueError("base candidate cache admission requires full 7-column registry results")
-                for out_idx, original_idx in enumerate(missing_indices):
-                    candidate_cache.put_base(
-                        cache_keys[original_idx],
-                        base_payload_from_result_tuple(
-                            result=tuple(int(v) for v in result_rows[out_idx, :7].tolist()),
-                            base_stats=base_rows[original_idx],
-                            selected_color=str(selected_color or ""),
-                        ),
-                    )
+        results = dispatch_registry_solve(req, gpu_client=gpu_client)
+        scores = _coerce_registry_scores(results, expected_rows=int(batch_ids.shape[0]))
         batch_best_idx = int(np.argmax(scores))
         batch_best_score = int(scores[batch_best_idx])
         if batch_best_score > best_score:
