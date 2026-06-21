@@ -574,13 +574,14 @@ def _render_table(rows: list[ReplayGapRow]) -> str:
     if not rows:
         return "No comparison rows."
     header = (
-        f"{'SONG':<48} {'MODE':<4} {'TIER':<4} {'REPLAY':>10} "
+        f"{'SONG':<44} {'MODE':<4} {'TIER':<4} {'COLOR':<6} {'REPLAY':>10} "
         f"{'RESOLVED':>10} {'DELTA':>10} {'DELTA%':>9} {'GEMS?':>6}"
     )
     lines = [header, "-" * len(header)]
     for row in rows:
         lines.append(
-            f"{row.song_name[:48]:<48} {row.mode:<4} {row.tier:<4} {row.replay_score:>10} "
+            f"{row.song_name[:44]:<44} {row.mode:<4} {row.tier:<4} "
+            f"{(row.team_buff_color or '-')[:6]:<6} {row.replay_score:>10} "
             f"{row.resolved_score:>10} {row.score_delta:>10} {row.score_delta_pct:>8.4f}% "
             f"{('yes' if row.gems_changed else 'no'):>6}"
         )
@@ -603,7 +604,19 @@ def main() -> int:
         default="meta",
         help="Current exact evidence path supports meta only. FG stays blocked on the macOS exact solver work.",
     )
-    parser.add_argument("--team-buff-color", type=str, default="")
+    parser.add_argument(
+        "--color",
+        type=str,
+        default="",
+        help=(
+            "Target Team Buff color override (the active team color axis; mirrors the "
+            "production target_team_color_override threaded by general_meta/app.py and the website "
+            "on-demand path). Empty = the song's default team color (no override); a color name "
+            "(Chill/Flow/Rush/Beat/Vibe) moves the per-tier Team Buff elemental bonus onto that "
+            "element; 'none' = zero-effect team color. Gates the replay-vs-resolve delta at a "
+            "NON-default color so a color-inherited-gems gap (if any) would surface as delta!=0."
+        ),
+    )
     parser.add_argument("--primary-element", type=str, default="")
     parser.add_argument("--secondary-element", type=str, default="")
     parser.add_argument(
@@ -661,7 +674,7 @@ def main() -> int:
         active_calc_song, base_team_color_override, target_team_color_override = _prepare_active_calc_song(
             base_calc_song,
             timing_mode=str(args.timing_mode),
-            team_buff_color_override=str(args.team_buff_color),
+            team_buff_color_override=str(args.color),
             primary_element_override=str(args.primary_element),
             secondary_element_override=str(args.secondary_element),
         )
@@ -710,9 +723,11 @@ def main() -> int:
         improved = sum(1 for row in rows if row.resolved_score > row.replay_score)
         changed = sum(1 for row in rows if row.gems_changed)
         print()
+        color_axis = str(args.color or "").strip() or "default"
         print(
             f"rows={len(rows)} improved={improved} gems_changed={changed} "
-            f"timing_mode={args.timing_mode} tier={normalize_team_buff(args.tier, default='T5')}"
+            f"timing_mode={args.timing_mode} tier={normalize_team_buff(args.tier, default='T5')} "
+            f"color={color_axis}"
         )
     return 0
 
