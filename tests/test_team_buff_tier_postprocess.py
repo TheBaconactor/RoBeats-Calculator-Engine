@@ -936,6 +936,138 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
     assert row["source_fg_score"] == 95
 
 
+def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_identity(monkeypatch):
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    calc_song = _mock_song(name="pytest_team_buff_zero_ms_fg_identity", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 100,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 150,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+    persisted_force = {
+        "Score": 95,
+        "BaseStats": dict(stats),
+        "GemCounts": {
+            "Perfect Points": 3,
+            "Combo Multiplier": 4,
+            "Fever Multiplier": 5,
+            "Element": 6,
+        },
+        "SelectedElement": "Rush",
+        "ForceGreats": {
+            "config": {"NonFever1": 1},
+            "frontier_trace": {"source": "persisted"},
+            "non_fever_base": 11,
+            "frontier_first_surfaces": [{"source": "persisted"}],
+            "final_score": 95,
+        },
+        "response_surface": _fg_test_surface(),
+        "forced_counts": {"NonFever1": 1},
+    }
+    witness_force = {
+        "Score": 123,
+        "BaseStats": {"Perfect Points": 0},
+        "GemCounts": {
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Element": 0,
+        },
+        "ForceGreats": {
+            "config": {"NonFever1": 7},
+            "frontier_trace": {"source": "zero-ms"},
+            "non_fever_base": 22,
+            "frontier_first_surfaces": [{"source": "zero-ms"}],
+        },
+        "response_surface": [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0],
+        "forced_counts": {"NonFever1": 7},
+    }
+    entry = {
+        "loadout_hash": "hash-zero-ms-fg",
+        "score": 100,
+        "fg_score": 95,
+        "fg_base_score": 90,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": dict(stats)},
+        "force": persisted_force,
+    }
+
+    def _fake_compute_team_buff_tier_leaderboards(**kwargs):
+        return {
+            "meta": {
+                "base_team_buff": "T5",
+                "base_team_color": "Rush",
+                "target_team_color": "Rush",
+                "team_color": "Rush",
+                "primary_color": "Rush",
+                "secondary_color": "Flow",
+            },
+            "tiers": {
+                "T5": {
+                    "base_top51": [],
+                    "fg_top51": [
+                        {
+                            "loadout_hash": entry["loadout_hash"],
+                            "gear": list(entry["gear"]),
+                            "minis": list(entry["minis"]),
+                            "score": 110,
+                            "fg_score": 123,
+                            "fg_base_score": 110,
+                            "force_config": {"NonFever1": 7},
+                        }
+                    ],
+                }
+            },
+            "zero_ms_fg_force_by_hash": {entry["loadout_hash"]: witness_force},
+        }
+
+    monkeypatch.setattr(
+        "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
+        _fake_compute_team_buff_tier_leaderboards,
+    )
+
+    batches = build_team_buff_tier_db_batches(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5",),
+        limit=1,
+        replay_surface="fg",
+        timing_mode="zero_ms",
+    )
+
+    row = batches["T5"][0]
+    force = row["force"]
+    assert row["gear"] == entry["gear"]
+    assert row["minis"] == entry["minis"]
+    assert int(row["fg_score"]) == 123
+    assert force["GemCounts"] == persisted_force["GemCounts"]
+    assert force["GemCounts"] != witness_force["GemCounts"]
+    assert force["SelectedElement"] == persisted_force["SelectedElement"]
+    assert force["ForceGreats"]["config"] == witness_force["ForceGreats"]["config"]
+    assert force["ForceGreats"]["frontier_trace"] == witness_force["ForceGreats"]["frontier_trace"]
+    assert force["ForceGreats"]["non_fever_base"] == witness_force["ForceGreats"]["non_fever_base"]
+    assert force["ForceGreats"]["frontier_first_surfaces"] == witness_force["ForceGreats"]["frontier_first_surfaces"]
+    assert force["response_surface"] == witness_force["response_surface"]
+    assert force["forced_counts"] == witness_force["forced_counts"]
+    assert int(force["Score"]) == 123
+    assert int(force["ForceGreats"]["final_score"]) == 123
+
+
 def test_fg_note_graph_trace_is_tier_invariant():
     """A TeamBuff tier delta shifts only Perfect Points + the two element colors; the fever
     geometry (Fever Time / Fever Fill Rate) and combo/fever multipliers are carried UNCHANGED at

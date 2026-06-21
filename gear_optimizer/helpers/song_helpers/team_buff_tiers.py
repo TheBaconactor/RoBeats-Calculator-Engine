@@ -961,29 +961,43 @@ def build_team_buff_tier_db_batches(
                         details_out["TimelineFrontier"] = timeline_frontier
 
             if surface in {"fg", "both"}:
+                force_base = orig.get("force")
+                if isinstance(force_base, dict) and base_effect:
+                    force_base_obj = force_base
+                    force_base = dict(force_base_obj)
+                    bs = force_base.get("BaseStats")
+                    if isinstance(bs, dict) and bs:
+                        force_base["BaseStats"] = _ensure_stats_include_base_effect(bs, base_effect)
+                    det = force_base.get("details")
+                    if isinstance(det, dict):
+                        st = det.get("Stats")
+                        if isinstance(st, dict) and st:
+                            det_out = dict(det)
+                            det_out["Stats"] = _ensure_stats_include_base_effect(st, base_effect)
+                            force_base["details"] = det_out
                 if is_zero_ms:
-                    # zero_ms (issue #51): carry the REBUILT 0ms FG force (its
-                    # ForceGreats.frontier_trace is the chart-fixed note-graph witness, valid at
-                    # 0ms — the persisted Perfect-window trace is not). Its BaseStats already
-                    # include the base team-buff effect (applied when the leaderboard rebuilt it),
-                    # so only the per-tier delta remains. A missing witness yields force_out=None,
-                    # and the consumer drops the FG card rather than drawing Perfect-window timing.
-                    force_base = zero_ms_fg_force_by_hash.get(_norm_text(orig.get("loadout_hash")))
-                else:
-                    force_base = orig.get("force")
-                    if isinstance(force_base, dict) and base_effect:
-                        force_base_obj = force_base
-                        force_base = dict(force_base_obj)
-                        bs = force_base.get("BaseStats")
-                        if isinstance(bs, dict) and bs:
-                            force_base["BaseStats"] = _ensure_stats_include_base_effect(bs, base_effect)
-                        det = force_base.get("details")
-                        if isinstance(det, dict):
-                            st = det.get("Stats")
-                            if isinstance(st, dict) and st:
-                                det_out = dict(det)
-                                det_out["Stats"] = _ensure_stats_include_base_effect(st, base_effect)
-                                force_base["details"] = det_out
+                    # zero_ms (issue #51): the loadout identity is timing-invariant — same gear,
+                    # gems, and stats as Perfect-window — so keep the PERSISTED force (its
+                    # GemCounts/Stats/BaseStats are the real allocation) and graft ONLY the
+                    # forced-greats TIMING fields that 0ms re-optimizes: the chart-fixed note-graph
+                    # trace, the 0ms forced-counts config, and the rebuilt response surface. The
+                    # rebuilt witness is a total_budget=0 recompute, so its own GemCounts are 0 and
+                    # must NOT be shown. No witness (or no persisted force) -> force_out=None and the
+                    # consumer drops the FG card rather than drawing Perfect-window timing.
+                    witness = zero_ms_fg_force_by_hash.get(_norm_text(orig.get("loadout_hash")))
+                    if isinstance(force_base, dict) and isinstance(witness, dict):
+                        force_base = dict(force_base)
+                        witness_fg = witness.get("ForceGreats") if isinstance(witness.get("ForceGreats"), dict) else {}
+                        fg_meta = dict(force_base.get("ForceGreats") or {})
+                        for fg_key in ("frontier_trace", "config", "non_fever_base", "frontier_first_surfaces"):
+                            if fg_key in witness_fg:
+                                fg_meta[fg_key] = witness_fg[fg_key]
+                        force_base["ForceGreats"] = fg_meta
+                        for top_key in ("response_surface", "forced_counts"):
+                            if top_key in witness:
+                                force_base[top_key] = witness[top_key]
+                    else:
+                        force_base = None
                 force_out = _apply_force_delta(
                     force_base,
                     delta=delta_map,
