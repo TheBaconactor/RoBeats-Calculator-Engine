@@ -5,6 +5,7 @@ Startup builds the candidate-independent timeline frontier cache; runtime upload
 the cached grid/frontier payload for the active song slot.
 """
 
+import os
 import time
 import hashlib
 import threading
@@ -213,8 +214,10 @@ def _upload_timeline_frontier_payload_slot(
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
 _FRONTIER_GROUP_PAYLOAD_CACHE_MAX = 32
 _frontier_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
+_frontier_group_payload_last_access: dict[tuple, float] = {}
 _FRONTIER_PAYLOAD_CACHE_MAX = 8
 _frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
+_frontier_payload_last_access: dict[tuple, float] = {}
 _frontier_payload_cache_lock = threading.RLock()
 # Bump whenever the base frontier OUTPUT changes in a way the cache key does NOT capture.
 # The key (_frontier_payload_cache_key -> song_key) hashes raw song inputs + window settings,
@@ -266,6 +269,95 @@ def _frontier_disk_cache_dir() -> Path:
 def _frontier_disk_cache_path(cache_key: tuple) -> Path:
     digest = hashlib.blake2b(repr(cache_key).encode("utf-8"), digest_size=16).hexdigest()
     return _frontier_disk_cache_dir() / f"{digest}.npz"
+
+
+def _frontier_idle_ttl_seconds() -> float | None:
+    raw = str(env_get("ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        ttl = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return ttl if ttl > 0.0 else None
+
+
+_LIVE_CACHE_DISK_IDLE_TTL_MULTIPLIER = 2.0
+
+
+def _frontier_disk_idle_ttl_seconds(idle_ttl_seconds: float | None = None) -> float | None:
+    ram_ttl = _frontier_idle_ttl_seconds() if idle_ttl_seconds is None else idle_ttl_seconds
+    if ram_ttl is None or float(ram_ttl) <= 0.0:
+        return None
+    return float(ram_ttl) * _LIVE_CACHE_DISK_IDLE_TTL_MULTIPLIER
+
+
+def _frontier_entry_idle_expired(
+    last_access: float | None,
+    *,
+    idle_ttl_seconds: float | None,
+    moment: float,
+) -> bool:
+    return idle_ttl_seconds is not None and idle_ttl_seconds > 0.0 and (
+        last_access is None or moment - float(last_access) > float(idle_ttl_seconds)
+    )
+
+
+def _live_frontier_disk_cache_path(
+    cache_key: tuple,
+    *,
+    idle_ttl_seconds: float | None = None,
+    now: float | None = None,
+) -> Path | None:
+    path = _frontier_disk_cache_path(cache_key)
+    if not path.exists():
+        return None
+    ttl = _frontier_idle_ttl_seconds() if idle_ttl_seconds is None else idle_ttl_seconds
+    disk_ttl = _frontier_disk_idle_ttl_seconds(ttl)
+    if disk_ttl is not None and disk_ttl > 0.0:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        moment = time.time() if now is None else float(now)
+        if moment - float(stat.st_mtime) > float(disk_ttl):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+    return path
+
+
+def _touch_frontier_disk_cache_file(path: Path) -> None:
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+def _sweep_timeline_memory_cache_locked(
+    cache: "OrderedDict[tuple, object]",
+    last_access: dict[tuple, float],
+    *,
+    idle_ttl_seconds: float | None,
+    moment: float,
+) -> int:
+    if idle_ttl_seconds is None or idle_ttl_seconds <= 0.0:
+        return 0
+    removed = 0
+    while cache:
+        oldest_key = next(iter(cache))
+        if not _frontier_entry_idle_expired(
+            last_access.get(oldest_key),
+            idle_ttl_seconds=idle_ttl_seconds,
+            moment=moment,
+        ):
+            break
+        cache.pop(oldest_key, None)
+        last_access.pop(oldest_key, None)
+        removed += 1
+    return removed
 
 
 def _group_payload_from_cache_arrays(
@@ -353,9 +445,19 @@ def _group_payload_from_npz(data: object, *, expected_n: int | None = None) -> d
 
 
 def _group_cache_get(base_song_key: tuple, *, expected_n: int) -> dict | None:
+    idle_ttl_seconds = _frontier_idle_ttl_seconds()
+    moment = time.monotonic()
     with _frontier_payload_cache_lock:
         cached = _frontier_group_payload_cache.get(base_song_key)
         if not isinstance(cached, dict):
+            return None
+        if _frontier_entry_idle_expired(
+            _frontier_group_payload_last_access.get(base_song_key),
+            idle_ttl_seconds=idle_ttl_seconds,
+            moment=moment,
+        ):
+            _frontier_group_payload_cache.pop(base_song_key, None)
+            _frontier_group_payload_last_access.pop(base_song_key, None)
             return None
         try:
             if int(cached.get("n", -1) or -1) != int(expected_n):
@@ -366,35 +468,42 @@ def _group_cache_get(base_song_key: tuple, *, expected_n: int) -> dict | None:
             logger.debug(f"timeline:_group_cache_get: {e}")
             return None
         _frontier_group_payload_cache.move_to_end(base_song_key)
+        _frontier_group_payload_last_access[base_song_key] = moment
         return cached
 
 
 def _group_cache_put(base_song_key: tuple, payload: dict) -> None:
+    moment = time.monotonic()
     with _frontier_payload_cache_lock:
         _frontier_group_payload_cache[base_song_key] = payload
         _frontier_group_payload_cache.move_to_end(base_song_key)
+        _frontier_group_payload_last_access[base_song_key] = moment
         while len(_frontier_group_payload_cache) > int(_FRONTIER_GROUP_PAYLOAD_CACHE_MAX):
-            _frontier_group_payload_cache.popitem(last=False)
+            stale_key, _stale_value = _frontier_group_payload_cache.popitem(last=False)
+            _frontier_group_payload_last_access.pop(stale_key, None)
 
 
 def _load_group_payload_from_frontier_disk(cache_key: tuple, *, expected_n: int) -> dict | None:
-    path = _frontier_disk_cache_path(cache_key)
-    if not path.exists():
+    path = _live_frontier_disk_cache_path(cache_key)
+    if path is None:
         return None
     try:
         with np.load(path, allow_pickle=False) as data:
             version = str(data["version"].item())
             if version != _FRONTIER_DISK_CACHE_VERSION:
                 return None
-            return _group_payload_from_npz(data, expected_n=expected_n)
+            payload = _group_payload_from_npz(data, expected_n=expected_n)
+            if payload is not None:
+                _touch_frontier_disk_cache_file(path)
+            return payload
     except Exception as e:
         logger.debug(f"timeline:_load_group_payload_from_frontier_disk: {e}")
         return None
 
 
 def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPayload | None:
-    path = _frontier_disk_cache_path(cache_key)
-    if not path.exists():
+    path = _live_frontier_disk_cache_path(cache_key)
+    if path is None:
         return None
     try:
         with np.load(path, allow_pickle=False) as data:
@@ -448,7 +557,7 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
                 grid_gap = np.expand_dims(grid_gap, axis=0)
             if grid_fever_activations.ndim == 2:
                 grid_fever_activations = np.expand_dims(grid_fever_activations, axis=0)
-            return TimelineFrontierGridPayload(
+            payload = TimelineFrontierGridPayload(
                 grid_count_body_fever=grid_count_body_fever,
                 grid_count_body_normal=grid_count_body_normal,
                 grid_head_len=grid_head_len,
@@ -466,6 +575,8 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
                 grid_fever_activations=grid_fever_activations,
                 frontier_pool_used=int(data["frontier_pool_used"].item()),
             )
+            _touch_frontier_disk_cache_file(path)
+            return payload
     except Exception as e:
         logger.debug(f"timeline:_load_frontier_payload_from_disk: {e}")
         try:
@@ -537,17 +648,33 @@ def _get_cached_frontier_payload_with_source(
     ref_ff: np.ndarray,
 ) -> tuple[TimelineFrontierGridPayload | None, str]:
     cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
+    idle_ttl_seconds = _frontier_idle_ttl_seconds()
+    moment = time.monotonic()
     with _frontier_payload_cache_lock:
         cached = _frontier_payload_cache.get(cache_key)
         if isinstance(cached, TimelineFrontierGridPayload):
-            _frontier_payload_cache.move_to_end(cache_key)
-            return cached, "memory"
+            if _frontier_entry_idle_expired(
+                _frontier_payload_last_access.get(cache_key),
+                idle_ttl_seconds=idle_ttl_seconds,
+                moment=moment,
+            ):
+                _frontier_payload_cache.pop(cache_key, None)
+                _frontier_payload_last_access.pop(cache_key, None)
+            else:
+                _frontier_payload_cache.move_to_end(cache_key)
+                _frontier_payload_last_access[cache_key] = moment
+                return cached, "memory"
 
     cached = _load_frontier_payload_from_disk(cache_key)
     if isinstance(cached, TimelineFrontierGridPayload):
+        moment = time.monotonic()
         with _frontier_payload_cache_lock:
             _frontier_payload_cache[cache_key] = cached
             _frontier_payload_cache.move_to_end(cache_key)
+            _frontier_payload_last_access[cache_key] = moment
+            while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
+                stale_key, _stale_value = _frontier_payload_cache.popitem(last=False)
+                _frontier_payload_last_access.pop(stale_key, None)
         return cached, "disk"
     return None, "missing"
 
@@ -827,15 +954,19 @@ def _get_or_build_frontier_payload_with_source(
     )
 
     _save_frontier_payload_to_disk(cache_key, payload, group_payload=group_payload)
+    moment = time.monotonic()
     with _frontier_payload_cache_lock:
         cached = _frontier_payload_cache.get(cache_key)
         if isinstance(cached, TimelineFrontierGridPayload):
             _frontier_payload_cache.move_to_end(cache_key)
+            _frontier_payload_last_access[cache_key] = moment
             return cached, "memory"
         _frontier_payload_cache[cache_key] = payload
         _frontier_payload_cache.move_to_end(cache_key)
+        _frontier_payload_last_access[cache_key] = moment
         while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
-            _frontier_payload_cache.popitem(last=False)
+            stale_key, _stale_value = _frontier_payload_cache.popitem(last=False)
+            _frontier_payload_last_access.pop(stale_key, None)
 
     return payload, "built"
 
@@ -938,10 +1069,14 @@ def timeline_frontier_payload_cache_info(calc_song: dict, ref_arrays: dict) -> T
     cache_source = "missing"
     with _frontier_payload_cache_lock:
         cached = _frontier_payload_cache.get(cache_key)
-        if isinstance(cached, TimelineFrontierGridPayload):
+        if isinstance(cached, TimelineFrontierGridPayload) and not _frontier_entry_idle_expired(
+            _frontier_payload_last_access.get(cache_key),
+            idle_ttl_seconds=_frontier_idle_ttl_seconds(),
+            moment=time.monotonic(),
+        ):
             cache_source = "memory"
     disk_path = _frontier_disk_cache_path(cache_key)
-    if cache_source == "missing" and disk_path.exists():
+    if cache_source == "missing" and _live_frontier_disk_cache_path(cache_key) is not None:
         cache_source = "disk"
 
     song_data = calc_song.get("song_data", {}) or {}
@@ -1170,4 +1305,55 @@ def reset_timeline_state() -> None:
     _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS
     with _frontier_payload_cache_lock:
         _frontier_group_payload_cache.clear()
+        _frontier_group_payload_last_access.clear()
         _frontier_payload_cache.clear()
+        _frontier_payload_last_access.clear()
+
+
+def sweep_timeline_frontier_live_cache(
+    *,
+    idle_ttl_seconds: float | None = None,
+    now_mono: float | None = None,
+    now_wall: float | None = None,
+) -> int:
+    ttl = _frontier_idle_ttl_seconds() if idle_ttl_seconds is None else idle_ttl_seconds
+    if ttl is None or ttl <= 0.0:
+        return 0
+    disk_ttl = _frontier_disk_idle_ttl_seconds(ttl)
+    moment_mono = time.monotonic() if now_mono is None else float(now_mono)
+    removed = 0
+    with _frontier_payload_cache_lock:
+        removed += _sweep_timeline_memory_cache_locked(
+            _frontier_group_payload_cache,
+            _frontier_group_payload_last_access,
+            idle_ttl_seconds=ttl,
+            moment=moment_mono,
+        )
+        removed += _sweep_timeline_memory_cache_locked(
+            _frontier_payload_cache,
+            _frontier_payload_last_access,
+            idle_ttl_seconds=ttl,
+            moment=moment_mono,
+        )
+    if disk_ttl is None or disk_ttl <= 0.0:
+        return removed
+    moment_wall = time.time() if now_wall is None else float(now_wall)
+    try:
+        cache_files = tuple(_frontier_disk_cache_dir().glob("*.npz"))
+    except OSError:
+        return removed
+    for path in cache_files:
+        if not path.exists():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if moment_wall - float(stat.st_mtime) <= float(disk_ttl):
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            continue
+        removed += 1
+    return removed

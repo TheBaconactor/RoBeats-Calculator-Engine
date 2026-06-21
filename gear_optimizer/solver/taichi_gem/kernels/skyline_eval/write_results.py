@@ -6,16 +6,13 @@ Includes:
 - skyline_write_best_and_update_global_kernel
 """
 
-import sys
-
 import taichi as ti
 
+from ... import fields as gpu_fields
 from .. import kernels_helpers
 from ..kernels_scoring import score_solution_from_gems_preloaded
 from ..write_results_common import solve_best_combo_uncached
 
-# Platform detection for atomic operations
-IS_METAL = sys.platform == "darwin"
 # Small populations are faster with a serial scan than a fully contended atomic reduction.
 SKYLINE_GLOBAL_BEST_SERIAL_THRESHOLD = 512
 
@@ -103,7 +100,7 @@ def _score_cached_combo_from_gems(
 @ti.func
 def _best_combo_idx_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
     out_idx = ti.i32(-1)
-    if ti.static(not IS_METAL):
+    if ti.static(not gpu_fields.IS_METAL):
         best_key = kernels_helpers.chunk_best_key[genome_idx]
         if best_key != ti.u64(0):
             out_idx = ti.cast(best_key & ti.u64(0xFFFFFFFF), ti.i32)
@@ -117,7 +114,7 @@ def _best_combo_idx_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
 @ti.func
 def _best_score_from_chunk_state(genome_idx: ti.i32) -> ti.i32:
     out_score = ti.i32(-1)
-    if ti.static(not IS_METAL):
+    if ti.static(not gpu_fields.IS_METAL):
         best_key = kernels_helpers.chunk_best_key[genome_idx]
         if best_key != ti.u64(0):
             out_score = ti.cast(best_key >> ti.u64(32), ti.i32) - 1
@@ -166,7 +163,7 @@ def _materialize_best_combo_stats(
     fm_gems: ti.i32 = 0
     ov_gems: ti.i32 = 0
 
-    if ti.static(not IS_METAL):
+    if ti.static(not gpu_fields.IS_METAL):
         pp_gems = kernels_helpers.chunk_best_results[genome_idx, 0]
         cm_gems = kernels_helpers.chunk_best_results[genome_idx, 1]
         fm_gems = kernels_helpers.chunk_best_results[genome_idx, 2]
@@ -261,7 +258,7 @@ def _materialize_best_combo_stats(
 def _write_materialized_result(genome_idx: ti.i32, combo_idx: ti.i32, result_stats: ti.types.vector(7, ti.i32)):
     kernels_helpers.genome_result_stats[genome_idx] = result_stats
     kernels_helpers.skyline_scores[genome_idx] = result_stats[0]
-    if ti.static(not IS_METAL):
+    if ti.static(not gpu_fields.IS_METAL):
         corrected_key: ti.u64 = (ti.cast(result_stats[0] + 1, ti.u64) << ti.u64(32)) | ti.cast(combo_idx, ti.u64)
         kernels_helpers.chunk_best_key[genome_idx] = corrected_key
 

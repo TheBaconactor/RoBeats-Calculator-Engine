@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -171,6 +173,80 @@ def test_build_or_load_timeline_frontier_payload_disk_hit_skips_redundant_group_
     second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
     assert second.cache_source == "disk"
     assert int(second.total_notes) == 4
+
+
+def test_build_or_load_timeline_frontier_payload_rebuilds_stale_disk_cache(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    monkeypatch.setenv("ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS", "1800")
+    timeline_api.reset_timeline_state()
+    calc_song = {
+        "metadata": {
+            "Song Name": "Stale Disk Timeline",
+            "Difficulty": "Easy",
+            "Long Notes": 0,
+            "Last Note Time": 0.6,
+        },
+        "song_data": {
+            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
+            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
+        },
+    }
+
+    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert first.cache_source == "built"
+    stale_ts = time.time() - 3700.0
+    os.utime(first.disk_path, (stale_ts, stale_ts))
+
+    timeline_api.reset_timeline_state()
+    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert second.cache_source == "built"
+    assert second.disk_path.exists()
+    assert second.disk_path.stat().st_mtime > stale_ts
+
+
+def test_timeline_frontier_live_cache_sweep_evicts_idle_memory_and_prunes_stale_disk(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    monkeypatch.setenv("ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS", "1800")
+    timeline_api.reset_timeline_state()
+    calc_song = {
+        "metadata": {
+            "Song Name": "Sweep Timeline",
+            "Difficulty": "Easy",
+            "Long Notes": 0,
+            "Last Note Time": 0.6,
+        },
+        "song_data": {
+            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
+            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
+        },
+    }
+
+    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert first.cache_source == "built"
+    warm = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert warm.cache_source == "memory"
+
+    removed_memory = timeline_api.sweep_timeline_frontier_live_cache(
+        now_mono=time.monotonic() + 1801.0,
+        now_wall=time.time(),
+    )
+    assert removed_memory >= 1
+
+    disk_hit = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert disk_hit.cache_source == "disk"
+
+    stale_ts = time.time() - 3700.0
+    os.utime(first.disk_path, (stale_ts, stale_ts))
+    removed_disk = timeline_api.sweep_timeline_frontier_live_cache(
+        now_mono=time.monotonic(),
+        now_wall=time.time(),
+    )
+    assert removed_disk >= 1
+    assert not first.disk_path.exists()
 
 
 def test_load_timeline_frontier_payload_requires_startup_built_cache(tmp_path: Path, monkeypatch) -> None:
