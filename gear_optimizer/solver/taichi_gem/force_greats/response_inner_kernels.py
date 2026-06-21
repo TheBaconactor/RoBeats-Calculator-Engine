@@ -337,9 +337,6 @@ def _fg_response_inner_batch_kernel(
         pp_secondary_delta: ti.i32 = pp_s_delta - ov_s_delta
         base_init: ti.i32 = (cur_primary << 1) + cur_secondary
         pp_ref_base = _fg_response_lookup_ref(ref_pp, cur_pp)
-        cm_ref_cache = ti.Vector.zero(ti.f64, TOTAL_GEM_BUDGET + 1)
-        fm_ref_cache = ti.Vector.zero(ti.f64, TOTAL_GEM_BUDGET + 1)
-        pp_ref_cache = ti.Vector.zero(ti.f64, TOTAL_GEM_BUDGET + 1)
         pp_bound_prefix_max = ti.Vector.zero(ti.f64, TOTAL_GEM_BUDGET + 1)
         if ti.static(allow_pp_template):
             g_pp_cache: ti.i32 = 0
@@ -347,20 +344,11 @@ def _fg_response_inner_batch_kernel(
             while g_pp_cache <= max_pp_gems:
                 pp_stat_cache: ti.i32 = cur_pp + g_pp_cache * GEM_SCALE_NORMAL
                 pp_ref_val: ti.f64 = _fg_response_lookup_ref(ref_pp, pp_stat_cache)
-                pp_ref_cache[g_pp_cache] = pp_ref_val
                 pp_bound_val: ti.f64 = ti.cast(g_pp_cache * delta_pp_vs_ov, ti.f64) + pp_ref_val
                 if pp_bound_val > running_pp_bound_max:
                     running_pp_bound_max = pp_bound_val
                 pp_bound_prefix_max[g_pp_cache] = running_pp_bound_max
                 g_pp_cache += 1
-        g_cm_cache: ti.i32 = 0
-        while g_cm_cache <= max_cm_gems:
-            cm_ref_cache[g_cm_cache] = _fg_response_lookup_ref(ref_cm, cur_cm + g_cm_cache * GEM_SCALE_NORMAL)
-            g_cm_cache += 1
-        g_fm_cache: ti.i32 = 0
-        while g_fm_cache <= max_fm_gems:
-            fm_ref_cache[g_fm_cache] = _fg_response_lookup_ref(ref_fm, cur_fm + g_fm_cache * GEM_SCALE_FEVER)
-            g_fm_cache += 1
 
         fever0: ti.u32 = surface_words[surface_row, 0]
         fever1: ti.u32 = surface_words[surface_row, 1]
@@ -399,7 +387,7 @@ def _fg_response_inner_batch_kernel(
             if leftover_after_cm < 0:
                 break
             cm_stat: ti.i32 = cur_cm + g_cm * GEM_SCALE_NORMAL
-            cm_mul = cm_ref_cache[g_cm]
+            cm_mul = _fg_response_lookup_ref(ref_cm, cm_stat)
             g_fm_max: ti.i32 = max_fm_gems
             if g_fm_max > leftover_after_cm:
                 g_fm_max = leftover_after_cm
@@ -407,7 +395,7 @@ def _fg_response_inner_batch_kernel(
             while g_fm <= g_fm_max:
                 leftover_after_fm: ti.i32 = leftover_after_cm - g_fm
                 fm_stat: ti.i32 = cur_fm + g_fm * GEM_SCALE_FEVER
-                fm_mul = fm_ref_cache[g_fm]
+                fm_mul = _fg_response_lookup_ref(ref_fm, fm_stat)
                 g_pp_max: ti.i32 = max_pp_gems
                 if g_pp_max > leftover_after_fm:
                     g_pp_max = leftover_after_fm
@@ -453,7 +441,7 @@ def _fg_response_inner_batch_kernel(
                                 body_total,
                                 primary_base,
                                 secondary_base,
-                                pp_ref_cache[0],
+                                _fg_response_lookup_ref(ref_pp, cur_pp),
                                 cm_mul,
                                 fm_mul,
                                 is_single_color,
@@ -485,7 +473,7 @@ def _fg_response_inner_batch_kernel(
                                 pp_base_value: ti.f64 = ti.cast(
                                     base_linear_common + g_pp * delta_pp_vs_ov,
                                     ti.f64,
-                                ) + pp_ref_cache[g_pp]
+                                ) + _fg_response_lookup_ref(ref_pp, pp_stat)
                                 pp_ub = _fg_response_surface_upper_bound(
                                     pp_base_value,
                                     cm_mul,
@@ -517,7 +505,7 @@ def _fg_response_inner_batch_kernel(
                                         body_total,
                                         primary_val,
                                         secondary_val,
-                                        pp_ref_cache[g_pp],
+                                        _fg_response_lookup_ref(ref_pp, pp_stat),
                                         cm_mul,
                                         fm_mul,
                                         is_single_color,
@@ -679,9 +667,6 @@ def _fg_response_inner_group_kernel(
         pp_secondary_delta: ti.i32 = pp_s_delta - ov_s_delta
         base_init: ti.i32 = (cur_primary << 1) + cur_secondary
         pp_ref_base = _fg_response_lookup_ref(ref_pp, cur_pp)
-        cm_ref_cache = ti.Vector.zero(ti.f64, TOTAL_GEM_BUDGET + 1)
-        fm_ref_cache = ti.Vector.zero(ti.f64, TOTAL_GEM_BUDGET + 1)
-        pp_ref_cache = ti.Vector.zero(ti.f64, TOTAL_GEM_BUDGET + 1)
         pp_bound_prefix_max = ti.Vector.zero(ti.f64, TOTAL_GEM_BUDGET + 1)
         if ti.static(allow_pp_template):
             g_pp_cache: ti.i32 = 0
@@ -689,20 +674,11 @@ def _fg_response_inner_group_kernel(
             while g_pp_cache <= max_pp_gems:
                 pp_stat_cache: ti.i32 = cur_pp + g_pp_cache * GEM_SCALE_NORMAL
                 pp_ref_val: ti.f64 = _fg_response_lookup_ref(ref_pp, pp_stat_cache)
-                pp_ref_cache[g_pp_cache] = pp_ref_val
                 pp_bound_val: ti.f64 = ti.cast(g_pp_cache * delta_pp_vs_ov, ti.f64) + pp_ref_val
                 if pp_bound_val > running_pp_bound_max:
                     running_pp_bound_max = pp_bound_val
                 pp_bound_prefix_max[g_pp_cache] = running_pp_bound_max
                 g_pp_cache += 1
-        g_cm_cache: ti.i32 = 0
-        while g_cm_cache <= max_cm_gems:
-            cm_ref_cache[g_cm_cache] = _fg_response_lookup_ref(ref_cm, cur_cm + g_cm_cache * GEM_SCALE_NORMAL)
-            g_cm_cache += 1
-        g_fm_cache: ti.i32 = 0
-        while g_fm_cache <= max_fm_gems:
-            fm_ref_cache[g_fm_cache] = _fg_response_lookup_ref(ref_fm, cur_fm + g_fm_cache * GEM_SCALE_FEVER)
-            g_fm_cache += 1
 
         group_best_score: ti.i32 = -1
         group_best_surface: ti.i32 = 0
@@ -758,7 +734,7 @@ def _fg_response_inner_group_kernel(
                 if leftover_after_cm < 0:
                     break
                 cm_stat: ti.i32 = cur_cm + g_cm * GEM_SCALE_NORMAL
-                cm_mul = cm_ref_cache[g_cm]
+                cm_mul = _fg_response_lookup_ref(ref_cm, cm_stat)
                 g_fm_max: ti.i32 = max_fm_gems
                 if g_fm_max > leftover_after_cm:
                     g_fm_max = leftover_after_cm
@@ -766,7 +742,7 @@ def _fg_response_inner_group_kernel(
                 while g_fm <= g_fm_max:
                     leftover_after_fm: ti.i32 = leftover_after_cm - g_fm
                     fm_stat: ti.i32 = cur_fm + g_fm * GEM_SCALE_FEVER
-                    fm_mul = fm_ref_cache[g_fm]
+                    fm_mul = _fg_response_lookup_ref(ref_fm, fm_stat)
                     g_pp_max: ti.i32 = max_pp_gems
                     if g_pp_max > leftover_after_fm:
                         g_pp_max = leftover_after_fm
@@ -812,7 +788,7 @@ def _fg_response_inner_group_kernel(
                                     body_total,
                                     primary_base,
                                     secondary_base,
-                                    pp_ref_cache[0],
+                                    _fg_response_lookup_ref(ref_pp, cur_pp),
                                     cm_mul,
                                     fm_mul,
                                     is_single_color,
@@ -844,7 +820,7 @@ def _fg_response_inner_group_kernel(
                                     pp_base_value: ti.f64 = ti.cast(
                                         base_linear_common + g_pp * delta_pp_vs_ov,
                                         ti.f64,
-                                    ) + pp_ref_cache[g_pp]
+                                    ) + _fg_response_lookup_ref(ref_pp, pp_stat)
                                     pp_ub = _fg_response_surface_upper_bound(
                                         pp_base_value,
                                         cm_mul,
@@ -876,7 +852,7 @@ def _fg_response_inner_group_kernel(
                                             body_total,
                                             primary_val,
                                             secondary_val,
-                                            pp_ref_cache[g_pp],
+                                            _fg_response_lookup_ref(ref_pp, pp_stat),
                                             cm_mul,
                                             fm_mul,
                                             is_single_color,
