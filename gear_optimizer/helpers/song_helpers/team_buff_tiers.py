@@ -227,6 +227,216 @@ def _apply_stat_delta(stats: dict, delta: dict[str, int]) -> dict:
     return out
 
 
+def _entry_loadout_items(entry: dict) -> list[dict]:
+    """The 6 gear + 3 mini stat dicts before any gem allocation is applied."""
+    gear = [dict(item) for item in list((entry or {}).get("gear") or [])[:6] if isinstance(item, dict)]
+    minis = [dict(item) for item in list((entry or {}).get("minis") or [])[:3] if isinstance(item, dict)]
+    if len(gear) != 6 or len(minis) != 3:
+        raise ValueError(
+            f"zero_ms FG re-solve needs 6 gear + 3 mini stat-dicts, got {len(gear)} gear + {len(minis)} minis "
+            f"(loadout {(entry or {}).get('loadout_hash')!r})"
+        )
+    return gear + minis
+
+
+def _pre_gem_loadout_stats(fixed_song_stats: dict, loadout_items: list[dict]) -> dict[str, int]:
+    """Stats row the gem solver starts from: song/tier fixed stats + loadout item stats."""
+    out = {str(key): int(value or 0) for key, value in dict(fixed_song_stats or {}).items()}
+    for item in list(loadout_items or []):
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            if key in {"Name", "type"}:
+                continue
+            out[str(key)] = int(out.get(key, 0) or 0) + int(value or 0)
+    return out
+
+
+def resolve_zero_ms_fg_force(
+    *,
+    fixed_song_stats: dict,
+    loadout_items: list[dict],
+    calc_song: dict,
+    ref_arrays: dict,
+    selected_color: str,
+) -> dict:
+    """Lossless 0ms FG re-solve for ONE loadout at one (tier·color) config.
+
+    ``fixed_song_stats`` is the tier-adjusted song fixed-stats row; ``loadout_items`` is the
+    loadout's 6 gear + 3 mini stat dicts before gems. Re-solves the gem allocation
+    at ``total_budget=TOTAL_GEM_BUDGET`` via the canonical FG response frontier (GPU search on the
+    fp-gated kernel -- f32 on MoltenVK / f64 on AMD -- then CPU-f64 exact rescore), and returns the
+    materialized ``force`` payload (re-solved GemCounts/Stats/Score + chart-fixed frontier_trace).
+    ``calc_song`` MUST carry chart-only timing (``apply_timing_envelope(mode="zero_ms")``). This is
+    the single canonical recipe shared by serving and the lossless-exact gate, so served == native.
+    """
+    from ...core.constants import TOTAL_GEM_BUDGET
+    from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_fg_replays
+
+    pre_gem_stats = _pre_gem_loadout_stats(fixed_song_stats, loadout_items)
+    replays = build_fixed_timing_fg_replays(
+        fg_stats_list=[pre_gem_stats],
+        base_stats_list=[pre_gem_stats],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_color=str(selected_color or ""),
+        total_budget=int(TOTAL_GEM_BUDGET),
+    )
+    if len(replays) != 1:
+        raise ValueError(f"zero_ms FG re-solve expected exactly one replay, got {len(replays)}")
+    return replays[0]["force"]
+
+
+def resolve_zero_ms_fg_force_batch(
+    *,
+    fixed_song_stats: dict,
+    loadouts: list,
+    calc_song: dict,
+    ref_arrays: dict,
+    selected_color: str,
+) -> list:
+    """Batched lossless 0ms FG re-solve: all N loadouts of a (tier·color) in ONE call.
+
+    ``build_fixed_timing_fg_replays`` already packs its stat list into one GPU response-frontier
+    dispatch, so this re-solves a full leaderboard's FG in one shot instead of N sequential calls.
+    ``fixed_song_stats`` is the shared tier-adjusted song fixed-stats row; ``loadouts`` is the list
+    of N loadout item-stat rows. Returns N ``force`` payloads in order. Each
+    loadout's surface/gem search is independent, so the per-loadout result equals
+    ``resolve_zero_ms_fg_force`` (the gate's per-loadout path) -> served == native (delta=0)."""
+    from ...core.constants import TOTAL_GEM_BUDGET
+    from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_fg_replays
+
+    rows = list(loadouts or [])
+    if not rows:
+        return []
+    pre_gem_rows = [_pre_gem_loadout_stats(fixed_song_stats, items) for items in rows]
+    replays = build_fixed_timing_fg_replays(
+        fg_stats_list=pre_gem_rows,
+        base_stats_list=pre_gem_rows,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_color=str(selected_color or ""),
+        total_budget=int(TOTAL_GEM_BUDGET),
+    )
+    if len(replays) != len(rows):
+        raise ValueError(f"batched zero_ms FG re-solve returned {len(replays)} != {len(rows)} replays")
+    return [r["force"] for r in replays]
+
+
+def _zero_ms_cfg_and_song_fixed_stats(cfg_dict: dict, calc_song: dict):
+    """``(cfg, song fixed_stats)`` for the 0ms re-solve, identical to the lossless-exact gate's
+    input. Mirrors setup_song_config: ``cfg_from_dict`` + ``apply_baseline_team_buff_config`` ->
+    ``get_fixed_stats``. The SAME ``cfg`` is reused for the base re-solve (build_candidate_payload),
+    so FG, base, and the gate share one config -> served == native. Computed once per song; the
+    per-tier delta is applied on top."""
+    from ...core.utils import cfg_from_dict
+    from ...data.csv_parser import get_fixed_stats
+    from ...data.song_io import clone_calc_song
+    from .song_config import apply_baseline_team_buff_config
+
+    cfg = cfg_from_dict(dict(cfg_dict or {}))
+    apply_baseline_team_buff_config(cfg, clone_calc_song(calc_song))
+    return cfg, dict(get_fixed_stats(cfg) or {})
+
+
+def resolve_zero_ms_base(
+    *,
+    cfg,
+    fixed_song_stats: dict,
+    loadout_items: list[dict],
+    calc_song: dict,
+    ref_arrays: dict,
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> tuple[dict, int]:
+    """Lossless 0ms BASE (meta) re-solve for ONE loadout at one (tier·color) config.
+
+    Re-allocates the gem budget at chart timing via the canonical GPU base exhaustive search (now
+    MoltenVK-correct after the skyline warmstart race fix), then CPU-f64 exact-rescores the resolved
+    Stats at 0ms. ``fixed_song_stats`` is the tier-adjusted song fixed-stats row; ``loadout_items``
+    is the loadout's 6 gear + 3 mini stat dicts before gems. Returns
+    ``(resolved_payload, score)`` where ``score`` is the served 0ms base score. Shared by serving
+    and the lossless gate so served == native (delta=0)."""
+    from ...solver.scoring.exact_rescore import score_stats_fixed_timing_exact
+    from ...solver.solver_common import (
+        build_candidate_payload,
+        build_solver_cfg_data,
+        build_solver_override_cfg,
+    )
+
+    p_color = str(primary_color or "")
+    cfg_data = build_solver_cfg_data(
+        cfg, p_color=p_color, s_color=str(secondary_color or ""), selected_color=str(selected_color or "")
+    )
+    override_cfg = build_solver_override_cfg(cfg_data, p_color=p_color, selected_color=str(selected_color or ""))
+    override_cfg["use_gpu"] = True
+    resolved = build_candidate_payload(
+        cfg=cfg,
+        base_stats_fixed=dict(fixed_song_stats or {}),
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        genome=list(loadout_items or []),
+        override_cfg=override_cfg,
+        gpu_client=None,
+    )
+    resolved_stats = dict(resolved.get("Stats") or {})
+    if not resolved_stats:
+        raise ValueError("zero_ms base re-solve returned no Stats")
+    score = int(score_stats_fixed_timing_exact(resolved_stats, calc_song, ref_arrays))
+    return resolved, score
+
+
+def resolve_zero_ms_base_batch(
+    *,
+    cfg,
+    fixed_song_stats: dict,
+    loadouts: list,
+    calc_song: dict,
+    ref_arrays: dict,
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> list:
+    """Batched lossless 0ms BASE re-solve: all N loadouts of a (tier·color) in ONE GPU dispatch.
+
+    The per-song serving path -- a full leaderboard re-solves in one skyline dispatch
+    (``n_genomes=N``) instead of N sequential solves. ``fixed_song_stats`` is the shared
+    tier-adjusted song fixed-stats row; ``loadouts`` is the list of N loadout item-stat rows.
+    Returns N ``(resolved_payload, score)`` in order. Each loadout's gem search is independent, so
+    the per-loadout result equals ``resolve_zero_ms_base`` (the gate's per-loadout path) -> served
+    == native (delta=0)."""
+    from ...solver.scoring.exact_rescore import score_stats_fixed_timing_exact
+    from ...solver.scoring.fever_solver import solve_best_fever_combination_batch
+    from ...solver.solver_common import (
+        _add_genome_item_stats,
+        build_solver_cfg_data,
+        build_solver_override_cfg,
+    )
+
+    rows = list(loadouts or [])
+    if not rows:
+        return []
+    p_color = str(primary_color or "")
+    cfg_data = build_solver_cfg_data(
+        cfg, p_color=p_color, s_color=str(secondary_color or ""), selected_color=str(selected_color or "")
+    )
+    override_cfg = build_solver_override_cfg(cfg_data, p_color=p_color, selected_color=str(selected_color or ""))
+    override_cfg["use_gpu"] = True
+    pre_gem_rows = [_add_genome_item_stats(dict(fixed_song_stats or {}), list(items or [])) for items in rows]
+    results = solve_best_fever_combination_batch(cfg, pre_gem_rows, calc_song, ref_arrays, override_cfg)
+    if len(results) != len(rows):
+        raise ValueError(f"batched zero_ms base re-solve returned {len(results)} != {len(rows)} results")
+    out = []
+    for resolved in results:
+        resolved_stats = dict(resolved.get("Stats") or {})
+        if not resolved_stats:
+            raise ValueError("batched zero_ms base re-solve returned no Stats")
+        score = int(score_stats_fixed_timing_exact(resolved_stats, calc_song, ref_arrays))
+        out.append((resolved, score))
+    return out
+
+
 def _ensure_stats_include_base_effect(stats: dict, base_effect: dict[str, int]) -> dict:
     if not isinstance(stats, dict) or not stats or not isinstance(base_effect, dict) or not base_effect:
         return stats if isinstance(stats, dict) else {}
@@ -501,6 +711,8 @@ def compute_team_buff_tier_leaderboards(
                 "source_fg_score": _safe_int(entry.get("fg_score"), 0),
                 "base": base_slice,
                 "fg": fg_snapshot,
+                # Raw entry keeps the loadout item stats needed by the zero_ms gem re-solve.
+                "_entry": entry,
             }
         )
 
@@ -537,104 +749,133 @@ def compute_team_buff_tier_leaderboards(
             int(delta_map.get(secondary_color, 0)) if secondary_color else 0,
         )
 
+    # Shared 0ms re-solve config (cfg + song fixed_stats), built once per song and used by BOTH
+    # the base (meta) and FG zero_ms re-solves so they (and the lossless gate) share one config.
+    zero_ms_cfg = None
+    zero_ms_song_fixed_stats: dict = {}
+    if timing_mode == "zero_ms":
+        zero_ms_cfg, zero_ms_song_fixed_stats = _zero_ms_cfg_and_song_fixed_stats(cfg_dict, calc_song)
+
     meta_scores_by_tier: dict[str, list[int]] = {}
+    # zero_ms only: per (tier, loadout_hash) RE-SOLVED base payloads (re-solved Stats/GemCounts/Score).
+    zero_ms_base_by_tier_hash: dict[str, dict[str, dict]] = {}
     if replay_meta and per_entry:
-        for tier in tier_list:
-            dpp, dp, ds = tier_deltas[str(tier)]
-            tier_stats = [
-                _fg_stats_at_tier(
-                    e.get("base") or {},
-                    delta_pp=int(dpp),
-                    delta_primary=int(dp),
-                    delta_secondary=int(ds),
+        if timing_mode == "zero_ms":
+            # Lossless 0ms BASE re-solve: per (loadout, tier), re-allocate the gem budget from
+            # song fixed stats + loadout item stats via the canonical GPU base exhaustive search
+            # + CPU-f64 exact rescore. perfect_window inherits the persisted gems.
+            base_loadouts = [_entry_loadout_items(e.get("_entry") or {}) for e in per_entry]
+            for tier in tier_list:
+                delta_map = _team_buff_delta_map(
+                    base_team_buff=base_team_buff,
+                    target_team_buff=str(tier),
+                    base_team_color=base_team_color,
+                    target_team_color=target_team_color,
+                )
+                tier_fixed_stats = _apply_stat_delta(zero_ms_song_fixed_stats, delta_map)
+                # Batched: ALL loadouts of this tier re-solve in ONE GPU dispatch (n_genomes=N is
+                # the low-level solver batch dimension). Per-loadout result
+                # is identical to the single-loadout path (independent gem searches) -> delta=0.
+                batch = resolve_zero_ms_base_batch(
+                    cfg=zero_ms_cfg,
+                    fixed_song_stats=tier_fixed_stats,
+                    loadouts=base_loadouts,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
                     primary_color=primary_color,
                     secondary_color=secondary_color,
+                    selected_color=primary_color,
                 )
-                for e in per_entry
-            ]
-            meta_scores_by_tier[str(tier)] = [int(s) for s in _base_score_batch(tier_stats)]
+                witness_for_tier = zero_ms_base_by_tier_hash.setdefault(str(tier), {})
+                for i, e in enumerate(per_entry):
+                    h = _norm_text(e.get("loadout_hash"))
+                    if h:
+                        witness_for_tier[h] = batch[i][0]
+                meta_scores_by_tier[str(tier)] = [int(score) for (_resolved, score) in batch]
+        else:
+            for tier in tier_list:
+                dpp, dp, ds = tier_deltas[str(tier)]
+                tier_stats = [
+                    _fg_stats_at_tier(
+                        e.get("base") or {},
+                        delta_pp=int(dpp),
+                        delta_primary=int(dp),
+                        delta_secondary=int(ds),
+                        primary_color=primary_color,
+                        secondary_color=secondary_color,
+                    )
+                    for e in per_entry
+                ]
+                meta_scores_by_tier[str(tier)] = [int(s) for s in _base_score_batch(tier_stats)]
     else:
         meta_scores_by_tier = {str(t): [0] * len(per_entry) for t in tier_list}
 
     fg_scores_by_tier: dict[str, list[int]] = {str(t): [0] * len(per_entry) for t in tier_list}
-    # zero_ms only: full rebuilt FG ``force`` payloads (with the chart-fixed
-    # ForceGreats.frontier_trace = 0ms note-graph witness) keyed by loadout_hash, so the
-    # DB-batch builder can carry a per-loadout 0ms witness instead of the persisted
-    # Perfect-window one. Tier-invariant (only stat values re-derive per tier).
-    zero_ms_fg_force_by_hash: dict[str, dict] = {}
+    # zero_ms only: per (tier, loadout_hash) RE-SOLVED FG force payloads (re-solved
+    # GemCounts/Stats/Score + chart-fixed note-graph witness); consumed by the DB-batch builder.
+    zero_ms_fg_force_by_tier_hash: dict[str, dict[str, dict]] = {}
     have_fg = replay_fg and any(isinstance(e.get("fg"), dict) for e in per_entry)
     if have_fg:
         fg_indices = [idx for idx, e in enumerate(per_entry) if isinstance(e.get("fg"), dict)]
         if timing_mode == "zero_ms":
-            # Re-optimize each loadout's FG surface at fixed chart timing (issue #51). Forcing
-            # greats still helps at 0ms -- it changes the fill length, which shifts where fever
-            # activates and can align fever windows better with note clusters (a count effect,
-            # independent of hit-offset) -- so FG 0ms is NOT base 0ms and the surface must be
-            # rebuilt. The persisted surface is the Perfect-window optimum (invalid at 0ms), so it
-            # is rebuilt once from each loadout's base FG stats. Tier deltas never shift FT/FF, so
-            # the rebuilt surface is tier-invariant and only stat values re-derive per tier.
-            from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_fg_replays
-
-            base_fg_stats = [
-                _fg_stats_at_tier(
-                    per_entry[idx]["fg"],
-                    delta_pp=0,
-                    delta_primary=0,
-                    delta_secondary=0,
-                    primary_color=primary_color,
-                    secondary_color=secondary_color,
+            # Lossless 0ms re-solve: per (loadout, tier), re-allocate the 90-gem budget from
+            # song fixed stats + loadout item stats at chart timing, via the canonical GPU FG
+            # kernel (fp-gated f32/f64) + CPU-f64 exact
+            # rescore -> served == native optimum. perfect_window inherits gems; at 0ms those are
+            # NOT the optimum (the timing shifts the optimal allocation), so they must be re-solved
+            # per tier, not replayed. (Forcing greats still helps at 0ms -- it changes fill length,
+            # shifting fever activation -- so FG 0ms is genuinely re-optimized, not base 0ms.)
+            for tier in tier_list:
+                delta_map = _team_buff_delta_map(
+                    base_team_buff=base_team_buff,
+                    target_team_buff=str(tier),
+                    base_team_color=base_team_color,
+                    target_team_color=target_team_color,
                 )
-                for idx in fg_indices
-            ]
-            base_paired_stats = [
-                _fg_stats_at_tier(
-                    per_entry[idx]["fg"],
-                    delta_pp=0,
-                    delta_primary=0,
-                    delta_secondary=0,
-                    primary_color=primary_color,
-                    secondary_color=secondary_color,
-                    paired_base=True,
+                tier_fixed_stats = _apply_stat_delta(zero_ms_song_fixed_stats, delta_map)
+                out_list = fg_scores_by_tier[str(tier)]
+                witness_for_tier = zero_ms_fg_force_by_tier_hash.setdefault(str(tier), {})
+                # Batched: all FG loadouts of this tier re-solve in ONE response-frontier dispatch
+                # (build_fixed_timing_fg_replays packs the stat list), so a full leaderboard's FG is
+                # one solve instead of N. Per-loadout result is identical (independent searches).
+                fg_forces = resolve_zero_ms_fg_force_batch(
+                    fixed_song_stats=tier_fixed_stats,
+                    loadouts=[_entry_loadout_items(per_entry[idx].get("_entry") or {}) for idx in fg_indices],
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    selected_color=primary_color,
                 )
-                for idx in fg_indices
-            ]
-            replays = build_fixed_timing_fg_replays(
-                fg_stats_list=base_fg_stats,
-                base_stats_list=base_paired_stats,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                selected_color=primary_color,
-            )
-            fg_surface_by_idx = {idx: replay["surface"] for idx, replay in zip(fg_indices, replays, strict=True)}
-            for idx, replay in zip(fg_indices, replays, strict=True):
-                loadout_hash = _norm_text(per_entry[idx].get("loadout_hash"))
-                if loadout_hash:
-                    zero_ms_fg_force_by_hash[loadout_hash] = replay["force"]
+                for idx, force in zip(fg_indices, fg_forces, strict=True):
+                    out_list[idx] = int(force.get("Score") or 0)
+                    h = _norm_text(per_entry[idx].get("loadout_hash"))
+                    if h:
+                        witness_for_tier[h] = force
         else:
+            # perfect_window: score the persisted FG surface at tier-adjusted stats (gems inherited;
+            # the persisted gems ARE the optimum at this timing, only stat values re-derive).
             fg_surface_by_idx = {idx: per_entry[idx]["fg"]["surface"] for idx in fg_indices}
-
-        for tier in tier_list:
-            dpp, dp, ds = tier_deltas[str(tier)]
-            out_list = fg_scores_by_tier[str(tier)]
-            for idx in fg_indices:
-                e = per_entry[idx]
-                stats = _fg_stats_at_tier(
-                    e["fg"],
-                    delta_pp=int(dpp),
-                    delta_primary=int(dp),
-                    delta_secondary=int(ds),
-                    primary_color=primary_color,
-                    secondary_color=secondary_color,
-                )
-                replay_score = score_force_greats_response_surface_exact(
-                    stats, calc_song, ref_arrays, fg_surface_by_idx[idx]
-                )
-                if replay_score is None:
-                    raise ValueError(
-                        "FG response surface tier replay failed for loadout "
-                        f"{e.get('loadout_hash')!r} at tier {tier!r}."
+            for tier in tier_list:
+                dpp, dp, ds = tier_deltas[str(tier)]
+                out_list = fg_scores_by_tier[str(tier)]
+                for idx in fg_indices:
+                    e = per_entry[idx]
+                    stats = _fg_stats_at_tier(
+                        e["fg"],
+                        delta_pp=int(dpp),
+                        delta_primary=int(dp),
+                        delta_secondary=int(ds),
+                        primary_color=primary_color,
+                        secondary_color=secondary_color,
                     )
-                out_list[idx] = int(replay_score)
+                    replay_score = score_force_greats_response_surface_exact(
+                        stats, calc_song, ref_arrays, fg_surface_by_idx[idx]
+                    )
+                    if replay_score is None:
+                        raise ValueError(
+                            "FG response surface tier replay failed for loadout "
+                            f"{e.get('loadout_hash')!r} at tier {tier!r}."
+                        )
+                    out_list[idx] = int(replay_score)
 
     tiers_out: dict[str, dict] = {}
     for tier in tier_list:
@@ -664,19 +905,24 @@ def compute_team_buff_tier_leaderboards(
                 )
 
             if replay_fg and isinstance(fg, dict) and int(fg_score) > 0:
-                fg_ranked.append(
-                    {
-                        "loadout_hash": e.get("loadout_hash") or "",
-                        "gear": e.get("gear") or [],
-                        "minis": e.get("minis") or [],
-                        "fg_score": int(fg_score),
-                        "source_score": int(e.get("source_score") or 0),
-                        "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
-                        "source_fg_score": int(e.get("source_fg_score") or 0),
-                        "force_config": fg.get("config"),
-                        "_replay_fg": fg,
-                    }
-                )
+                fg_row = {
+                    "loadout_hash": e.get("loadout_hash") or "",
+                    "gear": e.get("gear") or [],
+                    "minis": e.get("minis") or [],
+                    "fg_score": int(fg_score),
+                    "source_score": int(e.get("source_score") or 0),
+                    "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
+                    "source_fg_score": int(e.get("source_fg_score") or 0),
+                    "force_config": fg.get("config"),
+                }
+                if timing_mode == "zero_ms":
+                    witness = zero_ms_fg_force_by_tier_hash.get(str(tier), {}).get(_norm_text(e.get("loadout_hash")))
+                    if not isinstance(witness, dict):
+                        raise ValueError(f"zero_ms FG re-solve missing witness for loadout {e.get('loadout_hash')!r}")
+                    fg_row["fg_base_score"] = int(witness.get("BaseScore") or 0)
+                else:
+                    fg_row["_replay_fg"] = fg
+                fg_ranked.append(fg_row)
 
         base_top = nsmallest(
             int(n),
@@ -707,7 +953,8 @@ def compute_team_buff_tier_leaderboards(
                     )
                 )
             else:
-                row["fg_base_score"] = 0
+                if "fg_base_score" not in row:
+                    row["fg_base_score"] = 0
             fg_top.append(row)
         if paired_stats:
             fg_base_scores = _base_score_batch(paired_stats)
@@ -728,7 +975,10 @@ def compute_team_buff_tier_leaderboards(
         "tiers": tiers_out,
         # zero_ms only (empty otherwise): per-loadout rebuilt FG force payloads carrying the
         # chart-fixed note-graph witness; consumed by build_team_buff_tier_db_batches.
-        "zero_ms_fg_force_by_hash": zero_ms_fg_force_by_hash,
+        "zero_ms_fg_force_by_tier_hash": zero_ms_fg_force_by_tier_hash,
+        # zero_ms only (empty otherwise): per (tier, hash) RE-SOLVED base payloads
+        # (re-solved Stats/GemCounts/Score), consumed by build_team_buff_tier_db_batches.
+        "zero_ms_base_by_tier_hash": zero_ms_base_by_tier_hash,
     }
 
 
@@ -791,7 +1041,8 @@ def build_team_buff_tier_db_batches(
         replay_surfaces=replay_surfaces,
         timing_mode=timing_mode,
     )
-    zero_ms_fg_force_by_hash = payload.get("zero_ms_fg_force_by_hash") or {}
+    zero_ms_fg_force_by_tier_hash = payload.get("zero_ms_fg_force_by_tier_hash") or {}
+    zero_ms_base_by_tier_hash = payload.get("zero_ms_base_by_tier_hash") or {}
 
     payload_meta = payload.get("meta") or {}
     base_team_buff = _norm_text(payload_meta.get("base_team_buff")) or _resolve_base_team_buff(cfg_dict)
@@ -943,6 +1194,21 @@ def build_team_buff_tier_db_batches(
                 # tier's timing (issue #38, base surface).
                 if isinstance(details_out, dict):
                     details_out.pop("TimelineFrontier", None)
+                if is_zero_ms and isinstance(details_out, dict):
+                    # Lossless 0ms base re-solve: replace the inherited Stats/GemCounts with the
+                    # RE-SOLVED (at-tier) witness so the served base card shows the 0ms-optimal gems
+                    # + score (the meta leaderboard score already comes from the same re-solve). No
+                    # tier delta -- the witness is already at-tier (fixed_stats + tier delta + gems).
+                    base_witness = zero_ms_base_by_tier_hash.get(str(tier), {}).get(
+                        _norm_text(orig.get("loadout_hash"))
+                    )
+                    if isinstance(base_witness, dict):
+                        w_stats = base_witness.get("Stats")
+                        if isinstance(w_stats, dict) and w_stats:
+                            details_out["Stats"] = dict(w_stats)
+                        w_gems = base_witness.get("GemCounts")
+                        if isinstance(w_gems, dict):
+                            details_out["GemCounts"] = dict(w_gems)
                 # Recompute the per-note timeline trace for the tier-shifted stats so the
                 # base note graph reflects this tier rather than the frozen baseline
                 # witnesses (issue #38, point 4 — base surface). Additive only: the row's
@@ -976,33 +1242,19 @@ def build_team_buff_tier_db_batches(
                             det_out["Stats"] = _ensure_stats_include_base_effect(st, base_effect)
                             force_base["details"] = det_out
                 if is_zero_ms:
-                    # zero_ms (issue #51): the loadout identity is timing-invariant — same gear,
-                    # gems, and stats as Perfect-window — so keep the PERSISTED force (its
-                    # GemCounts/Stats/BaseStats are the real allocation) and graft ONLY the
-                    # forced-greats TIMING fields that 0ms re-optimizes: the chart-fixed note-graph
-                    # trace, the 0ms forced-counts config, and the rebuilt response surface. The
-                    # rebuilt witness is a total_budget=0 recompute, so its own GemCounts are 0 and
-                    # must NOT be shown. No witness (or no persisted force) -> force_out=None and the
-                    # consumer drops the FG card rather than drawing Perfect-window timing.
-                    witness = zero_ms_fg_force_by_hash.get(_norm_text(orig.get("loadout_hash")))
-                    if isinstance(force_base, dict) and isinstance(witness, dict):
-                        force_base = dict(force_base)
-                        witness_fg = witness.get("ForceGreats") if isinstance(witness.get("ForceGreats"), dict) else {}
-                        fg_meta = dict(force_base.get("ForceGreats") or {})
-                        for fg_key in ("frontier_trace", "config", "non_fever_base", "frontier_first_surfaces"):
-                            if fg_key in witness_fg:
-                                fg_meta[fg_key] = witness_fg[fg_key]
-                        force_base["ForceGreats"] = fg_meta
-                        for top_key in ("response_surface", "forced_counts"):
-                            if top_key in witness:
-                                force_base[top_key] = witness[top_key]
-                    else:
-                        force_base = None
-                force_out = _apply_force_delta(
-                    force_base,
-                    delta=delta_map,
-                    fg_score=fg_score_out,
-                )
+                    # Lossless 0ms re-solve: the served FG force IS the re-solved witness for this
+                    # (tier, loadout) -- re-solved GemCounts/Stats/Score + chart-fixed frontier_trace,
+                    # already at this tier. Use it directly and SKIP the tier delta (it is NOT the
+                    # persisted Perfect-window force). No witness -> drop the FG card rather than draw
+                    # Perfect-window gems/timing.
+                    witness = zero_ms_fg_force_by_tier_hash.get(str(tier), {}).get(_norm_text(orig.get("loadout_hash")))
+                    force_out = dict(witness) if isinstance(witness, dict) else None
+                else:
+                    force_out = _apply_force_delta(
+                        force_base,
+                        delta=delta_map,
+                        fg_score=fg_score_out,
+                    )
                 # NB: unlike the base TimelineFrontier above, the FG note-graph trace
                 # (ForceGreats.frontier_trace) is NOT recomputed per tier — it is tier-invariant.
                 # The base witness is the argmax surface in the (FT,FF) cell, which CAN change per

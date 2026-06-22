@@ -145,10 +145,17 @@ def skyline_find_best_combo_warmstart_kernel(
     w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ff << 1) + is_s_ff)
 
     if ti.static(gpu_fields.IS_METAL):
-        # Metal: keep the original per-combo score atomic approach (no u64 atomics).
+        # Metal/MoltenVK has no u64 atomics, so it cannot atomic_max the packed (score, combo_idx)
+        # key the way the Vulkan path below does. The previous Metal code split that into
+        # atomic_max(score) + a NON-atomic combo_idx write, which RACED: two threads improving the
+        # same genome's score could leave chunk_best_score and chunk_best_idx desynchronized,
+        # dropping the optimal allocation (observed as a wrong, ~-21% base re-solve on macOS).
+        # Instead, parallelize over GENOMES and reduce the combo dimension SERIALLY per genome:
+        # each genome's slot is then owned by exactly one thread, so score and combo_idx always
+        # stay paired -- no atomics, no race. Same exact argmax as the Vulkan path; only the
+        # reduction strategy differs (required hardware-safety boundary: no u64 atomics on Metal).
         ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-        for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
-            combo_idx: ti.i32 = combo_offset + local_c
+        for genome_idx in range(n_genomes):
             if ti.static(reuse_exact_eval_results):
                 if kernels_helpers.skyline_exact_eval_rep_idx[genome_idx] != genome_idx:
                     continue
@@ -171,44 +178,53 @@ def skyline_find_best_combo_warmstart_kernel(
             if max_ff_gems > total_budget:
                 max_ff_gems = total_budget
 
-            key = _compute_combo_key_warmstart_preloaded(
-                genome_idx,
-                combo_idx,
-                total_budget,  # combo_budget
-                gem_scale_fever,
-                is_p_ft,
-                is_s_ft,
-                is_p_ff,
-                is_s_ff,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                song_slot,
-                w_ft,
-                w_ff,
-                base_pp,
-                base_cm,
-                base_fm,
-                base_p_val,
-                base_s_val,
-                base_ft_stat,
-                base_ff_stat,
-                max_ft_gems,
-                max_ff_gems,
-                use_exact_inner_solver,
-                use_timing_response_antichain,
-                score_cull_threshold,
-            )
-            if key != 0:
-                score = ti.cast((key >> 32), ti.i32) - 1
-                old = ti.atomic_max(kernels_helpers.chunk_best_score[genome_idx], score)
-                if old < score:
-                    kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
+            best_score: ti.i32 = -1
+            best_idx: ti.i32 = -1
+            for local_c in range(combo_count):
+                combo_idx: ti.i32 = combo_offset + local_c
+                key = _compute_combo_key_warmstart_preloaded(
+                    genome_idx,
+                    combo_idx,
+                    total_budget,  # combo_budget
+                    gem_scale_fever,
+                    is_p_ft,
+                    is_s_ft,
+                    is_p_ff,
+                    is_s_ff,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    song_slot,
+                    w_ft,
+                    w_ff,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    base_p_val,
+                    base_s_val,
+                    base_ft_stat,
+                    base_ff_stat,
+                    max_ft_gems,
+                    max_ff_gems,
+                    use_exact_inner_solver,
+                    use_timing_response_antichain,
+                    score_cull_threshold,
+                )
+                if key != 0:
+                    score = ti.cast((key >> 32), ti.i32) - 1
+                    if score > best_score:
+                        best_score = score
+                        best_idx = combo_idx
+            # Single owner thread per genome -> score and combo_idx stay paired. Accumulate the
+            # max across combo chunks (sequential kernel invocations; no cross-thread contention).
+            if best_score >= 0 and best_score > kernels_helpers.chunk_best_score[genome_idx]:
+                kernels_helpers.chunk_best_score[genome_idx] = best_score
+                kernels_helpers.chunk_best_idx[genome_idx] = best_idx
     else:
         # Vulkan: use deterministic logical lanes from the loop index and
         # combine per-lane maxima via atomic_max on the packed key only.

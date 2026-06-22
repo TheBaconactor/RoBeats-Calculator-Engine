@@ -43,7 +43,11 @@ from gear_optimizer.core.utils import cfg_to_dict, get_selected_element
 from gear_optimizer.data.database import get_best_loadouts, get_evolution_db_path
 from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
 from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
-from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
+    build_team_buff_tier_db_batches,
+    resolve_zero_ms_base,
+    resolve_zero_ms_fg_force,
+)
 from gear_optimizer.solver.fg_response_frontier_cache_prebuild import ensure_response_frontier_cache_for_calc_song
 from gear_optimizer.solver.scoring.exact_rescore import (
     score_force_greats_response_surface_exact,
@@ -59,6 +63,7 @@ from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline
 from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
     prepare_force_greats_response_frontier_scoring_batch,
     score_prepared_force_greats_response_frontier_batch_cpu_sync,
+    score_prepared_force_greats_response_frontier_batch_sync,
 )
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
@@ -285,24 +290,12 @@ def _song_file_from_name(song_name: str, details: dict[str, Any] | None = None) 
     return None
 
 
-def _entry_genome(entry: dict[str, Any]) -> list[dict[str, Any]]:
+def _entry_loadout_items(entry: dict[str, Any]) -> list[dict[str, Any]]:
     gear = [dict(item) for item in list(entry.get("gear") or [])[:6]]
     minis = [dict(item) for item in list(entry.get("minis") or [])[:3]]
     if len(gear) != 6 or len(minis) != 3:
         raise ValueError(f"Loadout {_entry_hash(entry)!r} does not have 6 gear + 3 minis")
     return gear + minis
-
-
-def _merge_fixed_stats_and_genome(base_stats_fixed: dict[str, Any], genome: list[dict[str, Any]]) -> dict[str, int]:
-    out = {str(key): int(value or 0) for key, value in dict(base_stats_fixed or {}).items()}
-    for item in list(genome or []):
-        if not isinstance(item, dict):
-            continue
-        for key, value in item.items():
-            if key in {"Name", "type"}:
-                continue
-            out[str(key)] = int(out.get(key, 0) or 0) + int(value or 0)
-    return out
 
 
 def _find_replay_row(
@@ -354,7 +347,13 @@ def _replay_score_for_mode(row: dict[str, Any], mode: str) -> int:
     return int(row.get("score", 0) or 0)
 
 
-def _exact_base_score(*, stats: dict[str, Any], calc_song: dict[str, Any], ref_arrays: dict[str, Any], timing_mode: str) -> int:
+def _exact_base_score(
+    *,
+    stats: dict[str, Any],
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    timing_mode: str,
+) -> int:
     if str(timing_mode) == "zero_ms":
         return int(score_stats_fixed_timing_exact(stats, calc_song, ref_arrays))
     return int(score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays).get("score", 0) or 0)
@@ -389,42 +388,25 @@ def _exact_fg_score(
 
 def _solve_fg_exact(
     *,
-    base_stats_fixed: dict[str, Any],
-    genome: list[dict[str, Any]],
+    fixed_song_stats: dict[str, Any],
+    loadout_items: list[dict[str, Any]],
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
     selected_element: str,
 ) -> tuple[int, dict[str, int], dict[str, Any]]:
-    base_stats = _merge_fixed_stats_and_genome(base_stats_fixed, genome)
-    ensure_response_frontier_cache_for_calc_song(calc_song, ref_arrays)
-    batch = prepare_force_greats_response_frontier_scoring_batch(
-        base_stats_list=[base_stats],
+    # Single canonical recipe, shared with serving: song fixed stats + loadout item stats
+    # + budget=90 -> GPU FG search (fp-gated kernel) -> CPU-f64 exact rescore (force["Score"]).
+    # Using the SAME production helper here is what makes served == native (delta=0).
+    force = resolve_zero_ms_fg_force(
+        fixed_song_stats=fixed_song_stats,
+        loadout_items=loadout_items,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         selected_color=str(selected_element or ""),
-        total_budget=int(TOTAL_GEM_BUDGET),
     )
-    results = score_prepared_force_greats_response_frontier_batch_cpu_sync(
-        batch,
-        include_forced_counts=False,
-    )
-    if len(results) != 1:
-        raise ValueError(f"Expected exactly one FG solve result, got {len(results)}")
-    result = results[0]
-    resolved_stats = dict(result.stats or {})
-    resolved_score = _exact_fg_score(
-        stats=resolved_stats,
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        selected_element=selected_element,
-    )
-    return resolved_score, _normalize_gem_counts(
-        {
-            "GemCounts": dict(result.gem_counts or {}),
-            "FT": int(result.ft),
-            "FF": int(result.ff),
-        }
-    ), resolved_stats
+    resolved_stats = dict(force.get("Stats") or {})
+    resolved_score = int(force.get("Score") or 0)
+    return resolved_score, _normalize_gem_counts(force), resolved_stats
 
 
 def _selected_element_for_mode(*, replay_payload: dict[str, Any] | None, fallback_primary: str) -> str:
@@ -473,15 +455,31 @@ def _compare_entry_mode(
         base_team_color_override=base_team_color_override,
         target_team_color_override=target_team_color_override,
     )
-    genome = _entry_genome(entry)
+    loadout_items = _entry_loadout_items(entry)
     if str(mode) == "fg":
         resolved_score, resolved_gem_counts, resolved_stats = _solve_fg_exact(
-            base_stats_fixed=target_fixed_stats,
-            genome=genome,
+            fixed_song_stats=target_fixed_stats,
+            loadout_items=loadout_items,
             calc_song=clone_calc_song(active_calc_song),
             ref_arrays=ref_arrays,
             selected_element=selected_element,
         )
+    elif str(timing_mode) == "zero_ms":
+        # Single canonical recipe, shared with serving: song fixed stats + loadout item stats
+        # + GPU base exhaustive search (MoltenVK-correct after the warmstart fix) + CPU-f64 0ms
+        # exact rescore. Using the SAME helper here is what makes served base == native (delta=0).
+        resolved, resolved_score = resolve_zero_ms_base(
+            cfg=cfg,
+            fixed_song_stats=target_fixed_stats,
+            loadout_items=loadout_items,
+            calc_song=clone_calc_song(active_calc_song),
+            ref_arrays=ref_arrays,
+            primary_color=chart_primary,
+            secondary_color=chart_secondary,
+            selected_color=selected_element,
+        )
+        resolved_stats = dict(resolved.get("Stats") or {})
+        resolved_gem_counts = _normalize_gem_counts(resolved)
     else:
         cfg_data = build_solver_cfg_data(
             cfg,
@@ -500,7 +498,7 @@ def _compare_entry_mode(
             base_stats_fixed=target_fixed_stats,
             calc_song=clone_calc_song(active_calc_song),
             ref_arrays=ref_arrays,
-            genome=genome,
+            genome=loadout_items,
             override_cfg=override_cfg,
             gpu_client=None,
         )
@@ -585,7 +583,7 @@ def main() -> int:
         "--mode",
         choices=("meta", "fg", "both"),
         default="meta",
-        help="Current exact evidence path supports meta only. FG stays blocked on the macOS exact solver work.",
+        help="Replay surface to compare against the exact zero_ms re-solve.",
     )
     parser.add_argument("--team-buff-color", type=str, default="")
     parser.add_argument("--primary-element", type=str, default="")
@@ -602,8 +600,9 @@ def main() -> int:
     db_path = Path(str(args.db or "").strip())
     if not db_path.exists():
         raise SystemExit(f"DB not found: {db_path}")
-    if str(args.mode) != "meta":
-        raise SystemExit("FG-mode exact re-solve still depends on Task A.2; run --mode meta for the base-gap evidence harness.")
+    # FG-mode exact re-solve is now supported on macOS: the FG gem kernel is fp-gated
+    # (f32 on MoltenVK / f64 on AMD), so the GPU gem search runs here; the served score is the
+    # CPU-f64 exact rescore of the winner (lossless). --mode {meta,fg,both} all run.
 
     cfg = load_config(str(args.config))
     cfg_dict = cfg_to_dict(cfg)

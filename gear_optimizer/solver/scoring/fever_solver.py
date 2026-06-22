@@ -482,3 +482,138 @@ def solve_best_fever_combination(
         return result
 
     return {}
+
+
+def solve_best_fever_combination_batch(cfg, stats_list, calc_song, ref_arrays, override_cfg):
+    """Batched GPU base gem re-solve: N loadouts in ONE skyline dispatch (n_genomes=N).
+
+    The whole base solve (timeline reuse + skyline + scoring) then runs once for all loadouts, and
+    the batch warmstart keeps each loadout's combo sweep independent. ``stats_list`` is N pre-gem
+    stat rows (song fixed stats + tier delta + gear/mini item stats). Returns one result dict
+    per input, in order: ``{Score, FT, FF, GemCounts, Stats, Selected Element, config}``. Each
+    loadout's gem search is independent, so the per-loadout result is identical to the single-loadout
+    ``solve_best_fever_combination`` GPU path -- served-batched == native-per-loadout (delta=0).
+    GPU-only (override_cfg.use_gpu must be True; the on-demand re-solve always sets it)."""
+    rows = [dict(s) for s in (stats_list or [])]
+    if not rows:
+        return []
+    if not override_cfg:
+        raise ValueError("solve_best_fever_combination_batch requires the parallel-eval override_cfg.")
+    if not bool(override_cfg.get("use_gpu", False)):
+        raise ValueError("solve_best_fever_combination_batch is GPU-only.")
+
+    user_ft = int(override_cfg["user_ft"])
+    user_ff = int(override_cfg["user_ff"])
+    user_pp = int(override_cfg["user_pp"])
+    user_cm = int(override_cfg["user_cm"])
+    user_fm = int(override_cfg["user_fm"])
+    selected_color = override_cfg["selected_color"]
+    static_elem_input = int(override_cfg["static_elem_input"])
+
+    # Match the single-loadout path's numeric behavior: ref arrays in float32.
+    ref_arrays = dict(ref_arrays)
+    for _k in ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate"):
+        ref_arrays[_k] = np.asarray(ref_arrays[_k], dtype=np.float32)
+
+    p_color = calc_song["metadata"].get("Primary Color", "")
+    s_color = calc_song["metadata"].get("Secondary Color", "")
+    flags = build_color_flags(p_color, s_color, selected_color)
+    gem_settings = {
+        "user_ft": user_ft,
+        "user_ff": user_ff,
+        "user_pp": user_pp,
+        "user_cm": user_cm,
+        "user_fm": user_fm,
+        "static_elem_input": static_elem_input,
+        "selected_color": selected_color,
+    }
+
+    n = len(rows)
+    # Encode each loadout's pre-gem stats as ONE item in the skyline item pool. The
+    # aggregator skips item_id == 0 (empty sentinel), so put loadout g at item g+1 and have
+    # population_indices select only that item (slots 1-8 stay 0/empty). base_fixed_stats is 0, so
+    # the aggregator yields exactly each loadout's pre-gem stats.
+    item_stats = np.zeros((n + 1, 10), dtype=np.int32)
+    population_indices = np.zeros((n, 9), dtype=np.int32)
+    normalized: list[dict] = []
+    for g, s in enumerate(rows):
+        nb, _sel = build_base_fixed_stats_dict(s, gem_settings, fallback_selected_color=selected_color)
+        normalized.append(nb)
+        item_stats[g + 1, :] = np.asarray(build_stats_array(nb), dtype=np.int32)[:10]
+        population_indices[g, 0] = g + 1
+
+    try:
+        song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
+    except Exception as e:
+        logger.debug(f"fever_solver:solve_best_fever_combination_batch: {e}")
+        song_slot = 0
+
+    request = RegistrySolveRequest(
+        population_indices=population_indices,
+        item_stats=item_stats,
+        slot_start=np.zeros((9,), dtype=np.int32),
+        slot_count=np.zeros((9,), dtype=np.int32),
+        base_fixed_stats=np.zeros((10,), dtype=np.int32),
+        timeline_grid=calc_song,
+        ref_arrays=ref_arrays,
+        flags={
+            "is_p_ft": int(flags["is_p_ft"]),
+            "is_s_ft": int(flags["is_s_ft"]),
+            "is_p_ff": int(flags["is_p_ff"]),
+            "is_s_ff": int(flags["is_s_ff"]),
+            "is_p_pp": int(flags["is_p_pp"]),
+            "is_s_pp": int(flags["is_s_pp"]),
+            "is_p_cm": int(flags["is_p_cm"]),
+            "is_s_cm": int(flags["is_s_cm"]),
+            "is_p_fm": int(flags["is_p_fm"]),
+            "is_s_fm": int(flags["is_s_fm"]),
+            "is_p_ov": int(flags["is_p_ov"]),
+            "is_s_ov": int(flags["is_s_ov"]),
+        },
+        total_budget=int(TOTAL_GEM_BUDGET),
+        gem_scale_fever=int(GEM_SCALE_FEVER),
+        song_slot=int(song_slot),
+    )
+    gpu_results = dispatch_registry_solve(request)
+    if not gpu_results or len(gpu_results) != n:
+        raise RuntimeError(
+            f"batched base re-solve returned {len(gpu_results) if gpu_results else 0} results for {n} genomes"
+        )
+
+    out: list[dict] = []
+    for g in range(n):
+        score, ft, ff, g_pp, g_cm, g_fm, g_ov = gpu_results[g]
+        final_stats = apply_gems_to_base_stats(
+            normalized[g],
+            selected_color,
+            int(ft),
+            int(ff),
+            int(g_pp),
+            int(g_cm),
+            int(g_fm),
+            int(g_ov),
+            add_missing_element_key=False,
+        )
+        gem_counts = build_gem_counts(int(g_pp), int(g_cm), int(g_fm), int(g_ov))
+        out.append(
+            {
+                "Score": int(score),
+                "FT": int(ft),
+                "FF": int(ff),
+                "config": {
+                    "FT Gems": int(ft),
+                    "FF Gems": int(ff),
+                    "PP Gems": int(g_pp),
+                    "CM Gems": int(g_cm),
+                    "FM Gems": int(g_fm),
+                    "Overflow Gems": int(g_ov),
+                },
+                "FT_gems": int(ft),
+                "FF_gems": int(ff),
+                "gem_counts": gem_counts,
+                "GemCounts": gem_counts,
+                "Stats": final_stats,
+                "Selected Element": selected_color,
+            }
+        )
+    return out
