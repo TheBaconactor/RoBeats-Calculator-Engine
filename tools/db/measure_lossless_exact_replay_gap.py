@@ -290,24 +290,12 @@ def _song_file_from_name(song_name: str, details: dict[str, Any] | None = None) 
     return None
 
 
-def _entry_genome(entry: dict[str, Any]) -> list[dict[str, Any]]:
+def _entry_loadout_items(entry: dict[str, Any]) -> list[dict[str, Any]]:
     gear = [dict(item) for item in list(entry.get("gear") or [])[:6]]
     minis = [dict(item) for item in list(entry.get("minis") or [])[:3]]
     if len(gear) != 6 or len(minis) != 3:
         raise ValueError(f"Loadout {_entry_hash(entry)!r} does not have 6 gear + 3 minis")
     return gear + minis
-
-
-def _merge_fixed_stats_and_genome(base_stats_fixed: dict[str, Any], genome: list[dict[str, Any]]) -> dict[str, int]:
-    out = {str(key): int(value or 0) for key, value in dict(base_stats_fixed or {}).items()}
-    for item in list(genome or []):
-        if not isinstance(item, dict):
-            continue
-        for key, value in item.items():
-            if key in {"Name", "type"}:
-                continue
-            out[str(key)] = int(out.get(key, 0) or 0) + int(value or 0)
-    return out
 
 
 def _find_replay_row(
@@ -400,18 +388,18 @@ def _exact_fg_score(
 
 def _solve_fg_exact(
     *,
-    base_stats_fixed: dict[str, Any],
-    genome: list[dict[str, Any]],
+    fixed_song_stats: dict[str, Any],
+    loadout_items: list[dict[str, Any]],
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
     selected_element: str,
 ) -> tuple[int, dict[str, int], dict[str, Any]]:
-    # Single canonical recipe, shared with serving (compute_team_buff_tier_leaderboards): gem-less
-    # base + budget=90 -> GPU FG search (fp-gated kernel) -> CPU-f64 exact rescore (force["Score"]).
+    # Single canonical recipe, shared with serving: song fixed stats + loadout item stats
+    # + budget=90 -> GPU FG search (fp-gated kernel) -> CPU-f64 exact rescore (force["Score"]).
     # Using the SAME production helper here is what makes served == native (delta=0).
     force = resolve_zero_ms_fg_force(
-        base_stats_fixed=base_stats_fixed,
-        genome=genome,
+        fixed_song_stats=fixed_song_stats,
+        loadout_items=loadout_items,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         selected_color=str(selected_element or ""),
@@ -467,23 +455,23 @@ def _compare_entry_mode(
         base_team_color_override=base_team_color_override,
         target_team_color_override=target_team_color_override,
     )
-    genome = _entry_genome(entry)
+    loadout_items = _entry_loadout_items(entry)
     if str(mode) == "fg":
         resolved_score, resolved_gem_counts, resolved_stats = _solve_fg_exact(
-            base_stats_fixed=target_fixed_stats,
-            genome=genome,
+            fixed_song_stats=target_fixed_stats,
+            loadout_items=loadout_items,
             calc_song=clone_calc_song(active_calc_song),
             ref_arrays=ref_arrays,
             selected_element=selected_element,
         )
     elif str(timing_mode) == "zero_ms":
-        # Single canonical recipe, shared with serving (compute_team_buff_tier_leaderboards): gem-less
-        # base + GPU base exhaustive search (MoltenVK-correct after the warmstart fix) + CPU-f64 0ms
+        # Single canonical recipe, shared with serving: song fixed stats + loadout item stats
+        # + GPU base exhaustive search (MoltenVK-correct after the warmstart fix) + CPU-f64 0ms
         # exact rescore. Using the SAME helper here is what makes served base == native (delta=0).
         resolved, resolved_score = resolve_zero_ms_base(
             cfg=cfg,
-            base_stats_fixed=target_fixed_stats,
-            genome=genome,
+            fixed_song_stats=target_fixed_stats,
+            loadout_items=loadout_items,
             calc_song=clone_calc_song(active_calc_song),
             ref_arrays=ref_arrays,
             primary_color=chart_primary,
@@ -510,7 +498,7 @@ def _compare_entry_mode(
             base_stats_fixed=target_fixed_stats,
             calc_song=clone_calc_song(active_calc_song),
             ref_arrays=ref_arrays,
-            genome=genome,
+            genome=loadout_items,
             override_cfg=override_cfg,
             gpu_client=None,
         )

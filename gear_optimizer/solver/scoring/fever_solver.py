@@ -488,10 +488,10 @@ def solve_best_fever_combination_batch(cfg, stats_list, calc_song, ref_arrays, o
     """Batched GPU base gem re-solve: N loadouts in ONE skyline dispatch (n_genomes=N).
 
     The whole base solve (timeline reuse + skyline + scoring) then runs once for all loadouts, and
-    the genome-parallel warmstart keeps each genome's combo sweep independent. ``stats_list`` is N
-    GEM-LESS merged stat dicts (song base + tier delta + gear/mini genome). Returns one result dict
+    the batch warmstart keeps each loadout's combo sweep independent. ``stats_list`` is N pre-gem
+    stat rows (song fixed stats + tier delta + gear/mini item stats). Returns one result dict
     per input, in order: ``{Score, FT, FF, GemCounts, Stats, Selected Element, config}``. Each
-    genome's gem search is independent, so the per-loadout result is identical to the single-loadout
+    loadout's gem search is independent, so the per-loadout result is identical to the single-loadout
     ``solve_best_fever_combination`` GPU path -- served-batched == native-per-loadout (delta=0).
     GPU-only (override_cfg.use_gpu must be True; the on-demand re-solve always sets it)."""
     rows = [dict(s) for s in (stats_list or [])]
@@ -529,10 +529,10 @@ def solve_best_fever_combination_batch(cfg, stats_list, calc_song, ref_arrays, o
     }
 
     n = len(rows)
-    # Encode each loadout's GEM-LESS merged stats as ONE item in the skyline item pool. The
+    # Encode each loadout's pre-gem stats as ONE item in the skyline item pool. The
     # aggregator skips item_id == 0 (empty sentinel), so put loadout g at item g+1 and have
     # population_indices select only that item (slots 1-8 stay 0/empty). base_fixed_stats is 0, so
-    # the aggregator yields exactly each loadout's merged stats per genome.
+    # the aggregator yields exactly each loadout's pre-gem stats.
     item_stats = np.zeros((n + 1, 10), dtype=np.int32)
     population_indices = np.zeros((n, 9), dtype=np.int32)
     normalized: list[dict] = []

@@ -56,7 +56,7 @@ def _fg_stats() -> dict:
     }
 
 
-def _genome(name: str, **stats: int) -> list[dict]:
+def _loadout_items(name: str, **stats: int) -> list[dict]:
     gear = [{"Name": f"{name}-G1", **stats}]
     gear.extend({"Name": f"{name}-G{i}"} for i in range(2, 7))
     minis = [{"Name": f"{name}-M{i}"} for i in range(1, 4)]
@@ -149,9 +149,8 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         "Beat": 0,
         "Vibe": 0,
     }
-    # zero_ms now RE-SOLVES the gem allocation, so gear/minis must be the genome (stat-dicts,
-    # no gems) -- the gem-less identity the search re-allocates 90 gems onto. The loadout's stats
-    # live in the genome; fixed_stats from the minimal cfg is ~0, so gem-less base == genome sum.
+    # zero_ms re-solves the gem allocation from gear/mini item stats, not from already allocated Stats.
+    # With the minimal cfg here, song fixed stats are zero, so the pre-gem row is just the item sum.
     entry = {
         "loadout_hash": "pytest_zero_ms_loadout",
         "score": 1,
@@ -242,7 +241,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
 
     cfg = cfg_from_dict({"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}})
-    base_stats_fixed = {
+    fixed_song_stats = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
         "Fever Multiplier": 0,
@@ -254,8 +253,8 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         "Beat": 0,
         "Vibe": 0,
     }
-    genomes = [
-        _genome(
+    loadouts = [
+        _loadout_items(
             "A",
             **{
                 "Perfect Points": 120,
@@ -267,7 +266,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
                 "Flow": 150,
             },
         ),
-        _genome(
+        _loadout_items(
             "B",
             **{
                 "Perfect Points": 100,
@@ -284,20 +283,20 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     base_singles = [
         resolve_zero_ms_base(
             cfg=cfg,
-            base_stats_fixed=base_stats_fixed,
-            genome=genome,
+            fixed_song_stats=fixed_song_stats,
+            loadout_items=loadout,
             calc_song=dict(calc_song),
             ref_arrays=ref_arrays,
             primary_color="Rush",
             secondary_color="Flow",
             selected_color="Rush",
         )
-        for genome in genomes
+        for loadout in loadouts
     ]
     base_batch = resolve_zero_ms_base_batch(
         cfg=cfg,
-        base_stats_fixed=base_stats_fixed,
-        genomes=genomes,
+        fixed_song_stats=fixed_song_stats,
+        loadouts=loadouts,
         calc_song=dict(calc_song),
         ref_arrays=ref_arrays,
         primary_color="Rush",
@@ -314,17 +313,17 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
 
     fg_singles = [
         resolve_zero_ms_fg_force(
-            base_stats_fixed=base_stats_fixed,
-            genome=genome,
+            fixed_song_stats=fixed_song_stats,
+            loadout_items=loadout,
             calc_song=dict(calc_song),
             ref_arrays=ref_arrays,
             selected_color="Rush",
         )
-        for genome in genomes
+        for loadout in loadouts
     ]
     fg_batch = resolve_zero_ms_fg_force_batch(
-        base_stats_fixed=base_stats_fixed,
-        genomes=genomes,
+        fixed_song_stats=fixed_song_stats,
+        loadouts=loadouts,
         calc_song=dict(calc_song),
         ref_arrays=ref_arrays,
         selected_color="Rush",
@@ -349,8 +348,8 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         "loadout_hash": "pytest-zero-ms-fg-witness",
         "score": 1,
         "fg_score": 1,
-        "gear": genomes[0][:6],
-        "minis": genomes[0][6:],
+        "gear": loadouts[0][:6],
+        "minis": loadouts[0][6:],
         "details": {"Stats": dict(fg_singles[0]["Stats"])},
         "force": dict(fg_singles[0]),
     }

@@ -35,11 +35,11 @@ def _solve_fixed_timing_response_results(
     chart-only timing (prepare it with ``apply_timing_envelope(mode="zero_ms")``).
 
     ``total_budget`` selects the semantic shape (a required-hardware-boundary input, not a
-    toggle): ``0`` = gems FIXED, re-optimize only FG placement, fed gem-FULL stats (the
-    legacy replay); ``>0`` = RE-SOLVE the gem allocation, MUST be fed GEM-LESS stats (gem-full
-    + budget double-counts the gems). The gem search runs on the GPU owner whose kernel is
-    fp-gated (f32 on MoltenVK / f64 on AMD), so this is exact on macOS too; the served score is
-    the CPU-f64 exact rescore in the materializer, lossless regardless of search fp.
+    toggle): ``0`` = gems fixed, re-optimize only FG placement from already allocated stats;
+    ``>0`` = re-solve the gem allocation, so the input rows must be pre-gem stats. Passing
+    already allocated stats with a positive budget would count gems twice. The gem search runs
+    on the GPU owner whose kernel is fp-gated (f32 on MoltenVK / f64 on AMD), so this is exact
+    on macOS too; the served score is the CPU-f64 exact rescore in the materializer.
     """
     rows = [dict(stats) for stats in (stats_list or [])]
     if not rows:
@@ -118,9 +118,10 @@ def build_fixed_timing_fg_replays(
 ) -> list[dict[str, Any]]:
     """Fixed-0ms FG replay per loadout: surface + full ``force`` payload.
 
-    ``total_budget==0`` (default) keeps gems FIXED (re-optimize FG placement only) and expects
-    gem-FULL ``fg_stats_list``. ``total_budget>0`` RE-SOLVES the gem allocation at 0ms and MUST
-    be fed GEM-LESS ``fg_stats_list``/``base_stats_list`` (gem-full + budget double-counts gems).
+    ``total_budget==0`` (default) keeps gems fixed (re-optimize FG placement only) and expects
+    already allocated ``fg_stats_list``. ``total_budget>0`` re-solves the gem allocation at 0ms
+    and must be fed pre-gem ``fg_stats_list``/``base_stats_list``. Passing already allocated
+    stats with a positive budget would count gems twice.
 
     Returns one ``{"surface": FgResponseSurface, "force": <payload>}`` per stats row, in
     order. The ``force`` payload is produced by the single canonical FG materializer
@@ -151,7 +152,7 @@ def build_fixed_timing_fg_replays(
     # Paired base = each loadout's NON-FG base score under the same fixed-0ms timeline; the
     # materializer requires it (>0) as the FG row's source base score. For a gem re-solve
     # (total_budget>0) the gems change, so the paired base is the non-FG score at the RE-SOLVED
-    # gems (result.stats), not the gem-less search input.
+    # stats (result.stats), not the pre-gem search input.
     if int(total_budget) > 0:
         paired_base_rows = [dict(getattr(result, "stats", None) or {}) for result in results]
         paired_base_scores = score_stats_fixed_timing_exact_batch(paired_base_rows, cs, refs)
