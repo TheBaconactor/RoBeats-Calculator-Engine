@@ -142,11 +142,31 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         "Beat": 0,
         "Vibe": 0,
     }
+    # zero_ms now RE-SOLVES the gem allocation, so gear/minis must be the genome (stat-dicts,
+    # no gems) -- the gem-less identity the search re-allocates 90 gems onto. The loadout's stats
+    # live in the genome; fixed_stats from the minimal cfg is ~0, so gem-less base == genome sum.
     entry = {
+        "loadout_hash": "pytest_zero_ms_loadout",
         "score": 1,
         "fg_score": 1,
-        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
-        "minis": ["M1", "M2", "M3"],
+        "gear": [
+            {
+                "Name": "G1",
+                "Perfect Points": 120,
+                "Combo Multiplier": 80,
+                "Fever Multiplier": 60,
+                "Fever Time": 80,
+                "Fever Fill Rate": 100,
+                "Rush": 200,
+                "Flow": 150,
+            },
+            {"Name": "G2"},
+            {"Name": "G3"},
+            {"Name": "G4"},
+            {"Name": "G5"},
+            {"Name": "G6"},
+        ],
+        "minis": [{"Name": "M1"}, {"Name": "M2"}, {"Name": "M3"}],
         "details": {"Stats": stats},
         "force": {
             "Stats": stats,
