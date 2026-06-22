@@ -240,6 +240,12 @@ def _normalize_gem_counts(payload: dict[str, Any]) -> dict[str, int]:
     return out
 
 
+def _gem_sum(gem_counts: dict[str, int]) -> int:
+    """Total gems in a served/resolved gem-count dict. Must never exceed TOTAL_GEM_BUDGET --
+    a higher sum is an impossible build (a served card a player cannot reproduce)."""
+    return sum(int(v or 0) for v in (gem_counts or {}).values())
+
+
 def _score_delta_pct(*, replay_score: int, resolved_score: int) -> float:
     replay = int(replay_score or 0)
     resolved = int(resolved_score or 0)
@@ -606,16 +612,41 @@ def main() -> int:
         if len(rows) >= int(args.samples):
             break
 
+    # Gem-budget legality: neither the served replay nor the native re-solve may exceed the
+    # 90-gem budget. A >90 sum is an impossible build (the served card pairs gems past the
+    # budget -> a player cannot reproduce it). Fail loud so this never ships silently.
+    illegal = [
+        row
+        for row in rows
+        if _gem_sum(row.replay_gem_counts) > TOTAL_GEM_BUDGET or _gem_sum(row.resolved_gem_counts) > TOTAL_GEM_BUDGET
+    ]
+
     if args.json:
         print(json.dumps([asdict(row) for row in rows], indent=2, sort_keys=True))
     else:
         print(_render_table(rows))
         improved = sum(1 for row in rows if row.resolved_score > row.replay_score)
         changed = sum(1 for row in rows if row.gems_changed)
+        max_replay_gems = max((_gem_sum(row.replay_gem_counts) for row in rows), default=0)
+        max_resolved_gems = max((_gem_sum(row.resolved_gem_counts) for row in rows), default=0)
         print()
         print(
             f"rows={len(rows)} improved={improved} gems_changed={changed} "
+            f"max_replay_gems={max_replay_gems} max_resolved_gems={max_resolved_gems} "
+            f"over_budget={len(illegal)} "
             f"timing_mode={args.timing_mode} tier={normalize_team_buff(args.tier, default='T5')}"
+        )
+
+    if illegal:
+        for row in illegal:
+            print(
+                f"  OVER-BUDGET {row.song_name[:40]!r} {row.mode}/{row.tier}: "
+                f"replay={_gem_sum(row.replay_gem_counts)} resolved={_gem_sum(row.resolved_gem_counts)} "
+                f"(budget={TOTAL_GEM_BUDGET}) replay_gems={row.replay_gem_counts}",
+                file=sys.stderr,
+            )
+        raise SystemExit(
+            f"GEM BUDGET VIOLATION: {len(illegal)} row(s) exceed {TOTAL_GEM_BUDGET} gems (impossible builds)."
         )
     return 0
 

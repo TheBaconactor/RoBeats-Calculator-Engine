@@ -87,6 +87,27 @@ def _fake_leaderboards(**_kwargs) -> dict:
                 "fg_top51": [],
             }
         },
+        # The base-witness graft fails loud unless every hashed (tier, loadout) carries its
+        # re-solved witness. The witness Stats are non-empty so the per-tier TimelineFrontier
+        # recompute runs (it is what these tests assert on, via the mocked recompute) and its
+        # gem counts are legal (FT + FF + PP + CM + FM + Element == 90).
+        "resolved_base_by_tier_hash": {
+            "T10": {
+                "hash-x": {
+                    "Stats": dict(_STATS),
+                    "GemCounts": {
+                        "Perfect Points": 30,
+                        "Combo Multiplier": 0,
+                        "Fever Multiplier": 0,
+                        "Element": 50,
+                    },
+                    "FT": 5,
+                    "FF": 5,
+                    "Score": 200,
+                    "Selected Element": "Rush",
+                }
+            }
+        },
     }
 
 

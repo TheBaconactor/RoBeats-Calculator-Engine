@@ -140,6 +140,7 @@ def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(
     from gear_optimizer.helpers.song_helpers import ref_array_builder as rab
     from gear_optimizer.helpers.song_helpers import team_buff_tiers as tbt
     from gear_optimizer.solver.scoring import exact_rescore as er
+    from tests.test_team_buff_tier_postprocess import _install_synthetic_tier_resolve
 
     authoritative = _ref_arrays(TOTAL_ROWS + 1, dtype=np.float64)
     caller_refs = _ref_arrays(TOTAL_ROWS + 1, dtype=np.float32)
@@ -154,10 +155,15 @@ def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(
         "force": None,
     }
 
+    # The per-tier base re-solve now requires 6 gear + 3 mini stat-dicts and a GPU gem search;
+    # the synthetic resolve replaces that GPU search with a deterministic CPU-exact witness whose
+    # FINAL scoring step is score_stats_exact_batch -- the exact function under test. It honors the
+    # resolved ref_arrays, so the f32-vs-f64 ref-array authority this test pins flows through it.
     monkeypatch.setattr(tbt, "resolve_exact_replay_ref_arrays", lambda refs: refs)
     monkeypatch.setattr(er, "resolve_exact_replay_ref_arrays", lambda refs: refs)
     raw_song = _mock_song(name="pytest_team_buff_float32_raw")
     _prebuild_team_buff_timeline_frontier(raw_song, caller_refs)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=raw_song, ref_arrays=caller_refs)
     raw = tbt.compute_team_buff_tier_leaderboards(
         entries=[entry],
         calc_song=raw_song,
@@ -169,6 +175,7 @@ def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(
 
     expected_song = _mock_song(name="pytest_team_buff_float64_expected")
     _prebuild_team_buff_timeline_frontier(expected_song, authoritative)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=expected_song, ref_arrays=authoritative)
     expected = tbt.compute_team_buff_tier_leaderboards(
         entries=[entry],
         calc_song=expected_song,
@@ -184,6 +191,7 @@ def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(
     monkeypatch.setattr(er, "resolve_exact_replay_ref_arrays", rab.resolve_exact_replay_ref_arrays)
     resolved_song = _mock_song(name="pytest_team_buff_float32_resolved")
     _prebuild_team_buff_timeline_frontier(resolved_song, authoritative)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=resolved_song, ref_arrays=authoritative)
     resolved = tbt.compute_team_buff_tier_leaderboards(
         entries=[entry],
         calc_song=resolved_song,

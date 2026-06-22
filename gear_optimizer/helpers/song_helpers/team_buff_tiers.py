@@ -1200,6 +1200,20 @@ def build_team_buff_tier_db_batches(
                         w_gems = base_witness.get("GemCounts")
                         if isinstance(w_gems, dict):
                             details_out["GemCounts"] = dict(w_gems)
+                        # The witness is the COMPLETE at-tier re-solve, so its FT/FF MUST replace the
+                        # inherited (T5) FT/FF too. The re-solved core gems fill budget = 90 - re-solved
+                        # ft - ff; pairing them with the baseline's ft/ff lets the served gemCounts sum
+                        # past the 90-gem budget (an impossible build / false card -- the served score is
+                        # the legal re-solve, only the displayed FT/FF were stale). build_processing reads
+                        # details["FT"]/["FF"] for the served Fever Time/Fill gem counts.
+                        details_out["FT"] = int(base_witness.get("FT") or 0)
+                        details_out["FF"] = int(base_witness.get("FF") or 0)
+                        # Drop the stale compact aliases of the inherited Stats/GemCounts: unpack prefers
+                        # the long keys we just grafted, but _pack_stats_for_storage only regenerates
+                        # st/gc when ABSENT, so leaving the baseline arrays here would re-persist the wrong
+                        # allocation. One canonical at-tier representation per row.
+                        for _stale_alias in ("st", "gc", "gk"):
+                            details_out.pop(_stale_alias, None)
                 # Recompute the per-note timeline trace for the tier-shifted stats so the
                 # base note graph reflects this tier rather than the frozen baseline
                 # witnesses (issue #38, point 4 — base surface). Additive only: the row's

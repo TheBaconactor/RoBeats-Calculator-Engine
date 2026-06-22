@@ -170,6 +170,46 @@ def test_team_buff_replay_keeps_force_origin_when_base_duplicate_follows(monkeyp
                     ],
                 }
             },
+            # The graft fails loud unless every hashed (tier, loadout) carries its re-solved
+            # witness. Base witness (legal gems: FT + FF + PP + CM + FM + Element == 90).
+            "resolved_base_by_tier_hash": {
+                "T5": {
+                    "same-loadout": {
+                        "Stats": dict(stats),
+                        "GemCounts": {
+                            "Perfect Points": 40,
+                            "Combo Multiplier": 0,
+                            "Fever Multiplier": 0,
+                            "Element": 40,
+                        },
+                        "FT": 5,
+                        "FF": 5,
+                        "Score": 100,
+                        "Selected Element": "Rush",
+                    }
+                }
+            },
+            # The served FG force IS this re-solved witness: it must carry the FG origin
+            # (config + Score) the assertion checks survives the base-duplicate dedupe.
+            "resolved_fg_force_by_tier_hash": {
+                "T5": {
+                    "same-loadout": {
+                        "Score": 120,
+                        "BaseScore": 100,
+                        "Stats": dict(stats),
+                        "BaseStats": dict(stats),
+                        "GemCounts": {
+                            "Perfect Points": 40,
+                            "Combo Multiplier": 0,
+                            "Fever Multiplier": 0,
+                            "Element": 40,
+                        },
+                        "Selected Element": "Rush",
+                        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 120},
+                        "response_surface": [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+                    }
+                }
+            },
         }
 
     monkeypatch.setattr(
@@ -283,7 +323,7 @@ def test_authoritative_fg_canonicalization_replays_00_hard_force_payload_directl
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.helpers.song_helpers.persistence_authority import canonicalize_authoritative_fg_entries
 
-    calc_song = get_base_calc_song(r"Data\Hard\00 (Hard) by garlagan.txt", {})
+    calc_song = get_base_calc_song("Data/Hard/00 (Hard) by garlagan.txt", {})
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert ref_arrays
     _prebuild_timeline_frontier(calc_song, ref_arrays)
@@ -319,7 +359,7 @@ def test_db_equal_fg_upsert_preserves_source_00_hard_paired_base_score(tmp_path,
     stale = _stale_00_hard_fg_entry()
     save_loadouts_batch(song, [stale])
 
-    calc_song = get_base_calc_song(r"Data\Hard\00 (Hard) by garlagan.txt", {})
+    calc_song = get_base_calc_song("Data/Hard/00 (Hard) by garlagan.txt", {})
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert ref_arrays
     _prebuild_timeline_frontier(calc_song, ref_arrays)
