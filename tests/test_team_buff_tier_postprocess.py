@@ -251,10 +251,12 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
 
 
 def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_and_fg_rows(monkeypatch):
+    from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_buff_row_order", n_notes=12)
-    ref_arrays = _ref_arrays(11)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
@@ -346,6 +348,7 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
 
     calc_song = _mock_song(name="pytest_team_buff_hash_collision", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     shared_stats = {
@@ -786,6 +789,7 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
 
     calc_song = _mock_song(name="pytest_team_buff_fg_batch_ctx", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
@@ -1121,6 +1125,7 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
 
     calc_song = _mock_song(name="pytest_team_buff_strict_sanity", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
@@ -1268,6 +1273,7 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
 
     calc_song = _mock_song(name="pytest_team_buff_batch_order", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {

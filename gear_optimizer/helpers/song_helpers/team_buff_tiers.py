@@ -701,6 +701,24 @@ def compute_team_buff_tier_leaderboards(
                 config=(force_obj.get("ForceGreats", {}) or {}).get("config"),
             )
 
+        if timing_mode == "zero_ms" and secondary_color:
+            # Defensive (review #1/#2): team-buff meta loadouts are always primary-selected -- the
+            # native optimizer fixes the selected element to the song primary, which is why the 0ms
+            # re-solve forces selected_color=primary_color (one color for the whole batch). If a
+            # persisted loadout ever carries a different selected element on a multi-color song,
+            # forcing primary would silently diverge from native; fail loud instead of serving a
+            # wrong card. (Empty/absent -> skip; single-color -> skip; so this never false-fires.)
+            persisted_se = _norm_text(
+                get_selected_element(force_obj, "") if isinstance(force_obj, dict) else ""
+            ) or _norm_text(get_selected_element(details, ""))
+            if persisted_se and persisted_se != primary_color:
+                raise ValueError(
+                    f"zero_ms re-solve invariant violated: loadout {_norm_text(entry.get('loadout_hash'))!r} "
+                    f"persists selected element {persisted_se!r} != song primary {primary_color!r}; the "
+                    f"forced-primary re-solve would diverge from native. The re-solve must honor the "
+                    f"per-loadout selected element before this can serve."
+                )
+
         per_entry.append(
             {
                 "loadout_hash": _norm_text(entry.get("loadout_hash", "")),
@@ -1199,9 +1217,15 @@ def build_team_buff_tier_db_batches(
                     # RE-SOLVED (at-tier) witness so the served base card shows the 0ms-optimal gems
                     # + score (the meta leaderboard score already comes from the same re-solve). No
                     # tier delta -- the witness is already at-tier (fixed_stats + tier delta + gems).
-                    base_witness = zero_ms_base_by_tier_hash.get(str(tier), {}).get(
-                        _norm_text(orig.get("loadout_hash"))
-                    )
+                    h_base = _norm_text(orig.get("loadout_hash"))
+                    base_witness = zero_ms_base_by_tier_hash.get(str(tier), {}).get(h_base)
+                    # Fail loud (mirrors the FG witness path above): a hashed 0ms base row MUST have
+                    # its re-solved witness. Silently keeping the inherited Perfect-window
+                    # Stats/GemCounts under a 0ms score would serve a wrong (over/under-paid) card.
+                    if h_base and not isinstance(base_witness, dict):
+                        raise ValueError(
+                            f"zero_ms base re-solve missing witness for loadout {h_base!r} at tier {tier!r}."
+                        )
                     if isinstance(base_witness, dict):
                         w_stats = base_witness.get("Stats")
                         if isinstance(w_stats, dict) and w_stats:

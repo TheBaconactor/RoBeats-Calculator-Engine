@@ -48,7 +48,6 @@ from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
     resolve_zero_ms_base,
     resolve_zero_ms_fg_force,
 )
-from gear_optimizer.solver.fg_response_frontier_cache_prebuild import ensure_response_frontier_cache_for_calc_song
 from gear_optimizer.solver.scoring.exact_rescore import (
     score_force_greats_response_surface_exact,
     score_stats_exact_with_timeline_trace,
@@ -60,11 +59,6 @@ from gear_optimizer.solver.solver_common import (
     build_solver_override_cfg,
 )
 from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
-    prepare_force_greats_response_frontier_scoring_batch,
-    score_prepared_force_greats_response_frontier_batch_cpu_sync,
-    score_prepared_force_greats_response_frontier_batch_sync,
-)
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
 
@@ -357,33 +351,6 @@ def _exact_base_score(
     if str(timing_mode) == "zero_ms":
         return int(score_stats_fixed_timing_exact(stats, calc_song, ref_arrays))
     return int(score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays).get("score", 0) or 0)
-
-
-def _exact_fg_score(
-    *,
-    stats: dict[str, Any],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    selected_element: str,
-) -> int:
-    ensure_response_frontier_cache_for_calc_song(calc_song, ref_arrays)
-    batch = prepare_force_greats_response_frontier_scoring_batch(
-        base_stats_list=[dict(stats)],
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        selected_color=str(selected_element or ""),
-        total_budget=0,
-    )
-    results = score_prepared_force_greats_response_frontier_batch_cpu_sync(
-        batch,
-        include_forced_counts=False,
-    )
-    if len(results) != 1:
-        raise ValueError(f"Expected exactly one FG replay result, got {len(results)}")
-    surface_score = score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, results[0].surface)
-    if surface_score is None:
-        raise ValueError("FG exact response-surface replay failed")
-    return int(surface_score)
 
 
 def _solve_fg_exact(

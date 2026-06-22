@@ -217,12 +217,24 @@ def skyline_find_best_combo_warmstart_kernel(
                 )
                 if key != 0:
                     score = ti.cast((key >> 32), ti.i32) - 1
-                    if score > best_score:
+                    # Match the Vulkan packed-key atomic_max tie-break (key = (score+1)<<32 |
+                    # combo_idx): on equal score the HIGHEST combo_idx wins, so Mac (f32, serial
+                    # reduction) and AMD (f64, u64 atomic) select the same gem layout, not just the
+                    # same score.
+                    if score > best_score or (score == best_score and combo_idx > best_idx):
                         best_score = score
                         best_idx = combo_idx
             # Single owner thread per genome -> score and combo_idx stay paired. Accumulate the
             # max across combo chunks (sequential kernel invocations; no cross-thread contention).
-            if best_score >= 0 and best_score > kernels_helpers.chunk_best_score[genome_idx]:
+            # Same tie-break as the inner loop and the Vulkan path: on an equal-score cross-chunk tie
+            # keep the higher combo_idx (later chunks hold higher indices) so the winner matches AMD.
+            if best_score >= 0 and (
+                best_score > kernels_helpers.chunk_best_score[genome_idx]
+                or (
+                    best_score == kernels_helpers.chunk_best_score[genome_idx]
+                    and best_idx > kernels_helpers.chunk_best_idx[genome_idx]
+                )
+            ):
                 kernels_helpers.chunk_best_score[genome_idx] = best_score
                 kernels_helpers.chunk_best_idx[genome_idx] = best_idx
     else:
