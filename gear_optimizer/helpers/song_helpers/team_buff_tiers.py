@@ -288,6 +288,42 @@ def resolve_zero_ms_fg_force(
     return replays[0]["force"]
 
 
+def resolve_zero_ms_fg_force_batch(
+    *,
+    base_stats_fixed: dict,
+    genomes: list,
+    calc_song: dict,
+    ref_arrays: dict,
+    selected_color: str,
+) -> list:
+    """Batched lossless 0ms FG re-solve: all N loadouts of a (tier·color) in ONE call.
+
+    ``build_fixed_timing_fg_replays`` already packs its stat list into one GPU response-frontier
+    dispatch, so this re-solves a full leaderboard's FG in one shot instead of N sequential calls.
+    ``base_stats_fixed`` is the SHARED gem-less tier-adjusted song base; ``genomes`` is the list of N
+    loadout genomes (6 gear + 3 mini stat-dicts each). Returns N ``force`` payloads in order. Each
+    loadout's surface/gem search is independent, so the per-loadout result equals
+    ``resolve_zero_ms_fg_force`` (the gate's per-loadout path) -> served == native (delta=0)."""
+    from ...core.constants import TOTAL_GEM_BUDGET
+    from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_fg_replays
+
+    rows = list(genomes or [])
+    if not rows:
+        return []
+    gem_less_list = [_merge_fixed_stats_and_genome(base_stats_fixed, g) for g in rows]
+    replays = build_fixed_timing_fg_replays(
+        fg_stats_list=gem_less_list,
+        base_stats_list=gem_less_list,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_color=str(selected_color or ""),
+        total_budget=int(TOTAL_GEM_BUDGET),
+    )
+    if len(replays) != len(rows):
+        raise ValueError(f"batched zero_ms FG re-solve returned {len(replays)} != {len(rows)} replays")
+    return [r["force"] for r in replays]
+
+
 def _zero_ms_cfg_and_fixed_stats(cfg_dict: dict, calc_song: dict):
     """``(cfg, gem-less fixed_stats)`` for the 0ms re-solve, identical to the lossless-exact gate's
     input. Mirrors setup_song_config: ``cfg_from_dict`` + ``apply_baseline_team_buff_config`` ->
@@ -806,17 +842,19 @@ def compute_team_buff_tier_leaderboards(
                 target_fixed = _apply_stat_delta(zero_ms_fixed_stats, delta_map)
                 out_list = fg_scores_by_tier[str(tier)]
                 witness_for_tier = zero_ms_fg_force_by_tier_hash.setdefault(str(tier), {})
-                for idx in fg_indices:
-                    e = per_entry[idx]
-                    force = resolve_zero_ms_fg_force(
-                        base_stats_fixed=target_fixed,
-                        genome=_entry_genome(e.get("_entry") or {}),
-                        calc_song=calc_song,
-                        ref_arrays=ref_arrays,
-                        selected_color=primary_color,
-                    )
+                # Batched: all FG loadouts of this tier re-solve in ONE response-frontier dispatch
+                # (build_fixed_timing_fg_replays packs the stat list), so a full leaderboard's FG is
+                # one solve instead of N. Per-loadout result is identical (independent searches).
+                fg_forces = resolve_zero_ms_fg_force_batch(
+                    base_stats_fixed=target_fixed,
+                    genomes=[_entry_genome(per_entry[idx].get("_entry") or {}) for idx in fg_indices],
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    selected_color=primary_color,
+                )
+                for idx, force in zip(fg_indices, fg_forces, strict=True):
                     out_list[idx] = int(force.get("Score") or 0)
-                    h = _norm_text(e.get("loadout_hash"))
+                    h = _norm_text(per_entry[idx].get("loadout_hash"))
                     if h:
                         witness_for_tier[h] = force
         else:
