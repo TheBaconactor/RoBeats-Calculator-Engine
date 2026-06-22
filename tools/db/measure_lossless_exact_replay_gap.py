@@ -45,18 +45,8 @@ from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, ge
 from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
     build_team_buff_tier_db_batches,
-    resolve_zero_ms_base,
-    resolve_zero_ms_fg_force,
-)
-from gear_optimizer.solver.scoring.exact_rescore import (
-    score_force_greats_response_surface_exact,
-    score_stats_exact_with_timeline_trace,
-    score_stats_fixed_timing_exact,
-)
-from gear_optimizer.solver.solver_common import (
-    build_candidate_payload,
-    build_solver_cfg_data,
-    build_solver_override_cfg,
+    resolve_tier_base,
+    resolve_tier_fg_force,
 )
 from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
@@ -341,18 +331,6 @@ def _replay_score_for_mode(row: dict[str, Any], mode: str) -> int:
     return int(row.get("score", 0) or 0)
 
 
-def _exact_base_score(
-    *,
-    stats: dict[str, Any],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    timing_mode: str,
-) -> int:
-    if str(timing_mode) == "zero_ms":
-        return int(score_stats_fixed_timing_exact(stats, calc_song, ref_arrays))
-    return int(score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays).get("score", 0) or 0)
-
-
 def _solve_fg_exact(
     *,
     fixed_song_stats: dict[str, Any],
@@ -360,16 +338,18 @@ def _solve_fg_exact(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
     selected_element: str,
+    timing_mode: str,
 ) -> tuple[int, dict[str, int], dict[str, Any]]:
     # Single canonical recipe, shared with serving: song fixed stats + loadout item stats
-    # + budget=90 -> GPU FG search (fp-gated kernel) -> CPU-f64 exact rescore (force["Score"]).
-    # Using the SAME production helper here is what makes served == native (delta=0).
-    force = resolve_zero_ms_fg_force(
+    # + budget=90 -> GPU FG search (fp-gated kernel) -> CPU-f64 exact rescore (force["Score"]) at the
+    # mode's timing. Using the SAME production helper here is what makes served == native (delta=0).
+    force = resolve_tier_fg_force(
         fixed_song_stats=fixed_song_stats,
         loadout_items=loadout_items,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         selected_color=str(selected_element or ""),
+        timing_mode=str(timing_mode),
     )
     resolved_stats = dict(force.get("Stats") or {})
     resolved_score = int(force.get("Score") or 0)
@@ -430,12 +410,14 @@ def _compare_entry_mode(
             calc_song=clone_calc_song(active_calc_song),
             ref_arrays=ref_arrays,
             selected_element=selected_element,
+            timing_mode=timing_mode,
         )
-    elif str(timing_mode) == "zero_ms":
-        # Single canonical recipe, shared with serving: song fixed stats + loadout item stats
-        # + GPU base exhaustive search (MoltenVK-correct after the warmstart fix) + CPU-f64 0ms
-        # exact rescore. Using the SAME helper here is what makes served base == native (delta=0).
-        resolved, resolved_score = resolve_zero_ms_base(
+    else:
+        # Single canonical recipe shared with serving for BOTH timing modes: the GPU base exhaustive
+        # search (MoltenVK-correct after the warmstart fix) reads timing from calc_song; the final
+        # exact rescore follows timing_mode. Using the SAME production helper here is what makes
+        # served base == native (delta=0) for zero_ms AND perfect_window.
+        resolved, resolved_score = resolve_tier_base(
             cfg=cfg,
             fixed_song_stats=target_fixed_stats,
             loadout_items=loadout_items,
@@ -444,40 +426,11 @@ def _compare_entry_mode(
             primary_color=chart_primary,
             secondary_color=chart_secondary,
             selected_color=selected_element,
-        )
-        resolved_stats = dict(resolved.get("Stats") or {})
-        resolved_gem_counts = _normalize_gem_counts(resolved)
-    else:
-        cfg_data = build_solver_cfg_data(
-            cfg,
-            p_color=chart_primary,
-            s_color=chart_secondary,
-            selected_color=selected_element,
-        )
-        override_cfg = build_solver_override_cfg(
-            cfg_data,
-            p_color=chart_primary,
-            selected_color=selected_element,
-        )
-        override_cfg["use_gpu"] = bool(use_gpu_solver)
-        resolved = build_candidate_payload(
-            cfg=cfg,
-            base_stats_fixed=target_fixed_stats,
-            calc_song=clone_calc_song(active_calc_song),
-            ref_arrays=ref_arrays,
-            genome=loadout_items,
-            override_cfg=override_cfg,
-            gpu_client=None,
+            timing_mode=timing_mode,
         )
         resolved_stats = dict(resolved.get("Stats") or {})
         if not resolved_stats:
             raise ValueError(f"Re-solve returned no Stats for loadout {_entry_hash(entry)!r}")
-        resolved_score = _exact_base_score(
-            stats=resolved_stats,
-            calc_song=clone_calc_song(active_calc_song),
-            ref_arrays=ref_arrays,
-            timing_mode=timing_mode,
-        )
         resolved_gem_counts = _normalize_gem_counts(resolved)
 
     replay_score = _replay_score_for_mode(replay_row, mode)

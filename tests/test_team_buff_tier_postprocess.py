@@ -59,7 +59,115 @@ def _ref_arrays(rows: int) -> dict:
     }
 
 
-def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
+# A sentinel key that lets the synthetic re-solve recover the per-tier stat delta from the
+# tier-adjusted `fixed_song_stats` row the postprocess hands it (the delta is `fixed_song_stats`
+# minus this constant song-level base, which carries only the sentinel).
+_SENTINEL_SONG_BASE = "__synthetic_song_base__"
+
+# Mutable cell shared between the loadout-items hook and the cfg/fixed-stats hook within one
+# `_install_synthetic_tier_resolve` install (set by the cfg/fixed-stats hook on every install).
+_CURRENT_BASE_EFFECT: dict[str, dict] = {"effect": {}}
+
+
+def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, ref_arrays: dict) -> None:
+    """Replace the GPU per-(tier, color) re-solve helpers with deterministic CPU-exact synthetics.
+
+    The perfect_window (default) postprocess now RE-SOLVES gems per (tier, color) via the GPU
+    helpers ``resolve_tier_base_batch`` / ``resolve_tier_fg_force_batch`` and requires each loadout
+    to carry 6 gear + 3 mini stat-dicts. These tests exercise the postprocess LOGIC (tier
+    reordering, color modes, FG inclusion/score, identity/mini-repair, witness graft) on entries
+    that carry bare loadout NAMES, so we feed the re-solve controlled witnesses instead of running
+    the GPU gem search.
+
+    The synthetic re-solve is faithful to the model the tests assert under: for a loadout whose
+    persisted base stats are ``S`` (already carrying the baseline TeamBuff effect) and a tier whose
+    stat delta is ``D``, the re-solved base witness Stats are ``S + D`` and its retained-row score is
+    the CPU-f64 exact rescore ``score_stats_exact_batch([S + D])`` — i.e. the same quantity the
+    pre-re-solve postprocess keyed on, so reordering/score assertions stay meaningful. CPU exact
+    (``score_stats_exact_batch``) remains the scoring authority: it is the synthetic's final step,
+    exactly as the real re-solve's final step is ``score_stats_exact_batch``. FG witnesses score the
+    frozen response surface exactly at the tier-shifted FG stats, matching the persisted-surface
+    replay the FG-visibility tests assert.
+    """
+    import gear_optimizer.helpers.song_helpers.team_buff_tiers as tbt
+    from gear_optimizer.core.team_buff import team_buff_effect
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_batch
+
+    meta0 = calc_song.get("metadata", {}) or {}
+    primary_color = str(meta0.get("Primary Color", "") or "").strip()
+    secondary_color = str(meta0.get("Secondary Color", "") or "").strip()
+
+    real_force_payload_stats = tbt._force_payload_stats
+    real_ensure_base = tbt._ensure_stats_include_base_effect
+
+    # Captured by the loadout-items hook so the synthetic re-solve can recover the per-loadout
+    # base/FG stat rows (the real helper would demand 6 gear + 3 mini stat-dicts).
+    def _fake_entry_loadout_items(entry: dict) -> list[dict]:
+        e = entry or {}
+        details = e.get("details") if isinstance(e.get("details"), dict) else {}
+        stats_base = real_ensure_base(details.get("Stats") or {}, _CURRENT_BASE_EFFECT["effect"])
+        fg_obj = e.get("force")
+        if isinstance(fg_obj, dict):
+            fg_stats0 = real_force_payload_stats(fg_obj, stats_base)
+            fg_stats = real_ensure_base(fg_stats0, _CURRENT_BASE_EFFECT["effect"]) if isinstance(fg_stats0, dict) else stats_base
+        else:
+            fg_stats = stats_base
+        return [{"__base_stats__": dict(stats_base), "__fg_stats__": dict(fg_stats)}]
+
+    def _fake_tier_cfg_and_song_fixed_stats(cfg_dict, calc_song_arg):
+        # Capture the baseline TeamBuff effect (base buff + base color) so the loadout-items hook can
+        # mirror the postprocess's `_ensure_stats_include_base_effect` exactly.
+        base_team_buff = tbt._resolve_base_team_buff(cfg_dict)
+        base_team_color, _target = tbt._resolve_team_colors_for_tiering(cfg_dict, calc_song_arg)
+        _CURRENT_BASE_EFFECT["effect"] = team_buff_effect(base_team_buff, base_team_color)
+        # Non-empty song base carrying only the sentinel, so `_apply_stat_delta` keeps the per-tier
+        # delta keys intact and the synthetic re-solve can subtract the sentinel back out.
+        return None, {_SENTINEL_SONG_BASE: 0}
+
+    def _delta_from_fixed(fixed_song_stats: dict) -> dict:
+        return {k: int(v) for k, v in dict(fixed_song_stats or {}).items() if k != _SENTINEL_SONG_BASE}
+
+    def _fake_resolve_tier_base_batch(*, fixed_song_stats, loadouts, calc_song, ref_arrays, **_kw):
+        delta = _delta_from_fixed(fixed_song_stats)
+        resolved_stats_rows = [
+            tbt._apply_stat_delta(items[0]["__base_stats__"], delta) for items in loadouts
+        ]
+        scores = [int(s) for s in score_stats_exact_batch(resolved_stats_rows, calc_song, ref_arrays)]
+        return [
+            ({"Stats": dict(stats_row), "GemCounts": {"Perfect Points": 0}}, int(score))
+            for stats_row, score in zip(resolved_stats_rows, scores, strict=True)
+        ]
+
+    def _fake_resolve_tier_fg_force_batch(*, fixed_song_stats, loadouts, calc_song, ref_arrays, selected_color="", **_kw):
+        delta = _delta_from_fixed(fixed_song_stats)
+        forces: list[dict] = []
+        for items in loadouts:
+            fg_stats = tbt._apply_stat_delta(items[0]["__fg_stats__"], delta)
+            base_stats = tbt._apply_stat_delta(items[0]["__base_stats__"], delta)
+            fg_score = _expected_fg_surface_score(fg_stats, calc_song, ref_arrays)
+            base_score = int(score_stats_exact_batch([base_stats], calc_song, ref_arrays)[0])
+            forces.append(
+                {
+                    "Score": int(fg_score),
+                    "BaseScore": int(base_score),
+                    "Stats": dict(fg_stats),
+                    "BaseStats": dict(base_stats),
+                    "GemCounts": {"Perfect Points": 0},
+                    "SelectedElement": str(selected_color or primary_color or ""),
+                    "ForceGreats": {"config": {"NonFever1": 1}, "final_score": int(fg_score)},
+                    "response_surface": _fg_test_surface(),
+                    "forced_counts": {"NonFever1": 1},
+                }
+            )
+        return forces
+
+    monkeypatch.setattr(tbt, "_entry_loadout_items", _fake_entry_loadout_items)
+    monkeypatch.setattr(tbt, "_tier_cfg_and_song_fixed_stats", _fake_tier_cfg_and_song_fixed_stats)
+    monkeypatch.setattr(tbt, "resolve_tier_base_batch", _fake_resolve_tier_base_batch)
+    monkeypatch.setattr(tbt, "resolve_tier_fg_force_batch", _fake_resolve_tier_fg_force_batch)
+
+
+def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
@@ -117,6 +225,7 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry_a, entry_b], calc_song=calc_song, ref_arrays=ref_arrays, cfg_dict=cfg_dict
@@ -128,7 +237,7 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
     assert tiers["T20"]["base_top51"][0]["gear"] == entry_b["gear"]
 
 
-def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base():
+def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
@@ -179,6 +288,7 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base():
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
@@ -195,7 +305,7 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base():
     assert t1_score > t5_score
 
 
-def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_minis():
+def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_minis(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
@@ -228,6 +338,7 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
@@ -321,6 +432,27 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
                             "fg_base_score": 15,
                         },
                     ],
+                }
+            },
+            # The graft fails loud unless every hashed (tier, loadout) carries a re-solved witness;
+            # supply one per hash (real stat dict reused) so the row-order assertion can run.
+            "resolved_base_by_tier_hash": {
+                "T5": {
+                    h: {"Stats": dict(stats), "GemCounts": {"Perfect Points": 0}}
+                    for h in ("hash-b", "hash-a", "hash-c")
+                }
+            },
+            "resolved_fg_force_by_tier_hash": {
+                "T5": {
+                    "hash-c": {
+                        "Score": 40,
+                        "BaseScore": 15,
+                        "Stats": dict(stats),
+                        "BaseStats": dict(stats),
+                        "GemCounts": {"Perfect Points": 0},
+                        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 40},
+                        "response_surface": _fg_test_surface(),
+                    }
                 }
             },
         }
@@ -417,6 +549,31 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
                     ],
                 }
             },
+            # Base witnesses for every hashed row (graft fails loud otherwise); witness Stats/GemCounts
+            # override only those keys, so the entry's `details.Marker` is preserved (the property
+            # under test: details attach by loadout_hash).
+            "resolved_base_by_tier_hash": {
+                "T5": {
+                    "hash-a": {"Stats": dict(shared_stats), "GemCounts": {"Perfect Points": 0}},
+                    "hash-b": {"Stats": dict(shared_stats), "GemCounts": {"Perfect Points": 0}},
+                }
+            },
+            # FG witness only for the fg_top loadout (hash-b); the re-solved force IS the served
+            # force, so it carries the marker the assertion checks. hash-a has no FG witness, so its
+            # served force stays None (the base-only row).
+            "resolved_fg_force_by_tier_hash": {
+                "T5": {
+                    "hash-b": {
+                        "Score": 350,
+                        "BaseScore": 300,
+                        "Stats": dict(shared_stats),
+                        "BaseStats": dict(shared_stats),
+                        "GemCounts": {"Perfect Points": 0},
+                        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 350, "Marker": "force-b"},
+                        "response_surface": _fg_test_surface(),
+                    }
+                }
+            },
         }
 
     monkeypatch.setattr(
@@ -443,7 +600,7 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
     assert fg_row.get("force", {}).get("ForceGreats", {}).get("Marker") == "force-b"
 
 
-def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp():
+def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
@@ -484,6 +641,7 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
@@ -501,7 +659,7 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
         assert pp >= 0
 
 
-def test_team_buff_tiers_support_target_team_color_overrides():
+def test_team_buff_tiers_support_target_team_color_overrides(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
@@ -533,6 +691,7 @@ def test_team_buff_tiers_support_target_team_color_overrides():
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     primary_batches = build_team_buff_tier_db_batches(
         entries=[entry],
@@ -572,7 +731,7 @@ def test_team_buff_tiers_support_target_team_color_overrides():
     assert n_stats["Flow"] == 10
 
 
-def test_team_buff_tiers_apply_tier_deltas_to_fg_score():
+def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
@@ -607,6 +766,7 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score():
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
@@ -693,6 +853,7 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     expected_base = int(score_stats_exact(stats, calc_song, ref_arrays))
     expected_fg = _expected_fg_surface_score(stats, calc_song, ref_arrays)
@@ -758,6 +919,8 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
     for key in set(base_effect) | set(target_effect):
         tier_stats[key] = int(tier_stats.get(key, 0)) + int(target_effect.get(key, 0)) - int(base_effect.get(key, 0))
     _prebuild_timeline_frontier(calc_song, ref_arrays)
+
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     expected_base = int(score_stats_exact(tier_stats, calc_song, ref_arrays))
     expected_fg = _expected_fg_surface_score(tier_stats, calc_song, ref_arrays)
@@ -846,6 +1009,24 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
                     ],
                 }
             },
+            "resolved_base_by_tier_hash": {
+                "T5": {entry["loadout_hash"]: {"Stats": dict(stats), "GemCounts": {"Perfect Points": 0}}}
+            },
+            # The served FG force IS the re-solved witness; it carries the FG config the assertion
+            # checks is preserved through the graft.
+            "resolved_fg_force_by_tier_hash": {
+                "T5": {
+                    entry["loadout_hash"]: {
+                        "Score": 95,
+                        "BaseScore": 90,
+                        "Stats": dict(stats),
+                        "BaseStats": dict(stats),
+                        "GemCounts": {"Perfect Points": 0},
+                        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 95},
+                        "response_surface": _fg_test_surface(),
+                    }
+                }
+            },
         }
 
     monkeypatch.setattr(
@@ -918,6 +1099,26 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
                             "force_config": {"NonFever1": 1},
                         }
                     ],
+                }
+            },
+            # This entry carries empty details Stats; keep the base witness Stats empty too so the
+            # (Stats-driven) per-tier TimelineFrontier recompute stays skipped — this test pins
+            # source-FG metadata propagation, not the base note-graph, and runs without the timeline
+            # frontier prebuilt. An empty-but-present witness still satisfies the fail-loud graft.
+            "resolved_base_by_tier_hash": {
+                "T10": {entry["loadout_hash"]: {"Stats": {}, "GemCounts": {"Perfect Points": 0}}}
+            },
+            "resolved_fg_force_by_tier_hash": {
+                "T10": {
+                    entry["loadout_hash"]: {
+                        "Score": 120,
+                        "BaseScore": 110,
+                        "Stats": {},
+                        "BaseStats": {},
+                        "GemCounts": {"Perfect Points": 0},
+                        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 120},
+                        "response_surface": _fg_test_surface(),
+                    }
                 }
             },
         }
@@ -1041,7 +1242,7 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
                     ],
                 }
             },
-            "zero_ms_fg_force_by_tier_hash": {"T5": {entry["loadout_hash"]: witness_force}},
+            "resolved_fg_force_by_tier_hash": {"T5": {entry["loadout_hash"]: witness_force}},
         }
 
     monkeypatch.setattr(
@@ -1175,9 +1376,46 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
     entry_a = _entry("hash-a", "GA", "MA", score=100, fg_score=120, fg_base_score=90)
     entry_b = _entry("hash-b", "GB", "MB", score=101, fg_score=0, fg_base_score=0)
 
+    # The re-solved base/FG witnesses are already at-tier (T20, target color Flow); their Stats are
+    # the tier-shifted persisted Stats. Build them the same way the postprocess would, so the served
+    # base details (witness Stats override) and FG force carry exactly the at-tier stats the
+    # assertions check.
+    _base_eff = team_buff_effect("T5", "Rush")
+    _target_eff = team_buff_effect("T20", "Flow")
+    _shift = {
+        "Perfect Points": int(_target_eff.get("Perfect Points", 0) - _base_eff.get("Perfect Points", 0)),
+        "Rush": int(_target_eff.get("Rush", 0) - _base_eff.get("Rush", 0)),
+        "Flow": int(_target_eff.get("Flow", 0) - _base_eff.get("Flow", 0)),
+    }
+    shifted_stats = dict(stats)
+    for _k, _d in _shift.items():
+        shifted_stats[_k] = int(shifted_stats.get(_k, 0)) + _d
+
     def _fake_compute_team_buff_tier_leaderboards(**kwargs):
         return {
             "meta": {"base_team_buff": "T5", "team_color": "Flow", "primary_color": "Rush", "secondary_color": "Flow"},
+            "resolved_base_by_tier_hash": {
+                "T20": {
+                    entry_a["loadout_hash"]: {"Stats": dict(shifted_stats), "GemCounts": {"Perfect Points": 0}},
+                    entry_b["loadout_hash"]: {"Stats": dict(shifted_stats), "GemCounts": {"Perfect Points": 0}},
+                }
+            },
+            # FG witness only for the fg_top loadout (hash-a). The served FG force IS this witness:
+            # at-tier Score/BaseStats and the FG config, all checked by the assertions.
+            "resolved_fg_force_by_tier_hash": {
+                "T20": {
+                    entry_a["loadout_hash"]: {
+                        "Score": 350,
+                        "BaseScore": 320,
+                        "Stats": dict(shifted_stats),
+                        "BaseStats": dict(shifted_stats),
+                        "GemCounts": {"Perfect Points": 0},
+                        "SelectedElement": "Rush",
+                        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 350},
+                        "response_surface": _fg_test_surface(),
+                    }
+                }
+            },
             "tiers": {
                 "T20": {
                     "base_top51": [
@@ -1342,6 +1580,25 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
                     ],
                 }
             },
+            "resolved_base_by_tier_hash": {
+                "T10": {
+                    h: {"Stats": dict(stats), "GemCounts": {"Perfect Points": 0}}
+                    for h in ("hash-b", "hash-a", "hash-c")
+                }
+            },
+            "resolved_fg_force_by_tier_hash": {
+                "T10": {
+                    "hash-c": {
+                        "Score": 260,
+                        "BaseScore": 190,
+                        "Stats": dict(stats),
+                        "BaseStats": dict(stats),
+                        "GemCounts": {"Perfect Points": 0},
+                        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 260},
+                        "response_surface": _fg_test_surface(),
+                    }
+                }
+            },
         }
 
     monkeypatch.setattr(
@@ -1365,10 +1622,18 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
     assert int(rows[2].get("fg_base_score") or 0) == 190
 
 
-def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore():
+def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypatch):
     """
     Regression test: GPU f32 fixed scoring can diverge at floor boundaries.
-    Tier postprocess now uses CPU exact replay as the retained-row authority.
+    Tier postprocess uses CPU exact replay as the retained-row authority.
+
+    The per-(tier, color) base re-solve's final, user-visible scoring step is the CPU-f64 exact
+    rescore (``score_stats_exact_batch``); the GPU gem search only proposes the allocation. We pin
+    that authority here by stubbing the GPU re-solve with a synthetic whose final scoring step is
+    the SAME ``score_stats_exact_batch`` over the re-solved Stats, and asserting the score the
+    postprocess surfaces equals an independent CPU ``score_stats_exact`` of those Stats. (At T5/Vibe
+    the tier delta is zero, so the re-solved Stats equal the persisted Stats and the retained score
+    must equal the CPU-exact replay of the persisted Stats — the floor-boundary divergence guard.)
     """
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
@@ -1425,6 +1690,7 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore():
 
     apply_timing_envelope(calc_song)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
     exact = int(score_stats_exact(stats, calc_song, ref_arrays))
 
     entry = {

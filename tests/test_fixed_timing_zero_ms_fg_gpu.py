@@ -212,10 +212,10 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     from gear_optimizer.core.utils import cfg_from_dict
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
         build_team_buff_tier_db_batches,
-        resolve_zero_ms_base,
-        resolve_zero_ms_base_batch,
-        resolve_zero_ms_fg_force,
-        resolve_zero_ms_fg_force_batch,
+        resolve_tier_base,
+        resolve_tier_base_batch,
+        resolve_tier_fg_force,
+        resolve_tier_fg_force_batch,
     )
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_fixed_timing_exact
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
@@ -281,7 +281,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     ]
 
     base_singles = [
-        resolve_zero_ms_base(
+        resolve_tier_base(
             cfg=cfg,
             fixed_song_stats=fixed_song_stats,
             loadout_items=loadout,
@@ -293,7 +293,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         )
         for loadout in loadouts
     ]
-    base_batch = resolve_zero_ms_base_batch(
+    base_batch = resolve_tier_base_batch(
         cfg=cfg,
         fixed_song_stats=fixed_song_stats,
         loadouts=loadouts,
@@ -312,7 +312,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         assert batch_payload["FF"] == single_payload["FF"]
 
     fg_singles = [
-        resolve_zero_ms_fg_force(
+        resolve_tier_fg_force(
             fixed_song_stats=fixed_song_stats,
             loadout_items=loadout,
             calc_song=dict(calc_song),
@@ -321,7 +321,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         )
         for loadout in loadouts
     ]
-    fg_batch = resolve_zero_ms_fg_force_batch(
+    fg_batch = resolve_tier_fg_force_batch(
         fixed_song_stats=fixed_song_stats,
         loadouts=loadouts,
         calc_song=dict(calc_song),
