@@ -23,7 +23,12 @@ MAX_GENOMES = 4608  # Active-population genome pool. Sized to fit a full GA batc
 MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native GA representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
-MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
+MAX_SONG_NOTES = 32768  # Max chart length for GPU timeline computation. Real-world max is ~7027
+# notes (M1LLI0N PP (Full Version) [EXTENDED CUT]); 32768 is 4.6x that (~110 min of continuous
+# notes -- beyond any conceivable chart). Sized down from 200000 (28x over) to reclaim ~102 MB on
+# the dominant field fever_end_idx_song = (MAX_SONG_NOTES, GRID_SIZE) i32 (was 122.8 MB, now 21 MB)
+# plus the ~7 per-note (MAX_SONG_NOTES,) arrays. A chart exceeding this fails loud at
+# timeline.py (`Song has N notes, max is ...`), never silent truncation -- bump it if ever hit.
 MAX_EVALS_PER_DISPATCH = 8_388_608  # Upper bound used for chunking (genomes * FT/FF combos)
 def _clamp_song_slots(n: int) -> int:
     if n < 2:
