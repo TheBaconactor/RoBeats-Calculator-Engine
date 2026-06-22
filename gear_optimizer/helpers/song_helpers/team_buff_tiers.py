@@ -227,6 +227,31 @@ def _apply_stat_delta(stats: dict, delta: dict[str, int]) -> dict:
     return out
 
 
+def _tier_delta_signature(delta_map: dict[str, int]) -> tuple[tuple[str, int], ...]:
+    """Canonical, order-independent signature of a baseline->tier stat delta.
+
+    PROVABLY-SAFE SKIP (Task 4b, zero_ms Lossless-Exact Replay). The per-(loadout, tier) zero_ms
+    re-solve (both the base/meta and FG branches below) is a DETERMINISTIC pure function whose ONLY
+    tier/color-varying input is ``target_fixed = apply_stat_delta(fixed_stats, tier_delta_map)`` --
+    every other input (the loadout genome, the chart-fixed ``calc_song``, ``ref_arrays``, the
+    per-loadout ``selected_color``/``cfg``) is tier- and color-invariant, and the exact CPU search
+    engines contain no RNG. Therefore two configs whose ``tier_delta_map`` is byte-equal feed a
+    byte-identical ``target_fixed`` and so produce a BYTE-IDENTICAL re-solve (score + gems + stats +
+    witness). This signature is that equivalence key: drop zero-valued entries (``apply_stat_delta``
+    ignores them, so they cannot change ``target_fixed``) and sort, so any two delta maps that yield
+    the same ``target_fixed`` map to the same key.
+
+    Consequences (all SOUND, never a false skip -- the inputs are proven bit-identical, not merely
+    "close"):
+    - The IDENTITY config (default tier + no color override) and any other zero-effect (tier, color)
+      collapse to the empty key ``()`` -- one re-solve shared by all of them (its ``target_fixed`` is
+      ``fixed_stats`` verbatim, i.e. the stored baseline gem-less stats shifted by nothing).
+    - Distinct tiers/colors that coincidentally share a delta map solve ONCE and reuse the result.
+    Conservative by construction: a different ``target_fixed`` always gets a fresh full re-solve.
+    """
+    return tuple(sorted((str(k), int(v)) for k, v in dict(delta_map or {}).items() if int(v or 0) != 0))
+
+
 def _ensure_stats_include_base_effect(stats: dict, base_effect: dict[str, int]) -> dict:
     if not isinstance(stats, dict) or not stats or not isinstance(base_effect, dict) or not base_effect:
         return stats if isinstance(stats, dict) else {}
@@ -591,10 +616,37 @@ def compute_team_buff_tier_leaderboards(
         )
         from .fg_exact_resolve import apply_stat_delta as _apply_fixed_stat_delta, entry_genome
 
+        # PROVABLY-SAFE SKIP (Task 4b): the base re-solve depends on the tier ONLY through
+        # ``target_fixed`` (see _tier_delta_signature), so re-solve ONCE per distinct delta signature
+        # and reuse the result (scores + witness) for every tier that shares it. Identity/zero-effect
+        # tiers collapse to the empty signature -> a single re-solve. Sound: equal signature => equal
+        # ``target_fixed`` => bit-identical inputs => bit-identical output (no RNG in the engine).
+        resolved_by_sig: dict[tuple[tuple[str, int], ...], tuple[list[int], list[dict]]] = {}
         for tier in tier_list:
             tier_delta_map = zero_ms_tier_delta_map[str(tier)]
+            sig = _tier_delta_signature(tier_delta_map)
+            cached = resolved_by_sig.get(sig)
+            if cached is not None:
+                # Bit-identical to a re-solve of this tier (proven). Reuse scores; re-key the witness
+                # payloads under THIS tier's (tier, loadout_hash) so the DB-batch graft finds them.
+                cached_scores, cached_payloads = cached
+                out_scores = list(cached_scores)
+                for idx, e in enumerate(per_entry):
+                    loadout_hash = _norm_text(e.get("loadout_hash"))
+                    payload = cached_payloads[idx]
+                    if not loadout_hash:
+                        raise ValueError(
+                            "zero_ms base re-solve produced an un-keyable leaderboard entry "
+                            f"(empty loadout_hash) for song {_norm_text(meta0.get('Song Name'))!r} "
+                            f"[{_norm_text(meta0.get('Difficulty'))}] at per_entry index {idx} "
+                            f"(tier {tier!r})."
+                        )
+                    zero_ms_base_by_hash[(str(tier), loadout_hash)] = payload
+                meta_scores_by_tier[str(tier)] = out_scores
+                continue
             target_fixed = _apply_fixed_stat_delta(zero_ms_fixed_stats, tier_delta_map)
             out_scores: list[int] = [0] * len(per_entry)
+            sig_payloads: list[dict] = [None] * len(per_entry)  # per-loadout witness for reuse
             for idx, e in enumerate(per_entry):
                 # per_entry is FILTERED (entries may be skipped); index its stored original entry,
                 # NOT entries[idx], which would be the wrong loadout when any entry was skipped.
@@ -650,7 +702,11 @@ def compute_team_buff_tier_leaderboards(
                     )
                 resolved["Score"] = exact_score
                 zero_ms_base_by_hash[(str(tier), loadout_hash)] = resolved
+                sig_payloads[idx] = resolved
             meta_scores_by_tier[str(tier)] = out_scores
+            # Cache this signature's full re-solve (scores + per-loadout witness) so any later tier
+            # with the same delta signature reuses it bit-for-bit instead of re-solving.
+            resolved_by_sig[sig] = (out_scores, sig_payloads)
     elif replay_meta and per_entry:
         for tier in tier_list:
             dpp, dp, ds = tier_deltas[str(tier)]
@@ -691,16 +747,27 @@ def compute_team_buff_tier_leaderboards(
             # per_entry is filtered (some entries skipped) -> index its stored original entry, NOT
             # `entries[idx]`, which would be the wrong loadout when any entry was skipped.
             fg_entries = [per_entry[idx]["_entry"] for idx in fg_indices]
+            # PROVABLY-SAFE SKIP (Task 4b): the FG re-solve depends on the tier ONLY through
+            # ``tier_delta`` (resolve_fg_force_for_loadouts applies it to the gem-less fixed_stats and
+            # takes no other tier/color input; the CPU search has no RNG). So re-solve ONCE per
+            # distinct delta signature and reuse the resulting forces for every tier sharing it.
+            # Identity/zero-effect tiers collapse to the empty signature -> a single re-solve. Sound:
+            # equal signature => equal target_fixed => bit-identical forces (score + gems + witness).
+            fg_forces_by_sig: dict[tuple[tuple[str, int], ...], list[dict]] = {}
             for tier in tier_list:
                 tier_delta_map = zero_ms_tier_delta_map[str(tier)]
-                forces = resolve_fg_force_for_loadouts(
-                    entries=fg_entries,
-                    fixed_stats=zero_ms_fixed_stats,
-                    tier_delta=tier_delta_map,
-                    calc_song=calc_song,
-                    ref_arrays=ref_arrays,
-                    selected_color=primary_color,
-                )
+                sig = _tier_delta_signature(tier_delta_map)
+                forces = fg_forces_by_sig.get(sig)
+                if forces is None:
+                    forces = resolve_fg_force_for_loadouts(
+                        entries=fg_entries,
+                        fixed_stats=zero_ms_fixed_stats,
+                        tier_delta=tier_delta_map,
+                        calc_song=calc_song,
+                        ref_arrays=ref_arrays,
+                        selected_color=primary_color,
+                    )
+                    fg_forces_by_sig[sig] = forces
                 out_list = fg_scores_by_tier[str(tier)]
                 for idx, force in zip(fg_indices, forces, strict=True):
                     out_list[idx] = int(force["Score"])
