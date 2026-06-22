@@ -1,6 +1,42 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
+
+
+class _PassthroughNdarray:
+    """CPU stand-in for the slice of ``ti.ndarray`` the FG host path touches (shape +
+    ``from_numpy`` + element/slice/``np.asarray`` access). The score path now uploads the
+    surface pool to a device ndarray once and reuses it across chunks; these host-routing
+    unit tests mock the kernels and have no initialized Vulkan runtime, so the upload is
+    stubbed to keep the real routing code exercised on CPU with plain numpy buffers."""
+
+    def __init__(self) -> None:
+        self._a: np.ndarray | None = None
+
+    def from_numpy(self, a) -> None:
+        self._a = np.asarray(a)
+
+    def to_numpy(self):
+        return self._a
+
+    @property
+    def shape(self):
+        return self._a.shape
+
+    def __getitem__(self, key):
+        return self._a[key]
+
+    def __array__(self, dtype=None):
+        return np.asarray(self._a, dtype=dtype)
+
+
+@pytest.fixture(autouse=True)
+def _stub_device_pool_upload(monkeypatch):
+    """Make the once-per-call device pool upload a CPU pass-through for this module."""
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
+
+    monkeypatch.setattr(response_inner.ti, "ndarray", lambda dtype, shape: _PassthroughNdarray())
 
 
 def test_response_surface_head_coeffs_match_bruteforce():
