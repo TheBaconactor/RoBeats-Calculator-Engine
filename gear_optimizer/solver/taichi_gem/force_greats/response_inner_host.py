@@ -18,7 +18,11 @@ from gear_optimizer.helpers.song_helpers.ref_array_builder import resolve_exact_
 from gear_optimizer.solver.taichi_gem import api as gem_api
 from gear_optimizer.solver.scoring.fg_policy import is_single_color_song
 
-from .response_inner_kernels import _fg_response_inner_batch_kernel, _fg_response_inner_group_kernel
+from .response_inner_kernels import (
+    SOLVER_NP_FP,
+    _fg_response_inner_batch_kernel,
+    _fg_response_inner_group_kernel,
+)
 from .response_types import FgResponseInnerResult, FgResponseSurface
 
 _FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK = 1_000_000_000
@@ -414,9 +418,9 @@ def _score_response_group_meta_gpu(
     gem_api.ensure_ready()
     flags = np.ascontiguousarray(np.asarray(_color_flags(primary_color, secondary_color, selected_color), dtype=np.int32))
     exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
-    ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=np.float64))
-    ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=np.float64))
-    ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=np.float64))
+    ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=SOLVER_NP_FP))
+    ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=SOLVER_NP_FP))
+    ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=SOLVER_NP_FP))
     surface_words_all = np.ascontiguousarray(surface_words, dtype=np.uint32)
     surface_counts_all = np.ascontiguousarray(surface_counts, dtype=np.int32)
     group_meta_all = np.ascontiguousarray(group_meta, dtype=np.int32)
@@ -717,9 +721,9 @@ def _optimize_response_surfaces_gpu(
     allow_pp = bool(int(flags_tuple[0]) != 0 or int(flags_tuple[1]) != 0)
     flags = np.ascontiguousarray(np.asarray(flags_tuple, dtype=np.int32))
     exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
-    ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=np.float64))
-    ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=np.float64))
-    ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=np.float64))
+    ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=SOLVER_NP_FP))
+    ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=SOLVER_NP_FP))
+    ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=SOLVER_NP_FP))
     out_rows = np.zeros((len(groups), 11), dtype=np.int32)
     _fg_response_inner_group_kernel(
         int(len(groups)),
@@ -934,6 +938,8 @@ def _score_response_group_meta_cpu(
     flags = _color_flags(primary_color, secondary_color, selected_color)
     is_single_color = int(flags[8])
     exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
+    # CPU exact-rescore path stays float64 (the numba scorer is the f64 authority), independent
+    # of the GPU search fp.
     ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=np.float64))
     ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=np.float64))
     ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=np.float64))
