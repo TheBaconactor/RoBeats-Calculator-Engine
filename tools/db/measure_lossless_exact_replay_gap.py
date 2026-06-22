@@ -359,7 +359,13 @@ def _replay_score_for_mode(row: dict[str, Any], mode: str) -> int:
     return int(row.get("score", 0) or 0)
 
 
-def _exact_base_score(*, stats: dict[str, Any], calc_song: dict[str, Any], ref_arrays: dict[str, Any], timing_mode: str) -> int:
+def _exact_base_score(
+    *,
+    stats: dict[str, Any],
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    timing_mode: str,
+) -> int:
     if str(timing_mode) == "zero_ms":
         return int(score_stats_fixed_timing_exact(stats, calc_song, ref_arrays))
     return int(score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays).get("score", 0) or 0)
@@ -589,7 +595,7 @@ def main() -> int:
         "--mode",
         choices=("meta", "fg", "both"),
         default="meta",
-        help="Current exact evidence path supports meta only. FG stays blocked on the macOS exact solver work.",
+        help="Replay surface to compare against the exact zero_ms re-solve.",
     )
     parser.add_argument("--team-buff-color", type=str, default="")
     parser.add_argument("--primary-element", type=str, default="")

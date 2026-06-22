@@ -56,6 +56,13 @@ def _fg_stats() -> dict:
     }
 
 
+def _genome(name: str, **stats: int) -> list[dict]:
+    gear = [{"Name": f"{name}-G1", **stats}]
+    gear.extend({"Name": f"{name}-G{i}"} for i in range(2, 7))
+    minis = [{"Name": f"{name}-M{i}"} for i in range(1, 4)]
+    return gear + minis
+
+
 def test_fixed_timing_fg_surface_matches_bruteforce_and_beats_base(tmp_path, monkeypatch):
     """The re-optimized 0ms surface == brute-force forced-counts optimum, and exceeds base 0ms."""
     from gear_optimizer.solver.scoring.exact_rescore import (
@@ -199,3 +206,169 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         assert int(tier["base_top51"][0]["score"]) > 0
         assert tier["fg_top51"], f"no FG leaderboard for {tier_name}"
         assert int(tier["fg_top51"][0]["fg_score"]) > 0
+
+
+def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch):
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.core.utils import cfg_from_dict
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
+        build_team_buff_tier_db_batches,
+        resolve_zero_ms_base,
+        resolve_zero_ms_base_batch,
+        resolve_zero_ms_fg_force,
+        resolve_zero_ms_fg_force_batch,
+    )
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_fixed_timing_exact
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
+    _reset_fg_cache()
+
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
+    calc_song = {
+        "metadata": {
+            "Song Name": "pytest_zero_ms_batch_parity",
+            "Difficulty": "Hard",
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]),
+        },
+        "song_data": {"timestamps": timestamps},
+    }
+    apply_timing_envelope(calc_song, mode="zero_ms")
+    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+
+    cfg = cfg_from_dict({"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}})
+    base_stats_fixed = {
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Time": 0,
+        "Fever Fill Rate": 0,
+        "Rush": 0,
+        "Flow": 0,
+        "Chill": 0,
+        "Beat": 0,
+        "Vibe": 0,
+    }
+    genomes = [
+        _genome(
+            "A",
+            **{
+                "Perfect Points": 120,
+                "Combo Multiplier": 80,
+                "Fever Multiplier": 60,
+                "Fever Time": 80,
+                "Fever Fill Rate": 100,
+                "Rush": 200,
+                "Flow": 150,
+            },
+        ),
+        _genome(
+            "B",
+            **{
+                "Perfect Points": 100,
+                "Combo Multiplier": 95,
+                "Fever Multiplier": 50,
+                "Fever Time": 90,
+                "Fever Fill Rate": 75,
+                "Rush": 180,
+                "Flow": 170,
+            },
+        ),
+    ]
+
+    base_singles = [
+        resolve_zero_ms_base(
+            cfg=cfg,
+            base_stats_fixed=base_stats_fixed,
+            genome=genome,
+            calc_song=dict(calc_song),
+            ref_arrays=ref_arrays,
+            primary_color="Rush",
+            secondary_color="Flow",
+            selected_color="Rush",
+        )
+        for genome in genomes
+    ]
+    base_batch = resolve_zero_ms_base_batch(
+        cfg=cfg,
+        base_stats_fixed=base_stats_fixed,
+        genomes=genomes,
+        calc_song=dict(calc_song),
+        ref_arrays=ref_arrays,
+        primary_color="Rush",
+        secondary_color="Flow",
+        selected_color="Rush",
+    )
+
+    assert [score for _payload, score in base_batch] == [score for _payload, score in base_singles]
+    for (single_payload, _single_score), (batch_payload, _batch_score) in zip(base_singles, base_batch, strict=True):
+        assert batch_payload["GemCounts"] == single_payload["GemCounts"]
+        assert batch_payload["Stats"] == single_payload["Stats"]
+        assert batch_payload["FT"] == single_payload["FT"]
+        assert batch_payload["FF"] == single_payload["FF"]
+
+    fg_singles = [
+        resolve_zero_ms_fg_force(
+            base_stats_fixed=base_stats_fixed,
+            genome=genome,
+            calc_song=dict(calc_song),
+            ref_arrays=ref_arrays,
+            selected_color="Rush",
+        )
+        for genome in genomes
+    ]
+    fg_batch = resolve_zero_ms_fg_force_batch(
+        base_stats_fixed=base_stats_fixed,
+        genomes=genomes,
+        calc_song=dict(calc_song),
+        ref_arrays=ref_arrays,
+        selected_color="Rush",
+    )
+
+    assert [force["Score"] for force in fg_batch] == [force["Score"] for force in fg_singles]
+    for single_force, batch_force in zip(fg_singles, fg_batch, strict=True):
+        assert batch_force["GemCounts"] == single_force["GemCounts"]
+        assert batch_force["Stats"] == single_force["Stats"]
+        assert batch_force["BaseStats"] == single_force["BaseStats"]
+        assert batch_force["BaseStats"] == batch_force["Stats"]
+        assert batch_force["BaseScore"] == score_stats_fixed_timing_exact(
+            batch_force["BaseStats"],
+            calc_song,
+            ref_arrays,
+        )
+        assert batch_force["ForceGreats"]["config"] == single_force["ForceGreats"]["config"]
+        assert isinstance(batch_force["ForceGreats"].get("frontier_trace"), list)
+        assert batch_force["ForceGreats"]["frontier_trace"] == single_force["ForceGreats"]["frontier_trace"]
+
+    entry = {
+        "loadout_hash": "pytest-zero-ms-fg-witness",
+        "score": 1,
+        "fg_score": 1,
+        "gear": genomes[0][:6],
+        "minis": genomes[0][6:],
+        "details": {"Stats": dict(fg_singles[0]["Stats"])},
+        "force": dict(fg_singles[0]),
+    }
+    batches = build_team_buff_tier_db_batches(
+        entries=[entry],
+        calc_song=dict(calc_song),
+        ref_arrays=ref_arrays,
+        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}},
+        limit=1,
+        tiers=("T5",),
+        replay_surface="fg",
+        timing_mode="zero_ms",
+    )
+    fg_row = batches["T5"][0]
+    assert fg_row["fg_base_score"] == fg_row["force"]["BaseScore"]
+    assert fg_row["force"]["BaseStats"] == fg_row["force"]["Stats"]
+    assert fg_row["fg_base_score"] == score_stats_fixed_timing_exact(
+        fg_row["force"]["BaseStats"],
+        calc_song,
+        ref_arrays,
+    )

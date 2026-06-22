@@ -153,14 +153,14 @@ def build_fixed_timing_fg_replays(
     # (total_budget>0) the gems change, so the paired base is the non-FG score at the RE-SOLVED
     # gems (result.stats), not the gem-less search input.
     if int(total_budget) > 0:
-        paired_base_scores = score_stats_fixed_timing_exact_batch(
-            [dict(getattr(result, "stats", None) or {}) for result in results], cs, refs
-        )
+        paired_base_rows = [dict(getattr(result, "stats", None) or {}) for result in results]
+        paired_base_scores = score_stats_fixed_timing_exact_batch(paired_base_rows, cs, refs)
     else:
+        paired_base_rows = base_rows
         paired_base_scores = score_stats_fixed_timing_exact_batch(base_rows, cs, refs)
 
     replays: list[dict[str, Any]] = []
-    for result, base_stats, paired_base in zip(results, base_rows, paired_base_scores, strict=True):
+    for result, base_stats, paired_base in zip(results, paired_base_rows, paired_base_scores, strict=True):
         force = materialize_force_payload_from_response_frontier(
             eval_data={},
             base_stats=dict(base_stats),

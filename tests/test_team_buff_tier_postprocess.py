@@ -17,7 +17,9 @@ def _expected_fg_surface_score(stats: dict, calc_song: dict, ref_arrays: dict) -
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
-    return int(score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, FgResponseSurface(*_FG_TEST_SURFACE)))
+    return int(
+        score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, FgResponseSurface(*_FG_TEST_SURFACE))
+    )
 
 
 # GPU exact-replay tests need the timeline frontier prebuilt (same as production startup).
@@ -978,18 +980,22 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
     }
     witness_force = {
         "Score": 123,
-        "BaseStats": {"Perfect Points": 0},
+        "BaseScore": 110,
+        "BaseStats": {"Perfect Points": 111},
+        "Stats": {"Perfect Points": 111},
         "GemCounts": {
             "Perfect Points": 0,
             "Combo Multiplier": 0,
             "Fever Multiplier": 0,
             "Element": 0,
         },
+        "SelectedElement": "Rush",
         "ForceGreats": {
             "config": {"NonFever1": 7},
             "frontier_trace": {"source": "zero-ms"},
             "non_fever_base": 22,
             "frontier_first_surfaces": [{"source": "zero-ms"}],
+            "final_score": 123,
         },
         "response_surface": [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0],
         "forced_counts": {"NonFever1": 7},
@@ -1031,7 +1037,7 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
                     ],
                 }
             },
-            "zero_ms_fg_force_by_hash": {entry["loadout_hash"]: witness_force},
+            "zero_ms_fg_force_by_tier_hash": {"T5": {entry["loadout_hash"]: witness_force}},
         }
 
     monkeypatch.setattr(
@@ -1055,9 +1061,11 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
     assert row["gear"] == entry["gear"]
     assert row["minis"] == entry["minis"]
     assert int(row["fg_score"]) == 123
-    assert force["GemCounts"] == persisted_force["GemCounts"]
-    assert force["GemCounts"] != witness_force["GemCounts"]
-    assert force["SelectedElement"] == persisted_force["SelectedElement"]
+    assert int(row["fg_base_score"]) == witness_force["BaseScore"]
+    assert force["GemCounts"] == witness_force["GemCounts"]
+    assert force["GemCounts"] != persisted_force["GemCounts"]
+    assert force["BaseStats"] == witness_force["BaseStats"]
+    assert force["SelectedElement"] == witness_force["SelectedElement"]
     assert force["ForceGreats"]["config"] == witness_force["ForceGreats"]["config"]
     assert force["ForceGreats"]["frontier_trace"] == witness_force["ForceGreats"]["frontier_trace"]
     assert force["ForceGreats"]["non_fever_base"] == witness_force["ForceGreats"]["non_fever_base"]
@@ -1128,7 +1136,15 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
         "Chill": 0,
     }
 
-    def _entry(loadout_hash: str, gear_name: str, mini_name: str, *, score: int, fg_score: int, fg_base_score: int) -> dict:
+    def _entry(
+        loadout_hash: str,
+        gear_name: str,
+        mini_name: str,
+        *,
+        score: int,
+        fg_score: int,
+        fg_base_score: int,
+    ) -> dict:
         return {
             "loadout_hash": loadout_hash,
             "score": score,

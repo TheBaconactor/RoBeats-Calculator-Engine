@@ -912,19 +912,24 @@ def compute_team_buff_tier_leaderboards(
                 )
 
             if replay_fg and isinstance(fg, dict) and int(fg_score) > 0:
-                fg_ranked.append(
-                    {
-                        "loadout_hash": e.get("loadout_hash") or "",
-                        "gear": e.get("gear") or [],
-                        "minis": e.get("minis") or [],
-                        "fg_score": int(fg_score),
-                        "source_score": int(e.get("source_score") or 0),
-                        "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
-                        "source_fg_score": int(e.get("source_fg_score") or 0),
-                        "force_config": fg.get("config"),
-                        "_replay_fg": fg,
-                    }
-                )
+                fg_row = {
+                    "loadout_hash": e.get("loadout_hash") or "",
+                    "gear": e.get("gear") or [],
+                    "minis": e.get("minis") or [],
+                    "fg_score": int(fg_score),
+                    "source_score": int(e.get("source_score") or 0),
+                    "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
+                    "source_fg_score": int(e.get("source_fg_score") or 0),
+                    "force_config": fg.get("config"),
+                }
+                if timing_mode == "zero_ms":
+                    witness = zero_ms_fg_force_by_tier_hash.get(str(tier), {}).get(_norm_text(e.get("loadout_hash")))
+                    if not isinstance(witness, dict):
+                        raise ValueError(f"zero_ms FG re-solve missing witness for loadout {e.get('loadout_hash')!r}")
+                    fg_row["fg_base_score"] = int(witness.get("BaseScore") or 0)
+                else:
+                    fg_row["_replay_fg"] = fg
+                fg_ranked.append(fg_row)
 
         base_top = nsmallest(
             int(n),
@@ -955,7 +960,8 @@ def compute_team_buff_tier_leaderboards(
                     )
                 )
             else:
-                row["fg_base_score"] = 0
+                if "fg_base_score" not in row:
+                    row["fg_base_score"] = 0
             fg_top.append(row)
         if paired_stats:
             fg_base_scores = _base_score_batch(paired_stats)
