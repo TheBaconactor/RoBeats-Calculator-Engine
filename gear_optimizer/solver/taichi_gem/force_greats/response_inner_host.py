@@ -40,6 +40,7 @@ _U16_HEAD_POS_SUM = np.ascontiguousarray(
 del _U16_HEAD_BITS
 _SURFACE_HEAD_COEFF_CACHE: OrderedDict[tuple[int, int, tuple[int, ...], tuple[int, ...]], np.ndarray] = OrderedDict()
 _SURFACE_HEAD_COEFF_CACHE_LOCK = threading.RLock()
+_FG_RESPONSE_CPU_SEARCH_LOCK = threading.Lock()
 _EXACT_REPLAY_REF_NAMES = (
     "Perfect Points",
     "Combo Multiplier",
@@ -802,16 +803,22 @@ def _score_response_group_meta_cpu(
     if bool(np.any(surface_counts_all < 0)):
         raise ValueError("response frontier CPU surface counts must be nonnegative")
 
-    out_rows = resolve_fg_response_groups_native_f64(
-        np.ascontiguousarray(group_offsets, dtype=np.int64),
-        np.ascontiguousarray(group_lengths, dtype=np.int64),
-        group_meta_all,
-        surface_words_all,
-        surface_counts_all,
-        flags,
-        ref_pp,
-        ref_cm,
-        ref_fm,
-        int(allow_pp),
-    )
+    # The serving Mac currently only has Numba's workqueue threading layer. It is not
+    # thread-safe for concurrent calls into a parallel=True kernel from multiple Python
+    # threads, and the website's ranked lane does exactly that under user fan-out. Keep
+    # the per-request parallel speedup inside the kernel, but serialize entry so two HTTP
+    # requests cannot abort the process by entering the workqueue backend at once.
+    with _FG_RESPONSE_CPU_SEARCH_LOCK:
+        out_rows = resolve_fg_response_groups_native_f64(
+            np.ascontiguousarray(group_offsets, dtype=np.int64),
+            np.ascontiguousarray(group_lengths, dtype=np.int64),
+            group_meta_all,
+            surface_words_all,
+            surface_counts_all,
+            flags,
+            ref_pp,
+            ref_cm,
+            ref_fm,
+            int(allow_pp),
+        )
     return np.asarray(out_rows, dtype=np.int32), int(logical_surface_rows)
