@@ -26,21 +26,54 @@ def materialize_force_payload_from_response_frontier(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
     reconstruction_frontier=None,
+    trace_cache: dict[Any, Any] | None = None,
 ) -> dict[str, Any]:
     frontier = reconstruction_frontier or result.frontier
     song_inputs = extract_fg_song_inputs(calc_song)
-    frontier_trace = reconstruct_force_greats_response_trace(
-        non_fever_base=int(frontier.non_fever_base),
-        target_surface=result.surface,
-        timestamps=song_inputs.timestamps,
-        perfect_candidate_timestamps=song_inputs.perfect_candidates,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        perfect_floor_timestamps=song_inputs.perfect_floor,
-        great_floor_timestamps=song_inputs.great_floor,
-        raw_fever_fill=float(result.raw_fever_fill),
-        real_fever_time=float(result.real_fever_time),
-        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-    )
+    non_fever_base = int(frontier.non_fever_base)
+    surface = result.surface
+    # Memoize the trace DFS across the loadouts materialized for one song: the trace is a pure
+    # function of its inputs but is recomputed once per kept loadout today, and that DFS (with
+    # its per-section centered-witness) is the dominant post-score host cost. The key MUST
+    # include raw_fever_fill / non_fever_base -- they build the action table and vary per
+    # candidate via the Fever Fill stat, so a surface-only key would be wrong -- while the
+    # song-level timestamp/floor inputs are constant across the calls sharing one trace_cache
+    # and are excluded. With no cache supplied (the single-shot fixed-timing path) this is the
+    # original behavior with zero added work: no key, no lookup, no copy.
+    base_trace = None
+    trace_key = None
+    if trace_cache is not None:
+        trace_key = (
+            non_fever_base,
+            (
+                int(surface.fever0), int(surface.fever1), int(surface.fever2), int(surface.fever3),
+                int(surface.great0), int(surface.great1), int(surface.great2), int(surface.great3),
+                int(surface.body_fever), int(surface.body_great), int(surface.body_fever_great),
+            ),
+            float(result.raw_fever_fill),
+            float(result.real_fever_time),
+            bool(song_inputs.use_forced_great_timing),
+        )
+        base_trace = trace_cache.get(trace_key)
+    if base_trace is None:
+        base_trace = reconstruct_force_greats_response_trace(
+            non_fever_base=non_fever_base,
+            target_surface=surface,
+            timestamps=song_inputs.timestamps,
+            perfect_candidate_timestamps=song_inputs.perfect_candidates,
+            great_candidate_timestamps=song_inputs.great_candidates,
+            perfect_floor_timestamps=song_inputs.perfect_floor,
+            great_floor_timestamps=song_inputs.great_floor,
+            raw_fever_fill=float(result.raw_fever_fill),
+            real_fever_time=float(result.real_fever_time),
+            use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+        )
+        if trace_cache is not None:
+            trace_cache[trace_key] = base_trace
+    # On the cache path, hand each payload fresh per-row dicts (the cached base_trace is never
+    # handed out directly, so it can't be mutated downstream); with no cache, return as-is,
+    # exactly like before.
+    frontier_trace = base_trace if trace_cache is None else tuple(dict(row) for row in base_trace)
     trace_counts = tuple(int(row["forced_count"]) for row in frontier_trace)
     if result.forced_counts:
         forced_counts = tuple(int(v) for v in result.forced_counts)
@@ -153,6 +186,7 @@ class FgResultReducer:
             )[: int(LOADOUTS_PER_SONG_LIMIT)]
         )
 
+        trace_cache: dict[Any, Any] = {}
         for item in pending_jobs:
             result = item["result"]
             payload = materialize_force_payload_from_response_frontier(
@@ -163,6 +197,7 @@ class FgResultReducer:
                 result=result,
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
+                trace_cache=trace_cache,
             )
 
             entry = item["entry"]

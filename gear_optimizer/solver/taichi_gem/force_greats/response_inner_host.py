@@ -471,6 +471,23 @@ def _score_response_group_meta_gpu(
     max_surface_dispatch_rows = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS))
     max_surface_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK))
     out_rows = np.zeros((group_count, 11), dtype=np.int32)
+    # The surface pool is invariant across every chunk dispatch below -- only the
+    # per-chunk index/output slices change. Passing the numpy pool to the kernel
+    # re-transfers it host->device on each launch (ti.types.ndarray semantics), so a
+    # 0.5-1.5 GB pool over 143-219 chunks is 90-330 GB of redundant PCIe copy and ~95%
+    # of the heavy-song "score loop" wall time (measured 25x, bit-exact via
+    # tools/dev/measure_fg_pool_reupload.py). Upload it ONCE to device-resident
+    # ndarrays and reuse across all chunks; results are identical (same kernel, same
+    # data, fewer copies).
+    d_surface_words = ti.ndarray(dtype=ti.u32, shape=surface_words_all.shape)
+    d_surface_counts = ti.ndarray(dtype=ti.i32, shape=surface_counts_all.shape)
+    d_surface_head_coeffs = ti.ndarray(dtype=ti.i32, shape=surface_head_coeffs_all.shape)
+    # No ti.sync() here: the from_numpy uploads and the kernel launches below run on the same
+    # Taichi stream, so the uploads are ordered before the first kernel reads them; the
+    # per-chunk ti.sync() after each dispatch already gates the host reduce on the outputs.
+    d_surface_words.from_numpy(surface_words_all)
+    d_surface_counts.from_numpy(surface_counts_all)
+    d_surface_head_coeffs.from_numpy(surface_head_coeffs_all)
     if (
         group_count <= max_dispatch_groups
         and total_work <= max_dispatch_work
@@ -478,9 +495,9 @@ def _score_response_group_meta_gpu(
     ):
         _fg_response_inner_group_kernel(
             int(group_count),
-            surface_words_all,
-            surface_counts_all,
-            surface_head_coeffs_all,
+            d_surface_words,
+            d_surface_counts,
+            d_surface_head_coeffs,
             group_offsets_all,
             group_lengths_all,
             group_meta_all,
@@ -509,9 +526,9 @@ def _score_response_group_meta_gpu(
                 chunk_stop = int(chunk_start) + 1
             _fg_response_inner_group_kernel(
                 int(chunk_stop) - int(chunk_start),
-                surface_words_all,
-                surface_counts_all,
-                surface_head_coeffs_all,
+                d_surface_words,
+                d_surface_counts,
+                d_surface_head_coeffs,
                 group_offsets_all[int(chunk_start) : int(chunk_stop)],
                 group_lengths_all[int(chunk_start) : int(chunk_stop)],
                 group_meta_all[int(chunk_start) : int(chunk_stop)],
@@ -580,9 +597,9 @@ def _score_response_group_meta_gpu(
             _t1 = time.perf_counter()
         _fg_response_inner_batch_kernel(
             int(row_count),
-            surface_words_all,
-            surface_counts_all,
-            surface_head_coeffs_all,
+            d_surface_words,
+            d_surface_counts,
+            d_surface_head_coeffs,
             group_offsets_all,
             logical_owners_all[int(chunk_start) : int(chunk_stop)],
             logical_surfaces_all[int(chunk_start) : int(chunk_stop)],
