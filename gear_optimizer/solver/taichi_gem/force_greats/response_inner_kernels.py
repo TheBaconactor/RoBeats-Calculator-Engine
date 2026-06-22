@@ -1,3 +1,6 @@
+import sys
+
+import numpy as np
 import taichi as ti
 
 from gear_optimizer.core.constants import (
@@ -10,9 +13,21 @@ from gear_optimizer.core.constants import (
     TOTAL_ROWS,
 )
 
+# Hardware-gated solver fp for the FG response-inner gem search. The RX 7900 XTX (and any
+# Vulkan device with shaderFloat64) runs the search in f64 -- its native mixed-precision
+# form, bit-identical to today. MoltenVK/Metal (macOS) has no shaderFloat64, so the same
+# kernel compiles at f32 there. This is a required-hardware-safety-boundary split (the only
+# branch the canonical-path rule permits), mirroring the IS_METAL gate in runtime.py. The
+# search only selects the argmax gem allocation; the served score is CPU-f64 exact-rescored,
+# so the final score is lossless regardless of which fp the search ran at.
+FP = ti.f32 if sys.platform == "darwin" else ti.f64
+# The numpy dtype the host must feed the GPU kernel's ref arrays, kept in lockstep with FP
+# (one gate). The CPU exact-rescore path stays float64 regardless.
+SOLVER_NP_FP = np.float32 if sys.platform == "darwin" else np.float64
+
 
 @ti.func
-def _fg_response_lookup_ref(ref: ti.template(), idx: ti.i32) -> ti.f64:
+def _fg_response_lookup_ref(ref: ti.template(), idx: ti.i32) -> FP:
     safe_idx: ti.i32 = idx
     if safe_idx < 0:
         safe_idx = 0
@@ -28,13 +43,13 @@ def _fg_response_bit(word: ti.u32, bit_idx: ti.i32) -> ti.i32:
 
 @ti.func
 def _fg_response_head_score(
-    base_value: ti.f64,
-    combo_slope: ti.f64,
-    fever_mul: ti.f64,
+    base_value: FP,
+    combo_slope: FP,
+    fever_mul: FP,
     note_idx: ti.i32,
     is_fever: ti.i32,
 ) -> ti.i32:
-    scaling: ti.f64 = combo_slope * ti.cast(note_idx + 1, ti.f64) + ti.f64(1.0)
+    scaling: FP = combo_slope * ti.cast(note_idx + 1, FP) + FP(1.0)
     score: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
     if is_fever != 0:
         score = ti.cast(ti.floor(base_value * scaling * fever_mul), ti.i32)
@@ -58,12 +73,12 @@ def _fg_response_score_device(
     body_total: ti.i32,
     primary_val: ti.i32,
     secondary_val: ti.i32,
-    pp_factor: ti.f64,
-    combo_mul: ti.f64,
-    fever_mul: ti.f64,
+    pp_factor: FP,
+    combo_mul: FP,
+    fever_mul: FP,
     is_single_color: ti.i32,
 ) -> ti.i32:
-    base_value: ti.f64 = ti.cast((primary_val * 2) + secondary_val, ti.f64) + pp_factor
+    base_value: FP = ti.cast((primary_val * 2) + secondary_val, FP) + pp_factor
     combo_val: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
     fever_val: ti.i32 = ti.cast(ti.floor(base_value * combo_mul * fever_mul), ti.i32)
     body_normal: ti.i32 = body_total - body_fever
@@ -71,8 +86,8 @@ def _fg_response_score_device(
         body_normal = 0
     score: ti.i32 = body_fever * fever_val + body_normal * combo_val
 
-    combo_span: ti.f64 = combo_mul - ti.f64(1.0)
-    combo_slope: ti.f64 = combo_span / ti.f64(100.0)
+    combo_span: FP = combo_mul - FP(1.0)
+    combo_slope: FP = combo_span / FP(100.0)
     n0 = ti.min(head_len, 32)
     for i in range(n0):
         score += _fg_response_head_score(
@@ -119,11 +134,11 @@ def _fg_response_score_device(
             great_head_base = (primary_val * 2) + 150
         else:
             great_head_base = (
-                ti.cast(ti.floor(ti.cast(primary_val, ti.f64) * ti.f64(4.0 / 3.0)), ti.i32)
-                + ti.cast(ti.floor(ti.cast(secondary_val, ti.f64) * ti.f64(2.0 / 3.0)), ti.i32)
+                ti.cast(ti.floor(ti.cast(primary_val, FP) * FP(4.0 / 3.0)), ti.i32)
+                + ti.cast(ti.floor(ti.cast(secondary_val, FP) * FP(2.0 / 3.0)), ti.i32)
                 + 150
             )
-        great_base: ti.f64 = ti.cast(great_head_base, ti.f64)
+        great_base: FP = ti.cast(great_head_base, FP)
         great_combo_val: ti.i32 = ti.cast(ti.floor(great_base * combo_mul), ti.i32)
         great_fever_val: ti.i32 = ti.cast(ti.floor(great_base * combo_mul * fever_mul), ti.i32)
         if body_great > 0:
@@ -228,25 +243,25 @@ def _fg_response_score_device(
 
 @ti.func
 def _fg_response_surface_upper_bound(
-    base_value: ti.f64,
-    combo_mul: ti.f64,
-    fever_mul: ti.f64,
+    base_value: FP,
+    combo_mul: FP,
+    fever_mul: FP,
     body_fever: ti.i32,
     body_normal: ti.i32,
     n_hn: ti.i32,
     n_hf: ti.i32,
     sigma_hn: ti.i32,
     sigma_hf: ti.i32,
-) -> ti.f64:
-    ub_eps = ti.f64(1024.0)
+) -> FP:
+    ub_eps = FP(1024.0)
     combo_val = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
     fever_val = ti.cast(ti.floor(base_value * combo_mul * fever_mul), ti.i32)
     body_score = body_fever * fever_val + body_normal * combo_val
-    factor = (combo_mul - ti.f64(1.0)) * base_value / ti.f64(100.0)
-    head_upper = base_value * (ti.cast(n_hn, ti.f64) + fever_mul * ti.cast(n_hf, ti.f64)) + factor * (
-        ti.cast(sigma_hn, ti.f64) + fever_mul * ti.cast(sigma_hf, ti.f64)
+    factor = (combo_mul - FP(1.0)) * base_value / FP(100.0)
+    head_upper = base_value * (ti.cast(n_hn, FP) + fever_mul * ti.cast(n_hf, FP)) + factor * (
+        ti.cast(sigma_hn, FP) + fever_mul * ti.cast(sigma_hf, FP)
     )
-    return ti.cast(body_score, ti.f64) + head_upper + ub_eps
+    return ti.cast(body_score, FP) + head_upper + ub_eps
 
 
 @ti.kernel
@@ -260,9 +275,9 @@ def _fg_response_inner_batch_kernel(
     logical_surfaces: ti.types.ndarray(dtype=ti.i32, ndim=1),
     row_meta: ti.types.ndarray(dtype=ti.i32, ndim=2),
     color_flags: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    ref_pp: ti.types.ndarray(dtype=ti.f64, ndim=1),
-    ref_cm: ti.types.ndarray(dtype=ti.f64, ndim=1),
-    ref_fm: ti.types.ndarray(dtype=ti.f64, ndim=1),
+    ref_pp: ti.types.ndarray(dtype=FP, ndim=1),
+    ref_cm: ti.types.ndarray(dtype=FP, ndim=1),
+    ref_fm: ti.types.ndarray(dtype=FP, ndim=1),
     out_scores: ti.types.ndarray(dtype=ti.i32, ndim=1),
     out_details: ti.types.ndarray(dtype=ti.i32, ndim=2),
     allow_pp_template: ti.template(),
@@ -337,18 +352,30 @@ def _fg_response_inner_batch_kernel(
         pp_secondary_delta: ti.i32 = pp_s_delta - ov_s_delta
         base_init: ti.i32 = (cur_primary << 1) + cur_secondary
         pp_ref_base = _fg_response_lookup_ref(ref_pp, cur_pp)
-        pp_bound_prefix_max = ti.Vector.zero(ti.f64, TOTAL_GEM_BUDGET + 1)
+        cm_ref_cache = ti.Vector.zero(FP, TOTAL_GEM_BUDGET + 1)
+        fm_ref_cache = ti.Vector.zero(FP, TOTAL_GEM_BUDGET + 1)
+        pp_ref_cache = ti.Vector.zero(FP, TOTAL_GEM_BUDGET + 1)
+        pp_bound_prefix_max = ti.Vector.zero(FP, TOTAL_GEM_BUDGET + 1)
         if ti.static(allow_pp_template):
             g_pp_cache: ti.i32 = 0
-            running_pp_bound_max: ti.f64 = ti.f64(-1e30)
+            running_pp_bound_max: FP = FP(-1e30)
             while g_pp_cache <= max_pp_gems:
                 pp_stat_cache: ti.i32 = cur_pp + g_pp_cache * GEM_SCALE_NORMAL
-                pp_ref_val: ti.f64 = _fg_response_lookup_ref(ref_pp, pp_stat_cache)
-                pp_bound_val: ti.f64 = ti.cast(g_pp_cache * delta_pp_vs_ov, ti.f64) + pp_ref_val
+                pp_ref_val: FP = _fg_response_lookup_ref(ref_pp, pp_stat_cache)
+                pp_ref_cache[g_pp_cache] = pp_ref_val
+                pp_bound_val: FP = ti.cast(g_pp_cache * delta_pp_vs_ov, FP) + pp_ref_val
                 if pp_bound_val > running_pp_bound_max:
                     running_pp_bound_max = pp_bound_val
                 pp_bound_prefix_max[g_pp_cache] = running_pp_bound_max
                 g_pp_cache += 1
+        g_cm_cache: ti.i32 = 0
+        while g_cm_cache <= max_cm_gems:
+            cm_ref_cache[g_cm_cache] = _fg_response_lookup_ref(ref_cm, cur_cm + g_cm_cache * GEM_SCALE_NORMAL)
+            g_cm_cache += 1
+        g_fm_cache: ti.i32 = 0
+        while g_fm_cache <= max_fm_gems:
+            fm_ref_cache[g_fm_cache] = _fg_response_lookup_ref(ref_fm, cur_fm + g_fm_cache * GEM_SCALE_FEVER)
+            g_fm_cache += 1
 
         fever0: ti.u32 = surface_words[surface_row, 0]
         fever1: ti.u32 = surface_words[surface_row, 1]
@@ -387,7 +414,7 @@ def _fg_response_inner_batch_kernel(
             if leftover_after_cm < 0:
                 break
             cm_stat: ti.i32 = cur_cm + g_cm * GEM_SCALE_NORMAL
-            cm_mul = _fg_response_lookup_ref(ref_cm, cm_stat)
+            cm_mul = cm_ref_cache[g_cm]
             g_fm_max: ti.i32 = max_fm_gems
             if g_fm_max > leftover_after_cm:
                 g_fm_max = leftover_after_cm
@@ -395,15 +422,15 @@ def _fg_response_inner_batch_kernel(
             while g_fm <= g_fm_max:
                 leftover_after_fm: ti.i32 = leftover_after_cm - g_fm
                 fm_stat: ti.i32 = cur_fm + g_fm * GEM_SCALE_FEVER
-                fm_mul = _fg_response_lookup_ref(ref_fm, fm_stat)
+                fm_mul = fm_ref_cache[g_fm]
                 g_pp_max: ti.i32 = max_pp_gems
                 if g_pp_max > leftover_after_fm:
                     g_pp_max = leftover_after_fm
 
                 base_linear_common: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover_after_fm * w_ov)
-                max_base_value: ti.f64 = ti.cast(base_linear_common, ti.f64) + pp_ref_base
+                max_base_value: FP = ti.cast(base_linear_common, FP) + pp_ref_base
                 if ti.static(allow_pp_template):
-                    max_base_value = ti.cast(base_linear_common, ti.f64) + pp_bound_prefix_max[g_pp_max]
+                    max_base_value = ti.cast(base_linear_common, FP) + pp_bound_prefix_max[g_pp_max]
                 ub = _fg_response_surface_upper_bound(
                     max_base_value,
                     cm_mul,
@@ -416,7 +443,7 @@ def _fg_response_inner_batch_kernel(
                     sigma_hf,
                 )
 
-                if ub > ti.cast(best_score, ti.f64):
+                if ub > ti.cast(best_score, FP):
                     primary_base: ti.i32 = (
                         cur_primary + g_cm * cm_p_delta + g_fm * fm_p_delta + leftover_after_fm * ov_p_delta
                     )
@@ -441,7 +468,7 @@ def _fg_response_inner_batch_kernel(
                                 body_total,
                                 primary_base,
                                 secondary_base,
-                                _fg_response_lookup_ref(ref_pp, cur_pp),
+                                pp_ref_cache[0],
                                 cm_mul,
                                 fm_mul,
                                 is_single_color,
@@ -470,10 +497,10 @@ def _fg_response_inner_batch_kernel(
                                 pp_stat: ti.i32 = cur_pp + g_pp * GEM_SCALE_NORMAL
                                 primary_val: ti.i32 = primary_base + g_pp * pp_primary_delta
                                 secondary_val: ti.i32 = secondary_base + g_pp * pp_secondary_delta
-                                pp_base_value: ti.f64 = ti.cast(
+                                pp_base_value: FP = ti.cast(
                                     base_linear_common + g_pp * delta_pp_vs_ov,
-                                    ti.f64,
-                                ) + _fg_response_lookup_ref(ref_pp, pp_stat)
+                                    FP,
+                                ) + pp_ref_cache[g_pp]
                                 pp_ub = _fg_response_surface_upper_bound(
                                     pp_base_value,
                                     cm_mul,
@@ -486,7 +513,7 @@ def _fg_response_inner_batch_kernel(
                                     sigma_hf,
                                 )
                                 should_score: ti.i32 = 1
-                                if pp_ub < ti.cast(best_score, ti.f64):
+                                if pp_ub < ti.cast(best_score, FP):
                                     should_score = 0
                                 if should_score != 0:
                                     score = _fg_response_score_device(
@@ -505,7 +532,7 @@ def _fg_response_inner_batch_kernel(
                                         body_total,
                                         primary_val,
                                         secondary_val,
-                                        _fg_response_lookup_ref(ref_pp, pp_stat),
+                                        pp_ref_cache[g_pp],
                                         cm_mul,
                                         fm_mul,
                                         is_single_color,
@@ -594,9 +621,9 @@ def _fg_response_inner_group_kernel(
     group_lengths: ti.types.ndarray(dtype=ti.i32, ndim=1),
     row_meta: ti.types.ndarray(dtype=ti.i32, ndim=2),
     color_flags: ti.types.ndarray(dtype=ti.i32, ndim=1),
-    ref_pp: ti.types.ndarray(dtype=ti.f64, ndim=1),
-    ref_cm: ti.types.ndarray(dtype=ti.f64, ndim=1),
-    ref_fm: ti.types.ndarray(dtype=ti.f64, ndim=1),
+    ref_pp: ti.types.ndarray(dtype=FP, ndim=1),
+    ref_cm: ti.types.ndarray(dtype=FP, ndim=1),
+    ref_fm: ti.types.ndarray(dtype=FP, ndim=1),
     out_rows: ti.types.ndarray(dtype=ti.i32, ndim=2),
     allow_pp_template: ti.template(),
 ):
@@ -667,18 +694,30 @@ def _fg_response_inner_group_kernel(
         pp_secondary_delta: ti.i32 = pp_s_delta - ov_s_delta
         base_init: ti.i32 = (cur_primary << 1) + cur_secondary
         pp_ref_base = _fg_response_lookup_ref(ref_pp, cur_pp)
-        pp_bound_prefix_max = ti.Vector.zero(ti.f64, TOTAL_GEM_BUDGET + 1)
+        cm_ref_cache = ti.Vector.zero(FP, TOTAL_GEM_BUDGET + 1)
+        fm_ref_cache = ti.Vector.zero(FP, TOTAL_GEM_BUDGET + 1)
+        pp_ref_cache = ti.Vector.zero(FP, TOTAL_GEM_BUDGET + 1)
+        pp_bound_prefix_max = ti.Vector.zero(FP, TOTAL_GEM_BUDGET + 1)
         if ti.static(allow_pp_template):
             g_pp_cache: ti.i32 = 0
-            running_pp_bound_max: ti.f64 = ti.f64(-1e30)
+            running_pp_bound_max: FP = FP(-1e30)
             while g_pp_cache <= max_pp_gems:
                 pp_stat_cache: ti.i32 = cur_pp + g_pp_cache * GEM_SCALE_NORMAL
-                pp_ref_val: ti.f64 = _fg_response_lookup_ref(ref_pp, pp_stat_cache)
-                pp_bound_val: ti.f64 = ti.cast(g_pp_cache * delta_pp_vs_ov, ti.f64) + pp_ref_val
+                pp_ref_val: FP = _fg_response_lookup_ref(ref_pp, pp_stat_cache)
+                pp_ref_cache[g_pp_cache] = pp_ref_val
+                pp_bound_val: FP = ti.cast(g_pp_cache * delta_pp_vs_ov, FP) + pp_ref_val
                 if pp_bound_val > running_pp_bound_max:
                     running_pp_bound_max = pp_bound_val
                 pp_bound_prefix_max[g_pp_cache] = running_pp_bound_max
                 g_pp_cache += 1
+        g_cm_cache: ti.i32 = 0
+        while g_cm_cache <= max_cm_gems:
+            cm_ref_cache[g_cm_cache] = _fg_response_lookup_ref(ref_cm, cur_cm + g_cm_cache * GEM_SCALE_NORMAL)
+            g_cm_cache += 1
+        g_fm_cache: ti.i32 = 0
+        while g_fm_cache <= max_fm_gems:
+            fm_ref_cache[g_fm_cache] = _fg_response_lookup_ref(ref_fm, cur_fm + g_fm_cache * GEM_SCALE_FEVER)
+            g_fm_cache += 1
 
         group_best_score: ti.i32 = -1
         group_best_surface: ti.i32 = 0
@@ -734,7 +773,7 @@ def _fg_response_inner_group_kernel(
                 if leftover_after_cm < 0:
                     break
                 cm_stat: ti.i32 = cur_cm + g_cm * GEM_SCALE_NORMAL
-                cm_mul = _fg_response_lookup_ref(ref_cm, cm_stat)
+                cm_mul = cm_ref_cache[g_cm]
                 g_fm_max: ti.i32 = max_fm_gems
                 if g_fm_max > leftover_after_cm:
                     g_fm_max = leftover_after_cm
@@ -742,15 +781,15 @@ def _fg_response_inner_group_kernel(
                 while g_fm <= g_fm_max:
                     leftover_after_fm: ti.i32 = leftover_after_cm - g_fm
                     fm_stat: ti.i32 = cur_fm + g_fm * GEM_SCALE_FEVER
-                    fm_mul = _fg_response_lookup_ref(ref_fm, fm_stat)
+                    fm_mul = fm_ref_cache[g_fm]
                     g_pp_max: ti.i32 = max_pp_gems
                     if g_pp_max > leftover_after_fm:
                         g_pp_max = leftover_after_fm
 
                     base_linear_common: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover_after_fm * w_ov)
-                    max_base_value: ti.f64 = ti.cast(base_linear_common, ti.f64) + pp_ref_base
+                    max_base_value: FP = ti.cast(base_linear_common, FP) + pp_ref_base
                     if ti.static(allow_pp_template):
-                        max_base_value = ti.cast(base_linear_common, ti.f64) + pp_bound_prefix_max[g_pp_max]
+                        max_base_value = ti.cast(base_linear_common, FP) + pp_bound_prefix_max[g_pp_max]
                     ub = _fg_response_surface_upper_bound(
                         max_base_value,
                         cm_mul,
@@ -763,7 +802,7 @@ def _fg_response_inner_group_kernel(
                         sigma_hf,
                     )
 
-                    if ub > ti.cast(best_score, ti.f64):
+                    if ub > ti.cast(best_score, FP):
                         primary_base: ti.i32 = (
                             cur_primary + g_cm * cm_p_delta + g_fm * fm_p_delta + leftover_after_fm * ov_p_delta
                         )
@@ -788,7 +827,7 @@ def _fg_response_inner_group_kernel(
                                     body_total,
                                     primary_base,
                                     secondary_base,
-                                    _fg_response_lookup_ref(ref_pp, cur_pp),
+                                    pp_ref_cache[0],
                                     cm_mul,
                                     fm_mul,
                                     is_single_color,
@@ -817,10 +856,10 @@ def _fg_response_inner_group_kernel(
                                     pp_stat: ti.i32 = cur_pp + g_pp * GEM_SCALE_NORMAL
                                     primary_val: ti.i32 = primary_base + g_pp * pp_primary_delta
                                     secondary_val: ti.i32 = secondary_base + g_pp * pp_secondary_delta
-                                    pp_base_value: ti.f64 = ti.cast(
+                                    pp_base_value: FP = ti.cast(
                                         base_linear_common + g_pp * delta_pp_vs_ov,
-                                        ti.f64,
-                                    ) + _fg_response_lookup_ref(ref_pp, pp_stat)
+                                        FP,
+                                    ) + pp_ref_cache[g_pp]
                                     pp_ub = _fg_response_surface_upper_bound(
                                         pp_base_value,
                                         cm_mul,
@@ -833,7 +872,7 @@ def _fg_response_inner_group_kernel(
                                         sigma_hf,
                                     )
                                     should_score: ti.i32 = 1
-                                    if pp_ub < ti.cast(best_score, ti.f64):
+                                    if pp_ub < ti.cast(best_score, FP):
                                         should_score = 0
                                     if should_score != 0:
                                         score = _fg_response_score_device(
@@ -852,7 +891,7 @@ def _fg_response_inner_group_kernel(
                                             body_total,
                                             primary_val,
                                             secondary_val,
-                                            _fg_response_lookup_ref(ref_pp, pp_stat),
+                                            pp_ref_cache[g_pp],
                                             cm_mul,
                                             fm_mul,
                                             is_single_color,

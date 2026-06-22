@@ -18,10 +18,7 @@ from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.force_greats_common import extract_base_stats
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
-from gear_optimizer.solver.scoring.fever_solver import (
-    solve_best_fever_combination,
-    solve_best_fever_combination_exact_cpu,
-)
+from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination
 
 logger = logging.getLogger(__name__)
 
@@ -216,18 +213,25 @@ def _add_genome_item_stats(base_stats: dict[str, Any], genome: list[dict]) -> di
     return merged
 
 
-def _finalize_candidate_payload(
-    refined: dict[str, Any] | None,
+def build_candidate_payload(
     *,
+    cfg: Any,
+    base_stats_fixed: dict[str, Any],
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
     genome: list[dict],
     override_cfg: dict[str, Any],
+    gpu_client: Any | None = None,
 ) -> dict[str, Any]:
-    """Attach genome identity + BaseScore/BaseStats to a solver result.
-
-    Shared, solver-agnostic tail of ``build_candidate_payload`` (GPU/greedy) and
-    ``build_candidate_payload_exact_cpu`` (exhaustive CPU): both produce the same payload shape
-    from their respective ``refined`` solver dict, so the post-processing is one canonical step.
-    """
+    merged = _add_genome_item_stats(base_stats_fixed, genome)
+    refined = solve_best_fever_combination(
+        cfg,
+        merged,
+        calc_song,
+        ref_arrays,
+        silent=True,
+        override_cfg=override_cfg,
+    )
     out = dict(refined or {})
     out["Genome"] = list(genome)
     out["Gear"] = list(genome[:6])
@@ -249,55 +253,6 @@ def _finalize_candidate_payload(
         if isinstance(base_stats, dict) and base_stats:
             out["BaseStats"] = base_stats
     return out
-
-
-def build_candidate_payload(
-    *,
-    cfg: Any,
-    base_stats_fixed: dict[str, Any],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    genome: list[dict],
-    override_cfg: dict[str, Any],
-    gpu_client: Any | None = None,
-) -> dict[str, Any]:
-    merged = _add_genome_item_stats(base_stats_fixed, genome)
-    refined = solve_best_fever_combination(
-        cfg,
-        merged,
-        calc_song,
-        ref_arrays,
-        silent=True,
-        override_cfg=override_cfg,
-    )
-    return _finalize_candidate_payload(refined, genome=genome, override_cfg=override_cfg)
-
-
-def build_candidate_payload_exact_cpu(
-    *,
-    cfg: Any,
-    base_stats_fixed: dict[str, Any],
-    calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
-    genome: list[dict],
-    override_cfg: dict[str, Any],
-) -> dict[str, Any]:
-    """Exhaustive CPU-exact twin of build_candidate_payload.
-
-    Same inputs/output shape, but drives the EXHAUSTIVE CPU gem search
-    (`solve_best_fever_combination_exact_cpu`) instead of the GPU/greedy solver, so the resolved
-    allocation is optimal by construction. Used by the lossless-exact measure harness on the macOS
-    serving host, where the GPU re-solve underperforms the inherited gems. Not a production serving
-    route (the GPU-first policy stands for the offline GA)."""
-    merged = _add_genome_item_stats(base_stats_fixed, genome)
-    refined = solve_best_fever_combination_exact_cpu(
-        cfg,
-        merged,
-        calc_song,
-        ref_arrays,
-        override_cfg=override_cfg,
-    )
-    return _finalize_candidate_payload(refined, genome=genome, override_cfg=override_cfg)
 
 
 def _coerce_registry_scores(results: Any, *, expected_rows: int) -> np.ndarray:

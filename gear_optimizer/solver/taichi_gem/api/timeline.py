@@ -18,6 +18,7 @@ import taichi as ti
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.array_signature import array_sig16
+from gear_optimizer.core.env_config import ENV as _ENV
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import timing_envelope_timing_context
 from gear_optimizer.solver.frontier_cache_errors import MissingFrontierCacheError
@@ -1210,7 +1211,11 @@ def precompute_timeline_gpu(
     frontier_result = (
         prebuilt_frontier
         if prebuilt_frontier is not None
-        else load_timeline_frontier_payload(calc_song, ref_arrays)
+        else (
+            build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+            if _ENV.serving_api
+            else load_timeline_frontier_payload(calc_song, ref_arrays)
+        )
     )
     total_notes = int(lookup["total_notes"])
     long_notes = int(lookup["long_notes"])
