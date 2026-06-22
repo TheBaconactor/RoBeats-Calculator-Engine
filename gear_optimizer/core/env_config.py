@@ -68,6 +68,12 @@ class EnvConfig:
     gpu_executor_batch_wait_ms: int  # GPU_EXECUTOR_BATCH_WAIT_MS
     gpu_executor_max_batch: int  # GPU_EXECUTOR_MAX_BATCH
 
+    # Serving context: true only when the RoBeatsMeta website API is importing this
+    # optimizer in-process to re-solve builds on demand. The standalone optimizer
+    # (``python main.py``) never sets this, so fail-loud invariants stay fail-loud
+    # there. Read once at import (the API sets the env var before sys.path insert).
+    serving_api: bool  # ROBEATSMETA_SERVING_API
+
     @classmethod
     def from_environment(cls) -> "EnvConfig":
         """
@@ -105,6 +111,8 @@ class EnvConfig:
             # GPU Executor batching/IPC
             gpu_executor_batch_wait_ms=10,  # GPU-owner loop batch wait base (hardwired)
             gpu_executor_max_batch=8,  # GPU-owner loop batch base (effective owner-batch widened downstream)
+            # Serving context (see field doc above)
+            serving_api=env_flag("ROBEATSMETA_SERVING_API"),
         )
 
 
