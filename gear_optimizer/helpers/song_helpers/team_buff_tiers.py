@@ -352,6 +352,56 @@ def resolve_zero_ms_base(
     return resolved, score
 
 
+def resolve_zero_ms_base_batch(
+    *,
+    cfg,
+    base_stats_fixed: dict,
+    genomes: list,
+    calc_song: dict,
+    ref_arrays: dict,
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> list:
+    """Batched lossless 0ms BASE re-solve: all N loadouts of a (tier·color) in ONE GPU dispatch.
+
+    The per-song serving path -- a full leaderboard re-solves in one skyline dispatch
+    (``n_genomes=N``) instead of N sequential solves. ``base_stats_fixed`` is the SHARED gem-less
+    tier-adjusted song base; ``genomes`` is the list of N loadout genomes (6 gear + 3 mini
+    stat-dicts each). Returns N ``(resolved_payload, score)`` in order. Each genome's gem search is
+    independent, so the per-loadout result equals ``resolve_zero_ms_base`` (the gate's per-loadout
+    path) -> served == native (delta=0)."""
+    from ...solver.scoring.exact_rescore import score_stats_fixed_timing_exact
+    from ...solver.scoring.fever_solver import solve_best_fever_combination_batch
+    from ...solver.solver_common import (
+        _add_genome_item_stats,
+        build_solver_cfg_data,
+        build_solver_override_cfg,
+    )
+
+    rows = list(genomes or [])
+    if not rows:
+        return []
+    p_color = str(primary_color or "")
+    cfg_data = build_solver_cfg_data(
+        cfg, p_color=p_color, s_color=str(secondary_color or ""), selected_color=str(selected_color or "")
+    )
+    override_cfg = build_solver_override_cfg(cfg_data, p_color=p_color, selected_color=str(selected_color or ""))
+    override_cfg["use_gpu"] = True
+    merged_list = [_add_genome_item_stats(dict(base_stats_fixed or {}), list(g or [])) for g in rows]
+    results = solve_best_fever_combination_batch(cfg, merged_list, calc_song, ref_arrays, override_cfg)
+    if len(results) != len(rows):
+        raise ValueError(f"batched zero_ms base re-solve returned {len(results)} != {len(rows)} results")
+    out = []
+    for resolved in results:
+        resolved_stats = dict(resolved.get("Stats") or {})
+        if not resolved_stats:
+            raise ValueError("batched zero_ms base re-solve returned no Stats")
+        score = int(score_stats_fixed_timing_exact(resolved_stats, calc_song, ref_arrays))
+        out.append((resolved, score))
+    return out
+
+
 def _ensure_stats_include_base_effect(stats: dict, base_effect: dict[str, int]) -> dict:
     if not isinstance(stats, dict) or not stats or not isinstance(base_effect, dict) or not base_effect:
         return stats if isinstance(stats, dict) else {}
@@ -689,24 +739,25 @@ def compute_team_buff_tier_leaderboards(
                     target_team_color=target_team_color,
                 )
                 target_fixed = _apply_stat_delta(zero_ms_fixed_stats, delta_map)
-                tier_scores = [0] * len(per_entry)
+                # Batched: ALL loadouts of this tier re-solve in ONE GPU dispatch (n_genomes=N), so a
+                # full leaderboard is ~one base solve instead of N sequential ones. Per-genome result
+                # is identical to the single-loadout path (independent gem searches) -> delta=0.
+                batch = resolve_zero_ms_base_batch(
+                    cfg=zero_ms_cfg,
+                    base_stats_fixed=target_fixed,
+                    genomes=base_genomes,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    primary_color=primary_color,
+                    secondary_color=secondary_color,
+                    selected_color=primary_color,
+                )
                 witness_for_tier = zero_ms_base_by_tier_hash.setdefault(str(tier), {})
                 for i, e in enumerate(per_entry):
-                    resolved, score = resolve_zero_ms_base(
-                        cfg=zero_ms_cfg,
-                        base_stats_fixed=target_fixed,
-                        genome=base_genomes[i],
-                        calc_song=calc_song,
-                        ref_arrays=ref_arrays,
-                        primary_color=primary_color,
-                        secondary_color=secondary_color,
-                        selected_color=primary_color,
-                    )
-                    tier_scores[i] = int(score)
                     h = _norm_text(e.get("loadout_hash"))
                     if h:
-                        witness_for_tier[h] = resolved
-                meta_scores_by_tier[str(tier)] = tier_scores
+                        witness_for_tier[h] = batch[i][0]
+                meta_scores_by_tier[str(tier)] = [int(score) for (_resolved, score) in batch]
         else:
             for tier in tier_list:
                 dpp, dp, ds = tier_deltas[str(tier)]
