@@ -24,22 +24,33 @@ def _solve_fixed_timing_response_results(
     calc_song: Mapping[str, Any],
     ref_arrays: Mapping[str, Any],
     selected_color: str,
+    *,
+    total_budget: int = 0,
 ) -> tuple[list[Any], dict[str, Any], dict[str, Any]]:
-    """Solve the re-optimized fixed-0ms FG response frontier (one result per stats row).
+    """Solve the fixed-0ms FG response frontier (one result per stats row).
 
     Returns ``(results, calc_song, ref_arrays)`` where ``calc_song``/``ref_arrays`` are the
     exact (chart-only, resolved) objects the solve ran against, so downstream exact replay /
     trace reconstruction scores the identical timing model. ``calc_song`` MUST already carry
     chart-only timing (prepare it with ``apply_timing_envelope(mode="zero_ms")``).
+
+    ``total_budget`` selects the semantic shape (a required-hardware-boundary input, not a
+    toggle): ``0`` = gems FIXED, re-optimize only FG placement, fed gem-FULL stats (the
+    legacy replay); ``>0`` = RE-SOLVE the gem allocation, MUST be fed GEM-LESS stats (gem-full
+    + budget double-counts the gems). The gem search runs on the GPU owner whose kernel is
+    fp-gated (f32 on MoltenVK / f64 on AMD), so this is exact on macOS too; the served score is
+    the CPU-f64 exact rescore in the materializer, lossless regardless of search fp.
     """
     rows = [dict(stats) for stats in (stats_list or [])]
     if not rows:
         return [], dict(calc_song), resolve_exact_replay_ref_arrays(ref_arrays)
 
+    total_budget = int(total_budget)
     from ..fg_response_frontier_cache_prebuild import ensure_response_frontier_cache_for_calc_song
     from ..taichi_gem.force_greats.response_frontier import (
         prepare_force_greats_response_frontier_scoring_batch,
         score_prepared_force_greats_response_frontier_batch_cpu_sync,
+        score_prepared_force_greats_response_frontier_batch_sync,
     )
 
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
@@ -55,13 +66,17 @@ def _solve_fixed_timing_response_results(
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         selected_color=str(selected_color or ""),
-        total_budget=0,  # gems fixed: recompute, do NOT re-solve gear -- only re-optimize FG placement
+        total_budget=total_budget,
     )
-    # Score the collapsed (gems-fixed) frontier on native CPU f64. This on-demand serving shape
-    # is tiny and latency-sensitive: CPU doubles are exact and faster here than emulating f64 on
-    # the GPU (which Metal/MoltenVK can't do natively), and they parallelize across cores instead
-    # of serializing on the single GPU owner. The heavy offline GA->FG search keeps the GPU path.
-    results = score_prepared_force_greats_response_frontier_batch_cpu_sync(batch, include_forced_counts=False)
+    if total_budget > 0:
+        # Gem re-solve: the gem search lives on the GPU owner (the CPU scorer is gems-fixed only).
+        # The fp-gated kernel runs the search at f32 on MoltenVK / f64 on AMD; the winning surface
+        # is CPU-f64 exact-rescored downstream, so the served score is lossless.
+        results = score_prepared_force_greats_response_frontier_batch_sync(batch, include_forced_counts=False)
+    else:
+        # Gems FIXED (budget==0): score the collapsed frontier on native CPU f64 -- tiny,
+        # latency-sensitive, and exact without any GPU f64 dependency.
+        results = score_prepared_force_greats_response_frontier_batch_cpu_sync(batch, include_forced_counts=False)
     if len(results) != len(rows):
         raise ValueError(
             "fixed-timing FG surface build produced a different row count than the stats batch "
@@ -99,8 +114,13 @@ def build_fixed_timing_fg_replays(
     calc_song: Mapping[str, Any],
     ref_arrays: Mapping[str, Any],
     selected_color: str,
+    total_budget: int = 0,
 ) -> list[dict[str, Any]]:
-    """Re-optimized fixed-0ms FG replay per loadout: surface + full ``force`` payload.
+    """Fixed-0ms FG replay per loadout: surface + full ``force`` payload.
+
+    ``total_budget==0`` (default) keeps gems FIXED (re-optimize FG placement only) and expects
+    gem-FULL ``fg_stats_list``. ``total_budget>0`` RE-SOLVES the gem allocation at 0ms and MUST
+    be fed GEM-LESS ``fg_stats_list``/``base_stats_list`` (gem-full + budget double-counts gems).
 
     Returns one ``{"surface": FgResponseSurface, "force": <payload>}`` per stats row, in
     order. The ``force`` payload is produced by the single canonical FG materializer
@@ -125,10 +145,19 @@ def build_fixed_timing_fg_replays(
     from ...solver.scoring.exact_rescore import score_stats_fixed_timing_exact_batch
     from .reducer import materialize_force_payload_from_response_frontier
 
-    results, cs, refs = _solve_fixed_timing_response_results(fg_rows, calc_song, ref_arrays, selected_color)
+    results, cs, refs = _solve_fixed_timing_response_results(
+        fg_rows, calc_song, ref_arrays, selected_color, total_budget=int(total_budget)
+    )
     # Paired base = each loadout's NON-FG base score under the same fixed-0ms timeline; the
-    # materializer requires it (>0) as the FG row's source base score.
-    paired_base_scores = score_stats_fixed_timing_exact_batch(base_rows, cs, refs)
+    # materializer requires it (>0) as the FG row's source base score. For a gem re-solve
+    # (total_budget>0) the gems change, so the paired base is the non-FG score at the RE-SOLVED
+    # gems (result.stats), not the gem-less search input.
+    if int(total_budget) > 0:
+        paired_base_scores = score_stats_fixed_timing_exact_batch(
+            [dict(getattr(result, "stats", None) or {}) for result in results], cs, refs
+        )
+    else:
+        paired_base_scores = score_stats_fixed_timing_exact_batch(base_rows, cs, refs)
 
     replays: list[dict[str, Any]] = []
     for result, base_stats, paired_base in zip(results, base_rows, paired_base_scores, strict=True):

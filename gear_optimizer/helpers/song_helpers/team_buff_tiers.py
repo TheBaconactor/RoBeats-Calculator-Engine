@@ -227,6 +227,67 @@ def _apply_stat_delta(stats: dict, delta: dict[str, int]) -> dict:
     return out
 
 
+def _entry_genome(entry: dict) -> list[dict]:
+    """Loadout genome = 6 gear + 3 mini STAT-DICTS (no gems). The re-solve allocates the 90-gem
+    budget from this gem-less identity; passing gem-FULL stats would double-count the gems."""
+    gear = [dict(item) for item in list((entry or {}).get("gear") or [])[:6] if isinstance(item, dict)]
+    minis = [dict(item) for item in list((entry or {}).get("minis") or [])[:3] if isinstance(item, dict)]
+    if len(gear) != 6 or len(minis) != 3:
+        raise ValueError(
+            f"zero_ms FG re-solve needs 6 gear + 3 mini stat-dicts, got {len(gear)} gear + {len(minis)} minis "
+            f"(loadout {(entry or {}).get('loadout_hash')!r})"
+        )
+    return gear + minis
+
+
+def _merge_fixed_stats_and_genome(base_stats_fixed: dict, genome: list[dict]) -> dict[str, int]:
+    """Gem-less loadout stats = tier-adjusted song base (fixed_stats + tier delta) + gear/mini genome."""
+    out = {str(key): int(value or 0) for key, value in dict(base_stats_fixed or {}).items()}
+    for item in list(genome or []):
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            if key in {"Name", "type"}:
+                continue
+            out[str(key)] = int(out.get(key, 0) or 0) + int(value or 0)
+    return out
+
+
+def resolve_zero_ms_fg_force(
+    *,
+    base_stats_fixed: dict,
+    genome: list[dict],
+    calc_song: dict,
+    ref_arrays: dict,
+    selected_color: str,
+) -> dict:
+    """Lossless 0ms FG re-solve for ONE loadout at one (tier·color) config.
+
+    ``base_stats_fixed`` is the GEM-LESS, tier-adjusted song base (``fixed_stats`` + tier delta);
+    ``genome`` is the loadout's 6 gear + 3 mini stat-dicts (no gems). Re-solves the gem allocation
+    at ``total_budget=TOTAL_GEM_BUDGET`` via the canonical FG response frontier (GPU search on the
+    fp-gated kernel -- f32 on MoltenVK / f64 on AMD -- then CPU-f64 exact rescore), and returns the
+    materialized ``force`` payload (re-solved GemCounts/Stats/Score + chart-fixed frontier_trace).
+    ``calc_song`` MUST carry chart-only timing (``apply_timing_envelope(mode="zero_ms")``). This is
+    the single canonical recipe shared by serving and the lossless-exact gate, so served == native.
+    """
+    from ...core.constants import TOTAL_GEM_BUDGET
+    from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_fg_replays
+
+    gem_less = _merge_fixed_stats_and_genome(base_stats_fixed, genome)
+    replays = build_fixed_timing_fg_replays(
+        fg_stats_list=[gem_less],
+        base_stats_list=[gem_less],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_color=str(selected_color or ""),
+        total_budget=int(TOTAL_GEM_BUDGET),
+    )
+    if len(replays) != 1:
+        raise ValueError(f"zero_ms FG re-solve expected exactly one replay, got {len(replays)}")
+    return replays[0]["force"]
+
+
 def _ensure_stats_include_base_effect(stats: dict, base_effect: dict[str, int]) -> dict:
     if not isinstance(stats, dict) or not stats or not isinstance(base_effect, dict) or not base_effect:
         return stats if isinstance(stats, dict) else {}

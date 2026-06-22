@@ -43,7 +43,10 @@ from gear_optimizer.core.utils import cfg_to_dict, get_selected_element
 from gear_optimizer.data.database import get_best_loadouts, get_evolution_db_path
 from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
 from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
-from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
+    build_team_buff_tier_db_batches,
+    resolve_zero_ms_fg_force,
+)
 from gear_optimizer.solver.fg_response_frontier_cache_prebuild import ensure_response_frontier_cache_for_calc_song
 from gear_optimizer.solver.scoring.exact_rescore import (
     score_force_greats_response_surface_exact,
@@ -59,6 +62,7 @@ from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline
 from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
     prepare_force_greats_response_frontier_scoring_batch,
     score_prepared_force_greats_response_frontier_batch_cpu_sync,
+    score_prepared_force_greats_response_frontier_batch_sync,
 )
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
@@ -395,36 +399,19 @@ def _solve_fg_exact(
     ref_arrays: dict[str, Any],
     selected_element: str,
 ) -> tuple[int, dict[str, int], dict[str, Any]]:
-    base_stats = _merge_fixed_stats_and_genome(base_stats_fixed, genome)
-    ensure_response_frontier_cache_for_calc_song(calc_song, ref_arrays)
-    batch = prepare_force_greats_response_frontier_scoring_batch(
-        base_stats_list=[base_stats],
+    # Single canonical recipe, shared with serving (compute_team_buff_tier_leaderboards): gem-less
+    # base + budget=90 -> GPU FG search (fp-gated kernel) -> CPU-f64 exact rescore (force["Score"]).
+    # Using the SAME production helper here is what makes served == native (delta=0).
+    force = resolve_zero_ms_fg_force(
+        base_stats_fixed=base_stats_fixed,
+        genome=genome,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         selected_color=str(selected_element or ""),
-        total_budget=int(TOTAL_GEM_BUDGET),
     )
-    results = score_prepared_force_greats_response_frontier_batch_cpu_sync(
-        batch,
-        include_forced_counts=False,
-    )
-    if len(results) != 1:
-        raise ValueError(f"Expected exactly one FG solve result, got {len(results)}")
-    result = results[0]
-    resolved_stats = dict(result.stats or {})
-    resolved_score = _exact_fg_score(
-        stats=resolved_stats,
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        selected_element=selected_element,
-    )
-    return resolved_score, _normalize_gem_counts(
-        {
-            "GemCounts": dict(result.gem_counts or {}),
-            "FT": int(result.ft),
-            "FF": int(result.ff),
-        }
-    ), resolved_stats
+    resolved_stats = dict(force.get("Stats") or {})
+    resolved_score = int(force.get("Score") or 0)
+    return resolved_score, _normalize_gem_counts(force), resolved_stats
 
 
 def _selected_element_for_mode(*, replay_payload: dict[str, Any] | None, fallback_primary: str) -> str:
@@ -602,8 +589,9 @@ def main() -> int:
     db_path = Path(str(args.db or "").strip())
     if not db_path.exists():
         raise SystemExit(f"DB not found: {db_path}")
-    if str(args.mode) != "meta":
-        raise SystemExit("FG-mode exact re-solve still depends on Task A.2; run --mode meta for the base-gap evidence harness.")
+    # FG-mode exact re-solve is now supported on macOS: the FG gem kernel is fp-gated
+    # (f32 on MoltenVK / f64 on AMD), so the GPU gem search runs here; the served score is the
+    # CPU-f64 exact rescore of the winner (lossless). --mode {meta,fg,both} all run.
 
     cfg = load_config(str(args.config))
     cfg_dict = cfg_to_dict(cfg)
