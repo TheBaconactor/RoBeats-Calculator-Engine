@@ -838,19 +838,36 @@ def compute_team_buff_tier_leaderboards(
                 )
 
             if replay_fg and isinstance(fg, dict) and int(fg_score) > 0:
-                fg_ranked.append(
-                    {
-                        "loadout_hash": e.get("loadout_hash") or "",
-                        "gear": e.get("gear") or [],
-                        "minis": e.get("minis") or [],
-                        "fg_score": int(fg_score),
-                        "source_score": int(e.get("source_score") or 0),
-                        "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
-                        "source_fg_score": int(e.get("source_fg_score") or 0),
-                        "force_config": fg.get("config"),
-                        "_replay_fg": fg,
-                    }
-                )
+                loadout_hash = _norm_text(e.get("loadout_hash"))
+                fg_row = {
+                    "loadout_hash": loadout_hash,
+                    "gear": e.get("gear") or [],
+                    "minis": e.get("minis") or [],
+                    "fg_score": int(fg_score),
+                    "source_score": int(e.get("source_score") or 0),
+                    "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
+                    "source_fg_score": int(e.get("source_fg_score") or 0),
+                    "force_config": fg.get("config"),
+                }
+                if timing_mode == "zero_ms":
+                    force = zero_ms_fg_force_by_hash.get((str(tier), loadout_hash))
+                    if not isinstance(force, dict):
+                        raise ValueError(
+                            "zero_ms FG re-solve has no force witness for leaderboard entry "
+                            f"{loadout_hash!r} at tier {tier!r}."
+                        )
+                    fg_base_score = _safe_int(force.get("BaseScore"), 0)
+                    if fg_base_score <= 0:
+                        raise ValueError(
+                            "zero_ms FG force witness is missing a positive paired BaseScore "
+                            f"for leaderboard entry {loadout_hash!r} at tier {tier!r}."
+                        )
+                    if int(fg_score) <= int(fg_base_score):
+                        continue
+                    fg_row["fg_base_score"] = int(fg_base_score)
+                else:
+                    fg_row["_replay_fg"] = fg
+                fg_ranked.append(fg_row)
 
         base_top = nsmallest(
             int(n),
@@ -866,6 +883,9 @@ def compute_team_buff_tier_leaderboards(
         paired_rows: list[dict] = []
         fg_top: list[dict] = []
         for row in fg_top_raw:
+            if timing_mode == "zero_ms":
+                fg_top.append(row)
+                continue
             fg_snap = row.pop("_replay_fg", None)
             if isinstance(fg_snap, dict):
                 paired_rows.append(row)

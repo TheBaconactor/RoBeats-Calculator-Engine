@@ -79,9 +79,9 @@ def resolve_fg_force_for_loadouts(
     timing must already be chart-fixed (caller applies apply_timing_envelope(mode="zero_ms") to
     calc_song). Returns one re-solved ``force`` dict per entry, in order.
 
-    The FG Score in each force is exact and independent of the paired base; the paired base sets
-    only the displayed BaseScore. Here the gem-less base stats double as the paired-base input (the
-    loadout's zero-gem base under the same chart timing) -- a valid >0 paired base.
+    The FG Score in each force is exact and independent of the paired base. The replay materializer
+    derives the paired BaseScore from the resolved gem-full stats, so no-force 0/0 surfaces compare
+    equal to base instead of being promoted by a gem-less seed score.
     """
     from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_fg_replays
 
@@ -92,7 +92,7 @@ def resolve_fg_force_for_loadouts(
     gem_less = [merge_fixed_stats_and_genome(target_fixed, entry_genome(e)) for e in rows]
     replays = build_fixed_timing_fg_replays(
         fg_stats_list=gem_less,
-        base_stats_list=gem_less,  # gem-less base = a valid >0 paired base (display-only field)
+        base_stats_list=gem_less,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         selected_color=str(selected_color or ""),
