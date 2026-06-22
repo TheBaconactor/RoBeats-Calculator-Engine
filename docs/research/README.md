@@ -13,6 +13,8 @@ This folder stores standalone research artifacts that are not required for day-t
 - `FG_GROUP_INCUMBENT_MEASUREMENT_20260621.md` — next-step spec: cheap best-case measurement of whether a group-kernel (per-owner) cross-surface incumbent would skip enough surfaces to be worth a heavy-song dispatch rewrite
 - `FG_GROUP_INCUMBENT_HANDOFF_20260621.md` — turnkey blind-executor handoff for the above measurement (dump-hook patch, run commands, analyzer `artifacts/profile/c4b_best_case_incumbent.py`, decision thresholds, report format). RESULT: skip ceilings 0.29-0.87 real, but forced group kernel 5.1× slower → per-owner dispatch dead
 - `FG_TWOPASS_SEED_QUALITY_HANDOFF_20260621.md` — handoff (M-A) to settle the last live variant (two-pass seed): per-surface-exact dump + analyzer `artifacts/profile/ma_seed_quality.py` measuring whether the top-UB seed reaches the skip ceiling
+- `FG_GPU_IDLE_CORRECTED_DIAGNOSIS_20260621.md` — sub-second per-chunk measurement (RGP installed) correcting the score-loop-only framing: chunk dispatch idle is 0.9%, the real GPU idle is the ~20 s post-score host work + 2.3 s GA warmup gap + 67 s cold-JIT (one-time)
+- `FG_POSTSCORE_HOTSPOT_20260621.md` — pinpointed the ~12 s post-score GPU-idle to `reconstruct_force_greats_response_trace` (51× in the reducer, no cross-call cache, 235 ms/call); lever = per-surface trace cache if unique-surface count ≪ 51
 - `GPU_FUSED_FG_OWNER_GAP_REVIEW_REQUEST_20260613.md` — earlier FG owner-gap review (superseded by the 2026-06-21 docs above; numbers under-sampled the heavy tail)
 
 ## Bundles
