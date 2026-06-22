@@ -32,6 +32,12 @@ scored as FG.
 `Score <= BaseScore` before ranking and never recomputes zero_ms `fg_base_score` from the persisted
 perfect-window FG snapshot.
 
+`helpers/song_helpers/team_buff_tiers.py::build_team_buff_tier_db_batches` also enforces the same
+contract on combined (`replay_surface="both"`) raw rows: base-selected rows do not carry a `force`
+payload or positive FG score fields unless they have a valid `fg_score > fg_base_score` witness.
+That keeps internal evidence harnesses and any combined-mode caller from treating "not on the FG
+leaderboard" as a served FG replay with score `0`.
+
 No feature flag or alternate path was added. This is a contract correction at the materialization
 boundary.
 
@@ -44,6 +50,8 @@ FG zero_ms buckets are invalidated on deploy.
   `tests/test_fixed_timing_fg_replay_paired_base.py::test_fixed_timing_fg_replay_pairs_base_to_resolved_stats`
 - New regression test:
   `tests/test_zero_ms_fg_leaderboard_paired_base.py::test_zero_ms_fg_leaderboard_uses_force_witness_base_score`
+- New regression test:
+  `tests/test_zero_ms_fg_leaderboard_paired_base.py::test_zero_ms_both_batch_does_not_attach_force_to_base_only_rows`
 - Manual reproduction before fix:
   Dark Sheep Hard T5 `mode=fg&timing_mode=zero_ms` recomputed cold in ~82s and produced score
   `112366848`, config `0/0`, with paired base incorrectly sourced from gem-less stats.

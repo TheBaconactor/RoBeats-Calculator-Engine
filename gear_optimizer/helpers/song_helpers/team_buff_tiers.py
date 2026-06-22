@@ -1190,7 +1190,15 @@ def build_team_buff_tier_db_batches(
                     if isinstance(timeline_frontier, dict) and timeline_frontier.get("frontier_trace"):
                         details_out["TimelineFrontier"] = timeline_frontier
 
-            if surface in {"fg", "both"}:
+            valid_fg_score = (
+                int(fg_score_out) > 0
+                and int(fg_base_score_out) > 0
+                and int(fg_score_out) > int(fg_base_score_out)
+            )
+            if surface in {"fg", "both"} and not valid_fg_score:
+                fg_score_out = 0
+                fg_base_score_out = 0
+            if surface in {"fg", "both"} and valid_fg_score:
                 force_base = orig.get("force")
                 if isinstance(force_base, dict) and base_effect:
                     force_base_obj = force_base
@@ -1270,6 +1278,9 @@ def build_team_buff_tier_db_batches(
                 # no score values — the renderer applies per-tier stats), so the persisted baseline
                 # trace is already the exact per-tier witness. See test_fg_note_graph_trace_is_tier_invariant
                 # and docs TIER_REPLAY_BASE_FRONTIER_TRACE.md (FG section).
+                if not isinstance(force_out, dict):
+                    fg_score_out = 0
+                    fg_base_score_out = 0
 
             out_row: dict = {
                 "loadout_hash": str(orig.get("loadout_hash") or ""),
