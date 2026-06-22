@@ -482,10 +482,12 @@ def _score_response_group_meta_gpu(
     d_surface_words = ti.ndarray(dtype=ti.u32, shape=surface_words_all.shape)
     d_surface_counts = ti.ndarray(dtype=ti.i32, shape=surface_counts_all.shape)
     d_surface_head_coeffs = ti.ndarray(dtype=ti.i32, shape=surface_head_coeffs_all.shape)
+    # No ti.sync() here: the from_numpy uploads and the kernel launches below run on the same
+    # Taichi stream, so the uploads are ordered before the first kernel reads them; the
+    # per-chunk ti.sync() after each dispatch already gates the host reduce on the outputs.
     d_surface_words.from_numpy(surface_words_all)
     d_surface_counts.from_numpy(surface_counts_all)
     d_surface_head_coeffs.from_numpy(surface_head_coeffs_all)
-    ti.sync()
     if (
         group_count <= max_dispatch_groups
         and total_work <= max_dispatch_work
