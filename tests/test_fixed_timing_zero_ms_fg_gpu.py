@@ -175,6 +175,15 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         },
     }
 
+    # zero_ms now re-solves the BASE gems too (GPU exhaustive search), which needs the
+    # candidate-independent timeline-frontier cache built first -- mirror the on-demand path.
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    _cs_zero_ms = dict(calc_song)
+    apply_timing_envelope(_cs_zero_ms, mode="zero_ms")
+    build_or_load_timeline_frontier_payload(_cs_zero_ms, ref_arrays)
+
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
         calc_song=calc_song,

@@ -45,6 +45,7 @@ from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, ge
 from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
     build_team_buff_tier_db_batches,
+    resolve_zero_ms_base,
     resolve_zero_ms_fg_force,
 )
 from gear_optimizer.solver.fg_response_frontier_cache_prebuild import ensure_response_frontier_cache_for_calc_song
@@ -469,6 +470,22 @@ def _compare_entry_mode(
             ref_arrays=ref_arrays,
             selected_element=selected_element,
         )
+    elif str(timing_mode) == "zero_ms":
+        # Single canonical recipe, shared with serving (compute_team_buff_tier_leaderboards): gem-less
+        # base + GPU base exhaustive search (MoltenVK-correct after the warmstart fix) + CPU-f64 0ms
+        # exact rescore. Using the SAME helper here is what makes served base == native (delta=0).
+        resolved, resolved_score = resolve_zero_ms_base(
+            cfg=cfg,
+            base_stats_fixed=target_fixed_stats,
+            genome=genome,
+            calc_song=clone_calc_song(active_calc_song),
+            ref_arrays=ref_arrays,
+            primary_color=chart_primary,
+            secondary_color=chart_secondary,
+            selected_color=selected_element,
+        )
+        resolved_stats = dict(resolved.get("Stats") or {})
+        resolved_gem_counts = _normalize_gem_counts(resolved)
     else:
         cfg_data = build_solver_cfg_data(
             cfg,

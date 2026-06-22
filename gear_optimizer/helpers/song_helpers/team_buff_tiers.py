@@ -288,10 +288,12 @@ def resolve_zero_ms_fg_force(
     return replays[0]["force"]
 
 
-def _zero_ms_fixed_stats(cfg_dict: dict, calc_song: dict) -> dict:
-    """Gem-less song base (incl. baseline team buff) for the 0ms re-solve, identical to the
-    lossless-exact gate's input. Mirrors setup_song_config's fixed_stats: cfg + baseline team
-    buff -> get_fixed_stats. Computed once per song; the per-tier delta is applied on top."""
+def _zero_ms_cfg_and_fixed_stats(cfg_dict: dict, calc_song: dict):
+    """``(cfg, gem-less fixed_stats)`` for the 0ms re-solve, identical to the lossless-exact gate's
+    input. Mirrors setup_song_config: ``cfg_from_dict`` + ``apply_baseline_team_buff_config`` ->
+    ``get_fixed_stats``. The SAME ``cfg`` is reused for the base re-solve (build_candidate_payload),
+    so FG, base, and the gate share one config -> served == native. Computed once per song; the
+    per-tier delta is applied on top."""
     from ...core.utils import cfg_from_dict
     from ...data.csv_parser import get_fixed_stats
     from ...data.song_io import clone_calc_song
@@ -299,7 +301,55 @@ def _zero_ms_fixed_stats(cfg_dict: dict, calc_song: dict) -> dict:
 
     cfg = cfg_from_dict(dict(cfg_dict or {}))
     apply_baseline_team_buff_config(cfg, clone_calc_song(calc_song))
-    return dict(get_fixed_stats(cfg) or {})
+    return cfg, dict(get_fixed_stats(cfg) or {})
+
+
+def resolve_zero_ms_base(
+    *,
+    cfg,
+    base_stats_fixed: dict,
+    genome: list[dict],
+    calc_song: dict,
+    ref_arrays: dict,
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> tuple[dict, int]:
+    """Lossless 0ms BASE (meta) re-solve for ONE loadout at one (tier·color) config.
+
+    Re-allocates the gem budget at chart timing via the canonical GPU base exhaustive search (now
+    MoltenVK-correct after the skyline warmstart race fix), then CPU-f64 exact-rescores the resolved
+    Stats at 0ms. ``base_stats_fixed`` is the GEM-LESS tier-adjusted song base; ``genome`` is the
+    loadout's 6 gear + 3 mini stat-dicts. Returns ``(resolved_payload, score)`` where ``score`` is
+    the served 0ms base score. Shared by serving and the lossless gate so served == native
+    (delta=0)."""
+    from ...solver.scoring.exact_rescore import score_stats_fixed_timing_exact
+    from ...solver.solver_common import (
+        build_candidate_payload,
+        build_solver_cfg_data,
+        build_solver_override_cfg,
+    )
+
+    p_color = str(primary_color or "")
+    cfg_data = build_solver_cfg_data(
+        cfg, p_color=p_color, s_color=str(secondary_color or ""), selected_color=str(selected_color or "")
+    )
+    override_cfg = build_solver_override_cfg(cfg_data, p_color=p_color, selected_color=str(selected_color or ""))
+    override_cfg["use_gpu"] = True
+    resolved = build_candidate_payload(
+        cfg=cfg,
+        base_stats_fixed=dict(base_stats_fixed or {}),
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        genome=list(genome or []),
+        override_cfg=override_cfg,
+        gpu_client=None,
+    )
+    resolved_stats = dict(resolved.get("Stats") or {})
+    if not resolved_stats:
+        raise ValueError("zero_ms base re-solve returned no Stats")
+    score = int(score_stats_fixed_timing_exact(resolved_stats, calc_song, ref_arrays))
+    return resolved, score
 
 
 def _ensure_stats_include_base_effect(stats: dict, base_effect: dict[str, int]) -> dict:
@@ -614,22 +664,64 @@ def compute_team_buff_tier_leaderboards(
             int(delta_map.get(secondary_color, 0)) if secondary_color else 0,
         )
 
+    # Shared 0ms re-solve config (cfg + gem-less fixed_stats), built once per song and used by BOTH
+    # the base (meta) and FG zero_ms re-solves so they (and the lossless gate) share one config.
+    zero_ms_cfg = None
+    zero_ms_fixed_stats: dict = {}
+    if timing_mode == "zero_ms":
+        zero_ms_cfg, zero_ms_fixed_stats = _zero_ms_cfg_and_fixed_stats(cfg_dict, calc_song)
+
     meta_scores_by_tier: dict[str, list[int]] = {}
+    # zero_ms only: per (tier, loadout_hash) RE-SOLVED base payloads (re-solved Stats/GemCounts/Score).
+    zero_ms_base_by_tier_hash: dict[str, dict[str, dict]] = {}
     if replay_meta and per_entry:
-        for tier in tier_list:
-            dpp, dp, ds = tier_deltas[str(tier)]
-            tier_stats = [
-                _fg_stats_at_tier(
-                    e.get("base") or {},
-                    delta_pp=int(dpp),
-                    delta_primary=int(dp),
-                    delta_secondary=int(ds),
-                    primary_color=primary_color,
-                    secondary_color=secondary_color,
+        if timing_mode == "zero_ms":
+            # Lossless 0ms BASE re-solve: per (loadout, tier) re-allocate the gem budget from the
+            # loadout's GEM-LESS identity via the canonical GPU base exhaustive search (now
+            # MoltenVK-correct after the skyline warmstart fix) + CPU-f64 exact rescore -> served
+            # base == native optimum. (perfect_window inherits the persisted gems, below.)
+            base_genomes = [_entry_genome(e.get("_entry") or {}) for e in per_entry]
+            for tier in tier_list:
+                delta_map = _team_buff_delta_map(
+                    base_team_buff=base_team_buff,
+                    target_team_buff=str(tier),
+                    base_team_color=base_team_color,
+                    target_team_color=target_team_color,
                 )
-                for e in per_entry
-            ]
-            meta_scores_by_tier[str(tier)] = [int(s) for s in _base_score_batch(tier_stats)]
+                target_fixed = _apply_stat_delta(zero_ms_fixed_stats, delta_map)
+                tier_scores = [0] * len(per_entry)
+                witness_for_tier = zero_ms_base_by_tier_hash.setdefault(str(tier), {})
+                for i, e in enumerate(per_entry):
+                    resolved, score = resolve_zero_ms_base(
+                        cfg=zero_ms_cfg,
+                        base_stats_fixed=target_fixed,
+                        genome=base_genomes[i],
+                        calc_song=calc_song,
+                        ref_arrays=ref_arrays,
+                        primary_color=primary_color,
+                        secondary_color=secondary_color,
+                        selected_color=primary_color,
+                    )
+                    tier_scores[i] = int(score)
+                    h = _norm_text(e.get("loadout_hash"))
+                    if h:
+                        witness_for_tier[h] = resolved
+                meta_scores_by_tier[str(tier)] = tier_scores
+        else:
+            for tier in tier_list:
+                dpp, dp, ds = tier_deltas[str(tier)]
+                tier_stats = [
+                    _fg_stats_at_tier(
+                        e.get("base") or {},
+                        delta_pp=int(dpp),
+                        delta_primary=int(dp),
+                        delta_secondary=int(ds),
+                        primary_color=primary_color,
+                        secondary_color=secondary_color,
+                    )
+                    for e in per_entry
+                ]
+                meta_scores_by_tier[str(tier)] = [int(s) for s in _base_score_batch(tier_stats)]
     else:
         meta_scores_by_tier = {str(t): [0] * len(per_entry) for t in tier_list}
 
@@ -652,7 +744,7 @@ def compute_team_buff_tier_leaderboards(
             # NOT the optimum (the timing shifts the optimal allocation), so they must be re-solved
             # per tier, not replayed. (Forcing greats still helps at 0ms -- it changes fill length,
             # shifting fever activation -- so FG 0ms is genuinely re-optimized, not base 0ms.)
-            zero_ms_fixed_stats = _zero_ms_fixed_stats(cfg_dict, calc_song)
+            # zero_ms_fixed_stats is the shared gem-less song base computed once above.
             for tier in tier_list:
                 delta_map = _team_buff_delta_map(
                     base_team_buff=base_team_buff,
@@ -796,6 +888,9 @@ def compute_team_buff_tier_leaderboards(
         # zero_ms only (empty otherwise): per-loadout rebuilt FG force payloads carrying the
         # chart-fixed note-graph witness; consumed by build_team_buff_tier_db_batches.
         "zero_ms_fg_force_by_tier_hash": zero_ms_fg_force_by_tier_hash,
+        # zero_ms only (empty otherwise): per (tier, hash) RE-SOLVED base payloads
+        # (re-solved Stats/GemCounts/Score), consumed by build_team_buff_tier_db_batches.
+        "zero_ms_base_by_tier_hash": zero_ms_base_by_tier_hash,
     }
 
 
@@ -859,6 +954,7 @@ def build_team_buff_tier_db_batches(
         timing_mode=timing_mode,
     )
     zero_ms_fg_force_by_tier_hash = payload.get("zero_ms_fg_force_by_tier_hash") or {}
+    zero_ms_base_by_tier_hash = payload.get("zero_ms_base_by_tier_hash") or {}
 
     payload_meta = payload.get("meta") or {}
     base_team_buff = _norm_text(payload_meta.get("base_team_buff")) or _resolve_base_team_buff(cfg_dict)
@@ -1010,6 +1106,21 @@ def build_team_buff_tier_db_batches(
                 # tier's timing (issue #38, base surface).
                 if isinstance(details_out, dict):
                     details_out.pop("TimelineFrontier", None)
+                if is_zero_ms and isinstance(details_out, dict):
+                    # Lossless 0ms base re-solve: replace the inherited Stats/GemCounts with the
+                    # RE-SOLVED (at-tier) witness so the served base card shows the 0ms-optimal gems
+                    # + score (the meta leaderboard score already comes from the same re-solve). No
+                    # tier delta -- the witness is already at-tier (fixed_stats + tier delta + gems).
+                    base_witness = zero_ms_base_by_tier_hash.get(str(tier), {}).get(
+                        _norm_text(orig.get("loadout_hash"))
+                    )
+                    if isinstance(base_witness, dict):
+                        w_stats = base_witness.get("Stats")
+                        if isinstance(w_stats, dict) and w_stats:
+                            details_out["Stats"] = dict(w_stats)
+                        w_gems = base_witness.get("GemCounts")
+                        if isinstance(w_gems, dict):
+                            details_out["GemCounts"] = dict(w_gems)
                 # Recompute the per-note timeline trace for the tier-shifted stats so the
                 # base note graph reflects this tier rather than the frozen baseline
                 # witnesses (issue #38, point 4 — base surface). Additive only: the row's
