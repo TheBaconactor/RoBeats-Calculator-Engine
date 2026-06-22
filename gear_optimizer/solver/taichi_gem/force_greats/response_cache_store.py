@@ -14,6 +14,7 @@ import numpy as np
 from numpy.lib import format as np_format
 
 from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 
 from .response_cache_keys import (
@@ -37,6 +38,10 @@ _frontier_cache: OrderedDict[tuple, FgResponseFrontierResult] = OrderedDict()
 _payload_cache: OrderedDict[tuple, FgResponseFrontierCachePayload] = OrderedDict()
 _bundle_array_cache: OrderedDict[tuple, dict[str, np.ndarray]] = OrderedDict()
 _scoring_bundle_cache: OrderedDict[tuple, FgResponseFrontierScoringBundle] = OrderedDict()
+_frontier_cache_last_access: dict[tuple, float] = {}
+_payload_cache_last_access: dict[tuple, float] = {}
+_bundle_array_cache_last_access: dict[tuple, float] = {}
+_scoring_bundle_cache_last_access: dict[tuple, float] = {}
 _frontier_cache_lock = threading.RLock()
 _RESPONSE_BUNDLE_BUILD_PARALLELISM = 1
 _response_bundle_build_slots = threading.BoundedSemaphore(int(_RESPONSE_BUNDLE_BUILD_PARALLELISM))
@@ -50,6 +55,102 @@ _SURFACE_POOL_SIDECAR_SUFFIX = ".surf_pool.npy"
 _SURFACE_COEFF_SIDECAR_SUFFIX = ".surf_coeffs.npy"
 _SURFACE_POOL_COLUMNS = 11
 _SURFACE_COEFF_COLUMNS = 4
+
+
+def _fg_response_idle_ttl_seconds() -> float | None:
+    raw = str(env_get("ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        ttl = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return ttl if ttl > 0.0 else None
+
+
+_LIVE_CACHE_DISK_IDLE_TTL_MULTIPLIER = 2.0
+
+
+def _fg_response_disk_idle_ttl_seconds(idle_ttl_seconds: float | None = None) -> float | None:
+    ram_ttl = _fg_response_idle_ttl_seconds() if idle_ttl_seconds is None else idle_ttl_seconds
+    if ram_ttl is None or float(ram_ttl) <= 0.0:
+        return None
+    return float(ram_ttl) * _LIVE_CACHE_DISK_IDLE_TTL_MULTIPLIER
+
+
+def _fg_response_entry_idle_expired(
+    last_access: float | None,
+    *,
+    idle_ttl_seconds: float | None,
+    moment: float,
+) -> bool:
+    return idle_ttl_seconds is not None and idle_ttl_seconds > 0.0 and (
+        last_access is None or moment - float(last_access) > float(idle_ttl_seconds)
+    )
+
+
+def _memory_cache_get_locked(
+    cache: OrderedDict,
+    last_access: dict[tuple, float],
+    cache_key: tuple,
+):
+    cached = cache.get(cache_key)
+    if cached is None:
+        return None
+    ttl = _fg_response_idle_ttl_seconds()
+    moment = time.monotonic()
+    if _fg_response_entry_idle_expired(
+        last_access.get(cache_key),
+        idle_ttl_seconds=ttl,
+        moment=moment,
+    ):
+        cache.pop(cache_key, None)
+        last_access.pop(cache_key, None)
+        return None
+    cache.move_to_end(cache_key)
+    last_access[cache_key] = moment
+    return cached
+
+
+def _memory_cache_put_locked(
+    cache: OrderedDict,
+    last_access: dict[tuple, float],
+    cache_key: tuple,
+    value,
+    *,
+    max_entries: int,
+) -> None:
+    moment = time.monotonic()
+    cache[cache_key] = value
+    cache.move_to_end(cache_key)
+    last_access[cache_key] = moment
+    while len(cache) > int(max_entries):
+        stale_key, _stale_value = cache.popitem(last=False)
+        last_access.pop(stale_key, None)
+
+
+def _sweep_fg_response_memory_cache_locked(
+    cache: OrderedDict,
+    last_access: dict[tuple, float],
+    *,
+    idle_ttl_seconds: float | None,
+    moment: float,
+) -> int:
+    if idle_ttl_seconds is None or idle_ttl_seconds <= 0.0:
+        return 0
+    removed = 0
+    while cache:
+        oldest_key = next(iter(cache))
+        if not _fg_response_entry_idle_expired(
+            last_access.get(oldest_key),
+            idle_ttl_seconds=idle_ttl_seconds,
+            moment=moment,
+        ):
+            break
+        cache.pop(oldest_key, None)
+        last_access.pop(oldest_key, None)
+        removed += 1
+    return removed
 
 
 class FgResponseSurfaceSidecarError(RuntimeError):
@@ -75,6 +176,49 @@ def _surface_sidecar_paths(bundle_path: Path) -> tuple[Path, Path]:
 
 def _surface_sidecar_paths_for_key(cache_key: tuple) -> tuple[Path, Path]:
     return _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
+
+
+def _touch_fg_response_bundle_files(bundle_path: Path) -> None:
+    for path in (bundle_path, *_surface_sidecar_paths(bundle_path)):
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
+
+
+def _remove_fg_response_bundle_files(bundle_path: Path) -> int:
+    removed = 0
+    for path in (bundle_path, *_surface_sidecar_paths(bundle_path)):
+        if not path.exists():
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            continue
+        removed += 1
+    return removed
+
+
+def _live_fg_response_bundle_path(
+    bundle_path: Path,
+    *,
+    idle_ttl_seconds: float | None = None,
+    now: float | None = None,
+) -> Path | None:
+    if not bundle_path.exists():
+        return None
+    ttl = _fg_response_idle_ttl_seconds() if idle_ttl_seconds is None else idle_ttl_seconds
+    disk_ttl = _fg_response_disk_idle_ttl_seconds(ttl)
+    if disk_ttl is not None and disk_ttl > 0.0:
+        try:
+            stat = bundle_path.stat()
+        except OSError:
+            return None
+        moment = time.time() if now is None else float(now)
+        if moment - float(stat.st_mtime) > float(disk_ttl):
+            _remove_fg_response_bundle_files(bundle_path)
+            return None
+    return bundle_path
 
 
 def compress_cache_dir_sidecars() -> None:
@@ -259,10 +403,8 @@ def _persisted_packed_frontier_metadata(
 
 def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
     with _frontier_cache_lock:
-        frontier = _frontier_cache.get(cache_key)
-        if frontier is not None:
-            _frontier_cache.move_to_end(cache_key)
-        return frontier
+        frontier = _memory_cache_get_locked(_frontier_cache, _frontier_cache_last_access, cache_key)
+        return frontier if isinstance(frontier, FgResponseFrontierResult) else None
 
 
 def _frontier_is_complete(frontier: FgResponseFrontierResult | None) -> bool:
@@ -273,34 +415,42 @@ def _memory_put(cache_key: tuple, frontier: FgResponseFrontierResult) -> None:
     if not frontier.first_frontier:
         raise ValueError("FG response frontier cache requires first-frontier surfaces")
     with _frontier_cache_lock:
-        _frontier_cache[cache_key] = frontier
-        _frontier_cache.move_to_end(cache_key)
-        while len(_frontier_cache) > int(_MEMORY_CACHE_MAX):
-            _frontier_cache.popitem(last=False)
+        _memory_cache_put_locked(
+            _frontier_cache,
+            _frontier_cache_last_access,
+            cache_key,
+            frontier,
+            max_entries=_MEMORY_CACHE_MAX,
+        )
 
 
 def _payload_memory_get(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
     with _frontier_cache_lock:
-        payload = _payload_cache.get(cache_key)
-        if payload is not None:
-            _payload_cache.move_to_end(cache_key)
-        return payload
+        payload = _memory_cache_get_locked(_payload_cache, _payload_cache_last_access, cache_key)
+        return payload if isinstance(payload, FgResponseFrontierCachePayload) else None
 
 
 def _payload_memory_put(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
     with _frontier_cache_lock:
-        _payload_cache[cache_key] = payload
-        _payload_cache.move_to_end(cache_key)
-        while len(_payload_cache) > int(_PAYLOAD_CACHE_MAX):
-            _payload_cache.popitem(last=False)
+        _memory_cache_put_locked(
+            _payload_cache,
+            _payload_cache_last_access,
+            cache_key,
+            payload,
+            max_entries=_PAYLOAD_CACHE_MAX,
+        )
 
 
 def reset_fg_response_frontier_payload_cache() -> None:
     with _frontier_cache_lock:
         _frontier_cache.clear()
+        _frontier_cache_last_access.clear()
         _payload_cache.clear()
+        _payload_cache_last_access.clear()
         _bundle_array_cache.clear()
+        _bundle_array_cache_last_access.clear()
         _scoring_bundle_cache.clear()
+        _scoring_bundle_cache_last_access.clear()
 
 
 def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
@@ -381,10 +531,10 @@ def _save_npz_fast_compressed(path: Path, arrays: dict[str, np.ndarray]) -> None
 def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
     from .response_cache_serde import _unpack_frontiers
 
-    path = _fg_response_disk_cache_path(cache_key)
-    pool_sidecar, _coeff_sidecar = _surface_sidecar_paths(path)
-    if not path.exists():
+    path = _live_fg_response_bundle_path(_fg_response_disk_cache_path(cache_key))
+    if path is None:
         return None
+    pool_sidecar, _coeff_sidecar = _surface_sidecar_paths(path)
     try:
         with np.load(path, allow_pickle=False) as data:
             version = str(data["version"].item())
@@ -411,6 +561,7 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
             )
             if payload.raw_fill_by_ff.shape[0] != TOTAL_ROWS + 1 or payload.real_time_by_ft.shape[0] != TOTAL_ROWS + 1:
                 return None
+            _touch_fg_response_bundle_files(path)
             return payload
     except FgResponseSurfaceSidecarError:
         # A current-version .npz whose surface sidecar is gone/mismatched is a desync, not a cache
@@ -418,16 +569,14 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
         # rebuilding from scratch.
         raise
     except Exception:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        _remove_fg_response_bundle_files(path)
         return None
 
 
 def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) -> tuple[int, int, int] | None:
     requested = set(normalize_fg_response_stat_keys(keys))
-    if not path.exists():
+    path = _live_fg_response_bundle_path(path)
+    if path is None:
         return None
     required = {"version", *_SCORING_BUNDLE_ARRAY_NAMES}
     pool_sidecar, coeff_sidecar = _surface_sidecar_paths(path)
@@ -489,16 +638,14 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
                 present.add(_normalize_stat_key((int(key_row[0]), int(key_row[1]))))
             if not requested.issubset(present):
                 return None
+            _touch_fg_response_bundle_files(path)
             return (
                 int(total_notes),
                 int(long_notes),
                 int(len(requested)),
             )
     except Exception:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        _remove_fg_response_bundle_files(path)
         return None
 
 
@@ -522,13 +669,13 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
     if not requested:
         raise ValueError("FG response frontier bundle array request was empty")
     with _frontier_cache_lock:
-        cached = _bundle_array_cache.get(cache_key)
+        cached = _memory_cache_get_locked(_bundle_array_cache, _bundle_array_cache_last_access, cache_key)
         if cached is not None and all(name in cached for name in requested):
-            _bundle_array_cache.move_to_end(cache_key)
             return {name: cached[name] for name in requested}
-    path = _fg_response_disk_cache_path(cache_key)
-    if not path.exists():
-        raise ValueError(f"FG response frontier bundle cache is missing: {path}")
+    bundle_path = _fg_response_disk_cache_path(cache_key)
+    path = _live_fg_response_bundle_path(bundle_path)
+    if path is None:
+        raise ValueError(f"FG response frontier bundle cache is missing: {bundle_path}")
     with np.load(path, allow_pickle=False) as data:
         version = str(data["version"].item())
         if version != _fg_response_cache_version():
@@ -537,14 +684,17 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
         if missing:
             raise ValueError(f"FG response frontier bundle cache is missing arrays: {missing[:5]!r}")
         loaded = {name: np.asarray(data[name]) for name in requested}
+    _touch_fg_response_bundle_files(path)
     with _frontier_cache_lock:
         cached = _bundle_array_cache.get(cache_key)
         if cached is None:
             cached = {}
             _bundle_array_cache[cache_key] = cached
         cached.update(loaded)
+        _bundle_array_cache_last_access[cache_key] = time.monotonic()
         while len(_bundle_array_cache) > int(_BUNDLE_ARRAY_CACHE_MAX):
-            _bundle_array_cache.popitem(last=False)
+            stale_key, _stale_value = _bundle_array_cache.popitem(last=False)
+            _bundle_array_cache_last_access.pop(stale_key, None)
         _bundle_array_cache.move_to_end(cache_key)
         return {name: cached[name] for name in requested}
 
@@ -617,20 +767,80 @@ def load_first_surface_scoring_rows(
 def _invalidate_bundle_array_views(bundle_key: tuple) -> None:
     with _frontier_cache_lock:
         _bundle_array_cache.pop(bundle_key, None)
+        _bundle_array_cache_last_access.pop(bundle_key, None)
         _scoring_bundle_cache.pop(bundle_key, None)
+        _scoring_bundle_cache_last_access.pop(bundle_key, None)
 
 
 def _scoring_bundle_memory_get(bundle_key: tuple) -> FgResponseFrontierScoringBundle | None:
     with _frontier_cache_lock:
-        cached = _scoring_bundle_cache.get(bundle_key)
-        if cached is not None:
-            _scoring_bundle_cache.move_to_end(bundle_key)
-        return cached
+        cached = _memory_cache_get_locked(_scoring_bundle_cache, _scoring_bundle_cache_last_access, bundle_key)
+        return cached if isinstance(cached, FgResponseFrontierScoringBundle) else None
 
 
 def _scoring_bundle_memory_put(bundle_key: tuple, scoring_bundle: FgResponseFrontierScoringBundle) -> None:
     with _frontier_cache_lock:
-        _scoring_bundle_cache[bundle_key] = scoring_bundle
-        _scoring_bundle_cache.move_to_end(bundle_key)
-        while len(_scoring_bundle_cache) > int(_BUNDLE_ARRAY_CACHE_MAX):
-            _scoring_bundle_cache.popitem(last=False)
+        _memory_cache_put_locked(
+            _scoring_bundle_cache,
+            _scoring_bundle_cache_last_access,
+            bundle_key,
+            scoring_bundle,
+            max_entries=_BUNDLE_ARRAY_CACHE_MAX,
+        )
+
+
+def sweep_fg_response_frontier_live_cache(
+    *,
+    idle_ttl_seconds: float | None = None,
+    now_mono: float | None = None,
+    now_wall: float | None = None,
+) -> int:
+    ttl = _fg_response_idle_ttl_seconds() if idle_ttl_seconds is None else idle_ttl_seconds
+    if ttl is None or ttl <= 0.0:
+        return 0
+    disk_ttl = _fg_response_disk_idle_ttl_seconds(ttl)
+    removed = 0
+    moment_mono = time.monotonic() if now_mono is None else float(now_mono)
+    with _frontier_cache_lock:
+        removed += _sweep_fg_response_memory_cache_locked(
+            _frontier_cache,
+            _frontier_cache_last_access,
+            idle_ttl_seconds=ttl,
+            moment=moment_mono,
+        )
+        removed += _sweep_fg_response_memory_cache_locked(
+            _payload_cache,
+            _payload_cache_last_access,
+            idle_ttl_seconds=ttl,
+            moment=moment_mono,
+        )
+        removed += _sweep_fg_response_memory_cache_locked(
+            _bundle_array_cache,
+            _bundle_array_cache_last_access,
+            idle_ttl_seconds=ttl,
+            moment=moment_mono,
+        )
+        removed += _sweep_fg_response_memory_cache_locked(
+            _scoring_bundle_cache,
+            _scoring_bundle_cache_last_access,
+            idle_ttl_seconds=ttl,
+            moment=moment_mono,
+        )
+    if disk_ttl is None or disk_ttl <= 0.0:
+        return removed
+    moment_wall = time.time() if now_wall is None else float(now_wall)
+    try:
+        bundle_paths = tuple(_fg_response_disk_cache_dir().glob("*.npz"))
+    except OSError:
+        return removed
+    for bundle_path in bundle_paths:
+        if not bundle_path.exists():
+            continue
+        try:
+            stat = bundle_path.stat()
+        except OSError:
+            continue
+        if moment_wall - float(stat.st_mtime) <= float(disk_ttl):
+            continue
+        removed += _remove_fg_response_bundle_files(bundle_path)
+    return removed

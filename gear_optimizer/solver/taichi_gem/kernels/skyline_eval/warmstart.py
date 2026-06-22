@@ -5,15 +5,11 @@ Includes:
 - skyline_find_best_combo_warmstart_kernel
 """
 
-import sys
-
 import taichi as ti
 
+from ... import fields as gpu_fields
 from .. import kernels_helpers
 from ..warmstart_common import MAX_STAT, solve_combo_warmstart_preloaded
-
-# Platform detection for atomic operations
-IS_METAL = sys.platform == "darwin"
 
 
 @ti.func
@@ -91,9 +87,10 @@ def _compute_combo_key_warmstart_preloaded(
         score_cull_threshold,
     )
     score = res_vec[0]
+    out_key = ti.u64(0)
     if score >= 0:
-        return (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
-    return ti.u64(0)
+        out_key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
+    return out_key
 
 
 @ti.kernel
@@ -147,7 +144,7 @@ def skyline_find_best_combo_warmstart_kernel(
     w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ft << 1) + is_s_ft)
     w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ff << 1) + is_s_ff)
 
-    if ti.static(IS_METAL):
+    if ti.static(gpu_fields.IS_METAL):
         # Metal: keep the original per-combo score atomic approach (no u64 atomics).
         ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
         for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):

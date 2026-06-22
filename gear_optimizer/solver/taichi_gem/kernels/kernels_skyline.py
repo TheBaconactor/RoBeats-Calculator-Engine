@@ -14,13 +14,10 @@ These kernels enable fully GPU-native skyline execution, avoiding CPU-GPU transf
 during population evolution.
 """
 
-import sys
 import taichi as ti
 
 from gear_optimizer.core.parsing import env_float
-
-# Platform detection for atomic operations
-IS_METAL = sys.platform == "darwin"
+from .. import fields as gpu_fields
 
 from . import kernels_helpers
 from .skyline_eval.write_results import (
@@ -386,7 +383,7 @@ def SKYLINE_build_exact_eval_reuse_map_kernel(n_genomes: int, n_slots: int) -> N
         return
 
     n_slots_i = int(n_slots)
-    if IS_METAL:
+    if gpu_fields.IS_METAL:
         _SKYLINE_build_exact_eval_reuse_map_serial_kernel(n_genomes_i, n_slots_i)
         return
 
@@ -500,7 +497,7 @@ def SKYLINE_build_exact_eval_reuse_map_from_base_stats_kernel(n_genomes: int) ->
             kernels_helpers.skyline_exact_eval_unique_count[0] = 1
         return
 
-    if IS_METAL:
+    if gpu_fields.IS_METAL:
         _SKYLINE_build_exact_eval_reuse_map_from_base_stats_serial_kernel(n_genomes_i)
         return
 
@@ -529,7 +526,7 @@ def SKYLINE_propagate_exact_eval_reuse_chunk_best_kernel(n_genomes: ti.i32):
     for g in range(n_genomes):
         rep = kernels_helpers.skyline_exact_eval_rep_idx[g]
         if rep >= 0 and rep != g:
-            if ti.static(not IS_METAL):
+            if ti.static(not gpu_fields.IS_METAL):
                 kernels_helpers.chunk_best_key[g] = kernels_helpers.chunk_best_key[rep]
             else:
                 kernels_helpers.chunk_best_score[g] = kernels_helpers.chunk_best_score[rep]
@@ -1118,7 +1115,7 @@ def skyline_aggregate_and_init_best_kernel(
     # Platform detection for atomic operations
 
     for g in range(n_genomes):
-        if ti.static(not IS_METAL):
+        if ti.static(not gpu_fields.IS_METAL):
             kernels_helpers.chunk_best_key[g] = ti.u64(0)
         else:
             kernels_helpers.chunk_best_score[g] = ti.cast(-2147483648, ti.i32)

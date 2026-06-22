@@ -978,6 +978,7 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
     }
     witness_force = {
         "Score": 123,
+        "Stats": {"Perfect Points": 0},
         "BaseStats": {"Perfect Points": 0},
         "GemCounts": {
             "Perfect Points": 0,
@@ -1031,7 +1032,7 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
                     ],
                 }
             },
-            "zero_ms_fg_force_by_hash": {entry["loadout_hash"]: witness_force},
+            "zero_ms_fg_force_by_hash": {("T5", entry["loadout_hash"]): witness_force},
         }
 
     monkeypatch.setattr(
@@ -1055,8 +1056,10 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
     assert row["gear"] == entry["gear"]
     assert row["minis"] == entry["minis"]
     assert int(row["fg_score"]) == 123
-    assert force["GemCounts"] == persisted_force["GemCounts"]
-    assert force["GemCounts"] != witness_force["GemCounts"]
+    # Lossless-Exact: zero_ms now RE-SOLVES the FG gems, so the served GemCounts are the
+    # re-solved witness gems (within the preserved loadout identity), NOT the persisted ones.
+    assert force["GemCounts"] == witness_force["GemCounts"]
+    assert force["GemCounts"] != persisted_force["GemCounts"]
     assert force["SelectedElement"] == persisted_force["SelectedElement"]
     assert force["ForceGreats"]["config"] == witness_force["ForceGreats"]["config"]
     assert force["ForceGreats"]["frontier_trace"] == witness_force["ForceGreats"]["frontier_trace"]

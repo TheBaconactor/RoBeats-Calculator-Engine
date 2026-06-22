@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import struct
+import sys
 import threading
 import time
 from contextlib import contextmanager, nullcontext
@@ -533,10 +534,6 @@ def init_taichi():
 
     Called once by gpu_executor.py on the GPU thread, or lazily on first use.
     Uses f32 precision for performance (sufficient for score accuracy).
-
-    Backend selection:
-    - macOS: Metal
-    - Windows/Linux: Vulkan
     """
     global _ti_initialized
     global _offline_cache_dir
@@ -546,6 +543,15 @@ def init_taichi():
         kernel_profiler = get_kernel_profiler_enabled()
         block_dim = get_block_dim()
         arch, backend_name = _detect_backend()
+        try:
+            from . import fields as gpu_fields
+
+            # Skyline's packed-u64 atomic reduction is not available on macOS:
+            # `ti.vulkan` still lowers through MoltenVK into Metal shaders, which
+            # reject `atomic_fetch_max` on `ulong`.
+            gpu_fields.IS_METAL = bool(sys.platform == "darwin")
+        except Exception as e:
+            logger.debug(f"runtime:init_taichi: {e}")
 
         if arch == ti.vulkan:
             _maybe_set_vulkan_visible_device()

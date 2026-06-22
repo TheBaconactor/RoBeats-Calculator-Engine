@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
 import sys
 import threading
 import time
@@ -121,6 +122,69 @@ def test_fg_response_frontier_payload_roundtrips_disk_cache(tmp_path: Path, monk
     assert second.payload.frontier_for_stats(ft_stat=0, ff_stat=0).first_frontier == (
         first.payload.frontier_for_stats(ft_stat=0, ff_stat=0).first_frontier
     )
+
+
+def test_fg_response_frontier_payload_rebuilds_stale_disk_cache(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        build_or_load_response_frontier_payload,
+        reset_fg_response_frontier_payload_cache,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _surface_sidecar_paths
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS", "1800")
+    reset_fg_response_frontier_payload_cache()
+
+    first = build_or_load_response_frontier_payload(_calc_song(), _ref_arrays(), stat_keys=((0, 0),))
+    assert first.cache_source == "built"
+    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(first.disk_path)
+    stale_ts = time.time() - 3700.0
+    for path in (first.disk_path, pool_sidecar, coeff_sidecar):
+        os.utime(path, (stale_ts, stale_ts))
+
+    reset_fg_response_frontier_payload_cache()
+    second = build_or_load_response_frontier_payload(_calc_song(), _ref_arrays(), stat_keys=((0, 0),))
+    assert second.cache_source == "built"
+    assert second.disk_path.exists()
+    assert second.disk_path.stat().st_mtime > stale_ts
+
+
+def test_fg_response_frontier_live_cache_sweep_evicts_idle_memory_and_prunes_stale_disk(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _surface_sidecar_paths
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS", "1800")
+    response_cache.reset_fg_response_frontier_payload_cache()
+
+    first = response_cache.build_or_load_response_frontier_payload(_calc_song(), _ref_arrays(), stat_keys=((0, 0),))
+    assert first.cache_source == "built"
+    warm = response_cache.build_or_load_response_frontier_payload(_calc_song(), _ref_arrays(), stat_keys=((0, 0),))
+    assert warm.cache_source == "memory"
+
+    removed_memory = response_cache.sweep_fg_response_frontier_live_cache(
+        now_mono=time.monotonic() + 1801.0,
+        now_wall=time.time(),
+    )
+    assert removed_memory >= 1
+
+    disk_hit = response_cache.build_or_load_response_frontier_payload(_calc_song(), _ref_arrays(), stat_keys=((0, 0),))
+    assert disk_hit.cache_source == "disk"
+
+    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(first.disk_path)
+    stale_ts = time.time() - 3700.0
+    for path in (first.disk_path, pool_sidecar, coeff_sidecar):
+        os.utime(path, (stale_ts, stale_ts))
+    removed_disk = response_cache.sweep_fg_response_frontier_live_cache(
+        now_mono=time.monotonic(),
+        now_wall=time.time(),
+    )
+    assert removed_disk >= 3
+    assert not first.disk_path.exists()
+    assert not pool_sidecar.exists()
+    assert not coeff_sidecar.exists()
 
 
 def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Path, monkeypatch) -> None:

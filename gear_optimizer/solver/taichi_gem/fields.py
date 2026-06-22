@@ -10,6 +10,9 @@ import logging
 import taichi as ti
 from gear_optimizer.core.parsing import env_int
 from .runtime import is_initialized, init_taichi
+# Skyline uses this to select the 32-bit-atomic reduction path on macOS.
+# That includes MoltenVK (`ti.vulkan` on Darwin), whose shaders still compile
+# through Metal and therefore cannot use the packed-u64 atomic reduction.
 IS_METAL = False
 logger = logging.getLogger(__name__)
 GRID_SIZE = 161  # Timeline grid dimension (161x161 = 26,521 entries per song)
