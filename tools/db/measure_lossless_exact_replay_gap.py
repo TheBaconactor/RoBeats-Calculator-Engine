@@ -52,7 +52,6 @@ from gear_optimizer.solver.scoring.exact_rescore import (
 )
 from gear_optimizer.solver.solver_common import (
     build_candidate_payload,
-    build_candidate_payload_exact_cpu,
     build_solver_cfg_data,
     build_solver_override_cfg,
 )
@@ -496,30 +495,15 @@ def _compare_entry_mode(
             selected_color=selected_element,
         )
         override_cfg["use_gpu"] = bool(use_gpu_solver)
-        if use_gpu_solver:
-            # --solver gpu: the (potentially sub-optimal on macOS/MoltenVK) GPU re-solve. Kept for
-            # diagnosing the GPU underperformance gap.
-            resolved = build_candidate_payload(
-                cfg=cfg,
-                base_stats_fixed=target_fixed_stats,
-                calc_song=clone_calc_song(active_calc_song),
-                ref_arrays=ref_arrays,
-                genome=genome,
-                override_cfg=override_cfg,
-                gpu_client=None,
-            )
-        else:
-            # --solver cpu: EXHAUSTIVE CPU-exact re-solve (canonical macOS evidence path). Replaces
-            # the greedy inner allocation with an exhaustive (pp,cm,fm,ov) search per FT/FF timeline,
-            # so the resolved allocation is optimal by construction (>= inherited feasible gems).
-            resolved = build_candidate_payload_exact_cpu(
-                cfg=cfg,
-                base_stats_fixed=target_fixed_stats,
-                calc_song=clone_calc_song(active_calc_song),
-                ref_arrays=ref_arrays,
-                genome=genome,
-                override_cfg=override_cfg,
-            )
+        resolved = build_candidate_payload(
+            cfg=cfg,
+            base_stats_fixed=target_fixed_stats,
+            calc_song=clone_calc_song(active_calc_song),
+            ref_arrays=ref_arrays,
+            genome=genome,
+            override_cfg=override_cfg,
+            gpu_client=None,
+        )
         resolved_stats = dict(resolved.get("Stats") or {})
         if not resolved_stats:
             raise ValueError(f"Re-solve returned no Stats for loadout {_entry_hash(entry)!r}")
@@ -574,14 +558,13 @@ def _render_table(rows: list[ReplayGapRow]) -> str:
     if not rows:
         return "No comparison rows."
     header = (
-        f"{'SONG':<44} {'MODE':<4} {'TIER':<4} {'COLOR':<6} {'REPLAY':>10} "
+        f"{'SONG':<48} {'MODE':<4} {'TIER':<4} {'REPLAY':>10} "
         f"{'RESOLVED':>10} {'DELTA':>10} {'DELTA%':>9} {'GEMS?':>6}"
     )
     lines = [header, "-" * len(header)]
     for row in rows:
         lines.append(
-            f"{row.song_name[:44]:<44} {row.mode:<4} {row.tier:<4} "
-            f"{(row.team_buff_color or '-')[:6]:<6} {row.replay_score:>10} "
+            f"{row.song_name[:48]:<48} {row.mode:<4} {row.tier:<4} {row.replay_score:>10} "
             f"{row.resolved_score:>10} {row.score_delta:>10} {row.score_delta_pct:>8.4f}% "
             f"{('yes' if row.gems_changed else 'no'):>6}"
         )
@@ -604,19 +587,7 @@ def main() -> int:
         default="meta",
         help="Current exact evidence path supports meta only. FG stays blocked on the macOS exact solver work.",
     )
-    parser.add_argument(
-        "--color",
-        type=str,
-        default="",
-        help=(
-            "Target Team Buff color override (the active team color axis; mirrors the "
-            "production target_team_color_override threaded by general_meta/app.py and the website "
-            "on-demand path). Empty = the song's default team color (no override); a color name "
-            "(Chill/Flow/Rush/Beat/Vibe) moves the per-tier Team Buff elemental bonus onto that "
-            "element; 'none' = zero-effect team color. Gates the replay-vs-resolve delta at a "
-            "NON-default color so a color-inherited-gems gap (if any) would surface as delta!=0."
-        ),
-    )
+    parser.add_argument("--team-buff-color", type=str, default="")
     parser.add_argument("--primary-element", type=str, default="")
     parser.add_argument("--secondary-element", type=str, default="")
     parser.add_argument(
@@ -631,8 +602,8 @@ def main() -> int:
     db_path = Path(str(args.db or "").strip())
     if not db_path.exists():
         raise SystemExit(f"DB not found: {db_path}")
-    # FG-mode exact re-solve is now unblocked: the macOS-exact CPU gem-search
-    # (response_inner_cpu_search.resolve_fg_response_groups_native_f64) handles budget>0.
+    if str(args.mode) != "meta":
+        raise SystemExit("FG-mode exact re-solve still depends on Task A.2; run --mode meta for the base-gap evidence harness.")
 
     cfg = load_config(str(args.config))
     cfg_dict = cfg_to_dict(cfg)
@@ -674,7 +645,7 @@ def main() -> int:
         active_calc_song, base_team_color_override, target_team_color_override = _prepare_active_calc_song(
             base_calc_song,
             timing_mode=str(args.timing_mode),
-            team_buff_color_override=str(args.color),
+            team_buff_color_override=str(args.team_buff_color),
             primary_element_override=str(args.primary_element),
             secondary_element_override=str(args.secondary_element),
         )
@@ -723,11 +694,9 @@ def main() -> int:
         improved = sum(1 for row in rows if row.resolved_score > row.replay_score)
         changed = sum(1 for row in rows if row.gems_changed)
         print()
-        color_axis = str(args.color or "").strip() or "default"
         print(
             f"rows={len(rows)} improved={improved} gems_changed={changed} "
-            f"timing_mode={args.timing_mode} tier={normalize_team_buff(args.tier, default='T5')} "
-            f"color={color_axis}"
+            f"timing_mode={args.timing_mode} tier={normalize_team_buff(args.tier, default='T5')}"
         )
     return 0
 

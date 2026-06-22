@@ -10,6 +10,7 @@ from gear_optimizer.core.constants import (
     GEM_SCALE_FEVER,
     GEM_SCALE_NORMAL,
     MAX_STAT_INDEX,
+    TOTAL_ROWS,
 )
 from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
@@ -17,7 +18,6 @@ from gear_optimizer.helpers.song_helpers.ref_array_builder import resolve_exact_
 from gear_optimizer.solver.taichi_gem import api as gem_api
 from gear_optimizer.solver.scoring.fg_policy import is_single_color_song
 
-from .response_inner_cpu_search import resolve_fg_response_groups_native_f64
 from .response_inner_kernels import _fg_response_inner_batch_kernel, _fg_response_inner_group_kernel
 from .response_types import FgResponseInnerResult, FgResponseSurface
 
@@ -40,7 +40,6 @@ _U16_HEAD_POS_SUM = np.ascontiguousarray(
 del _U16_HEAD_BITS
 _SURFACE_HEAD_COEFF_CACHE: OrderedDict[tuple[int, int, tuple[int, ...], tuple[int, ...]], np.ndarray] = OrderedDict()
 _SURFACE_HEAD_COEFF_CACHE_LOCK = threading.RLock()
-_FG_RESPONSE_CPU_SEARCH_LOCK = threading.Lock()
 _EXACT_REPLAY_REF_NAMES = (
     "Perfect Points",
     "Combo Multiplier",
@@ -761,6 +760,144 @@ def _optimize_response_surfaces_gpu(
     return [row for row in best_by_group if row is not None], int(logical_surface_rows)
 
 
+@jit(nopython=True, cache=True)
+def _score_fg_response_groups_native_f64(
+    group_offsets,
+    group_lengths,
+    row_meta,
+    surface_words,
+    surface_counts,
+    ref_pp,
+    ref_cm,
+    ref_fm,
+    is_single_color,
+    total_rows,
+):
+    """Native-f64 CPU port of ``_fg_response_inner_group_kernel`` for the gems-fixed
+    (residual_budget == 0) case: per group, score every candidate surface against the
+    group's fixed stats and keep the argmax. Bit-for-bit f64 with the GPU kernel (same
+    op order: ``(base*combo)*fever``, ``floor`` per term, i32 accumulation) so the winning
+    surface is identical -- it just runs on CPU doubles instead of emulating f64 on the GPU.
+    Callers must guarantee residual_budget == 0 (the on-demand zero_ms shape); the gem search
+    is intentionally absent here.
+    """
+    group_count = int(row_meta.shape[0])
+    out = np.zeros((group_count, 11), dtype=np.int64)
+    for g in range(group_count):
+        cur_pp = int(row_meta[g, 1])
+        cur_cm = int(row_meta[g, 2])
+        cur_fm = int(row_meta[g, 3])
+        cur_primary = int(row_meta[g, 4])
+        cur_secondary = int(row_meta[g, 5])
+        head_len = int(row_meta[g, 6])
+        body_total = int(row_meta[g, 7])
+        if head_len > 100:
+            head_len = 100
+
+        ipp = 0 if cur_pp < 0 else (total_rows if cur_pp > total_rows else cur_pp)
+        icm = 0 if cur_cm < 0 else (total_rows if cur_cm > total_rows else cur_cm)
+        ifm = 0 if cur_fm < 0 else (total_rows if cur_fm > total_rows else cur_fm)
+        pp_factor = ref_pp[ipp]
+        combo_mul = ref_cm[icm]
+        fever_mul = ref_fm[ifm]
+
+        base_value = float((cur_primary * 2) + cur_secondary) + pp_factor
+        combo_val = int(np.floor(base_value * combo_mul))
+        fever_val = int(np.floor(base_value * combo_mul * fever_mul))
+        combo_slope = (combo_mul - 1.0) / 100.0
+
+        # Per-head Perfect values (fever / non-fever), reused across this group's surfaces.
+        if is_single_color != 0:
+            great_head_base = (cur_primary * 2) + 150
+        else:
+            great_head_base = (
+                int(np.floor(float(cur_primary) * (4.0 / 3.0)))
+                + int(np.floor(float(cur_secondary) * (2.0 / 3.0)))
+                + 150
+            )
+        great_base = float(great_head_base)
+        great_combo_val = int(np.floor(great_base * combo_mul))
+        great_fever_val = int(np.floor(great_base * combo_mul * fever_mul))
+
+        start = int(group_offsets[g])
+        length = int(group_lengths[g])
+        best_score = -1
+        best_local = 0
+        for ls in range(length):
+            sr = start + ls
+            body_fever = int(surface_counts[sr, 0])
+            body_great = int(surface_counts[sr, 1])
+            body_fever_great = int(surface_counts[sr, 2])
+            body_normal = body_total - body_fever
+            if body_normal < 0:
+                body_normal = 0
+            score = body_fever * fever_val + body_normal * combo_val
+
+            for i in range(head_len):
+                wi = i >> 5
+                b = i & 31
+                is_fever = (int(surface_words[sr, wi]) >> b) & 1
+                scaling = combo_slope * float(i + 1) + 1.0
+                if is_fever != 0:
+                    score += int(np.floor(base_value * scaling * fever_mul))
+                else:
+                    score += int(np.floor(base_value * scaling))
+
+            great_or = (
+                int(surface_words[sr, 4])
+                | int(surface_words[sr, 5])
+                | int(surface_words[sr, 6])
+                | int(surface_words[sr, 7])
+            )
+            if body_great > 0 or great_or != 0:
+                if body_great > 0:
+                    body_normal_great = body_great - body_fever_great
+                    if body_normal_great < 0:
+                        body_normal_great = 0
+                    body_normal_penalty = combo_val - great_combo_val
+                    if body_normal_penalty < 0:
+                        body_normal_penalty = 0
+                    body_fever_penalty = fever_val - great_fever_val
+                    if body_fever_penalty < 0:
+                        body_fever_penalty = 0
+                    score -= body_normal_great * body_normal_penalty
+                    score -= body_fever_great * body_fever_penalty
+                if great_or != 0:
+                    for i in range(head_len):
+                        wi = i >> 5
+                        b = i & 31
+                        if ((int(surface_words[sr, 4 + wi]) >> b) & 1) != 0:
+                            is_fever = (int(surface_words[sr, wi]) >> b) & 1
+                            scaling = combo_slope * float(i + 1) + 1.0
+                            if is_fever != 0:
+                                perfect_val = int(np.floor(base_value * scaling * fever_mul))
+                                great_val = int(np.floor(great_base * scaling * fever_mul))
+                            else:
+                                perfect_val = int(np.floor(base_value * scaling))
+                                great_val = int(np.floor(great_base * scaling))
+                            penalty = perfect_val - great_val
+                            if penalty > 0:
+                                score -= penalty
+
+            if score > best_score:
+                best_score = score
+                best_local = ls
+
+        out[g, 0] = best_score
+        out[g, 1] = best_local
+        # gems fixed (residual_budget == 0): no reallocation, final stats == current stats.
+        out[g, 2] = 0
+        out[g, 3] = 0
+        out[g, 4] = 0
+        out[g, 5] = int(row_meta[g, 0])
+        out[g, 6] = cur_pp
+        out[g, 7] = cur_cm
+        out[g, 8] = cur_fm
+        out[g, 9] = cur_primary
+        out[g, 10] = cur_secondary
+    return out
+
+
 def _score_response_group_meta_cpu(
     *,
     group_meta: np.ndarray,
@@ -774,12 +911,12 @@ def _score_response_group_meta_cpu(
     surface_counts: np.ndarray,
     surface_head_coeffs: np.ndarray | None = None,
 ) -> tuple[np.ndarray, int]:
-    """Native-f64 CPU twin of ``_score_response_group_meta_gpu`` for the on-demand serving path
-    (macOS/MoltenVK has no GPU f64). Bit-for-bit identical to the GPU f64 kernel; handles BOTH
-    the gems-fixed replay (residual_budget==0) AND the lossless-exact gem re-solve
-    (residual_budget>0) via the canonical CPU search (`resolve_fg_response_groups_native_f64`).
-    Runs on CPU doubles and parallelizes per request across cores instead of serializing on the
-    single GPU owner."""
+    """Native-f64 CPU twin of ``_score_response_group_meta_gpu`` for the gems-fixed
+    (zero_ms / total_budget == 0) on-demand path. Same exact algorithm and exact f64
+    arithmetic as the GPU kernel; runs on CPU doubles so it needs no GPU f64 support
+    (MoltenVK) and parallelizes per request across cores instead of serializing on the
+    single GPU. Fails loud if any group carries a nonzero gem budget (the gem search lives
+    only in the GPU path)."""
     group_count = int(group_meta.shape[0])
     if group_count != int(group_offsets.shape[0]) or group_count != int(group_lengths.shape[0]):
         raise ValueError("response frontier CPU group metadata arrays have inconsistent lengths")
@@ -788,8 +925,14 @@ def _score_response_group_meta_cpu(
         return np.zeros((0, 11), dtype=np.int32), 0
 
     group_meta_all = np.ascontiguousarray(group_meta, dtype=np.int32)
-    flags = np.ascontiguousarray(np.asarray(_color_flags(primary_color, secondary_color, selected_color), dtype=np.int32))
-    allow_pp = 1 if (int(flags[0]) != 0 or int(flags[1]) != 0) else 0
+    if group_count and bool(np.any(group_meta_all[:, 0] != 0)):
+        raise ValueError(
+            "response frontier CPU scoring is the gems-fixed (residual_budget==0) on-demand path; "
+            "a nonzero gem budget must use the GPU gem-search owner"
+        )
+
+    flags = _color_flags(primary_color, secondary_color, selected_color)
+    is_single_color = int(flags[8])
     exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
     ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=np.float64))
     ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=np.float64))
@@ -803,22 +946,16 @@ def _score_response_group_meta_cpu(
     if bool(np.any(surface_counts_all < 0)):
         raise ValueError("response frontier CPU surface counts must be nonnegative")
 
-    # The serving Mac currently only has Numba's workqueue threading layer. It is not
-    # thread-safe for concurrent calls into a parallel=True kernel from multiple Python
-    # threads, and the website's ranked lane does exactly that under user fan-out. Keep
-    # the per-request parallel speedup inside the kernel, but serialize entry so two HTTP
-    # requests cannot abort the process by entering the workqueue backend at once.
-    with _FG_RESPONSE_CPU_SEARCH_LOCK:
-        out_rows = resolve_fg_response_groups_native_f64(
-            np.ascontiguousarray(group_offsets, dtype=np.int64),
-            np.ascontiguousarray(group_lengths, dtype=np.int64),
-            group_meta_all,
-            surface_words_all,
-            surface_counts_all,
-            flags,
-            ref_pp,
-            ref_cm,
-            ref_fm,
-            int(allow_pp),
-        )
+    out_rows = _score_fg_response_groups_native_f64(
+        np.ascontiguousarray(group_offsets, dtype=np.int64),
+        np.ascontiguousarray(group_lengths, dtype=np.int64),
+        group_meta_all,
+        surface_words_all,
+        surface_counts_all,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        int(is_single_color),
+        int(TOTAL_ROWS),
+    )
     return np.asarray(out_rows, dtype=np.int32), int(logical_surface_rows)

@@ -143,14 +143,10 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         "Vibe": 0,
     }
     entry = {
-        "loadout_hash": "hash-zero-ms-tier",
         "score": 1,
         "fg_score": 1,
-        # zero_ms now RE-SOLVES gems, so the loadout genome must be full stat-dicts
-        # (6 gear + 3 minis), not names -- mirrors the production on-demand path, whose
-        # entry_genome() requires stat-dicts (this is the names-only crash class).
-        "gear": [{"Name": f"G{i}", "Rush": 8, "Combo Multiplier": 4} for i in range(1, 7)],
-        "minis": [{"Name": f"M{i}", "Flow": 6} for i in range(1, 4)],
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
         "details": {"Stats": stats},
         "force": {
             "Stats": stats,
