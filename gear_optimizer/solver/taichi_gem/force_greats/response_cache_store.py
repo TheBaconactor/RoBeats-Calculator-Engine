@@ -789,11 +789,68 @@ def _scoring_bundle_memory_put(bundle_key: tuple, scoring_bundle: FgResponseFron
         )
 
 
+def _enforce_fg_response_disk_cap(
+    *,
+    max_disk_bytes: int | None,
+    max_disk_files: int | None,
+) -> int:
+    """Bound the on-disk FG response-frontier cache to a hard size/file budget, evicting the
+    least-recently-used bundles (oldest mtime) first. Returns the number of files removed.
+
+    This is a SERVING-mode safety: only ``sweep_fg_response_frontier_live_cache`` (the API's
+    periodic live-cache sweep) passes caps, so a standalone optimizer run -- which writes bundles
+    but never calls the live sweep -- is never throttled by it (it keeps the idle-TTL-only
+    behavior). Lossless: an evicted bundle is rebuilt on next access. Each bundle is sized as its
+    .npz plus the two surface sidecars so they evict as one unit (mirrors the on-demand rank
+    cache's prune_cache_dir)."""
+    cap_bytes = int(max_disk_bytes) if max_disk_bytes and int(max_disk_bytes) > 0 else 0
+    cap_files = int(max_disk_files) if max_disk_files and int(max_disk_files) > 0 else 0
+    if cap_bytes <= 0 and cap_files <= 0:
+        return 0
+    try:
+        bundles = tuple(_fg_response_disk_cache_dir().glob("*.npz"))
+    except OSError:
+        return 0
+    entries: list[tuple[float, int, Path]] = []
+    total_bytes = 0
+    for npz in bundles:
+        size = 0
+        mtime = 0.0
+        present = False
+        for path in (npz, *_surface_sidecar_paths(npz)):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            size += int(stat.st_size)
+            mtime = max(mtime, float(stat.st_mtime))
+            present = True
+        if present:
+            entries.append((mtime, size, npz))
+            total_bytes += size
+    entries.sort(key=lambda item: item[0])  # least-recently-used (oldest mtime) first
+    remaining_files = len(entries)
+    removed = 0
+    for _mtime, size, npz in entries:
+        over_bytes = cap_bytes > 0 and total_bytes > cap_bytes
+        over_files = cap_files > 0 and remaining_files > cap_files
+        if not over_bytes and not over_files:
+            break
+        freed = _remove_fg_response_bundle_files(npz)
+        if freed:
+            removed += freed
+            total_bytes -= size
+            remaining_files -= 1
+    return removed
+
+
 def sweep_fg_response_frontier_live_cache(
     *,
     idle_ttl_seconds: float | None = None,
     now_mono: float | None = None,
     now_wall: float | None = None,
+    max_disk_bytes: int | None = None,
+    max_disk_files: int | None = None,
 ) -> int:
     ttl = _fg_response_idle_ttl_seconds() if idle_ttl_seconds is None else idle_ttl_seconds
     if ttl is None or ttl <= 0.0:
@@ -826,21 +883,27 @@ def sweep_fg_response_frontier_live_cache(
             idle_ttl_seconds=ttl,
             moment=moment_mono,
         )
-    if disk_ttl is None or disk_ttl <= 0.0:
-        return removed
-    moment_wall = time.time() if now_wall is None else float(now_wall)
-    try:
-        bundle_paths = tuple(_fg_response_disk_cache_dir().glob("*.npz"))
-    except OSError:
-        return removed
-    for bundle_path in bundle_paths:
-        if not bundle_path.exists():
-            continue
+    if disk_ttl is not None and disk_ttl > 0.0:
+        moment_wall = time.time() if now_wall is None else float(now_wall)
         try:
-            stat = bundle_path.stat()
+            bundle_paths = tuple(_fg_response_disk_cache_dir().glob("*.npz"))
         except OSError:
-            continue
-        if moment_wall - float(stat.st_mtime) <= float(disk_ttl):
-            continue
-        removed += _remove_fg_response_bundle_files(bundle_path)
+            bundle_paths = ()
+        for bundle_path in bundle_paths:
+            if not bundle_path.exists():
+                continue
+            try:
+                stat = bundle_path.stat()
+            except OSError:
+                continue
+            if moment_wall - float(stat.st_mtime) <= float(disk_ttl):
+                continue
+            removed += _remove_fg_response_bundle_files(bundle_path)
+    # Hard size/file cap (serving-mode): after the idle-TTL pass, evict the oldest bundles until
+    # the on-disk cache is within budget. Runs independently of the disk TTL (the cap bounds total
+    # SSD even when many songs are touched inside one TTL window). Pure disk I/O, idempotent.
+    removed += _enforce_fg_response_disk_cap(
+        max_disk_bytes=max_disk_bytes,
+        max_disk_files=max_disk_files,
+    )
     return removed
