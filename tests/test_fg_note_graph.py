@@ -898,3 +898,130 @@ def test_fever_end_replay_at_shown_delta_keeps_sequential_fever():
     assert bool(fever[1])
     assert bool(fever[2])
     assert bool(fever[3])
+
+
+def test_fever_end_decoy_full_chart_sequential_replay_at_graph_deltas():
+    """Issue #64 integration: full Decoy loadout graph deltas preserve sequential fever + T1 score."""
+    import json
+    import sqlite3
+
+    import numpy as np
+    import pytest
+
+    from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, team_buff_effect
+    from gear_optimizer.data.database import get_evolution_db_path
+    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+        force_greats_note_graph,
+        reconcile_force_greats_note_graph,
+    )
+    from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
+    from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
+    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs, resolve_stat_factors
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    song = "Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat]"
+    loadout_hash = "9466514779a185ba64c4198786581230"
+    t1_opt = 7_845_087
+
+    db_path = get_evolution_db_path()
+    try:
+        row = sqlite3.connect(db_path).execute(
+            "SELECT force_details_json FROM team_buff_fg_loadouts WHERE loadout_hash=? AND song_name=?",
+            (loadout_hash, song),
+        ).fetchone()
+    except Exception:
+        pytest.skip("evolution DB unavailable")
+    if row is None:
+        pytest.skip("Decoy FG loadout not in local DB")
+
+    fd = json.loads(row[0])
+    calc = clone_calc_song(
+        get_base_calc_song(
+            "Data/Normal/Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat].txt", {}
+        )
+    )
+    apply_timing_envelope(calc)
+    si = extract_fg_song_inputs(calc)
+    nt = calc.get("song_data", {}).get("note_types")
+    ts = np.asarray(si.timestamps)
+    n = si.total_notes
+    trace = fd["ForceGreats"]["frontier_trace"]
+    surf = FgResponseSurface(*(fd.get("response_surface") or fd["ForceGreats"]["surface"]))
+
+    ng = force_greats_note_graph(
+        frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt
+    )
+    reconcile_force_greats_note_graph(
+        ng,
+        total_notes=n,
+        fever_words=(surf.fever0, surf.fever1, surf.fever2, surf.fever3),
+        great_words=(surf.great0, surf.great1, surf.great2, surf.great3),
+        body_fever=surf.body_fever,
+        body_great=surf.body_great,
+        body_fever_great=surf.body_fever_great,
+    )
+
+    stats = materialize_stats_from_payload(fd)
+    for key, val in {
+        k: team_buff_effect("T1", "Rush").get(k, 0)
+        - team_buff_effect(OPTIMIZER_BASELINE_TEAM_BUFF, "Rush").get(k, 0)
+        for k in team_buff_effect("T1", "Rush")
+    }.items():
+        stats[key] = int(stats.get(key, 0)) + int(val)
+
+    ref = get_exact_replay_ref_arrays_cached()
+    assert score_force_greats_response_surface_exact(stats, calc, ref, surf) == t1_opt
+
+    acts = [int(trace[0]["activation_index"]), int(trace[1]["activation_index"])]
+    act_offs = [
+        float(trace[0]["activation_hit_offset_ms"]),
+        float(trace[1]["activation_hit_offset_ms"]),
+    ]
+    f = resolve_stat_factors(stats, ref)
+    real_ft = (float(si.last_note_time) * 0.15 + 0.15) * float(f.fever_time_stat)
+
+    offsets = np.zeros(n, dtype=np.float64)
+    for i, note in enumerate(ng):
+        d = note.get("delta_ms")
+        if d is not None:
+            offsets[i] = float(d)
+
+    static_fever = np.array([bool(x.get("fever")) for x in ng], dtype=bool)
+    seq_fever = np.zeros(n, dtype=bool)
+    act_ptr = 0
+    window_end = -1.0
+    for i in range(n):
+        if act_ptr < len(acts) and i == acts[act_ptr]:
+            window_end = float(ts[i]) + act_offs[act_ptr] / 1000.0 + real_ft
+            act_ptr += 1
+        if act_ptr > 0 and i >= acts[act_ptr - 1]:
+            hit = float(ts[i]) + offsets[i] / 1000.0
+            seq_fever[i] = hit < window_end
+
+    assert np.array_equal(static_fever, seq_fever)
+
+    # F1 tail cluster: issue #64 guidance deltas (not 0 ms on-line play).
+    assert ng[182]["delta_ms"] == pytest.approx(-9.93, abs=0.02)
+    assert ng[183]["delta_ms"] == pytest.approx(ng[182]["delta_ms"])
+    assert ng[183]["is_fever_end_witness"] is True
+
+    import sys
+    from pathlib import Path
+
+    verify_dir = Path(__file__).resolve().parents[1] / "tools" / "verify"
+    if str(verify_dir) not in sys.path:
+        sys.path.insert(0, str(verify_dir))
+    from verify_fg_game_oracle import score_from_game_source
+
+    great = np.array([x.get("note_result") == "Great" for x in ng], dtype=bool)
+    seq_score = score_from_game_source(
+        stats=stats,
+        primary_color="Rush",
+        secondary_color="Vibe",
+        fever_mask=seq_fever,
+        great_mask=great,
+    )
+    assert seq_score == t1_opt
