@@ -78,7 +78,8 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
         except ValueError:
             continue  # not all standalone edge surfaces are independently reconstructable
 
-        graph = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=timestamps)
+        note_types = np.ones(n, dtype=np.int16)  # all normal notes
+        graph = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=timestamps, note_types=note_types)
         assert len(graph) == n
         # game-model shape: Perfect/Great only, fever is bool, witness carries a numeric delta
         for g in graph:
@@ -243,7 +244,8 @@ def test_fg_note_graph_marks_fever_end_witness():
          "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
          "fever_window_end_ms": 11590.0},
     ]
-    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts)
+    nt = np.ones(n, dtype=np.int16)  # all normal notes
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
 
     # Last note of each run ([50,56) -> 55; [110,116) -> 115) is the fever-end witness.
     ends = [x["note_index"] for x in g if x["is_fever_end_witness"]]
@@ -253,6 +255,14 @@ def test_fg_note_graph_marks_fever_end_witness():
     assert g[55]["fever"] is True and g[115]["fever"] is True
     # No score-contributing flag on either frontier.
     assert all("contributes_to_max_score" not in x for x in g)
+    # Issue #64: witness notes always get largest-cushion delta (even barely inside).
+    # Note 55: hit=5500ms, cutoff=5590 -> legal_low_hit=5480, upper_hit=5589.
+    # lo_hit = max(5480, prev_shown=[notes 50..54] at ~5000-5400) = ~5400.
+    # Center: 0.5*(~5400 + 5589) ≈ 5494.5 -> delta ≈ -5.5
+    assert g[55]["delta_ms"] != 0.0
+    assert g[55]["hit_time_ms"] + g[55]["delta_ms"] < 5590.0  # in fever
+    assert g[115]["delta_ms"] != 0.0
+    assert g[115]["hit_time_ms"] + g[115]["delta_ms"] < 11590.0  # in fever
 
 
 def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
@@ -496,7 +506,8 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
         }
     ]
 
-    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=trace)
+    nt = np.ones(n, dtype=np.int16)  # all normal notes
+    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=trace, note_types=nt)
 
     # Fever run is notes [2, 5); the last fevered note (4) is the fever-end witness,
     # carrying the largest-cushion cutoff time. No score-contributing flag exists.
@@ -507,6 +518,11 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
     assert graph[2]["is_fever_end_witness"] is False
     assert graph[0]["fever_end_ms"] is None
     assert all("contributes_to_max_score" not in g for g in graph)
+    # Issue #64: witness always gets largest-cushion delta. Note 4: hit=400ms, cutoff=440ms.
+    # legal_low_hit=380, prev_shown for notes 2,3 = ~200,300 -> lo_hit=max(380, ~300)=380.
+    # Center: 0.5*(380 + 439) = 409.5 -> delta = +9.5
+    assert graph[4]["delta_ms"] != 0.0
+    assert graph[4]["hit_time_ms"] + graph[4]["delta_ms"] < 440.0  # in fever
 
 
 def test_base_note_graph_matches_production_fever_timeline():
@@ -528,3 +544,357 @@ def test_base_note_graph_matches_production_fever_timeline():
     head_fever_graph = {g["note_index"] for g in graph if g["fever"] and g["note_index"] < 100}
     head_fever_mask = {i for i in range(min(n, 100)) if bool(fever_mask_head[i])}
     assert head_fever_graph == head_fever_mask
+
+
+# ---------------------------------------------------------------------------
+# Issue #64 — fever-end witness + same-chart cluster largest-cushion delta
+# ---------------------------------------------------------------------------
+
+
+def test_fever_end_witness_barely_inside_gets_largest_cushion():
+    """Issue #64: a fever-end witness barely inside the cutoff (chart < cutoff) MUST get
+    a non-zero largest-cushion delta -- no boolean skip for 'comfortably inside'."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+        base_note_graph,
+        force_greats_note_graph,
+    )
+
+    n = 8
+    # note 5 @ 1220ms is barely inside cutoff=1240 (20ms margin) AND is the witness.
+    # fever window [3,6) -> notes 3,4,5. Witness = note 5.
+    ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.0, 1.220, 1.245, 1.5], dtype=np.float32)
+    cutoff = 1240.0
+    fg_trace = [{
+        "section": 1, "activation_index": 3, "fever_end_index": 6,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    base_trace = [{
+        "section": 1, "activation_index": 3, "fever_end_index": 6,
+        "activation_hit_offset_ms": 40.0, "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+
+    for g in (
+        force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
+        base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool), frontier_trace=base_trace, note_types=nt),
+    ):
+        # Witness is note 5 (last fever note in [3,6))
+        assert g[5]["is_fever_end_witness"] is True
+        assert g[5]["fever"] is True
+        # Barely inside: hit=1220 < cutoff=1240 -- MUST have a non-zero delta.
+        assert g[5]["delta_ms"] != 0.0, "barely-inside witness must get largest-cushion delta"
+        # Legal: delta >= -20 (normal Perfect lower bound)
+        assert g[5]["delta_ms"] >= -20.0
+        # In-fever: shown hit lands inside the window
+        shown = g[5]["hit_time_ms"] + g[5]["delta_ms"]
+        assert shown < cutoff, "witness shown hit must land inside fever window"
+        # Largest-cushion center: legal_low_hit=1200, upper_hit=1239, prev_shown≈600->lo_hit=1200.
+        # Center = 0.5*(1200+1239) = 1219.5 -> delta = -0.5 (very small but non-zero).
+        assert g[5]["delta_ms"] == pytest.approx(-0.5, abs=0.1)
+
+        # Note 6 is NOT in the fever window — it's outside [3,6). Verify it's untouched.
+        assert g[6]["fever"] is False
+
+
+def test_fever_end_cluster_same_chart_gets_witness_delta():
+    """Issue #64: same-chart fever notes in the end cluster share the witness delta."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 8
+    cutoff = 1240.0
+    # notes 4+5 share chart 1.220s; note 5 is witness. Window [3,6).
+    ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.220, 1.220, 1.4, 1.6], dtype=np.float32)
+    trace = [{
+        "section": 1, "activation_index": 3, "fever_end_index": 6,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    assert g[5]["is_fever_end_witness"] is True
+    assert g[5]["delta_ms"] != 0.0
+    assert g[4]["is_fever_end_witness"] is False
+    assert g[4]["fever"] is True
+    assert g[4]["delta_ms"] == pytest.approx(g[5]["delta_ms"])
+    assert g[4]["delta_ms"] == pytest.approx(-0.5, abs=0.1)
+
+
+def test_fever_end_non_cluster_neighbor_stays_zero():
+    """Issue #64: barely-inside notes at a different chart time than the witness stay at 0 ms."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 8
+    ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.210, 1.220, 1.4, 1.6], dtype=np.float32)
+    cutoff = 1240.0
+    trace = [{
+        "section": 1, "activation_index": 3, "fever_end_index": 6,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    assert g[5]["is_fever_end_witness"] is True
+    assert g[5]["delta_ms"] != 0.0
+    assert g[4]["delta_ms"] == 0.0
+
+
+def test_fever_end_witness_clawed_in_unchanged():
+    """Issue #64: a clawed-in fever-end witness (chart >= cutoff) produces the same delta
+    as issue #42's _mark_endpoint_early_hits -- the formula is identical, so the witness
+    delta is unchanged from the existing clawed-in behavior."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 6
+    # note 4 @ 1245ms is clawed-in past the 1240ms cutoff AND is the witness.
+    ts = np.asarray([0.0, 0.2, 0.4, 1.0, 1.245, 1.5], dtype=np.float32)
+    cutoff = 1240.0
+    trace = [{
+        "section": 1, "activation_index": 2, "fever_end_index": 5,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    assert g[4]["is_fever_end_witness"] is True
+    assert g[4]["fever"] is True
+    # Clawed-in: largest-cushion center = 0.5*(1245-20 + 1240-1) = 0.5*(1225 + 1239) = 1232
+    # delta = 1232 - 1245 = -13
+    assert g[4]["delta_ms"] == pytest.approx(-13.0, abs=1e-3)
+    assert g[4]["delta_ms"] >= -20.0
+    assert g[4]["hit_time_ms"] + g[4]["delta_ms"] < cutoff
+
+
+def test_fever_end_witness_delta_is_legal_and_in_fever():
+    """Issue #64: the witness delta is always LEGAL (>= note's Perfect lower bound) and
+    IN-FEVER (shown_hit < cutoff). Covers normal barely-inside witness AND held-tail
+    clawed-in non-witness neighbor."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 6
+    # note 3 @ 1.019s is barely inside cutoff=1020 (1ms), normal note, AND the witness.
+    # note 4 @ 1.030s is clawed-in held tail, not the witness.
+    ts = np.asarray([0.0, 0.2, 0.4, 1.019, 1.030, 1.5], dtype=np.float32)
+    cutoff = 1020.0
+    trace = [{
+        "section": 1, "activation_index": 1, "fever_end_index": 4,  # window [1,4) -> notes 1,2,3
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.asarray([1, 1, 1, 1, 3, 1], dtype=np.int16)  # note 4 is held tail
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    # Witness (note 3 normal, barely inside): delta must be legal and in-fever.
+    assert g[3]["is_fever_end_witness"] is True
+    assert g[3]["delta_ms"] != 0.0
+    assert g[3]["delta_ms"] >= -20.0
+    shown3 = g[3]["hit_time_ms"] + g[3]["delta_ms"]
+    assert shown3 < cutoff
+
+    # Note 4 is NOT in the fever window — verify it's untouched.
+    assert g[4]["fever"] is False
+    assert g[4]["delta_ms"] == 0.0
+
+
+def test_fever_end_witness_held_tail_gets_correct_lower_bound():
+    """Issue #64: a held-tail (note_type=3) fever-end witness uses the -40ms lower bound,
+    not the normal -20ms. The witness is barely inside -- still gets largest-cushion."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 5
+    # note 3 @ 1.220s is a held tail, barely inside cutoff=1240 (20ms margin), AND the witness.
+    ts = np.asarray([0.0, 0.2, 0.4, 1.220, 1.5], dtype=np.float32)
+    cutoff = 1240.0
+    trace = [{
+        "section": 1, "activation_index": 1, "fever_end_index": 4,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.asarray([1, 1, 1, 3, 1], dtype=np.int16)  # note 3 is held tail
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    assert g[3]["is_fever_end_witness"] is True
+    # Held tail: legal_low = -40. legal_low_hit = 1220-40 = 1180, upper_hit = 1239.
+    # lo_hit = max(1180, prev_shown≈400) = 1180. Center = 0.5*(1180+1239) = 1209.5 -> delta = -10.5
+    assert g[3]["delta_ms"] == pytest.approx(-10.5, abs=0.1)
+    assert g[3]["delta_ms"] >= -40.0  # uses held-tail lower bound
+    shown = g[3]["hit_time_ms"] + g[3]["delta_ms"]
+    assert shown < cutoff
+
+
+def test_fever_end_witness_missing_note_types_fails_loud():
+    """Issue #64: if a fever-end witness exists and note_types is missing, fail loud --
+    the held-tail-aware lower bound is never guessed."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+        base_note_graph,
+        force_greats_note_graph,
+    )
+
+    n = 6
+    ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.0, 1.5], dtype=np.float32)
+    cutoff = 1200.0
+    fg_trace = [{
+        "section": 1, "activation_index": 2, "fever_end_index": 5,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    base_trace = [{
+        "section": 1, "activation_index": 2, "fever_end_index": 5,
+        "activation_hit_offset_ms": 40.0, "fever_window_end_ms": cutoff,
+    }]
+
+    for builder, kwargs in (
+        (force_greats_note_graph, {"frontier_trace": fg_trace, "total_notes": n, "timestamps": ts}),
+        (base_note_graph, {"total_notes": n, "timestamps": ts, "is_fever_mask": np.zeros(n, bool), "frontier_trace": base_trace}),
+    ):
+        with pytest.raises(ValueError):
+            builder(**kwargs)
+
+
+def test_fever_end_witness_both_frontiers_symmetric():
+    """Issue #64: the fever-end witness delta must be identical in base and FG note graphs
+    for the same fever geometry. Both call the same _mark_fever_end_witness_delta."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+        base_note_graph,
+        force_greats_note_graph,
+    )
+
+    n = 8
+    ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.0, 1.220, 1.245, 1.5], dtype=np.float32)
+    cutoff = 1240.0
+    # fever window [3,6) -> witness is note 5 (barely inside).
+    fg_trace = [{
+        "section": 1, "activation_index": 3, "fever_end_index": 6,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    base_trace = [{
+        "section": 1, "activation_index": 3, "fever_end_index": 6,
+        "activation_hit_offset_ms": 40.0, "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+
+    fg = force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt)
+    ba = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool), frontier_trace=base_trace, note_types=nt)
+
+    # Both graphs must have identical fever-end witness deltas.
+    assert fg[5]["is_fever_end_witness"] and ba[5]["is_fever_end_witness"]
+    assert fg[5]["delta_ms"] == pytest.approx(ba[5]["delta_ms"])
+
+
+def test_fever_end_witness_one_note_window_not_overwritten():
+    """Issue #64: when the fever window has exactly 1 note (activation == witness),
+    the activation witness delta is NOT overwritten by the fever-end witness delta."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 5
+    ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.0], dtype=np.float32)
+    cutoff = 1200.0
+    trace = [{
+        "section": 1, "activation_index": 2, "fever_end_index": 3,  # exactly 1 note: note 2
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    # Note 2 is both activation AND fever-end witness. Activation delta (40ms) is preserved.
+    assert g[2]["is_activation_witness"] is True
+    assert g[2]["is_fever_end_witness"] is True
+    assert g[2]["delta_ms"] == pytest.approx(40.0), "activation witness delta must not be overwritten"
+
+
+def test_fever_end_witness_no_fever_window_end_ms_is_noop():
+    """Issue #64: when fever_window_end_ms is absent from the trace, the witness
+    delta function is a no-op -- the witness keeps delta_ms=0 (no cutoff to compute against)."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 6
+    ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.0, 1.5], dtype=np.float32)
+    trace = [{
+        "section": 1, "activation_index": 2, "fever_end_index": 5,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
+        # no fever_window_end_ms
+    }]
+    nt = np.ones(n, dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    assert g[4]["is_fever_end_witness"] is True
+    assert g[4]["fever_end_ms"] is None
+    assert g[4]["delta_ms"] == 0.0  # no cutoff -> stays 0
+
+
+def test_fever_end_decoy_f1_cluster_exact_deltas():
+    """Issue #64: Decoy F1 tail cluster (notes 183+184) shares ~-9.9ms largest-cushion."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    cutoff = 61340.14382457733
+    n = 4
+    ts = np.asarray([0.0, 61.167, 61.339, 61.339], dtype=np.float32)
+    trace = [{
+        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 179.43191528320312,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    assert g[1]["delta_ms"] == 0.0
+    assert g[2]["delta_ms"] == pytest.approx(-9.93, abs=0.02)
+    assert g[3]["is_fever_end_witness"] is True
+    assert g[3]["delta_ms"] == pytest.approx(g[2]["delta_ms"])
+    for i in (2, 3):
+        assert g[i]["hit_time_ms"] + g[i]["delta_ms"] < cutoff
+
+
+def test_fever_end_replay_at_shown_delta_keeps_sequential_fever():
+    """Replay at graph deltas: end-cluster hits stay inside the sequential fever window."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    cutoff = 61340.14382457733
+    act_ms = 190.0
+    real_ft_sec = 43.25914382457733  # matches Decoy F1 window geometry
+    n = 4
+    ts = np.asarray([17.891, 61.167, 61.339, 61.339], dtype=np.float32)
+    trace = [{
+        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "late_great", "activation_hit_offset_ms": act_ms,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    offsets = np.zeros(n)
+    for i in range(n):
+        d = g[i].get("delta_ms")
+        if d is not None:
+            offsets[i] = float(d)
+
+    window_end = float(ts[0]) + act_ms / 1000.0 + real_ft_sec
+    fever = np.zeros(n, dtype=bool)
+    in_section = False
+    for i in range(n):
+        if i == 0:
+            in_section = True
+        if in_section:
+            hit_t = float(ts[i]) + offsets[i] / 1000.0
+            fever[i] = hit_t < window_end
+
+    assert bool(fever[1])
+    assert bool(fever[2])
+    assert bool(fever[3])
