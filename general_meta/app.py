@@ -16,7 +16,6 @@ from gear_optimizer.core.team_buff import (
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display
-from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
 from .analysis import (
     _ELEMENT_ORDER,
@@ -25,7 +24,6 @@ from .analysis import (
     format_gem_counts,
     sort_gears_by_slot,
 )
-from .db import prepare_team_buff_tier_replay
 from .song_scan import get_songs_by_elemental_combo
 
 
@@ -114,71 +112,88 @@ def _build_replayed_loadout_rows_for_song(
     cfg_dict: dict | None,
     ref_arrays: dict | None,
 ) -> tuple[dict | None, dict | None, dict[str, list[dict]]]:
+    """
+    Build per-tier loadout rows for a song.
+
+    Intent (T5-cosmetic policy):
+    - GeneralMeta build-time stays on the baseline TeamBuff tier (T5) persisted in
+      evolution.db. We do NOT run the per-tier gem re-solve (``build_team_buff_tier_db_batches``)
+      here: that path requires the candidate-independent timeline/FG-response frontier caches
+      (expensive to prebuild) and re-allocates gems per tier. The website already serves
+      per-tier on-demand re-solves live, so reproducing them at build time is redundant cost.
+    - Every TeamBuff tier label in ``DEFAULT_TEAM_BUFF_REPLAY_TIERS`` is populated from the
+      same T5 seed rows so the frontend can present the tier selector as a cosmetic surface;
+      the per-tier numbers are computed on demand when a user opens a tier.
+    - Future maintainers: if you want real per-tier gems in the static general_meta snapshot,
+      you must (1) prebuild the timeline + FG response frontier caches and (2) call
+      ``build_team_buff_tier_db_batches`` with ``replay_surface``/``timing_mode`` set as
+      needed. Until then, keep this on the T5-only no-replay path.
+    """
+    from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+    from gear_optimizer.core.utils import cfg_to_dict
+    from gear_optimizer.core.config import load_config
+    from gear_optimizer.data.database import get_best_loadouts
+    from gear_optimizer.data.loadout_equivalence import (
+        get_gears_by_name_cached,
+        get_minis_by_name_cached,
+        normalize_minis_groups_for_display,
+    )
+
     song_name = str((song or {}).get("song_name") or "").strip()
-    song_file = str((song or {}).get("file_path") or "").strip()
-    if not song_name or not song_file:
+    if not song_name:
         return cfg_dict, ref_arrays, {}
 
-    cfg_dict_out, ref_arrays_out, entries, calc_song, _ = prepare_team_buff_tier_replay(
-        song_name=song_name,
-        song_file=song_file,
-        limit=int(LOADOUTS_PER_SONG_LIMIT),
-        element="primary",
-        team_color=str(team_color or "").strip() or None,
-        cfg_dict=cfg_dict,
-        ref_arrays=ref_arrays,
-    )
-    if not entries:
-        return cfg_dict_out, ref_arrays_out, {}
+    cfg_dict_local = dict(cfg_dict) if cfg_dict is not None else cfg_to_dict(load_config())
+    baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict_local, default="T5")
 
-    batches = build_team_buff_tier_db_batches(
-        entries=entries,
-        calc_song=calc_song,
-        ref_arrays=ref_arrays_out,
-        cfg_dict=cfg_dict_out,
+    # Read T5 seed entries directly from the DB. Pass the cached name->stats maps so entries
+    # carry full gear/mini stat dicts (required by downstream persistence canonicalization
+    # and the on-demand re-solve path on the website).
+    entries = get_best_loadouts(
+        str(song_name),
         limit=int(LOADOUTS_PER_SONG_LIMIT),
-        tiers=DEFAULT_TEAM_BUFF_REPLAY_TIERS,
-        target_team_color_override=team_color,
+        gears_by_name=get_gears_by_name_cached(),
+        minis_by_name=get_minis_by_name_cached(),
+        team_buff=str(baseline_team_buff),
     )
 
-    entry_by_hash: dict[str, dict] = {}
-    for entry in entries:
+    # Project the same T5 seed rows under every tier label (cosmetic tiers). The per-tier
+    # gem re-solve happens live on the website; the static snapshot only carries T5 data.
+    # Flatten gear/mini stat dicts to name strings — downstream aggregation (find_most_common_loadout,
+    # _build_loadout_entry) keys loadout identity by gear name tuples and expects string gear lists.
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import _flat_item_names
+
+    tier_rows: list[dict] = []
+    for entry in entries or []:
         if not isinstance(entry, dict):
             continue
         loadout_hash = str(entry.get("loadout_hash") or "").strip()
-        if loadout_hash and loadout_hash not in entry_by_hash:
-            entry_by_hash[loadout_hash] = entry
+        gear_names = _flat_item_names(entry.get("gear") or [])
+        mini_names = _flat_item_names(entry.get("minis") or [])
+        mini_groups = normalize_minis_groups_for_display(entry.get("mini_groups") or [])
+        if not mini_groups:
+            mini_groups = normalize_minis_groups_for_display([[m] for m in mini_names if m])
+        tier_rows.append(
+            {
+                "song_name": song_name,
+                "loadout_hash": loadout_hash,
+                "score": int(entry.get("score") or 0),
+                "fg_score": int(entry.get("fg_score") or 0),
+                "fg_base_score": int(entry.get("fg_base_score") or entry.get("score") or 0),
+                "gear": gear_names,
+                "mini_groups": mini_groups,
+                "minis": mini_names,
+                "details_json": _serialize_details_json(entry.get("details")),
+                "team_buff": str(baseline_team_buff),
+            }
+        )
 
     rows_by_tier: dict[str, list[dict]] = {}
     for tier in DEFAULT_TEAM_BUFF_REPLAY_TIERS:
-        tier_key = str(tier)
-        tier_label = team_buff_display_label(tier_key, default="NONE")
-        tier_rows: list[dict] = []
-        for row in batches.get(tier_key) or []:
-            if not isinstance(row, dict):
-                continue
-            loadout_hash = str(row.get("loadout_hash") or "").strip()
-            orig_entry = entry_by_hash.get(loadout_hash) or {}
-            mini_groups = normalize_minis_groups_for_display(orig_entry.get("mini_groups") or [])
-            if not mini_groups:
-                mini_groups = normalize_minis_groups_for_display([[m] for m in (row.get("minis") or []) if m])
+        tier_label = team_buff_display_label(str(tier), default="NONE")
+        rows_by_tier[tier_label] = list(tier_rows)
 
-            tier_rows.append(
-                {
-                    "song_name": song_name,
-                    "loadout_hash": loadout_hash,
-                    "score": int(row.get("score") or 0),
-                    "fg_score": int(row.get("fg_score") or 0),
-                    "fg_base_score": int(row.get("fg_base_score") or 0),
-                    "gear": list(row.get("gear") or []),
-                    "mini_groups": mini_groups,
-                    "minis": list(row.get("minis") or []),
-                    "details_json": _serialize_details_json(row.get("details")),
-                }
-            )
-        rows_by_tier[tier_label] = tier_rows
-
-    return cfg_dict_out, ref_arrays_out, rows_by_tier
+    return cfg_dict_local, ref_arrays, rows_by_tier
 
 
 def run_general_meta(cfg, paths: dict) -> dict:

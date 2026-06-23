@@ -120,6 +120,7 @@ def prepare_team_buff_tier_replay(
     from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
     from gear_optimizer.core.utils import cfg_to_dict
     from gear_optimizer.data.database import get_best_loadouts
+    from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
     from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
     from gear_optimizer.helpers.song_helpers.persistence_canon import (
         ReplayContext,
@@ -136,9 +137,14 @@ def prepare_team_buff_tier_replay(
             raise RuntimeError("ref_arrays unavailable (failed to load Stats lookup tables)")
 
     baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict_local, default="T5")
+    # The zero_ms/perfect_window tier re-solve path (_entry_loadout_items) requires each
+    # seed entry's `gear`/`minis` to be full stat dicts, not name strings. Passing the
+    # cached name->stats maps makes get_best_loadouts expand names into stat dicts.
     entries = get_best_loadouts(
         str(song_name),
         limit=_replay_seed_limit(int(limit)),
+        gears_by_name=get_gears_by_name_cached(),
+        minis_by_name=get_minis_by_name_cached(),
         team_buff=str(baseline_team_buff),
     )
 
