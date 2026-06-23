@@ -56,9 +56,28 @@ __all__ = [
 # note can legally be hit as early as -20 ms; a held tail (note_type == 3) as early as -40 ms
 # (the Perfect window is widened x2 for held tails).
 _PERFECT_LOWER_MS = -20
+_PERFECT_UPPER_MS = 40
 _HELD_TAIL_TYPE = 3
 _HELD_TAIL_TIME_MULT = 2
+_FEVER_END_SAME_CHART_TIME_MS = 0.01
 
+
+def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
+    if int(note_types.shape[0]) <= j:
+        raise ValueError(
+            "note_graph: note_types (length == total_notes) is required to display "
+            "fever-end cluster timing at the note's legal judgment bounds -- it is never guessed"
+        )
+    mult = _HELD_TAIL_TIME_MULT if int(note_types[j]) == _HELD_TAIL_TYPE else 1
+    return float(_PERFECT_LOWER_MS * mult), float(_PERFECT_UPPER_MS * mult)
+
+
+def _center_safe_delta(*, low_ms: float, high_ms: float) -> float:
+    return 0.5 * (float(low_ms) + float(high_ms))
+
+
+def _same_chart_time_ms(a: float, b: float) -> bool:
+    return abs(float(a) - float(b)) <= _FEVER_END_SAME_CHART_TIME_MS
 
 def _hit_time_ms(timestamps: np.ndarray, idx: int) -> float:
     return float(timestamps[int(idx)]) * 1000.0
@@ -189,6 +208,116 @@ def _mark_fever_end_witness(
         notes[last_fever]["section"] = int(section)
 
 
+def _mark_fever_end_cluster_safe_delta(
+    notes: list[dict[str, Any]],
+    *,
+    activation_index: int,
+    fever_end_index: int,
+    total_notes: int,
+    fever_window_end_ms: float | None,
+    note_types: Sequence[int] | np.ndarray | None,
+) -> None:
+    """Fever-end cluster: judgment-safe ∩ in-fever display delta (issue #64).
+
+    ``fever_window_end_ms`` is a continuous fever **cutoff**, not a playable hit target.
+    A guidance ``delta_ms`` must stay inside the note's required judgment window (Perfect
+    first) **and** land before the cutoff (``hit + delta < cutoff``).
+
+    For each same-chart-time fever cluster at the section tail:
+
+      * ``judgment_safe = [perfect_lower, perfect_upper]`` (held-tail-aware)
+      * ``fever_safe_upper = cutoff - hit - 1ms``
+      * ``safe = judgment_safe ∩ (-inf, fever_safe_upper]``
+      * ``cluster_safe = intersection of every cluster note's safe interval``
+
+    Display only when the cutoff **constrains** the upper bound below Perfect upper
+    (comfortable ends keep ``delta_ms = 0``). Otherwise ``+560 ms``-style values are
+    impossible. Great-interval fever-end guidance is not implemented; a tight cutoff
+    with a non-Perfect same-chart-time cluster **fails loud** rather than silently
+    leaving ``0 ms``.
+
+    Display-only; fever/great sets and scores are unchanged.
+    """
+    if fever_window_end_ms is None:
+        return
+    cutoff = float(fever_window_end_ms)
+    a = int(activation_index)
+    last_fever = min(int(fever_end_index), int(total_notes)) - 1
+    if last_fever < a:
+        return
+    witness = notes[last_fever]
+    if not witness.get("is_fever_end_witness"):
+        return
+    if witness.get("is_activation_witness"):
+        return
+    hit = float(witness["hit_time_ms"])
+    if hit >= cutoff:
+        return
+    fever_upper_witness = cutoff - hit - 1.0
+    if fever_upper_witness >= _PERFECT_UPPER_MS:
+        return
+    witness_result = str(witness.get("note_result", "Perfect"))
+    if witness_result != "Perfect":
+        raise ValueError(
+            "note_graph: unsupported fever-end guidance at tight cutoff: "
+            f"witness note {last_fever} is {witness_result!r}, not Perfect"
+        )
+    if note_types is None:
+        raise ValueError(
+            "note_graph: note_types (length == total_notes) is required to display "
+            "fever-end cluster timing at judgment bounds -- it is never guessed"
+        )
+    nt = np.asarray(note_types).reshape(-1)
+
+    cluster: list[int] = []
+    for j in range(max(0, a), last_fever + 1):
+        note = notes[j]
+        if not note.get("fever"):
+            continue
+        if note.get("is_activation_witness"):
+            continue
+        if not _same_chart_time_ms(note["hit_time_ms"], hit):
+            continue
+        note_result = str(note.get("note_result", "Perfect"))
+        if note.get("delta_ms") is None or note_result != "Perfect":
+            raise ValueError(
+                "note_graph: unsupported fever-end guidance at tight cutoff: "
+                f"same-chart-time cluster note {j} is {note_result!r} "
+                "(Perfect-only guidance not implemented)"
+            )
+        cluster.append(j)
+    if not cluster:
+        return
+
+    cluster_lo = -np.inf
+    cluster_hi = np.inf
+    min_judgment_hi = np.inf
+    for j in cluster:
+        j_lo, j_hi = _perfect_bounds_ms_at(nt, j)
+        min_judgment_hi = min(min_judgment_hi, j_hi)
+        fever_upper_delta = cutoff - float(notes[j]["hit_time_ms"]) - 1.0
+        safe_hi = min(j_hi, fever_upper_delta)
+        safe_lo = j_lo
+        if safe_lo > safe_hi:
+            raise ValueError(
+                f"note_graph: fever-end cluster note {j} has empty safe interval "
+                f"[{safe_lo}, {safe_hi}] ms"
+            )
+        cluster_lo = max(cluster_lo, safe_lo)
+        cluster_hi = min(cluster_hi, safe_hi)
+
+    if cluster_lo > cluster_hi:
+        raise ValueError(
+            "note_graph: fever-end cluster has empty shared safe interval after intersection"
+        )
+    if cluster_hi >= float(min_judgment_hi):
+        return
+
+    display_delta = _center_safe_delta(low_ms=cluster_lo, high_ms=cluster_hi)
+    for j in cluster:
+        notes[j]["delta_ms"] = display_delta
+
+
 def timeline_frontier_note_graph(
     *,
     frontier_trace: Sequence[Mapping[str, Any]],
@@ -227,6 +356,10 @@ def timeline_frontier_note_graph(
             fever_window_end_ms=fever_end_ms, section=section,
         )
         _mark_endpoint_early_hits(
+            notes, activation_index=a, fever_end_index=e, total_notes=n,
+            fever_window_end_ms=fever_end_ms, note_types=note_types,
+        )
+        _mark_fever_end_cluster_safe_delta(
             notes, activation_index=a, fever_end_index=e, total_notes=n,
             fever_window_end_ms=fever_end_ms, note_types=note_types,
         )
@@ -341,6 +474,10 @@ def force_greats_note_graph(
         # margin), display-only so the scored fever set is unchanged. Great selectors (delta_ms
         # None) are skipped.
         _mark_endpoint_early_hits(
+            notes, activation_index=a, fever_end_index=e, total_notes=n,
+            fever_window_end_ms=fever_end_ms, note_types=note_types,
+        )
+        _mark_fever_end_cluster_safe_delta(
             notes, activation_index=a, fever_end_index=e, total_notes=n,
             fever_window_end_ms=fever_end_ms, note_types=note_types,
         )
