@@ -61,6 +61,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
     validated = 0
     saw_body_fever = False
     saw_witness = False
+    note_types = np.ones(n, dtype=np.int16)
     for opt in options:
         surface = opt["surface"]
         try:
@@ -78,7 +79,9 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
         except ValueError:
             continue  # not all standalone edge surfaces are independently reconstructable
 
-        graph = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=timestamps)
+        graph = force_greats_note_graph(
+            frontier_trace=trace, total_notes=n, timestamps=timestamps, note_types=note_types,
+        )
         assert len(graph) == n
         # game-model shape: Perfect/Great only, fever is bool, witness carries a numeric delta
         for g in graph:
@@ -165,7 +168,7 @@ def test_fg_note_graph_body_counts_synthetic():
         "forced_start_index": 0, "forced_prefix_count": 3,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
     }]
-    g1 = force_greats_note_graph(frontier_trace=trace1, total_notes=n, timestamps=ts)
+    g1 = force_greats_note_graph(frontier_trace=trace1, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     reconcile_force_greats_note_graph(
         g1, total_notes=n,
         fever_words=(0, 0, 0, 0), great_words=_words_from_indices({0, 1, 2}),
@@ -180,7 +183,7 @@ def test_fg_note_graph_body_counts_synthetic():
         "forced_start_index": 0, "forced_prefix_count": 0,
         "activation_judgment": "late_great", "activation_hit_offset_ms": 190.0,
     }]
-    g2 = force_greats_note_graph(frontier_trace=trace2, total_notes=n, timestamps=ts)
+    g2 = force_greats_note_graph(frontier_trace=trace2, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     reconcile_force_greats_note_graph(
         g2, total_notes=n,
         fever_words=(0, 0, 0, 0), great_words=(0, 0, 0, 0),
@@ -197,7 +200,7 @@ def test_fg_note_graph_body_counts_synthetic():
         "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
         "fever_start_source": "perfect_window",
     }]
-    gp = force_greats_note_graph(frontier_trace=trace_perfect, total_notes=n, timestamps=ts)
+    gp = force_greats_note_graph(frontier_trace=trace_perfect, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     reconcile_force_greats_note_graph(
         gp, total_notes=n,
         fever_words=_words_from_indices(set(range(12, 16))), great_words=(0, 0, 0, 0),
@@ -217,7 +220,7 @@ def test_fg_note_graph_body_counts_synthetic():
          "forced_start_index": 100, "forced_prefix_count": 4,
          "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0},
     ]
-    g3 = force_greats_note_graph(frontier_trace=trace3, total_notes=n, timestamps=ts)
+    g3 = force_greats_note_graph(frontier_trace=trace3, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     # head fever {50..55}, head greats {0,1}, body fever {110..115}=6, body greats {100..103}=4, no overlap
     reconcile_force_greats_note_graph(
         g3, total_notes=n,
@@ -243,7 +246,7 @@ def test_fg_note_graph_marks_fever_end_witness():
          "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
          "fever_window_end_ms": 11590.0},
     ]
-    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
 
     # Last note of each run ([50,56) -> 55; [110,116) -> 115) is the fever-end witness.
     ends = [x["note_index"] for x in g if x["is_fever_end_witness"]]
@@ -496,7 +499,10 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
         }
     ]
 
-    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=trace)
+    graph = base_note_graph(
+        total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=trace,
+        note_types=np.ones(n, dtype=np.int16),
+    )
 
     # Fever run is notes [2, 5); the last fevered note (4) is the fever-end witness,
     # carrying the largest-cushion cutoff time. No score-contributing flag exists.
@@ -528,3 +534,192 @@ def test_base_note_graph_matches_production_fever_timeline():
     head_fever_graph = {g["note_index"] for g in graph if g["fever"] and g["note_index"] < 100}
     head_fever_mask = {i for i in range(min(n, 100)) if bool(fever_mask_head[i])}
     assert head_fever_graph == head_fever_mask
+
+
+def test_fever_end_cluster_rejects_impossible_plus_560_ms():
+    """Comfortable cutoff: fever does not constrain Perfect upper -> keep 0 ms (not cutoff-hit)."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 5
+    ts = np.asarray([0.0, 1.0, 1.2, 1.4, 1.6], dtype=np.float32)
+    trace = [{
+        "section": 1, "activation_index": 1, "fever_end_index": 4,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
+        "fever_window_end_ms": 1560.0,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    assert g[3]["is_fever_end_witness"] is True
+    assert g[3]["delta_ms"] == 0.0
+    assert -20.0 <= g[3]["delta_ms"] <= 40.0
+    assert g[3]["delta_ms"] != pytest.approx(560.0)
+
+
+def test_fever_end_cluster_barely_inside_decoy_delta():
+    """Tight cutoff: safe upper is fever-bound -> center ~ -9.93 ms."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    cutoff = 61340.14382457733
+    n = 4
+    ts = np.asarray([0.0, 61.167, 61.339, 61.339], dtype=np.float32)
+    trace = [{
+        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 179.43191528320312,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    assert g[2]["delta_ms"] == pytest.approx(-9.93, abs=0.02)
+    assert g[3]["delta_ms"] == pytest.approx(g[2]["delta_ms"])
+    for i in (2, 3):
+        assert g[i]["delta_ms"] >= -20.0
+        assert g[i]["hit_time_ms"] + g[i]["delta_ms"] < cutoff
+
+
+def test_fever_end_cluster_same_chart_time_shared_delta():
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 8
+    cutoff = 1240.0
+    ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.220, 1.220, 1.4, 1.6], dtype=np.float32)
+    trace = [{
+        "section": 1, "activation_index": 3, "fever_end_index": 6,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    assert g[5]["is_fever_end_witness"] is True
+    assert g[4]["delta_ms"] == pytest.approx(g[5]["delta_ms"])
+    assert g[4]["delta_ms"] != 0.0
+
+
+def test_fever_end_cluster_held_tail_intersection():
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 7
+    cutoff = 1230.0
+    ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.220, 1.220, 1.5], dtype=np.float32)
+    trace = [{
+        "section": 1, "activation_index": 3, "fever_end_index": 6,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.asarray([1, 1, 1, 1, 1, 3, 1], dtype=np.int16)
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+    shared = g[5]["delta_ms"]
+    assert g[4]["delta_ms"] == pytest.approx(shared)
+    assert shared >= -20.0
+    assert shared <= 40.0
+    assert g[5]["delta_ms"] >= -40.0
+    assert g[5]["delta_ms"] <= 80.0
+
+
+def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
+    import json
+    import sqlite3
+
+    from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, team_buff_effect
+    from gear_optimizer.data.database import get_evolution_db_path
+    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+    from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
+    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs, resolve_stat_factors
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    song = "Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat]"
+    loadout_hash = "9466514779a185ba64c4198786581230"
+    t1_opt = 7_845_087
+
+    db_path = get_evolution_db_path()
+    try:
+        row = sqlite3.connect(db_path).execute(
+            "SELECT force_details_json FROM team_buff_fg_loadouts WHERE loadout_hash=? AND song_name=?",
+            (loadout_hash, song),
+        ).fetchone()
+    except Exception:
+        pytest.skip("evolution DB unavailable")
+    if row is None:
+        pytest.skip("Decoy FG loadout not in local DB")
+
+    fd = json.loads(row[0])
+    calc = clone_calc_song(
+        get_base_calc_song(
+            "Data/Normal/Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat].txt", {}
+        )
+    )
+    apply_timing_envelope(calc)
+    si = extract_fg_song_inputs(calc)
+    nt = calc.get("song_data", {}).get("note_types")
+    ts = np.asarray(si.timestamps)
+    n = si.total_notes
+    trace = fd["ForceGreats"]["frontier_trace"]
+
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    ng = force_greats_note_graph(
+        frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt
+    )
+
+    stats = materialize_stats_from_payload(fd)
+    for key, val in {
+        k: team_buff_effect("T1", "Rush").get(k, 0)
+        - team_buff_effect(OPTIMIZER_BASELINE_TEAM_BUFF, "Rush").get(k, 0)
+        for k in team_buff_effect("T1", "Rush")
+    }.items():
+        stats[key] = int(stats.get(key, 0)) + int(val)
+
+    ref = get_exact_replay_ref_arrays_cached()
+    f = resolve_stat_factors(stats, ref)
+    real_ft = (float(si.last_note_time) * 0.15 + 0.15) * float(f.fever_time_stat)
+    acts = [int(trace[0]["activation_index"]), int(trace[1]["activation_index"])]
+    act_offs = [
+        float(trace[0]["activation_hit_offset_ms"]),
+        float(trace[1]["activation_hit_offset_ms"]),
+    ]
+
+    offsets = np.zeros(n, dtype=np.float64)
+    for i, note in enumerate(ng):
+        d = note.get("delta_ms")
+        if d is not None:
+            offsets[i] = float(d)
+
+    static_fever = np.array([bool(x.get("fever")) for x in ng], dtype=bool)
+    seq_fever = np.zeros(n, dtype=bool)
+    act_ptr = 0
+    window_end = -1.0
+    for i in range(n):
+        if act_ptr < len(acts) and i == acts[act_ptr]:
+            window_end = float(ts[i]) + act_offs[act_ptr] / 1000.0 + real_ft
+            act_ptr += 1
+        if act_ptr > 0 and i >= acts[act_ptr - 1]:
+            hit = float(ts[i]) + offsets[i] / 1000.0
+            seq_fever[i] = hit < window_end
+
+    assert np.array_equal(static_fever, seq_fever)
+    assert ng[182]["delta_ms"] == pytest.approx(-9.93, abs=0.02)
+
+    import sys
+    from pathlib import Path
+
+    verify_dir = Path(__file__).resolve().parents[1] / "tools" / "verify"
+    if str(verify_dir) not in sys.path:
+        sys.path.insert(0, str(verify_dir))
+    from verify_fg_game_oracle import score_from_game_source
+
+    great = np.array([x.get("note_result") == "Great" for x in ng], dtype=bool)
+    assert score_from_game_source(
+        stats=stats,
+        primary_color="Rush",
+        secondary_color="Vibe",
+        fever_mask=seq_fever,
+        great_mask=great,
+    ) == t1_opt
