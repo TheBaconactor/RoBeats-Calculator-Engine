@@ -192,11 +192,9 @@ def _mark_endpoint_early_hits(
     cutoff = float(fever_window_end_ms)
     upper_hit = cutoff - _ENDPOINT_CUTOFF_SAFETY_MS  # latest hit still inside the fever cutoff
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
-    skip_lo = int(skip_range[0]) if skip_range is not None else -1
-    skip_hi = int(skip_range[1]) if skip_range is not None else -1
     prev_hit = -np.inf  # running largest shown hit across the section (monotonic order)
     for j in range(max(0, int(activation_index)), min(int(fever_end_index), int(total_notes))):
-        if skip_range is not None and skip_lo <= j < skip_hi:
+        if skip_range is not None and int(skip_range[0]) <= j < int(skip_range[1]):
             # Great-only endpoint notes are handled by the early-Great helper; do not overwrite
             # them with Perfect-only endpoint logic (which would collapse to Perfect-low).
             continue
@@ -296,22 +294,6 @@ def _mark_endpoint_early_great_hits(
 
     return
 
-
-def _early_great_endpoint_range(
-    *,
-    activation_index: int,
-    fever_end_index: int,
-    total_notes: int,
-    early_great_start: int,
-    early_great_end: int,
-) -> tuple[int, int] | None:
-    if early_great_start < 0 or early_great_end < 0:
-        return None
-    start = max(int(activation_index), int(early_great_start), 0)
-    end = min(int(early_great_end), int(fever_end_index), int(total_notes))
-    if end <= start:
-        return None
-    return (start, end)
 
 def _mark_fever_end_witness(
     notes: list[dict[str, Any]],
@@ -612,13 +594,12 @@ def force_greats_note_graph(
             # None) are skipped.
             early_great_start = int(sec.get("early_great_start", -1))
             early_great_end = int(sec.get("early_great_end", -1))
-            early_great_range = _early_great_endpoint_range(
-                activation_index=a,
-                fever_end_index=e,
-                total_notes=n,
-                early_great_start=early_great_start,
-                early_great_end=early_great_end,
-            )
+            early_great_range = None
+            if early_great_start >= 0 and early_great_end >= 0:
+                start = max(int(a), int(early_great_start), 0)
+                end = min(int(early_great_end), int(e), int(n))
+                if end > start:
+                    early_great_range = (start, end)
             _mark_endpoint_early_hits(
                 notes,
                 activation_index=a,

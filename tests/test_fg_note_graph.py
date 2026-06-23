@@ -703,6 +703,7 @@ def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
     assert g[1]["note_result"] == "Perfect"
     assert -20.0 <= g[1]["delta_ms"] <= 40.0
     assert g[1]["hit_time_ms"] + g[1]["delta_ms"] < cutoff
+    assert g[1]["delta_ms"] != 0.0
 
     assert g[2]["note_result"] == "Great"
     assert -95.0 <= g[2]["delta_ms"] < -20.0
