@@ -67,6 +67,10 @@ _HELD_TAIL_TYPE = 3
 _HELD_TAIL_TIME_MULT = 2
 _FEVER_END_SAME_CHART_TIME_MS = 0.01
 _TIMING_MODES = frozenset({"perfect_window", "zero_ms"})
+_EARLY_GREAT_LOWER_EXTRA_MS = -75.0
+_EARLY_GREAT_FLOOR_MS = float(_PERFECT_LOWER_MS) + float(_EARLY_GREAT_LOWER_EXTRA_MS)  # -95
+_ENDPOINT_CUTOFF_SAFETY_MS = 1.0
+_EARLY_GREAT_ONLY_UPPER_GAP_MS = 1.0
 
 
 def _normalize_timing_mode(timing_mode: str) -> str:
@@ -84,6 +88,25 @@ def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]
         )
     mult = _HELD_TAIL_TIME_MULT if int(note_types[j]) == _HELD_TAIL_TYPE else 1
     return float(_PERFECT_LOWER_MS * mult), float(_PERFECT_UPPER_MS * mult)
+
+
+def _early_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
+    """Return early-Great-only guidance bounds for note j (issue #68).
+
+    Great-only endpoint claw-in is a different semantic than Perfect-window claw-in:
+    a note that is fevered only via an early Great hit should be shown inside the
+    early-Great band, not collapsed to the Perfect-low line.
+    """
+    if int(note_types.shape[0]) <= j:
+        raise ValueError(
+            "note_graph: note_types (length == total_notes) is required to display "
+            "early-Great fever-end timing at judgment bounds -- it is never guessed"
+        )
+    mult = _HELD_TAIL_TIME_MULT if int(note_types[j]) == _HELD_TAIL_TYPE else 1
+    great_low = float(_EARLY_GREAT_FLOOR_MS * mult)
+    # Great-only region ends just before Perfect-low (exclusive), leaving a visible gap.
+    great_high = float((_PERFECT_LOWER_MS * mult) - _EARLY_GREAT_ONLY_UPPER_GAP_MS)
+    return great_low, great_high
 
 
 def _center_safe_delta(*, low_ms: float, high_ms: float) -> float:
@@ -126,6 +149,7 @@ def _mark_endpoint_early_hits(
     total_notes: int,
     fever_window_end_ms: float | None,
     note_types: Sequence[int] | np.ndarray | None,
+    skip_range: tuple[int, int] | None = None,
 ) -> None:
     """Issue #42 endpoint-early inclusion, shown as the LARGEST-CUSHION legal hit per note.
 
@@ -166,10 +190,16 @@ def _mark_endpoint_early_hits(
     if fever_window_end_ms is None:
         return
     cutoff = float(fever_window_end_ms)
-    upper_hit = cutoff - 1.0  # latest hit still inside the fever cutoff
+    upper_hit = cutoff - _ENDPOINT_CUTOFF_SAFETY_MS  # latest hit still inside the fever cutoff
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
+    skip_lo = int(skip_range[0]) if skip_range is not None else -1
+    skip_hi = int(skip_range[1]) if skip_range is not None else -1
     prev_hit = -np.inf  # running largest shown hit across the section (monotonic order)
     for j in range(max(0, int(activation_index)), min(int(fever_end_index), int(total_notes))):
+        if skip_range is not None and skip_lo <= j < skip_hi:
+            # Great-only endpoint notes are handled by the early-Great helper; do not overwrite
+            # them with Perfect-only endpoint logic (which would collapse to Perfect-low).
+            continue
         note = notes[j]
         delta = note["delta_ms"]
         hit = float(note["hit_time_ms"])
@@ -197,6 +227,76 @@ def _mark_endpoint_early_hits(
         note["delta_ms"] = shown_hit - hit
         prev_hit = shown_hit
 
+
+def _mark_endpoint_early_great_hits(
+    notes: list[dict[str, Any]],
+    *,
+    activation_index: int,
+    fever_end_index: int,
+    total_notes: int,
+    fever_window_end_ms: float | None,
+    note_types: Sequence[int] | np.ndarray | None,
+    early_great_start: int,
+    early_great_end: int,
+) -> tuple[int, int] | None:
+    """Issue #68: early-Great fever extension tail, shown in the Great-only band."""
+    if fever_window_end_ms is None:
+        return None
+    if early_great_start < 0 or early_great_end < 0:
+        return None
+    start = max(int(activation_index), int(early_great_start), 0)
+    end = min(int(early_great_end), int(fever_end_index), int(total_notes))
+    if end <= start:
+        return None
+    if note_types is None:
+        raise ValueError(
+            "note_graph: note_types (length == total_notes) is required to display early-Great "
+            "fever-end timing at judgment bounds -- it is never guessed"
+        )
+
+    cutoff = float(fever_window_end_ms)
+    nt = np.asarray(note_types).reshape(-1)
+    prev_hit = -np.inf
+
+    # Reconstruct the monotonic frontier up to the early-Great start from already-set deltas.
+    for j in range(max(0, int(activation_index)), min(end, int(total_notes))):
+        note = notes[j]
+        hit = float(note["hit_time_ms"])
+        delta = note.get("delta_ms")
+        if j < start:
+            if delta is not None:
+                prev_hit = max(prev_hit, hit + float(delta))
+            continue
+
+        if not bool(note.get("fever")):
+            continue
+        if note.get("is_activation_witness"):
+            continue
+
+        great_low, great_high = _early_great_bounds_ms_at(nt, j)
+        fever_high = cutoff - hit - _ENDPOINT_CUTOFF_SAFETY_MS
+        safe_low = float(great_low)
+        safe_high = min(float(great_high), float(fever_high))
+        if safe_low > safe_high:
+            raise ValueError(
+                f"note_graph: early-Great fever-end note {j} has empty safe interval "
+                f"[{safe_low}, {safe_high}] ms"
+            )
+
+        lo_hit = max(hit + safe_low, prev_hit)
+        hi_hit = hit + safe_high
+        if lo_hit > hi_hit:
+            raise ValueError(
+                f"note_graph: early-Great fever-end note {j} has empty safe interval after "
+                f"monotonic/cutoff constraints (lo_hit={lo_hit}, hi_hit={hi_hit})"
+            )
+
+        shown_hit = 0.5 * (lo_hit + hi_hit)
+        note["note_result"] = "Great"
+        note["delta_ms"] = shown_hit - hit
+        prev_hit = shown_hit
+
+    return (start, end)
 
 def _mark_fever_end_witness(
     notes: list[dict[str, Any]],
@@ -495,9 +595,26 @@ def force_greats_note_graph(
             # LARGEST-CUSHION legal early hit -- the center of its legal in-fever range (most error
             # margin), display-only so the scored fever set is unchanged. Great selectors (delta_ms
             # None) are skipped.
+            early_great_start = int(sec.get("early_great_start", -1))
+            early_great_end = int(sec.get("early_great_end", -1))
+            early_great_range = _mark_endpoint_early_great_hits(
+                notes,
+                activation_index=a,
+                fever_end_index=e,
+                total_notes=n,
+                fever_window_end_ms=fever_end_ms,
+                note_types=note_types,
+                early_great_start=early_great_start,
+                early_great_end=early_great_end,
+            )
             _mark_endpoint_early_hits(
-                notes, activation_index=a, fever_end_index=e, total_notes=n,
-                fever_window_end_ms=fever_end_ms, note_types=note_types,
+                notes,
+                activation_index=a,
+                fever_end_index=e,
+                total_notes=n,
+                fever_window_end_ms=fever_end_ms,
+                note_types=note_types,
+                skip_range=early_great_range,
             )
             _mark_fever_end_cluster_safe_delta(
                 notes, activation_index=a, fever_end_index=e, total_notes=n,
