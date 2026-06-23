@@ -623,6 +623,41 @@ def test_fever_end_cluster_held_tail_intersection():
     assert g[5]["delta_ms"] <= 80.0
 
 
+def test_fever_end_cluster_fail_loud_on_tight_non_perfect_same_time():
+    """Tight cutoff + mixed Perfect/Great same-chart-time cluster must not silently keep 0 ms."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+        _mark_fever_end_cluster_safe_delta,
+        _mark_fever_end_witness,
+        _perfect_note_graph,
+    )
+
+    n = 4
+    ts = np.asarray([0.0, 0.5, 1.0, 1.0], dtype=np.float32)
+    notes = _perfect_note_graph(n, ts)
+    for i in range(n):
+        notes[i]["fever"] = i >= 1
+    _mark_fever_end_witness(
+        notes,
+        activation_index=1,
+        fever_end_index=4,
+        total_notes=n,
+        fever_window_end_ms=1010.0,
+        section=1,
+    )
+    notes[2]["note_result"] = "Great"
+    notes[2]["delta_ms"] = None
+
+    with pytest.raises(ValueError, match="unsupported fever-end guidance"):
+        _mark_fever_end_cluster_safe_delta(
+            notes,
+            activation_index=1,
+            fever_end_index=4,
+            total_notes=n,
+            fever_window_end_ms=1010.0,
+            note_types=np.ones(n, dtype=np.int16),
+        )
+
+
 def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     import json
     import sqlite3
@@ -705,7 +740,11 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
             seq_fever[i] = hit < window_end
 
     assert np.array_equal(static_fever, seq_fever)
-    assert ng[182]["delta_ms"] == pytest.approx(-9.93, abs=0.02)
+    # F1 tail cluster: chart notes 183/184 (zero-based indices 182/183); witness is 184.
+    f1_tail = (182, 183)
+    assert ng[f1_tail[1]]["is_fever_end_witness"] is True
+    assert ng[f1_tail[0]]["delta_ms"] == pytest.approx(-9.93, abs=0.02)
+    assert ng[f1_tail[1]]["delta_ms"] == pytest.approx(ng[f1_tail[0]]["delta_ms"])
 
     import sys
     from pathlib import Path

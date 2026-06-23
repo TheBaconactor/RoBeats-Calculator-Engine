@@ -59,6 +59,7 @@ _PERFECT_LOWER_MS = -20
 _PERFECT_UPPER_MS = 40
 _HELD_TAIL_TYPE = 3
 _HELD_TAIL_TIME_MULT = 2
+_FEVER_END_SAME_CHART_TIME_MS = 0.01
 
 
 def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
@@ -73,6 +74,10 @@ def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]
 
 def _center_safe_delta(*, low_ms: float, high_ms: float) -> float:
     return 0.5 * (float(low_ms) + float(high_ms))
+
+
+def _same_chart_time_ms(a: float, b: float) -> bool:
+    return abs(float(a) - float(b)) <= _FEVER_END_SAME_CHART_TIME_MS
 
 def _hit_time_ms(timestamps: np.ndarray, idx: int) -> float:
     return float(timestamps[int(idx)]) * 1000.0
@@ -227,7 +232,9 @@ def _mark_fever_end_cluster_safe_delta(
 
     Display only when the cutoff **constrains** the upper bound below Perfect upper
     (comfortable ends keep ``delta_ms = 0``). Otherwise ``+560 ms``-style values are
-    impossible. Great fever-end notes are left untouched (no Great-interval guidance yet).
+    impossible. Great-interval fever-end guidance is not implemented; a tight cutoff
+    with a non-Perfect same-chart-time cluster **fails loud** rather than silently
+    leaving ``0 ms``.
 
     Display-only; fever/great sets and scores are unchanged.
     """
@@ -246,11 +253,15 @@ def _mark_fever_end_cluster_safe_delta(
     hit = float(witness["hit_time_ms"])
     if hit >= cutoff:
         return
-    if str(witness.get("note_result", "Perfect")) != "Perfect":
-        return
     fever_upper_witness = cutoff - hit - 1.0
     if fever_upper_witness >= _PERFECT_UPPER_MS:
         return
+    witness_result = str(witness.get("note_result", "Perfect"))
+    if witness_result != "Perfect":
+        raise ValueError(
+            "note_graph: unsupported fever-end guidance at tight cutoff: "
+            f"witness note {last_fever} is {witness_result!r}, not Perfect"
+        )
     if note_types is None:
         raise ValueError(
             "note_graph: note_types (length == total_notes) is required to display "
@@ -265,12 +276,15 @@ def _mark_fever_end_cluster_safe_delta(
             continue
         if note.get("is_activation_witness"):
             continue
-        if note.get("delta_ms") is None:
+        if not _same_chart_time_ms(note["hit_time_ms"], hit):
             continue
-        if str(note.get("note_result", "Perfect")) != "Perfect":
-            return
-        if float(note["hit_time_ms"]) != hit:
-            continue
+        note_result = str(note.get("note_result", "Perfect"))
+        if note.get("delta_ms") is None or note_result != "Perfect":
+            raise ValueError(
+                "note_graph: unsupported fever-end guidance at tight cutoff: "
+                f"same-chart-time cluster note {j} is {note_result!r} "
+                "(Perfect-only guidance not implemented)"
+            )
         cluster.append(j)
     if not cluster:
         return
