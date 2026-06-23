@@ -64,50 +64,6 @@ def _hit_time_ms(timestamps: np.ndarray, idx: int) -> float:
     return float(timestamps[int(idx)]) * 1000.0
 
 
-def _perfect_lower_ms_at(note_types: np.ndarray, j: int) -> float:
-    if int(note_types.shape[0]) <= j:
-        raise ValueError(
-            "note_graph: note_types (length == total_notes) is required to display "
-            "endpoint timing at the note's legal lower bound -- it is never guessed"
-        )
-    mult = _HELD_TAIL_TIME_MULT if int(note_types[j]) == _HELD_TAIL_TYPE else 1
-    return float(_PERFECT_LOWER_MS * mult)
-
-
-def _largest_cushion_shown_hit(
-    *,
-    hit_ms: float,
-    legal_low_ms: float,
-    upper_hit_ms: float,
-    floor_hit_ms: float = -np.inf,
-) -> float:
-    """Center of the legal in-fever hit range, optionally floored (activation-only at fever end)."""
-    legal_low_hit = hit_ms + legal_low_ms
-    lo_hit = max(legal_low_hit, floor_hit_ms)
-    if lo_hit >= upper_hit_ms:
-        return lo_hit
-    return 0.5 * (lo_hit + upper_hit_ms)
-
-
-def _activation_shown_hit_floor(
-    notes: list[dict[str, Any]],
-    *,
-    activation_index: int,
-    last_fever: int,
-) -> float:
-    """Monotonic floor from the activation witness only (fever-start anchor)."""
-    a = int(activation_index)
-    if a < 0 or a > last_fever:
-        return -np.inf
-    note = notes[a]
-    if not note.get("is_activation_witness"):
-        return -np.inf
-    delta = note.get("delta_ms")
-    if delta is None:
-        return -np.inf
-    return float(note["hit_time_ms"]) + float(delta)
-
-
 def _perfect_note_graph(total_notes: int, timestamps: Sequence[float] | np.ndarray) -> list[dict[str, Any]]:
     n = int(total_notes)
     ts = np.asarray(timestamps).reshape(-1)
@@ -193,18 +149,18 @@ def _mark_endpoint_early_hits(
             prev_hit = max(prev_hit, hit + float(delta))
             continue
         # Clawed-in note: shown with the largest-cushion legal in-fever hit.
-        if nt is None:
+        if nt is None or int(nt.shape[0]) <= j:
             raise ValueError(
                 "note_graph: note_types (length == total_notes) is required to display an "
                 "endpoint-early hit at the note's legal lower bound -- it is never guessed"
             )
-        legal_low = _perfect_lower_ms_at(nt, j)
-        shown_hit = _largest_cushion_shown_hit(
-            hit_ms=hit,
-            legal_low_ms=legal_low,
-            upper_hit_ms=upper_hit,
-            floor_hit_ms=prev_hit,
-        )
+        legal_low = _PERFECT_LOWER_MS * (_HELD_TAIL_TIME_MULT if int(nt[j]) == _HELD_TAIL_TYPE else 1)
+        legal_low_hit = hit + float(legal_low)
+        lo_hit = max(legal_low_hit, prev_hit)
+        if lo_hit >= upper_hit:
+            shown_hit = lo_hit  # no in-fever room: keep the legal + monotonic floor (>= prev_hit, < cutoff)
+        else:
+            shown_hit = 0.5 * (lo_hit + upper_hit)  # largest cushion = center of the legal range
         note["delta_ms"] = shown_hit - hit
         prev_hit = shown_hit
 
@@ -231,82 +187,6 @@ def _mark_fever_end_witness(
         if fever_window_end_ms is not None:
             notes[last_fever]["fever_end_ms"] = float(fever_window_end_ms)
         notes[last_fever]["section"] = int(section)
-
-
-def _mark_fever_end_witness_delta(
-    notes: list[dict[str, Any]],
-    *,
-    activation_index: int,
-    fever_end_index: int,
-    total_notes: int,
-    fever_window_end_ms: float | None,
-    note_types: Sequence[int] | np.ndarray | None,
-) -> None:
-    """Fever-end witness + same-chart cluster: largest-cushion ``delta_ms`` (issue #64).
-
-    Unlike ``_mark_endpoint_early_hits`` (clawed-in only, section monotonicity), the
-    fever-end path ALWAYS computes largest-cushion for the witness -- clawed-in or barely
-    inside -- with NO boolean ``hit < cutoff`` skip and NO monotonic floor from body notes.
-
-    Monotonicity at fever **end** is wrong for chord tails (a same-beat neighbor at 0 ms must
-    not pin the witness to +0.07 ms). Only the **activation witness** may floor the shown hit
-    (fever-start anchor). The same ``delta_ms`` is copied to every other fever note in the
-    section with the **same chart time** (end cluster) when legal for that note.
-
-    Display-only: fever/great sets and scores are unchanged.
-    """
-    if fever_window_end_ms is None:
-        return
-    last_fever = min(int(fever_end_index), int(total_notes)) - 1
-    a = int(activation_index)
-    if last_fever < a:
-        return
-    witness = notes[last_fever]
-    if not witness.get("is_fever_end_witness"):
-        return
-    if witness.get("is_activation_witness"):
-        return
-
-    cutoff = float(fever_window_end_ms)
-    upper_hit = cutoff - 1.0
-    hit = float(witness["hit_time_ms"])
-    # Clawed-in witnesses are already largest-cushion from _mark_endpoint_early_hits (#42).
-    if hit >= cutoff:
-        return
-
-    if note_types is None:
-        raise ValueError(
-            "note_graph: note_types (length == total_notes) is required to display "
-            "fever-end witness timing at the note's legal lower bound -- it is never guessed"
-        )
-    nt = np.asarray(note_types).reshape(-1)
-    legal_low = _perfect_lower_ms_at(nt, last_fever)
-    floor_hit = _activation_shown_hit_floor(notes, activation_index=a, last_fever=last_fever)
-    shown_hit = _largest_cushion_shown_hit(
-        hit_ms=hit,
-        legal_low_ms=legal_low,
-        upper_hit_ms=upper_hit,
-        floor_hit_ms=floor_hit,
-    )
-    witness_delta = shown_hit - hit
-    witness["delta_ms"] = witness_delta
-
-    for j in range(max(0, a), last_fever):
-        note = notes[j]
-        if not note.get("fever"):
-            continue
-        if note.get("is_activation_witness"):
-            continue
-        if note.get("delta_ms") is None:
-            continue
-        if float(note["hit_time_ms"]) != hit:
-            continue
-        cluster_legal = _perfect_lower_ms_at(nt, j)
-        if witness_delta < cluster_legal:
-            raise ValueError(
-                "note_graph: fever-end cluster delta is below a cluster note's legal lower bound"
-            )
-        note["delta_ms"] = witness_delta
 
 
 def timeline_frontier_note_graph(
@@ -347,11 +227,6 @@ def timeline_frontier_note_graph(
             fever_window_end_ms=fever_end_ms, section=section,
         )
         _mark_endpoint_early_hits(
-            notes, activation_index=a, fever_end_index=e, total_notes=n,
-            fever_window_end_ms=fever_end_ms, note_types=note_types,
-        )
-        # Issue #64: fever-end witness always gets largest-cushion delta (barely inside OR clawed-in).
-        _mark_fever_end_witness_delta(
             notes, activation_index=a, fever_end_index=e, total_notes=n,
             fever_window_end_ms=fever_end_ms, note_types=note_types,
         )
@@ -466,11 +341,6 @@ def force_greats_note_graph(
         # margin), display-only so the scored fever set is unchanged. Great selectors (delta_ms
         # None) are skipped.
         _mark_endpoint_early_hits(
-            notes, activation_index=a, fever_end_index=e, total_notes=n,
-            fever_window_end_ms=fever_end_ms, note_types=note_types,
-        )
-        # Issue #64: fever-end witness always gets largest-cushion delta (barely inside OR clawed-in).
-        _mark_fever_end_witness_delta(
             notes, activation_index=a, fever_end_index=e, total_notes=n,
             fever_window_end_ms=fever_end_ms, note_types=note_types,
         )
