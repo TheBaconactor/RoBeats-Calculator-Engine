@@ -298,6 +298,23 @@ def _mark_endpoint_early_great_hits(
 
     return (start, end)
 
+
+def _early_great_endpoint_range(
+    *,
+    activation_index: int,
+    fever_end_index: int,
+    total_notes: int,
+    early_great_start: int,
+    early_great_end: int,
+) -> tuple[int, int] | None:
+    if early_great_start < 0 or early_great_end < 0:
+        return None
+    start = max(int(activation_index), int(early_great_start), 0)
+    end = min(int(early_great_end), int(fever_end_index), int(total_notes))
+    if end <= start:
+        return None
+    return (start, end)
+
 def _mark_fever_end_witness(
     notes: list[dict[str, Any]],
     *,
@@ -597,13 +614,10 @@ def force_greats_note_graph(
             # None) are skipped.
             early_great_start = int(sec.get("early_great_start", -1))
             early_great_end = int(sec.get("early_great_end", -1))
-            early_great_range = _mark_endpoint_early_great_hits(
-                notes,
+            early_great_range = _early_great_endpoint_range(
                 activation_index=a,
                 fever_end_index=e,
                 total_notes=n,
-                fever_window_end_ms=fever_end_ms,
-                note_types=note_types,
                 early_great_start=early_great_start,
                 early_great_end=early_great_end,
             )
@@ -615,6 +629,16 @@ def force_greats_note_graph(
                 fever_window_end_ms=fever_end_ms,
                 note_types=note_types,
                 skip_range=early_great_range,
+            )
+            _mark_endpoint_early_great_hits(
+                notes,
+                activation_index=a,
+                fever_end_index=e,
+                total_notes=n,
+                fever_window_end_ms=fever_end_ms,
+                note_types=note_types,
+                early_great_start=early_great_start,
+                early_great_end=early_great_end,
             )
             _mark_fever_end_cluster_safe_delta(
                 notes, activation_index=a, fever_end_index=e, total_notes=n,
