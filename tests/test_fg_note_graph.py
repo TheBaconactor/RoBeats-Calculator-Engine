@@ -580,6 +580,55 @@ def test_fever_end_cluster_barely_inside_decoy_delta():
         assert g[i]["hit_time_ms"] + g[i]["delta_ms"] < cutoff
 
 
+def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
+    """zero_ms mode must not inherit Perfect-window guidance deltas (issue #66)."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+        base_note_graph,
+        force_greats_note_graph,
+    )
+
+    cutoff = 61340.14382457733
+    n = 4
+    ts = np.asarray([0.0, 61.167, 61.339, 61.339], dtype=np.float32)
+    trace_with_tight_fever_end = [{
+        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 179.43191528320312,
+        "fever_window_end_ms": cutoff,
+    }]
+    nt = np.ones(n, dtype=np.int16)
+
+    fg_graph = force_greats_note_graph(
+        frontier_trace=trace_with_tight_fever_end,
+        total_notes=n,
+        timestamps=ts,
+        note_types=nt,
+        timing_mode="zero_ms",
+    )
+    assert all(note["delta_ms"] in (0.0, None) for note in fg_graph)
+    assert fg_graph[0]["is_activation_witness"] is False
+
+    pw_graph = force_greats_note_graph(
+        frontier_trace=trace_with_tight_fever_end,
+        total_notes=n,
+        timestamps=ts,
+        note_types=nt,
+        timing_mode="perfect_window",
+    )
+    assert pw_graph[2]["delta_ms"] == pytest.approx(-9.93, abs=0.02)
+
+    base_graph = base_note_graph(
+        total_notes=n,
+        timestamps=ts,
+        is_fever_mask=np.zeros(n, bool),
+        frontier_trace=trace_with_tight_fever_end,
+        note_types=nt,
+        timing_mode="zero_ms",
+    )
+    assert all(note["delta_ms"] in (0.0, None) for note in base_graph)
+    assert base_graph[0]["is_activation_witness"] is False
+
+
 def test_fever_end_cluster_same_chart_time_shared_delta():
     from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
 
