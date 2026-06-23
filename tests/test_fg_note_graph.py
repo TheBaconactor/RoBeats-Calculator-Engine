@@ -580,6 +580,138 @@ def test_fever_end_cluster_barely_inside_decoy_delta():
         assert g[i]["hit_time_ms"] + g[i]["delta_ms"] < cutoff
 
 
+def test_note_graph_displays_early_great_fever_end_tail():
+    """Issue #68: Great-only fever-end claw-in must not collapse to Perfect-low."""
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 2
+    cutoff = 133108.764
+    ts = np.asarray([0.0, 133.201996], dtype=np.float32)
+    nt = np.ones(n, dtype=np.int16)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 2,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "perfect",
+            "activation_hit_offset_ms": 40.0,
+            "fever_window_end_ms": cutoff,
+            "early_great_start": 1,
+            "early_great_end": 2,
+        }
+    ]
+
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+    assert g[1]["fever"] is True
+    assert g[1]["note_result"] == "Great"
+    assert g[1]["delta_ms"] < -20.0
+    assert g[1]["delta_ms"] >= -95.0
+    assert g[1]["hit_time_ms"] + g[1]["delta_ms"] < cutoff
+    assert g[1]["delta_ms"] != pytest.approx(-20.0)
+    assert g[1]["delta_ms"] == pytest.approx(-94.6, abs=0.6)
+
+
+def test_note_graph_displays_early_great_fever_end_tail_held_tail():
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 2
+    cutoff = 133108.764
+    ts = np.asarray([0.0, 133.201996], dtype=np.float32)
+    nt = np.asarray([1, 3], dtype=np.int16)  # held tail doubles early-Great floor
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 2,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "perfect",
+            "activation_hit_offset_ms": 40.0,
+            "fever_window_end_ms": cutoff,
+            "early_great_start": 1,
+            "early_great_end": 2,
+        }
+    ]
+
+    g = force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+    assert g[1]["note_result"] == "Great"
+    assert g[1]["delta_ms"] >= -190.0
+    assert g[1]["delta_ms"] < -40.0
+
+
+def test_note_graph_early_great_fever_end_fails_loud_beyond_floor():
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 2
+    # Make the fever upper bound earlier than the Great floor (-95ms) so the safe interval is empty.
+    # chart_ms = 133201.996 -> choose cutoff_ms so (cutoff_ms - hit_ms - 1) < -95.
+    # e.g. cutoff_ms = hit_ms - 96 => upper ~= -97ms.
+    cutoff = 133201.996 - 96.0
+    ts = np.asarray([0.0, 133.201996], dtype=np.float32)
+    nt = np.ones(n, dtype=np.int16)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 2,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "perfect",
+            "activation_hit_offset_ms": 40.0,
+            "fever_window_end_ms": float(cutoff),
+            "early_great_start": 1,
+            "early_great_end": 2,
+        }
+    ]
+
+    with pytest.raises(ValueError, match="early-Great fever-end note"):
+        force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
+
+
+def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
+    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+
+    n = 3
+    cutoff = 1240.0
+    ts = np.asarray([0.0, 1.250, 1.330], dtype=np.float32)
+    nt = np.ones(n, dtype=np.int16)
+
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 3,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "perfect",
+            "activation_hit_offset_ms": 40.0,
+            "fever_window_end_ms": cutoff,
+            "early_great_start": 2,
+            "early_great_end": 3,
+        }
+    ]
+
+    g = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=n,
+        timestamps=ts,
+        note_types=nt,
+    )
+
+    assert g[1]["note_result"] == "Perfect"
+    assert -20.0 <= g[1]["delta_ms"] <= 40.0
+    assert g[1]["hit_time_ms"] + g[1]["delta_ms"] < cutoff
+    assert g[1]["delta_ms"] != 0.0
+
+    assert g[2]["note_result"] == "Great"
+    assert -95.0 <= g[2]["delta_ms"] < -20.0
+    assert g[2]["hit_time_ms"] + g[2]["delta_ms"] < cutoff
+
+    assert g[1]["hit_time_ms"] + g[1]["delta_ms"] <= g[2]["hit_time_ms"] + g[2]["delta_ms"]
+
+
 def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
     """zero_ms mode must not inherit Perfect-window guidance deltas (issue #66)."""
     from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
