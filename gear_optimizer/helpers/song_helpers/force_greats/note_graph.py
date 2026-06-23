@@ -22,17 +22,23 @@ ms with the optimizer's `timestamps`). The gear-stat window lines (`get_note_tim
 are derived frontend-side from the persisted stats.
 
 Two graphs per loadout, matching the intended software behavior:
-  * BASE = timeline frontier            -> base_note_graph(...)
+  * BASE = timeline frontier            -> base_note_graph(..., timing_mode=...)
         all notes Perfect; selected activation witnesses carry exact `delta_ms`
         when a compact timeline trace is available. The last note of each fever
         run is also a witness (`is_fever_end_witness`) carrying `fever_end_ms`,
         the largest-cushion fever cutoff time -- symmetric to the activation
         witness that anchors where fever starts.
-  * FG   = fg frontier + timeline       -> force_greats_note_graph(...)
+  * FG   = fg frontier + timeline       -> force_greats_note_graph(..., timing_mode=...)
         per-note Perfect/Great + fever; optimized activation hits are timing
         WITNESSES (Perfect-window or Late-Great, carrying exact `delta_ms`);
         prefix/forced Greats are pure v3 selectors (Great label, `delta_ms=None`,
         no precise witness).
+
+``timing_mode`` selects the timing semantic (issue #66):
+  * ``"perfect_window"`` (default): apply activation witness offsets, endpoint-early
+    guidance, and fever-end safe-target guidance.
+  * ``"zero_ms"``: every playable hit at chart time (`delta_ms=0.0`; Great selectors
+    stay ``None``). Fever/great sets and witness metadata are unchanged.
 
 Both are reconstructable losslessly from already-persisted data (FG: `frontier_trace`
 + `response_surface`; BASE: the packed stats, replayed through the fever timeline),
@@ -60,6 +66,14 @@ _PERFECT_UPPER_MS = 40
 _HELD_TAIL_TYPE = 3
 _HELD_TAIL_TIME_MULT = 2
 _FEVER_END_SAME_CHART_TIME_MS = 0.01
+_TIMING_MODES = frozenset({"perfect_window", "zero_ms"})
+
+
+def _normalize_timing_mode(timing_mode: str) -> str:
+    mode = str(timing_mode or "perfect_window").strip().lower()
+    if mode not in _TIMING_MODES:
+        raise ValueError(f"note_graph: unknown timing_mode {timing_mode!r}")
+    return mode
 
 
 def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
@@ -324,6 +338,7 @@ def timeline_frontier_note_graph(
     total_notes: int,
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray | None = None,
+    timing_mode: str = "perfect_window",
 ) -> list[dict[str, Any]]:
     """BASE note-graph from the selected timeline-frontier witness trace.
 
@@ -333,6 +348,7 @@ def timeline_frontier_note_graph(
     """
 
     n = int(total_notes)
+    apply_guidance = _normalize_timing_mode(timing_mode) == "perfect_window"
     notes = _perfect_note_graph(n, timestamps)
     for sec in frontier_trace:
         section = int(sec.get("section", 0))
@@ -342,7 +358,7 @@ def timeline_frontier_note_graph(
             notes[j]["fever"] = True
             if notes[j]["section"] == 0:
                 notes[j]["section"] = section
-        if 0 <= a < n:
+        if apply_guidance and 0 <= a < n:
             notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
             notes[a]["is_activation_witness"] = True
             notes[a]["section"] = section
@@ -355,14 +371,15 @@ def timeline_frontier_note_graph(
             notes, activation_index=a, fever_end_index=e, total_notes=n,
             fever_window_end_ms=fever_end_ms, section=section,
         )
-        _mark_endpoint_early_hits(
-            notes, activation_index=a, fever_end_index=e, total_notes=n,
-            fever_window_end_ms=fever_end_ms, note_types=note_types,
-        )
-        _mark_fever_end_cluster_safe_delta(
-            notes, activation_index=a, fever_end_index=e, total_notes=n,
-            fever_window_end_ms=fever_end_ms, note_types=note_types,
-        )
+        if apply_guidance:
+            _mark_endpoint_early_hits(
+                notes, activation_index=a, fever_end_index=e, total_notes=n,
+                fever_window_end_ms=fever_end_ms, note_types=note_types,
+            )
+            _mark_fever_end_cluster_safe_delta(
+                notes, activation_index=a, fever_end_index=e, total_notes=n,
+                fever_window_end_ms=fever_end_ms, note_types=note_types,
+            )
     return notes
 
 
@@ -373,6 +390,7 @@ def base_note_graph(
     is_fever_mask: Sequence[bool] | np.ndarray,
     frontier_trace: Sequence[Mapping[str, Any]] | None = None,
     note_types: Sequence[int] | np.ndarray | None = None,
+    timing_mode: str = "perfect_window",
 ) -> list[dict[str, Any]]:
     """BASE note-graph (timeline frontier): every note Perfect, with fever windows.
 
@@ -391,6 +409,7 @@ def base_note_graph(
             total_notes=int(total_notes),
             timestamps=timestamps,
             note_types=note_types,
+            timing_mode=timing_mode,
         )
     n = int(total_notes)
     fev = np.asarray(is_fever_mask).reshape(-1)
@@ -408,6 +427,7 @@ def force_greats_note_graph(
     total_notes: int,
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray | None = None,
+    timing_mode: str = "perfect_window",
 ) -> list[dict[str, Any]]:
     """FG note-graph (fg frontier + timeline frontier) from the persisted witness trace.
 
@@ -426,6 +446,7 @@ def force_greats_note_graph(
     All other notes are Perfect (delta 0). A note may be both fever and Great.
     """
     n = int(total_notes)
+    apply_guidance = _normalize_timing_mode(timing_mode) == "perfect_window"
     notes = _perfect_note_graph(n, timestamps)
 
     for sec in frontier_trace:
@@ -454,33 +475,34 @@ def force_greats_note_graph(
             fever_window_end_ms=fever_end_ms, section=section,
         )
 
-        activation_judgment = str(sec.get("activation_judgment", ""))
-        if activation_judgment == "late_great" and 0 <= a < n:
-            notes[a]["note_result"] = "Great"             # activation Late Great = the WITNESS
-            notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
-            notes[a]["is_activation_witness"] = True
-            notes[a]["section"] = section
-        elif (
-            activation_judgment == "perfect"
-            and 0 <= a < n
-            and float(sec.get("activation_hit_offset_ms", 0.0) or 0.0) != 0.0
-        ):
-            notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
-            notes[a]["is_activation_witness"] = True
-            notes[a]["section"] = section
+        if apply_guidance:
+            activation_judgment = str(sec.get("activation_judgment", ""))
+            if activation_judgment == "late_great" and 0 <= a < n:
+                notes[a]["note_result"] = "Great"             # activation Late Great = the WITNESS
+                notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
+                notes[a]["is_activation_witness"] = True
+                notes[a]["section"] = section
+            elif (
+                activation_judgment == "perfect"
+                and 0 <= a < n
+                and float(sec.get("activation_hit_offset_ms", 0.0) or 0.0) != 0.0
+            ):
+                notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
+                notes[a]["is_activation_witness"] = True
+                notes[a]["section"] = section
 
-        # Endpoint-early (issue #42): any Perfect fever note at/after the cutoff is shown with its
-        # LARGEST-CUSHION legal early hit -- the center of its legal in-fever range (most error
-        # margin), display-only so the scored fever set is unchanged. Great selectors (delta_ms
-        # None) are skipped.
-        _mark_endpoint_early_hits(
-            notes, activation_index=a, fever_end_index=e, total_notes=n,
-            fever_window_end_ms=fever_end_ms, note_types=note_types,
-        )
-        _mark_fever_end_cluster_safe_delta(
-            notes, activation_index=a, fever_end_index=e, total_notes=n,
-            fever_window_end_ms=fever_end_ms, note_types=note_types,
-        )
+            # Endpoint-early (issue #42): any Perfect fever note at/after the cutoff is shown with its
+            # LARGEST-CUSHION legal early hit -- the center of its legal in-fever range (most error
+            # margin), display-only so the scored fever set is unchanged. Great selectors (delta_ms
+            # None) are skipped.
+            _mark_endpoint_early_hits(
+                notes, activation_index=a, fever_end_index=e, total_notes=n,
+                fever_window_end_ms=fever_end_ms, note_types=note_types,
+            )
+            _mark_fever_end_cluster_safe_delta(
+                notes, activation_index=a, fever_end_index=e, total_notes=n,
+                fever_window_end_ms=fever_end_ms, note_types=note_types,
+            )
 
     return notes
 
