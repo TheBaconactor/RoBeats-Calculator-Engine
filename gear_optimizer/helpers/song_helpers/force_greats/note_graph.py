@@ -236,18 +236,16 @@ def _mark_endpoint_early_great_hits(
     total_notes: int,
     fever_window_end_ms: float | None,
     note_types: Sequence[int] | np.ndarray | None,
-    early_great_start: int,
-    early_great_end: int,
-) -> tuple[int, int] | None:
+    early_great_range: tuple[int, int] | None,
+) -> None:
     """Issue #68: early-Great fever extension tail, shown in the Great-only band."""
     if fever_window_end_ms is None:
-        return None
-    if early_great_start < 0 or early_great_end < 0:
-        return None
-    start = max(int(activation_index), int(early_great_start), 0)
-    end = min(int(early_great_end), int(fever_end_index), int(total_notes))
+        return
+    if early_great_range is None:
+        return
+    start, end = (int(early_great_range[0]), int(early_great_range[1]))
     if end <= start:
-        return None
+        return
     if note_types is None:
         raise ValueError(
             "note_graph: note_types (length == total_notes) is required to display early-Great "
@@ -296,7 +294,7 @@ def _mark_endpoint_early_great_hits(
         note["delta_ms"] = shown_hit - hit
         prev_hit = shown_hit
 
-    return (start, end)
+    return
 
 
 def _early_great_endpoint_range(
@@ -637,8 +635,7 @@ def force_greats_note_graph(
                 total_notes=n,
                 fever_window_end_ms=fever_end_ms,
                 note_types=note_types,
-                early_great_start=early_great_start,
-                early_great_end=early_great_end,
+                early_great_range=early_great_range,
             )
             _mark_fever_end_cluster_safe_delta(
                 notes, activation_index=a, fever_end_index=e, total_notes=n,
