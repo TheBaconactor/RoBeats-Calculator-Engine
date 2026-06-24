@@ -2,18 +2,20 @@ Song Name	Shop 'til You Drop by FinnMK
 Difficulty	8
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9065332585
+Audio File	9065332585.ogg
 Last Note Time	161.873
 Total Notes	703
 Fever Fill	205
 Fever Time	24.280950
 Long Notes	90
 BPM	200
-Song Length	163.814943311
+Song Length	162.873000000
 
 Timing Points
-0.000	300.0000
-0.273	300.0000
-1.173	300.0000
+0.000	300.000000
+0.273	300.000000
+1.173	300.000000
 
 
 Song Data

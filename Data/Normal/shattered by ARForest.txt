@@ -2,16 +2,18 @@ Song Name	shattered by ARForest
 Difficulty	15
 Primary Color	Flow
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9058860953
+Audio File	9058860953.ogg
 Last Note Time	136.864
 Total Notes	795
 Fever Fill	241
 Fever Time	20.529600
 Long Notes	72
 BPM	175
-Song Length	140.100979167
+Song Length	137.864000000
 
 Timing Points
-0.064	342.8571
+0.064	342.857143
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	F-Rozenette by Se-U-Ra
 Difficulty	17
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063500080
+Audio File	9063500080.ogg
 Last Note Time	128.338
 Total Notes	1021
 Fever Fill	320
 Fever Time	19.250700
 Long Notes	63
 BPM	219
-Song Length	131.840000000
+Song Length	129.338000000
 
 Timing Points
-0.804	273.9726
+0.804	273.972603
 
 
 Song Data

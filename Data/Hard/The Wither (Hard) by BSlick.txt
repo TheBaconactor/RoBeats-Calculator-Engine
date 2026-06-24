@@ -2,16 +2,18 @@ Song Name	The Wither (Hard) by BSlick
 Difficulty	17
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9065768743
+Audio File	9065768743.ogg
 Last Note Time	162.500
 Total Notes	931
 Fever Fill	245
 Fever Time	24.375000
 Long Notes	196
 BPM	90
-Song Length	162.742857143
+Song Length	163.500000000
 
 Timing Points
-0.000	666.0000
+0.000	666.000000
 
 
 Song Data

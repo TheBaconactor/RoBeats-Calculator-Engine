@@ -2,16 +2,18 @@ Song Name	Machina by Pixel Terror [Monstercat]
 Difficulty	9
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065283403
+Audio File	9065283403.ogg
 Last Note Time	127.736
 Total Notes	452
 Fever Fill	109
 Fever Time	19.160400
 Long Notes	127
 BPM	180
-Song Length	134.070657596
+Song Length	128.736000000
 
 Timing Points
-0.070	333.3333
+0.070	333.333333
 
 
 Song Data

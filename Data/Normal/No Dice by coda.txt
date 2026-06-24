@@ -2,20 +2,22 @@ Song Name	No Dice by coda
 Difficulty	6
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9063114087
+Audio File	9063114087.ogg
 Last Note Time	157.899
 Total Notes	710
 Fever Fill	178
 Fever Time	23.684850
 Long Notes	178
 BPM	112
-Song Length	159.634126984
+Song Length	158.899000000
 
 Timing Points
-0.034	533.3286
-17.100	533.3286
-31.767	533.3286
-150.432	533.3286
-156.565	533.3286
+0.034	533.328593
+17.100	533.328593
+31.767	533.328593
+150.432	533.328593
+156.565	533.328593
 
 
 Song Data

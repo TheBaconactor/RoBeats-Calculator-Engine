@@ -2,16 +2,18 @@ Song Name	Electro Cabello (Hard) by Kevin MacLeod (Incompetech)
 Difficulty	19
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9060603355
+Audio File	9060603355.ogg
 Last Note Time	187.989
 Total Notes	1821
 Fever Fill	471
 Fever Time	28.198350
 Long Notes	409
 BPM	117
-Song Length	190.836979167
+Song Length	188.989000000
 
 Timing Points
-0.169	512.8205
+0.169	512.820513
 
 
 Song Data

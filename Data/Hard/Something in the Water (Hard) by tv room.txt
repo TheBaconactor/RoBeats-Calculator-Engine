@@ -2,16 +2,18 @@ Song Name	Something in the Water (Hard) by tv room
 Difficulty	17
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9064084791
+Audio File	9064084791.ogg
 Last Note Time	147.586
 Total Notes	1191
 Fever Fill	305
 Fever Time	22.137900
 Long Notes	276
 BPM	144
-Song Length	148.471609977
+Song Length	148.586000000
 
 Timing Points
-0.086	416.6667
+0.086	416.666667
 
 
 Song Data

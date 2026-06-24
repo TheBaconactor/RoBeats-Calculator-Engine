@@ -2,16 +2,18 @@ Song Name	Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat]
 Difficulty	5
 Primary Color	Rush
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://5645549178
+Audio File	5645549178.ogg
 Last Note Time	116.512
 Total Notes	385
 Fever Fill	106
 Fever Time	17.476800
 Long Notes	68
 BPM	174
-Song Length	119.922630385
+Song Length	117.512000000
 
 Timing Points
-0.650	344.8276
+0.650	344.827586
 
 
 Song Data

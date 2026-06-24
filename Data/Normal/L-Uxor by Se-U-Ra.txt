@@ -2,20 +2,22 @@ Song Name	L-Uxor by Se-U-Ra
 Difficulty	16
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063506142
+Audio File	9063506142.ogg
 Last Note Time	118.636
 Total Notes	598
 Fever Fill	177
 Fever Time	17.795400
 Long Notes	67
 BPM	198
-Song Length	119.959954649
+Song Length	119.636000000
 
 Timing Points
-0.708	302.7245
-27.953	302.2670
-59.691	301.6591
-77.790	300.9027
-104.871	299.2519
+0.708	302.724521
+27.953	302.267003
+59.691	301.659125
+77.790	300.902708
+104.871	299.251870
 
 
 Song Data

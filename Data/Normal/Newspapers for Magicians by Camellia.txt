@@ -2,16 +2,18 @@ Song Name	Newspapers for Magicians by Camellia
 Difficulty	19
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059197555
+Audio File	9059197555.ogg
 Last Note Time	158.655
 Total Notes	1442
 Fever Fill	414
 Fever Time	23.798250
 Long Notes	200
 BPM	150
-Song Length	160.394013605
+Song Length	159.655000000
 
 Timing Points
-1.855	400.0000
+1.855	400.000000
 
 
 Song Data

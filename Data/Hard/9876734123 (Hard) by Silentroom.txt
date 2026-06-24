@@ -2,16 +2,18 @@ Song Name	9876734123 (Hard) by Silentroom
 Difficulty	25
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063719219
+Audio File	9063719219.ogg
 Last Note Time	122.268
 Total Notes	1442
 Fever Fill	434
 Fever Time	18.340200
 Long Notes	140
 BPM	157
-Song Length	127.500000000
+Song Length	123.268000000
 
 Timing Points
-1.504	382.1656
+1.504	382.165605
 
 
 Song Data

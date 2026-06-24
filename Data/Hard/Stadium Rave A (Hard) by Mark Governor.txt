@@ -2,20 +2,22 @@ Song Name	Stadium Rave A (Hard) by Mark Governor
 Difficulty	16
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9590475329
+Audio File	9590475329.mp3
 Last Note Time	149.578
 Total Notes	1259
 Fever Fill	339
 Fever Time	22.436700
 Long Notes	243
 BPM	125
-Song Length	151.327346939
+Song Length	150.578000000
 
 Timing Points
-0.316	479.9424
-15.822	479.9424
-69.575	479.9424
-100.292	479.9424
-149.726	479.9424
+0.316	479.942407
+15.822	479.942407
+69.575	479.942407
+100.292	479.942407
+149.726	479.942407
 
 
 Song Data

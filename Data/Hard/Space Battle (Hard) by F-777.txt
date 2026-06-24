@@ -2,16 +2,18 @@ Song Name	Space Battle (Hard) by F-777
 Difficulty	28
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065767637
+Audio File	9065767637.ogg
 Last Note Time	144.000
 Total Notes	1591
 Fever Fill	524
 Fever Time	21.600000
 Long Notes	19
 BPM	200
-Song Length	145.606530612
+Song Length	145.000000000
 
 Timing Points
-0.000	300.0000
+0.000	300.000000
 
 
 Song Data

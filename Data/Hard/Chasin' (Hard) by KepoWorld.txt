@@ -2,16 +2,18 @@ Song Name	Chasin' (Hard) by KepoWorld
 Difficulty	24
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9060281980
+Audio File	9060281980.ogg
 Last Note Time	180.816
 Total Notes	1370
 Fever Fill	366
 Fever Time	27.122400
 Long Notes	272
 BPM	150
-Song Length	187.245714286
+Song Length	181.816000000
 
 Timing Points
-1.616	400.0000
+1.616	400.000000
 
 
 Song Data

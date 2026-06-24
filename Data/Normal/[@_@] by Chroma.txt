@@ -2,16 +2,18 @@ Song Name	[@_@] by Chroma
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059365271
+Audio File	9059365271.ogg
 Last Note Time	101.012
 Total Notes	206
 Fever Fill	58
 Fever Time	15.151800
 Long Notes	32
 BPM	158
-Song Length	102.600000000
+Song Length	102.012000000
 
 Timing Points
-0.000	379.7468
+0.000	379.746835
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Feeling Alright by Rutra
 Difficulty	11
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065317619
+Audio File	9065317619.ogg
 Last Note Time	166.939
 Total Notes	925
 Fever Fill	210
 Fever Time	25.040850
 Long Notes	297
 BPM	128
-Song Length	169.673514739
+Song Length	167.939000000
 
 Timing Points
-1.939	468.7500
+1.939	468.750000
 
 
 Song Data

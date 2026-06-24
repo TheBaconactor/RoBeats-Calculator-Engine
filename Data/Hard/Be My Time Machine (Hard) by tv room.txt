@@ -2,18 +2,20 @@ Song Name	Be My Time Machine (Hard) by tv room
 Difficulty	29
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9064078600
+Audio File	9064078600.ogg
 Last Note Time	126.083
 Total Notes	1502
 Fever Fill	416
 Fever Time	18.912450
 Long Notes	255
 BPM	126
-Song Length	127.272244898
+Song Length	127.083000000
 
 Timing Points
--0.025	447.7612
-93.109	517.2414
-93.109	517.2414
+-0.025	447.761194
+93.109	517.241379
+93.109	517.241379
 
 
 Song Data

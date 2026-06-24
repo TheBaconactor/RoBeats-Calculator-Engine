@@ -2,16 +2,18 @@ Song Name	Orange by Aoi Okutsu [Nash Music Library]
 Difficulty	12
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://11478094579
+Audio File	11478094579.ogg
 Last Note Time	154.411
 Total Notes	774
 Fever Fill	193
 Fever Time	23.161650
 Long Notes	195
 BPM	157
-Song Length	157.971609977
+Song Length	155.411000000
 
 Timing Points
-0.017	382.1656
+0.017	382.165605
 
 
 Song Data

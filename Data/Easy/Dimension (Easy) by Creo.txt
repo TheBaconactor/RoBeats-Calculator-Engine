@@ -2,13 +2,15 @@ Song Name	Dimension (Easy) by Creo
 Difficulty	1
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9062721758
+Audio File	9062721758.ogg
 Last Note Time	117.011
 Total Notes	119
 Fever Fill	36
 Fever Time	17.551650
 Long Notes	13
 BPM	115
-Song Length	120.000000000
+Song Length	118.011000000
 
 Timing Points
 0.142	521.739130

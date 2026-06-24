@@ -2,16 +2,18 @@ Song Name	Fire (Hard) by Rutra
 Difficulty	22
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9065319459
+Audio File	9065319459.ogg
 Last Note Time	99.360
 Total Notes	979
 Fever Fill	246
 Fever Time	14.904000
 Long Notes	242
 BPM	160
-Song Length	102.138231293
+Song Length	100.360000000
 
 Timing Points
-0.360	375.0000
+0.360	375.000000
 
 
 Song Data

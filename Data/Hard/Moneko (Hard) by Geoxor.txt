@@ -2,17 +2,19 @@ Song Name	Moneko (Hard) by Geoxor
 Difficulty	24
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059906228
+Audio File	9059906228.ogg
 Last Note Time	151.630
 Total Notes	1496
 Fever Fill	373
 Fever Time	22.744500
 Long Notes	376
 BPM	150
-Song Length	152.849270833
+Song Length	152.630000000
 
 Timing Points
-0.030	400.0000
-2.430	400.0000
+0.030	400.000000
+2.430	400.000000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Shironobo (Hard) by Se-U-Ra
 Difficulty	14
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063507749
+Audio File	9063507749.ogg
 Last Note Time	142.770
 Total Notes	782
 Fever Fill	183
 Fever Time	21.415500
 Long Notes	235
 BPM	100
-Song Length	144.946666667
+Song Length	143.770000000
 
 Timing Points
-2.370	600.0000
+2.370	600.000000
 
 
 Song Data

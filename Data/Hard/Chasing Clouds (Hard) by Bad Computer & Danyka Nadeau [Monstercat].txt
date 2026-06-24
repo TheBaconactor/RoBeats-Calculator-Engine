@@ -2,16 +2,18 @@ Song Name	Chasing Clouds (Hard) by Bad Computer & Danyka Nadeau [Monstercat]
 Difficulty	19
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063102542
+Audio File	9063102542.ogg
 Last Note Time	136.086
 Total Notes	1012
 Fever Fill	259
 Fever Time	20.412900
 Long Notes	237
 BPM	128
-Song Length	137.051972789
+Song Length	137.086000000
 
 Timing Points
-0.149	468.7500
+0.149	468.750000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Show's Startin' by FinnMK
 Difficulty	7
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065333954
+Audio File	9065333954.ogg
 Last Note Time	146.829
 Total Notes	638
 Fever Fill	169
 Fever Time	22.024350
 Long Notes	133
 BPM	134
-Song Length	149.421473923
+Song Length	147.829000000
 
 Timing Points
-1.755	447.7612
+1.755	447.761194
 
 
 Song Data

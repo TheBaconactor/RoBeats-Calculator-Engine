@@ -2,16 +2,18 @@ Song Name	Moonlight (Hard) by Geoxor
 Difficulty	19
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059907395
+Audio File	9059907395.ogg
 Last Note Time	162.219
 Total Notes	1245
 Fever Fill	315
 Fever Time	24.332850
 Long Notes	300
 BPM	87
-Song Length	164.144979167
+Song Length	163.219000000
 
 Timing Points
-2.219	689.6552
+2.219	689.655172
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Step Forward by Aoi Okutsu [Nash Music Library]
 Difficulty	6
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://11382046577
+Audio File	11382046577.ogg
 Last Note Time	121.500
 Total Notes	317
 Fever Fill	70
 Fever Time	18.225000
 Long Notes	109
 BPM	138
-Song Length	122.741043084
+Song Length	122.500000000
 
 Timing Points
-1.718	434.7826
+1.718	434.782609
 
 
 Song Data

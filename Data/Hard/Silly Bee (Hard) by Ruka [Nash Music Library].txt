@@ -2,23 +2,25 @@ Song Name	Silly Bee (Hard) by Ruka [Nash Music Library]
 Difficulty	19
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://11382045616
+Audio File	11382045616.ogg
 Last Note Time	125.469
 Total Notes	1171
 Fever Fill	302
 Fever Time	18.820350
 Long Notes	266
 BPM	177
-Song Length	129.337800454
+Song Length	126.469000000
 
 Timing Points
-0.714	338.9831
-53.605	338.9831
-54.741	338.9831
-65.080	338.9831
-65.589	338.9831
-75.928	338.9831
-76.436	338.9831
-106.436	338.9831
+0.714	338.983051
+53.605	338.983051
+54.741	338.983051
+65.080	338.983051
+65.589	338.983051
+75.928	338.983051
+76.436	338.983051
+106.436	338.983051
 
 
 Song Data

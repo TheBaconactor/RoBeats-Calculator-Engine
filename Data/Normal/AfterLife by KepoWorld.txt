@@ -2,19 +2,21 @@ Song Name	AfterLife by KepoWorld
 Difficulty	7
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9060276997
+Audio File	9060276997.ogg
 Last Note Time	179.973
 Total Notes	946
 Fever Fill	212
 Fever Time	26.995950
 Long Notes	312
 BPM	128
-Song Length	184.332086168
+Song Length	180.973000000
 
 Timing Points
-0.000	468.7500
-0.031	468.7500
-0.441	468.7500
-1.848	468.7500
+0.000	468.750000
+0.031	468.750000
+0.441	468.750000
+1.848	468.750000
 
 
 Song Data

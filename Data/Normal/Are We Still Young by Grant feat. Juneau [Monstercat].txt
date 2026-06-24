@@ -2,16 +2,18 @@ Song Name	Are We Still Young by Grant feat. Juneau [Monstercat]
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9062858598
+Audio File	9062858598.ogg
 Last Note Time	104.730
 Total Notes	270
 Fever Fill	60
 Fever Time	15.709500
 Long Notes	90
 BPM	110
-Song Length	106.389002268
+Song Length	105.730000000
 
 Timing Points
-0.003	545.4545
+0.003	545.454545
 
 
 Song Data

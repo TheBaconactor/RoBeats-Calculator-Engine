@@ -2,16 +2,18 @@ Song Name	Blammed (Hard) by Kawai Sprite
 Difficulty	20
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://6278442803
+Audio File	6278442803.ogg
 Last Note Time	105.517
 Total Notes	895
 Fever Fill	280
 Fever Time	15.827550
 Long Notes	55
 BPM	165
-Song Length	106.997551020
+Song Length	106.517000000
 
 Timing Points
-0.063	363.6364
+0.063	363.636364
 
 
 Song Data

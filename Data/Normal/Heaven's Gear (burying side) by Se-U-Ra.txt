@@ -2,16 +2,18 @@ Song Name	Heaven's Gear (burying side) by Se-U-Ra
 Difficulty	18
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063503258
+Audio File	9063503258.ogg
 Last Note Time	120.940
 Total Notes	1023
 Fever Fill	267
 Fever Time	18.141000
 Long Notes	222
 BPM	197
-Song Length	124.186122449
+Song Length	121.940000000
 
 Timing Points
-0.331	304.5685
+0.331	304.568528
 
 
 Song Data

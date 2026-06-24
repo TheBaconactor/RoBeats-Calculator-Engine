@@ -2,23 +2,25 @@ Song Name	Slowly (Hard) by Rutra
 Difficulty	18
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065526763
+Audio File	9065526763.ogg
 Last Note Time	143.808
 Total Notes	890
 Fever Fill	248
 Fever Time	21.571200
 Long Notes	148
 BPM	80
-Song Length	153.036979167
+Song Length	144.808000000
 
 Timing Points
-0.002	750.0000
-0.558	750.0000
-0.746	750.0000
-2.996	750.0000
-23.996	750.0000
-71.996	750.0000
-95.996	750.0000
-119.996	750.0000
+0.002	750.000000
+0.558	750.000000
+0.746	750.000000
+2.996	750.000000
+23.996	750.000000
+71.996	750.000000
+95.996	750.000000
+119.996	750.000000
 
 
 Song Data

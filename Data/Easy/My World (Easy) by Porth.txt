@@ -2,13 +2,15 @@ Song Name	My World (Easy) by Porth
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065309702
+Audio File	9065309702.ogg
 Last Note Time	122.830
 Total Notes	196
 Fever Fill	64
 Fever Time	18.424500
 Long Notes	4
 BPM	125
-Song Length	0.000000000
+Song Length	123.830000000
 
 Timing Points
 -0.050	480.000000

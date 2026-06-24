@@ -2,16 +2,18 @@ Song Name	New World (Hard) by Hoaprox feat. Rogue [Monstercat]
 Difficulty	19
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9060991044
+Audio File	9060991044.ogg
 Last Note Time	104.523
 Total Notes	919
 Fever Fill	216
 Fever Time	15.678450
 Long Notes	273
 BPM	170
-Song Length	106.617437642
+Song Length	105.523000000
 
 Timing Points
-2.876	352.9412
+2.876	352.941176
 
 
 Song Data

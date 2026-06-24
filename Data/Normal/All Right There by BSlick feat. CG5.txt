@@ -2,16 +2,18 @@ Song Name	All Right There by BSlick feat. CG5
 Difficulty	7
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059074035
+Audio File	9059074035.ogg
 Last Note Time	150.276
 Total Notes	639
 Fever Fill	139
 Fever Time	22.541400
 Long Notes	224
 BPM	153
-Song Length	151.155714286
+Song Length	151.276000000
 
 Timing Points
-0.080	392.1569
+0.080	392.156863
 
 
 Song Data

@@ -2,20 +2,22 @@ Song Name	Rebound (Hard) by Egg Yolk
 Difficulty	30
 Primary Color	Rush
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9065253424
+Audio File	9065253424.ogg
 Last Note Time	177.208
 Total Notes	2529
 Fever Fill	523
 Fever Time	26.581200
 Long Notes	959
 BPM	195
-Song Length	177.237573696
+Song Length	178.208000000
 
 Timing Points
-0.000	307.6923
-0.287	307.6923
-0.594	307.6923
-1.209	307.6923
-4.901	307.6923
+0.000	307.692308
+0.287	307.692308
+0.594	307.692308
+1.209	307.692308
+4.901	307.692308
 
 
 Song Data

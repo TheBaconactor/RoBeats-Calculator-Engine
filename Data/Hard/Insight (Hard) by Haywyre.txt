@@ -2,20 +2,22 @@ Song Name	Insight (Hard) by Haywyre
 Difficulty	24
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://1221666953
+Audio File	1221666953.ogg
 Last Note Time	147.472
 Total Notes	1378
 Fever Fill	431
 Fever Time	22.120800
 Long Notes	86
 BPM	140
-Song Length	149.960680272
+Song Length	148.472000000
 
 Timing Points
-0.000	428.0000
-68.571	428.0000
-82.178	428.0000
-82.275	428.0000
-98.142	428.0000
+0.000	428.000000
+68.571	428.000000
+82.178	428.000000
+82.275	428.000000
+98.142	428.000000
 
 
 Song Data

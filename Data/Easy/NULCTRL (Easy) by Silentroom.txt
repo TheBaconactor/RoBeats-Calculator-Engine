@@ -2,13 +2,15 @@ Song Name	NULCTRL (Easy) by Silentroom
 Difficulty	8
 Primary Color	Rush
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://12269521360
+Audio File	12269521360.ogg
 Last Note Time	80.660
 Total Notes	242
 Fever Fill	79
 Fever Time	12.099000
 Long Notes	5
 BPM	100
-Song Length	82.019083333
+Song Length	81.660000000
 
 Timing Points
 0.710	600.000000

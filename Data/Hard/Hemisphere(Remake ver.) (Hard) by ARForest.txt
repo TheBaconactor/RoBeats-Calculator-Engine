@@ -2,20 +2,22 @@ Song Name	Hemisphere(Remake ver.) (Hard) by ARForest
 Difficulty	18
 Primary Color	Flow
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9058852836
+Audio File	9058852836.ogg
 Last Note Time	143.483
 Total Notes	885
 Fever Fill	257
 Fever Time	21.522450
 Long Notes	115
 BPM	117
-Song Length	144.087729167
+Song Length	144.483000000
 
 Timing Points
-14.483	600.0000
-115.283	2400.0000
-115.283	2400.0000
-123.683	300.0000
-123.683	300.0000
+14.483	600.000000
+115.283	2400.000000
+115.283	2400.000000
+123.683	300.000000
+123.683	300.000000
 
 
 Song Data

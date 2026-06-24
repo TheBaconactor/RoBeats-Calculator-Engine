@@ -2,16 +2,18 @@ Song Name	LOA2 by Se-U-Ra
 Difficulty	18
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063504588
+Audio File	9063504588.ogg
 Last Note Time	117.788
 Total Notes	900
 Fever Fill	257
 Fever Time	17.668200
 Long Notes	129
 BPM	202
-Song Length	118.973287982
+Song Length	118.788000000
 
 Timing Points
-0.165	297.0297
+0.165	297.029703
 
 
 Song Data

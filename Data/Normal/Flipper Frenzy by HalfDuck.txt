@@ -2,16 +2,18 @@ Song Name	Flipper Frenzy by HalfDuck
 Difficulty	10
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9546623162
+Audio File	9546623162.ogg
 Last Note Time	140.641
 Total Notes	784
 Fever Fill	226
 Fever Time	21.096150
 Long Notes	107
 BPM	140
-Song Length	144.877006803
+Song Length	141.641000000
 
 Timing Points
-0.070	428.5714
+0.070	428.571429
 
 
 Song Data

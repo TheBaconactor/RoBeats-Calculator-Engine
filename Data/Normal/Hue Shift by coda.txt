@@ -2,16 +2,18 @@ Song Name	Hue Shift by coda
 Difficulty	5
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063110567
+Audio File	9063110567.ogg
 Last Note Time	139.382
 Total Notes	448
 Fever Fill	87
 Fever Time	20.907300
 Long Notes	189
 BPM	93
-Song Length	141.855147392
+Song Length	140.382000000
 
 Timing Points
-0.062	645.0018
+0.062	645.001774
 
 
 Song Data

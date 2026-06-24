@@ -2,20 +2,22 @@ Song Name	Summer Time Lover by Yui Shimada [Nash Music Library]
 Difficulty	16
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://11382047735
+Audio File	11382047735.ogg
 Last Note Time	163.057
 Total Notes	875
 Fever Fill	217
 Fever Time	24.458550
 Long Notes	226
 BPM	160
-Song Length	163.892947846
+Song Length	164.057000000
 
 Timing Points
-1.057	375.0000
-65.557	375.0000
-95.557	375.0000
-133.057	375.0000
-158.932	375.0000
+1.057	375.000000
+65.557	375.000000
+95.557	375.000000
+133.057	375.000000
+158.932	375.000000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Senpai (Hard) by Kawai Sprite
 Difficulty	18
 Primary Color	Chill
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059797119
+Audio File	9059797119.ogg
 Last Note Time	95.945
 Total Notes	827
 Fever Fill	195
 Fever Time	14.391750
 Long Notes	243
 BPM	144
-Song Length	99.497505669
+Song Length	96.945000000
 
 Timing Points
-0.320	416.6667
+0.320	416.666667
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Terrorize (Hard) by firedagger01
 Difficulty	20
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063183602
+Audio File	9063183602.ogg
 Last Note Time	112.232
 Total Notes	1240
 Fever Fill	303
 Fever Time	16.834800
 Long Notes	331
 BPM	128
-Song Length	112.468458050
+Song Length	113.232000000
 
 Timing Points
--0.033	468.7500
+-0.033	468.750000
 
 
 Song Data

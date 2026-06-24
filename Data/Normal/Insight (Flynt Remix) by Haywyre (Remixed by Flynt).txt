@@ -2,16 +2,18 @@ Song Name	Insight (Flynt Remix) by Haywyre (Remixed by Flynt)
 Difficulty	18
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065273797
+Audio File	9065273797.ogg
 Last Note Time	162.842
 Total Notes	1133
 Fever Fill	330
 Fever Time	24.426300
 Long Notes	143
 BPM	140
-Song Length	164.340181406
+Song Length	163.842000000
 
 Timing Points
--0.015	428.5714
+-0.015	428.571429
 
 
 Song Data

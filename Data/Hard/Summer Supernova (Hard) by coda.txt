@@ -2,16 +2,18 @@ Song Name	Summer Supernova (Hard) by coda
 Difficulty	22
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063117446
+Audio File	9063117446.ogg
 Last Note Time	157.187
 Total Notes	1595
 Fever Fill	438
 Fever Time	23.578050
 Long Notes	280
 BPM	104
-Song Length	160.277460317
+Song Length	158.187000000
 
 Timing Points
--0.024	576.9231
+-0.024	576.923077
 
 
 Song Data

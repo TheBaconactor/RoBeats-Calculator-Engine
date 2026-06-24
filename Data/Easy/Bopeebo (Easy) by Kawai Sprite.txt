@@ -2,13 +2,15 @@ Song Name	Bopeebo (Easy) by Kawai Sprite
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059790451
+Audio File	9059790451.ogg
 Last Note Time	75.409
 Total Notes	78
 Fever Fill	26
 Fever Time	11.311350
 Long Notes	2
 BPM	100
-Song Length	81.246621315
+Song Length	76.409000000
 
 Timing Points
 0.109	600.000000

@@ -2,16 +2,18 @@ Song Name	Delusional!! by Ponchi feat. haxchi [MisoilePunch]
 Difficulty	19
 Primary Color	Rush
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9064136592
+Audio File	9064136592.ogg
 Last Note Time	107.118
 Total Notes	902
 Fever Fill	277
 Fever Time	16.067700
 Long Notes	72
 BPM	238
-Song Length	113.000000000
+Song Length	108.118000000
 
 Timing Points
-0.984	252.1008
+0.984	252.100840
 
 
 Song Data

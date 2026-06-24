@@ -2,16 +2,18 @@ Song Name	Show Your Style (Hard) by ARForest
 Difficulty	26
 Primary Color	Beat
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9058865098
+Audio File	9058865098.ogg
 Last Note Time	135.084
 Total Notes	1707
 Fever Fill	443
 Fever Time	20.262600
 Long Notes	379
 BPM	128
-Song Length	139.236979167
+Song Length	136.084000000
 
 Timing Points
-0.084	468.7500
+0.084	468.750000
 
 
 Song Data

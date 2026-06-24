@@ -2,16 +2,18 @@ Song Name	Realms (Hard) by Hinkik & A Himitsu
 Difficulty	18
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059988049
+Audio File	9059988049.ogg
 Last Note Time	178.362
 Total Notes	1344
 Fever Fill	401
 Fever Time	26.754300
 Long Notes	142
 BPM	174
-Song Length	178.769410431
+Song Length	179.362000000
 
 Timing Points
-3.190	344.8276
+3.190	344.827586
 
 
 Song Data

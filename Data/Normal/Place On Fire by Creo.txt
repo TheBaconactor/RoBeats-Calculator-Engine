@@ -2,16 +2,18 @@ Song Name	Place On Fire by Creo
 Difficulty	7
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063134819
+Audio File	9063134819.ogg
 Last Note Time	168.035
 Total Notes	639
 Fever Fill	164
 Fever Time	25.205250
 Long Notes	148
 BPM	140
-Song Length	168.906780045
+Song Length	169.035000000
 
 Timing Points
-0.035	428.5714
+0.035	428.571429
 
 
 Song Data

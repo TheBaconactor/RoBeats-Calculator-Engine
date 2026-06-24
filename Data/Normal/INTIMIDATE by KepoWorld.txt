@@ -2,16 +2,18 @@ Song Name	INTIMIDATE by KepoWorld
 Difficulty	15
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9060286081
+Audio File	9060286081.ogg
 Last Note Time	182.358
 Total Notes	941
 Fever Fill	229
 Fever Time	27.353700
 Long Notes	256
 BPM	128
-Song Length	183.756979167
+Song Length	183.358000000
 
 Timing Points
-1.890	468.7500
+1.890	468.750000
 
 
 Song Data

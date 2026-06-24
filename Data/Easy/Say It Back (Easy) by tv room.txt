@@ -2,13 +2,15 @@ Song Name	Say It Back (Easy) by tv room
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9064083176
+Audio File	9064083176.ogg
 Last Note Time	160.228
 Total Notes	179
 Fever Fill	47
 Fever Time	24.034200
 Long Notes	38
 BPM	120
-Song Length	162.750000000
+Song Length	161.228000000
 
 Timing Points
 1.228	500.000000

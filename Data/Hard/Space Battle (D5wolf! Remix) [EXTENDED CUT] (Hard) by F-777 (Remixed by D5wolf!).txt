@@ -2,21 +2,23 @@ Song Name	Space Battle (D5wolf! Remix) [EXTENDED CUT] (Hard) by F-777 (Remixed b
 Difficulty	28
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063181869
+Audio File	9063181869.ogg
 Last Note Time	372.021
 Total Notes	4412
 Fever Fill	1201
 Fever Time	55.803150
 Long Notes	808
 BPM	160
-Song Length	374.531451247
+Song Length	373.021000000
 
 Timing Points
-0.116	375.0000
-11.928	375.0000
-95.928	375.0000
-179.928	375.0000
-263.928	375.0000
-347.928	375.0000
+0.116	375.000000
+11.928	375.000000
+95.928	375.000000
+179.928	375.000000
+263.928	375.000000
+347.928	375.000000
 
 
 Song Data

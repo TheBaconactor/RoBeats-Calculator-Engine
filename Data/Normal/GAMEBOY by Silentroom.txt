@@ -2,16 +2,18 @@ Song Name	GAMEBOY by Silentroom
 Difficulty	6
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063715052
+Audio File	9063715052.ogg
 Last Note Time	151.777
 Total Notes	355
 Fever Fill	85
 Fever Time	22.766550
 Long Notes	100
 BPM	105
-Song Length	155.723708333
+Song Length	152.777000000
 
 Timing Points
-0.920	571.4286
+0.920	571.428571
 
 
 Song Data

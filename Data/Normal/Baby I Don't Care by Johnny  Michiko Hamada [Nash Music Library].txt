@@ -2,16 +2,18 @@ Song Name	Baby I Don't Care by Johnny / Michiko Hamada [Nash Music Library]
 Difficulty	5
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://11382039122
+Audio File	11382039122.ogg
 Last Note Time	106.016
 Total Notes	319
 Fever Fill	83
 Fever Time	15.902400
 Long Notes	72
 BPM	100
-Song Length	108.177664399
+Song Length	107.016000000
 
 Timing Points
-0.416	600.0000
+0.416	600.000000
 
 
 Song Data

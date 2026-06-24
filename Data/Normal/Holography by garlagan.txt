@@ -2,18 +2,20 @@ Song Name	Holography by garlagan
 Difficulty	15
 Primary Color	Rush
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059844548
+Audio File	9059844548.ogg
 Last Note Time	118.118
 Total Notes	979
 Fever Fill	262
 Fever Time	17.717700
 Long Notes	194
 BPM	128
-Song Length	118.959909297
+Song Length	119.118000000
 
 Timing Points
-0.000	468.7500
-0.110	468.7500
-1.868	468.7500
+0.000	468.750000
+0.110	468.750000
+1.868	468.750000
 
 
 Song Data

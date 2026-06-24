@@ -2,22 +2,24 @@ Song Name	The Vocab Quiz (Hard) by tv room
 Difficulty	19
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9064089031
+Audio File	9064089031.ogg
 Last Note Time	100.874
 Total Notes	958
 Fever Fill	249
 Fever Time	15.131100
 Long Notes	213
 BPM	117
-Song Length	102.564104308
+Song Length	101.874000000
 
 Timing Points
-0.000	512.8205
-0.232	512.8205
-2.028	512.8205
-34.848	512.8205
-51.258	512.8205
-67.669	512.8205
-84.079	512.8205
+0.000	512.820513
+0.232	512.820513
+2.028	512.820513
+34.848	512.820513
+51.258	512.820513
+67.669	512.820513
+84.079	512.820513
 
 
 Song Data

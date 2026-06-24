@@ -2,16 +2,18 @@ Song Name	Get Stickbugged LOL! (CG5 Remix) by Onett (Remixed by CG5)
 Difficulty	11
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9062887832
+Audio File	9062887832.ogg
 Last Note Time	90.371
 Total Notes	629
 Fever Fill	167
 Fever Time	13.555650
 Long Notes	130
 BPM	130
-Song Length	90.774399093
+Song Length	91.371000000
 
 Timing Points
-1.756	461.5385
+1.756	461.538462
 
 
 Song Data

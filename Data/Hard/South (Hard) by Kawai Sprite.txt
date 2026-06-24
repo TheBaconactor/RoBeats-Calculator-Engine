@@ -2,16 +2,18 @@ Song Name	South (Hard) by Kawai Sprite
 Difficulty	19
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063148512
+Audio File	9063148512.ogg
 Last Note Time	87.111
 Total Notes	705
 Fever Fill	197
 Fever Time	13.066650
 Long Notes	116
 BPM	165
-Song Length	87.275102041
+Song Length	88.111000000
 
 Timing Points
-0.021	363.6364
+0.021	363.636364
 
 
 Song Data

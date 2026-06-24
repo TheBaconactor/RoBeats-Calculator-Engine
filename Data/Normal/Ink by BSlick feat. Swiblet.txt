@@ -2,16 +2,18 @@ Song Name	Ink by BSlick feat. Swiblet
 Difficulty	6
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059065206
+Audio File	9059065206.ogg
 Last Note Time	166.395
 Total Notes	466
 Fever Fill	89
 Fever Time	24.959250
 Long Notes	201
 BPM	176
-Song Length	166.952471655
+Song Length	167.395000000
 
 Timing Points
-0.032	340.9091
+0.032	340.909091
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Gravity by Jonathan Eiter
 Difficulty	7
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065456008
+Audio File	9065456008.ogg
 Last Note Time	114.750
 Total Notes	448
 Fever Fill	121
 Fever Time	17.212500
 Long Notes	87
 BPM	120
-Song Length	116.035918367
+Song Length	115.750000000
 
 Timing Points
-0.000	500.0000
+0.000	500.000000
 
 
 Song Data

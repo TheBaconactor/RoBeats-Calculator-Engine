@@ -2,16 +2,18 @@ Song Name	Operation: Evolution (Hard) by Dimrain47
 Difficulty	28
 Primary Color	Rush
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059614901
+Audio File	9059614901.ogg
 Last Note Time	208.020
 Total Notes	2999
 Fever Fill	793
 Fever Time	31.203000
 Long Notes	620
 BPM	165
-Song Length	208.004500000
+Song Length	209.020000000
 
 Timing Points
-0.020	363.6364
+0.020	363.636364
 
 
 Song Data

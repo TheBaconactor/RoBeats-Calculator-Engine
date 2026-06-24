@@ -2,16 +2,18 @@ Song Name	Summer Met With a Meteor Shower by Chroma
 Difficulty	17
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059379980
+Audio File	9059379980.ogg
 Last Note Time	160.410
 Total Notes	1312
 Fever Fill	295
 Fever Time	24.061500
 Long Notes	429
 BPM	181
-Song Length	163.037505669
+Song Length	161.410000000
 
 Timing Points
--0.031	331.4917
+-0.031	331.491713
 
 
 Song Data

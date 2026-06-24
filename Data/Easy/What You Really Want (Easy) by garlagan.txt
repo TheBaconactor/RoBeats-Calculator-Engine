@@ -2,13 +2,15 @@ Song Name	What You Really Want (Easy) by garlagan
 Difficulty	7
 Primary Color	Rush
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9607132681
+Audio File	9607132681.ogg
 Last Note Time	79.982
 Total Notes	249
 Fever Fill	67
 Fever Time	11.997300
 Long Notes	49
 BPM	111
-Song Length	85.244058957
+Song Length	80.982000000
 
 Timing Points
 2.144	540.540541

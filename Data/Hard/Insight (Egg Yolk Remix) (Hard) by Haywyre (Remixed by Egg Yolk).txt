@@ -2,16 +2,18 @@ Song Name	Insight (Egg Yolk Remix) (Hard) by Haywyre (Remixed by Egg Yolk)
 Difficulty	25
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065266401
+Audio File	9065266401.ogg
 Last Note Time	120.090
 Total Notes	1084
 Fever Fill	320
 Fever Time	18.013500
 Long Notes	126
 BPM	170
-Song Length	122.823537415
+Song Length	121.090000000
 
 Timing Points
-1.370	352.9412
+1.370	352.941176
 
 
 Song Data

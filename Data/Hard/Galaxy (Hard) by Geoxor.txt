@@ -2,16 +2,18 @@ Song Name	Galaxy (Hard) by Geoxor
 Difficulty	19
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059904942
+Audio File	9059904942.ogg
 Last Note Time	168.569
 Total Notes	1185
 Fever Fill	291
 Fever Time	25.285350
 Long Notes	313
 BPM	128
-Song Length	169.128687500
+Song Length	169.569000000
 
 Timing Points
-0.288	468.7500
+0.288	468.750000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Time Leaper by Hinkik
 Difficulty	8
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059990689
+Audio File	9059990689.ogg
 Last Note Time	136.060
 Total Notes	623
 Fever Fill	154
 Fever Time	20.409000
 Long Notes	161
 BPM	87
-Song Length	136.153809524
+Song Length	137.060000000
 
 Timing Points
-0.460	685.7143
+0.460	685.714286
 
 
 Song Data

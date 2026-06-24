@@ -2,16 +2,18 @@ Song Name	Daily Life (Hard) by FinnMK
 Difficulty	17
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065326685
+Audio File	9065326685.ogg
 Last Note Time	120.020
 Total Notes	804
 Fever Fill	221
 Fever Time	18.003000
 Long Notes	141
 BPM	106
-Song Length	122.358616780
+Song Length	121.020000000
 
 Timing Points
-0.020	566.0377
+0.020	566.037736
 
 
 Song Data

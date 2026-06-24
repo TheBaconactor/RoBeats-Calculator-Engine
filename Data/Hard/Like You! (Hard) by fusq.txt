@@ -2,22 +2,24 @@ Song Name	Like You! (Hard) by fusq
 Difficulty	18
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063163458
+Audio File	9063163458.ogg
 Last Note Time	158.019
 Total Notes	1281
 Fever Fill	359
 Fever Time	23.702850
 Long Notes	203
 BPM	123
-Song Length	160.056258503
+Song Length	159.019000000
 
 Timing Points
-0.002	487.8049
-0.460	487.8049
-1.922	487.8049
-50.702	487.8049
-81.921	487.8049
-128.751	487.8049
-158.019	487.8049
+0.002	487.804878
+0.460	487.804878
+1.922	487.804878
+50.702	487.804878
+81.921	487.804878
+128.751	487.804878
+158.019	487.804878
 
 
 Song Data

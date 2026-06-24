@@ -2,16 +2,18 @@ Song Name	Happy! Lucky! La Kirari (Hard) by Sunao Wada [Nash Music Library]
 Difficulty	17
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9062020068
+Audio File	9062020068.ogg
 Last Note Time	160.694
 Total Notes	1433
 Fever Fill	339
 Fever Time	24.104100
 Long Notes	417
 BPM	143
-Song Length	163.534671202
+Song Length	161.694000000
 
 Timing Points
-1.254	419.5804
+1.254	419.580420
 
 
 Song Data

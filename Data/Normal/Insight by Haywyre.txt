@@ -2,16 +2,18 @@ Song Name	Insight by Haywyre
 Difficulty	18
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://1221666953
+Audio File	1221666953.ogg
 Last Note Time	145.714
 Total Notes	738
 Fever Fill	231
 Fever Time	21.857100
 Long Notes	45
 BPM	140
-Song Length	149.960680272
+Song Length	146.714000000
 
 Timing Points
-0.000	428.0000
+0.000	428.571429
 
 
 Song Data

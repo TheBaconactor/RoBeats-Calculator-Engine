@@ -2,16 +2,18 @@ Song Name	Spooky time by Rutra
 Difficulty	17
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065528430
+Audio File	9065528430.ogg
 Last Note Time	149.080
 Total Notes	724
 Fever Fill	185
 Fever Time	22.362000
 Long Notes	169
 BPM	128
-Song Length	149.951473923
+Song Length	150.080000000
 
 Timing Points
-0.018	468.7500
+0.018	468.750000
 
 
 Song Data

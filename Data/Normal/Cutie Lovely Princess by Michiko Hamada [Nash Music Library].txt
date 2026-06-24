@@ -2,24 +2,26 @@ Song Name	Cutie Lovely Princess by Michiko Hamada [Nash Music Library]
 Difficulty	10
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://11382040598
+Audio File	11382040598.ogg
 Last Note Time	105.324
 Total Notes	517
 Fever Fill	128
 Fever Time	15.798600
 Long Notes	135
 BPM	166
-Song Length	107.262857143
+Song Length	106.324000000
 
 Timing Points
-1.228	361.4458
-64.842	361.4458
-74.962	361.4458
-76.408	361.4458
-85.083	361.4458
-87.974	361.4458
-95.203	361.4458
-96.649	361.4458
-102.432	361.4458
+1.228	361.445783
+64.842	361.445783
+74.962	361.445783
+76.408	361.445783
+85.083	361.445783
+87.974	361.445783
+95.203	361.445783
+96.649	361.445783
+102.432	361.445783
 
 
 Song Data

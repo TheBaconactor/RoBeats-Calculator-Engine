@@ -2,16 +2,18 @@ Song Name	Astar by Kurokotei
 Difficulty	7
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9060362778
+Audio File	9060362778.ogg
 Last Note Time	125.065
 Total Notes	345
 Fever Fill	97
 Fever Time	18.759750
 Long Notes	54
 BPM	192
-Song Length	130.037551020
+Song Length	126.065000000
 
 Timing Points
-2.565	312.5000
+2.565	312.500000
 
 
 Song Data

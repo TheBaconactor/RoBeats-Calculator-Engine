@@ -2,18 +2,20 @@ Song Name	Travels by EntityEnginuity
 Difficulty	15
 Primary Color	Rush
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://6982208727
+Audio File	6982208727.ogg
 Last Note Time	146.727
 Total Notes	942
 Fever Fill	248
 Fever Time	22.009050
 Long Notes	199
 BPM	170
-Song Length	146.930453515
+Song Length	147.727000000
 
 Timing Points
-0.087	352.9412
-22.651	352.9412
-135.610	352.9412
+0.087	352.941176
+22.651	352.941176
+135.610	352.941176
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	I Caught a Hacker by BSlick feat. Thinknoodles
 Difficulty	14
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059063822
+Audio File	9059063822.ogg
 Last Note Time	157.382
 Total Notes	1317
 Fever Fill	301
 Fever Time	23.607300
 Long Notes	416
 BPM	159
-Song Length	160.344000000
+Song Length	158.382000000
 
 Timing Points
-0.590	377.3585
+0.590	377.358491
 
 
 Song Data

@@ -2,18 +2,20 @@ Song Name	Afterwars -Infection- by Se-U-Ra
 Difficulty	21
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063489293
+Audio File	9063489293.ogg
 Last Note Time	97.740
 Total Notes	711
 Fever Fill	207
 Fever Time	14.661000
 Long Notes	90
 BPM	210
-Song Length	104.986122449
+Song Length	98.740000000
 
 Timing Points
-0.883	285.7143
-80.597	285.7143
-94.311	285.7143
+0.883	285.714286
+80.597	285.714286
+94.311	285.714286
 
 
 Song Data

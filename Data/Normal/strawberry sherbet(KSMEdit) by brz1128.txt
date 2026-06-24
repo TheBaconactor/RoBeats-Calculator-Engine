@@ -2,16 +2,18 @@ Song Name	strawberry sherbet(KSMEdit) by brz1128
 Difficulty	12
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9064135123
+Audio File	9064135123.ogg
 Last Note Time	129.665
 Total Notes	648
 Fever Fill	180
 Fever Time	19.449750
 Long Notes	109
 BPM	175
-Song Length	135.810612245
+Song Length	130.665000000
 
 Timing Points
-0.751	342.8571
+0.751	342.857143
 
 
 Song Data

@@ -2,13 +2,15 @@ Song Name	By My Side (Easy) by Synthion feat. Yuuna Nini
 Difficulty	1
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://14058401155
+Audio File	14058401155.ogg
 Last Note Time	104.621
 Total Notes	140
 Fever Fill	41
 Fever Time	15.693150
 Long Notes	18
 BPM	172
-Song Length	106.179705215
+Song Length	105.621000000
 
 Timing Points
 0.319	348.837209

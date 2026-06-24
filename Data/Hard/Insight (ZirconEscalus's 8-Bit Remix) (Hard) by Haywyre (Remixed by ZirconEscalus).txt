@@ -2,18 +2,20 @@ Song Name	Insight (ZirconEscalus's 8-Bit Remix) (Hard) by Haywyre (Remixed by Zi
 Difficulty	27
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065279510
+Audio File	9065279510.ogg
 Last Note Time	110.821
 Total Notes	1249
 Fever Fill	348
 Fever Time	16.623150
 Long Notes	204
 BPM	170
-Song Length	111.570430839
+Song Length	111.821000000
 
 Timing Points
-1.410	352.9412
-45.174	352.9412
-69.174	352.9412
+1.410	352.941176
+45.174	352.941176
+69.174	352.941176
 
 
 Song Data

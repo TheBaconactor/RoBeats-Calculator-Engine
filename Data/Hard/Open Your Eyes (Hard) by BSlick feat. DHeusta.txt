@@ -2,16 +2,18 @@ Song Name	Open Your Eyes (Hard) by BSlick feat. DHeusta
 Difficulty	14
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059077840
+Audio File	9059077840.ogg
 Last Note Time	142.757
 Total Notes	740
 Fever Fill	212
 Fever Time	21.413550
 Long Notes	106
 BPM	88
-Song Length	145.994852608
+Song Length	143.757000000
 
 Timing Points
-0.257	681.8182
+0.257	681.818182
 
 
 Song Data

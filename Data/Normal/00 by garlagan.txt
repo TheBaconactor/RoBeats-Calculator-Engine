@@ -2,21 +2,23 @@ Song Name	00 by garlagan
 Difficulty	13
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059840162
+Audio File	9059840162.ogg
 Last Note Time	143.187
 Total Notes	672
 Fever Fill	182
 Fever Time	21.478050
 Long Notes	127
 BPM	141
-Song Length	144.782698413
+Song Length	144.187000000
 
 Timing Points
-0.000	370.3704
-0.355	370.3704
-1.096	370.3704
-1.467	370.3704
-84.605	472.4409
-84.605	472.4409
+0.000	370.370370
+0.355	370.370370
+1.096	370.370370
+1.467	370.370370
+84.605	472.440945
+84.605	472.440945
 
 
 Song Data

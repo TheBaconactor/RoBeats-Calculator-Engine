@@ -2,16 +2,18 @@ Song Name	Rice Expedition - Looking for the Voice of Dawn by Chroma feat. Uchu I
 Difficulty	6
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059377507
+Audio File	9059377507.ogg
 Last Note Time	184.086
 Total Notes	674
 Fever Fill	155
 Fever Time	27.612900
 Long Notes	209
 BPM	158
-Song Length	187.367210884
+Song Length	185.086000000
 
 Timing Points
-0.289	379.7468
+0.289	379.746835
 
 
 Song Data

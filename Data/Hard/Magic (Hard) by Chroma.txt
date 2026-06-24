@@ -2,16 +2,18 @@ Song Name	Magic (Hard) by Chroma
 Difficulty	18
 Primary Color	Vibe
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059375581
+Audio File	9059375581.ogg
 Last Note Time	196.101
 Total Notes	1506
 Fever Fill	407
 Fever Time	29.415150
 Long Notes	286
 BPM	82
-Song Length	196.368072562
+Song Length	197.101000000
 
 Timing Points
-5.858	731.7073
+5.858	731.707317
 
 
 Song Data

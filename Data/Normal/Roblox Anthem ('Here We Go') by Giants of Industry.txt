@@ -2,16 +2,18 @@ Song Name	Roblox Anthem ('Here We Go') by Giants of Industry
 Difficulty	8
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065766271
+Audio File	9065766271.ogg
 Last Note Time	156.942
 Total Notes	604
 Fever Fill	190
 Fever Time	23.541300
 Long Notes	35
 BPM	107
-Song Length	160.131678005
+Song Length	157.942000000
 
 Timing Points
-0.732	558.0000
+0.732	558.000000
 
 
 Song Data

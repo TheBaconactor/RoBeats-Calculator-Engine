@@ -2,16 +2,18 @@ Song Name	Body (Hard) by Rutra
 Difficulty	21
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065315407
+Audio File	9065315407.ogg
 Last Note Time	89.367
 Total Notes	753
 Fever Fill	208
 Fever Time	13.405050
 Long Notes	130
 BPM	128
-Song Length	90.663333333
+Song Length	90.367000000
 
 Timing Points
-0.774	468.7500
+0.774	468.750000
 
 
 Song Data

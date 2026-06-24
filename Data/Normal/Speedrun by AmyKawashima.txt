@@ -2,18 +2,20 @@ Song Name	Speedrun by AmyKawashima
 Difficulty	24
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065241092
+Audio File	9065241092.ogg
 Last Note Time	128.161
 Total Notes	1205
 Fever Fill	402
 Fever Time	19.224150
 Long Notes	0
 BPM	210
-Song Length	130.583333333
+Song Length	129.161000000
 
 Timing Points
-0.779	284.4950
-18.986	284.4950
-37.194	284.4950
+0.779	284.495021
+18.986	284.495021
+37.194	284.495021
 
 
 Song Data

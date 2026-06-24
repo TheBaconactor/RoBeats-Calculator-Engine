@@ -2,18 +2,20 @@ Song Name	Insight (1NS1GHTFUL Remix) by Haywyre (Remixed by Fritzy)
 Difficulty	24
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065268029
+Audio File	9065268029.ogg
 Last Note Time	114.754
 Total Notes	1351
 Fever Fill	411
 Fever Time	17.213100
 Long Notes	118
 BPM	205
-Song Length	124.107755102
+Song Length	115.754000000
 
 Timing Points
-0.023	292.6829
-58.559	292.6829
-96.022	292.6829
+0.023	292.682927
+58.559	292.682927
+96.022	292.682927
 
 
 Song Data

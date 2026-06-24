@@ -2,16 +2,18 @@ Song Name	Together forever, my lovely lovely video game cartridges by Camellia
 Difficulty	6
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059202865
+Audio File	9059202865.ogg
 Last Note Time	129.365
 Total Notes	513
 Fever Fill	104
 Fever Time	19.404750
 Long Notes	202
 BPM	128
-Song Length	138.695510204
+Song Length	130.365000000
 
 Timing Points
--0.010	468.7500
+-0.010	468.750000
 
 
 Song Data

@@ -2,20 +2,22 @@ Song Name	Daydream (Hard) by RiraN
 Difficulty	22
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9062387367
+Audio File	9062387367.ogg
 Last Note Time	146.425
 Total Notes	1376
 Fever Fill	413
 Fever Time	21.963750
 Long Notes	138
 BPM	150
-Song Length	148.402698413
+Song Length	147.425000000
 
 Timing Points
-0.025	400.0000
-41.625	400.0000
-67.225	400.0000
-105.625	400.0000
-144.025	400.0000
+0.025	400.000000
+41.625	400.000000
+67.225	400.000000
+105.625	400.000000
+144.025	400.000000
 
 
 Song Data

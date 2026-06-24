@@ -2,16 +2,18 @@ Song Name	Rainshower by Silentroom
 Difficulty	20
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063724609
+Audio File	9063724609.ogg
 Last Note Time	198.597
 Total Notes	1237
 Fever Fill	378
 Fever Time	29.789550
 Long Notes	102
 BPM	174
-Song Length	199.840020833
+Song Length	199.597000000
 
 Timing Points
-1.356	344.8276
+1.356	344.827586
 
 
 Song Data

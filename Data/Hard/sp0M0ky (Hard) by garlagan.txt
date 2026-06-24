@@ -2,16 +2,18 @@ Song Name	sp0M0ky (Hard) by garlagan
 Difficulty	27
 Primary Color	Rush
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059846011
+Audio File	9059846011.ogg
 Last Note Time	155.021
 Total Notes	2153
 Fever Fill	549
 Fever Time	23.253150
 Long Notes	507
 BPM	137
-Song Length	156.161179138
+Song Length	156.021000000
 
 Timing Points
-3.489	437.9562
+3.489	437.956204
 
 
 Song Data

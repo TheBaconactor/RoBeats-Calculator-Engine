@@ -2,16 +2,18 @@ Song Name	Poison AND/OR Affection by LeaF (7eaF)
 Difficulty	17
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9060426719
+Audio File	9060426719.ogg
 Last Note Time	123.656
 Total Notes	1050
 Fever Fill	269
 Fever Time	18.548400
 Long Notes	244
 BPM	240
-Song Length	124.058276644
+Song Length	124.656000000
 
 Timing Points
-0.031	250.0000
+0.031	250.000000
 
 
 Song Data

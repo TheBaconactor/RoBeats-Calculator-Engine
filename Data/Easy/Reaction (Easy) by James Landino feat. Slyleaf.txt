@@ -2,13 +2,15 @@ Song Name	Reaction (Easy) by James Landino feat. Slyleaf
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9062628481
+Audio File	9062628481.ogg
 Last Note Time	116.975
 Total Notes	140
 Fever Fill	44
 Fever Time	17.546250
 Long Notes	9
 BPM	132
-Song Length	117.237551020
+Song Length	117.975000000
 
 Timing Points
 0.060	454.545455

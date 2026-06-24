@@ -2,20 +2,22 @@ Song Name	Kyouki Ranbu (Hard) by LeaF (7eaF)
 Difficulty	30
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9060419424
+Audio File	9060419424.ogg
 Last Note Time	153.630
 Total Notes	2407
 Fever Fill	672
 Fever Time	23.044500
 Long Notes	390
 BPM	230
-Song Length	156.004331066
+Song Length	154.630000000
 
 Timing Points
-0.500	260.8696
-57.891	260.8696
-74.586	260.8696
-103.804	260.8696
-118.413	260.8696
+0.500	260.869565
+57.891	260.869565
+74.586	260.869565
+103.804	260.869565
+118.413	260.869565
 
 
 Song Data

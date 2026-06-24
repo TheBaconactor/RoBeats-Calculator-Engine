@@ -2,16 +2,18 @@ Song Name	Take The Long Way Home (Hard) by RiraN feat. core mc
 Difficulty	25
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9062518788
+Audio File	9062518788.ogg
 Last Note Time	135.778
 Total Notes	1412
 Fever Fill	369
 Fever Time	20.366700
 Long Notes	305
 BPM	150
-Song Length	142.400000000
+Song Length	136.778000000
 
 Timing Points
-1.578	400.0000
+1.578	400.000000
 
 
 Song Data

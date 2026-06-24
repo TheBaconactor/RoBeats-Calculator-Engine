@@ -2,16 +2,18 @@ Song Name	Explorers (Hard) by Hinkik
 Difficulty	19
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059983004
+Audio File	9059983004.ogg
 Last Note Time	148.354
 Total Notes	1163
 Fever Fill	315
 Fever Time	22.253100
 Long Notes	220
 BPM	110
-Song Length	149.249841270
+Song Length	149.354000000
 
 Timing Points
-0.264	545.4545
+0.264	545.454545
 
 
 Song Data

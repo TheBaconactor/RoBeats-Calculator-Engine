@@ -2,13 +2,15 @@ Song Name	Flight of the Bumblebee (Easy) by Nikolai Rimsky-Korsakov (Performed b
 Difficulty	4
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://7278142575
+Audio File	7278142575.ogg
 Last Note Time	76.342
 Total Notes	155
 Fever Fill	52
 Fever Time	11.451300
 Long Notes	0
 BPM	162
-Song Length	78.173356009
+Song Length	77.342000000
 
 Timing Points
 0.168	324.324324

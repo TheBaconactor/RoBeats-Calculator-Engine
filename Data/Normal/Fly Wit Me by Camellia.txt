@@ -2,16 +2,18 @@ Song Name	Fly Wit Me by Camellia
 Difficulty	10
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9059187602
+Audio File	9059187602.ogg
 Last Note Time	121.388
 Total Notes	593
 Fever Fill	117
 Fever Time	18.208200
 Long Notes	243
 BPM	174
-Song Length	124.363560091
+Song Length	122.388000000
 
 Timing Points
-0.009	344.8276
+0.009	344.827586
 
 
 Song Data

@@ -2,13 +2,15 @@ Song Name	[@_@] (Easy) by Chroma
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059365271
+Audio File	9059365271.ogg
 Last Note Time	100.443
 Total Notes	95
 Fever Fill	30
 Fever Time	15.066450
 Long Notes	6
 BPM	158
-Song Length	102.600000000
+Song Length	101.443000000
 
 Timing Points
 0.000	379.746835

@@ -2,21 +2,23 @@ Song Name	Who Needs A Broken Heart (Hard) by Tobu & Mangoo
 Difficulty	16
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://8267693523
+Audio File	8267693523.ogg
 Last Note Time	184.678
 Total Notes	1013
 Fever Fill	306
 Fever Time	27.701700
 Long Notes	95
 BPM	100
-Song Length	188.368979592
+Song Length	185.678000000
 
 Timing Points
-1.106	600.0000
-20.278	600.0000
-58.678	600.0000
-77.878	600.0000
-137.878	600.0000
-176.278	600.0000
+1.106	600.000000
+20.278	600.000000
+58.678	600.000000
+77.878	600.000000
+137.878	600.000000
+176.278	600.000000
 
 
 Song Data

@@ -2,20 +2,22 @@ Song Name	Carissa (Hard) by DESERT STAR [Monstercat]
 Difficulty	20
 Primary Color	Chill
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9062860505
+Audio File	9062860505.ogg
 Last Note Time	134.669
 Total Notes	897
 Fever Fill	237
 Fever Time	20.200350
 Long Notes	188
 BPM	86
-Song Length	139.419047619
+Song Length	135.669000000
 
 Timing Points
-0.890	697.6744
-45.541	697.6744
-67.866	697.6744
-90.192	697.6744
-134.843	697.6744
+0.890	697.674419
+45.541	697.674419
+67.866	697.674419
+90.192	697.674419
+134.843	697.674419
 
 
 Song Data

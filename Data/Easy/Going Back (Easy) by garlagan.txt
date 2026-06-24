@@ -2,13 +2,15 @@ Song Name	Going Back (Easy) by garlagan
 Difficulty	3
 Primary Color	Rush
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059843272
+Audio File	9059843272.ogg
 Last Note Time	152.997
 Total Notes	186
 Fever Fill	57
 Fever Time	22.949550
 Long Notes	15
 BPM	159
-Song Length	154.755260771
+Song Length	153.997000000
 
 Timing Points
 6.016	377.358491

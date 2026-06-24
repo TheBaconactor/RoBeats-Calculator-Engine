@@ -2,16 +2,18 @@ Song Name	My World by Porth
 Difficulty	7
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065308281
+Audio File	9065308281.ogg
 Last Note Time	147.790
 Total Notes	752
 Fever Fill	200
 Fever Time	22.168500
 Long Notes	154
 BPM	125
-Song Length	149.906312500
+Song Length	148.790000000
 
 Timing Points
--0.050	480.0000
+-0.050	480.000000
 
 
 Song Data

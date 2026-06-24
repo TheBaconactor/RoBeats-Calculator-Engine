@@ -2,23 +2,25 @@ Song Name	Rivals (Hard) by Creo
 Difficulty	22
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063137003
+Audio File	9063137003.ogg
 Last Note Time	121.828
 Total Notes	896
 Fever Fill	252
 Fever Time	18.274200
 Long Notes	142
 BPM	149
-Song Length	124.722471655
+Song Length	122.828000000
 
 Timing Points
-3.252	400.0000
-64.452	416.6667
-65.285	434.7826
-65.719	454.5455
-66.628	400.0000
-67.428	400.0000
-67.428	400.0000
-118.628	400.0000
+3.252	400.000000
+64.452	416.666667
+65.285	434.782609
+65.719	454.545455
+66.628	400.000000
+67.428	400.000000
+67.428	400.000000
+118.628	400.000000
 
 
 Song Data

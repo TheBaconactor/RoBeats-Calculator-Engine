@@ -2,16 +2,18 @@ Song Name	Insight (Himitsu's DnB Remix) by Haywyre (Remixed by HimitsuHiketsu)
 Difficulty	18
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065277460
+Audio File	9065277460.ogg
 Last Note Time	109.419
 Total Notes	798
 Fever Fill	230
 Fever Time	16.412850
 Long Notes	110
 BPM	170
-Song Length	119.040000000
+Song Length	110.419000000
 
 Timing Points
-0.008	352.9412
+0.008	352.941176
 
 
 Song Data

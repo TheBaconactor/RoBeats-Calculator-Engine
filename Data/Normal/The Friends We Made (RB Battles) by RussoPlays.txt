@@ -2,20 +2,22 @@ Song Name	The Friends We Made (RB Battles) by RussoPlays
 Difficulty	13
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063185463
+Audio File	9063185463.ogg
 Last Note Time	126.881
 Total Notes	781
 Fever Fill	199
 Fever Time	19.032150
 Long Notes	186
 BPM	190
-Song Length	129.683446712
+Song Length	127.881000000
 
 Timing Points
--0.697	315.7895
-25.829	315.7895
-46.039	315.7895
-76.355	315.7895
-121.829	315.7895
+-0.697	315.789474
+25.829	315.789474
+46.039	315.789474
+76.355	315.789474
+121.829	315.789474
 
 
 Song Data

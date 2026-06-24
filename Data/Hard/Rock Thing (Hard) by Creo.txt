@@ -2,16 +2,18 @@ Song Name	Rock Thing (Hard) by Creo
 Difficulty	20
 Primary Color	Vibe
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063138787
+Audio File	9063138787.ogg
 Last Note Time	124.275
 Total Notes	1235
 Fever Fill	330
 Fever Time	18.641250
 Long Notes	247
 BPM	114
-Song Length	132.698004535
+Song Length	125.275000000
 
 Timing Points
-2.170	526.3158
+2.170	526.315789
 
 
 Song Data

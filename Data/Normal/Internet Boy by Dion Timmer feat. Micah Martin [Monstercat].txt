@@ -2,16 +2,18 @@ Song Name	Internet Boy by Dion Timmer feat. Micah Martin [Monstercat]
 Difficulty	8
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065281304
+Audio File	9065281304.ogg
 Last Note Time	150.958
 Total Notes	668
 Fever Fill	155
 Fever Time	22.643700
 Long Notes	203
 BPM	128
-Song Length	151.005034014
+Song Length	151.958000000
 
 Timing Points
-0.958	468.7500
+0.958	468.750000
 
 
 Song Data

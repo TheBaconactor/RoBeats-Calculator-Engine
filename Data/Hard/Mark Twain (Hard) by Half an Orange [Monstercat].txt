@@ -2,16 +2,18 @@ Song Name	Mark Twain (Hard) by Half an Orange [Monstercat]
 Difficulty	10
 Primary Color	Beat
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9062870847
+Audio File	9062870847.ogg
 Last Note Time	84.621
 Total Notes	382
 Fever Fill	105
 Fever Time	12.693150
 Long Notes	68
 BPM	115
-Song Length	91.323968254
+Song Length	85.621000000
 
 Timing Points
-0.100	521.7391
+0.100	521.739130
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Power Up (Hard) by Razihel
 Difficulty	22
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9062723704
+Audio File	9062723704.ogg
 Last Note Time	121.666
 Total Notes	947
 Fever Fill	256
 Fever Time	18.249900
 Long Notes	181
 BPM	150
-Song Length	122.569909297
+Song Length	122.666000000
 
 Timing Points
-0.066	400.0000
+0.066	400.000000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	M1LLI0N PP by Camellia
 Difficulty	24
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059194887
+Audio File	9059194887.ogg
 Last Note Time	164.792
 Total Notes	1209
 Fever Fill	337
 Fever Time	24.718800
 Long Notes	199
 BPM	234
-Song Length	165.244263039
+Song Length	165.792000000
 
 Timing Points
-0.690	256.4103
+0.690	256.410256
 
 
 Song Data

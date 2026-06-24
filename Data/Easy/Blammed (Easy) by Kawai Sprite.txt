@@ -2,13 +2,15 @@ Song Name	Blammed (Easy) by Kawai Sprite
 Difficulty	2
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://6278442803
+Audio File	6278442803.ogg
 Last Note Time	92.972
 Total Notes	157
 Fever Fill	53
 Fever Time	13.945800
 Long Notes	0
 BPM	165
-Song Length	106.997551020
+Song Length	93.972000000
 
 Timing Points
 0.063	363.636364

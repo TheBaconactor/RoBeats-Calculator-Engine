@@ -2,20 +2,22 @@ Song Name	Learn The Language (Hard) by Chroma
 Difficulty	23
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9059369948
+Audio File	9059369948.ogg
 Last Note Time	161.769
 Total Notes	1393
 Fever Fill	379
 Fever Time	24.265350
 Long Notes	255
 BPM	105
-Song Length	162.051269841
+Song Length	162.769000000
 
 Timing Points
-0.055	571.4286
-55.483	571.4286
-73.197	571.4286
-128.626	571.4286
-146.340	571.4286
+0.055	571.428571
+55.483	571.428571
+73.197	571.428571
+128.626	571.428571
+146.340	571.428571
 
 
 Song Data

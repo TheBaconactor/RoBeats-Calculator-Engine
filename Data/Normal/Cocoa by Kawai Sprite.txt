@@ -2,16 +2,18 @@ Song Name	Cocoa by Kawai Sprite
 Difficulty	10
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9059791323
+Audio File	9059791323.ogg
 Last Note Time	106.564
 Total Notes	474
 Fever Fill	152
 Fever Time	15.984600
 Long Notes	19
 BPM	100
-Song Length	115.612154195
+Song Length	107.564000000
 
 Timing Points
-0.364	600.0000
+0.364	600.000000
 
 
 Song Data

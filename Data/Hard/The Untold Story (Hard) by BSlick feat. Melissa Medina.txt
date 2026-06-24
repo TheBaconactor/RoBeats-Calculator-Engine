@@ -2,16 +2,18 @@ Song Name	The Untold Story (Hard) by BSlick feat. Melissa Medina
 Difficulty	20
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059069640
+Audio File	9059069640.ogg
 Last Note Time	160.291
 Total Notes	1201
 Fever Fill	284
 Fever Time	24.043650
 Long Notes	350
 BPM	143
-Song Length	161.372018141
+Song Length	161.291000000
 
 Timing Points
-0.012	419.5804
+0.012	419.580420
 
 
 Song Data

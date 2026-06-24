@@ -2,16 +2,18 @@ Song Name	Feel Your Heart by Protostar feat. Sam Tabor [Monstercat]
 Difficulty	14
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9060983774
+Audio File	9060983774.ogg
 Last Note Time	165.767
 Total Notes	748
 Fever Fill	215
 Fever Time	24.865050
 Long Notes	104
 BPM	174
-Song Length	169.496870748
+Song Length	166.767000000
 
 Timing Points
-0.250	344.8276
+0.250	344.827586
 
 
 Song Data

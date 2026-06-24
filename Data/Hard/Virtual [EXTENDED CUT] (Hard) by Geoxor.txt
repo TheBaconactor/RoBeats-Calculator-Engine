@@ -2,16 +2,18 @@ Song Name	Virtual [EXTENDED CUT] (Hard) by Geoxor
 Difficulty	23
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059912030
+Audio File	9059912030.ogg
 Last Note Time	299.110
 Total Notes	2649
 Fever Fill	662
 Fever Time	44.866500
 Long Notes	662
 BPM	128
-Song Length	310.077375000
+Song Length	300.110000000
 
 Timing Points
-0.956	468.7500
+0.956	468.750000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Artificial Intelligence Bomb (Hard) by naruto2413
 Difficulty	27
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065755032
+Audio File	9065755032.ogg
 Last Note Time	125.443
 Total Notes	1750
 Fever Fill	539
 Fever Time	18.816450
 Long Notes	133
 BPM	148
-Song Length	126.870000000
+Song Length	126.443000000
 
 Timing Points
-0.579	405.0000
+0.579	405.000000
 
 
 Song Data

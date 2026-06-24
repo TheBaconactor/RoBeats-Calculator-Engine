@@ -2,16 +2,18 @@ Song Name	supernova (Hard) by matthieumusic
 Difficulty	30
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9065288469
+Audio File	9065288469.ogg
 Last Note Time	142.668
 Total Notes	2119
 Fever Fill	664
 Fever Time	21.400200
 Long Notes	127
 BPM	175
-Song Length	148.192653061
+Song Length	143.668000000
 
 Timing Points
-0.040	342.8571
+0.040	342.857143
 
 
 Song Data

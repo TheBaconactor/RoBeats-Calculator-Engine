@@ -2,16 +2,18 @@ Song Name	The Falling Mysts by Dimrain47
 Difficulty	8
 Primary Color	Chill
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059618429
+Audio File	9059618429.ogg
 Last Note Time	180.929
 Total Notes	662
 Fever Fill	182
 Fever Time	27.139350
 Long Notes	118
 BPM	132
-Song Length	187.330875000
+Song Length	181.929000000
 
 Timing Points
-0.020	454.5455
+0.020	454.545455
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	FIREBITE! by KepoWorld
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9060283201
+Audio File	9060283201.ogg
 Last Note Time	171.351
 Total Notes	722
 Fever Fill	199
 Fever Time	25.702650
 Long Notes	126
 BPM	135
-Song Length	171.471043084
+Song Length	172.351000000
 
 Timing Points
-2.018	444.4444
+2.018	444.444444
 
 
 Song Data

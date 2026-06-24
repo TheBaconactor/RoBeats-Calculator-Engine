@@ -2,16 +2,18 @@ Song Name	VR in the Virtual World by ARForest
 Difficulty	17
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9058872241
+Audio File	9058872241.ogg
 Last Note Time	128.065
 Total Notes	748
 Fever Fill	217
 Fever Time	19.209750
 Long Notes	97
 BPM	150
-Song Length	130.380979167
+Song Length	129.065000000
 
 Timing Points
-0.065	400.0000
+0.065	400.000000
 
 
 Song Data

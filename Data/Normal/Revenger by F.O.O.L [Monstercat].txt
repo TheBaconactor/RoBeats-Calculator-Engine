@@ -2,16 +2,18 @@ Song Name	Revenger by F.O.O.L [Monstercat]
 Difficulty	8
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9060992541
+Audio File	9060992541.ogg
 Last Note Time	128.750
 Total Notes	427
 Fever Fill	138
 Fever Time	19.312500
 Long Notes	14
 BPM	110
-Song Length	132.933265306
+Song Length	129.750000000
 
 Timing Points
-0.023	545.4545
+0.023	545.454545
 
 
 Song Data

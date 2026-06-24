@@ -2,18 +2,20 @@ Song Name	Drifters (Hard) by Feint feat. Elizaveta [Monstercat]
 Difficulty	21
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9062866412
+Audio File	9062866412.ogg
 Last Note Time	119.752
 Total Notes	727
 Fever Fill	180
 Fever Time	17.962800
 Long Notes	187
 BPM	174
-Song Length	121.302018141
+Song Length	120.752000000
 
 Timing Points
-0.097	344.8276
-66.303	344.8276
-107.683	344.8276
+0.097	344.827586
+66.303	344.827586
+107.683	344.827586
 
 
 Song Data

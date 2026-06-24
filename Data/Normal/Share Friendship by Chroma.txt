@@ -2,16 +2,18 @@ Song Name	Share Friendship by Chroma
 Difficulty	6
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059378673
+Audio File	9059378673.ogg
 Last Note Time	190.726
 Total Notes	678
 Fever Fill	168
 Fever Time	28.608900
 Long Notes	174
 BPM	136
-Song Length	191.573673469
+Song Length	191.726000000
 
 Timing Points
-0.138	441.1765
+0.138	441.176471
 
 
 Song Data

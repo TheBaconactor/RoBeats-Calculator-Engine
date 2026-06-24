@@ -2,16 +2,18 @@ Song Name	Let's Show Them by BSlick feat. Plexsy
 Difficulty	10
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9059076292
+Audio File	9059076292.ogg
 Last Note Time	162.767
 Total Notes	679
 Fever Fill	173
 Fever Time	24.415050
 Long Notes	160
 BPM	130
-Song Length	164.560340136
+Song Length	163.767000000
 
 Timing Points
-0.306	461.5385
+0.306	461.538462
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	retro raceway (Hard) by matthieumusic
 Difficulty	30
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9065284990
+Audio File	9065284990.ogg
 Last Note Time	146.037
 Total Notes	2187
 Fever Fill	543
 Fever Time	21.905550
 Long Notes	558
 BPM	187
-Song Length	152.424489796
+Song Length	147.037000000
 
 Timing Points
-0.048	320.8556
+0.048	320.855615
 
 
 Song Data

@@ -2,13 +2,15 @@ Song Name	Philly Nice (Easy) by Kawai Sprite
 Difficulty	1
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063145819
+Audio File	9063145819.ogg
 Last Note Time	94.486
 Total Notes	134
 Fever Fill	45
 Fever Time	14.172900
 Long Notes	0
 BPM	175
-Song Length	101.485714286
+Song Length	95.486000000
 
 Timing Points
 2.772	342.857143

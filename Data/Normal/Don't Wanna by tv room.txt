@@ -2,16 +2,18 @@ Song Name	Don't Wanna by tv room
 Difficulty	6
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9064080298
+Audio File	9064080298.ogg
 Last Note Time	136.583
 Total Notes	386
 Fever Fill	99
 Fever Time	20.487450
 Long Notes	90
 BPM	130
-Song Length	142.153854875
+Song Length	137.583000000
 
 Timing Points
-3.660	461.5385
+3.660	461.538462
 
 
 Song Data

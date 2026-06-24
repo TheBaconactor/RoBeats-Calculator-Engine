@@ -2,16 +2,18 @@ Song Name	Bhutesha by Silentroom
 Difficulty	16
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063713215
+Audio File	9063713215.ogg
 Last Note Time	110.263
 Total Notes	531
 Fever Fill	166
 Fever Time	16.539450
 Long Notes	35
 BPM	173
-Song Length	111.663750000
+Song Length	111.263000000
 
 Timing Points
-0.668	346.8208
+0.668	346.820809
 
 
 Song Data

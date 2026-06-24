@@ -2,16 +2,18 @@ Song Name	tires on fire (Hard) by coda
 Difficulty	24
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063119232
+Audio File	9063119232.ogg
 Last Note Time	123.329
 Total Notes	1442
 Fever Fill	430
 Fever Time	18.499350
 Long Notes	153
 BPM	159
-Song Length	125.016791667
+Song Length	124.329000000
 
 Timing Points
-0.049	377.0028
+0.049	377.002828
 
 
 Song Data

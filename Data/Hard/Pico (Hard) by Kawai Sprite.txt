@@ -2,16 +2,18 @@ Song Name	Pico (Hard) by Kawai Sprite
 Difficulty	18
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063147367
+Audio File	9063147367.ogg
 Last Note Time	80.022
 Total Notes	792
 Fever Fill	235
 Fever Time	12.003300
 Long Notes	88
 BPM	150
-Song Length	84.819591837
+Song Length	81.022000000
 
 Timing Points
-0.022	400.0000
+0.022	400.000000
 
 
 Song Data

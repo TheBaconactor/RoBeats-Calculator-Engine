@@ -2,16 +2,18 @@ Song Name	Crystallized Ignition (Hard) by Egg Yolk
 Difficulty	27
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065247306
+Audio File	9065247306.ogg
 Last Note Time	110.420
 Total Notes	993
 Fever Fill	317
 Fever Time	16.563000
 Long Notes	44
 BPM	200
-Song Length	113.400000000
+Song Length	111.420000000
 
 Timing Points
-0.020	300.0000
+0.020	300.000000
 
 
 Song Data

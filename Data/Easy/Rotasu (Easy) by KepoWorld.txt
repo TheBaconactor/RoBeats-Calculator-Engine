@@ -2,13 +2,15 @@ Song Name	Rotasu (Easy) by KepoWorld
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9062883210
+Audio File	9062883210.ogg
 Last Note Time	125.265
 Total Notes	150
 Fever Fill	50
 Fever Time	18.789750
 Long Notes	0
 BPM	115
-Song Length	0.000000000
+Song Length	126.265000000
 
 Timing Points
 0.048	521.739130

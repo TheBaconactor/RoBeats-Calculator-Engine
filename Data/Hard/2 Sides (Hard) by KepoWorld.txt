@@ -2,16 +2,18 @@ Song Name	2 Sides (Hard) by KepoWorld
 Difficulty	23
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9060289672
+Audio File	9060289672.ogg
 Last Note Time	175.067
 Total Notes	1420
 Fever Fill	416
 Fever Time	26.260050
 Long Notes	172
 BPM	128
-Song Length	177.792789116
+Song Length	176.067000000
 
 Timing Points
-4.560	468.7500
+4.560	468.750000
 
 
 Song Data

@@ -2,20 +2,22 @@ Song Name	Color by Grant feat. Juneau [Monstercat]
 Difficulty	13
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065243856
+Audio File	9065243856.ogg
 Last Note Time	106.149
 Total Notes	588
 Fever Fill	157
 Fever Time	15.922350
 Long Notes	119
 BPM	110
-Song Length	110.299433107
+Song Length	107.149000000
 
 Timing Points
-10.150	545.4545
-71.786	545.4545
-88.695	545.4545
-89.786	545.4545
-105.059	545.4545
+10.150	545.454545
+71.786	545.454545
+88.695	545.454545
+89.786	545.454545
+105.059	545.454545
 
 
 Song Data

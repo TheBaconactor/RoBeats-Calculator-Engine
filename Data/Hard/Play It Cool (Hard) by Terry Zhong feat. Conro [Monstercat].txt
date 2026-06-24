@@ -2,18 +2,20 @@ Song Name	Play It Cool (Hard) by Terry Zhong feat. Conro [Monstercat]
 Difficulty	18
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065304358
+Audio File	9065304358.ogg
 Last Note Time	154.314
 Total Notes	1142
 Fever Fill	346
 Fever Time	23.147100
 Long Notes	103
 BPM	118
-Song Length	155.847596372
+Song Length	155.314000000
 
 Timing Points
-0.000	508.4746
-0.501	508.4746
-2.026	508.4746
+0.000	508.474576
+0.501	508.474576
+2.026	508.474576
 
 
 Song Data

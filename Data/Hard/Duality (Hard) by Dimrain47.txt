@@ -2,16 +2,18 @@ Song Name	Duality (Hard) by Dimrain47
 Difficulty	26
 Primary Color	Beat
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059613255
+Audio File	9059613255.ogg
 Last Note Time	130.434
 Total Notes	1581
 Fever Fill	424
 Fever Time	19.565100
 Long Notes	308
 BPM	162
-Song Length	136.228895833
+Song Length	131.434000000
 
 Timing Points
-0.064	370.3704
+0.064	370.370370
 
 
 Song Data

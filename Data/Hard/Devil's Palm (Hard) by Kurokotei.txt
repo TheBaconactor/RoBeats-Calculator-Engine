@@ -2,16 +2,18 @@ Song Name	Devil's Palm (Hard) by Kurokotei
 Difficulty	32
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9060366647
+Audio File	9060366647.ogg
 Last Note Time	142.856
 Total Notes	1954
 Fever Fill	589
 Fever Time	21.428400
 Long Notes	187
 BPM	150
-Song Length	145.746281179
+Song Length	143.856000000
 
 Timing Points
-1.590	400.0000
+1.590	400.000000
 
 
 Song Data

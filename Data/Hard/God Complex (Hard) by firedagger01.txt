@@ -2,16 +2,18 @@ Song Name	God Complex (Hard) by firedagger01
 Difficulty	24
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065261548
+Audio File	9065261548.ogg
 Last Note Time	148.135
 Total Notes	1243
 Fever Fill	360
 Fever Time	22.220250
 Long Notes	162
 BPM	128
-Song Length	150.047346939
+Song Length	149.135000000
 
 Timing Points
-1.885	468.7500
+1.885	468.750000
 
 
 Song Data

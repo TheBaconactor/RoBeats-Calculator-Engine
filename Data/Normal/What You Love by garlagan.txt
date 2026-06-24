@@ -2,23 +2,25 @@ Song Name	What You Love by garlagan
 Difficulty	10
 Primary Color	Rush
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059849079
+Audio File	9059849079.ogg
 Last Note Time	156.781
 Total Notes	785
 Fever Fill	196
 Fever Time	23.517150
 Long Notes	199
 BPM	128
-Song Length	157.035941043
+Song Length	157.781000000
 
 Timing Points
-0.000	468.7500
-0.453	468.7500
-1.860	468.7500
-7.485	468.7500
-52.485	468.7500
-82.485	468.7500
-104.985	468.7500
-152.094	468.7500
+0.000	468.750000
+0.453	468.750000
+1.860	468.750000
+7.485	468.750000
+52.485	468.750000
+82.485	468.750000
+104.985	468.750000
+152.094	468.750000
 
 
 Song Data

@@ -1,17 +1,19 @@
 Song Name	Blush by fusq feat. MYLK
-Difficulty	9
+Difficulty	11
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9063155982
+Audio File	9063155982.ogg
 Last Note Time	162.502
 Total Notes	755
 Fever Fill	216
 Fever Time	24.375300
 Long Notes	109
 BPM	127
-Song Length	163.039229025
+Song Length	163.502000000
 
 Timing Points
-0.455	472.4409
+0.455	472.440945
 
 
 Song Data

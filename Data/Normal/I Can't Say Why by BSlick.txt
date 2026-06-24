@@ -2,16 +2,18 @@ Song Name	I Can't Say Why by BSlick
 Difficulty	8
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059062342
+Audio File	9059062342.ogg
 Last Note Time	135.953
 Total Notes	618
 Fever Fill	154
 Fever Time	20.392950
 Long Notes	157
 BPM	104
-Song Length	137.407845805
+Song Length	136.953000000
 
 Timing Points
-0.088	576.9231
+0.088	576.923077
 
 
 Song Data

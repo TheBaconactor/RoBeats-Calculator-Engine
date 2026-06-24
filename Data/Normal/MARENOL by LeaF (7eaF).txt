@@ -2,16 +2,18 @@ Song Name	MARENOL by LeaF (7eaF)
 Difficulty	15
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9060423129
+Audio File	9060423129.ogg
 Last Note Time	147.033
 Total Notes	729
 Fever Fill	169
 Fever Time	22.054950
 Long Notes	224
 BPM	140
-Song Length	147.492562358
+Song Length	148.033000000
 
 Timing Points
-0.033	428.5714
+0.033	428.571429
 
 
 Song Data

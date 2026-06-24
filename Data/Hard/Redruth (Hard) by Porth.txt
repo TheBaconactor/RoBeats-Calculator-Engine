@@ -2,13 +2,15 @@ Song Name	Redruth (Hard) by Porth
 Difficulty	23
 Primary Color	Vibe
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065313427
+Audio File	9065313427.ogg
 Last Note Time	146.749
 Total Notes	1604
 Fever Fill	404
 Fever Time	22.012350
 Long Notes	391
 BPM	130
-Song Length	146.782947846
+Song Length	147.749000000
 
 Timing Points
 -0.020	461.538462

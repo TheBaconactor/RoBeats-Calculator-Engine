@@ -2,16 +2,18 @@ Song Name	Medusa by Aiobahn feat. Cozi Zuehlsdorff [Monstercat]
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9065294287
+Audio File	9065294287.ogg
 Last Note Time	171.483
 Total Notes	807
 Fever Fill	199
 Fever Time	25.722450
 Long Notes	212
 BPM	126
-Song Length	175.348004535
+Song Length	172.483000000
 
 Timing Points
-1.960	476.1905
+1.960	476.190476
 
 
 Song Data

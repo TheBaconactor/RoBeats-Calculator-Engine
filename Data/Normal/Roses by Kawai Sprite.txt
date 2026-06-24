@@ -2,16 +2,18 @@ Song Name	Roses by Kawai Sprite
 Difficulty	14
 Primary Color	Chill
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059795013
+Audio File	9059795013.ogg
 Last Note Time	88.181
 Total Notes	524
 Fever Fill	156
 Fever Time	13.227150
 Long Notes	58
 BPM	120
-Song Length	91.091882086
+Song Length	89.181000000
 
 Timing Points
-0.306	500.0000
+0.306	500.000000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Hot (Hard) by FWLR [Monstercat]
 Difficulty	20
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065263839
+Audio File	9065263839.ogg
 Last Note Time	169.983
 Total Notes	1578
 Fever Fill	494
 Fever Time	25.497450
 Long Notes	95
 BPM	126
-Song Length	170.553469388
+Song Length	170.983000000
 
 Timing Points
-0.618	476.1905
+0.618	476.190476
 
 
 Song Data

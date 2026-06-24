@@ -2,16 +2,18 @@ Song Name	Aulture (Hard) by Silentroom
 Difficulty	24
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063711483
+Audio File	9063711483.ogg
 Last Note Time	134.610
 Total Notes	1617
 Fever Fill	485
 Fever Time	20.191500
 Long Notes	163
 BPM	172
-Song Length	140.243729167
+Song Length	135.610000000
 
 Timing Points
-0.744	348.8372
+0.744	348.837209
 
 
 Song Data

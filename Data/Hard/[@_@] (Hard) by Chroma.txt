@@ -2,16 +2,18 @@ Song Name	[@_@] (Hard) by Chroma
 Difficulty	25
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059365271
+Audio File	9059365271.ogg
 Last Note Time	101.012
 Total Notes	886
 Fever Fill	291
 Fever Time	15.151800
 Long Notes	13
 BPM	158
-Song Length	102.600000000
+Song Length	102.012000000
 
 Timing Points
-0.000	379.7468
+0.000	379.746835
 
 
 Song Data

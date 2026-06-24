@@ -2,20 +2,22 @@ Song Name	Crystallize (Hard) by Creo
 Difficulty	19
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063128810
+Audio File	9063128810.ogg
 Last Note Time	125.292
 Total Notes	941
 Fever Fill	272
 Fever Time	18.793800
 Long Notes	125
 BPM	115
-Song Length	125.464013605
+Song Length	126.292000000
 
 Timing Points
-4.249	521.7391
-41.814	521.7391
-57.988	521.7391
-58.509	521.7391
-74.162	521.7391
+4.249	521.739130
+41.814	521.739130
+57.988	521.739130
+58.509	521.739130
+74.162	521.739130
 
 
 Song Data

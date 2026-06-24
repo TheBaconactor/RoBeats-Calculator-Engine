@@ -2,20 +2,22 @@ Song Name	Window Cleaner: A Tale of Two Gangs by Joshua Kaplan (Open Heart Sound
 Difficulty	3
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065336332
+Audio File	9065336332.ogg
 Last Note Time	155.194
 Total Notes	276
 Fever Fill	91
 Fever Time	23.279100
 Long Notes	5
 BPM	151
-Song Length	163.541836735
+Song Length	156.194000000
 
 Timing Points
-0.000	428.5714
-62.888	384.6154
-62.888	384.6154
-64.425	384.6154
-64.425	384.6154
+0.000	428.571429
+62.888	428.571429
+62.888	384.615385
+64.425	384.615385
+64.425	384.615385
 
 
 Song Data

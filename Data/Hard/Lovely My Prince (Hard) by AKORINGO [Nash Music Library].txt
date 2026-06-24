@@ -2,16 +2,18 @@ Song Name	Lovely My Prince (Hard) by AKORINGO [Nash Music Library]
 Difficulty	30
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9062025662
+Audio File	9062025662.ogg
 Last Note Time	162.367
 Total Notes	2863
 Fever Fill	681
 Fever Time	24.355050
 Long Notes	818
 BPM	178
-Song Length	163.477732426
+Song Length	163.367000000
 
 Timing Points
-2.676	337.0787
+2.676	337.078652
 
 
 Song Data

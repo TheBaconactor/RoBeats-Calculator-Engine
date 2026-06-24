@@ -2,16 +2,18 @@ Song Name	EPIC by Tokyo Machine [Monstercat]
 Difficulty	3
 Primary Color	Beat
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9062867730
+Audio File	9062867730.ogg
 Last Note Time	108.859
 Total Notes	432
 Fever Fill	96
 Fever Time	16.328850
 Long Notes	146
 BPM	128
-Song Length	110.594126984
+Song Length	109.859000000
 
 Timing Points
-0.109	468.7500
+0.109	468.750000
 
 
 Song Data

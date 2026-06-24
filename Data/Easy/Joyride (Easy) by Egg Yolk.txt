@@ -2,13 +2,15 @@ Song Name	Joyride (Easy) by Egg Yolk
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9065249928
+Audio File	9065249928.ogg
 Last Note Time	191.351
 Total Notes	250
 Fever Fill	84
 Fever Time	28.702650
 Long Notes	0
 BPM	180
-Song Length	192.000000000
+Song Length	192.351000000
 
 Timing Points
 0.018	333.333333

@@ -2,16 +2,18 @@ Song Name	British Tea (Hard) by KepoWorld feat. NJ
 Difficulty	22
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9060280257
+Audio File	9060280257.ogg
 Last Note Time	158.673
 Total Notes	1652
 Fever Fill	428
 Fever Time	23.800950
 Long Notes	369
 BPM	135
-Song Length	165.407346939
+Song Length	159.673000000
 
 Timing Points
-1.785	444.4444
+1.785	444.444444
 
 
 Song Data

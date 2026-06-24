@@ -2,16 +2,18 @@ Song Name	Buzztone Symphony by Dimrain47
 Difficulty	15
 Primary Color	Flow
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059611666
+Audio File	9059611666.ogg
 Last Note Time	199.376
 Total Notes	1413
 Fever Fill	361
 Fever Time	29.906400
 Long Notes	331
 BPM	165
-Song Length	199.402750000
+Song Length	200.376000000
 
 Timing Points
-0.104	363.6364
+0.104	363.636364
 
 
 Song Data

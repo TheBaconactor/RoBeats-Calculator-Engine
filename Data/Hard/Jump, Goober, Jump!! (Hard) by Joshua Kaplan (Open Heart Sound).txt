@@ -2,19 +2,21 @@ Song Name	Jump, Goober, Jump!! (Hard) by Joshua Kaplan (Open Heart Sound)
 Difficulty	22
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065330791
+Audio File	9065330791.ogg
 Last Note Time	150.775
 Total Notes	1545
 Fever Fill	340
 Fever Time	22.616250
 Long Notes	524
 BPM	147
-Song Length	152.637755102
+Song Length	151.775000000
 
 Timing Points
--0.017	361.4458
-57.920	535.7143
-110.080	361.4458
-149.330	361.4458
+-0.017	361.445783
+57.920	535.714286
+110.080	361.445783
+149.330	361.445783
 
 
 Song Data

@@ -2,18 +2,20 @@ Song Name	Angel Echo by Silentroom
 Difficulty	15
 Primary Color	Beat
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9063709677
+Audio File	9063709677.ogg
 Last Note Time	121.230
 Total Notes	556
 Fever Fill	149
 Fever Time	18.184500
 Long Notes	110
-BPM	142
-Song Length	121.571916667
+BPM	158
+Song Length	122.230000000
 
 Timing Points
-0.283	631.5789
-0.283	631.5789
-40.704	315.7895
+0.283	-50.000000
+0.283	631.578947
+40.704	315.789474
 
 
 Song Data

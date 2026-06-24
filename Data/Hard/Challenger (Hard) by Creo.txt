@@ -2,18 +2,20 @@ Song Name	Challenger (Hard) by Creo
 Difficulty	24
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059453490
+Audio File	9059453490.ogg
 Last Note Time	157.479
 Total Notes	1730
 Fever Fill	414
 Fever Time	23.621850
 Long Notes	488
 BPM	128
-Song Length	160.773106576
+Song Length	158.479000000
 
 Timing Points
-0.000	468.7500
-1.381	468.7500
-1.854	468.7500
+0.000	468.750000
+1.381	468.750000
+1.854	468.750000
 
 
 Song Data

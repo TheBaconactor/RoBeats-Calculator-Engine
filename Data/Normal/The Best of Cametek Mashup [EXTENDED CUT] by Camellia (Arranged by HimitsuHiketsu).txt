@@ -2,21 +2,23 @@ Song Name	The Best of Cametek Mashup [EXTENDED CUT] by Camellia (Arranged by Him
 Difficulty	25
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9060591401
+Audio File	9060591401.ogg
 Last Note Time	414.966
 Total Notes	3650
 Fever Fill	1063
 Fever Time	62.244900
 Long Notes	458
 BPM	202
-Song Length	418.455510204
+Song Length	415.966000000
 
 Timing Points
-0.010	300.0000
-64.210	300.0000
-130.810	300.0000
-339.610	256.4103
-359.975	300.0000
-388.785	272.7273
+0.010	300.000000
+64.210	300.000000
+130.810	300.000000
+339.610	256.410256
+359.975	300.000000
+388.785	272.727273
 
 
 Song Data

@@ -2,18 +2,20 @@ Song Name	Awaken (Hard) by Creo
 Difficulty	25
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063123141
+Audio File	9063123141.ogg
 Last Note Time	157.697
 Total Notes	1456
 Fever Fill	437
 Fever Time	23.654550
 Long Notes	144
 BPM	172
-Song Length	158.338344671
+Song Length	158.697000000
 
 Timing Points
-0.023	348.8372
-129.790	348.8372
-152.116	348.8372
+0.023	348.837209
+129.790	348.837209
+152.116	348.837209
 
 
 Song Data

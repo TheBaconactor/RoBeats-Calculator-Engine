@@ -2,23 +2,25 @@ Song Name	The Long Drive by tv room
 Difficulty	12
 Primary Color	Rush
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9064087142
+Audio File	9064087142.ogg
 Last Note Time	127.859
 Total Notes	766
 Fever Fill	206
 Fever Time	19.178850
 Long Notes	150
 BPM	120
-Song Length	131.506258503
+Song Length	128.859000000
 
 Timing Points
-0.000	500.0000
-0.234	500.0000
-0.484	500.0000
-1.984	500.0000
-31.984	500.0000
-63.984	500.0000
-95.984	500.0000
-127.984	500.0000
+0.000	500.000000
+0.234	500.000000
+0.484	500.000000
+1.984	500.000000
+31.984	500.000000
+63.984	500.000000
+95.984	500.000000
+127.984	500.000000
 
 
 Song Data

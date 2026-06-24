@@ -2,18 +2,20 @@ Song Name	Decisions (Hard) by FinnMK
 Difficulty	12
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065328874
+Audio File	9065328874.ogg
 Last Note Time	95.830
 Total Notes	362
 Fever Fill	120
 Fever Time	14.374500
 Long Notes	3
 BPM	100
-Song Length	96.027188209
+Song Length	96.830000000
 
 Timing Points
-0.000	600.0000
-0.580	600.0000
-2.380	600.0000
+0.000	600.000000
+0.580	600.000000
+2.380	600.000000
 
 
 Song Data

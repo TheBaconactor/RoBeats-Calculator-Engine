@@ -2,16 +2,18 @@ Song Name	Neurotoxicity by Kurokotei
 Difficulty	7
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9060368076
+Audio File	9060368076.ogg
 Last Note Time	166.277
 Total Notes	559
 Fever Fill	145
 Fever Time	24.941550
 Long Notes	126
 BPM	140
-Song Length	168.144000000
+Song Length	167.277000000
 
 Timing Points
-1.706	428.5714
+1.706	428.571429
 
 
 Song Data

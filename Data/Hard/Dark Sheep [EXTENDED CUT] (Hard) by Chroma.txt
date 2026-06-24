@@ -2,16 +2,18 @@ Song Name	Dark Sheep [EXTENDED CUT] (Hard) by Chroma
 Difficulty	34
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9062626498
+Audio File	9062626498.ogg
 Last Note Time	235.953
 Total Notes	4081
 Fever Fill	938
 Fever Time	35.392950
 Long Notes	1266
 BPM	177
-Song Length	236.497981859
+Song Length	236.953000000
 
 Timing Points
-2.733	338.9831
+2.733	338.983051
 
 
 Song Data

@@ -2,13 +2,15 @@ Song Name	Among Us (Easy) by BSlick
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059057907
+Audio File	9059057907.ogg
 Last Note Time	122.040
 Total Notes	91
 Fever Fill	31
 Fever Time	18.306000
 Long Notes	0
 BPM	92
-Song Length	127.440000000
+Song Length	123.040000000
 
 Timing Points
 0.095	648.648649

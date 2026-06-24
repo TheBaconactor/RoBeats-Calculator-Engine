@@ -2,16 +2,18 @@ Song Name	Soulless 5 (HalfDuck Cover) [EXTENDED CUT] (Hard) by ExileLord (Cover 
 Difficulty	34
 Primary Color	Rush
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9062726290
+Audio File	9062726290.ogg
 Last Note Time	376.715
 Total Notes	6213
 Fever Fill	1813
 Fever Time	56.507250
 Long Notes	769
 BPM	260
-Song Length	380.322448980
+Song Length	377.715000000
 
 Timing Points
-0.100	230.7692
+0.100	230.769231
 
 
 Song Data

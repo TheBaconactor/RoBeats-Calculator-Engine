@@ -2,16 +2,18 @@ Song Name	Dreaming of Flying in the Night Sky by Chroma (feat. mikanzil)
 Difficulty	15
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059366774
+Audio File	9059366774.ogg
 Last Note Time	140.018
 Total Notes	1034
 Fever Fill	280
 Fever Time	21.002700
 Long Notes	194
 BPM	246
-Song Length	140.519977324
+Song Length	141.018000000
 
 Timing Points
-0.019	243.9024
+0.019	243.902439
 
 
 Song Data

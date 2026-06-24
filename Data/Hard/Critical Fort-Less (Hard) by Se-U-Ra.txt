@@ -2,16 +2,18 @@ Song Name	Critical Fort-Less (Hard) by Se-U-Ra
 Difficulty	29
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9063493467
+Audio File	9063493467.ogg
 Last Note Time	109.311
 Total Notes	1706
 Fever Fill	434
 Fever Time	16.396650
 Long Notes	405
 BPM	190
-Song Length	111.374512472
+Song Length	110.311000000
 
 Timing Points
-0.680	315.7895
+0.680	315.789474
 
 
 Song Data

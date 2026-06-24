@@ -2,18 +2,20 @@ Song Name	With Your Love by Tobu
 Difficulty	7
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://8267694863
+Audio File	8267694863.mp3
 Last Note Time	164.755
 Total Notes	493
 Fever Fill	136
 Fever Time	24.713250
 Long Notes	86
 BPM	128
-Song Length	168.019591837
+Song Length	165.755000000
 
 Timing Points
-0.000	468.7500
-0.458	468.7500
-1.865	468.7500
+0.000	468.750000
+0.458	468.750000
+1.865	468.750000
 
 
 Song Data

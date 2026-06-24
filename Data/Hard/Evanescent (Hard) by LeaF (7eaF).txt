@@ -2,18 +2,20 @@ Song Name	Evanescent (Hard) by LeaF (7eaF)
 Difficulty	30
 Primary Color	Vibe
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9060418075
+Audio File	9060418075.ogg
 Last Note Time	123.948
 Total Notes	1734
 Fever Fill	514
 Fever Time	18.592200
 Long Notes	193
 BPM	190
-Song Length	125.434648526
+Song Length	124.948000000
 
 Timing Points
-1.422	315.7895
-87.316	315.7895
-117.632	315.7895
+1.422	315.789474
+87.316	315.789474
+117.632	315.789474
 
 
 Song Data

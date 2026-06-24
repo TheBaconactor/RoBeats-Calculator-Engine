@@ -2,20 +2,22 @@ Song Name	FREEDOM DiVE (Classic Map) [EXTENDED CUT] by xi (xi_com_giko_31)
 Difficulty	26
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065757446
+Audio File	9065757446.ogg
 Last Note Time	149.014
 Total Notes	1821
 Fever Fill	589
 Fever Time	22.352100
 Long Notes	53
 BPM	222
-Song Length	149.472000000
+Song Length	150.014000000
 
 Timing Points
-2.133	270.0000
-64.773	270.0000
-82.053	270.0000
-107.974	270.0000
-146.853	270.0000
+2.133	270.000000
+64.773	270.000000
+82.053	270.000000
+107.974	270.000000
+146.853	270.000000
 
 
 Song Data

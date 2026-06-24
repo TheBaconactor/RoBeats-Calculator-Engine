@@ -2,16 +2,18 @@ Song Name	The Memory Of Summer [EXTENDED CUT] by RiraN feat. Ai Ohsera
 Difficulty	19
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9062521145
+Audio File	9062521145.ogg
 Last Note Time	218.380
 Total Notes	1476
 Fever Fill	446
 Fever Time	32.757000
 Long Notes	139
 BPM	150
-Song Length	226.400000000
+Song Length	219.380000000
 
 Timing Points
-2.380	400.0000
+2.380	400.000000
 
 
 Song Data

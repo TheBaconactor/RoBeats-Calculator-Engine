@@ -2,17 +2,19 @@ Song Name	Report 4: New World by coda
 Difficulty	10
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063115782
+Audio File	9063115782.ogg
 Last Note Time	127.062
 Total Notes	649
 Fever Fill	178
 Fever Time	19.059300
 Long Notes	115
 BPM	120
-Song Length	132.659297052
+Song Length	128.062000000
 
 Timing Points
-0.062	500.0000
-83.062	500.0000
+0.062	500.000000
+83.062	500.000000
 
 
 Song Data

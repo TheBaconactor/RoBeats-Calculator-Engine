@@ -2,16 +2,18 @@ Song Name	Ocean Eyes by Jay Cosmic & DESERT STAR [Monstercat]
 Difficulty	5
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9062874060
+Audio File	9062874060.ogg
 Last Note Time	101.040
 Total Notes	352
 Fever Fill	90
 Fever Time	15.156000
 Long Notes	82
 BPM	172
-Song Length	106.838503401
+Song Length	102.040000000
 
 Timing Points
-0.750	348.8372
+0.750	348.837209
 
 
 Song Data

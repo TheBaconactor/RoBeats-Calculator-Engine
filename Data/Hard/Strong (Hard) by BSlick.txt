@@ -2,16 +2,18 @@ Song Name	Strong (Hard) by BSlick
 Difficulty	17
 Primary Color	Chill
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059068224
+Audio File	9059068224.ogg
 Last Note Time	166.041
 Total Notes	1280
 Fever Fill	302
 Fever Time	24.906150
 Long Notes	374
 BPM	98
-Song Length	166.734376417
+Song Length	167.041000000
 
 Timing Points
-0.356	609.1371
+0.356	609.137056
 
 
 Song Data

@@ -2,21 +2,23 @@ Song Name	RiraN Hardstyle Mashup [EXTENDED CUT] (Hard) by RiraN (Arranged by pos
 Difficulty	28
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9060625656
+Audio File	9060625656.ogg
 Last Note Time	366.879
 Total Notes	4956
 Fever Fill	1305
 Fever Time	55.031850
 Long Notes	1039
 BPM	180
-Song Length	367.082426304
+Song Length	367.879000000
 
 Timing Points
-0.285	333.3333
-74.888	333.3333
-138.853	333.3333
-224.167	333.3333
-310.845	333.3333
-330.880	333.3333
+0.285	333.333333
+74.888	333.333333
+138.853	333.333333
+224.167	333.333333
+310.845	333.333333
+330.880	333.333333
 
 
 Song Data

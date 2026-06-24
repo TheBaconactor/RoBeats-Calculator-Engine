@@ -2,13 +2,15 @@ Song Name	Dog Jam (Easy) by coda
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063105483
+Audio File	9063105483.ogg
 Last Note Time	117.612
 Total Notes	158
 Fever Fill	52
 Fever Time	17.641800
 Long Notes	4
 BPM	92
-Song Length	123.931541667
+Song Length	118.612000000
 
 Timing Points
 0.000	649.702220

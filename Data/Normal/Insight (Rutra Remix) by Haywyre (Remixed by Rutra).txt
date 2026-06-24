@@ -2,20 +2,22 @@ Song Name	Insight (Rutra Remix) by Haywyre (Remixed by Rutra)
 Difficulty	14
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9546600539
+Audio File	9546600539.ogg
 Last Note Time	195.011
 Total Notes	1073
 Fever Fill	332
 Fever Time	29.251650
 Long Notes	78
 BPM	128
-Song Length	199.929229025
+Song Length	196.011000000
 
 Timing Points
-0.011	468.7500
-75.011	468.7500
-105.011	468.7500
-165.011	468.7500
-195.011	468.7500
+0.011	468.750000
+75.011	468.750000
+105.011	468.750000
+165.011	468.750000
+195.011	468.750000
 
 
 Song Data

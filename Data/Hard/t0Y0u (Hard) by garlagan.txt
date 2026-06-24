@@ -2,16 +2,18 @@ Song Name	t0Y0u (Hard) by garlagan
 Difficulty	20
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059847520
+Audio File	9059847520.ogg
 Last Note Time	113.727
 Total Notes	868
 Fever Fill	259
 Fever Time	17.059050
 Long Notes	91
 BPM	144
-Song Length	118.586666667
+Song Length	114.727000000
 
 Timing Points
-4.977	416.6667
+4.977	416.666667
 
 
 Song Data

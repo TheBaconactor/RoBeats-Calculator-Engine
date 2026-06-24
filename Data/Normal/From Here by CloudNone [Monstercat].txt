@@ -2,16 +2,18 @@ Song Name	From Here by CloudNone [Monstercat]
 Difficulty	4
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063153694
+Audio File	9063153694.ogg
 Last Note Time	151.976
 Total Notes	410
 Fever Fill	123
 Fever Time	22.796400
 Long Notes	41
 BPM	130
-Song Length	152.804988662
+Song Length	152.976000000
 
 Timing Points
-0.130	461.5385
+0.130	461.538462
 
 
 Song Data

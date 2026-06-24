@@ -2,16 +2,18 @@ Song Name	St Tropez (Hard) by Tony Romera & SQWAD [Monstercat]
 Difficulty	19
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9060994382
+Audio File	9060994382.ogg
 Last Note Time	123.932
 Total Notes	932
 Fever Fill	267
 Fever Time	18.589800
 Long Notes	132
 BPM	124
-Song Length	129.019750567
+Song Length	124.932000000
 
 Timing Points
-0.062	483.8710
+0.062	483.870968
 
 
 Song Data

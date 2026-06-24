@@ -2,18 +2,20 @@ Song Name	introduction - INSANE INFLAME (Hard) by Camellia
 Difficulty	24
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059190800
+Audio File	9059190800.ogg
 Last Note Time	113.976
 Total Notes	987
 Fever Fill	304
 Fever Time	17.096400
 Long Notes	75
 BPM	172
-Song Length	119.605464853
+Song Length	114.976000000
 
 Timing Points
-2.349	348.8372
-69.325	348.8372
-113.976	348.8372
+2.349	348.837209
+69.325	348.837209
+113.976	348.837209
 
 
 Song Data

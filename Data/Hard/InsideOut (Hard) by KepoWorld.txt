@@ -2,17 +2,19 @@ Song Name	InsideOut (Hard) by KepoWorld
 Difficulty	23
 Primary Color	Vibe
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9060284594
+Audio File	9060284594.ogg
 Last Note Time	165.452
 Total Notes	1526
 Fever Fill	411
 Fever Time	24.817800
 Long Notes	292
 BPM	128
-Song Length	168.977664399
+Song Length	166.452000000
 
 Timing Points
-0.000	468.7500
-1.859	468.7500
+0.000	468.750000
+1.859	468.750000
 
 
 Song Data

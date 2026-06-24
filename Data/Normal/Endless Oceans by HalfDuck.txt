@@ -2,16 +2,18 @@ Song Name	Endless Oceans by HalfDuck
 Difficulty	24
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059946354
+Audio File	9059946354.ogg
 Last Note Time	257.585
 Total Notes	2320
 Fever Fill	719
 Fever Time	38.637750
 Long Notes	162
 BPM	180
-Song Length	259.854083333
+Song Length	258.585000000
 
 Timing Points
-0.252	333.3333
+0.252	333.333333
 
 
 Song Data

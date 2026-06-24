@@ -2,18 +2,20 @@ Song Name	Ena (Hard) by Hinkik
 Difficulty	16
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059982003
+Audio File	9059982003.ogg
 Last Note Time	105.280
 Total Notes	962
 Fever Fill	234
 Fever Time	15.792000
 Long Notes	260
 BPM	128
-Song Length	109.457573696
+Song Length	106.280000000
 
 Timing Points
-0.280	468.7500
-60.280	468.7500
-105.280	468.7500
+0.280	468.750000
+60.280	468.750000
+105.280	468.750000
 
 
 Song Data

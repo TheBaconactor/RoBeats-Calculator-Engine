@@ -2,23 +2,25 @@ Song Name	Aurora by Creo
 Difficulty	4
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059452052
+Audio File	9059452052.ogg
 Last Note Time	156.180
 Total Notes	359
 Fever Fill	89
 Fever Time	23.427000
 Long Notes	94
 BPM	184
-Song Length	156.535306122
+Song Length	157.180000000
 
 Timing Points
-0.000	326.0870
-0.148	326.0870
-0.311	326.0870
-1.289	326.0870
-5.202	326.0870
-41.723	326.0870
-73.028	326.0870
-135.636	326.0870
+0.000	326.086957
+0.148	326.086957
+0.311	326.086957
+1.289	326.086957
+5.202	326.086957
+41.723	326.086957
+73.028	326.086957
+135.636	326.086957
 
 
 Song Data

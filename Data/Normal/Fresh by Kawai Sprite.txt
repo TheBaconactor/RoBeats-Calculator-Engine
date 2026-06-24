@@ -2,16 +2,18 @@ Song Name	Fresh by Kawai Sprite
 Difficulty	3
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063144320
+Audio File	9063144320.ogg
 Last Note Time	79.576
 Total Notes	229
 Fever Fill	73
 Fever Time	11.936400
 Long Notes	12
 BPM	120
-Song Length	82.050612245
+Song Length	80.576000000
 
 Timing Points
-0.076	500.0000
+0.076	500.000000
 
 
 Song Data

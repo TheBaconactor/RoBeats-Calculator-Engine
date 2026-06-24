@@ -2,16 +2,18 @@ Song Name	Guardian (Hard) by Hinkik
 Difficulty	16
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059984122
+Audio File	9059984122.ogg
 Last Note Time	120.194
 Total Notes	1051
 Fever Fill	297
 Fever Time	18.029100
 Long Notes	160
 BPM	128
-Song Length	123.971428571
+Song Length	121.194000000
 
 Timing Points
-0.194	468.7500
+0.194	468.750000
 
 
 Song Data

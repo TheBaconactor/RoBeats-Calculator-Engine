@@ -2,16 +2,18 @@ Song Name	Skystrike (Hard) by Hinkik
 Difficulty	20
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059989380
+Audio File	9059989380.ogg
 Last Note Time	184.036
 Total Notes	1803
 Fever Fill	477
 Fever Time	27.605400
 Long Notes	372
 BPM	128
-Song Length	184.760884354
+Song Length	185.036000000
 
 Timing Points
-0.286	468.7500
+0.286	468.750000
 
 
 Song Data

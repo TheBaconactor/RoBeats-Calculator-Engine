@@ -2,16 +2,18 @@ Song Name	Exit This Earth's Atomosphere by Camellia
 Difficulty	15
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059186319
+Audio File	9059186319.ogg
 Last Note Time	158.453
 Total Notes	1040
 Fever Fill	249
 Fever Time	23.767950
 Long Notes	295
 BPM	170
-Song Length	161.808072562
+Song Length	159.453000000
 
 Timing Points
-0.336	352.9412
+0.336	352.941176
 
 
 Song Data

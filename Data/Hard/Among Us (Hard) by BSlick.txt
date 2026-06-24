@@ -2,16 +2,18 @@ Song Name	Among Us (Hard) by BSlick
 Difficulty	20
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059057907
+Audio File	9059057907.ogg
 Last Note Time	124.473
 Total Notes	955
 Fever Fill	287
 Fever Time	18.670950
 Long Notes	95
 BPM	92
-Song Length	127.440000000
+Song Length	125.473000000
 
 Timing Points
-0.095	648.6486
+0.095	648.648649
 
 
 Song Data

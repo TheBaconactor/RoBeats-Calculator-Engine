@@ -2,16 +2,18 @@ Song Name	Hate The Most (Hard) by RiraN
 Difficulty	29
 Primary Color	Vibe
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9062513553
+Audio File	9062513553.ogg
 Last Note Time	151.431
 Total Notes	2234
 Fever Fill	585
 Fever Time	22.714650
 Long Notes	479
 BPM	180
-Song Length	155.917823129
+Song Length	152.431000000
 
 Timing Points
-0.765	333.3333
+0.765	333.333333
 
 
 Song Data

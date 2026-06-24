@@ -2,16 +2,18 @@ Song Name	Over It (Hard) by Glaue [Monstercat]
 Difficulty	19
 Primary Color	Flow
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://7023800698
+Audio File	7023800698.ogg
 Last Note Time	161.367
 Total Notes	1079
 Fever Fill	306
 Fever Time	24.205050
 Long Notes	162
 BPM	120
-Song Length	163.500000000
+Song Length	162.367000000
 
 Timing Points
-1.492	500.0000
+1.492	500.000000
 
 
 Song Data

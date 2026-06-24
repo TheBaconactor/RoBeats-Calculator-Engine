@@ -2,20 +2,22 @@ Song Name	Crazy Magic by NAMI with Shigex2 & S/N [Nash Music Library]
 Difficulty	17
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9062016855
+Audio File	9062016855.ogg
 Last Note Time	160.127
 Total Notes	1320
 Fever Fill	329
 Fever Time	24.019050
 Long Notes	334
 BPM	144
-Song Length	160.625963719
+Song Length	161.127000000
 
 Timing Points
-0.232	416.6667
-70.232	416.6667
-96.898	416.6667
-123.565	416.6667
-146.898	416.6667
+0.232	416.666667
+70.232	416.666667
+96.898	416.666667
+123.565	416.666667
+146.898	416.666667
 
 
 Song Data

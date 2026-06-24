@@ -2,16 +2,18 @@ Song Name	FREEDOM DiVE [METAL DIMENSIONS] (Classic Map) [EXTENDED CUT] by xi (xi
 Difficulty	24
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9062582369
+Audio File	9062582369.ogg
 Last Note Time	148.927
 Total Notes	1798
 Fever Fill	474
 Fever Time	22.339050
 Long Notes	377
 BPM	211
-Song Length	152.850702948
+Song Length	149.927000000
 
 Timing Points
-0.000	284.2120
+0.000	284.212022
 
 
 Song Data

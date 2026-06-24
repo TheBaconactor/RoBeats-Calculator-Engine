@@ -2,16 +2,18 @@ Song Name	Spectrum (Hard) by MUZZ [Monstercat]
 Difficulty	18
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9062886094
+Audio File	9062886094.ogg
 Last Note Time	139.079
 Total Notes	1006
 Fever Fill	264
 Fever Time	20.861850
 Long Notes	215
 BPM	175
-Song Length	143.093310658
+Song Length	140.079000000
 
 Timing Points
-2.279	342.8571
+2.279	342.857143
 
 
 Song Data

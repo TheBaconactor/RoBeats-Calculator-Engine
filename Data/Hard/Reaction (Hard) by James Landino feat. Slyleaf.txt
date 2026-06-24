@@ -2,17 +2,19 @@ Song Name	Reaction (Hard) by James Landino feat. Slyleaf
 Difficulty	25
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9062628481
+Audio File	9062628481.ogg
 Last Note Time	116.255
 Total Notes	1269
 Fever Fill	294
 Fever Time	17.438250
 Long Notes	388
 BPM	132
-Song Length	117.237551020
+Song Length	117.255000000
 
 Timing Points
-0.060	454.5455
-14.589	454.5455
+0.060	454.545455
+14.589	454.545455
 
 
 Song Data

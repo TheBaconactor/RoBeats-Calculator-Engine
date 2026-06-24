@@ -2,23 +2,25 @@ Song Name	What You Love (Hard) by garlagan
 Difficulty	26
 Primary Color	Rush
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059849079
+Audio File	9059849079.ogg
 Last Note Time	152.094
 Total Notes	1408
 Fever Fill	413
 Fever Time	22.814100
 Long Notes	170
 BPM	128
-Song Length	157.035941043
+Song Length	153.094000000
 
 Timing Points
-0.000	468.7500
-0.453	468.7500
-1.860	468.7500
-7.485	468.7500
-52.485	468.7500
-82.485	468.7500
-104.985	468.7500
-152.094	468.7500
+0.000	468.750000
+0.453	468.750000
+1.860	468.750000
+7.485	468.750000
+52.485	468.750000
+82.485	468.750000
+104.985	468.750000
+152.094	468.750000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	E-Lectixilent (E-xtended Mix) [EXTENDED CUT] by Se-U-Ra
 Difficulty	23
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063497533
+Audio File	9063497533.ogg
 Last Note Time	363.598
 Total Notes	2745
 Fever Fill	778
 Fever Time	54.539700
 Long Notes	411
 BPM	193
-Song Length	367.773333333
+Song Length	364.598000000
 
 Timing Points
-0.490	310.8808
+0.490	310.880829
 
 
 Song Data

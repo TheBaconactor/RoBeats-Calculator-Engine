@@ -2,16 +2,18 @@ Song Name	dreamless wanderer (Hard) by Camellia
 Difficulty	25
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059185078
+Audio File	9059185078.ogg
 Last Note Time	178.771
 Total Notes	1910
 Fever Fill	537
 Fever Time	26.815650
 Long Notes	299
 BPM	174
-Song Length	181.277936508
+Song Length	179.771000000
 
 Timing Points
-2.220	344.8276
+2.220	344.827586
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Galactic Voyage (Hard) by PIXL [Monstercat]
 Difficulty	24
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9060985929
+Audio File	9060985929.ogg
 Last Note Time	197.920
 Total Notes	1903
 Fever Fill	461
 Fever Time	29.688000
 Long Notes	521
 BPM	125
-Song Length	199.577777778
+Song Length	198.920000000
 
 Timing Points
-0.160	480.0000
+0.160	480.000000
 
 
 Song Data

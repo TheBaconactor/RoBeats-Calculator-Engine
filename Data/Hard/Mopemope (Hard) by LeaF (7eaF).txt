@@ -2,17 +2,19 @@ Song Name	Mopemope (Hard) by LeaF (7eaF)
 Difficulty	25
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9060425171
+Audio File	9060425171.ogg
 Last Note Time	109.975
 Total Notes	1124
 Fever Fill	322
 Fever Time	16.496250
 Long Notes	159
 BPM	200
-Song Length	110.271882086
+Song Length	110.975000000
 
 Timing Points
--0.158	300.0000
-50.842	300.0000
+-0.158	300.000000
+50.842	300.000000
 
 
 Song Data

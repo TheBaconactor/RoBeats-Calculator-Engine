@@ -2,16 +2,18 @@ Song Name	vix by matthieumusic
 Difficulty	19
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9065292519
+Audio File	9065292519.ogg
 Last Note Time	152.550
 Total Notes	1158
 Fever Fill	351
 Fever Time	22.882500
 Long Notes	104
 BPM	192
-Song Length	154.566530612
+Song Length	153.550000000
 
 Timing Points
-0.050	312.5000
+0.050	312.500000
 
 
 Song Data

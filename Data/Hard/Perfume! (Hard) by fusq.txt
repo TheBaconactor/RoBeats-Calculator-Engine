@@ -1,17 +1,19 @@
 Song Name	Perfume! (Hard) by fusq
-Difficulty	18
+Difficulty	19
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065762949
+Audio File	9065762949.ogg
 Last Note Time	113.073
 Total Notes	748
 Fever Fill	237
 Fever Time	16.960950
 Long Notes	37
 BPM	127
-Song Length	114.605419501
+Song Length	114.073000000
 
 Timing Points
-3.940	472.0000
+3.940	472.000000
 
 
 Song Data

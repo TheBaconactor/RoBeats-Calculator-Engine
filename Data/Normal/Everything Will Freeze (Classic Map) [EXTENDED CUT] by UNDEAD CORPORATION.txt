@@ -2,16 +2,18 @@ Song Name	Everything Will Freeze (Classic Map) [EXTENDED CUT] by UNDEAD CORPORAT
 Difficulty	24
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9062392732
+Audio File	9062392732.ogg
 Last Note Time	135.436
 Total Notes	1783
 Fever Fill	566
 Fever Time	20.315400
 Long Notes	86
 BPM	240
-Song Length	137.002358277
+Song Length	136.436000000
 
 Timing Points
-0.436	250.0000
+0.436	250.000000
 
 
 Song Data

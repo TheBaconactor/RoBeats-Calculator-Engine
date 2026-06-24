@@ -2,16 +2,18 @@ Song Name	Dark Desire of Ark Six (Hard) by Se-U-Ra
 Difficulty	35
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063495148
+Audio File	9063495148.ogg
 Last Note Time	110.361
 Total Notes	2104
 Fever Fill	592
 Fever Time	16.554150
 Long Notes	329
 BPM	209
-Song Length	112.750068027
+Song Length	111.361000000
 
 Timing Points
-0.122	287.0813
+0.122	287.081340
 
 
 Song Data

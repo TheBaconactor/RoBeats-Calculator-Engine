@@ -2,16 +2,18 @@ Song Name	Serenity by KepoWorld
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9060287705
+Audio File	9060287705.ogg
 Last Note Time	113.398
 Total Notes	229
 Fever Fill	65
 Fever Time	17.009700
 Long Notes	34
 BPM	128
-Song Length	114.490975057
+Song Length	114.398000000
 
 Timing Points
-2.070	468.7500
+2.070	468.750000
 
 
 Song Data

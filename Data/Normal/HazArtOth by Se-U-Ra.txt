@@ -2,18 +2,20 @@ Song Name	HazArtOth by Se-U-Ra
 Difficulty	21
 Primary Color	Chill
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9063501518
+Audio File	9063501518.ogg
 Last Note Time	123.888
 Total Notes	1152
 Fever Fill	280
 Fever Time	18.583200
 Long Notes	312
 BPM	195
-Song Length	127.626621315
+Song Length	124.888000000
 
 Timing Points
-3.274	307.6923
-40.043	307.6923
-46.350	307.6923
+3.274	307.692308
+40.043	307.692308
+46.350	307.692308
 
 
 Song Data

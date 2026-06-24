@@ -2,16 +2,18 @@ Song Name	Neon (Hard) by F.O.O.L & Midranger [Monstercat]
 Difficulty	13
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9062872569
+Audio File	9062872569.ogg
 Last Note Time	93.638
 Total Notes	423
 Fever Fill	120
 Fever Time	14.045700
 Long Notes	63
 BPM	97
-Song Length	100.815396825
+Song Length	94.638000000
 
 Timing Points
-0.100	615.3846
+0.100	615.384615
 
 
 Song Data

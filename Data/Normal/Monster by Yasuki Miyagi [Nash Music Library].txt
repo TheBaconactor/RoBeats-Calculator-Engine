@@ -2,16 +2,18 @@ Song Name	Monster by Yasuki Miyagi [Nash Music Library]
 Difficulty	18
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://11382043129
+Audio File	11382043129.ogg
 Last Note Time	111.705
 Total Notes	728
 Fever Fill	208
 Fever Time	16.755750
 Long Notes	106
 BPM	156
-Song Length	112.536258503
+Song Length	112.705000000
 
 Timing Points
-0.936	384.6154
+0.936	384.615385
 
 
 Song Data

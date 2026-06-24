@@ -2,16 +2,18 @@ Song Name	Traveler ~stand aloof~ (Hard) by Se-U-Ra
 Difficulty	33
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063509005
+Audio File	9063509005.ogg
 Last Note Time	117.607
 Total Notes	1869
 Fever Fill	519
 Fever Time	17.641050
 Long Notes	312
 BPM	205
-Song Length	120.226666667
+Song Length	118.607000000
 
 Timing Points
-0.242	292.6829
+0.242	292.682927
 
 
 Song Data

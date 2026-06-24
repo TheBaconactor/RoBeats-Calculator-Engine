@@ -2,13 +2,15 @@ Song Name	Internet Boy (Easy) by Dion Timmer feat. Micah Martin [Monstercat]
 Difficulty	3
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065281304
+Audio File	9065281304.ogg
 Last Note Time	149.083
 Total Notes	252
 Fever Fill	72
 Fever Time	22.362450
 Long Notes	36
 BPM	128
-Song Length	151.005034014
+Song Length	150.083000000
 
 Timing Points
 0.958	468.750000

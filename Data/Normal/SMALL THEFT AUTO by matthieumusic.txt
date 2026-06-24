@@ -2,16 +2,18 @@ Song Name	SMALL THEFT AUTO by matthieumusic
 Difficulty	20
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065286853
+Audio File	9065286853.ogg
 Last Note Time	185.393
 Total Notes	1779
 Fever Fill	507
 Fever Time	27.808950
 Long Notes	259
 BPM	157
-Song Length	190.014693878
+Song Length	186.393000000
 
 Timing Points
-0.425	382.1656
+0.425	382.165605
 
 
 Song Data

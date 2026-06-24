@@ -1,17 +1,19 @@
 Song Name	Yeah! (Hard) by fusq
-Difficulty	14
+Difficulty	16
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9063165327
+Audio File	9063165327.ogg
 Last Note Time	168.888
 Total Notes	1078
 Fever Fill	271
 Fever Time	25.333200
 Long Notes	267
 BPM	132
-Song Length	169.682063492
+Song Length	169.888000000
 
 Timing Points
-0.252	454.5455
+0.252	454.545455
 
 
 Song Data

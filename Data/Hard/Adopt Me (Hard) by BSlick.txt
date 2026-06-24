@@ -2,16 +2,18 @@ Song Name	Adopt Me (Hard) by BSlick
 Difficulty	16
 Primary Color	Vibe
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059056273
+Audio File	9059056273.ogg
 Last Note Time	160.352
 Total Notes	1158
 Fever Fill	364
 Fever Time	24.052800
 Long Notes	67
 BPM	162
-Song Length	162.144000000
+Song Length	161.352000000
 
 Timing Points
-0.723	370.3704
+0.723	370.370370
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Doppelganger by LeaF (7eaF)
 Difficulty	24
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9060416766
+Audio File	9060416766.ogg
 Last Note Time	144.131
 Total Notes	1479
 Fever Fill	396
 Fever Time	21.619650
 Long Notes	290
 BPM	280
-Song Length	144.467916667
+Song Length	145.131000000
 
 Timing Points
-0.024	214.2857
+0.024	214.285714
 
 
 Song Data

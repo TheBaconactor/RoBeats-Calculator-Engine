@@ -2,13 +2,15 @@ Song Name	Asteroid's Dream (Easy) by brz1128
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9118752889
+Audio File	9118752889.ogg
 Last Note Time	130.272
 Total Notes	203
 Fever Fill	62
 Fever Time	19.540800
 Long Notes	18
 BPM	175
-Song Length	132.234580499
+Song Length	131.272000000
 
 Timing Points
 0.329	342.857143

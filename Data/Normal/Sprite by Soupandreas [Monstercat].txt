@@ -2,22 +2,24 @@ Song Name	Sprite by Soupandreas [Monstercat]
 Difficulty	10
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065339632
+Audio File	9065339632.ogg
 Last Note Time	189.751
 Total Notes	1062
 Fever Fill	289
 Fever Time	28.462650
 Long Notes	195
 BPM	250
-Song Length	190.858004535
+Song Length	190.751000000
 
 Timing Points
-0.000	240.0000
-0.471	240.0000
-1.911	240.0000
-138.231	240.0000
-160.791	240.0000
-161.271	240.0000
-184.311	240.0000
+0.000	240.000000
+0.471	240.000000
+1.911	240.000000
+138.231	240.000000
+160.791	240.000000
+161.271	240.000000
+184.311	240.000000
 
 
 Song Data

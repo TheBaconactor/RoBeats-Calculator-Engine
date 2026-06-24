@@ -2,19 +2,21 @@ Song Name	Aiyatvs (Hard) by Se-U-Ra
 Difficulty	30
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9063490611
+Audio File	9063490611.ogg
 Last Note Time	110.790
 Total Notes	1555
 Fever Fill	482
 Fever Time	16.618500
 Long Notes	109
 BPM	191
-Song Length	112.678616780
+Song Length	111.790000000
 
 Timing Points
-1.240	315.7895
-11.346	314.1361
-41.503	312.5000
-64.003	310.8808
+1.240	315.789474
+11.346	314.136126
+41.503	312.500000
+64.003	310.880829
 
 
 Song Data

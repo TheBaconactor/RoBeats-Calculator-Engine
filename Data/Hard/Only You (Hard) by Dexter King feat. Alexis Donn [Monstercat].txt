@@ -2,16 +2,18 @@ Song Name	Only You (Hard) by Dexter King feat. Alexis Donn [Monstercat]
 Difficulty	22
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065300824
+Audio File	9065300824.ogg
 Last Note Time	175.973
 Total Notes	1629
 Fever Fill	364
 Fever Time	26.395950
 Long Notes	537
 BPM	126
-Song Length	176.220666667
+Song Length	176.973000000
 
 Timing Points
-0.974	476.1905
+0.974	476.190476
 
 
 Song Data

@@ -2,20 +2,22 @@ Song Name	Blue Zenith by xi (xi_com_giko_31)
 Difficulty	22
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9064170836
+Audio File	9064170836.ogg
 Last Note Time	182.350
 Total Notes	1648
 Fever Fill	497
 Fever Time	27.352500
 Long Notes	157
 BPM	200
-Song Length	185.490453515
+Song Length	183.350000000
 
 Timing Points
-1.150	300.0000
-1.150	300.0000
-73.150	300.0000
-111.550	300.0000
-152.350	300.0000
+1.150	300.000000
+1.150	300.000000
+73.150	300.000000
+111.550	300.000000
+152.350	300.000000
 
 
 Song Data

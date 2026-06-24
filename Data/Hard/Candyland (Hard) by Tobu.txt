@@ -2,16 +2,18 @@ Song Name	Candyland (Hard) by Tobu
 Difficulty	20
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065756356
+Audio File	9065756356.ogg
 Last Note Time	104.855
 Total Notes	635
 Fever Fill	160
 Fever Time	15.728250
 Long Notes	155
 BPM	128
-Song Length	107.231360544
+Song Length	105.855000000
 
 Timing Points
-0.090	468.0000
+0.090	468.000000
 
 
 Song Data

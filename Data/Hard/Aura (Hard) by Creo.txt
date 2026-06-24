@@ -2,16 +2,18 @@ Song Name	Aura (Hard) by Creo
 Difficulty	25
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://10599491024
+Audio File	10599491024.ogg
 Last Note Time	161.278
 Total Notes	1262
 Fever Fill	331
 Fever Time	24.191700
 Long Notes	271
 BPM	128
-Song Length	162.073877551
+Song Length	162.278000000
 
 Timing Points
-0.028	468.7500
+0.028	468.750000
 
 
 Song Data

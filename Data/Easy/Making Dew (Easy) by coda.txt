@@ -2,13 +2,15 @@ Song Name	Making Dew (Easy) by coda
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063112409
+Audio File	9063112409.ogg
 Last Note Time	153.022
 Total Notes	234
 Fever Fill	67
 Fever Time	22.953300
 Long Notes	35
 BPM	103
-Song Length	156.659229167
+Song Length	154.022000000
 
 Timing Points
 2.302	580.810036

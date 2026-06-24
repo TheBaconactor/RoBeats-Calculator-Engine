@@ -2,16 +2,18 @@ Song Name	Let's Roll (Hard) by Ephixa & Going Quantum [Monstercat]
 Difficulty	21
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9060989688
+Audio File	9060989688.ogg
 Last Note Time	97.962
 Total Notes	677
 Fever Fill	205
 Fever Time	14.694300
 Long Notes	64
 BPM	174
-Song Length	98.620793651
+Song Length	98.962000000
 
 Timing Points
-0.031	344.8276
+0.031	344.827586
 
 
 Song Data

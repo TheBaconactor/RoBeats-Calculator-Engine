@@ -2,18 +2,20 @@ Song Name	Nautilus (Hard) by Creo
 Difficulty	18
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059459568
+Audio File	9059459568.ogg
 Last Note Time	158.225
 Total Notes	823
 Fever Fill	233
 Fever Time	23.733750
 Long Notes	124
 BPM	124
-Song Length	158.763560091
+Song Length	159.225000000
 
 Timing Points
-0.000	483.8710
-0.716	483.8710
-1.935	483.8710
+0.000	483.870968
+0.716	483.870968
+1.935	483.870968
 
 
 Song Data

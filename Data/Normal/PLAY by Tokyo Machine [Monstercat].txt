@@ -2,16 +2,18 @@ Song Name	PLAY by Tokyo Machine [Monstercat]
 Difficulty	9
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9062876198
+Audio File	9062876198.ogg
 Last Note Time	110.625
 Total Notes	500
 Fever Fill	141
 Fever Time	16.593750
 Long Notes	79
 BPM	128
-Song Length	111.518299320
+Song Length	111.625000000
 
 Timing Points
-0.000	468.7500
+0.000	468.750000
 
 
 Song Data

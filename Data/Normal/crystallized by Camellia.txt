@@ -2,18 +2,20 @@ Song Name	crystallized by Camellia
 Difficulty	13
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059183174
+Audio File	9059183174.ogg
 Last Note Time	121.452
 Total Notes	682
 Fever Fill	187
 Fever Time	18.217800
 Long Notes	121
 BPM	174
-Song Length	126.619047619
+Song Length	122.452000000
 
 Timing Points
-0.073	344.8276
-77.314	344.8276
-121.452	344.8276
+0.073	344.827586
+77.314	344.827586
+121.452	344.827586
 
 
 Song Data

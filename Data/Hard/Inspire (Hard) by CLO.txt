@@ -2,16 +2,18 @@ Song Name	Inspire (Hard) by CLO
 Difficulty	23
 Primary Color	Beat
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065242582
+Audio File	9065242582.ogg
 Last Note Time	142.807
 Total Notes	1031
 Fever Fill	263
 Fever Time	21.421050
 Long Notes	243
 BPM	155
-Song Length	146.322583333
+Song Length	143.807000000
 
 Timing Points
-0.356	387.0968
+0.356	387.096774
 
 
 Song Data

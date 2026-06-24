@@ -2,16 +2,18 @@ Song Name	You & I (Hard) by RiraN
 Difficulty	21
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9062525448
+Audio File	9062525448.ogg
 Last Note Time	132.310
 Total Notes	974
 Fever Fill	300
 Fever Time	19.846500
 Long Notes	76
 BPM	175
-Song Length	134.540181406
+Song Length	133.310000000
 
 Timing Points
-0.739	342.8571
+0.739	342.857143
 
 
 Song Data

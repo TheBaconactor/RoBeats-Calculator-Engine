@@ -2,16 +2,18 @@ Song Name	Lightmare by Creo
 Difficulty	9
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063132983
+Audio File	9063132983.ogg
 Last Note Time	135.655
 Total Notes	521
 Fever Fill	140
 Fever Time	20.348250
 Long Notes	103
 BPM	107
-Song Length	135.726916100
+Song Length	136.655000000
 
 Timing Points
-0.028	558.1395
+0.028	558.139535
 
 
 Song Data

@@ -2,22 +2,24 @@ Song Name	Exit This Earth's Atomosphere (Camellia's 'Planetary//200step' Remix) 
 Difficulty	26
 Primary Color	Rush
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9544036508
+Audio File	9544036508.ogg
 Last Note Time	401.537
 Total Notes	3141
 Fever Fill	881
 Fever Time	60.230550
 Long Notes	497
 BPM	200
-Song Length	403.932979167
+Song Length	402.537000000
 
 Timing Points
-7.037	300.0000
-107.837	300.0000
-151.037	300.0000
-182.237	300.0000
-220.637	300.0000
-311.837	300.0000
-352.037	300.0000
+7.037	300.000000
+107.837	300.000000
+151.037	300.000000
+182.237	300.000000
+220.637	300.000000
+311.837	300.000000
+352.037	300.000000
 
 
 Song Data

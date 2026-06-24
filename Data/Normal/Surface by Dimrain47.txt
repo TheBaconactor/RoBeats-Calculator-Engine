@@ -2,20 +2,22 @@ Song Name	Surface by Dimrain47
 Difficulty	13
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059616658
+Audio File	9059616658.ogg
 Last Note Time	155.394
 Total Notes	914
 Fever Fill	241
 Fever Time	23.309100
 Long Notes	192
 BPM	190
-Song Length	158.093645833
+Song Length	156.394000000
 
 Timing Points
-0.014	315.7895
-70.745	315.7895
-80.861	315.7895
-121.270	315.7895
-151.605	315.7895
+0.014	315.789474
+70.745	315.789474
+80.861	315.789474
+121.270	315.789474
+151.605	315.789474
 
 
 Song Data

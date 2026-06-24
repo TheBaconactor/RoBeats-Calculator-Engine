@@ -2,20 +2,22 @@ Song Name	in your sight (matthieumusic's digifu-electrofunk-future bass remix) b
 Difficulty	19
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065271723
+Audio File	9065271723.ogg
 Last Note Time	172.543
 Total Notes	1273
 Fever Fill	388
 Fever Time	25.881450
 Long Notes	109
 BPM	128
-Song Length	175.882448980
+Song Length	173.543000000
 
 Timing Points
-0.043	468.7500
-60.043	468.7500
-91.918	468.7500
-133.168	468.7500
-165.043	468.7500
+0.043	468.750000
+60.043	468.750000
+91.918	468.750000
+133.168	468.750000
+165.043	468.750000
 
 
 Song Data

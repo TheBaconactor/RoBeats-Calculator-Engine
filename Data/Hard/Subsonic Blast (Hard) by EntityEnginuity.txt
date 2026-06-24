@@ -2,16 +2,18 @@ Song Name	Subsonic Blast (Hard) by EntityEnginuity
 Difficulty	25
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://7005102404
+Audio File	7005102404.ogg
 Last Note Time	151.117
 Total Notes	1680
 Fever Fill	411
 Fever Time	22.667550
 Long Notes	446
 BPM	170
-Song Length	151.980408163
+Song Length	152.117000000
 
 Timing Points
-1.647	352.9412
+1.647	352.941176
 
 
 Song Data

@@ -2,20 +2,22 @@ Song Name	Outbreaker by Hinkik
 Difficulty	7
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059986529
+Audio File	9059986529.ogg
 Last Note Time	105.311
 Total Notes	562
 Fever Fill	134
 Fever Time	15.796650
 Long Notes	162
 BPM	128
-Song Length	108.483038549
+Song Length	106.311000000
 
 Timing Points
-0.311	468.7500
-45.311	468.7500
-75.311	468.7500
-90.311	468.7500
-105.311	468.7500
+0.311	468.750000
+45.311	468.750000
+75.311	468.750000
+90.311	468.750000
+105.311	468.750000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Looking for Edge of Ground (Hard) by Camellia
 Difficulty	27
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059193452
+Audio File	9059193452.ogg
 Last Note Time	195.142
 Total Notes	1939
 Fever Fill	510
 Fever Time	29.271300
 Long Notes	409
 BPM	174
-Song Length	198.707891156
+Song Length	196.142000000
 
 Timing Points
-0.660	344.8276
+0.660	344.827586
 
 
 Song Data

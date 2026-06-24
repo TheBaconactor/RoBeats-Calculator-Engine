@@ -2,16 +2,18 @@ Song Name	The Guardians Of The Sun by RiraN
 Difficulty	8
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9062511922
+Audio File	9062511922.ogg
 Last Note Time	147.308
 Total Notes	591
 Fever Fill	139
 Fever Time	22.096200
 Long Notes	176
 BPM	150
-Song Length	152.000000000
+Song Length	148.308000000
 
 Timing Points
-2.375	400.0000
+2.375	400.000000
 
 
 Song Data

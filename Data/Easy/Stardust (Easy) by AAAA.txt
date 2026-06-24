@@ -2,13 +2,15 @@ Song Name	Stardust (Easy) by AAAA
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://17062588911
+Audio File	17062588911.ogg
 Last Note Time	129.731
 Total Notes	163
 Fever Fill	48
 Fever Time	19.459650
 Long Notes	21
 BPM	205
-Song Length	131.655873016
+Song Length	130.731000000
 
 Timing Points
 0.000	292.682927
@@ -21,8 +23,8 @@ Song Data
 4.682	4	3	1
 5.853	5	2	1
 7.024	6	3	1
-8.195	7	1	1
-8.195	8	4	1
+8.195	7	4	1
+8.195	8	1	1
 9.365	9	3	1
 12.878	10	4	1
 14.048	11	3	1
@@ -111,8 +113,8 @@ Song Data
 79.024	94	1	1
 79.609	95	4	1
 80.195	96	2	1
-80.780	97	1	1
-80.780	98	4	1
+80.780	97	4	1
+80.780	98	1	1
 81.804	99	3	2
 82.536	100	3	3
 83.121	101	4	1

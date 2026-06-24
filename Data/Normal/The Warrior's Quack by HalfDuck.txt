@@ -2,16 +2,18 @@ Song Name	The Warrior's Quack by HalfDuck
 Difficulty	15
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059949431
+Audio File	9059949431.ogg
 Last Note Time	139.401
 Total Notes	1091
 Fever Fill	278
 Fever Time	20.910150
 Long Notes	257
 BPM	140
-Song Length	144.532403628
+Song Length	140.401000000
 
 Timing Points
-0.116	428.5714
+0.116	428.571429
 
 
 Song Data

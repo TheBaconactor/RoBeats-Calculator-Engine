@@ -2,16 +2,18 @@ Song Name	Clouds in the Blue by Camellia
 Difficulty	6
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059181999
+Audio File	9059181999.ogg
 Last Note Time	131.687
 Total Notes	493
 Fever Fill	119
 Fever Time	19.753050
 Long Notes	136
 BPM	175
-Song Length	136.812562358
+Song Length	132.687000000
 
 Timing Points
-0.030	342.8571
+0.030	342.857143
 
 
 Song Data

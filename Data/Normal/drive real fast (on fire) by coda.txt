@@ -2,20 +2,22 @@ Song Name	drive real fast (on fire) by coda
 Difficulty	17
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063108699
+Audio File	9063108699.ogg
 Last Note Time	74.207
 Total Notes	681
 Fever Fill	187
 Fever Time	11.131050
 Long Notes	122
 BPM	159
-Song Length	75.646416667
+Song Length	75.207000000
 
 Timing Points
-0.100	377.0028
-13.944	377.0028
-15.075	377.0028
-44.047	377.0028
-45.178	377.0028
+0.100	377.002828
+13.944	377.002828
+15.075	377.002828
+44.047	377.002828
+45.178	377.002828
 
 
 Song Data

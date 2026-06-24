@@ -2,13 +2,15 @@ Song Name	Thorns (Easy) by Kawai Sprite
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059798550
+Audio File	9059798550.ogg
 Last Note Time	100.548
 Total Notes	175
 Fever Fill	59
 Fever Time	15.082200
 Long Notes	0
 BPM	190
-Song Length	101.887062500
+Song Length	101.548000000
 
 Timing Points
 0.000	315.789474

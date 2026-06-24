@@ -2,22 +2,24 @@ Song Name	Rebirth (Hard) by MH (Marquan Harper) feat. Nikolaev
 Difficulty	20
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9065296466
+Audio File	9065296466.ogg
 Last Note Time	149.544
 Total Notes	1117
 Fever Fill	268
 Fever Time	22.431600
 Long Notes	313
 BPM	128
-Song Length	150.073469388
+Song Length	150.544000000
 
 Timing Points
-0.013	468.7500
-45.013	468.7500
-58.138	468.7500
-60.013	468.7500
-75.013	468.7500
-135.013	468.7500
-148.138	468.7500
+0.013	468.750000
+45.013	468.750000
+58.138	468.750000
+60.013	468.750000
+75.013	468.750000
+135.013	468.750000
+148.138	468.750000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Make Your Body Shake (Hard) by Rutra
 Difficulty	22
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065321764
+Audio File	9065321764.ogg
 Last Note Time	120.892
 Total Notes	872
 Fever Fill	271
 Fever Time	18.133800
 Long Notes	59
 BPM	128
-Song Length	127.242448980
+Song Length	121.892000000
 
 Timing Points
-0.945	468.7500
+0.945	468.750000
 
 
 Song Data

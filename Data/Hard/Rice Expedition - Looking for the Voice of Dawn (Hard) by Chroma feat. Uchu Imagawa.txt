@@ -2,20 +2,22 @@ Song Name	Rice Expedition - Looking for the Voice of Dawn (Hard) by Chroma feat.
 Difficulty	24
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059377507
+Audio File	9059377507.ogg
 Last Note Time	186.365
 Total Notes	1905
 Fever Fill	524
 Fever Time	27.954750
 Long Notes	334
 BPM	158
-Song Length	187.367210884
+Song Length	187.365000000
 
 Timing Points
-0.290	379.7468
-67.125	379.7468
-89.530	379.7468
-158.264	379.7468
-182.568	379.7468
+0.290	379.746835
+67.125	379.746835
+89.530	379.746835
+158.264	379.746835
+182.568	379.746835
 
 
 Song Data

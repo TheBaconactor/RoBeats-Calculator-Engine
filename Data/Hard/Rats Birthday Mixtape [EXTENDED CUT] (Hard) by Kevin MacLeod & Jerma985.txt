@@ -2,16 +2,18 @@ Song Name	Rats Birthday Mixtape [EXTENDED CUT] (Hard) by Kevin MacLeod & Jerma98
 Difficulty	21
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9060620854
+Audio File	9060620854.ogg
 Last Note Time	189.235
 Total Notes	2260
 Fever Fill	534
 Fever Time	28.385250
 Long Notes	658
 BPM	117
-Song Length	190.708004535
+Song Length	190.235000000
 
 Timing Points
-0.774	512.8205
+0.774	512.820513
 
 
 Song Data

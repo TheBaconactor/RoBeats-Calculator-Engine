@@ -2,18 +2,20 @@ Song Name	Happy Touch! (Hard) by Yui Shimada [Nash Music Library]
 Difficulty	24
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://11382041750
+Audio File	11382041750.ogg
 Last Note Time	138.143
 Total Notes	1671
 Fever Fill	423
 Fever Time	20.721450
 Long Notes	401
 BPM	157
-Song Length	141.627142857
+Song Length	139.143000000
 
 Timing Points
-0.604	382.1656
-9.755	382.1656
-12.793	382.1656
+0.604	382.165605
+9.755	382.165605
+12.793	382.165605
 
 
 Song Data

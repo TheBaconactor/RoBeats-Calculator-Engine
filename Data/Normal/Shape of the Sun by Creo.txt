@@ -2,19 +2,21 @@ Song Name	Shape of the Sun by Creo
 Difficulty	10
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059463140
+Audio File	9059463140.ogg
 Last Note Time	110.250
 Total Notes	350
 Fever Fill	95
 Fever Time	16.537500
 Long Notes	66
 BPM	164
-Song Length	111.255714286
+Song Length	111.250000000
 
 Timing Points
-0.000	363.6364
-105.454	382.1656
-106.982	394.7368
-108.560	422.5352
+0.000	363.636364
+105.454	382.165605
+106.982	394.736842
+108.560	422.535211
 
 
 Song Data

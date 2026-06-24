@@ -1,21 +1,23 @@
 Song Name	Inner (Hard) by fusq feat. MYLK
-Difficulty	20
+Difficulty	16
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063161398
+Audio File	9063161398.ogg
 Last Note Time	102.021
 Total Notes	672
 Fever Fill	172
 Fever Time	15.303150
 Long Notes	157
 BPM	132
-Song Length	105.904489796
+Song Length	103.021000000
 
 Timing Points
-0.203	454.5455
-29.293	454.5455
-58.384	454.5455
-87.475	454.5455
-102.021	454.5455
+0.203	454.545455
+29.293	454.545455
+58.384	454.545455
+87.475	454.545455
+102.021	454.545455
 
 
 Song Data

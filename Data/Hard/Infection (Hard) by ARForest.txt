@@ -2,16 +2,18 @@ Song Name	Infection (Hard) by ARForest
 Difficulty	23
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9058856663
+Audio File	9058856663.ogg
 Last Note Time	140.915
 Total Notes	1315
 Fever Fill	326
 Fever Time	21.137250
 Long Notes	337
 BPM	170
-Song Length	141.265791667
+Song Length	141.915000000
 
 Timing Points
-0.092	352.9412
+0.092	352.941176
 
 
 Song Data

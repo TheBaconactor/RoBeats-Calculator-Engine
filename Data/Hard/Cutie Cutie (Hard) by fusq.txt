@@ -2,22 +2,24 @@ Song Name	Cutie Cutie (Hard) by fusq
 Difficulty	22
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063157733
+Audio File	9063157733.ogg
 Last Note Time	147.347
 Total Notes	1194
 Fever Fill	363
 Fever Time	22.102050
 Long Notes	104
 BPM	171
-Song Length	147.556961451
+Song Length	148.347000000
 
 Timing Points
-0.002	350.8772
-0.330	350.8772
-1.383	350.8772
-12.611	350.8772
-35.067	350.8772
-91.207	350.8772
-113.663	350.8772
+0.002	350.877193
+0.330	350.877193
+1.383	350.877193
+12.611	350.877193
+35.067	350.877193
+91.207	350.877193
+113.663	350.877193
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Ready For The Madness (Hard) by RiraN
 Difficulty	27
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9062516405
+Audio File	9062516405.ogg
 Last Note Time	114.541
 Total Notes	1525
 Fever Fill	404
 Fever Time	17.181150
 Long Notes	314
 BPM	180
-Song Length	118.723628118
+Song Length	115.541000000
 
 Timing Points
-1.375	333.3333
+1.375	333.333333
 
 
 Song Data

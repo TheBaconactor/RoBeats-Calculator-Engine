@@ -2,18 +2,20 @@ Song Name	Shaii (Hard) by Geoxor
 Difficulty	18
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059910338
+Audio File	9059910338.ogg
 Last Note Time	149.645
 Total Notes	1271
 Fever Fill	330
 Fever Time	22.446750
 Long Notes	283
 BPM	150
-Song Length	149.648041667
+Song Length	150.645000000
 
 Timing Points
-2.445	400.0000
-40.845	400.0000
-92.045	400.0000
+2.445	400.000000
+40.845	400.000000
+92.045	400.000000
 
 
 Song Data

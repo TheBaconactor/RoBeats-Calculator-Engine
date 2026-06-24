@@ -2,16 +2,18 @@ Song Name	Don't Stop The Rave (Hard) by RiraN
 Difficulty	27
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9062510031
+Audio File	9062510031.ogg
 Last Note Time	127.070
 Total Notes	2034
 Fever Fill	488
 Fever Time	19.060500
 Long Notes	571
 BPM	170
-Song Length	134.861496599
+Song Length	128.070000000
 
 Timing Points
-2.835	352.9412
+2.835	352.941176
 
 
 Song Data

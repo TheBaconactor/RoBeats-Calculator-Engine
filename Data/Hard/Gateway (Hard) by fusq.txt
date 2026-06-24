@@ -2,20 +2,22 @@ Song Name	Gateway (Hard) by fusq
 Difficulty	17
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063159426
+Audio File	9063159426.ogg
 Last Note Time	163.888
 Total Notes	1213
 Fever Fill	358
 Fever Time	24.583200
 Long Notes	140
 BPM	123
-Song Length	166.879160998
+Song Length	164.888000000
 
 Timing Points
-0.000	487.8049
-0.473	487.8049
-1.937	487.8049
-101.449	487.8049
-159.985	487.8049
+0.000	487.804878
+0.473	487.804878
+1.937	487.804878
+101.449	487.804878
+159.985	487.804878
 
 
 Song Data

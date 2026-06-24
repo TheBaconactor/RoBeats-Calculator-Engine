@@ -2,18 +2,20 @@ Song Name	Heat Wave (Hard) by Tony Romera [Monstercat]
 Difficulty	23
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063173304
+Audio File	9063173304.ogg
 Last Note Time	121.147
 Total Notes	1122
 Fever Fill	337
 Fever Time	18.172050
 Long Notes	111
 BPM	128
-Song Length	125.507369615
+Song Length	122.147000000
 
 Timing Points
-1.147	468.7500
-91.153	468.7500
-121.153	468.7500
+1.147	468.750000
+91.153	468.750000
+121.153	468.750000
 
 
 Song Data

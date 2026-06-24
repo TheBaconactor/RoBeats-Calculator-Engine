@@ -2,17 +2,19 @@ Song Name	Worlds by Creo
 Difficulty	13
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059464119
+Audio File	9059464119.ogg
 Last Note Time	172.924
 Total Notes	718
 Fever Fill	207
 Fever Time	25.938600
 Long Notes	97
 BPM	174
-Song Length	173.380725624
+Song Length	173.924000000
 
 Timing Points
-0.000	344.8276
-2.752	344.8276
+0.000	344.827586
+2.752	344.827586
 
 
 Song Data

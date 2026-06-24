@@ -2,17 +2,19 @@ Song Name	Decoy World VIP [EXTENDED CUT] by INTERCOM feat. Park Avenue [Monsterc
 Difficulty	5
 Primary Color	Rush
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9064762873
+Audio File	9064762873.ogg
 Last Note Time	264.847
 Total Notes	800
 Fever Fill	222
 Fever Time	39.727050
 Long Notes	134
 BPM	174
-Song Length	270.341224490
+Song Length	265.847000000
 
 Timing Points
-0.710	344.8276
-24.847	344.8276
+0.710	344.827586
+24.847	344.827586
 
 
 Song Data

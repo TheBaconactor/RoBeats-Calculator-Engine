@@ -2,16 +2,18 @@ Song Name	REBIRTH by Dictate & Silentroom
 Difficulty	20
 Primary Color	Flow
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063727904
+Audio File	9063727904.ogg
 Last Note Time	150.646
 Total Notes	1234
 Fever Fill	384
 Fever Time	22.596900
 Long Notes	82
 BPM	175
-Song Length	153.414285714
+Song Length	151.646000000
 
 Timing Points
-0.475	342.8571
+0.475	342.857143
 
 
 Song Data

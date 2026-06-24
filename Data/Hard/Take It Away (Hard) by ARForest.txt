@@ -2,16 +2,18 @@ Song Name	Take It Away (Hard) by ARForest
 Difficulty	27
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9058869266
+Audio File	9058869266.ogg
 Last Note Time	148.828
 Total Notes	1485
 Fever Fill	382
 Fever Time	22.324200
 Long Notes	340
 BPM	175
-Song Length	149.133650794
+Song Length	149.828000000
 
 Timing Points
-1.399	342.8571
+1.399	342.857143
 
 
 Song Data

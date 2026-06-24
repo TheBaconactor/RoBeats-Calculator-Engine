@@ -2,16 +2,18 @@ Song Name	Wings Of A Duck (Hard) by HalfDuck
 Difficulty	29
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059951285
+Audio File	9059951285.ogg
 Last Note Time	178.380
 Total Notes	2552
 Fever Fill	827
 Fever Time	26.757000
 Long Notes	69
 BPM	170
-Song Length	182.733764172
+Song Length	179.380000000
 
 Timing Points
-0.498	352.9412
+0.498	352.941176
 
 
 Song Data

@@ -2,20 +2,22 @@ Song Name	Dune by Creo
 Difficulty	12
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059454856
+Audio File	9059454856.ogg
 Last Note Time	136.973
 Total Notes	654
 Fever Fill	193
 Fever Time	20.545950
 Long Notes	76
 BPM	170
-Song Length	137.331882086
+Song Length	137.973000000
 
 Timing Points
-1.797	352.9412
-35.679	352.9412
-58.267	352.9412
-80.855	352.9412
-103.444	352.9412
+1.797	352.941176
+35.679	352.941176
+58.267	352.941176
+80.855	352.941176
+103.444	352.941176
 
 
 Song Data

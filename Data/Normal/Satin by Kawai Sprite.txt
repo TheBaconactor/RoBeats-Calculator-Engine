@@ -2,16 +2,18 @@ Song Name	Satin by Kawai Sprite
 Difficulty	11
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059796038
+Audio File	9059796038.ogg
 Last Note Time	87.928
 Total Notes	464
 Fever Fill	143
 Fever Time	13.189200
 Long Notes	35
 BPM	110
-Song Length	96.084172336
+Song Length	88.928000000
 
 Timing Points
-0.110	545.4545
+0.110	545.454545
 
 
 Song Data

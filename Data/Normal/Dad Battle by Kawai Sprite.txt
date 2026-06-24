@@ -2,16 +2,18 @@ Song Name	Dad Battle by Kawai Sprite
 Difficulty	17
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063142183
+Audio File	9063142183.ogg
 Last Note Time	84.864
 Total Notes	658
 Fever Fill	175
 Fever Time	12.729600
 Long Notes	133
 BPM	180
-Song Length	86.674285714
+Song Length	85.864000000
 
 Timing Points
-0.031	333.3333
+0.031	333.333333
 
 
 Song Data

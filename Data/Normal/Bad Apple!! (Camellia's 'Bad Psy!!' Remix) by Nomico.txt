@@ -2,16 +2,18 @@ Song Name	Bad Apple!! (Camellia's 'Bad Psy!!' Remix) by Nomico
 Difficulty	19
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9062624568
+Audio File	9062624568.ogg
 Last Note Time	290.310
 Total Notes	2337
 Fever Fill	587
 Fever Time	43.546500
 Long Notes	575
 BPM	160
-Song Length	291.317551020
+Song Length	291.310000000
 
 Timing Points
-0.060	375.0000
+0.060	375.000000
 
 
 Song Data

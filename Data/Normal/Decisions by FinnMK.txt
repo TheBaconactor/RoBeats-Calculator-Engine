@@ -2,18 +2,20 @@ Song Name	Decisions by FinnMK
 Difficulty	5
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065328874
+Audio File	9065328874.ogg
 Last Note Time	95.980
 Total Notes	223
 Fever Fill	73
 Fever Time	14.397000
 Long Notes	5
 BPM	100
-Song Length	96.027188209
+Song Length	96.980000000
 
 Timing Points
-0.000	600.0000
-0.580	600.0000
-2.380	600.0000
+0.000	600.000000
+0.580	600.000000
+2.380	600.000000
 
 
 Song Data

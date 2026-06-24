@@ -2,18 +2,20 @@ Song Name	Now I Do (Hard) by tv room
 Difficulty	28
 Primary Color	Flow
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9064081766
+Audio File	9064081766.ogg
 Last Note Time	121.340
 Total Notes	1379
 Fever Fill	441
 Fever Time	18.201000
 Long Notes	56
 BPM	131
-Song Length	122.414580499
+Song Length	122.340000000
 
 Timing Points
-1.688	428.5714
-81.402	495.8678
-82.393	526.3158
+1.688	428.571429
+81.402	495.867769
+82.393	526.315789
 
 
 Song Data

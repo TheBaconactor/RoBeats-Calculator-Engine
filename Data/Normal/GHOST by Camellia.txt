@@ -2,16 +2,18 @@ Song Name	GHOST by Camellia
 Difficulty	25
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059189320
+Audio File	9059189320.ogg
 Last Note Time	191.766
 Total Notes	2033
 Fever Fill	584
 Fever Time	28.764900
 Long Notes	280
 BPM	220
-Song Length	198.482766440
+Song Length	192.766000000
 
 Timing Points
-17.221	272.7273
+17.221	272.727273
 
 
 Song Data

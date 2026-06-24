@@ -2,16 +2,18 @@ Song Name	Better Run by Rutra
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065522230
+Audio File	9065522230.ogg
 Last Note Time	151.004
 Total Notes	400
 Fever Fill	90
 Fever Time	22.650600
 Long Notes	131
 BPM	128
-Song Length	158.271375000
+Song Length	152.004000000
 
 Timing Points
-1.004	468.7500
+1.004	468.750000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	BPM = RT by Kurokotei
 Difficulty	19
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9060364143
+Audio File	9060364143.ogg
 Last Note Time	155.442
 Total Notes	1344
 Fever Fill	395
 Fever Time	23.316300
 Long Notes	160
 BPM	266
-Song Length	155.832000000
+Song Length	156.442000000
 
 Timing Points
-2.486	225.2675
+2.486	225.267505
 
 
 Song Data

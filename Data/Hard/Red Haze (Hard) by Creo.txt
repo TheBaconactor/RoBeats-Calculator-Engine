@@ -2,16 +2,18 @@ Song Name	Red Haze (Hard) by Creo
 Difficulty	22
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://10598793372
+Audio File	10598793372.ogg
 Last Note Time	114.744
 Total Notes	957
 Fever Fill	258
 Fever Time	17.211600
 Long Notes	183
 BPM	160
-Song Length	117.547687075
+Song Length	115.744000000
 
 Timing Points
-1.494	375.0000
+1.494	375.000000
 
 
 Song Data

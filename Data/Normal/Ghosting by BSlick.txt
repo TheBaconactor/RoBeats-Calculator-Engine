@@ -2,16 +2,18 @@ Song Name	Ghosting by BSlick
 Difficulty	7
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059059259
+Audio File	9059059259.ogg
 Last Note Time	111.359
 Total Notes	404
 Fever Fill	97
 Fever Time	16.703850
 Long Notes	114
 BPM	157
-Song Length	112.678435374
+Song Length	112.359000000
 
 Timing Points
-2.060	382.1656
+2.060	382.165605
 
 
 Song Data

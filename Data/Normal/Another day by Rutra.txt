@@ -2,18 +2,20 @@ Song Name	Another day by Rutra
 Difficulty	15
 Primary Color	Vibe
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065520060
+Audio File	9065520060.ogg
 Last Note Time	146.546
 Total Notes	529
 Fever Fill	121
 Fever Time	21.981900
 Long Notes	166
 BPM	145
-Song Length	150.511904762
+Song Length	147.546000000
 
 Timing Points
-0.891	413.7931
-67.097	413.7931
-93.580	413.7931
+0.891	413.793103
+67.097	413.793103
+93.580	413.793103
 
 
 Song Data

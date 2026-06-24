@@ -2,16 +2,18 @@ Song Name	Going Back (Hard) by garlagan
 Difficulty	25
 Primary Color	Rush
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059843272
+Audio File	9059843272.ogg
 Last Note Time	153.751
 Total Notes	1700
 Fever Fill	394
 Fever Time	23.062650
 Long Notes	518
 BPM	159
-Song Length	154.755260771
+Song Length	154.751000000
 
 Timing Points
-6.016	377.3585
+6.016	377.358491
 
 
 Song Data

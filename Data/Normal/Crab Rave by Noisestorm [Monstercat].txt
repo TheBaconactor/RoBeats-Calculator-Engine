@@ -2,16 +2,18 @@ Song Name	Crab Rave by Noisestorm [Monstercat]
 Difficulty	13
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9062416375
+Audio File	9062416375.ogg
 Last Note Time	143.999
 Total Notes	741
 Fever Fill	180
 Fever Time	21.599850
 Long Notes	203
 BPM	125
-Song Length	145.277052154
+Song Length	144.999000000
 
 Timing Points
-0.000	480.0000
+0.000	480.000000
 
 
 Song Data

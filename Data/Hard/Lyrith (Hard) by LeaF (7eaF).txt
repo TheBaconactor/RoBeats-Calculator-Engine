@@ -2,18 +2,20 @@ Song Name	Lyrith (Hard) by LeaF (7eaF)
 Difficulty	29
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9060421215
+Audio File	9060421215.ogg
 Last Note Time	143.876
 Total Notes	1876
 Fever Fill	523
 Fever Time	21.581400
 Long Notes	306
 BPM	177
-Song Length	145.905623583
+Song Length	144.876000000
 
 Timing Points
-0.148	338.9831
-57.097	338.9831
-76.080	338.9831
+0.148	338.983051
+57.097	338.983051
+76.080	338.983051
 
 
 Song Data

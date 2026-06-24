@@ -2,16 +2,18 @@ Song Name	I Can't by Tony Romera [Monstercat]
 Difficulty	6
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9060988105
+Audio File	9060988105.ogg
 Last Note Time	158.391
 Total Notes	597
 Fever Fill	133
 Fever Time	23.758650
 Long Notes	199
 BPM	126
-Song Length	159.341156463
+Song Length	159.391000000
 
 Timing Points
-1.011	476.1905
+1.011	476.190476
 
 
 Song Data

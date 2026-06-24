@@ -2,18 +2,20 @@ Song Name	Octane by Creo
 Difficulty	6
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9059460728
+Audio File	9059460728.ogg
 Last Note Time	128.562
 Total Notes	310
 Fever Fill	77
 Fever Time	19.284300
 Long Notes	80
 BPM	168
-Song Length	129.316712018
+Song Length	129.562000000
 
 Timing Points
-0.000	357.1429
-0.180	357.1429
-1.420	357.1429
+0.000	357.142857
+0.180	357.142857
+1.420	357.142857
 
 
 Song Data

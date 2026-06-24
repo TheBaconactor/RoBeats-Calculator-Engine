@@ -2,16 +2,18 @@ Song Name	Only You by Dexter King feat. Alexis Donn [Monstercat]
 Difficulty	11
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065300824
+Audio File	9065300824.ogg
 Last Note Time	175.735
 Total Notes	718
 Fever Fill	191
 Fever Time	26.360250
 Long Notes	146
 BPM	126
-Song Length	176.220666667
+Song Length	176.735000000
 
 Timing Points
-0.974	476.1905
+0.974	476.190476
 
 
 Song Data

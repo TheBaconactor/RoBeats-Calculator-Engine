@@ -2,17 +2,19 @@ Song Name	Chronostasis by Kurokotei
 Difficulty	5
 Primary Color	Vibe
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9060365226
+Audio File	9060365226.ogg
 Last Note Time	141.492
 Total Notes	266
 Fever Fill	53
 Fever Time	21.223800
 Long Notes	107
 BPM	196
-Song Length	141.766984127
+Song Length	142.492000000
 
 Timing Points
-0.370	306.1224
-0.370	306.1224
+0.370	306.122449
+0.370	306.122449
 
 
 Song Data

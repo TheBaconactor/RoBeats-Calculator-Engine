@@ -2,16 +2,18 @@ Song Name	Vulture (Remasterized) (Hard) by Rutra
 Difficulty	21
 Primary Color	Vibe
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://10678268971
+Audio File	10678268971.ogg
 Last Note Time	166.145
 Total Notes	1318
 Fever Fill	361
 Fever Time	24.921750
 Long Notes	235
 BPM	128
-Song Length	166.492199546
+Song Length	167.145000000
 
 Timing Points
-1.380	468.7500
+1.380	468.750000
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Monday Night Monsters by FinnMK
 Difficulty	1
 Primary Color	Flow
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9065760325
+Audio File	9065760325.ogg
 Last Note Time	132.120
 Total Notes	200
 Fever Fill	54
 Fever Time	19.818000
 Long Notes	38
 BPM	100
-Song Length	134.000000000
+Song Length	133.120000000
 
 Timing Points
--0.030	600.0000
+-0.030	600.000000
 
 
 Song Data

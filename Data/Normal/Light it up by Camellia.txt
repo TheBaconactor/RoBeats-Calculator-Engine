@@ -2,16 +2,18 @@ Song Name	Light it up by Camellia
 Difficulty	11
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9059191944
+Audio File	9059191944.ogg
 Last Note Time	157.949
 Total Notes	925
 Fever Fill	228
 Fever Time	23.692350
 Long Notes	241
 BPM	175
-Song Length	162.065759637
+Song Length	158.949000000
 
 Timing Points
-22.007	342.8571
+22.007	342.857143
 
 
 Song Data

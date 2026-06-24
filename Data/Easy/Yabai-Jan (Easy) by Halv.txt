@@ -2,13 +2,15 @@ Song Name	Yabai-Jan (Easy) by Halv
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://15924506655
+Audio File	15924506655.ogg
 Last Note Time	142.825
 Total Notes	180
 Fever Fill	56
 Fever Time	21.423750
 Long Notes	14
 BPM	135
-Song Length	143.062426304
+Song Length	143.825000000
 
 Timing Points
 0.826	444.444444
@@ -32,8 +34,8 @@ Song Data
 23.937	15	2	1
 25.714	16	1	1
 27.492	17	2	1
-28.825	18	2	1
-28.825	19	3	1
+28.825	18	3	1
+28.825	19	2	1
 29.270	20	4	1
 31.048	21	3	1
 32.825	22	4	1
@@ -44,8 +46,8 @@ Song Data
 40.381	27	2	1
 40.825	28	3	1
 41.714	29	1	1
-43.048	30	2	1
-43.048	31	3	1
+43.048	30	3	1
+43.048	31	2	1
 43.492	32	1	1
 43.937	33	4	1
 44.381	34	3	1
@@ -83,8 +85,8 @@ Song Data
 69.270	66	2	1
 69.714	67	1	1
 70.159	68	4	1
-71.492	69	2	1
-71.492	70	3	1
+71.492	69	3	1
+71.492	70	2	1
 71.937	71	1	1
 72.381	72	4	1
 72.825	73	1	1

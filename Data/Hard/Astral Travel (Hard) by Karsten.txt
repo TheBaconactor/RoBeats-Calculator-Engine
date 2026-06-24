@@ -2,16 +2,18 @@ Song Name	Astral Travel (Hard) by Karsten
 Difficulty	21
 Primary Color	Beat
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9065245705
+Audio File	9065245705.ogg
 Last Note Time	111.632
 Total Notes	1050
 Fever Fill	249
 Fever Time	16.744800
 Long Notes	303
 BPM	150
-Song Length	121.896000000
+Song Length	112.632000000
 
 Timing Points
-0.032	400.0000
+0.032	400.000000
 
 
 Song Data

@@ -2,20 +2,22 @@ Song Name	Forward (Hard) by Duumu feat. EMIA [Monstercat]
 Difficulty	18
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063151799
+Audio File	9063151799.ogg
 Last Note Time	96.060
 Total Notes	795
 Fever Fill	221
 Fever Time	14.409000
 Long Notes	132
 BPM	170
-Song Length	98.027777778
+Song Length	97.060000000
 
 Timing Points
-0.061	352.9412
-50.884	352.9412
-62.178	352.9412
-62.884	352.9412
-73.472	352.9412
+0.061	352.941176
+50.884	352.941176
+62.178	352.941176
+62.884	352.941176
+73.472	352.941176
 
 
 Song Data

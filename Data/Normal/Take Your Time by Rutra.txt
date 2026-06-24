@@ -2,20 +2,22 @@ Song Name	Take Your Time by Rutra
 Difficulty	10
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://10678270630
+Audio File	10678270630.ogg
 Last Note Time	110.625
 Total Notes	472
 Fever Fill	123
 Fever Time	16.593750
 Long Notes	103
 BPM	128
-Song Length	112.021882086
+Song Length	111.625000000
 
 Timing Points
-0.000	468.7500
-75.000	468.7500
-88.125	468.7500
-93.750	468.7500
-103.125	468.7500
+0.000	468.750000
+75.000	468.750000
+88.125	468.750000
+93.750	468.750000
+103.125	468.750000
 
 
 Song Data

@@ -2,13 +2,15 @@ Song Name	Spookeez (Easy) by Kawai Sprite
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063150262
+Audio File	9063150262.ogg
 Last Note Time	95.647
 Total Notes	137
 Fever Fill	46
 Fever Time	14.347050
 Long Notes	0
 BPM	150
-Song Length	97.175510204
+Song Length	96.647000000
 
 Timing Points
 0.047	400.000000

@@ -2,18 +2,20 @@ Song Name	Sphere (Hard) by Creo
 Difficulty	20
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063140607
+Audio File	9063140607.ogg
 Last Note Time	122.460
 Total Notes	845
 Fever Fill	232
 Fever Time	18.369000
 Long Notes	151
 BPM	100
-Song Length	125.411700680
+Song Length	123.460000000
 
 Timing Points
-4.860	600.0000
-62.460	600.0000
-100.260	600.0000
+4.860	600.000000
+62.460	600.000000
+100.260	600.000000
 
 
 Song Data

@@ -2,17 +2,19 @@ Song Name	Birds of Plague by ARForest
 Difficulty	19
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9058790922
+Audio File	9058790922.ogg
 Last Note Time	153.086
 Total Notes	815
 Fever Fill	266
 Fever Time	22.962900
 Long Notes	17
 BPM	200
-Song Length	161.340979167
+Song Length	154.086000000
 
 Timing Points
-0.686	300.0000
-9.686	300.0000
+0.686	300.000000
+9.686	300.000000
 
 
 Song Data

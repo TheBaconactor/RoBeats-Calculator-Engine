@@ -2,18 +2,20 @@ Song Name	Octane (Hard) by Creo
 Difficulty	18
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9059460728
+Audio File	9059460728.ogg
 Last Note Time	128.572
 Total Notes	868
 Fever Fill	214
 Fever Time	19.285800
 Long Notes	228
 BPM	168
-Song Length	129.316712018
+Song Length	129.572000000
 
 Timing Points
-0.000	357.1429
-0.180	357.1429
-1.430	357.1429
+0.000	357.142857
+0.180	357.142857
+1.430	357.142857
 
 
 Song Data

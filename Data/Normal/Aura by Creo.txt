@@ -2,16 +2,18 @@ Song Name	Aura by Creo
 Difficulty	16
 Primary Color	Beat
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://10599491024
+Audio File	10599491024.ogg
 Last Note Time	161.278
 Total Notes	779
 Fever Fill	214
 Fever Time	24.191700
 Long Notes	138
 BPM	128
-Song Length	162.073877551
+Song Length	162.278000000
 
 Timing Points
-0.028	468.7500
+0.028	468.750000
 
 
 Song Data

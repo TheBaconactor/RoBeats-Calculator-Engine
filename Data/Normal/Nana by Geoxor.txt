@@ -2,16 +2,18 @@ Song Name	Nana by Geoxor
 Difficulty	6
 Primary Color	Flow
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059908987
+Audio File	9059908987.ogg
 Last Note Time	138.136
 Total Notes	350
 Fever Fill	80
 Fever Time	20.720400
 Long Notes	110
 BPM	128
-Song Length	138.457416667
+Song Length	139.136000000
 
 Timing Points
-3.605	468.7500
+3.605	468.750000
 
 
 Song Data

@@ -2,18 +2,20 @@ Song Name	Thorns (Hard) by Kawai Sprite
 Difficulty	25
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059798550
+Audio File	9059798550.ogg
 Last Note Time	101.654
 Total Notes	1261
 Fever Fill	340
 Fever Time	15.248100
 Long Notes	240
 BPM	190
-Song Length	101.887062500
+Song Length	102.654000000
 
 Timing Points
-0.000	315.7895
-0.285	315.7895
-1.233	315.7895
+0.000	315.789474
+0.285	315.789474
+1.233	315.789474
 
 
 Song Data

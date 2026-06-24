@@ -2,16 +2,18 @@ Song Name	Galaxies by Protostar [Monstercat]
 Difficulty	10
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063166886
+Audio File	9063166886.ogg
 Last Note Time	112.550
 Total Notes	557
 Fever Fill	142
 Fever Time	16.882500
 Long Notes	133
 BPM	176
-Song Length	112.726598639
+Song Length	113.550000000
 
 Timing Points
-0.050	340.9091
+0.050	340.909091
 
 
 Song Data

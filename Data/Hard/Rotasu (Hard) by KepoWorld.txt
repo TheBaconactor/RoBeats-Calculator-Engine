@@ -2,16 +2,18 @@ Song Name	Rotasu (Hard) by KepoWorld
 Difficulty	17
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9062883210
+Audio File	9062883210.ogg
 Last Note Time	125.267
 Total Notes	697
 Fever Fill	147
 Fever Time	18.790050
 Long Notes	256
 BPM	115
-Song Length	129.436734694
+Song Length	126.267000000
 
 Timing Points
-0.050	521.7391
+0.050	521.739130
 
 
 Song Data

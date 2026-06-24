@@ -2,20 +2,22 @@ Song Name	Exosphere (Hard) by Creo
 Difficulty	20
 Primary Color	Vibe
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9063131557
+Audio File	9063131557.ogg
 Last Note Time	164.896
 Total Notes	1292
 Fever Fill	356
 Fever Time	24.734400
 Long Notes	223
 BPM	118
-Song Length	165.122902494
+Song Length	165.896000000
 
 Timing Points
-2.058	508.4746
-67.142	508.4746
-83.413	508.4746
-149.007	508.4746
-164.769	508.4746
+2.058	508.474576
+67.142	508.474576
+83.413	508.474576
+149.007	508.474576
+164.769	508.474576
 
 
 Song Data

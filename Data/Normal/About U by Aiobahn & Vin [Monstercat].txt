@@ -2,20 +2,22 @@ Song Name	About U by Aiobahn & Vin [Monstercat]
 Difficulty	16
 Primary Color	Beat
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065299057
+Audio File	9065299057.ogg
 Last Note Time	174.971
 Total Notes	1126
 Fever Fill	264
 Fever Time	26.245650
 Long Notes	334
 BPM	126
-Song Length	175.476190476
+Song Length	175.971000000
 
 Timing Points
-0.210	476.1905
-45.924	476.1905
-74.495	476.1905
-141.162	476.1905
-169.733	476.1905
+0.210	476.190476
+45.924	476.190476
+74.495	476.190476
+141.162	476.190476
+169.733	476.190476
 
 
 Song Data

@@ -2,16 +2,18 @@ Song Name	Mom by Kawai Sprite
 Difficulty	14
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://6244107428
+Audio File	6244107428.ogg
 Last Note Time	120.836
 Total Notes	688
 Fever Fill	210
 Fever Time	18.125400
 Long Notes	60
 BPM	180
-Song Length	124.684013605
+Song Length	121.836000000
 
 Timing Points
-2.670	333.3333
+2.670	333.333333
 
 
 Song Data

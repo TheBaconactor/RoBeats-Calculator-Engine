@@ -2,16 +2,18 @@ Song Name	Eggnog by Kawai Sprite
 Difficulty	7
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9059792330
+Audio File	9059792330.ogg
 Last Note Time	93.660
 Total Notes	426
 Fever Fill	139
 Fever Time	14.049000
 Long Notes	11
 BPM	150
-Song Length	94.481995465
+Song Length	94.660000000
 
 Timing Points
-3.260	400.0000
+3.260	400.000000
 
 
 Song Data

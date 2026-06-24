@@ -2,16 +2,18 @@ Song Name	Farewell, My Friend by Chroma
 Difficulty	12
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059368479
+Audio File	9059368479.ogg
 Last Note Time	143.080
 Total Notes	973
 Fever Fill	292
 Fever Time	21.462000
 Long Notes	97
 BPM	169
-Song Length	143.403219955
+Song Length	144.080000000
 
 Timing Points
-0.004	355.0296
+0.004	355.029586
 
 
 Song Data

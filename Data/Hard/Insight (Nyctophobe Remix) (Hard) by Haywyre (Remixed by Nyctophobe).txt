@@ -2,16 +2,18 @@ Song Name	Insight (Nyctophobe Remix) (Hard) by Haywyre (Remixed by Nyctophobe)
 Difficulty	26
 Primary Color	Chill
 Secondary Color	Chill
+Audio Asset ID	rbxassetid://9064896878
+Audio File	9064896878.ogg
 Last Note Time	132.102
 Total Notes	1521
 Fever Fill	484
 Fever Time	19.815300
 Long Notes	68
 BPM	160
-Song Length	133.204829932
+Song Length	133.102000000
 
 Timing Points
-0.102	375.0000
+0.102	375.000000
 
 
 Song Data

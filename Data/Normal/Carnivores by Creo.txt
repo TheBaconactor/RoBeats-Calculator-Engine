@@ -2,16 +2,18 @@ Song Name	Carnivores by Creo
 Difficulty	8
 Primary Color	Beat
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063126149
+Audio File	9063126149.ogg
 Last Note Time	136.986
 Total Notes	398
 Fever Fill	105
 Fever Time	20.547900
 Long Notes	84
 BPM	128
-Song Length	139.367732426
+Song Length	137.986000000
 
 Timing Points
-0.111	468.7500
+0.111	468.750000
 
 
 Song Data

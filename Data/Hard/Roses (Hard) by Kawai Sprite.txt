@@ -2,16 +2,18 @@ Song Name	Roses (Hard) by Kawai Sprite
 Difficulty	23
 Primary Color	Chill
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059795013
+Audio File	9059795013.ogg
 Last Note Time	88.805
 Total Notes	951
 Fever Fill	303
 Fever Time	13.320750
 Long Notes	42
 BPM	120
-Song Length	91.091882086
+Song Length	89.805000000
 
 Timing Points
-0.305	500.0000
+0.305	500.000000
 
 
 Song Data

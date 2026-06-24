@@ -2,13 +2,15 @@ Song Name	Winter Horrorland (Easy) by Kawai Sprite feat. Bassetfilms
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059800023
+Audio File	9059800023.ogg
 Last Note Time	129.905
 Total Notes	158
 Fever Fill	52
 Fever Time	19.485750
 Long Notes	4
 BPM	159
-Song Length	132.980680272
+Song Length	130.905000000
 
 Timing Points
 0.093	377.358491

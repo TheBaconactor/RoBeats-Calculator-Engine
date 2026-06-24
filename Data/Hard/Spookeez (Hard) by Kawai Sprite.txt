@@ -2,16 +2,18 @@ Song Name	Spookeez (Hard) by Kawai Sprite
 Difficulty	18
 Primary Color	Chill
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9063150262
+Audio File	9063150262.ogg
 Last Note Time	95.947
 Total Notes	1037
 Fever Fill	300
 Fever Time	14.392050
 Long Notes	138
 BPM	150
-Song Length	97.175510204
+Song Length	96.947000000
 
 Timing Points
-0.047	400.0000
+0.047	400.000000
 
 
 Song Data

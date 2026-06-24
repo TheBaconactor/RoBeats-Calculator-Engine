@@ -2,16 +2,18 @@ Song Name	Walkin' 'n' Strollin' by FinnMK
 Difficulty	7
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065335216
+Audio File	9065335216.ogg
 Last Note Time	166.654
 Total Notes	384
 Fever Fill	121
 Fever Time	24.998100
 Long Notes	23
 BPM	75
-Song Length	172.565963719
+Song Length	167.654000000
 
 Timing Points
-0.254	800.0000
+0.254	800.000000
 
 
 Song Data

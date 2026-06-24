@@ -2,16 +2,18 @@ Song Name	Farewell by ARForest
 Difficulty	15
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9058832250
+Audio File	9058832250.ogg
 Last Note Time	152.560
 Total Notes	828
 Fever Fill	239
 Fever Time	22.884000
 Long Notes	112
 BPM	170
-Song Length	153.290291667
+Song Length	153.560000000
 
 Timing Points
-0.090	352.9412
+0.090	352.941176
 
 
 Song Data

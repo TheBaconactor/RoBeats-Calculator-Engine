@@ -2,16 +2,18 @@ Song Name	What You Really Want (Hard) by garlagan
 Difficulty	28
 Primary Color	Rush
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9059850673
+Audio File	9059850673.ogg
 Last Note Time	177.279
 Total Notes	1615
 Fever Fill	500
 Fever Time	26.591850
 Long Notes	116
 BPM	111
-Song Length	177.552539683
+Song Length	178.279000000
 
 Timing Points
-2.144	540.5405
+2.144	540.540541
 
 
 Song Data

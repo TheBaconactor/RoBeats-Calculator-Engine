@@ -2,16 +2,18 @@ Song Name	This Future (we didn't expect) by Camellia
 Difficulty	4
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059201428
+Audio File	9059201428.ogg
 Last Note Time	96.159
 Total Notes	264
 Fever Fill	53
 Fever Time	14.423850
 Long Notes	107
 BPM	180
-Song Length	102.237551020
+Song Length	97.159000000
 
 Timing Points
-0.160	333.3333
+0.160	333.333333
 
 
 Song Data

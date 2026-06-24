@@ -2,16 +2,18 @@ Song Name	Inspire by CLO
 Difficulty	13
 Primary Color	Beat
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065242582
+Audio File	9065242582.ogg
 Last Note Time	142.803
 Total Notes	606
 Fever Fill	165
 Fever Time	21.420450
 Long Notes	113
 BPM	155
-Song Length	146.322583333
+Song Length	143.803000000
 
 Timing Points
-0.352	387.0968
+0.352	387.096774
 
 
 Song Data

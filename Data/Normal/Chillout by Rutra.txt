@@ -2,16 +2,18 @@ Song Name	Chillout by Rutra
 Difficulty	6
 Primary Color	Vibe
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9065523926
+Audio File	9065523926.ogg
 Last Note Time	166.878
 Total Notes	690
 Fever Fill	156
 Fever Time	25.031700
 Long Notes	224
 BPM	105
-Song Length	172.284979167
+Song Length	167.878000000
 
 Timing Points
-2.307	571.4286
+2.307	571.428571
 
 
 Song Data

@@ -2,13 +2,15 @@ Song Name	Taking Me Higher (Easy) by Rootkit [Monstercat]
 Difficulty	1
 Primary Color	Vibe
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9060996088
+Audio File	9060996088.ogg
 Last Note Time	99.058
 Total Notes	119
 Fever Fill	40
 Fever Time	14.858700
 Long Notes	1
 BPM	120
-Song Length	99.358117914
+Song Length	100.058000000
 
 Timing Points
 0.058	500.000000

@@ -2,17 +2,19 @@ Song Name	Eternity Dedicated to Travelers (Hard) by Se-U-Ra
 Difficulty	26
 Primary Color	Flow
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063498822
+Audio File	9063498822.ogg
 Last Note Time	121.664
 Total Notes	1364
 Fever Fill	353
 Fever Time	18.249600
 Long Notes	306
 BPM	191
-Song Length	125.929818594
+Song Length	122.664000000
 
 Timing Points
-1.822	314.1361
-9.989	314.1361
+1.822	314.136126
+9.989	314.136126
 
 
 Song Data

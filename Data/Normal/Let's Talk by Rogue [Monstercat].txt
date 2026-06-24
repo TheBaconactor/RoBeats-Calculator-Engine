@@ -2,18 +2,20 @@ Song Name	Let's Talk by Rogue [Monstercat]
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9062869275
+Audio File	9062869275.ogg
 Last Note Time	91.410
 Total Notes	215
 Fever Fill	47
 Fever Time	13.711500
 Long Notes	74
 BPM	115
-Song Length	96.681655329
+Song Length	92.410000000
 
 Timing Points
-0.106	521.7391
-58.540	521.7391
-89.845	521.7391
+0.106	521.739130
+58.540	521.739130
+89.845	521.739130
 
 
 Song Data

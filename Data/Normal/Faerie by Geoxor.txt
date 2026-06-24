@@ -2,19 +2,21 @@ Song Name	Faerie by Geoxor
 Difficulty	14
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9059903367
+Audio File	9059903367.ogg
 Last Note Time	151.593
 Total Notes	904
 Fever Fill	239
 Fever Time	22.738950
 Long Notes	189
 BPM	150
-Song Length	152.658979167
+Song Length	152.593000000
 
 Timing Points
-0.015	400.0000
-0.193	400.0000
-0.393	400.0000
-1.593	400.0000
+0.015	400.000000
+0.193	400.000000
+0.393	400.000000
+1.593	400.000000
 
 
 Song Data

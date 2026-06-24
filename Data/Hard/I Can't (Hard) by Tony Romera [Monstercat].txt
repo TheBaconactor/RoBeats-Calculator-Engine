@@ -2,16 +2,18 @@ Song Name	I Can't (Hard) by Tony Romera [Monstercat]
 Difficulty	16
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9060988105
+Audio File	9060988105.ogg
 Last Note Time	159.106
 Total Notes	1317
 Fever Fill	317
 Fever Time	23.865900
 Long Notes	368
 BPM	126
-Song Length	159.341156463
+Song Length	160.106000000
 
 Timing Points
-1.011	476.1905
+1.011	476.190476
 
 
 Song Data

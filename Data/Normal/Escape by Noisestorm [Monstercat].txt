@@ -2,16 +2,18 @@ Song Name	Escape by Noisestorm [Monstercat]
 Difficulty	9
 Primary Color	Vibe
 Secondary Color	Beat
+Audio Asset ID	rbxassetid://9060982404
+Audio File	9060982404.ogg
 Last Note Time	91.451
 Total Notes	435
 Fever Fill	125
 Fever Time	13.717650
 Long Notes	61
 BPM	130
-Song Length	92.464693878
+Song Length	92.451000000
 
 Timing Points
-0.990	461.5385
+0.990	461.538462
 
 
 Song Data

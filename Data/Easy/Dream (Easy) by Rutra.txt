@@ -2,13 +2,15 @@ Song Name	Dream (Easy) by Rutra
 Difficulty	1
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9065525053
+Audio File	9065525053.ogg
 Last Note Time	118.190
 Total Notes	139
 Fever Fill	46
 Fever Time	17.728500
 Long Notes	2
 BPM	128
-Song Length	118.726621315
+Song Length	119.190000000
 
 Timing Points
 0.065	468.750000

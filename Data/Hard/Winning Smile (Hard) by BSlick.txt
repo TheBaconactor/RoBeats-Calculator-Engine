@@ -2,16 +2,18 @@ Song Name	Winning Smile (Hard) by BSlick
 Difficulty	25
 Primary Color	Rush
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059071202
+Audio File	9059071202.ogg
 Last Note Time	90.640
 Total Notes	969
 Fever Fill	301
 Fever Time	13.596000
 Long Notes	66
 BPM	172
-Song Length	91.680583333
+Song Length	91.640000000
 
 Timing Points
-0.030	348.8372
+0.030	348.837209
 
 
 Song Data

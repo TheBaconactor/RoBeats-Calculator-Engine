@@ -2,16 +2,18 @@ Song Name	Euphoria by Geoxor
 Difficulty	5
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9059901929
+Audio File	9059901929.ogg
 Last Note Time	152.722
 Total Notes	572
 Fever Fill	110
 Fever Time	22.908300
 Long Notes	242
 BPM	110
-Song Length	152.827208333
+Song Length	153.722000000
 
 Timing Points
--0.005	545.4545
+-0.005	545.454545
 
 
 Song Data

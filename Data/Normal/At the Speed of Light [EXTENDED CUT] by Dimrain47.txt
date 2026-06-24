@@ -2,16 +2,18 @@ Song Name	At the Speed of Light [EXTENDED CUT] by Dimrain47
 Difficulty	20
 Primary Color	Rush
 Secondary Color	Vibe
+Audio Asset ID	rbxassetid://9059610004
+Audio File	9059610004.ogg
 Last Note Time	243.435
 Total Notes	2072
 Fever Fill	605
 Fever Time	36.515250
 Long Notes	256
 BPM	162
-Song Length	249.145104167
+Song Length	244.435000000
 
 Timing Points
-0.102	370.3704
+0.102	370.370370
 
 
 Song Data

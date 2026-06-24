@@ -2,16 +2,18 @@ Song Name	Dorito Dust by coda
 Difficulty	15
 Primary Color	Chill
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9063107375
+Audio File	9063107375.ogg
 Last Note Time	157.747
 Total Notes	1135
 Fever Fill	301
 Fever Time	23.662050
 Long Notes	234
 BPM	135
-Song Length	158.887392290
+Song Length	158.747000000
 
 Timing Points
--0.030	444.4444
+-0.030	444.444444
 
 
 Song Data

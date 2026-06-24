@@ -2,16 +2,18 @@ Song Name	World of Hinkik [EXTENDED CUT] (Hard) by Hinkik (Arranged by Got1Butte
 Difficulty	27
 Primary Color	Flow
 Secondary Color	Flow
+Audio Asset ID	rbxassetid://9060612184
+Audio File	9060612184.ogg
 Last Note Time	303.750
 Total Notes	3548
 Fever Fill	870
 Fever Time	45.562500
 Long Notes	938
 BPM	160
-Song Length	306.050612245
+Song Length	304.750000000
 
 Timing Points
-0.000	375.0000
+0.000	375.000000
 
 
 Song Data

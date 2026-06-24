@@ -2,22 +2,24 @@ Song Name	Nhelv by Silentroom
 Difficulty	21
 Primary Color	Rush
 Secondary Color	Rush
+Audio Asset ID	rbxassetid://9063717050
+Audio File	9063717050.ogg
 Last Note Time	155.236
 Total Notes	649
 Fever Fill	189
 Fever Time	23.285400
 Long Notes	83
 BPM	174
-Song Length	164.961479167
+Song Length	156.236000000
 
 Timing Points
--0.022	343.6820
-67.339	343.6820
-89.335	343.6820
-111.330	343.6820
-116.829	343.6820
-133.326	343.6820
-136.076	343.6820
+-0.022	343.681980
+67.339	343.681980
+89.335	343.681980
+111.330	343.681980
+116.829	343.681980
+133.326	343.681980
+136.076	343.681980
 
 
 Song Data
