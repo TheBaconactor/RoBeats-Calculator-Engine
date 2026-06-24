@@ -1039,7 +1039,8 @@ def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     assert offenders == []
 
 
-def test_fg_response_prebuild_uses_two_workers_split_reducer_width(monkeypatch) -> None:
+def test_fg_response_prebuild_uses_band_pinned_worker_topology(monkeypatch) -> None:
+    from gear_optimizer.core import cpu_affinity
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
     seen: dict[str, object] = {}
@@ -1048,20 +1049,28 @@ def test_fg_response_prebuild_uses_two_workers_split_reducer_width(monkeypatch) 
         def __init__(self, **kwargs):
             seen.update(kwargs)
 
-    monkeypatch.setattr(prebuild.os, "cpu_count", lambda: 32)
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(cpu_affinity, "frontier_prebuild_worker_count", lambda: 8)
+    monkeypatch.setattr(cpu_affinity, "frontier_prebuild_intra_worker_threads", lambda _workers: 4)
     monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", FakeExecutor)
 
-    worker_count = prebuild._resolve_prebuild_worker_count()
-    prebuild._build_prebuild_executor(
-        worker_count=worker_count,
-        ref_arrays={},
-        stat_keys=((0, 0),),
-    )
+    worker_count = prebuild.frontier_prebuild_worker_count()
+    reducer_threads = cpu_affinity.frontier_prebuild_intra_worker_threads(worker_count)
+    prebuild.concurrent.futures.ProcessPoolExecutor(
+        max_workers=worker_count,
+        initializer=prebuild._init_prebuild_worker,
+        initargs=({}, ((0, 0),), int(reducer_threads), int(worker_count)),
+    ).__enter__()
 
-    # 2 song-build workers, reducer threads split across them (cpu_count // workers = 32 // 2 = 16).
-    assert worker_count == 2
-    assert seen["max_workers"] == 2
-    assert seen["initargs"][2] == 16
+    assert worker_count == 8
+    assert seen["max_workers"] == 8
+    assert seen["initargs"][2] == 4
+    assert seen["initargs"][3] == 8
 
 
 def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -> None:

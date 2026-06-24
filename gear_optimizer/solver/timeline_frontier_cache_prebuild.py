@@ -18,6 +18,12 @@ from gear_optimizer.solver.frontier_cache_manifest import (
     apply_manifest_results as _shared_apply_manifest_results,
     build_manifest_plan as _shared_build_manifest_plan,
 )
+from gear_optimizer.core.cpu_affinity import (
+    frontier_prebuild_intra_worker_threads,
+    init_process_pool_worker_band,
+    timeline_prebuild_worker_count,
+)
+from gear_optimizer.solver.timeline_exact_frontier import configure_timeline_pair_build_threads
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +51,9 @@ _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _MANIFEST_FILE_NAME = "manifest_v1.json"
 
 
-def _init_prebuild_worker(ref_arrays: dict) -> None:
+def _init_prebuild_worker(ref_arrays: dict, pair_build_threads: int, total_workers: int) -> None:
+    init_process_pool_worker_band(int(total_workers))
+    configure_timeline_pair_build_threads(max(1, int(pair_build_threads)))
     global _PREBUILD_WORKER_REF_ARRAYS
     _PREBUILD_WORKER_REF_ARRAYS = dict(ref_arrays or {})
 
@@ -53,27 +61,6 @@ def _init_prebuild_worker(ref_arrays: dict) -> None:
 def _build_timeline_frontier_cache_for_path_shared(song_path_text: str) -> TimelineFrontierCacheBuildResult:
     shared = _PREBUILD_WORKER_REF_ARRAYS if isinstance(_PREBUILD_WORKER_REF_ARRAYS, dict) else {}
     return build_timeline_frontier_cache_for_path(song_path_text, shared)
-
-
-def _prebuild_max_workers() -> int:
-    """Worker count for the timeline-frontier prebuild process pool.
-
-    The binding limit is GPU + numba-runtime contention at startup, NOT per-worker RAM
-    (measured ~0.4 GB/worker): one worker per logical CPU floods the shared numba cache and
-    single GPU and fails the mass-rebuild that follows a cache-version bump -- observed
-    cpu_count=32 -> 304 built / 1931 failures, vs 8 workers -> 250/250 built, 0 failures,
-    +3 GB RAM. Cap concurrency to the tested-safe level, with a low-RAM guard (~1.5 GB/worker)
-    for small hosts.
-    """
-    cpu = max(1, int(os.cpu_count() or 1))
-    cap = min(cpu, 8)
-    try:
-        import psutil
-
-        cap = min(cap, max(1, int(float(psutil.virtual_memory().available) / 1e9 / 1.5)))
-    except Exception:
-        pass
-    return max(1, cap)
 
 
 def iter_timeline_frontier_cache_song_paths(
@@ -236,10 +223,12 @@ def _run_missing_timeline_prebuild(paths: list[str], ref_arrays: dict) -> tuple[
             ),
             results,
         )
+    worker_count = timeline_prebuild_worker_count()
+    pair_build_threads = frontier_prebuild_intra_worker_threads(worker_count)
     with concurrent.futures.ProcessPoolExecutor(
-        max_workers=_prebuild_max_workers(),
+        max_workers=worker_count,
         initializer=_init_prebuild_worker,
-        initargs=(dict(ref_arrays or {}),),
+        initargs=(dict(ref_arrays or {}), int(pair_build_threads), int(worker_count)),
     ) as executor:
         futures = {executor.submit(_build_timeline_frontier_cache_for_path_shared, path): path for path in paths}
         for future in concurrent.futures.as_completed(futures):

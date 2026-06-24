@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import concurrent.futures
 import threading
 import time
 from typing import Iterable
@@ -31,6 +32,18 @@ _MAX_HEAD = 100
 _GROUPED_TIMELINE_CONTEXT_CACHE_MAX = 64
 _GROUPED_TIMELINE_CONTEXT_CACHE_LOCK = threading.RLock()
 _GROUPED_TIMELINE_CONTEXT_CACHE: "OrderedDict[tuple[object, ...], _GroupedTimelineContext]" = OrderedDict()
+
+_TIMELINE_PAIR_BUILD_THREADS = 1
+
+
+def configure_timeline_pair_build_threads(max_threads: int) -> int:
+    """Size the per-song fill-count pair-build thread pool (timeline prebuild workers)."""
+    global _TIMELINE_PAIR_BUILD_THREADS
+    from gear_optimizer.core.cpu_affinity import logical_core_count
+
+    previous = int(_TIMELINE_PAIR_BUILD_THREADS)
+    _TIMELINE_PAIR_BUILD_THREADS = max(1, min(int(max_threads), logical_core_count()))
+    return previous
 
 
 @dataclass(frozen=True)
@@ -1252,6 +1265,91 @@ def _exit_trace_certifies_d_ms(
     return True
 
 
+@dataclass(frozen=True)
+class _TimelineFillCountPairBuild:
+    pair_cache: dict[tuple[int, int], TimelineFrontierPack]
+    solved_pair_count: int
+    trace_equivalent_reused_pair_count: int
+    pair_build_ms_total: float
+    pair_build_ms_max: float
+    pair_surface_total: int
+    pair_surface_max: int
+    pack_sig_counts: dict[tuple[int, int], int]
+
+
+def _build_timeline_pair_cache_for_fill_count(
+    ctx: _GroupedTimelineContext,
+    fill_count_i: int,
+    d_ms_list: list[int],
+) -> _TimelineFillCountPairBuild:
+    transition_cache: dict[tuple[int, int, int, int], tuple[tuple[int, int, int, int], ...]] = {}
+    propagation_cache: dict[tuple[int, int, int, int], tuple[int, int]] = {}
+    pair_cache: dict[tuple[int, int], TimelineFrontierPack] = {}
+    solved_pair_count = 0
+    pair_build_ms_total = 0.0
+    pair_build_ms_max = 0.0
+    pair_surface_total = 0
+    pair_surface_max = 0
+    trace_equivalent_reused_pair_count = 0
+    pack_sig_counts: dict[tuple[int, int], int] = {}
+    d_idx = 0
+    while d_idx < len(d_ms_list):
+        d_ms = int(d_ms_list[d_idx])
+        key = (int(d_ms), int(fill_count_i))
+        if key in pair_cache:
+            d_idx += 1
+            continue
+        trace: list[_ExitTraceEntry] = []
+        t_pair = time.perf_counter()
+        pack = _build_exact_timeline_frontier_from_context(
+            ctx,
+            fill_count=fill_count_i,
+            d_ms=int(d_ms),
+            exit_trace=trace,
+            transition_cache=transition_cache,
+            propagation_cache=propagation_cache,
+        )
+        solved_pair_count += 1
+        pair_ms = float((time.perf_counter() - t_pair) * 1000.0)
+        pair_build_ms_total += pair_ms
+        if pair_ms > pair_build_ms_max:
+            pair_build_ms_max = pair_ms
+        count = int(len(pack.surfaces))
+        sig_key = (int(pack.sig0), int(pack.sig1))
+        pack_sig_counts[sig_key] = int(pack_sig_counts.get(sig_key, 0)) + 1
+        pair_surface_total += count
+        if count > pair_surface_max:
+            pair_surface_max = count
+        pair_cache[key] = pack
+        d_idx += 1
+        while d_idx < len(d_ms_list):
+            reuse_d_ms = int(d_ms_list[d_idx])
+            reuse_key = (reuse_d_ms, fill_count_i)
+            if reuse_key in pair_cache:
+                d_idx += 1
+                continue
+            if not _exit_trace_certifies_d_ms(
+                ctx,
+                trace,
+                int(reuse_d_ms),
+                transition_cache=transition_cache,
+            ):
+                break
+            pair_cache[reuse_key] = pack
+            trace_equivalent_reused_pair_count += 1
+            d_idx += 1
+    return _TimelineFillCountPairBuild(
+        pair_cache=pair_cache,
+        solved_pair_count=int(solved_pair_count),
+        pair_build_ms_total=float(pair_build_ms_total),
+        pair_build_ms_max=float(pair_build_ms_max),
+        pair_surface_total=int(pair_surface_total),
+        pair_surface_max=int(pair_surface_max),
+        trace_equivalent_reused_pair_count=int(trace_equivalent_reused_pair_count),
+        pack_sig_counts=pack_sig_counts,
+    )
+
+
 def build_timeline_frontier_grid_payload(
     *,
     song_slot: int,
@@ -1322,18 +1420,8 @@ def build_timeline_frontier_grid_payload(
         group_high_ms=group_high_ms,
         note_group_idx=note_group_idx,
     )
-    pair_cache: dict[tuple[int, int], tuple[TimelineFrontierPack, int]] = {}
-    transition_cache: dict[tuple[int, int, int, int], tuple[tuple[int, int, int, int], ...]] = {}
-    propagation_cache: dict[tuple[int, int, int, int], tuple[int, int]] = {}
     pool_offset_by_pack_signature: dict[tuple[tuple[int, int, int, int, int, int, int], ...], int] = {}
     pool_cursor = 0
-    pair_build_ms_total = 0.0
-    pair_build_ms_max = 0.0
-    pair_surface_total = 0
-    pair_surface_max = 0
-    pack_sig_counts: dict[tuple[int, int], int] = {}
-    solved_pair_count = 0
-    trace_equivalent_reused_pair_count = 0
 
     def _store_pack(pack: TimelineFrontierPack) -> int:
         nonlocal pool_cursor
@@ -1373,55 +1461,44 @@ def build_timeline_frontier_grid_payload(
 
     t_pairs = time.perf_counter()
     d_ms_list = [int(x) for x in unique_d_ms.tolist()]
-    for fill_count in unique_fill_counts.tolist():
-        fill_count_i = int(fill_count)
-        d_idx = 0
-        while d_idx < len(d_ms_list):
-            d_ms = int(d_ms_list[d_idx])
-            key = (int(d_ms), int(fill_count))
-            if key in pair_cache:
-                d_idx += 1
-                continue
-            trace: list[_ExitTraceEntry] = []
-            t_pair = time.perf_counter()
-            pack = _build_exact_timeline_frontier_from_context(
-                ctx,
-                fill_count=fill_count_i,
-                d_ms=int(d_ms),
-                exit_trace=trace,
-                transition_cache=transition_cache,
-                propagation_cache=propagation_cache,
+    fill_counts_list = [int(x) for x in unique_fill_counts.tolist()]
+    pair_cache: dict[tuple[int, int], tuple[TimelineFrontierPack, int]] = {}
+    solved_pair_count = 0
+    pair_build_ms_total = 0.0
+    pair_build_ms_max = 0.0
+    pair_surface_total = 0
+    pair_surface_max = 0
+    pack_sig_counts: dict[tuple[int, int], int] = {}
+    trace_equivalent_reused_pair_count = 0
+    thread_count = max(1, int(_TIMELINE_PAIR_BUILD_THREADS))
+    if thread_count <= 1 or len(fill_counts_list) <= 1:
+        builds = [
+            _build_timeline_pair_cache_for_fill_count(ctx, int(fill_count_i), d_ms_list)
+            for fill_count_i in fill_counts_list
+        ]
+    else:
+        workers = min(thread_count, len(fill_counts_list))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            builds = list(
+                executor.map(
+                    lambda fill_count_i: _build_timeline_pair_cache_for_fill_count(ctx, int(fill_count_i), d_ms_list),
+                    fill_counts_list,
+                )
             )
-            solved_pair_count += 1
-            pair_ms = float((time.perf_counter() - t_pair) * 1000.0)
-            pair_build_ms_total += pair_ms
-            if pair_ms > pair_build_ms_max:
-                pair_build_ms_max = pair_ms
-            count = int(len(pack.surfaces))
-            sig_key = (int(pack.sig0), int(pack.sig1))
-            pack_sig_counts[sig_key] = int(pack_sig_counts.get(sig_key, 0)) + 1
-            pair_surface_total += count
-            if count > pair_surface_max:
-                pair_surface_max = count
-            offset = _store_pack(pack)
-            pair_cache[key] = (pack, offset)
-            d_idx += 1
-            while d_idx < len(d_ms_list):
-                reuse_d_ms = int(d_ms_list[d_idx])
-                reuse_key = (reuse_d_ms, fill_count_i)
-                if reuse_key in pair_cache:
-                    d_idx += 1
-                    continue
-                if not _exit_trace_certifies_d_ms(
-                    ctx,
-                    trace,
-                    int(reuse_d_ms),
-                    transition_cache=transition_cache,
-                ):
-                    break
-                pair_cache[reuse_key] = (pack, offset)
-                trace_equivalent_reused_pair_count += 1
-                d_idx += 1
+    for build in builds:
+        solved_pair_count += int(build.solved_pair_count)
+        trace_equivalent_reused_pair_count += int(build.trace_equivalent_reused_pair_count)
+        pair_build_ms_total += float(build.pair_build_ms_total)
+        pair_build_ms_max = max(pair_build_ms_max, float(build.pair_build_ms_max))
+        pair_surface_total += int(build.pair_surface_total)
+        pair_surface_max = max(pair_surface_max, int(build.pair_surface_max))
+        for sig_key, count in build.pack_sig_counts.items():
+            pack_sig_counts[sig_key] = int(pack_sig_counts.get(sig_key, 0)) + int(count)
+        for key in sorted(build.pair_cache.keys()):
+            if key in pair_cache:
+                continue
+            pack = build.pair_cache[key]
+            pair_cache[key] = (pack, _store_pack(pack))
 
     _emit_frontier_phase(
         phase="pair_builds",
@@ -1434,8 +1511,8 @@ def build_timeline_frontier_grid_payload(
         solved_pair_count=int(solved_pair_count),
         plateau_reused_pair_count=int(trace_equivalent_reused_pair_count),
         trace_equivalent_reused_pair_count=int(trace_equivalent_reused_pair_count),
-        transition_cache_entries=int(len(transition_cache)),
-        propagation_cache_entries=int(len(propagation_cache)),
+        transition_cache_entries=0,
+        propagation_cache_entries=0,
         pair_build_ms_total=float(pair_build_ms_total),
         pair_build_ms_max=float(pair_build_ms_max),
         pair_surface_total=int(pair_surface_total),

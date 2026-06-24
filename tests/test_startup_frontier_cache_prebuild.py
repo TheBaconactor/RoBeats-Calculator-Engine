@@ -193,7 +193,7 @@ def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path)
             raise AssertionError("single missing path must not spawn a process pool")
 
     monkeypatch.setattr(prebuild, "_dedupe_paths_by_response_bundle_key", lambda paths, _ref_arrays: (list(paths), {}))
-    monkeypatch.setattr(prebuild, "_build_prebuild_executor", lambda **_kwargs: _UnexpectedExecutor())
+    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", lambda **_kwargs: _UnexpectedExecutor())
     monkeypatch.setattr(
         prebuild,
         "build_fg_response_frontier_cache_for_path",

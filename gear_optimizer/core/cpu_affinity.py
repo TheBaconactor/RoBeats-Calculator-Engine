@@ -176,3 +176,39 @@ def pin_current_process_to_core_band(index: int, total: int) -> None:
         logger.debug("CPU: worker %d/%d pinned to logical cores [%d,%d), EcoQoS off.", index, total, lo, hi)
     except Exception as e:  # fail-safe: scheduling is an optimization, never block the build
         logger.debug("pin_current_process_to_core_band skipped: %s", e)
+
+
+FRONTIER_PREBUILD_CORES_PER_WORKER = 4
+
+
+def frontier_prebuild_worker_count() -> int:
+    """Cross-song process-pool workers for timeline/FG frontier cold builds."""
+    return max(1, logical_core_count() // FRONTIER_PREBUILD_CORES_PER_WORKER)
+
+
+def frontier_prebuild_intra_worker_threads(worker_count: int) -> int:
+    """Reducer / pair-build threads owned by each frontier prebuild worker."""
+    return max(1, logical_core_count() // max(1, int(worker_count)))
+
+
+def timeline_prebuild_worker_count() -> int:
+    """Frontier prebuild worker count with the timeline low-RAM guard (~1.5 GB/worker)."""
+    workers = frontier_prebuild_worker_count()
+    try:
+        import psutil
+
+        workers = min(workers, max(1, int(float(psutil.virtual_memory().available) / 1e9 / 1.5)))
+    except Exception:
+        pass
+    return max(1, workers)
+
+
+def init_process_pool_worker_band(total_workers: int) -> None:
+    """Pin a ProcessPoolExecutor worker to its band (index from ``SpawnProcess-<seq>``)."""
+    import multiprocessing as mp
+
+    try:
+        seq = int(mp.current_process().name.rsplit("-", 1)[-1])
+    except (ValueError, IndexError, AttributeError):
+        return
+    pin_current_process_to_core_band(seq, int(total_workers))

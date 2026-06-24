@@ -12,13 +12,18 @@ from typing import Iterable
 import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
+from gear_optimizer.core.cpu_affinity import (
+    frontier_prebuild_intra_worker_threads,
+    frontier_prebuild_worker_count,
+    init_process_pool_worker_band,
+)
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.frontier_cache_manifest import (
     apply_manifest_results as _shared_apply_manifest_results,
     build_manifest_plan as _shared_build_manifest_plan,
 )
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import ordered_frontier_cache_song_paths
+from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
 
 logger = logging.getLogger(__name__)
 
@@ -44,34 +49,6 @@ class FgResponseFrontierCachePrebuildSummary:
 
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
-def _prebuild_cpu_count() -> int:
-    # All logical cores: the prebuild workers hard-pin themselves across distinct P AND E core bands
-    # (pin_current_process_to_core_band), so reducer-thread + worker budgets size to every core, not
-    # just the main process's P-core affinity. (On a non-hybrid CPU the band pin is a no-op and workers
-    # use all cores anyway, so this is correct everywhere.)
-    from gear_optimizer.core.cpu_affinity import logical_core_count
-
-    return max(1, logical_core_count())
-
-
-def _resolve_prebuild_reducer_threads(worker_count: int | None = None) -> int:
-    workers = max(1, int(worker_count if worker_count is not None else _resolve_prebuild_worker_count()))
-    return max(1, _prebuild_cpu_count() // workers)
-
-
-def _resolve_prebuild_worker_count() -> int:
-    # The per-song body-tail build is a strictly sequential DP, so cross-song overlap (more worker
-    # processes) is the only parallelism lever. Each worker hard-pins itself to its own ~4-logical-core
-    # band spanning P AND E (pin_current_process_to_core_band), so the count is one worker per 4 logical
-    # cores -- e.g. 8 on an i9-13900K (32 logical) -> every P+E core at full clock, vs the old 4 workers
-    # over only the 16 P logicals. Reducer threads = logical_core_count // workers (~4). (An unpinned
-    # build can't do this: Windows parks all the workers on the E-cores only.)
-    from gear_optimizer.core.cpu_affinity import logical_core_count
-
-    return max(1, logical_core_count() // 4)
-
-
-_PREBUILD_WORKERS = _resolve_prebuild_worker_count()
 _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
 
 
@@ -81,24 +58,9 @@ def _init_prebuild_worker(
     reducer_threads: int = 1,
     total_workers: int = 1,
 ) -> None:
-    import multiprocessing as mp
-
-    from gear_optimizer.core.cpu_affinity import pin_current_process_to_core_band
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
 
-    # Hard-pin this worker to its own core band so the pool spans every P+E core (see
-    # pin_current_process_to_core_band). ProcessPoolExecutor names spawned workers "...-<seq>" with a
-    # unique incrementing seq, so seq % total_workers -> a distinct band per worker, no shared counter.
-    # If the name carries no ordinal (unexpected), leave this worker UNPINNED rather than guess a band:
-    # a guessed band would collide with a sibling and silently leave cores uncovered, whereas unpinned
-    # is merely suboptimal -- and pinning here is best-effort, never correctness.
-    try:
-        seq = int(mp.current_process().name.rsplit("-", 1)[-1])
-    except (ValueError, IndexError, AttributeError):
-        seq = None
-    if seq is not None:
-        pin_current_process_to_core_band(seq, int(total_workers))
-
+    init_process_pool_worker_band(int(total_workers))
     global _PREBUILD_WORKER_REF_ARRAYS, _PREBUILD_WORKER_STAT_KEYS
     _PREBUILD_WORKER_REF_ARRAYS = dict(ref_arrays or {})
     _PREBUILD_WORKER_STAT_KEYS = tuple(stat_keys or ())
@@ -168,20 +130,6 @@ def _apply_manifest_results(*, plan, results: Iterable[object], stat_keys: Itera
             cache_file,
             stat_keys=stat_keys_tuple,
         ),
-    )
-
-
-def _build_prebuild_executor(
-    *,
-    worker_count: int,
-    ref_arrays: dict,
-    stat_keys: tuple[tuple[int, int], ...],
-) -> concurrent.futures.ProcessPoolExecutor:
-    reducer_threads = _resolve_prebuild_reducer_threads(worker_count)
-    return concurrent.futures.ProcessPoolExecutor(
-        max_workers=max(1, int(worker_count)),
-        initializer=_init_prebuild_worker,
-        initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), int(reducer_threads), int(worker_count)),
     )
 
 
@@ -289,7 +237,8 @@ def _run_missing_fg_prebuild(
     failures = 0
     completed = 0
     results: list[FgResponseFrontierCacheBuildResult] = []
-    worker_count = _PREBUILD_WORKERS
+    worker_count = frontier_prebuild_worker_count()
+    reducer_threads = frontier_prebuild_intra_worker_threads(worker_count)
     build_paths, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(paths, ref_arrays)
     if len(build_paths) == 1:
         path = str(build_paths[0])
@@ -335,7 +284,11 @@ def _run_missing_fg_prebuild(
             int(duplicate_count),
             int(len(paths)),
         )
-    with _build_prebuild_executor(worker_count=worker_count, ref_arrays=ref_arrays, stat_keys=stat_keys) as executor:
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=worker_count,
+        initializer=_init_prebuild_worker,
+        initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), int(reducer_threads), int(worker_count)),
+    ) as executor:
         futures = {executor.submit(_build_fg_response_frontier_cache_for_path_shared, path): path for path in build_paths}
         for future in concurrent.futures.as_completed(futures):
             path = futures[future]

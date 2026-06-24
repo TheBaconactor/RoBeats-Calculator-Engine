@@ -26,12 +26,10 @@ def _report_affinity(_):
 
 
 if __name__ == "__main__":
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
-        _init_prebuild_worker,
-        _resolve_prebuild_worker_count,
-    )
+    from gear_optimizer.core.cpu_affinity import frontier_prebuild_worker_count
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import _init_prebuild_worker
 
-    w = _resolve_prebuild_worker_count()
+    w = frontier_prebuild_worker_count()
     print(f"workers: {w}")
     with cf.ProcessPoolExecutor(
         max_workers=w, initializer=_init_prebuild_worker, initargs=({}, (), 4, w)
