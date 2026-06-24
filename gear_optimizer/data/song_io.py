@@ -343,9 +343,23 @@ def read_song_file(fp):
             if nd.size:
                 nd = nd.reshape(1, -1) if nd.ndim == 1 else nd
                 if nd.shape[1] >= 4:
-                    data["timestamps"] = np.asarray(nd[:, 0], dtype=np.float32)
+                    timestamps = np.asarray(nd[:, 0], dtype=np.float32)
                     # Column 4 is the note type: 1=normal, 2=held head, 3=held tail.
-                    data["note_types"] = nd[:, 3].astype(np.int16, copy=False)
+                    note_types = nd[:, 3].astype(np.int16, copy=False)
+                    # Canonicalize external chart order at ingest: the game exporter
+                    # (SongLoggerProd) preserves the in-engine HitObjects array order, NOT
+                    # chronological order -- a hold's synthesized tail (type 3) is emitted right
+                    # after its head at head_time + duration, so a later note in array order can
+                    # sit earlier in time. The optimizer's fever model is strictly time-ordered
+                    # (per-note floor/candidate envelopes consumed by searchsorted REQUIRE
+                    # nondecreasing timestamps; the FG builder fails loudly otherwise). Stable sort
+                    # by time: true chords (equal timestamps) keep the export's within-chord order,
+                    # and every note carries its own type/window so a chord-tied held tail keeps
+                    # its widened reach. (The legacy SongLogger pre-sorted by time; SongLoggerProd
+                    # does not, which is faithful to live game data, not a bug.)
+                    order = np.argsort(timestamps, kind="stable")
+                    data["timestamps"] = np.ascontiguousarray(timestamps[order])
+                    data["note_types"] = np.ascontiguousarray(note_types[order])
         return data
     except Exception as exc:
         WARN_ONCE.warn("song-file", f"Failed to read song file {fp}: {exc}")
