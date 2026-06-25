@@ -1,35 +1,28 @@
 """
-Database operations for the gear optimizer.
-Handles all SQLite interactions for loadout persistence and retrieval.
+Loadout persistence: batch writes into the tiered base/FG leaderboards.
+
+`save_loadouts_batch` is the public single-transaction entry; it delegates to
+`save_team_buff_loadouts_batch`, which owns the tier-partitioned write surface.
 """
-import re
-import json
-import os
 import sqlite3
 import time
-import threading
 import warnings
-from typing import Any, Dict, List, Mapping, Optional, Sequence
-from urllib.parse import quote
 import logging
-from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
-from ..core.fallback_monitor import warn_fallback
-from ..core.gem_defs import element_gem_count, fg_score_from_force
-from ..core.parsing import env_flag
-from ..core.utils import safe_int as _safe_int_for_db
-from ..core.team_buff import (
+from typing import Any, Dict, List, Mapping, Optional, Sequence
+from ...core.fallback_monitor import warn_fallback
+from ...core.gem_defs import fg_score_from_force
+from ...core.parsing import env_flag
+from ...core.team_buff import (
     canonicalize_team_buff,
     normalize_team_buff,
     team_buff_effect,
-    team_buff_query_values,
 )
-from ..core.types import PersistenceEntry
-from .migrations import ensure_schema
-from .database_fg_summary import (
+from ...core.types import PersistenceEntry
+from ..database_fg_summary import (
     normalize_details_for_persistence as _normalize_details_for_persistence,
     repair_base_loadout_fg_summaries as _repair_base_loadout_fg_summaries,
 )
-from .database_codecs import (
+from ..database_codecs import (
     _json_dumps_compact,
     _json_loads,
     _pack_id_groups,
@@ -40,600 +33,38 @@ from .database_codecs import (
     _unpack_id_list,
     _unpack_stats_after_load,
 )
-from .piece_encoding_store import (
+from ..piece_encoding_store import (
     _GEAR_NAME_ENCODING_TABLE,
     _MINI_NAME_ENCODING_TABLE,
-    _initialize_piece_name_encodings,
     _insert_missing_piece_names,
     _load_piece_name_encoding_maps,
 )
-from .loadout_equivalence import (
+from ..loadout_equivalence import (
     effective_loadout_hash_from_names,
     effective_mini_signature_for_name,
     extract_song_colors,
-    get_gears_by_name_cached,
-    get_minis_by_name_cached,
     canonical_minis_groups_from_names,
     representative_mini_names,
     rotate_mini_groups_for_slot_display,
 )
 from gear_optimizer.core.parsing import env_get
+from .connection import get_db_connection, get_evolution_db_path, get_db_connection_cached
+from .loadout_io import _compact_gear_for_db, _compact_minis_for_db
+from .force_normalize import (
+    _get_overflow_from_details,
+    _ensure_stats_in_details,
+    _force_payload_base_score,
+    _base_details_from_force_payload,
+    _compact_force_details_for_storage,
+    _coerce_db_int,
+    _normalize_force_for_persistence,
+    _normalize_force_base_score_for_persistence,
+    _assert_force_score_pairing,
+)
+
 logger = logging.getLogger(__name__)
-def get_evolution_db_path() -> str:
-    """
-    Return the configured evolution DB location (env override supported).
-    Returns:
-        str: Path to evolution database file
-    """
-    env_path = str(env_get("EVOLUTION_DB_PATH", "") or "").strip()
-    if env_path:
-        return env_path
-    try:
-        external_db = os.path.abspath(os.path.join(PATHS.script_dir, os.pardir, "ExternalDatabases", "evolution.db"))
-        if os.path.exists(external_db):
-            return external_db
-    except Exception as e:
-        logger.warning(f"database:get_evolution_db_path: {e}")
-    return PATHS.evolution_db_default
-def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
-    """
-    Create a SQLite connection with optimized settings.
-    Args:
-        db_path: Optional database path (defaults to evolution DB)
-    Returns:
-        sqlite3.Connection: Database connection with WAL mode enabled
-    """
-    return get_db_connection_with_timeout(db_path=db_path)
-def get_db_connection_with_timeout(db_path: Optional[str] = None, *, timeout: float = 30.0) -> sqlite3.Connection:
-    """
-    Create a SQLite connection with optimized settings.
-    `timeout` is the maximum time SQLite will wait for a lock before raising.
-    """
-    if db_path is None:
-        db_path = get_evolution_db_path()
-    try:
-        parent = os.path.dirname(os.path.abspath(db_path))
-        if parent and not os.path.exists(parent):
-            os.makedirs(parent, exist_ok=True)
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_with_timeout: {e}")
-    conn = sqlite3.connect(db_path, timeout=float(timeout))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    try:
-        busy_ms = int(max(100.0, min(float(timeout) * 1000.0, 30_000.0)))
-        conn.execute(f"PRAGMA busy_timeout={busy_ms};")
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_with_timeout: {e}")
-    ensure_schema(conn)
-    return conn
-def _db_path_to_uri(db_path: str) -> str:
-    path = os.path.abspath(str(db_path))
-    path = path.replace("\\", "/")
-    return f"file:{quote(path, safe='/:')}?mode=ro"
-def get_db_connection_readonly(db_path: Optional[str] = None, *, timeout: float = 0.0) -> sqlite3.Connection:
-    """
-    Create a read-only SQLite connection (no PRAGMAs/migrations).
-    This is used for read-heavy seed/context fetches where we must never block the GPU feed loop.
-    """
-    if db_path is None:
-        db_path = get_evolution_db_path()
-    db_path = str(db_path)
-    if not db_path:
-        raise sqlite3.OperationalError("Empty db path")
-    if not os.path.exists(db_path):
-        raise sqlite3.OperationalError("DB not found")
-    uri = _db_path_to_uri(db_path)
-    conn = sqlite3.connect(uri, timeout=float(timeout), uri=True)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA query_only=1;")
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_readonly: {e}")
-    return conn
-_DB_TLS = threading.local()
-def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connection:
-    """
-    Return a per-thread cached SQLite connection.
-    This keeps exact query semantics while avoiding per-call reconnect + PRAGMA + migration
-    overhead on read-heavy call sites (e.g., per-song progress/context reads).
-    """
-    if db_path is None:
-        db_path = get_evolution_db_path()
-    try:
-        conns = getattr(_DB_TLS, "conns", None)
-        if conns is None:
-            conns = {}
-            setattr(_DB_TLS, "conns", conns)
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_cached: {e}")
-        conns = {}
-    db_path = str(db_path)
-    conn = conns.get(db_path)
-    if conn is not None:
-        return conn
-    read_timeout = 0.2
-    conn = get_db_connection_readonly(db_path, timeout=read_timeout)
-    conns[db_path] = conn
-    return conn
-def init_db():
-    """
-    Initialize the SQLite database schema if it doesn't exist.
-    Storage optimization (compact/default `evolution.db`):
-    - Gear + minis are persisted as compact integer IDs via:
-      - encoding tables: `gear_name_encoding`, `mini_name_encoding`
-      - BLOB columns: `gear_ids_blob`, `minis_ids_blob`
-    - `details_json` stores packed Stats as `st` (fixed-order int list) instead of verbose `Stats` keys.
-    """
-    db_path = get_evolution_db_path()
-    conn = get_db_connection(db_path)
-    try:
-        try:
-            _initialize_piece_name_encodings(conn, db_path=str(db_path))
-        except Exception as e:
-            logger.warning(f"database:init_db: {e}")
-        conn.commit()
-    finally:
-        conn.close()
-def get_song_counters(
-    song_name: str,
-    *,
-    conn: Optional[sqlite3.Connection] = None,
-    db_path: Optional[str] = None,
-) -> tuple[int, int, int, int]:
-    """
-    Fetch per-song attempt counters and best scores from `songs`.
-    Returns:
-        (attempt_lifetime, attempts_first, best_score, best_fg_score)
-    """
-    song_name = str(song_name or "").strip()
-    if not song_name:
-        return (0, 0, 0, 0)
-    if conn is None:
-        conn = get_db_connection_cached(db_path or get_evolution_db_path())
-    try:
-        row = conn.execute(
-            """
-            SELECT attempt_lifetime, attempts_first, best_score, best_fg_score
-            FROM songs
-            WHERE name = ?
-            """,
-            (song_name,),
-        ).fetchone()
-        if not row:
-            return (0, 0, 0, 0)
-        try:
-            attempt_lifetime = int(row["attempt_lifetime"] or 0)
-        except Exception as e:
-            logger.warning(f"database:get_song_counters: {e}")
-            attempt_lifetime = 0
-        try:
-            attempts_first = int(row["attempts_first"] or 0)
-        except Exception as e:
-            logger.warning(f"database:get_song_counters: {e}")
-            attempts_first = 0
-        try:
-            best_score = int(row["best_score"] or 0)
-        except Exception as e:
-            logger.warning(f"database:get_song_counters: {e}")
-            best_score = 0
-        try:
-            best_fg_score = int(row["best_fg_score"] or 0)
-        except Exception as e:
-            logger.warning(f"database:get_song_counters: {e}")
-            best_fg_score = 0
-        return (attempt_lifetime, attempts_first, best_score, best_fg_score)
-    except sqlite3.Error:
-        raise
-def update_song_counters(
-    song_name: str,
-    *,
-    processed_run: bool,
-    record_improved: bool,
-    conn: Optional[sqlite3.Connection] = None,
-    db_path: Optional[str] = None,
-) -> None:
-    """
-    Update per-song attempt counters.
-    Semantics:
-    - If `processed_run=True`: increment `attempt_lifetime` and `attempts_first`
-    - If `record_improved=True`: reset `attempts_first = 1`
-    - If `processed_run=False`: do not increment (used for deferred FG-only updates)
-    """
-    song_name = str(song_name or "").strip()
-    if not song_name:
-        return
-    close_conn = False
-    if conn is None:
-        conn = get_db_connection(db_path or get_evolution_db_path())
-        close_conn = True
-    pr = 1 if processed_run else 0
-    ri = 1 if record_improved else 0
-    try:
-        with conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO songs (name, best_score, best_fg_score, last_updated, attempt_lifetime, attempts_first)
-                VALUES (?, 0, 0, 0, 0, 0)
-                """,
-                (song_name,),
-            )
-            conn.execute(
-                """
-                UPDATE songs
-                SET
-                    attempt_lifetime = CASE
-                        WHEN ? THEN COALESCE(attempt_lifetime, 0) + 1
-                        ELSE COALESCE(attempt_lifetime, 0)
-                    END,
-                    attempts_first = CASE
-                        WHEN ? THEN 1
-                        WHEN ? THEN COALESCE(attempts_first, 0) + 1
-                        ELSE COALESCE(attempts_first, 0)
-                    END,
-                    last_updated = strftime('%s', 'now')
-                WHERE name = ?
-                """,
-                (pr, ri, pr, song_name),
-            )
-    except sqlite3.Error:
-        return
-    finally:
-        if close_conn:
-            try:
-                conn.close()
-            except Exception as e:
-                logger.warning(f"database:update_song_counters: {e}")
-def _compact_gear_for_db(gear_list):
-    """
-    Convert gear list to compact storage format (names only).
-    Handles both dicts and strings.
-    Args:
-        gear_list: List of gear items (dicts or strings)
-    Returns:
-        list: List of gear names
-    """
-    if not gear_list:
-        return []
-    result = []
-    for g in gear_list:
-        if isinstance(g, dict):
-            name = g.get("Name", "")
-        else:
-            name = str(g) if g else ""
-        if name:
-            result.append(name)
-    return result
-def _compact_minis_for_db(mini_list):
-    """
-    Convert mini list to compact storage format (names only).
-    Handles:
-    - dicts: {"Name": ...}
-    - strings: "Electroman"
-    - nested variant groups: [["A","B"], ["C"], ...] (takes a representative per slot)
-    Args:
-        mini_list: List of mini items (dicts or strings)
-    Returns:
-        list: List of mini names
-    """
-    if not mini_list:
-        return []
-    def _first_name(v: Any) -> str:
-        if v is None:
-            return ""
-        if isinstance(v, dict):
-            return str(v.get("Name", "") or "").strip()
-        if isinstance(v, (list, tuple)):
-            for it in v:
-                name = _first_name(it)
-                if name:
-                    return name
-            return ""
-        if isinstance(v, str):
-            s = v.strip()
-            if s.startswith("[") and s.endswith("]"):
-                match = re.search(r"[\"']([^\"']+)[\"']", s)
-                if match:
-                    return match.group(1).strip()
-            return s
-        return str(v).strip()
-    result = []
-    for m in mini_list:
-        name = _first_name(m)
-        if name:
-            result.append(name)
-    return result
-def _expand_gear_from_db(gear_names, gears_by_name):
-    """
-    Expand gear names back to full stat dictionaries.
-    Args:
-        gear_names: List of gear names
-        gears_by_name: Lookup dict mapping names to full gear dicts
-    Returns:
-        list: List of full gear dictionaries
-    """
-    if not gear_names or not gears_by_name:
-        return []
-    return [gears_by_name.get(name, {"Name": name}) for name in gear_names]
-def _expand_minis_from_db(mini_names, minis_by_name):
-    """
-    Expand mini names back to full stat dictionaries.
-    Args:
-        mini_names: List of mini names
-        minis_by_name: Lookup dict mapping names to full mini dicts
-    Returns:
-        list: List of full mini dictionaries
-    """
-    if not mini_names or not minis_by_name:
-        return []
-    return [minis_by_name.get(name, {"Name": name}) for name in mini_names]
-def _loadout_hash_from_names(gear_names: list[str], mini_names: list[str]) -> str:
-    from ..helpers.song_helpers.loadout_hashing import loadout_hash_from_names
-    return loadout_hash_from_names(gear_names, mini_names)
-def get_loadout_hash(gear_list: List[Any], mini_list: List[Any]) -> str:
-    """
-    Generate a unique hash for a loadout (gear + minis).
-    Sorts items by name to ensure consistent hashing regardless of order.
-    Handles both dicts (with 'Name' key) and plain strings.
-    Args:
-        gear_list: List of gear items (dicts or strings)
-        mini_list: List of mini items (dicts or strings)
-    Returns:
-        str: MD5 hash of the loadout
-    """
-    gear_names = _compact_gear_for_db(gear_list)
-    mini_names = _compact_minis_for_db(mini_list)
-    return _loadout_hash_from_names(gear_names, mini_names)
-def _get_overflow_from_details(details):
-    """
-    Extract overflow value from details dict.
-    Args:
-        details: Details dictionary containing GemCounts
-    Returns:
-        int: Overflow value (Element), or 0 if not found
-    """
-    if not details:
-        return 0
-    gem_counts = details.get("GemCounts", {})
-    if not gem_counts:
-        return 0
-    return element_gem_count(gem_counts)
-def _ensure_stats_in_details(
-    details: dict,
-    gear: list,
-    minis: list,
-    minis_by_name: dict,
-    *,
-    team_buff: "Optional[str]" = None,
-    team_color: "Optional[str]" = None,
-) -> dict:
-    """
-    Ensure Stats are populated in details dict.
-    Defers to the unified stats gateway first; falls back to heavy reconstruction
-    from gear/mini names only when the gateway returns without Stats.
-    """
-    if not isinstance(details, dict):
-        details = {}
-    stats_obj = details.get("Stats")
-    if isinstance(stats_obj, dict) and stats_obj:
-        return details
-    warn_fallback(
-        "db.ensure_stats",
-        "details missing Stats, reconstructing stats for persistence",
-        context={"team_buff": team_buff or "", "team_color": team_color or ""},
-        fatal=False,
-    )
-    try:
-        from gear_optimizer.core.stats_calculator import compute_full_stats
-        gear_names = []
-        for g in gear or []:
-            if isinstance(g, dict):
-                gear_names.append(g.get("Name", ""))
-            elif isinstance(g, str):
-                gear_names.append(g)
-        mini_names = []
-        for m in minis or []:
-            if isinstance(m, dict):
-                mini_names.append(m.get("Name", ""))
-            elif isinstance(m, str):
-                mini_names.append(m)
-            elif isinstance(m, list) and m:
-                first = m[0]
-                if isinstance(first, dict):
-                    mini_names.append(first.get("Name", ""))
-                elif isinstance(first, str):
-                    mini_names.append(first)
-        gears_by_name = get_gears_by_name_cached()
-        base_stats = {
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Fever Fill Rate": 0,
-            "Fever Time": 0,
-            "Chill": 0,
-            "Flow": 0,
-            "Rush": 0,
-            "Beat": 0,
-            "Vibe": 0,
-        }
-        buff_tier = str(team_buff or "").strip().upper()
-        buff_color = str(team_color or "").strip()
-        if not buff_color:
-            buff_color = str(
-                details.get("PrimaryColor")
-                or details.get("Primary Color")
-                or details.get("SelectedElement")
-                or details.get("Selected Element")
-                or ""
-            ).strip()
-        for stat_name, delta in team_buff_effect(buff_tier, buff_color).items():
-            base_stats[stat_name] = int(base_stats.get(stat_name, 0) or 0) + int(delta)
-        gem_counts = dict(details.get("GemCounts", {}) or {})
-        gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
-        gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
-        selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
-        computed = compute_full_stats(
-            gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
-        )
-        details["Stats"] = computed
-    except Exception as e:
-        logger.warning(f"database:_ensure_stats_in_details: {e}")
-    return details
 
 
-def _force_payload_base_score(force_data: Any) -> int:
-    if not isinstance(force_data, dict):
-        return 0
-    for key in ("BaseScore", "base_score"):
-        score = _safe_int_for_db(force_data.get(key), 0)
-        if score > 0:
-            return score
-    nested = force_data.get("details")
-    if isinstance(nested, dict):
-        for key in ("BaseScore", "base_score"):
-            score = _safe_int_for_db(nested.get(key), 0)
-            if score > 0:
-                return score
-    return 0
-def _base_details_from_force_payload(base_details: Any, force_data: Any) -> dict:
-    """
-    Build the FG table details payload that explains the FG row's paired `score`.
-    `force_details_json` owns the FG replay surface (`fg_score` plus ForceGreats config).
-    The FG row's `details_json` owns the paired base replay surface for the same FG
-    allocation, so it must be derived from the force payload's BaseStats+gems instead
-    of from the loadout's separate best-base winner.
-    """
-    if not isinstance(force_data, dict):
-        return {}
-    from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
-    payload = force_data.get("details") if isinstance(force_data.get("details"), dict) else force_data
-    if not isinstance(payload, dict):
-        return {}
-    selected = (
-        payload.get("SelectedElement")
-        or payload.get("Selected Element")
-        or (base_details.get("SelectedElement") if isinstance(base_details, dict) else None)
-        or (base_details.get("Selected Element") if isinstance(base_details, dict) else None)
-        or ""
-    )
-    stats = materialize_stats_from_payload(payload, selected_element=selected)
-    if not isinstance(stats, dict) or not stats:
-        return {}
-    out: dict[str, Any] = {}
-    if isinstance(base_details, dict):
-        for key in ("PrimaryColor", "Primary Color", "SecondaryColor", "Secondary Color"):
-            if base_details.get(key) not in (None, ""):
-                out[key] = base_details.get(key)
-    out["Stats"] = dict(stats)
-    out["FT"] = _safe_int_for_db(payload.get("FT", (payload.get("GemCounts") or {}).get("Fever Time", 0)), 0)
-    out["FF"] = _safe_int_for_db(
-        payload.get("FF", (payload.get("GemCounts") or {}).get("Fever Fill Rate", 0)),
-        0,
-    )
-    gem_counts = payload.get("GemCounts")
-    if isinstance(gem_counts, dict):
-        out["GemCounts"] = dict(gem_counts)
-    if selected:
-        out["SelectedElement"] = str(selected)
-    base_score = _force_payload_base_score(force_data)
-    if base_score > 0:
-        out["BaseScore"] = int(base_score)
-    return out
-def _compact_force_details_for_storage(force_data: Any) -> Any:
-    """
-    Return the raw FG payload without fields already persisted in FG details.
-    `force_details_json` must keep the replay surface: BaseStats, GemCounts,
-    FT/FF, selected element, ForceGreats config, and score. A materialized final
-    `Stats` copy is redundant when BaseStats + gems are present, because FG
-    replay reconstructs it from `force_details_json`. The FG table `details_json`
-    remains the paired base-score detail surface.
-    """
-    if not isinstance(force_data, dict) or not force_data:
-        return force_data
-    out = dict(force_data)
-    if (
-        isinstance(out.get("Stats"), dict)
-        and isinstance(out.get("BaseStats"), dict)
-        and isinstance(out.get("GemCounts"), dict)
-    ):
-        out.pop("Stats", None)
-    if "Score" in out and "score" in out:
-        try:
-            if int(out.get("Score") or 0) == int(out.get("score") or 0):
-                out.pop("score", None)
-        except Exception as e:
-            logger.warning(f"database:_compact_force_details_for_storage: {e}")
-    return out
-def _coerce_db_int(v: Any) -> int:
-    try:
-        return int(v or 0)
-    except Exception as e:
-        logger.warning(f"database:_coerce_db_int: {e}")
-        return 0
-def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
-    if not isinstance(force_data, dict):
-        return force_data
-    out = dict(force_data)
-    score_v = _coerce_db_int(fg_score)
-    if score_v <= 0:
-        score_v = _coerce_db_int(out.get("Score", 0))
-    if score_v <= 0:
-        score_v = _coerce_db_int(out.get("score", 0))
-    if score_v > 0:
-        out["score"] = int(score_v)
-        out["Score"] = int(score_v)
-    det = out.get("details")
-    if isinstance(det, dict):
-        fg = det.get("ForceGreats")
-        if isinstance(fg, dict) and int(fg_score or 0) > 0:
-            fg_out = dict(fg)
-            fg_out["final_score"] = int(fg_score)
-            det_out = dict(det)
-            det_out["ForceGreats"] = fg_out
-            out["details"] = det_out
-    fg = out.get("ForceGreats")
-    if isinstance(fg, dict) and int(score_v or 0) > 0:
-        fg_out = dict(fg)
-        fg_out["final_score"] = int(score_v)
-        out["ForceGreats"] = fg_out
-    return out
-def _normalize_force_base_score_for_persistence(force_data: Any, *, fg_base_score: int) -> Any:
-    if not isinstance(force_data, dict):
-        return force_data
-    base_i = _coerce_db_int(fg_base_score)
-    if base_i <= 0:
-        return force_data
-    out = dict(force_data)
-    out["BaseScore"] = int(base_i)
-    det = out.get("details")
-    if isinstance(det, dict):
-        det_out = dict(det)
-        det_out["BaseScore"] = int(base_i)
-        out["details"] = det_out
-    return out
-def _assert_force_score_pairing(force_data: Any, *, fg_base_score: int, fg_score: int) -> None:
-    if not isinstance(force_data, dict) or int(fg_score or 0) <= 0:
-        return
-    force_base = _force_payload_base_score(force_data)
-    if int(force_base or 0) != int(fg_base_score or 0):
-        raise AssertionError(
-            "FG persistence payload BaseScore must match the paired FG base score "
-            f"(force={force_base}, row={fg_base_score})."
-        )
-    force_score = _coerce_db_int(force_data.get("Score", force_data.get("score", 0)))
-    if int(force_score or 0) != int(fg_score or 0):
-        raise AssertionError(
-            "FG persistence payload Score must match the row FG score "
-            f"(force={force_score}, row={fg_score})."
-        )
-    fg_meta = force_data.get("ForceGreats")
-    if isinstance(fg_meta, dict) and "final_score" in fg_meta:
-        meta_score = _coerce_db_int(fg_meta.get("final_score"))
-        if int(meta_score or 0) != int(fg_score or 0):
-            raise AssertionError(
-                "FG persistence ForceGreats.final_score must match the row FG score "
-                f"(force={meta_score}, row={fg_score})."
-            )
 def save_loadouts_batch(
     song_name: str,
     entries: List[PersistenceEntry],
@@ -748,6 +179,8 @@ def save_loadouts_batch(
                 raise
     finally:
         conn.close()
+
+
 def save_team_buff_loadouts_batch(
     song_name: str,
     team_buff: str,
@@ -764,6 +197,9 @@ def save_team_buff_loadouts_batch(
     - team_buff_loadouts (base leaderboard for that tier)
     - team_buff_fg_loadouts (FG leaderboard for that tier; FG strictly beats base)
     """
+    # Resolve monkeypatchable names through the package facade at call time so
+    # tests that patch `gear_optimizer.data.database.<name>` are honored.
+    from gear_optimizer.data import database as _db
     song_name = str(song_name or "").strip()
     team_buff = canonicalize_team_buff(team_buff)
     if not song_name or not team_buff or not entries:
@@ -783,8 +219,8 @@ def save_team_buff_loadouts_batch(
             return
         print(f"[DB][TIMING] {song_name} {team_buff} {label}={ms:.1f}ms")
     _t0 = time.perf_counter()
-    minis_by_name = get_minis_by_name_cached()
-    gears_by_name = get_gears_by_name_cached()
+    minis_by_name = _db.get_minis_by_name_cached()
+    gears_by_name = _db.get_gears_by_name_cached()
     entry_color_cache: Dict[int, tuple[str, str, str]] = {}
     def _extract_entry_colors(entry: Mapping[str, Any]) -> tuple[str, str, str]:
         entry_id = int(id(entry))
@@ -913,7 +349,7 @@ def save_team_buff_loadouts_batch(
                 fatal=False,
             )
             gear_names_local, mini_names_local = _compact_entry_names(entry)
-            h = _loadout_hash_from_names(gear_names_local, mini_names_local)
+            h = _db._loadout_hash_from_names(gear_names_local, mini_names_local)
         else:
             h = eff[0]
         key = (int(entry.get("score", 0) or 0), str(h))
@@ -1027,7 +463,7 @@ def save_team_buff_loadouts_batch(
                 context={"song_name": song_name, "team_buff": team_buff},
                 fatal=False,
             )
-            return _loadout_hash_from_names(gear_names_local, mini_names_local), [[n] for n in mini_names_local], [
+            return _db._loadout_hash_from_names(gear_names_local, mini_names_local), [[n] for n in mini_names_local], [
                 *mini_names_local
             ]
         loadout_hash, mini_sigs, p_color, s_color, sel_color = eff
@@ -1384,7 +820,7 @@ def save_team_buff_loadouts_batch(
             )
             count = cursor.fetchone()[0]
             _log_timing(f"count_{table}", time.perf_counter() - _t_cnt0)
-            if count <= LOADOUTS_PER_SONG_LIMIT:
+            if count <= _db.LOADOUTS_PER_SONG_LIMIT:
                 continue
             if table == "team_buff_loadouts":
                 _t_pr0 = time.perf_counter()
@@ -1401,7 +837,7 @@ def save_team_buff_loadouts_batch(
                         LIMIT ?
                     )
                     """,
-                    (song_name, team_buff, song_name, team_buff, LOADOUTS_PER_SONG_LIMIT),
+                    (song_name, team_buff, song_name, team_buff, _db.LOADOUTS_PER_SONG_LIMIT),
                 )
                 _log_timing("prune_team_buff_loadouts", time.perf_counter() - _t_pr0)
             else:
@@ -1419,7 +855,7 @@ def save_team_buff_loadouts_batch(
                         LIMIT ?
                     )
                     """,
-                    (song_name, team_buff, song_name, team_buff, LOADOUTS_PER_SONG_LIMIT),
+                    (song_name, team_buff, song_name, team_buff, _db.LOADOUTS_PER_SONG_LIMIT),
                 )
                 _log_timing("prune_team_buff_fg_loadouts", time.perf_counter() - _t_prfg0)
         _t_repair0 = time.perf_counter()
@@ -1491,7 +927,7 @@ def save_team_buff_loadouts_batch(
                         ]
                         expected_hash = effective_loadout_hash_from_names(gear_names_row, mini_sigs_row)
                     else:
-                        expected_hash = _loadout_hash_from_names(gear_names_row, mini_names_row)
+                        expected_hash = _db._loadout_hash_from_names(gear_names_row, mini_names_row)
                     if expected_hash and str(expected_hash) != str(loadout_hash):
                         _warn_or_raise(
                             f"[DB] Loadout hash mismatch after persistence (possible override/race): table={table} "
@@ -1540,204 +976,3 @@ def save_team_buff_loadouts_batch(
                 pass
             conn.close()
         _log_timing("total", time.perf_counter() - _t0)
-def get_best_loadouts(
-    song_name: str,
-    limit: int = LOADOUTS_PER_SONG_LIMIT,
-    gears_by_name: Optional[Dict[str, Any]] = None,
-    minis_by_name: Optional[Dict[str, Any]] = None,
-    team_buff: str = "T5",
-    db_path: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Retrieve the top N loadouts for a song to seed the GA.
-    Storage format:
-    - gear_ids_blob: varint-packed list of encoding-table IDs (decoded via `gear_name_encoding`)
-    - minis_ids_blob: varint-packed groups of IDs with 0 separators (decoded via `mini_name_encoding`)
-    If gears_by_name/minis_by_name are provided, expands representative names to full stat dicts.
-    Args:
-        song_name: Name of the song
-        limit: Maximum number of loadouts to retrieve
-        gears_by_name: Optional dict mapping gear names to full dicts
-        minis_by_name: Optional dict mapping mini names to full dicts
-        team_buff: TeamBuff tier to seed from (defaults to T5)
-    Returns:
-        list: List of loadout dictionaries
-    """
-    resolved_db_path = str(db_path or get_evolution_db_path() or "").strip()
-    if not resolved_db_path or not os.path.exists(resolved_db_path):
-        return []
-    song_name = str(song_name or "").strip()
-    team_buff = normalize_team_buff(team_buff, default="T5")
-    query_team_buffs = team_buff_query_values(team_buff, default=team_buff)
-    strict_seed_hash = str(env_get("DB_STRICT_SEED_HASH", "0") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    conn = get_db_connection_cached(resolved_db_path)
-    try:
-        results: list[dict[str, Any]] = []
-        by_hash: dict[str, dict[str, Any]] = {}
-        encoding_maps = _load_piece_name_encoding_maps(conn, db_path=resolved_db_path)
-        def _materialize_common(row) -> tuple[str, list[str], list[list[str]], list[str], dict[str, Any], dict | None]:
-            loadout_hash = str(row["loadout_hash"])
-            gear_names: list[str] = []
-            try:
-                gear_ids_blob = row["gear_ids_blob"]
-            except Exception as e:
-                logger.warning(f"database:_materialize_common: {e}")
-                gear_ids_blob = None
-            if gear_ids_blob:
-                ids = _unpack_id_list(gear_ids_blob)
-                if ids:
-                    gear_names = [str(encoding_maps.gear_id_to_name.get(int(i), "") or "") for i in ids]
-                    gear_names = [n for n in gear_names if n]
-            mini_groups: list[list[str]] = []
-            try:
-                minis_ids_blob = row["minis_ids_blob"]
-            except Exception as e:
-                logger.warning(f"database:_materialize_common: {e}")
-                minis_ids_blob = None
-            if minis_ids_blob:
-                id_groups = _unpack_id_groups(minis_ids_blob)
-                if id_groups:
-                    for g in id_groups:
-                        names = [str(encoding_maps.mini_id_to_name.get(int(i), "") or "") for i in g]
-                        names = [n for n in names if n]
-                        if names:
-                            mini_groups.append(names)
-            mini_names = representative_mini_names(mini_groups)
-            details = _json_loads(row["details_json"]) if row["details_json"] else {}
-            details = _unpack_stats_after_load(details)
-            details = _strip_computed_details_fields(details)
-            if strict_seed_hash:
-                try:
-                    p_color, s_color, sel_color = extract_song_colors(details)
-                    if p_color or s_color:
-                        lookup = minis_by_name or get_minis_by_name_cached()
-                        mini_sigs = [
-                            effective_mini_signature_for_name(n, lookup, p_color, s_color, sel_color)
-                            for n in mini_names
-                        ]
-                        expected = effective_loadout_hash_from_names(gear_names, mini_sigs)
-                    else:
-                        expected = _loadout_hash_from_names(gear_names, mini_names)
-                    if expected and str(expected) != str(loadout_hash):
-                        warnings.warn(
-                            f"[DB] Loadout hash mismatch (seed): song={song_name!r} team_buff={team_buff!r} "
-                            f"stored={loadout_hash} expected={expected}",
-                            RuntimeWarning,
-                            stacklevel=2,
-                        )
-                except Exception as e:
-                    logger.warning(f"database:_materialize_common: {e}")
-            force_block = _json_loads(row["force_details_json"]) if row["force_details_json"] else None
-            force_obj = force_block if isinstance(force_block, dict) else None
-            if isinstance(force_obj, dict):
-                force_obj = _strip_computed_details_fields(force_obj)
-                nested = force_obj.get("details")
-                if isinstance(nested, dict):
-                    nested_out = _strip_computed_details_fields(nested)
-                    if nested_out is not nested:
-                        force_obj = dict(force_obj)
-                        force_obj["details"] = nested_out
-            return loadout_hash, gear_names, mini_groups, mini_names, details, force_obj
-        def _expand_items(gear_names: list[str], mini_names: list[str]):
-            if gears_by_name:
-                gear_data = _expand_gear_from_db(gear_names, gears_by_name)
-            else:
-                gear_data = gear_names  # Return as names for hash lookups
-            if minis_by_name:
-                minis_data = _expand_minis_from_db(mini_names, minis_by_name)
-            else:
-                minis_data = mini_names
-            return gear_data, minis_data
-        query_placeholders = ",".join("?" for _ in query_team_buffs)
-        cursor = conn.execute(
-            f"""
-            SELECT loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
-            FROM team_buff_loadouts
-            WHERE song_name = ? AND UPPER(team_buff) IN ({query_placeholders})
-            ORDER BY score DESC
-            LIMIT ?
-            """,
-            (song_name, *query_team_buffs, limit),
-        )
-        for row in cursor:
-            loadout_hash, gear_names, mini_groups, mini_names, details, force_obj = _materialize_common(row)
-            if loadout_hash in by_hash:
-                continue
-            gear_data, minis_data = _expand_items(gear_names, mini_names)
-            entry = {
-                "loadout_hash": loadout_hash,
-                "score": row["score"],
-                "fg_score": row["fg_score"],
-                "gear": gear_data,
-                "minis": minis_data,
-                "mini_groups": mini_groups,
-                "details": details,
-                "force": force_obj,
-            }
-            by_hash[loadout_hash] = entry
-            results.append(entry)
-        cursor = conn.execute(
-            f"""
-            SELECT loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, force_details_json
-            FROM team_buff_fg_loadouts
-            WHERE song_name = ? AND UPPER(team_buff) IN ({query_placeholders})
-            ORDER BY fg_score DESC
-            LIMIT ?
-            """,
-            (song_name, *query_team_buffs, limit),
-        )
-        for row in cursor:
-            loadout_hash, gear_names, mini_groups, mini_names, details, force_obj = _materialize_common(row)
-            gear_data, minis_data = _expand_items(gear_names, mini_names)
-            fg_score = row["fg_score"]
-            fg_base_score = row["score"]
-            entry = by_hash.get(loadout_hash)
-            if entry is None:
-                entry = {
-                    "loadout_hash": loadout_hash,
-                    "score": row["score"],
-                    "fg_score": fg_score,
-                    "gear": gear_data,
-                    "minis": minis_data,
-                    "mini_groups": mini_groups,
-                    "details": details,
-                    "force": force_obj,
-                }
-                by_hash[loadout_hash] = entry
-                results.append(entry)
-                continue
-            try:
-                existing_fg = int(entry.get("fg_score", 0) or 0)
-            except Exception as e:
-                logger.warning(f"database:_expand_items: {e}")
-                existing_fg = 0
-            try:
-                fg_i = int(fg_score or 0)
-            except Exception as e:
-                logger.warning(f"database:_expand_items: {e}")
-                fg_i = 0
-            if fg_i > existing_fg:
-                entry["fg_score"] = fg_score
-                entry["force"] = force_obj
-                entry["fg_base_score"] = fg_base_score
-            elif fg_i == existing_fg:
-                if "fg_base_score" not in entry:
-                    entry["fg_base_score"] = fg_base_score
-                if entry.get("force") is None and force_obj is not None:
-                    entry["force"] = force_obj
-        return results
-    except (sqlite3.Error, json.JSONDecodeError):
-        raise
-    finally:
-        pass
-from . import pending_fg_jobs as _pending_fg_jobs
-get_song_names_present_in_db = _pending_fg_jobs.get_song_names_present_in_db
-get_song_names_with_persisted_loadouts = _pending_fg_jobs.get_song_names_with_persisted_loadouts
-upsert_pending_fg_job = _pending_fg_jobs.upsert_pending_fg_job
-delete_pending_fg_job = _pending_fg_jobs.delete_pending_fg_job
-list_pending_fg_jobs = _pending_fg_jobs.list_pending_fg_jobs
