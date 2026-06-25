@@ -4,6 +4,7 @@ Per-song counter reads/writes against the `songs` table.
 import sqlite3
 import logging
 from typing import Optional
+from ...core.utils import require_int
 from .connection import get_db_connection, get_db_connection_cached, get_evolution_db_path
 
 logger = logging.getLogger(__name__)
@@ -36,26 +37,12 @@ def get_song_counters(
         ).fetchone()
         if not row:
             return (0, 0, 0, 0)
-        try:
-            attempt_lifetime = int(row["attempt_lifetime"] or 0)
-        except Exception as e:
-            logger.warning(f"database:get_song_counters: {e}")
-            attempt_lifetime = 0
-        try:
-            attempts_first = int(row["attempts_first"] or 0)
-        except Exception as e:
-            logger.warning(f"database:get_song_counters: {e}")
-            attempts_first = 0
-        try:
-            best_score = int(row["best_score"] or 0)
-        except Exception as e:
-            logger.warning(f"database:get_song_counters: {e}")
-            best_score = 0
-        try:
-            best_fg_score = int(row["best_fg_score"] or 0)
-        except Exception as e:
-            logger.warning(f"database:get_song_counters: {e}")
-            best_fg_score = 0
+        # Authoritative per-song counters: fail loud on a non-int (DB corruption)
+        # rather than silently masking it as 0. require_int still maps NULL/0 -> 0.
+        attempt_lifetime = require_int(row["attempt_lifetime"], field="attempt_lifetime")
+        attempts_first = require_int(row["attempts_first"], field="attempts_first")
+        best_score = require_int(row["best_score"], field="best_score")
+        best_fg_score = require_int(row["best_fg_score"], field="best_fg_score")
         return (attempt_lifetime, attempts_first, best_score, best_fg_score)
     except sqlite3.Error:
         raise

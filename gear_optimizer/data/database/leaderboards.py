@@ -76,22 +76,14 @@ def get_best_loadouts(
         def _materialize_common(row) -> tuple[str, list[str], list[list[str]], list[str], dict[str, Any], dict | None]:
             loadout_hash = str(row["loadout_hash"])
             gear_names: list[str] = []
-            try:
-                gear_ids_blob = row["gear_ids_blob"]
-            except Exception as e:
-                logger.warning(f"database:_materialize_common: {e}")
-                gear_ids_blob = None
+            gear_ids_blob = row["gear_ids_blob"]
             if gear_ids_blob:
                 ids = _unpack_id_list(gear_ids_blob)
                 if ids:
                     gear_names = [str(encoding_maps.gear_id_to_name.get(int(i), "") or "") for i in ids]
                     gear_names = [n for n in gear_names if n]
             mini_groups: list[list[str]] = []
-            try:
-                minis_ids_blob = row["minis_ids_blob"]
-            except Exception as e:
-                logger.warning(f"database:_materialize_common: {e}")
-                minis_ids_blob = None
+            minis_ids_blob = row["minis_ids_blob"]
             if minis_ids_blob:
                 id_groups = _unpack_id_groups(minis_ids_blob)
                 if id_groups:
