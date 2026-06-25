@@ -12,7 +12,7 @@ from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.data.song_io import clone_calc_song
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
-from gear_optimizer.solver.genetic_pipeline import decode_gpu_native_ga_runs_payload
+from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.native_inflight_config import NativeSong

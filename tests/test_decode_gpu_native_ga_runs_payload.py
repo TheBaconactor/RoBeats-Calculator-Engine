@@ -6,7 +6,7 @@ import pytest
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.solver import genetic_pipeline as genetic
-from gear_optimizer.solver.genetic_pipeline import decode_gpu_native_ga_runs_payload
+from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.item_registry import ItemRegistry
 if not getattr(genetic, "_GPU_NATIVE_AVAILABLE", False):
     pytest.skip("GPU-native GA modules not available", allow_module_level=True)

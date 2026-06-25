@@ -28,10 +28,11 @@ import pytest
 
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.solver import genetic_pipeline as genetic
+from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
+from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
 from gear_optimizer.solver.force_greats_common import FG_BASE_STATS7_KEY
 from gear_optimizer.solver.genetic_pipeline import (
-    decode_gpu_native_ga_runs_payload,
     run_gpu_native_ga_runs_payload_prebuilt,
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
@@ -186,7 +187,7 @@ def real_ga_run():
         "GemScaleFever": 3,
         "fg_candidate_limit": 51,
     }
-    base_fixed_stats_arr, _sel = genetic.build_base_fixed_stats_array(base_stats_fixed, cfg_data)
+    base_fixed_stats_arr, _sel = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
     base_fixed_stats_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32)
 
     gear_name_rank, mini_sig_id = effective_tables_for_context(
