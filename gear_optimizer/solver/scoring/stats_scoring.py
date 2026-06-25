@@ -25,7 +25,7 @@ from ..fever_timeline import (
 )
 from ...core.ref_lookup import resolve_stat_factors
 
-from ..scoring_core import fast_calculate_score, lookup_reference_py
+from ..score_math import fast_calculate_score, lookup_reference_py
 
 logger = logging.getLogger(__name__)
 _FG_BASELINE_CACHE: dict[tuple, tuple[int, int]] = {}
