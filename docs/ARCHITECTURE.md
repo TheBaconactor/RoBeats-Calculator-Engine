@@ -222,7 +222,7 @@ def run_native_inflight_song_pipeline(tasks, *, in_flight_songs, completed_songs
 
 ## Performance Optimizations
 
-### 1. **JIT Compilation** (solver/scoring_core.py)
+### 1. **JIT Compilation** (solver/score_math.py)
 ```python
 try:
     from numba import jit

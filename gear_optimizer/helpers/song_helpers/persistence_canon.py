@@ -10,7 +10,6 @@ from ...core.utils import safe_int
 from .fg_config import has_valid_fg_config
 from .item_utils import names_list
 from .persistence_entry_merge import merge_persist_entry, resolve_loadout_hash
-from .persistence_keys import stable_loadout_key
 from .persistence_entry_selection import (
     add_db_payload_priority_entries,
     add_ga_candidate_entries,
@@ -23,6 +22,14 @@ from .team_buff_tiers import build_team_buff_tier_db_batches
 
 
 logger = logging.getLogger(__name__)
+
+
+def stable_loadout_key(entry_obj: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    gear = tuple(sorted(str(item).strip() for item in (entry_obj.get("gear") or []) if str(item).strip()))
+    minis = tuple(sorted(str(item).strip() for item in (entry_obj.get("minis") or []) if str(item).strip()))
+    return (gear, minis)
+
+
 @dataclass(frozen=True)
 class ReplayContext:
     calc_song: dict

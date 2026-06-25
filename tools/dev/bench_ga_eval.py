@@ -104,6 +104,7 @@ def main():
 
     from gear_optimizer.core.color_flags import build_color_flags, normalize_color_flags
     from gear_optimizer.solver import genetic_pipeline as genetic
+    from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
     from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.api.timeline import (
@@ -120,7 +121,7 @@ def main():
     item_stats = np.asarray(arr["item_stats"], dtype=np.int32)
     slot_start = np.asarray(arr["slot_start"], dtype=np.int32)
     slot_count = np.asarray(arr["slot_count"], dtype=np.int32)
-    base_fixed, _ = genetic.build_base_fixed_stats_array(
+    base_fixed, _ = build_base_fixed_stats_array(
         {}, {"selected_color": _SELECTED, "primary_color": _PRIMARY, "secondary_color": _SECONDARY}
     )
     base_fixed = np.asarray(base_fixed, dtype=np.int32)

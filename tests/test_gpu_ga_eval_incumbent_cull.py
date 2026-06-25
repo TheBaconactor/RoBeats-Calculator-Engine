@@ -26,6 +26,7 @@ import pytest
 
 from gear_optimizer.core.color_flags import build_color_flags, normalize_color_flags
 from gear_optimizer.solver import genetic_pipeline as genetic
+from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 
@@ -278,7 +279,7 @@ def eval_device_state():
     item_stats = np.asarray(gpu_arrays["item_stats"], dtype=np.int32)
     slot_start = np.asarray(gpu_arrays["slot_start"], dtype=np.int32)
     slot_count = np.asarray(gpu_arrays["slot_count"], dtype=np.int32)
-    base_fixed_stats_arr, _sel = genetic.build_base_fixed_stats_array(
+    base_fixed_stats_arr, _sel = build_base_fixed_stats_array(
         {}, {"selected_color": _SELECTED_COLOR, "primary_color": _PRIMARY_COLOR, "secondary_color": _SECONDARY_COLOR}
     )
     base_fixed_stats_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32)
