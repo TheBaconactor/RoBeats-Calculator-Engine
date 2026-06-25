@@ -7,7 +7,7 @@ This module provides the main gem solver pipeline:
 
     Coordinates between:
     - Rules Layer (fever_timeline.py): Timeline calculation, SongTimelineGrid
-    - Compute Layer (scoring_core.py): Score calculation, gem optimization
+    - Compute Layer (score_math.py): Score calculation, gem optimization
     - GPU Layer (taichi_gem.api): GPU-accelerated batch optimization
 """
 
@@ -32,7 +32,7 @@ from ..fever_timeline import (
     get_song_timeline_grid,
 )
 
-from ..scoring_core import (
+from ..score_math import (
     fast_calculate_score,
     lookup_reference_py,
     optimize_core_jit,

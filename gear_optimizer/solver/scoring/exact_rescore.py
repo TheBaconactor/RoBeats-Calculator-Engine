@@ -19,7 +19,7 @@ from ...core.constants import TOTAL_ROWS
 from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from ...core.utils import safe_float, safe_int
 from ..fever_timeline import calculate_fever_timeline_indices, calculate_force_greats_timeline_indices
-from ..scoring_core import lookup_reference_py
+from ..score_math import lookup_reference_py
 from .fg_policy import (
     accumulate_fg_penalties,
     build_fg_result_dict,

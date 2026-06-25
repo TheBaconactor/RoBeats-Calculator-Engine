@@ -290,7 +290,7 @@ RoBeats-Calculator-Engine/
 ┌────────────────────┴────────────────────┐
 │      Rules/Compute Layers              │
 │  gear_optimizer/solver/scoring/ (CPU/GPU dispatch) │
-│  gear_optimizer/solver/scoring_core.py (JIT scoring) │
+│  gear_optimizer/solver/score_math.py (JIT scoring) │
 │  gear_optimizer/solver/fever_timeline.py (CPU logic) │
 │  gear_optimizer/solver/taichi_gem/ (GPU kernels) │
 └────────────────────┬────────────────────┘
@@ -326,7 +326,7 @@ RoBeats-Calculator-Engine/
 - **Elitism:** Preserve top 10% across generations
 - **Memetic Search:** Local hill-climbing on elite offspring
 
-#### Scoring Engine ([scoring/](gear_optimizer/solver/scoring/) + [scoring_core.py](gear_optimizer/solver/scoring_core.py))
+#### Scoring Engine ([scoring/](gear_optimizer/solver/scoring/) + [score_math.py](gear_optimizer/solver/score_math.py))
 - **Reference Lookup:** JIT-compiled O(1) stat-to-multiplier conversion
 - **Fever Timeline:** CPU-side complex fever calculations ([fever_timeline.py](gear_optimizer/solver/fever_timeline.py))
 - **Gem Optimization:** GPU-accelerated greedy gem allocation ([taichi_gem/](gear_optimizer/solver/taichi_gem/))
