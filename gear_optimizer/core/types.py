@@ -7,11 +7,12 @@ The goal is to make refactors and performance work safer without forcing a full 
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Tuple, TypedDict
+from collections.abc import Mapping
+from typing import Any, TypedDict
 
 import numpy as np
 
-JsonDict = Dict[str, Any]
+JsonDict = dict[str, Any]
 
 
 class CalcSongData(TypedDict, total=False):
@@ -49,10 +50,10 @@ class DbLoadoutPayload(TypedDict, total=False):
 
     score: int
     fg_score: int
-    gear: List[Any]
-    minis: List[Any]
+    gear: list[Any]
+    minis: list[Any]
     details: JsonDict
-    force: Optional[JsonDict]
+    force: JsonDict | None
     base_score: int
     selected_element: str
     _source: str
@@ -104,7 +105,7 @@ class SongResultPayload(TypedDict, total=False):
     _queue_label: str
     _repeat_index: int
     _repeat_total: int
-    _ga_seed: Optional[int]
+    _ga_seed: int | None
 
     # Inputs
     file_path: str
@@ -114,10 +115,10 @@ class SongResultPayload(TypedDict, total=False):
     # Outputs
     db_key: str
     db_payload: DbLoadoutPayload
-    best_data: Optional[JsonDict]
-    best_gear: List[Any]
-    best_minis: List[Any]
-    persist_entries: List[PersistenceEntry]
+    best_data: JsonDict | None
+    best_gear: list[Any]
+    best_minis: list[Any]
+    persist_entries: list[PersistenceEntry]
     log: str
 
     # Diagnostics
@@ -132,6 +133,6 @@ class SongResultPayload(TypedDict, total=False):
 
 # ----------------------------- GPU IPC payloads -----------------------------
 
-BoolFlags = Tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]
+BoolFlags = tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]
 
 

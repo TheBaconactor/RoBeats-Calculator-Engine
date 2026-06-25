@@ -120,7 +120,7 @@ def _read_first_int(mapping: Mapping[str, Any], *keys: str) -> int:
             continue
         try:
             return int(mapping.get(key) or 0)
-        except Exception as e:
+        except (TypeError, ValueError) as e:
             logger.debug(f"gem_defs:_read_first_int: {e}")
             return 0
     return 0
