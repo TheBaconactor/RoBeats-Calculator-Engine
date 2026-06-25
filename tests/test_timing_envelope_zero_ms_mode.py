@@ -19,7 +19,7 @@ from gear_optimizer.solver.scoring.exact_rescore import (
     score_stats_fixed_timing_exact,
     score_stats_fixed_timing_exact_batch,
 )
-from gear_optimizer.solver.scoring_core import lookup_reference_py
+from gear_optimizer.solver.score_math import lookup_reference_py
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
 
