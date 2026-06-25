@@ -27,7 +27,7 @@ STAT_KEYS = (
 )
 
 # Key under which the GPU-native GA decode carries each candidate's device-computed
-# base_stats7 vector (see solver/genetic_pipeline.decode_gpu_native_ga_runs_payload).
+# base_stats7 vector (see solver/genetic_pipeline_decode.decode_gpu_native_ga_runs_payload).
 # Cols: [pp, cm, fm, p_val (primary-color stat), s_val (secondary-color stat), ft, ff].
 # This is the SAME 7-vector the host derives from a candidate's BaseStats dict
 # (proven bit-exact on real device data in tests/test_gpu_base_stats7_equivalence.py),
