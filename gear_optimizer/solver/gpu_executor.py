@@ -101,7 +101,6 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     safe_qsize as _safe_qsize,
 )
 from gear_optimizer.core.parsing import env_get
-_ENV_GET = os.environ.get
 logger = logging.getLogger(__name__)
 
 
@@ -181,7 +180,7 @@ class GpuExecutor:
         self._last_work_end_ts: Optional[float] = None
         self._live = LiveReporter()
         self._high_res_timer_enabled = False
-        short_wait_settings = _load_short_wait_spin_settings(env_get_fn=_ENV_GET)
+        short_wait_settings = _load_short_wait_spin_settings(env_get_fn=env_get)
         self._short_wait_spin_sec = short_wait_settings.short_wait_spin_sec
         self._short_wait_spin_yield_rounds = short_wait_settings.short_wait_spin_yield_rounds
         self._dispatch = {
@@ -449,14 +448,14 @@ class GpuExecutor:
         def _try_put_response(req: GpuRequest, resp: GpuResponse) -> bool:
             return self._response_delivery.try_put(self._response_queues, req, resp)
         env_refresh_counter = 0
-        cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=_ENV_GET)
+        cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=env_get)
         live_enabled = bool(self._live.enabled)
         while self._running:
             batch: list[GpuRequest] = []
             responded_ids: set[int] = set()
             try:
                 if env_refresh_counter == 0:
-                    cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=_ENV_GET)
+                    cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=env_get)
                 env_refresh_counter = (env_refresh_counter + 1) % 64
                 queue_depth_hint = _safe_qsize(self._request_queue)
                 batch_plan = _plan_loop_batch(
@@ -607,8 +606,8 @@ class GpuExecutor:
             staged_requests=self._staged_requests,
             deadline=float(deadline),
             batch_max_size=int(batch_max_size),
-            streak_cap=int(_ga_recovery_streak_cap(env_get=_ENV_GET)),
-            lookahead_limit=int(_ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size), env_get=_ENV_GET)),
+            streak_cap=int(_ga_recovery_streak_cap(env_get=env_get)),
+            lookahead_limit=int(_ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size), env_get=env_get)),
             pop_queue_request=self._pop_queue_request,
             perf_counter_fn=perf_counter,
             is_ga_recovery_request=_is_ga_recovery_request,
@@ -620,7 +619,7 @@ class GpuExecutor:
         self._prefetch_ga_recovery_requests(deadline=deadline, batch_max_size=int(batch_max_size))
         if (
             self._in_process_queues
-            and int(self._ga_owner_turn_streak) >= int(_ga_recovery_streak_cap(env_get=_ENV_GET))
+            and int(self._ga_owner_turn_streak) >= int(_ga_recovery_streak_cap(env_get=env_get))
             and self._staged_requests
             and self._staged_requests[0].request_type == GpuRequestType.GPU_NATIVE_GA_RUN
         ):
@@ -650,7 +649,7 @@ class GpuExecutor:
         inproc_settings = _load_inprocess_coalesce_settings(
             max_wait_ms=int(max_wait_ms),
             in_process_queues=bool(self._in_process_queues),
-            env_get=_ENV_GET,
+            env_get=env_get,
             env_flag_fn=env_flag,
         )
         inproc_coalesce_enabled = bool(inproc_settings.enabled)
