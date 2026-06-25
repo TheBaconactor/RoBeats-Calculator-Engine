@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 from .constants import TOTAL_ROWS
 from .utils import safe_int
-from ..solver.scoring_core import lookup_reference_py
+from ..solver.score_math import lookup_reference_py
 
 
 @dataclass(frozen=True, slots=True)

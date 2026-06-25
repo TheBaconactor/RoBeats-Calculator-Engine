@@ -47,7 +47,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         reconstruct_force_greats_response_trace,
     )
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
         force_greats_note_graph,
         reconcile_force_greats_note_graph,
     )
@@ -154,7 +154,7 @@ def _words_from_indices(indices):
 
 def test_fg_note_graph_body_counts_synthetic():
     """Construct traces with KNOWN ground-truth surfaces and prove exact body reconciliation."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
         force_greats_note_graph,
         reconcile_force_greats_note_graph,
     )
@@ -232,7 +232,7 @@ def test_fg_note_graph_body_counts_synthetic():
 
 def test_fg_note_graph_marks_fever_end_witness():
     """FG note-graph tags the last note of each fever run with the cutoff ms, like base."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     n = 130
     ts = (np.arange(n) * 0.1).astype(np.float32)
@@ -262,7 +262,7 @@ def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
     """Issue #42: a fever note at/after the cutoff carries its LARGEST-CUSHION legal early delta --
     the center of its legal in-fever range (most error margin) -- so it is in-fever and legal, and
     the scored fever set is unchanged (display-only)."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
         base_note_graph,
         force_greats_note_graph,
     )
@@ -305,7 +305,7 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
     bound (-20, or -40 for a held tail). In the tight-margin edge where the legal-early hit already
     sits at/after `cutoff - 1` (no in-fever room), the degenerate branch preserves the old
     clamp-to-bound. Needs `note_types` for the held-tail bound."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
         base_note_graph,
         force_greats_note_graph,
     )
@@ -356,7 +356,7 @@ def test_endpoint_early_delta_is_largest_cushion_center():
     LARGEST-CUSHION timing -- the center of its legal in-fever range [legal_low, cutoff-hit-1] --
     not the old cliff-edge (`cutoff - hit - 1`). The shown hit is LEGAL (delta >= legal_low),
     IN-FEVER (hit <= cutoff), and MONOTONIC (>= the previous note's shown hit). Both frontiers."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
         base_note_graph,
         force_greats_note_graph,
     )
@@ -425,7 +425,7 @@ def test_endpoint_early_degenerate_clamp_is_monotonic():
     non-decreasing. A normal note clawed in at the ~1ms boundary (shown ~cutoff-0.5) followed by a
     held tail whose own legal_low_hit is lower would, under a prev_hit-blind clamp, be shown EARLIER
     -- breaking monotonicity. The fix clamps to lo_hit (>= prev_hit)."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     n = 4
     ts = np.asarray([0.0, 0.1, 1.0195, 1.030], dtype=np.float32)  # idx2 normal @1019.5, idx3 held @1030
@@ -447,7 +447,7 @@ def test_endpoint_early_degenerate_clamp_is_monotonic():
 
 
 def test_base_note_graph_maps_fever_timeline():
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import base_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import base_note_graph
 
     n = 6
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
@@ -461,7 +461,7 @@ def test_base_note_graph_maps_fever_timeline():
 
 
 def test_base_note_graph_uses_timeline_frontier_trace_witness():
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import base_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import base_note_graph
 
     n = 6
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
@@ -484,7 +484,7 @@ def test_base_note_graph_uses_timeline_frontier_trace_witness():
 
 
 def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import base_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import base_note_graph
 
     n = 6
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
@@ -518,7 +518,7 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
 def test_base_note_graph_matches_production_fever_timeline():
     """base fever mask is the production fever timeline's full per-note is_fever buffer."""
     from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import base_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import base_note_graph
 
     n = 130
     ts = (np.arange(n) * 0.1).astype(np.float32)
@@ -538,7 +538,7 @@ def test_base_note_graph_matches_production_fever_timeline():
 
 def test_fever_end_cluster_rejects_impossible_plus_560_ms():
     """Comfortable cutoff: fever does not constrain Perfect upper -> keep 0 ms (not cutoff-hit)."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     n = 5
     ts = np.asarray([0.0, 1.0, 1.2, 1.4, 1.6], dtype=np.float32)
@@ -559,7 +559,7 @@ def test_fever_end_cluster_rejects_impossible_plus_560_ms():
 
 def test_fever_end_cluster_barely_inside_decoy_delta():
     """Tight cutoff: safe upper is fever-bound -> center ~ -9.93 ms."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     cutoff = 61340.14382457733
     n = 4
@@ -582,7 +582,7 @@ def test_fever_end_cluster_barely_inside_decoy_delta():
 
 def test_note_graph_displays_early_great_fever_end_tail():
     """Issue #68: Great-only fever-end claw-in must not collapse to Perfect-low."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     n = 2
     cutoff = 133108.764
@@ -614,7 +614,7 @@ def test_note_graph_displays_early_great_fever_end_tail():
 
 
 def test_note_graph_displays_early_great_fever_end_tail_held_tail():
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     n = 2
     cutoff = 133108.764
@@ -642,7 +642,7 @@ def test_note_graph_displays_early_great_fever_end_tail_held_tail():
 
 
 def test_note_graph_early_great_fever_end_fails_loud_beyond_floor():
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     n = 2
     # Make the fever upper bound earlier than the Great floor (-95ms) so the safe interval is empty.
@@ -671,7 +671,7 @@ def test_note_graph_early_great_fever_end_fails_loud_beyond_floor():
 
 
 def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     n = 3
     cutoff = 1240.0
@@ -714,7 +714,7 @@ def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
 
 def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
     """zero_ms mode must not inherit Perfect-window guidance deltas (issue #66)."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
         base_note_graph,
         force_greats_note_graph,
     )
@@ -762,7 +762,7 @@ def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
 
 
 def test_fever_end_cluster_same_chart_time_shared_delta():
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     n = 8
     cutoff = 1240.0
@@ -782,7 +782,7 @@ def test_fever_end_cluster_same_chart_time_shared_delta():
 
 
 def test_fever_end_cluster_held_tail_intersection():
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     n = 7
     cutoff = 1230.0
@@ -806,7 +806,7 @@ def test_fever_end_cluster_held_tail_intersection():
 
 def test_fever_end_cluster_fail_loud_on_tight_non_perfect_same_time():
     """Tight cutoff + mixed Perfect/Great same-chart-time cluster must not silently keep 0 ms."""
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import (
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
         _mark_fever_end_cluster_safe_delta,
         _mark_fever_end_witness,
         _perfect_note_graph,
@@ -879,7 +879,7 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     n = si.total_notes
     trace = fd["ForceGreats"]["frontier_trace"]
 
-    from gear_optimizer.helpers.song_helpers.force_greats.note_graph import force_greats_note_graph
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     ng = force_greats_note_graph(
         frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt

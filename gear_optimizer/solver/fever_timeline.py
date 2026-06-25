@@ -12,7 +12,7 @@ from collections import OrderedDict
 import logging
 
 from ..core.jit_setup import jit
-from .scoring_core import lookup_reference_py
+from .score_math import lookup_reference_py
 from ..core.constants import (
     TOTAL_ROWS,
     FEVER_FILL_BASE_RATE,
