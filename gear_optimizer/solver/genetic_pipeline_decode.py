@@ -294,14 +294,14 @@ def decode_gpu_native_ga_runs_payload(
                 base_row_stats = base_stats_arr + item_stats_sum[i]
                 base_stats = build_stats_dict(base_row_stats)
                 data_obj["BaseStats"] = base_stats
-            except Exception as e:
+            except (IndexError, ValueError) as e:
                 logger.debug(f"genetic:decode_gpu_native_ga_runs_payload: {e}")
             if include_full_stats and final_stats_mat is not None:
                 try:
                     row_stats = final_stats_mat[i]
                     current_stats = build_stats_dict(row_stats)
                     data_obj["Stats"] = current_stats
-                except Exception as e:
+                except (IndexError, ValueError) as e:
                     logger.debug(f"genetic:decode_gpu_native_ga_runs_payload: {e}")
 
             cand_data = {
