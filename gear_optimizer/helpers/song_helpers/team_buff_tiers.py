@@ -604,6 +604,7 @@ def compute_team_buff_tier_leaderboards(
     target_team_color_override: object = None,
     replay_surfaces: tuple[str, ...] = ("meta", "fg"),
     timing_mode: str = "perfect_window",
+    baseline_offset: object = None,
 ) -> dict:
     """
     Re-score persisted entries under TeamBuff tiers and return per-tier leaderboards.
@@ -633,6 +634,19 @@ def compute_team_buff_tier_leaderboards(
     timing_mode = str(timing_mode or "perfect_window").strip().lower()
     if timing_mode not in {"perfect_window", "zero_ms"}:
         raise ValueError(f"compute_team_buff_tier_leaderboards: unknown timing_mode {timing_mode!r}")
+    if baseline_offset is not None:
+        if timing_mode != "zero_ms":
+            raise ValueError(
+                "compute_team_buff_tier_leaderboards: baseline_offset (custom per-note timing) "
+                "requires timing_mode='zero_ms'"
+            )
+        # Validate up front: the apply_timing_envelope call below sits in a broad except, so a bad
+        # offset (wrong length / note-reordering) must fail loud here, not silently fall through to
+        # a T=0 leaderboard.
+        from ...solver.timing_envelope import baseline_hit_timeline
+
+        _sd = calc_song.get("song_data", {}) or {}
+        baseline_hit_timeline(_sd.get("chart_timestamps", _sd.get("timestamps")), baseline_offset)
     replay_meta = "meta" in {str(s).strip().lower() for s in (replay_surfaces or ("meta", "fg"))}
     replay_fg = "fg" in {str(s).strip().lower() for s in (replay_surfaces or ("meta", "fg"))}
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
@@ -655,7 +669,7 @@ def compute_team_buff_tier_leaderboards(
     try:
         from ...solver.timing_envelope import apply_timing_envelope
 
-        apply_timing_envelope(calc_song, mode=timing_mode)
+        apply_timing_envelope(calc_song, mode=timing_mode, baseline_offset=baseline_offset)
     except Exception as e:
         logger.debug(f"team_buff_tiers:compute_team_buff_tier_leaderboards: {e}")
 
@@ -979,6 +993,7 @@ def build_team_buff_tier_db_batches(
     target_team_color_override: object = None,
     replay_surface: str = "both",
     timing_mode: str = "perfect_window",
+    baseline_offset: object = None,
 ) -> dict[str, list[dict]]:
     """
     Return DB-ready entry batches per tier.
@@ -1025,6 +1040,7 @@ def build_team_buff_tier_db_batches(
         target_team_color_override=target_team_color_override,
         replay_surfaces=replay_surfaces,
         timing_mode=timing_mode,
+        baseline_offset=baseline_offset,
     )
     resolved_fg_force_by_tier_hash = payload.get("resolved_fg_force_by_tier_hash") or {}
     resolved_base_by_tier_hash = payload.get("resolved_base_by_tier_hash") or {}

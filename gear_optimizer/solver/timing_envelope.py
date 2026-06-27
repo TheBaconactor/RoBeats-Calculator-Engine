@@ -14,6 +14,7 @@ hard activation-window cap.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 import numpy as np
@@ -29,6 +30,37 @@ def floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
     """Quantize seconds to integer milliseconds using the repo parity rule."""
 
     return quantize_to_int_ms(timestamps_sec)
+
+
+def baseline_hit_timeline(
+    chart_timestamps_sec: np.ndarray,
+    baseline_offset_sec: np.ndarray | None,
+) -> tuple[np.ndarray, str]:
+    """Apply a per-note baseline timing offset ``T`` to the chart timeline.
+
+    Returns ``(hit_timestamps, baseline_hash)`` where ``hit_timestamps = chart + T`` (float32
+    seconds) and ``baseline_hash`` is a stable digest of ``T`` for cache separation. A ``None`` or
+    all-zero offset returns the chart unchanged and an empty hash -- the ``zero_ms`` (``T == 0``)
+    preset, bit-identical to the chart-only path. Fails loud if ``T`` reorders notes: the fever
+    timeline searchsorts the hit times, so they must stay non-decreasing.
+    """
+    chart = np.asarray(chart_timestamps_sec, dtype=np.float32)
+    if baseline_offset_sec is None:
+        return chart, ""
+    offset = np.asarray(baseline_offset_sec, dtype=np.float32)
+    if int(offset.shape[0]) != int(chart.shape[0]):
+        raise ValueError(
+            f"baseline timing offset length {int(offset.shape[0])} != song note count "
+            f"{int(chart.shape[0])}"
+        )
+    if not bool(np.any(offset)):
+        return chart, ""
+    hit = (chart + offset).astype(np.float32)
+    if int(hit.shape[0]) > 1 and bool(np.any(np.diff(hit) < np.float32(0.0))):
+        raise ValueError("baseline timing offset reorders notes (hit timeline must be non-decreasing)")
+    quantized_ms = np.round(np.asarray(offset, dtype=np.float64) * 1000.0).astype(np.int64)
+    baseline_hash = hashlib.blake2b(quantized_ms.tobytes(), digest_size=8).hexdigest()
+    return hit, baseline_hash
 
 
 def build_per_note_perfect_window_ms(
@@ -432,7 +464,11 @@ def build_great_floor_envelope_sec(
 
 
 def apply_timing_envelope(
-    calc_song: dict, *, attach_fg: bool = True, mode: str = "perfect_window"
+    calc_song: dict,
+    *,
+    attach_fg: bool = True,
+    mode: str = "perfect_window",
+    baseline_offset: np.ndarray | None = None,
 ) -> dict | None:
     """
     Attach deterministic timing-envelope streams to a calc_song.
@@ -456,6 +492,15 @@ def apply_timing_envelope(
     timing_mode = str(mode or "perfect_window").strip().lower()
     if timing_mode not in {"perfect_window", "zero_ms"}:
         raise ValueError(f"apply_timing_envelope: unknown timing mode {mode!r}")
+    if (
+        baseline_offset is not None
+        and timing_mode != "zero_ms"
+        and bool(np.any(np.asarray(baseline_offset)))
+    ):
+        raise ValueError(
+            "apply_timing_envelope: baseline_offset (custom per-note timing) is only valid for "
+            f"fixed timing (mode='zero_ms'), not {timing_mode!r}"
+        )
 
     song_data = calc_song.get("song_data", {}) or {}
     timestamps = song_data.get("chart_timestamps", song_data.get("timestamps"))
@@ -466,9 +511,12 @@ def apply_timing_envelope(
     song_data["chart_timestamps"] = chart_ts
 
     if timing_mode == "zero_ms":
-        # Fixed 0ms timing: no Perfect-window envelope. Drop any FG candidate/floor
-        # streams so extract_fg_song_inputs uses its chart-timestamp fallback (the
-        # canonical chart-only FG build) and disables forced-great carry.
+        # Fixed/explicit timing: no Perfect-window envelope. The played timeline is
+        # ``chart + baseline_offset`` (T); the four FG candidate/floor streams are dropped so
+        # extract_fg_song_inputs uses this single hit timeline for every activation/boundary
+        # decision and disables forced-great carry. ``baseline_offset is None`` (or all-zero) is
+        # the canonical ``zero_ms`` (T == 0) preset, bit-identical to the chart-only build.
+        hit_ts, baseline_hash = baseline_hit_timeline(chart_ts, baseline_offset)
         for _stream in (
             "fg_perfect_candidate_timestamps",
             "fg_perfect_floor_timestamps",
@@ -476,10 +524,11 @@ def apply_timing_envelope(
             "fg_great_candidate_timestamps",
         ):
             song_data.pop(_stream, None)
-        song_data["fg_timestamps"] = chart_ts
+        song_data["fg_timestamps"] = hit_ts
         meta = dict(calc_song.get("metadata", {}) or {})
         meta["TimingEnvelopeApplied"] = True
         meta["TimingEnvelopeMode"] = "zero_ms"
+        meta["TimingEnvelopeBaselineHash"] = baseline_hash
         meta["TimingEnvelopeFGPerfect"] = "chart"
         meta["TimingEnvelopeFGCarry"] = "none"
         calc_song["metadata"] = meta
@@ -488,6 +537,7 @@ def apply_timing_envelope(
             "mode": "fg" if attach_fg else "base",
             "notes": int(chart_ts.shape[0]),
             "timing_mode": "zero_ms",
+            "baseline_hash": baseline_hash,
         }
 
     if not attach_fg:

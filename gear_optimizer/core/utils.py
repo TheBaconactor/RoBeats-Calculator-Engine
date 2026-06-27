@@ -219,7 +219,7 @@ def timing_envelope_timing_context(calc_song):
     return (
         "TIMING_ENVELOPE",
         str(meta.get("TimingEnvelopeMode", "") or "").strip().lower(),
-        "",
+        str(meta.get("TimingEnvelopeBaselineHash", "") or ""),
         0,
     )
 
@@ -239,7 +239,7 @@ def timing_envelope_full_context(calc_song):
         "TIMING_ENVELOPE",
         str(meta.get("TimingEnvelopeMode", "") or "").strip().lower(),
         str(meta.get("TimingEnvelopeFGCarry", "") or "").strip().lower(),
-        0,
+        meta.get("TimingEnvelopeBaselineHash", "") or 0,
     )
 
 
