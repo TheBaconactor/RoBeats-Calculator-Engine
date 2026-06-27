@@ -799,12 +799,24 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
         return cached
     chart_ts = song_data.get("chart_timestamps", None)
     timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
-    ts_sig = song_data.get("_chart_timestamps_sig", None)
-    if not isinstance(ts_sig, (bytes, bytearray, memoryview)) or len(ts_sig) != 16:
-        ts_sig = array_sig16(timestamps)
-    nt_sig = song_data.get("_note_types_sig", None)
-    if not isinstance(nt_sig, (bytes, bytearray, memoryview)) or len(nt_sig) != 16:
-        nt_sig = array_sig16(song_data.get("note_types"))
+    # Order-invariant content signature. The timeline/FG frontier is a pure function of the
+    # (timestamp, note-type) note SET, not the HitObjects array order: a re-export of the same
+    # chart that differs only in note array order (e.g. held-note tail placement) builds a
+    # bit-identical frontier payload and identical base/FG scores. Verified empirically on real
+    # reorder-only charts (base score + full frontier-payload parity) -- see
+    # docs/Implementation Records/FRONTIER_ORDER_INVARIANT_KEY.md. So those charts MUST share a
+    # cache key; canonicalize by sorting the (timestamp, type) pairs before hashing rather than
+    # trusting the load-order signature, which over-invalidated the cache and forced wasted rebuilds.
+    ts_arr = np.asarray(timestamps, dtype=np.float32).reshape(-1)
+    n_notes = int(ts_arr.shape[0])
+    nt_raw = song_data.get("note_types")
+    if nt_raw is not None and len(nt_raw) == n_notes:
+        nt_arr = np.asarray(nt_raw, dtype=np.int16).reshape(-1)
+    else:
+        nt_arr = np.ones(n_notes, dtype=np.int16)
+    canonical = np.lexsort((nt_arr, ts_arr))  # primary: timestamp, secondary: note type
+    ts_sig = array_sig16(np.ascontiguousarray(ts_arr[canonical]))
+    nt_sig = array_sig16(np.ascontiguousarray(nt_arr[canonical]))
     key = (
         str(meta.get("Song Name", "")),
         str(meta.get("Difficulty", "")),

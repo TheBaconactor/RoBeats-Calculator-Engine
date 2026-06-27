@@ -12,7 +12,6 @@ from io import StringIO
 import numpy as np
 from cachetools import LRUCache
 
-from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.constants import PATHS
 from gear_optimizer.data.models import WarnOnce
 
@@ -88,20 +87,15 @@ def _build_base_calc_song_from_file(fp: str) -> dict:
     if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
         song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
 
-    # Cache stable content signatures on the base calc_song so GPU timeline caching
-    # does not need to hash full arrays on every request.
-    ts_sig = array_sig16(song_timestamps_np)
-    nt_sig = array_sig16(song_note_types_np)
-
+    # The frontier cache key (timeline._song_timing_cache_key) now derives its own
+    # order-invariant signature from the live (timestamp, note-type) arrays, so no
+    # precomputed load-order signature is stored here.
     return {
         "metadata": song_data.get("song_details", {}) or {},
         "song_data": {
             "timestamps": song_timestamps_np,
             "chart_timestamps": song_timestamps_np,
             "note_types": song_note_types_np,
-            "_timestamps_sig": ts_sig,
-            "_chart_timestamps_sig": ts_sig,
-            "_note_types_sig": nt_sig,
         },
     }
 
