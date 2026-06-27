@@ -1,7 +1,11 @@
 Song Name	Halcyon (Easy) by xi (xi_com_giko_31)
+Title	Halcyon (Easy)
+Artist	xi (xi_com_giko_31)
+Description	Track 9 from Japanese musician xi's 2011 album 'Parousia'. Halcyon denotes a period of time in the past that was idyllically happy and peaceful. Art by theshredded_coconut. Map by AmyKawashima.
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Beat
+Cover Image ID	7861710172
 Audio Asset ID	rbxassetid://9064177984
 Audio File	9064177984.ogg
 Last Note Time	192.000

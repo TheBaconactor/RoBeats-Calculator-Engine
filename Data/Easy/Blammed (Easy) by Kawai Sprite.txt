@@ -1,7 +1,11 @@
 Song Name	Blammed (Easy) by Kawai Sprite
+Title	Blammed (Easy)
+Artist	Kawai Sprite
+Description	The 3rd track from Week 3 'Pico'. The term 'Blammed' on NG is to give something a low rating (and to destroy someone's hard work!).
 Difficulty	2
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	7252873616
 Audio Asset ID	rbxassetid://6278442803
 Audio File	6278442803.ogg
 Last Note Time	92.972

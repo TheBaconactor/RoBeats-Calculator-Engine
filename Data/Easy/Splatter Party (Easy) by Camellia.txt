@@ -1,7 +1,11 @@
 Song Name	Splatter Party (Easy) by Camellia
+Title	Splatter Party (Easy)
+Artist	Camellia
+Description	'Let's get this party started.' Art by Ajiko. Map by doofyplayer.
 Difficulty	3
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	7784982292
 Audio Asset ID	rbxassetid://9059220695
 Audio File	9059220695.ogg
 Last Note Time	151.224

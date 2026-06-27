@@ -1,7 +1,11 @@
 Song Name	World Eclipse (Easy) by Lappy
+Title	World Eclipse (Easy)
+Artist	Lappy
+Description	I haven't had much time to work on personal tracks lately - So I hurriedly wrote this original song this morning. I'll make sure to bring you some good news again soon!
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Rush
+Cover Image ID	116740531085865
 Audio Asset ID	rbxassetid://88437182532441
 Audio File	88437182532441.ogg
 Last Note Time	125.806

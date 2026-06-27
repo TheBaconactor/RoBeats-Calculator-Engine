@@ -1,7 +1,11 @@
 Song Name	Sus Funk (Easy) by James Landino
+Title	Sus Funk (Easy)
+Artist	James Landino
+Description	From the artist: THIS SONG IS SUS (im sorry but lowkey im not). Map by Fritzy.
 Difficulty	7
 Primary Color	Vibe
 Secondary Color	Chill
+Cover Image ID	7953185711
 Audio Asset ID	rbxassetid://9060062627
 Audio File	9060062627.ogg
 Last Note Time	190.197

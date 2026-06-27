@@ -1,7 +1,11 @@
 Song Name	Overkill (Easy) by RIOT [Monstercat]
+Title	Overkill (Easy)
+Artist	RIOT [Monstercat]
+Description	A 2018 Drumstep song by American producer duo RIOT, featured in 'Monstercat Uncaged Vol.7' and voted 1st place in Monstercat's 'Best of 2018' voting (finishing ahead of 'Crab Rave'!). The cover art features several references to other songs from their 'Dogma Resistance' LP. Map by doofyplayer.
 Difficulty	9
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	10142539505
 Audio Asset ID	rbxassetid://9690784236
 Audio File	9690784236.ogg
 Last Note Time	176.469

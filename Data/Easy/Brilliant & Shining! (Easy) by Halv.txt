@@ -1,7 +1,11 @@
 Song Name	Brilliant & Shining! (Easy) by Halv
+Title	Brilliant & Shining! (Easy)
+Artist	Halv
+Description	From the artist: I created an album with the theme 'Happy Music Game Core'. We will deliver this Happy-Core on the backs of 10 shooting stars~. Map by Livium.
 Difficulty	10
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	16457431745
 Audio Asset ID	rbxassetid://15924352932
 Audio File	15924352932.ogg
 Last Note Time	125.194

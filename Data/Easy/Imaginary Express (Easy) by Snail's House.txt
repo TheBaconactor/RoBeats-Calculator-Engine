@@ -1,7 +1,11 @@
 Song Name	Imaginary Express (Easy) by Snail's House
+Title	Imaginary Express (Easy)
+Artist	Snail's House
+Description	snailchan got into some weird dream... Track 2 from Snail's House's 2020 album 'Imaginarium'. Map by Fritzy.
 Difficulty	1
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	72768930333477
 Audio Asset ID	rbxassetid://140161387633533
 Audio File	140161387633533.ogg
 Last Note Time	120.158

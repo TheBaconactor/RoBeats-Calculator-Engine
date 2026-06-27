@@ -1,7 +1,11 @@
 Song Name	Galaxy Friends [Game Edition] (Easy) by Kobaryo
+Title	Galaxy Friends [Game Edition] (Easy)
+Artist	Kobaryo
+Description	Featured as track 14 in the 2016 HARDCORE TANO*C compilation album 'HARDCORE SYNDROME X', a yearly release by the label. Map by doofyplayer.
 Difficulty	10
 Primary Color	Flow
 Secondary Color	Rush
+Cover Image ID	11646381566
 Audio Asset ID	rbxassetid://11231563806
 Audio File	11231563806.ogg
 Last Note Time	129.300

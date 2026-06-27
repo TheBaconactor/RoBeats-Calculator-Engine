@@ -1,7 +1,11 @@
 Song Name	Sky Gazer (Easy) by ARForest
+Title	Sky Gazer (Easy)
+Artist	ARForest
+Description	Track 13 on the 2022 album 'TERRA-FORMING 2', a collaboration album featuring work from a variety of artists produced by Chester Park. Map by doofyplayer.
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	9215193860
 Audio Asset ID	rbxassetid://9118721656
 Audio File	9118721656.ogg
 Last Note Time	134.151

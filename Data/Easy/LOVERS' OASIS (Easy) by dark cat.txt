@@ -1,7 +1,11 @@
 Song Name	LOVERS' OASIS (Easy) by dark cat
+Title	LOVERS' OASIS (Easy)
+Artist	dark cat
+Description	From the artist: let's get funky now - it's a lovers' oasis. #catstep. Map by iijohn0.
 Difficulty	1
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	12100806415
 Audio Asset ID	rbxassetid://9059512196
 Audio File	9059512196.ogg
 Last Note Time	72.384

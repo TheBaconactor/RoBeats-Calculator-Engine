@@ -1,7 +1,11 @@
 Song Name	Chiwawa (Easy) by Wanko Ni Mero Mero [Just Dance]
+Title	Chiwawa (Easy)
+Artist	Wanko Ni Mero Mero [Just Dance]
+Description	First featured in Just Dance 2016, this is the first song by Wanko Ni Mero Mero in the series. Composed by Tom Salta, and performed by Japanese singer ReniReni. Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by doofyplayer.
 Difficulty	1
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	8046922716
 Audio Asset ID	rbxassetid://9060162988
 Audio File	9060162988.ogg
 Last Note Time	165.891

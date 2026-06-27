@@ -1,7 +1,11 @@
 Song Name	Double Helix (Easy) by xi (xi_com_giko_31)
+Title	Double Helix (Easy)
+Artist	xi (xi_com_giko_31)
+Description	Track 2 from Japanese musician xi's 2015 album 'World Fragments'. The double helix is a description of the molecular shape of DNA, the building blocks of all living creatures. Map by Himitsu.
 Difficulty	10
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	7861702519
 Audio Asset ID	rbxassetid://9064172853
 Audio File	9064172853.ogg
 Last Note Time	152.838

@@ -1,7 +1,11 @@
 Song Name	Nacreous Snowmelt (Easy) by Camellia
+Title	Nacreous Snowmelt (Easy)
+Artist	Camellia
+Description	From the artist: Hi! It's Camellia. When I asked you for a request of genre of music for 70k on Twitter, I received a lot of replies and genres. This 'Nacreous Snowmelt' once came up with them, all kinds of genres. Map by Himitsu.
 Difficulty	7
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	8255773034
 Audio Asset ID	rbxassetid://9064394494
 Audio File	9064394494.ogg
 Last Note Time	165.326

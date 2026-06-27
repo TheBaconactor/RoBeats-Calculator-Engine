@@ -1,7 +1,11 @@
 Song Name	M1LLI0N PP (Easy) by Camellia
+Title	M1LLI0N PP (Easy)
+Artist	Camellia
+Description	From Camellia's 2020 album 'Tera I/O'. The album covers a wide range of songs from complextro / electohouse, UK hardcore and drum'n'bass which he is working on from older days, to 200step, Full Fravor, metal and more. Map by doofyplayer.
 Difficulty	4
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	6329222717
 Audio Asset ID	rbxassetid://9059194887
 Audio File	9059194887.ogg
 Last Note Time	164.792

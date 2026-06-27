@@ -1,7 +1,11 @@
 Song Name	HEADACHE (Easy) by atsuover & Rageminer
+Title	HEADACHE (Easy)
+Artist	atsuover & Rageminer
+Description	The first track from FNF Smoke 'Em Out Struggle - an original full week mod by atsuover and rageminer. Face off against a man named GARCELLO, as he tries to peer pressure Boyfriend into smoking a strange cigarette. Map by Himitsu.
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	8510940001
 Audio Asset ID	rbxassetid://9058926907
 Audio File	9058926907.ogg
 Last Note Time	103.533

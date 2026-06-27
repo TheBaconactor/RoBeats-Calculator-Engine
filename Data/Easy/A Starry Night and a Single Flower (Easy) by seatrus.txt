@@ -1,7 +1,11 @@
 Song Name	A Starry Night and a Single Flower (Easy) by seatrus
+Title	A Starry Night and a Single Flower (Easy)
+Artist	seatrus
+Description	Against the canvas of the dark, the flower shone like a tiny spark. Track 2 from seatrus's 3:00 AM EP. Map by Fritzy.
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	12877261814
 Audio Asset ID	rbxassetid://12735693556
 Audio File	12735693556.ogg
 Last Note Time	165.399

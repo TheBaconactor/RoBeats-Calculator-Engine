@@ -1,7 +1,11 @@
 Song Name	Among Us (Easy) by BSlick
+Title	Among Us (Easy)
+Artist	BSlick
+Description	A 2020 original song by BSlick. Sus!
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	108355708438414
 Audio Asset ID	rbxassetid://9059057907
 Audio File	9059057907.ogg
 Last Note Time	122.040

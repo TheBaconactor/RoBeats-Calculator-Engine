@@ -1,7 +1,11 @@
 Song Name	Daydream (Easy) by RiraN
+Title	Daydream (Easy)
+Artist	RiraN
+Description	A 2019 'Euphoric Hardstyle' track by South Korean composer RiraN. What is hardstyle? When the drop hits - you'll know! Map by doofyplayer.
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	1938090605
 Audio Asset ID	rbxassetid://9062387367
 Audio File	9062387367.ogg
 Last Note Time	145.623

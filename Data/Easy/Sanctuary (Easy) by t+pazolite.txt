@@ -1,7 +1,11 @@
 Song Name	Sanctuary (Easy) by t+pazolite
+Title	Sanctuary (Easy)
+Artist	t+pazolite
+Description	SYMPHONIC HAPPY HARD EURO TRANCE RENAISSANCE POP (Featured as track 11 in compilation album 'Sensation in the Sky'). Map by Fritzy.
 Difficulty	6
 Primary Color	Vibe
 Secondary Color	Rush
+Cover Image ID	12414134559
 Audio Asset ID	rbxassetid://11559394401
 Audio File	11559394401.ogg
 Last Note Time	145.502

@@ -1,7 +1,11 @@
 Song Name	Deadlocked (Easy) by F-777
+Title	Deadlocked (Easy)
+Artist	F-777
+Description	Track 10 from producer F-777's 2013 album of the same name. From the artist: Here is my first album of the year 2013 and its MASSIVE! I had so much fun making this and I hope you enjoy these songs. Map by Fritzy.
 Difficulty	3
 Primary Color	Rush
 Secondary Color	Beat
+Cover Image ID	8030010628
 Audio Asset ID	rbxassetid://9876701336
 Audio File	9876701336.ogg
 Last Note Time	113.777

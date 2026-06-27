@@ -1,7 +1,11 @@
 Song Name	Dark Sheep [EXTENDED CUT] (Easy) by Chroma
+Title	Dark Sheep [EXTENDED CUT] (Easy)
+Artist	Chroma
+Description	A chiptune song by Japanese artist Chroma. Featured in a sense-defying 'modchart' in Clone Hero! Map by doofyplayer.
 Difficulty	3
 Primary Color	Beat
 Secondary Color	Beat
+Cover Image ID	4448149578
 Audio Asset ID	rbxassetid://9062626498
 Audio File	9062626498.ogg
 Last Note Time	235.953

@@ -1,7 +1,11 @@
 Song Name	Kathastrophe (Easy) by Team Grimoire
+Title	Kathastrophe (Easy)
+Artist	Team Grimoire
+Description	Track 1 of the 2019 compilation album of the same name. This album made its debut at [M3 2019 Fall], a long-running bi-annual doujinshi music convention. Map by Ucitysm.
 Difficulty	6
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	10357343853
 Audio Asset ID	rbxassetid://9612387206
 Audio File	9612387206.ogg
 Last Note Time	114.597

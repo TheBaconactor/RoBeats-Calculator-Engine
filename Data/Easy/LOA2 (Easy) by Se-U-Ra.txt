@@ -1,7 +1,11 @@
 Song Name	LOA2 (Easy) by Se-U-Ra
+Title	LOA2 (Easy)
+Artist	Se-U-Ra
+Description	A 2019 track by Japanese artist and music producer Se-U-Ra. From the artist: Roatsu! Map by fritzy.
 Difficulty	6
 Primary Color	Flow
 Secondary Color	Rush
+Cover Image ID	7224190700
 Audio Asset ID	rbxassetid://9063504588
 Audio File	9063504588.ogg
 Last Note Time	117.788

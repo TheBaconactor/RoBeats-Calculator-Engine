@@ -1,7 +1,11 @@
 Song Name	Dark Dungeon (Easy) by Ardolf
+Title	Dark Dungeon (Easy)
+Artist	Ardolf
+Description	Get into the dark dungeon and discover what deadly monster is wandering in it.. Enjoy this UK Hardcore, Chiptune, Dubstep and Hardstyle mixed genre song created by Ardolf. Map by Fritzy.
 Difficulty	4
 Primary Color	Rush
 Secondary Color	Flow
+Cover Image ID	8237547014
 Audio Asset ID	rbxassetid://9065433720
 Audio File	9065433720.ogg
 Last Note Time	135.001

@@ -1,7 +1,11 @@
 Song Name	Rainshower (Easy) by Silentroom
+Title	Rainshower (Easy)
+Artist	Silentroom
+Description	A track by Japanese producer Silentroom made for FRENZ 2019, a yearly music-video exhibition. Inspired by the poem 'Abendregen' by Gottfried Keller. Map by Himitsu.
 Difficulty	5
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	123770497749681
 Audio Asset ID	rbxassetid://10006618893
 Audio File	10006618893.ogg
 Last Note Time	155.843

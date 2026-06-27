@@ -1,7 +1,11 @@
 Song Name	GOOD ENOUGH! (Full Vocal Version) (Easy) by atsuover
+Title	GOOD ENOUGH! (Full Vocal Version) (Easy)
+Artist	atsuover
+Description	A 2021 track by producer and artist atsuover. From the artist: I finally worked up the confidence to do this. It's not that great, but hey: that's what the song's about. Map by fritzy.
 Difficulty	3
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	8510939831
 Audio Asset ID	rbxassetid://9058925518
 Audio File	9058925518.ogg
 Last Note Time	163.689

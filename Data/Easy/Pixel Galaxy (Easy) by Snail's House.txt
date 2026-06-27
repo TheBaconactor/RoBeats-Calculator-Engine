@@ -1,7 +1,11 @@
 Song Name	Pixel Galaxy (Easy) by Snail's House
+Title	Pixel Galaxy (Easy)
+Artist	Snail's House
+Description	Poyo~! Inspired by 'Green Greens', a retro-inspired chiptune kawaii future bass track from Snail's House, track 1 from the 2017 album of the same name. Map by Pyrromxniac.
 Difficulty	10
 Primary Color	Flow
 Secondary Color	Chill
+Cover Image ID	131499050766855
 Audio Asset ID	rbxassetid://115911458692011
 Audio File	115911458692011.ogg
 Last Note Time	105.058

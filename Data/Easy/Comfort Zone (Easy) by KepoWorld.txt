@@ -1,7 +1,11 @@
 Song Name	Comfort Zone (Easy) by KepoWorld
+Title	Comfort Zone (Easy)
+Artist	KepoWorld
+Description	From the artist: Thank you so much 'Robeats' for giving me the support you do. This was a great track to make and I did my utmost effort to do the most in this track. That's what Christmas is all about: the joy of others and the ability to cherish what you have! Map by Himitsu.
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	8249253419
 Audio Asset ID	rbxassetid://9064372423
 Audio File	9064372423.ogg
 Last Note Time	145.139

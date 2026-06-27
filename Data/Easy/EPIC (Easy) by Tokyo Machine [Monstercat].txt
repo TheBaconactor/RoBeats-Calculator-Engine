@@ -1,7 +1,11 @@
 Song Name	EPIC (Easy) by Tokyo Machine [Monstercat]
+Title	EPIC (Easy)
+Artist	Tokyo Machine [Monstercat]
+Description	A track by Japanese artist 'Tokyo Machine' released in 2019 under the Monstercat label. Since his debut show at EDC Las Vegas in 2017, Tokyo Machine has established himself as a chiptune stage-beast, who alongside his little Tokimon friends steals the show on every continent. Map by doofyplayer.
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Vibe
+Cover Image ID	7159056077
 Audio Asset ID	rbxassetid://9062867730
 Audio File	9062867730.ogg
 Last Note Time	108.859

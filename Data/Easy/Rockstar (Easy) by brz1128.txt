@@ -1,7 +1,11 @@
 Song Name	Rockstar (Easy) by brz1128
+Title	Rockstar (Easy)
+Artist	brz1128
+Description	A 2017 #UKHardcore track by Japanese producer brz1128, track 1 of the multi-artist compilation album 'Diver Bass'. Map by doofyplayer.
 Difficulty	7
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	9300606059
 Audio Asset ID	rbxassetid://9118775630
 Audio File	9118775630.ogg
 Last Note Time	94.962

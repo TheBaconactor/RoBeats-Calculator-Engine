@@ -1,7 +1,11 @@
 Song Name	Destiny (Easy) by Jim Yosef, Electro-Light, Anna Yvette, Deaf Kev & Tobu
+Title	Destiny (Easy)
+Artist	Jim Yosef, Electro-Light, Anna Yvette, Deaf Kev & Tobu
+Description	A 2021 collaboration between producers Jim Yosef, Electro-Light, Anna Yvette, Deaf Kev and Tobu. From Tobu: did you expect this? Music: Tobu, Jim Yosef, Electro-Light, Anna Yvette & Deaf Kev - Destiny (youtube.com/tobuofficial). Art by ST4RLYTE. Map by Himitsu.
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	8392189366
 Audio Asset ID	rbxassetid://9063863121
 Audio File	9063863121.ogg
 Last Note Time	137.386

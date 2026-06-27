@@ -1,7 +1,11 @@
 Song Name	Ryokucha (Easy) by Project Skylate
+Title	Ryokucha (Easy)
+Artist	Project Skylate
+Description	Ryokucha is one of my favourite tea and it always help me to relax. So I've made another tea song because tea is all I need.... besides coffee. Art by cowfee_chan. Map by Fritzy.
 Difficulty	4
 Primary Color	Beat
 Secondary Color	Beat
+Cover Image ID	17431474082
 Audio Asset ID	rbxassetid://16708693862
 Audio File	16708693862.ogg
 Last Note Time	143.019

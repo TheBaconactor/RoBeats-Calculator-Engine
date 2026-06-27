@@ -1,7 +1,11 @@
 Song Name	Reimei (Easy) by Kagetora
+Title	Reimei (Easy)
+Artist	Kagetora
+Description	A 2018 track made for G2R2018 Climax. From the artist: After considering what I wanted do based on the themes, I settled on a Japanese style. By incorporating the essence of Artcore, I created a fantastically expansive piece. Thanks for your support! Map by Fritzy.
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Beat
+Cover Image ID	113881402504279
 Audio Asset ID	rbxassetid://17402201452
 Audio File	17402201452.ogg
 Last Note Time	142.732

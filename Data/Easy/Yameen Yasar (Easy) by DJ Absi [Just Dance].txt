@@ -1,7 +1,11 @@
 Song Name	Yameen Yasar (Easy) by DJ Absi [Just Dance]
+Title	Yameen Yasar (Easy)
+Artist	DJ Absi [Just Dance]
+Description	Featured in Just Dance 2021, this is Arabic-language track includes vocals from Steve Ouimette and Kurupt Tha Killa. Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by doofyplayer.
 Difficulty	6
 Primary Color	Beat
 Secondary Color	Beat
+Cover Image ID	8048033574
 Audio Asset ID	rbxassetid://9060177643
 Audio File	9060177643.ogg
 Last Note Time	198.387

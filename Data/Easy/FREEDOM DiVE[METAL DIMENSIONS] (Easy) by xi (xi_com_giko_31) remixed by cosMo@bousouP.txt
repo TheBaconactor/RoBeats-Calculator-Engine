@@ -1,7 +1,11 @@
 Song Name	FREEDOM DiVE[METAL DIMENSIONS] (Easy) by xi (xi_com_giko_31) remixed by cosMo@bousouP
+Title	FREEDOM DiVE[METAL DIMENSIONS] (Easy)
+Artist	xi (xi_com_giko_31) remixed by cosMo@bousouP
+Description	Track 12 from Japanese musician xi's 2018 album 'Quietus Ray'. This track is a metal remix of xi's track 'FREEDOM DiVE' by cosMo@bousouP, a Japanese freelance sound creator and game effector. Art by Jahseh0nMyWrist. Map by doofyplayer.
 Difficulty	7
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	7861707385
 Audio Asset ID	rbxassetid://9064176231
 Audio File	9064176231.ogg
 Last Note Time	148.932

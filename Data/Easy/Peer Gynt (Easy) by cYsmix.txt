@@ -1,7 +1,11 @@
 Song Name	Peer Gynt (Easy) by cYsmix
+Title	Peer Gynt (Easy)
+Artist	cYsmix
+Description	Also known as 'Per Gynt', the main character of a Norwegian fairy tale featuring stories of a lonely hunter. Famously set as a 1800's play - and now as a 2017 electronic track by cYsmix! Map by Monoseul.
 Difficulty	7
 Primary Color	Rush
 Secondary Color	Flow
+Cover Image ID	116667246895896
 Audio Asset ID	rbxassetid://125761742497101
 Audio File	125761742497101.ogg
 Last Note Time	136.714

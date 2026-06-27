@@ -1,7 +1,11 @@
 Song Name	Demise (Easy) by Radical_Box [Tower Heroes]
+Title	Demise (Easy)
+Artist	Radical_Box [Tower Heroes]
+Description	Music that plays when fighting Demise, the final boss of the Bleak Barrens map in Tower Heroes. Tower Heroes is a Tower Defense on ROBLOX made by Pixel-Bit Studio. Map by Himitsu.
 Difficulty	3
 Primary Color	Beat
 Secondary Color	Flow
+Cover Image ID	8878704499
 Audio Asset ID	rbxassetid://9064021688
 Audio File	9064021688.ogg
 Last Note Time	124.680

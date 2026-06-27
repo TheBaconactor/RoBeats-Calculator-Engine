@@ -1,7 +1,11 @@
 Song Name	ATHAZA (Easy) by LeaF (7eaF)
+Title	ATHAZA (Easy)
+Artist	LeaF (7eaF)
+Description	What kind of flowers will a plant nurtured by tears bloom? A bpm-defying track created for 'BOFU2016 - Legendary Again -'. #ImaginaryFlower.
 Difficulty	3
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	12647861786
 Audio Asset ID	rbxassetid://9062720097
 Audio File	9062720097.ogg
 Last Note Time	156.551

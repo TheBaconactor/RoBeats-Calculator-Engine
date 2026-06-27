@@ -1,7 +1,11 @@
 Song Name	DEAD (Easy) by Geoxor & SVRGE
+Title	DEAD (Easy)
+Artist	Geoxor & SVRGE
+Description	From the artist: Shaii's angry on this one, I flew out to Canada to meet my friend SVRGE for a month and we made this, hope you enjoy :D!! Art by Ariimaw. Map by Himitsu.
 Difficulty	5
 Primary Color	Vibe
 Secondary Color	Chill
+Cover Image ID	9850390443
 Audio Asset ID	rbxassetid://9546794388
 Audio File	9546794388.ogg
 Last Note Time	108.641

@@ -1,7 +1,11 @@
 Song Name	Newspapers for Magicians (Easy) by Camellia
+Title	Newspapers for Magicians (Easy)
+Artist	Camellia
+Description	From Camellia's 2019 EP '60+3+10k EP'. A free download E.P. released with a thanks to: 60,000 Twitter followers, 10,000 YouTube subscribers, and 3,000 members of the Discord server. The name is based on a joke news site 'Maho-ONLINE' which publishes news all about magic & fantasy.
 Difficulty	4
 Primary Color	Flow
 Secondary Color	Chill
+Cover Image ID	6111906556
 Audio Asset ID	rbxassetid://9059197555
 Audio File	9059197555.ogg
 Last Note Time	155.455

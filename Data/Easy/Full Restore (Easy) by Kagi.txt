@@ -1,7 +1,11 @@
 Song Name	Full Restore (Easy) by Kagi
+Title	Full Restore (Easy)
+Artist	Kagi
+Description	ducc returns - Just warming up :D. Map by Pyrromxniac.
 Difficulty	6
 Primary Color	Flow
 Secondary Color	Vibe
+Cover Image ID	74782889682608
 Audio Asset ID	rbxassetid://88390784012492
 Audio File	88390784012492.ogg
 Last Note Time	144.730

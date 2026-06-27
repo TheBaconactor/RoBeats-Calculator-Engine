@@ -1,7 +1,11 @@
 Song Name	Electroman Adventures V3 (Easy) by Waterflame
+Title	Electroman Adventures V3 (Easy)
+Artist	Waterflame
+Description	Electroman V3: We can rebuild him. Better, stronger, faster - and with even more electric guitar! Map by Pyrromxniac.
 Difficulty	8
 Primary Color	Beat
 Secondary Color	Chill
+Cover Image ID	88668082974202
 Audio Asset ID	rbxassetid://130055087892199
 Audio File	130055087892199.ogg
 Last Note Time	164.421

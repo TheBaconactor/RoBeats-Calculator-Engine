@@ -1,7 +1,11 @@
 Song Name	Glow Mind (Easy) by Rutra
+Title	Glow Mind (Easy)
+Artist	Rutra
+Description	A 2022 release from French artist Rutra. From the artist: [...] A challenge for me. I tried out a new style, and was happy with how it turned out. AND it's the first with an official video on Youtube! I hope you enjoy it. Map by Ucitysm.
 Difficulty	6
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	10843178607
 Audio Asset ID	rbxassetid://10540198923
 Audio File	10540198923.ogg
 Last Note Time	128.000

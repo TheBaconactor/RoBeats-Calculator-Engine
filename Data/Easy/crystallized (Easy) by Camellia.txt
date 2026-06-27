@@ -1,7 +1,11 @@
 Song Name	crystallized (Easy) by Camellia
+Title	crystallized (Easy)
+Artist	Camellia
+Description	From Camellia's 2015 album 'crystallized'. From the artist: There are so many people who love this song the most, it's amazing. I can't thank you enough for your love!
 Difficulty	2
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	6111900982
 Audio Asset ID	rbxassetid://9059183174
 Audio File	9059183174.ogg
 Last Note Time	121.452

@@ -1,7 +1,11 @@
 Song Name	Wishing you a very H4RDC0RE Christmas! (With Project Skylate) (Easy) by Project Skylate
+Title	Wishing you a very H4RDC0RE Christmas! (With Project Skylate) (Easy)
+Artist	Project Skylate
+Description	Wishing you a very H4RDC0RE Christmas! A RoBeats-original commission for Xmas 2024 by Project Skylate. Merry Christmas, and here's to many more! Map by Fritzy.
 Difficulty	2
 Primary Color	Flow
 Secondary Color	Rush
+Cover Image ID	136093439782188
 Audio Asset ID	rbxassetid://111478695957746
 Audio File	111478695957746.ogg
 Last Note Time	126.684

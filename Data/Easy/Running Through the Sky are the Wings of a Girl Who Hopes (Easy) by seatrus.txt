@@ -1,7 +1,11 @@
 Song Name	Running Through the Sky are the Wings of a Girl Who Hopes (Easy) by seatrus
+Title	Running Through the Sky are the Wings of a Girl Who Hopes (Easy)
+Artist	seatrus
+Description	Directly translated from its Japanese title. Originally a 2018 Artcore track by Japanese producer seatrus, re-mastered and re-released in 2021. Art by Nari. Map by Ucitysm.
 Difficulty	9
 Primary Color	Chill
 Secondary Color	Rush
+Cover Image ID	11300087209
 Audio Asset ID	rbxassetid://10939890898
 Audio File	10939890898.ogg
 Last Note Time	134.385

@@ -1,7 +1,11 @@
 Song Name	GHOST (2020 Halloween+++++++++ VIP) (Easy) by Camellia
+Title	GHOST (2020 Halloween+++++++++ VIP) (Easy)
+Artist	Camellia
+Description	From the artist: For bringing more scary time for Halloween, I made a VIP(a slightly different, extra version) version of 'GHOST'! Enjoy experiencing breaking your arm and becoming to a GHOST. mu ha ha ha ha! Map by Fritzy.
 Difficulty	7
 Primary Color	Chill
 Secondary Color	Rush
+Cover Image ID	7784988730
 Audio Asset ID	rbxassetid://9059211028
 Audio File	9059211028.ogg
 Last Note Time	143.101

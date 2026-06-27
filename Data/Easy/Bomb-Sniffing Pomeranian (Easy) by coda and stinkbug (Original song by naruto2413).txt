@@ -1,7 +1,11 @@
 Song Name	Bomb-Sniffing Pomeranian (Easy) by coda and stinkbug (Original song by naruto2413)
+Title	Bomb-Sniffing Pomeranian (Easy)
+Artist	coda and stinkbug (Original song by naruto2413)
+Description	A remix of 'Artificial Intelligence Bomb' by American producers coda and stinkbug. Coverart by mushbuh. Map by Fritzy.
 Difficulty	2
 Primary Color	Flow
 Secondary Color	Beat
+Cover Image ID	7676093187
 Audio Asset ID	rbxassetid://9061128928
 Audio File	9061128928.ogg
 Last Note Time	162.284

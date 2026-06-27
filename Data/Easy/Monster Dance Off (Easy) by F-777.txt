@@ -1,7 +1,11 @@
 Song Name	Monster Dance Off (Easy) by F-777
+Title	Monster Dance Off (Easy)
+Artist	F-777
+Description	Track 5 from producer F-777's 2016 album of the same name. From the artist: I love you guys so much. Stay awesome and BLAST DEM SPEAKERS!! Map by DeadpanSky21.
 Difficulty	4
 Primary Color	Flow
 Secondary Color	Rush
+Cover Image ID	8030298426
 Audio Asset ID	rbxassetid://9059685893
 Audio File	9059685893.ogg
 Last Note Time	142.643

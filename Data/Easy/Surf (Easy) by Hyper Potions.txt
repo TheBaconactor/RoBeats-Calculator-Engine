@@ -1,7 +1,11 @@
 Song Name	Surf (Easy) by Hyper Potions
+Title	Surf (Easy)
+Artist	Hyper Potions
+Description	A 2017 track by American producer pair Hyper Potions. HM03! From the artist: The soundtrack to your surf adventures. Map by Himitsu.
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	79738200618042
 Audio Asset ID	rbxassetid://9064707867
 Audio File	9064707867.ogg
 Last Note Time	111.974

@@ -1,7 +1,11 @@
 Song Name	Euphoria (Easy) by Laur [LAUR1200]
+Title	Euphoria (Easy)
+Artist	Laur [LAUR1200]
+Description	Track 1 from Japanese producer Laur's 'CELESTIAL EP' released in 2022. Art by Mishamo (@0youmu). From the album notes: Heaven shouted. Tune brings light---. Map by Fritzy.
 Difficulty	6
 Primary Color	Beat
 Secondary Color	Chill
+Cover Image ID	9423664244
 Audio Asset ID	rbxassetid://9126010651
 Audio File	9126010651.ogg
 Last Note Time	95.973

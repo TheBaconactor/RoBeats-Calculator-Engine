@@ -1,7 +1,11 @@
 Song Name	Galaxy Collapse (Easy) by Kurokotei
+Title	Galaxy Collapse (Easy)
+Artist	Kurokotei
+Description	A Speedcore remix of 'Heian Alien' from Touhou 12 by French producer Kurokotei. This song is known in many rhythm game communities for its extreme BPM. Permission granted by Team Shanghai Alice. Map by Fritzy.
 Difficulty	10
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	9362753367
 Audio Asset ID	rbxassetid://9158989264
 Audio File	9158989264.ogg
 Last Note Time	117.314

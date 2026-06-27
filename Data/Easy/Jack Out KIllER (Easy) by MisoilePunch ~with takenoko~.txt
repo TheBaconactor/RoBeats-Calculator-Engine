@@ -1,7 +1,11 @@
 Song Name	Jack Out KIllER (Easy) by MisoilePunch ~with takenoko~
+Title	Jack Out KIllER (Easy)
+Artist	MisoilePunch ~with takenoko~
+Description	A 2018 track by Japanese producer duo MisoilePunch. Art by Haltquinz. Map by Ucitysm and Luciduslux.
 Difficulty	8
 Primary Color	Beat
 Secondary Color	Flow
+Cover Image ID	8919819901
 Audio Asset ID	rbxassetid://9060917367
 Audio File	9060917367.ogg
 Last Note Time	131.652

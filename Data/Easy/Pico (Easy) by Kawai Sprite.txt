@@ -1,7 +1,11 @@
 Song Name	Pico (Easy) by Kawai Sprite
+Title	Pico (Easy)
+Artist	Kawai Sprite
+Description	The 1st track of Week 3 'Pico'. The character comes from the NG flash animation 'Pico's School', and is an unlikely school saviour. Map by Dopheide.
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Chill
+Cover Image ID	6137052382
 Audio Asset ID	rbxassetid://9063147367
 Audio File	9063147367.ogg
 Last Note Time	79.222
@@ -70,8 +74,8 @@ Song Data
 55.022	51	3	1
 56.022	52	2	1
 56.822	53	1	1
-57.622	54	1	1
-57.622	55	4	1
+57.622	54	4	1
+57.622	55	1	1
 58.222	56	3	1
 59.222	57	2	1
 60.022	58	1	1

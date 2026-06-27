@@ -1,7 +1,11 @@
 Song Name	Inside (Easy) by Slynk
+Title	Inside (Easy)
+Artist	Slynk
+Description	Track 8 from Slynk's 2015 album 'Front Yard Futon'. From the album: Sometimes you find inspiration for music in the most unlikely places. Slynk found Front Yard Futon at a yard sale. Map by doofyplayer.
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	8643781311
 Audio Asset ID	rbxassetid://9063812299
 Audio File	9063812299.ogg
 Last Note Time	108.847

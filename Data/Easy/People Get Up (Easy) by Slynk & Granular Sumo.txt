@@ -1,7 +1,11 @@
 Song Name	People Get Up (Easy) by Slynk & Granular Sumo
+Title	People Get Up (Easy)
+Artist	Slynk & Granular Sumo
+Description	From the artist: [...] Occasionally I revisit my old friend drum and bass. And I've got to say, it's been a while. I've missed you! To all the dance floor ragers and jump up people, this one is for you. Map by Himitsu.
 Difficulty	2
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	8643781016
 Audio Asset ID	rbxassetid://9063818211
 Audio File	9063818211.ogg
 Last Note Time	159.994

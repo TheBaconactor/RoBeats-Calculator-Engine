@@ -1,7 +1,11 @@
 Song Name	The Empress (scream off version) (Easy) by UNDEAD CORPORATION
+Title	The Empress (scream off version) (Easy)
+Artist	UNDEAD CORPORATION
+Description	Track 9 from Japanese heavy metal doujin band UNDEAD CORPORATION's 2012 album 'Tyrant'. Arrangement of 'Embodiment of the Scarlet Devil' by ZUN. Permission granted by Team Shanghai Alice. The source theme is commonly known as Flandre's Theme, or the theme of Flandre Scarlet. Map by Fritzy.
 Difficulty	8
 Primary Color	Beat
 Secondary Color	Flow
+Cover Image ID	77514710989739
 Audio Asset ID	rbxassetid://9126094470
 Audio File	9126094470.ogg
 Last Note Time	158.216

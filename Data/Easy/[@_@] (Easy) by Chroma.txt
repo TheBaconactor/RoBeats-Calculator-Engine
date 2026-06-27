@@ -1,7 +1,11 @@
 Song Name	[@_@] (Easy) by Chroma
+Title	[@_@] (Easy)
+Artist	Chroma
+Description	Track #3 from Chroma's 2019 album 'Robot & Human.' There was a robot, and the human that made the robot. There was a great love between the two.
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	6527751628
 Audio Asset ID	rbxassetid://9059365271
 Audio File	9059365271.ogg
 Last Note Time	100.443
@@ -69,9 +73,9 @@ Song Data
 49.936	50	3	1
 50.696	51	2	1
 51.455	52	3	2
-52.784	53	2	2
-54.493	54	2	3
-54.493	55	3	3
+54.493	53	3	3
+52.784	54	2	2
+54.493	55	2	3
 56.202	56	4	1
 57.531	57	2	1
 58.481	58	3	1
@@ -89,8 +93,8 @@ Song Data
 71.392	70	1	1
 72.911	71	2	1
 77.278	72	2	2
-77.278	73	3	2
-78.607	74	2	3
+78.607	73	2	3
+77.278	74	3	2
 78.607	75	3	3
 81.265	76	3	1
 81.835	77	2	1
@@ -107,8 +111,8 @@ Song Data
 92.848	88	3	1
 93.417	89	1	1
 95.696	90	2	2
-97.025	91	3	2
-98.734	92	2	3
+98.734	91	2	3
+97.025	92	3	2
 98.734	93	3	3
 100.443	94	2	1
 100.443	95	3	1

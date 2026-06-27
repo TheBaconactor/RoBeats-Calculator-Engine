@@ -1,7 +1,11 @@
 Song Name	Farewell (Easy) by ARForest
+Title	Farewell (Easy)
+Artist	ARForest
+Description	This track was released in 2021 by the artist 'ARForest'. This song is part of their 'the unfinished' album. Map by Ucitysm.
 Difficulty	5
 Primary Color	Chill
 Secondary Color	Flow
+Cover Image ID	7312869521
 Audio Asset ID	rbxassetid://9058832250
 Audio File	9058832250.ogg
 Last Note Time	152.379

@@ -1,7 +1,11 @@
 Song Name	Perfect Neglect (Easy) by Kobaryo
+Title	Perfect Neglect (Easy)
+Artist	Kobaryo
+Description	A 2016 Hardcore song by Japanese producer Kobaryo, featured as track 4 on label HiTNEX TRAX's debut compilation album 'SUPER REUNION'. Map by Ucitysm.
 Difficulty	8
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	11646381367
 Audio Asset ID	rbxassetid://11231591068
 Audio File	11231591068.ogg
 Last Note Time	139.936

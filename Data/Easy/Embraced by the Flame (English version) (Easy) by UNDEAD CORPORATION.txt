@@ -1,7 +1,11 @@
 Song Name	Embraced by the Flame (English version) (Easy) by UNDEAD CORPORATION
+Title	Embraced by the Flame (English version) (Easy)
+Artist	UNDEAD CORPORATION
+Description	Track 7 from Japanese heavy metal doujin band UNDEAD CORPORATION's 2015 album 'Instant Defeat'. Arrangement of 'Lullaby of Deserted Hell' by ZUN, with permission granted by Team Shanghai Alice. Don't fear this adventure / show me your brave heart... Map by doofyplayer.
 Difficulty	5
 Primary Color	Rush
 Secondary Color	Beat
+Cover Image ID	9658317181
 Audio Asset ID	rbxassetid://9353386047
 Audio File	9353386047.ogg
 Last Note Time	143.983

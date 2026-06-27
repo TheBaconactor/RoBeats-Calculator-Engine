@@ -1,7 +1,11 @@
 Song Name	Idol Encore (Easy) by Radical_Box [Tower Heroes]
+Title	Idol Encore (Easy)
+Artist	Radical_Box [Tower Heroes]
+Description	Music that plays when fighting Mirai, the final boss of the 'Idol Encore' stage in Tower Heroes. Mirai is a virtual idol who's extremely popular around the world of Tower Heroes. Map by Ucitysm.
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Flow
+Cover Image ID	8876911854
 Audio Asset ID	rbxassetid://9064020238
 Audio File	9064020238.ogg
 Last Note Time	153.604

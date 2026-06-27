@@ -1,7 +1,11 @@
 Song Name	Endgame (Easy) by Bossfight
+Title	Endgame (Easy)
+Artist	Bossfight
+Description	A 2021 Drumstep track by Swedish producer Bossfight. Welcome to the end / Welcome to the end / Welcome to the endgame! Map by Fritzy.
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Vibe
+Cover Image ID	14558294078
 Audio Asset ID	rbxassetid://13684915001
 Audio File	13684915001.ogg
 Last Note Time	123.630

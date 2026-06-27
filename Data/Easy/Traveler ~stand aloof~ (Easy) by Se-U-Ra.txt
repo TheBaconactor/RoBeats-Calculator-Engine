@@ -1,7 +1,11 @@
 Song Name	Traveler ~stand aloof~ (Easy) by Se-U-Ra
+Title	Traveler ~stand aloof~ (Easy)
+Artist	Se-U-Ra
+Description	A 2019 track by Japanese artist and music producer Se-U-Ra made for #BMS_Shuin, a team battle music competition. From the artist: The traveler stands at the end. Map by fritzy.
 Difficulty	7
 Primary Color	Flow
 Secondary Color	Chill
+Cover Image ID	7261689508
 Audio Asset ID	rbxassetid://9063509005
 Audio File	9063509005.ogg
 Last Note Time	115.851

@@ -1,7 +1,11 @@
 Song Name	Unlimited (Easy) by Similar Outskirts
+Title	Unlimited (Easy)
+Artist	Similar Outskirts
+Description	From the artist: Colour Bass banger! Map by Himitsu.
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Beat
+Cover Image ID	8837589194
 Audio Asset ID	rbxassetid://9063772318
 Audio File	9063772318.ogg
 Last Note Time	116.820

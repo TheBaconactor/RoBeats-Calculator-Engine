@@ -1,7 +1,11 @@
 Song Name	Ludicrous Speed (Easy) by F-777
+Title	Ludicrous Speed (Easy)
+Artist	F-777
+Description	Track 8 from producer F-777's 2015 album of the same name. From the artist: So for years now people have been asking me to make more songs like 'Ludicrous Speed'. So I decided instead to make an entire album featuring some fast tracks! Map by doofyplayer.
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Rush
+Cover Image ID	8030029402
 Audio Asset ID	rbxassetid://9059684257
 Audio File	9059684257.ogg
 Last Note Time	131.701

@@ -1,7 +1,11 @@
 Song Name	Birdsong (Easy) by James Landino & Kabuki
+Title	Birdsong (Easy)
+Artist	James Landino & Kabuki
+Description	Track 5 from the 2019 album 'Osu! James Landino Collection'. This track was a collaboration with Kabuki, a German DJ from the drum & bass scene. Art by AshleyLi. Map by Fritzy.
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	7952877041
 Audio Asset ID	rbxassetid://9060048215
 Audio File	9060048215.ogg
 Last Note Time	128.162

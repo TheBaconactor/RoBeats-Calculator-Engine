@@ -1,7 +1,11 @@
 Song Name	Delusion (Easy) by EmoCosine
+Title	Delusion (Easy)
+Artist	EmoCosine
+Description	A beautiful dream (or delusion?) before one's last dying breath. A Future Bass/Jersey Club song featured as track 1 in EmoCosine's 2021 'Love Kills U EP'. Art by Wagashi, mastering by GUANA.
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	14305098947
 Audio Asset ID	rbxassetid://14306209865
 Audio File	14306209865.ogg
 Last Note Time	98.950

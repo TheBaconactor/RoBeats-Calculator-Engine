@@ -1,7 +1,11 @@
 Song Name	Sky Warrior (Easy) by Similar Outskirts
+Title	Sky Warrior (Easy)
+Artist	Similar Outskirts
+Description	You feel the cold breeze brush past your face. Peace fills your heart as you watch the sky... Map by Fritzy.
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Chill
+Cover Image ID	73733971174118
 Audio Asset ID	rbxassetid://92969215537365
 Audio File	92969215537365.ogg
 Last Note Time	107.603

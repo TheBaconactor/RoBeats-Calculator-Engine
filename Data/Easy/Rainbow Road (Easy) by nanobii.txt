@@ -1,7 +1,11 @@
 Song Name	Rainbow Road (Easy) by nanobii
+Title	Rainbow Road (Easy)
+Artist	nanobii
+Description	nanobii's 2014 debut Monstercat track - in reference to a recurring course in the Mario Kart series. Careful not to fall off the sides! Map by Fritzy.
 Difficulty	4
 Primary Color	Rush
 Secondary Color	Flow
+Cover Image ID	86781112338381
 Audio Asset ID	rbxassetid://18446802095
 Audio File	18446802095.ogg
 Last Note Time	169.265

@@ -1,7 +1,11 @@
 Song Name	Thorns (Easy) by Kawai Sprite
+Title	Thorns (Easy)
+Artist	Kawai Sprite
+Description	The 3rd track of Week 6 'Hating Simulator ft. Moawling'. Having lost twice, the Spirit bursts out of Senpai's face and possesses his body. Having been trapped by 'Daddy Dearest', the Spirit seeks revenge! Map by Dopheide.
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Beat
+Cover Image ID	7276946343
 Audio Asset ID	rbxassetid://9059798550
 Audio File	9059798550.ogg
 Last Note Time	100.548

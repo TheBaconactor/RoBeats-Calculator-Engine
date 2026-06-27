@@ -1,7 +1,11 @@
 Song Name	Sound Chimera (Game Edition) (Easy) by Laur [LAUR1200]
+Title	Sound Chimera (Game Edition) (Easy)
+Artist	Laur [LAUR1200]
+Description	Track 6 from Laur's 1st solo album 'The Angel's Message'. A Psytrance/Frenchcore song that gained much popularity from the online rhythm game 'osu!' for its highly difficult beatmap. Map by Fritzy.
 Difficulty	9
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	9425375648
 Audio Asset ID	rbxassetid://9285208087
 Audio File	9285208087.ogg
 Last Note Time	133.907

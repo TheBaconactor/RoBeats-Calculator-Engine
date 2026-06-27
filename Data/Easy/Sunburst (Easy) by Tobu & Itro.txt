@@ -1,7 +1,11 @@
 Song Name	Sunburst (Easy) by Tobu & Itro
+Title	Sunburst (Easy)
+Artist	Tobu & Itro
+Description	A 2014 track by producers Tobu and Itro. Music: Tobu & Itro - Sunburst (youtube.com/tobuofficial) (youtube.com/user/officialitro) Released by NCS (youtube.com/NoCopyrightSounds). Map by Ucitysm.
 Difficulty	2
 Primary Color	Beat
 Secondary Color	Beat
+Cover Image ID	8392197864
 Audio Asset ID	rbxassetid://9063875097
 Audio File	9063875097.ogg
 Last Note Time	89.712

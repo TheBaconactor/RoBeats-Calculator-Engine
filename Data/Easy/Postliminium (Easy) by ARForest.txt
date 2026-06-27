@@ -1,7 +1,11 @@
 Song Name	Postliminium (Easy) by ARForest
+Title	Postliminium (Easy)
+Artist	ARForest
+Description	A 2021 track by ARForest made for 'THE BMS OF FIGHTERS XVII -VISION THE RETRO FUTURE-'. From the artist: The title of the song was made in Latin with the theme of 'returning to where I should be', meaning 'returning home, returning'. Map by Ucitysm.
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Chill
+Cover Image ID	9215190197
 Audio Asset ID	rbxassetid://9118711152
 Audio File	9118711152.ogg
 Last Note Time	139.603

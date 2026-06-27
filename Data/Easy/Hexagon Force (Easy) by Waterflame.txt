@@ -1,7 +1,11 @@
 Song Name	Hexagon Force (Easy) by Waterflame
+Title	Hexagon Force (Easy)
+Artist	Waterflame
+Description	A 2014 track from Norwegian producer Waterflame. From the artist: I took some inspiration from 80s themes and sega genesis music for this one! Hope you dig it ~. Map by doofyplayer.
 Difficulty	2
 Primary Color	Flow
 Secondary Color	Chill
+Cover Image ID	9064990716
 Audio Asset ID	rbxassetid://9064611431
 Audio File	9064611431.ogg
 Last Note Time	100.130

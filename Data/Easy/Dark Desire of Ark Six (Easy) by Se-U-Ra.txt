@@ -1,7 +1,11 @@
 Song Name	Dark Desire of Ark Six (Easy) by Se-U-Ra
+Title	Dark Desire of Ark Six (Easy)
+Artist	Se-U-Ra
+Description	A 2018 track by Japanese artist and music producer Se-U-Ra. From the artist: It may be a continuation of this story... Map by doofyplayer.
 Difficulty	6
 Primary Color	Vibe
 Secondary Color	Chill
+Cover Image ID	7261688970
 Audio Asset ID	rbxassetid://9063495148
 Audio File	9063495148.ogg
 Last Note Time	110.361

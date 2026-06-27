@@ -1,7 +1,11 @@
 Song Name	Change (Easy) by hayve & Skyelle [Monstercat]
+Title	Change (Easy)
+Artist	hayve & Skyelle [Monstercat]
+Description	A 2021 Drum & Bass song by hayve and Skyelle, featured on 'Monstercat Uncaged Vol. 11', and included in 'Monstercat - Best of 2021'. Map by Himitsu.
 Difficulty	7
 Primary Color	Beat
 Secondary Color	Chill
+Cover Image ID	10142530193
 Audio Asset ID	rbxassetid://9690720237
 Audio File	9690720237.ogg
 Last Note Time	99.794

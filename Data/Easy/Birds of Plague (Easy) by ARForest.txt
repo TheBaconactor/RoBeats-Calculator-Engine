@@ -1,7 +1,11 @@
 Song Name	Birds of Plague (Easy) by ARForest
+Title	Birds of Plague (Easy)
+Artist	ARForest
+Description	An artcore track released in 2019 by South Korean composer 'ARForest', as part of the Frost Era album, featured in several different rhythm games. Map by Ucitysm.
 Difficulty	5
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	7336539481
 Audio Asset ID	rbxassetid://9058790922
 Audio File	9058790922.ogg
 Last Note Time	153.090

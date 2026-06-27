@@ -1,7 +1,11 @@
 Song Name	Dance of The Violins (Easy) by F-777
+Title	Dance of The Violins (Easy)
+Artist	F-777
+Description	Track 2 from producer F-777's 2015 album 'Celtic Dance Machine'. From the artist: I had an AMAZING fun time making this! I have always been in love with traditional Celtic music and even more modern styles such as found in the performance 'Lord of The Dance'. Map by Himitsu.
 Difficulty	4
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	8029985826
 Audio Asset ID	rbxassetid://9059679710
 Audio File	9059679710.ogg
 Last Note Time	140.289

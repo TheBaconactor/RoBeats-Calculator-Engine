@@ -1,7 +1,11 @@
 Song Name	Mom (Easy) by Kawai Sprite
+Title	Mom (Easy)
+Artist	Kawai Sprite
+Description	Track 3 from Week 4 'Mommy Must Murder'. Officially known as a certain 4-letter abbreviation which we won't be mentioning here...
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Rush
+Cover Image ID	7261991285
 Audio Asset ID	rbxassetid://6244107428
 Audio File	6244107428.ogg
 Last Note Time	120.003

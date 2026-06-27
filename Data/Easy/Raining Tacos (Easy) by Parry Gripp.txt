@@ -1,9 +1,13 @@
 Song Name	Raining Tacos (Easy) by Parry Gripp
+Title	Raining Tacos (Easy)
+Artist	Parry Gripp
+Description	A song that became popular on ROBLOX after CloneTrooper1019 made a place that exclusively looped the song temporarily reached the front page. Back again on Roblox courtesy of Parry Gripp!
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	5653160014
 Audio Asset ID	rbxassetid://142376088
-Audio File	142376088.ogg
+Audio File	142376088.mp3
 Last Note Time	89.827
 Total Notes	162
 Fever Fill	47

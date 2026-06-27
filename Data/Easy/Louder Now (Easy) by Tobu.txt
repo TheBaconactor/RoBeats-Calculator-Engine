@@ -1,9 +1,13 @@
 Song Name	Louder Now (Easy) by Tobu
+Title	Louder Now (Easy)
+Artist	Tobu
+Description	A 2020 track by producer Tobu released at the start of the global pandemic. From the artist: I hope this gives you some joy during these times! :) And, please, stay safe! How are you spending time now? Art by iroarts. Map by AmyKawashima.
 Difficulty	5
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	8716289977
 Audio Asset ID	rbxassetid://8267684113
-Audio File	8267684113.ogg
+Audio File	8267684113.mp3
 Last Note Time	164.778
 Total Notes	345
 Fever Fill	97

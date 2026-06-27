@@ -1,7 +1,11 @@
 Song Name	In My Heart (Easy) by Silentroom
+Title	In My Heart (Easy)
+Artist	Silentroom
+Description	From the album description: Silentroom's second album, 'In My Heart', includes full version tracks from music games, selected masterpieces, newly written songs, and contributions from guest composers. This album is the culmination of 10 years of Silentroom's musical activity. Map by doofyplayer.
 Difficulty	4
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	12414134837
 Audio Asset ID	rbxassetid://10893611939
 Audio File	10893611939.ogg
 Last Note Time	158.370

@@ -1,7 +1,11 @@
 Song Name	sp0M0ky (Easy) by garlagan
+Title	sp0M0ky (Easy)
+Artist	garlagan
+Description	garlagan: I really like Halloween and whenever i can i try to make a song related to it every October 31. this is one of those songs and i just like how it is kinda romantic in a very silly way. Map by AmyKawashima.
 Difficulty	6
 Primary Color	Rush
 Secondary Color	Chill
+Cover Image ID	7486776577
 Audio Asset ID	rbxassetid://9059846011
 Audio File	9059846011.ogg
 Last Note Time	155.021

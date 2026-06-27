@@ -1,7 +1,11 @@
 Song Name	Vulture 2 (Easy) by Rutra
+Title	Vulture 2 (Easy)
+Artist	Rutra
+Description	A 2022 release from French artist Rutra. From the artist: If you've been listening to my music, then you know the first 'Vulture' as one of my classics. It's been a few years so I thought... time to make a new and shiny sequel! Map by Fritzy.
 Difficulty	5
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	10843179631
 Audio Asset ID	rbxassetid://11148128428
 Audio File	11148128428.ogg
 Last Note Time	120.937

@@ -1,7 +1,11 @@
 Song Name	Summer Met With a Meteor Shower (Easy) by Chroma
+Title	Summer Met With a Meteor Shower (Easy)
+Artist	Chroma
+Description	A 2020 track from Japanese producer Chroma. This is one summer you're not likely to forget! Map by Ucitysm.
 Difficulty	8
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	6527804899
 Audio Asset ID	rbxassetid://9059379980
 Audio File	9059379980.ogg
 Last Note Time	162.407

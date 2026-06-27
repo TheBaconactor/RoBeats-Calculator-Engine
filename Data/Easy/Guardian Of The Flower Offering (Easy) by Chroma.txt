@@ -1,7 +1,11 @@
 Song Name	Guardian Of The Flower Offering (Easy) by Chroma
+Title	Guardian Of The Flower Offering (Easy)
+Artist	Chroma
+Description	Track 13 in 'A city that delights in love', Chroma's first digital album. The second disk includes a 49-stage PC puzzle game 'Machines for Reality', from which the album took inspiration. Map by doofyplayer.
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Beat
+Cover Image ID	13025021798
 Audio Asset ID	rbxassetid://12468667067
 Audio File	12468667067.ogg
 Last Note Time	115.670

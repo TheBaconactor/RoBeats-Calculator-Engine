@@ -1,7 +1,11 @@
 Song Name	Philly Nice (Easy) by Kawai Sprite
+Title	Philly Nice (Easy)
+Artist	Kawai Sprite
+Description	The 2nd track of Week 3 'Pico'. 'Philly' is short for the American city of Philadelphia, where the NG office is located. The stage is said to be located on the roof!
 Difficulty	1
 Primary Color	Vibe
 Secondary Color	Beat
+Cover Image ID	6137062716
 Audio Asset ID	rbxassetid://9063145819
 Audio File	9063145819.ogg
 Last Note Time	94.486

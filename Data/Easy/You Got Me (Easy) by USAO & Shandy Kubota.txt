@@ -1,7 +1,11 @@
 Song Name	You Got Me (Easy) by USAO & Shandy Kubota
+Title	You Got Me (Easy)
+Artist	USAO & Shandy Kubota
+Description	Featured as track 4 on the 2021 HARDCORE TANO*C 'not hardcore' compilation album 'IRREGULAR NATION 7', with art from HARDCORE TANO*C. From the artist: I want to go for a walk...
 Difficulty	5
 Primary Color	Beat
 Secondary Color	Vibe
+Cover Image ID	18940631049
 Audio Asset ID	rbxassetid://17714804125
 Audio File	17714804125.ogg
 Last Note Time	158.394

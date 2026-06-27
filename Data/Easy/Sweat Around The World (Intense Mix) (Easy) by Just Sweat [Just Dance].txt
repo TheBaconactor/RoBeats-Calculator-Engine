@@ -1,7 +1,11 @@
 Song Name	Sweat Around The World (Intense Mix) (Easy) by Just Sweat [Just Dance]
+Title	Sweat Around The World (Intense Mix) (Easy)
+Artist	Just Sweat [Just Dance]
+Description	A track used for 'Just Sweat', an exercise mode in Just Dance 4. You can select this track as a 10, 25 or 45 minute workout. Muy Bien! Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by AmyKawashima.
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	8047327353
 Audio Asset ID	rbxassetid://9060172570
 Audio File	9060172570.ogg
 Last Note Time	91.361

@@ -1,7 +1,11 @@
 Song Name	Chronoto (Easy) by Se-U-Ra
+Title	Chronoto (Easy)
+Artist	Se-U-Ra
+Description	A 2020 track by Japanese artist and music producer Se-U-Ra. From the artist: I give you a new song: 'Se-U-Ra Chronoto'. I'll still wait!
 Difficulty	2
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	7222611033
 Audio Asset ID	rbxassetid://9063491830
 Audio File	9063491830.ogg
 Last Note Time	118.862

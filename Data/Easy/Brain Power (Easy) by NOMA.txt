@@ -1,7 +1,11 @@
 Song Name	Brain Power (Easy) by NOMA
+Title	Brain Power (Easy)
+Artist	NOMA
+Description	The often memed and much beloved 2013 classic by Japanese composer NOMA, known for its associated chat spam... O-oooooooooo AAAAE-A-A-I-A-U-JO-oooooooooooo AAE-O-A-A-U-U-A-E-eee-ee-eee AAAAE-A-E-I-E-A-JO-ooo-oo-oo-oo EEEEO-A-AAA-AAAA. Map by doofyplayer.
 Difficulty	6
 Primary Color	Beat
 Secondary Color	Flow
+Cover Image ID	10079055694
 Audio Asset ID	rbxassetid://9951771724
 Audio File	9951771724.ogg
 Last Note Time	108.710

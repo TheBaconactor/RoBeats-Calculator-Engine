@@ -1,7 +1,11 @@
 Song Name	Crab Rave (Easy) by Noisestorm [Monstercat]
+Title	Crab Rave (Easy)
+Artist	Noisestorm [Monstercat]
+Description	Released as an April fool's joke on the Monstercat channel, it went viral because of a catchy music video featuring dancing crabs. MY WIFE IS GONE.
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Chill
+Cover Image ID	2604971216
 Audio Asset ID	rbxassetid://9062416375
 Audio File	9062416375.ogg
 Last Note Time	138.240

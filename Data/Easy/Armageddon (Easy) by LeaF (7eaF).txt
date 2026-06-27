@@ -1,7 +1,11 @@
 Song Name	Armageddon (Easy) by LeaF (7eaF)
+Title	Armageddon (Easy)
+Artist	LeaF (7eaF)
+Description	A 2020 track by Japanese producer LeaF, made for Touhou BMS 9. Arrangement of the original song 'Solar Sect of Mystic Wisdom ~ Nuclear Fusion' by ZUN. Permission granted by Team Shanghai Alice. Map by Himitsu.
 Difficulty	4
 Primary Color	Rush
 Secondary Color	Beat
+Cover Image ID	9119833440
 Audio Asset ID	rbxassetid://9064552243
 Audio File	9064552243.ogg
 Last Note Time	145.300

@@ -1,7 +1,11 @@
 Song Name	Destination (Easy) by BlackY
+Title	Destination (Easy)
+Artist	BlackY
+Description	Five songs that open up a new world view of the BlackY Sound - Track 3 from BlackY's 2023 solo album 'ATARAXIA EP'. Map by Pyrromxniac.
 Difficulty	10
 Primary Color	Beat
 Secondary Color	Vibe
+Cover Image ID	105196539704572
 Audio Asset ID	rbxassetid://92090480087355
 Audio File	92090480087355.ogg
 Last Note Time	151.162

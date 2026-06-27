@@ -1,7 +1,11 @@
 Song Name	BANANA STREET (Easy) by dark cat
+Title	BANANA STREET (Easy)
+Artist	dark cat
+Description	From the artist: my favorite of the whole thing. Track 3 from producer dark cat's 2016 album 'finite EP'. Map by AmyKawashima.
 Difficulty	5
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	8201483043
 Audio Asset ID	rbxassetid://7526742108
 Audio File	7526742108.mp3
 Last Note Time	137.098

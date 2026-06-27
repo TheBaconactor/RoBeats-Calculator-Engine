@@ -1,7 +1,11 @@
 Song Name	Colors (Easy) by Tobu
+Title	Colors (Easy)
+Artist	Tobu
+Description	A 2014 track by Latvian producer Tobu. From the artist: 20,000,000... omg, thanks guys!! Music: Tobu - Colors (youtube.com/tobuofficial) Released by NCS (youtube.com/NoCopyrightSounds). Art by SKL.PROD. Map by Ucitysm.
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	8392191240
 Audio Asset ID	rbxassetid://9063861239
 Audio File	9063861239.ogg
 Last Note Time	136.543

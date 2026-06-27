@@ -1,7 +1,11 @@
 Song Name	liquated (Easy) by Camellia
+Title	liquated (Easy)
+Artist	Camellia
+Description	Liquate: To separate or purify (a metal) by melting it. Track 9 from Camellia's 2015 album 'crystallized'. Art by dhanfrhr. Map by Ucitysm and VIVIDDEBUT.
 Difficulty	4
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	8255784519
 Audio Asset ID	rbxassetid://9064392369
 Audio File	9064392369.ogg
 Last Note Time	151.115

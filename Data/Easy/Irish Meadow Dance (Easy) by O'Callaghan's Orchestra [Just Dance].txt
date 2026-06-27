@@ -1,7 +1,11 @@
 Song Name	Irish Meadow Dance (Easy) by O'Callaghan's Orchestra [Just Dance]
+Title	Irish Meadow Dance (Easy)
+Artist	O'Callaghan's Orchestra [Just Dance]
+Description	First featured in Just Dance 2016. An instrumental track heavily influenced by traditional Irish music, in-game it is performed as a quartet dance. Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by doofyplayer.
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	8046908399
 Audio Asset ID	rbxassetid://9060164222
 Audio File	9060164222.ogg
 Last Note Time	150.616

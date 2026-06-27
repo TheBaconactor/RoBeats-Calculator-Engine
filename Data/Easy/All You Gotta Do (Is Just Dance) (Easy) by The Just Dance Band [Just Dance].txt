@@ -1,7 +1,11 @@
 Song Name	All You Gotta Do (Is Just Dance) (Easy) by The Just Dance Band [Just Dance]
+Title	All You Gotta Do (Is Just Dance) (Easy)
+Artist	The Just Dance Band [Just Dance]
+Description	Featured in Just Dance 2018, this was the first song by 'The Just Dance Band' in the series. Composed by Tom Salta. Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by AmyKawashima.
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	8048084407
 Audio Asset ID	rbxassetid://9060161585
 Audio File	9060161585.ogg
 Last Note Time	143.492

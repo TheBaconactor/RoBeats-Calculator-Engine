@@ -1,7 +1,11 @@
 Song Name	pastel planet (Easy) by AAAA
+Title	pastel planet (Easy)
+Artist	AAAA
+Description	From the artist: A new song has been released to coincide with my first Youtube stream! Made as a hobby while having fun in a new environment (PC). I hope you'll listen to it and enjoy it...! Art by Okku.
 Difficulty	8
 Primary Color	Vibe
 Secondary Color	Beat
+Cover Image ID	17737000644
 Audio Asset ID	rbxassetid://17062573697
 Audio File	17062573697.ogg
 Last Note Time	111.899

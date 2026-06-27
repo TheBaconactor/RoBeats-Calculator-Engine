@@ -1,9 +1,13 @@
 Song Name	Who Needs A Broken Heart (Easy) by Tobu & Mangoo
+Title	Who Needs A Broken Heart (Easy)
+Artist	Tobu & Mangoo
+Description	A 2020 track by Latvian producer Tobu and Swedish producer Mangoo. Art by iroarts. Third time is the charm! Map by Ucitysm.
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	8781210474
 Audio Asset ID	rbxassetid://8267693523
-Audio File	8267693523.ogg
+Audio File	8267693523.mp3
 Last Note Time	184.678
 Total Notes	435
 Fever Fill	120

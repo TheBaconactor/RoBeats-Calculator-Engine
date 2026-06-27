@@ -1,7 +1,11 @@
 Song Name	Memory of Summer Days (Easy) by Halv
+Title	Memory of Summer Days (Easy)
+Artist	Halv
+Description	A 2022 remake of an original 2019 track! From the artist: I created a bright (but slightly sad) J-core track with the theme of summer memories. Map by Livium.
 Difficulty	8
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	18101875406
 Audio Asset ID	rbxassetid://15924451170
 Audio File	15924451170.ogg
 Last Note Time	138.010

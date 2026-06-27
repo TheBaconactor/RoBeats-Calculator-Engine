@@ -1,7 +1,11 @@
 Song Name	Clutterfunk (Easy) by Waterflame
+Title	Clutterfunk (Easy)
+Artist	Waterflame
+Description	From the artist: This is my submission for the NGADM (Newgrounds Audio Deathmatch) Round 4! [...] I couldn't decide on what style or genre i wanted to make, and after 2 failed attempts, this came out. a hybrid of.. pretty much everything, a damn clutter. Or if you were to try and put it in a genre: Glitch-step-Orchestral-break-Techno... lol. Map by Fritzy.
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Vibe
+Cover Image ID	9064991794
 Audio Asset ID	rbxassetid://9064600771
 Audio File	9064600771.ogg
 Last Note Time	165.428

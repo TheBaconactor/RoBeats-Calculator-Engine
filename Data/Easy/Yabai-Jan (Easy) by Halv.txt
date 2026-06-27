@@ -1,7 +1,11 @@
 Song Name	Yabai-Jan (Easy) by Halv
+Title	Yabai-Jan (Easy)
+Artist	Halv
+Description	Cut-'n-Cute! Track 1 of the 2020 compilation album 'cut-e'. Enjoy this CUTE world, CUT from many a different angle! Map by Fritzy.
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Beat
+Cover Image ID	16457431314
 Audio Asset ID	rbxassetid://15924506655
 Audio File	15924506655.ogg
 Last Note Time	142.825

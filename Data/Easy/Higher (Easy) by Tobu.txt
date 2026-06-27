@@ -1,7 +1,11 @@
 Song Name	Higher (Easy) by Tobu
+Title	Higher (Easy)
+Artist	Tobu
+Description	From the artist: Crazy how it's been 5 years already..  An idea just popped in my head I should make 2018/2019 version of this song. Who'd love that? Music: Tobu - Higher (youtube.com/tobuofficial). Map by fritzy.
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	8392195193
 Audio Asset ID	rbxassetid://8267687505
 Audio File	8267687505.mp3
 Last Note Time	104.041

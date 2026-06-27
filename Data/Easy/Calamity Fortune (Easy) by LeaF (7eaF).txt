@@ -1,7 +1,11 @@
 Song Name	Calamity Fortune (Easy) by LeaF (7eaF)
+Title	Calamity Fortune (Easy)
+Artist	LeaF (7eaF)
+Description	A 2013 track by Japanese producer LeaF, made for Touhou BMS 5. Arrangement of the original song 'The Primal Scene of Japan the Girl Watched' by ZUN. Permission granted by Team Shanghai Alice. Map by AmyKawashima.
 Difficulty	7
 Primary Color	Rush
 Secondary Color	Chill
+Cover Image ID	9119833253
 Audio Asset ID	rbxassetid://9064554384
 Audio File	9064554384.ogg
 Last Note Time	129.646

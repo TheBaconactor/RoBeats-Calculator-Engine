@@ -1,7 +1,11 @@
 Song Name	GHOUL (Easy) by Camellia
+Title	GHOUL (Easy)
+Artist	Camellia
+Description	Track 23 from Camellia's 2021 album 'U.U.F.O'. A spiritual sequel? Genres: Hard Twerk/PumpCore. Map by Ucitysm.
 Difficulty	8
 Primary Color	Beat
 Secondary Color	Beat
+Cover Image ID	7861890423
 Audio Asset ID	rbxassetid://9059212831
 Audio File	9059212831.ogg
 Last Note Time	197.999

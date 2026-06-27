@@ -1,7 +1,11 @@
 Song Name	Taking Me Higher (Easy) by Rootkit [Monstercat]
+Title	Taking Me Higher (Easy)
+Artist	Rootkit [Monstercat]
+Description	A 2018 track by Norwegian producer Rootkit, featured in Monstercat Instinct Vol. 2. Map by Dopheide.
 Difficulty	1
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	6945727797
 Audio Asset ID	rbxassetid://9060996088
 Audio File	9060996088.ogg
 Last Note Time	99.058

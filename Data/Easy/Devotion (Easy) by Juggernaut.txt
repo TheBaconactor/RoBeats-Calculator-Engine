@@ -1,7 +1,11 @@
 Song Name	Devotion (Easy) by Juggernaut
+Title	Devotion (Easy)
+Artist	Juggernaut
+Description	From the artist: The seventh song on the album! A spirited color-base hardcore track based on the atmosphere of 'apo:llioth'. The album 'Distorted Heaven' debuted at M3 Autumn 2021.
 Difficulty	10
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	15874341386
 Audio Asset ID	rbxassetid://15478315336
 Audio File	15478315336.ogg
 Last Note Time	123.555

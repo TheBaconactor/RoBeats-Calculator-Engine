@@ -1,7 +1,11 @@
 Song Name	For You (Easy) by Xeon Diversity [Sound Space]
+Title	For You (Easy)
+Artist	Xeon Diversity [Sound Space]
+Description	Do you believe in the magic of music? A 2021 track by producer Xeon Diversity, featured in Sound Space (and now RoBeats too!).
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Rush
+Cover Image ID	12100828584
 Audio Asset ID	rbxassetid://12134736750
 Audio File	12134736750.ogg
 Last Note Time	77.009

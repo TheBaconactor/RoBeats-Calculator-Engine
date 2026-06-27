@@ -1,7 +1,11 @@
 Song Name	Try Resisting Me (Easy) by Lappy
+Title	Try Resisting Me (Easy)
+Artist	Lappy
+Description	A 2022 track from producer 'Lappy', as an unofficial theme for the Arknights character 'Lappland'.
 Difficulty	7
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	70942928711485
 Audio Asset ID	rbxassetid://113895166199426
 Audio File	113895166199426.ogg
 Last Note Time	125.965

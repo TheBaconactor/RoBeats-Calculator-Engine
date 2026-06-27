@@ -1,7 +1,11 @@
 Song Name	Vaportrailed (Radio Edit) (Easy) by Reku Mochizuki
+Title	Vaportrailed (Radio Edit) (Easy)
+Artist	Reku Mochizuki
+Description	From album notes: Death, Ashes, Vengeance, Burning - CRJT (Campaign for Real J-Trance) series makes a brilliant comeback. Featured as track 2 on Vol.11 on the album of the same name, debuting at M3-2022. Map by Fritzy.
 Difficulty	4
 Primary Color	Flow
 Secondary Color	Vibe
+Cover Image ID	15680784997
 Audio Asset ID	rbxassetid://15147487128
 Audio File	15147487128.ogg
 Last Note Time	143.775

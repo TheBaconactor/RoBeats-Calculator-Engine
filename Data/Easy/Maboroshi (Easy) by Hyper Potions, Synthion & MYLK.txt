@@ -1,7 +1,11 @@
 Song Name	Maboroshi (Easy) by Hyper Potions, Synthion & MYLK
+Title	Maboroshi (Easy)
+Artist	Hyper Potions, Synthion & MYLK
+Description	From the artist: Huge thanks to Synthion and MYLK for creating this song with us. Synthion, your songwriting is so good and thank you for creating the happy hardcore drop idea! MYLK, your vocals help make this song what it is, and thank you for the extra ideas. Map by doofyplayer.
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Chill
+Cover Image ID	9126878017
 Audio Asset ID	rbxassetid://9064699599
 Audio File	9064699599.ogg
 Last Note Time	114.462

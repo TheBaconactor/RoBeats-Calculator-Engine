@@ -1,7 +1,11 @@
 Song Name	Twinkle*Winter (Easy) by brz1128
+Title	Twinkle*Winter (Easy)
+Artist	brz1128
+Description	A 2015 Happy Hardcore track by Japanese producer brz1128. Art by Kanna_Chann.
 Difficulty	8
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	8256426616
 Audio Asset ID	rbxassetid://9064369635
 Audio File	9064369635.ogg
 Last Note Time	104.992

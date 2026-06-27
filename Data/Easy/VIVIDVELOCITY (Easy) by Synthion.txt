@@ -1,7 +1,11 @@
 Song Name	VIVIDVELOCITY (Easy) by Synthion
+Title	VIVIDVELOCITY (Easy)
+Artist	Synthion
+Description	Spread your wings, look up at the soaring sky / We can fly, Touch the sky, You and I - a 2023 track by producer and V-Tuber Synthion. Map by Ucitysm.
 Difficulty	8
 Primary Color	Rush
 Secondary Color	Flow
+Cover Image ID	14056303527
 Audio Asset ID	rbxassetid://13464626214
 Audio File	13464626214.ogg
 Last Note Time	126.545

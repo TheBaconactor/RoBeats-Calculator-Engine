@@ -1,7 +1,11 @@
 Song Name	Brightest Star (Easy) by KepoWorld
+Title	Brightest Star (Easy)
+Artist	KepoWorld
+Description	From the artist: Brightest star is a movement of energy that keeps the star shining. But you, as one, need to shine the brightest you can be. Map by fritzy.
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Flow
+Cover Image ID	8582458049
 Audio Asset ID	rbxassetid://9060278441
 Audio File	9060278441.ogg
 Last Note Time	139.209

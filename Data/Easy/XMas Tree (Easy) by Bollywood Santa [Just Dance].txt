@@ -1,7 +1,11 @@
 Song Name	XMas Tree (Easy) by Bollywood Santa [Just Dance]
+Title	XMas Tree (Easy)
+Artist	Bollywood Santa [Just Dance]
+Description	A Bollywood-themed XMas song first featured in Just Dance 2015. A portmanteau of 'Bombay' and 'Hollywood', Bollywood is a style of Indian Hindi-language film that often includes song and dance. Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by doofyplayer.
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	8048004704
 Audio Asset ID	rbxassetid://9060175947
 Audio File	9060175947.ogg
 Last Note Time	141.203

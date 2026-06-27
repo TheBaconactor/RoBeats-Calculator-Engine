@@ -1,7 +1,11 @@
 Song Name	Attractor Dimension (Easy) by Laur [LAUR1200]
+Title	Attractor Dimension (Easy)
+Artist	Laur [LAUR1200]
+Description	Track 2 from the 1st Disc (Afflict) of Japanese producer Laur's 2nd solo Album 'Afflict & Collapse'. From the album notes: The determination called for collapse and afflicted me. Map by Ucitysm.
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Rush
+Cover Image ID	9423653703
 Audio Asset ID	rbxassetid://9126005334
 Audio File	9126005334.ogg
 Last Note Time	150.597

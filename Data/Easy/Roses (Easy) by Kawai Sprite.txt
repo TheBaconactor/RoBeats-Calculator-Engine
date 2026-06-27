@@ -1,7 +1,11 @@
 Song Name	Roses (Easy) by Kawai Sprite
+Title	Roses (Easy)
+Artist	Kawai Sprite
+Description	The 2nd track of Week 6 'Hating Simulator ft. Moawling'. Boyfriend must face off against Senpai, a competing love interest for Girlfriend in the 16-bit dating sim video game they are trapped in. Map by Dopheide.
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	7271811138
 Audio Asset ID	rbxassetid://9059795013
 Audio File	9059795013.ogg
 Last Note Time	88.306

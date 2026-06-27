@@ -1,7 +1,11 @@
 Song Name	Brain Power (Cranky Remix) (Easy) by NOMA (Remixed by Cranky)
+Title	Brain Power (Cranky Remix) (Easy)
+Artist	NOMA (Remixed by Cranky)
+Description	A 2020 remix of NOMA's classic track 'Brain Power' by Japanese producer Cranky (Hiroshi Watanabe)... LET THE BASS KICK O-oooooooooo AAAAE-A-A-I-A-U- JO-oooooooooooo AAE-O-A-A-U-U-A. Map by Ucitysm and Himitsu.
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Beat
+Cover Image ID	10079328847
 Audio Asset ID	rbxassetid://9690530066
 Audio File	9690530066.ogg
 Last Note Time	186.681

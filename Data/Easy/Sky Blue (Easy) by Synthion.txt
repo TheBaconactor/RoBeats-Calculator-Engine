@@ -1,7 +1,11 @@
 Song Name	Sky Blue (Easy) by Synthion
+Title	Sky Blue (Easy)
+Artist	Synthion
+Description	From the artist: Here's a little song that I wrote over the summer~ Summer is already starting to come to an end... ( ; _ ; ) But I'm so excited for the hot weather to go away! Map by Fritzy.
 Difficulty	10
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	13763213640
 Audio Asset ID	rbxassetid://13464613516
 Audio File	13464613516.ogg
 Last Note Time	157.699

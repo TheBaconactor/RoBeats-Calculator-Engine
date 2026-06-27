@@ -1,7 +1,11 @@
 Song Name	Skylate's Halloween Electro-Swing Spook-taculaire! (Easy) by Project Skylate
+Title	Skylate's Halloween Electro-Swing Spook-taculaire! (Easy)
+Artist	Project Skylate
+Description	A RoBeats-original commission for Halloween 2024 by Project Skylate. Featuring spooky electro-swing beats and inspired by several Halloween songs of years past. Any guesses which? Art by OwEnigma. Map by Fritzy.
 Difficulty	2
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	125012044003357
 Audio Asset ID	rbxassetid://87148314863642
 Audio File	87148314863642.ogg
 Last Note Time	113.787

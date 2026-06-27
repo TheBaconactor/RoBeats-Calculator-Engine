@@ -1,7 +1,11 @@
 Song Name	iRELLiA (Easy) by HyuN
+Title	iRELLiA (Easy)
+Artist	HyuN
+Description	From the artist: I had this song in my head since I was young, and through BOFXV19 it was finally finished. It's got a lot of meaning to me - Thank you for listening to it. Map by doofyplayer.
 Difficulty	7
 Primary Color	Rush
 Secondary Color	Chill
+Cover Image ID	13180042221
 Audio Asset ID	rbxassetid://12681339534
 Audio File	12681339534.ogg
 Last Note Time	122.203

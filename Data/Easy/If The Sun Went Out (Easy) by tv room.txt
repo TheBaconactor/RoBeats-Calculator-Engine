@@ -1,7 +1,11 @@
 Song Name	If The Sun Went Out (Easy) by tv room
+Title	If The Sun Went Out (Easy)
+Artist	tv room
+Description	From the artist: its actually 8 minutes lol. Map by doofyplayer.
 Difficulty	4
 Primary Color	Flow
 Secondary Color	Beat
+Cover Image ID	11509443629
 Audio Asset ID	rbxassetid://10859893760
 Audio File	10859893760.ogg
 Last Note Time	109.412

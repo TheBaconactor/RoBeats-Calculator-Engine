@@ -1,7 +1,11 @@
 Song Name	Poison AND/OR Affection (Easy) by LeaF (7eaF)
+Title	Poison AND/OR Affection (Easy)
+Artist	LeaF (7eaF)
+Description	A song about a certain someone's box - check the capitalized letters in the title! The box, opened carelessly, released all sickness, death and other evils onto the world. Afterwards, only one thing was left behind - hope. Map by doofyplayer.
 Difficulty	6
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	6484915930
 Audio Asset ID	rbxassetid://9060426719
 Audio File	9060426719.ogg
 Last Note Time	123.658

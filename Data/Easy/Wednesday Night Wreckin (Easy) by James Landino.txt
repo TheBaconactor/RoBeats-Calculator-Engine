@@ -1,7 +1,11 @@
 Song Name	Wednesday Night Wreckin (Easy) by James Landino
+Title	Wednesday Night Wreckin (Easy)
+Artist	James Landino
+Description	From the artist: Hey gamers It's Friday! (except I made it on a Wednesday...) Enjoy my latest release inspired by the game series Friday Night Funkin', all of the voices were created by me. Please enjoy :). Map by Fritzy.
 Difficulty	6
 Primary Color	Flow
 Secondary Color	Chill
+Cover Image ID	7953195169
 Audio Asset ID	rbxassetid://9060064334
 Audio File	9060064334.ogg
 Last Note Time	139.554

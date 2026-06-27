@@ -1,7 +1,11 @@
 Song Name	Nitro Bot (Easy) by Sentai Express [Just Dance]
+Title	Nitro Bot (Easy)
+Artist	Sentai Express [Just Dance]
+Description	An electronic track inspired by Japanese Mecha animes of the 80's and 90's. First featured in Just Dance 2014. Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by fritzy.
 Difficulty	5
 Primary Color	Beat
 Secondary Color	Beat
+Cover Image ID	8046984661
 Audio Asset ID	rbxassetid://9060167075
 Audio File	9060167075.ogg
 Last Note Time	183.690

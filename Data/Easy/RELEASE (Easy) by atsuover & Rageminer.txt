@@ -1,7 +1,11 @@
 Song Name	RELEASE (Easy) by atsuover & Rageminer
+Title	RELEASE (Easy)
+Artist	atsuover & Rageminer
+Description	The third track from FNF Smoke 'Em Out Struggle - an original full week mod by atsuover and rageminer. Tight bars, little man... Map by Himitsu.
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Chill
+Cover Image ID	8510939885
 Audio Asset ID	rbxassetid://9058932986
 Audio File	9058932986.ogg
 Last Note Time	140.313

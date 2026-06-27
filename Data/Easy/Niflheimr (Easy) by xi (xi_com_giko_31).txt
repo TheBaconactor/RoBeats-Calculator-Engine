@@ -1,7 +1,11 @@
 Song Name	Niflheimr (Easy) by xi (xi_com_giko_31)
+Title	Niflheimr (Easy)
+Artist	xi (xi_com_giko_31)
+Description	Track 1 from Japanese musician xi's 2013 album 'Agartha'. Directly translated from Old Norse as 'World of Mist', Niflheim was the second of two primordial realms to emanate out of the void. Art by ebbssa. Map by Fritzy.
 Difficulty	7
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	7861716186
 Audio Asset ID	rbxassetid://9064181376
 Audio File	9064181376.ogg
 Last Note Time	156.947

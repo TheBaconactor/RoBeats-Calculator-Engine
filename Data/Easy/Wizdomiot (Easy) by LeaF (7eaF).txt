@@ -1,7 +1,11 @@
 Song Name	Wizdomiot (Easy) by LeaF (7eaF)
+Title	Wizdomiot (Easy)
+Artist	LeaF (7eaF)
+Description	A 2016 track by Japanese producer LeaF, made for Touhou BMS 7. Arrangement of the original song 'Green-Eyed Jealousy' by ZUN. Permission granted by Team Shanghai Alice. Map by doofyplayer.
 Difficulty	6
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	9119833000
 Audio Asset ID	rbxassetid://9064560522
 Audio File	9064560522.ogg
 Last Note Time	165.024

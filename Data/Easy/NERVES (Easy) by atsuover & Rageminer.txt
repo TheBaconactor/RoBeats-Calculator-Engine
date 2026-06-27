@@ -1,7 +1,11 @@
 Song Name	NERVES (Easy) by atsuover & Rageminer
+Title	NERVES (Easy)
+Artist	atsuover & Rageminer
+Description	The second track from FNF Smoke 'Em Out Struggle - an original full week mod by atsuover and rageminer. From the FNF wiki: When Garcello died, his soul was bound to the cigarette. Map by AmyKawashima.
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	8510939929
 Audio Asset ID	rbxassetid://9058931360
 Audio File	9058931360.ogg
 Last Note Time	111.020

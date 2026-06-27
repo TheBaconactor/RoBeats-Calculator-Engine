@@ -1,7 +1,11 @@
 Song Name	NULCTRL (Easy) by Silentroom
+Title	NULCTRL (Easy)
+Artist	Silentroom
+Description	Made for FRENZ 2018 and exhibited at G2R2018 BMS CLIMAX, two yearly music-video competitions. From the artist: Taking advantage of what I know about the rhythm of music, I made it with a pleasant synchronization between hearing and sight.
 Difficulty	8
 Primary Color	Rush
 Secondary Color	Chill
+Cover Image ID	7392283598
 Audio Asset ID	rbxassetid://12269521360
 Audio File	12269521360.ogg
 Last Note Time	80.660
@@ -121,8 +125,8 @@ Song Data
 37.910	102	4	1
 38.210	103	1	1
 38.510	104	4	1
-39.185	105	1	1
-39.185	106	4	1
+39.185	105	4	1
+39.185	106	1	1
 39.710	107	2	1
 40.010	108	4	1
 40.460	109	2	1
@@ -177,14 +181,14 @@ Song Data
 55.160	158	2	1
 55.610	159	3	1
 55.985	160	3	2
-56.360	161	4	1
-56.360	162	3	3
+56.360	161	3	3
+56.360	162	4	1
 56.585	163	2	2
-56.960	164	1	1
-56.960	165	2	3
+56.960	164	2	3
+56.960	165	1	1
 57.185	166	3	2
-57.560	167	4	1
-57.560	168	3	3
+57.560	167	3	3
+57.560	168	4	1
 57.860	169	2	1
 58.010	170	3	1
 58.160	171	2	1

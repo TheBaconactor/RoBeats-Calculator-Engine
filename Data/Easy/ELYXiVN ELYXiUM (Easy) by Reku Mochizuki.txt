@@ -1,7 +1,11 @@
 Song Name	ELYXiVN ELYXiUM (Easy) by Reku Mochizuki
+Title	ELYXiVN ELYXiUM (Easy)
+Artist	Reku Mochizuki
+Description	A 2021 Future J-Core/Arcade Core track by Japanese producer Reku Mochizuki. Originally created the 'GROOVE COASTER 10th Anniversary Original Song Recruitment Contest', where it was a finalist. Map by Fritzy.
 Difficulty	2
 Primary Color	Rush
 Secondary Color	Chill
+Cover Image ID	10970046819
 Audio Asset ID	rbxassetid://10176946599
 Audio File	10176946599.ogg
 Last Note Time	131.763

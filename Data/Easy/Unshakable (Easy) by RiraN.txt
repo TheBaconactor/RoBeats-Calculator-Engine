@@ -1,7 +1,11 @@
 Song Name	Unshakable (Easy) by RiraN
+Title	Unshakable (Easy)
+Artist	RiraN
+Description	Released for BOFU2016. When we're alone and the world is gone / I turn to you, you're my number one. Map by Himitsu.
 Difficulty	6
 Primary Color	Vibe
 Secondary Color	Rush
+Cover Image ID	6651126876
 Audio Asset ID	rbxassetid://9062523405
 Audio File	9062523405.ogg
 Last Note Time	105.822

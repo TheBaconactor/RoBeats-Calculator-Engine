@@ -1,7 +1,11 @@
 Song Name	META-morphose (Easy) by Silentroom
+Title	META-morphose (Easy)
+Artist	Silentroom
+Description	Melodic classic electronic dance. For Shun Yamaguchi's Graduation Work. Featured as track 1 in Silentroom's 2022 album 'In My Heart'. Map by Himitsu.
 Difficulty	7
 Primary Color	Chill
 Secondary Color	Flow
+Cover Image ID	12262841268
 Audio Asset ID	rbxassetid://10893612598
 Audio File	10893612598.ogg
 Last Note Time	152.699

@@ -1,7 +1,11 @@
 Song Name	Find My Way (Easy) by Similar Outskirts
+Title	Find My Way (Easy)
+Artist	Similar Outskirts
+Description	From the artist: I will find my way~. Map by Ucitysm.
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	8837589885
 Audio Asset ID	rbxassetid://9063763832
 Audio File	9063763832.ogg
 Last Note Time	107.493

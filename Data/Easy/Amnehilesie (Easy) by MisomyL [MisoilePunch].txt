@@ -1,7 +1,11 @@
 Song Name	Amnehilesie (Easy) by MisomyL [MisoilePunch]
+Title	Amnehilesie (Easy)
+Artist	MisomyL [MisoilePunch]
+Description	A 2019 track made by Japanese producer MisomyL for G2R2018 (GO BACK 2 YOUR ROOTS 2018 CLIMAX, a BMS competition) as part of Team Curious Contentious Circus. Map by doofyplayer.
 Difficulty	3
 Primary Color	Rush
 Secondary Color	Flow
+Cover Image ID	8919820378
 Audio Asset ID	rbxassetid://9060910251
 Audio File	9060910251.ogg
 Last Note Time	145.945

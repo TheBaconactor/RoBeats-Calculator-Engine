@@ -1,7 +1,11 @@
 Song Name	Everything Will Freeze (Easy) by UNDEAD CORPORATION
+Title	Everything Will Freeze (Easy)
+Artist	UNDEAD CORPORATION
+Description	Track 12 (Guitar Instrumental) from Japanese Doujin Metal band UNDEAD CORPORATION's 2013 album 'The Tyrant'. A new full-length map! Permission granted by Team Shanghai Alice. Map by fritzy.
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Rush
+Cover Image ID	1477061374
 Audio Asset ID	rbxassetid://9064928411
 Audio File	9064928411.ogg
 Last Note Time	193.365

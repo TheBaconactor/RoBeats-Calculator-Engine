@@ -1,7 +1,11 @@
 Song Name	Hit That (Easy) by James Landino
+Title	Hit That (Easy)
+Artist	James Landino
+Description	Track 1 from the 2019 album 'Osu! James Landino Collection'. This track was part of the Osu 'featured artist' program - tracks and artists hand-picked by the osu! team as 'being awesomesauce and suitable for mapping'. Art by dhanfrhr. Map by Himitsu.
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	7953008131
 Audio Asset ID	rbxassetid://9060051520
 Audio File	9060051520.ogg
 Last Note Time	122.807

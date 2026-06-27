@@ -1,7 +1,11 @@
 Song Name	Phantom (Easy) by F-777 & Wyldfyre1
+Title	Phantom (Easy)
+Artist	F-777 & Wyldfyre1
+Description	A Halloween themed breakbeat song by F-777, a Canadian producer known for his music on Newgrounds and Wyldfyre1, the host of the 'Nerd is the New Sexy' podcast.
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	948257685
 Audio Asset ID	rbxassetid://9065764826
 Audio File	9065764826.ogg
 Last Note Time	115.663

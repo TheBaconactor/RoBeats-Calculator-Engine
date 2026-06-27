@@ -1,7 +1,11 @@
 Song Name	Unlimited Power (Game Edition) (Easy) by USAO
+Title	Unlimited Power (Game Edition) (Easy)
+Artist	USAO
+Description	With the hopes of the people who desire peace in their hearts, they resolve to eradicate this darkness - regardless if it means their own destruction. Track 2 from the M3 2023-released album 'BREAK OUT -The Final-'.
 Difficulty	8
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	18940365650
 Audio Asset ID	rbxassetid://17714811464
 Audio File	17714811464.ogg
 Last Note Time	123.641

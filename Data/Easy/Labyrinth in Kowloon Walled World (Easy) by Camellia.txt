@@ -1,7 +1,11 @@
 Song Name	Labyrinth in Kowloon: Walled World (Easy) by Camellia
+Title	Labyrinth in Kowloon: Walled World (Easy)
+Artist	Camellia
+Description	Track 3 from Camellia's 2021 album 'U.U.F.O'. The song likely refers to 'Kowloon Walled City' in Hong Kong, a dense crime-infested labyrinth that was demolished in 1993. Genres: Drum'n'Bass/Melodic Hardcore. Map by Himitsu.
 Difficulty	5
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	7861883743
 Audio Asset ID	rbxassetid://9059214828
 Audio File	9059214828.ogg
 Last Note Time	127.232

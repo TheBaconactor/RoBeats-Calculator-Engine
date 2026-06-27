@@ -1,7 +1,11 @@
 Song Name	Alive (Easy) by Rutra X KepoWorld
+Title	Alive (Easy)
+Artist	Rutra X KepoWorld
+Description	An unexpected crossover collaboration between two artists you know and love! Map by Ucitysm and GDtor1craft.
 Difficulty	2
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	7746106979
 Audio Asset ID	rbxassetid://9065472601
 Audio File	9065472601.ogg
 Last Note Time	150.005

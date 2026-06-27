@@ -1,7 +1,11 @@
 Song Name	Bad Elixir (Easy) by xi (xi_com_giko_31)
+Title	Bad Elixir (Easy)
+Artist	xi (xi_com_giko_31)
+Description	Track 8 from Japanese musician xi's 2018 album 'Quietus Ray'. This track was made for G2R2018 Climax -GO BACK 2 YOUR ROOTS 2018 climax-, a Be-Music Source contest. Map by iiJohn0.
 Difficulty	9
 Primary Color	Vibe
 Secondary Color	Rush
+Cover Image ID	7861545060
 Audio Asset ID	rbxassetid://9064169143
 Audio File	9064169143.ogg
 Last Note Time	126.522

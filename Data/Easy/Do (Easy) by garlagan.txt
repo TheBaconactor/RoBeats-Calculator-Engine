@@ -1,7 +1,11 @@
 Song Name	Do (Easy) by garlagan
+Title	Do (Easy)
+Artist	garlagan
+Description	garlagan: DO and whoa it's that time of the year again! been working on this for quite a while and i'm really excited to finally share it. hope you enjoy!! lotsa garlagals in this vid so it should be fun and slightly dangerous.
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Flow
+Cover Image ID	9617734781
 Audio Asset ID	rbxassetid://9617717336
 Audio File	9617717336.ogg
 Last Note Time	128.858

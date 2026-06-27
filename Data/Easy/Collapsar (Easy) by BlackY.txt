@@ -1,7 +1,11 @@
 Song Name	Collapsar (Easy) by BlackY
+Title	Collapsar (Easy)
+Artist	BlackY
+Description	The galaxies are... collapsing? A 'Hard PDM' (PIANO DANCE MUSIC) track from BlackY's 2022 album 'AlterLuna'.
 Difficulty	9
 Primary Color	Chill
 Secondary Color	Rush
+Cover Image ID	105323013727743
 Audio Asset ID	rbxassetid://90144231053593
 Audio File	90144231053593.ogg
 Last Note Time	140.424

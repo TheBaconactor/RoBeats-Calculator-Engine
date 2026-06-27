@@ -1,7 +1,11 @@
 Song Name	Dog Jam (Easy) by coda
+Title	Dog Jam (Easy)
+Artist	coda
+Description	From the 'S3XMODITMania 1' music competition.
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	6070824661
 Audio Asset ID	rbxassetid://9063105483
 Audio File	9063105483.ogg
 Last Note Time	117.612
@@ -90,8 +94,8 @@ Song Data
 55.111	68	2	1
 55.761	69	3	1
 56.519	70	4	1
-57.169	71	1	1
-57.169	72	4	1
+57.169	71	4	1
+57.169	72	1	1
 59.769	73	3	1
 60.419	74	2	1
 60.960	75	3	1
@@ -113,10 +117,10 @@ Song Data
 73.960	91	4	1
 75.368	92	2	1
 76.668	93	3	1
-77.968	94	2	2
-77.968	95	3	2
-78.943	96	2	3
-78.943	97	3	3
+77.968	94	3	2
+78.943	95	3	3
+77.968	96	2	2
+78.943	97	2	3
 79.264	98	1	1
 79.264	99	4	1
 79.913	100	2	1
@@ -174,7 +178,7 @@ Song Data
 113.604	152	2	1
 114.254	153	3	1
 115.012	154	4	1
-115.662	155	2	2
-115.662	156	3	2
-117.612	157	2	3
-117.612	158	3	3
+115.662	155	3	2
+117.612	156	3	3
+115.662	157	2	2
+117.612	158	2	3

@@ -1,7 +1,11 @@
 Song Name	Lake Attitash (Easy) by tv room
+Title	Lake Attitash (Easy)
+Artist	tv room
+Description	This EP, 'The Great State of Maine', was commissioned by the Attitash Multimedia Commission in an effort to promote the beauty of Lake Attitash and the surrounding area. Map by Himitsu.
 Difficulty	7
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	11509487847
 Audio Asset ID	rbxassetid://10859894537
 Audio File	10859894537.ogg
 Last Note Time	130.451

@@ -1,7 +1,11 @@
 Song Name	The Dream Of A Rabbit Singing In The Night (Easy) by UNDEAD CORPORATION
+Title	The Dream Of A Rabbit Singing In The Night (Easy)
+Artist	UNDEAD CORPORATION
+Description	Track 2 from Japanese heavy metal doujin band UNDEAD CORPORATION's 2012 album 'The Scarlet-Dyed Oni Howls'. Arrangement of 'Imperishable Night' by ZUN. Permission granted by Team Shanghai Alice. Map by Fritzy.
 Difficulty	2
 Primary Color	Flow
 Secondary Color	Vibe
+Cover Image ID	10716842413
 Audio Asset ID	rbxassetid://9126092502
 Audio File	9126092502.ogg
 Last Note Time	142.695

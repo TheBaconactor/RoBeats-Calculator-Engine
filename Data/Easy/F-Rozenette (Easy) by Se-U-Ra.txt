@@ -1,7 +1,11 @@
 Song Name	F-Rozenette (Easy) by Se-U-Ra
+Title	F-Rozenette (Easy)
+Artist	Se-U-Ra
+Description	A 2019 track by Japanese artist and music producer Se-U-Ra. Featured in 'Tone Sphere / Bit192 - Show Me Your World 2019' - a music submission contest for mobile game 'Tone Sphere' that received over 370 entries. From the artist: Frozen, Humorously! Map by doofyplayer.
 Difficulty	5
 Primary Color	Flow
 Secondary Color	Rush
+Cover Image ID	7222611482
 Audio Asset ID	rbxassetid://9063500080
 Audio File	9063500080.ogg
 Last Note Time	128.201

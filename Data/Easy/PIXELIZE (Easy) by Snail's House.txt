@@ -1,7 +1,11 @@
 Song Name	PIXELIZE (Easy) by Snail's House
+Title	PIXELIZE (Easy)
+Artist	Snail's House
+Description	snailchan enters the pixel dimension! Title track from Snail's House's 2022 album 'PIXELIZE'.
 Difficulty	6
 Primary Color	Rush
 Secondary Color	Beat
+Cover Image ID	119372561982456
 Audio Asset ID	rbxassetid://76225919256770
 Audio File	76225919256770.ogg
 Last Note Time	167.990

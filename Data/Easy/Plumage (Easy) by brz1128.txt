@@ -1,7 +1,11 @@
 Song Name	Plumage (Easy) by brz1128
+Title	Plumage (Easy)
+Artist	brz1128
+Description	A track released with team 'Armillary Sphere' for the online music competition 'The BMS of Fighters Ultimate 2017 -Legenda Est A Myth- (BOFU2017). From the artist: Happy Hardcore-desu!!!!! Map by Himitsu.
 Difficulty	7
 Primary Color	Beat
 Secondary Color	Chill
+Cover Image ID	97316768176940
 Audio Asset ID	rbxassetid://9118768627
 Audio File	9118768627.ogg
 Last Note Time	141.557

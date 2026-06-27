@@ -1,7 +1,11 @@
 Song Name	Psyched Fevereiro (Easy) by t+pazolite
+Title	Psyched Fevereiro (Easy)
+Artist	t+pazolite
+Description	Track 2 from t+pazolite's 2020 album 'without Permission'. Tomoyuki Hamada, better known as t+pazolite, is a hardcore music producer and longtime member of the HARDCORE TANO*C circle. He is known for his rather chaotic, sample-driven style of music. Map by doofyplayer.
 Difficulty	7
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	12492313251
 Audio Asset ID	rbxassetid://12091474107
 Audio File	12091474107.ogg
 Last Note Time	129.648

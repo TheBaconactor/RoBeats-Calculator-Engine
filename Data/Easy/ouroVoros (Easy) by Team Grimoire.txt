@@ -1,7 +1,11 @@
 Song Name	ouroVoros (Easy) by Team Grimoire
+Title	ouroVoros (Easy)
+Artist	Team Grimoire
+Description	A [BOFU2017 - LEGENDA EST A MYTH] track entered as team 'Employ Zero-Origin'. From the entry page: Death and rebirth, destruction and creation, reincarnation, infinite symbolism, yin and yang. The roar of the dragon Ouroboros that made itself infinite. Map by Fritzy.
 Difficulty	7
 Primary Color	Flow
 Secondary Color	Beat
+Cover Image ID	10357344024
 Audio Asset ID	rbxassetid://9612388437
 Audio File	9612388437.ogg
 Last Note Time	145.791

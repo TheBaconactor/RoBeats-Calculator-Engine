@@ -1,7 +1,11 @@
 Song Name	Teleport me to your soul (Easy) by Ardolf
+Title	Teleport me to your soul (Easy)
+Artist	Ardolf
+Description	Track 3 from Ardolf's 2021 Lycurgus EP. From the artist: Currently trying to master as many genres as possible and mixing different styles into the same track, bringing a more unforgettable experience to the audience. Map by Ucitysm.
 Difficulty	8
 Primary Color	Rush
 Secondary Color	Beat
+Cover Image ID	8580897752
 Audio Asset ID	rbxassetid://9065437451
 Audio File	9065437451.ogg
 Last Note Time	154.694

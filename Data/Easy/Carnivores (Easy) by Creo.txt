@@ -1,7 +1,11 @@
 Song Name	Carnivores (Easy) by Creo
+Title	Carnivores (Easy)
+Artist	Creo
+Description	A track released in 2016 by Austrian producer Creo, from his album 'Virtualism EP'. Featuring other tracks with names like 'Carnivore' and 'Avalance', what lies at the top of this mountain?
 Difficulty	2
 Primary Color	Beat
 Secondary Color	Beat
+Cover Image ID	6153070757
 Audio Asset ID	rbxassetid://9063126149
 Audio File	9063126149.ogg
 Last Note Time	136.986

@@ -1,7 +1,11 @@
 Song Name	Roses (Easy) by Maliboux
+Title	Roses (Easy)
+Artist	Maliboux
+Description	A 2021 track by American producer Maliboux. Known for his versatility and unique production style, the Chicago native left film school to re-direct his cinematic vision to music production and has gained the support of several of the biggest names in music. Map by Fritzy.
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	9915786383
 Audio Asset ID	rbxassetid://9370939244
 Audio File	9370939244.ogg
 Last Note Time	102.380

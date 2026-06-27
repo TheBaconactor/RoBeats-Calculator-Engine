@@ -1,7 +1,11 @@
 Song Name	Null (Easy) by AlphaTux [Project : RUSHER]
+Title	Null (Easy)
+Artist	AlphaTux [Project : RUSHER]
+Description	first appearance in a rhythm game, so proud so be apart of a peak *** game ^^ - a 2025 track from producer AlphaTux, featured in Roblox game Project : RUSHER! Map by Monoseul.
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	79592515491378
 Audio Asset ID	rbxassetid://118228217996176
 Audio File	118228217996176.ogg
 Last Note Time	104.705

@@ -1,7 +1,11 @@
 Song Name	Sugar Dance (Easy) by The Just Dance Band [Just Dance]
+Title	Sugar Dance (Easy)
+Artist	The Just Dance Band [Just Dance]
+Description	Featured in Just Dance 2018, this was the second song in the series by 'The Just Dance Band'. Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by fritzy.
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	8047057009
 Audio Asset ID	rbxassetid://9060171585
 Audio File	9060171585.ogg
 Last Note Time	181.166

@@ -1,7 +1,11 @@
 Song Name	TRICKY_TRIPPER (Easy) by brz1128
+Title	TRICKY_TRIPPER (Easy)
+Artist	brz1128
+Description	A 2018 track made for music competition 'K-Shoot MANIA Musical Show', entered in the Level 13-17 category. How do you think that compares with the RoBeats difficulty rating? Map by doofyplayer.
 Difficulty	6
 Primary Color	Flow
 Secondary Color	Rush
+Cover Image ID	9802442163
 Audio Asset ID	rbxassetid://9118785575
 Audio File	9118785575.ogg
 Last Note Time	119.440

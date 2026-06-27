@@ -1,7 +1,11 @@
 Song Name	There For Me (Easy) by Synthion
+Title	There For Me (Easy)
+Artist	Synthion
+Description	I was standing under the night sky / The stars were shining up above the world so high / You held my hand and told me, 'You'll be okay' / You were there by my side, next to me / You were always there for me. Map by Livium.
 Difficulty	7
 Primary Color	Flow
 Secondary Color	Beat
+Cover Image ID	14056303355
 Audio Asset ID	rbxassetid://13464616783
 Audio File	13464616783.ogg
 Last Note Time	131.477

@@ -1,7 +1,11 @@
 Song Name	Spooky time (Easy) by Rutra
+Title	Spooky time (Easy)
+Artist	Rutra
+Description	Released in October 2019. From the artist: Are you prepared for Spooky Time? Hope you enjoy it! Map by doofyplayer.
 Difficulty	5
 Primary Color	Beat
 Secondary Color	Chill
+Cover Image ID	10843579270
 Audio Asset ID	rbxassetid://9065528430
 Audio File	9065528430.ogg
 Last Note Time	149.090

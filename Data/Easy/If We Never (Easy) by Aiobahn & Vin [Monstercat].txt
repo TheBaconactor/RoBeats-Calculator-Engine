@@ -1,7 +1,11 @@
 Song Name	If We Never (Easy) by Aiobahn & Vin [Monstercat]
+Title	If We Never (Easy)
+Artist	Aiobahn & Vin [Monstercat]
+Description	A 2018 Future House/Future Bounce track by producers Aiobahn and Vin (their second collaboration on Monstercat), featured on 'Monstercat Instinct Vol.2'. Map by Fritzy.
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	10142529854
 Audio Asset ID	rbxassetid://9690713118
 Audio File	9690713118.ogg
 Last Note Time	154.694

@@ -1,7 +1,11 @@
 Song Name	Spectronizer (Easy) by Sentai Express [Just Dance]
+Title	Spectronizer (Easy)
+Artist	Sentai Express [Just Dance]
+Description	Featured in Just Dance 3, this was the first Japanese song to be added to the Just Dance series. Inspired by the Japanese series 'Super Sentai', known in America as 'Power Rangers'. Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by AmyKawashima.
 Difficulty	5
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	8047031273
 Audio Asset ID	rbxassetid://9060170061
 Audio File	9060170061.ogg
 Last Note Time	214.691

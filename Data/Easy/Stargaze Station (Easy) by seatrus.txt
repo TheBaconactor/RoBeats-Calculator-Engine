@@ -1,7 +1,11 @@
 Song Name	Stargaze Station (Easy) by seatrus
+Title	Stargaze Station (Easy)
+Artist	seatrus
+Description	Gazing the sea of stars... A 2019 Hardcore/Happy Speed track by producer seatrus. Illustration by shi0n. Map by Luciduslux.
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Vibe
+Cover Image ID	11867316263
 Audio Asset ID	rbxassetid://10939893254
 Audio File	10939893254.ogg
 Last Note Time	140.516

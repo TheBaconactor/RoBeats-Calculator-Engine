@@ -1,7 +1,11 @@
 Song Name	Delirious (Easy) by Maliboux
+Title	Delirious (Easy)
+Artist	Maliboux
+Description	A 2020 track by American producer Maliboux. From the artist: [A song] I came up with while i was working my day job a while back, i had this melody in my head and quickly ran to the bathroom to hum the idea into my phone so i could lay the idea out in Ableton later that night. And boom, Delirious was born. Map by Fritzy.
 Difficulty	5
 Primary Color	Flow
 Secondary Color	Beat
+Cover Image ID	9915786837
 Audio Asset ID	rbxassetid://9370935210
 Audio File	9370935210.ogg
 Last Note Time	93.047

@@ -1,7 +1,11 @@
 Song Name	Buzzbox76 (Easy) by Camellia
+Title	Buzzbox76 (Easy)
+Artist	Camellia
+Description	Track 5 from Camellia's 2021 album 'U.U.F.O'. UVB-76, also known as 'The Buzzer', is a Russian shortwave radio station that broadcasts approximately 25 tones a minute, 24 hours a day. The purpose of the station has not been confirmed. Map by Fritzy.
 Difficulty	9
 Primary Color	Beat
 Secondary Color	Beat
+Cover Image ID	7861876419
 Audio Asset ID	rbxassetid://9059207546
 Audio File	9059207546.ogg
 Last Note Time	154.616

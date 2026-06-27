@@ -1,7 +1,11 @@
 Song Name	Joyride (Easy) by Egg Yolk
+Title	Joyride (Easy)
+Artist	Egg Yolk
+Description	A happy hardcore-style track by indie music producer Egg Yolk. Perfect lead?
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	12100780852
 Audio Asset ID	rbxassetid://9065249928
 Audio File	9065249928.ogg
 Last Note Time	191.351
@@ -33,8 +37,8 @@ Song Data
 16.017	14	1	1
 18.017	15	2	1
 18.684	16	4	1
-20.017	17	2	1
-20.017	18	3	1
+20.017	17	3	1
+20.017	18	2	1
 21.351	19	1	1
 23.351	20	4	1
 24.017	21	2	1

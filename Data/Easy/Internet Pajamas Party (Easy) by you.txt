@@ -1,7 +1,11 @@
 Song Name	Internet Pajamas Party (Easy) by you
+Title	Internet Pajamas Party (Easy)
+Artist	you
+Description	Intanettopajamapati~. Map by Fritzy.
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Chill
+Cover Image ID	17087094247
 Audio Asset ID	rbxassetid://16433143027
 Audio File	16433143027.ogg
 Last Note Time	100.932

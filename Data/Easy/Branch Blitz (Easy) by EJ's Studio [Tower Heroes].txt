@@ -1,7 +1,11 @@
 Song Name	Branch Blitz (Easy) by EJ's Studio [Tower Heroes]
+Title	Branch Blitz (Easy)
+Artist	EJ's Studio [Tower Heroes]
+Description	Music that plays when fighting the final boss of 'Silent Sanctuary' in Tower Heroes. Tower Heroes is a Tower Defense on ROBLOX made by Pixel-Bit Studio. Map by fritzy.
 Difficulty	1
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	8878741542
 Audio Asset ID	rbxassetid://9064018564
 Audio File	9064018564.ogg
 Last Note Time	132.257

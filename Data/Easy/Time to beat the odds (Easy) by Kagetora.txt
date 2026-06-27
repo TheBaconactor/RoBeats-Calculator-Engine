@@ -1,7 +1,11 @@
 Song Name	Time to beat the odds (Easy) by Kagetora
+Title	Time to beat the odds (Easy)
+Artist	Kagetora
+Description	Overcome it. Made for BOF:ET (The BMS of Fighters EighTeen - Summer Dream Traveler-). Map by Livium.
 Difficulty	9
 Primary Color	Beat
 Secondary Color	Chill
+Cover Image ID	18512385573
 Audio Asset ID	rbxassetid://17402204456
 Audio File	17402204456.ogg
 Last Note Time	111.924

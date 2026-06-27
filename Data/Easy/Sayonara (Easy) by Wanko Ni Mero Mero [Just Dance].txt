@@ -1,7 +1,11 @@
 Song Name	Sayonara (Easy) by Wanko Ni Mero Mero [Just Dance]
+Title	Sayonara (Easy)
+Artist	Wanko Ni Mero Mero [Just Dance]
+Description	A track in the style of 'Oshare Kei', a Japanese music and fashion movement known for bright, cheerful colors, lots of jewlery and positive and upbeat music. First featured in Just Dance 2018. Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by fritzy.
 Difficulty	6
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	8046999808
 Audio Asset ID	rbxassetid://9060168485
 Audio File	9060168485.ogg
 Last Note Time	187.241

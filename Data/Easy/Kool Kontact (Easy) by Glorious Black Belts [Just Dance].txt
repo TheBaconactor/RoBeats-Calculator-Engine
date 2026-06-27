@@ -1,7 +1,11 @@
 Song Name	Kool Kontact (Easy) by Glorious Black Belts [Just Dance]
+Title	Kool Kontact (Easy)
+Artist	Glorious Black Belts [Just Dance]
+Description	A funk track inspired by martial arts movies of the 70's and 80's, first featured in Just Dance 2016. Throw some Karate moves while dancing along to this! Hosted from a 2021 promotional event for Just Dance 2021, with all rights reserved to Ubisoft. Map by doofyplayer.
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	8046968885
 Audio Asset ID	rbxassetid://9060165572
 Audio File	9060165572.ogg
 Last Note Time	155.947

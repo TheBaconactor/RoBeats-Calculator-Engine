@@ -1,7 +1,11 @@
 Song Name	This Club is Not 4 U (Easy) by EmoCosine
+Title	This Club is Not 4 U (Easy)
+Artist	EmoCosine
+Description	A Dance/Future Bass track made for the G2R2018 (GO BACK 2 YOUR ROOTS 2018 Climax) bms, with video by Reika. G2R2018 featured several other RoBeats tracks you may be familiar with - including NULCTRL and MARENOL! Map by Livium.
 Difficulty	9
 Primary Color	Vibe
 Secondary Color	Beat
+Cover Image ID	15322063685
 Audio Asset ID	rbxassetid://13745681187
 Audio File	13745681187.ogg
 Last Note Time	132.010

@@ -1,7 +1,11 @@
 Song Name	LUV U NEED U (Easy) by Slushii [Monstercat]
+Title	LUV U NEED U (Easy)
+Artist	Slushii [Monstercat]
+Description	A 2017 Future Bass song by American producer Slushii, featured as the third track on 'Rocket League x Monstercat Vol. 1'. Map by Ucitysm.
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	10174730519
 Audio Asset ID	rbxassetid://9690710398
 Audio File	9690710398.ogg
 Last Note Time	142.088

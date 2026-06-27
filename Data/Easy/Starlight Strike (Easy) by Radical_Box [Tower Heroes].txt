@@ -1,7 +1,11 @@
 Song Name	Starlight Strike (Easy) by Radical_Box [Tower Heroes]
+Title	Starlight Strike (Easy)
+Artist	Radical_Box [Tower Heroes]
+Description	Music that plays when fighting the final boss 'Cule' in the Metaverse Madness in Tower Heroes, a map added for the Roblox Metaverse Champions event. Map by doofyplayer.
 Difficulty	6
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	8878732302
 Audio Asset ID	rbxassetid://9064024756
 Audio File	9064024756.ogg
 Last Note Time	101.296

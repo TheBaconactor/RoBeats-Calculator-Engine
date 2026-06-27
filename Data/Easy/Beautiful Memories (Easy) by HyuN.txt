@@ -1,7 +1,11 @@
 Song Name	Beautiful Memories (Easy) by HyuN
+Title	Beautiful Memories (Easy)
+Artist	HyuN
+Description	Utsukushi (Beautiful) Memories. The fleeting moments of joy and happiness that we have forgotten could still bring a smile to our faces. Map by Ucitysm.
 Difficulty	9
 Primary Color	Chill
 Secondary Color	Flow
+Cover Image ID	13180351797
 Audio Asset ID	rbxassetid://12689736061
 Audio File	12689736061.ogg
 Last Note Time	126.647

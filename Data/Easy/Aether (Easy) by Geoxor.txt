@@ -1,7 +1,11 @@
 Song Name	Aether (Easy) by Geoxor
+Title	Aether (Easy)
+Artist	Geoxor
+Description	From the artist: Inspired by the minecraft aether, as a sequel to virtual, you've finally made it to that high dimension after your long voyage, you've finally made it to the aether, and this is where the journey begins. Art by Ariimaw. Map by Ucitysm.
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	9850388874
 Audio Asset ID	rbxassetid://9546793411
 Audio File	9546793411.ogg
 Last Note Time	131.276

@@ -1,7 +1,11 @@
 Song Name	Rotasu (Easy) by KepoWorld
+Title	Rotasu (Easy)
+Artist	KepoWorld
+Description	A track by RoBeats fan KEPO. Follow him on Soundcloud at @kepoowo!
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	5850724832
 Audio Asset ID	rbxassetid://9062883210
 Audio File	9062883210.ogg
 Last Note Time	125.265
@@ -116,8 +120,8 @@ Song Data
 82.743	97	3	1
 83.526	98	1	1
 84.569	99	2	1
-85.091	100	1	1
-85.091	101	4	1
+85.091	100	4	1
+85.091	101	1	1
 85.613	102	1	1
 86.004	103	4	1
 86.395	104	1	1
@@ -165,5 +169,5 @@ Song Data
 123.569	146	4	1
 123.961	147	1	1
 124.482	148	3	1
-125.265	149	1	1
-125.265	150	4	1
+125.265	149	4	1
+125.265	150	1	1

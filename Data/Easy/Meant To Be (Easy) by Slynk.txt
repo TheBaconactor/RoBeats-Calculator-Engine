@@ -1,7 +1,11 @@
 Song Name	Meant To Be (Easy) by Slynk
+Title	Meant To Be (Easy)
+Artist	Slynk
+Description	Was it meant to be? A 2021 RoBeats commission by producer Slynk, in the style of a specific older track. Map by Ucitysm and GDtor1craft.
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	8643781135
 Audio Asset ID	rbxassetid://9063816492
 Audio File	9063816492.ogg
 Last Note Time	122.740

@@ -1,7 +1,11 @@
 Song Name	Step to Sky (Easy) by EmoCosine
+Title	Step to Sky (Easy)
+Artist	EmoCosine
+Description	Featured as track 3 in EmoCosine's 2019 'Shake The Future!' EP, first available at M3 2019. Illustration by yaki*mayu. Map by Fritzy.
 Difficulty	4
 Primary Color	Chill
 Secondary Color	Flow
+Cover Image ID	14305099315
 Audio Asset ID	rbxassetid://13745665984
 Audio File	13745665984.ogg
 Last Note Time	142.617

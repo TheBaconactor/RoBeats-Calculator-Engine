@@ -1,7 +1,11 @@
 Song Name	Mesheer (Easy) by MisoilePunch
+Title	Mesheer (Easy)
+Artist	MisoilePunch
+Description	A 2019 track from Japanese producer duo MisoilePunch. From the artist: Connect Messiah + Sheer and read it as Mesheer. Map by AmyKawashima.
 Difficulty	3
 Primary Color	Rush
 Secondary Color	Chill
+Cover Image ID	8919819584
 Audio Asset ID	rbxassetid://9060921373
 Audio File	9060921373.ogg
 Last Note Time	126.521

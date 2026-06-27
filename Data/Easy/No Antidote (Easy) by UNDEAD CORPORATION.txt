@@ -1,7 +1,11 @@
 Song Name	No Antidote (Easy) by UNDEAD CORPORATION
+Title	No Antidote (Easy)
+Artist	UNDEAD CORPORATION
+Description	A 2017 track (from the album of the same name) by Japanese heavy metal band UNDEAD CORPORATION. I'm too far gone, there's no antidote... Map by Ucitysm.
 Difficulty	7
 Primary Color	Beat
 Secondary Color	Vibe
+Cover Image ID	9658328875
 Audio Asset ID	rbxassetid://9126085234
 Audio File	9126085234.ogg
 Last Note Time	99.610

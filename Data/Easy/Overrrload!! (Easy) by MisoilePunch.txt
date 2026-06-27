@@ -1,7 +1,11 @@
 Song Name	Overrrload!! (Easy) by MisoilePunch
+Title	Overrrload!! (Easy)
+Artist	MisoilePunch
+Description	A 2020 track from Japanese producer duo MisoilePunch. From the artist: Please be careful about your safety by wearing seat belts and gloves. Then, make Sky Feather the fastest and final form program! Map by fritzy.
 Difficulty	9
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	8934401185
 Audio Asset ID	rbxassetid://9060925343
 Audio File	9060925343.ogg
 Last Note Time	130.400

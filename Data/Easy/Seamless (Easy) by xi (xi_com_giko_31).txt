@@ -1,7 +1,11 @@
 Song Name	Seamless (Easy) by xi (xi_com_giko_31)
+Title	Seamless (Easy)
+Artist	xi (xi_com_giko_31)
+Description	Track 2 from xi's 2013 album 'Agartha', released under the 'Diverse System' label. xi is a Japanese musician featured in several different rhythm games. Art by IyanuKwent. Map by Fritzy.
 Difficulty	8
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	7861718861
 Audio Asset ID	rbxassetid://9064184694
 Audio File	9064184694.ogg
 Last Note Time	155.926

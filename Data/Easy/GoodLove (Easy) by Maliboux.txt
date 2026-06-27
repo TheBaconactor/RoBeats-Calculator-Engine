@@ -1,7 +1,11 @@
 Song Name	GoodLove (Easy) by Maliboux
+Title	GoodLove (Easy)
+Artist	Maliboux
+Description	A 2021 track by American producer Maliboux. Couldn't we all use some more (good) love? Map by doofyplayer.
 Difficulty	6
 Primary Color	Vibe
 Secondary Color	Chill
+Cover Image ID	9924702518
 Audio Asset ID	rbxassetid://9370937419
 Audio File	9370937419.ogg
 Last Note Time	125.960

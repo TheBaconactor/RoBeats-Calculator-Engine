@@ -1,7 +1,11 @@
 Song Name	Warp (Easy) by Bossfight [Monstercat]
+Title	Warp (Easy)
+Artist	Bossfight [Monstercat]
+Description	A 2022 Dubstep track by Swedish producer Bossfight, featured on the 'Paladins x Monstercat' collaboration. Map by Himitsu.
 Difficulty	6
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	10142538837
 Audio Asset ID	rbxassetid://9690787432
 Audio File	9690787432.ogg
 Last Note Time	117.747

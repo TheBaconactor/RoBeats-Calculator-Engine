@@ -1,7 +1,11 @@
 Song Name	Nasty * Nasty * Spell (Easy) by Camellia
+Title	Nasty * Nasty * Spell (Easy)
+Artist	Camellia
+Description	From Camellia's 2019 album 'Blackmagik Blazing'. From the artist: This song is in a kind of sequel of (i don't really think so but you can see the similarity) Midnight Amaretto, like an ElectroSwing track with a dark vibe and full of 'evil' feeling, just like the album's theme. I hope you enjoy it! Map by iiJohn0 and Ucitysm.
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Beat
+Cover Image ID	6111906239
 Audio Asset ID	rbxassetid://9059196133
 Audio File	9059196133.ogg
 Last Note Time	147.610

@@ -1,7 +1,11 @@
 Song Name	Eternal Ending (Easy) by Kobaryo
+Title	Eternal Ending (Easy)
+Artist	Kobaryo
+Description	Featured as track 12 in the 2017 HARDCORE TANO*C compilation album 'HARDCORE SYNDROME 11', a yearly release by the label. Map by Fritzy.
 Difficulty	6
 Primary Color	Chill
 Secondary Color	Rush
+Cover Image ID	11646381714
 Audio Asset ID	rbxassetid://11231553325
 Audio File	11231553325.ogg
 Last Note Time	118.297

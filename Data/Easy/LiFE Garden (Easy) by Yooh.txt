@@ -1,7 +1,11 @@
 Song Name	LiFE Garden (Easy) by Yooh
+Title	LiFE Garden (Easy)
+Artist	Yooh
+Description	Resurrection, revival. A remaster of the 2014 track of the same name, originally released under album 'Eutopia'.
 Difficulty	8
 Primary Color	Vibe
 Secondary Color	Rush
+Cover Image ID	117535534921420
 Audio Asset ID	rbxassetid://137075047033450
 Audio File	137075047033450.ogg
 Last Note Time	174.957

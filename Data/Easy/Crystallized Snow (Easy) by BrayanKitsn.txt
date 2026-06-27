@@ -1,7 +1,11 @@
 Song Name	Crystallized Snow (Easy) by BrayanKitsn
+Title	Crystallized Snow (Easy)
+Artist	BrayanKitsn
+Description	From the artist: Well, it was really fun making this song to celebrate Christmas, and in this song, I tried to pass on the feeling of snow and Christmas. It's my first time making music for Robeats and I hope everyone enjoys it!
 Difficulty	3
 Primary Color	Flow
 Secondary Color	Vibe
+Cover Image ID	8218121865
 Audio Asset ID	rbxassetid://9064366364
 Audio File	9064366364.ogg
 Last Note Time	142.779

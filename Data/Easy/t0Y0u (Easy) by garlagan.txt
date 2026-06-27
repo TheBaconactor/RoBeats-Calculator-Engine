@@ -1,7 +1,11 @@
 Song Name	t0Y0u (Easy) by garlagan
+Title	t0Y0u (Easy)
+Artist	garlagan
+Description	garlagan: i like repeating words as you can probably tell from the chorus LOL. the contrast between the sort of dark verse and brighter chorus is kinda meant to represent how some relationships can fluctuate like that. Map by Himitsu.
 Difficulty	5
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	7486776487
 Audio Asset ID	rbxassetid://9059847520
 Audio File	9059847520.ogg
 Last Note Time	113.726

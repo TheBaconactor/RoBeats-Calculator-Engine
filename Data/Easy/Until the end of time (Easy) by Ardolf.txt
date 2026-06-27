@@ -1,7 +1,11 @@
 Song Name	Until the end of time (Easy) by Ardolf
+Title	Until the end of time (Easy)
+Artist	Ardolf
+Description	2022 is coming to an end, but no matter where you are, music will always stay with you and be your only best friend until the end of time. Enjoy this original song made for Robeats! Map by Fritzy.
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Rush
+Cover Image ID	11866976912
 Audio Asset ID	rbxassetid://11745124265
 Audio File	11745124265.ogg
 Last Note Time	132.034

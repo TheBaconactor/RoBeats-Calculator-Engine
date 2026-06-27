@@ -1,7 +1,11 @@
 Song Name	Aura (Easy) by Creo
+Title	Aura (Easy)
+Artist	Creo
+Description	A track released in 2019 by Austrian producer Creo. A mix between EDM and melodic electro-house, it fills your senses with a cybernetic 'Aura'. Map by Fritzy.
 Difficulty	5
 Primary Color	Beat
 Secondary Color	Rush
+Cover Image ID	6153067600
 Audio Asset ID	rbxassetid://10599491024
 Audio File	10599491024.ogg
 Last Note Time	161.276

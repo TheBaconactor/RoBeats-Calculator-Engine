@@ -1,7 +1,11 @@
 Song Name	TAKE A SWIG OF THIS! (Original Version) (Easy) by atsuover & Rageminer
+Title	TAKE A SWIG OF THIS! (Original Version) (Easy)
+Artist	atsuover & Rageminer
+Description	Originally an unused song, an updated version was later featured in VS Annie. From the artist: This is one song I considered putting in the mod. But like the others, this one wasn't made with the gameplay in mind [...]. Map by Ucitysm.
 Difficulty	1
 Primary Color	Vibe
 Secondary Color	Rush
+Cover Image ID	8510938728
 Audio Asset ID	rbxassetid://9058935072
 Audio File	9058935072.ogg
 Last Note Time	103.773

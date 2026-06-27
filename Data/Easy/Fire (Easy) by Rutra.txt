@@ -1,7 +1,11 @@
 Song Name	Fire (Easy) by Rutra
+Title	Fire (Easy)
+Artist	Rutra
+Description	A 2021 K-pop inspired track by French producer Rutra. Map by Ucitysm.
 Difficulty	4
 Primary Color	Vibe
 Secondary Color	Vibe
+Cover Image ID	7098347829
 Audio Asset ID	rbxassetid://9065319459
 Audio File	9065319459.ogg
 Last Note Time	96.171

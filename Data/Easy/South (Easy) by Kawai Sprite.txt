@@ -1,7 +1,11 @@
 Song Name	South (Easy) by Kawai Sprite
+Title	South (Easy)
+Artist	Kawai Sprite
+Description	The 2nd track of Week 2 'Spooky Month'. In this week Boyfriend faces off against 'Skid and Pump', two characters from the annual 'Spooky Month' animation series by Sr Pelo. Have you seen the dance 'Pelo Moves'?
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	6137051744
 Audio Asset ID	rbxassetid://9063148512
 Audio File	9063148512.ogg
 Last Note Time	86.930

@@ -1,7 +1,11 @@
 Song Name	Chipland (Easy) by nanobii
+Title	Chipland (Easy)
+Artist	nanobii
+Description	Self-described as 'High-energy EDM meets eurodance'. A 2017 Happy Hardcore/Chiptune track by Swedish producer nanobii, released under the Monstercat label. Map by Livium.
 Difficulty	8
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	103786129677325
 Audio Asset ID	rbxassetid://18446796990
 Audio File	18446796990.ogg
 Last Note Time	91.016

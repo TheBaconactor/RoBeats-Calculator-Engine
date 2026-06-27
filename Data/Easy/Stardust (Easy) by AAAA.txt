@@ -1,7 +1,11 @@
 Song Name	Stardust (Easy) by AAAA
+Title	Stardust (Easy)
+Artist	AAAA
+Description	From the artist: Happy birthday to me! So (?) I'm uploading a new song! I quickly made a song that has THE AAAA feel to it! Art by Kona-chi. Map by Fritzy.
 Difficulty	1
 Primary Color	Beat
 Secondary Color	Vibe
+Cover Image ID	17737000996
 Audio Asset ID	rbxassetid://17062588911
 Audio File	17062588911.ogg
 Last Note Time	129.731

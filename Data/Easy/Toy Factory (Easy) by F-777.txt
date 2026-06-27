@@ -1,7 +1,11 @@
 Song Name	Toy Factory (Easy) by F-777
+Title	Toy Factory (Easy)
+Artist	F-777
+Description	Santa's elves are often said to make toys in Santa's workshop, to be delivered to good boys and girls on Christmas day. Track 2 from F-777's album 'It's Freaking Christmas'. Art by NickTSO. Map by doofyplayer.
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	8255779658
 Audio Asset ID	rbxassetid://9064401528
 Audio File	9064401528.ogg
 Last Note Time	152.555

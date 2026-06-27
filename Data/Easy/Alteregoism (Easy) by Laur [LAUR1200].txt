@@ -1,7 +1,11 @@
 Song Name	Alteregoism (Easy) by Laur [LAUR1200]
+Title	Alteregoism (Easy)
+Artist	Laur [LAUR1200]
+Description	A 2020 single by Japanese producer Laur. From the artist: A Happy-core style song that's pretty rare for me. Alteregoism means 'one mind and one body'. If you watch the MV, you will understand the meaning! Map by Ucitysm.
 Difficulty	8
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	10562137718
 Audio Asset ID	rbxassetid://9126003677
 Audio File	9126003677.ogg
 Last Note Time	150.518

@@ -1,7 +1,11 @@
 Song Name	Happy Lucky --> Injection!! (Easy) by brz1128
+Title	Happy Lucky --> Injection!! (Easy)
+Artist	brz1128
+Description	A track made for Shooter's Festival 2016 (SF2016), a Japanese online competition for creating new music and maps for K-Shoot Mania, with team 'Pretty Days'. From the artist: Fast, radio-like sound with gamecore feel.
 Difficulty	4
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	9687395659
 Audio Asset ID	rbxassetid://9118759284
 Audio File	9118759284.ogg
 Last Note Time	116.850

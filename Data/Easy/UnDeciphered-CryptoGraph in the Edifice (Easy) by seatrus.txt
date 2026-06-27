@@ -1,7 +1,11 @@
 Song Name	%UnDeciphered-CryptoGraph in the Edifice% (Easy) by seatrus
+Title	%UnDeciphered-CryptoGraph in the Edifice% (Easy)
+Artist	seatrus
+Description	A dubcore track by seatrus included in the 'Eupholic Selections vol.1' KSM pack. From the page: To the person who found this diary, I missed something important. We assumed there was nothing in the deciphered text. That was wrong. Map by Luciduslux.
 Difficulty	8
 Primary Color	Rush
 Secondary Color	Flow
+Cover Image ID	11300086689
 Audio Asset ID	rbxassetid://10939897759
 Audio File	10939897759.ogg
 Last Note Time	121.183

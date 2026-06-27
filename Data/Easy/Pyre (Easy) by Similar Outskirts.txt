@@ -1,7 +1,11 @@
 Song Name	Pyre (Easy) by Similar Outskirts
+Title	Pyre (Easy)
+Artist	Similar Outskirts
+Description	From the artist: Mt. Pyre is spooky! Map by fritzy.
 Difficulty	7
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	8837589483
 Audio Asset ID	rbxassetid://9063770936
 Audio File	9063770936.ogg
 Last Note Time	108.827

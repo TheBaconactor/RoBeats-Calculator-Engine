@@ -1,7 +1,11 @@
 Song Name	Sad Dream (Easy) by UNDEAD CORPORATION
+Title	Sad Dream (Easy)
+Artist	UNDEAD CORPORATION
+Description	Track 5 from Japanese heavy metal band UNDEAD CORPORATION's 2015 album 'Flash Back'. If I close my eyes / Everything seems to stay like good old days... Map by Ucitysm.
 Difficulty	4
 Primary Color	Chill
 Secondary Color	Flow
+Cover Image ID	9658332088
 Audio Asset ID	rbxassetid://9126087226
 Audio File	9126087226.ogg
 Last Note Time	154.610

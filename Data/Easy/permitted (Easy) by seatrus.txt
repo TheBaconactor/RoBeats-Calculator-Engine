@@ -1,7 +1,11 @@
 Song Name	permitted (Easy) by seatrus
+Title	permitted (Easy)
+Artist	seatrus
+Description	A 2021 200step/J-Core/Hardcore track from Japanese producer seatrus, included as track 3 from their 'Battle of Prophets EP'. Map by Himitsu.
 Difficulty	7
 Primary Color	Beat
 Secondary Color	Vibe
+Cover Image ID	11300261225
 Audio Asset ID	rbxassetid://10939879694
 Audio File	10939879694.ogg
 Last Note Time	120.534

@@ -1,7 +1,11 @@
 Song Name	Electroman Adventures V2 (Easy) by Waterflame
+Title	Electroman Adventures V2 (Easy)
+Artist	Waterflame
+Description	From the artist: Awww yeah! I decided to remake Electroman! Just for fun really. Its mostly still the same composition and structure, but some new stuff at the end. new mastering, instruments and polish. Map by AmyKawashima.
 Difficulty	5
 Primary Color	Rush
 Secondary Color	Chill
+Cover Image ID	9064991327
 Audio Asset ID	rbxassetid://9064602556
 Audio File	9064602556.ogg
 Last Note Time	139.272

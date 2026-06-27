@@ -1,7 +1,11 @@
 Song Name	Viyella's Memory (Easy) by Laur [LAUR1200]
+Title	Viyella's Memory (Easy)
+Artist	Laur [LAUR1200]
+Description	Track 3 from Laur's 1st solo album 'The Angel's Message'. Viyella (full name Viyella Vane) is a mysterious girl dressed in an old-fashioned maid's outfit, who always seems to be holding her stuffed bear. Map by doofyplayer.
 Difficulty	5
 Primary Color	Flow
 Secondary Color	Beat
+Cover Image ID	9425418938
 Audio Asset ID	rbxassetid://9126030440
 Audio File	9126030440.ogg
 Last Note Time	146.731

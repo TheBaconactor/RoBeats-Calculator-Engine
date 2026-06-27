@@ -1,7 +1,11 @@
 Song Name	Back Out (Easy) by RiraN
+Title	Back Out (Easy)
+Artist	RiraN
+Description	A 2020 track made for the 'BMS of Fighters XVI' competition. From the artist: The genre's called 'Euphoric Rawstyle', but it's better described as 'Rawphoric'. Until now, my songs were not that hard when I played them on BMS. This time I made them quite difficult! Map by doofyplayer.
 Difficulty	3
 Primary Color	Rush
 Secondary Color	Flow
+Cover Image ID	9658604317
 Audio Asset ID	rbxassetid://9470573756
 Audio File	9470573756.ogg
 Last Note Time	130.622

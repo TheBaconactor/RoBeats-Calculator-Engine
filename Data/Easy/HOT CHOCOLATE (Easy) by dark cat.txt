@@ -1,7 +1,11 @@
 Song Name	HOT CHOCOLATE (Easy) by dark cat
+Title	HOT CHOCOLATE (Easy)
+Artist	dark cat
+Description	From the artist: i hope you enjoyed this track as much as I did making it - and I hope you're having a christmas! Art by Pumpkwi. Map by doofyplayer.
 Difficulty	5
 Primary Color	Chill
 Secondary Color	Flow
+Cover Image ID	8201482641
 Audio Asset ID	rbxassetid://7526763067
 Audio File	7526763067.mp3
 Last Note Time	142.028

@@ -1,7 +1,11 @@
 Song Name	Chartreuse Green (Easy) by t+pazolite
+Title	Chartreuse Green (Easy)
+Artist	t+pazolite
+Description	Track 1 from t+pazolite's 2020 album 'without Permission'. From the album: Interested in having t+pazolite's music on your rhythm game? These tracks are now available for use, free of charge for both personal and commercial rhythm game projects. Map by Ucitysm.
 Difficulty	9
 Primary Color	Vibe
 Secondary Color	Beat
+Cover Image ID	12492313433
 Audio Asset ID	rbxassetid://12099174523
 Audio File	12099174523.ogg
 Last Note Time	130.378

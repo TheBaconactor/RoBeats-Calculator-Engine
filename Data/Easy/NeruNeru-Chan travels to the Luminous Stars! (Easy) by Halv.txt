@@ -1,7 +1,11 @@
 Song Name	NeruNeru-Chan travels to the Luminous Stars! (Easy) by Halv
+Title	NeruNeru-Chan travels to the Luminous Stars! (Easy)
+Artist	Halv
+Description	NeruNeru-Chan: The episode where she travels to the sea of stars. I'm coming to deliver presents to everyone! A 2023 Kawaiicore track by producer Halv. Map by Monoseul.
 Difficulty	8
 Primary Color	Beat
 Secondary Color	Beat
+Cover Image ID	77924767661699
 Audio Asset ID	rbxassetid://101269396418886
 Audio File	101269396418886.ogg
 Last Note Time	123.089

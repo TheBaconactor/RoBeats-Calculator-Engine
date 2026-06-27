@@ -1,7 +1,11 @@
 Song Name	Scattered Faith (Easy) by Kurokotei
+Title	Scattered Faith (Easy)
+Artist	Kurokotei
+Description	From the artist: Galaxy Collapse's sequel? Original song is Emotional Skyscraper ~ Cosmic Mind from Touhou 12. Permission granted by Team Shanghai Alice. Map by Fritzy.
 Difficulty	9
 Primary Color	Chill
 Secondary Color	Rush
+Cover Image ID	9362749649
 Audio Asset ID	rbxassetid://9159007096
 Audio File	9159007096.ogg
 Last Note Time	126.269

@@ -1,7 +1,11 @@
 Song Name	strawberry sherbet(KSMEdit) (Easy) by brz1128
+Title	strawberry sherbet(KSMEdit) (Easy)
+Artist	brz1128
+Description	A 2020 track from brz1128's first album 'Prism'. Art by 4ra8_. Featured in SFES2019, an online music creation competition for music game k-shoot mania (KSM). Map by fritzy.
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Rush
+Cover Image ID	8781210544
 Audio Asset ID	rbxassetid://9064135123
 Audio File	9064135123.ogg
 Last Note Time	129.665

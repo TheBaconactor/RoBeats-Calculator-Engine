@@ -1,7 +1,11 @@
 Song Name	SYSTEM ERROR (Easy) by Laur [LAUR1200]
+Title	SYSTEM ERROR (Easy)
+Artist	Laur [LAUR1200]
+Description	SYSTEM ERROR - an instruction that is either not recognized by an operating system or is in violation of the procedural rules. Track 2 from Disc 2 (Collapse) of Laur's 2021 album 'Afflict & Collapse'. Map by Fritzy.
 Difficulty	9
 Primary Color	Vibe
 Secondary Color	Beat
+Cover Image ID	10562138975
 Audio Asset ID	rbxassetid://9126058925
 Audio File	9126058925.ogg
 Last Note Time	124.937

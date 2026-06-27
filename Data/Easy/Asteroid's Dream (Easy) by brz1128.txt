@@ -1,7 +1,11 @@
 Song Name	Asteroid's Dream (Easy) by brz1128
+Title	Asteroid's Dream (Easy)
+Artist	brz1128
+Description	A 2021 track by Japanese producer brz1128, made for music competition THE BMS OF FIGHTERS XVI -NEO DYSTOPIA- (BOFXVI) under team 'Bless of Muse'. From the artist: It's a heartrending four-on-the-floor beat song; thank you very much! Art by @4ra8_. Map by Ucitysm.
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Flow
+Cover Image ID	9300605773
 Audio Asset ID	rbxassetid://9118752889
 Audio File	9118752889.ogg
 Last Note Time	130.272

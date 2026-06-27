@@ -1,7 +1,11 @@
 Song Name	Spookeez (Easy) by Kawai Sprite
+Title	Spookeez (Easy)
+Artist	Kawai Sprite
+Description	The 1st track of Week 1 'Spooky Month'. Trick or treat, smell my feet!
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Beat
+Cover Image ID	6136900787
 Audio Asset ID	rbxassetid://9063150262
 Audio File	9063150262.ogg
 Last Note Time	95.647

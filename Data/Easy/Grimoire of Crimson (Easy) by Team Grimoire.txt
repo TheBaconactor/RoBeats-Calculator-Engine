@@ -1,7 +1,11 @@
 Song Name	Grimoire of Crimson (Easy) by Team Grimoire
+Title	Grimoire of Crimson (Easy)
+Artist	Team Grimoire
+Description	Track 1 from Team Grimoire's 2015 album 'Grimoire of Crimson'. From the website: Distorted tone, immoral illusion---. Map by Himitsu.
 Difficulty	9
 Primary Color	Rush
 Secondary Color	Chill
+Cover Image ID	10357343345
 Audio Asset ID	rbxassetid://10107537555
 Audio File	10107537555.ogg
 Last Note Time	168.167

@@ -1,7 +1,11 @@
 Song Name	NightLine (Easy) by Shandy Kubota (USAO)
+Title	NightLine (Easy)
+Artist	Shandy Kubota (USAO)
+Description	Track 5 from Shandy Kubota's 2014 album 'Shandy Bass 2'. From the album: 'The best bass music ever!'. Map by Fritzy.
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	105590516720752
 Audio Asset ID	rbxassetid://17714766698
 Audio File	17714766698.ogg
 Last Note Time	159.980

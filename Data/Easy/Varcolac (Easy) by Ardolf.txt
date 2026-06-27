@@ -1,7 +1,11 @@
 Song Name	Varcolac (Easy) by Ardolf
+Title	Varcolac (Easy)
+Artist	Ardolf
+Description	Discover the dark side of the werewolf named Lycurgus and go wild together in the forest.. Enjoy this Artcore, Dubstep and UK Hardcore mixed genre song created by Ardolf. Map by Ucitysm.
 Difficulty	5
 Primary Color	Rush
 Secondary Color	Rush
+Cover Image ID	8319557842
 Audio Asset ID	rbxassetid://9065439242
 Audio File	9065439242.ogg
 Last Note Time	132.040

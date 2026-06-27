@@ -1,7 +1,11 @@
 Song Name	Exosphere (Easy) by Creo
+Title	Exosphere (Easy)
+Artist	Creo
+Description	A track released in 2020 by Austrian producer Creo. Featuring 'Jeremy Jellyfish' in the music video, this saxophone-dominated track brings back some of the most iconic elements of Creo's music. Map by Ucitysm.
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Chill
+Cover Image ID	6153072033
 Audio Asset ID	rbxassetid://9063131557
 Audio File	9063131557.ogg
 Last Note Time	164.261

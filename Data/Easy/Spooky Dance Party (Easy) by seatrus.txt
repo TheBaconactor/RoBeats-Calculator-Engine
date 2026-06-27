@@ -1,7 +1,11 @@
 Song Name	Spooky Dance Party (Easy) by seatrus
+Title	Spooky Dance Party (Easy)
+Artist	seatrus
+Description	A jazzy, toe-tapping dance between two Marionettes... Track 1 from seatrus's EP of the same name released in October 2022. Map by Fritzy.
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Rush
+Cover Image ID	11389095108
 Audio Asset ID	rbxassetid://11146626300
 Audio File	11146626300.ogg
 Last Note Time	124.346

@@ -1,7 +1,11 @@
 Song Name	Dream (Easy) by Rutra
+Title	Dream (Easy)
+Artist	Rutra
+Description	Released in April 2020. A dream, or nightmare? One of the favorites from this artist. Hope you enjoy!
 Difficulty	1
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	6569089713
 Audio Asset ID	rbxassetid://9065525053
 Audio File	9065525053.ogg
 Last Note Time	118.190
@@ -78,8 +82,8 @@ Song Data
 55.377	59	4	1
 55.846	60	1	1
 56.315	61	2	2
-56.315	62	3	2
-58.190	63	2	3
+58.190	62	2	3
+56.315	63	3	2
 58.190	64	3	3
 59.127	65	3	1
 59.596	66	2	1

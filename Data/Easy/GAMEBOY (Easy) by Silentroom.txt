@@ -1,7 +1,11 @@
 Song Name	GAMEBOY (Easy) by Silentroom
+Title	GAMEBOY (Easy)
+Artist	Silentroom
+Description	Track 10 of Japanese producer Silentroom's 2019 album 'Rainbow Frontier'. First released for FRENZ 2017, a yearly Shinjuku-based music video exhibition.
 Difficulty	2
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	7392277718
 Audio Asset ID	rbxassetid://12269518909
 Audio File	12269518909.ogg
 Last Note Time	109.491

@@ -1,7 +1,11 @@
 Song Name	Jelly (Easy) by Hyper Potions & MYLK
+Title	Jelly (Easy)
+Artist	Hyper Potions & MYLK
+Description	From the artist: Jelly is about getting nervous dancing near the person you have a crush on, something we've all experienced or will at some point lol. Thank you again everyone for always listening to our music, it means so much to us to be able to do this for a living. :'). Map by Fritzy.
 Difficulty	1
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	9126865381
 Audio Asset ID	rbxassetid://9064698112
 Audio File	9064698112.ogg
 Last Note Time	168.032

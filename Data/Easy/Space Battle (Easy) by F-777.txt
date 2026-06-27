@@ -1,7 +1,11 @@
 Song Name	Space Battle (Easy) by F-777
+Title	Space Battle (Easy)
+Artist	F-777
+Description	The first track of the album 'Ludicrous Speed' by Jesse Valentine, also known as F-777.
 Difficulty	5
 Primary Color	Flow
 Secondary Color	Chill
+Cover Image ID	1195593735
 Audio Asset ID	rbxassetid://9065767637
 Audio File	9065767637.ogg
 Last Note Time	144.014

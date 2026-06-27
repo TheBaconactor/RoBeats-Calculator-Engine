@@ -1,7 +1,11 @@
 Song Name	The Last Page (Easy) by ARForest
+Title	The Last Page (Easy)
+Artist	ARForest
+Description	Track 14 from ARForest's 2019 album 'The Unfinished'. Illustration & Main Design : c.c.R, PV : inukoro. Map by AmyKawashima.
 Difficulty	4
 Primary Color	Flow
 Secondary Color	Vibe
+Cover Image ID	9246947354
 Audio Asset ID	rbxassetid://9118726154
 Audio File	9118726154.ogg
 Last Note Time	130.206

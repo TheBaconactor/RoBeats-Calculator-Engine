@@ -1,7 +1,11 @@
 Song Name	Uphoric Utopia (Easy) by Reku Mochizuki
+Title	Uphoric Utopia (Easy)
+Artist	Reku Mochizuki
+Description	A 2020 J-Core track by Japanese producer Reku Mochizuki. Featured as track 11 in multi-artist compilation album HARDCORE UTOPIA 2, the '2nd Iteration of the free release album constructed by Kara'. Map by doofyplayer.
 Difficulty	6
 Primary Color	Chill
 Secondary Color	Rush
+Cover Image ID	10969643928
 Audio Asset ID	rbxassetid://10176958521
 Audio File	10176958521.ogg
 Last Note Time	90.844

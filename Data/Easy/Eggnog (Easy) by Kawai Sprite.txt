@@ -1,7 +1,11 @@
 Song Name	Eggnog (Easy) by Kawai Sprite
+Title	Eggnog (Easy)
+Artist	Kawai Sprite
+Description	Track 2 from Week 5 'Red Snow'. Boyfriend has out-rap-battled both Daddy Dearest (Week 1) and Mommy Mearest (Week 4) - but now they've teamed up for an encore duet!
 Difficulty	2
 Primary Color	Vibe
 Secondary Color	Flow
+Cover Image ID	7254255774
 Audio Asset ID	rbxassetid://9059792330
 Audio File	9059792330.ogg
 Last Note Time	92.860

@@ -1,7 +1,11 @@
 Song Name	Senpai (Easy) by Kawai Sprite
+Title	Senpai (Easy)
+Artist	Kawai Sprite
+Description	The 1st track of Week 6 'Hating Simulator ft. Moawling'. Senpai: Ah, a new fair maiden has come in search of true love! A serenade between gentlemen shall decide where her beautiful heart shall reside. Boyfriend: Beep bo bop.
 Difficulty	3
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	7271811710
 Audio Asset ID	rbxassetid://9059797119
 Audio File	9059797119.ogg
 Last Note Time	95.731

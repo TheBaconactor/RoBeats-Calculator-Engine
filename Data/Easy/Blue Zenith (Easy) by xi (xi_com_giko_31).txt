@@ -1,7 +1,11 @@
 Song Name	Blue Zenith (Easy) by xi (xi_com_giko_31)
+Title	Blue Zenith (Easy)
+Artist	xi (xi_com_giko_31)
+Description	Earn 727pp with a 99.71% play on this song! Track 5 from Japanese musician xi's 2011 album 'Parousia'. Art by uderstat.
 Difficulty	8
 Primary Color	Chill
 Secondary Color	Chill
+Cover Image ID	7980094378
 Audio Asset ID	rbxassetid://9064170836
 Audio File	9064170836.ogg
 Last Note Time	182.351

@@ -1,7 +1,11 @@
 Song Name	Rotanautica (Easy) by Ardolf
+Title	Rotanautica (Easy)
+Artist	Ardolf
+Description	Are you ready to travel to space with me? Art by Tempest. Map by Pyrromxniac.
 Difficulty	9
 Primary Color	Flow
 Secondary Color	Flow
+Cover Image ID	107532698586435
 Audio Asset ID	rbxassetid://82478930491643
 Audio File	82478930491643.ogg
 Last Note Time	158.154

@@ -1,7 +1,11 @@
 Song Name	Apocaliptix //-Another-// (Easy) by Juggernaut
+Title	Apocaliptix //-Another-// (Easy)
+Artist	Juggernaut
+Description	The death knell is ringing... Initially released for BOFXV19, and featured as track 2 from Juggernaut's 2020 album 'Siegfried'. Map by Livium.
 Difficulty	8
 Primary Color	Rush
 Secondary Color	Flow
+Cover Image ID	17287295685
 Audio Asset ID	rbxassetid://15478297490
 Audio File	15478297490.ogg
 Last Note Time	124.320

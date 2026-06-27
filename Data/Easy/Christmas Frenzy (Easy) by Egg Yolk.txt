@@ -1,7 +1,11 @@
 Song Name	Christmas Frenzy (Easy) by Egg Yolk
+Title	Christmas Frenzy (Easy)
+Artist	Egg Yolk
+Description	From the artist: Here's my Christmas gift to you guys for Christmas :]. Map by doofyplayer.
 Difficulty	3
 Primary Color	Rush
 Secondary Color	Vibe
+Cover Image ID	8201939962
 Audio Asset ID	rbxassetid://9064371025
 Audio File	9064371025.ogg
 Last Note Time	151.407

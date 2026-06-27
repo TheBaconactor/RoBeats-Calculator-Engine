@@ -1,7 +1,11 @@
 Song Name	Ice Angel (Easy) by Yooh
+Title	Ice Angel (Easy)
+Artist	Yooh
+Description	Track 4 on the 2020 album 'Yoohsics -REVIVAL-', a remaster of the original 2014 track 'Ice Angel'. Map by Livium.
 Difficulty	10
 Primary Color	Chill
 Secondary Color	Rush
+Cover Image ID	126238205796089
 Audio Asset ID	rbxassetid://117898938536699
 Audio File	117898938536699.ogg
 Last Note Time	140.042

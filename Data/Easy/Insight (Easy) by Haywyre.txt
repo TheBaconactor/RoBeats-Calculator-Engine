@@ -1,7 +1,11 @@
 Song Name	Insight (Easy) by Haywyre
+Title	Insight (Easy)
+Artist	Haywyre
+Description	An EDM track by American producer Haywyre, originally released under the Monstercat label and re-released independently as of 2021. At release was one of the most difficult tracks in Robeats. Take the 'mightybaseplate' challenge and get a no-miss!
 Difficulty	3
 Primary Color	Vibe
 Secondary Color	Chill
+Cover Image ID	873225903
 Audio Asset ID	rbxassetid://1221666953
 Audio File	1221666953.ogg
 Last Note Time	147.518

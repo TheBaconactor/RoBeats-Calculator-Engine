@@ -1,7 +1,11 @@
 Song Name	Feel The Same (Easy) by Gardens [Sound Space]
+Title	Feel The Same (Easy)
+Artist	Gardens [Sound Space]
+Description	A 2021 Hi-Tech/Techcore song by producer Gardens, featured in Sound Space (and now RoBeats too!). Map by doofyplayer.
 Difficulty	8
 Primary Color	Flow
 Secondary Color	Chill
+Cover Image ID	12101124793
 Audio Asset ID	rbxassetid://11558489855
 Audio File	11558489855.ogg
 Last Note Time	180.620

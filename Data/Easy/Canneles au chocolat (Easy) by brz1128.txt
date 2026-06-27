@@ -1,7 +1,11 @@
 Song Name	Canneles au chocolat (Easy) by brz1128
+Title	Canneles au chocolat (Easy)
+Artist	brz1128
+Description	A 2020 track by Japanese producer brz1128, an entry in the SSTA2020 (Shooter's Stadium 2020) K-ShootMANIA music competition. Art by by4co.
 Difficulty	6
 Primary Color	Chill
 Secondary Color	Vibe
+Cover Image ID	8255723530
 Audio Asset ID	rbxassetid://9064367817
 Audio File	9064367817.ogg
 Last Note Time	119.207
