@@ -464,13 +464,6 @@ def apply_timing_envelope(
 
     chart_ts = np.asarray(timestamps, dtype=np.float32)
     song_data["chart_timestamps"] = chart_ts
-    try:
-        from ..core.array_signature import array_sig16
-
-        song_data["_chart_timestamps_sig"] = array_sig16(chart_ts)
-    except Exception as e:
-        logger.debug(f"timing_envelope:apply_timing_envelope: {e}")
-        song_data.pop("_chart_timestamps_sig", None)
 
     if timing_mode == "zero_ms":
         # Fixed 0ms timing: no Perfect-window envelope. Drop any FG candidate/floor
@@ -481,7 +474,6 @@ def apply_timing_envelope(
             "fg_perfect_floor_timestamps",
             "fg_great_floor_timestamps",
             "fg_great_candidate_timestamps",
-            "_note_types_sig",
         ):
             song_data.pop(_stream, None)
         song_data["fg_timestamps"] = chart_ts
@@ -507,13 +499,6 @@ def apply_timing_envelope(
         note_types = np.ones(int(chart_ts.shape[0]), dtype=np.int16)
     else:
         note_types = np.asarray(note_types, dtype=np.int16)
-    try:
-        from ..core.array_signature import array_sig16
-
-        song_data["_note_types_sig"] = array_sig16(note_types)
-    except Exception as e:
-        logger.debug(f"timing_envelope:apply_timing_envelope: {e}")
-        song_data.pop("_note_types_sig", None)
 
     song_data["fg_timestamps"] = chart_ts
     # Candidate (latest Perfect) + floor (earliest Perfect, issue #42 fever-boundary basis), both
