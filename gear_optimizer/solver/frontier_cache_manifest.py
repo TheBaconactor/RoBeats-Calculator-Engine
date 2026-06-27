@@ -144,14 +144,21 @@ def build_manifest_plan(
         cache_identity = _path_identity(cache_file) if cache_file else None
         cache_hit = cache_identity is not None
         if cache_hit:
-            _cache_abs_path, cache_mtime_ns, cache_size = cache_identity
-            entry_mtime_ns = entry.get("cache_mtime_ns")
+            # Identity fast-path compares cache-file SIZE only, never mtime. Both frontier caches mark
+            # recently-used bundles by bumping mtime via os.utime (idle-TTL retention/purge), so a cache
+            # file's mtime is mutated with no content change. Comparing mtime here defeats the fast-path:
+            # the recorded mtime is stale the instant retention touches the file, forcing a full per-file
+            # re-validation on every startup (measured: FG fast-path hit 0/6704 -> ~100s warm verify).
+            # The cache path is content-addressed (digest of the cache key) and builds are deterministic,
+            # so a same-size file at the same path is the same validated bundle; corruption is still
+            # caught loudly by the loader on the real read path.
+            _cache_abs_path, _cache_mtime_ns, cache_size = cache_identity
             entry_size = entry.get("cache_size")
-            if entry_mtime_ns is None or entry_size is None:
+            if entry_size is None:
                 cache_hit = False
             else:
                 try:
-                    cache_hit = int(entry_mtime_ns) == int(cache_mtime_ns) and int(entry_size) == int(cache_size)
+                    cache_hit = int(entry_size) == int(cache_size)
                 except (TypeError, ValueError):
                     cache_hit = False
         if cache_identity is not None and not cache_hit and cache_file_validator is not None:

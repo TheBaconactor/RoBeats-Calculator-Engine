@@ -367,12 +367,47 @@ def score_stats_fixed_timing_exact_batch(
     ref_arrays: Mapping[str, Any],
 ) -> list[int]:
     """
-    Exact f64 base replay under FIXED 0ms timing (issue #51, ``timing_mode=zero_ms``).
+    Exact f64 base replay for the PREPARED fixed/explicit-timing calc_song.
 
-    Every hit lands at chart time (delta=0), so the fever timeline is the single
-    deterministic chart-time timeline from ``calculate_fever_timeline_indices`` --
-    NOT the Perfect-window timing frontier used by ``score_stats_exact_batch``. This
-    path therefore depends on no timing-envelope stream or frontier payload.
+    Scores the played hit timeline materialized as ``song_data["fg_timestamps"]`` by
+    ``apply_timing_envelope(mode="zero_ms", baseline_offset=T)`` (= ``chart + T``). The ``zero_ms``
+    / ``T == 0`` preset leaves it == chart, so this is the deterministic chart-time fever timeline
+    -- NOT the Perfect-window frontier used by ``score_stats_exact_batch``, and independent of any
+    frontier payload. A raw (un-prepared) calc_song falls back to the chart.
+
+    Thin adapter over ``score_stats_timing_exact_batch`` (the canonical explicit-timeline scorer).
+    """
+    if not stats_rows:
+        return []
+    song_dict = calc_song if isinstance(calc_song, dict) else dict(calc_song)
+    song_data = song_dict.get("song_data", {}) or {}
+    hit_timestamps = song_data.get("fg_timestamps")
+    if hit_timestamps is None:
+        hit_timestamps = song_data.get("chart_timestamps", song_data.get("timestamps", ()))
+    return score_stats_timing_exact_batch(stats_rows, song_dict, ref_arrays, hit_timestamps)
+
+
+def score_stats_timing_exact_batch(
+    stats_rows: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+    hit_timestamps: Any,
+) -> list[int]:
+    """
+    Exact f64 base replay under an EXPLICIT per-note hit-time timeline.
+
+    Generalizes the fixed-0ms (``zero_ms``) base replay: the deterministic fever timeline is
+    computed from the supplied ``hit_timestamps`` (chart time + a per-note offset ``T``), not
+    from chart. ``hit_timestamps == chart_timestamps`` reproduces
+    ``score_stats_fixed_timing_exact_batch`` bit-for-bit -- ``zero_ms`` is the ``T == 0`` preset.
+
+    Only the fever-window BOUNDARIES depend on the per-note offset; the fill count is
+    offset-independent (see ``fg_response_scoring/fixed_timing.py``) and base scoring carries no
+    greats. Song-intrinsic quantities (``total_notes``, ``Long Notes``, ``Last Note Time``) come
+    from the chart, not from ``hit_timestamps`` -- ``T`` shifts the played timeline, not the song.
+
+    ``hit_timestamps`` MUST be non-decreasing: ``calculate_fever_timeline_indices`` searches it,
+    so a timing vector that reorders notes is an invalid external input and fails loud.
     """
     if not stats_rows:
         return []
@@ -380,17 +415,29 @@ def score_stats_fixed_timing_exact_batch(
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
     song_dict = calc_song if isinstance(calc_song, dict) else dict(calc_song)
     song_data = song_dict.get("song_data", {}) or {}
-    timestamps = song_data.get("chart_timestamps")
-    if timestamps is None:
-        timestamps = song_data.get("timestamps", song_data.get("fg_timestamps", ()))
-    timestamps = np.asarray(timestamps, dtype=np.float32)
-    total_notes = int(timestamps.shape[0])
+    chart = song_data.get("chart_timestamps")
+    if chart is None:
+        chart = song_data.get("timestamps", song_data.get("fg_timestamps", ()))
+    chart = np.asarray(chart, dtype=np.float32)
+    total_notes = int(chart.shape[0])
     if total_notes <= 0:
         return [0 for _stats in stats_rows]
 
+    hits = np.asarray(hit_timestamps, dtype=np.float32)
+    if int(hits.shape[0]) != total_notes:
+        raise ValueError(
+            "score_stats_timing_exact_batch: hit_timestamps length "
+            f"{int(hits.shape[0])} != song note count {total_notes}"
+        )
+    if total_notes > 1 and bool(np.any(np.diff(hits) < np.float32(0.0))):
+        raise ValueError(
+            "score_stats_timing_exact_batch: hit_timestamps must be non-decreasing "
+            "(a per-note timing offset may not reorder notes)"
+        )
+
     metadata = song_dict.get("metadata", {}) or {}
     long_notes = safe_int(metadata.get("Long Notes"), 0)
-    default_last_note = float(timestamps[-1]) if total_notes else 0.0
+    default_last_note = float(chart[-1]) if total_notes else 0.0
     last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
 
     ft_axis = ref_arrays["Fever Time"]
@@ -412,11 +459,9 @@ def score_stats_fixed_timing_exact_batch(
         base_value = float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor)
         ft_factor = lookup_reference_py(int(ft_idx), ft_axis, TOTAL_ROWS)
         ff_factor = lookup_reference_py(int(ff_idx), ff_axis, TOTAL_ROWS)
-        # fever_mask_head is a view into mask_buffer; calculate_score_exact consumes it
-        # fully before the next iteration overwrites the buffer.
         fever_mask_head, count_body_fever, count_body_normal, _activations, _last_end = (
             calculate_fever_timeline_indices(
-                timestamps,
+                hits,
                 total_notes,
                 ff_factor,
                 ft_factor,
