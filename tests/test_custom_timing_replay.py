@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.core.constants import TOTAL_ROWS
-from gear_optimizer.core.utils import timing_envelope_timing_context
+from gear_optimizer.core.utils import timing_envelope_full_context, timing_envelope_timing_context
 from gear_optimizer.solver.scoring.exact_rescore import (
     score_stats_fixed_timing_exact_batch,
     score_stats_timing_exact_batch,
@@ -203,3 +203,19 @@ def test_baseline_offset_rejected_for_perfect_window():
     cs = _calc_song()
     with pytest.raises(ValueError, match="only valid for fixed"):
         apply_timing_envelope(cs, mode="perfect_window", baseline_offset=np.full(250, 0.02, dtype=np.float32))
+
+
+def test_cache_context_is_inert_at_zero_t_lossless():
+    """LOSSLESS GUARD: the per-note ``T`` hash lives in the timing-context reserved slots, so at
+    ``T == 0`` the timing cache keys are byte-identical to their pre-feature values. These frozen
+    tuples lock that existing zero_ms / perfect_window cache keys (and therefore cached scores) are
+    unchanged -- if a future edit leaks a non-empty hash at ``T == 0``, this fails."""
+    cs_zero = _calc_song()
+    apply_timing_envelope(cs_zero, mode="zero_ms")
+    assert timing_envelope_timing_context(cs_zero) == ("TIMING_ENVELOPE", "zero_ms", "", 0)
+    assert timing_envelope_full_context(cs_zero) == ("TIMING_ENVELOPE", "zero_ms", "none", 0)
+
+    cs_pw = _calc_song()
+    apply_timing_envelope(cs_pw, mode="perfect_window")
+    assert timing_envelope_timing_context(cs_pw) == ("TIMING_ENVELOPE", "perfect_window", "", 0)
+    assert timing_envelope_full_context(cs_pw) == ("TIMING_ENVELOPE", "perfect_window", "late_upper", 0)
