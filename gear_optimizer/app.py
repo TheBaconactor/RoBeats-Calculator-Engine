@@ -219,6 +219,47 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         except Exception as e:
             logger.debug(f"app:_maybe_autoset_gpu_song_slots: {e}")
 
+    def _materialize_gpu_runtime_on_main_thread(self) -> None:
+        """
+        Materialize the Taichi/Vulkan GPU runtime once, on the OS main thread.
+
+        Required OS/GPU dispatch-safety boundary (the only kind of branch the
+        canonical-path rule permits): ``ti.vulkan`` lowers through MoltenVK on
+        macOS, and Taichi acquires a GLFW/Cocoa context inside
+        ``VulkanProgramImpl::materialize_runtime``. GLFW/AppKit initialization
+        traps (SIGTRAP) unless it runs on the OS main thread. The GPU executor
+        owns all *subsequent* GPU command submission on its own thread, but that
+        one-time runtime materialization must be pinned to the main thread first.
+        This mirrors the hub's ``_materialize_optimizer_runtime_on_main_thread``,
+        which is why the live API serves GPU scores on this same Mac without
+        trapping.
+
+        Idempotent (guarded by ``is_initialized()``) and completes synchronously
+        BEFORE the GPU executor thread is started, giving a strict happens-before
+        ordering with no concurrent GPU access (no races). Harmless on Linux /
+        Windows, where it is simply the first init on the main thread.
+        """
+        from gear_optimizer.solver.taichi_gem.runtime import is_initialized
+
+        if is_initialized():
+            return
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError(
+                "GPU runtime must be materialized on the OS main thread; got thread "
+                f"'{threading.current_thread().name}'. On macOS this is fatal: "
+                "Taichi/MoltenVK acquires a GLFW/Cocoa context during "
+                "materialize_runtime, which traps off the main thread."
+            )
+        from gear_optimizer.solver.taichi_gem import api as gpu_api
+        from gear_optimizer.solver.taichi_gem.runtime import ti
+
+        logger.info("[Startup][GPU] Materializing Taichi/Vulkan runtime on main thread...")
+        gpu_api.ensure_ready()
+        # Force full runtime materialization here on the main thread (GLFW/Cocoa
+        # init) rather than letting it happen lazily on the executor thread.
+        ti.sync()
+        logger.info("[Startup][GPU] Taichi/Vulkan runtime materialized on main thread.")
+
     def _configure_execution_and_prewarm(self, cfg) -> None:
         runtime_settings = self._current_runtime_settings(cfg)
         ga_multistart = max(1, int(runtime_settings.ga.multi_start))
@@ -228,6 +269,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
         except Exception as e:
             logger.warning(f"app:_configure_execution_and_prewarm: {e}")
+        # Pin the one-time Taichi/Vulkan runtime materialization to the OS main
+        # thread before any GPU executor thread is spawned. Placed AFTER
+        # configure_ga_run_buffers (which MUST precede the first
+        # ensure_fields_allocated) and BEFORE the executor start below / the
+        # lazy executor start on the single-song (inflight<=1) task path.
+        self._materialize_gpu_runtime_on_main_thread()
         try:
             inflight_req = int(runtime_settings.inflight.songs or 0)
         except Exception as e:

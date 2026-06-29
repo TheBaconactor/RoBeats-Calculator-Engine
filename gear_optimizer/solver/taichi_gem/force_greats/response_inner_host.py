@@ -7,8 +7,10 @@ import numpy as np
 import taichi as ti
 
 from gear_optimizer.core.constants import (
+    ELEMENTAL_GEM_SCALE,
     GEM_SCALE_FEVER,
     GEM_SCALE_NORMAL,
+    GEM_STAT_TO_ELEMENT_SCALE,
     MAX_STAT_INDEX,
     TOTAL_ROWS,
 )
@@ -782,29 +784,184 @@ def _optimize_response_surfaces_gpu(
 
 
 @jit(nopython=True, cache=True)
+def _fg_clamp_ref_idx_native(idx, total_rows):
+    if idx < 0:
+        return 0
+    if idx > total_rows:
+        return total_rows
+    return idx
+
+
+@jit(nopython=True, cache=True)
+def _fg_response_upper_bound_native_f64(
+    base_value,
+    combo_mul,
+    fever_mul,
+    body_fever,
+    body_normal,
+    n_hn,
+    n_hf,
+    sigma_hn,
+    sigma_hf,
+):
+    """f64 CPU port of ``_fg_response_surface_upper_bound`` (the gem-search prune bound)."""
+    ub_eps = 1024.0
+    combo_val = int(np.floor(base_value * combo_mul))
+    fever_val = int(np.floor(base_value * combo_mul * fever_mul))
+    body_score = body_fever * fever_val + body_normal * combo_val
+    factor = (combo_mul - 1.0) * base_value / 100.0
+    head_upper = base_value * (float(n_hn) + fever_mul * float(n_hf)) + factor * (
+        float(sigma_hn) + fever_mul * float(sigma_hf)
+    )
+    return float(body_score) + head_upper + ub_eps
+
+
+@jit(nopython=True, cache=True)
+def _fg_response_surface_score_native_f64(
+    surface_words,
+    sr,
+    body_fever,
+    body_great,
+    body_fever_great,
+    head_len,
+    body_total,
+    primary_val,
+    secondary_val,
+    pp_factor,
+    combo_mul,
+    fever_mul,
+    is_single_color,
+):
+    """f64 CPU port of ``_fg_response_score_device``: exact score of one surface for a fixed
+    (gem-allocated) stat line. Same op order / per-term ``floor`` / i32 accumulation as the
+    GPU device function, run in CPU doubles (no MoltenVK shaderFloat64 needed)."""
+    base_value = float((primary_val * 2) + secondary_val) + pp_factor
+    combo_val = int(np.floor(base_value * combo_mul))
+    fever_val = int(np.floor(base_value * combo_mul * fever_mul))
+    body_normal = body_total - body_fever
+    if body_normal < 0:
+        body_normal = 0
+    score = body_fever * fever_val + body_normal * combo_val
+    combo_slope = (combo_mul - 1.0) / 100.0
+
+    for i in range(head_len):
+        wi = i >> 5
+        b = i & 31
+        is_fever = (int(surface_words[sr, wi]) >> b) & 1
+        scaling = combo_slope * float(i + 1) + 1.0
+        if is_fever != 0:
+            score += int(np.floor(base_value * scaling * fever_mul))
+        else:
+            score += int(np.floor(base_value * scaling))
+
+    great_or = (
+        int(surface_words[sr, 4])
+        | int(surface_words[sr, 5])
+        | int(surface_words[sr, 6])
+        | int(surface_words[sr, 7])
+    )
+    if body_great > 0 or great_or != 0:
+        if is_single_color != 0:
+            great_head_base = (primary_val * 2) + 150
+        else:
+            great_head_base = (
+                int(np.floor(float(primary_val) * (4.0 / 3.0)))
+                + int(np.floor(float(secondary_val) * (2.0 / 3.0)))
+                + 150
+            )
+        great_base = float(great_head_base)
+        great_combo_val = int(np.floor(great_base * combo_mul))
+        great_fever_val = int(np.floor(great_base * combo_mul * fever_mul))
+        if body_great > 0:
+            body_normal_great = body_great - body_fever_great
+            if body_normal_great < 0:
+                body_normal_great = 0
+            body_normal_penalty = combo_val - great_combo_val
+            if body_normal_penalty < 0:
+                body_normal_penalty = 0
+            body_fever_penalty = fever_val - great_fever_val
+            if body_fever_penalty < 0:
+                body_fever_penalty = 0
+            score -= body_normal_great * body_normal_penalty
+            score -= body_fever_great * body_fever_penalty
+        if great_or != 0:
+            for i in range(head_len):
+                wi = i >> 5
+                b = i & 31
+                if ((int(surface_words[sr, 4 + wi]) >> b) & 1) != 0:
+                    is_fever = (int(surface_words[sr, wi]) >> b) & 1
+                    scaling = combo_slope * float(i + 1) + 1.0
+                    if is_fever != 0:
+                        perfect_val = int(np.floor(base_value * scaling * fever_mul))
+                        great_val = int(np.floor(great_base * scaling * fever_mul))
+                    else:
+                        perfect_val = int(np.floor(base_value * scaling))
+                        great_val = int(np.floor(great_base * scaling))
+                    penalty = perfect_val - great_val
+                    if penalty > 0:
+                        score -= penalty
+    return score
+
+
+@jit(nopython=True, cache=True)
 def _score_fg_response_groups_native_f64(
     group_offsets,
     group_lengths,
     row_meta,
     surface_words,
     surface_counts,
+    surface_head_coeffs,
+    color_flags,
     ref_pp,
     ref_cm,
     ref_fm,
-    is_single_color,
+    allow_pp,
     total_rows,
 ):
-    """Native-f64 CPU port of ``_fg_response_inner_group_kernel`` for the gems-fixed
-    (residual_budget == 0) case: per group, score every candidate surface against the
-    group's fixed stats and keep the argmax. Bit-for-bit f64 with the GPU kernel (same
-    op order: ``(base*combo)*fever``, ``floor`` per term, i32 accumulation) so the winning
-    surface is identical -- it just runs on CPU doubles instead of emulating f64 on the GPU.
-    Callers must guarantee residual_budget == 0 (the on-demand zero_ms shape); the gem search
-    is intentionally absent here.
+    """Native-f64 CPU twin of ``_fg_response_inner_group_kernel`` INCLUDING the gem search.
+
+    Bit-for-bit f64 port of the GPU owner kernel: per group it enumerates the same gem
+    allocations (the g_cm/g_fm/g_pp partition of ``residual_budget``) with the identical
+    upper-bound prune, lexicographic tie-break, and per-term ``floor`` op order, scores every
+    candidate surface, and keeps the group argmax. Runs in CPU doubles so it needs no GPU
+    shaderFloat64 (MoltenVK/Metal has none, where the f32 GPU search mis-floors the razor-thin
+    greats argmax and drops every FG candidate). ``residual_budget == 0`` collapses to a single
+    allocation == current stats, identical to the prior gems-fixed serving twin.
+
+    Output columns: [best_score, best_surface, g_pp, g_cm, g_fm, g_ov,
+    final_pp, final_cm, final_fm, final_primary, final_secondary].
     """
     group_count = int(row_meta.shape[0])
     out = np.zeros((group_count, 11), dtype=np.int64)
+
+    is_p_pp = int(color_flags[0])
+    is_s_pp = int(color_flags[1])
+    is_p_cm = int(color_flags[2])
+    is_s_cm = int(color_flags[3])
+    is_p_fm = int(color_flags[4])
+    is_s_fm = int(color_flags[5])
+    is_p_ov = int(color_flags[6])
+    is_s_ov = int(color_flags[7])
+    is_single_color = int(color_flags[8])
+
+    pp_p_delta = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
+    pp_s_delta = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
+    cm_p_delta = GEM_STAT_TO_ELEMENT_SCALE * is_p_cm
+    cm_s_delta = GEM_STAT_TO_ELEMENT_SCALE * is_s_cm
+    fm_p_delta = GEM_STAT_TO_ELEMENT_SCALE * is_p_fm
+    fm_s_delta = GEM_STAT_TO_ELEMENT_SCALE * is_s_fm
+    ov_p_delta = ELEMENTAL_GEM_SCALE * is_p_ov
+    ov_s_delta = ELEMENTAL_GEM_SCALE * is_s_ov
+    w_pp = (pp_p_delta << 1) + pp_s_delta
+    w_cm = (cm_p_delta << 1) + cm_s_delta
+    w_fm = (fm_p_delta << 1) + fm_s_delta
+    w_ov = (ov_p_delta << 1) + ov_s_delta
+    delta_pp_vs_ov = w_pp - w_ov
+    pp_primary_delta = pp_p_delta - ov_p_delta
+    pp_secondary_delta = pp_s_delta - ov_s_delta
+
     for g in range(group_count):
+        residual_budget = int(row_meta[g, 0])
         cur_pp = int(row_meta[g, 1])
         cur_cm = int(row_meta[g, 2])
         cur_fm = int(row_meta[g, 3])
@@ -815,35 +972,67 @@ def _score_fg_response_groups_native_f64(
         if head_len > 100:
             head_len = 100
 
-        ipp = 0 if cur_pp < 0 else (total_rows if cur_pp > total_rows else cur_pp)
-        icm = 0 if cur_cm < 0 else (total_rows if cur_cm > total_rows else cur_cm)
-        ifm = 0 if cur_fm < 0 else (total_rows if cur_fm > total_rows else cur_fm)
-        pp_factor = ref_pp[ipp]
-        combo_mul = ref_cm[icm]
-        fever_mul = ref_fm[ifm]
+        max_pp_gems = 0
+        if allow_pp and cur_pp < MAX_STAT_INDEX:
+            rem_pp = MAX_STAT_INDEX - cur_pp
+            max_pp_gems = rem_pp // GEM_SCALE_NORMAL
+            if rem_pp % GEM_SCALE_NORMAL != 0:
+                max_pp_gems += 1
+        max_cm_gems = 0
+        if cur_cm < MAX_STAT_INDEX:
+            rem_cm = MAX_STAT_INDEX - cur_cm
+            max_cm_gems = rem_cm // GEM_SCALE_NORMAL
+            if rem_cm % GEM_SCALE_NORMAL != 0:
+                max_cm_gems += 1
+        max_fm_gems = 0
+        if cur_fm < MAX_STAT_INDEX:
+            rem_fm = MAX_STAT_INDEX - cur_fm
+            max_fm_gems = rem_fm // GEM_SCALE_FEVER
+            if rem_fm % GEM_SCALE_FEVER != 0:
+                max_fm_gems += 1
+        if max_pp_gems > residual_budget:
+            max_pp_gems = residual_budget
+        if max_cm_gems > residual_budget:
+            max_cm_gems = residual_budget
+        if max_fm_gems > residual_budget:
+            max_fm_gems = residual_budget
 
-        base_value = float((cur_primary * 2) + cur_secondary) + pp_factor
-        combo_val = int(np.floor(base_value * combo_mul))
-        fever_val = int(np.floor(base_value * combo_mul * fever_mul))
-        combo_slope = (combo_mul - 1.0) / 100.0
+        base_init = (cur_primary << 1) + cur_secondary
+        pp_ref_base = ref_pp[_fg_clamp_ref_idx_native(cur_pp, total_rows)]
+        cm_ref_cache = np.empty(max_cm_gems + 1, dtype=np.float64)
+        for gc in range(max_cm_gems + 1):
+            cm_ref_cache[gc] = ref_cm[_fg_clamp_ref_idx_native(cur_cm + gc * GEM_SCALE_NORMAL, total_rows)]
+        fm_ref_cache = np.empty(max_fm_gems + 1, dtype=np.float64)
+        for gf in range(max_fm_gems + 1):
+            fm_ref_cache[gf] = ref_fm[_fg_clamp_ref_idx_native(cur_fm + gf * GEM_SCALE_FEVER, total_rows)]
+        pp_ref_cache = np.empty(max_pp_gems + 1, dtype=np.float64)
+        pp_bound_prefix_max = np.empty(max_pp_gems + 1, dtype=np.float64)
+        pp_ref_cache[0] = pp_ref_base
+        pp_bound_prefix_max[0] = pp_ref_base
+        if allow_pp:
+            running = -1.0e30
+            for gp in range(max_pp_gems + 1):
+                v = ref_pp[_fg_clamp_ref_idx_native(cur_pp + gp * GEM_SCALE_NORMAL, total_rows)]
+                pp_ref_cache[gp] = v
+                bound = float(gp * delta_pp_vs_ov) + v
+                if bound > running:
+                    running = bound
+                pp_bound_prefix_max[gp] = running
 
-        # Per-head Perfect values (fever / non-fever), reused across this group's surfaces.
-        if is_single_color != 0:
-            great_head_base = (cur_primary * 2) + 150
-        else:
-            great_head_base = (
-                int(np.floor(float(cur_primary) * (4.0 / 3.0)))
-                + int(np.floor(float(cur_secondary) * (2.0 / 3.0)))
-                + 150
-            )
-        great_base = float(great_head_base)
-        great_combo_val = int(np.floor(great_base * combo_mul))
-        great_fever_val = int(np.floor(great_base * combo_mul * fever_mul))
+        group_best_score = -1
+        group_best_surface = 0
+        group_best_pp = 0
+        group_best_cm = 0
+        group_best_fm = 0
+        group_best_ov = residual_budget
+        group_best_final_pp = cur_pp
+        group_best_final_cm = cur_cm
+        group_best_final_fm = cur_fm
+        group_best_final_primary = cur_primary + group_best_ov * ov_p_delta
+        group_best_final_secondary = cur_secondary + group_best_ov * ov_s_delta
 
         start = int(group_offsets[g])
         length = int(group_lengths[g])
-        best_score = -1
-        best_local = 0
         for ls in range(length):
             sr = start + ls
             body_fever = int(surface_counts[sr, 0])
@@ -852,70 +1041,164 @@ def _score_fg_response_groups_native_f64(
             body_normal = body_total - body_fever
             if body_normal < 0:
                 body_normal = 0
-            score = body_fever * fever_val + body_normal * combo_val
+            n_hn = int(surface_head_coeffs[sr, 0])
+            n_hf = int(surface_head_coeffs[sr, 1])
+            sigma_hn = int(surface_head_coeffs[sr, 2])
+            sigma_hf = int(surface_head_coeffs[sr, 3])
 
-            for i in range(head_len):
-                wi = i >> 5
-                b = i & 31
-                is_fever = (int(surface_words[sr, wi]) >> b) & 1
-                scaling = combo_slope * float(i + 1) + 1.0
-                if is_fever != 0:
-                    score += int(np.floor(base_value * scaling * fever_mul))
-                else:
-                    score += int(np.floor(base_value * scaling))
+            best_score = group_best_score
+            best_pp = group_best_pp
+            best_cm = group_best_cm
+            best_fm = group_best_fm
+            best_ov = group_best_ov
+            best_final_pp = group_best_final_pp
+            best_final_cm = group_best_final_cm
+            best_final_fm = group_best_final_fm
+            best_final_primary = group_best_final_primary
+            best_final_secondary = group_best_final_secondary
 
-            great_or = (
-                int(surface_words[sr, 4])
-                | int(surface_words[sr, 5])
-                | int(surface_words[sr, 6])
-                | int(surface_words[sr, 7])
-            )
-            if body_great > 0 or great_or != 0:
-                if body_great > 0:
-                    body_normal_great = body_great - body_fever_great
-                    if body_normal_great < 0:
-                        body_normal_great = 0
-                    body_normal_penalty = combo_val - great_combo_val
-                    if body_normal_penalty < 0:
-                        body_normal_penalty = 0
-                    body_fever_penalty = fever_val - great_fever_val
-                    if body_fever_penalty < 0:
-                        body_fever_penalty = 0
-                    score -= body_normal_great * body_normal_penalty
-                    score -= body_fever_great * body_fever_penalty
-                if great_or != 0:
-                    for i in range(head_len):
-                        wi = i >> 5
-                        b = i & 31
-                        if ((int(surface_words[sr, 4 + wi]) >> b) & 1) != 0:
-                            is_fever = (int(surface_words[sr, wi]) >> b) & 1
-                            scaling = combo_slope * float(i + 1) + 1.0
-                            if is_fever != 0:
-                                perfect_val = int(np.floor(base_value * scaling * fever_mul))
-                                great_val = int(np.floor(great_base * scaling * fever_mul))
-                            else:
-                                perfect_val = int(np.floor(base_value * scaling))
-                                great_val = int(np.floor(great_base * scaling))
-                            penalty = perfect_val - great_val
-                            if penalty > 0:
-                                score -= penalty
+            g_cm = 0
+            while g_cm <= max_cm_gems:
+                leftover_after_cm = residual_budget - g_cm
+                if leftover_after_cm < 0:
+                    break
+                cm_stat = cur_cm + g_cm * GEM_SCALE_NORMAL
+                cm_mul = cm_ref_cache[g_cm]
+                g_fm_max = max_fm_gems
+                if g_fm_max > leftover_after_cm:
+                    g_fm_max = leftover_after_cm
+                g_fm = 0
+                while g_fm <= g_fm_max:
+                    leftover_after_fm = leftover_after_cm - g_fm
+                    fm_stat = cur_fm + g_fm * GEM_SCALE_FEVER
+                    fm_mul = fm_ref_cache[g_fm]
+                    g_pp_max = max_pp_gems
+                    if g_pp_max > leftover_after_fm:
+                        g_pp_max = leftover_after_fm
 
-            if score > best_score:
-                best_score = score
-                best_local = ls
+                    base_linear_common = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover_after_fm * w_ov)
+                    if allow_pp:
+                        max_base_value = float(base_linear_common) + pp_bound_prefix_max[g_pp_max]
+                    else:
+                        max_base_value = float(base_linear_common) + pp_ref_base
+                    ub = _fg_response_upper_bound_native_f64(
+                        max_base_value, cm_mul, fm_mul, body_fever, body_normal, n_hn, n_hf, sigma_hn, sigma_hf
+                    )
 
-        out[g, 0] = best_score
-        out[g, 1] = best_local
-        # gems fixed (residual_budget == 0): no reallocation, final stats == current stats.
-        out[g, 2] = 0
-        out[g, 3] = 0
-        out[g, 4] = 0
-        out[g, 5] = int(row_meta[g, 0])
-        out[g, 6] = cur_pp
-        out[g, 7] = cur_cm
-        out[g, 8] = cur_fm
-        out[g, 9] = cur_primary
-        out[g, 10] = cur_secondary
+                    if ub > float(best_score):
+                        primary_base = cur_primary + g_cm * cm_p_delta + g_fm * fm_p_delta + leftover_after_fm * ov_p_delta
+                        secondary_base = (
+                            cur_secondary + g_cm * cm_s_delta + g_fm * fm_s_delta + leftover_after_fm * ov_s_delta
+                        )
+                        if allow_pp and max_pp_gems > 0:
+                            g_pp = 0
+                            while g_pp <= g_pp_max:
+                                g_ov = leftover_after_fm - g_pp
+                                pp_stat = cur_pp + g_pp * GEM_SCALE_NORMAL
+                                primary_val = primary_base + g_pp * pp_primary_delta
+                                secondary_val = secondary_base + g_pp * pp_secondary_delta
+                                pp_base_value = float(base_linear_common + g_pp * delta_pp_vs_ov) + pp_ref_cache[g_pp]
+                                pp_ub = _fg_response_upper_bound_native_f64(
+                                    pp_base_value, cm_mul, fm_mul, body_fever, body_normal, n_hn, n_hf, sigma_hn, sigma_hf
+                                )
+                                if pp_ub >= float(best_score):
+                                    score = _fg_response_surface_score_native_f64(
+                                        surface_words,
+                                        sr,
+                                        body_fever,
+                                        body_great,
+                                        body_fever_great,
+                                        head_len,
+                                        body_total,
+                                        primary_val,
+                                        secondary_val,
+                                        pp_ref_cache[g_pp],
+                                        cm_mul,
+                                        fm_mul,
+                                        is_single_color,
+                                    )
+                                    if score > best_score or (
+                                        score == best_score
+                                        and (
+                                            g_cm < best_cm
+                                            or (
+                                                g_cm == best_cm
+                                                and (g_fm < best_fm or (g_fm == best_fm and g_pp < best_pp))
+                                            )
+                                        )
+                                    ):
+                                        best_score = score
+                                        best_pp = g_pp
+                                        best_cm = g_cm
+                                        best_fm = g_fm
+                                        best_ov = g_ov
+                                        best_final_pp = pp_stat
+                                        best_final_cm = cm_stat
+                                        best_final_fm = fm_stat
+                                        best_final_primary = primary_val
+                                        best_final_secondary = secondary_val
+                                g_pp += 1
+                        else:
+                            pp_factor = pp_ref_cache[0] if allow_pp else pp_ref_base
+                            score = _fg_response_surface_score_native_f64(
+                                surface_words,
+                                sr,
+                                body_fever,
+                                body_great,
+                                body_fever_great,
+                                head_len,
+                                body_total,
+                                primary_base,
+                                secondary_base,
+                                pp_factor,
+                                cm_mul,
+                                fm_mul,
+                                is_single_color,
+                            )
+                            if score > best_score or (
+                                score == best_score
+                                and (
+                                    g_cm < best_cm
+                                    or (g_cm == best_cm and (g_fm < best_fm or (g_fm == best_fm and 0 < best_pp)))
+                                )
+                            ):
+                                best_score = score
+                                best_pp = 0
+                                best_cm = g_cm
+                                best_fm = g_fm
+                                best_ov = leftover_after_fm
+                                best_final_pp = cur_pp
+                                best_final_cm = cm_stat
+                                best_final_fm = fm_stat
+                                best_final_primary = primary_base
+                                best_final_secondary = secondary_base
+                    g_fm += 1
+                g_cm += 1
+
+            if best_score > group_best_score:
+                group_best_score = best_score
+                group_best_surface = ls
+                group_best_pp = best_pp
+                group_best_cm = best_cm
+                group_best_fm = best_fm
+                group_best_ov = best_ov
+                group_best_final_pp = best_final_pp
+                group_best_final_cm = best_final_cm
+                group_best_final_fm = best_final_fm
+                group_best_final_primary = best_final_primary
+                group_best_final_secondary = best_final_secondary
+
+        out[g, 0] = group_best_score
+        out[g, 1] = group_best_surface
+        out[g, 2] = group_best_pp
+        out[g, 3] = group_best_cm
+        out[g, 4] = group_best_fm
+        out[g, 5] = group_best_ov
+        out[g, 6] = group_best_final_pp
+        out[g, 7] = group_best_final_cm
+        out[g, 8] = group_best_final_fm
+        out[g, 9] = group_best_final_primary
+        out[g, 10] = group_best_final_secondary
     return out
 
 
@@ -932,12 +1215,13 @@ def _score_response_group_meta_cpu(
     surface_counts: np.ndarray,
     surface_head_coeffs: np.ndarray | None = None,
 ) -> tuple[np.ndarray, int]:
-    """Native-f64 CPU twin of ``_score_response_group_meta_gpu`` for the gems-fixed
-    (zero_ms / total_budget == 0) on-demand path. Same exact algorithm and exact f64
-    arithmetic as the GPU kernel; runs on CPU doubles so it needs no GPU f64 support
-    (MoltenVK) and parallelizes per request across cores instead of serializing on the
-    single GPU. Fails loud if any group carries a nonzero gem budget (the gem search lives
-    only in the GPU path)."""
+    """Native-f64 CPU twin of ``_score_response_group_meta_gpu`` for BOTH the gems-fixed
+    (zero_ms / total_budget == 0) on-demand serving path AND the gem-search (total_budget > 0)
+    optimizer path. Same exact algorithm and exact f64 arithmetic as the GPU kernel (including
+    the gem-allocation enumeration, upper-bound prune, and lexicographic tie-break); runs on
+    CPU doubles so it needs no GPU shaderFloat64 (MoltenVK/Metal has none -- there the f32 GPU
+    search mis-floors the razor-thin greats argmax and drops every FG candidate). Parallelizes
+    per request across cores instead of serializing on the single GPU."""
     group_count = int(group_meta.shape[0])
     if group_count != int(group_offsets.shape[0]) or group_count != int(group_lengths.shape[0]):
         raise ValueError("response frontier CPU group metadata arrays have inconsistent lengths")
@@ -946,14 +1230,14 @@ def _score_response_group_meta_cpu(
         return np.zeros((0, 11), dtype=np.int32), 0
 
     group_meta_all = np.ascontiguousarray(group_meta, dtype=np.int32)
-    if group_count and bool(np.any(group_meta_all[:, 0] != 0)):
-        raise ValueError(
-            "response frontier CPU scoring is the gems-fixed (residual_budget==0) on-demand path; "
-            "a nonzero gem budget must use the GPU gem-search owner"
-        )
+    if int(group_meta_all.shape[1]) < 8:
+        raise ValueError("response frontier CPU group metadata requires head/body columns")
 
     flags = _color_flags(primary_color, secondary_color, selected_color)
-    is_single_color = int(flags[8])
+    color_flags_all = np.ascontiguousarray(np.asarray(flags, dtype=np.int32))
+    # PP gems are the Chill element; the GPU search only enumerates PP gems when the song
+    # carries a Chill color (flags[0]/[1]). Mirror that gate exactly.
+    allow_pp = bool(int(flags[0]) != 0 or int(flags[1]) != 0)
     exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
     # CPU exact-rescore path stays float64 (the numba scorer is the f64 authority), independent
     # of the GPU search fp.
@@ -969,16 +1253,32 @@ def _score_response_group_meta_cpu(
     if bool(np.any(surface_counts_all < 0)):
         raise ValueError("response frontier CPU surface counts must be nonnegative")
 
+    head_lengths = np.unique(np.ascontiguousarray(group_meta_all[:, 6], dtype=np.int32))
+    if int(head_lengths.shape[0]) != 1:
+        raise ValueError("response frontier CPU group metadata has inconsistent head length")
+    if surface_head_coeffs is None:
+        surface_head_coeffs_all = _precompute_surface_head_coeffs(surface_words_all, head_len=int(head_lengths[0]))
+    else:
+        surface_head_coeffs_all = np.ascontiguousarray(np.asarray(surface_head_coeffs, dtype=np.int32))
+        if (
+            int(surface_head_coeffs_all.ndim) != 2
+            or int(surface_head_coeffs_all.shape[0]) != int(surface_words_all.shape[0])
+            or int(surface_head_coeffs_all.shape[1]) != 4
+        ):
+            raise ValueError("response frontier CPU surface head coefficients have invalid shape")
+
     out_rows = _score_fg_response_groups_native_f64(
         np.ascontiguousarray(group_offsets, dtype=np.int64),
         np.ascontiguousarray(group_lengths, dtype=np.int64),
         group_meta_all,
         surface_words_all,
         surface_counts_all,
+        surface_head_coeffs_all,
+        color_flags_all,
         ref_pp,
         ref_cm,
         ref_fm,
-        int(is_single_color),
+        bool(allow_pp),
         int(TOTAL_ROWS),
     )
     return np.asarray(out_rows, dtype=np.int32), int(logical_surface_rows)
