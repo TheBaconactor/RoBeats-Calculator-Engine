@@ -236,8 +236,12 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
         Idempotent (guarded by ``is_initialized()``) and completes synchronously
         BEFORE the GPU executor thread is started, giving a strict happens-before
-        ordering with no concurrent GPU access (no races). Harmless on Linux /
-        Windows, where it is simply the first init on the main thread.
+        ordering with no concurrent GPU access (no races). Gated to darwin at the
+        call site: Linux/Windows have no main-thread GLFW requirement and keep
+        their prior lazy executor-thread init, so this does not add an eager
+        startup GPU dependency there. On darwin a materialization failure is a
+        genuine GPU-first fatal (the lazy path would otherwise SIGTRAP), so it
+        intentionally fails loud rather than being swallowed.
         """
         from gear_optimizer.solver.taichi_gem.runtime import is_initialized
 
@@ -269,12 +273,16 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
         except Exception as e:
             logger.warning(f"app:_configure_execution_and_prewarm: {e}")
-        # Pin the one-time Taichi/Vulkan runtime materialization to the OS main
-        # thread before any GPU executor thread is spawned. Placed AFTER
-        # configure_ga_run_buffers (which MUST precede the first
-        # ensure_fields_allocated) and BEFORE the executor start below / the
-        # lazy executor start on the single-song (inflight<=1) task path.
-        self._materialize_gpu_runtime_on_main_thread()
+        # macOS-only required dispatch-safety boundary: on darwin `ti.vulkan` lowers through
+        # MoltenVK and Taichi acquires a GLFW/Cocoa context during materialize_runtime, which
+        # traps off the OS main thread. Pin that one-time materialization to the main thread
+        # before any GPU executor thread spawns. Placed AFTER configure_ga_run_buffers (which
+        # MUST precede the first ensure_fields_allocated) and BEFORE the executor start below /
+        # the lazy executor start on the single-song (inflight<=1) task path. On Linux/Windows
+        # there is no main-thread requirement, so we leave their startup path exactly as before
+        # (lazy init on the executor thread) and do not introduce an eager startup GPU dependency.
+        if sys.platform == "darwin":
+            self._materialize_gpu_runtime_on_main_thread()
         try:
             inflight_req = int(runtime_settings.inflight.songs or 0)
         except Exception as e:
