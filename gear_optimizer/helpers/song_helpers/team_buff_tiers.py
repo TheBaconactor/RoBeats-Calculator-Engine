@@ -12,7 +12,11 @@ from ...core.team_buff import (
     team_buff_effect,
 )
 from ...core.utils import get_selected_element, safe_int as _safe_int
-from ...data.loadout_equivalence import representative_mini_names
+from ...data.loadout_equivalence import (
+    get_gears_by_name_cached,
+    get_minis_by_name_cached,
+    representative_mini_names,
+)
 from .fg_config import has_valid_fg_config, require_response_surface
 from .force_greats.result_application import materialize_stats_from_payload
 from .ref_array_builder import resolve_exact_replay_ref_arrays
@@ -228,13 +232,39 @@ def _apply_stat_delta(stats: dict, delta: dict[str, int]) -> dict:
 
 
 def _entry_loadout_items(entry: dict) -> list[dict]:
-    """The 6 gear + 3 mini stat dicts before any gem allocation is applied."""
-    gear = [dict(item) for item in list((entry or {}).get("gear") or [])[:6] if isinstance(item, dict)]
-    minis = [dict(item) for item in list((entry or {}).get("minis") or [])[:3] if isinstance(item, dict)]
+    """The 6 gear + 3 mini stat dicts before any gem allocation is applied.
+
+    Two callers feed entries here. The on-demand serving path passes entries
+    whose ``gear``/``minis`` are already expanded stat-dicts; the persistence
+    canonicalizer keeps ``gear``/``minis`` as item NAME STRINGS (the loadout
+    hash is derived from names, so they cannot be replaced in-place). Resolve
+    BOTH shapes to the canonical pre-gem stat-dicts here, via the same
+    Gears.csv/Minis.csv name->stats maps the seed-loading path
+    (``_expand_*_from_db``) uses, so the per-tier gem re-solve has ONE entry
+    contract regardless of caller. Fail loud if the loadout does not resolve to
+    exactly 6 gear + 3 mini stat-dicts.
+    """
+    entry = entry or {}
+    raw_gear = list(entry.get("gear") or [])
+    raw_minis = list(entry.get("minis") or [])
+    gear = [dict(item) for item in raw_gear[:6] if isinstance(item, dict)]
+    minis = [dict(item) for item in raw_minis[:3] if isinstance(item, dict)]
+    if len(gear) != 6 or len(minis) != 3:
+        # Persistence entries carry item NAME STRINGS -> expand to the canonical
+        # pre-gem stat-dicts. Minis are variant-grouped, so resolve their
+        # representative names exactly as the per-entry "minis" field does above.
+        gears_by_name = get_gears_by_name_cached()
+        minis_by_name = get_minis_by_name_cached()
+        gear = [dict(gears_by_name[name]) for name in _flat_item_names(raw_gear) if name in gears_by_name]
+        minis = [
+            dict(minis_by_name[name])
+            for name in _representative_mini_names_from_any(raw_minis)
+            if name in minis_by_name
+        ]
     if len(gear) != 6 or len(minis) != 3:
         raise ValueError(
             f"tier re-solve needs 6 gear + 3 mini stat-dicts, got {len(gear)} gear + {len(minis)} minis "
-            f"(loadout {(entry or {}).get('loadout_hash')!r})"
+            f"(loadout {entry.get('loadout_hash')!r})"
         )
     return gear + minis
 

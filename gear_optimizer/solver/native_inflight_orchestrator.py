@@ -252,7 +252,6 @@ def run_native_inflight_song_pipeline(
         emit_deferred_post_payload(
             song,
             post=_post,
-            persist_pending_fg_job=False,
             completed_songs=completed_songs,
             memory_resume_tracker=memory_resume_tracker,
             bundle_completed_cb=bundle_completed_cb,

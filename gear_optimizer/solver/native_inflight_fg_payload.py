@@ -26,7 +26,7 @@ def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) ->
         "file_path": song.config.fp,
         "cfg_dict": song.config.cfg_dict,
     }
-def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: bool) -> dict[str, Any]:
+def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
     best_data_for_post = song.runtime.decode.best_data or {}
     best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
     pending_fg_job = getattr(song.runtime.fg, "fg_variants", None) is None
@@ -86,7 +86,6 @@ def build_deferred_post_payload(song: NativeSong, *, persist_pending_fg_job: boo
         "current_minis": _compact_items(song.gpu_inputs.current_mini_list),
         "fg_variants": fg_variants_post,
         "ga_candidates": ga_candidates_post,
-        "_persist_pending_fg_job": bool(persist_pending_fg_job and pending_fg_job),
         "prev_record": _compact_prev_record(song.runtime.db.prev_record),
         "attempt_lifetime": int(song.runtime.db.attempt_lifetime or 0),
         "prev_attempts_first": int(song.runtime.db.prev_attempts_first or 0),

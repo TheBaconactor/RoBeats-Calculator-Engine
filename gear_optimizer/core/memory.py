@@ -28,6 +28,14 @@ try:
 except ImportError:
     psutil = None
 
+# Errors a per-process RSS read can raise. `psutil.AccessDenied` is a `psutil.Error`, NOT an
+# `OSError`, so it must be listed explicitly or it escapes the read guard and kills the
+# watchdog thread (on macOS, `memory_full_info()` on a CHILD process needs the `task_for_pid`
+# entitlement and raises AccessDenied).
+_RSS_READ_ERRORS: tuple[type[BaseException], ...] = (OSError, AttributeError, ValueError)
+if psutil is not None:
+    _RSS_READ_ERRORS = _RSS_READ_ERRORS + (psutil.Error,)
+
 from .constants import MEMORY_WATCHDOG_INTERVAL_SEC, PATHS
 
 # Global watchdog state
@@ -82,8 +90,18 @@ def _process_tree_rss_bytes(root_process, include_compressed=False):
     def _rss_with_compressed(proc):
         try:
             info = proc.memory_full_info() if include_compressed else proc.memory_info()
-        except (OSError, AttributeError, ValueError):
-            return 0
+        except _RSS_READ_ERRORS:
+            if not include_compressed:
+                return 0
+            # macOS: memory_full_info() (uss/compressed) needs the task_for_pid entitlement
+            # for child processes and raises AccessDenied; plain rss via memory_info() does
+            # not. Fall back so the watchdog keeps accounting the child's rss (minus the
+            # compressed portion) instead of the whole watchdog thread dying.
+            try:
+                info = proc.memory_info()
+            except _RSS_READ_ERRORS:
+                return 0
+            return getattr(info, "rss", 0) or 0
         rss_val = getattr(info, "rss", 0) or 0
         if include_compressed:
             rss_val += getattr(info, "compressed", 0) or 0
@@ -93,7 +111,7 @@ def _process_tree_rss_bytes(root_process, include_compressed=False):
     try:
         for child in root_process.children(recursive=True):
             total += _rss_with_compressed(child)
-    except (OSError, AttributeError, ValueError):
+    except _RSS_READ_ERRORS:
         logging.debug("[MemoryGuard] Failed to read child process memory", exc_info=True)
     return total
 

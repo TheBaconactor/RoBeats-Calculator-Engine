@@ -13,13 +13,12 @@ from gear_optimizer.core.output import suppress_stdout, suppress_stderr
 from gear_optimizer.data.database import init_db
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.helpers.song_helpers.results_printer import print_results
-from gear_optimizer.pipeline.post_processor_deferred import (
-    build_deferred_post_context,
-    build_deferred_post_db_payload,
-    build_deferred_post_persist_entries,
-    build_deferred_post_print_payload,
-    build_deferred_post_result_payload,
-    should_persist_pending_fg_job,
+from gear_optimizer.pipeline.post_processor_persist import (
+    build_post_persist_context,
+    build_post_persist_db_payload,
+    build_post_persist_entries,
+    build_post_persist_print_payload,
+    build_post_persist_result_payload,
 )
 from gear_optimizer.pipeline.post_processor_fg_updates import (
     build_fg_update_state,
@@ -209,13 +208,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     if persisted:
                         logger.debug("[DB] Skipped FG update for %s: no valid entries", song_name)
 
-                try:
-                    _t_del0 = time.perf_counter()
-                    async_db.delete_pending_fg_job(db_key)
-                    _log_timing("fg_delete_pending_job_enqueue", time.perf_counter() - _t_del0, song=song_name)
-                except Exception as e:
-                    logger.warning(f"post_processor:_print_pending_final: {e}")
-
                 fg_state = build_fg_update_state(pending_fg_summary.get(song_name), valid_entries)
                 pending_fg_summary[song_name] = fg_state
 
@@ -294,38 +286,20 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             res = item
             if isinstance(item, dict) and item.get("_deferred_post"):
                 _t_build0 = time.perf_counter()
-                post_context = build_deferred_post_context(item)
+                post_context = build_post_persist_context(item)
                 _log_timing("deferred_payload_unpack", time.perf_counter() - _t_build0, song=item.get("song"))
 
                 _t_dbpayload0 = time.perf_counter()
-                db_payload = build_deferred_post_db_payload(post_context)
+                db_payload = build_post_persist_db_payload(post_context)
                 _log_timing("build_db_payload", time.perf_counter() - _t_dbpayload0, song=item.get("song"))
 
                 _t_persist0 = time.perf_counter()
-                persist_entries = build_deferred_post_persist_entries(
+                persist_entries = build_post_persist_entries(
                     item,
                     db_payload=db_payload,
                     context=post_context,
                 )
                 _log_timing("build_persistence_entries", time.perf_counter() - _t_persist0, song=item.get("song"))
-
-                # Durable deferred FG is opt-in. The normal in-flight queue is already
-                # drained by FG workers; persisting it here bloats the main DB with
-                # transient JSON pages and is not part of retained frontier coverage.
-                if should_persist_pending_fg_job(item):
-                    try:
-                        _t_upsert0 = time.perf_counter()
-                        async_db.submit_pending_fg_job(
-                            item.get("db_key", item.get("song", "Unknown")),
-                            item.get("ga_candidates") or [],
-                        )
-                        _log_timing(
-                            "upsert_pending_fg_job_enqueue",
-                            time.perf_counter() - _t_upsert0,
-                            song=item.get("song"),
-                        )
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
 
                 # Print results (including optional FG debug) in post process so GPU can move on.
                 def _emit(_msg: str) -> None:
@@ -333,7 +307,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
                 if sync_output and item.get("_pending_fg_job"):
                     song_name_for_print = item.get("song", "Unknown")
-                    pending_final_print[song_name_for_print] = build_deferred_post_print_payload(
+                    pending_final_print[song_name_for_print] = build_post_persist_print_payload(
                         item,
                         context=post_context,
                         emit=_emit,
@@ -364,7 +338,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     except Exception as e:
                         logger.warning(f"post_processor:_emit: {e}")
 
-                res = build_deferred_post_result_payload(
+                res = build_post_persist_result_payload(
                     item,
                     db_payload=db_payload,
                     persist_entries=persist_entries,

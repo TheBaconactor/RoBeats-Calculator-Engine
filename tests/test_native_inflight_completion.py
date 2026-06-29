@@ -106,7 +106,6 @@ def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_complete
     emitted = emit_deferred_post_payload(
         song,
         post=posted.append,
-        persist_pending_fg_job=True,
         completed_songs=completed,
         memory_resume_tracker=memory,
         bundle_completed_cb=lambda key, done: bundle_callbacks.append((key, set(done))),
@@ -117,7 +116,6 @@ def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_complete
     emitted_again = emit_deferred_post_payload(
         song,
         post=posted.append,
-        persist_pending_fg_job=True,
         completed_songs=completed,
         memory_resume_tracker=memory,
         bundle_completed_cb=None,
@@ -145,7 +143,6 @@ def test_emit_deferred_post_payload_defers_completion_when_fg_is_pending():
     emitted = emit_deferred_post_payload(
         song,
         post=posted.append,
-        persist_pending_fg_job=False,
         completed_songs=completed,
         advance_bundle=lambda *_args, **_kwargs: None,
     )
@@ -153,7 +150,6 @@ def test_emit_deferred_post_payload_defers_completion_when_fg_is_pending():
     assert emitted is True
     assert len(posted) == 1
     assert posted[0]["_pending_fg_job"] is True
-    assert posted[0]["_persist_pending_fg_job"] is False
     assert song.runtime.post.await_fg_completion_progress is True
     assert completed == set()
 

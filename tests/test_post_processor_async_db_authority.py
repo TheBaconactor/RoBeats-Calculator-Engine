@@ -100,7 +100,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         db_best_fg_score=0,
     )
 
-    payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=False)
+    payload = result_events.build_deferred_post_payload(song)
     result_queue: queue.Queue = queue.Queue()
     worker = threading.Thread(
         target=post_processor.run_post_processor,

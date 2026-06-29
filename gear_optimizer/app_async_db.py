@@ -119,22 +119,6 @@ class AsyncDbSaver:
             self.start()
         self._queue.put(("save", song_name, entries or [], meta))
 
-    def submit_pending_fg_job(self, song_name: str, candidates: list[dict]) -> None:
-        self.raise_if_failed()
-        if not song_name:
-            return
-        if not self._running:
-            self.start()
-        self._queue.put(("upsert_pending_fg_job", str(song_name), candidates or []))
-
-    def delete_pending_fg_job(self, song_name: str) -> None:
-        self.raise_if_failed()
-        if not song_name:
-            return
-        if not self._running:
-            self.start()
-        self._queue.put(("delete_pending_fg_job", str(song_name)))
-
     def flush(self, timeout: float = 30.0) -> None:
         if not self._running:
             return
@@ -242,34 +226,6 @@ class AsyncDbSaver:
                     continue
 
                 kind = item[0]
-                if kind == "delete_pending_fg_job":
-                    try:
-                        _, song_name = item
-                    except Exception as e:
-                        logger.warning(f"app_async_db:_loop: {e}")
-                        continue
-                    try:
-                        from gear_optimizer.data.database import delete_pending_fg_job
-
-                        delete_pending_fg_job(str(song_name))
-                    except Exception as exc:
-                        self._record_error("delete_pending_fg_job", exc, song_name=str(song_name))
-                    continue
-
-                if kind == "upsert_pending_fg_job":
-                    try:
-                        _, song_name, candidates = item
-                    except Exception as e:
-                        logger.warning(f"app_async_db:_loop: {e}")
-                        continue
-                    try:
-                        from gear_optimizer.data.database import upsert_pending_fg_job
-
-                        upsert_pending_fg_job(str(song_name), list(candidates or []))
-                    except Exception as exc:
-                        self._record_error("upsert_pending_fg_job", exc, song_name=str(song_name))
-                    continue
-
                 if kind != "save":
                     continue
 

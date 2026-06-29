@@ -1,13 +1,78 @@
 """
-Per-song counter reads/writes against the `songs` table.
+Per-song counter reads/writes against the `songs` table, plus per-song
+presence queries against `songs` and the loadout tables.
 """
+import os
 import sqlite3
 import logging
+from collections.abc import Iterable
 from typing import Optional
 from ...core.utils import require_int
 from .connection import get_db_connection, get_db_connection_cached, get_evolution_db_path
 
 logger = logging.getLogger(__name__)
+
+
+def get_song_names_present_in_db(
+    song_names: Iterable[str],
+    db_path: Optional[str] = None,
+    *,
+    require_loadouts: bool = False,
+) -> set[str]:
+    """
+    Return the subset of song names that are already present in the DB.
+
+    By default, presence is defined as having a row in `songs` OR any row in the
+    loadout tables. When ``require_loadouts=True``, only persisted loadout rows
+    count as present so stub ``songs`` rows without optimization output are treated
+    as missing.
+    """
+    names = [name for name in (song_names or []) if name]
+    if not names:
+        return set()
+
+    if db_path is None:
+        db_path = get_evolution_db_path()
+    db_path = str(db_path)
+    if not db_path or not os.path.exists(db_path):
+        return set()
+
+    conn = get_db_connection_cached(db_path)
+    present: set[str] = set()
+    batch_size = 900  # sqlite default parameter cap is commonly 999
+    for offset in range(0, len(names), batch_size):
+        batch = names[offset : offset + batch_size]
+        placeholders = ",".join("?" for _ in batch)
+
+        if not require_loadouts:
+            try:
+                rows = conn.execute(
+                    f"SELECT name FROM songs WHERE name IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                present.update(row[0] for row in rows if row and row[0])
+            except sqlite3.Error:
+                pass
+
+        for table in ("team_buff_loadouts", "team_buff_fg_loadouts"):
+            try:
+                rows = conn.execute(
+                    f"SELECT DISTINCT song_name FROM {table} WHERE song_name IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                present.update(row[0] for row in rows if row and row[0])
+            except sqlite3.Error:
+                continue
+
+    return present
+
+
+def get_song_names_with_persisted_loadouts(
+    song_names: Iterable[str],
+    db_path: Optional[str] = None,
+) -> set[str]:
+    """Return song names that already have persisted base or FG loadout rows."""
+    return get_song_names_present_in_db(song_names, db_path, require_loadouts=True)
 
 
 def get_song_counters(
