@@ -1,3 +1,10 @@
+"""
+Single canonical post-processing/persist helper for optimizer results.
+
+Builds the DB payload, persistence entries, print payload, and result payload
+for a completed per-song compute item before it is written to SQLite and printed.
+This is THE one post-processing path; there is no second/alternate route.
+"""
 from __future__ import annotations
 
 import logging
@@ -20,22 +27,8 @@ from gear_optimizer.pipeline.post_processor_fg_variants import best_fg_improving
 logger = logging.getLogger(__name__)
 
 
-def should_persist_pending_fg_job(item: dict[str, Any]) -> bool:
-    """
-    Persist pending FG work only for explicit durable deferral.
-
-    Normal GPU-native in-flight runs already drain FG in-process. Writing every
-    in-memory FG queue item into SQLite creates large transient JSON pages that
-    SQLite keeps after delete, without improving the completed product result.
-    """
-    return (
-        bool(item.get("_pending_fg_job"))
-        and bool(item.get("_persist_pending_fg_job"))
-    )
-
-
 @dataclass(frozen=True)
-class DeferredPostContext:
+class PostPersistContext:
     cfg: Any
     build_details: Callable[[dict[str, Any]], dict[str, Any]]
     best_data: Any
@@ -48,7 +41,7 @@ class DeferredPostContext:
     db_best_fg_score: int
 
 
-def build_deferred_post_context(item: dict[str, Any]) -> DeferredPostContext:
+def build_post_persist_context(item: dict[str, Any]) -> PostPersistContext:
     cfg_dict = item.get("cfg_dict") or {}
     cfg = cfg_from_dict(cfg_dict) if cfg_dict else FallbackAwareConfigParser()
 
@@ -106,7 +99,7 @@ def build_deferred_post_context(item: dict[str, Any]) -> DeferredPostContext:
 
     attempts_first = 1 if record_improved else (int(prev_attempts_first or 0) + 1 if prev_attempts_first else 1)
 
-    return DeferredPostContext(
+    return PostPersistContext(
         cfg=cfg,
         build_details=build_details,
         best_data=best_data,
@@ -120,7 +113,7 @@ def build_deferred_post_context(item: dict[str, Any]) -> DeferredPostContext:
     )
 
 
-def build_deferred_post_db_payload(context: DeferredPostContext) -> dict[str, Any]:
+def build_post_persist_db_payload(context: PostPersistContext) -> dict[str, Any]:
     return build_db_payload(
         context.best_data,
         context.best_gear,
@@ -134,11 +127,11 @@ def build_deferred_post_db_payload(context: DeferredPostContext) -> dict[str, An
     )
 
 
-def build_deferred_post_persist_entries(
+def build_post_persist_entries(
     item: dict[str, Any],
     *,
     db_payload: dict[str, Any],
-    context: DeferredPostContext,
+    context: PostPersistContext,
 ) -> list[dict[str, Any]]:
     return canonicalize_and_assemble(
         db_payload=db_payload,
@@ -153,10 +146,10 @@ def build_deferred_post_persist_entries(
     )
 
 
-def build_deferred_post_print_payload(
+def build_post_persist_print_payload(
     item: dict[str, Any],
     *,
-    context: DeferredPostContext,
+    context: PostPersistContext,
     emit: Callable[[str], None],
 ) -> dict[str, Any]:
     song_name = item.get("song", "Unknown")
@@ -177,7 +170,7 @@ def build_deferred_post_print_payload(
     }
 
 
-def build_deferred_post_result_payload(
+def build_post_persist_result_payload(
     item: dict[str, Any],
     *,
     db_payload: dict[str, Any],

@@ -101,7 +101,6 @@ def emit_deferred_post_payload(
     song: NativeSong,
     *,
     post: Callable[[dict], None],
-    persist_pending_fg_job: bool,
     completed_songs: set[str],
     memory_resume_tracker=None,
     bundle_completed_cb=None,
@@ -111,7 +110,7 @@ def emit_deferred_post_payload(
 ) -> bool:
     if bool(getattr(song.runtime.post, "deferred_post_emitted", False)):
         return False
-    post(build_deferred_post_payload(song, persist_pending_fg_job=bool(persist_pending_fg_job)))
+    post(build_deferred_post_payload(song))
     song.runtime.post.deferred_post_emitted = True
     bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
     needs_fg_stage = getattr(song.runtime.fg, "fg_variants", None) is None

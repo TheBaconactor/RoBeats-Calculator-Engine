@@ -158,11 +158,10 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
         db_best_fg_score=105,
     )
 
-    payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=True)
+    payload = result_events.build_deferred_post_payload(song)
 
     assert payload["_deferred_post"] is True
     assert payload["_pending_fg_job"] is True
-    assert payload["_persist_pending_fg_job"] is True
     assert payload["fg_debug"] is False
     assert payload["calc_song"] is calc_song
     assert payload["ref_arrays"] is ref_arrays
@@ -211,7 +210,7 @@ def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("selected twice")),
     )
 
-    payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=True)
+    payload = result_events.build_deferred_post_payload(song)
 
     candidate = payload["ga_candidates"][0]
     assert candidate["Data"]["RawGASearchScore"] == 200
@@ -272,10 +271,9 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         db_best_fg_score=105,
     )
 
-    payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=True)
+    payload = result_events.build_deferred_post_payload(song)
 
     assert payload["_pending_fg_job"] is False
-    assert payload["_persist_pending_fg_job"] is False
     assert int(payload["fg_variants"][0]["fg_score"]) == 130
 
 
@@ -444,7 +442,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         db_best_fg_score=0,
     )
 
-    payload = result_events.build_deferred_post_payload(song, persist_pending_fg_job=False)
+    payload = result_events.build_deferred_post_payload(song)
     persist_entries = build_persistence_entries(
         {
             "score": int(payload["best_data"]["Score"]),

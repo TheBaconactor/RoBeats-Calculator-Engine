@@ -1,9 +1,9 @@
-from gear_optimizer.pipeline.post_processor_deferred import (
-    build_deferred_post_context,
-    build_deferred_post_db_payload,
-    build_deferred_post_persist_entries,
-    build_deferred_post_print_payload,
-    build_deferred_post_result_payload,
+from gear_optimizer.pipeline.post_processor_persist import (
+    build_post_persist_context,
+    build_post_persist_db_payload,
+    build_post_persist_entries,
+    build_post_persist_print_payload,
+    build_post_persist_result_payload,
 )
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
@@ -78,10 +78,10 @@ def test_deferred_post_finalizer_builds_replay_authoritative_entries():
         "meta_secondary_color": "Flow",
     }
 
-    context = build_deferred_post_context(item)
-    db_payload = build_deferred_post_db_payload(context)
-    persist_entries = build_deferred_post_persist_entries(item, db_payload=db_payload, context=context)
-    result_payload = build_deferred_post_result_payload(item, db_payload=db_payload, persist_entries=persist_entries)
+    context = build_post_persist_context(item)
+    db_payload = build_post_persist_db_payload(context)
+    persist_entries = build_post_persist_entries(item, db_payload=db_payload, context=context)
+    result_payload = build_post_persist_result_payload(item, db_payload=db_payload, persist_entries=persist_entries)
 
     assert context.attempt_lifetime == 1
     assert context.attempts_first == 1
@@ -123,8 +123,8 @@ def test_deferred_post_print_payload_preserves_pending_final_shape():
         "db_best_fg_score": "123",
     }
 
-    context = build_deferred_post_context(item)
-    payload = build_deferred_post_print_payload(item, context=context, emit=emit)
+    context = build_post_persist_context(item)
+    payload = build_post_persist_print_payload(item, context=context, emit=emit)
 
     assert payload == {
         "song": "pytest_deferred_post_print",

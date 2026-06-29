@@ -76,7 +76,7 @@ from ..loadout_equivalence import (
 )
 from gear_optimizer.core.parsing import env_get
 
-# --- Connection layer (imported first; pending_fg_jobs depends on these) ---
+# --- Connection layer ---
 from . import connection
 from .connection import (
     get_evolution_db_path,
@@ -93,8 +93,13 @@ from .connection import (
 # thread-local object (never a fresh instance).
 _DB_TLS = connection._DB_TLS
 
-# --- Songs counters ---
-from .songs import get_song_counters, update_song_counters
+# --- Songs counters + per-song presence queries ---
+from .songs import (
+    get_song_counters,
+    get_song_names_present_in_db,
+    get_song_names_with_persisted_loadouts,
+    update_song_counters,
+)
 
 # --- Loadout IO (compaction / expansion / hashing) ---
 from .loadout_io import (
@@ -122,17 +127,6 @@ from .force_normalize import (
 # --- Persistence + leaderboards ---
 from .persistence import save_loadouts_batch, save_team_buff_loadouts_batch
 from .leaderboards import get_best_loadouts
-
-# --- pending_fg_jobs re-export (LAST): the module does a module-scope
-#     `from .database import get_db_connection, get_db_connection_cached,
-#     get_evolution_db_path`, which resolves against THIS package __init__.
-#     Those names are bound above, so importing it here is safe. ---
-from .. import pending_fg_jobs as _pending_fg_jobs
-get_song_names_present_in_db = _pending_fg_jobs.get_song_names_present_in_db
-get_song_names_with_persisted_loadouts = _pending_fg_jobs.get_song_names_with_persisted_loadouts
-upsert_pending_fg_job = _pending_fg_jobs.upsert_pending_fg_job
-delete_pending_fg_job = _pending_fg_jobs.delete_pending_fg_job
-list_pending_fg_jobs = _pending_fg_jobs.list_pending_fg_jobs
 
 __all__ = [
     # constants / collaborators
@@ -188,6 +182,8 @@ __all__ = [
     "_DB_TLS",
     # songs
     "get_song_counters",
+    "get_song_names_present_in_db",
+    "get_song_names_with_persisted_loadouts",
     "update_song_counters",
     # loadout io
     "_compact_gear_for_db",
@@ -210,10 +206,4 @@ __all__ = [
     "save_loadouts_batch",
     "save_team_buff_loadouts_batch",
     "get_best_loadouts",
-    # pending_fg_jobs re-export
-    "get_song_names_present_in_db",
-    "get_song_names_with_persisted_loadouts",
-    "upsert_pending_fg_job",
-    "delete_pending_fg_job",
-    "list_pending_fg_jobs",
 ]

@@ -15,16 +15,6 @@ CREATE TABLE IF NOT EXISTS songs (
     attempts_first INTEGER DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS pending_fg_jobs (
-    song_name TEXT PRIMARY KEY,
-    candidates_json TEXT NOT NULL,
-    created_ts REAL,
-    updated_ts REAL
-);
-
-CREATE INDEX IF NOT EXISTS idx_pending_fg_jobs_updated
-    ON pending_fg_jobs (updated_ts DESC);
-
 CREATE TABLE IF NOT EXISTS team_buff_loadouts (
     song_name TEXT,
     team_buff TEXT,
@@ -75,7 +65,6 @@ CREATE TABLE IF NOT EXISTS mini_name_encoding (
 
 _REQUIRED_COLUMNS: dict[str, set[str]] = {
     "songs": {"name", "best_score", "best_fg_score", "last_updated", "attempt_lifetime", "attempts_first"},
-    "pending_fg_jobs": {"song_name", "candidates_json", "created_ts", "updated_ts"},
     "team_buff_loadouts": {
         "song_name",
         "team_buff",
