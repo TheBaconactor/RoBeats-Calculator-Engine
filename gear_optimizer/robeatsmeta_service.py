@@ -96,9 +96,6 @@ class RequestError(ValueError):
 
 # --- official chart catalog --------------------------------------------------
 
-_DIFFICULTY_NUM_TO_NAME = {"1": "Easy", "2": "Normal", "3": "Hard"}
-
-
 def _read_full_header(path: Path) -> dict[str, str]:
     """Read all tab-separated header fields from a chart file (up to 'Song Data')."""
     header: dict[str, str] = {}
@@ -120,7 +117,9 @@ def list_official_songs() -> list[dict[str, str]]:
     """The official chart list for the website picker, read from the catalog Data/ headers.
 
     Every chart file's header is read in full so the picker gets title, artist, audioId, and
-    coverImageId directly from the source — no catalog or evolution.db dependency.
+    coverImageId directly from the source — no catalog or evolution.db dependency. The difficulty
+    suffix is stripped from the title so the frontend collapses all difficulties of a song into
+    one entry (same title+artist = same family key).
     """
     songs: list[dict[str, str]] = []
     for difficulty in DIFFICULTIES:
@@ -132,16 +131,21 @@ def list_official_songs() -> list[dict[str, str]]:
             song_id = str(h.get("Song Name") or "").strip()
             if not song_id:
                 continue
+            title = str(h.get("Title") or "").strip()
+            for d in ("Hard", "Normal", "Easy"):
+                suffix = f" ({d})"
+                if title.endswith(suffix):
+                    title = title[: -len(suffix)]
+                    break
             audio_raw = str(h.get("Audio Asset ID") or "").strip()
-            audio_id = audio_raw.replace("rbxassetid://", "") if audio_raw else ""
             songs.append({
                 "songId": song_id,
                 "difficulty": difficulty,
                 "primaryElement": str(h.get("Primary Color") or "").strip(),
                 "secondaryElement": str(h.get("Secondary Color") or "").strip(),
-                "title": str(h.get("Title") or "").strip(),
+                "title": title,
                 "artist": str(h.get("Artist") or "").strip(),
-                "audioId": audio_id,
+                "audioId": audio_raw.replace("rbxassetid://", "") if audio_raw else "",
                 "coverImageId": str(h.get("Cover Image ID") or "").strip(),
             })
     return songs
