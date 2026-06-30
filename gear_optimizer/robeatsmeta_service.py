@@ -17,7 +17,6 @@ from typing import Any
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_int, env_str
 from gear_optimizer.data.database import get_best_loadouts
-from gear_optimizer.data.song_io import scan_song_header
 
 logger = logging.getLogger(__name__)
 
@@ -97,26 +96,54 @@ class RequestError(ValueError):
 
 # --- official chart catalog --------------------------------------------------
 
+_DIFFICULTY_NUM_TO_NAME = {"1": "Easy", "2": "Normal", "3": "Hard"}
+
+
+def _read_full_header(path: Path) -> dict[str, str]:
+    """Read all tab-separated header fields from a chart file (up to 'Song Data')."""
+    header: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if line == "Song Data":
+                    break
+                if "\t" in line:
+                    key, _, value = line.partition("\t")
+                    header[key.strip()] = value.strip()
+    except OSError:
+        pass
+    return header
+
+
 def list_official_songs() -> list[dict[str, str]]:
-    """The official chart list for the website picker, read from the catalog Data/ headers."""
+    """The official chart list for the website picker, read from the catalog Data/ headers.
+
+    Every chart file's header is read in full so the picker gets title, artist, audioId, and
+    coverImageId directly from the source — no catalog or evolution.db dependency.
+    """
     songs: list[dict[str, str]] = []
     for difficulty in DIFFICULTIES:
         diff_dir = DATA_ROOT / difficulty
         if not diff_dir.is_dir():
             continue
         for chart in sorted(diff_dir.glob("*.txt")):
-            header = scan_song_header(str(chart)) or {}
-            name = str(header.get("Song Name") or "").strip()
-            if not name:
+            h = _read_full_header(chart)
+            song_id = str(h.get("Song Name") or "").strip()
+            if not song_id:
                 continue
-            songs.append(
-                {
-                    "songId": name,
-                    "difficulty": difficulty,
-                    "primaryElement": str(header.get("Primary Color") or "").strip(),
-                    "secondaryElement": str(header.get("Secondary Color") or "").strip(),
-                }
-            )
+            audio_raw = str(h.get("Audio Asset ID") or "").strip()
+            audio_id = audio_raw.replace("rbxassetid://", "") if audio_raw else ""
+            songs.append({
+                "songId": song_id,
+                "difficulty": difficulty,
+                "primaryElement": str(h.get("Primary Color") or "").strip(),
+                "secondaryElement": str(h.get("Secondary Color") or "").strip(),
+                "title": str(h.get("Title") or "").strip(),
+                "artist": str(h.get("Artist") or "").strip(),
+                "audioId": audio_id,
+                "coverImageId": str(h.get("Cover Image ID") or "").strip(),
+            })
     return songs
 
 
@@ -134,8 +161,8 @@ def find_official_chart(song_id: str) -> Path:
         if not diff_dir.is_dir():
             continue
         for chart in sorted(diff_dir.glob("*.txt")):
-            header = scan_song_header(str(chart)) or {}
-            if str(header.get("Song Name") or "").strip() == target:
+            h = _read_full_header(chart)
+            if str(h.get("Song Name") or "").strip() == target:
                 return chart
     raise RequestError(f"no official chart matches {target!r}")
 
