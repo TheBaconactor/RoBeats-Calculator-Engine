@@ -18,6 +18,7 @@ from .constants import (
     GA_MULTI_RUNS_DEFAULT,
     STRICT_PLATFORM_MEMORY_GUARD_PERCENT,
     SCRIPT_DIR,
+    PATHS,
 )
 from .parsing import env_str
 from .utils import safe_float, safe_int
@@ -452,7 +453,9 @@ def find_and_cache_paths():
     results = {k: "" for k in ["Easy", "Normal", "Hard", "Gear", "Gears", "Minis", "Stats"]}
     targets_dirs = set(["Easy", "Normal", "Hard"])
     targets_files = set(["Gears.csv", "Minis.csv", "Stats.txt"])
-    data_dir = PROJECT_ROOT / "Data"
+    # Honors ROBEATSMETA_OPTIMIZER_DATA_DIR (via PATHS) so a dedicated instance can point its
+    # song source at an isolated dir (e.g. the website's custom-chart bridge).
+    data_dir = Path(PATHS.data_dir)
     base_dir = data_dir if data_dir.exists() else PROJECT_ROOT
     queue = deque([base_dir])
     visited = {str(base_dir.resolve())}
