@@ -7,8 +7,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -32,11 +33,29 @@ from gear_optimizer.data.song_io import scan_song_header
 # Every solve runs in a throwaway per-request dir with the song source, run state and output DB
 # redirected via the ROBEATSMETA_OPTIMIZER_* path overrides, so requests never touch the catalog
 # bin/ queues, the Data/ catalog, or evolution.db.
+#
+# The service is a concurrent pool: ThreadingHTTPServer handles requests in parallel, and a bounded
+# semaphore caps concurrent solves (default 10). Each solve spawns main.py as a subprocess; the
+# subprocesses share a single frontier-cache dir (TIMELINE_FRONTIER_CACHE_DIR) so a frontier built
+# for one song is reused by the next — the CPU is free while the GPU processes a song, so multiple
+# solves overlap and the frontier cache amortizes across them.
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = REPO_ROOT / "Data"
 GEAR_DIR = DATA_ROOT / "Gear"
 DIFFICULTIES = ("Easy", "Normal", "Hard")
+
+# Global solve pool: caps concurrent optimizer subprocesses. The GPU is the bottleneck (one song
+# at a time on the Vulkan device), but the CPU-side frontier build + chart parse + DB write
+# overlaps with the GPU work of the previous song, so a small pool keeps both fed.
+_SOLVE_POOL_SIZE = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_POOL", 10))
+_SOLVE_SEMAPHORE = threading.Semaphore(_SOLVE_POOL_SIZE)
+
+# Shared frontier cache: all solve subprocesses read/write the same timeline-frontier cache so a
+# frontier built for song A is reused when song B needs the same calc arrays. Pointing every
+# subprocess at this one dir (instead of the per-work bin/) is what makes the pool amortize.
+_SHARED_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "robeatsmeta_api_frontier_cache"
+_SHARED_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class RequestError(ValueError):
@@ -170,26 +189,31 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         "METAFINDER_CONFIG_PATH": str(work / "config.ini"),
         "ROBEATSMETA_OPTIMIZER_DATA_DIR": str(data_dir),
         "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(work / "bin"),
+        # Shared frontier cache: every solve subprocess reads/writes the same dir so a frontier
+        # built for one song is reused by the next. This is the key to the pool — the CPU-side
+        # frontier build for song B overlaps with the GPU solve of song A.
+        "TIMELINE_FRONTIER_CACHE_DIR": str(_SHARED_FRONTIER_CACHE_DIR),
     }
-    try:
-        proc = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "main.py"), "run"],
-            cwd=str(REPO_ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-        if proc.returncode != 0:
-            tail = " | ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-20:])
-            raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
-        entries = get_best_loadouts(
-            job, limit=LOADOUTS_PER_SONG_LIMIT, team_buff="T5", db_path=str(db_path)
-        )
-        if not entries:
-            raise RuntimeError("optimizer produced no T5 loadout")
-        return entries
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+    with _SOLVE_SEMAPHORE:
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(REPO_ROOT / "main.py"), "run"],
+                cwd=str(REPO_ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                tail = " | ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-20:])
+                raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
+            entries = get_best_loadouts(
+                job, limit=LOADOUTS_PER_SONG_LIMIT, team_buff="T5", db_path=str(db_path)
+            )
+            if not entries:
+                raise RuntimeError("optimizer produced no T5 loadout")
+            return entries
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 # --- HTTP --------------------------------------------------------------------
@@ -258,8 +282,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default=env_str("ROBEATSMETA_OPTIMIZER_API_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=env_int("ROBEATSMETA_OPTIMIZER_API_PORT", 8765))
     args = parser.parse_args(argv)
-    server = HTTPServer((args.host, int(args.port)), RoBeatsMetaServiceHandler)
-    print(f"[robeatsmeta-service] listening on http://{args.host}:{args.port}", flush=True)
+    server = ThreadingHTTPServer((args.host, int(args.port)), RoBeatsMetaServiceHandler)
+    server.daemon_threads = True
+    print(
+        f"[robeatsmeta-service] listening on http://{args.host}:{args.port}"
+        f" (pool={_SOLVE_POOL_SIZE}, frontier_cache={_SHARED_FRONTIER_CACHE_DIR})",
+        flush=True,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
