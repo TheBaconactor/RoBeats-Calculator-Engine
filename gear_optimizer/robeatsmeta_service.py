@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_int, env_str
 from gear_optimizer.data.database import get_best_loadouts
 from gear_optimizer.data.song_io import scan_song_header
@@ -21,8 +22,12 @@ from gear_optimizer.data.song_io import scan_song_header
 # The website owns identity, credits, TTL, sharing and persistence; this service only solves.
 #   GET  /songs     -> the official chart list (from Data/ headers) the website picker chooses from
 #   POST /optimize  -> solve one chart (official `targetSongId` OR custom `chartText`) and return
-#                      its top T5 loadout, in the exact shape `get_best_loadouts` yields for the
-#                      catalog, so the website serializes it through its normal SongBuild path.
+#                      its full T5 baseline leaderboard (top 51 base + 51 FG by hash), in the exact
+#                      shape `get_best_loadouts` yields for the catalog. The website persists this
+#                      verbatim into a per-job evolution.db-format file and replays it across tiers /
+#                      modes / ranks / colors / timing via the same on-demand re-score path the
+#                      catalog uses on evolution.db, so an optimizer result is a peer of a catalog
+#                      meta card.
 #
 # Every solve runs in a throwaway per-request dir with the song source, run state and output DB
 # redirected via the ROBEATSMETA_OPTIMIZER_* path overrides, so requests never touch the catalog
@@ -128,8 +133,15 @@ def _service_run_root() -> Path:
     return Path(override) if override else (REPO_ROOT / "bin" / "robeatsmeta_api_runs")
 
 
-def solve(request: dict[str, Any]) -> dict[str, Any]:
-    """Solve one chart in an isolated per-request workspace and return its top T5 loadout entry."""
+def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
+    """Solve one chart in an isolated per-request workspace and return its full T5 leaderboard.
+
+    The returned list is the merged top-N base + FG leaderboard (ranked by score / fg_score, deduped
+    by loadout_hash) exactly as `get_best_loadouts` yields for the catalog. The website writes this
+    verbatim into a per-job evolution.db-format file via `save_loadouts_batch`, so every downstream
+    replay (any tier / mode / rank / color / timing) runs through the catalog's own on-demand re-score
+    path (`build_team_buff_tier_db_batches`) and produces a byte-identical SongBuild.
+    """
     job = _job_slug(request.get("jobId") or request.get("resultKey"))
     chart_text = chart_text_for_request(request)
     repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
@@ -170,10 +182,12 @@ def solve(request: dict[str, Any]) -> dict[str, Any]:
         if proc.returncode != 0:
             tail = " | ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-20:])
             raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
-        entries = get_best_loadouts(job, limit=1, team_buff="T5", db_path=str(db_path))
+        entries = get_best_loadouts(
+            job, limit=LOADOUTS_PER_SONG_LIMIT, team_buff="T5", db_path=str(db_path)
+        )
         if not entries:
             raise RuntimeError("optimizer produced no T5 loadout")
-        return entries[0]
+        return entries
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -208,8 +222,8 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
             return
         try:
             request = self._read_json()
-            loadout = solve(request)
-            self._send(HTTPStatus.OK, {"jobId": request.get("jobId"), "loadout": loadout})
+            loadouts = solve(request)
+            self._send(HTTPStatus.OK, {"jobId": request.get("jobId"), "loadouts": loadouts})
         except RequestError as exc:
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - HTTP boundary: optimizer failure -> 500

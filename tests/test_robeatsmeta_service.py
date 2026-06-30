@@ -92,6 +92,7 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     def fake_loadouts(song_name, **kwargs):
         assert song_name == "job_abc"
         assert kwargs["team_buff"] == "T5"
+        assert kwargs["limit"] == 51  # full leaderboard, not a single rank #1
         return [entry]
 
     monkeypatch.setattr(service.subprocess, "run", fake_run)
@@ -99,7 +100,7 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
 
     result = service.solve({"jobId": "job_abc", "targetSongId": "Feeding [Hard]"})
 
-    assert result == entry  # raw loadout entry returned verbatim (website serializes it)
+    assert result == [entry]  # full T5 leaderboard returned verbatim (website persists + replays it)
     env = captured["env"]
     assert env["EVOLUTION_DB_PATH"].endswith("result.db")  # output DB redirected off evolution.db
     assert env["ROBEATSMETA_OPTIMIZER_DATA_DIR"].endswith("job_abc/Data")  # isolated song source
