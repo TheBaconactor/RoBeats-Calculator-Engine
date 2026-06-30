@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from http import HTTPStatus
@@ -11,230 +12,222 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.parsing import env_int, env_str
 from gear_optimizer.data.database import get_best_loadouts
-from gear_optimizer.data.loadout_equivalence import representative_mini_names
 from gear_optimizer.data.song_io import scan_song_header
 
+# Stateless HTTP front-end over the canonical optimizer pipeline.
+#
+# The website owns identity, credits, TTL, sharing and persistence; this service only solves.
+#   GET  /songs     -> the official chart list (from Data/ headers) the website picker chooses from
+#   POST /optimize  -> solve one chart (official `targetSongId` OR custom `chartText`) and return
+#                      its top T5 loadout, in the exact shape `get_best_loadouts` yields for the
+#                      catalog, so the website serializes it through its normal SongBuild path.
+#
+# Every solve runs in a throwaway per-request dir with the song source, run state and output DB
+# redirected via the ROBEATSMETA_OPTIMIZER_* path overrides, so requests never touch the catalog
+# bin/ queues, the Data/ catalog, or evolution.db.
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = REPO_ROOT / "Data"
+GEAR_DIR = DATA_ROOT / "Gear"
 DIFFICULTIES = ("Easy", "Normal", "Hard")
 
 
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return int(default)
+class RequestError(ValueError):
+    """A bad request from the caller -> HTTP 400 (an internal failure -> 500)."""
 
 
-def _clean_piece_names(values: Any) -> list[str]:
-    if not isinstance(values, list):
-        return []
-    out: list[str] = []
-    for value in values:
-        if isinstance(value, str):
-            name = value.strip()
-        elif isinstance(value, dict):
-            name = str(value.get("Name") or value.get("name") or "").strip()
-        else:
-            name = ""
-        if name:
-            out.append(name)
-    return out
+# --- official chart catalog --------------------------------------------------
 
-
-def _stats_payload(details: dict[str, Any]) -> dict[str, int]:
-    stats = details.get("Stats") if isinstance(details.get("Stats"), dict) else details
-    return {
-        "perfectPoints": _safe_int(stats.get("Perfect Points")),
-        "comboMultiplier": _safe_int(stats.get("Combo Multiplier")),
-        "feverMultiplier": _safe_int(stats.get("Fever Multiplier")),
-        "feverFill": _safe_int(stats.get("Fever Fill Rate")),
-        "feverTime": _safe_int(stats.get("Fever Time")),
-    }
-
-
-def _affinity_payload(details: dict[str, Any]) -> dict[str, int]:
-    stats = details.get("Stats") if isinstance(details.get("Stats"), dict) else details
-    return {
-        "Chill": _safe_int(stats.get("Chill")),
-        "Vibe": _safe_int(stats.get("Vibe")),
-        "Beat": _safe_int(stats.get("Beat")),
-        "Flow": _safe_int(stats.get("Flow")),
-        "Rush": _safe_int(stats.get("Rush")),
-    }
-
-
-def _gem_counts(details: dict[str, Any]) -> dict[str, int]:
-    raw = details.get("GemCounts") or details.get("gc") or []
-    if not isinstance(raw, list):
-        raw = []
-    values = [_safe_int(v) for v in list(raw)[:6]]
-    while len(values) < 6:
-        values.append(0)
-    return {
-        "Perfect Points": values[0],
-        "Combo Multiplier": values[1],
-        "Fever Multiplier": values[2],
-        "Elemental": values[3],
-        "Fever Time": values[4],
-        "Fever Fill": values[5],
-    }
-
-
-def _selected_element(details: dict[str, Any]) -> str:
-    return str(
-        details.get("Selected Element")
-        or details.get("selected_element")
-        or details.get("se")
-        or details.get("Primary Color")
-        or details.get("pc")
-        or "General"
-    ).strip() or "General"
-
-
-def _primary_element(details: dict[str, Any]) -> str | None:
-    value = str(details.get("Primary Color") or details.get("pc") or "").strip()
-    return value or None
-
-
-def _secondary_element(details: dict[str, Any]) -> str | None:
-    value = str(details.get("Secondary Color") or details.get("sc") or "").strip()
-    return value or None
-
-
-def build_payload_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    details = entry.get("details") if isinstance(entry.get("details"), dict) else {}
-    mini_groups = entry.get("mini_groups")
-    if isinstance(mini_groups, list):
-        minis = representative_mini_names(mini_groups)
-    else:
-        minis = _clean_piece_names(entry.get("minis"))
-    return {
-        "score": _safe_int(entry.get("score")),
-        "loadoutHash": str(entry.get("loadout_hash") or "").strip() or None,
-        "gear": _clean_piece_names(entry.get("gear")),
-        "minis": minis,
-        "element": _selected_element(details),
-        "primaryElement": _primary_element(details),
-        "secondaryElement": _secondary_element(details),
-        "teamBuffTier": "T5",
-        "forceGreats": False,
-        "forceGreatsConfig": None,
-        "stats": _stats_payload(details),
-        "affinity": _affinity_payload(details),
-        "gemCounts": _gem_counts(details),
-        "metaTags": [],
-    }
-
-
-def resolve_official_song(song_id: str) -> tuple[str, str]:
-    cleaned = str(song_id or "").strip()
-    if not cleaned:
-        raise ValueError("missing targetSongId")
-    preferred: list[str] = []
-    match = re.search(r"\((Easy|Normal|Hard)\)", cleaned, flags=re.IGNORECASE)
-    if match:
-        preferred.append(match.group(1).title())
-    preferred.extend(diff for diff in DIFFICULTIES if diff not in preferred)
-    for difficulty in preferred:
-        diff_dir = REPO_ROOT / "Data" / difficulty
+def list_official_songs() -> list[dict[str, str]]:
+    """The official chart list for the website picker, read from the catalog Data/ headers."""
+    songs: list[dict[str, str]] = []
+    for difficulty in DIFFICULTIES:
+        diff_dir = DATA_ROOT / difficulty
         if not diff_dir.is_dir():
             continue
-        matches: list[str] = []
-        for fp in sorted(diff_dir.glob("*.txt")):
-            meta = scan_song_header(str(fp)) or {}
-            name = str(meta.get("Song Name") or "").strip()
-            if name and (name == cleaned or cleaned.lower() in name.lower()):
-                matches.append(name)
-        if len(matches) == 1:
-            return matches[0], difficulty
-        if len(matches) > 1:
-            raise ValueError(f"targetSongId matched multiple {difficulty} charts")
-    raise ValueError("targetSongId did not match an official chart")
+        for chart in sorted(diff_dir.glob("*.txt")):
+            header = scan_song_header(str(chart)) or {}
+            name = str(header.get("Song Name") or "").strip()
+            if not name:
+                continue
+            songs.append(
+                {
+                    "songId": name,
+                    "difficulty": difficulty,
+                    "primaryElement": str(header.get("Primary Color") or "").strip(),
+                    "secondaryElement": str(header.get("Secondary Color") or "").strip(),
+                }
+            )
+    return songs
 
 
-def run_official_solve(song_name: str, difficulty: str, db_path: Path, repeats: int) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg_path = db_path.parent / f"{db_path.stem}.ini"
-    log_path = db_path.parent / f"{db_path.stem}.log"
-    cfg_path.write_text(
+def find_official_chart(song_id: str) -> Path:
+    """Return the official chart file whose `Song Name` header equals `song_id` exactly.
+
+    The website picks from `list_official_songs()` and echoes back the exact `songId`, so an exact
+    match is the contract -- no fuzzy/substring matching.
+    """
+    target = str(song_id or "").strip()
+    if not target:
+        raise RequestError("missing targetSongId")
+    for difficulty in DIFFICULTIES:
+        diff_dir = DATA_ROOT / difficulty
+        if not diff_dir.is_dir():
+            continue
+        for chart in sorted(diff_dir.glob("*.txt")):
+            header = scan_song_header(str(chart)) or {}
+            if str(header.get("Song Name") or "").strip() == target:
+                return chart
+    raise RequestError(f"no official chart matches {target!r}")
+
+
+# --- solve -------------------------------------------------------------------
+
+def _job_slug(value: Any) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip()).strip("_")
+    return slug or "job"
+
+
+def _normalize_chart(chart_text: str, name: str) -> str:
+    """Force Song Name (the unique job slug, so the output is keyed by it) and Difficulty (the
+    isolated Hard bucket the per-request workspace uses) so the header matches the run config."""
+    out: list[str] = []
+    have_name = have_diff = False
+    for line in chart_text.splitlines():
+        if line.startswith("Song Name\t") and not have_name:
+            out.append(f"Song Name\t{name}")
+            have_name = True
+        elif line.startswith("Difficulty\t") and not have_diff:
+            out.append("Difficulty\tHard")
+            have_diff = True
+        else:
+            out.append(line)
+    prefix: list[str] = []
+    if not have_name:
+        prefix.append(f"Song Name\t{name}")
+    if not have_diff:
+        prefix.append("Difficulty\tHard")
+    return "\n".join(prefix + out) + "\n"
+
+
+def chart_text_for_request(request: dict[str, Any]) -> str:
+    """The chart to solve: custom `chartText` when present, else the official `targetSongId`."""
+    chart_text = str(request.get("chartText") or "").strip()
+    if chart_text:
+        return chart_text + "\n"
+    song_id = str(request.get("targetSongId") or "").strip()
+    if song_id:
+        return find_official_chart(song_id).read_text(encoding="utf-8")
+    raise RequestError("request must include targetSongId or chartText")
+
+
+def _service_run_root() -> Path:
+    override = env_str("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", "").strip()
+    return Path(override) if override else (REPO_ROOT / "bin" / "robeatsmeta_api_runs")
+
+
+def solve(request: dict[str, Any]) -> dict[str, Any]:
+    """Solve one chart in an isolated per-request workspace and return its top T5 loadout entry."""
+    job = _job_slug(request.get("jobId") or request.get("resultKey"))
+    chart_text = chart_text_for_request(request)
+    repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
+
+    work = _service_run_root() / job
+    shutil.rmtree(work, ignore_errors=True)
+    data_dir = work / "Data"
+    (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
+    shutil.copytree(GEAR_DIR, data_dir / "Gear")  # real files; discovery does not follow symlinks
+    (data_dir / "Hard" / f"{job}.txt").write_text(_normalize_chart(chart_text, job), encoding="utf-8")
+    # The isolated Data dir holds exactly this one chart, so "process discovered charts once"
+    # (empty Song_Name + LoopForever off) solves it; a fresh bin means no resume/candidate queue.
+    (work / "config.ini").write_text(
         "[CalculateSong]\n"
-        f"Song_Name = {song_name}\n"
-        f"Difficulty = {difficulty}\n"
-        "TargetPrimary = All\n"
-        "TargetSecondary = All\n"
         "LoopForever = false\n\n"
         "[IterationEngine]\n"
-        f"SongRepeats = {max(1, int(repeats))}\n"
+        "IgnoreResumeQueue = true\n"
+        f"SongRepeats = {repeats}\n"
         "SongQueueLimit = 1\n",
         encoding="utf-8",
     )
-    env = dict(os.environ)
-    env["EVOLUTION_DB_PATH"] = str(db_path)
-    env["METAFINDER_CONFIG_PATH"] = str(cfg_path)
+    db_path = work / "result.db"
+    env = {
+        **os.environ,
+        "EVOLUTION_DB_PATH": str(db_path),
+        "METAFINDER_CONFIG_PATH": str(work / "config.ini"),
+        "ROBEATSMETA_OPTIMIZER_DATA_DIR": str(data_dir),
+        "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(work / "bin"),
+    }
     try:
-        with log_path.open("w", encoding="utf-8") as log:
-            proc = subprocess.run(
-                [sys.executable, str(REPO_ROOT / "main.py")],
-                cwd=str(REPO_ROOT),
-                env=env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-            )
+        proc = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "main.py"), "run"],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
         if proc.returncode != 0:
-            tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-25:])
+            tail = " | ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-20:])
             raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
+        entries = get_best_loadouts(job, limit=1, team_buff="T5", db_path=str(db_path))
+        if not entries:
+            raise RuntimeError("optimizer produced no T5 loadout")
+        return entries[0]
     finally:
-        cfg_path.unlink(missing_ok=True)
+        shutil.rmtree(work, ignore_errors=True)
 
 
-def solve_official_request(request: dict[str, Any]) -> dict[str, Any]:
-    song_name, difficulty = resolve_official_song(str(request.get("targetSongId") or ""))
-    job_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(request.get("jobId") or "job").strip()) or "job"
-    run_dir = Path(os.environ.get("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR") or (REPO_ROOT / "bin" / "robeatsmeta_api_runs"))
-    db_path = run_dir / f"{job_id}.db"
-    for suffix in ("", "-wal", "-shm"):
-        Path(str(db_path) + suffix).unlink(missing_ok=True)
-    repeats = _safe_int(os.environ.get("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS"), 1)
-    run_official_solve(song_name, difficulty, db_path, repeats)
-    entries = get_best_loadouts(song_name, limit=1, team_buff="T5", db_path=str(db_path))
-    if not entries:
-        raise RuntimeError("optimizer completed without a T5 build")
-    return build_payload_from_entry(entries[0])
-
+# --- HTTP --------------------------------------------------------------------
 
 class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
-    server_version = "RoBeatsMetaOptimizer/1.0"
+    server_version = "RoBeatsMetaOptimizer/2.0"
+
+    def _authorized(self) -> bool:
+        token = env_str("ROBEATSMETA_OPTIMIZER_API_TOKEN", "").strip()
+        return not token or self.headers.get("Authorization") == f"Bearer {token}"
+
+    def do_GET(self) -> None:
+        if self.path.rstrip("/") != "/songs":
+            self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        if not self._authorized():
+            self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        try:
+            self._send(HTTPStatus.OK, {"songs": list_official_songs()})
+        except Exception as exc:  # noqa: BLE001 - HTTP boundary: surface as 500
+            self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
     def do_POST(self) -> None:
         if self.path.rstrip("/") != "/optimize":
-            self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
-        token = str(os.environ.get("ROBEATSMETA_OPTIMIZER_API_TOKEN") or "").strip()
-        if token:
-            expected = f"Bearer {token}"
-            if self.headers.get("Authorization") != expected:
-                self._write_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
-                return
+        if not self._authorized():
+            self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
         try:
-            length = _safe_int(self.headers.get("Content-Length"), 0)
-            body = self.rfile.read(length)
-            request = json.loads(body.decode("utf-8"))
-            if not isinstance(request, dict):
-                raise ValueError("request body must be a JSON object")
-            if request.get("chartText"):
-                raise ValueError("custom chart optimization is not wired in Metafinder yet")
-            build = solve_official_request(request)
-            self._write_json(HTTPStatus.OK, {"jobId": request.get("jobId"), "build": build})
-        except ValueError as exc:
-            self._write_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-        except Exception as exc:
-            self._write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            request = self._read_json()
+            loadout = solve(request)
+            self._send(HTTPStatus.OK, {"jobId": request.get("jobId"), "loadout": loadout})
+        except RequestError as exc:
+            self._send(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - HTTP boundary: optimizer failure -> 500
+            self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
-    def log_message(self, fmt: str, *args: Any) -> None:
-        sys.stderr.write("[robeatsmeta-service] " + (fmt % args) + "\n")
+    def _read_json(self) -> dict[str, Any]:
+        length = self.headers.get("Content-Length")
+        if not length or not length.isdigit():
+            raise RequestError("missing Content-Length")
+        try:
+            request = json.loads(self.rfile.read(int(length)).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RequestError(f"invalid JSON body: {exc}") from exc
+        if not isinstance(request, dict):
+            raise RequestError("request body must be a JSON object")
+        return request
 
-    def _write_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+    def _send(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json")
@@ -242,15 +235,21 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def log_message(self, fmt: str, *args: Any) -> None:
+        sys.stderr.write("[robeatsmeta-service] " + (fmt % args) + "\n")
+
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="RoBeatsMeta optimizer API service")
-    parser.add_argument("--host", default=os.environ.get("ROBEATSMETA_OPTIMIZER_API_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=_safe_int(os.environ.get("ROBEATSMETA_OPTIMIZER_API_PORT"), 8765))
+    parser = argparse.ArgumentParser(description="RoBeatsMeta optimizer service")
+    parser.add_argument("--host", default=env_str("ROBEATSMETA_OPTIMIZER_API_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=env_int("ROBEATSMETA_OPTIMIZER_API_PORT", 8765))
     args = parser.parse_args(argv)
     server = HTTPServer((args.host, int(args.port)), RoBeatsMetaServiceHandler)
     print(f"[robeatsmeta-service] listening on http://{args.host}:{args.port}", flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
