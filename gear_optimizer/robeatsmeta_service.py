@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import shutil
@@ -17,6 +18,8 @@ from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_int, env_str
 from gear_optimizer.data.database import get_best_loadouts
 from gear_optimizer.data.song_io import scan_song_header
+
+logger = logging.getLogger(__name__)
 
 # Stateless HTTP front-end over the canonical optimizer pipeline.
 #
@@ -56,6 +59,36 @@ _SOLVE_SEMAPHORE = threading.Semaphore(_SOLVE_POOL_SIZE)
 # subprocess at this one dir (instead of the per-work bin/) is what makes the pool amortize.
 _SHARED_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "robeatsmeta_api_frontier_cache"
 _SHARED_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Frontier cache TTL: entries older than 24h are deleted to prevent stale frontiers and bound disk.
+# A background sweeper runs every 30min and prunes files whose mtime is older than the TTL.
+_FRONTIER_CACHE_TTL_S = max(60, env_int("ROBEATSMETA_OPTIMIZER_FRONTIER_CACHE_TTL_S", 24 * 60 * 60))
+_FRONTIER_CACHE_SWEEP_INTERVAL_S = 30 * 60.0
+
+
+def _sweep_frontier_cache() -> None:
+    """Delete frontier cache entries older than the TTL."""
+    import time
+    cutoff = time.time() - _FRONTIER_CACHE_TTL_S
+    pruned = 0
+    for entry in _SHARED_FRONTIER_CACHE_DIR.iterdir():
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                entry.unlink(missing_ok=True)
+                pruned += 1
+        except OSError:
+            pass
+    if pruned:
+        logger.info("frontier cache sweep: pruned %d stale entries", pruned)
+
+
+def _frontier_cache_sweeper_loop() -> None:
+    while True:
+        try:
+            _sweep_frontier_cache()
+        except Exception:  # noqa: BLE001 - sweeper must never crash the service
+            logger.warning("frontier cache sweep failed", exc_info=True)
+        threading.Event().wait(_FRONTIER_CACHE_SWEEP_INTERVAL_S)
 
 
 class RequestError(ValueError):
@@ -284,9 +317,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     server = ThreadingHTTPServer((args.host, int(args.port)), RoBeatsMetaServiceHandler)
     server.daemon_threads = True
+    # Frontier cache sweeper: prunes entries older than 24h so the cache can't grow unbounded or
+    # serve stale frontiers. Daemon thread — dies with the process.
+    sweeper = threading.Thread(target=_frontier_cache_sweeper_loop, name="frontier-cache-sweeper", daemon=True)
+    sweeper.start()
     print(
         f"[robeatsmeta-service] listening on http://{args.host}:{args.port}"
-        f" (pool={_SOLVE_POOL_SIZE}, frontier_cache={_SHARED_FRONTIER_CACHE_DIR})",
+        f" (pool={_SOLVE_POOL_SIZE}, frontier_cache={_SHARED_FRONTIER_CACHE_DIR},"
+        f" frontier_ttl={_FRONTIER_CACHE_TTL_S}s)",
         flush=True,
     )
     try:
