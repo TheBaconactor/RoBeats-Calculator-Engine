@@ -561,6 +561,16 @@ def init_taichi():
             arch=arch,
             default_fp=ti.f32,
             default_ip=ti.i32,
+            # Cross-vendor determinism: the per-note score is floor(f32*f32) (kernels_helpers
+            # `_calc_body_score`/`_calc_head_score_*`). With fast_math on, the backend may
+            # contract `a*b+c` into an FMA or reassociate products, and Metal (MoltenVK) vs
+            # Vulkan/AMD then round the last bit differently -> the per-note floor flips +/-1 on
+            # boundary notes -> the integer gem argmax selects a different allocation on each
+            # vendor (the ~0.4-0.7% base "near-tie flip"). fast_math=False forces IEEE-strict
+            # +,-,*,/ (correctly rounded, no contraction/reassociation), so the score is
+            # bit-identical across Metal and Vulkan and the pick is deterministic. Stays on GPU
+            # (search remains batched); negligible cost for this add/mul arithmetic.
+            fast_math=False,
             kernel_profiler=kernel_profiler,
             default_gpu_block_dim=block_dim,
             # Huge win for repeated runs: avoid recompiling kernels each process.
