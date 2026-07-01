@@ -18,6 +18,7 @@ from .constants import (
     GA_MULTI_RUNS_DEFAULT,
     STRICT_PLATFORM_MEMORY_GUARD_PERCENT,
     SCRIPT_DIR,
+    PATHS,
 )
 from .parsing import env_str
 from .utils import safe_float, safe_int
@@ -448,11 +449,15 @@ def find_and_cache_paths():
     from pathlib import Path
     from collections import deque
     PROJECT_ROOT = Path(SCRIPT_DIR)
-    cache_file = os.path.join(SCRIPT_DIR, "bin", "paths_cache.json")
+    # Cache under the (per-request-isolable) bin dir, not SCRIPT_DIR/bin, so a service solve with
+    # ROBEATSMETA_OPTIMIZER_BIN_DIR set never reads or writes the catalog's shared paths cache.
+    cache_file = PATHS.bin_path("paths_cache.json")
     results = {k: "" for k in ["Easy", "Normal", "Hard", "Gear", "Gears", "Minis", "Stats"]}
     targets_dirs = set(["Easy", "Normal", "Hard"])
     targets_files = set(["Gears.csv", "Minis.csv", "Stats.txt"])
-    data_dir = PROJECT_ROOT / "Data"
+    # Honors ROBEATSMETA_OPTIMIZER_DATA_DIR (via PATHS) so a dedicated instance can point its
+    # song source at an isolated dir (e.g. the website's custom-chart bridge).
+    data_dir = Path(PATHS.data_dir)
     base_dir = data_dir if data_dir.exists() else PROJECT_ROOT
     queue = deque([base_dir])
     visited = {str(base_dir.resolve())}
@@ -500,7 +505,9 @@ def load_paths_cache():
     Returns:
         dict: Cached paths configuration, or empty dict if not found
     """
-    cache_file = os.path.join(SCRIPT_DIR, "bin", "paths_cache.json")
+    # Isolated bin dir (see find_and_cache_paths): a fresh per-request bin has no cache, so the
+    # service always rediscovers from its isolated PATHS.data_dir instead of the catalog's cache.
+    cache_file = PATHS.bin_path("paths_cache.json")
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "r", encoding="utf-8") as f:

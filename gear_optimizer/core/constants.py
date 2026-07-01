@@ -5,6 +5,8 @@ Global constants and configuration values for the gear optimizer.
 import os
 from dataclasses import dataclass
 
+from .parsing import env_str
+
 # --- SCORING CONSTANTS ---
 GEM_SCALE_NORMAL = 2
 GEM_SCALE_FEVER = 3
@@ -80,6 +82,7 @@ class PathConfig:
 
     script_dir: str
     bin_dir: str
+    data_dir: str
 
     @classmethod
     def build(cls):
@@ -89,9 +92,13 @@ class PathConfig:
         # We want <root> as the script_dir so that user-facing files like
         # config.ini, Data/, bin/, etc resolve correctly.
         script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        bin_dir = os.path.join(script_dir, "bin")
+        # External-boundary overrides (cache/data dirs) so a dedicated instance — e.g. the
+        # website's custom-chart bridge — can run against an isolated state dir + song source
+        # without touching the catalog bin/ or Data/ trees. Empty => default (current behavior).
+        bin_dir = env_str("ROBEATSMETA_OPTIMIZER_BIN_DIR", "").strip() or os.path.join(script_dir, "bin")
+        data_dir = env_str("ROBEATSMETA_OPTIMIZER_DATA_DIR", "").strip() or os.path.join(script_dir, "Data")
 
-        return cls(script_dir, bin_dir)
+        return cls(script_dir, bin_dir, data_dir)
 
     def bin_path(self, *parts):
         """Get a path within the bin directory."""
@@ -101,11 +108,6 @@ class PathConfig:
     def stats_csv(self):
         """Path to Stats.csv file."""
         return os.path.join(self.script_dir, "Stats.csv")
-
-    @property
-    def data_dir(self):
-        """Path to Data directory containing song files."""
-        return os.path.join(self.script_dir, "Data")
 
     @property
     def evolution_db_default(self):
