@@ -876,6 +876,77 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
     assert "score" not in tier["fg_top51"][0]
 
 
+def test_fg_paired_base_is_loadout_base_not_gemless_recompute(monkeypatch):
+    """Regression (recurring site): the FG row's paired base (fg_base_score) MUST be the same
+    loadout's re-solved BASE score, never a second recompute off the force payload's pre-gem
+    ``BaseStats``. Production stored BaseStats WITHOUT the loadout gems (FeverFill/element), so a
+    paired-base recompute off it collapsed to ~30-45% of the real base (fever barely activated),
+    neutering the ``fg_score > base`` gate and showing set-crafters a wrong base on the site. Here
+    ``force['BaseStats']`` is deliberately gemless; ``fg_base_score`` must still equal the loadout's
+    base leaderboard score."""
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
+
+    calc_song = _mock_song(name="pytest_fg_paired_base_gemless_guard", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 100,
+        "Combo Multiplier": 40,
+        "Fever Multiplier": 40,
+        "Fever Fill Rate": 40,
+        "Fever Time": 40,
+        "Rush": 200,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+    # What production actually persisted in force['BaseStats']: the loadout WITHOUT its gems
+    # (FeverFill 0, low element). A paired-base recompute off this collapses well below the truth.
+    gemless_base_stats = dict(stats)
+    gemless_base_stats["Fever Fill Rate"] = 0
+    gemless_base_stats["Rush"] = 60
+    entry = {
+        "score": 100,
+        "fg_score": 95,
+        "fg_base_score": 90,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": dict(stats)},
+        "force": {
+            "Stats": dict(stats),
+            "BaseStats": dict(gemless_base_stats),
+            "ForceGreats": {"config": {"NonFever1": 1}},
+            "response_surface": _fg_test_surface(),
+        },
+    }
+
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
+
+    expected_base = int(score_stats_exact(stats, calc_song, ref_arrays))
+    gemless_score = int(score_stats_exact(gemless_base_stats, calc_song, ref_arrays))
+    assert gemless_score < expected_base  # the discarded recompute would be strictly lower
+
+    out = compute_team_buff_tier_leaderboards(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5",),
+        limit=1,
+    )
+    tier = out["tiers"]["T5"]
+    assert len(tier["fg_top51"]) == 1
+    fg_base = int(tier["fg_top51"][0]["fg_base_score"])
+    assert fg_base == expected_base                        # the loadout's real base
+    assert fg_base == int(tier["base_top51"][0]["score"])  # identical to the base leaderboard row
+    assert fg_base != gemless_score                        # NOT the gemless force['BaseStats']
+
+
 @pytest.mark.parametrize("tier_name", ["NONE", "T1", "T10", "T20", "T50", "T51"])
 def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_base_score(monkeypatch, tier_name: str):
     from gear_optimizer.core.constants import TOTAL_ROWS
@@ -1279,44 +1350,6 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
     assert force["forced_counts"] == witness_force["forced_counts"]
     assert int(force["Score"]) == 123
     assert int(force["ForceGreats"]["final_score"]) == 123
-
-
-def test_fg_note_graph_trace_is_tier_invariant():
-    """A TeamBuff tier delta shifts only Perfect Points + the two element colors; the fever
-    geometry (Fever Time / Fever Fill Rate) and combo/fever multipliers are carried UNCHANGED at
-    every tier. Because the FG note-graph trace is reconstructed from the frozen response_surface
-    + song timing + FT/FF fever geometry (all tier-invariant) and is purely structural (the
-    renderer applies per-tier stats at draw time), the persisted baseline FG frontier_trace is the
-    exact witness at every tier -- so no per-tier FG re-search or trace recompute is needed
-    (contrast the base TimelineFrontier, whose argmax winning surface IS tier-dependent). This
-    test pins the structural reason; test_reconstruct_force_greats_response_trace_is_stats_free
-    (tests/test_fg_note_graph.py) pins that the reconstruction primitive takes no stat/tier input."""
-    from gear_optimizer.helpers.song_helpers.team_buff_tiers import _fg_stats_at_tier
-
-    snapshot = {"pp": 100, "p_val": 50, "s_val": 20, "ft_stat": 12, "ff_stat": 34, "cm_stat": 5, "fm_stat": 3}
-
-    def at(delta_pp: int, delta_primary: int, delta_secondary: int) -> dict:
-        return _fg_stats_at_tier(
-            snapshot,
-            delta_pp=delta_pp,
-            delta_primary=delta_primary,
-            delta_secondary=delta_secondary,
-            primary_color="Rush",
-            secondary_color="Flow",
-        )
-
-    none_tier, t1, t50 = at(0, 0, 0), at(25, 35, 10), at(10, 15, 5)
-
-    # the fever geometry + multipliers that drive the FG note-graph trace are identical per tier
-    for s in (none_tier, t1, t50):
-        assert s["Fever Time"] == snapshot["ft_stat"]
-        assert s["Fever Fill Rate"] == snapshot["ff_stat"]
-        assert s["Combo Multiplier"] == snapshot["cm_stat"]
-        assert s["Fever Multiplier"] == snapshot["fm_stat"]
-    # only Perfect Points + element colors move with the tier (these feed per-note SCORE values,
-    # which the renderer computes from stats -- not the structural trace)
-    assert (t1["Perfect Points"], t1["Rush"], t1["Flow"]) == (125, 85, 30)
-    assert (t50["Perfect Points"], t50["Rush"], t50["Flow"]) == (110, 65, 25)
 
 
 def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_target_team_color(monkeypatch):

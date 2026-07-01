@@ -519,94 +519,6 @@ def _apply_details_delta(details: object, delta: dict[str, int]) -> dict:
     return out
 
 
-def _replay_stat_slice(
-    stats: dict,
-    *,
-    primary_color: str,
-    secondary_color: str,
-) -> dict[str, int]:
-    return {
-        "pp": _safe_int(stats.get("Perfect Points", 0), 0),
-        "p_val": _safe_int(stats.get(primary_color, 0), 0) if primary_color else 0,
-        "s_val": _safe_int(stats.get(secondary_color, 0), 0) if secondary_color else 0,
-        "ft_stat": _safe_int(stats.get("Fever Time", 0), 0),
-        "ff_stat": _safe_int(stats.get("Fever Fill Rate", 0), 0),
-        "cm_stat": _safe_int(stats.get("Combo Multiplier", 0), 0),
-        "fm_stat": _safe_int(stats.get("Fever Multiplier", 0), 0),
-    }
-
-
-def _fg_replay_snapshot(
-    *,
-    fg_stats: dict,
-    paired_base_stats: dict,
-    primary_color: str,
-    secondary_color: str,
-    surface: object,
-    config: object,
-) -> dict:
-    fg = _replay_stat_slice(fg_stats, primary_color=primary_color, secondary_color=secondary_color)
-    base = _replay_stat_slice(paired_base_stats, primary_color=primary_color, secondary_color=secondary_color)
-    return {
-        "pp": int(fg["pp"]),
-        "p_val": int(fg["p_val"]),
-        "s_val": int(fg["s_val"]),
-        "ft_stat": int(fg["ft_stat"]),
-        "ff_stat": int(fg["ff_stat"]),
-        "cm_stat": int(fg["cm_stat"]),
-        "fm_stat": int(fg["fm_stat"]),
-        "base_pp": int(base["pp"]),
-        "base_p_val": int(base["p_val"]),
-        "base_s_val": int(base["s_val"]),
-        "base_ft_stat": int(base["ft_stat"]),
-        "base_ff_stat": int(base["ff_stat"]),
-        "base_cm_stat": int(base["cm_stat"]),
-        "base_fm_stat": int(base["fm_stat"]),
-        "surface": surface,
-        "config": config,
-    }
-
-
-def _fg_stats_at_tier(
-    fg: dict,
-    *,
-    delta_pp: int,
-    delta_primary: int,
-    delta_secondary: int,
-    primary_color: str,
-    secondary_color: str,
-    paired_base: bool = False,
-) -> dict[str, int]:
-    if paired_base:
-        pp = int(fg.get("base_pp", fg.get("pp", 0)) or 0)
-        p_val = int(fg.get("base_p_val", fg.get("p_val", 0)) or 0)
-        s_val = int(fg.get("base_s_val", fg.get("s_val", 0)) or 0)
-        ft_stat = int(fg.get("base_ft_stat", fg.get("ft_stat", 0)) or 0)
-        ff_stat = int(fg.get("base_ff_stat", fg.get("ff_stat", 0)) or 0)
-        cm_stat = int(fg.get("base_cm_stat", fg.get("cm_stat", 0)) or 0)
-        fm_stat = int(fg.get("base_fm_stat", fg.get("fm_stat", 0)) or 0)
-    else:
-        pp = int(fg.get("pp", 0) or 0)
-        p_val = int(fg.get("p_val", 0) or 0)
-        s_val = int(fg.get("s_val", 0) or 0)
-        ft_stat = int(fg.get("ft_stat", 0) or 0)
-        ff_stat = int(fg.get("ff_stat", 0) or 0)
-        cm_stat = int(fg.get("cm_stat", 0) or 0)
-        fm_stat = int(fg.get("fm_stat", 0) or 0)
-    stats = {
-        "Perfect Points": pp + int(delta_pp),
-        "Combo Multiplier": cm_stat,
-        "Fever Multiplier": fm_stat,
-        "Fever Time": ft_stat,
-        "Fever Fill Rate": ff_stat,
-    }
-    if primary_color:
-        stats[primary_color] = p_val + int(delta_primary)
-    if secondary_color:
-        stats[secondary_color] = s_val + int(delta_secondary)
-    return stats
-
-
 def _fg_identity_details(force_out: object, calc_song: dict) -> dict[str, str]:
     """Chart/loadout identity fields required by FG serialization (not meta scoring)."""
     meta0 = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
@@ -712,47 +624,20 @@ def compute_team_buff_tier_leaderboards(
         if not isinstance(details, dict):
             details = {}
         stats_base_raw = details.get("Stats") or {}
-        stats_base = (
-            _ensure_stats_include_base_effect(stats_base_raw, base_effect)
-            if isinstance(stats_base_raw, dict)
-            else {}
-        )
-        if not isinstance(stats_base, dict) or not stats_base:
+        if not isinstance(stats_base_raw, dict) or not stats_base_raw:
             continue
 
         gear = _flat_item_names(entry.get("gear") or [])
         minis = _representative_mini_names_from_any(entry.get("minis") or [])
 
-        base_slice = _replay_stat_slice(
-            stats_base,
-            primary_color=primary_color,
-            secondary_color=secondary_color,
-        )
-
         force_obj = entry.get("force")
         fg_snapshot = None
         if isinstance(force_obj, dict) and has_valid_fg_config(force_obj):
-            fg_stats0 = _force_payload_stats(force_obj, stats_base)
-            fg_stats = (
-                _ensure_stats_include_base_effect(fg_stats0, base_effect) if isinstance(fg_stats0, dict) else {}
-            )
-            if not isinstance(fg_stats, dict) or not fg_stats:
-                fg_stats = stats_base
-
-            force_base_raw = force_obj.get("BaseStats")
-            if isinstance(force_base_raw, dict) and force_base_raw:
-                force_base_stats = _ensure_stats_include_base_effect(force_base_raw, base_effect)
-            else:
-                force_base_stats = fg_stats
-
-            fg_snapshot = _fg_replay_snapshot(
-                fg_stats=fg_stats,
-                paired_base_stats=force_base_stats,
-                primary_color=primary_color,
-                secondary_color=secondary_color,
-                surface=require_response_surface(force_obj),
-                config=(force_obj.get("ForceGreats", {}) or {}).get("config"),
-            )
+            # Fail loud: an FG row must carry a valid response surface. The snapshot now only
+            # needs the force config -- the FG paired base is the loadout's re-solved meta base
+            # (carried verbatim in the tier loop below), never a per-snapshot recompute.
+            require_response_surface(force_obj)
+            fg_snapshot = {"config": (force_obj.get("ForceGreats", {}) or {}).get("config")}
 
         if timing_mode == "zero_ms" and secondary_color:
             # Defensive (review #1/#2): team-buff meta loadouts are always primary-selected -- the
@@ -780,43 +665,10 @@ def compute_team_buff_tier_leaderboards(
                 "source_score": _safe_int(entry.get("score"), 0),
                 "source_fg_base_score": _safe_int(entry.get("fg_base_score"), _safe_int(entry.get("score"), 0)),
                 "source_fg_score": _safe_int(entry.get("fg_score"), 0),
-                "base": base_slice,
                 "fg": fg_snapshot,
                 # Raw entry keeps the loadout item stats needed by the zero_ms gem re-solve.
                 "_entry": entry,
             }
-        )
-
-    from ...solver.scoring.exact_rescore import (
-        score_stats_exact_batch,
-        score_stats_fixed_timing_exact_batch,
-    )
-
-    # Base-meta scoring is one canonical exact replay per timing mode (a semantic input,
-    # not a toggle): the Perfect-window timing frontier (perfect_window) vs the fixed
-    # chart-time timeline (zero_ms). FG re-optimization is selected separately below.
-    if timing_mode == "zero_ms":
-
-        def _base_score_batch(rows):
-            return score_stats_fixed_timing_exact_batch(rows, calc_song, ref_arrays)
-
-    else:
-
-        def _base_score_batch(rows):
-            return score_stats_exact_batch(rows, calc_song, ref_arrays)
-
-    tier_deltas: dict[str, tuple[int, int, int]] = {}
-    for tier in tier_list:
-        delta_map = _team_buff_delta_map(
-            base_team_buff=base_team_buff,
-            target_team_buff=str(tier),
-            base_team_color=base_team_color,
-            target_team_color=target_team_color,
-        )
-        tier_deltas[str(tier)] = (
-            int(delta_map.get("Perfect Points", 0)),
-            int(delta_map.get(primary_color, 0)) if primary_color else 0,
-            int(delta_map.get(secondary_color, 0)) if secondary_color else 0,
         )
 
     # Shared re-solve config (cfg + song fixed_stats), built once per song and used by BOTH the base
@@ -908,7 +760,6 @@ def compute_team_buff_tier_leaderboards(
 
     tiers_out: dict[str, dict] = {}
     for tier in tier_list:
-        delta_pp, delta_primary, delta_secondary = tier_deltas[str(tier)]
         base_scores = meta_scores_by_tier.get(str(tier), [])
         fg_scores_for_tier = fg_scores_by_tier.get(str(tier)) if have_fg else None
 
@@ -934,61 +785,41 @@ def compute_team_buff_tier_leaderboards(
                 )
 
             if replay_fg and isinstance(fg, dict) and int(fg_score) > 0:
-                fg_row = {
-                    "loadout_hash": e.get("loadout_hash") or "",
-                    "gear": e.get("gear") or [],
-                    "minis": e.get("minis") or [],
-                    "fg_score": int(fg_score),
-                    "source_score": int(e.get("source_score") or 0),
-                    "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
-                    "source_fg_score": int(e.get("source_fg_score") or 0),
-                    "force_config": fg.get("config"),
-                }
-                if timing_mode == "zero_ms":
-                    witness = resolved_fg_force_by_tier_hash.get(str(tier), {}).get(_norm_text(e.get("loadout_hash")))
-                    if not isinstance(witness, dict):
-                        raise ValueError(f"zero_ms FG re-solve missing witness for loadout {e.get('loadout_hash')!r}")
-                    fg_row["fg_base_score"] = int(witness.get("BaseScore") or 0)
-                else:
-                    fg_row["_replay_fg"] = fg
-                fg_ranked.append(fg_row)
+                # The FG row's paired base IS the same loadout's base score, already computed
+                # losslessly by the per-tier base re-solve above (== base_score) for whichever
+                # timing mode is active. Carry it verbatim. A separate paired-base recompute
+                # is what drifted before: it scored the loadout's pre-gem stats (FeverFill 0,
+                # no element gems), yielding ~30-45% of the real base. Because the FG paired
+                # base is the meta base, FG replay requires the meta surface.
+                if not replay_meta:
+                    raise ValueError(
+                        "FG replay requires the 'meta' surface: the FG paired base is the "
+                        "loadout's re-solved base score, computed only when meta is replayed."
+                    )
+                fg_ranked.append(
+                    {
+                        "loadout_hash": e.get("loadout_hash") or "",
+                        "gear": e.get("gear") or [],
+                        "minis": e.get("minis") or [],
+                        "fg_score": int(fg_score),
+                        "fg_base_score": int(base_score),
+                        "source_score": int(e.get("source_score") or 0),
+                        "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
+                        "source_fg_score": int(e.get("source_fg_score") or 0),
+                        "force_config": fg.get("config"),
+                    }
+                )
 
         base_top = nsmallest(
             int(n),
             base_ranked,
             key=lambda r: (-int(r.get("score", 0) or 0), str(r.get("loadout_hash") or "")),
         )
-        fg_top_raw = nsmallest(
+        fg_top = nsmallest(
             int(n),
             fg_ranked,
             key=lambda r: (-int(r.get("fg_score", 0) or 0), str(r.get("loadout_hash") or "")),
         )
-        paired_stats: list[dict[str, int]] = []
-        paired_rows: list[dict] = []
-        fg_top: list[dict] = []
-        for row in fg_top_raw:
-            fg_snap = row.pop("_replay_fg", None)
-            if isinstance(fg_snap, dict):
-                paired_rows.append(row)
-                paired_stats.append(
-                    _fg_stats_at_tier(
-                        fg_snap,
-                        delta_pp=int(delta_pp),
-                        delta_primary=int(delta_primary),
-                        delta_secondary=int(delta_secondary),
-                        primary_color=primary_color,
-                        secondary_color=secondary_color,
-                        paired_base=True,
-                    )
-                )
-            else:
-                if "fg_base_score" not in row:
-                    row["fg_base_score"] = 0
-            fg_top.append(row)
-        if paired_stats:
-            fg_base_scores = _base_score_batch(paired_stats)
-            for row, score in zip(paired_rows, fg_base_scores):
-                row["fg_base_score"] = int(score)
         tiers_out[str(tier)] = {"base_top51": base_top, "fg_top51": fg_top}
 
     return {
