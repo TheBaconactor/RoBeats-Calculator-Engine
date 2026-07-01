@@ -449,7 +449,9 @@ def find_and_cache_paths():
     from pathlib import Path
     from collections import deque
     PROJECT_ROOT = Path(SCRIPT_DIR)
-    cache_file = os.path.join(SCRIPT_DIR, "bin", "paths_cache.json")
+    # Cache under the (per-request-isolable) bin dir, not SCRIPT_DIR/bin, so a service solve with
+    # ROBEATSMETA_OPTIMIZER_BIN_DIR set never reads or writes the catalog's shared paths cache.
+    cache_file = PATHS.bin_path("paths_cache.json")
     results = {k: "" for k in ["Easy", "Normal", "Hard", "Gear", "Gears", "Minis", "Stats"]}
     targets_dirs = set(["Easy", "Normal", "Hard"])
     targets_files = set(["Gears.csv", "Minis.csv", "Stats.txt"])
@@ -503,7 +505,9 @@ def load_paths_cache():
     Returns:
         dict: Cached paths configuration, or empty dict if not found
     """
-    cache_file = os.path.join(SCRIPT_DIR, "bin", "paths_cache.json")
+    # Isolated bin dir (see find_and_cache_paths): a fresh per-request bin has no cache, so the
+    # service always rediscovers from its isolated PATHS.data_dir instead of the catalog's cache.
+    cache_file = PATHS.bin_path("paths_cache.json")
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "r", encoding="utf-8") as f:

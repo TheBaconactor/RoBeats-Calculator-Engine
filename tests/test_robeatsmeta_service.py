@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -75,19 +76,17 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     captured: dict[str, dict[str, str]] = {}
     entry = {"loadout_hash": "h", "score": 999, "gear": ["A"], "minis": ["B"], "details": {}}
 
-    def fake_run(cmd, **kwargs):
-        env = kwargs["env"]
-        captured["env"] = env
-        # the chart was written into the isolated Data dir, keyed by the job slug
-        chart = (Path(env["ROBEATSMETA_OPTIMIZER_DATA_DIR"]) / "Hard" / "job_abc.txt").read_text("utf-8")
-        assert "Song Name\tjob_abc" in chart
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            env = kwargs["env"]
+            captured["env"] = env
+            # the chart was written into the isolated Data dir, keyed by the job slug
+            chart = (Path(env["ROBEATSMETA_OPTIMIZER_DATA_DIR"]) / "Hard" / "job_abc.txt").read_text("utf-8")
+            assert "Song Name\tjob_abc" in chart
+            self.returncode = 0
 
-        class Result:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return Result()
+        def communicate(self, timeout=None):
+            return ("", "")
 
     def fake_loadouts(song_name, **kwargs):
         assert song_name == "job_abc"
@@ -95,7 +94,7 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
         assert kwargs["limit"] == 51  # full leaderboard, not a single rank #1
         return [entry]
 
-    monkeypatch.setattr(service.subprocess, "run", fake_run)
+    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(service, "get_best_loadouts", fake_loadouts)
 
     result = service.solve({"jobId": "job_abc", "targetSongId": "Feeding [Hard]"})
@@ -114,14 +113,49 @@ def test_solve_propagates_optimizer_failure(data_root, monkeypatch):
     (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
 
-    def fake_run(cmd, **kwargs):
-        class Result:
-            returncode = 1
-            stdout = ""
-            stderr = "boom"
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            self.returncode = 1
 
-        return Result()
+        def communicate(self, timeout=None):
+            return ("", "boom")
 
-    monkeypatch.setattr(service.subprocess, "run", fake_run)
+    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
     with pytest.raises(RuntimeError):
         service.solve({"jobId": "job_x", "targetSongId": "Feeding [Hard]"})
+
+
+def test_solve_times_out_and_kills_process_group(data_root, monkeypatch):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    gear = data_root / "Data" / "Gear"
+    gear.mkdir(parents=True, exist_ok=True)
+    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
+
+    killed: dict[str, int] = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            self.pid = 4321
+            self.returncode = None
+            self._calls = 0
+
+        def communicate(self, timeout=None):
+            self._calls += 1
+            if timeout is not None:  # the guarded solve call -> simulate a hang
+                raise subprocess.TimeoutExpired(cmd="main.py", timeout=timeout)
+            return ("", "")  # the post-kill drain
+
+    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(service, "_kill_process_group", lambda proc: killed.setdefault("pid", proc.pid))
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        service.solve({"jobId": "job_t", "targetSongId": "Feeding [Hard]"})
+    assert killed["pid"] == 4321  # the whole process group was reaped, not orphaned
+
+
+def test_read_json_rejects_oversize_body():
+    handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
+    handler.headers = {"Content-Length": str(service._MAX_BODY_BYTES + 1)}
+    with pytest.raises(service.RequestTooLarge):
+        handler._read_json()

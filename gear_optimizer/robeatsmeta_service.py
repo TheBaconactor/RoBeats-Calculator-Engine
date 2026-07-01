@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -59,10 +60,22 @@ _SOLVE_SEMAPHORE = threading.Semaphore(_SOLVE_POOL_SIZE)
 _SHARED_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "robeatsmeta_api_frontier_cache"
 _SHARED_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Concurrent writes to the shared frontier cache are safe: both writers (timeline frontier grid and
+# FG response cache) write to a unique per-thread temp file and atomically os.replace() it into
+# place, so a partial file is never observed and the last writer wins on identical content.
+
 # Frontier cache TTL: entries older than 24h are deleted to prevent stale frontiers and bound disk.
 # A background sweeper runs every 30min and prunes files whose mtime is older than the TTL.
 _FRONTIER_CACHE_TTL_S = max(60, env_int("ROBEATSMETA_OPTIMIZER_FRONTIER_CACHE_TTL_S", 24 * 60 * 60))
 _FRONTIER_CACHE_SWEEP_INTERVAL_S = 30 * 60.0
+
+# Body-size cap for /optimize: a translated chart is small; reject anything absurd with 413 so an
+# oversized body can't be read into memory. Belongs behind loopback/private + bearer auth regardless.
+_MAX_BODY_BYTES = max(1024, env_int("ROBEATSMETA_OPTIMIZER_MAX_BODY_BYTES", 8 * 1024 * 1024))
+
+# Hard wall-clock cap on a single solve subprocess: on timeout the whole process group is killed
+# (so main.py's GPU/worker children don't linger) and the request fails. Must exceed a real solve.
+_SOLVE_TIMEOUT_S = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_TIMEOUT_S", 30 * 60))
 
 
 def _sweep_frontier_cache() -> None:
@@ -92,6 +105,10 @@ def _frontier_cache_sweeper_loop() -> None:
 
 class RequestError(ValueError):
     """A bad request from the caller -> HTTP 400 (an internal failure -> 500)."""
+
+
+class RequestTooLarge(RequestError):
+    """The request body exceeds the configured cap -> HTTP 413."""
 
 
 # --- official chart catalog --------------------------------------------------
@@ -216,6 +233,17 @@ def _service_run_root() -> Path:
     return Path(override) if override else (REPO_ROOT / "bin" / "robeatsmeta_api_runs")
 
 
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the solve subprocess and its whole process group so no GPU/worker child lingers."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError, AttributeError):
+        try:
+            proc.kill()  # fallback (non-POSIX, or the group is already gone)
+        except OSError:
+            pass
+
+
 def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     """Solve one chart in an isolated per-request workspace and return its full T5 leaderboard.
 
@@ -260,15 +288,25 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     }
     with _SOLVE_SEMAPHORE:
         try:
-            proc = subprocess.run(
+            # start_new_session -> the solve gets its own process group, so on timeout we can reap
+            # the whole tree (main.py + its GPU/worker children) instead of orphaning them.
+            proc = subprocess.Popen(
                 [sys.executable, str(REPO_ROOT / "main.py"), "run"],
                 cwd=str(REPO_ROOT),
                 env=env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
+                start_new_session=True,
             )
+            try:
+                out, err = proc.communicate(timeout=_SOLVE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                _kill_process_group(proc)
+                proc.communicate()
+                raise RuntimeError(f"optimizer timed out after {_SOLVE_TIMEOUT_S}s")
             if proc.returncode != 0:
-                tail = " | ".join((proc.stderr or proc.stdout or "").strip().splitlines()[-20:])
+                tail = " | ".join((err or out or "").strip().splitlines()[-20:])
                 raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
             entries = get_best_loadouts(
                 job, limit=LOADOUTS_PER_SONG_LIMIT, team_buff="T5", db_path=str(db_path)
@@ -312,6 +350,8 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
             request = self._read_json()
             loadouts = solve(request)
             self._send(HTTPStatus.OK, {"jobId": request.get("jobId"), "loadouts": loadouts})
+        except RequestTooLarge as exc:
+            self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": str(exc)})
         except RequestError as exc:
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - HTTP boundary: optimizer failure -> 500
@@ -321,6 +361,8 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
         length = self.headers.get("Content-Length")
         if not length or not length.isdigit():
             raise RequestError("missing Content-Length")
+        if int(length) > _MAX_BODY_BYTES:
+            raise RequestTooLarge(f"request body exceeds {_MAX_BODY_BYTES} bytes")
         try:
             request = json.loads(self.rfile.read(int(length)).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
