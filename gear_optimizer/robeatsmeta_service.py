@@ -69,9 +69,11 @@ _SHARED_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _FRONTIER_CACHE_TTL_S = max(60, env_int("ROBEATSMETA_OPTIMIZER_FRONTIER_CACHE_TTL_S", 24 * 60 * 60))
 _FRONTIER_CACHE_SWEEP_INTERVAL_S = 30 * 60.0
 
-# Body-size cap for /optimize: a translated chart is small; reject anything absurd with 413 so an
-# oversized body can't be read into memory. Belongs behind loopback/private + bearer auth regardless.
-_MAX_BODY_BYTES = max(1024, env_int("ROBEATSMETA_OPTIMIZER_MAX_BODY_BYTES", 8 * 1024 * 1024))
+# Body-size cap for /optimize: reject anything absurd with 413 so an oversized body can't be read
+# into memory. Sized to fit the worst-case translated chart the website accepts (up to 200k hit
+# objects, holds doubling rows, JSON-escaped) with margin; the website also caps chartText below
+# this before sending. Belongs behind loopback/private + bearer auth regardless.
+_MAX_BODY_BYTES = max(1024, env_int("ROBEATSMETA_OPTIMIZER_MAX_BODY_BYTES", 32 * 1024 * 1024))
 
 # Hard wall-clock cap on a single solve subprocess: on timeout the whole process group is killed
 # (so main.py's GPU/worker children don't linger) and the request fails. Must exceed a real solve.
