@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -159,3 +161,43 @@ def test_read_json_rejects_oversize_body():
     handler.headers = {"Content-Length": str(service._MAX_BODY_BYTES + 1)}
     with pytest.raises(service.RequestTooLarge):
         handler._read_json()
+
+
+def _peak_concurrent_slots(workers: int, available: int, min_free: int, monkeypatch) -> int:
+    """Drive N threads through the memory-admission gate and return the peak simultaneous slots."""
+    monkeypatch.setattr(service, "_MIN_FREE_BYTES", min_free)
+    monkeypatch.setattr(service, "_available_bytes", lambda: available)
+    monkeypatch.setattr(service, "_active_solves", 0)
+    peak = {"n": 0}
+    peak_lock = threading.Lock()
+    start = threading.Barrier(workers)
+
+    def worker() -> None:
+        start.wait()  # release together to maximize contention
+        service._acquire_solve_slot()
+        try:
+            with peak_lock:
+                peak["n"] = max(peak["n"], service._active_solves)
+            time.sleep(0.05)  # hold the slot so overlap is observable
+        finally:
+            service._release_solve_slot()
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return peak["n"]
+
+
+def test_memory_guard_serializes_solves_when_memory_low(monkeypatch):
+    # Available memory always below the floor -> only the first (progress-guaranteed) solve runs;
+    # additional solves wait for it to finish, so at most one runs at a time.
+    peak = _peak_concurrent_slots(workers=4, available=0, min_free=8 * 1024 * 1024 * 1024, monkeypatch=monkeypatch)
+    assert peak == 1
+
+
+def test_memory_guard_allows_concurrency_when_memory_ample(monkeypatch):
+    # Plenty of memory -> the gate admits everyone; concurrency is bounded only by the pool.
+    peak = _peak_concurrent_slots(workers=4, available=64 * 1024 * 1024 * 1024, min_free=1, monkeypatch=monkeypatch)
+    assert peak == 4

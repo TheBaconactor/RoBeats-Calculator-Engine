@@ -54,6 +54,40 @@ DIFFICULTIES = ("Easy", "Normal", "Hard")
 _SOLVE_POOL_SIZE = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_POOL", 10))
 _SOLVE_SEMAPHORE = threading.Semaphore(_SOLVE_POOL_SIZE)
 
+# Memory-headroom admission (a hardware memory bound, not a perf flag). The semaphore caps how many
+# solves may be *scheduled*, but each solve subprocess (main.py + its GPU context + worker pool) is
+# memory-heavy, and on a small-RAM box enough concurrent solves exhaust RAM and thrash/OOM (measured
+# on a 16 GB unified-memory Mac: 2 concurrent solves drove free memory to ~70 MB). So gate the START
+# of each *additional* concurrent solve on real available memory: the first concurrent solve always
+# runs (progress guarantee, never deadlocks), and a further one only starts once at least
+# ROBEATSMETA_OPTIMIZER_SERVICE_MIN_FREE_MB is free -- otherwise it waits for a running solve to
+# finish. This makes effective concurrency track the box's memory regardless of the pool size.
+_MIN_FREE_BYTES = max(0, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_MIN_FREE_MB", 3000)) * 1024 * 1024
+_admission = threading.Condition()
+_active_solves = 0
+
+
+def _available_bytes() -> int:
+    import psutil
+
+    return int(psutil.virtual_memory().available)
+
+
+def _acquire_solve_slot() -> None:
+    """Block until it is memory-safe to start another solve subprocess."""
+    global _active_solves
+    with _admission:
+        while _active_solves > 0 and _MIN_FREE_BYTES and _available_bytes() < _MIN_FREE_BYTES:
+            _admission.wait(timeout=1.0)  # re-check as running solves free memory
+        _active_solves += 1
+
+
+def _release_solve_slot() -> None:
+    global _active_solves
+    with _admission:
+        _active_solves = max(0, _active_solves - 1)
+        _admission.notify_all()
+
 # Shared frontier cache: all solve subprocesses read/write the same timeline-frontier cache so a
 # frontier built for song A is reused when song B needs the same calc arrays. Pointing every
 # subprocess at this one dir (instead of the per-work bin/) is what makes the pool amortize.
@@ -289,6 +323,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         "TIMELINE_FRONTIER_CACHE_DIR": str(_SHARED_FRONTIER_CACHE_DIR),
     }
     with _SOLVE_SEMAPHORE:
+        _acquire_solve_slot()  # memory-headroom gate: hold here until it's safe to add a solve
         try:
             # start_new_session -> the solve gets its own process group, so on timeout we can reap
             # the whole tree (main.py + its GPU/worker children) instead of orphaning them.
@@ -317,6 +352,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
                 raise RuntimeError("optimizer produced no T5 loadout")
             return entries
         finally:
+            _release_solve_slot()
             shutil.rmtree(work, ignore_errors=True)
 
 
