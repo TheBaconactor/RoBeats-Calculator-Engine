@@ -751,9 +751,15 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
         "Vibe": 0,
         "Chill": 0,
     }
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+
+    # Production invariant: a persisted FG entry carries fg_score == the exact surface
+    # score. The baseline (T5) tier CARRIES that value verbatim (identical-context
+    # carry); only non-baseline tiers re-solve, which is exactly what this test pins.
+    carried_fg = _expected_fg_surface_score(stats, calc_song, ref_arrays)
     entry = {
         "score": 0,
-        "fg_score": 0,
+        "fg_score": int(carried_fg),
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
         "minis": ["M1", "M2", "M3"],
         "details": {"Stats": stats},
@@ -765,7 +771,6 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
         },
     }
 
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
     _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     out = compute_team_buff_tier_leaderboards(
@@ -838,9 +843,16 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
         "Vibe": 0,
         "Chill": 0,
     }
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+
+    expected_base = int(score_stats_exact(stats, calc_song, ref_arrays))
+    expected_fg = _expected_fg_surface_score(stats, calc_song, ref_arrays)
+
+    # Production invariant: the persisted fg_score IS the exact surface score; the
+    # baseline (T5) tier carries it verbatim (identical-context carry).
     entry = {
         "score": 100,
-        "fg_score": 95,
+        "fg_score": int(expected_fg),
         "fg_base_score": 90,
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
         "minis": ["M1", "M2", "M3"],
@@ -852,11 +864,7 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
         },
     }
 
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
     _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
-
-    expected_base = int(score_stats_exact(stats, calc_song, ref_arrays))
-    expected_fg = _expected_fg_surface_score(stats, calc_song, ref_arrays)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
@@ -874,6 +882,63 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
     assert tier["fg_top51"][0]["fg_score"] == expected_fg
     assert tier["fg_top51"][0]["fg_base_score"] == expected_paired_fg_base
     assert "score" not in tier["fg_top51"][0]
+
+
+def test_baseline_carry_fails_loud_on_valid_force_with_nonpositive_fg_score(monkeypatch):
+    """Regression (PR #87 review): the baseline (T5) perfect_window identical-context carry ranks
+    FG rows from the entry-level ``fg_score`` WITHOUT re-solving. If an entry reaches the FG loop
+    with a VALID force payload (valid config + response surface) but a stale/missing non-positive
+    top-level ``fg_score``, the pre-fix carry wrote 0 into the rank list and the ``fg_score > 0``
+    filter silently DROPPED the row -- a lost valid FG loadout. The re-solve branch it replaced
+    would have RANKED that row from its freshly recomputed force Score. Since the carry does not
+    recompute, it must fail loud on the inconsistency rather than silently drop."""
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+
+    calc_song = _mock_song(name="pytest_carry_stale_fg_score", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 100,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 150,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+
+    # Valid FG force (config + response surface) but a stale, non-positive top-level fg_score.
+    entry = {
+        "score": 100,
+        "fg_score": 0,  # stale/missing -- inconsistent with the valid force below
+        "fg_base_score": 90,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": dict(stats)},
+        "force": {
+            "Stats": dict(stats),
+            "ForceGreats": {"config": {"NonFever1": 1}},
+            "response_surface": _fg_test_surface(),
+        },
+    }
+
+    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
+
+    with pytest.raises(ValueError, match="non-positive fg_score"):
+        compute_team_buff_tier_leaderboards(
+            entries=[entry],
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            cfg_dict=cfg_dict,
+            tiers=("T5",),
+            limit=1,
+        )
 
 
 def test_fg_paired_base_is_loadout_base_not_gemless_recompute(monkeypatch):

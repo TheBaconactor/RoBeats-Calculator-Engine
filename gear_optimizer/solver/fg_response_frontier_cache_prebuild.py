@@ -199,19 +199,34 @@ def ensure_response_frontier_cache_for_calc_song(
     *,
     stat_keys: Iterable[tuple[int, int]] | None = None,
 ) -> None:
-    """Ensure the response-frontier bundle exists for an already-prepared calc_song.
+    """Ensure the response-frontier CACHE (npz bundle + sidecars) exists on disk/in memory.
 
     In-memory owner entry for callers that hold a prepared calc_song (e.g. fixed-0ms
     tier replay) rather than a song path. The candidate-independent all-FT/FF bundle is
     keyed by the song's timing context, so a chart-only (zero_ms) calc_song builds its
     own bundle distinct from the perfect_window one. Idempotent; keeps the single
     production owner of ``build_or_load_response_frontier_payload`` intact.
+
+    Contract: this guarantees the cache FILES are present; it does NOT materialize the
+    full in-memory payload. On a warm hit it returns after a metadata + sidecar-header
+    probe and deliberately skips ``build_or_load``'s eager per-row object materialization
+    (seconds on heavy bundles), because the scoring batch prepared downstream
+    (``prepare_force_greats_response_frontier_scoring_batch``) reads only the slim bundle
+    + sidecars, never that payload. A cold miss builds the bundle in full.
     """
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
+        fg_response_frontier_payload_cache_info,
     )
 
     keys = tuple(stat_keys) if stat_keys is not None else all_response_stat_keys()
+    # Existence probe first (npz metadata + sidecar headers): build_or_load eagerly
+    # materializes every pool row into Python objects -- seconds on heavy bundles -- and
+    # no consumer on this path reads that payload (scoring uses the slim bundle +
+    # sidecars). Same fast path as build_fg_response_frontier_cache_for_path above.
+    cache_info = fg_response_frontier_payload_cache_info(calc_song, ref_arrays, stat_keys=keys)
+    if cache_info.cache_source in {"disk", "memory"}:
+        return
     build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
 
 

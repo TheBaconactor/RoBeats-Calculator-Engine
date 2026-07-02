@@ -31,11 +31,13 @@ def ga_find_best_combo_warmstart_kernel(
     reuse_exact_eval_results: ti.template(),
 ):
     """
-    GPU-parallel evaluation with exact or refined per-(genome, FT/FF) solving.
-    Vulkan path reduces the winning key into `chunk_best_key` via an exact
-    per-genome `ti.atomic_max` and intentionally does NOT write
-    `chunk_best_results` (materialization validates cached payloads and recomputes
-    when needed).
+    GPU-parallel exact per-(genome, FT/FF) evaluation.
+    Each (genome, lane) strides the chunk's combos and stages its lane-local
+    winner in `ga_warmstart_lane_best_key/_results`; the separate
+    `ga_finalize_warmstart_lane_best_kernel` then reduces lanes into
+    `chunk_best_key` + `chunk_best_results` (no u64 atomics — MoltenVK/Metal
+    rejects `atomic_fetch_max` on ulong, so the lane-array + reduce shape is
+    the cross-platform path).
     Args:
         n_genomes: Number of genomes to evaluate
         n_combos: Total number of FT/FF combinations

@@ -11,9 +11,7 @@ from gear_optimizer.solver.native_inflight_lifecycle import BubbleTracker
 from gear_optimizer.solver.native_inflight_scheduler_policy import (
     closed_loop_bubble_kpi,
     count_active_song_lanes,
-    default_prime_target,
     read_fg_scheduler_mode,
-    read_prime_target,
 )
 from gear_optimizer.solver.native_inflight_config import (
     default_worker_threads,
@@ -284,25 +282,6 @@ def test_continuous_fg_prep_start_budget_clamps_to_pending():
         )
         == 1
     )
-
-
-def test_default_prime_target_scales_small_inflight_runs_without_exceeding_buffers():
-    assert default_prime_target(inflight_limit=1, prep_limit=4, pending_count=20) == 4
-    assert default_prime_target(inflight_limit=2, prep_limit=8, pending_count=20) == 4
-    assert default_prime_target(inflight_limit=4, prep_limit=16, pending_count=20) == 8
-    assert default_prime_target(inflight_limit=8, prep_limit=32, pending_count=20) == 8
-
-
-def test_default_prime_target_clamps_to_pending_and_prep_limits():
-    assert default_prime_target(inflight_limit=4, prep_limit=6, pending_count=20) == 6
-    assert default_prime_target(inflight_limit=4, prep_limit=16, pending_count=3) == 3
-    assert default_prime_target(inflight_limit=4, prep_limit=16, pending_count=0) == 0
-
-
-def test_read_prime_target_uses_canonical_default():
-    assert read_prime_target(inflight_limit=2, prep_limit=8, pending_count=20) == 4
-
-    assert read_prime_target(inflight_limit=4, prep_limit=6, pending_count=20) == 6
 
 
 def test_read_inflight_event_wait_settings_are_hardwired(monkeypatch):

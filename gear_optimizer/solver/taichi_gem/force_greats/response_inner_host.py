@@ -571,6 +571,11 @@ def _score_response_group_meta_gpu(
     ):
         raise ValueError("response frontier logical surface plan references an invalid surface")
 
+    # NOTE (measured 2026-07-01, net-zero, reverted): device-residency for the
+    # chunk-invariant args here (group_offsets/group_meta/flags/refs) was bit-exact
+    # but did NOT move enqueue_ms (398.6 -> 402.5ms warm on a 12-chunk heavy song).
+    # The enqueue cost is per-launch fixed overhead, not these arrays' re-staging
+    # (~5MB/chunk); do not re-attempt residency for them without new evidence.
     chunk_capacity = max(1, min(int(max_surface_dispatch_rows), int(logical_surface_rows)))
     chunk_scores = np.empty((chunk_capacity,), dtype=np.int32)
     chunk_details = np.empty((chunk_capacity, 9), dtype=np.int32)

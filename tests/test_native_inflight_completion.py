@@ -262,6 +262,27 @@ def test_song_prep_runway_fill_is_not_gated_by_ga_admission():
     assert "pending_tasks and (len(prepared) + len(prep_inflight) < icfg.prep_limit)" not in src
 
 
+def test_song_prep_runway_fill_error_posts_task_payload_and_advances():
+    """Replacement for the deleted synchronous-prime coverage (test_native_inflight_prime.py):
+    the async runway fill absorbed the first-wave prep the old prime loop did serially. When a
+    prep submit raises, _fill_song_prep_runway must post a task error payload and then either
+    advance the repeat bundle or mark the song completed -- it must not swallow the failure or
+    leave the task un-accounted. Pins the error branch the prime loop used to own."""
+    src = inspect.getsource(run_native_inflight_song_pipeline)
+
+    fill_idx = src.index("def _fill_song_prep_runway()")
+    fill_block = src[fill_idx : src.index("def _emit_deferred_post_payload", fill_idx)]
+
+    # A prep submit is attempted for the next queued task...
+    assert "prep_queue.submit(" in fill_block
+    # ...and a raised submit fails loud into the shared error/advance machinery (no swallow).
+    assert "except Exception as exc:" in fill_block
+    assert "build_native_task_error_payload(" in fill_block
+    assert "_post(payload)" in fill_block
+    assert "_advance_bundle(" in fill_block
+    assert "mark_song_completed(" in fill_block
+
+
 def test_ga_admission_reserves_slot_fail_loud_before_payload_submit():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 

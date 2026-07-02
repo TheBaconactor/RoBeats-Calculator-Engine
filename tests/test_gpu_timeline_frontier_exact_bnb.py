@@ -43,10 +43,6 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
             base_pool_idx = ti.i32(3)
 
             fields.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i8)
-            fields.grid_N_hn[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
-            fields.grid_N_hf[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
-            fields.grid_Sigma_hn[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
-            fields.grid_Sigma_hf[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
             for word in ti.static(range(4)):
                 fields.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, word] = ti.u32(0)
 
@@ -91,6 +87,9 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
                 fields.grid_frontier_masks_bits_pool[song_slot, pool_idx, 3] = ti.u32(0)
                 fields.grid_frontier_body_fever_pool[song_slot, pool_idx] = ti.cast(variant_idx, ti.i32)
                 fields.grid_frontier_body_normal_pool[song_slot, pool_idx] = ti.cast(10 - variant_idx, ti.i32)
+                for coeff in ti.static(range(4)):
+                    # head_len == 0 -> all head coefficients are zero for every variant.
+                    fields.grid_frontier_head_coeffs_pool[song_slot, pool_idx, coeff] = ti.cast(0, ti.i16)
             frontier = optimize_core_device_exact_bound(
                 0,
                 0,

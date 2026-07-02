@@ -37,7 +37,6 @@ def test_prepare_tasks_uses_deterministic_ga_seed_when_env_set(monkeypatch):
         None,
         None,
         1,
-        None,
         False,
     )
 
@@ -45,7 +44,7 @@ def test_prepare_tasks_uses_deterministic_ga_seed_when_env_set(monkeypatch):
     assert len(tasks) == 4
     got = {}
     for t in tasks:
-        repeat_ctx = t[14]
+        repeat_ctx = t[13]
         song_name = t[1]
         idx = int(repeat_ctx["repeat_index"])
         ga_seed = int(repeat_ctx["ga_seed"])
@@ -83,14 +82,13 @@ def test_prepare_tasks_injects_repeat_ctx_when_songrepeats_1_and_env_set(monkeyp
         None,
         None,
         1,
-        None,
         False,
     )
 
     assert len(tasks) == 1
     t0 = tasks[0]
-    assert len(t0) >= 15
-    repeat_ctx = t0[14]
+    assert len(t0) >= 14
+    repeat_ctx = t0[13]
     assert isinstance(repeat_ctx, dict)
     assert int(repeat_ctx["repeat_total"]) == 1
     assert int(repeat_ctx["repeat_index"]) == 1
@@ -119,6 +117,5 @@ def test_prepare_tasks_rejects_invalid_debug_ga_seed(monkeypatch):
             None,
             None,
             1,
-            None,
             False,
         )

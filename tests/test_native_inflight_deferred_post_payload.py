@@ -183,9 +183,17 @@ def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
     from gear_optimizer.solver import native_inflight_pipeline as stages
 
+    calc_song = {
+        "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
+        "song_data": {"timestamps": [0.0]},
+    }
+    ref_arrays = _ref_arrays()
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
     song = make_native_song(
         song_name="pytest_native_deferred_post_reuse",
         task_key="pytest_native_deferred_post_reuse",
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
         ga_candidates=[
             {
                 "Score": 200,
@@ -230,6 +238,12 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         ),
     )
 
+    inline_calc_song = {
+        "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
+        "song_data": {"timestamps": [0.0]},
+    }
+    inline_ref_arrays = _ref_arrays()
+    _prebuild_timeline_frontier(inline_calc_song, inline_ref_arrays)
     song = make_native_song(
         song_name="pytest_native_deferred_post_inline_fg",
         task_key="pytest_native_deferred_post_inline_fg",
@@ -239,8 +253,8 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         effective_difficulty="Hard",
         cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
         fg_debug=False,
-        calc_song={"metadata": {}, "song_data": {}},
-        ref_arrays={"Perfect Points": []},
+        calc_song=inline_calc_song,
+        ref_arrays=inline_ref_arrays,
         ga_candidates=[
             {
                 "Score": 111,

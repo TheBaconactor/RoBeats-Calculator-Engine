@@ -219,7 +219,7 @@ def test_fg_response_scoring_failure_raises_directly(monkeypatch):
     with pytest.raises(RuntimeError, match="response frontier path failed"):
         force_greats.run_force_greats_response_frontier_for_ga_candidates(
             ga_candidates=ga_candidates,
-            calc_song={"metadata": {}, "song_data": {}},
+            calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
             ref_arrays={},
             meta_primary_color="Rush",
         )
@@ -252,7 +252,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
 
     song = make_native_song(
         cfg=cfg,
-        calc_song={"metadata": {}, "song_data": {}},
+        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         cfg_dict={},
         ga_candidates=[
             {
@@ -306,7 +306,7 @@ def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatc
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
     song = make_native_song(
         cfg=cfg,
-        calc_song={"metadata": {}, "song_data": {}},
+        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         cfg_dict={},
         ga_candidates=[
             {
@@ -370,7 +370,7 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
 
     song = make_native_song(
         cfg=cfg,
-        calc_song={"metadata": {}, "song_data": {}},
+        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         cfg_dict={},
         ga_candidates=duplicate_prefix + [keeper],
         meta_primary_color="Rush",
@@ -433,7 +433,7 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
 
     song = make_native_song(
         cfg=cfg,
-        calc_song={"metadata": {}, "song_data": {}},
+        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         cfg_dict={},
         ga_candidates=ga_candidates,
         meta_primary_color="Rush",
@@ -474,7 +474,7 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
     cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
     song = make_native_song(
         cfg=cfg,
-        calc_song={"metadata": {}, "song_data": {"notes": [{"time": 1.0}]}},
+        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         cfg_dict={},
         ga_candidates=[{"BaseScore": 100, "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"}}],
         meta_primary_color="Rush",
@@ -496,12 +496,14 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
 def test_prepare_fg_static_sync_warms_jit_and_loads_canonical_scoring_bundle(monkeypatch):
     import configparser
 
-    import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_frontier, response_ftff_prune
+    from types import SimpleNamespace
 
-    seen: dict[str, object] = {"frontier": 0, "ftff": 0}
+    import gear_optimizer.solver.native_inflight_pipeline as stages
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
+
+    seen: dict[str, object] = {"sidecar_warm": 0}
     canonical_keys = ((0, 0), (1, 1))
-    bundle = object()
+    bundle = SimpleNamespace(cache_key=("bundle-key",))
 
     def _fake_load_bundle(_calc_song, _ref_arrays, *, stat_keys):
         seen["stat_keys"] = tuple(stat_keys)
@@ -510,14 +512,15 @@ def test_prepare_fg_static_sync_warms_jit_and_loads_canonical_scoring_bundle(mon
     monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _fake_load_bundle)
     monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: canonical_keys)
     monkeypatch.setattr(
-        response_frontier, "warmup_response_frontier_group_builder", lambda: seen.__setitem__("frontier", 1)
+        response_cache_store,
+        "warm_surface_sidecar_page_cache",
+        lambda _key: seen.__setitem__("sidecar_warm", 1),
     )
-    monkeypatch.setattr(response_ftff_prune, "warmup_response_ftff_prune", lambda: seen.__setitem__("ftff", 1))
 
     cfg = configparser.ConfigParser()
     song = make_native_song(
         cfg=cfg,
-        calc_song={"metadata": {}, "song_data": {"notes": [{"time": 1.0}]}},
+        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         cfg_dict={},
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -533,7 +536,7 @@ def test_prepare_fg_static_sync_warms_jit_and_loads_canonical_scoring_bundle(mon
 
     assert song.runtime.fg.fg_response_scoring_bundle is bundle
     assert song.runtime.fg.fg_static_prep_done is True
-    assert seen == {"frontier": 1, "ftff": 1, "stat_keys": canonical_keys}
+    assert seen == {"sidecar_warm": 1, "stat_keys": canonical_keys}
 
 
 def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
@@ -587,7 +590,7 @@ def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
 
     out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
         ga_candidates=ga_candidates,
-        calc_song={"metadata": {}, "song_data": {}},
+        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         ref_arrays={},
         meta_primary_color="Rush",
         ga_registry=registry,
@@ -655,7 +658,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
         paired_base_score=1000,
         selected_element="Rush",
         result=result,
-        calc_song={"metadata": {}, "song_data": {}},
+        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         ref_arrays={},
         reconstruction_frontier=full_frontier,
     )
@@ -726,7 +729,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         paired_base_score=1000,
         selected_element="Rush",
         result=result,
-        calc_song={"metadata": {}, "song_data": {}},
+        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         ref_arrays={},
     )
 

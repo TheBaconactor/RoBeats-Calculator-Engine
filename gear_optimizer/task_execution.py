@@ -16,16 +16,6 @@ logger = logging.getLogger(__name__)
 
 
 class TaskExecutionMixin:
-    def _status_listener(self, q):
-            while True:
-                try:
-                    msg = q.get()
-                except (EOFError, BrokenPipeError, OSError):
-                    break
-                if msg is None:
-                    break
-                self._handle_status_message(msg)
-
     def _execute_tasks(
             self,
             tasks,

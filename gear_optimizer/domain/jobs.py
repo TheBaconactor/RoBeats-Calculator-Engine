@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 # pipeline (app -> execution -> engine). The code originally named it "legacy"
 # when refactoring toward typed `SongJob`/`SharedRunContext` while keeping the
 # tuple as the durable interchange format.
-TASK_FIXED_FIELD_COUNT = 14
+TASK_FIXED_FIELD_COUNT = 13
 # Backwards-compatible alias (kept to avoid churn across the codebase).
 LEGACY_TASK_FIXED_FIELD_COUNT = TASK_FIXED_FIELD_COUNT
 
@@ -27,9 +27,8 @@ class TaskIndex(IntEnum):
     GEARS_BY_NAME = 8
     MINIS_BY_NAME = 9
     GA_DEPTH = 10
-    STATUS_QUEUE = 11
-    PARALLEL_WORKERS = 12
-    FG_DEBUG = 13
+    PARALLEL_WORKERS = 11
+    FG_DEBUG = 12
 
 
 # Backwards-compatible alias.
@@ -65,7 +64,6 @@ class SharedRunContext:
     gears_by_name: Mapping[str, Any] | None
     minis_by_name: Mapping[str, Any] | None
     ga_depth: int
-    status_queue: Any
     parallel_workers: int
     fg_debug: bool
 
@@ -276,7 +274,6 @@ def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
         gears_by_name=task[int(TaskIndex.GEARS_BY_NAME)],
         minis_by_name=task[int(TaskIndex.MINIS_BY_NAME)],
         ga_depth=ga_depth,
-        status_queue=task[int(TaskIndex.STATUS_QUEUE)],
         parallel_workers=parallel_workers,
         fg_debug=bool(task[int(TaskIndex.FG_DEBUG)]),
     )
@@ -315,7 +312,6 @@ def task_tuple_from_job_context(
         context.gears_by_name,
         context.minis_by_name,
         context.ga_depth,
-        context.status_queue,
         context.parallel_workers,
         context.fg_debug,
         *extras,

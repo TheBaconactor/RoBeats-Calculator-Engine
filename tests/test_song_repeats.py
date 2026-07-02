@@ -31,19 +31,18 @@ def test_prepare_tasks_song_repeats_expands_queue():
         gears_by_name={},
         minis_by_name={},
         ga_depth=1,
-        status_queue=None,
         fg_debug=False,
     )
 
     assert len(tasks) == 3
-    assert all(len(t) == 15 for t in tasks)
+    assert all(len(t) == 14 for t in tasks)
     assert [task_queue_label(t) for t in tasks] == [
         "Dummy Song (Run 1/3)",
         "Dummy Song (Run 2/3)",
         "Dummy Song (Run 3/3)",
     ]
 
-    seeds = [t[14]["ga_seed"] for t in tasks]
+    seeds = [t[13]["ga_seed"] for t in tasks]
     assert len(seeds) == 3
     assert len(set(seeds)) == 3
 
@@ -63,12 +62,11 @@ def test_prepare_tasks_song_repeats_one_still_seeds_single_run():
         gears_by_name={},
         minis_by_name={},
         ga_depth=1,
-        status_queue=None,
         fg_debug=False,
     )
 
     assert len(tasks) == 1
-    assert len(tasks[0]) == 15
+    assert len(tasks[0]) == 14
     repeat_ctx = extract_repeat_context(tasks[0])
     assert repeat_ctx is not None
     assert repeat_ctx["repeat_index"] == 1
@@ -79,10 +77,10 @@ def test_prepare_tasks_song_repeats_one_still_seeds_single_run():
 
 
 def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypatch):
-    from gear_optimizer import app as app_module
+    from gear_optimizer.pipeline import queue_task_coordinator as qtc_module
 
     seeds = iter([101, 202])
-    monkeypatch.setattr(app_module.secrets, "randbits", lambda _bits: next(seeds))
+    monkeypatch.setattr(qtc_module.secrets, "randbits", lambda _bits: next(seeds))
 
     app = GearOptimizerApp.__new__(GearOptimizerApp)
     cfg = _build_cfg(1)
@@ -98,7 +96,6 @@ def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypat
         gears_by_name={},
         minis_by_name={},
         ga_depth=1,
-        status_queue=None,
         fg_debug=False,
     )
     second = app._prepare_tasks(
@@ -111,7 +108,6 @@ def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypat
         gears_by_name={},
         minis_by_name={},
         ga_depth=1,
-        status_queue=None,
         fg_debug=False,
     )
 
@@ -120,10 +116,10 @@ def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypat
 
 
 def test_prepare_tasks_accepts_zero_as_random_seed(monkeypatch):
-    from gear_optimizer import app as app_module
+    from gear_optimizer.pipeline import queue_task_coordinator as qtc_module
 
     seeds = iter([0])
-    monkeypatch.setattr(app_module.secrets, "randbits", lambda _bits: next(seeds))
+    monkeypatch.setattr(qtc_module.secrets, "randbits", lambda _bits: next(seeds))
 
     app = GearOptimizerApp.__new__(GearOptimizerApp)
     cfg = _build_cfg(1)
@@ -137,7 +133,6 @@ def test_prepare_tasks_accepts_zero_as_random_seed(monkeypatch):
         gears_by_name={},
         minis_by_name={},
         ga_depth=1,
-        status_queue=None,
         fg_debug=False,
     )
 
@@ -159,7 +154,6 @@ def test_prepare_tasks_does_not_collapse_song_repeats():
         gears_by_name={},
         minis_by_name={},
         ga_depth=1,
-        status_queue=None,
         fg_debug=False,
     )
 

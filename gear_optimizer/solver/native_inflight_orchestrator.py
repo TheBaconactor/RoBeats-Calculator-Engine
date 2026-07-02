@@ -46,7 +46,6 @@ from gear_optimizer.solver.native_inflight_scheduler_policy import (
     count_active_song_lanes,
     ga_admission_fg_backlog_limit,
     ga_should_pause_for_fg_backlog,
-    read_prime_target,
 )
 from gear_optimizer.solver import native_inflight_pipeline as native_fg_pipeline
 from gear_optimizer.solver.native_inflight_pipeline import GADecodeQueue, InflightGAPipeline
@@ -59,7 +58,6 @@ from gear_optimizer.solver.native_inflight_lifecycle import (
     SongPrepQueue,
     is_stop_abort_exception,
     log_native_abort,
-    prime_native_inflight_prepared_queue,
     shutdown_native_inflight_resources,
     start_native_inflight_gpu_client,
 )
@@ -186,24 +184,9 @@ def run_native_inflight_song_pipeline(
             submitted += 1
             submit_budget -= 1
         return int(submitted)
-    prime_target = read_prime_target(
-        inflight_limit=int(icfg.inflight_limit),
-        prep_limit=int(icfg.prep_limit),
-        pending_count=len(pending_tasks),
-    )
-    prime_native_inflight_prepared_queue(
-        prime_target=int(prime_target),
-        pending_tasks=pending_tasks,
-        prepared=prepared,
-        completed_songs=completed_songs,
-        next_logical_task=_next_logical_task,
-        bind_bundle_song=_bind_bundle_song,
-        prepare_song=prepare_native_song,
-        post=_post,
-        advance_bundle=_advance_bundle,
-        stage_profiler=stage_profiler,
-        memory_resume_tracker=memory_resume_tracker,
-    )
+    # First-wave prep goes through the same prep-worker runway as steady state (the
+    # first loop iteration fills it): the old synchronous prime loop prepared 8-12
+    # songs serially on this thread while the already-warm GPU idled.
     def _fill_song_prep_runway() -> bool:
         submitted_any = False
         while (

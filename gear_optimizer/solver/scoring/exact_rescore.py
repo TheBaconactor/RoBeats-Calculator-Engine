@@ -34,6 +34,22 @@ from .fg_policy import (
 
 _FG_TIMELINE_TLS = threading.local()
 
+# Base timeline-trace memo: the reconstructed trace is a pure function of
+# (frontier payload cache_key, FT cell, FF cell, winning pool row) -- stats enter only
+# through those. The cache_key is content-addressed (song + ref axes + cache version),
+# so entries can never alias across songs or ref tables. Memoized values are kept
+# pristine; every hand-out is a fresh copy because callers graft the per-note dicts
+# into mutable details payloads.
+_TIMELINE_TRACE_MEMO: dict[tuple, dict[str, Any]] = {}
+_TIMELINE_TRACE_MEMO_MAX = 4096
+
+
+def _copy_timeline_trace_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    out = dict(meta)
+    out["frontier_trace"] = [dict(row) for row in meta["frontier_trace"]]
+    out["response_surface"] = list(meta["response_surface"])
+    return out
+
 
 def _get_fg_timeline_buffers(total_notes: int):
     n = max(0, int(total_notes))
@@ -268,9 +284,10 @@ def score_stats_exact_with_timeline_trace(
     from ..taichi_gem.api.timeline import load_timeline_frontier_payload
 
     frontier_refs = _frontier_replay_refs(ref_arrays)
-    payload = load_timeline_frontier_payload(song_dict, frontier_refs).payload
+    frontier_result = load_timeline_frontier_payload(song_dict, frontier_refs)
+    payload = frontier_result.payload
+    song_meta = extract_song_meta(song_dict)
     (
-        _ref_arrays,
         primary_val,
         secondary_val,
         pp_factor,
@@ -278,7 +295,7 @@ def score_stats_exact_with_timeline_trace(
         fever_mul,
         ft_idx,
         ff_idx,
-    ) = _score_stat_inputs(stats, song_dict, frontier_refs)
+    ) = _score_stat_inputs(stats, frontier_refs, song_meta.primary_color, song_meta.secondary_color)
     score, pool_idx = _score_timeline_frontier_payload_vectorized_result(
         payload=payload,
         total_notes=int(total_notes),
@@ -290,16 +307,24 @@ def score_stats_exact_with_timeline_trace(
         ft_idx=int(ft_idx),
         ff_idx=int(ff_idx),
     )
-    frontier_meta = _timeline_trace_for_payload_surface(
-        payload=payload,
-        pool_idx=int(pool_idx),
-        total_notes=int(total_notes),
-        ft_idx=int(ft_idx),
-        ff_idx=int(ff_idx),
-        calc_song=song_dict,
-        ref_arrays=frontier_refs,
-    )
-    return {"score": int(score), "TimelineFrontier": frontier_meta}
+    ft_i = max(0, min(int(ft_idx), TOTAL_ROWS))
+    ff_i = max(0, min(int(ff_idx), TOTAL_ROWS))
+    memo_key = (frontier_result.cache_key, ft_i, ff_i, int(pool_idx))
+    frontier_meta = _TIMELINE_TRACE_MEMO.get(memo_key)
+    if frontier_meta is None:
+        frontier_meta = _timeline_trace_for_payload_surface(
+            payload=payload,
+            pool_idx=int(pool_idx),
+            total_notes=int(total_notes),
+            ft_idx=int(ft_idx),
+            ff_idx=int(ff_idx),
+            calc_song=song_dict,
+            ref_arrays=frontier_refs,
+        )
+        while len(_TIMELINE_TRACE_MEMO) >= _TIMELINE_TRACE_MEMO_MAX:
+            _TIMELINE_TRACE_MEMO.pop(next(iter(_TIMELINE_TRACE_MEMO)))
+        _TIMELINE_TRACE_MEMO[memo_key] = frontier_meta
+    return {"score": int(score), "TimelineFrontier": _copy_timeline_trace_meta(frontier_meta)}
 
 
 def score_stats_exact_batch(
@@ -324,10 +349,10 @@ def score_stats_exact_batch(
     frontier_refs = _frontier_replay_refs(ref_arrays)
 
     payload = load_timeline_frontier_payload(song_dict, frontier_refs).payload
+    song_meta = extract_song_meta(song_dict)
     scores: list[int] = []
     for stats in stats_rows:
         (
-            _ref_arrays,
             primary_val,
             secondary_val,
             pp_factor,
@@ -335,7 +360,7 @@ def score_stats_exact_batch(
             fever_mul,
             ft_idx,
             ff_idx,
-        ) = _score_stat_inputs(stats, song_dict, frontier_refs)
+        ) = _score_stat_inputs(stats, frontier_refs, song_meta.primary_color, song_meta.secondary_color)
         scores.append(
             _score_timeline_frontier_payload_vectorized(
                 payload=payload,
@@ -443,11 +468,15 @@ def score_stats_timing_exact_batch(
     ft_axis = ref_arrays["Fever Time"]
     ff_axis = ref_arrays["Fever Fill Rate"]
     mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+    song_meta = extract_song_meta(song_dict)
+    # (FT, FF) -> deterministic fever timeline: a pure function of the cell within one
+    # batch (hits/notes/long/last are batch-constant). The njit walk returns a VIEW of
+    # the shared mask buffer, so the memo stores a copy.
+    timeline_by_cell: dict[tuple[int, int], tuple[np.ndarray, int, int]] = {}
 
     scores: list[int] = []
     for stats in stats_rows:
         (
-            _ref_arrays,
             primary_val,
             secondary_val,
             pp_factor,
@@ -455,21 +484,27 @@ def score_stats_timing_exact_batch(
             fever_mul,
             ft_idx,
             ff_idx,
-        ) = _score_stat_inputs(stats, song_dict, ref_arrays)
+        ) = _score_stat_inputs(stats, ref_arrays, song_meta.primary_color, song_meta.secondary_color)
         base_value = float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor)
-        ft_factor = lookup_reference_py(int(ft_idx), ft_axis, TOTAL_ROWS)
-        ff_factor = lookup_reference_py(int(ff_idx), ff_axis, TOTAL_ROWS)
-        fever_mask_head, count_body_fever, count_body_normal, _activations, _last_end = (
-            calculate_fever_timeline_indices(
-                hits,
-                total_notes,
-                ff_factor,
-                ft_factor,
-                long_notes,
-                last_note_time,
-                mask_buffer,
+        cell = (int(ft_idx), int(ff_idx))
+        cached_timeline = timeline_by_cell.get(cell)
+        if cached_timeline is None:
+            ft_factor = lookup_reference_py(int(ft_idx), ft_axis, TOTAL_ROWS)
+            ff_factor = lookup_reference_py(int(ff_idx), ff_axis, TOTAL_ROWS)
+            fever_mask_head, count_body_fever, count_body_normal, _activations, _last_end = (
+                calculate_fever_timeline_indices(
+                    hits,
+                    total_notes,
+                    ff_factor,
+                    ft_factor,
+                    long_notes,
+                    last_note_time,
+                    mask_buffer,
+                )
             )
-        )
+            cached_timeline = (fever_mask_head.copy(), int(count_body_fever), int(count_body_normal))
+            timeline_by_cell[cell] = cached_timeline
+        fever_mask_head, count_body_fever, count_body_normal = cached_timeline
         scores.append(
             calculate_score_exact(
                 base_value,
@@ -495,14 +530,15 @@ def _frontier_replay_refs(ref_arrays: Mapping[str, Any]) -> dict[str, Any]:
 
 def _score_stat_inputs(
     stats: Mapping[str, Any],
-    calc_song: Mapping[str, Any],
     ref_arrays: Mapping[str, Any],
-) -> tuple[Mapping[str, Any], int, int, float, float, float, int, int]:
-    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
-    song_meta = extract_song_meta(calc_song)
-    primary = song_meta.primary_color
-    secondary = song_meta.secondary_color
+    primary: str,
+    secondary: str,
+) -> tuple[int, int, float, float, float, int, int]:
+    """Per-row scoring inputs.
 
+    ``ref_arrays`` must already be resolved and ``primary``/``secondary`` extracted once
+    per song -- both are row-invariant, so callers hoist them out of their row loops.
+    """
     pp_factor = lookup_reference_py(safe_int(stats.get("Perfect Points", 0), 0), ref_arrays["Perfect Points"], TOTAL_ROWS)
     combo_mul = lookup_reference_py(
         safe_int(stats.get("Combo Multiplier", 0), 0),
@@ -518,7 +554,6 @@ def _score_stat_inputs(
     secondary_val = safe_int(stats.get(secondary, 0), 0)
 
     return (
-        ref_arrays,
         int(primary_val),
         int(secondary_val),
         float(pp_factor),
@@ -641,19 +676,28 @@ def _score_timeline_frontier_payload_vectorized_result(
     if int(fever_val) != int(combo_val):
         scores = scores + (body_fever * (fever_val - combo_val))
 
-    words = np.asarray(payload.grid_frontier_masks_bits_pool[0, frontier_offset:frontier_limit, :4], dtype=np.uint64)
     head_len = min(max(0, int(total_notes)), 100)
     combo_slope = np.float64((float(combo_f) - 1.0) / 100.0)
-    for i in range(head_len):
-        scaling = np.float64((float(combo_slope) * float(i + 1)) + 1.0)
-        perfect_value = np.float64(float(base_value) * float(scaling))
-        normal_score = np.int64(np.floor(perfect_value))
-        fever_score = np.int64(np.floor(perfect_value * fever_f))
-        if int(normal_score) == int(fever_score):
-            scores = scores + normal_score
-            continue
-        fever_mask = ((words[:, i // 32] >> np.uint64(i % 32)) & np.uint64(1)) != 0
-        scores = scores + np.where(fever_mask, fever_score, normal_score).astype(np.int64)
+    if head_len > 0:
+        # Vectorized head replay: the per-position f64 expressions (multiply, add,
+        # floor -- same op order per lane) are elementwise-identical to the scalar
+        # per-note loop this replaces, and only exact int64 additions are regrouped,
+        # so every pool lane's score is bit-identical (same argmax winner).
+        positions = np.arange(1, head_len + 1, dtype=np.float64)
+        perfect_values = base_value * ((combo_slope * positions) + np.float64(1.0))
+        normal_scores = np.floor(perfect_values).astype(np.int64)
+        fever_scores = np.floor(perfect_values * fever_f).astype(np.int64)
+        scores = scores + np.int64(normal_scores.sum())
+        fever_delta = fever_scores - normal_scores
+        if bool(np.any(fever_delta != 0)):
+            words = np.asarray(
+                payload.grid_frontier_masks_bits_pool[0, frontier_offset:frontier_limit, :4], dtype=np.uint64
+            )
+            note_idx = np.arange(head_len)
+            head_bits = ((words[:, note_idx // 32] >> (note_idx % 32).astype(np.uint64)) & np.uint64(1)).astype(
+                np.int64
+            )
+            scores = scores + (head_bits @ fever_delta)
 
     if int(scores.shape[0]) <= 0:
         raise ValueError("Timing frontier replay did not produce a score")

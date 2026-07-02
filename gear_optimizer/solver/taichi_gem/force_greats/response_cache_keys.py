@@ -26,8 +26,9 @@ def _fg_response_cache_version() -> str:
     return str(response_cache._FG_RESPONSE_CACHE_VERSION)
 
 
-def _surface_from_row_cached(row: np.ndarray, cache: dict[tuple[int, ...], FgResponseSurface]) -> FgResponseSurface:
-    values = tuple(int(v) for v in row[:11])
+def _surface_from_values_cached(
+    values: tuple[int, ...], cache: dict[tuple[int, ...], FgResponseSurface]
+) -> FgResponseSurface:
     surface = cache.get(values)
     if surface is None:
         if len(values) != 11:
@@ -35,6 +36,10 @@ def _surface_from_row_cached(row: np.ndarray, cache: dict[tuple[int, ...], FgRes
         surface = FgResponseSurface(*values)
         cache[values] = surface
     return surface
+
+
+def _surface_from_row_cached(row: np.ndarray, cache: dict[tuple[int, ...], FgResponseSurface]) -> FgResponseSurface:
+    return _surface_from_values_cached(tuple(int(v) for v in row[:11]), cache)
 
 
 def fg_response_frontier_song_cache_key(calc_song: dict[str, Any]) -> tuple:

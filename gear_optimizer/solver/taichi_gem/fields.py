@@ -58,16 +58,13 @@ exact_pp_best_gems_prefix: ti.Field = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16
 grid_count_body_fever: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
 grid_count_body_normal: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
 grid_head_len: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
-grid_N_hn: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - count of normal head notes
-grid_N_hf: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - count of fever head notes
-grid_Sigma_hn: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - sum(i+1) over normal head notes
-grid_Sigma_hf: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - sum(i+1) over fever head notes
 grid_fever_masks_bits: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161, 4) u32 - bitpacked head masks
 grid_frontier_count: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - retained packed frontier count
 grid_frontier_offset: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - packed frontier start offset
 grid_frontier_body_fever_pool: ti.Field = None  # (MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES) i32
 grid_frontier_body_normal_pool: ti.Field = None  # (MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES) i32
 grid_frontier_masks_bits_pool: ti.Field = None  # (MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES, 4) u32
+grid_frontier_head_coeffs_pool: ti.Field = None  # (MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES, 4) i16 - per-variant (n_hn, n_hf, sigma_hn, sigma_hf)
 grid_gap: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - gap to song end per (FT, FF)
 grid_fever_activations: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - fever activations per (FT, FF)
 song_timestamps: ti.Field = None  # (MAX_SONG_NOTES,) f32
@@ -288,10 +285,10 @@ def reset_fields_state() -> None:
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
     global exact_pp_best_gems_prefix
     global grid_count_body_fever, grid_count_body_normal, grid_head_len
-    global grid_N_hn, grid_N_hf, grid_Sigma_hn, grid_Sigma_hf
     global grid_fever_masks_bits
     global grid_frontier_count, grid_frontier_offset
     global grid_frontier_body_fever_pool, grid_frontier_body_normal_pool, grid_frontier_masks_bits_pool
+    global grid_frontier_head_coeffs_pool
     global grid_gap, grid_fever_activations
     global song_timestamps, fever_end_idx_song
     global song_note_group_idx, song_group_starts, song_group_base_t_ms, song_group_low_ms, song_group_high_ms
@@ -333,16 +330,13 @@ def reset_fields_state() -> None:
     grid_count_body_fever = None
     grid_count_body_normal = None
     grid_head_len = None
-    grid_N_hn = None
-    grid_N_hf = None
-    grid_Sigma_hn = None
-    grid_Sigma_hf = None
     grid_fever_masks_bits = None
     grid_frontier_count = None
     grid_frontier_offset = None
     grid_frontier_body_fever_pool = None
     grid_frontier_body_normal_pool = None
     grid_frontier_masks_bits_pool = None
+    grid_frontier_head_coeffs_pool = None
     grid_gap = None
     grid_fever_activations = None
     song_timestamps = None
@@ -624,10 +618,10 @@ def allocate_grid_fields():
     Each song slot can hold a different song's grid for parallel processing.
     """
     global grid_count_body_fever, grid_count_body_normal, grid_head_len
-    global grid_N_hn, grid_N_hf, grid_Sigma_hn, grid_Sigma_hf
     global grid_fever_masks_bits
     global grid_frontier_count, grid_frontier_offset
     global grid_frontier_body_fever_pool, grid_frontier_body_normal_pool, grid_frontier_masks_bits_pool
+    global grid_frontier_head_coeffs_pool
     global grid_gap, grid_fever_activations
     global song_timestamps, fever_end_idx_song
     global song_note_group_idx, song_group_starts, song_group_base_t_ms, song_group_low_ms, song_group_high_ms
@@ -637,16 +631,13 @@ def allocate_grid_fields():
     grid_count_body_fever = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_count_body_normal = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_head_len = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_N_hn = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_N_hf = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_Sigma_hn = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_Sigma_hf = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4))
     grid_frontier_count = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_frontier_offset = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_frontier_body_fever_pool = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES))
     grid_frontier_body_normal_pool = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES))
     grid_frontier_masks_bits_pool = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES, 4))
+    grid_frontier_head_coeffs_pool = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, MAX_TIMELINE_FRONTIER_SURFACES, 4))
     grid_gap = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_fever_activations = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     if song_timestamps is None:
@@ -694,16 +685,13 @@ def bind_fields(kernels_module):
     target.grid_count_body_fever = grid_count_body_fever
     target.grid_count_body_normal = grid_count_body_normal
     target.grid_head_len = grid_head_len
-    target.grid_N_hn = grid_N_hn
-    target.grid_N_hf = grid_N_hf
-    target.grid_Sigma_hn = grid_Sigma_hn
-    target.grid_Sigma_hf = grid_Sigma_hf
     target.grid_fever_masks_bits = grid_fever_masks_bits
     target.grid_frontier_count = grid_frontier_count
     target.grid_frontier_offset = grid_frontier_offset
     target.grid_frontier_body_fever_pool = grid_frontier_body_fever_pool
     target.grid_frontier_body_normal_pool = grid_frontier_body_normal_pool
     target.grid_frontier_masks_bits_pool = grid_frontier_masks_bits_pool
+    target.grid_frontier_head_coeffs_pool = grid_frontier_head_coeffs_pool
     target.grid_gap = grid_gap
     target.grid_fever_activations = grid_fever_activations
     target.song_timestamps = song_timestamps

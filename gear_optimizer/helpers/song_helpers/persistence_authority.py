@@ -7,7 +7,6 @@ from ...core.utils import require_int
 
 from ...solver.scoring.exact_rescore import (
     score_force_greats_response_surface_exact,
-    score_stats_exact,
     score_stats_exact_with_timeline_trace,
 )
 from .fg_config import extract_fg_config, has_valid_fg_config, require_response_surface
@@ -135,31 +134,22 @@ def _replay_force_payload(
     }
 
 
-def assert_authoritative_fg_entry(
-    entry: Mapping[str, Any],
-    *,
-    calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
-) -> None:
-    base_stats = _details_stats(entry)
-    if base_stats:
-        expected_score = int(score_stats_exact(base_stats, calc_song, ref_arrays))
-        actual_score = require_int(entry.get("score"), field="score")
-        if actual_score != expected_score:
-            raise AssertionError(
-                "Persistence base score is not authoritative "
-                f"(expected={expected_score}, entry={actual_score})."
-            )
+def _assert_canonical_fg_invariants(entry: Mapping[str, Any], *, expected_fg: int | None) -> None:
+    """Cross-field invariants over a just-canonicalized entry.
 
+    ``expected_fg`` is the exact surface replay the canonicalizer computed ONCE for this
+    entry -- the check validates every independently-written field against it instead of
+    re-deriving the same pure function from the same inputs (recompute-and-compare-to-self
+    protects nothing). ``None`` asserts the FG-less shape.
+    """
     force_obj = entry.get("force")
-    if not (isinstance(force_obj, dict) and has_valid_fg_config(force_obj)):
+    if force_obj is None:
+        if int(entry.get("fg_score", 0) or 0) != 0:
+            raise AssertionError("FG-less persistence entry must carry fg_score=0.")
         return
-
-    stats = _force_stats(force_obj)
-    config = extract_fg_config(force_obj)
-    counts = _config_counts(config)
-    fg_eval = _replay_force_payload(force_obj, stats=stats, calc_song=calc_song, ref_arrays=ref_arrays, counts=counts)
-    expected_fg = int(fg_eval.get("final_score", 0) or 0)
+    if expected_fg is None:
+        raise AssertionError("Canonical FG entry requires the once-computed exact surface score.")
+    expected_fg = int(expected_fg)
 
     actual_base = require_int(entry.get("fg_base_score"), field="fg_base_score")
     actual_fg = require_int(entry.get("fg_score"), field="fg_score")
@@ -199,7 +189,7 @@ def canonicalize_authoritative_fg_entry(
         out["force"] = None
         out["fg_score"] = 0
         out.pop("fg_base_score", None)
-        assert_authoritative_fg_entry(out, calc_song=calc_song, ref_arrays=ref_arrays)
+        _assert_canonical_fg_invariants(out, expected_fg=None)
         return out
 
     force_normalized = normalize_force_payload(force_obj)
@@ -213,7 +203,7 @@ def canonicalize_authoritative_fg_entry(
         out["force"] = None
         out["fg_score"] = 0
         out.pop("fg_base_score", None)
-        assert_authoritative_fg_entry(out, calc_song=calc_song, ref_arrays=ref_arrays)
+        _assert_canonical_fg_invariants(out, expected_fg=None)
         return out
 
     fg_eval = _replay_force_payload(
@@ -228,7 +218,7 @@ def canonicalize_authoritative_fg_entry(
         out["force"] = None
         out["fg_score"] = 0
         out.pop("fg_base_score", None)
-        assert_authoritative_fg_entry(out, calc_song=calc_song, ref_arrays=ref_arrays)
+        _assert_canonical_fg_invariants(out, expected_fg=None)
         return out
 
     out["fg_base_score"] = int(fg_base_score)
@@ -239,7 +229,7 @@ def canonicalize_authoritative_fg_entry(
         fg_score=int(fg_score),
         fg_eval=fg_eval,
     )
-    assert_authoritative_fg_entry(out, calc_song=calc_song, ref_arrays=ref_arrays)
+    _assert_canonical_fg_invariants(out, expected_fg=fg_score)
     return out
 
 

@@ -221,6 +221,12 @@ def save_team_buff_loadouts_batch(
     _t0 = time.perf_counter()
     minis_by_name = _db.get_minis_by_name_cached()
     gears_by_name = _db.get_gears_by_name_cached()
+    # LIFETIME INVARIANT for every id()-keyed memo in this function
+    # (entry_color_cache, entry_names_cache, effective_cache_by_entry_id):
+    # they are call-local and `entries` holds strong references to every entry
+    # for the whole call, so an id() can never be reused while cached. If a
+    # refactor ever streams/spills entries instead of holding the full list,
+    # these must switch to content keys.
     entry_color_cache: Dict[int, tuple[str, str, str]] = {}
     def _extract_entry_colors(entry: Mapping[str, Any]) -> tuple[str, str, str]:
         entry_id = int(id(entry))

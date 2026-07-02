@@ -38,8 +38,8 @@ def materialize_force_payload_from_response_frontier(
     # include raw_fever_fill / non_fever_base -- they build the action table and vary per
     # candidate via the Fever Fill stat, so a surface-only key would be wrong -- while the
     # song-level timestamp/floor inputs are constant across the calls sharing one trace_cache
-    # and are excluded. With no cache supplied (the single-shot fixed-timing path) this is the
-    # original behavior with zero added work: no key, no lookup, no copy.
+    # and are excluded. With no cache supplied this is the original single-shot behavior with
+    # zero added work: no key, no lookup, no copy.
     base_trace = None
     trace_key = None
     if trace_cache is not None:

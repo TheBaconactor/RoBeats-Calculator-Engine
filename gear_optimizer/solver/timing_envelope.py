@@ -507,6 +507,32 @@ def apply_timing_envelope(
     if timestamps is None:
         return None
 
+    if timing_mode == "perfect_window" and attach_fg:
+        # Idempotent fast path: the four envelope streams are pure functions of
+        # (chart_timestamps, note_types), so re-applying rebuilds identical arrays.
+        # The identity check pins fg_timestamps to the SAME chart array object --
+        # a replaced chart (new object) still rebuilds. note_types is load-fixed song
+        # metadata written once alongside chart_timestamps and never mutated in place,
+        # so the chart-identity check also covers it (no separate note_types signature
+        # is needed on this hot path).
+        meta_existing = calc_song.get("metadata", {}) or {}
+        chart_existing = song_data.get("chart_timestamps")
+        if (
+            meta_existing.get("TimingEnvelopeMode") == "perfect_window"
+            and chart_existing is not None
+            and song_data.get("fg_timestamps") is chart_existing
+            and all(
+                song_data.get(stream) is not None
+                for stream in (
+                    "fg_perfect_candidate_timestamps",
+                    "fg_perfect_floor_timestamps",
+                    "fg_great_floor_timestamps",
+                    "fg_great_candidate_timestamps",
+                )
+            )
+        ):
+            return {"mode": "fg", "notes": int(len(chart_existing)), "great_mode": "late_upper"}
+
     chart_ts = np.asarray(timestamps, dtype=np.float32)
     song_data["chart_timestamps"] = chart_ts
 

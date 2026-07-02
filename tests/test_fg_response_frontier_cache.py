@@ -1076,16 +1076,18 @@ def test_fg_response_prebuild_uses_band_pinned_worker_topology(monkeypatch) -> N
 def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -> None:
     from gear_optimizer.solver import native_inflight_pipeline as pipeline
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
-    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
-    from gear_optimizer.solver.taichi_gem.force_greats import response_ftff_prune
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
 
     calc_song = {"song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)}}
     ref_arrays = {"Fever Time": np.asarray([0.0]), "Fever Fill Rate": np.asarray([0.0])}
     canonical_keys = ((0, 0), (1, 1))
-    bundle = object()
+    bundle = SimpleNamespace(cache_key=("bundle-key",))
     seen: dict[str, object] = {}
-    monkeypatch.setattr(response_ftff_prune, "warmup_response_ftff_prune", lambda: None)
-    monkeypatch.setattr(response_frontier, "warmup_response_frontier_group_builder", lambda: None)
+    monkeypatch.setattr(
+        response_cache_store,
+        "warm_surface_sidecar_page_cache",
+        lambda _key: seen.__setitem__("sidecar_warm", 1),
+    )
     monkeypatch.setattr(pipeline, "resolve_active_fg_calc_song", lambda _song: calc_song)
     monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: canonical_keys)
 
@@ -1106,7 +1108,12 @@ def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -
 
     assert song.runtime.fg.fg_response_scoring_bundle is bundle
     assert song.runtime.fg.fg_static_prep_done is True
-    assert seen == {"calc_song": calc_song, "ref_arrays": ref_arrays, "stat_keys": canonical_keys}
+    assert seen == {
+        "calc_song": calc_song,
+        "ref_arrays": ref_arrays,
+        "stat_keys": canonical_keys,
+        "sidecar_warm": 1,
+    }
 
 
 def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
