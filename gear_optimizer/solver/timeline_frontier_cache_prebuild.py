@@ -121,6 +121,19 @@ def _ref_axes_signature(ref_arrays: dict) -> str:
     return bytes(array_sig16(ref_ft) + array_sig16(ref_ff)).hex()
 
 
+def _derived_frontier_cache_file(song_path: str, ref_arrays: dict) -> str | None:
+    """Parse one chart and return the cache file its CURRENT frontier key derives (drift probe)."""
+    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_payload_cache_info
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    calc_song = get_base_calc_song(str(song_path), {})
+    if not calc_song:
+        return None
+    apply_timing_envelope(calc_song)
+    return str(timeline_frontier_payload_cache_info(calc_song, ref_arrays).disk_path)
+
+
 def _build_manifest_plan(song_paths: Iterable[str], ref_arrays: dict):
     from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_cache_file_is_complete
 
@@ -131,6 +144,7 @@ def _build_manifest_plan(song_paths: Iterable[str], ref_arrays: dict):
         version_field="frontier_version",
         ref_sig_hex=_ref_axes_signature(ref_arrays),
         cache_file_validator=timeline_frontier_cache_file_is_complete,
+        derived_cache_file_fn=lambda song_path: _derived_frontier_cache_file(song_path, ref_arrays),
     )
 
 

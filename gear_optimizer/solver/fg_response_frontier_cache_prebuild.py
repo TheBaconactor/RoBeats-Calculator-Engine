@@ -98,6 +98,22 @@ def _stat_keys_signature(stat_keys: Iterable[tuple[int, int]]) -> str:
     return bytes(array_sig16(rows.reshape(-1))).hex()
 
 
+def _derived_bundle_cache_file(song_path: str, ref_arrays: dict) -> str | None:
+    """Parse one chart and return the cache file its CURRENT bundle key derives (drift probe)."""
+    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
+        _fg_response_disk_cache_path,
+        fg_response_frontier_bundle_cache_key,
+    )
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    calc_song = get_base_calc_song(str(song_path), {})
+    if not calc_song:
+        return None
+    apply_timing_envelope(calc_song)
+    return str(_fg_response_disk_cache_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)))
+
+
 def _build_manifest_plan(song_paths: Iterable[str], ref_arrays: dict, *, stat_keys: Iterable[tuple[int, int]]):
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import fg_response_cache_file_is_complete
 
@@ -113,6 +129,7 @@ def _build_manifest_plan(song_paths: Iterable[str], ref_arrays: dict, *, stat_ke
             cache_file,
             stat_keys=stat_keys_tuple,
         ),
+        derived_cache_file_fn=lambda song_path: _derived_bundle_cache_file(song_path, ref_arrays),
     )
 
 

@@ -464,6 +464,29 @@ def run_fg_job_sync(
     progress_cb=None,
     progress_tracker: ProgressTracker | None = None,
 ) -> None:
+    try:
+        _run_fg_job_sync_impl(
+            song,
+            gpu_client=gpu_client,
+            post_sender=post_sender,
+            progress_cb=progress_cb,
+            progress_tracker=progress_tracker,
+        )
+    finally:
+        # FG scoring for this song is over (success OR failure): free its ~0.5-1.5 GB surface
+        # pool now. Releasing only on success leaks one pool per failed song, so a failure storm
+        # (e.g. a dying GPU service) pins gigabytes and trips the memory guard.
+        _release_fg_song_surfaces(song)
+
+
+def _run_fg_job_sync_impl(
+    song: NativeSong,
+    *,
+    gpu_client: GpuServiceClient,
+    post_sender: PostSender | None = None,
+    progress_cb=None,
+    progress_tracker: ProgressTracker | None = None,
+) -> None:
     from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
     from gear_optimizer.solver.native_inflight_fg_payload import (
         build_fg_persist_entries,
@@ -604,6 +627,3 @@ def run_fg_job_sync(
             song.runtime.db.record_info = fg_record_info
     if post_sender is not None:
         post_sender.send(build_fg_update_payload(song, persist_entries=build_fg_persist_entries(song)))
-    # FG scoring for this song is done: free its surface pool now instead of holding it resident
-    # until the song object is GC'd (the leak that trips the memory guard ~33 songs into a run).
-    _release_fg_song_surfaces(song)

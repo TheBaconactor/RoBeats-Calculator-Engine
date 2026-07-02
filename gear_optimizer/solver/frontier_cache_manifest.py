@@ -114,6 +114,8 @@ def build_manifest_plan(
     ref_sig_hex: str,
     stat_sig_hex: str | None = None,
     cache_file_validator: Callable[[str], bool] | None = None,
+    derived_cache_file_fn: Callable[[str], str | None] | None = None,
+    drift_sample_size: int = 8,
 ) -> FrontierCacheManifestPlan:
     paths = [str(path) for path in list(song_paths or []) if str(path or "").strip()]
     if not paths:
@@ -123,6 +125,7 @@ def build_manifest_plan(
     hits: list[str] = []
     misses: list[str] = []
     key_by_norm: dict[str, str] = {}
+    recorded_file_by_norm: dict[str, str] = {}
     updated_entries = 0
     for song_path in paths:
         identity = _path_identity(song_path)
@@ -178,11 +181,31 @@ def build_manifest_plan(
                 updated_entries += 1
         if cache_hit:
             hits.append(song_path)
+            recorded_file_by_norm[normalize_manifest_path(abs_path)] = cache_file
         else:
             misses.append(song_path)
 
     if updated_entries > 0:
         _save_manifest(manifest_path, cache_version=cache_version, version_field=version_field, entries=entries)
+
+    if _detect_cache_key_drift(
+        hits,
+        recorded_file_by_norm=recorded_file_by_norm,
+        derived_cache_file_fn=derived_cache_file_fn,
+        drift_sample_size=drift_sample_size,
+    ):
+        # The manifest's identity inputs (cache version, chart mtime/size, ref/stat sigs) did not
+        # move, yet the content-addressed cache key the runtime derives points at a DIFFERENT file
+        # than the one this manifest validated. That means the key-derivation code changed without
+        # a cache-version bump (the 2026-07-02 incident: PR #89 changed great_candidates, the
+        # fast-path kept reporting stale bundles as ready, and every affected song failed prep).
+        # Drop the fast-path for this run: the per-file verify derives true keys and rebuilds.
+        return FrontierCacheManifestPlan(
+            total_paths=len(paths),
+            hit_paths=(),
+            missing_paths=tuple(paths),
+            key_by_norm_path=key_by_norm,
+        )
 
     return FrontierCacheManifestPlan(
         total_paths=len(paths),
@@ -190,6 +213,49 @@ def build_manifest_plan(
         missing_paths=tuple(misses),
         key_by_norm_path=key_by_norm,
     )
+
+
+def _detect_cache_key_drift(
+    hit_paths: list[str],
+    *,
+    recorded_file_by_norm: dict[str, str],
+    derived_cache_file_fn: Callable[[str], str | None] | None,
+    drift_sample_size: int,
+) -> bool:
+    """Sample manifest hits and verify the recorded cache file is the one the CURRENT key derives.
+
+    The fast-path identity (cache version + chart mtime/size + ref/stat sigs) cannot see changes to
+    the key-derivation code itself: if key inputs change without a version bump, every recorded
+    entry silently points at a file the runtime will never ask for. Deriving the true key for a
+    handful of hits costs a few chart parses (~50ms each) and turns that silent skip into a loud
+    full re-verify. Derivation errors are skipped (unreadable charts are the per-file path's
+    problem, not a drift signal)."""
+    if derived_cache_file_fn is None or not hit_paths:
+        return False
+    sample_count = max(1, min(int(drift_sample_size), len(hit_paths)))
+    step = max(1, len(hit_paths) // sample_count)
+    for song_path in hit_paths[::step][:sample_count]:
+        recorded = recorded_file_by_norm.get(normalize_manifest_path(song_path), "")
+        if not recorded:
+            continue
+        try:
+            derived = derived_cache_file_fn(song_path)
+        except Exception as exc:
+            logger.debug("frontier_cache_manifest:derived_cache_file_fn: %s", exc)
+            continue
+        if not derived:
+            continue
+        if normalize_manifest_path(str(derived)) != normalize_manifest_path(recorded):
+            logger.warning(
+                "[FrontierCacheManifest] Cache-key drift detected: %s derives %s but the manifest "
+                "recorded %s. Key-derivation inputs changed without a cache-version bump; dropping "
+                "the manifest fast-path for this run (full per-file verify + rebuild).",
+                song_path,
+                derived,
+                recorded,
+            )
+            return True
+    return False
 
 
 def apply_manifest_results(
