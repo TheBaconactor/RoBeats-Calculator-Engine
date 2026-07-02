@@ -381,6 +381,11 @@ def select_top_base_fg_candidates_reference(
 
 _CONTEXT_TABLES_LOCK = threading.Lock()
 _CONTEXT_TABLES_CACHE: dict[tuple[int, str, str, str], tuple[np.ndarray, np.ndarray]] = {}
+# The cache key is id(registry); registries are LRU-evicted from the 32-entry _REGISTRY_GPU_CACHE
+# and rebuilt with fresh ids, so without a bound every rebuild leaks a permanent
+# (gear_name_rank, sig_id) ndarray pair for a now-dead registry. The live working set is the
+# <=32 registries x their colour contexts, so a generous cap clears rarely and only sheds orphans.
+_CONTEXT_TABLES_CACHE_MAX = 256
 
 
 def effective_tables_for_context(
@@ -416,6 +421,8 @@ def effective_tables_for_context(
     )
     tables = (gear_rank, sig_tables.sig_id)
     with _CONTEXT_TABLES_LOCK:
+        if len(_CONTEXT_TABLES_CACHE) >= _CONTEXT_TABLES_CACHE_MAX:
+            _CONTEXT_TABLES_CACHE.clear()
         _CONTEXT_TABLES_CACHE[key] = tables
     return tables
 

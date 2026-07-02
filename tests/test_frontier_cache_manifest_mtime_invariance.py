@@ -22,7 +22,7 @@ _VERSION_FIELD = "frontier_version"
 _CACHE_VERSION = "v1"
 
 
-def _plan(song_path: Path, manifest_path: Path, *, validator=None):
+def _plan(song_path: Path, manifest_path: Path, *, validator=None, derived_cache_file_fn=None):
     return build_manifest_plan(
         [str(song_path)],
         manifest_path=manifest_path,
@@ -31,6 +31,7 @@ def _plan(song_path: Path, manifest_path: Path, *, validator=None):
         ref_sig_hex="ref",
         stat_sig_hex="stat",
         cache_file_validator=validator,
+        derived_cache_file_fn=derived_cache_file_fn,
     )
 
 
@@ -115,3 +116,67 @@ def test_manifest_fast_path_still_detects_size_change(tmp_path: Path) -> None:
 
     assert plan.hit_paths == (str(song_path),)  # re-validated complete -> still a hit
     assert calls["n"] == 1, "a real size change must drop to the validator, not silently fast-hit"
+
+
+def test_manifest_detects_cache_key_drift(tmp_path: Path) -> None:
+    """Key-derivation code changed without a version bump: the CURRENT key derives a different
+    cache file than the manifest recorded. The fast-path must drop every hit and force the full
+    per-file verify (the 2026-07-02 incident: PR #89 changed great_candidates, the manifest kept
+    fast-hitting stale bundles, and 2204/2237 songs failed FG prep every run)."""
+    song_path = tmp_path / "Song.txt"
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cache_path = cache_dir / "deadbeef.npz"
+    manifest_path = cache_dir / "manifest_v1.json"
+    song_path.write_bytes(b"chart-bytes")
+    cache_path.write_bytes(b"x" * 4096)
+
+    _seed_manifest_entry(song_path, cache_path, manifest_path)
+
+    plan = _plan(
+        song_path,
+        manifest_path,
+        derived_cache_file_fn=lambda _p: str(cache_dir / "0123abcd.npz"),  # key now derives elsewhere
+    )
+
+    assert plan.hit_paths == ()
+    assert plan.missing_paths == (str(song_path),)
+
+
+def test_manifest_key_drift_probe_accepts_matching_derivation(tmp_path: Path) -> None:
+    """Healthy case: the derived cache file matches the recorded one, so the fast-path holds."""
+    song_path = tmp_path / "Song.txt"
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cache_path = cache_dir / "deadbeef.npz"
+    manifest_path = cache_dir / "manifest_v1.json"
+    song_path.write_bytes(b"chart-bytes")
+    cache_path.write_bytes(b"x" * 4096)
+
+    _seed_manifest_entry(song_path, cache_path, manifest_path)
+
+    plan = _plan(song_path, manifest_path, derived_cache_file_fn=lambda _p: str(cache_path))
+
+    assert plan.hit_paths == (str(song_path),)
+    assert plan.missing_paths == ()
+
+
+def test_manifest_key_drift_probe_skips_derivation_errors(tmp_path: Path) -> None:
+    """An unreadable chart is an external boundary for the probe, not a drift signal."""
+    song_path = tmp_path / "Song.txt"
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    cache_path = cache_dir / "deadbeef.npz"
+    manifest_path = cache_dir / "manifest_v1.json"
+    song_path.write_bytes(b"chart-bytes")
+    cache_path.write_bytes(b"x" * 4096)
+
+    _seed_manifest_entry(song_path, cache_path, manifest_path)
+
+    def boom(_p: str) -> str:
+        raise OSError("unreadable chart")
+
+    plan = _plan(song_path, manifest_path, derived_cache_file_fn=boom)
+
+    assert plan.hit_paths == (str(song_path),)
+    assert plan.missing_paths == ()

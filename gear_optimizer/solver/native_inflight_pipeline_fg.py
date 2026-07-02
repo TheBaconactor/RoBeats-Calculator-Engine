@@ -425,7 +425,61 @@ class NativeFGPipeline:
             return ""
 
 
+def _release_fg_song_surfaces(song: NativeSong) -> None:
+    """Release a song's ~0.5-1.5 GB FG response surfaces once its FG scoring is complete.
+
+    After this job's `materialize_from_owner_score_map`, nothing else reads the per-song scoring
+    bundle, prepared plan, or owner score map -- the fused GA turn and the FG planner are the only
+    other readers and both run earlier. Left alone, each song's surface pool stays resident, pinned
+    by BOTH the per-song bundle handle and the process-global response-frontier caches, until the
+    song object is garbage-collected and the entry-count LRU evicts it. A standalone optimizer run
+    never runs the serving-mode idle sweep, so ~prep_limit songs' worth accumulates and trips the
+    memory guard after only a few dozen songs. Dropping all three references here bounds resident FG
+    surfaces to the songs actively scoring. Lossless: any later access rebuilds from the on-disk
+    bundle. Best-effort -- a cleanup error must not fail the already-complete FG job.
+    """
+    fg = getattr(song.runtime, "fg", None)
+    if fg is None:
+        return
+    bundle = getattr(fg, "fg_response_scoring_bundle", None)
+    if bundle is not None:
+        try:
+            from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+                release_fg_response_song_memory,
+            )
+
+            release_fg_response_song_memory(getattr(bundle, "cache_key", ()))
+        except Exception as e:
+            logger.debug(f"native_inflight_pipeline:_release_fg_song_surfaces: {e}")
+    fg.fg_response_scoring_bundle = None
+    fg.fg_response_frontier_plan = None
+    fg.fg_owner_score_map = None
+
+
 def run_fg_job_sync(
+    song: NativeSong,
+    *,
+    gpu_client: GpuServiceClient,
+    post_sender: PostSender | None = None,
+    progress_cb=None,
+    progress_tracker: ProgressTracker | None = None,
+) -> None:
+    try:
+        _run_fg_job_sync_impl(
+            song,
+            gpu_client=gpu_client,
+            post_sender=post_sender,
+            progress_cb=progress_cb,
+            progress_tracker=progress_tracker,
+        )
+    finally:
+        # FG scoring for this song is over (success OR failure): free its ~0.5-1.5 GB surface
+        # pool now. Releasing only on success leaks one pool per failed song, so a failure storm
+        # (e.g. a dying GPU service) pins gigabytes and trips the memory guard.
+        _release_fg_song_surfaces(song)
+
+
+def _run_fg_job_sync_impl(
     song: NativeSong,
     *,
     gpu_client: GpuServiceClient,

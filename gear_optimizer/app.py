@@ -478,8 +478,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 memory_resume_tracker,
                 loop_forever,
             )
-            if memory_release_requested() and loop_forever:
-                memory_guard_restart = True
+            memory_guard_restart = self._memory_guard_restart_needed(memory_resume_tracker)
         except KeyboardInterrupt:
             graceful_stop = True
             loop_forever = False
@@ -646,6 +645,15 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         if truthy(env_get("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")):
             return True
         return False
+
+    def _memory_guard_restart_needed(self, memory_resume_tracker) -> bool:
+        if not memory_release_requested():
+            return False
+        try:
+            return memory_resume_tracker is not None and memory_resume_tracker.pending_count() > 0
+        except Exception as e:
+            logger.warning(f"app:_memory_guard_restart_needed: {e}")
+            return True
 
     @staticmethod
     def _iter_exception_chain(exc: BaseException | None):

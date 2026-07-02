@@ -36,7 +36,18 @@ from .response_types import FgResponseFrontierResult
 #             body_fever_great (= section_bound*(1+early_Great_band)); best_fg_score drops to the
 #             correct value on aliased cells, so v16 bundles are wrong and must rebuild. (Latent
 #             since #44 at -75; -95's wider band made it reproduce.)
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v17"
+# v17 -> v18: PR #89 late-Great deliverability cap (build_per_note_great_window_ms clamps the late
+#             edge at NOTE_REMOVE_LATE_CAP_MS = +200) changed great_candidates for most charts.
+#             That changed the content-addressed bundle key for those songs, but WITHOUT a version
+#             bump the manifest fast-path (identity: version + chart mtime/size + ref sig, none of
+#             which moved) kept reporting the pre-#89 bundles as valid and skipped the rebuild --
+#             every affected song then failed prep loudly ("scoring bundle is missing") while the
+#             startup banner said the cache was ready. v17 bundles for affected songs schedule
+#             non-deliverable +200..+380ms late-Great activations, so they are semantically stale
+#             and must rebuild. Invariant: ANY change that alters fg_response_frontier_song_cache_key
+#             inputs (extract_fg_song_inputs / timing envelopes) MUST bump this version -- the
+#             version string is the only key-derivation fingerprint the manifest fast-path sees.
+_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v18"
 _MEMORY_CACHE_MAX = 4096
 _PAYLOAD_CACHE_MAX = 8
 # Sized to cover the native in-flight prep window (prep_limit tops out around 36): a

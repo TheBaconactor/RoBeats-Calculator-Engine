@@ -199,7 +199,7 @@ def run_native_inflight_song_pipeline(
             if nxt_bundle_key in completed_songs:
                 submitted_any = True
                 continue
-            logical_nxt, repeat_ctx = _next_logical_task(nxt)
+            logical_nxt, _repeat_ctx = _next_logical_task(nxt)
             nxt_key = task_queue_label(logical_nxt)
             try:
                 prep_queue.submit(
@@ -208,17 +208,19 @@ def run_native_inflight_song_pipeline(
                     register_future=completion_tracker.register,
                 )
             except Exception as exc:
+                is_repeat_bundle = bool(bundle_tracker.bundle_runs(nxt))
                 payload = build_native_task_error_payload(
                     song_name=task_song_name(nxt),
                     queue_key=str(nxt_key),
                     exc=exc,
                     trace=traceback.format_exc(),
-                    suppress_progress=repeat_ctx is not None,
+                    suppress_progress=is_repeat_bundle,
                 )
                 _post(payload)
-                if repeat_ctx is not None:
-                    _advance_bundle(nxt, song_name=task_song_name(nxt), failed=True)
-                else:
+                advanced = False
+                if is_repeat_bundle:
+                    advanced = _advance_bundle(nxt, song_name=task_song_name(nxt), failed=True)
+                if not advanced:
                     mark_song_completed(
                         completed_songs=completed_songs,
                         task_key=nxt_key,
@@ -382,18 +384,19 @@ def run_native_inflight_song_pipeline(
                 except Exception as exc:
                     if stopping and is_stop_abort_exception(exc):
                         continue
-                    repeat_ctx = extract_repeat_context(logical_task)
+                    is_repeat_bundle = bool(bundle_tracker.bundle_runs(task))
                     payload = build_native_task_error_payload(
                         song_name=str(song_name),
                         queue_key=str(task_key),
                         exc=exc,
                         trace=traceback.format_exc(),
-                        suppress_progress=repeat_ctx is not None,
+                        suppress_progress=is_repeat_bundle,
                     )
                     _post(payload)
-                    if repeat_ctx is not None:
-                        _advance_bundle(task, song_name=str(song_name), failed=True)
-                    else:
+                    advanced = False
+                    if is_repeat_bundle:
+                        advanced = _advance_bundle(task, song_name=str(song_name), failed=True)
+                    if not advanced:
                         mark_song_completed(
                             completed_songs=completed_songs,
                             task_key=task_key,

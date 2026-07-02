@@ -41,6 +41,7 @@ from .response_cache_store import (
     compress_cache_dir_sidecars,
     load_first_surface_scoring_rows,
     purge_stale_version_cache_files,
+    release_fg_response_song_memory,
     reset_fg_response_frontier_payload_cache,
     sweep_fg_response_frontier_live_cache,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "load_response_frontier_scoring_bundle",
     "normalize_fg_response_stat_keys",
     "purge_stale_version_cache_files",
+    "release_fg_response_song_memory",
     "reset_fg_response_frontier_payload_cache",
     "sweep_fg_response_frontier_live_cache",
 ]

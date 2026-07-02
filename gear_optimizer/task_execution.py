@@ -76,8 +76,7 @@ class TaskExecutionMixin:
 
             if memory_release_requested():
                 logger.warning("[MemoryGuard] Soft limit reached; pending songs saved for resume.")
-                if loop_forever:
-                    logger.warning("[MemoryGuard] LoopForever enabled; scheduling automatic restart.")
+                logger.warning("[MemoryGuard] Scheduling automatic restart if pending songs remain.")
 
             if memory_resume_tracker:
                 memory_resume_tracker.finalize(memory_release_requested())
@@ -235,4 +234,3 @@ class TaskExecutionMixin:
                     post_proc.join(timeout=5.0)
             except Exception as e:
                 logger.debug(f"task_execution:_stop_post_processor: {e}")
-
