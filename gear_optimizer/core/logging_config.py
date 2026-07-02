@@ -80,3 +80,30 @@ def configure_logging(
             pass
 
         _CONFIGURED = True
+
+
+def configure_default_logging() -> None:
+    """
+    Install the optimizer's canonical durable diagnostics logging.
+
+    Single source of truth for the production log target (``bin/error.log``, WARNING+)
+    and console level (INFO in output mode, ERROR otherwise). Called from every process
+    entry point that must record fail-loud diagnostics: the CLI entry (before the heavy
+    solver import chain can install a foreign root handler), ``GearOptimizerApp``, and the
+    spawned post-processor child (which otherwise runs with an unconfigured root logger).
+
+    Idempotent and best-effort: logging must never crash the optimizer.
+    """
+    try:
+        from gear_optimizer.core.constants import BIN_DIR
+        from gear_optimizer.core.env_config import ENV
+
+        console_level = logging.INFO if bool(getattr(ENV, "output_enabled", False)) else logging.ERROR
+        configure_logging(
+            log_file_path=os.path.join(BIN_DIR, "error.log"),
+            console_level=console_level,
+            file_level=logging.WARNING,
+        )
+    except Exception:
+        # Never let logging setup abort a process entry point.
+        pass
