@@ -13,10 +13,11 @@ import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.cpu_affinity import (
+    fg_response_prebuild_worker_count,
     frontier_prebuild_intra_worker_threads,
-    frontier_prebuild_worker_count,
     init_process_pool_worker_band,
 )
+from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.frontier_cache_manifest import (
     apply_manifest_results as _shared_apply_manifest_results,
@@ -269,7 +270,7 @@ def _run_missing_fg_prebuild(
     failures = 0
     completed = 0
     results: list[FgResponseFrontierCacheBuildResult] = []
-    worker_count = frontier_prebuild_worker_count()
+    worker_count = fg_response_prebuild_worker_count()
     reducer_threads = frontier_prebuild_intra_worker_threads(worker_count)
     build_paths, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(paths, ref_arrays)
     if len(build_paths) == 1:
@@ -402,6 +403,7 @@ def run_fg_response_frontier_cache_prebuild(
 ) -> FgResponseFrontierCachePrebuildSummary:
     del cfg
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        _fg_response_disk_cache_dir,
         cleanup_fg_response_frontier_cache_temp_files,
         compress_cache_dir_sidecars,
         purge_stale_version_cache_files,
@@ -414,39 +416,43 @@ def run_fg_response_frontier_cache_prebuild(
     if not paths:
         return FgResponseFrontierCachePrebuildSummary(total=0)
 
-    manifest_plan = _build_manifest_plan(paths, ref_arrays, stat_keys=stat_keys)
-    manifest_hits = int(manifest_plan.hit_count)
-    if manifest_hits > 0:
-        logger.info(
-            "[FGResponseCache] Manifest fast-hit skipped %s/%s song(s) before worker parse/build.",
-            manifest_hits,
-            int(manifest_plan.total_paths),
+    # Single-builder lock: a second concurrent process waits here, then re-runs its manifest plan
+    # below -- which now fast-hits everything this process wrote -- instead of duplicating the
+    # multi-GB cold build and multiplying peak RAM.
+    with FrontierBuildLock(_fg_response_disk_cache_dir(), label="fg_response"):
+        manifest_plan = _build_manifest_plan(paths, ref_arrays, stat_keys=stat_keys)
+        manifest_hits = int(manifest_plan.hit_count)
+        if manifest_hits > 0:
+            logger.info(
+                "[FGResponseCache] Manifest fast-hit skipped %s/%s song(s) before worker parse/build.",
+                manifest_hits,
+                int(manifest_plan.total_paths),
+            )
+
+        removed_tmp = cleanup_fg_response_frontier_cache_temp_files()
+        if int(removed_tmp) > 0:
+            logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
+
+        removed_stale = purge_stale_version_cache_files()
+        if int(removed_stale) > 0:
+            logger.info(
+                "[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale)
+            )
+
+        missing_paths = sorted(manifest_plan.missing_paths, key=_fg_response_frontier_prebuild_priority)
+        run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
+        _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
+        elapsed_ms = float((time.perf_counter() - started) * 1000.0)
+        if int(run_summary.built) > 0:
+            # Bulk-compress newly written sidecars once (NTFS WOF XPRESS16K, ~6x, memmap preserved).
+            # Housekeeping after the timed region so elapsed_ms reflects build cost, not compaction.
+            compress_cache_dir_sidecars()
+        return FgResponseFrontierCachePrebuildSummary(
+            total=int(manifest_plan.total_paths),
+            completed=int(manifest_hits + run_summary.completed),
+            failures=int(run_summary.failures),
+            built=int(run_summary.built),
+            disk=int(manifest_hits + run_summary.disk),
+            memory=int(run_summary.memory),
+            elapsed_ms=elapsed_ms,
         )
-
-    removed_tmp = cleanup_fg_response_frontier_cache_temp_files()
-    if int(removed_tmp) > 0:
-        logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
-
-    removed_stale = purge_stale_version_cache_files()
-    if int(removed_stale) > 0:
-        logger.info(
-            "[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale)
-        )
-
-    missing_paths = sorted(manifest_plan.missing_paths, key=_fg_response_frontier_prebuild_priority)
-    run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
-    _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
-    elapsed_ms = float((time.perf_counter() - started) * 1000.0)
-    if int(run_summary.built) > 0:
-        # Bulk-compress newly written sidecars once (NTFS WOF XPRESS16K, ~6x, memmap preserved).
-        # Housekeeping after the timed region so elapsed_ms reflects build cost, not compaction.
-        compress_cache_dir_sidecars()
-    return FgResponseFrontierCachePrebuildSummary(
-        total=int(manifest_plan.total_paths),
-        completed=int(manifest_hits + run_summary.completed),
-        failures=int(run_summary.failures),
-        built=int(run_summary.built),
-        disk=int(manifest_hits + run_summary.disk),
-        memory=int(run_summary.memory),
-        elapsed_ms=elapsed_ms,
-    )

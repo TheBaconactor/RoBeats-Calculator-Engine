@@ -179,6 +179,14 @@ def pin_current_process_to_core_band(index: int, total: int) -> None:
 
 
 FRONTIER_PREBUILD_CORES_PER_WORKER = 4
+# Per-worker available-RAM budgets for the cold builds. Timeline exact frontiers peak modestly
+# (~1.5 GB/worker). FG response-frontier cold builds are the multi-GB ones: the EXTENDED CUT giant
+# charts (FREEDOM DiVE Koneko, Soulless 5, Galaxy Collapse, Camellia EXTENDED CUTs) peak at several
+# GB RSS each, and the prebuild schedules heaviest-first so every worker starts on a giant chart at
+# once -- exactly the concurrency that hit "Unable to allocate memory" on 2026-07-02. Size FG to
+# that real peak, not timeline's budget.
+TIMELINE_PREBUILD_GB_PER_WORKER = 1.5
+FG_RESPONSE_PREBUILD_GB_PER_WORKER = 4.0
 
 
 def frontier_prebuild_worker_count() -> int:
@@ -191,16 +199,33 @@ def frontier_prebuild_intra_worker_threads(worker_count: int) -> int:
     return max(1, logical_core_count() // max(1, int(worker_count)))
 
 
-def timeline_prebuild_worker_count() -> int:
-    """Frontier prebuild worker count with the timeline low-RAM guard (~1.5 GB/worker)."""
+def _ram_capped_prebuild_worker_count(gb_per_worker: float) -> int:
+    """Core-derived worker count, capped so concurrent workers fit in currently-available RAM at
+    ``gb_per_worker`` each. psutil is the only available-RAM source; if it is missing the core-based
+    count stands (the guard is a safety cap, not a hard requirement)."""
     workers = frontier_prebuild_worker_count()
     try:
         import psutil
 
-        workers = min(workers, max(1, int(float(psutil.virtual_memory().available) / 1e9 / 1.5)))
+        available_gb = float(psutil.virtual_memory().available) / 1e9
+        workers = min(workers, max(1, int(available_gb / max(0.1, float(gb_per_worker)))))
     except Exception:
         pass
     return max(1, workers)
+
+
+def timeline_prebuild_worker_count() -> int:
+    """Frontier prebuild worker count with the timeline low-RAM guard (~1.5 GB/worker)."""
+    return _ram_capped_prebuild_worker_count(TIMELINE_PREBUILD_GB_PER_WORKER)
+
+
+def fg_response_prebuild_worker_count() -> int:
+    """Frontier prebuild worker count with the FG response low-RAM guard (~several GB/worker).
+
+    FG response-frontier cold builds are the memory-heavy ones and run heaviest-first, so unlike
+    timeline this guard is load-bearing: without it every worker piles onto a giant EXTENDED CUT
+    chart simultaneously and exhausts RAM."""
+    return _ram_capped_prebuild_worker_count(FG_RESPONSE_PREBUILD_GB_PER_WORKER)
 
 
 def init_process_pool_worker_band(total_workers: int) -> None:
