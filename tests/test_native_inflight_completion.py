@@ -283,6 +283,27 @@ def test_song_prep_runway_fill_error_posts_task_payload_and_advances():
     assert "mark_song_completed(" in fill_block
 
 
+def test_song_prep_failures_do_not_treat_seed_context_as_repeat_bundle():
+    src = inspect.getsource(run_native_inflight_song_pipeline)
+
+    fill_idx = src.index("def _fill_song_prep_runway()")
+    fill_block = src[fill_idx : src.index("def _emit_deferred_post_payload", fill_idx)]
+    song_prep_idx = src.index("for prep_completion in prep_queue.pop_completed():")
+    prep_error_block = src[song_prep_idx : src.index("ready_fg_from_prep = False", song_prep_idx)]
+
+    assert "is_repeat_bundle = bool(bundle_tracker.bundle_runs(nxt))" in fill_block
+    assert "suppress_progress=is_repeat_bundle" in fill_block
+    assert "advanced = False" in fill_block
+    assert "if not advanced:" in fill_block
+
+    assert "is_repeat_bundle = bool(bundle_tracker.bundle_runs(task))" in prep_error_block
+    assert "suppress_progress=is_repeat_bundle" in prep_error_block
+    assert "advanced = False" in prep_error_block
+    assert "if not advanced:" in prep_error_block
+    assert "suppress_progress=repeat_ctx is not None" not in prep_error_block
+    assert "if repeat_ctx is not None:" not in prep_error_block
+
+
 def test_ga_admission_reserves_slot_fail_loud_before_payload_submit():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 
