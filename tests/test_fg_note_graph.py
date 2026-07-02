@@ -276,7 +276,7 @@ def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
         "fever_window_end_ms": 1240.0,
     }]
     base_trace = [{
-        "section": 1, "activation_index": 2, "fever_end_index": 8,
+        "section": 1, "activation_index": 2, "fever_start_note_index": 2, "fever_end_index": 8,
         "activation_hit_offset_ms": 40.0, "fever_window_end_ms": 1240.0,
     }]
 
@@ -320,7 +320,7 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
         "fever_window_end_ms": 1000.0,
     }]
     base_trace = [{
-        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "section": 1, "activation_index": 0, "fever_start_note_index": 0, "fever_end_index": 4,
         "activation_hit_offset_ms": 40.0, "fever_window_end_ms": 1000.0,
     }]
     mask = np.zeros(n, bool)
@@ -375,7 +375,7 @@ def test_endpoint_early_delta_is_largest_cushion_center():
         "fever_window_end_ms": cutoff,
     }]
     base_trace = [{
-        "section": 1, "activation_index": 2, "fever_end_index": 6,
+        "section": 1, "activation_index": 2, "fever_start_note_index": 2, "fever_end_index": 6,
         "activation_hit_offset_ms": 40.0, "fever_window_end_ms": cutoff,
     }]
     nt = np.asarray([1, 1, 1, 1, 1, 3, 1], dtype=np.int16)  # idx5 is the held tail
@@ -470,6 +470,7 @@ def test_base_note_graph_uses_timeline_frontier_trace_witness():
         {
             "section": 1,
             "activation_index": 2,
+            "fever_start_note_index": 2,
             "activation_hit_offset_ms": 40.0,
             "fever_end_index": 5,
         }
@@ -493,6 +494,7 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
         {
             "section": 1,
             "activation_index": 2,
+            "fever_start_note_index": 2,
             "activation_hit_offset_ms": 40.0,
             "fever_end_index": 5,
             "fever_window_end_ms": 440.0,
@@ -723,7 +725,7 @@ def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
     n = 4
     ts = np.asarray([0.0, 61.167, 61.339, 61.339], dtype=np.float32)
     trace_with_tight_fever_end = [{
-        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "section": 1, "activation_index": 0, "fever_start_note_index": 0, "fever_end_index": 4,
         "forced_start_index": 0, "forced_prefix_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 179.43191528320312,
         "fever_window_end_ms": cutoff,

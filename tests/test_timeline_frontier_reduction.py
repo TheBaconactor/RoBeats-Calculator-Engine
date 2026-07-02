@@ -216,6 +216,96 @@ def test_timeline_frontier_trace_witness_reproduces_carry_dependent_exit() -> No
     assert row["fever_window_end_ms"] == row["activation_hit_ms"] + float(d_ms)
 
 
+def test_timeline_frontier_trace_witness_is_legal_for_chorded_held_tail_cluster() -> None:
+    # Regression: a held tail chorded with a narrower note lands in its OWN
+    # (timestamp, window) group, and its wider [-40,+80] window pushes the carry
+    # CLOCK band's upper edge past the following normal note's own Perfect window
+    # [-20,+40]. The old witness reported that clock edge (+80) as the normal
+    # note's own hit offset -- a normal note hit at +80 is a Great in the
+    # decompiled judgement, contradicting activation_judgment="perfect". The
+    # witness must keep activation_index as the count/mask boundary while
+    # attributing the physical +80 hit to the held tail (fever_start_note_index).
+    group_starts = np.array([0, 1, 2, 3, 4], dtype=np.int32)
+    group_ends = np.array([1, 2, 3, 4, 5], dtype=np.int32)
+    group_base_t_ms = np.array([0, 500, 500, 560, 900], dtype=np.int32)
+    group_low_ms = np.array([-20, -40, -20, -20, -20], dtype=np.int32)
+    group_high_ms = np.array([40, 80, 40, 40, 40], dtype=np.int32)
+    note_group_idx = np.array([0, 1, 2, 3, 4], dtype=np.int32)
+    n = 5
+    ctx = _build_grouped_timeline_context(
+        n,
+        group_starts=group_starts,
+        group_ends=group_ends,
+        group_base_t_ms=group_base_t_ms,
+        group_low_ms=group_low_ms,
+        group_high_ms=group_high_ms,
+        note_group_idx=note_group_idx,
+    )
+    d_ms = 150
+    # fill_count=3 puts the first-section count boundary on note #2, the normal
+    # note sharing 500ms with the held tail (note #1).
+    pack = _build_exact_timeline_frontier_from_context(ctx, fill_count=3, d_ms=d_ms)
+
+    def _reconstruct(target: TimelineExactSignature):
+        return reconstruct_timeline_frontier_trace(
+            total_notes=n,
+            group_starts=group_starts,
+            group_ends=group_ends,
+            group_base_t_ms=group_base_t_ms,
+            group_low_ms=group_low_ms,
+            group_high_ms=group_high_ms,
+            note_group_idx=note_group_idx,
+            fill_count=3,
+            d_ms=d_ms,
+            target_surface=target,
+        )
+
+    for target in pack.surfaces:
+        for row in _reconstruct(target):
+            _assert_witness_consistent(row, d_ms=float(d_ms))
+            a = int(row["activation_index"])
+            w = int(row["fever_start_note_index"])
+            assert 0 <= w <= a
+            own_low = int(group_low_ms[note_group_idx[w]])
+            own_high = int(group_high_ms[note_group_idx[w]])
+            # The witness note must be able to hit Perfect at every reported offset.
+            assert row["activation_ms"] == float(group_base_t_ms[note_group_idx[w]])
+            assert own_low <= row["activation_hit_offset_lower_ms"]
+            assert row["activation_hit_offset_upper_ms"] <= own_high
+            assert own_low <= row["activation_hit_offset_ms"] <= own_high
+
+    trace = _reconstruct(pack.canonical)
+    assert len(trace) == 1
+    row = trace[0]
+    # Count/mask boundary stays the normal note; the physical +80 activating hit
+    # is the held tail's (its own window reaches +80, largest cushion preserved).
+    assert int(row["activation_index"]) == 2
+    assert int(row["fever_start_note_index"]) == 1
+    assert row["activation_ms"] == 500.0
+    assert row["activation_hit_offset_ms"] == 80.0
+    assert row["activation_hit_ms"] == 580.0
+    assert row["activation_judgment"] == "perfect"
+
+    # The note graph follows the physical hit: the tail is the fever-starting
+    # witness (delta +80), the count-boundary normal note was hit before the
+    # activation clock so it is outside fever (same fever count, replayable).
+    from gear_optimizer.solver.fg_response_scoring.note_graph import timeline_frontier_note_graph
+
+    notes = timeline_frontier_note_graph(
+        frontier_trace=trace,
+        total_notes=n,
+        timestamps=[0.0, 0.5, 0.5, 0.56, 0.9],
+        note_types=[1, 3, 1, 1, 1],
+    )
+    assert notes[1]["is_activation_witness"] is True
+    assert notes[1]["delta_ms"] == 80.0
+    assert notes[1]["fever"] is True
+    assert notes[2]["fever"] is False
+    assert notes[2]["is_activation_witness"] is False
+    assert notes[3]["fever"] is True
+    assert notes[4]["fever"] is False
+
+
 def test_vectorized_exit_enumerator_matches_scalar_reference() -> None:
     group_starts = np.array([0, 1, 3, 4, 6, 7], dtype=np.int32)
     group_ends = np.array([1, 3, 4, 6, 7, 9], dtype=np.int32)

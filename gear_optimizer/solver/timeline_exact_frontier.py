@@ -1190,29 +1190,77 @@ def reconstruct_timeline_frontier_trace(
                 exit_group=int(exit_group),
                 d_ms=d_ms_i,
             )
-            # Largest-cushion witness (issue #41): report the band's upper end (the
-            # latest Perfect activation yielding this exit); fever_window_end_ms pins
-            # the displayed duration to d_ms regardless of boundary-note timing.
-            activation_offset_ms = offset_hi
-            activation_hit_ms = float(activation_ms + activation_offset_ms)
+            # Largest-cushion witness time (issue #41): the band's upper end is
+            # the latest activation clock yielding this exit; fever_window_end_ms
+            # pins the displayed duration to d_ms regardless of boundary-note
+            # timing.
+            #
+            # The band is the carry CLOCK (running max over every Perfect hit so
+            # far), so its upper edge can exceed the count-boundary note's OWN
+            # Perfect window when an earlier wider-window note (a chorded held
+            # tail, [-40,+80], grouped separately by (timestamp, window)) delivers
+            # the activating hit. The witness must name a note that can legally be
+            # hit at the chosen clock time: activation_index keeps the count /
+            # fever-mask boundary, while fever_start_note_index and every
+            # activation_hit_* field describe the physical activating hit,
+            # attributed to the LATEST already-hit group whose own Perfect window
+            # contains it.
+            hit_abs_ms = int(activation_ms) + int(offset_hi)
+            witness_group = int(g_act)
+            if not (
+                int(ctx.group_low_ms[g_act]) <= int(offset_hi) <= int(ctx.group_high_ms[g_act])
+            ):
+                witness_group = -1
+                max_group_high = int(np.max(ctx.group_high_ms))
+                for g in range(int(g_act) - 1, -1, -1):
+                    g_base = int(ctx.group_base_t_ms[g])
+                    if g_base + max_group_high < hit_abs_ms:
+                        break
+                    if (
+                        g_base + int(ctx.group_low_ms[g])
+                        <= hit_abs_ms
+                        <= g_base + int(ctx.group_high_ms[g])
+                    ):
+                        witness_group = g
+                        break
+                if witness_group < 0:
+                    raise ValueError(
+                        "timeline frontier trace clock witness is outside every "
+                        "already-hit note's Perfect window"
+                    )
+            if witness_group == int(g_act):
+                witness_note = int(activation_note)
+            else:
+                witness_note = int(ctx.group_starts[witness_group + 1]) - 1
+            witness_base_ms = int(ctx.group_base_t_ms[witness_group])
+            activation_offset_ms = hit_abs_ms - witness_base_ms
+            # Feasible witness band for THAT note: the clock band mapped onto the
+            # witness note's chart time, clamped to its own Perfect window (every
+            # value still yields this same first exit, so the surface and scores
+            # are unchanged).
+            witness_lo = max(
+                int(activation_ms) + int(offset_lo) - witness_base_ms,
+                int(ctx.group_low_ms[witness_group]),
+            )
+            activation_hit_ms = float(hit_abs_ms)
             if int(boundary_note) >= n or int(exit_group) >= int(ctx.gcount):
                 fever_end_ms: float | None = None
             else:
                 fever_end_ms = float(int(ctx.group_base_t_ms[int(exit_group)]))
             section = {
                 "activation_index": int(activation_note),
-                "activation_ms": float(activation_ms),
+                "activation_ms": float(witness_base_ms),
                 "activation_hit_ms": activation_hit_ms,
                 "activation_hit_offset_ms": float(activation_offset_ms),
-                "activation_hit_offset_lower_ms": float(offset_lo),
-                "activation_hit_offset_upper_ms": float(offset_hi),
-                "activation_hit_window_lower_ms": float(activation_ms + offset_lo),
-                "activation_hit_window_upper_ms": float(activation_ms + offset_hi),
-                "activation_hit_window_width_ms": float(max(0, offset_hi - offset_lo)),
+                "activation_hit_offset_lower_ms": float(witness_lo),
+                "activation_hit_offset_upper_ms": float(activation_offset_ms),
+                "activation_hit_window_lower_ms": float(witness_base_ms + witness_lo),
+                "activation_hit_window_upper_ms": float(hit_abs_ms),
+                "activation_hit_window_width_ms": float(max(0, activation_offset_ms - witness_lo)),
                 "activation_hit_offset_kind": "largest_cushion",
                 "activation_judgment": "perfect",
                 "fever_start_source": "perfect_window",
-                "fever_start_note_index": int(activation_note),
+                "fever_start_note_index": int(witness_note),
                 "fever_start_hit_ms": activation_hit_ms,
                 "fever_end_index": int(boundary_note),
                 "fever_end_ms": fever_end_ms,
