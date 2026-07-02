@@ -233,6 +233,15 @@ def fever_great_masks_from_trace(
 
 
 def reconstruct_visible_stats(force_details: dict[str, object], details: dict[str, object]) -> dict[str, int]:
+    """Return the FG row's visible (gem-applied) stats.
+
+    Current schema: `force_details.BaseStats` IS the post-gem visible stats row
+    (the persisted GemCounts/FT/FF allocation is already included in it), and
+    `details.st` packs the same row in VISIBLE_STATS_ORDER. The two are
+    persisted independently, so equality is a real integrity check. The former
+    pre-gem reconstruction (re-adding gem scales on top of BaseStats) predates
+    post-gem persistence and double-counted every gem on current rows.
+    """
     base_stats = force_details.get("BaseStats")
     gem_counts = force_details.get("GemCounts")
     if not isinstance(base_stats, dict):
@@ -241,37 +250,13 @@ def reconstruct_visible_stats(force_details: dict[str, object], details: dict[st
         raise ValueError("FG row force_details_json requires GemCounts")
 
     stats = {key: int(base_stats.get(key, 0) or 0) for key in VISIBLE_STATS_ORDER}
-    g_pp = int(gem_counts.get("Perfect Points", 0) or 0)
-    g_cm = int(gem_counts.get("Combo Multiplier", 0) or 0)
-    g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
-    g_ov = int(gem_counts.get("Element", 0) or 0)
-    g_ft = int(force_details.get("FT", 0) or 0)
-    g_ff = int(force_details.get("FF", 0) or 0)
-    selected_element = (
-        str(force_details.get("Selected Element") or "")
-        or str(force_details.get("SelectedElement") or "")
-        or str(details.get("se") or "")
-    )
-
-    stats["Perfect Points"] += g_pp * GEM_SCALE_NORMAL
-    stats["Combo Multiplier"] += g_cm * GEM_SCALE_NORMAL
-    stats["Fever Multiplier"] += g_fm * GEM_SCALE_FEVER
-    stats["Fever Time"] += g_ft * GEM_SCALE_FEVER
-    stats["Fever Fill Rate"] += g_ff * GEM_SCALE_FEVER
-    stats["Chill"] += g_pp * GEM_STAT_TO_ELEMENT_SCALE
-    stats["Flow"] += g_cm * GEM_STAT_TO_ELEMENT_SCALE
-    stats["Rush"] += g_fm * GEM_STAT_TO_ELEMENT_SCALE
-    stats["Beat"] += g_ft * GEM_STAT_TO_ELEMENT_SCALE
-    stats["Vibe"] += g_ff * GEM_STAT_TO_ELEMENT_SCALE
-    if selected_element:
-        stats[selected_element] = int(stats.get(selected_element, 0)) + g_ov * ELEMENTAL_GEM_SCALE
 
     packed = details.get("st")
     if isinstance(packed, list) and len(packed) == len(VISIBLE_STATS_ORDER):
         packed_stats = [int(v) for v in packed]
-        rebuilt_stats = [int(stats[key]) for key in VISIBLE_STATS_ORDER]
-        if packed_stats != rebuilt_stats:
-            raise ValueError(f"visible stats mismatch: details.st={packed_stats} rebuilt={rebuilt_stats}")
+        visible_stats = [int(stats[key]) for key in VISIBLE_STATS_ORDER]
+        if packed_stats != visible_stats:
+            raise ValueError(f"visible stats mismatch: details.st={packed_stats} force_details.BaseStats={visible_stats}")
     return stats
 
 

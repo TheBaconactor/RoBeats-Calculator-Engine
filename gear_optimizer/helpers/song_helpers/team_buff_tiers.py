@@ -604,8 +604,6 @@ def compute_team_buff_tier_leaderboards(
         target_team_color_override=target_team_color_override,
     )
     base_team_buff = _resolve_base_team_buff(cfg_dict)
-
-    base_effect = team_buff_effect(base_team_buff, base_team_color)
     tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
 
     try:
@@ -732,6 +730,40 @@ def compute_team_buff_tier_leaderboards(
         # timing (the tier shifts stats -> the optimal great placement + gems shift too).
         fg_loadouts = [_entry_loadout_items(per_entry[idx].get("_entry") or {}) for idx in fg_indices]
         for tier in tier_list:
+            out_list = fg_scores_by_tier[str(tier)]
+            witness_for_tier = resolved_fg_force_by_tier_hash.setdefault(str(tier), {})
+            if (
+                timing_mode == "perfect_window"
+                and str(tier) == str(base_team_buff)
+                and base_team_color == target_team_color
+            ):
+                # Identical-context carry (carry-don't-recompute doctrine): at the baseline
+                # tier, perfect_window timing, and no team-color shift, NO re-solve variable
+                # differs from the solve that produced the entry — the persisted force payload
+                # IS this (tier, timing, color)'s exact frontier optimum (the fused FG owner +
+                # materializer derived it from the same response frontier this re-solve would
+                # re-derive, and the persistence gateway exact-verifies it downstream via
+                # canonicalize_authoritative_fg_entries, fail-loud). Re-solving here re-paid
+                # the response-frontier bundle load + per-loadout surface re-solve + trace
+                # re-search per song — the measured post-processor burner on heavy songs.
+                # Any differing variable keeps the full re-solve below: a tier shift
+                # re-allocates gems, zero_ms rebuilds surfaces, color overrides shift stats.
+                for idx in fg_indices:
+                    raw_force = (per_entry[idx].get("_entry") or {}).get("force")
+                    if not isinstance(raw_force, dict):
+                        raise ValueError(
+                            "baseline-tier FG carry requires the persisted force payload "
+                            f"(loadout {per_entry[idx].get('loadout_hash')!r})"
+                        )
+                    # The entry-level fg_score is the canonical exact surface score
+                    # (surface-authority doctrine); carry it verbatim. A non-positive
+                    # value excludes the row from the FG ranking below — identical to
+                    # today's semantics for rows the re-solve would not rank.
+                    out_list[idx] = _safe_int(per_entry[idx].get("source_fg_score"), 0)
+                    h = _norm_text(per_entry[idx].get("loadout_hash"))
+                    if h:
+                        witness_for_tier[h] = raw_force
+                continue
             delta_map = _team_buff_delta_map(
                 base_team_buff=base_team_buff,
                 target_team_buff=str(tier),
@@ -739,8 +771,6 @@ def compute_team_buff_tier_leaderboards(
                 target_team_color=target_team_color,
             )
             tier_fixed_stats = _apply_stat_delta(tier_song_fixed_stats, delta_map)
-            out_list = fg_scores_by_tier[str(tier)]
-            witness_for_tier = resolved_fg_force_by_tier_hash.setdefault(str(tier), {})
             # Batched: all FG loadouts of this tier re-solve in ONE response-frontier dispatch
             # (build_fixed_timing_fg_replays packs the stat list), so a full leaderboard's FG is
             # one solve instead of N. Per-loadout result is identical (independent searches).

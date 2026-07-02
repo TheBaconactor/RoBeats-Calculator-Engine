@@ -82,7 +82,6 @@ def test_save_loadouts_batch_preserves_fg_base_score_context(monkeypatch, tmp_pa
 def test_authoritative_fg_preserves_source_paired_base_score(monkeypatch):
     from gear_optimizer.helpers.song_helpers import persistence_authority as authority
 
-    monkeypatch.setattr(authority, "score_stats_exact", lambda *_args, **_kwargs: 160)
     monkeypatch.setattr(
         authority,
         "score_stats_exact_with_timeline_trace",

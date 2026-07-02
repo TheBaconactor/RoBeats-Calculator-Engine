@@ -751,9 +751,15 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
         "Vibe": 0,
         "Chill": 0,
     }
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+
+    # Production invariant: a persisted FG entry carries fg_score == the exact surface
+    # score. The baseline (T5) tier CARRIES that value verbatim (identical-context
+    # carry); only non-baseline tiers re-solve, which is exactly what this test pins.
+    carried_fg = _expected_fg_surface_score(stats, calc_song, ref_arrays)
     entry = {
         "score": 0,
-        "fg_score": 0,
+        "fg_score": int(carried_fg),
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
         "minis": ["M1", "M2", "M3"],
         "details": {"Stats": stats},
@@ -765,7 +771,6 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
         },
     }
 
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
     _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     out = compute_team_buff_tier_leaderboards(
@@ -838,9 +843,16 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
         "Vibe": 0,
         "Chill": 0,
     }
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+
+    expected_base = int(score_stats_exact(stats, calc_song, ref_arrays))
+    expected_fg = _expected_fg_surface_score(stats, calc_song, ref_arrays)
+
+    # Production invariant: the persisted fg_score IS the exact surface score; the
+    # baseline (T5) tier carries it verbatim (identical-context carry).
     entry = {
         "score": 100,
-        "fg_score": 95,
+        "fg_score": int(expected_fg),
         "fg_base_score": 90,
         "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
         "minis": ["M1", "M2", "M3"],
@@ -852,11 +864,7 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
         },
     }
 
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
     _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
-
-    expected_base = int(score_stats_exact(stats, calc_song, ref_arrays))
-    expected_fg = _expected_fg_surface_score(stats, calc_song, ref_arrays)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],

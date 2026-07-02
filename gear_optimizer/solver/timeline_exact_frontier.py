@@ -75,16 +75,13 @@ class TimelineFrontierGridPayload:
     grid_count_body_fever: np.ndarray
     grid_count_body_normal: np.ndarray
     grid_head_len: np.ndarray
-    grid_N_hn: np.ndarray
-    grid_N_hf: np.ndarray
-    grid_Sigma_hn: np.ndarray
-    grid_Sigma_hf: np.ndarray
     grid_fever_masks_bits: np.ndarray
     grid_frontier_count: np.ndarray
     grid_frontier_offset: np.ndarray
     grid_frontier_body_fever_pool: np.ndarray
     grid_frontier_body_normal_pool: np.ndarray
     grid_frontier_masks_bits_pool: np.ndarray
+    grid_frontier_head_coeffs_pool: np.ndarray
     grid_gap: np.ndarray
     grid_fever_activations: np.ndarray
     frontier_pool_used: int
@@ -1394,10 +1391,6 @@ def build_timeline_frontier_grid_payload(
     grid_count_body_fever = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
     grid_count_body_normal = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
     grid_head_len = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int8)
-    grid_N_hn = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int16)
-    grid_N_hf = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int16)
-    grid_Sigma_hn = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int16)
-    grid_Sigma_hf = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int16)
     grid_fever_masks_bits = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
     grid_frontier_count = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
     grid_frontier_offset = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
@@ -1406,6 +1399,10 @@ def build_timeline_frontier_grid_payload(
     grid_frontier_masks_bits_pool = np.zeros(
         (payload_slots, MAX_TIMELINE_FRONTIER_SURFACES, 4), dtype=np.uint32
     )
+    # Per-VARIANT head coefficients (n_hn, n_hf, sigma_hn, sigma_hf): the eval kernel's
+    # upper bound needs them for every pool row, not just the cell-canonical surface.
+    # i16 is exact (n <= 100, sigma <= 5050).
+    grid_frontier_head_coeffs_pool = np.zeros((payload_slots, MAX_TIMELINE_FRONTIER_SURFACES, 4), dtype=np.int16)
     grid_gap = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
     grid_fever_activations = np.zeros((payload_slots, GRID_SIZE, GRID_SIZE), dtype=np.int32)
 
@@ -1422,6 +1419,7 @@ def build_timeline_frontier_grid_payload(
     )
     pool_offset_by_pack_signature: dict[tuple[tuple[int, int, int, int, int, int, int], ...], int] = {}
     pool_cursor = 0
+    head_coeff_cache: dict[tuple[int, int, int, int, int], tuple[int, int, int, int]] = {}
 
     def _store_pack(pack: TimelineFrontierPack) -> int:
         nonlocal pool_cursor
@@ -1456,6 +1454,27 @@ def build_timeline_frontier_grid_payload(
             grid_frontier_masks_bits_pool[payload_slot_i, pool_idx, 1] = np.uint32(int(surf.head_bits[1]))
             grid_frontier_masks_bits_pool[payload_slot_i, pool_idx, 2] = np.uint32(int(surf.head_bits[2]))
             grid_frontier_masks_bits_pool[payload_slot_i, pool_idx, 3] = np.uint32(int(surf.head_bits[3]))
+            coeff_key = (
+                int(surf.head_bits[0]),
+                int(surf.head_bits[1]),
+                int(surf.head_bits[2]),
+                int(surf.head_bits[3]),
+                int(surf.head_len),
+            )
+            coeffs = head_coeff_cache.get(coeff_key)
+            if coeffs is None:
+                coeffs = _head_mask_coefficients_py(
+                    surf.head_bits[0],
+                    surf.head_bits[1],
+                    surf.head_bits[2],
+                    surf.head_bits[3],
+                    head_len=surf.head_len,
+                )
+                head_coeff_cache[coeff_key] = coeffs
+            grid_frontier_head_coeffs_pool[payload_slot_i, pool_idx, 0] = np.int16(int(coeffs[0]))
+            grid_frontier_head_coeffs_pool[payload_slot_i, pool_idx, 1] = np.int16(int(coeffs[1]))
+            grid_frontier_head_coeffs_pool[payload_slot_i, pool_idx, 2] = np.int16(int(coeffs[2]))
+            grid_frontier_head_coeffs_pool[payload_slot_i, pool_idx, 3] = np.int16(int(coeffs[3]))
         pool_cursor += count
         return offset
 
@@ -1524,17 +1543,12 @@ def build_timeline_frontier_grid_payload(
     )
 
     t_cells = time.perf_counter()
-    head_coeff_cache: dict[tuple[int, int, int, int, int], tuple[int, int, int, int]] = {}
     dense_shape = (int(unique_d_ms.size), int(unique_fill_counts.size))
     d_pos = {int(v): idx for idx, v in enumerate(unique_d_ms.tolist())}
     f_pos = {int(v): idx for idx, v in enumerate(unique_fill_counts.tolist())}
     dense_body_fever = np.zeros(dense_shape, dtype=np.int32)
     dense_body_normal = np.zeros(dense_shape, dtype=np.int32)
     dense_head_len = np.zeros(dense_shape, dtype=np.int8)
-    dense_n_hn = np.zeros(dense_shape, dtype=np.int16)
-    dense_n_hf = np.zeros(dense_shape, dtype=np.int16)
-    dense_sigma_hn = np.zeros(dense_shape, dtype=np.int16)
-    dense_sigma_hf = np.zeros(dense_shape, dtype=np.int16)
     dense_masks = np.zeros((*dense_shape, 4), dtype=np.uint32)
     dense_frontier_count = np.zeros(dense_shape, dtype=np.int32)
     dense_frontier_offset = np.zeros(dense_shape, dtype=np.int32)
@@ -1545,32 +1559,9 @@ def build_timeline_frontier_grid_payload(
         d_i = int(d_pos[int(d_key)])
         f_i = int(f_pos[int(fc_key)])
         canonical = pack.canonical
-        head_coeff_key = (
-            int(canonical.head_bits[0]),
-            int(canonical.head_bits[1]),
-            int(canonical.head_bits[2]),
-            int(canonical.head_bits[3]),
-            int(canonical.head_len),
-        )
-        coeffs = head_coeff_cache.get(head_coeff_key)
-        if coeffs is None:
-            coeffs = _head_mask_coefficients_py(
-                canonical.head_bits[0],
-                canonical.head_bits[1],
-                canonical.head_bits[2],
-                canonical.head_bits[3],
-                head_len=canonical.head_len,
-            )
-            head_coeff_cache[head_coeff_key] = coeffs
-        n_hn, n_hf, sigma_hn, sigma_hf = coeffs
-
         dense_body_fever[d_i, f_i] = int(canonical.body_fever)
         dense_body_normal[d_i, f_i] = int(canonical.body_normal)
         dense_head_len[d_i, f_i] = np.int8(int(canonical.head_len))
-        dense_n_hn[d_i, f_i] = np.int16(int(n_hn))
-        dense_n_hf[d_i, f_i] = np.int16(int(n_hf))
-        dense_sigma_hn[d_i, f_i] = np.int16(int(sigma_hn))
-        dense_sigma_hf[d_i, f_i] = np.int16(int(sigma_hf))
         dense_masks[d_i, f_i, 0] = np.uint32(int(canonical.head_bits[0]))
         dense_masks[d_i, f_i, 1] = np.uint32(int(canonical.head_bits[1]))
         dense_masks[d_i, f_i, 2] = np.uint32(int(canonical.head_bits[2]))
@@ -1585,10 +1576,6 @@ def build_timeline_frontier_grid_payload(
     grid_count_body_fever[payload_slot_i] = dense_body_fever[grid_d_idx, grid_f_idx]
     grid_count_body_normal[payload_slot_i] = dense_body_normal[grid_d_idx, grid_f_idx]
     grid_head_len[payload_slot_i] = dense_head_len[grid_d_idx, grid_f_idx]
-    grid_N_hn[payload_slot_i] = dense_n_hn[grid_d_idx, grid_f_idx]
-    grid_N_hf[payload_slot_i] = dense_n_hf[grid_d_idx, grid_f_idx]
-    grid_Sigma_hn[payload_slot_i] = dense_sigma_hn[grid_d_idx, grid_f_idx]
-    grid_Sigma_hf[payload_slot_i] = dense_sigma_hf[grid_d_idx, grid_f_idx]
     grid_fever_masks_bits[payload_slot_i] = dense_masks[grid_d_idx, grid_f_idx]
     grid_frontier_count[payload_slot_i] = dense_frontier_count[grid_d_idx, grid_f_idx]
     grid_frontier_offset[payload_slot_i] = dense_frontier_offset[grid_d_idx, grid_f_idx]
@@ -1612,16 +1599,13 @@ def build_timeline_frontier_grid_payload(
         grid_count_body_fever=grid_count_body_fever,
         grid_count_body_normal=grid_count_body_normal,
         grid_head_len=grid_head_len,
-        grid_N_hn=grid_N_hn,
-        grid_N_hf=grid_N_hf,
-        grid_Sigma_hn=grid_Sigma_hn,
-        grid_Sigma_hf=grid_Sigma_hf,
         grid_fever_masks_bits=grid_fever_masks_bits,
         grid_frontier_count=grid_frontier_count,
         grid_frontier_offset=grid_frontier_offset,
         grid_frontier_body_fever_pool=grid_frontier_body_fever_pool,
         grid_frontier_body_normal_pool=grid_frontier_body_normal_pool,
         grid_frontier_masks_bits_pool=grid_frontier_masks_bits_pool,
+        grid_frontier_head_coeffs_pool=grid_frontier_head_coeffs_pool,
         grid_gap=grid_gap,
         grid_fever_activations=grid_fever_activations,
         frontier_pool_used=int(pool_cursor),

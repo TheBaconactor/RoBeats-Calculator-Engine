@@ -83,21 +83,13 @@ def resolve_active_fg_calc_song(song: NativeSong) -> dict | None:
     fg_state = getattr(runtime, "fg", None)
     fg_calc_song = getattr(fg_state, "fg_calc_song", None)
     if not isinstance(fg_calc_song, dict):
-        try:
-            fg_calc_song = clone_calc_song(calc_song)
-        except Exception as e:
-            logger.debug(f"native_inflight_pipeline:resolve_active_fg_calc_song: {e}")
-            fg_calc_song = {
-                "metadata": dict(calc_song.get("metadata", {}) or {}),
-                "song_data": dict(calc_song.get("song_data", {}) or {}),
-            }
-    try:
-        from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+        fg_calc_song = clone_calc_song(calc_song)
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-        apply_timing_envelope(fg_calc_song)
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:resolve_active_fg_calc_song: {e}")
-        return calc_song
+    # Fail loud: FG scored without the timing envelope would silently use chart floors --
+    # a plausible-but-wrong best_fg_score, not a recoverable state.
+    if apply_timing_envelope(fg_calc_song) is None:
+        raise ValueError("resolve_active_fg_calc_song: calc_song carries no chart timestamps to envelope")
     _sync_fg_runtime_calc_song_keys(calc_song, fg_calc_song)
     try:
         if fg_state is not None:

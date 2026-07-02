@@ -209,9 +209,17 @@ def ensure_response_frontier_cache_for_calc_song(
     """
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
+        fg_response_frontier_payload_cache_info,
     )
 
     keys = tuple(stat_keys) if stat_keys is not None else all_response_stat_keys()
+    # Existence probe first (npz metadata + sidecar headers): build_or_load eagerly
+    # materializes every pool row into Python objects -- seconds on heavy bundles -- and
+    # no consumer on this path reads that payload (scoring uses the slim bundle +
+    # sidecars). Same fast path as build_fg_response_frontier_cache_for_path above.
+    cache_info = fg_response_frontier_payload_cache_info(calc_song, ref_arrays, stat_keys=keys)
+    if cache_info.cache_source in {"disk", "memory"}:
+        return
     build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
 
 

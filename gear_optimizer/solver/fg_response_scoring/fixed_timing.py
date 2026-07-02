@@ -173,6 +173,11 @@ def build_fixed_timing_fg_replays(
         paired_base_scores = base_score_batch(base_rows, cs, refs)
 
     replays: list[dict[str, Any]] = []
+    # Batch-shared trace memo: loadouts in one replay batch commonly share the FG surface +
+    # fill inputs, and the reconstruct DFS is the dominant materialize cost (same memo the
+    # fused owner path uses; key completeness incl. raw_fever_fill/non_fever_base lives in
+    # the reducer).
+    trace_cache: dict[Any, Any] = {}
     for result, base_stats, paired_base in zip(results, paired_base_rows, paired_base_scores, strict=True):
         force = materialize_force_payload_from_response_frontier(
             eval_data={},
@@ -182,6 +187,7 @@ def build_fixed_timing_fg_replays(
             result=result,
             calc_song=cs,
             ref_arrays=refs,
+            trace_cache=trace_cache,
         )
         replays.append({"surface": result.surface, "force": force})
     return replays

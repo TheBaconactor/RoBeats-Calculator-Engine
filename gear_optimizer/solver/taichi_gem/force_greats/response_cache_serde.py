@@ -9,6 +9,7 @@ import numpy as np
 from .response_build_gpu_surfaces import SurfaceRowsFirstFrontier, _surface_rows_from_numba_rows
 from .response_cache_keys import (
     _surface_from_row_cached,
+    _surface_from_values_cached,
     fg_response_frontier_geometry_cache_key,
 )
 from .response_cache_store import (
@@ -180,13 +181,22 @@ def _unpack_frontiers(data: object, *, pool_sidecar: Path) -> tuple[FgResponseFr
 
     out: list[FgResponseFrontierResult] = []
     surface_cache: dict[tuple[int, ...], FgResponseSurface] = {}
+    # Frontiers share packed pool segments (pack-time dedup), so materialize each unique
+    # (offset, count) segment once and alias the immutable tuple across its frontiers.
+    # tolist() converts a whole segment to plain ints in one C pass -- the per-row
+    # int()-boxing generator was the dominant unpack cost on multi-million-row pools.
+    segment_cache: dict[tuple[int, int], tuple[FgResponseSurface, ...]] = {}
     for idx in range(int(meta.shape[0])):
         first_start = int(first_offsets[idx])
         first_count = int(first_counts[idx])
-        first_frontier = tuple(
-            _surface_from_row_cached(first_pool[row_idx], surface_cache)
-            for row_idx in range(first_start, first_start + first_count)
-        )
+        segment_key = (first_start, first_count)
+        first_frontier = segment_cache.get(segment_key)
+        if first_frontier is None:
+            first_frontier = tuple(
+                _surface_from_values_cached(tuple(values), surface_cache)
+                for values in first_pool[first_start : first_start + first_count].tolist()
+            )
+            segment_cache[segment_key] = first_frontier
         row = meta[idx]
         out.append(
             FgResponseFrontierResult(

@@ -206,6 +206,20 @@ class GpuExecutor:
         if not dump_path:
             return
         _print_taichi_kernel_profiler(enabled=False, dump_path=dump_path)
+    def _finalize_taichi_on_owner_thread(self) -> None:
+        """Finalize Taichi from the owner thread at shutdown (persists the offline cache).
+
+        Must run on this (owner) thread for the same reason as the profiler dump:
+        the Taichi/Vulkan runtime is thread-owned. hard_reset_taichi also clears
+        taichi_gem module state, so a later in-process start() re-initializes cleanly.
+        """
+        if not self._taichi_ready:
+            return
+        try:
+            from .taichi_gem.api.initialization import hard_reset_taichi
+            hard_reset_taichi(reason="executor shutdown (persist offline kernel cache)")
+        except Exception as e:
+            logger.warning("[GpuExecutor] Taichi shutdown finalize failed (offline cache may be stale): %s", e)
     def start(self, *, in_process: bool = False):
         """Start the GPU executor thread in the main process."""
         if self._running:
@@ -337,6 +351,23 @@ class GpuExecutor:
             logger.debug("[GpuExecutor] Taichi init failed: %s", e)
             return
         self._write_heartbeat(phase="init_ok", force=True)
+        try:
+            # FG fused-path runtime warmup: the group-row builder dispatches Taichi
+            # kernels and its module warm-flag is not thread-safe. Warm ONCE here on
+            # the owner thread so no prep/FG worker thread ever performs the first
+            # dispatch (single-GPU-ownership rule; prep threads stay Taichi-free).
+            from .taichi_gem.force_greats.response_frontier import warmup_response_frontier_group_builder
+            from .taichi_gem.force_greats.response_ftff_prune import warmup_response_ftff_prune
+
+            warmup_response_ftff_prune()
+            warmup_response_frontier_group_builder()
+        except Exception as e:
+            self._taichi_ready = False
+            self._last_init_error = f"GPU executor FG frontier warmup failed: {type(e).__name__}: {e}"
+            self._running = False
+            self._ready_event.set()
+            self._write_heartbeat(phase="warmup_failed", note=self._last_init_error, force=True)
+            return
         warmup_fg = bool(getattr(ENV, "gpu_executor_warmup_fg", False))
         warmup_ga = True
         if warmup_fg or warmup_ga:
@@ -483,6 +514,14 @@ class GpuExecutor:
                     # Doing it from the external stop() (a different thread) races Vulkan
                     # teardown and segfaults. No-op unless the dump path is set.
                     self._maybe_dump_kernel_profiler_on_owner_thread()
+                    # Finalize the Taichi runtime HERE, on the owner thread, so the
+                    # offline kernel cache dumps synchronously while the Vulkan runtime
+                    # is fully alive. Leaving finalization to interpreter atexit races
+                    # daemon-thread teardown and truncates the dump (observed: 1-9 of
+                    # ~40 .tic entries persisted per run), so the expensive fused GA/FG
+                    # kernels never enter the cache and every process pays the full
+                    # warmup recompile with the GPU idle.
+                    self._finalize_taichi_on_owner_thread()
                     self._running = False
                     break
                 self._write_heartbeat(phase="running", batch=batch)

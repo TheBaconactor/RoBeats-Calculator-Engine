@@ -128,31 +128,6 @@ class RuntimeUiMixin:
             if failed_delta:
                 self._progress.add_failed(int(failed_delta))
 
-    def _handle_status_message(self, msg: str) -> None:
-        if not msg:
-            return
-        song = None
-        status = str(msg)
-        if status.startswith("[") and "]" in status:
-            try:
-                end = status.index("]")
-                song = status[1:end]
-                status = status[end + 1 :].strip()
-            except Exception as e:
-                logger.debug(f"runtime_ui:_handle_status_message: {e}")
-                song = None
-        if not self._progress_counts_driven and status.upper().startswith("DONE"):
-            self._runtime_completed_count = max(0, int(self._runtime_completed_count or 0) + 1)
-            if self._progress is not None:
-                self._progress.add_completed(1)
-        if song:
-            self._run_current_song_label = str(song)
-        self._runtime_status_name = str(status or self._runtime_status_name or "running")
-        if self._progress is not None:
-            self._progress.set_status(song, status)
-        else:
-            logger.info(str(msg))
-
     def _start_hotkeys(self) -> None:
         if not bool(getattr(self, "_hotkeys_enabled", True)):
             return

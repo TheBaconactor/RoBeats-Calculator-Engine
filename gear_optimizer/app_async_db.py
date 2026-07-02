@@ -248,43 +248,31 @@ class AsyncDbSaver:
                         db_path=canonical_db_path or None,
                     )
 
+                    # Fail loud on malformed internal entries: a non-int score here is a
+                    # producer bug, and silently coercing it to 0 would mis-compute
+                    # record_improved and under-record the DB. A raise lands in the
+                    # outer handler below, which records + reports the failed song save
+                    # without killing the writer thread. (The former per-field handlers
+                    # also shadowed the loop variable `e` with the exception, so any
+                    # trigger crashed the save anyway — they were dead protection.)
                     run_score = 0
                     run_best_fg = 0
                     for e in entries or []:
                         if not isinstance(e, dict):
                             continue
-                        try:
-                            s = int(e.get("score", 0) or 0)
-                        except Exception as e:
-                            logger.warning(f"app_async_db:_loop: {e}")
-                            s = 0
-                        try:
-                            fg = int(e.get("fg_score", 0) or 0)
-                        except Exception as e:
-                            logger.warning(f"app_async_db:_loop: {e}")
-                            fg = 0
-                        if fg <= 0:
-                            try:
-                                force_obj = e.get("force")
-                            except Exception as e:
-                                logger.warning(f"app_async_db:_loop: {e}")
-                                force_obj = None
-                            if isinstance(force_obj, dict):
-                                try:
-                                    fg = max(fg, int(force_obj.get("score", 0) or 0))
-                                except Exception as e:
-                                    logger.warning(f"app_async_db:_loop: {e}")
-                                det = force_obj.get("details") or {}
-                                if isinstance(det, dict):
-                                    fg_meta = det.get("ForceGreats") or {}
-                                    if isinstance(fg_meta, dict):
-                                        try:
-                                            fg = max(fg, int(fg_meta.get("final_score", 0) or 0))
-                                        except Exception as e:
-                                            logger.warning(f"app_async_db:_loop: {e}")
+                        s = int(e.get("score", 0) or 0)
+                        fg = int(e.get("fg_score", 0) or 0)
+                        force_obj = e.get("force")
+                        if fg <= 0 and isinstance(force_obj, dict):
+                            fg = max(fg, int(force_obj.get("score", 0) or 0))
+                            det = force_obj.get("details") or {}
+                            if isinstance(det, dict):
+                                fg_meta = det.get("ForceGreats") or {}
+                                if isinstance(fg_meta, dict):
+                                    fg = max(fg, int(fg_meta.get("final_score", 0) or 0))
                         if s > run_score:
                             run_score = s
-                        if e.get("force") is not None and fg > s and fg > run_best_fg:
+                        if force_obj is not None and fg > s and fg > run_best_fg:
                             run_best_fg = fg
 
                     record_improved = (run_score > int(prev_best_score or 0)) or (run_best_fg > int(prev_best_fg or 0))

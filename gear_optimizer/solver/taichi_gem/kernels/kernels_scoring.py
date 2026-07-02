@@ -306,48 +306,6 @@ def _exact_bound_ub_for_cm_fm(
 
 
 @ti.func
-def _head_mask_coefficients_bits(
-    m0: ti.u32,
-    m1: ti.u32,
-    m2: ti.u32,
-    m3: ti.u32,
-    head_len: ti.i32,
-) -> ti.types.vector(4, ti.i32):
-    n_hn = ti.i32(0)
-    n_hf = ti.i32(0)
-    sigma_hn = ti.i32(0)
-    sigma_hf = ti.i32(0)
-    head_len_c = ti.max(0, ti.min(head_len, 100))
-
-    for i in range(100):
-        if i < head_len_c:
-            word = ti.u32(0)
-            bit_idx = i
-            if i < 32:
-                word = m0
-            elif i < 64:
-                word = m1
-                bit_idx = i - 32
-            elif i < 96:
-                word = m2
-                bit_idx = i - 64
-            else:
-                word = m3
-                bit_idx = i - 96
-
-            is_fever = ti.cast((word >> ti.u32(bit_idx)) & ti.u32(1), ti.i32)
-            pos = i + 1
-            if is_fever != 0:
-                n_hf += 1
-                sigma_hf += pos
-            else:
-                n_hn += 1
-                sigma_hn += pos
-
-    return ti.Vector([n_hn, n_hf, sigma_hn, sigma_hf])
-
-
-@ti.func
 def _optimize_core_device_exact_bound_preloaded_bits_impl(
     budget: ti.i32,
     cur_pp: ti.i32,
@@ -370,9 +328,10 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     head_len: ti.i32,
     count_fever: ti.i32,
     count_normal: ti.i32,
-    song_slot: ti.i32,
-    ft_idx: ti.i32,
-    ff_idx: ti.i32,
+    n_hn: ti.i32,
+    n_hf: ti.i32,
+    sigma_hn: ti.i32,
+    sigma_hf: ti.i32,
 ) -> ti.types.vector(7, ti.i32):
     GEM_SCALE_NORMAL: ti.i32 = 2
     GEM_SCALE_FEVER: ti.i32 = 3
@@ -435,21 +394,10 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     if max_fm_gems > budget:
         max_fm_gems = budget
 
-    n_hn: ti.i32 = 0
-    n_hf: ti.i32 = 0
-    sigma_hn: ti.i32 = 0
-    sigma_hf: ti.i32 = 0
-    if song_slot >= 0:
-        n_hn = kernels_helpers.grid_N_hn[song_slot, ft_idx, ff_idx]
-        n_hf = kernels_helpers.grid_N_hf[song_slot, ft_idx, ff_idx]
-        sigma_hn = kernels_helpers.grid_Sigma_hn[song_slot, ft_idx, ff_idx]
-        sigma_hf = kernels_helpers.grid_Sigma_hf[song_slot, ft_idx, ff_idx]
-    else:
-        coeffs = _head_mask_coefficients_bits(m0, m1, m2, m3, head_len)
-        n_hn = coeffs[0]
-        n_hf = coeffs[1]
-        sigma_hn = coeffs[2]
-        sigma_hf = coeffs[3]
+    # Head coefficients (n_hn, n_hf, sigma_hn, sigma_hf) arrive precomputed per
+    # frontier variant (grid_frontier_head_coeffs_pool, filled at timeline build):
+    # they are genome-invariant, so deriving them in-kernel per (genome, combo,
+    # variant) was pure recompute.
 
     # ---------------------------------------------------------------------
     # Incumbent seed (no hints): cheap UB-guided greedy over (CM, FM) counts.
@@ -865,9 +813,10 @@ def optimize_core_device_exact_bound(
             head_len,
             frontier.body_fever,
             frontier.body_normal,
-            -1,
-            0,
-            0,
+            frontier.n_hn,
+            frontier.n_hf,
+            frontier.sigma_hn,
+            frontier.sigma_hf,
         )
         if cand_vec[0] > result_vec[0]:
             result_vec = cand_vec

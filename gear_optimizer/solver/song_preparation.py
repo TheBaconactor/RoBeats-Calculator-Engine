@@ -102,15 +102,9 @@ def build_prepared_calc_song(
     if "chart_timestamps" not in song_data and song_data.get("timestamps") is not None:
         song_data["chart_timestamps"] = np.asarray(song_data.get("timestamps"), dtype=np.float32)
 
-    timing_envelope_sec = 0.0
-    timing_envelope_info = None
-    try:
-        t_sim0 = time.perf_counter()
-        timing_envelope_info = _apply_timing_envelope(calc_song)
-        if timing_envelope_info is not None:
-            timing_envelope_sec = time.perf_counter() - t_sim0
-    except Exception as e:
-        logger.debug(f"song_preparation:build_prepared_calc_song: {e}")
+    t_sim0 = time.perf_counter()
+    timing_envelope_info = _apply_timing_envelope(calc_song)
+    timing_envelope_sec = (time.perf_counter() - t_sim0) if timing_envelope_info is not None else 0.0
 
     return PreparedCalcSong(
         calc_song=calc_song,

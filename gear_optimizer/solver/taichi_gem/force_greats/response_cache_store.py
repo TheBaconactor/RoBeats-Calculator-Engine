@@ -178,6 +178,22 @@ def _surface_sidecar_paths_for_key(cache_key: tuple) -> tuple[Path, Path]:
     return _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
 
 
+def warm_surface_sidecar_page_cache(cache_key: tuple) -> None:
+    """Sequentially read both surface sidecars to warm the OS page cache.
+
+    Runs on prep workers so the fused turn's owner-thread sidecar gather reads from
+    memory instead of cold (WOF-compressed) disk. Best-effort readahead only -- a
+    missing/unreadable sidecar fails loud later at the gather that actually needs it.
+    """
+    for path in _surface_sidecar_paths_for_key(cache_key):
+        try:
+            with open(path, "rb") as fh:
+                while fh.read(8 * 1024 * 1024):
+                    pass
+        except OSError:
+            return
+
+
 def _touch_fg_response_bundle_files(bundle_path: Path) -> None:
     for path in (bundle_path, *_surface_sidecar_paths(bundle_path)):
         try:

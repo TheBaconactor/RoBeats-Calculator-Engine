@@ -31,34 +31,6 @@ def count_active_song_lanes(
             keys.add(key)
     keys.update(str(key).strip() for key in fg_active_keys if str(key).strip())
     return int(len(keys))
-def default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count: int) -> int:
-    """
-    Pick a startup prep backlog large enough to avoid the first GA/FG feed bubble.
-    For smaller in-flight runs, priming only `inflight_limit` songs tends to leave the
-    GPU queue shallow while prep/decode workers are still spinning up. We bias toward
-    a modest 4-8 song startup backlog, but always cap by the prep buffer and pending queue.
-    """
-    inflight_limit = int(inflight_limit)
-    prep_limit = int(prep_limit)
-    pending_count = int(pending_count)
-    inflight_limit = max(1, inflight_limit)
-    prep_limit = max(1, prep_limit)
-    pending_count = max(0, pending_count)
-    if pending_count <= 0:
-        return 0
-    target = max(inflight_limit, min(8, max(4, inflight_limit * 2)))
-    return max(1, min(target, prep_limit, pending_count))
-def read_prime_target(
-    *,
-    inflight_limit: int,
-    prep_limit: int,
-    pending_count: int,
-) -> int:
-    return default_prime_target(
-        inflight_limit=int(inflight_limit),
-        prep_limit=int(prep_limit),
-        pending_count=int(pending_count),
-    )
 def read_fg_scheduler_mode() -> str:
     """
     In-flight scheduler is intentionally fixed to continuous mode.

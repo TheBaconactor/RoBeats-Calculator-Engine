@@ -19,7 +19,7 @@ import signal
 import threading
 import time
 import random
-from concurrent.futures import Future
+from concurrent.futures import Future, InvalidStateError
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -175,8 +175,11 @@ class GpuServiceClient:
             self._pending.clear()
         for _req_id, entry in pending:
             fut = entry.future if isinstance(entry, _PendingGpuRequest) else entry
-            if not fut.done():
-                fut.set_exception(RuntimeError("GPU client closed"))
+            try:
+                if not fut.done():
+                    fut.set_exception(RuntimeError("GPU client closed"))
+            except InvalidStateError as e:
+                logger.debug(f"gpu_service:close: future already resolved/cancelled: {e}")
 
     def submit(self, request_type: GpuRequestType, payload: dict[str, Any]) -> GpuJobHandle:
         if not self._running or self._worker_id is None:
@@ -300,10 +303,18 @@ class GpuServiceClient:
                 except Exception as e:
                     logger.debug(f"gpu_service:_rx_loop: {e}")
 
-            if resp.success:
-                fut.set_result(resp.result)
-            else:
-                fut.set_exception(RuntimeError(resp.error or "GPU job failed"))
+            # The pop-under-lock above makes this thread the sole owner of the
+            # entry (the timeout loop can never see it), so the only competing
+            # writer is a caller-side Future.cancel() (abort/shutdown). Losing
+            # that race raises InvalidStateError; letting it propagate would
+            # kill this rx thread and silently hang every later response.
+            try:
+                if resp.success:
+                    fut.set_result(resp.result)
+                else:
+                    fut.set_exception(RuntimeError(resp.error or "GPU job failed"))
+            except InvalidStateError as e:
+                logger.debug(f"gpu_service:_rx_loop: future already resolved/cancelled: {e}")
 
     def _request_timeout_sec_for(self, request_type: GpuRequestType) -> float:
         # Single canonical deployment-boundary timeout knob. The former
@@ -368,8 +379,14 @@ class GpuServiceClient:
                     f"(request_id={request_id}) timed out after {elapsed_sec:.1f}s "
                     f"(limit {float(entry.timeout_sec):.1f}s)"
                 )
-                if not entry.future.done():
-                    entry.future.set_exception(GpuServiceTimeoutError(message))
+                # Same ownership rule as _rx_loop: the pop-under-lock made this
+                # thread the entry's sole owner; only a caller-side cancel can
+                # race the set. Losing that race must not kill the timeout loop.
+                try:
+                    if not entry.future.done():
+                        entry.future.set_exception(GpuServiceTimeoutError(message))
+                except InvalidStateError as e:
+                    logger.debug(f"gpu_service:_timeout_loop: future already resolved/cancelled: {e}")
                 emit_profile_event(
                     component="gpu_service",
                     event="timeout",

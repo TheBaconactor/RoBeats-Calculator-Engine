@@ -55,16 +55,13 @@ exact_pp_best_gems_prefix = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16 - PP-vs-OV
 grid_count_body_fever = None
 grid_count_body_normal = None
 grid_head_len = None
-grid_N_hn = None
-grid_N_hf = None
-grid_Sigma_hn = None
-grid_Sigma_hf = None
 grid_fever_masks_bits = None
 grid_frontier_count = None
 grid_frontier_offset = None
 grid_frontier_body_fever_pool = None
 grid_frontier_body_normal_pool = None
 grid_frontier_masks_bits_pool = None
+grid_frontier_head_coeffs_pool = None  # (MAX_SONG_SLOTS, POOL, 4) i16 - per-variant (n_hn, n_hf, sigma_hn, sigma_hf)
 grid_gap = None  # (MAX_SONG_SLOTS, 161, 161) i16 - gap to song end per (FT, FF)
 grid_fever_activations = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever activations per (FT, FF)
 
@@ -307,6 +304,10 @@ TimelineFrontierRecord = ti.types.struct(
     m3=ti.u32,
     body_fever=ti.i32,
     body_normal=ti.i32,
+    n_hn=ti.i32,
+    n_hf=ti.i32,
+    sigma_hn=ti.i32,
+    sigma_hf=ti.i32,
 )
 
 
@@ -317,7 +318,8 @@ def read_timeline_frontier_variant(song_slot: ti.i32, ft_idx: ti.i32, ff_idx: ti
 
     The new exact frontier stores a per-cell offset plus a flat per-slot pool.
     Callers are expected to check `grid_frontier_count` first and then iterate
-    `[0, count)` against this helper.
+    `[0, count)` against this helper. Head coefficients (n_hn, n_hf, sigma_hn,
+    sigma_hf) are precomputed per pool row at timeline build.
     """
     pool_idx = grid_frontier_offset[song_slot, ft_idx, ff_idx] + variant_idx
     return TimelineFrontierRecord(
@@ -327,6 +329,10 @@ def read_timeline_frontier_variant(song_slot: ti.i32, ft_idx: ti.i32, ff_idx: ti
         m3=grid_frontier_masks_bits_pool[song_slot, pool_idx, 3],
         body_fever=grid_frontier_body_fever_pool[song_slot, pool_idx],
         body_normal=grid_frontier_body_normal_pool[song_slot, pool_idx],
+        n_hn=ti.cast(grid_frontier_head_coeffs_pool[song_slot, pool_idx, 0], ti.i32),
+        n_hf=ti.cast(grid_frontier_head_coeffs_pool[song_slot, pool_idx, 1], ti.i32),
+        sigma_hn=ti.cast(grid_frontier_head_coeffs_pool[song_slot, pool_idx, 2], ti.i32),
+        sigma_hf=ti.cast(grid_frontier_head_coeffs_pool[song_slot, pool_idx, 3], ti.i32),
     )
 
 

@@ -4,13 +4,11 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import time
-import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from gear_optimizer.domain.jobs import task_file_path, task_queue_label, task_song_name
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import inflight_shutdown_debug_enabled
@@ -128,71 +126,6 @@ def is_stop_abort_exception(exc: BaseException) -> bool:
         logger.debug(f"native_inflight_lifecycle:is_stop_abort_exception: {e}")
         msg = ""
     return "GpuExecutor aborted:" in msg
-
-
-def prime_native_inflight_prepared_queue(
-    *,
-    prime_target: int,
-    pending_tasks,
-    prepared,
-    completed_songs: set[str],
-    next_logical_task: Callable[[tuple], tuple[tuple, dict | None]],
-    bind_bundle_song: Callable[[Any, tuple, dict | None], None],
-    prepare_song: Callable[[tuple], Any],
-    post: Callable[[dict], None],
-    advance_bundle: Callable[..., bool],
-    stage_profiler,
-    memory_resume_tracker=None,
-) -> int:
-    """Synchronously prepare the initial native in-flight backlog."""
-    prepared_count = 0
-    for _ in range(max(0, int(prime_target))):
-        first = pending_tasks.popleft()
-        song_name = task_song_name(first)
-        bundle_key = task_queue_label(first)
-        if bundle_key in completed_songs:
-            continue
-        logical_task, repeat_ctx = next_logical_task(first)
-        task_key = task_queue_label(logical_task)
-        try:
-            t0 = time.perf_counter()
-            prepared_song = prepare_song(logical_task)
-            bind_bundle_song(prepared_song, first, repeat_ctx)
-            prepared.append(prepared_song)
-            prepared_count += 1
-            prep_elapsed_s = time.perf_counter() - float(t0)
-            prep_wall_s = float(getattr(prepared_song.runtime.prep, "wall_prep_s", 0.0) or 0.0)
-            if prep_wall_s <= 0.0 or prep_wall_s > prep_elapsed_s:
-                prep_wall_s = float(prep_elapsed_s)
-            prep_queue_s = max(0.0, float(prep_elapsed_s) - float(prep_wall_s))
-            if prep_queue_s > 0.0:
-                stage_profiler.record("prep_queue", prep_queue_s, song=task_key)
-            stage_profiler.record(
-                "prep",
-                prep_wall_s,
-                cpu_seconds=getattr(prepared_song.runtime.prep, "cpu_prep_s", None),
-                song=task_key,
-            )
-        except Exception as exc:
-            payload = build_native_task_error_payload(
-                song_name=str(song_name),
-                queue_key=str(task_key),
-                exc=exc,
-                trace=traceback.format_exc(),
-                suppress_progress=repeat_ctx is not None,
-            )
-            post(payload)
-            if repeat_ctx is not None:
-                advance_bundle(first, song_name=str(song_name), failed=True)
-            else:
-                mark_song_completed(
-                    completed_songs=completed_songs,
-                    task_key=task_key,
-                    song_name=song_name,
-                    song_path=task_file_path(first),
-                    memory_resume_tracker=memory_resume_tracker,
-                )
-    return int(prepared_count)
 
 
 def build_abort_queue_snapshot(
@@ -373,7 +306,6 @@ __all__ = [
     "mark_song_completed",
     "native_abort_log_path",
     "prepare_native_song",
-    "prime_native_inflight_prepared_queue",
     "shutdown_native_inflight_resources",
     "start_native_inflight_gpu_client",
 ]
