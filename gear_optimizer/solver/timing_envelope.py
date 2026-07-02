@@ -25,6 +25,16 @@ from ..core.time_quantize import quantize_to_int_ms
 
 logger = logging.getLogger(__name__)
 
+# The game engine removes an unhit note once ``now - hit > 200`` ms (decompiled
+# Constants.lua:19 ``NOTE_REMOVE_TIME = -200``; the SAME edge for taps
+# (Note.lua:191), hold heads, and the hold despawn (HeldNote.lua:219/231)).
+# Judgement windows wider than this — a held tail's late-Great classification
+# edge reaches +380 — are scoring ranges only: an input scheduled past +200
+# races the per-frame sweep and lands only if no frame ticks inside the gap,
+# which no frame rate guarantees. The planner must never claim a hit later
+# than this cap.
+NOTE_REMOVE_LATE_CAP_MS = 200
+
 
 def floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
     """Quantize seconds to integer milliseconds using the repo parity rule."""
@@ -89,18 +99,31 @@ def build_per_note_great_window_ms(
     great_mode: str,
     held_tail_type: int,
     held_tail_time_multiplier: int,
+    late_removal_cap_ms: int = NOTE_REMOVE_LATE_CAP_MS,
 ) -> tuple[np.ndarray, np.ndarray]:
     note_types = np.asarray(note_types, dtype=np.int16)
     is_tail = note_types == int(held_tail_type)
     mult = np.where(is_tail, int(held_tail_time_multiplier), 1).astype(np.int16)
 
-    great_upper_abs_ms = ((int(perfect_upper_ms) + int(great_extra_upper_ms)) * mult).astype(np.int32)
+    # The late edge is deliverability-capped by the engine's note removal, NOT
+    # by the (wider) classification window: a held tail's +380 late-Great edge
+    # is unreachable past +200 (see NOTE_REMOVE_LATE_CAP_MS).
+    great_upper_abs_ms = np.minimum(
+        ((int(perfect_upper_ms) + int(great_extra_upper_ms)) * mult).astype(np.int32),
+        np.int32(int(late_removal_cap_ms)),
+    )
     perfect_low_abs_ms = np.asarray(perfect_low_ms, dtype=np.int32)
     mode = str(great_mode or "late").strip().lower()
 
     if mode == "late":
         great_low_abs_ms = (int(perfect_upper_ms) * mult + 1).astype(np.int32)
         great_high_abs_ms = great_upper_abs_ms
+        if bool(np.any(great_low_abs_ms > great_high_abs_ms)):
+            raise ValueError(
+                "late-Great window empty: removal cap "
+                f"{int(late_removal_cap_ms)}ms is below a note's earliest late-Great "
+                f"({int(np.max(great_low_abs_ms))}ms)"
+            )
     elif mode == "early":
         great_low_abs_ms = perfect_low_abs_ms + (int(great_lower_ms) * mult).astype(np.int32)
         great_high_abs_ms = perfect_low_abs_ms - 1
@@ -295,6 +318,7 @@ def build_great_candidate_envelope_sec(
     held_tail_type: int = 3,
     held_tail_time_multiplier: int = 2,
     quantize_ms: bool = True,
+    late_removal_cap_ms: int = NOTE_REMOVE_LATE_CAP_MS,
 ) -> np.ndarray:
     """
     Build deterministic per-note Great-candidate envelope timestamps.
@@ -332,6 +356,7 @@ def build_great_candidate_envelope_sec(
         great_mode=str(great_mode or "late").strip().lower(),
         held_tail_type=int(held_tail_type),
         held_tail_time_multiplier=int(held_tail_time_multiplier),
+        late_removal_cap_ms=int(late_removal_cap_ms),
     )
     # Per-note (NOT chord-collapsed): a held tail's widened late-Great reach is its own, so a
     # chord-tied held-tail late-Great activation is not capped to the chord intersection.

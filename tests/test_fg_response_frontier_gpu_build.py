@@ -758,8 +758,22 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
         use_forced_great_timing=song_inputs.use_forced_great_timing,
     )[0]
 
-    previously_unwitnessable = FgResponseSurface(0, 0, 0, 0, 3, 0, 0, 0, 1256, 2, 2)
-    assert previously_unwitnessable not in frontier.first_frontier
+    # Every late-Great candidate must respect the engine's note-removal
+    # deliverability cap (+200ms, Constants.lua:19) — the classification
+    # window's wider +380 tail edge is unreachable in game. Tolerance covers
+    # f32-second storage of the int-ms envelope.
+    from gear_optimizer.solver.timing_envelope import NOTE_REMOVE_LATE_CAP_MS
+
+    great_deltas_ms = (
+        np.asarray(song_inputs.great_candidates, dtype=np.float64)
+        - np.asarray(song_inputs.timestamps, dtype=np.float64)
+    ) * 1000.0
+    assert float(great_deltas_ms.max()) <= float(NOTE_REMOVE_LATE_CAP_MS) + 0.05
+    # PR #35 pinned FgResponseSurface(0,0,0,0,3,0,0,0,1256,2,2) as unwitnessable
+    # under the UNCAPPED (+380 tail) candidate geometry. Under the removal-capped
+    # envelope that surface is legitimately witnessable again (its trace
+    # reconstructs below); the universal reconstruct-every-surface loop is the
+    # invariant that guards the #35 bug class.
     assert frontier.first_frontier
     for surface in frontier.first_frontier:
         reconstruct_force_greats_response_trace(
