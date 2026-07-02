@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from heapq import nsmallest
 import re
-import logging
 
 from ...core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
@@ -20,9 +19,6 @@ from ...data.loadout_equivalence import (
 from .fg_config import has_valid_fg_config, require_response_surface
 from .force_greats.result_application import materialize_stats_from_payload
 from .ref_array_builder import resolve_exact_replay_ref_arrays
-
-
-logger = logging.getLogger(__name__)
 
 
 def _norm_text(v: object) -> str:
@@ -582,9 +578,9 @@ def compute_team_buff_tier_leaderboards(
                 "compute_team_buff_tier_leaderboards: baseline_offset (custom per-note timing) "
                 "requires timing_mode='zero_ms'"
             )
-        # Validate up front: the apply_timing_envelope call below sits in a broad except, so a bad
-        # offset (wrong length / note-reordering) must fail loud here, not silently fall through to
-        # a T=0 leaderboard.
+        # Validate the custom offset up front so a wrong-length / note-reordering offset raises
+        # with this precise message; the apply_timing_envelope call below also fails loud, but the
+        # up-front check pins the offset contract independently of envelope internals.
         from ...solver.timing_envelope import baseline_hit_timeline
 
         _sd = calc_song.get("song_data", {}) or {}
@@ -606,12 +602,13 @@ def compute_team_buff_tier_leaderboards(
     base_team_buff = _resolve_base_team_buff(cfg_dict)
     tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
 
-    try:
-        from ...solver.timing_envelope import apply_timing_envelope
+    from ...solver.timing_envelope import apply_timing_envelope
 
-        apply_timing_envelope(calc_song, mode=timing_mode, baseline_offset=baseline_offset)
-    except Exception as e:
-        logger.debug(f"team_buff_tiers:compute_team_buff_tier_leaderboards: {e}")
+    # Fail loud (matches resolve_active_fg_calc_song / song_preparation): a raised envelope
+    # would otherwise leave calc_song un-enveloped and silently score the FG surface against
+    # the wrong timeline. A chartless calc_song returns None here (not an error); a genuine
+    # envelope failure is an invalid internal state, not a reason to fall through.
+    apply_timing_envelope(calc_song, mode=timing_mode, baseline_offset=baseline_offset)
 
     per_entry: list[dict] = []
 
@@ -717,8 +714,10 @@ def compute_team_buff_tier_leaderboards(
         meta_scores_by_tier = {str(t): [0] * len(per_entry) for t in tier_list}
 
     fg_scores_by_tier: dict[str, list[int]] = {str(t): [0] * len(per_entry) for t in tier_list}
-    # zero_ms only: per (tier, loadout_hash) RE-SOLVED FG force payloads (re-solved
-    # GemCounts/Stats/Score + chart-fixed note-graph witness); consumed by the DB-batch builder.
+    # Per (tier, loadout_hash) FG force payloads consumed by build_team_buff_tier_db_batches for
+    # BOTH timing modes: the baseline perfect_window tier carries the persisted force verbatim
+    # (identical-context carry below); every other (tier, mode) stores the re-solved witness
+    # (re-solved GemCounts/Stats/Score + the mode's note-graph trace).
     resolved_fg_force_by_tier_hash: dict[str, dict[str, dict]] = {}
     have_fg = replay_fg and any(isinstance(e.get("fg"), dict) for e in per_entry)
     if have_fg:
@@ -756,10 +755,25 @@ def compute_team_buff_tier_leaderboards(
                             f"(loadout {per_entry[idx].get('loadout_hash')!r})"
                         )
                     # The entry-level fg_score is the canonical exact surface score
-                    # (surface-authority doctrine); carry it verbatim. A non-positive
-                    # value excludes the row from the FG ranking below — identical to
-                    # today's semantics for rows the re-solve would not rank.
-                    out_list[idx] = _safe_int(per_entry[idx].get("source_fg_score"), 0)
+                    # (surface-authority doctrine); carry it verbatim. Every producer of an
+                    # FG-candidate entry (fused materializer, persistence canonicalizer) sets
+                    # fg_score to the force payload's positive exact score, so an entry that
+                    # reached fg_indices (valid FG config + response surface, gated above) with a
+                    # non-positive fg_score is internally inconsistent (a stale/missing top-level
+                    # fg_score against a valid force). The re-solve branch below would have RANKED
+                    # such a row from its freshly recomputed force Score (> 0); the carry does NOT
+                    # recompute, so ranking by a non-positive fg_score would silently DROP the row
+                    # via the `fg_score > 0` filter. Fail loud instead of losing a valid FG loadout.
+                    carried_fg = _safe_int(per_entry[idx].get("source_fg_score"), 0)
+                    if carried_fg <= 0:
+                        raise ValueError(
+                            "baseline-tier FG carry: loadout "
+                            f"{per_entry[idx].get('loadout_hash')!r} carries a valid force payload "
+                            f"but a non-positive fg_score ({carried_fg}); refusing to silently drop "
+                            "the row. The persisted fg_score IS the exact surface score and a valid "
+                            "FG force always scores > 0 -- re-canonicalize the source entry."
+                        )
+                    out_list[idx] = carried_fg
                     h = _norm_text(per_entry[idx].get("loadout_hash"))
                     if h:
                         witness_for_tier[h] = raw_force
@@ -863,11 +877,12 @@ def compute_team_buff_tier_leaderboards(
             "secondary_color": secondary_color,
         },
         "tiers": tiers_out,
-        # zero_ms only (empty otherwise): per-loadout rebuilt FG force payloads carrying the
-        # chart-fixed note-graph witness; consumed by build_team_buff_tier_db_batches.
+        # Per (tier, hash) FG force payloads consumed by build_team_buff_tier_db_batches for BOTH
+        # timing modes (baseline perfect_window = the carried persisted force; every other
+        # (tier, mode) = the re-solved witness carrying the mode's note-graph trace).
         "resolved_fg_force_by_tier_hash": resolved_fg_force_by_tier_hash,
-        # zero_ms only (empty otherwise): per (tier, hash) RE-SOLVED base payloads
-        # (re-solved Stats/GemCounts/Score), consumed by build_team_buff_tier_db_batches.
+        # Per (tier, hash) RE-SOLVED base payloads (re-solved Stats/GemCounts/Score) consumed by
+        # build_team_buff_tier_db_batches for BOTH timing modes.
         "resolved_base_by_tier_hash": resolved_base_by_tier_hash,
     }
 

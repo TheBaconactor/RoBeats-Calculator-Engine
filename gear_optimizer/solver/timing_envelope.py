@@ -511,7 +511,10 @@ def apply_timing_envelope(
         # Idempotent fast path: the four envelope streams are pure functions of
         # (chart_timestamps, note_types), so re-applying rebuilds identical arrays.
         # The identity check pins fg_timestamps to the SAME chart array object --
-        # a replaced chart (new object) still rebuilds.
+        # a replaced chart (new object) still rebuilds. note_types is load-fixed song
+        # metadata written once alongside chart_timestamps and never mutated in place,
+        # so the chart-identity check also covers it (no separate note_types signature
+        # is needed on this hot path).
         meta_existing = calc_song.get("metadata", {}) or {}
         chart_existing = song_data.get("chart_timestamps")
         if (
