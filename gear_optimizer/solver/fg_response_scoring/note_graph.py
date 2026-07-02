@@ -481,12 +481,17 @@ def timeline_frontier_note_graph(
             fever_window_end_ms=fever_end_ms, section=section,
         )
         if apply_guidance:
+            # Endpoint guidance must see the PHYSICAL fever start: when the
+            # witness precedes the count boundary (chorded held tail), the
+            # monotonic display frontier starts at the witness so no clawed-in
+            # endpoint hit is ever shown before the activating hit.
+            guidance_start = min(a, w)
             _mark_endpoint_early_hits(
-                notes, activation_index=a, fever_end_index=e, total_notes=n,
+                notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
                 fever_window_end_ms=fever_end_ms, note_types=note_types,
             )
             _mark_fever_end_cluster_safe_delta(
-                notes, activation_index=a, fever_end_index=e, total_notes=n,
+                notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
                 fever_window_end_ms=fever_end_ms, note_types=note_types,
             )
     return notes
