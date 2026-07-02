@@ -22,7 +22,7 @@ import zlib
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR
 from gear_optimizer.core.memory import (
     build_memory_guard_resume_context,
-    load_memory_guard_resume_queue,
+    load_memory_guard_resume_state,
 )
 from gear_optimizer.core.parsing import env_get, truthy
 from gear_optimizer.core.utils import cfg_to_dict, safe_int
@@ -37,6 +37,7 @@ from gear_optimizer.song_queue import (
     SongQueueItem,
     finalize_song_queue,
     infer_song_difficulty_from_path,
+    queue_path_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,11 +109,16 @@ class QueueTaskCoordinator:
             return present
 
         resume_seed_queue: list[SongQueueItem] = []
+        resume_known_path_keys: set[str] | None = None
+        resume_has_known_paths = False
         ignore_resume = bool(self._runtime_settings(cfg).ignore_resume_queue)
         if truthy(env_get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
             ignore_resume = True
         if not ignore_resume:
-            resume_seed_queue = load_memory_guard_resume_queue(resume_context)
+            resume_state = load_memory_guard_resume_state(resume_context)
+            resume_seed_queue = resume_state.pending
+            resume_known_path_keys = resume_state.known_path_keys
+            resume_has_known_paths = resume_known_path_keys is not None
             if resume_seed_queue:
                 logger.info(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
         diff = self._runtime_settings(cfg).calculate_song.difficulty or "All"
@@ -162,6 +168,8 @@ class QueueTaskCoordinator:
         if not song_queue and not resume_seed_queue:
             logger.error("Error: No matching songs found.")
             return []
+        if resume_seed_queue and not resume_has_known_paths:
+            resume_known_path_keys = {queue_path_key(item) for item in song_queue}
         logger.info(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={diff})")
         song_names_present_in_db: set[str] = set()
         try:
@@ -172,6 +180,7 @@ class QueueTaskCoordinator:
         finalized = finalize_song_queue(
             discovered_queue=song_queue,
             resume_queue=resume_seed_queue or None,
+            resume_known_path_keys=resume_known_path_keys,
             song_queue_limit=song_queue_limit,
             present_names=song_names_present_in_db,
         )

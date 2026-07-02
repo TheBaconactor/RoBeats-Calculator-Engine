@@ -53,16 +53,19 @@ def merge_discovered_with_resume(
     *,
     discovered_queue: list[SongQueueItem],
     resume_queue: list[SongQueueItem],
+    resume_known_path_keys: set[str] | None = None,
     song_queue_limit: int = 0,
 ) -> tuple[list[SongQueueItem], int]:
     """
-    Prepend every discovered chart whose file path is absent from the resume file.
+    Prepend every discovered chart whose file path is absent from the original resumed queue.
 
-    Resume membership is path-keyed so git-pulled charts always enter the scheduled
-    pool and startup cache prebuild even when catalog/loadout rows already exist.
+    Resume membership is path-keyed so git-pulled charts always enter the scheduled pool and
+    startup cache prebuild even when catalog/loadout rows already exist. The original queue path
+    set is wider than the pending queue: completed songs are absent from `resume_queue`, but must
+    not be treated as newly discovered and replayed after a memory-guard restart.
     """
-    resume_paths = {queue_path_key(item) for item in resume_queue}
-    prepended = [item for item in discovered_queue if queue_path_key(item) not in resume_paths]
+    known_paths = set(resume_known_path_keys or ()) or {queue_path_key(item) for item in resume_queue}
+    prepended = [item for item in discovered_queue if queue_path_key(item) not in known_paths]
     merged = list(prepended) + list(resume_queue)
     limit = max(0, int(song_queue_limit or 0))
     if limit > 0 and len(merged) > limit:
@@ -85,6 +88,7 @@ def finalize_song_queue(
     *,
     discovered_queue: list[SongQueueItem],
     resume_queue: list[SongQueueItem] | None = None,
+    resume_known_path_keys: set[str] | None = None,
     song_queue_limit: int = 0,
     present_names: set[str] | None = None,
 ) -> FinalizeSongQueueResult:
@@ -109,6 +113,7 @@ def finalize_song_queue(
         merged, prepended_count = merge_discovered_with_resume(
             discovered_queue=discovered,
             resume_queue=resume,
+            resume_known_path_keys=resume_known_path_keys,
             song_queue_limit=limit,
         )
         limit_applied = limit > 0 and len(merged) < len(discovered) + len(resume)

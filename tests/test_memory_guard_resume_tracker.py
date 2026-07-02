@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import gear_optimizer.core.memory as memory
 
 
@@ -35,3 +37,27 @@ def test_resume_tracker_mark_completed_prefers_path_over_name(tmp_path):
     tracker.mark_completed(song_path=str(tmp_path / "beta.txt"), song_name="Shared Name")
 
     assert [entry["path"] for entry in tracker.pending] == [str(tmp_path / "alpha.txt")]
+
+
+def test_resume_tracker_persists_original_known_paths(tmp_path, monkeypatch):
+    resume_path = tmp_path / "resume.json"
+    monkeypatch.setattr(memory, "MEMORY_GUARD_RESUME_FILE", str(resume_path))
+    tracker = memory.MemoryGuardResumeTracker(str(resume_path))
+    queue = [
+        (str(tmp_path / "alpha.txt"), "Alpha", "Hard"),
+        (str(tmp_path / "beta.txt"), "Beta", "Hard"),
+    ]
+    for fp, _name, _diff in queue:
+        Path(fp).write_text("", encoding="utf-8")
+    tracker.prime(queue, {"ctx": "x"})
+    assert tracker.pending_count() == 2
+    tracker.mark_completed(song_path=str(tmp_path / "alpha.txt"))
+    assert tracker.pending_count() == 1
+
+    state = memory.load_memory_guard_resume_state()
+
+    assert [item[1] for item in state.pending] == ["Beta"]
+    assert state.known_path_keys == {
+        memory.queue_path_key((queue[0][0], "", "")),
+        memory.queue_path_key((queue[1][0], "", "")),
+    }

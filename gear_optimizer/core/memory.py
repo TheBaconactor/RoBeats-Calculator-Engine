@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 
 from gear_optimizer.song_queue import normalize_queue_item, queue_path_key
 
@@ -47,6 +48,12 @@ MEMORY_WATCHDOG_TOTAL_RAM_BYTES = None
 MEMORY_WATCHDOG_TOTAL_RAM_LOGGED = False
 MEMORY_WATCHDOG_PSUTIL_WARNED = False
 MEMORY_GUARD_RESUME_FILE = PATHS.bin_path("memory_guard_resume.json")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryGuardResumeState:
+    pending: list[tuple[str, str, str]]
+    known_path_keys: set[str] | None
 
 
 def _bytes_to_gb(value):
@@ -317,28 +324,37 @@ def build_memory_guard_resume_context(
     }
 
 
-def load_memory_guard_resume_queue(expected_context=None):
+def load_memory_guard_resume_state(expected_context=None) -> MemoryGuardResumeState:
     """
-    Load pending song queue from memory guard resume file.
+    Load pending song queue plus original queue membership from the memory guard resume file.
 
     Args:
         expected_context: Expected resume context (None to skip validation)
 
     Returns:
-        list: List of (file_path, song_name, difficulty) tuples
+        MemoryGuardResumeState with pending queue and optional known path keys
     """
     if not os.path.exists(MEMORY_GUARD_RESUME_FILE):
-        return []
+        return MemoryGuardResumeState(pending=[], known_path_keys=None)
     try:
         with open(MEMORY_GUARD_RESUME_FILE, "r", encoding="utf-8") as fh:
             payload = json.load(fh)
     except (json.JSONDecodeError, OSError, ValueError) as exc:
         logging.warning(f"[MemoryGuard] Failed to load resume queue: {exc}")
-        return []
+        return MemoryGuardResumeState(pending=[], known_path_keys=None)
 
     stored_context = payload.get("context") or {}
     if expected_context and stored_context != expected_context:
-        return []
+        return MemoryGuardResumeState(pending=[], known_path_keys=None)
+
+    known_path_keys = None
+    raw_known_paths = payload.get("known_paths")
+    if isinstance(raw_known_paths, list):
+        known_path_keys = {
+            queue_path_key((str(path or ""), "", ""))
+            for path in raw_known_paths
+            if str(path or "").strip()
+        }
 
     pending = []
     for entry in payload.get("pending", []):
@@ -350,7 +366,20 @@ def load_memory_guard_resume_queue(expected_context=None):
         if not os.path.exists(fp):
             continue
         pending.append(normalize_queue_item((fp, song_name, diff)))
-    return pending
+    return MemoryGuardResumeState(pending=pending, known_path_keys=known_path_keys)
+
+
+def load_memory_guard_resume_queue(expected_context=None):
+    """
+    Load pending song queue from memory guard resume file.
+
+    Args:
+        expected_context: Expected resume context (None to skip validation)
+
+    Returns:
+        list: List of (file_path, song_name, difficulty) tuples
+    """
+    return load_memory_guard_resume_state(expected_context).pending
 
 
 class MemoryGuardResumeTracker:
@@ -365,6 +394,7 @@ class MemoryGuardResumeTracker:
         self.path = path
         self.lock = threading.Lock()
         self.pending = []
+        self.known_paths = []
         self.context = {}
         self._since_write = 0
         self._last_write_t = time.monotonic()
@@ -375,6 +405,7 @@ class MemoryGuardResumeTracker:
         """Initialize tracker with full queue and context."""
         with self.lock:
             self.context = context or {}
+            self.known_paths = [os.path.abspath(item[0]) for item in queue]
             self.pending = [
                 {
                     "path": os.path.abspath(item[0]),
@@ -421,6 +452,10 @@ class MemoryGuardResumeTracker:
                     self._last_write_t = time.monotonic()
                 break
 
+    def pending_count(self) -> int:
+        with self.lock:
+            return len(self.pending)
+
     def _write_locked(self):
         """Write resume queue to disk (must be called with lock held)."""
         if not self.pending:
@@ -432,7 +467,7 @@ class MemoryGuardResumeTracker:
                 logging.warning(f"[MemoryGuard] Failed to remove resume queue: {exc}")
             return
 
-        payload = {"pending": self.pending, "context": self.context}
+        payload = {"pending": self.pending, "known_paths": self.known_paths, "context": self.context}
         try:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
         except Exception as exc:
@@ -492,6 +527,7 @@ class MemoryGuardResumeTracker:
                 self._write_locked()
             else:
                 self.pending = []
+                self.known_paths = []
                 self.context = {}
                 self._write_locked()
             self._since_write = 0

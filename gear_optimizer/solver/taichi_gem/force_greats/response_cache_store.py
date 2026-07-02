@@ -469,6 +469,44 @@ def reset_fg_response_frontier_payload_cache() -> None:
         _scoring_bundle_cache_last_access.clear()
 
 
+def release_fg_response_song_memory(bundle_key: tuple) -> int:
+    """Evict every in-memory cache entry for one song's response-frontier surfaces.
+
+    Called once a song's FG scoring is complete: the ~0.5-1.5 GB surface pool it loaded is no
+    longer needed for the rest of this run, so drop it from every memory tier instead of letting
+    it sit until the entry-count LRU (`_MEMORY_CACHE_MAX`/`_BUNDLE_ARRAY_CACHE_MAX`) or the
+    serving-only idle sweep (`sweep_fg_response_frontier_live_cache`) evicts it. A standalone
+    optimizer run calls neither, so without this the surfaces accumulate one-per-scored-song and
+    trip the memory guard after only a few dozen songs. Lossless: any later access rebuilds from
+    the on-disk bundle.
+
+    Every cache keys its entries as ``(version, song_key, *ref_axes, <suffix>)`` (bundle marker,
+    stat key, or stat-key tuple); the shared per-song prefix is the bundle key without its
+    trailing marker, so match on that to sweep the scoring bundle, slim metadata, frontier and
+    payload tiers together. Returns the number of entries removed.
+    """
+    if not bundle_key:
+        return 0
+    prefix = tuple(bundle_key[:-1])
+    if not prefix:
+        return 0
+    n = len(prefix)
+    removed = 0
+    with _frontier_cache_lock:
+        for cache, last_access in (
+            (_scoring_bundle_cache, _scoring_bundle_cache_last_access),
+            (_bundle_array_cache, _bundle_array_cache_last_access),
+            (_frontier_cache, _frontier_cache_last_access),
+            (_payload_cache, _payload_cache_last_access),
+        ):
+            stale = [key for key in cache if key[:n] == prefix]
+            for key in stale:
+                cache.pop(key, None)
+                last_access.pop(key, None)
+                removed += 1
+    return removed
+
+
 def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
     from .response_cache_serde import _pack_frontiers
     from .response_inner_host import _precompute_surface_head_coeffs

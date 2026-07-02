@@ -1475,3 +1475,54 @@ def test_packed_scoring_batch_dedupes_and_coalesces_selected_segments() -> None:
     np.testing.assert_array_equal(packed_coeffs, surface_head_coeffs)
     assert group_offsets.tolist() == [0, 0, 2]
     assert group_lengths.tolist() == [2, 2, 1]
+
+
+def test_release_fg_response_song_memory_evicts_only_target_song():
+    """`release_fg_response_song_memory` must drop every memory tier for the target song's
+    surfaces (scoring bundle, slim metadata, frontier, payload) while leaving other songs'
+    entries resident. This is the per-song release that keeps a standalone optimizer run from
+    accumulating one ~0.5-1.5 GB surface pool per scored song until the memory guard restarts it."""
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
+        fg_response_frontier_bundle_cache_key,
+        fg_response_frontier_geometry_cache_key,
+        fg_response_frontier_payload_cache_key,
+    )
+
+    song = _calc_song()
+    ref_a = _ref_arrays()
+    ref_b = _varying_ref_arrays()  # distinct ref axes -> distinct per-song key prefix
+
+    a_bundle = fg_response_frontier_bundle_cache_key(song, ref_a)
+    a_geo = fg_response_frontier_geometry_cache_key(song, ref_a, ft_stat=3, ff_stat=5)
+    a_payload = fg_response_frontier_payload_cache_key(song, ref_a, [(3, 5)])
+    b_bundle = fg_response_frontier_bundle_cache_key(song, ref_b)
+    b_geo = fg_response_frontier_geometry_cache_key(song, ref_b, ft_stat=3, ff_stat=5)
+
+    # Guard: the eviction keys off the shared prefix (bundle key minus its trailing marker),
+    # so the two songs must not collide or the test proves nothing.
+    assert a_bundle[:-1] != b_bundle[:-1]
+
+    store.reset_fg_response_frontier_payload_cache()
+    try:
+        # Values are placeholders: release() evicts purely by tuple-prefix, not value type.
+        store._scoring_bundle_cache[a_bundle] = object()
+        store._scoring_bundle_cache[b_bundle] = object()
+        store._bundle_array_cache[a_bundle] = {}
+        store._frontier_cache[a_geo] = object()
+        store._frontier_cache[b_geo] = object()
+        store._payload_cache[a_payload] = object()
+
+        removed = store.release_fg_response_song_memory(a_bundle)
+
+        # Song A: scoring bundle + slim metadata + frontier + payload = 4 entries.
+        assert removed == 4
+        assert a_bundle not in store._scoring_bundle_cache
+        assert a_bundle not in store._bundle_array_cache
+        assert a_geo not in store._frontier_cache
+        assert a_payload not in store._payload_cache
+        # Song B is a different prefix and must survive untouched.
+        assert b_bundle in store._scoring_bundle_cache
+        assert b_geo in store._frontier_cache
+    finally:
+        store.reset_fg_response_frontier_payload_cache()

@@ -41,14 +41,20 @@ def _make_hard_queue_cfg(*, ignore_resume: bool = False, song_queue_limit: int =
     return cfg
 
 
-def _install_resume_file(monkeypatch, tmp_path, *, resume_entries: list[dict]):
+def _install_resume_file(
+    monkeypatch,
+    tmp_path,
+    *,
+    resume_entries: list[dict],
+    known_paths: list[str] | None = None,
+):
     resume_context = build_memory_guard_resume_context("hard", "", True, set(), True, set())
     resume_file = tmp_path / "memory_guard_resume.json"
     resume_file.parent.mkdir(parents=True, exist_ok=True)
-    resume_file.write_text(
-        json.dumps({"context": resume_context, "pending": resume_entries}),
-        encoding="utf-8",
-    )
+    payload = {"context": resume_context, "pending": resume_entries}
+    if known_paths is not None:
+        payload["known_paths"] = known_paths
+    resume_file.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr("gear_optimizer.core.memory.MEMORY_GUARD_RESUME_FILE", str(resume_file))
     monkeypatch.setattr("gear_optimizer.app.MEMORY_GUARD_RESUME_FILE", str(resume_file))
     return resume_file
@@ -156,6 +162,22 @@ def test_merge_discovered_with_resume_prepends_by_path_only():
     assert [item[1] for item in merged] == ["New Song", "Resume Song"]
 
 
+def test_merge_discovered_with_resume_does_not_readd_completed_known_path():
+    completed = ("C:/completed.txt", "Completed Song", "Hard")
+    resume = [("C:/resume.txt", "Resume Song", "Hard")]
+    new = ("C:/new.txt", "New Song", "Hard")
+    discovered = [completed, new, *resume]
+
+    merged, prepended = merge_discovered_with_resume(
+        discovered_queue=discovered,
+        resume_queue=resume,
+        resume_known_path_keys={queue_path_key(completed), queue_path_key(resume[0])},
+    )
+
+    assert prepended == 1
+    assert [item[1] for item in merged] == ["New Song", "Resume Song"]
+
+
 def test_merge_discovered_with_resume_path_key_is_case_insensitive():
     resume = [("C:/Resume.TXT", "Resume Song", "Hard")]
     discovered = [("c:/resume.txt", "Resume Song", "Hard")]
@@ -173,6 +195,7 @@ def test_finalize_song_queue_resume_limit_keeps_prepended_block():
     result = finalize_song_queue(
         discovered_queue=discovered,
         resume_queue=resume,
+        resume_known_path_keys={queue_path_key(item) for item in resume},
         song_queue_limit=4,
     )
     assert result.prepended_count == 3
@@ -219,6 +242,7 @@ def test_build_song_queue_resume_prepends_new_path_even_with_loadouts(monkeypatc
         resume_entries=[
             {"path": str(resume_fp.resolve()), "song": song_resume, "diff": "Hard"},
         ],
+        known_paths=[str(resume_fp.resolve())],
     )
 
     app = GearOptimizerApp()
@@ -256,6 +280,7 @@ def test_build_song_queue_resume_prepends_stub_db_songs_without_loadouts(monkeyp
         resume_entries=[
             {"path": str(resume_fp.resolve()), "song": song_resume, "diff": "Hard"},
         ],
+        known_paths=[str(resume_fp.resolve())],
     )
 
     app = GearOptimizerApp()
@@ -293,6 +318,7 @@ def test_build_song_queue_resume_limit_preserves_prepended_paths(monkeypatch, tm
             {"path": str(resume_fp_a.resolve()), "song": song_resume_a, "diff": "Hard"},
             {"path": str(resume_fp_b.resolve()), "song": song_resume_b, "diff": "Hard"},
         ],
+        known_paths=[str(resume_fp_a.resolve()), str(resume_fp_b.resolve())],
     )
 
     app = GearOptimizerApp()
@@ -303,3 +329,31 @@ def test_build_song_queue_resume_limit_preserves_prepended_paths(monkeypatch, tm
 
     assert [item[1] for item in queue] == [song_new_a, song_new_b, song_resume_a]
     assert queue_path_key(queue[0]) == queue_path_key((str(new_fp_a.resolve()), song_new_a, "Hard"))
+
+
+def test_build_song_queue_legacy_resume_does_not_prepend_completed_paths(monkeypatch, tmp_path):
+    hard_dir = tmp_path / "Hard"
+    hard_dir.mkdir(parents=True, exist_ok=True)
+
+    song_completed = "Completed Before Restart (Hard)"
+    song_resume = "Still Pending (Hard)"
+
+    completed_fp = hard_dir / "completed.txt"
+    resume_fp = hard_dir / "resume.txt"
+    _write_song_stub(completed_fp, song_completed)
+    _write_song_stub(resume_fp, song_resume)
+
+    _setup_resume_queue_env(monkeypatch, tmp_path, "legacy_resume.db")
+    _install_resume_file(
+        monkeypatch,
+        tmp_path,
+        resume_entries=[
+            {"path": str(resume_fp.resolve()), "song": song_resume, "diff": "Hard"},
+        ],
+        known_paths=None,
+    )
+
+    app = GearOptimizerApp()
+    queue = app._build_song_queue(_make_hard_queue_cfg(), {"Hard": str(hard_dir)})
+
+    assert [item[1] for item in queue] == [song_resume]

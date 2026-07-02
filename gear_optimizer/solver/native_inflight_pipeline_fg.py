@@ -425,6 +425,37 @@ class NativeFGPipeline:
             return ""
 
 
+def _release_fg_song_surfaces(song: NativeSong) -> None:
+    """Release a song's ~0.5-1.5 GB FG response surfaces once its FG scoring is complete.
+
+    After this job's `materialize_from_owner_score_map`, nothing else reads the per-song scoring
+    bundle, prepared plan, or owner score map -- the fused GA turn and the FG planner are the only
+    other readers and both run earlier. Left alone, each song's surface pool stays resident, pinned
+    by BOTH the per-song bundle handle and the process-global response-frontier caches, until the
+    song object is garbage-collected and the entry-count LRU evicts it. A standalone optimizer run
+    never runs the serving-mode idle sweep, so ~prep_limit songs' worth accumulates and trips the
+    memory guard after only a few dozen songs. Dropping all three references here bounds resident FG
+    surfaces to the songs actively scoring. Lossless: any later access rebuilds from the on-disk
+    bundle. Best-effort -- a cleanup error must not fail the already-complete FG job.
+    """
+    fg = getattr(song.runtime, "fg", None)
+    if fg is None:
+        return
+    bundle = getattr(fg, "fg_response_scoring_bundle", None)
+    if bundle is not None:
+        try:
+            from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+                release_fg_response_song_memory,
+            )
+
+            release_fg_response_song_memory(getattr(bundle, "cache_key", ()))
+        except Exception as e:
+            logger.debug(f"native_inflight_pipeline:_release_fg_song_surfaces: {e}")
+    fg.fg_response_scoring_bundle = None
+    fg.fg_response_frontier_plan = None
+    fg.fg_owner_score_map = None
+
+
 def run_fg_job_sync(
     song: NativeSong,
     *,
@@ -573,3 +604,6 @@ def run_fg_job_sync(
             song.runtime.db.record_info = fg_record_info
     if post_sender is not None:
         post_sender.send(build_fg_update_payload(song, persist_entries=build_fg_persist_entries(song)))
+    # FG scoring for this song is done: free its surface pool now instead of holding it resident
+    # until the song object is GC'd (the leak that trips the memory guard ~33 songs into a run).
+    _release_fg_song_surfaces(song)
