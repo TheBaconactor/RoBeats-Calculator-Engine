@@ -276,7 +276,7 @@ def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
         "fever_window_end_ms": 1240.0,
     }]
     base_trace = [{
-        "section": 1, "activation_index": 2, "fever_end_index": 8,
+        "section": 1, "activation_index": 2, "fever_start_note_index": 2, "fever_end_index": 8,
         "activation_hit_offset_ms": 40.0, "fever_window_end_ms": 1240.0,
     }]
 
@@ -320,7 +320,7 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
         "fever_window_end_ms": 1000.0,
     }]
     base_trace = [{
-        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "section": 1, "activation_index": 0, "fever_start_note_index": 0, "fever_end_index": 4,
         "activation_hit_offset_ms": 40.0, "fever_window_end_ms": 1000.0,
     }]
     mask = np.zeros(n, bool)
@@ -375,7 +375,7 @@ def test_endpoint_early_delta_is_largest_cushion_center():
         "fever_window_end_ms": cutoff,
     }]
     base_trace = [{
-        "section": 1, "activation_index": 2, "fever_end_index": 6,
+        "section": 1, "activation_index": 2, "fever_start_note_index": 2, "fever_end_index": 6,
         "activation_hit_offset_ms": 40.0, "fever_window_end_ms": cutoff,
     }]
     nt = np.asarray([1, 1, 1, 1, 1, 3, 1], dtype=np.int16)  # idx5 is the held tail
@@ -470,6 +470,7 @@ def test_base_note_graph_uses_timeline_frontier_trace_witness():
         {
             "section": 1,
             "activation_index": 2,
+            "fever_start_note_index": 2,
             "activation_hit_offset_ms": 40.0,
             "fever_end_index": 5,
         }
@@ -493,6 +494,7 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
         {
             "section": 1,
             "activation_index": 2,
+            "fever_start_note_index": 2,
             "activation_hit_offset_ms": 40.0,
             "fever_end_index": 5,
             "fever_window_end_ms": 440.0,
@@ -513,6 +515,46 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
     assert graph[2]["is_fever_end_witness"] is False
     assert graph[0]["fever_end_ms"] is None
     assert all("contributes_to_max_score" not in g for g in graph)
+
+
+def test_endpoint_early_frontier_includes_reattributed_activation_witness():
+    """Chorded-tail witness (w < a) + tight endpoint: the endpoint-early monotonic
+    frontier must start at the PHYSICAL activating hit, so no clawed-in fever note is
+    displayed before it."""
+    from gear_optimizer.solver.fg_response_scoring.note_graph import base_note_graph
+
+    n = 6
+    # note 1 = held tail (witness, hit 500+80=580); note 2 = same-ms count boundary
+    # (swapped out of fever); note 4 = held-tail endpoint at chart 600 == cutoff,
+    # clawed in early (its -40 legal edge reaches below the 580 witness hit).
+    ts = np.asarray([0.0, 0.5, 0.5, 0.55, 0.6, 0.7], dtype=np.float32)
+    nt = np.asarray([1, 3, 1, 1, 3, 1], dtype=np.int16)
+    trace = [{
+        "section": 1, "activation_index": 2, "fever_start_note_index": 1,
+        "activation_ms": 500.0, "activation_hit_offset_ms": 80.0,
+        "fever_end_index": 5, "fever_window_end_ms": 600.0,
+    }]
+
+    g = base_note_graph(
+        total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool),
+        frontier_trace=trace, note_types=nt,
+    )
+
+    assert g[1]["is_activation_witness"] is True and g[1]["delta_ms"] == pytest.approx(80.0)
+    assert g[1]["fever"] is True
+    assert g[2]["fever"] is False
+    witness_shown = g[1]["hit_time_ms"] + g[1]["delta_ms"]  # 580
+    # The clawed endpoint's displayed hit must never precede the activating hit.
+    endpoint_shown = g[4]["hit_time_ms"] + g[4]["delta_ms"]
+    assert endpoint_shown >= witness_shown
+    # lo_hit = max(600-40, witness 580) = 580, upper = 599 -> center 589.5.
+    assert endpoint_shown == pytest.approx(589.5)
+    assert g[4]["delta_ms"] >= -40.0                       # legal for the held tail
+    assert endpoint_shown < 600.0                          # still inside the cutoff
+    # Every displayed fever hit chosen by the guidance stays at/after the witness hit.
+    for note in g:
+        if note["fever"] and note["delta_ms"] not in (None, 0.0):
+            assert note["hit_time_ms"] + note["delta_ms"] >= witness_shown
 
 
 def test_base_note_graph_matches_production_fever_timeline():
@@ -723,7 +765,7 @@ def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
     n = 4
     ts = np.asarray([0.0, 61.167, 61.339, 61.339], dtype=np.float32)
     trace_with_tight_fever_end = [{
-        "section": 1, "activation_index": 0, "fever_end_index": 4,
+        "section": 1, "activation_index": 0, "fever_start_note_index": 0, "fever_end_index": 4,
         "forced_start_index": 0, "forced_prefix_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 179.43191528320312,
         "fever_window_end_ms": cutoff,

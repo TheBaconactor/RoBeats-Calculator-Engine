@@ -451,14 +451,26 @@ def timeline_frontier_note_graph(
         section = int(sec.get("section", 0))
         a = int(sec["activation_index"])
         e = int(sec["fever_end_index"])
+        w = int(sec["fever_start_note_index"])
         for j in range(max(0, a), min(e, n)):
             notes[j]["fever"] = True
             if notes[j]["section"] == 0:
                 notes[j]["section"] = section
-        if apply_guidance and 0 <= a < n:
-            notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
-            notes[a]["is_activation_witness"] = True
-            notes[a]["section"] = section
+        if w != a and 0 <= w < n:
+            # The activating hit is physically delivered by an earlier
+            # wider-window note (chorded held tail): fever starts at ITS hit, so
+            # the count-boundary note (hit before the activation clock) is outside
+            # fever and the witness note is inside. Same fever count -> the scored
+            # surface is unchanged; the graph stays replay-consistent per note.
+            notes[w]["fever"] = True
+            if notes[w]["section"] == 0:
+                notes[w]["section"] = section
+            if 0 <= a < n:
+                notes[a]["fever"] = False
+        if apply_guidance and 0 <= w < n:
+            notes[w]["delta_ms"] = float(sec["activation_hit_offset_ms"])
+            notes[w]["is_activation_witness"] = True
+            notes[w]["section"] = section
         # The last note of the fever run is the fever-end witness (largest-cushion cutoff);
         # any fever note at/after that cutoff is shown with its LARGEST-CUSHION legal early hit --
         # the center of its legal in-fever range, the timing with the most error margin (issue #42).
@@ -469,12 +481,17 @@ def timeline_frontier_note_graph(
             fever_window_end_ms=fever_end_ms, section=section,
         )
         if apply_guidance:
+            # Endpoint guidance must see the PHYSICAL fever start: when the
+            # witness precedes the count boundary (chorded held tail), the
+            # monotonic display frontier starts at the witness so no clawed-in
+            # endpoint hit is ever shown before the activating hit.
+            guidance_start = min(a, w)
             _mark_endpoint_early_hits(
-                notes, activation_index=a, fever_end_index=e, total_notes=n,
+                notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
                 fever_window_end_ms=fever_end_ms, note_types=note_types,
             )
             _mark_fever_end_cluster_safe_delta(
-                notes, activation_index=a, fever_end_index=e, total_notes=n,
+                notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
                 fever_window_end_ms=fever_end_ms, note_types=note_types,
             )
     return notes

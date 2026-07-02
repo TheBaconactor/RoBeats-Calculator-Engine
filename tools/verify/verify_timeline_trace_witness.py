@@ -89,12 +89,26 @@ def verify_song(song_rel: str) -> tuple[int, int]:
         for row in trace:
             sections += 1
             a = int(row["activation_index"]); fe = int(row["fever_end_index"])
+            w = int(row["fever_start_note_index"])
             off = float(row["activation_hit_offset_ms"])
             up = float(row["activation_hit_offset_upper_ms"])
             lo = float(row["activation_hit_offset_lower_ms"])
             assert row["activation_hit_offset_kind"] == "largest_cushion", f"{song_rel}: witness not labeled largest_cushion"
             assert off == up, f"{song_rel} fc={fc} d={d}: offset {off} != upper {up} (not largest cushion)"
             assert lo <= up, f"{song_rel} fc={fc} d={d}: lower {lo} > upper {up}"
+            # The physical activating hit names witness note `w` (the count/mask
+            # boundary stays `a`): the hit fields must be anchored to w's chart
+            # time and every reported offset must be a legal Perfect hit for w's
+            # OWN window (a chorded held tail's wider window must not leak
+            # through the carry clock onto a narrower note).
+            assert 0 <= w <= a, f"{song_rel} fc={fc} d={d}: witness note {w} after count boundary {a}"
+            assert float(row["activation_ms"]) == float(chart_ms[w]), (
+                f"{song_rel} fc={fc} d={d}: activation_ms {row['activation_ms']} != witness note #{w} chart ms {chart_ms[w]}"
+            )
+            assert int(gl[ngi[w]]) <= lo and up <= int(gh[ngi[w]]), (
+                f"{song_rel} fc={fc} d={d}: witness offsets [{lo}, {up}] outside "
+                f"witness note #{w}'s own Perfect window [{int(gl[ngi[w]])}, {int(gh[ngi[w]])}]"
+            )
             assert float(row["activation_hit_ms"]) == float(row["activation_ms"]) + off
             we = float(row["fever_window_end_ms"])
             assert we == float(row["activation_hit_ms"]) + float(d), f"{song_rel}: window end != hit + d_ms"
@@ -104,8 +118,8 @@ def verify_song(song_rel: str) -> tuple[int, int]:
             last_in_ok = (fe - 1 < a) or (int(earliest[fe - 1]) < window_end)
             assert first_out_ok and last_in_ok, f"{song_rel} fc={fc} d={d}: endpoint cert failed sec a={a} fe={fe}"
             # Is this section reproducible by a *single* activation-only offset?
-            offs = np.arange(max(CARRY_L, int(gl[ngi[a]])), min(CARRY_U, int(gh[ngi[a]])) + 1, dtype=np.int64)
-            ao = bool((np.searchsorted(chart_ms, int(chart_ms[a]) + offs + int(d), side="left") == fe).any())
+            offs = np.arange(max(CARRY_L, int(gl[ngi[w]])), min(CARRY_U, int(gh[ngi[w]])) + 1, dtype=np.int64)
+            ao = bool((np.searchsorted(chart_ms, int(chart_ms[w]) + offs + int(d), side="left") == fe).any())
             if not ao:
                 carry_only += 1
     return sections, carry_only
