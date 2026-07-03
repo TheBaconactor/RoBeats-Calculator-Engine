@@ -187,6 +187,10 @@ def build_fg_response_frontier_cache_for_path(
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         fg_response_frontier_payload_cache_info,
+        release_fg_response_song_memory,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
+        fg_response_frontier_bundle_cache_key,
     )
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
@@ -201,7 +205,17 @@ def build_fg_response_frontier_cache_for_path(
             build_ms=0.0,
             cache_file=str(cache_info.disk_path),
         )
-    result = build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=stat_keys)
+    try:
+        result = build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=stat_keys)
+    finally:
+        # The prebuild contract is disk files; build_or_load additionally pins the built
+        # bundle+payload (~1 GB of frontier rows on heavy charts) into the process-global
+        # payload LRU for live-process reuse that never happens here. Left pinned, a worker
+        # building heaviest-first accumulates up to 4 songs' bundles (~4-5 GB dead weight per
+        # worker) on top of the current build's transient peak -- the measured OOM/paging
+        # driver on EXTENDED CUT charts. Release sweeps every per-song cache tier by key
+        # prefix; the bundle just written re-opens from disk wherever it is next needed.
+        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays))
     return FgResponseFrontierCacheBuildResult(
         path=str(song_path),
         source=str(result.cache_source),

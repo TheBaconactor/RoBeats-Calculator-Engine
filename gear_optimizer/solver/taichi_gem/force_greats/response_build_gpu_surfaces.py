@@ -3,9 +3,12 @@ import numpy as np
 from .response_types import FgResponseSurface
 
 
-def _surface_rows_from_numba_rows(rows: np.ndarray) -> np.ndarray:
+def _surface_rows_from_numba_rows(rows: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
     src = np.ascontiguousarray(np.asarray(rows, dtype=np.uint64).reshape((-1, 7)))
-    out = np.empty((int(src.shape[0]), 11), dtype=np.uint32)
+    if out is None:
+        out = np.empty((int(src.shape[0]), 11), dtype=np.uint32)
+    elif tuple(out.shape) != (int(src.shape[0]), 11) or out.dtype != np.uint32:
+        raise ValueError("surface-row conversion output must be (rows, 11) uint32")
     fever_lo = src[:, 0]
     fever_hi = src[:, 1]
     great_lo = src[:, 2]

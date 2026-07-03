@@ -104,11 +104,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     def setup_logging(self) -> None:
         try:
-            from gear_optimizer.core.logging_config import configure_logging
+            from gear_optimizer.core.logging_config import configure_default_logging
 
-            log_file_path = os.path.join(BIN_DIR, "error.log")
-            console_level = logging.INFO if bool(getattr(ENV, "output_enabled", False)) else logging.ERROR
-            configure_logging(log_file_path=log_file_path, console_level=console_level, file_level=logging.WARNING)
+            configure_default_logging()
         except Exception as e:
             logger.warning(f"app:setup_logging: {e}")
 
