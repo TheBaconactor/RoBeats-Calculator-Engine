@@ -10,6 +10,7 @@ from .payload import (
     ga_update_runs_best_kernel,
 )
 from .warmstart import (
+    ga_build_unique_slot_table_kernel,
     ga_compute_exact_eval_rep_kernel,
     ga_finalize_warmstart_lane_best_kernel,
     ga_find_best_combo_warmstart_kernel,
@@ -31,5 +32,6 @@ __all__ = [
     "ga_find_best_combo_warmstart_kernel",
     "ga_finalize_warmstart_lane_best_kernel",
     "ga_compute_exact_eval_rep_kernel",
+    "ga_build_unique_slot_table_kernel",
     "ga_scatter_dup_results_kernel",
 ]

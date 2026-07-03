@@ -8,7 +8,7 @@ from .. import kernels_helpers
 from ..warmstart_common import MAX_STAT, solve_combo_warmstart_preloaded
 @ti.kernel
 def ga_find_best_combo_warmstart_kernel(
-    n_genomes: ti.i32,
+    n_unique_genomes: ti.i32,
     n_combos: ti.i32,
     combo_offset: ti.i32,
     combo_count: ti.i32,
@@ -28,10 +28,18 @@ def ga_find_best_combo_warmstart_kernel(
     is_s_ov: ti.i32,
     song_slot: ti.i32,
     use_exact_inner_solver: ti.template(),  # retained ABI flag; production requires exact inner solving
-    reuse_exact_eval_results: ti.template(),
 ):
     """
-    GPU-parallel exact per-(genome, FT/FF) evaluation.
+    GPU-parallel exact per-(genome, FT/FF) evaluation over COMPACTED unique rows.
+
+    The launch is sized by the number of UNIQUE genome_base_stats rows; slot s
+    maps to its genome via `ga_unique_slot_to_genome[s]` (built by
+    ga_build_unique_slot_table_kernel from the rep map). Duplicate rows are not
+    launched at all — `ga_scatter_dup_results_kernel` copies each duplicate's
+    winning key/results from its representative afterwards. This replaces the
+    former skip-in-place shape (launch all rows, duplicates early-out), which
+    still paid the launch slots: converged populations measure ~81% duplicates.
+
     Each (genome, lane) strides the chunk's combos and stages its lane-local
     winner in `ga_warmstart_lane_best_key/_results`; the separate
     `ga_finalize_warmstart_lane_best_kernel` then reduces lanes into
@@ -39,7 +47,7 @@ def ga_find_best_combo_warmstart_kernel(
     rejects `atomic_fetch_max` on ulong, so the lane-array + reduce shape is
     the cross-platform path).
     Args:
-        n_genomes: Number of genomes to evaluate
+        n_unique_genomes: Number of UNIQUE genome rows (from ga_exact_eval_unique_count)
         n_combos: Total number of FT/FF combinations
         combo_offset: Starting index in combo tables (for chunked processing)
         combo_count: Number of combos in this chunk
@@ -52,18 +60,15 @@ def ga_find_best_combo_warmstart_kernel(
     w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ft << 1) + is_s_ft)
     w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ff << 1) + is_s_ff)
     block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
-    total_threads = n_genomes * block_dim
+    total_threads = n_unique_genomes * block_dim
     ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
     for tid in range(total_threads):
-        genome_idx = tid // block_dim
-        lane = tid - genome_idx * block_dim
+        slot_idx = tid // block_dim
+        lane = tid - slot_idx * block_dim
+        genome_idx = kernels_helpers.ga_unique_slot_to_genome[slot_idx]
         kernels_helpers.ga_warmstart_lane_best_key[genome_idx, lane] = ti.u64(0)
         for i in ti.static(range(4)):
             kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, i] = 0
-        skip_row = ti.i32(0)
-        if ti.static(reuse_exact_eval_results):
-            if kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
-                skip_row = ti.i32(1)
         stats = kernels_helpers.genome_base_stats[genome_idx]
         base_pp: ti.i32 = stats[0]
         base_cm: ti.i32 = stats[1]
@@ -87,7 +92,7 @@ def ga_find_best_combo_warmstart_kernel(
         local_best_fm: ti.i32 = 0
         local_best_ov: ti.i32 = 0
         local_c: ti.i32 = lane
-        while skip_row == 0 and local_c < combo_count:
+        while local_c < combo_count:
             combo_idx: ti.i32 = combo_offset + local_c
             # Exact UB combo culling: skip the inner solve when even the relaxed
             # upper bound cannot reach the best exact score already found for
@@ -152,9 +157,12 @@ def ga_find_best_combo_warmstart_kernel(
             kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 2] = local_best_fm
             kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 3] = local_best_ov
 @ti.kernel
-def ga_finalize_warmstart_lane_best_kernel(n_genomes: ti.i32):
+def ga_finalize_warmstart_lane_best_kernel(n_unique_genomes: ti.i32):
+    # Compacted like the eval kernel: only unique rows have freshly-written lane
+    # arrays; iterating all rows would reduce stale lanes for duplicate rows.
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for g in range(n_genomes):
+    for s in range(n_unique_genomes):
+        g = kernels_helpers.ga_unique_slot_to_genome[s]
         best_key = kernels_helpers.chunk_best_key[g]
         best_lane = ti.i32(-1)
         for lane in ti.static(range(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)):
@@ -204,3 +212,18 @@ def ga_scatter_dup_results_kernel(n_genomes: ti.i32):
             kernels_helpers.chunk_best_key[g] = kernels_helpers.chunk_best_key[rep]
             for i in ti.static(range(4)):
                 kernels_helpers.chunk_best_results[g, i] = kernels_helpers.chunk_best_results[rep, i]
+
+
+@ti.kernel
+def ga_build_unique_slot_table_kernel(n_genomes: ti.i32):
+    # Emit representative rows (rep[g] == g) into a dense slot table in ascending
+    # genome order and publish the unique count. Serialized single-thread pass:
+    # bounded by MAX_GENOMES (~4.6k iterations), deterministic table order, and
+    # tiny vs the O(n_combos) eval it sizes.
+    ti.loop_config(serialize=True)
+    count = 0
+    for g in range(n_genomes):
+        if kernels_helpers.ga_exact_eval_rep_idx[g] == g:
+            kernels_helpers.ga_unique_slot_to_genome[count] = g
+            count += 1
+    kernels_helpers.ga_exact_eval_unique_count[0] = count
