@@ -30,8 +30,28 @@ FEVER_FILL_BASE_RATE = 0.333
 # Formula: fever_time_cas = last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
 FEVER_TIME_SCALE = 0.15
 
-# Fever Time constant offset added to scaled duration (seconds)
-FEVER_TIME_OFFSET = 0.15
+# Fever Time constant offset added to scaled duration (seconds).
+#
+# 0.15 is the FEVER_TIME_SCALE-driven "+1000ms of song length" term (see
+# SongDatabase.lua:1212 songkey_get_approx_length_sec, ported verbatim as
+# [REDACTED PRIVATE REPOSITORY]/web/src/score/scoreEngine.ts's `cfg.lastNoteTimeSec`); this
+# repo folds that same convention directly into the offset constant instead
+# of a separate approx-length variable (algebraically identical).
+#
+# The additional `+ 1/60` is a second, independent term: one extra engine
+# tick (1/60s) that the real server grants before fever deactivates, added
+# BEFORE the FeverTime stat ratio multiply (matches
+# [REDACTED PRIVATE REPOSITORY]/web/src/score/scoreEngine.ts:123-129's
+# `(lastNoteTimeSec * 0.15 + 1/60) * ratio`, which is itself calibrated
+# against two real captured ranked-build fever windows -- see the
+# "LIVE-BUILD PARITY" suite in scoreEngine.test.ts). Fever ACTIVATION is
+# already documented server-authoritative over the raw client Lua (2026-07-01
+# ruling); this is the matching correction for fever DURATION/deactivation
+# timing, root-caused via the Raining Tacos (Easy) T1/Chill/Precise parity
+# bug (site rescore 2,833,029 vs real-engine replay 2,831,430 on an
+# otherwise full-perfect run). See
+# docs/Implementation Records/FEVER_TIME_OFFSET_SERVER_TICK_PARITY.md.
+FEVER_TIME_OFFSET = 0.15 + 1.0 / 60.0
 
 # --- GA (GENETIC ALGORITHM) CONSTANTS ---
 # These will be overwritten by config.ini if present

@@ -9,6 +9,8 @@ This module contains kernels for fever timeline precomputation:
 
 import taichi as ti
 
+from gear_optimizer.core.constants import FEVER_TIME_OFFSET, FEVER_TIME_SCALE
+
 # Import kernels_helpers to access fields at runtime (they're bound by fields.bind_fields())
 from . import kernels_helpers
 
@@ -23,7 +25,7 @@ def precompute_fever_end_idx_kernel(total_notes: ti.i32, last_note_time: ti.f32)
     """
     n_stat: ti.i32 = 161
     n: ti.i32 = ti.max(total_notes, 0)
-    fever_time_cas: ti.f32 = last_note_time * 0.15 + 0.15  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
+    fever_time_cas: ti.f32 = last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
 
     for flat in range(n * n_stat):
         note_idx: ti.i32 = flat // n_stat

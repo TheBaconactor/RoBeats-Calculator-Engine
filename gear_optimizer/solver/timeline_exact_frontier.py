@@ -22,6 +22,7 @@ from typing import Iterable
 import numpy as np
 from numba import jit
 
+from gear_optimizer.core.constants import FEVER_TIME_OFFSET, FEVER_TIME_SCALE
 from gear_optimizer.core.profile_events import emit_profile_event
 
 from .taichi_gem.fields import GRID_SIZE, MAX_TIMELINE_FRONTIER_SURFACES
@@ -1429,7 +1430,7 @@ def build_timeline_frontier_grid_payload(
     total_notes_i = int(total_notes)
     long_notes_i = int(long_notes)
     non_fever_cas = float(max(0, total_notes_i - long_notes_i)) * 0.333
-    fever_time_cas = float(last_note_time) * 0.15 + 0.15
+    fever_time_cas = float(last_note_time) * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
 
     fill_counts = np.ceil(np.float32(non_fever_cas) * ref_ff).astype(np.int32)
     fill_counts = np.maximum(fill_counts, np.int32(1))

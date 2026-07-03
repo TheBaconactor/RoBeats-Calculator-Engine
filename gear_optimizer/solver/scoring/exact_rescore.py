@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from ...core.constants import TOTAL_ROWS
+from ...core.constants import FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
 from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from ...core.utils import safe_float, safe_int
 from ..fever_timeline import calculate_fever_timeline_indices, calculate_force_greats_timeline_indices
@@ -745,7 +745,7 @@ def _timeline_trace_for_payload_surface(
     total_notes_i = int(ctx["total_notes"])
     long_notes_i = int(ctx["long_notes"])
     non_fever_cas = float(max(0, total_notes_i - long_notes_i)) * 0.333
-    fever_time_cas = float(ctx["last_note_time"]) * 0.15 + 0.15
+    fever_time_cas = float(ctx["last_note_time"]) * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
     fill_count = int(np.ceil(np.float32(non_fever_cas) * np.float32(ref_ff[ff_i])))
     fill_count = max(1, int(fill_count))
     d_ms = int(np.ceil(np.float32(fever_time_cas) * np.float32(ref_ft[ft_i]) * np.float32(1000.0)))

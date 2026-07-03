@@ -25,9 +25,9 @@ $$\text{non\_fever\_base} = \lceil \text{non\_fever\_cas} \times f_{FF}(FF) \rce
 
 ### Fever Duration
 
-The game derives fever duration from a 15% base scaled by the song length, then applies the Fever Time stat multiplier:
+The game derives fever duration from a 15% base scaled by the song length, then applies the Fever Time stat multiplier. The additive offset has two independent parts: the `+1000ms`-of-song-length convention (folded in as `+0.15` since it is scaled by the same 0.15) and one extra server-granted engine tick (`+1/60` second) added before the stat multiplier — see `FEVER_TIME_OFFSET` in `gear_optimizer/core/constants.py` and `docs/Implementation Records/FEVER_TIME_OFFSET_SERVER_TICK_PARITY.md`:
 
-$$\text{fever\_time\_cas} = (t_{last} \times 0.15) + 0.15$$
+$$\text{fever\_time\_cas} = (t_{last} \times 0.15) + \left(0.15 + \tfrac{1}{60}\right)$$
 
 $$\text{fever\_duration} = \text{fever\_time\_cas} \times f_{FT}(FT)$$
 

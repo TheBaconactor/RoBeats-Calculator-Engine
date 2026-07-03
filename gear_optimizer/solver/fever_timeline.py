@@ -102,7 +102,7 @@ def calculate_fever_timeline_indices(
     # Game formula constants (see constants.FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET)
     non_fever_cas = (total_notes - long_notes_count) * 0.333  # FEVER_FILL_BASE_RATE
     non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-    fever_time_cas = last_note_time * 0.15 + 0.15  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
+    fever_time_cas = last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
     real_fever_time = fever_time_cas * fever_time_stat
 
     is_fever = fever_mask_buffer
@@ -171,7 +171,7 @@ def calculate_non_fever_sections(
         non_fever_cas = 0.0
 
     non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-    fever_time_cas = last_note_time * 0.15 + 0.15  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
+    fever_time_cas = last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
     real_fever_time = fever_time_cas * fever_time_stat
 
     current_idx = 0
@@ -295,7 +295,7 @@ def calculate_force_greats_timeline_indices(
     raw_fever_fill = non_fever_cas * fever_fill_rate
     non_fever_base = ceil(raw_fever_fill)
 
-    fever_time_cas = last_note_time * 0.15 + 0.15  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
+    fever_time_cas = last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
     real_fever_time = fever_time_cas * fever_time_stat
 
     is_fever = fever_mask_buffer
