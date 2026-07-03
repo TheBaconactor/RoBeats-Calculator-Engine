@@ -869,6 +869,72 @@ def ga_update_runs_best(*, run_idx_start: int, n_runs: int, n_genomes_per_run: i
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
     kernels.ga_update_runs_best_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
+def ga_download_runs_best(*, n_runs: int) -> np.ndarray:
+    """
+    Download per-run tracked-best rows (ga_runs_payload_packed row 0) as a compact
+    (n_runs, 17) int32 array: [score, genome_ids(9), results(7)].
+    """
+    ensure_ready()
+    n_runs = int(n_runs)
+    if n_runs <= 0:
+        return np.zeros((0, 17), dtype=np.int32)
+    if n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(f"n_runs out of range: {n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    kernels.ga_copy_runs_best_to_download_staging_kernel(int(n_runs))
+    out = fields.ga_runs_best_download_staging.to_numpy()
+    return np.asarray(out[:n_runs], dtype=np.int32)
+def ga_refresh_fg_candidates_row0(
+    *,
+    table_slot: int,
+    run_idx_start: int,
+    n_runs: int,
+    n_slots: int = 9,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+) -> None:
+    """
+    Re-derive `ga_fg_candidates_packed` row 0 from `ga_runs_payload_packed` row 0
+    (same semantics as the pack kernel's row-0 section). Called after the 1-swap
+    elite polish so the FG funnel and selected payload see polished run bests.
+    """
+    ensure_ready()
+    table_slot = int(table_slot)
+    run_idx_start = int(run_idx_start)
+    n_runs = int(n_runs)
+    if n_runs <= 0:
+        return
+    if table_slot < 0 or table_slot >= int(fields.MAX_SONG_SLOTS):
+        raise ValueError(f"table_slot out of range: {table_slot} (MAX_SONG_SLOTS={fields.MAX_SONG_SLOTS})")
+    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(
+            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
+        )
+    kernels.ga_refresh_fg_candidates_row0_kernel(
+        table_slot,
+        run_idx_start,
+        n_runs,
+        int(n_slots),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+    )
 def ga_pack_fg_candidates_table_segmented(
     *,
     table_slot: int,

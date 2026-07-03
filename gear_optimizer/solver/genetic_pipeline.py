@@ -329,6 +329,122 @@ def upload_ga_global_static_state(
         setup_phase_emitter(phase="ga_upload_fg_effective_tables", start=t_phase)
 
 
+def _one_swap_neighborhood(
+    incumbent: "np.ndarray",
+    slot_start: "np.ndarray",
+    slot_count: "np.ndarray",
+    n_slots: int,
+) -> "np.ndarray":
+    """All single-slot substitutions of `incumbent` (mini uniqueness preserved).
+
+    Gear slots (0-5) swap to every other item in the slot pool; mini slots (6-8)
+    additionally exclude the incumbent's other two minis. Returns (K, n_slots) i32.
+    """
+    inc = np.asarray(incumbent, dtype=np.int64)
+    rows = []
+    for s in range(int(n_slots)):
+        cnt = int(slot_count[s])
+        st = int(slot_start[s])
+        if cnt <= 1:
+            continue
+        pool = np.arange(st, st + cnt, dtype=np.int64)
+        pool = pool[pool != inc[s]]
+        if s >= 6:
+            others = [int(inc[j]) for j in range(6, int(n_slots)) if j != s]
+            if others:
+                pool = pool[~np.isin(pool, others)]
+        if pool.size == 0:
+            continue
+        block = np.tile(inc, (int(pool.size), 1))
+        block[:, s] = pool
+        rows.append(block)
+    if not rows:
+        return np.zeros((0, int(n_slots)), dtype=np.int32)
+    return np.ascontiguousarray(np.concatenate(rows, axis=0).astype(np.int32))
+
+
+def _polish_runs_best_one_swap(
+    *,
+    gpu_api,
+    gpu_fields,
+    seg_len: int,
+    n_slots: int,
+    slot_start: "np.ndarray",
+    slot_count: "np.ndarray",
+    prepare_flags: dict,
+    eval_extra: dict,
+    refresh_extra: dict,
+    abort_requested=None,
+) -> int:
+    """Exact 1-swap local search on each run's tracked best (memetic finisher).
+
+    Measured motivation (tools/dev/measure_ga_miss.py, 8 songs x 96 seeds): 94.7%
+    of all GA misses sit exactly one swap from the true optimum, so making every
+    run's answer 1-swap-locally-optimal removes nearly all of them for ~one extra
+    generation-equivalent of GPU work per pass.
+
+    Each pass evaluates the full single-swap neighborhood of every run's incumbent
+    through the canonical prepare/evaluate kernels; ga_refresh_scores_and_update_runs_best
+    adopts strictly better genomes (ties keep the incumbent). Iterates until no run
+    improves — termination is guaranteed because run bests are strictly increasing
+    integers bounded by the song optimum. Consumes `population_indices`/eval scratch,
+    so it must run AFTER the FG candidate pack for the segment; the caller refreshes
+    the packed row 0 afterwards. Returns the number of passes executed.
+    """
+    chunk_cap = int(min(gpu_fields.MAX_GA_RUN_GENOMES, gpu_fields.MAX_GENOMES))
+    if chunk_cap <= 0:
+        raise RuntimeError("Invalid GA buffer configuration for 1-swap polish (chunk_cap <= 0)")
+    passes = 0
+    prev = gpu_api.ga_download_runs_best(n_runs=int(seg_len))
+    while True:
+        _raise_if_abort_requested(abort_requested, "before GA 1-swap polish pass")
+        if np.any(prev[:, 0] <= 0):
+            bad = int(np.argmin(prev[:, 0]))
+            raise RuntimeError(
+                f"GA 1-swap polish: run {bad} has no tracked best (score={int(prev[bad, 0])}); "
+                "invalid GA state after generation loop"
+            )
+        hoods = [
+            _one_swap_neighborhood(prev[r, 1 : 1 + int(n_slots)], slot_start, slot_count, int(n_slots))
+            for r in range(int(seg_len))
+        ]
+        k_max = max(h.shape[0] for h in hoods)
+        if k_max == 0:
+            break
+        # Pad every run's neighborhood to k_max with incumbent copies (score ties
+        # never replace the incumbent), giving uniform GPU blocks per chunk.
+        for r in range(int(seg_len)):
+            if hoods[r].shape[0] < k_max:
+                pad = np.tile(prev[r, 1 : 1 + int(n_slots)].astype(np.int32), (k_max - hoods[r].shape[0], 1))
+                hoods[r] = np.concatenate([hoods[r], pad], axis=0)
+        for off in range(0, k_max, chunk_cap):
+            k = int(min(chunk_cap, k_max - off))
+            group_cap = max(1, int(gpu_fields.MAX_GENOMES) // k)
+            for g0 in range(0, int(seg_len), group_cap):
+                g_runs = int(min(group_cap, int(seg_len) - g0))
+                pop = np.stack([hoods[g0 + j][off : off + k] for j in range(g_runs)])
+                gpu_api.ga_upload_initial_populations(pop, n_runs=g_runs, n_genomes=k, n_slots=int(n_slots))
+                gpu_api.ga_load_initial_populations_batch(
+                    run_idx_start=0, n_runs=g_runs, n_genomes_per_run=k, n_slots=int(n_slots)
+                )
+                n_total = g_runs * k
+                gpu_api.ga_prepare_population_base_stats(n_genomes=n_total, n_slots=int(n_slots), **prepare_flags)
+                gpu_api.ga_evaluate_prepared_population(n_genomes=n_total, n_slots=int(n_slots), **eval_extra)
+                gpu_api.ga_refresh_scores_and_update_runs_best(
+                    run_idx_start=g0,
+                    n_runs=g_runs,
+                    n_genomes_per_run=k,
+                    n_slots=int(n_slots),
+                    **refresh_extra,
+                )
+        passes += 1
+        cur = gpu_api.ga_download_runs_best(n_runs=int(seg_len))
+        if not bool(np.any(cur[:, 0] > prev[:, 0])):
+            break
+        prev = cur
+    return passes
+
+
 def run_gpu_native_ga_runs_payload_prebuilt(
     *,
     calc_song: dict,
@@ -1136,6 +1252,74 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                 raise last_exc
 
             local_run_idx += int(batch_len)
+
+        # Exact 1-swap elite polish (always-on): make every run's tracked best
+        # 1-swap-locally-optimal, then refresh the packed FG row 0 so the funnel
+        # and the selected payload see the polished genomes. Runs after the pack
+        # because the polish consumes population_indices/eval scratch.
+        t0 = time.perf_counter() if phase_timing else 0.0
+        _polish_flags = dict(
+            is_p_ft=is_p_ft,
+            is_s_ft=is_s_ft,
+            is_p_ff=is_p_ff,
+            is_s_ff=is_s_ff,
+            is_p_pp=is_p_pp,
+            is_s_pp=is_s_pp,
+            is_p_cm=is_p_cm,
+            is_s_cm=is_s_cm,
+            is_p_fm=is_p_fm,
+            is_s_fm=is_s_fm,
+            is_p_ov=is_p_ov,
+            is_s_ov=is_s_ov,
+        )
+        polish_passes = _polish_runs_best_one_swap(
+            gpu_api=gpu_api,
+            gpu_fields=gpu_fields,
+            seg_len=int(seg_len),
+            n_slots=int(n_slots),
+            slot_start=slot_start,
+            slot_count=slot_count,
+            prepare_flags=dict(_polish_flags),
+            eval_extra=dict(
+                total_budget=total_budget,
+                gem_scale_fever=gem_scale_fever,
+                song_slot=int(song_slot),
+                max_ft_gems_global=int(max_ft_gems_global),
+                max_ff_gems_global=int(max_ff_gems_global),
+                **_polish_flags,
+            ),
+            refresh_extra=dict(
+                total_budget=total_budget,
+                gem_scale_fever=gem_scale_fever,
+                song_slot=int(song_slot),
+                **_polish_flags,
+            ),
+            abort_requested=abort_requested,
+        )
+        gpu_api.ga_refresh_fg_candidates_row0(
+            table_slot=int(song_slot),
+            run_idx_start=0,
+            n_runs=int(seg_len),
+            n_slots=int(n_slots),
+            is_p_ft=is_p_ft,
+            is_s_ft=is_s_ft,
+            is_p_ff=is_p_ff,
+            is_s_ff=is_s_ff,
+            is_p_pp=is_p_pp,
+            is_s_pp=is_s_pp,
+            is_p_cm=is_p_cm,
+            is_s_cm=is_s_cm,
+            is_p_fm=is_p_fm,
+            is_s_fm=is_s_fm,
+        )
+        if t0:
+            _log_phase(
+                phase="polish_one_swap",
+                ms=(time.perf_counter() - t0) * 1000.0,
+                runs=int(seg_len),
+                pop=int(n_genomes),
+                gen=int(polish_passes),
+            )
 
         _prof_dl = profile_events_active()
         _t_dl = time.perf_counter() if _prof_dl else 0.0

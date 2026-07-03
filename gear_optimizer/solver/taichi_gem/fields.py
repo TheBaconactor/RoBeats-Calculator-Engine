@@ -110,6 +110,7 @@ MAX_GA_RUN_GENOMES = DEFAULT_MAX_GA_RUN_GENOMES
 _REQUESTED_MAX_GA_RUNS: int | None = None
 _REQUESTED_MAX_GA_RUN_GENOMES: int | None = None
 ga_runs_payload_packed: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32
+ga_runs_best_download_staging: ti.Field = None  # (MAX_GA_RUNS, 17) i32 - compact per-run best rows for host download
 ga_fg_candidates_packed: ti.Field = (
     None  # (MAX_SONG_SLOTS, MAX_GA_RUNS, GA_FG_CANDIDATES_PER_RUN+1, GA_FG_CANDIDATE_COLS) i32
 )
@@ -313,6 +314,7 @@ def reset_fields_state() -> None:
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
     global ga_global_best_packed
     global ga_runs_payload_packed
+    global ga_runs_best_download_staging
     global ga_fg_candidates_packed
     global ga_fg_gear_name_rank, ga_fg_mini_sig_id
     global ga_fg_select_hash_used, ga_fg_select_hash_keys
@@ -376,6 +378,7 @@ def reset_fields_state() -> None:
     ga_global_best_scan_key = None
     ga_global_best_packed = None
     ga_runs_payload_packed = None
+    ga_runs_best_download_staging = None
     ga_fg_candidates_packed = None
     ga_fg_gear_name_rank = None
     ga_fg_mini_sig_id = None
@@ -508,6 +511,7 @@ def allocate_fields():
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
     global ga_global_best_packed
     global ga_runs_payload_packed
+    global ga_runs_best_download_staging
     global ga_fg_candidates_packed
     global ga_fg_gear_name_rank, ga_fg_mini_sig_id
     global ga_fg_select_hash_used, ga_fg_select_hash_keys
@@ -576,6 +580,7 @@ def allocate_fields():
     ga_global_best_packed = ti.field(dtype=ti.i32, shape=17)  # [score, genome_ids(9), results(7)]
     _payload_cols = 1 + MAX_SLOTS + 7
     ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, _payload_cols))
+    ga_runs_best_download_staging = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, _payload_cols))
     ga_fg_candidates_packed = ti.field(
         dtype=ti.i32,
         shape=(MAX_SONG_SLOTS, MAX_GA_RUNS, int(GA_FG_CANDIDATES_PER_RUN) + 1, int(GA_FG_CANDIDATE_COLS)),
@@ -736,6 +741,7 @@ def bind_fields(kernels_module):
     target.ga_global_best_scan_key = ga_global_best_scan_key
     target.ga_global_best_packed = ga_global_best_packed
     target.ga_runs_payload_packed = ga_runs_payload_packed
+    target.ga_runs_best_download_staging = ga_runs_best_download_staging
     target.ga_fg_candidates_packed = ga_fg_candidates_packed
     target.ga_fg_gear_name_rank = ga_fg_gear_name_rank
     target.ga_fg_mini_sig_id = ga_fg_mini_sig_id
