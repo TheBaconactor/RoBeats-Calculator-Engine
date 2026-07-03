@@ -429,6 +429,71 @@ def _mark_fever_end_cluster_safe_delta(
         notes[j]["delta_ms"] = display_delta
 
 
+def _mark_fever_exit_push_delta(
+    notes: list[dict[str, Any]],
+    *,
+    fever_end_index: int,
+    total_notes: int,
+    fever_window_end_ms: float | None,
+    note_types: Sequence[int] | np.ndarray | None,
+) -> None:
+    """Push the first-excluded note(s) at a fever-end boundary LATE so the replay drain excludes them.
+
+    The MIRROR of the claw-IN-early endpoint logic. ``_mark_endpoint_early_hits`` /
+    ``_mark_fever_end_cluster_safe_delta`` pull late fever notes EARLY to keep them inside the
+    cutoff; this pushes the FIRST NON-FEVER note (``fever_end_index``) LATE to keep it OUT.
+
+    Why it is needed: the served surface excludes note ``e`` -- the frontier proved that exclusion
+    using the note's LATEST legal Perfect hit (``group_high``) landing at/after the cutoff
+    (``timeline_exact_frontier._exit_intervals_jit``). But the note is serialized at ``delta_ms = 0``
+    (chart time), and the replay RE-DERIVES fever from the shipped hit times. If the note's chart
+    time is still before the cutoff, the replay's drain reclaims it into fever, so the replayed fever
+    set no longer matches the served surface and the replay score diverges from the card
+    (``delta != 0``; e.g. Raining Tacos (Easy) T1: card 2,833,029 vs replay 2,831,430). Shipping the
+    note at its latest legal Perfect hit -- the same ``group_high`` the frontier's exclusion assumed
+    -- restores ``hit >= cutoff`` so the drain excludes it exactly as the surface does.
+
+    Display/replay-only: the scored surface and the card score are unchanged; this only makes the
+    replay reproduce them. Acts only on a plain Perfect note actually reclaimed at chart time
+    (``chart < cutoff``); a note already past the cutoff, a Great selector, an activation witness, or
+    an already-fever note is left untouched. It pushes to the note's LATEST legal Perfect hit -- the
+    same ``group_high`` the frontier's exclusion assumed, so it is the best legal effort and can only
+    move the note further out (never worse than the current ``d = 0``). It does NOT fail loud on the
+    frontier's ``fever_window_end_ms``: that cutoff is a floored-integer-derived float, so a note's
+    float latest hit can sit a sub-ms below it yet still land past the REPLAY's own (lower) fever end
+    -- as Raining Tacos note 85 does (latest 41388.999ms vs cutoff 41389.000ms, replay-excluded). The
+    authoritative reproducibility gate is the delta=0 replay sweep, not a serializer inequality that
+    cannot see the replay's exact drain.
+    """
+    if fever_window_end_ms is None:
+        return
+    cutoff = float(fever_window_end_ms)
+    n = int(total_notes)
+    nt: np.ndarray | None = None
+    j = int(fever_end_index)
+    while 0 <= j < n:
+        note = notes[j]
+        hit = float(note["hit_time_ms"])
+        if hit >= cutoff:
+            break  # already excluded at chart time; every later note is later still -> done
+        # Only a plain Perfect exit note is pushed. A Great selector (delta_ms None), an activation
+        # witness, or an already-fever note is owned by other logic and left untouched.
+        if note.get("is_activation_witness") or note.get("fever"):
+            break
+        if note.get("delta_ms") is None or str(note.get("note_result", "Perfect")) != "Perfect":
+            break
+        if nt is None:
+            if note_types is None:
+                raise ValueError(
+                    "note_graph: note_types (length == total_notes) is required to push a fever-exit "
+                    "note past the cutoff at its held-tail-aware Perfect bound -- it is never guessed"
+                )
+            nt = np.asarray(note_types).reshape(-1)
+        _perfect_lo, perfect_hi = _perfect_bounds_ms_at(nt, j)
+        note["delta_ms"] = float(perfect_hi)  # latest legal Perfect hit: largest cushion OUT
+        j += 1
+
+
 def timeline_frontier_note_graph(
     *,
     frontier_trace: Sequence[Mapping[str, Any]],
@@ -492,6 +557,12 @@ def timeline_frontier_note_graph(
             )
             _mark_fever_end_cluster_safe_delta(
                 notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
+                fever_window_end_ms=fever_end_ms, note_types=note_types,
+            )
+            # Mirror of the claw-in: push the first NON-fever note past the cutoff so the replay's
+            # drain excludes it exactly as the served surface does (keeps replay == card).
+            _mark_fever_exit_push_delta(
+                notes, fever_end_index=e, total_notes=n,
                 fever_window_end_ms=fever_end_ms, note_types=note_types,
             )
     return notes
@@ -637,6 +708,12 @@ def force_greats_note_graph(
             )
             _mark_fever_end_cluster_safe_delta(
                 notes, activation_index=a, fever_end_index=e, total_notes=n,
+                fever_window_end_ms=fever_end_ms, note_types=note_types,
+            )
+            # Mirror of the claw-in: push the first NON-fever note past the cutoff so the replay's
+            # drain excludes it exactly as the served surface does (keeps replay == card).
+            _mark_fever_exit_push_delta(
+                notes, fever_end_index=e, total_notes=n,
                 fever_window_end_ms=fever_end_ms, note_types=note_types,
             )
 
