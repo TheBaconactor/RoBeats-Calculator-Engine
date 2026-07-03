@@ -58,7 +58,8 @@ def test_stale_lock_from_dead_pid_is_broken(tmp_path: Path, monkeypatch) -> None
     lock_path = tmp_path / _LOCK_FILE_NAME
     dead_pid = 424242
     lock_path.write_text(
-        json.dumps({"pid": dead_pid, "heartbeat_ns": int(time.time_ns())}), encoding="utf-8"
+        json.dumps({"pid": dead_pid, "token": "dead-owner", "heartbeat_ns": int(time.time_ns())}),
+        encoding="utf-8",
     )
     monkeypatch.setattr(lock_mod, "_pid_alive", lambda pid: pid != dead_pid)
 
@@ -85,7 +86,8 @@ def test_stale_lock_from_frozen_heartbeat_is_broken(tmp_path: Path, monkeypatch)
     lock_path = tmp_path / _LOCK_FILE_NAME
     frozen_heartbeat_ns = int(time.time_ns()) - int(5.0 * 1e9)
     lock_path.write_text(
-        json.dumps({"pid": os.getpid(), "heartbeat_ns": frozen_heartbeat_ns}), encoding="utf-8"
+        json.dumps({"pid": os.getpid(), "token": "frozen-owner", "heartbeat_ns": frozen_heartbeat_ns}),
+        encoding="utf-8",
     )
 
     with FrontierBuildLock(tmp_path, label="test"):
@@ -101,7 +103,8 @@ def test_live_owner_lock_is_waited_on_not_broken(tmp_path: Path, monkeypatch) ->
 
     lock_path = tmp_path / _LOCK_FILE_NAME
     lock_path.write_text(
-        json.dumps({"pid": 999999, "heartbeat_ns": int(time.time_ns())}), encoding="utf-8"
+        json.dumps({"pid": 999999, "token": "live-owner", "heartbeat_ns": int(time.time_ns())}),
+        encoding="utf-8",
     )
 
     acquired = threading.Event()
@@ -121,3 +124,45 @@ def test_live_owner_lock_is_waited_on_not_broken(tmp_path: Path, monkeypatch) ->
     finally:
         thread.join(timeout=10)
         assert not thread.is_alive()
+
+
+def test_broken_out_owner_cannot_clobber_or_delete_new_holders_lock(tmp_path: Path, monkeypatch) -> None:
+    """Reviewer regression: an owner whose lock is broken as stale must not, on resuming, recreate or
+    replace the new holder's lock via its heartbeat, nor delete it on release.
+
+    Sequence: holder A acquires; A's heartbeat stalls (thread stopped, but A stays 'alive' with its
+    fd open, simulating a paged-out process); waiter B judges A stale, breaks it, and acquires a
+    fresh lock; A resumes and fires a heartbeat, then releases. Throughout, the on-disk lock must
+    remain B's."""
+    monkeypatch.setattr(lock_mod, "_pid_alive", lambda pid: True)  # same-pid threads: force 'alive'
+    monkeypatch.setattr(lock_mod, "_HEARTBEAT_STALE_S", 0.0)  # any non-refreshed heartbeat is stale
+
+    lock_path = tmp_path / _LOCK_FILE_NAME
+
+    holder_a = FrontierBuildLock(tmp_path, label="A")
+    holder_a._acquire()
+    # Simulate A's heartbeat stalling: stop the thread but keep A 'alive' with its fd open and unreleased.
+    holder_a._stop.set()
+    if holder_a._heartbeat_thread is not None:
+        holder_a._heartbeat_thread.join(timeout=5)
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["token"] == holder_a._token
+
+    # B breaks A's stale lock and acquires its own.
+    holder_b = FrontierBuildLock(tmp_path, label="B")
+    holder_b._acquire()
+    assert json.loads(lock_path.read_text(encoding="utf-8"))["token"] == holder_b._token
+
+    try:
+        # A resumes and fires one more heartbeat: it must land on A's orphaned inode, not B's lock.
+        holder_a._emit_heartbeat()
+        assert (
+            json.loads(lock_path.read_text(encoding="utf-8"))["token"] == holder_b._token
+        ), "a broken-out owner's heartbeat clobbered the new holder's lock"
+
+        # A releases: it must not delete B's lock (token gate).
+        holder_a._release()
+        assert lock_path.exists(), "a broken-out owner's release deleted the new holder's lock"
+        assert json.loads(lock_path.read_text(encoding="utf-8"))["token"] == holder_b._token
+    finally:
+        holder_b._release()
+    assert not lock_path.exists()

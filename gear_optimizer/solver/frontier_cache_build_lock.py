@@ -11,6 +11,14 @@ External-boundary code (a lock file owned by another OS process): it must fail L
 lock -- a dead owner pid or a heartbeat that stopped advancing -- by breaking the lock and building,
 never by silently skipping the build. A live owner's heartbeat keeps waiters parked; a crashed or
 hung owner's heartbeat goes stale and the next waiter reclaims the lock.
+
+Identity safety under a stale break: the heartbeat writes IN PLACE through the held lock file
+descriptor, never by replacing the lock pathname. So if an owner stalls past the stale window (e.g.
+paged out under the very memory pressure this guards), a waiter breaks the lock via a rename-steal
+and acquires a fresh one, and the stalled owner later resumes, the owner's heartbeat lands on the
+now-orphaned inode its fd still points at -- it can neither recreate nor clobber the new holder's
+lock file. Release is gated on a unique per-holder token, so a broken-out former owner never deletes
+the new holder's lock either.
 """
 from __future__ import annotations
 
@@ -19,6 +27,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -51,15 +60,18 @@ def _pid_alive(pid: int) -> bool:
 class FrontierBuildLock:
     """A best-effort cross-process build lock rooted in the cache directory.
 
-    Ownership is a single atomically-created lock file (``O_CREAT | O_EXCL``) carrying the owner pid
-    and a heartbeat. A background thread advances the heartbeat while the lock is held; waiters poll
-    and break the lock only when its owner is provably gone (dead pid or stale heartbeat).
+    Ownership is a single atomically-created lock file (``O_CREAT | O_EXCL``) carrying the owner pid,
+    a unique holder token, and a heartbeat. A background thread advances the heartbeat -- writing in
+    place through the held descriptor -- while the lock is held; waiters poll and break the lock only
+    when its owner is provably gone (dead pid or stale heartbeat).
     """
 
     def __init__(self, cache_dir: str | os.PathLike[str], *, label: str) -> None:
         self._path = Path(cache_dir) / _LOCK_FILE_NAME
         self._label = str(label)
+        self._token = uuid.uuid4().hex
         self._held = False
+        self._fd: int | None = None
         self._stop = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
 
@@ -72,21 +84,34 @@ class FrontierBuildLock:
         return False
 
     def _owner_payload(self) -> bytes:
-        return json.dumps({"pid": int(os.getpid()), "heartbeat_ns": int(time.time_ns())}).encode("utf-8")
+        return json.dumps(
+            {"pid": int(os.getpid()), "token": self._token, "heartbeat_ns": int(time.time_ns())}
+        ).encode("utf-8")
 
-    def _write_owner_atomic(self) -> None:
-        """Publish a fresh owner payload without a torn read: write a temp file, then atomically
-        replace the lock path onto it."""
-        tmp = self._path.with_name(f"{self._path.name}.{os.getpid()}.{time.perf_counter_ns()}.tmp")
-        tmp.write_bytes(self._owner_payload())
-        os.replace(tmp, self._path)
+    def _emit_heartbeat(self) -> None:
+        """Refresh the heartbeat IN PLACE through the held descriptor. Crucially this writes to the
+        inode this holder created, not to the lock *path*: if a waiter has already rename-stolen this
+        (stale) lock and created a new one, our fd points at the orphaned inode and this write cannot
+        touch the new holder's lock file. Write-then-truncate (not truncate-then-write) so a
+        concurrent reader never observes an empty file."""
+        fd = self._fd
+        if fd is None:
+            return
+        payload = self._owner_payload()
+        os.lseek(fd, 0, os.SEEK_SET)
+        written = os.write(fd, payload)
+        os.ftruncate(fd, written)
 
-    def _read_owner(self) -> tuple[int, int] | None:
-        """(pid, heartbeat_ns) recorded in the lock file, or None if it is missing / mid-write /
-        malformed."""
+    def _read_owner(self) -> dict | None:
+        """Owner record (pid, token, heartbeat_ns) in the lock file, or None if it is missing /
+        mid-write / malformed."""
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-            return int(data["pid"]), int(data["heartbeat_ns"])
+            return {
+                "pid": int(data["pid"]),
+                "token": str(data["token"]),
+                "heartbeat_ns": int(data["heartbeat_ns"]),
+            }
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             logger.debug("frontier_cache_build_lock:_read_owner: %s", exc)
             return None
@@ -103,7 +128,7 @@ class FrontierBuildLock:
             # Unreadable/empty: could be an owner mid-create. Only stale once the file itself has sat
             # untouched past the heartbeat window.
             return self._lock_age_s() > _HEARTBEAT_STALE_S
-        pid, heartbeat_ns = owner
+        pid = owner["pid"]
         if not _pid_alive(pid):
             logger.warning(
                 "[FrontierBuildLock] %s build lock owner pid %s is gone; breaking stale lock.",
@@ -111,7 +136,7 @@ class FrontierBuildLock:
                 pid,
             )
             return True
-        heartbeat_age_s = max(0.0, (time.time_ns() - heartbeat_ns) / 1e9)
+        heartbeat_age_s = max(0.0, (time.time_ns() - owner["heartbeat_ns"]) / 1e9)
         if heartbeat_age_s > _HEARTBEAT_STALE_S:
             logger.warning(
                 "[FrontierBuildLock] %s build lock heartbeat is %.0fs stale (owner pid %s); breaking it.",
@@ -124,8 +149,8 @@ class FrontierBuildLock:
 
     def _break_stale(self) -> bool:
         """Reclaim a stale lock via a rename-steal so racing waiters cannot both break the same lock:
-        only the process whose rename of the lock path succeeds owns the removal. Returns True if we
-        should retry acquisition (the lock is gone or being recreated)."""
+        only the process whose rename of the lock path succeeds owns the removal. Returns True to
+        signal that acquisition should be retried (the lock is now gone or being recreated)."""
         stolen = self._path.with_name(f"{self._path.name}.stale.{os.getpid()}.{time.perf_counter_ns()}")
         try:
             os.replace(self._path, stolen)
@@ -163,11 +188,11 @@ class FrontierBuildLock:
                     logger.info("[FrontierBuildLock] Still waiting on the %s frontier build lock...", self._label)
                     waited_since_log = 0.0
                 continue
-            try:
-                os.write(fd, self._owner_payload())
-            finally:
-                os.close(fd)
+            # Own the descriptor for the lock's lifetime: heartbeats write through it (never by
+            # replacing the path), and it is closed only in _release.
+            self._fd = fd
             self._held = True
+            self._emit_heartbeat()
             self._start_heartbeat()
             if announced_wait:
                 logger.info("[FrontierBuildLock] Acquired the %s frontier build lock after waiting.", self._label)
@@ -179,7 +204,7 @@ class FrontierBuildLock:
         def _beat() -> None:
             while not self._stop.wait(_HEARTBEAT_INTERVAL_S):
                 try:
-                    self._write_owner_atomic()
+                    self._emit_heartbeat()
                 except OSError as exc:
                     logger.debug("frontier_cache_build_lock:heartbeat: %s", exc)
 
@@ -196,10 +221,17 @@ class FrontierBuildLock:
         if thread is not None:
             thread.join(timeout=_HEARTBEAT_INTERVAL_S + 1.0)
         self._heartbeat_thread = None
-        # Only drop the lock if it still records us as owner: a waiter that (wrongly) judged us stale
-        # may already have stolen it, and unlinking then would remove a different owner's live lock.
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError as exc:
+                logger.debug("frontier_cache_build_lock:_release_close: %s", exc)
+            self._fd = None
+        # Only drop the lock if it still records OUR token: a waiter that (wrongly) judged us stale
+        # may already have stolen the path and created its own lock, and unlinking then would remove
+        # a different holder's live lock.
         owner = self._read_owner()
-        if owner is not None and owner[0] != int(os.getpid()):
+        if owner is not None and owner["token"] != self._token:
             return
         try:
             os.unlink(self._path)
