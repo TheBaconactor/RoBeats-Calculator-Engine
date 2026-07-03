@@ -54,6 +54,17 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         suppress_stdout(True)
         suppress_stderr(True)
 
+    # This runs in a spawned multiprocessing child whose root logger has no handlers, and
+    # (in quiet mode) stderr is suppressed process-wide. Without configuring logging here,
+    # per-song failure payloads (`[POST] FAILED: ...`) reach neither the console nor
+    # bin/error.log, concealing fail-loud errors (see the 2026-07-02 "stuck at 33/2237"
+    # incident). Configure AFTER the stderr swap so the console handler binds to the already
+    # -suppressed stderr in quiet mode (no new console output), while the durable file handler
+    # records error payloads regardless. Uses the same canonical target as the main process.
+    from gear_optimizer.core.logging_config import configure_default_logging
+
+    configure_default_logging()
+
     try:
         init_db()
     except Exception as e:

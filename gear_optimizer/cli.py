@@ -89,6 +89,14 @@ def _apply_gpu_song_slots_default() -> None:
 def run() -> int:
     common_init()
     try:
+        # Configure durable diagnostics logging BEFORE importing the solver/Taichi stack.
+        # The heavy import chain behind `gear_optimizer.app` can install a root logging
+        # handler at import time; if it lands first, `configure_logging`'s respect-existing-
+        # handlers guard would bail and `bin/error.log` would never get its file handler.
+        from gear_optimizer.core.logging_config import configure_default_logging
+
+        configure_default_logging()
+
         cfg_path = _read_config_path()
         _apply_taichi_shell_env()
         _apply_debug_profile_env(cfg_path)
