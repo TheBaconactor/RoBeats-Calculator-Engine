@@ -92,13 +92,21 @@ def configure_default_logging() -> None:
     solver import chain can install a foreign root handler), ``GearOptimizerApp``, and the
     spawned post-processor child (which otherwise runs with an unconfigured root logger).
 
+    The console-output flag is read live via ``env_flag`` rather than from the frozen
+    ``ENV`` singleton: the CLI entry calls this before ``_apply_debug_profile_env`` /
+    ``_apply_throughput_mode_env`` mutate ``os.environ``, and importing ``env_config`` here
+    would freeze ``ENV`` prematurely and disable the config-driven debug/profile family.
+    ``METAFINDER_OUTPUT`` / ``METAFINDER_VERBOSE`` are never touched by those helpers, so the
+    live read matches ``ENV.output_enabled``.
+
     Idempotent and best-effort: logging must never crash the optimizer.
     """
     try:
         from gear_optimizer.core.constants import BIN_DIR
-        from gear_optimizer.core.env_config import ENV
+        from gear_optimizer.core.parsing import env_flag
 
-        console_level = logging.INFO if bool(getattr(ENV, "output_enabled", False)) else logging.ERROR
+        output_enabled = env_flag("METAFINDER_OUTPUT") or env_flag("METAFINDER_VERBOSE")
+        console_level = logging.INFO if output_enabled else logging.ERROR
         configure_logging(
             log_file_path=os.path.join(BIN_DIR, "error.log"),
             console_level=console_level,
