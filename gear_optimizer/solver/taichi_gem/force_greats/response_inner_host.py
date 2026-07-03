@@ -1,6 +1,7 @@
 from collections import OrderedDict
 import threading
 import time
+import weakref
 from typing import Any
 
 import numpy as np
@@ -394,7 +395,17 @@ def _precompute_surface_head_coeffs(
             _SURFACE_HEAD_COEFF_CACHE.move_to_end(key)
             while len(_SURFACE_HEAD_COEFF_CACHE) > int(_SURFACE_HEAD_COEFF_CACHE_MAX):
                 _SURFACE_HEAD_COEFF_CACHE.popitem(last=False)
+        # The key embeds id(words): it identifies THIS array only while the array is alive.
+        # Once the pool is garbage-collected the id can be reused by a new same-shaped pool
+        # (stale-hit hazard) and the retained coeffs are unreachable dead weight (~370 MB per
+        # 23M-row pool in prebuild workers). Evict the entry the moment the source dies.
+        weakref.finalize(words, _evict_surface_head_coeff_entry, key)
     return coeffs
+
+
+def _evict_surface_head_coeff_entry(key: tuple[int, int, tuple[int, ...], tuple[int, ...]]) -> None:
+    with _SURFACE_HEAD_COEFF_CACHE_LOCK:
+        _SURFACE_HEAD_COEFF_CACHE.pop(key, None)
 
 
 def _score_response_group_meta_gpu(

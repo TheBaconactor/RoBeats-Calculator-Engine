@@ -96,20 +96,11 @@ def _pack_frontiers(frontiers: tuple[FgResponseFrontierResult, ...]) -> dict[str
     first_offsets = np.empty((len(frontiers),), dtype=np.int32)
     first_counts = np.empty((len(frontiers),), dtype=np.int32)
     unique_frontier_indices, segment_id_by_frontier = _frontier_segment_ids(frontiers)
-    row_backed_total = sum(
-        len(frontier.first_frontier)
-        for frontier_idx in unique_frontier_indices
-        for frontier in (frontiers[int(frontier_idx)],)
-        if isinstance(frontier.first_frontier, SurfaceRowsFirstFrontier)
-    )
     first_surface_pool = np.empty(
         (sum(len(frontiers[int(frontier_idx)].first_frontier) for frontier_idx in unique_frontier_indices), 11),
         dtype=np.uint32,
     )
-    first_numba_pool = np.empty((int(row_backed_total), 7), dtype=np.uint64)
-    row_backed_ranges: list[tuple[int, int, int]] = []
     segment_offsets = np.empty((len(unique_frontier_indices),), dtype=np.int32)
-    first_numba_cursor = 0
     first_cursor = 0
 
     for idx, frontier in enumerate(frontiers):
@@ -133,12 +124,15 @@ def _pack_frontiers(frontiers: tuple[FgResponseFrontierResult, ...]) -> dict[str
         if isinstance(frontier.first_frontier, SurfaceRowsFirstFrontier):
             first_rows = frontier.first_frontier.numba_rows()
             first_count = int(first_rows.shape[0])
-            start = int(first_cursor)
-            numba_start = int(first_numba_cursor)
-            first_numba_pool[numba_start : numba_start + first_count] = first_rows
-            row_backed_ranges.append((start, numba_start, first_count))
+            # Convert each row-backed segment straight into its pool slice: staging every
+            # row-backed segment into an all-rows uint64 pool plus a second all-rows converted
+            # copy doubled peak RSS on multi-million-row bundles (~2.3 GB extra on a 23M-row
+            # chart) for no output difference.
+            _surface_rows_from_numba_rows(
+                first_rows,
+                out=first_surface_pool[int(first_cursor) : int(first_cursor) + first_count],
+            )
             first_cursor += first_count
-            first_numba_cursor += first_count
         else:
             for surface in frontier.first_frontier:
                 _write_surface_row(first_surface_pool, int(first_cursor), surface)
@@ -146,13 +140,6 @@ def _pack_frontiers(frontiers: tuple[FgResponseFrontierResult, ...]) -> dict[str
 
     for idx in range(len(frontiers)):
         first_offsets[int(idx)] = int(segment_offsets[int(segment_id_by_frontier[int(idx)])])
-
-    if row_backed_ranges:
-        converted = _surface_rows_from_numba_rows(first_numba_pool)
-        for first_start, numba_start, count in row_backed_ranges:
-            first_surface_pool[int(first_start) : int(first_start) + int(count)] = converted[
-                int(numba_start) : int(numba_start) + int(count)
-            ]
 
     return {
         "frontier_meta": meta,

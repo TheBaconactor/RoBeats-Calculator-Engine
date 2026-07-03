@@ -59,7 +59,38 @@ def _configure_test_db_path() -> None:
         init_db()
 
 
+def _isolate_frontier_cache_dirs() -> None:
+    """Redirect BOTH production frontier-cache dirs to a throwaway session dir.
+
+    The timeline and FG-response frontier caches default to ``bin/timeline_frontier_cache``
+    and ``bin/fg_response_frontier_cache`` when their env overrides are unset
+    (``_frontier_disk_cache_dir`` / ``_fg_response_disk_cache_dir``). Any test that
+    exercises a real cache code path -- a timeline build/load, a cache-info probe, or
+    ``run_fg_response_frontier_cache_prebuild`` (which calls the real
+    ``purge_stale_version_cache_files`` / ``compress_cache_dir_sidecars`` /
+    ``cleanup_fg_response_frontier_cache_temp_files``) -- without setting its override
+    would read, prune, purge, or rebuild the developer's PRODUCTION cache under ``bin/``.
+
+    Pinning both overrides for the whole session (env is read live via ``env_get``, so a
+    process-wide ``os.environ`` assignment is honored by every worker on first access)
+    makes the real dirs unreachable by construction. Per-test ``monkeypatch.setenv`` for
+    these vars still works: monkeypatch snapshots this session value and restores it on
+    teardown, keeping isolation intact.
+    """
+    tmp_dir = Path(tempfile.mkdtemp(prefix="gear_optimizer_tests_frontier_cache_"))
+    atexit.register(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
+
+    timeline_dir = tmp_dir / "timeline_frontier_cache"
+    fg_response_dir = tmp_dir / "fg_response_frontier_cache"
+    timeline_dir.mkdir(parents=True, exist_ok=True)
+    fg_response_dir.mkdir(parents=True, exist_ok=True)
+
+    os.environ["TIMELINE_FRONTIER_CACHE_DIR"] = str(timeline_dir)
+    os.environ["FG_RESPONSE_FRONTIER_CACHE_DIR"] = str(fg_response_dir)
+
+
 _configure_test_db_path()
+_isolate_frontier_cache_dirs()
 
 
 @pytest.fixture
