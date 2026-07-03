@@ -22,8 +22,6 @@ from ..core.constants import (
     GA_ELITISM,
     LOADOUTS_PER_SONG_LIMIT,
     GPU_GA_NUM_ISLANDS,
-    GPU_GA_GENS_PER_MIGRATION,
-    GPU_GA_MIGRATE_COUNT,
 )
 from ..core.color_flags import normalize_color_flags
 from ..core.profile_events import emit_profile_event, profile_events_active
@@ -1008,14 +1006,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
                         # Keep selection scores exact every generation, but only write full per-genome
                         # result rows when tracing needs them. Row 0 stays exact in both paths.
-                        is_migration_gen = (
-                            num_islands > 1
-                            and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0
-                            and gen < (int(n_generations) - 1)
-                        )
-                        fuse_refresh_with_next = (
-                            not bool(phase_timing) and not bool(is_migration_gen) and gen < int(n_generations) - 1
-                        )
+                        # The non-fused branch remains for the final generation (refresh without
+                        # producing a next population) and for phase_timing instrumentation.
+                        fuse_refresh_with_next = not bool(phase_timing) and gen < int(n_generations) - 1
                         fused_refresh_next_done = False
                         t0 = time.perf_counter() if phase_timing else 0.0
                         if fuse_refresh_with_next:
@@ -1109,31 +1102,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 use_hints=0,
                                 combos=int(n_combos),
                             )
-
-                        # Migration only if another generation will be evaluated (avoid corrupting final snapshots).
-                        if is_migration_gen:
-                            t0 = time.perf_counter() if phase_timing else 0.0
-                            gpu_api.ga_island_migration_runs(
-                                n_runs=int(batch_len),
-                                n_genomes_per_run=int(n_genomes),
-                                n_islands=int(num_islands),
-                                migrate_count=int(GPU_GA_MIGRATE_COUNT),
-                                n_slots=int(n_slots),
-                            )
-                            _sync()
-                            _raise_if_abort_requested(
-                                abort_requested, f"after GPU-native GA migration generation {int(gen)}"
-                            )
-                            if t0:
-                                _log_phase(
-                                    phase="migration",
-                                    ms=(time.perf_counter() - t0) * 1000.0,
-                                    runs=int(batch_len),
-                                    pop=int(n_genomes),
-                                    gen=int(gen),
-                                    use_hints=0,
-                                    combos=int(n_combos),
-                                )
 
                         if gen < int(n_generations) - 1 and not fused_refresh_next_done:
                             t0 = time.perf_counter() if phase_timing else 0.0

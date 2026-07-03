@@ -1073,23 +1073,3 @@ def ga_download_fg_selected_payload(
     if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:
         return view
     return np.ascontiguousarray(view, dtype=np.int32)
-def ga_island_migration_runs(
-    *, n_runs: int, n_genomes_per_run: int, n_islands: int, migrate_count: int, n_slots: int = 9
-) -> None:
-    """
-    GPU-side island migration using ring topology for multiple independent runs.
-    """
-    ensure_ready()
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_islands = int(n_islands)
-    migrate_count = int(migrate_count)
-    n_slots = int(n_slots)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
-        raise ValueError(f"Invalid n_slots: {n_slots}")
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-    kernels.ga_island_migration_runs_kernel(n_runs, n_genomes_per_run, n_islands, migrate_count, n_slots)

@@ -49,7 +49,6 @@ from .ga_operations import (
     ga_update_runs_best,
     ga_pack_fg_candidates_table_segmented,
     ga_download_fg_selected_payload,
-    ga_island_migration_runs,
 )
 
 # Public API
@@ -95,5 +94,4 @@ __all__ = [
     "ga_pack_fg_candidates_table_segmented",
     "ga_download_fg_selected_payload",
     # GPU-side island migration
-    "ga_island_migration_runs",
 ]

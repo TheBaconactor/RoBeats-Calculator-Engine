@@ -107,7 +107,6 @@ from .ga_eval import (
     ga_init_runs_best_kernel,
     ga_update_runs_best_kernel,
     # GPU-side island migration
-    ga_island_migration_runs_kernel,
     # Exact GA evaluation
     ga_compute_exact_eval_rep_kernel,
     ga_finalize_warmstart_lane_best_kernel,
@@ -198,7 +197,6 @@ __all__ = [
     "ga_init_runs_best_kernel",
     "ga_update_runs_best_kernel",
     # GPU-side island migration
-    "ga_island_migration_runs_kernel",
     # Exact GA evaluation
     "ga_find_best_combo_warmstart_kernel",
     "ga_finalize_warmstart_lane_best_kernel",
