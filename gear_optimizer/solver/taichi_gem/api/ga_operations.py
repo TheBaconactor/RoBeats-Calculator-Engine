@@ -559,10 +559,25 @@ def ga_evaluate_prepared_population(
         max_ft_gems=max_ft_gems_i,
         max_ff_gems=max_ff_gems_i,
     )
+    # GPU-side exact-eval dedup + COMPACTED launch: build the representative map once
+    # (base_stats are constant across combo chunks), emit the dense unique-slot table,
+    # and evaluate ONLY unique genome rows; the scatter copies each rep's result back
+    # to its duplicates. Bit-exact (genome_base_stats[g] is the sole per-genome eval
+    # input). Replaces skip-in-place, which still paid launch slots for duplicates —
+    # converged populations measure ~81% duplicate rows. The per-eval n_unique host
+    # read is measured ~free (+0.32 ms/gen); the sorted-hash rep build alternative was
+    # measured at +18.9 ms/gen and rejected — the O(n_genomes^2) rep kernel stays.
+    kernels.ga_compute_exact_eval_rep_kernel(n_genomes)
+    kernels.ga_build_unique_slot_table_kernel(n_genomes)
+    n_unique = int(fields.ga_exact_eval_unique_count.to_numpy()[0])
+    if n_unique <= 0 or n_unique > int(n_genomes):
+        raise RuntimeError(
+            f"GA exact-eval unique-slot table invalid: n_unique={n_unique} (n_genomes={n_genomes})"
+        )
     eval_budget = int(_ga_eval_budget())
-    max_evals = max(int(eval_budget), int(n_genomes))
+    max_evals = max(int(eval_budget), int(n_unique))
     combo_chunk = compute_ga_combo_chunk(
-        n_genomes=n_genomes,
+        n_genomes=n_unique,
         n_combos=n_combos,
         max_evals=max_evals,
         chunk_min=_GA_COMBO_CHUNK_MIN,
@@ -570,12 +585,6 @@ def ga_evaluate_prepared_population(
     )
     if combo_chunk <= 0:
         combo_chunk = int(n_combos)
-    # GPU-side exact-eval dedup: build the representative map once (base_stats are
-    # constant across combo chunks) so the eval kernel skips duplicate genomes and the
-    # scatter copies each rep's result back. Measured bit-exact, ~3% faster GA-eval on
-    # real workloads (16% of genomes are duplicates; skip-in-place reclaims part of that).
-    # O(n_genomes^2) rep build is bounded by MAX_GENOMES and tiny vs the O(n_combos) eval.
-    kernels.ga_compute_exact_eval_rep_kernel(n_genomes)
     offset = 0
     while offset < n_combos:
         chunk_len = int(min(combo_chunk, n_combos - offset))
@@ -583,10 +592,10 @@ def ga_evaluate_prepared_population(
             rem = int(n_combos - (offset + chunk_len))
             if 0 < rem <= int(_GA_COMBO_TAIL_MERGE_MAX):
                 merged = int(chunk_len + rem)
-                if int(n_genomes) * int(merged) <= int(max_evals):
+                if int(n_unique) * int(merged) <= int(max_evals):
                     chunk_len = merged
         kernels.ga_find_best_combo_warmstart_kernel(
-            n_genomes,
+            n_unique,
             n_combos,
             int(offset),
             int(chunk_len),
@@ -606,9 +615,8 @@ def ga_evaluate_prepared_population(
             int(is_s_ov),
             song_slot_i,
             use_exact_inner_solver_i,
-            1,  # GPU-side exact-eval dedup: reuse rep result for duplicate genome_base_stats
         )
-        kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
+        kernels.ga_finalize_warmstart_lane_best_kernel(n_unique)
         offset += int(chunk_len)
     # Scatter each duplicate genome's winning key/results from its representative row.
     kernels.ga_scatter_dup_results_kernel(n_genomes)

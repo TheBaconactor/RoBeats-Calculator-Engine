@@ -387,8 +387,12 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
     from gear_optimizer.solver.taichi_gem.api.ga_operations import (
         _ensure_ftff_combo_tables,
     )
+    from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.kernels import (
+        ga_build_unique_slot_table_kernel,
+        ga_compute_exact_eval_rep_kernel,
         ga_finalize_warmstart_lane_best_kernel,
+        ga_scatter_dup_results_kernel,
     )
 
     with _GPU_LOCK:
@@ -456,7 +460,17 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
             is_s_ov,
             _SONG_SLOT,
         )
-        ga_finalize_warmstart_lane_best_kernel(_N_GENOMES)
+        # The production finalize kernel is compacted (reduces unique-slot rows via
+        # ga_unique_slot_to_genome); mirror production's post-eval shape: rep map ->
+        # slot table -> finalize(n_unique) -> scatter dups from reps. The exhaustive
+        # reference evaluated every row, so rep rows carry the same lane data the
+        # compacted production path produced for them.
+        ga_compute_exact_eval_rep_kernel(_N_GENOMES)
+        ga_build_unique_slot_table_kernel(_N_GENOMES)
+        _ref_n_unique = int(fields.ga_exact_eval_unique_count.to_numpy()[0])
+        assert 0 < _ref_n_unique <= _N_GENOMES
+        ga_finalize_warmstart_lane_best_kernel(_ref_n_unique)
+        ga_scatter_dup_results_kernel(_N_GENOMES)
 
         from gear_optimizer.solver.taichi_gem.kernels import kernels_helpers
 
