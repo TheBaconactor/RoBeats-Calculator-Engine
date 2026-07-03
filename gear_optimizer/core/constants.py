@@ -70,11 +70,10 @@ PP_TIE_LOOKAHEAD_MAX = 8  # Max lookahead iterations for PP tie-breaking in gem 
 
 # --- GPU GA ISLAND MODEL ---
 # Real-song benchmarks showed island migration amplifying exact-clone pressure
-# without improving score quality consistently, so keep the default on a single
-# island until migration is revisited.
+# without improving score quality consistently; the migration dispatch path was
+# deleted (2026-07-03, dead at a single island). n_islands still parameterizes
+# the next-generation kernel's elitism layout.
 GPU_GA_NUM_ISLANDS = 1
-GPU_GA_GENS_PER_MIGRATION = 5  # Generations between elite migrations
-GPU_GA_MIGRATE_COUNT = 2  # Elites to migrate per island (ring topology)
 
 # --- DATABASE CONFIGURATION ---
 DB_FILE = "evolution.db"

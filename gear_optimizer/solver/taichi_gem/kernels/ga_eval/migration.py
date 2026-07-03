@@ -1,3 +1,6 @@
+# DO NOT DELETE: skyline_eval/_from_ga.py source-reads this file (install_from_ga_source).
+# The production GA migration dispatch was removed 2026-07-03 (dead at 1 island);
+# this kernel remains ONLY as skyline source material.
 """Taichi Kernels - GPU-side island migration for packed GA runs."""
 
 import taichi as ti

@@ -1,6 +1,5 @@
 """Taichi Kernels - GA evaluation kernels (split package)."""
 
-from .migration import ga_island_migration_runs_kernel
 from .payload import (
     ga_copy_fg_selected_payload_to_download_staging_kernel,
     ga_copy_runs_best_to_download_staging_kernel,
@@ -33,5 +32,4 @@ __all__ = [
     "ga_finalize_warmstart_lane_best_kernel",
     "ga_compute_exact_eval_rep_kernel",
     "ga_scatter_dup_results_kernel",
-    "ga_island_migration_runs_kernel",
 ]

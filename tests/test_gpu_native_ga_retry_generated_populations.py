@@ -107,9 +107,6 @@ class _FakeGpuApi:
         self.refresh_scores_and_update_runs_best_calls += 1
         return None
 
-    def ga_island_migration_runs(self, *_args, **_kwargs):
-        return None
-
     def ga_next_generation_fused_runs(self, *_args, **_kwargs):
         self.next_generation_calls += 1
         return None
@@ -323,7 +320,6 @@ def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
     monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
-    monkeypatch.setattr(genetic, "GPU_GA_GENS_PER_MIGRATION", 9999, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
