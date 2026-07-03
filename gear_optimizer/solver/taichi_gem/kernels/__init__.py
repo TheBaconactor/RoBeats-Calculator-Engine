@@ -102,6 +102,8 @@ from .ga_eval import (
     ga_pack_fg_candidates_table_segmented_kernel,
     ga_select_top_base_fg_candidate_coords_kernel,
     ga_copy_fg_selected_payload_to_download_staging_kernel,
+    ga_copy_runs_best_to_download_staging_kernel,
+    ga_refresh_fg_candidates_row0_kernel,
     ga_init_runs_best_kernel,
     ga_update_runs_best_kernel,
     # GPU-side island migration
@@ -191,6 +193,8 @@ __all__ = [
     "ga_pack_fg_candidates_table_segmented_kernel",
     "ga_select_top_base_fg_candidate_coords_kernel",
     "ga_copy_fg_selected_payload_to_download_staging_kernel",
+    "ga_copy_runs_best_to_download_staging_kernel",
+    "ga_refresh_fg_candidates_row0_kernel",
     "ga_init_runs_best_kernel",
     "ga_update_runs_best_kernel",
     # GPU-side island migration

@@ -757,3 +757,97 @@ def ga_copy_fg_selected_payload_to_download_staging_kernel(
         out_payload[i + 1, 1] = row_idx
         for c in ti.static(range(base_cols)):
             out_payload[i + 1, 2 + c] = kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, row_idx, c]
+
+
+@ti.kernel
+def ga_copy_runs_best_to_download_staging_kernel(n_runs: ti.i32):
+    """Copy per-run tracked-best rows (ga_runs_payload_packed row 0) to compact staging."""
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for r in range(n_runs):
+        for c in ti.static(range(1 + 9 + _GA_FG_RESULTS_COLS)):
+            kernels_helpers.ga_runs_best_download_staging[r, c] = kernels_helpers.ga_runs_payload_packed[r, 0, c]
+
+
+@ti.kernel
+def ga_refresh_fg_candidates_row0_kernel(
+    table_slot: ti.i32,
+    run_idx_start: ti.i32,
+    n_runs: ti.i32,
+    n_slots: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+):
+    """
+    Re-derive `ga_fg_candidates_packed` row 0 from `ga_runs_payload_packed` row 0.
+
+    Semantics are identical to the row-0 section of
+    ga_pack_fg_candidates_table_segmented_kernel (copy score+ids+results,
+    canonicalize minis, recompute base_stats7). Used after the 1-swap elite
+    polish updates per-run bests so the FG funnel and the selected payload see
+    the polished genomes without repacking rows 1..K (whose source population
+    was consumed by the polish evaluation).
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for r in range(n_runs):
+        run_idx = run_idx_start + r
+
+        _clear_fg_candidate_row(table_slot, run_idx, 0)
+
+        for c in ti.static(range(1 + 9 + _GA_FG_RESULTS_COLS)):
+            kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, c] = kernels_helpers.ga_runs_payload_packed[
+                run_idx, 0, c
+            ]
+
+        m = _sort3_i32(
+            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 6],
+            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 7],
+            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + 8],
+        )
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 6] = m[0]
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 7] = m[1]
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, 1 + 8] = m[2]
+
+        pp = kernels_helpers.base_fixed_stats[0]
+        cm = kernels_helpers.base_fixed_stats[1]
+        fm = kernels_helpers.base_fixed_stats[2]
+        ft_stat = kernels_helpers.base_fixed_stats[3]
+        ff_stat = kernels_helpers.base_fixed_stats[4]
+        beat = kernels_helpers.base_fixed_stats[5]
+        vibe = kernels_helpers.base_fixed_stats[6]
+        rush = kernels_helpers.base_fixed_stats[7]
+        flow = kernels_helpers.base_fixed_stats[8]
+        chill = kernels_helpers.base_fixed_stats[9]
+
+        for s in range(n_slots):
+            item_id = kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s]
+            if item_id > 0:
+                pp += kernels_helpers.item_stats[item_id, 0]
+                cm += kernels_helpers.item_stats[item_id, 1]
+                fm += kernels_helpers.item_stats[item_id, 2]
+                ft_stat += kernels_helpers.item_stats[item_id, 3]
+                ff_stat += kernels_helpers.item_stats[item_id, 4]
+                beat += kernels_helpers.item_stats[item_id, 5]
+                vibe += kernels_helpers.item_stats[item_id, 6]
+                rush += kernels_helpers.item_stats[item_id, 7]
+                flow += kernels_helpers.item_stats[item_id, 8]
+                chill += kernels_helpers.item_stats[item_id, 9]
+
+        p_val = (beat * is_p_ft) + (vibe * is_p_ff) + (rush * is_p_fm) + (flow * is_p_cm) + (chill * is_p_pp)
+        s_val = (beat * is_s_ft) + (vibe * is_s_ff) + (rush * is_s_fm) + (flow * is_s_cm) + (chill * is_s_pp)
+
+        base_col0 = 1 + 9 + _GA_FG_RESULTS_COLS
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 0] = pp
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 1] = cm
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 2] = fm
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 3] = p_val
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 4] = s_val
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 5] = ft_stat
+        kernels_helpers.ga_fg_candidates_packed[table_slot, run_idx, 0, base_col0 + 6] = ff_stat
