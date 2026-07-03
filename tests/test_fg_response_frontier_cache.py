@@ -1055,11 +1055,11 @@ def test_fg_response_prebuild_uses_band_pinned_worker_topology(monkeypatch) -> N
         def __exit__(self, *_args):
             return False
 
-    monkeypatch.setattr(cpu_affinity, "frontier_prebuild_worker_count", lambda: 8)
+    monkeypatch.setattr(prebuild, "fg_response_prebuild_worker_count", lambda: 8)
     monkeypatch.setattr(cpu_affinity, "frontier_prebuild_intra_worker_threads", lambda _workers: 4)
     monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", FakeExecutor)
 
-    worker_count = prebuild.frontier_prebuild_worker_count()
+    worker_count = prebuild.fg_response_prebuild_worker_count()
     reducer_threads = cpu_affinity.frontier_prebuild_intra_worker_threads(worker_count)
     prebuild.concurrent.futures.ProcessPoolExecutor(
         max_workers=worker_count,

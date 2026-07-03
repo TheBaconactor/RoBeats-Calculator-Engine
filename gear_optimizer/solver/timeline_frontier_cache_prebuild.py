@@ -23,6 +23,7 @@ from gear_optimizer.core.cpu_affinity import (
     init_process_pool_worker_band,
     timeline_prebuild_worker_count,
 )
+from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.solver.timeline_exact_frontier import configure_timeline_pair_build_threads
 
 logger = logging.getLogger(__name__)
@@ -298,49 +299,54 @@ def run_timeline_frontier_cache_prebuild(
     data_root: str | os.PathLike[str] | None = None,
 ) -> TimelineFrontierCachePrebuildSummary:
     del cfg
+    from gear_optimizer.solver.taichi_gem.api.timeline import _frontier_disk_cache_dir
+
     started = time.perf_counter()
     queue_paths = [str(item[0]) for item in song_queue if isinstance(item, tuple) and item]
     paths = ordered_frontier_cache_song_paths(queue_paths=queue_paths, data_root=data_root)
     if not paths:
         return TimelineFrontierCachePrebuildSummary(total=0)
 
-    manifest_plan = _build_manifest_plan(paths, ref_arrays)
-    manifest_hits = int(manifest_plan.hit_count)
-    if manifest_hits > 0:
-        logger.info(
-            "[TimelineCache] Manifest fast-hit skipped %s/%s song(s) before worker parse/build.",
-            manifest_hits,
-            int(manifest_plan.total_paths),
+    # Single-builder lock: a second concurrent process waits here, then re-runs its manifest plan
+    # below -- which now fast-hits everything this process wrote -- instead of duplicating the build.
+    with FrontierBuildLock(_frontier_disk_cache_dir(), label="timeline"):
+        manifest_plan = _build_manifest_plan(paths, ref_arrays)
+        manifest_hits = int(manifest_plan.hit_count)
+        if manifest_hits > 0:
+            logger.info(
+                "[TimelineCache] Manifest fast-hit skipped %s/%s song(s) before worker parse/build.",
+                manifest_hits,
+                int(manifest_plan.total_paths),
+            )
+
+        removed_tmp = cleanup_timeline_frontier_cache_temp_files()
+        if int(removed_tmp) > 0:
+            logger.info("[TimelineCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
+
+        run_summary, results = _run_missing_timeline_prebuild(list(manifest_plan.missing_paths), ref_arrays)
+        _apply_manifest_results(plan=manifest_plan, results=results)
+        elapsed_ms = float((time.perf_counter() - started) * 1000.0)
+        combined = TimelineFrontierCachePrebuildSummary(
+            total=int(manifest_plan.total_paths),
+            completed=int(manifest_hits + run_summary.completed),
+            failures=int(run_summary.failures),
+            built=int(run_summary.built),
+            disk=int(manifest_hits + run_summary.disk),
+            memory=int(run_summary.memory),
+            elapsed_ms=elapsed_ms,
         )
-
-    removed_tmp = cleanup_timeline_frontier_cache_temp_files()
-    if int(removed_tmp) > 0:
-        logger.info("[TimelineCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
-
-    run_summary, results = _run_missing_timeline_prebuild(list(manifest_plan.missing_paths), ref_arrays)
-    _apply_manifest_results(plan=manifest_plan, results=results)
-    elapsed_ms = float((time.perf_counter() - started) * 1000.0)
-    combined = TimelineFrontierCachePrebuildSummary(
-        total=int(manifest_plan.total_paths),
-        completed=int(manifest_hits + run_summary.completed),
-        failures=int(run_summary.failures),
-        built=int(run_summary.built),
-        disk=int(manifest_hits + run_summary.disk),
-        memory=int(run_summary.memory),
-        elapsed_ms=elapsed_ms,
-    )
-    emit_profile_event(
-        component="timeline_cache",
-        event="prebuild_with_manifest",
-        metrics={
-            "manifest_hits": int(manifest_hits),
-            "completed": int(combined.completed),
-            "total": int(combined.total),
-            "failures": int(combined.failures),
-            "built": int(combined.built),
-            "disk": int(combined.disk),
-            "memory": int(combined.memory),
-            "elapsed_ms": elapsed_ms,
-        },
-    )
-    return combined
+        emit_profile_event(
+            component="timeline_cache",
+            event="prebuild_with_manifest",
+            metrics={
+                "manifest_hits": int(manifest_hits),
+                "completed": int(combined.completed),
+                "total": int(combined.total),
+                "failures": int(combined.failures),
+                "built": int(combined.built),
+                "disk": int(combined.disk),
+                "memory": int(combined.memory),
+                "elapsed_ms": elapsed_ms,
+            },
+        )
+        return combined
