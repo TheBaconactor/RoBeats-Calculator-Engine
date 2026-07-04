@@ -47,7 +47,11 @@ from .response_types import FgResponseFrontierResult
 #             and must rebuild. Invariant: ANY change that alters fg_response_frontier_song_cache_key
 #             inputs (extract_fg_song_inputs / timing envelopes) MUST bump this version -- the
 #             version string is the only key-derivation fingerprint the manifest fast-path sees.
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v18"
+#             v18->v19: canonical late-Great gate (late_great_prefix_is_legal) added to the search
+#             (_compact_first_frontier_action_arrays) + reconstruct mirror -- illegal (phantom)
+#             late-Great activations whose fill-crossing is an earlier Perfect are no longer emitted,
+#             so produced surfaces change for any song where the old model scheduled one. Rebuild.
+_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v19"
 _MEMORY_CACHE_MAX = 4096
 _PAYLOAD_CACHE_MAX = 8
 # Sized to cover the native in-flight prep window (prep_limit tops out around 36): a

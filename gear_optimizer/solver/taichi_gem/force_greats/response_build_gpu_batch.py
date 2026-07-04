@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 
+from .fill_crossing import late_great_prefix_is_legal
 from .response_builder import _action_table
 from .response_build_gpu_precompute import (
     _canonicalize_first_only_prepared_items_with_end_indices,
@@ -24,6 +25,7 @@ def _compact_first_frontier_action_arrays(
     first_fill: list[int],
     later_forced: list[int],
     first_forced: list[int],
+    raw_fever_fill: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     rows: list[tuple[int, int, int, int, int, int]] = []
     row_by_fill: dict[tuple[int, int], int] = {}
@@ -54,12 +56,18 @@ def _compact_first_frontier_action_arrays(
             later_activation,
             first_activation,
         ) = rows[int(row_idx)]
+        # Late-Great gate (canonical fill-crossing): emit the late-Great activation ONLY when the
+        # server float bar reaches full ON that Great, not on an earlier Perfect. An illegal
+        # candidate is dropped (left as the -1 sentinel), so the phantom late-Great over-report can
+        # never be selected on any vendor. Bit-exact with the `late_great_activation_is_legal` walk.
         if int(k) > 0 and int(action_idx) > 0 and int(later_fill[int(action_idx) - 1]) == int(later):
             candidate = min(max(0, int(k) - 1), max(0, int(later) - 1))
-            later_activation = int(candidate) if int(later_activation) < 0 else min(int(later_activation), int(candidate))
+            if late_great_prefix_is_legal(int(later), int(candidate), float(raw_fever_fill), first=False):
+                later_activation = int(candidate) if int(later_activation) < 0 else min(int(later_activation), int(candidate))
         if int(k) > 0 and int(action_idx) > 0 and int(first_fill[int(action_idx) - 1]) == int(first):
             candidate = min(max(0, int(k) - 1), max(0, int(first)))
-            first_activation = int(candidate) if int(first_activation) < 0 else min(int(first_activation), int(candidate))
+            if late_great_prefix_is_legal(int(first), int(candidate), float(raw_fever_fill), first=True):
+                first_activation = int(candidate) if int(first_activation) < 0 else min(int(first_activation), int(candidate))
         rows[int(row_idx)] = (
             int(normal_later),
             int(normal_first),
@@ -145,6 +153,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                 first_fill,
                 later_forced,
                 first_forced,
+                float(raw_fever_fill),
             )
             action_table_cache[action_key] = action_arrays
         (

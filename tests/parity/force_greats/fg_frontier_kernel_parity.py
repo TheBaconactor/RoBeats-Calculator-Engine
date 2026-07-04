@@ -85,7 +85,7 @@ def build_kernel_args(
         later_activation_forced_arr,
         first_activation_forced_arr,
     ) = _compact_first_frontier_action_arrays(
-        actions, later_fill, first_fill, later_forced, first_forced
+        actions, later_fill, first_fill, later_forced, first_forced, float(raw_fever_fill)
     )
 
     real_times = np.asarray([float(real_fever_time)], dtype=np.float32)

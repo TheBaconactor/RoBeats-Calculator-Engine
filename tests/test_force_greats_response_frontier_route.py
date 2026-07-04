@@ -779,6 +779,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
             great_candidate_timestamps=great_candidates,
             perfect_floor_timestamps=timestamps,
             great_floor_timestamps=timestamps,
+            raw_fever_fill=raw_fever_fill,
         )
         if row["activation_judgment"] == "late_great"
     )

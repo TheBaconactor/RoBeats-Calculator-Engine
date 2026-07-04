@@ -620,6 +620,7 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
         great_floor_timestamps=timestamps,
+        raw_fever_fill=2.0,
     )
 
     assert not any(int(option["k"]) == 1 and int(option["next_state"]) == 5 for option in options)
@@ -922,6 +923,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
             great_candidate_timestamps=great_candidates,
             perfect_floor_timestamps=timestamps,
             great_floor_timestamps=timestamps,
+            raw_fever_fill=raw_fever_fill,
         ):
             if int(option["k"]) == int(count):
                 edge_match = (int(option["next_state"]), option["surface"])

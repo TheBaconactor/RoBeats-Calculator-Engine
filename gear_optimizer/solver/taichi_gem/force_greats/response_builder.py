@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 
+from .fill_crossing import late_great_prefix_is_legal
 from .response_types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
 
 
@@ -314,6 +315,7 @@ def _edge_surface_options(
     great_candidate_timestamps: np.ndarray | None = None,
     perfect_floor_timestamps: np.ndarray,
     great_floor_timestamps: np.ndarray,
+    raw_fever_fill: float,
 ) -> list[dict[str, Any]]:
     """Enumerate candidate fever sections with their response-surface edges.
 
@@ -423,7 +425,16 @@ def _edge_surface_options(
                 a=int(a), forced_start=int(forced_start), forced_great_end=int(great_end),
                 activation_great_idx=-1,
             )
-        if bool(use_forced_great_timing) and int(k) > 0 and int(action_idx) > 0 and int(fills[action_idx - 1]) == int(fill):
+        if (
+            bool(use_forced_great_timing)
+            and int(k) > 0
+            and int(action_idx) > 0
+            and int(fills[action_idx - 1]) == int(fill)
+            # Late-Great gate (mirror of the search's `_compact_first_frontier_action_arrays`): only a
+            # Great that IS the server fill-crossing may start fever from its late hit; a Perfect
+            # crossing first is a phantom over-report. Same O(1) legality both paths obey -> reconcile.
+            and late_great_prefix_is_legal(int(fill), min(max(0, int(k) - 1), max(0, int(a) - int(forced_start))), float(raw_fever_fill), first=bool(first))
+        ):
             prefix_forced = min(max(0, int(k) - 1), max(0, int(a) - int(forced_start)))
             activation_e, _activation_start_time, activation_carry_idx = _edge_end(
                 n=int(n),
@@ -564,6 +575,7 @@ def _edge_surface_option_details(
     great_candidate_timestamps: np.ndarray | None = None,
     perfect_floor_timestamps: np.ndarray,
     great_floor_timestamps: np.ndarray,
+    raw_fever_fill: float,
 ) -> list[dict[str, Any]]:
     """Full option details (surface edge + witness fields) for every option."""
     return [
@@ -590,6 +602,7 @@ def _edge_surface_option_details(
             great_candidate_timestamps=great_candidate_timestamps,
             perfect_floor_timestamps=perfect_floor_timestamps,
             great_floor_timestamps=great_floor_timestamps,
+            raw_fever_fill=float(raw_fever_fill),
         )
     ]
 
@@ -768,6 +781,7 @@ def reconstruct_force_greats_response_trace(
             great_candidate_timestamps=great_ts,
             perfect_floor_timestamps=floor_ts,
             great_floor_timestamps=great_floor_ts,
+            raw_fever_fill=float(raw_fever_fill),
         ):
             edge = option["surface"]
             next_remaining = _subtract_edge(remaining, edge)
