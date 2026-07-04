@@ -369,19 +369,6 @@ def load_memory_guard_resume_state(expected_context=None) -> MemoryGuardResumeSt
     return MemoryGuardResumeState(pending=pending, known_path_keys=known_path_keys)
 
 
-def load_memory_guard_resume_queue(expected_context=None):
-    """
-    Load pending song queue from memory guard resume file.
-
-    Args:
-        expected_context: Expected resume context (None to skip validation)
-
-    Returns:
-        list: List of (file_path, song_name, difficulty) tuples
-    """
-    return load_memory_guard_resume_state(expected_context).pending
-
-
 class MemoryGuardResumeTracker:
     """
     Tracks pending songs for graceful restart after memory limit is reached.

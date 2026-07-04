@@ -13,8 +13,7 @@ placed-Great locations, activation-hit inclusion, Great half-fill, and the float
 one integer count.  For Perfect-only (BASE) sections the calibrated integer stepping happens to line
 up; once Greats are placed non-uniformly it can land ONE NOTE too far right.  The late-Great branch
 then starts the fever window from that (wrong) note's late-Great timestamp, extending fever past the
-true drain -- an unreachable window (the FG late-Great over-report; see
-``docs/Implementation Records/FG_LATE_GREAT_OVERREPORT.md``).
+true drain -- an unreachable window (the FG late-Great over-report).
 
 THE CANONICAL ANSWER
 --------------------
@@ -31,13 +30,23 @@ candidate-generation hint, but it must not decide where fever activates.  (Corre
 prefix-sum / ``searchsorted`` acceleration -- the ``fever_timeline`` ``side="left"`` style -- can
 replace the walk once wired and proven, without changing the result.)
 
-BASE AND FG ARE ONE MODEL
--------------------------
+BASE AND FG SHARE ONE CANONICAL MODEL (reference)
+-------------------------------------------------
 This crossing is not FG-specific.  The BASE (all-Perfect) timeline is the same walk with
-``is_great`` all-False, and its historical ``calculate_fever_timeline_indices``
-(``ceil((total-long)*0.333*ff)`` integer note-count) is just the Perfect-only special case of it.
-Both surfaces therefore route through the SAME two calls -- ``server_fill_crossing_fast`` (activation)
-and ``server_fever_end`` (drain) -- differing ONLY in ``is_great`` and the per-note hit-timing arrays.
+``is_great`` all-False, and the historical ``calculate_fever_timeline_indices``
+(``ceil((total-long)*0.333*ff)`` integer note-count) is its Perfect-only special case.  Conceptually
+both surfaces reduce to the SAME two calls -- ``server_fill_crossing_fast`` (activation) and
+``server_fever_end`` (drain) -- differing ONLY in ``is_great`` and the per-note hit-timing arrays.
+
+SCOPE OF THE CURRENT FIX -- NOT YET FULL CANONICAL ROUTING
+----------------------------------------------------------
+This module defines the canonical REFERENCE model plus the O(1) ``late_great_prefix_is_legal`` gate
+that the current FG fix wires in.  Production does NOT yet route activation through
+``server_fill_crossing_fast``: the FG search/reconstruct still compute ``activation = state_i + fill``
+from ``_action_table`` and only DROP illegal late-Great candidates via the gate (so the phantom can
+never be selected); BASE was fixed separately by invalidating the stale timeline-frontier disk cache
+(``exact-frontier`` version bump), the DP/scorer already being floor-aware.  Full canonical activation
+routing for both surfaces is a follow-up.
 The MAXIMUM REACHABLE surface falls straight out of the server rules: activation is the AUTO crossing
 (cannot fire earlier -- the bar is not full; cannot fire later -- the server auto-fires the instant it
 is), and the drain starts at the crossing note's LATEST legal hit (a Great's late window reaches
