@@ -438,17 +438,7 @@ def _edge_surface_options(
         # it here so the reconstruct emits only reachable surfaces; off overlap this is a bit-exact
         # no-op (the correction is 0) so non-chord charts are unchanged.
         if lg_prefix is not None and not late_great_activation_is_reachable(
-            fill=int(fill),
-            prefix=int(lg_prefix),
-            fever_fill_denom=float(raw_fever_fill),
-            first=bool(first),
-            activation_index=int(a),
-            section_start=int(forced_start),
-            forced_start=int(forced_start),
-            timestamps=timestamps,
-            perfect_candidate_timestamps=perfect_ts,
-            great_candidate_timestamps=great_ts,
-            n=int(n),
+            int(a), timestamps, perfect_ts, great_ts, int(n)
         ):
             lg_prefix = None
         if (

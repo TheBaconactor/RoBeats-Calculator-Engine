@@ -1,93 +1,98 @@
 """Hit-time chord-reachability gate (fix/chord-reachability-producer).
 
-Proves the new :func:`late_great_activation_is_reachable` gate:
-  (A) REJECTS the chord phantom the index-order gate blesses (All Right There class),
-  (B) PRESERVES a genuinely reachable late tail, incl. a straddling note-ahead (no under-count),
-  (C) is a BIT-IDENTICAL no-op off overlap (== today's index gate), and
-  (D) costs only a bounded local scan (no per-call O(n) blow-up).
+Proves the reachability owner :func:`late_great_activation_is_reachable` and its vectorized twin
+:func:`build_late_great_forbidden_mask`:
+  (A) REJECT the chord phantom the index-order gate blesses (All Right There class),
+  (B) PRESERVE a genuinely reachable late tail, incl. a straddling note-ahead (no under-count),
+  (C) are a NO-OP off overlap (every activation reachable), and
+  (D) the mask equals the per-note owner and builds in bounded time (no O(n^2) blow-up).
 """
 import time
 
 import numpy as np
-import pytest
 
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+    build_late_great_forbidden_mask,
     late_great_activation_is_reachable,
     late_great_activation_prefix,
     late_great_prefix_is_legal,
 )
 
 
-def _reach(ts, pc, gc, *, fill, prefix, denom, a, forced_start=0, section_start=0, first=True):
-    return late_great_activation_is_reachable(
-        fill=fill, prefix=prefix, fever_fill_denom=denom, first=first,
-        activation_index=a, section_start=section_start, forced_start=forced_start,
-        timestamps=np.asarray(ts, float), perfect_candidate_timestamps=np.asarray(pc, float),
-        great_candidate_timestamps=np.asarray(gc, float), n=len(ts),
-    )
+def _R(a, ts, pc, gc):
+    return late_great_activation_is_reachable(a, np.asarray(ts, float), np.asarray(pc, float),
+                                              np.asarray(gc, float), len(ts))
 
 
 def test_a_chord_phantom_rejected():
-    # Chord at t=0: normal, TAIL(activation), normal, normal. denom=1.5 -> the index gate BLESSES the
-    # tail late-Great, but two on-time sibling Perfects (+40ms) fill the bar before the tail's +198ms.
+    # Chord at t=0: normal, TAIL(activation idx1), normal, normal. denom=1.5 -> the index gate
+    # BLESSES the tail late-Great, but the on-time sibling Perfects (+40ms) fill the bar first.
     ts = [0.0, 0.0, 0.0, 0.0]
-    pc = [0.040, 0.080, 0.040, 0.040]      # idx1 = held tail (Perfect upper +80)
-    gc = [0.190, 0.198, 0.190, 0.190]      # idx1 tail Great late edge +198
-    # today's index gate blesses it:
+    pc = [0.040, 0.080, 0.040, 0.040]   # idx1 = held tail (Perfect upper +80)
+    gc = [0.190, 0.198, 0.190, 0.190]   # idx1 tail Great late edge +198
     assert late_great_activation_prefix(fill=1, k=1, first=True, fever_fill_denom=1.5) == 0
-    assert late_great_prefix_is_legal(1, 0, 1.5, True) is True
-    # hit-time gate rejects it (must_precede = 3 on-time siblings >= denom 1.5):
-    assert _reach(ts, pc, gc, fill=1, prefix=0, denom=1.5, a=1) is False
+    assert late_great_prefix_is_legal(1, 0, 1.5, True) is True  # index gate blesses it
+    assert _R(1, ts, pc, gc) is False                            # hit-time gate rejects it
 
 
 def test_b_legit_late_tail_with_straddle_preserved():
-    # idx1 tail is the GENUINE reachable late-Great: its only earlier note (idx0) does not fill the
-    # bar, and the note-ahead idx2 STRADDLES h_a (earliest 0.360 < 0.398 < latest 0.420) so it is
-    # delayable past the activation -> optional -> the tail stays reachable (no under-count).
+    # idx1 tail is the GENUINE reachable late-Great: the note-ahead idx2 STRADDLES h_a (earliest hit
+    # 0.360 < 0.398, but LATEST hit pc=0.420 >= 0.398) so it is delayable past the activation -> the
+    # tail stays reachable (no under-count).
     ts = [0.100, 0.200, 0.380]
-    pc = [0.140, 0.280, 0.420]             # idx2 latest Perfect hit 0.420 > h_a 0.398 -> optional
-    gc = [0.290, 0.398, 0.570]             # idx1 tail Great hit 0.398
+    pc = [0.140, 0.280, 0.420]          # idx2 latest Perfect hit 0.420 >= h_a 0.398 -> optional
+    gc = [0.290, 0.398, 0.570]          # idx1 tail Great hit 0.398
     assert late_great_activation_prefix(fill=1, k=1, first=True, fever_fill_denom=1.5) == 0
-    assert _reach(ts, pc, gc, fill=1, prefix=0, denom=1.5, a=1) is True
+    assert _R(1, ts, pc, gc) is True
 
 
-def test_c_bit_identical_to_index_gate_off_overlap():
-    # Well-separated notes (>0.5s apart): no window can reorder, so the hit-time gate must equal the
-    # index gate for EVERY (fill, prefix, denom) -- non-overlapping charts are provably unchanged.
-    n = 12
-    ts = [i * 1.0 for i in range(n)]                 # 1s apart
-    pc = [t + 0.040 for t in ts]
-    gc = [t + 0.190 for t in ts]
-    for a in range(1, n):
-        for prefix in range(0, a + 1):
-            for denom in (1.0, 1.5, 2.0, 2.5, 3.7, float(a)):
-                fill = a  # first section: a = fill
-                perfects_before = fill - 0 - prefix
-                if perfects_before < 0:
-                    continue
-                index_ok = late_great_prefix_is_legal(fill, prefix, denom, True)
-                hittime_ok = _reach(ts, pc, gc, fill=fill, prefix=prefix, denom=denom, a=a)
-                assert hittime_ok == index_ok, (a, prefix, denom, index_ok, hittime_ok)
+def test_c_all_right_there_numeric_class():
+    # Held tail 620 @96.550s, +198ms -> h_a 96.748489; on-time normal siblings 621/622 latest Perfect
+    # hit 96.590 < 96.748 -> the tail late-Great is unreachable; siblings are NOT chord-last.
+    ts = [96.550, 96.550, 96.550]
+    pc = [96.630, 96.590, 96.590]       # tail Perfect +80, normals +40
+    gc = [96.748489, 96.740, 96.740]    # tail late-Great +198.489; normals +190
+    assert _R(0, ts, pc, gc) is False   # tail 620 forbidden (siblings 621/622 hit first)
+    # If the tail were LAST in its chord it would be reachable (no later sibling to cross first):
+    ts2, pc2, gc2 = [96.550, 96.550, 96.550], [96.590, 96.590, 96.630], [96.740, 96.740, 96.748489]
+    assert _R(2, ts2, pc2, gc2) is True
 
 
-def test_d_bounded_local_scan_is_fast():
-    # A long chart (50k notes) with the activation mid-array: the gate must scan only the ~0.5s
-    # neighbourhood, not the whole section. 20k calls must stay well under a second.
-    n = 50_000
-    ts = np.arange(n, dtype=float) * 0.030          # 30ms spacing (dense)
-    pc = ts + 0.040
-    gc = ts + 0.190
-    a = 25_000
+def test_d_off_overlap_noop_and_mask_equivalence():
+    rng = np.random.default_rng(0)
+    for trial in range(200):
+        n = int(rng.integers(4, 40))
+        # dense-ish chart with occasional exact chords + held tails
+        base = np.cumsum(rng.integers(0, 60, size=n)).astype(float) * 0.001  # 0..~60ms steps (chords when 0)
+        upper_p = np.where(rng.random(n) < 0.3, 0.080, 0.040)                # some held tails (+80)
+        upper_g = np.where(upper_p > 0.05, 0.380, 0.190)
+        ts, pc, gc = base, base + upper_p, base + upper_g
+        mask = build_late_great_forbidden_mask(ts, pc, gc, n)
+        for a in range(n):
+            assert bool(mask[a]) == (not _R(a, ts, pc, gc)), (trial, a)
+        # well-separated (>0.5s) => no note can be a later must-precede => nothing forbidden
+        sep = np.arange(n, dtype=float)
+        assert not build_late_great_forbidden_mask(sep, sep + 0.040, sep + 0.190, n).any()
+
+
+def test_e_dense_forbids_late_greats_sparse_does_not():
+    # CORRECT model incl. notes-ahead: on a DENSE chart, delaying an activation to its +190ms late
+    # hit means the on-time notes in the intervening ~190ms are hit FIRST and fill the bar before it,
+    # so the late-Great is unreachable -- the window-extension trick only survives in SPARSE regions.
+    n = 2_000
+    dense = np.arange(n, dtype=float) * 0.030          # 30ms spacing
+    fd = build_late_great_forbidden_mask(dense, dense + 0.040, dense + 0.190, n)
+    assert fd[:-10].all()                              # essentially every interior note is forbidden
+    sparse = np.arange(n, dtype=float) * 0.250         # 250ms spacing > late-Great window
+    fs = build_late_great_forbidden_mask(sparse, sparse + 0.040, sparse + 0.190, n)
+    assert not fs.any()                                # gaps larger than the window -> all reachable
+
+
+def test_f_mask_build_is_bounded_fast():
+    n = 100_000
+    ts = np.arange(n, dtype=float) * 0.030             # dense -> ~6 inner iterations/note, worst case
+    pc, gc = ts + 0.040, ts + 0.190
     t0 = time.perf_counter()
-    for _ in range(20_000):
-        late_great_activation_is_reachable(
-            fill=a, prefix=0, fever_fill_denom=float(a) - 0.5, first=True,
-            activation_index=a, section_start=0, forced_start=0,
-            timestamps=ts, perfect_candidate_timestamps=pc, great_candidate_timestamps=gc, n=n,
-        )
-    elapsed = time.perf_counter() - t0
-    assert elapsed < 1.0, f"gate too slow: {elapsed:.3f}s for 20k calls on a 50k-note chart"
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
+    build_late_great_forbidden_mask(ts, pc, gc, n)
+    el = time.perf_counter() - t0
+    assert el < 2.0, f"mask build too slow: {el:.3f}s for {n} notes (should be ~O(n*window))"
