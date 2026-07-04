@@ -4,7 +4,11 @@ from typing import Any
 
 import numpy as np
 
-from .fill_crossing import late_great_activation_prefix, perfect_fill_crossing_offset
+from .fill_crossing import (
+    late_great_activation_is_reachable,
+    late_great_activation_prefix,
+    perfect_fill_crossing_offset,
+)
 from .response_types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
 
 
@@ -429,6 +433,24 @@ def _edge_surface_options(
         # server fill-crossing, or None when a Perfect crosses first (a phantom over-report). Same O(1)
         # owner both paths call, so the placement math lives in exactly one place.
         lg_prefix = late_great_activation_prefix(int(fill), int(k), first=bool(first), fever_fill_denom=float(raw_fever_fill))
+        # Hit-time reachability: the index gate above can bless a late-Great activation whose bar is
+        # actually completed first by an earlier-hit same-timestamp sibling (the chord phantom). Drop
+        # it here so the reconstruct emits only reachable surfaces; off overlap this is a bit-exact
+        # no-op (the correction is 0) so non-chord charts are unchanged.
+        if lg_prefix is not None and not late_great_activation_is_reachable(
+            fill=int(fill),
+            prefix=int(lg_prefix),
+            fever_fill_denom=float(raw_fever_fill),
+            first=bool(first),
+            activation_index=int(a),
+            section_start=int(forced_start),
+            forced_start=int(forced_start),
+            timestamps=timestamps,
+            perfect_candidate_timestamps=perfect_ts,
+            great_candidate_timestamps=great_ts,
+            n=int(n),
+        ):
+            lg_prefix = None
         if (
             bool(use_forced_great_timing)
             and int(action_idx) > 0
