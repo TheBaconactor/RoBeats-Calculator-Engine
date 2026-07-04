@@ -20,25 +20,8 @@ from gear_optimizer.solver.combined_skyline_sparse import (
     get_last_combined_skyline_stats,
 )
 from gear_optimizer.solver.fixed_timing_skyline import reduce_fixed_timing_prefix_skyline
-from gear_optimizer.solver.gear_response_prune import (
-    gear_response_phase_counts,
-    gear_response_phase_seconds,
-    prune_local_gear_response_pairs,
-)
 from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
-)
-from gear_optimizer.solver.mini_response_prune import (
-    MiniLocalResponseFilter,
-    mini_local_filter_gear_rows,
-    mini_response_phase_counts,
-    mini_response_phase_seconds,
-    prune_mini_response_envelope,
-)
-from gear_optimizer.solver.response_envelope_prune import (
-    prune_response_envelope_pairs,
-    response_envelope_phase_counts,
-    response_envelope_phase_seconds,
 )
 from gear_optimizer.solver.solver_common import (
     GEAR_SLOTS,
@@ -104,7 +87,10 @@ class _FgCandidatePolicy:
 
     @property
     def run_topk_prune(self) -> bool:
-        return str(self.mode) == "topk"
+        # The response-envelope prune subsystem (lossless top-K optimization) was removed.
+        # This parity reference now always evaluates the full candidate set, which yields the
+        # identical winner -- pruning only ever dropped provably-dominated candidates.
+        return False
 
     def skipped_reason(self) -> str:
         return f"skipped_fg_candidate_mode_{self.mode}"
@@ -1001,58 +987,18 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     keep_top_k = int(base_keep_top_k)
     fg_policy = _fg_candidate_policy(_read_skyline_fg_candidate_mode())
     fg_candidate_mode = fg_policy.mode
-    mini_response_reason = "not_run"
-    mini_local_filter: MiniLocalResponseFilter | None = None
-    if fg_policy.run_topk_prune:
-        status_cb("skyline: mini response-envelope prune")
-        mini_prune_result = prune_mini_response_envelope(
-            gear_points=gear_points,
-            mini_points=mini_points,
-            mini_codes=mini_codes,
-            mini_ids=mini_ids,
-            gpu_arrays=ctx.gpu_arrays,
-            base_fixed_stats_arr=ctx.base_fixed_stats_arr,
-            calc_song=ctx.calc_song,
-            ref_arrays=ctx.ref_arrays,
-            flags=ctx.color_flags,
-        )
-        mini_points, mini_codes, mini_ids, mini_response_stats, mini_local_filter = mini_prune_result
-        mini_response_reason = str(mini_response_stats.reason)
-        for name, count in mini_response_phase_counts(mini_response_stats).items():
-            phase_counts[name] = int(count)
-        for name, seconds in mini_response_phase_seconds(mini_response_stats).items():
-            phase_seconds[name] = float(seconds)
-        if int(mini_response_stats.pruned) > 0 or int(mini_response_stats.local_pruned_entries) > 0:
-            status_cb(
-                "skyline: mini response-envelope certified "
-                f"(global={int(mini_response_stats.pruned):,}, "
-                f"local_entries={int(mini_response_stats.local_pruned_entries):,}, "
-                f"remaining={int(mini_response_stats.minis_out):,}, "
-                f"time={float(mini_response_stats.seconds_total):.2f}s)"
-            )
-        else:
-            status_cb(
-                "skyline: mini response-envelope kept minis "
-                f"(reason={mini_response_reason}, time={float(mini_response_stats.seconds_total):.2f}s)"
-            )
-    else:
-        mini_response_reason = fg_policy.skipped_reason()
-        phase_counts["mini_response_enabled"] = 0
-        phase_counts["mini_response_minis_in"] = int(mini_points.shape[0])
-        phase_counts["mini_response_minis_out"] = int(mini_points.shape[0])
-        phase_counts["mini_response_pruned"] = 0
+    # Response-envelope prune removed: always keep the full mini candidate set.
+    mini_response_reason = fg_policy.skipped_reason()
+    phase_counts["mini_response_enabled"] = 0
+    phase_counts["mini_response_minis_in"] = int(mini_points.shape[0])
+    phase_counts["mini_response_minis_out"] = int(mini_points.shape[0])
+    phase_counts["mini_response_pruned"] = 0
     if mini_points.size == 0:
         return None, [], [], None, [], [], []
     phase_counts["mini_ids"] = int(mini_ids.shape[0])
+    # Local mini response filter removed with the prune subsystem; always evaluate all pairs.
     mini_allowed_by_gear_cell: np.ndarray | None = None
     mini_allowed_gear_rows: np.ndarray | None = None
-    if mini_local_filter is not None:
-        mini_allowed_by_gear_cell = mini_local_filter.allowed
-        mini_allowed_gear_rows = mini_local_filter_gear_rows(
-            local_filter=mini_local_filter,
-            gear_points=gear_points,
-            base_fixed_stats_arr=ctx.base_fixed_stats_arr,
-        )
 
     status_cb(
         "skyline: build registry + evaluate candidates "
@@ -1104,41 +1050,12 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             return None, [], [], None, [], [], []
 
         gear_response_in = int(pair_g_idx.shape[0])
-        if fg_policy.run_topk_prune:
-            status_cb("skyline: local gear response prune")
-            pair_g_idx, pair_m_idx, gear_response_stats = prune_local_gear_response_pairs(
-                pair_gear_idx=pair_g_idx,
-                pair_mini_idx=pair_m_idx,
-                gear_points=gear_points,
-                mini_points=mini_points,
-                base_fixed_stats_arr=ctx.base_fixed_stats_arr,
-                calc_song=ctx.calc_song,
-                ref_arrays=ctx.ref_arrays,
-                flags=ctx.color_flags,
-            )
-            gear_response_reason = str(gear_response_stats.reason)
-            for name, count in gear_response_phase_counts(gear_response_stats).items():
-                phase_counts[name] = int(count)
-            for name, seconds in gear_response_phase_seconds(gear_response_stats).items():
-                phase_seconds[name] = float(seconds)
-            if int(gear_response_stats.pruned) > 0:
-                status_cb(
-                    "skyline: local gear response certified "
-                    f"(pruned={int(gear_response_stats.pruned):,}, "
-                    f"remaining={int(gear_response_stats.candidates_out):,}, "
-                    f"time={float(gear_response_stats.seconds_total):.2f}s)"
-                )
-            else:
-                status_cb(
-                    "skyline: local gear response kept frontier "
-                    f"(reason={gear_response_reason}, time={float(gear_response_stats.seconds_total):.2f}s)"
-                )
-        else:
-            gear_response_reason = fg_policy.skipped_reason()
-            phase_counts["gear_response_enabled"] = 0
-            phase_counts["gear_response_candidates_in"] = int(gear_response_in)
-            phase_counts["gear_response_candidates_out"] = int(pair_g_idx.shape[0])
-            phase_counts["gear_response_pruned"] = 0
+        # Local gear response prune removed: keep the full gear/mini pair frontier.
+        gear_response_reason = fg_policy.skipped_reason()
+        phase_counts["gear_response_enabled"] = 0
+        phase_counts["gear_response_candidates_in"] = int(gear_response_in)
+        phase_counts["gear_response_candidates_out"] = int(pair_g_idx.shape[0])
+        phase_counts["gear_response_pruned"] = 0
         status_cb(
             "skyline: evaluate combined frontier "
             f"(pairs={int(pair_g_idx.shape[0])}, product={product_total:,}, "
@@ -1152,45 +1069,12 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
             keep_top_k = int(combined_candidate_count)
         elif fg_candidate_mode == "sample":
             keep_top_k = max(int(base_keep_top_k), 1000)
-        if fg_policy.run_topk_prune:
-            status_cb("skyline: response-envelope prune")
-            pair_g_idx, pair_m_idx, response_stats = prune_response_envelope_pairs(
-                pair_gear_idx=pair_g_idx,
-                pair_mini_idx=pair_m_idx,
-                gear_ids=gear_ids,
-                mini_ids=mini_ids,
-                gpu_arrays=ctx.gpu_arrays,
-                base_fixed_stats_arr=ctx.base_fixed_stats_arr,
-                calc_song=ctx.calc_song,
-                ref_arrays=ctx.ref_arrays,
-                flags=ctx.color_flags,
-                gear_points=gear_points,
-                mini_points=mini_points,
-            )
-            response_envelope_reason = str(response_stats.reason)
-            for name, count in response_envelope_phase_counts(response_stats).items():
-                phase_counts[name] = int(count)
-            for name, seconds in response_envelope_phase_seconds(response_stats).items():
-                phase_seconds[name] = float(seconds)
-            if int(response_stats.pruned) > 0:
-                status_cb(
-                    "skyline: response-envelope certified "
-                    f"(pruned={int(response_stats.pruned):,}, "
-                    f"remaining={int(response_stats.candidates_out):,}, "
-                    f"time={float(response_stats.seconds_total):.2f}s)"
-                )
-            else:
-                status_cb(
-                    "skyline: response-envelope kept frontier "
-                    f"(reason={response_envelope_reason}, time={float(response_stats.seconds_total):.2f}s)"
-                )
-            combined_candidate_count = int(pair_g_idx.shape[0])
-        else:
-            response_envelope_reason = fg_policy.skipped_reason()
-            phase_counts["response_envelope_enabled"] = 0
-            phase_counts["response_envelope_candidates_in"] = int(fixed_timing_candidate_count)
-            phase_counts["response_envelope_candidates_out"] = int(fixed_timing_candidate_count)
-            phase_counts["response_envelope_pruned"] = 0
+        # Response-envelope prune removed: evaluate the full candidate frontier.
+        response_envelope_reason = fg_policy.skipped_reason()
+        phase_counts["response_envelope_enabled"] = 0
+        phase_counts["response_envelope_candidates_in"] = int(fixed_timing_candidate_count)
+        phase_counts["response_envelope_candidates_out"] = int(fixed_timing_candidate_count)
+        phase_counts["response_envelope_pruned"] = 0
         phase_counts["combined_skyline_candidates"] = int(combined_candidate_count)
         if pair_g_idx.size == 0:
             return None, [], [], None, [], [], []

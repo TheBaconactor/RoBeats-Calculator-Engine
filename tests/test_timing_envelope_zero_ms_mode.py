@@ -14,8 +14,9 @@ import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.utils import full_pipeline_signature
+from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
 from gear_optimizer.solver.scoring.exact_rescore import (
-    score_fixed_value_exact,
+    calculate_score_exact,
     score_stats_fixed_timing_exact,
     score_stats_fixed_timing_exact_batch,
 )
@@ -113,7 +114,13 @@ def test_unknown_mode_fails_loudly():
 
 
 def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
-    """The stats->score adapter equals the existing fixed-timeline primitive."""
+    """The stats->score adapter equals an independent chart-time fixed-timeline replay.
+
+    The reference re-derives the deterministic chart-time fever timeline
+    (``calculate_fever_timeline_indices``) and scores it with the f64 primitive
+    (``calculate_score_exact``) -- the same math the adapter performs, computed here
+    independently from resolved factors.
+    """
     stats = _stats()
     cs = _calc_song()
     ref = _ref_arrays()
@@ -121,17 +128,31 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     pp = lookup_reference_py(stats["Perfect Points"], ref["Perfect Points"], TOTAL_ROWS)
     combo = lookup_reference_py(stats["Combo Multiplier"], ref["Combo Multiplier"], TOTAL_ROWS)
     fever = lookup_reference_py(stats["Fever Multiplier"], ref["Fever Multiplier"], TOTAL_ROWS)
+    ft_factor = lookup_reference_py(stats["Fever Time"], ref["Fever Time"], TOTAL_ROWS)
+    ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref["Fever Fill Rate"], TOTAL_ROWS)
     base_value = float(stats["Rush"] * 2 + stats["Flow"]) + float(pp)
 
-    reference = score_fixed_value_exact(
-        base_value=base_value,
-        combo_mul=float(combo),
-        fever_mul=float(fever),
-        ft_idx=stats["Fever Time"],
-        ff_idx=stats["Fever Fill Rate"],
-        calc_song=cs,
-        ref_arrays=ref,
+    timestamps = cs["song_data"]["timestamps"]
+    total_notes = int(len(timestamps))
+    mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+    fever_mask_head, count_body_fever, count_body_normal, _non_fever, _acts = calculate_fever_timeline_indices(
+        timestamps,
+        total_notes,
+        float(ff_factor),
+        float(ft_factor),
+        int(cs["metadata"]["Long Notes"]),
+        float(cs["metadata"]["Last Note Time"]),
+        mask_buffer,
     )
+    reference = calculate_score_exact(
+        base_value,
+        float(combo),
+        float(fever),
+        fever_mask_head,
+        int(count_body_fever),
+        int(count_body_normal),
+    )
+
     got = score_stats_fixed_timing_exact(stats, cs, ref)
     assert got == reference
     assert got > 0  # the synthetic song exercises a real fever timeline + body notes

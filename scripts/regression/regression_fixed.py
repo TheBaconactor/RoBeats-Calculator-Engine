@@ -62,7 +62,7 @@ def run_regression():
     # 4. Config
     cfg_data = {
         "selected_color": "Rush",
-        "use_gpu": False,  # Force CPU for deterministic simple test
+        "use_gpu": True,  # GPU-only canonical solve
         "user_ft": 0,
         "user_ff": 0,
         "user_pp": 0,
