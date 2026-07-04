@@ -8,6 +8,7 @@ from typing import Iterable
 import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
 
 from .response_types import FgResponseFrontierResult
 
@@ -51,7 +52,31 @@ from .response_types import FgResponseFrontierResult
 #             (_compact_first_frontier_action_arrays) + reconstruct mirror -- illegal (phantom)
 #             late-Great activations whose fill-crossing is an earlier Perfect are no longer emitted,
 #             so produced surfaces change for any song where the old model scheduled one. Rebuild.
-_FG_RESPONSE_CACHE_VERSION = "fg-response-frontier-visible-first-v19"
+# v19 -> v20: the manual string above is now the BACKSTOP + history; a DP-LOGIC FINGERPRINT of the FG
+#             builder modules is appended as `+logic-<fp>` (Fix 1, 2026-07-04). The manifest fast-path
+#             admits that "the version string is the only key-derivation fingerprint [it] sees" -- so
+#             any change to the FG search/build/pack/kernel logic below now moves the version
+#             automatically, and the manifest can no longer false-hit bundles built by superseded
+#             logic (the failure mode that stranded songs at built=0 while runtime fail-louded). The
+#             fingerprint is ast-level: comment/docstring/whitespace edits do NOT rebuild (see
+#             logic_fingerprint.py); only real logic/literal changes do. Over-invalidation is safe.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v20"
+_HERE = Path(__file__).resolve().parent
+# Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
+# build/search/pack path, add it here (the base version stays the human backstop).
+_FG_DP_SOURCES = (
+    _HERE / "fill_crossing.py",
+    _HERE / "response_builder.py",
+    _HERE / "response_types.py",
+    _HERE / "response_build_gpu_batch.py",
+    _HERE / "response_build_gpu_precompute.py",
+    _HERE / "response_build_gpu_reducer.py",
+    _HERE / "response_build_gpu_numba.py",
+    _HERE / "response_build_gpu_surfaces.py",
+)
+_FG_RESPONSE_CACHE_VERSION = (
+    f"{_FG_RESPONSE_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint(_FG_DP_SOURCES)}"
+)
 _MEMORY_CACHE_MAX = 4096
 _PAYLOAD_CACHE_MAX = 8
 # Sized to cover the native in-flight prep window (prep_limit tops out around 36): a
