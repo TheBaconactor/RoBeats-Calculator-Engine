@@ -1,0 +1,100 @@
+{
+  "V1_ref_monotone": {
+    "Perfect Points": true,
+    "Combo Multiplier": true,
+    "Fever Multiplier": true,
+    "Fever Fill Rate": false,
+    "Fever Time": true
+  },
+  "ga_eval_budget": 264375,
+  "songs": [
+    {
+      "song": "(The) Red * Room (Hard) by Camellia",
+      "difficulty_dir": "Hard",
+      "colors": [
+        "Rush",
+        "Flow"
+      ],
+      "pools": {
+        "gear_per_slot": {
+          "Back": 8,
+          "Face": 8,
+          "Hat": 8,
+          "Neck": 8,
+          "Pants": 8,
+          "Shirt": 8
+        },
+        "minis": 14
+      },
+      "raw_space": {
+        "gear_product": 262144.0,
+        "mini_triples": 364
+      },
+      "dp": {
+        "gear_level_widths": [
+          1001,
+          7063,
+          41489,
+          205751,
+          635728,
+          1381378
+        ],
+        "gear_level_raw_expansion": [
+          1120,
+          8008,
+          56504,
+          331912,
+          1646008,
+          5085824
+        ],
+        "final_frontier": 1381378,
+        "eval_frontier_bcf_collapse": null,
+        "distinct_cells": 10175,
+        "per_cell_width": {
+          "mean": 135.76,
+          "p95": 344.0,
+          "max": 663
+        },
+        "peak_states": 5085824,
+        "dp_wall_s": 1.685,
+        "frontier_eval_wall_s": 0.609
+      },
+      "vs_ga": {
+        "ga_eval_budget": 264375,
+        "frontier_evals": 1381378,
+        "eval_ratio_frontier_over_ga": 5.2251
+      },
+      "best_base_score_fixed_timing": 9299602,
+      "eval_frontier_bcf_collapse": 405563,
+      "parity_subsample": 300,
+      "E1": {
+        "samples": 30000,
+        "misses": 0
+      },
+      "E2": {
+        "pairs": 200,
+        "violations": 0
+      },
+      "E3": [
+        {
+          "trial": 0,
+          "enumerated": 14580,
+          "frontier": 9072,
+          "brute_max": 8416678,
+          "dp_max": 8416678,
+          "equal": true
+        },
+        {
+          "trial": 1,
+          "enumerated": 14580,
+          "frontier": 7851,
+          "brute_max": 7381122,
+          "dp_max": 7381122,
+          "equal": true
+        }
+      ],
+      "total_wall_s": 4.367
+    }
+  ],
+  "failures": []
+}

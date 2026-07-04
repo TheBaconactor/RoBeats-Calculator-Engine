@@ -1,0 +1,7 @@
+    [dp] gear level 6: raw=29402328 -> width=5651123
+    [dp] mini-triple frontier: width=281
+    [dp] gear level 1: raw=4496 -> width=3550
+    [dp] gear level 2: raw=56800 -> width=38894
+    [dp] gear level 3: raw=622304 -> width=266835
+    [dp] gear level 4: raw=4269360 -> width=1312185
+    [dp] gear level 5: raw=20994960 -> width=3983120

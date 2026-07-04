@@ -1,0 +1,100 @@
+{
+  "V1_ref_monotone": {
+    "Perfect Points": true,
+    "Combo Multiplier": true,
+    "Fever Multiplier": true,
+    "Fever Fill Rate": false,
+    "Fever Time": true
+  },
+  "ga_eval_budget": 264375,
+  "songs": [
+    {
+      "song": "A Starry Night and a Single Flower (Easy) by seatrus",
+      "difficulty_dir": "Easy",
+      "colors": [
+        "Flow",
+        "Flow"
+      ],
+      "pools": {
+        "gear_per_slot": {
+          "Back": 10,
+          "Face": 10,
+          "Hat": 10,
+          "Neck": 10,
+          "Pants": 10,
+          "Shirt": 10
+        },
+        "minis": 16
+      },
+      "raw_space": {
+        "gear_product": 1000000.0,
+        "mini_triples": 560
+      },
+      "dp": {
+        "gear_level_widths": [
+          1039,
+          9560,
+          74173,
+          450674,
+          1927616,
+          5576659
+        ],
+        "gear_level_raw_expansion": [
+          1110,
+          10390,
+          95600,
+          741730,
+          4506740,
+          19276160
+        ],
+        "final_frontier": 5576659,
+        "eval_frontier_bcf_collapse": null,
+        "distinct_cells": 11017,
+        "per_cell_width": {
+          "mean": 506.19,
+          "p95": 1317.0,
+          "max": 2588
+        },
+        "peak_states": 11961471,
+        "dp_wall_s": 6.141,
+        "frontier_eval_wall_s": 2.302
+      },
+      "vs_ga": {
+        "ga_eval_budget": 264375,
+        "frontier_evals": 5576659,
+        "eval_ratio_frontier_over_ga": 21.0937
+      },
+      "best_base_score_fixed_timing": 2891253,
+      "eval_frontier_bcf_collapse": 1059758,
+      "parity_subsample": 300,
+      "E1": {
+        "samples": 30000,
+        "misses": 0
+      },
+      "E2": {
+        "pairs": 200,
+        "violations": 0
+      },
+      "E3": [
+        {
+          "trial": 0,
+          "enumerated": 14580,
+          "frontier": 6012,
+          "brute_max": 2531231,
+          "dp_max": 2531231,
+          "equal": true
+        },
+        {
+          "trial": 1,
+          "enumerated": 14580,
+          "frontier": 12212,
+          "brute_max": 2429199,
+          "dp_max": 2429199,
+          "equal": true
+        }
+      ],
+      "total_wall_s": 12.941
+    }
+  ],
+  "failures": []
+}

@@ -1,0 +1,100 @@
+{
+  "V1_ref_monotone": {
+    "Perfect Points": true,
+    "Combo Multiplier": true,
+    "Fever Multiplier": true,
+    "Fever Fill Rate": false,
+    "Fever Time": true
+  },
+  "ga_eval_budget": 264375,
+  "songs": [
+    {
+      "song": "#include <signal.h> (Hard) by Kurokotei",
+      "difficulty_dir": "Hard",
+      "colors": [
+        "Vibe",
+        "Flow"
+      ],
+      "pools": {
+        "gear_per_slot": {
+          "Back": 8,
+          "Face": 8,
+          "Hat": 8,
+          "Neck": 8,
+          "Pants": 8,
+          "Shirt": 8
+        },
+        "minis": 14
+      },
+      "raw_space": {
+        "gear_product": 262144.0,
+        "mini_triples": 364
+      },
+      "dp": {
+        "gear_level_widths": [
+          830,
+          6293,
+          40375,
+          203298,
+          741464,
+          1985513
+        ],
+        "gear_level_raw_expansion": [
+          832,
+          6640,
+          50344,
+          323000,
+          1626384,
+          5931712
+        ],
+        "final_frontier": 1985513,
+        "eval_frontier_bcf_collapse": null,
+        "distinct_cells": 7776,
+        "per_cell_width": {
+          "mean": 255.34,
+          "p95": 704.25,
+          "max": 1158
+        },
+        "peak_states": 5931712,
+        "dp_wall_s": 1.882,
+        "frontier_eval_wall_s": 0.812
+      },
+      "vs_ga": {
+        "ga_eval_budget": 264375,
+        "frontier_evals": 1985513,
+        "eval_ratio_frontier_over_ga": 7.5102
+      },
+      "best_base_score_fixed_timing": 13776726,
+      "eval_frontier_bcf_collapse": 522266,
+      "parity_subsample": 300,
+      "E1": {
+        "samples": 30000,
+        "misses": 0
+      },
+      "E2": {
+        "pairs": 200,
+        "violations": 0
+      },
+      "E3": [
+        {
+          "trial": 0,
+          "enumerated": 14580,
+          "frontier": 9434,
+          "brute_max": 12278697,
+          "dp_max": 12278697,
+          "equal": true
+        },
+        {
+          "trial": 1,
+          "enumerated": 14580,
+          "frontier": 8614,
+          "brute_max": 12909456,
+          "dp_max": 12909456,
+          "equal": true
+        }
+      ],
+      "total_wall_s": 5.677
+    }
+  ],
+  "failures": []
+}
