@@ -210,12 +210,15 @@ def late_great_activation_is_reachable(
     """
     a = int(activation_index)
     total = int(n)
-    ts = timestamps
-    pc = perfect_candidate_timestamps
-    h_a = float(great_candidate_timestamps[a])
+    # Compare in float32 -- the game (and the frontier's searchsorted end-index tables) resolve hit
+    # times in float32, so reachability must agree bit-for-bit with the numba build's clamp on the
+    # measure-zero float boundary (and be independent of whether the caller passes f32 or f64 arrays).
+    ts = np.asarray(timestamps, dtype=np.float32)
+    pc = np.asarray(perfect_candidate_timestamps, dtype=np.float32)
+    h_a = np.float32(great_candidate_timestamps[a])
     j = a + 1
-    while j < total and float(ts[j]) < h_a:
-        if float(pc[j]) < h_a:
+    while j < total and ts[j] < h_a:
+        if pc[j] < h_a:
             return False  # an earlier-hit note (chord sibling or near note-ahead) completes the bar first
         j += 1
     return True
@@ -235,15 +238,15 @@ def build_late_great_forbidden_mask(
     work is O(n * window) once per song, never per loadout.
     """
     total = int(n)
-    ts = np.asarray(timestamps, dtype=np.float64)
-    pc = np.asarray(perfect_candidate_timestamps, dtype=np.float64)
-    gc = np.asarray(great_candidate_timestamps, dtype=np.float64)
+    ts = np.asarray(timestamps, dtype=np.float32)          # float32: match the game / searchsorted tables
+    pc = np.asarray(perfect_candidate_timestamps, dtype=np.float32)
+    gc = np.asarray(great_candidate_timestamps, dtype=np.float32)
     forbidden = np.zeros(total, dtype=bool)
     for a in range(total):
-        h_a = float(gc[a])
+        h_a = gc[a]
         j = a + 1
-        while j < total and float(ts[j]) < h_a:
-            if float(pc[j]) < h_a:
+        while j < total and ts[j] < h_a:
+            if pc[j] < h_a:
                 forbidden[a] = True
                 break
             j += 1

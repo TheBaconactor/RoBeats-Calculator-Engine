@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .fill_crossing import build_late_great_forbidden_mask
+
 _GPU_EDGE_BATCH_MAX_BYTES = 4 * 1024 * 1024 * 1024
 
 def _batch_chunk_size(*, n: int, action_count: int, geometry_count: int, bytes_per_edge: int = 64) -> int:
@@ -183,6 +185,19 @@ def _precompute_end_indices(
         great_floor_end_idx[idx, :, 1] = np.searchsorted(great_floor_ts, great_cutoff, side="left").astype(
             np.int32, copy=False
         )
+    # Hit-time reachability (chord + notes-ahead): a late-Great activation is UNREACHABLE when an
+    # earlier-hit note (a same-timestamp sibling, or an on-time note within the ~late-Great window
+    # after it) completes the fever bar first -- delaying the activation to its late hit lets those
+    # notes register before it. Clamping great_end_idx down to perfect_end_idx at those indices makes
+    # the late-Great end `late_e <= perfect_e`, which EVERY build path already treats as "no
+    # late-Great" (the `late_e <= perfect_e -> return` / `activation_e > edge_e` guards), so the
+    # phantom late-Great is never emitted or selected -- the search falls back to the reachable
+    # Perfect crossing it already enumerates. Off overlap (no forbidden index, e.g. sparse-tail or
+    # non-chord charts) great_end_idx is UNCHANGED -> byte-identical frontier. The mask is a pure
+    # function of the per-note windows (loadout-independent), computed once here.
+    forbidden = build_late_great_forbidden_mask(ts64, perfect_ts64, great_ts64, int(ts.shape[0]))
+    if bool(forbidden.any()):
+        great_end_idx[:, forbidden] = perfect_end_idx[:, forbidden]
     return (
         np.ascontiguousarray(inverse.astype(np.int32, copy=False)),
         np.ascontiguousarray(timestamp_end_idx),

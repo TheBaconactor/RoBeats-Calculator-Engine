@@ -549,6 +549,13 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
         real_times=np.asarray([real_fever_time], dtype=np.float64),
     )
     rt_idx = int(real_time_index[0])
+    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import build_late_great_forbidden_mask
+    forbidden = build_late_great_forbidden_mask(
+        np.asarray(song_inputs.timestamps, dtype=np.float64),
+        np.asarray(song_inputs.perfect_candidates, dtype=np.float64),
+        np.asarray(song_inputs.great_candidates, dtype=np.float64),
+        int(song_inputs.timestamps.shape[0]),
+    )
 
     for note_idx in range(int(song_inputs.timestamps.shape[0])):
         timestamp_e, _timestamp_start, _timestamp_carry = _edge_end(
@@ -585,9 +592,17 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
 
         assert int(timestamp_end_idx[rt_idx, note_idx]) == int(timestamp_e)
         assert int(perfect_end_idx[rt_idx, note_idx]) == int(perfect_e)
-        assert int(great_end_idx[rt_idx, note_idx]) == int(great_e)
+        # Hit-time reachability: an UNREACHABLE late-Great (an earlier-hit note completes the bar
+        # first) is forbidden in the precompute by clamping great_end_idx down to perfect_end_idx,
+        # so its late-Great edge cannot extend fever. Reachable notes keep the raw late-Great edge.
+        great_expected = int(perfect_e) if bool(forbidden[note_idx]) else int(great_e)
+        assert int(great_end_idx[rt_idx, note_idx]) == great_expected
 
-    assert int(great_end_idx[rt_idx, 164]) == 845
+    # Note 164's late-Great reaches note 845 -- assert that only if it is reachable (no earlier-hit
+    # note forecloses it); if forbidden it is clamped to the Perfect edge.
+    assert int(great_end_idx[rt_idx, 164]) == (
+        int(perfect_end_idx[rt_idx, 164]) if bool(forbidden[164]) else 845
+    )
 
 
 def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
