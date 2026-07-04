@@ -25,10 +25,11 @@ ScoreEngine's ``feverFillDenom`` exactly (verified: diff < 1e-6), so this walk r
 ScoreEngine crossing bit-for-bit.  It needs NONE of the ``-1`` / wasted-note / ceil corrections --
 those were artifacts of the compressed formula; the walk gets them for free.
 
-This is the SOURCE OF TRUTH for activation legality.  ``_action_table``'s ``fill`` may remain a
-candidate-generation hint, but it must not decide where fever activates.  (Correctness first; a
-prefix-sum / ``searchsorted`` acceleration -- the ``fever_timeline`` ``side="left"`` style -- can
-replace the walk once wired and proven, without changing the result.)
+This is the SOURCE OF TRUTH for activation legality -- the ORACLE the production closed forms are
+measured against, not a replacement for them.  For the Perfect crossing ``_action_table``'s ``fill``
+equals this walk exactly on the production band (see below), so it does decide activation correctly;
+for the non-uniform late-Great placement the walk exposed the pre-gate over-report, which the O(1)
+``late_great_prefix_is_legal`` gate now forecloses (it reproduces this walk bit-for-bit).
 
 BASE AND FG SHARE ONE CANONICAL MODEL (reference)
 -------------------------------------------------
@@ -38,15 +39,29 @@ This crossing is not FG-specific.  The BASE (all-Perfect) timeline is the same w
 both surfaces reduce to the SAME two calls -- ``server_fill_crossing_fast`` (activation) and
 ``server_fever_end`` (drain) -- differing ONLY in ``is_great`` and the per-note hit-timing arrays.
 
-SCOPE OF THE CURRENT FIX -- NOT YET FULL CANONICAL ROUTING
-----------------------------------------------------------
-This module defines the canonical REFERENCE model plus the O(1) ``late_great_prefix_is_legal`` gate
-that the current FG fix wires in.  Production does NOT yet route activation through
-``server_fill_crossing_fast``: the FG search/reconstruct still compute ``activation = state_i + fill``
-from ``_action_table`` and only DROP illegal late-Great candidates via the gate (so the phantom can
-never be selected); BASE was fixed separately by invalidating the stale timeline-frontier disk cache
-(``exact-frontier`` version bump), the DP/scorer already being floor-aware.  Full canonical activation
-routing for both surfaces is a follow-up.
+PRODUCTION ALREADY COMPUTES THE CANONICAL CROSSING (in closed form)
+-------------------------------------------------------------------
+Production does not literally CALL ``server_fill_crossing_fast`` / ``server_fill_crossing_run`` in the
+hot path -- and it does not need to.  The two O(1) closed forms it uses ARE that crossing, each proven
+bit-exact against the walk oracle, so there is no "wrong compressed formula" left to route away:
+
+  * Perfect activation: ``_action_table``'s ``fill = ceil(raw_fever_fill + 0.5*k)`` equals
+    ``server_fill_crossing_run`` for EVERY production ``(raw_fever_fill, k)`` -- measured 0 differences
+    over the full ``raw in [1, 300]``, ``k in [0, ceil(raw)]`` band.  Region 2 (the crossing lands ON a
+    Great) needs a contiguous run of ``k >= ~2*raw`` Greats, which ``non_fever_base = ceil(raw)`` never
+    reaches, so the Perfect crossing is always the region-3 form and ``ceil(...)`` is the exact index.
+  * late-Great activation: ``late_great_prefix_is_legal`` equals the placement walk
+    ``late_great_activation_is_legal`` (``test_fg_fill_crossing``, 200k cases).  The late-Great
+    placement is ``[prefix Greats][Perfects][activation Great]`` -- non-contiguous -- which a single
+    contiguous ``server_fill_crossing_run`` deliberately does NOT model; the GATE is that placement's
+    canonical closed form.  So the gate is not a stopgap over a wrong formula: it IS the canonical
+    late-Great crossing (it drops only the float-boundary phantom, e.g. the MoltenVK over-report).
+
+The walk / searchsorted forms (``server_fill_crossing``, ``server_fill_crossing_fast``) are therefore
+the ORACLE that PROVES the production closed forms, not a pending replacement for them.  Real loadouts
+are re-validated walk-legal on every deploy by ``tools/dev/audit_loadout_legality.py``.  BASE was fixed
+separately by invalidating the stale timeline-frontier disk cache (``exact-frontier`` version bump),
+the DP/scorer already being floor-aware.
 The MAXIMUM REACHABLE surface falls straight out of the server rules: activation is the AUTO crossing
 (cannot fire earlier -- the bar is not full; cannot fire later -- the server auto-fires the instant it
 is), and the drain starts at the crossing note's LATEST legal hit (a Great's late window reaches
@@ -123,6 +138,41 @@ def late_great_prefix_is_legal(fill: int, prefix: int, fever_fill_denom: float, 
     return bool(bar_before < denom and bar_before + 0.5 >= denom)
 
 
+def perfect_fill_crossing_offset(fever_fill_denom: float, k: int, first: bool) -> int:
+    """Canonical Perfect fill-crossing OFFSET for a fever section that forces ``k`` Greats packed at
+    its first accumulating note -- the ONE owner of ``_action_table``'s ``fill``.
+
+    The section's activation note is ``section_state + this`` (later section) or ``this`` (first
+    section, which burns no wasted note).  This is ``server_fill_crossing_run``'s region-3 index (the
+    crossing is a Perfect after the packed run for every production ``k <= ceil(denom)``; measured
+    bit-exact across the whole band -- see the module docstring), whose closed form is
+    ``ceil(denom + 0.5*k)`` minus the first-section wasted note.  Kept here next to the walk oracle so
+    the Perfect-crossing formula lives in exactly one place.
+    """
+    fill = int(ceil(float(fever_fill_denom) + 0.5 * float(int(k))))
+    return int(fill if not bool(first) else max(0, fill - 1))
+
+
+def late_great_activation_prefix(fill: int, k: int, first: bool, fever_fill_denom: float) -> int | None:
+    """Canonical forced-Great PREFIX for a late-Great activation, or ``None`` if a late-Great is
+    illegal there (a Perfect crosses first -> phantom over-report) -- the ONE owner of the late-Great
+    placement math that BOTH the search compaction (``_compact_first_frontier_action_arrays``) and the
+    reconstruct mirror (``_edge_surface_options``) consume, so the ``min(k-1, fill - wasted)`` +
+    :func:`late_great_prefix_is_legal` pair is written once.
+
+    ``prefix`` is the number of forced Greats before the activation Great; the section burns one wasted
+    note on later sections (``wasted = 1``) and none on the first (``wasted = 0``).  Returns ``None``
+    for ``k <= 0`` (no forced Great to activate on).
+    """
+    if int(k) <= 0:
+        return None
+    wasted = 0 if bool(first) else 1
+    prefix = min(max(0, int(k) - 1), max(0, int(fill) - wasted))
+    if late_great_prefix_is_legal(int(fill), int(prefix), float(fever_fill_denom), first=bool(first)):
+        return int(prefix)
+    return None
+
+
 def server_fill_crossing(
     is_great: Sequence[bool],
     fever_fill_denom: float,
@@ -178,13 +228,14 @@ def late_great_activation_is_legal(
 # --------------------------------------------------------------------------------------------------
 # Fast path -- the same answer as ``server_fill_crossing``, in O(log n).
 #
-# ``server_fill_crossing`` is the reference oracle (a clear per-note walk).  The search cannot afford
-# an O(section) walk per candidate, so production uses this prefix-sum + ``searchsorted`` form.  It is
-# a MECHANICAL acceleration -- the cumulative perfect-units array IS the walk's running bar, and
-# ``searchsorted(..., side="left")`` is the first note that reaches full -- so it returns the identical
-# index (proven bit-equal to the walk on randomized + real placements in ``test_fg_fill_crossing``).
-# It is numba-portable (``np.cumsum`` + ``np.searchsorted``).  This is the canonical activation index;
-# ``_action_table``'s ``ceil(raw + 0.5k)`` is demoted to a candidate-generation hint only.
+# ``server_fill_crossing`` is the reference oracle (a clear per-note walk).  This prefix-sum +
+# ``searchsorted`` form is a MECHANICAL acceleration of it -- the cumulative perfect-units array IS the
+# walk's running bar, and ``searchsorted(..., side="left")`` is the first note that reaches full -- so
+# it returns the identical index (proven bit-equal to the walk on randomized + real placements in
+# ``test_fg_fill_crossing``).  It exists as an ORACLE / kernel-portable reference; production does NOT
+# call it -- the hot path uses ``_action_table``'s ``ceil(raw + 0.5k)``, which is itself bit-exact with
+# this crossing on the whole production band (region-3 Perfect; measured 0 diffs), so the two agree and
+# neither is a mere "hint".
 # --------------------------------------------------------------------------------------------------
 
 

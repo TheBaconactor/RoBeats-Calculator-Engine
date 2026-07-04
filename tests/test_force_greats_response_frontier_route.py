@@ -1307,6 +1307,9 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
     assert set(out[0]["data"]["ForceGreats"]) == {
         "config",
         "final_score",
+        # Fever-window params persisted for the legality audit + frontend timing graph (reducer.py).
+        "raw_fever_fill",
+        "real_fever_time",
         "frontier_trace",
         "frontier_first_surfaces",
         "frontier_states",

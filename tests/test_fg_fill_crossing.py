@@ -25,7 +25,9 @@ from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
     fg_canonical_fever_sections,
     fill_prefix_perfect_units,
     late_great_activation_is_legal,
+    late_great_activation_prefix,
     late_great_prefix_is_legal,
+    perfect_fill_crossing_offset,
     server_fever_end,
     server_fill_crossing,
     server_fill_crossing_fast,
@@ -299,3 +301,30 @@ def test_late_great_prefix_gate_matches_the_walk_oracle():
         assert late_great_prefix_is_legal(fill, prefix, raw, first) == late_great_activation_is_legal(
             ig, raw, start=start, activation_index=a, n=n
         ), (fill, prefix, raw, first, start, a)
+
+
+def test_consolidated_owners_match_the_legacy_inline_formulas():
+    # The DRY consolidation routed _action_table's fill and both the search compaction + reconstruct
+    # mirror's late-Great math through perfect_fill_crossing_offset / late_great_activation_prefix.
+    # Pin those single owners to the EXACT legacy inline formulas they replaced, so a future edit to a
+    # helper that diverges from the shipped (bit-exact-verified) behavior is caught here.
+    from math import ceil
+
+    for raw_i in range(20, 6000, 11):
+        raw = raw_i / 20.0  # 1.0 .. 300.0 with fractional denominators
+        for k in range(0, min(60, int(ceil(raw)) + 2)):
+            legacy_fill = int(ceil(raw + 0.5 * k))
+            assert perfect_fill_crossing_offset(raw, k, first=False) == legacy_fill
+            assert perfect_fill_crossing_offset(raw, k, first=True) == max(0, legacy_fill - 1)
+            for first in (False, True):
+                fill = perfect_fill_crossing_offset(raw, k, first=first)
+                wasted = 0 if first else 1
+                legacy_prefix = min(max(0, k - 1), max(0, fill - wasted))
+                legacy = (
+                    legacy_prefix
+                    if (k > 0 and late_great_prefix_is_legal(fill, legacy_prefix, raw, first=first))
+                    else None
+                )
+                assert late_great_activation_prefix(fill, k, first=first, fever_fill_denom=raw) == legacy, (
+                    raw, k, first, fill,
+                )

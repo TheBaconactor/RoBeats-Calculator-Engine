@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from .fill_crossing import late_great_prefix_is_legal
+from .fill_crossing import late_great_activation_prefix
 from .response_builder import _action_table
 from .response_build_gpu_precompute import (
     _canonicalize_first_only_prepared_items_with_end_indices,
@@ -56,17 +56,17 @@ def _compact_first_frontier_action_arrays(
             later_activation,
             first_activation,
         ) = rows[int(row_idx)]
-        # Late-Great gate (canonical fill-crossing): emit the late-Great activation ONLY when the
-        # server float bar reaches full ON that Great, not on an earlier Perfect. An illegal
-        # candidate is dropped (left as the -1 sentinel), so the phantom late-Great over-report can
-        # never be selected on any vendor. Bit-exact with the `late_great_activation_is_legal` walk.
-        if int(k) > 0 and int(action_idx) > 0 and int(later_fill[int(action_idx) - 1]) == int(later):
-            candidate = min(max(0, int(k) - 1), max(0, int(later) - 1))
-            if late_great_prefix_is_legal(int(later), int(candidate), float(raw_fever_fill), first=False):
+        # Late-Great activation (single-sourced with the reconstruct mirror `_edge_surface_options`
+        # via late_great_activation_prefix): the forced-Great prefix when the activation Great IS the
+        # server fill-crossing, else None -> the -1 sentinel stays, so the phantom late-Great
+        # over-report (a Perfect crosses first) can never be selected on any vendor.
+        if int(action_idx) > 0 and int(later_fill[int(action_idx) - 1]) == int(later):
+            candidate = late_great_activation_prefix(int(later), int(k), first=False, fever_fill_denom=float(raw_fever_fill))
+            if candidate is not None:
                 later_activation = int(candidate) if int(later_activation) < 0 else min(int(later_activation), int(candidate))
-        if int(k) > 0 and int(action_idx) > 0 and int(first_fill[int(action_idx) - 1]) == int(first):
-            candidate = min(max(0, int(k) - 1), max(0, int(first)))
-            if late_great_prefix_is_legal(int(first), int(candidate), float(raw_fever_fill), first=True):
+        if int(action_idx) > 0 and int(first_fill[int(action_idx) - 1]) == int(first):
+            candidate = late_great_activation_prefix(int(first), int(k), first=True, fever_fill_denom=float(raw_fever_fill))
+            if candidate is not None:
                 first_activation = int(candidate) if int(first_activation) < 0 else min(int(first_activation), int(candidate))
         rows[int(row_idx)] = (
             int(normal_later),
