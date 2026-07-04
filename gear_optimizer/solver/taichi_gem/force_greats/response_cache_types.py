@@ -60,7 +60,12 @@ from .response_types import FgResponseFrontierResult
 #             logic (the failure mode that stranded songs at built=0 while runtime fail-louded). The
 #             fingerprint is ast-level: comment/docstring/whitespace edits do NOT rebuild (see
 #             logic_fingerprint.py); only real logic/literal changes do. Over-invalidation is safe.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v20"
+# v20 -> v21: hit-time chord-reachability -- the frontier now forbids UNREACHABLE late-Great
+#             activations (an earlier-hit same-timestamp sibling or on-time note-ahead completes the
+#             fever bar first), so stale bundles carry phantom late-Great over-reports and MUST
+#             rebuild. The DP fingerprint over fill_crossing.py + response_build_gpu_precompute.py
+#             already moves the version automatically; this backstop bump records the behaviour change.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v21"
 _HERE = Path(__file__).resolve().parent
 # Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
 # build/search/pack path, add it here (the base version stays the human backstop).
