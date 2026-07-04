@@ -240,7 +240,18 @@ _frontier_payload_cache_lock = threading.RLock()
 # v7: per-cell N_hn/N_hf/Sigma_hn/Sigma_hf grids replaced by the per-VARIANT
 # grid_frontier_head_coeffs_pool (the eval kernel needs coefficients for every pool
 # row; the per-cell grids were never read on the live GPU path).
-_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v7"
+# v8: STALE-CACHE INVALIDATION (2026-07-04). The base DP (_build_exact_timeline_frontier_
+# from_context) is floor-aware / endpoint-early exact -- a note whose EARLIEST legal hit
+# (perfect_floor = chart-20ms, held-tail -40) lands inside the fever window is counted even
+# when its nominal chart time falls outside. Pre-existing v7 disk payloads on some machines
+# were built by an older DP that omitted that boundary note, and no version moved when the DP
+# gained it, so a pure-logic change went invisible to the (input+window)-hashed key. Symptom:
+# Bopeebo Easy T5 Vibe persisted base 1,360,389 (nominal ff24) from a stale v7 payload while a
+# fresh build of the SAME loadout selects the floor-optimal ff22 -> 1,364,025 (bit-exact to the
+# website's live re-solve). Bumping forces a rebuild from the current floor-aware DP. Strictly
+# regression-safe: perfect_floor <= chart pointwise, so a rebuilt cell's body_fever only rises
+# or stays equal; songs with no endpoint-early boundary note are byte-identical.
+_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v8"
 
 
 @dataclass(frozen=True)
