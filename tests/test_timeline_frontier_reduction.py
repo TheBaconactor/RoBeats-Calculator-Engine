@@ -9,9 +9,72 @@ from gear_optimizer.solver.timeline_exact_frontier import (
     _enumerate_first_exit_boundary_intervals_from_activation_band,
     _enumerate_first_exit_boundary_intervals_from_context,
     _exit_trace_certifies_d_ms,
+    _reachable_act_hi,
     reconstruct_timeline_frontier_trace,
     reduce_timeline_frontier,
 )
+
+
+def _fever_count_5(base_ms, high_ms, note_types, fill_count, d_ms):
+    """Build the canonical base surface for a 5-note single-group-per-note chart and return the
+    replayable fever-note set (via the note graph, which applies the hit-time witness semantics)."""
+    gs = np.array([0, 1, 2, 3, 4], np.int32)
+    ge = np.array([1, 2, 3, 4, 5], np.int32)
+    gb = np.array(base_ms, np.int32)
+    gl = np.array([-20 if h == 40 else -40 for h in high_ms], np.int32)
+    gh = np.array(high_ms, np.int32)
+    ng = np.array([0, 1, 2, 3, 4], np.int32)
+    ctx = _build_grouped_timeline_context(5, group_starts=gs, group_ends=ge, group_base_t_ms=gb,
+                                          group_low_ms=gl, group_high_ms=gh, note_group_idx=ng)
+    pack = _build_exact_timeline_frontier_from_context(ctx, fill_count=fill_count, d_ms=d_ms)
+    trace = reconstruct_timeline_frontier_trace(
+        total_notes=5, group_starts=gs, group_ends=ge, group_base_t_ms=gb, group_low_ms=gl,
+        group_high_ms=gh, note_group_idx=ng, fill_count=fill_count, d_ms=d_ms, target_surface=pack.canonical)
+    from gear_optimizer.solver.fg_response_scoring.note_graph import timeline_frontier_note_graph
+    notes = timeline_frontier_note_graph(frontier_trace=trace, total_notes=5,
+                                         timestamps=[x / 1000 for x in base_ms], note_types=note_types)
+    return {i for i in range(5) if notes[i]["fever"]}, float(trace[0]["activation_hit_ms"])
+
+
+def test_base_chord_reachability_phantom_late_tail_is_capped() -> None:
+    # A held tail (idx1, +80) chorded at 500ms with a NARROWER normal (idx2, +40) indexed after it,
+    # activation landing on the tail (fill_count=2). The tail's +80 clock (580ms) is UNREACHABLE:
+    # the normal sibling is hit at +40 (540ms) FIRST and completes the bar. The over-extended +80
+    # window sweeps note3@720 (earliest hit 700) into fever, which no live play reaches.
+    fever, clock = _fever_count_5([0, 500, 500, 720, 5000], [40, 80, 40, 40, 40], [1, 3, 1, 1, 1],
+                                  fill_count=2, d_ms=150)
+    assert clock == 540.0, clock                 # clock capped from the phantom 580 to the reachable 540
+    assert fever == {1, 2}, fever                 # note3@720 dropped (was {1,2,3} pre-fix)
+
+
+def test_base_chord_reachability_score_neutral_when_count_coincides() -> None:
+    # Same chord, but note3@560 (earliest hit 540) is fevered under BOTH the phantom and reachable
+    # windows -> capping the clock is score-neutral (count preserved), only the reported clock moves.
+    fever, clock = _fever_count_5([0, 500, 500, 560, 900], [40, 80, 40, 40, 40], [1, 3, 1, 1, 1],
+                                  fill_count=2, d_ms=150)
+    assert clock == 540.0, clock
+    assert fever == {1, 2, 3}, fever
+
+
+def test_base_chord_reachability_does_not_downgrade_reachable_wide_tail() -> None:
+    # Wide held tail is the LAST note of its chord (idx2, +80) with no later-indexed preempting
+    # sibling -> the cap must NOT fire and a genuinely reachable late activation stays.
+    class _Ctx:
+        group_base_t_ms = np.array([0, 200, 200], np.int32)
+        group_high_ms = np.array([40, 40, 80], np.int32)
+        gcount = 3
+    assert _reachable_act_hi(_Ctx(), 2, 80) == 80          # no later sibling -> unchanged
+
+
+def test_base_chord_reachability_noop_on_distinct_timestamps() -> None:
+    # Distinct timestamps (no overlap): the forward scan breaks immediately, so the clock is
+    # returned unchanged -> distinct-timestamp charts are bit-identical.
+    class _Ctx:
+        group_base_t_ms = np.array([0, 500, 560, 720, 5000], np.int32)
+        group_high_ms = np.array([40, 80, 40, 40, 40], np.int32)
+        gcount = 5
+    for g in range(5):
+        assert _reachable_act_hi(_Ctx(), g, int(_Ctx.group_high_ms[g])) == int(_Ctx.group_high_ms[g])
 
 
 def _score(surface: TimelineExactSignature, *, head_len: int, normal: int, fever: int) -> int:

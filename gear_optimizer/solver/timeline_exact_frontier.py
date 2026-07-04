@@ -795,6 +795,48 @@ def _propagate_band_to_group(
     return result
 
 
+def _reachable_act_hi(ctx, activation_group: int, act_hi: int) -> int:
+    """Cap the largest-cushion activation clock to the hit-time REACHABLE value.
+
+    Base is all-Perfect, so each note's only latest legal hit is ``group_base_t_ms[g] +
+    group_high_ms[g]`` and the fever bar completes on the ``fill_count``-th note IN LATEST-LEGAL-HIT
+    ORDER (the decompiled server processes hits in physical time order -- see
+    ``robeats-fever-clock-semantics``). The running-max band carry (:func:`_propagate_band_to_group`)
+    makes the clock the max window over the INDEX-prefix ``[start_g, g_act]``, which OVER-estimates
+    it whenever a wider-window group inflates the max past the latest hit of a LATER-INDEXED
+    overlapping sibling that is unavoidably hit first -- the chord phantom (a held tail ``+80``
+    indexed before a normal ``+40`` at the same timestamp: the normal is hit at ``+40`` first and
+    really completes the bar, so the ``+80`` clock over-extends the drain window and sweeps a
+    preempted note). A note ``j`` (index after ``g_act``) whose LATEST hit still precedes the clock
+    ``h_a`` cannot be delayed past the activation, so the reachable clock cannot exceed its hit.
+
+    This is the single-window analog of the FG owner
+    :func:`gear_optimizer.solver.taichi_gem.force_greats.fill_crossing.late_great_activation_is_reachable`
+    (which, having two windows, FORBIDS rather than caps). Only the LATE edge is capped; ``act_lo``
+    is untouched. Off overlap the forward scan runs 0 effective iterations (the next group's chart
+    time is already ``>= h_a``), so ``act_hi`` is returned unchanged -- distinct-timestamp charts are
+    bit-identical.
+    """
+    g_act = int(activation_group)
+    base = int(ctx.group_base_t_ms[g_act])
+    h_a = base + int(act_hi)  # activation latest-legal-hit, absolute ms
+    gb = ctx.group_base_t_ms
+    gh = ctx.group_high_ms
+    gcount = int(ctx.gcount)
+    cap = h_a
+    j = g_act + 1
+    # Scan bound: once a later group's chart time reaches h_a, its latest hit (chart + positive
+    # window) is >= h_a, so it cannot preempt -- nothing further can lower the cap.
+    while j < gcount and int(gb[j]) < h_a:
+        pc_j = int(gb[j]) + int(gh[j])  # that note's own latest legal hit
+        if pc_j < cap:  # unavoidably hit before the activation -> it completes the bar first
+            cap = pc_j
+        j += 1
+    if cap < h_a:
+        return int(act_hi) - (h_a - cap)  # == cap - base; lower the clock offset to the reachable hit
+    return int(act_hi)
+
+
 def _build_exact_timeline_frontier_from_context(
     ctx: _GroupedTimelineContext,
     *,
@@ -886,6 +928,9 @@ def _build_exact_timeline_frontier_from_context(
             g_act,
             propagation_cache=propagation_cache,
         )
+        # Hit-time reachability: cap the largest-cushion clock so a wide-window group cannot claim a
+        # late activation a later-indexed overlapping sibling (hit first) actually forecloses.
+        act_hi = _reachable_act_hi(ctx, int(g_act), int(act_hi))
         if act_lo > act_hi:
             result = (_all_normal_surface(start_note_i),)
             solve_cache[solve_key] = result
@@ -1147,6 +1192,9 @@ def reconstruct_timeline_frontier_trace(
             g_act,
             propagation_cache=propagation_cache,
         )
+        # Hit-time reachability: same cap as the build site, so the reconstructed trace enumerates
+        # against the same reachable clock the persisted surface was built with.
+        act_hi = _reachable_act_hi(ctx, int(g_act), int(act_hi))
         if act_lo > act_hi:
             return None
 
