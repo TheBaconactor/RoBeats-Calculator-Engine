@@ -75,9 +75,6 @@ class SongTaskView:
     extras: tuple[Any, ...]
 
 
-# Backwards-compatible alias.
-LegacySongTaskView = SongTaskView
-
 def _is_task_sequence(task: Any) -> bool:
     return isinstance(task, (tuple, list))
 

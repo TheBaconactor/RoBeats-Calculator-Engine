@@ -80,9 +80,9 @@ def test_score_stats_exact_uses_exact_replay_ref_arrays_for_float32_callers(monk
 def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.scoring.exact_rescore import (
-        score_fixed_value_exact,
         score_stats_exact,
         score_stats_exact_with_timeline_trace,
+        score_stats_fixed_timing_exact,
     )
 
     timestamps = np.linspace(0.0, 2.0, 101, dtype=np.float32)
@@ -116,19 +116,15 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
     }
 
     _prebuild_timeline_frontier(calc_song, ref_arrays)
-    fixed_chart = score_fixed_value_exact(
-        base_value=251.0,
-        combo_mul=2.0,
-        fever_mul=4.0,
-        ft_idx=0,
-        ff_idx=0,
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-    )
-    assert int(fixed_chart) == 79568
-    assert int(score_stats_exact(stats, calc_song, ref_arrays)) == 80336
+    # The fixed chart-time replay (deterministic chart timeline) scores strictly below the
+    # legal Perfect-window timing frontier. stats -> base_value 251.0 (Rush 100*2 + Flow 50 +
+    # PP factor 1.0), combo 2.0, fever 4.0, FT/FF idx 0 -- exactly the fixed-chart inputs.
+    fixed_chart = score_stats_fixed_timing_exact(stats, calc_song, ref_arrays)
+    assert int(fixed_chart) == 79312
+    # The legal Perfect-window timing frontier scores strictly higher than the fixed chart replay.
+    assert int(fixed_chart) < int(score_stats_exact(stats, calc_song, ref_arrays)) == 80080
     replay = score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays)
-    assert int(replay["score"]) == 80336
+    assert int(replay["score"]) == 80080
     trace = replay["TimelineFrontier"]["frontier_trace"]
     assert trace
     assert all(row["activation_judgment"] == "perfect" for row in trace)

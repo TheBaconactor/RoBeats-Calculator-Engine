@@ -116,6 +116,12 @@ def materialize_force_payload_from_response_frontier(
     payload["ForceGreats"] = {
         "config": config,
         "final_score": int(final_score),
+        # Fever-window parameters of this surface (the server's feverFillDenom and the fever
+        # duration in seconds). Persisted so the legality audit (tools/dev/audit_loadout_legality.py)
+        # can re-derive the canonical fill-crossing / drain for every loadout without re-solving,
+        # and so the frontend timing graph can place the fever window. Cheap (two floats), exact.
+        "raw_fever_fill": float(result.raw_fever_fill),
+        "real_fever_time": float(result.real_fever_time),
         "frontier_trace": list(frontier_trace),
         "frontier_first_surfaces": int(len(frontier.first_frontier)),
         "frontier_states": int(frontier.states_evaluated),

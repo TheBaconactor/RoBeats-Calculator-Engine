@@ -205,57 +205,6 @@ def calculate_score_exact(
     return int(body_score + total_head)
 
 
-def score_fixed_value_exact(
-    *,
-    base_value: float,
-    combo_mul: float,
-    fever_mul: float,
-    ft_idx: int,
-    ff_idx: int,
-    calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
-    fever_mask_buffer=None,
-) -> int:
-    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("timestamps")
-    if timestamps is None:
-        timestamps = song_data.get("chart_timestamps", song_data.get("fg_timestamps", ()))
-    total_notes = int(len(timestamps))
-    if total_notes <= 0:
-        return 0
-
-    metadata = calc_song.get("metadata", {}) or {}
-    long_notes = safe_int(metadata.get("Long Notes"), 0)
-    default_last_note = timestamps[-1] if total_notes else 0.0
-    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
-
-    mask_buffer = fever_mask_buffer
-    if mask_buffer is None or int(getattr(mask_buffer, "shape", (0,))[0]) != total_notes:
-        mask_buffer = np.zeros(total_notes, dtype=np.bool_)
-
-    ft_factor = lookup_reference_py(int(ft_idx), ref_arrays["Fever Time"], TOTAL_ROWS)
-    ff_factor = lookup_reference_py(int(ff_idx), ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
-    fever_mask_head, count_body_fever, count_body_normal, _non_fever, _activations = calculate_fever_timeline_indices(
-        timestamps,
-        total_notes,
-        ff_factor,
-        ft_factor,
-        long_notes,
-        last_note_time,
-        mask_buffer,
-    )
-
-    return calculate_score_exact(
-        float(base_value),
-        float(combo_mul),
-        float(fever_mul),
-        fever_mask_head,
-        int(count_body_fever),
-        int(count_body_normal),
-    )
-
-
 def score_stats_exact(
     stats: Mapping[str, Any],
     calc_song: Mapping[str, Any],

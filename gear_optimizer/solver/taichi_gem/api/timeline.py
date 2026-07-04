@@ -19,6 +19,7 @@ import taichi as ti
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.env_config import ENV as _ENV
+from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import timing_envelope_timing_context
 from gear_optimizer.solver.frontier_cache_errors import MissingFrontierCacheError
@@ -240,7 +241,29 @@ _frontier_payload_cache_lock = threading.RLock()
 # v7: per-cell N_hn/N_hf/Sigma_hn/Sigma_hf grids replaced by the per-VARIANT
 # grid_frontier_head_coeffs_pool (the eval kernel needs coefficients for every pool
 # row; the per-cell grids were never read on the live GPU path).
-_FRONTIER_DISK_CACHE_VERSION = "exact-frontier-v7"
+# v8: STALE-CACHE INVALIDATION (2026-07-04). The base DP (_build_exact_timeline_frontier_
+# from_context) is floor-aware / endpoint-early exact -- a note whose EARLIEST legal hit
+# (perfect_floor = chart-20ms, held-tail -40) lands inside the fever window is counted even
+# when its nominal chart time falls outside. Pre-existing v7 disk payloads on some machines
+# were built by an older DP that omitted that boundary note, and no version moved when the DP
+# gained it, so a pure-logic change went invisible to the (input+window)-hashed key. Symptom:
+# Bopeebo Easy T5 Vibe persisted base 1,360,389 (nominal ff24) from a stale v7 payload while a
+# fresh build of the SAME loadout selects the floor-optimal ff22 -> 1,364,025 (bit-exact to the
+# website's live re-solve). Bumping forces a rebuild from the current floor-aware DP. Strictly
+# regression-safe: perfect_floor <= chart pointwise, so a rebuilt cell's body_fever only rises
+# or stays equal; songs with no endpoint-early boundary note are byte-identical.
+# v9: fold a DP-LOGIC FINGERPRINT into the version (Fix 1, 2026-07-04). The base string above is the
+# human backstop + semantic history; the appended `+logic-<fp>` is an ast-level digest of the
+# timeline DP module (timeline_exact_frontier.py). A change to the DP body (as in the v7->v8 floor-
+# aware regression that went invisible) now shifts the fingerprint automatically, so stale disk
+# payloads built by the old logic no longer validate against the new code -- killing the silent
+# stale-cache bug class rather than relying on someone remembering to bump the string. Docstring/
+# comment/whitespace edits do NOT move it (see logic_fingerprint.py). Over-invalidation is safe.
+_FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v9"
+_TIMELINE_DP_SOURCE = Path(__file__).resolve().parents[2] / "timeline_exact_frontier.py"
+_FRONTIER_DISK_CACHE_VERSION = (
+    f"{_FRONTIER_DISK_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint([_TIMELINE_DP_SOURCE])}"
+)
 
 
 @dataclass(frozen=True)

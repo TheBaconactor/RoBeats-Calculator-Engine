@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from math import ceil
 from typing import Any
 
 import numpy as np
 
+from .fill_crossing import late_great_activation_prefix, perfect_fill_crossing_offset
 from .response_types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
 
 
@@ -16,9 +16,9 @@ def _action_table(*, raw_fever_fill: float, non_fever_base: int, use_forced_grea
     first_forced: list[int] = []
     last_fill: int | None = None
     for k in range(max(0, int(non_fever_base)) + 1):
-        fill = int(ceil(float(raw_fever_fill) + (float(k) * 0.5)))
+        fill = perfect_fill_crossing_offset(float(raw_fever_fill), int(k), first=False)
         if bool(use_forced_great_timing) or last_fill is None or fill != last_fill:
-            fill_first = max(0, fill - 1)
+            fill_first = perfect_fill_crossing_offset(float(raw_fever_fill), int(k), first=True)
             actions.append(int(k))
             later_fill.append(int(fill))
             first_fill.append(int(fill_first))
@@ -314,6 +314,7 @@ def _edge_surface_options(
     great_candidate_timestamps: np.ndarray | None = None,
     perfect_floor_timestamps: np.ndarray,
     great_floor_timestamps: np.ndarray,
+    raw_fever_fill: float,
 ) -> list[dict[str, Any]]:
     """Enumerate candidate fever sections with their response-surface edges.
 
@@ -423,8 +424,18 @@ def _edge_surface_options(
                 a=int(a), forced_start=int(forced_start), forced_great_end=int(great_end),
                 activation_great_idx=-1,
             )
-        if bool(use_forced_great_timing) and int(k) > 0 and int(action_idx) > 0 and int(fills[action_idx - 1]) == int(fill):
-            prefix_forced = min(max(0, int(k) - 1), max(0, int(a) - int(forced_start)))
+        # Late-Great activation, single-sourced with the search's `_compact_first_frontier_action_arrays`
+        # via `late_great_activation_prefix`: the forced-Great prefix when the activation Great IS the
+        # server fill-crossing, or None when a Perfect crosses first (a phantom over-report). Same O(1)
+        # owner both paths call, so the placement math lives in exactly one place.
+        lg_prefix = late_great_activation_prefix(int(fill), int(k), first=bool(first), fever_fill_denom=float(raw_fever_fill))
+        if (
+            bool(use_forced_great_timing)
+            and int(action_idx) > 0
+            and int(fills[action_idx - 1]) == int(fill)
+            and lg_prefix is not None
+        ):
+            prefix_forced = int(lg_prefix)
             activation_e, _activation_start_time, activation_carry_idx = _edge_end(
                 n=int(n),
                 a=int(a),
@@ -564,6 +575,7 @@ def _edge_surface_option_details(
     great_candidate_timestamps: np.ndarray | None = None,
     perfect_floor_timestamps: np.ndarray,
     great_floor_timestamps: np.ndarray,
+    raw_fever_fill: float,
 ) -> list[dict[str, Any]]:
     """Full option details (surface edge + witness fields) for every option."""
     return [
@@ -590,6 +602,7 @@ def _edge_surface_option_details(
             great_candidate_timestamps=great_candidate_timestamps,
             perfect_floor_timestamps=perfect_floor_timestamps,
             great_floor_timestamps=great_floor_timestamps,
+            raw_fever_fill=float(raw_fever_fill),
         )
     ]
 
@@ -768,6 +781,7 @@ def reconstruct_force_greats_response_trace(
             great_candidate_timestamps=great_ts,
             perfect_floor_timestamps=floor_ts,
             great_floor_timestamps=great_floor_ts,
+            raw_fever_fill=float(raw_fever_fill),
         ):
             edge = option["surface"]
             next_remaining = _subtract_edge(remaining, edge)

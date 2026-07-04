@@ -155,8 +155,16 @@ def test_ftff_response_position_prune_matches_bruteforce_randomized():
             assert got.tolist() == expected
 
 
-def test_nojit_fixed_stats_score_matches_jit_score():
-    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score, evaluate_stats_score_nojit
+def test_fixed_stats_score_matches_independent_reference():
+    """`evaluate_stats_score` (njit) matches an independent inline f32 replay.
+
+    The reference re-derives the same fever timeline via the canonical
+    `calculate_fever_timeline_indices` kernel and applies the same f32 ramp/body
+    scoring, computed here independently from the scorer under test.
+    """
+    from gear_optimizer.core.ref_lookup import resolve_stat_factors
+    from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
+    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
 
     calc_song = {
         "metadata": {
@@ -184,9 +192,32 @@ def test_nojit_fixed_stats_score_matches_jit_score():
         "Flow": 83,
     }
 
-    assert evaluate_stats_score_nojit(stats, calc_song, ref_arrays) == evaluate_stats_score(
-        stats, calc_song, ref_arrays
+    timestamps = calc_song["song_data"]["timestamps"]
+    total_notes = int(len(timestamps))
+    mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+    factors = resolve_stat_factors(stats, ref_arrays)
+    fever_mask_head, count_body_fever, count_body_normal, _, _ = calculate_fever_timeline_indices(
+        timestamps,
+        total_notes,
+        float(factors.fever_fill_rate),
+        float(factors.fever_time_stat),
+        int(calc_song["metadata"]["Long Notes"]),
+        float(calc_song["metadata"]["Last Note Time"]),
+        mask_buffer,
     )
+    total_base = (stats["Rush"] * 2) + stats["Flow"] + float(factors.pp_factor)
+    base_f = np.float32(total_base)
+    combo_f = np.float32(float(factors.combo_mul))
+    fever_f = np.float32(float(factors.fever_mul))
+    combo_val = int(base_f * combo_f)
+    fever_val = int(base_f * combo_f * fever_f)
+    reference = (int(count_body_fever) * fever_val) + (int(count_body_normal) * combo_val)
+    factor = (combo_f - np.float32(1.0)) * base_f / np.float32(100.0)
+    for idx, in_fever in enumerate(fever_mask_head):
+        ramp = base_f + (np.float32(idx + 1) * factor)
+        reference += int(ramp * fever_f) if bool(in_fever) else int(ramp)
+
+    assert evaluate_stats_score(stats, calc_song, ref_arrays) == int(reference)
 
 
 def test_fg_response_scoring_failure_raises_directly(monkeypatch):
@@ -779,6 +810,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
             great_candidate_timestamps=great_candidates,
             perfect_floor_timestamps=timestamps,
             great_floor_timestamps=timestamps,
+            raw_fever_fill=raw_fever_fill,
         )
         if row["activation_judgment"] == "late_great"
     )
@@ -1275,6 +1307,9 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
     assert set(out[0]["data"]["ForceGreats"]) == {
         "config",
         "final_score",
+        # Fever-window params persisted for the legality audit + frontend timing graph (reducer.py).
+        "raw_fever_fill",
+        "real_fever_time",
         "frontier_trace",
         "frontier_first_surfaces",
         "frontier_states",

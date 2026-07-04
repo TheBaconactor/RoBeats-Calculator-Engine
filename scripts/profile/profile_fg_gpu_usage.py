@@ -82,10 +82,10 @@ def main() -> int:
         "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float32),
     }
 
-    # Use CPU for the baseline solve so Taichi is only touched from the executor thread.
+    # GPU-only canonical solve.
     cfg_data = {
         "selected_color": "Rush",
-        "use_gpu": False,
+        "use_gpu": True,
         "user_ft": 0,
         "user_ff": 0,
         "user_pp": 0,
@@ -94,7 +94,7 @@ def main() -> int:
         "static_elem_input": 0,
     }
 
-    print("Running baseline solver (CPU)...")
+    print("Running baseline solver (GPU)...")
     data_dict = solve_best_fever_combination(
         cfg=None,
         initial_stats=base_stats_fixed,

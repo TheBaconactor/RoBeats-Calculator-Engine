@@ -132,11 +132,11 @@ def evaluate_loadout(gear_names, mini_names, gears_by_name, minis_by_name, ref_a
         "user_fm": 0,
         "selected_color": selected_color,
         "static_elem_input": 0,
-        "use_gpu": False,
+        "use_gpu": True,
     }
 
     result = solve_best_fever_combination(
-        cfg, stats, calc_song, ref_arrays, silent=True, skip_optimizer=False, override_cfg=override_cfg
+        cfg, stats, calc_song, ref_arrays, silent=True, override_cfg=override_cfg
     )
 
     if verbose and result:

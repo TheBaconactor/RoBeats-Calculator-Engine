@@ -19,8 +19,9 @@ def _build_options(n, non_fever_base, real_fever_time):
 
     timestamps = (np.arange(n) * 0.1).astype(np.float32)
     great_candidates = timestamps.copy()
+    raw_fever_fill = 1.0
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
-        raw_fever_fill=1.0,
+        raw_fever_fill=raw_fever_fill,
         non_fever_base=non_fever_base,
         use_forced_great_timing=True,
     )
@@ -39,6 +40,7 @@ def _build_options(n, non_fever_base, real_fever_time):
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
         great_floor_timestamps=timestamps,
+        raw_fever_fill=raw_fever_fill,
     )
     return timestamps, great_candidates, actions, options
 
