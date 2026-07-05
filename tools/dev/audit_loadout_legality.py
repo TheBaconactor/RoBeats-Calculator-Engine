@@ -31,7 +31,7 @@ from gear_optimizer.data.database_codecs import _unpack_stats_after_load
 from gear_optimizer.solver.score_math import lookup_reference_py
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-    server_fill_crossing, server_fever_end)
+    server_fill_crossing, server_fever_end, late_great_activation_is_reachable)
 from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
 
 _DIFF_DIRS = ("Easy", "Normal", "Hard")
@@ -53,6 +53,7 @@ def audit_fg_loadout(fg: dict, calc_song: dict, ref: dict) -> list[str]:
     """Return a list of violation strings (empty == legal/reachable)."""
     sd = calc_song["song_data"]
     n = int(len(sd["timestamps"]))
+    ts = np.asarray(sd["timestamps"], np.float32)
     floor = np.asarray(sd["fg_perfect_floor_timestamps"], np.float32)
     gfloor = np.asarray(sd["fg_great_floor_timestamps"], np.float32)
     pcand = np.asarray(sd["fg_perfect_candidate_timestamps"], np.float32)
@@ -83,8 +84,18 @@ def audit_fg_loadout(fg: dict, calc_song: dict, ref: dict) -> list[str]:
         base_e = server_fever_end(floor, hit, rft, cross, n=n)
         great_e = server_fever_end(gfloor, hit, rft, cross, n=n)
         kind = "late_great" if is_g else "perfect"
+        # server_fill_crossing walks ARRAY-INDEX order, which equals the physical HIT-TIME order only
+        # where chart order == latest-legal-hit order. A late-Great activation the index walk blesses
+        # can still be a hit-time PHANTOM: a same-timestamp sibling (or on-time note-ahead) whose
+        # latest legal hit precedes the Great's late hit is hit FIRST and completes the bar earlier
+        # (the chord phantom, e.g. All Right There). This is the check the old index-only oracle could
+        # not make -- it now uses the same reachability owner the producer enforces.
+        reachable = kind != "late_great" or late_great_activation_is_reachable(int(cross), ts, pcand, gcand, n)
         if cross != ra or kind != j:
             viol.append(f"sec{sec}: reported {j}@{ra} but canonical crossing is {kind}@{cross} (PHANTOM activation)")
+        elif not reachable:
+            viol.append(f"sec{sec}: late_great@{ra} is index-legal but HIT-TIME unreachable -- an "
+                        f"earlier-hit same-timestamp sibling / on-time note-ahead completes the bar first (PHANTOM)")
         elif not (base_e <= re <= great_e):
             viol.append(f"sec{sec}: fever_end {re} outside reachable drain [{base_e},{great_e}] (PHANTOM drain)")
         state = re
