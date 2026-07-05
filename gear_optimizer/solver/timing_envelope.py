@@ -84,7 +84,12 @@ def build_per_note_perfect_window_ms(
     note_types = np.asarray(note_types, dtype=np.int16)
     is_tail = note_types == int(held_tail_type)
     mult = np.where(is_tail, int(held_tail_time_multiplier), 1).astype(np.int16)
-    lower = (int(perfect_lower_ms) * mult).astype(np.int16)
+    # Early edge is EXCLUSIVE in the engine judge (score_bundle.mjs judgeWithEdges is strict `>`:
+    # a hit at exactly `perfect_lower` is judged Great, not Perfect). So the earliest REACHABLE
+    # Perfect hit is `perfect_lower + 1` ms (tail: `-40 -> -39`), not the edge value itself. The +1
+    # is a flat ms after the held-tail x2 (the edge scales, the 1ms strict-boundary does not). The
+    # late edge (`upper`) is inclusive in the engine, so it stays at the value. (BUG-1 fix.)
+    lower = (int(perfect_lower_ms) * mult + 1).astype(np.int16)
     upper = (int(perfect_upper_ms) * mult).astype(np.int16)
     return lower, upper
 
@@ -484,7 +489,12 @@ def build_great_floor_envelope_sec(
     # Cumulative early-Great edge = perfect_lower + great_lower_extra (game get_note_times), ×2 on
     # held tails -> -95 / -190. (Was raw -75: it dropped the Perfect-lower offset and under-included
     # legal early-Great fever for notes 75-95ms past a cutoff.)
-    great_low_ms = ((int(perfect_lower_ms) + int(great_lower_ms)) * mult).astype(np.int32)
+    # Early edge is EXCLUSIVE in the engine judge (strict `>`): a hit at exactly the cumulative
+    # `perfect_lower + great_lower` edge is judged Okay, not Great. So the earliest REACHABLE
+    # early-Great hit is that edge `+ 1` ms (tap `-95 -> -94`, tail `-190 -> -189`); the +1 is a
+    # flat ms after the held-tail x2. Independent of the Perfect-floor +1 (this path uses the raw
+    # constants, not the Perfect-window array), so no double-count. (BUG-1 fix.)
+    great_low_ms = ((int(perfect_lower_ms) + int(great_lower_ms)) * mult + 1).astype(np.int32)
     return _emit_pernote_edge_envelope_sec(ts_sec, great_low_ms, prefix_max=True, quantize_ms=quantize_ms)
 
 

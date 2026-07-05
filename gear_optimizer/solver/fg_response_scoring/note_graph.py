@@ -58,9 +58,13 @@ __all__ = [
     "reconcile_force_greats_note_graph",
 ]
 
-# Perfect-window lower bound (ms), matching the scoring envelope (timing_envelope.py): a normal
-# note can legally be hit as early as -20 ms; a held tail (note_type == 3) as early as -40 ms
-# (the Perfect window is widened x2 for held tails).
+# RAW judgment early edges (ms), matching the scoring envelope (timing_envelope.py). The engine
+# judge is strict-`>` at the early edge (SPUtil.timedelta_to_result / WebPort judgeWithEdges: a band
+# is `lower < delta <= upper`), so the edge value itself is NOT in that band -- `-20` is judged
+# Great, `-95` Okay. The earliest REACHABLE hit is therefore `edge*mult + 1` ms (the +1 is applied
+# AFTER the held-tail x2, so a tail is `-40 -> -39`, not `-38`). Consumers below add the +1; the
+# constants stay the raw edges so the x2 scaling is correct. (BUG-1: keep in lockstep with
+# timing_envelope.py, else the oracle harness replays illegal hit timings.)
 _PERFECT_LOWER_MS = -20
 _PERFECT_UPPER_MS = 40
 _HELD_TAIL_TYPE = 3
@@ -87,7 +91,8 @@ def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]
             "fever-end cluster timing at the note's legal judgment bounds -- it is never guessed"
         )
     mult = _HELD_TAIL_TIME_MULT if int(note_types[j]) == _HELD_TAIL_TYPE else 1
-    return float(_PERFECT_LOWER_MS * mult), float(_PERFECT_UPPER_MS * mult)
+    # +1 after the x2: earliest REACHABLE Perfect is the exclusive edge + 1ms (-19 / tail -39).
+    return float(_PERFECT_LOWER_MS * mult + 1), float(_PERFECT_UPPER_MS * mult)
 
 
 def _early_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
@@ -103,9 +108,11 @@ def _early_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, fl
             "early-Great fever-end timing at judgment bounds -- it is never guessed"
         )
     mult = _HELD_TAIL_TIME_MULT if int(note_types[j]) == _HELD_TAIL_TYPE else 1
-    great_low = float(_EARLY_GREAT_FLOOR_MS * mult)
-    # Great-only region ends just before Perfect-low (exclusive), leaving a visible gap.
-    great_high = float((_PERFECT_LOWER_MS * mult) - _EARLY_GREAT_ONLY_UPPER_GAP_MS)
+    # +1 after the x2: earliest REACHABLE early-Great is the exclusive edge + 1ms (-94 / tail -189).
+    great_low = float(_EARLY_GREAT_FLOOR_MS * mult + 1)
+    # Great-only region ends at the latest early-Great (inclusive `-20` edge; the Perfect band opens
+    # at the exclusive `-19`), i.e. perfect_low - gap. The +1 on perfect_low provides the visible gap.
+    great_high = float((_PERFECT_LOWER_MS * mult + 1) - _EARLY_GREAT_ONLY_UPPER_GAP_MS)
     return great_low, great_high
 
 
@@ -162,7 +169,7 @@ def _mark_endpoint_early_hits(
     For a clawed note with chart time ``hit``:
 
       * ``legal_low_hit = hit + legal_low``        earliest legal Perfect hit (held-tail-aware
-        lower bound: -20 normal, -40 held tail)
+        lower bound: -19 normal, -39 held tail -- the exclusive edge + 1ms, BUG-1)
       * ``upper_hit = cutoff - 1ms``               latest hit still inside the fever cutoff
       * ``lo_hit = max(legal_low_hit, prev_hit)``  also >= the previous shown hit (monotonic order)
       * if ``lo_hit >= upper_hit`` (degenerate / no in-fever room): ``shown_hit = lo_hit`` -- the
@@ -215,7 +222,8 @@ def _mark_endpoint_early_hits(
                 "note_graph: note_types (length == total_notes) is required to display an "
                 "endpoint-early hit at the note's legal lower bound -- it is never guessed"
             )
-        legal_low = _PERFECT_LOWER_MS * (_HELD_TAIL_TIME_MULT if int(nt[j]) == _HELD_TAIL_TYPE else 1)
+        # +1 after the x2: earliest REACHABLE Perfect hit (exclusive edge + 1ms), matching BUG-1.
+        legal_low = _PERFECT_LOWER_MS * (_HELD_TAIL_TIME_MULT if int(nt[j]) == _HELD_TAIL_TYPE else 1) + 1
         legal_low_hit = hit + float(legal_low)
         lo_hit = max(legal_low_hit, prev_hit)
         if lo_hit >= upper_hit:

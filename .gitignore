@@ -73,3 +73,9 @@ run_*.log
 .calc/
 .reasonix/
 compare_results.json
+
+# Agent/benchmark scratch: .ai-bridge holds a throwaway benchmark virtualenv (frontier-bench-venv,
+# ~262MB of taichi/numpy binaries); docs/research + tools/research are ad-hoc benchmark artifacts.
+.ai-bridge/
+docs/research/
+tools/research/
