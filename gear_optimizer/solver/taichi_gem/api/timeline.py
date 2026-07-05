@@ -264,7 +264,12 @@ _frontier_payload_cache_lock = threading.RLock()
 # sibling, hit first, forecloses), so stale bundles carry a phantom over-extended drain window (and,
 # where it captured a note, an over-count). The DP fingerprint over timeline_exact_frontier.py
 # already shifts automatically; this backstop bump records the behaviour change.
-_FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v10"
+# v10->v11: BUG-1 judgment-edge inclusivity fix. The base drain searches the Perfect FLOOR envelope
+# (build_perfect_floor_envelope_sec), whose early edge shifted +1ms to the engine's exclusive-early
+# boundary (-20/-40 -> -19/-39). timing_envelope.py is NOT in _TIMELINE_DP_SOURCE, so this explicit
+# bump is what invalidates the stale (1ms-over-generous) base fever-membership floor. Re-solve to
+# re-persist best_score.
+_FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v11"
 _TIMELINE_DP_SOURCE = Path(__file__).resolve().parents[2] / "timeline_exact_frontier.py"
 _FRONTIER_DISK_CACHE_VERSION = (
     f"{_FRONTIER_DISK_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint([_TIMELINE_DP_SOURCE])}"

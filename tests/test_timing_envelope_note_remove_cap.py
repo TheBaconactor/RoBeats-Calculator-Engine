@@ -58,14 +58,17 @@ def test_tail_late_great_edge_is_capped_at_note_removal() -> None:
 
 def test_full_mode_caps_only_the_late_edge() -> None:
     low, high = _windows([TAIL], great_mode="full")
-    assert int(low[0]) == -190  # perfect_low(-40) + great_lower(-75)*2
+    # BUG-1: the early edge is exclusive in the engine, so the earliest reachable early-Great is
+    # -189, not the -190 edge value (tail great early edge -190 is judged Okay). = perfect_low(-39,
+    # itself +1) + great_lower(-75)*2.
+    assert int(low[0]) == -189
     assert int(high[0]) == NOTE_REMOVE_LATE_CAP_MS
 
 
 def test_early_mode_is_untouched_by_the_cap() -> None:
     low, high = _windows([TAIL], great_mode="early", cap=0)
-    assert int(low[0]) == -190
-    assert int(high[0]) == -41  # perfect_low(-40) - 1
+    assert int(low[0]) == -189  # BUG-1: earliest reachable early-Great (edge -190 is exclusive)
+    assert int(high[0]) == -40  # perfect_low(-39, itself BUG-1 +1) - 1
 
 
 def test_empty_late_window_fails_loud() -> None:

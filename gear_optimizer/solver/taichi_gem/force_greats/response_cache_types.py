@@ -69,7 +69,12 @@ from .response_types import FgResponseFrontierResult
 #             perfect activation whose narrower later-indexed sibling is hit first over-extended the
 #             drain window). perfect_end_idx is built from the capped clock, so stale bundles carry the
 #             phantom perfect-activation window and MUST rebuild.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v22"
+# v22->v23: BUG-1 judgment-edge inclusivity fix (timing_envelope.py perfect/great FLOOR early edges
+# shifted +1ms to the engine's exclusive-early boundary: -20/-40 -> -19/-39, -95/-190 -> -94/-189).
+# The floor envelopes are frontier-build INPUTS but timing_envelope.py is NOT in _FG_DP_SOURCES, so
+# the logic fingerprint does not cover it -- this explicit base-version bump is what invalidates the
+# stale (over-generous) fever-membership floors. Re-solve to re-persist best_fg_score.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v23"
 _HERE = Path(__file__).resolve().parent
 # Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
 # build/search/pack path, add it here (the base version stays the human backstop).
