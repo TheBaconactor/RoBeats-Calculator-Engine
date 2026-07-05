@@ -68,3 +68,8 @@ analysis.txt
 tmp_general_meta_debug*.db*
 runs*/
 run_*.log
+
+# Local scratch/profiling DBs, tool state, and ad-hoc validation output (never checked in)
+.calc/
+.reasonix/
+compare_results.json
