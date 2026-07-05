@@ -36,6 +36,7 @@ def build_kernel_args(
     timestamps: Any,
     perfect_candidate_timestamps: Any | None = None,
     great_candidate_timestamps: Any | None = None,
+    lanes: Any | None = None,
     raw_fever_fill: float,
     non_fever_base: int,
     real_fever_time: float,
@@ -71,6 +72,13 @@ def build_kernel_args(
     great_floor_ts = np.ascontiguousarray(
         np.asarray(build_great_floor_envelope_sec(ts, None), dtype=np.float32).reshape(-1)
     )
+    lane_arr = (
+        np.arange(n, dtype=np.int32)
+        if lanes is None
+        else np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
+    )
+    if int(lane_arr.shape[0]) != n:
+        raise ValueError("lanes length must match timestamps")
 
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=float(raw_fever_fill),
@@ -78,6 +86,7 @@ def build_kernel_args(
         use_forced_great_timing=bool(use_forced_great_timing),
     )
     (
+        action_k_arr,
         later_fill_arr,
         first_fill_arr,
         later_forced_arr,
@@ -101,12 +110,15 @@ def build_kernel_args(
         great_candidate_timestamps=great_ts,
         perfect_floor_timestamps=floor_ts,
         great_floor_timestamps=great_floor_ts,
+        lanes=lane_arr,
         real_times=real_times,
     )
 
     return {
         "n": n,
         "action_count": int(later_fill_arr.shape[0]),
+        "raw_fever_fill": float(raw_fever_fill),
+        "action_k": np.ascontiguousarray(action_k_arr, dtype=np.int32),
         "later_fill": np.ascontiguousarray(later_fill_arr, dtype=np.int32),
         "first_fill": np.ascontiguousarray(first_fill_arr, dtype=np.int32),
         "later_forced": np.ascontiguousarray(later_forced_arr, dtype=np.int32),
@@ -116,6 +128,9 @@ def build_kernel_args(
         "timestamps": ts,
         "perfect_candidate_timestamps": perfect_ts,
         "great_candidate_timestamps": great_ts,
+        "perfect_floor_timestamps": floor_ts,
+        "great_floor_timestamps": great_floor_ts,
+        "lanes": lane_arr,
         "timestamp_end_idx": timestamp_end_idx,
         "perfect_end_idx": perfect_end_idx,
         "great_end_idx": great_end_idx,
@@ -130,6 +145,8 @@ def numba_first_frontier(args: dict[str, Any]):
     return _first_frontier_from_precomputed_end_indices_numba(
         int(args["n"]),
         int(args["action_count"]),
+        float(args["raw_fever_fill"]),
+        args["action_k"],
         args["later_fill"],
         args["first_fill"],
         args["later_forced"],
@@ -139,6 +156,9 @@ def numba_first_frontier(args: dict[str, Any]):
         args["timestamps"],
         args["perfect_candidate_timestamps"],
         args["great_candidate_timestamps"],
+        args["perfect_floor_timestamps"],
+        args["great_floor_timestamps"],
+        args["lanes"],
         args["timestamp_end_idx"],
         args["perfect_end_idx"],
         args["great_end_idx"],

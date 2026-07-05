@@ -4,8 +4,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .fill_crossing import build_late_great_forbidden_mask, build_reachable_perfect_candidate
-
 _GPU_EDGE_BATCH_MAX_BYTES = 4 * 1024 * 1024 * 1024
 
 def _batch_chunk_size(*, n: int, action_count: int, geometry_count: int, bytes_per_edge: int = 64) -> int:
@@ -22,7 +20,7 @@ def _first_only_chunks(*, n: int, items: list[tuple]) -> list[tuple[int, list[tu
 
 
 def _action_arrays_signature(item: tuple) -> tuple[bytes, ...]:
-    return tuple(np.ascontiguousarray(value, dtype=np.int32).tobytes() for value in item[3:])
+    return tuple(np.ascontiguousarray(value, dtype=np.int32).tobytes() for value in item[4:])
 
 
 @dataclass(frozen=True)
@@ -44,18 +42,20 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     great_candidate_timestamps: np.ndarray,
     perfect_floor_timestamps: np.ndarray,
     great_floor_timestamps: np.ndarray,
+    lanes: np.ndarray | None = None,
 ) -> FirstOnlyCanonicalization:
     if not prepared:
         empty = np.empty((0, 0), dtype=np.int32)
         empty3 = np.empty((0, 0, 2), dtype=np.int32)
         return FirstOnlyCanonicalization([], {}, {}, empty, empty, empty, empty3)
-    real_times = np.asarray([item[2] for item in prepared], dtype=np.float64)
+    real_times = np.asarray([item[3] for item in prepared], dtype=np.float64)
     real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx, great_floor_end_idx = _precompute_end_indices(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
         perfect_floor_timestamps=perfect_floor_timestamps,
         great_floor_timestamps=great_floor_timestamps,
+        lanes=lanes,
         real_times=real_times,
     )
     if len(prepared) == 1:
@@ -94,7 +94,7 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     real_time_index_by_source: dict[int, int] = {}
     for local_idx, item in enumerate(prepared):
         source_idx = int(item[0])
-        action_object_key = tuple(id(value) for value in item[3:])
+        action_object_key = tuple(id(value) for value in item[4:])
         action_class = action_class_by_object.get(action_object_key)
         if action_class is None:
             action_signature = _action_arrays_signature(item)
@@ -139,11 +139,16 @@ def _precompute_end_indices(
     perfect_floor_timestamps: np.ndarray,
     great_floor_timestamps: np.ndarray,
     real_times: np.ndarray,
+    lanes: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     unique_real_times, inverse = np.unique(np.asarray(real_times, dtype=np.float64), return_inverse=True)
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     perfect_ts = np.ascontiguousarray(np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1))
     great_ts = np.ascontiguousarray(np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1))
+    if lanes is None:
+        raise ValueError("lanes are required for input-engine-aware FG precompute")
+    if int(np.asarray(lanes, dtype=np.int32).reshape(-1).shape[0]) != int(ts.shape[0]):
+        raise ValueError("lanes length must match timestamps")
     # Endpoint-early fever inclusion (issue #42): a later note is in fever iff its EARLIEST
     # legal hit precedes the cutoff, so the fever boundary searches the monotone earliest-
     # Perfect floor envelope, not chart. `floor_ts` is prebuilt prefix-max-monotone and shares
@@ -168,8 +173,9 @@ def _precompute_end_indices(
     # perfect-activation clock to the reachable value; the Perfect fever-end table below searches this
     # capped clock. Off overlap it equals perfect_ts64 exactly -> bit-identical. (The GREAT clock is
     # handled by the forbid clamp; each note's own uncapped hit stays in perfect_ts64 for reach checks.)
-    reachable_perfect_ts64 = np.asarray(
-        build_reachable_perfect_candidate(ts64, perfect_ts64, int(ts.shape[0])), dtype=np.float64)
+    # The legacy global perfect cap was lane-blind. Input-engine-aware production keeps each note's
+    # own latest Perfect hit and lets reconstruction/persistence enforce the lane-aware owner.
+    reachable_perfect_ts64 = perfect_ts64
     timestamp_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0])), dtype=np.int32)
     perfect_end_idx = np.empty_like(timestamp_end_idx)
     great_end_idx = np.empty_like(timestamp_end_idx)
@@ -202,9 +208,8 @@ def _precompute_end_indices(
     # Perfect crossing it already enumerates. Off overlap (no forbidden index, e.g. sparse-tail or
     # non-chord charts) great_end_idx is UNCHANGED -> byte-identical frontier. The mask is a pure
     # function of the per-note windows (loadout-independent), computed once here.
-    forbidden = build_late_great_forbidden_mask(ts64, perfect_ts64, great_ts64, int(ts.shape[0]))
-    if bool(forbidden.any()):
-        great_end_idx[:, forbidden] = perfect_end_idx[:, forbidden]
+    # The legacy global late-Great forbidden mask was lane-blind and loadout-independent. Do not
+    # clamp here; exact activation legality is checked by the lane-aware reconstruction owner.
     return (
         np.ascontiguousarray(inverse.astype(np.int32, copy=False)),
         np.ascontiguousarray(timestamp_end_idx),

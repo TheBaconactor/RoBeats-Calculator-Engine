@@ -40,6 +40,7 @@ def _build_options(n, non_fever_base, real_fever_time):
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
         great_floor_timestamps=timestamps,
+        lanes=np.arange(int(timestamps.shape[0]), dtype=np.int32),
         raw_fever_fill=raw_fever_fill,
     )
     return timestamps, great_candidates, actions, options
@@ -74,6 +75,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
                 great_candidate_timestamps=great_candidates,
                 perfect_floor_timestamps=timestamps,
                 great_floor_timestamps=timestamps,
+                lanes=np.arange(n, dtype=np.int32),
                 raw_fever_fill=1.0,
                 real_fever_time=real_fever_time,
                 use_forced_great_timing=True,
@@ -136,6 +138,7 @@ def test_reconstruct_force_greats_response_trace_is_stats_free():
         "great_candidate_timestamps",
         "perfect_floor_timestamps",
         "great_floor_timestamps",
+        "lanes",
         "raw_fever_fill",
         "real_fever_time",
         "use_forced_great_timing",
@@ -213,6 +216,28 @@ def test_fg_note_graph_body_counts_synthetic():
     assert witp["note_result"] == "Perfect"
     assert witp["delta_ms"] == 40.0
 
+    # Case 3b: non-prefix forced-Great run. The legacy prefix fields say "none"; the load-bearing
+    # run fields place Greats at {2, 3}, with idx3 also carrying the late-Great witness.
+    trace_run = [{
+        "section": 1, "activation_index": 3, "fever_end_index": 6,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_run_start_index": 2, "forced_run_count": 2,
+        "activation_judgment": "late_great", "activation_hit_offset_ms": 181.0,
+    }]
+    gr = force_greats_note_graph(
+        frontier_trace=trace_run,
+        total_notes=n,
+        timestamps=ts,
+        note_types=np.ones(n, dtype=np.int16),
+    )
+    reconcile_force_greats_note_graph(
+        gr, total_notes=n,
+        fever_words=_words_from_indices(set(range(3, 6))), great_words=_words_from_indices({2, 3}),
+        body_fever=0, body_great=0, body_fever_great=0,
+    )
+    assert [i for i, x in enumerate(gr) if x["note_result"] == "Great"] == [2, 3]
+    assert gr[3]["is_activation_witness"] is True
+
     # Case 4: multi-section (two fever windows), head fever + body fever.
     trace3 = [
         {"section": 1, "activation_index": 50, "fever_end_index": 56,
@@ -230,6 +255,36 @@ def test_fg_note_graph_body_counts_synthetic():
         great_words=_words_from_indices({0, 1}),
         body_fever=6, body_great=4, body_fever_great=0,
     )
+
+
+def test_fg_note_graph_same_time_head_great_selector_preserves_ramp_order():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 8
+    ts = np.asarray([0.095, 0.581, 0.743, 0.743, 1.067, 1.392, 1.878, 2.040], dtype=np.float32)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 6,
+            "fever_end_index": 8,
+            "forced_start_index": 2,
+            "forced_prefix_count": 1,
+            "activation_judgment": "perfect",
+            "activation_hit_offset_ms": 0.0,
+        }
+    ]
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=n,
+        timestamps=ts,
+        note_types=np.ones(n, dtype=np.int16),
+    )
+
+    assert graph[2]["note_result"] == "Great"
+    assert graph[3]["note_result"] == "Perfect"
+    assert graph[2]["delta_ms"] < -20.0
+    assert graph[3]["delta_ms"] == 0.0
+    assert graph[2]["hit_time_ms"] + graph[2]["delta_ms"] < graph[3]["hit_time_ms"] + graph[3]["delta_ms"]
 
 
 def test_fg_note_graph_marks_fever_end_witness():

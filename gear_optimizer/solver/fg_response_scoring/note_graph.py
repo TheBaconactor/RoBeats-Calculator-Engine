@@ -31,8 +31,9 @@ Two graphs per loadout, matching the intended software behavior:
   * FG   = fg frontier + timeline       -> force_greats_note_graph(..., timing_mode=...)
         per-note Perfect/Great + fever; optimized activation hits are timing
         WITNESSES (Perfect-window or Late-Great, carrying exact `delta_ms`);
-        prefix/forced Greats are pure v3 selectors (Great label, `delta_ms=None`,
-        no precise witness).
+        prefix/forced Greats are pure v3 selectors unless a same-chart-time cluster
+        needs an explicit early/late Great witness to preserve the scored head-ramp
+        order.
 
 ``timing_mode`` selects the timing semantic (issue #66):
   * ``"perfect_window"`` (default): apply activation witness offsets, endpoint-early
@@ -67,6 +68,7 @@ __all__ = [
 # timing_envelope.py, else the oracle harness replays illegal hit timings.)
 _PERFECT_LOWER_MS = -20
 _PERFECT_UPPER_MS = 40
+_GREAT_UPPER_MS = 190
 _HELD_TAIL_TYPE = 3
 _HELD_TAIL_TIME_MULT = 2
 _FEVER_END_SAME_CHART_TIME_MS = 0.01
@@ -116,6 +118,16 @@ def _early_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, fl
     return great_low, great_high
 
 
+def _late_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
+    if int(note_types.shape[0]) <= j:
+        raise ValueError(
+            "note_graph: note_types (length == total_notes) is required to display "
+            "same-time forced-Great selector timing at judgment bounds -- it is never guessed"
+        )
+    mult = _HELD_TAIL_TIME_MULT if int(note_types[j]) == _HELD_TAIL_TYPE else 1
+    return float(_PERFECT_UPPER_MS * mult + 1), float(_GREAT_UPPER_MS * mult)
+
+
 def _center_safe_delta(*, low_ms: float, high_ms: float) -> float:
     return 0.5 * (float(low_ms) + float(high_ms))
 
@@ -146,6 +158,98 @@ def _perfect_note_graph(total_notes: int, timestamps: Sequence[float] | np.ndarr
         }
         for i in range(n)
     ]
+
+
+def _mark_same_time_selector_order_deltas(
+    notes: list[dict[str, Any]],
+    *,
+    total_notes: int,
+    note_types: Sequence[int] | np.ndarray | None,
+) -> None:
+    """Give same-time forced-Great selectors concrete offsets when combo order matters.
+
+    A selector Great (`delta_ms is None`) is not a fever-boundary witness, but in the first
+    100-note ramp its physical order still changes score. The scored surface indexes head
+    bits in chart order, so the replay/display witness must keep same-chart-time clusters in
+    that order. Great-before-Perfect therefore uses the early-Great band; Perfect-before-Great
+    uses the late-Great band. If a mixed cluster cannot be ordered without changing a judgment,
+    fail loudly: that surface is not a legal witness for the scored ramp.
+    """
+    n = min(int(total_notes), len(notes))
+    if n <= 1:
+        return
+
+    clusters: list[list[int]] = []
+    current: list[int] = [0]
+    for idx in range(1, n):
+        if _same_chart_time_ms(notes[idx - 1]["hit_time_ms"], notes[idx]["hit_time_ms"]):
+            current.append(idx)
+            continue
+        if len(current) > 1:
+            clusters.append(current)
+        current = [idx]
+    if len(current) > 1:
+        clusters.append(current)
+    if not clusters:
+        return
+
+    nt: np.ndarray | None = None
+    for cluster in clusters:
+        has_selector = any(
+            str(notes[j].get("note_result", "Perfect")) == "Great" and notes[j].get("delta_ms") is None
+            for j in cluster
+        )
+        if not has_selector:
+            continue
+        if nt is None:
+            if note_types is None:
+                raise ValueError(
+                    "note_graph: note_types (length == total_notes) is required to display "
+                    "same-time forced-Great selector timing at judgment bounds -- it is never guessed"
+                )
+            nt = np.asarray(note_types).reshape(-1)
+
+        previous_delta = -np.inf
+        for j in cluster:
+            note = notes[j]
+            result = str(note.get("note_result", "Perfect"))
+            delta = note.get("delta_ms")
+            if result == "Great" and delta is None:
+                early_lo, early_hi = _early_great_bounds_ms_at(nt, j)
+                late_lo, late_hi = _late_great_bounds_ms_at(nt, j)
+                if previous_delta < early_hi:
+                    chosen = max(
+                        _center_safe_delta(low_ms=early_lo, high_ms=early_hi),
+                        float(early_lo),
+                        float(previous_delta) + 1.0,
+                    )
+                    if chosen > early_hi:
+                        chosen = float(early_hi)
+                elif previous_delta < late_hi:
+                    chosen = max(float(late_lo), float(previous_delta) + 1.0)
+                    if chosen > late_hi:
+                        chosen = float(late_hi)
+                else:
+                    raise ValueError(
+                        "note_graph: same-time forced-Great selector cluster cannot preserve "
+                        f"chart-index score order at note {j}"
+                    )
+                note["delta_ms"] = float(chosen)
+                previous_delta = float(chosen)
+                continue
+
+            if delta is None:
+                # Only Great selectors are allowed to omit a timing witness.
+                raise ValueError(
+                    f"note_graph: same-time cluster note {j} has no timing witness for result {result!r}"
+                )
+            fixed_delta = float(delta)
+            if fixed_delta < previous_delta:
+                raise ValueError(
+                    "note_graph: same-time cluster witness order contradicts chart-index score order "
+                    f"at note {j} ({fixed_delta}ms < {previous_delta}ms)"
+                )
+            previous_delta = fixed_delta
 
 
 def _mark_endpoint_early_hits(
@@ -632,7 +736,8 @@ def force_greats_note_graph(
     dicts emitted by `reconstruct_force_greats_response_trace`). Each section carries a
     sequential, non-overlapping region of the timeline:
       - fever window  [activation_index, fever_end_index)            -> fever
-      - forced greats [forced_start_index, forced_start_index+forced_prefix_count) -> Great (selector)
+      - forced greats [forced_run_start_index, forced_run_start_index+forced_run_count) -> Great (selector)
+        (older prefix-only traces map this to forced_start_index/forced_prefix_count)
       - the activation note is a timing WITNESS when activation_hit_offset_ms is nonzero.
         If activation_judgment == "late_great", that witness is also a Great; otherwise
         it remains Perfect.
@@ -646,8 +751,8 @@ def force_greats_note_graph(
         section = int(sec.get("section", 0))
         a = int(sec["activation_index"])
         e = int(sec["fever_end_index"])
-        fs = int(sec["forced_start_index"])
-        fc = int(sec["forced_prefix_count"])
+        fs = int(sec.get("forced_run_start_index", sec["forced_start_index"]))
+        fc = int(sec.get("forced_run_count", sec["forced_prefix_count"]))
 
         for j in range(max(0, fs), min(fs + fc, n)):     # forced (selector) Greats
             notes[j]["note_result"] = "Great"
@@ -724,6 +829,13 @@ def force_greats_note_graph(
                 notes, fever_end_index=e, total_notes=n,
                 fever_window_end_ms=fever_end_ms, note_types=note_types,
             )
+
+    if apply_guidance:
+        _mark_same_time_selector_order_deltas(
+            notes,
+            total_notes=n,
+            note_types=note_types,
+        )
 
     return notes
 

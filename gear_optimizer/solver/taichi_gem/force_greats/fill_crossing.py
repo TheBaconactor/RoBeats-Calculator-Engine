@@ -173,6 +173,86 @@ def late_great_activation_prefix(fill: int, k: int, first: bool, fever_fill_deno
     return None
 
 
+def activation_hit_is_reachable_weighted_lane_aware(
+    *,
+    activation_index: int,
+    activation_hit_timestamp: float,
+    low_hit_timestamps: Sequence[float] | np.ndarray,
+    high_hit_timestamps: Sequence[float] | np.ndarray,
+    lanes: Sequence[int] | np.ndarray,
+    fill_units: Sequence[float] | np.ndarray,
+    fever_fill_denom: float,
+    section_start: int,
+    section_end: int,
+) -> bool:
+    """Canonical full-combo activation reachability for one concrete hit time.
+
+    This is the input-engine-aware predicate the fragmented legacy gates are being collapsed into:
+    an activation is legal only when the same weighted, lane-aware hit-time walk that the surface
+    prices can make ``activation_index`` the first note whose fill reaches the fever denominator.
+
+    ``fill_units`` is in Perfect-fill units: Perfect = 1.0, Great = 0.5. ``low_hit_timestamps`` and
+    ``high_hit_timestamps`` are the legal hit interval for each note under the surface's chosen label.
+    A note is forced before ``activation_hit_timestamp`` if either its own latest legal hit is earlier
+    on any lane, or it is an earlier same-lane note whose hittable interval still overlaps the
+    activation hit. Other cross-lane notes hittable before ``h_a`` are optional capacity: they may be
+    scheduled before the activation if needed to reach the crossing, or delayed after it if they would
+    preempt. Later same-lane notes cannot supply pre-activation fill while ``a`` is still unhit,
+    because earliest-hittable-first would consume ``a`` first.
+    """
+    a = int(activation_index)
+    start = int(section_start)
+    end = int(section_end)
+    denom = float(fever_fill_denom)
+    if denom <= 0.0:
+        raise ValueError("fever_fill_denom must be > 0")
+    if start < 0 or end < start:
+        raise ValueError("invalid section bounds")
+
+    lo = np.asarray(low_hit_timestamps, dtype=np.float32).reshape(-1)
+    hi = np.asarray(high_hit_timestamps, dtype=np.float32).reshape(-1)
+    lane = np.asarray(lanes, dtype=np.int32).reshape(-1)
+    units = np.asarray(fill_units, dtype=np.float32).reshape(-1)
+    total = int(lo.shape[0])
+    if int(hi.shape[0]) != total or int(lane.shape[0]) != total or int(units.shape[0]) != total:
+        raise ValueError("hit timestamps, lanes, and fill_units must have the same length")
+    if not (start <= a < end <= total):
+        raise ValueError("activation_index must be inside [section_start, section_end)")
+    unit_a = float(units[a])
+    if unit_a <= 0.0:
+        return False
+
+    h_a = np.float32(activation_hit_timestamp)
+    activation_lane = int(lane[a])
+    forced_units = 0.0
+    optional_units = 0.0
+    for j in range(start, end):
+        if int(j) == a:
+            continue
+        same_lane = bool(int(lane[j]) == activation_lane)
+        if same_lane and int(j) > a and hi[j] < h_a and lo[a] <= hi[j]:
+            return False
+        forced_any_lane = bool(hi[j] < h_a)
+        forced_same_lane_older = bool(same_lane and int(j) < a and lo[j] <= h_a)
+        if forced_any_lane or forced_same_lane_older:
+            forced_units += float(units[j])
+            if forced_units >= denom:
+                return False
+            continue
+        if lo[j] <= h_a:
+            if same_lane and int(j) > a:
+                continue
+            optional_units += float(units[j])
+
+    # There must exist a schedule with some optional pre-activation fill S such that
+    #   forced_units <= S < denom <= S + unit_a.
+    # Since all modeled units are 0.5-grid Perfect/Great fill and the game threshold is continuous,
+    # the interval check is the exact reachability condition for the retained full-combo surface.
+    needed_before_activation = max(0.0, denom - unit_a)
+    return bool(forced_units < denom and forced_units + optional_units >= needed_before_activation)
+
+
+# Legacy narrow owner retained while production wiring is migrated to the weighted/lane-aware owner above.
 def late_great_activation_is_reachable(
     activation_index: int,
     timestamps: Sequence[float] | np.ndarray,

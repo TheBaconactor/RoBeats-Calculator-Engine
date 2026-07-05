@@ -74,7 +74,17 @@ from .response_types import FgResponseFrontierResult
 # The floor envelopes are frontier-build INPUTS but timing_envelope.py is NOT in _FG_DP_SOURCES, so
 # the logic fingerprint does not cover it -- this explicit base-version bump is what invalidates the
 # stale (over-generous) fever-membership floors. Re-solve to re-persist best_fg_score.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v23"
+# v23->v24: input-engine-aware reachability. The frontier now carries lanes in the cache key, keeps
+# raw timing edges in precompute, and filters reconstructed surfaces through the weighted lane-aware
+# owner. Stale v23 bundles can either keep phantoms the input engine cannot play or miss legal
+# region-delay surfaces the lane-blind clamp removed.
+# v24->v25: region-delay producer. The numba first-frontier graph now emits late-Great activations
+# from non-prefix contiguous Great runs, and traces persist forced_run_start/count so the note graph
+# and audits render the same run the surface scored. v24 bundles are prefix-only after filtering.
+# v25->v26: input-engine-aware same-time sibling bundles. A region-delay late-Great activation may
+# require following same-time/early-hit siblings to also be forced Great so their Perfect hits do not
+# fill the bar first; stale v25 bundles miss legal higher-scoring surfaces such as ART Hard 835/3/3.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v26"
 _HERE = Path(__file__).resolve().parent
 # Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
 # build/search/pack path, add it here (the base version stays the human backstop).

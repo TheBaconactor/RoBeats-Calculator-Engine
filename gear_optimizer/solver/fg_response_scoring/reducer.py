@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
@@ -13,38 +15,65 @@ from gear_optimizer.solver.taichi_gem.force_greats import (
     reconstruct_force_greats_response_trace,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-    late_great_activation_is_reachable,
+    activation_hit_is_reachable_weighted_lane_aware,
 )
 
 from .planner import FgResponseFrontierPreparedPlan
 
 
-def _assert_trace_hit_time_reachable(frontier_trace, song_inputs) -> None:
-    """FAIL LOUD if any persisted late-Great activation is hit-time UNREACHABLE.
+def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_fill: float) -> None:
+    """FAIL LOUD if a persisted activation is not input-engine reachable.
 
-    The producer already forecloses these -- the frontier build clamps ``great_end_idx`` for
-    forbidden indices and the reconstruct drops the option -- so this never fires for a correctly
-    built frontier. It is the invariant enforcer required by repo policy: a future regression that
-    lets a phantom late-Great reach persistence becomes a loud crash AT THE SOURCE instead of a
-    silent leaderboard over-report. It uses the same reachability owner
-    (:func:`late_great_activation_is_reachable`) the producer and the legality audit use, so it is
-    bit-consistent and only fires on a genuine logic regression (its job). It never MUTATES the
-    surface -- a phantom is a producer bug, not a persist-time fixup.
+    This is the persistence-side invariant for the canonical owner: the activation clock and drain
+    window must be produced by the same weighted, lane-aware hit-time walk the surface prices. It never
+    mutates the surface; a rejection here means the producer emitted a phantom surface and must be fixed.
     """
-    ts = song_inputs.timestamps
-    pc = song_inputs.perfect_candidates
-    gc = song_inputs.great_candidates
-    n = int(len(ts))
+    ts = np.asarray(song_inputs.timestamps, dtype=np.float32).reshape(-1)
+    pc = np.asarray(song_inputs.perfect_candidates, dtype=np.float32).reshape(-1)
+    gc = np.asarray(song_inputs.great_candidates, dtype=np.float32).reshape(-1)
+    pf = np.asarray(song_inputs.perfect_floor, dtype=np.float32).reshape(-1)
+    gf = np.asarray(song_inputs.great_floor, dtype=np.float32).reshape(-1)
+    lanes = np.asarray(song_inputs.lanes, dtype=np.int32).reshape(-1)
+    n = int(ts.shape[0])
+    if any(int(arr.shape[0]) != n for arr in (pc, gc, pf, gf, lanes)):
+        raise ValueError("FG persist guard: timing arrays and lanes must match timestamps")
+
     for row in frontier_trace:
-        if str(row.get("activation_judgment")) != "late_great":
-            continue
         a = int(row["activation_index"])
-        if 0 <= a < n and not late_great_activation_is_reachable(a, ts, pc, gc, n):
+        if not (0 <= a < n):
+            continue
+        section_start = max(0, int(row.get("forced_start_index", 0)))
+        forced_start = max(0, int(row.get("forced_run_start_index", section_start)))
+        forced_count = max(0, int(row.get("forced_run_count", row.get("forced_prefix_count", 0))))
+        forced_end = min(n, forced_start + forced_count)
+        lo = pf.copy()
+        hi = pc.copy()
+        units = np.ones((n,), dtype=np.float32)
+        if forced_end > forced_start:
+            lo[forced_start:forced_end] = gf[forced_start:forced_end]
+            hi[forced_start:forced_end] = gc[forced_start:forced_end]
+            units[forced_start:forced_end] = np.float32(0.5)
+        if str(row.get("activation_judgment")) == "late_great":
+            lo[a] = gf[a]
+            hi[a] = gc[a]
+            units[a] = np.float32(0.5)
+        h_a = float(row.get("activation_hit_window_upper_ms", float(hi[a]) * 1000.0)) / 1000.0
+        if not activation_hit_is_reachable_weighted_lane_aware(
+            activation_index=a,
+            activation_hit_timestamp=h_a,
+            low_hit_timestamps=lo,
+            high_hit_timestamps=hi,
+            lanes=lanes,
+            fill_units=units,
+            fever_fill_denom=float(raw_fever_fill),
+            section_start=section_start,
+            section_end=n,
+        ):
             raise ValueError(
-                f"FG persist guard: late-Great activation @{a} (section {row.get('section')}) is "
-                f"HIT-TIME UNREACHABLE -- an earlier-hit same-timestamp sibling / on-time note-ahead "
-                f"completes the fever bar first (phantom). The frontier build must foreclose this; a "
-                f"trace reaching persistence with it is a producer regression, not a persist fixup."
+                f"FG persist guard: activation @{a} (section {row.get('section')}, "
+                f"judgment={row.get('activation_judgment')}) is not reachable under the weighted, "
+                f"lane-aware input-engine owner. The frontier build must foreclose this; a trace "
+                f"reaching persistence with it is a producer regression, not a persist fixup."
             )
 
 
@@ -62,6 +91,9 @@ def materialize_force_payload_from_response_frontier(
 ) -> dict[str, Any]:
     frontier = reconstruction_frontier or result.frontier
     song_inputs = extract_fg_song_inputs(calc_song)
+    song_lanes = getattr(song_inputs, "lanes", None)
+    if song_lanes is None:
+        raise ValueError("FG response materialization requires song input lanes")
     non_fever_base = int(frontier.non_fever_base)
     surface = result.surface
     # Memoize the trace DFS across the loadouts materialized for one song: the trace is a pure
@@ -96,6 +128,7 @@ def materialize_force_payload_from_response_frontier(
             great_candidate_timestamps=song_inputs.great_candidates,
             perfect_floor_timestamps=song_inputs.perfect_floor,
             great_floor_timestamps=song_inputs.great_floor,
+            lanes=song_lanes,
             raw_fever_fill=float(result.raw_fever_fill),
             real_fever_time=float(result.real_fever_time),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
@@ -107,7 +140,7 @@ def materialize_force_payload_from_response_frontier(
     # exactly like before.
     frontier_trace = base_trace if trace_cache is None else tuple(dict(row) for row in base_trace)
     # Persist-time fail-loud reachability guard: no phantom late-Great activation may reach the DB.
-    _assert_trace_hit_time_reachable(frontier_trace, song_inputs)
+    _assert_trace_hit_time_reachable(frontier_trace, song_inputs, raw_fever_fill=float(result.raw_fever_fill))
     trace_counts = tuple(int(row["forced_count"]) for row in frontier_trace)
     if result.forced_counts:
         forced_counts = tuple(int(v) for v in result.forced_counts)

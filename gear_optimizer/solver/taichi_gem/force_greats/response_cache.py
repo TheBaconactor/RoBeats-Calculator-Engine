@@ -214,6 +214,7 @@ def _build_response_frontier_cache_payload(
             great_candidate_timestamps=song_inputs.great_candidates,
             perfect_floor_timestamps=song_inputs.perfect_floor,
             great_floor_timestamps=song_inputs.great_floor,
+            lanes=song_inputs.lanes,
             geometries=tuple(item[1] for item in missing_items),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
         )

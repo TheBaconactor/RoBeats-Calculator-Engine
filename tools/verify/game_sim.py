@@ -756,12 +756,11 @@ def simulate(
 
 
 # A note_graph "Great selector" (delta_ms is None) declares the note IS a Great but carries no
-# timing witness (note_graph.py: prefix/forced Greats are pure v3 selectors, delta_ms=None). The
-# game awards Great by the result LABEL; the exact offset inside the Great window does not change the
-# score (a Great adds no fill/drain and these are never fever-boundary witnesses). To make the
-# Model-A matcher re-judge the press to "great", we synthesize a canonical in-Great offset: the
-# smallest-cushion late-Great edge (perfect_late + 1ms), matching the game's "as on-time as legal"
-# forced-Great placement while staying strictly inside (perfect_late, great_late].
+# timing witness. Order-sensitive same-time selectors are expected to be materialized by
+# note_graph.py with an explicit early/late offset; only the remaining order-neutral selectors reach
+# this fallback. To make the Model-A matcher re-judge those presses to "great", synthesize the
+# smallest-cushion late-Great edge (perfect_late + 1ms), staying strictly inside
+# (perfect_late, great_late].
 _CANONICAL_GREAT_OFFSET_TAP_MS = _JUDGE_EDGES_TAP[2] + 1.0   # 41 ms  (perfect_late 40 + 1)
 _CANONICAL_GREAT_OFFSET_TAIL_MS = _JUDGE_EDGES_TAIL[2] + 1.0  # 81 ms  (tail perfect_late 80 + 1)
 
@@ -790,8 +789,9 @@ def _synth_offset(result: str, is_tail: bool, delta: float | None) -> float:
     """Physical offset (ms) that makes Model-A re-judge the press to ``result``.
 
     A witness (explicit ``delta``) is trusted verbatim -- it was constructed to yield ``result``. A
-    selector (``delta is None``): Perfect -> 0 (on-time, judges Perfect); Great -> the canonical
-    in-Great edge. Fail loud on any other unlabelled result (the optimizer only emits P/G).
+    remaining order-neutral selector (``delta is None``): Perfect -> 0 (on-time, judges Perfect);
+    Great -> the canonical in-Great edge. Fail loud on any other unlabelled result (the optimizer
+    only emits P/G).
     """
     if delta is not None:
         return float(delta)
