@@ -259,7 +259,12 @@ _frontier_payload_cache_lock = threading.RLock()
 # payloads built by the old logic no longer validate against the new code -- killing the silent
 # stale-cache bug class rather than relying on someone remembering to bump the string. Docstring/
 # comment/whitespace edits do NOT move it (see logic_fingerprint.py). Over-invalidation is safe.
-_FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v9"
+# v9 -> v10: hit-time chord-reachability -- the base activation clock is now capped to the reachable
+# value (a wide-window group can no longer claim a late activation a later-indexed overlapping
+# sibling, hit first, forecloses), so stale bundles carry a phantom over-extended drain window (and,
+# where it captured a note, an over-count). The DP fingerprint over timeline_exact_frontier.py
+# already shifts automatically; this backstop bump records the behaviour change.
+_FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v10"
 _TIMELINE_DP_SOURCE = Path(__file__).resolve().parents[2] / "timeline_exact_frontier.py"
 _FRONTIER_DISK_CACHE_VERSION = (
     f"{_FRONTIER_DISK_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint([_TIMELINE_DP_SOURCE])}"

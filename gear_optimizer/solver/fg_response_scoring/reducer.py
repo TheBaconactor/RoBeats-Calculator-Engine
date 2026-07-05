@@ -12,8 +12,40 @@ from gear_optimizer.solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     reconstruct_force_greats_response_trace,
 )
+from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+    late_great_activation_is_reachable,
+)
 
 from .planner import FgResponseFrontierPreparedPlan
+
+
+def _assert_trace_hit_time_reachable(frontier_trace, song_inputs) -> None:
+    """FAIL LOUD if any persisted late-Great activation is hit-time UNREACHABLE.
+
+    The producer already forecloses these -- the frontier build clamps ``great_end_idx`` for
+    forbidden indices and the reconstruct drops the option -- so this never fires for a correctly
+    built frontier. It is the invariant enforcer required by repo policy: a future regression that
+    lets a phantom late-Great reach persistence becomes a loud crash AT THE SOURCE instead of a
+    silent leaderboard over-report. It uses the same reachability owner
+    (:func:`late_great_activation_is_reachable`) the producer and the legality audit use, so it is
+    bit-consistent and only fires on a genuine logic regression (its job). It never MUTATES the
+    surface -- a phantom is a producer bug, not a persist-time fixup.
+    """
+    ts = song_inputs.timestamps
+    pc = song_inputs.perfect_candidates
+    gc = song_inputs.great_candidates
+    n = int(len(ts))
+    for row in frontier_trace:
+        if str(row.get("activation_judgment")) != "late_great":
+            continue
+        a = int(row["activation_index"])
+        if 0 <= a < n and not late_great_activation_is_reachable(a, ts, pc, gc, n):
+            raise ValueError(
+                f"FG persist guard: late-Great activation @{a} (section {row.get('section')}) is "
+                f"HIT-TIME UNREACHABLE -- an earlier-hit same-timestamp sibling / on-time note-ahead "
+                f"completes the fever bar first (phantom). The frontier build must foreclose this; a "
+                f"trace reaching persistence with it is a producer regression, not a persist fixup."
+            )
 
 
 def materialize_force_payload_from_response_frontier(
@@ -74,6 +106,8 @@ def materialize_force_payload_from_response_frontier(
     # handed out directly, so it can't be mutated downstream); with no cache, return as-is,
     # exactly like before.
     frontier_trace = base_trace if trace_cache is None else tuple(dict(row) for row in base_trace)
+    # Persist-time fail-loud reachability guard: no phantom late-Great activation may reach the DB.
+    _assert_trace_hit_time_reachable(frontier_trace, song_inputs)
     trace_counts = tuple(int(row["forced_count"]) for row in frontier_trace)
     if result.forced_counts:
         forced_counts = tuple(int(v) for v in result.forced_counts)

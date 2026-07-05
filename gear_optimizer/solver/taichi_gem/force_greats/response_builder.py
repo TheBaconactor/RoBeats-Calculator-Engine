@@ -4,7 +4,12 @@ from typing import Any
 
 import numpy as np
 
-from .fill_crossing import late_great_activation_prefix, perfect_fill_crossing_offset
+from .fill_crossing import (
+    build_reachable_perfect_candidate,
+    late_great_activation_is_reachable,
+    late_great_activation_prefix,
+    perfect_fill_crossing_offset,
+)
 from .response_types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
 
 
@@ -331,6 +336,11 @@ def _edge_surface_options(
     prev_e = -1
     perfect_ts = timestamps if perfect_candidate_timestamps is None else perfect_candidate_timestamps
     great_ts = timestamps if great_candidate_timestamps is None else great_candidate_timestamps
+    # Reachable PERFECT-activation clock: a held-tail +80 activation whose narrower later-indexed
+    # sibling is hit first is capped to the reachable value, matching the frontier build's
+    # perfect_end_idx (built from the same capped clock). `perfect_ts` (uncapped) is retained for the
+    # late-Great reachability check -- each note's own actual latest hit.
+    perfect_activation_ts = build_reachable_perfect_candidate(timestamps, perfect_ts, int(n))
 
     def _great_floor_end(start_time: float, a: int) -> int:
         # Issue #44: the early-Great extended fever end -- searchsorted of the earliest-Great
@@ -382,7 +392,7 @@ def _edge_surface_options(
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(use_forced_great_timing),
             timestamps=timestamps,
-            perfect_candidate_timestamps=perfect_candidate_timestamps,
+            perfect_candidate_timestamps=perfect_activation_ts,
             great_candidate_timestamps=great_candidate_timestamps,
             perfect_floor_timestamps=perfect_floor_timestamps,
         )
@@ -410,8 +420,8 @@ def _edge_surface_options(
                     "_witness": {
                         "activation_idx": int(a),
                         "chart_time": float(chart_time),
-                        "lo": min(float(chart_time), float(perfect_ts[int(a)])),
-                        "hi": max(float(chart_time), float(perfect_ts[int(a)])),
+                        "lo": min(float(chart_time), float(perfect_activation_ts[int(a)])),
+                        "hi": max(float(chart_time), float(perfect_activation_ts[int(a)])),
                         "target_end": int(e),
                         "carry_idx": int(carry_idx),
                         "activation_great": False,
@@ -429,6 +439,14 @@ def _edge_surface_options(
         # server fill-crossing, or None when a Perfect crosses first (a phantom over-report). Same O(1)
         # owner both paths call, so the placement math lives in exactly one place.
         lg_prefix = late_great_activation_prefix(int(fill), int(k), first=bool(first), fever_fill_denom=float(raw_fever_fill))
+        # Hit-time reachability: the index gate above can bless a late-Great activation whose bar is
+        # actually completed first by an earlier-hit same-timestamp sibling (the chord phantom). Drop
+        # it here so the reconstruct emits only reachable surfaces; off overlap this is a bit-exact
+        # no-op (the correction is 0) so non-chord charts are unchanged.
+        if lg_prefix is not None and not late_great_activation_is_reachable(
+            int(a), timestamps, perfect_ts, great_ts, int(n)
+        ):
+            lg_prefix = None
         if (
             bool(use_forced_great_timing)
             and int(action_idx) > 0
@@ -443,7 +461,7 @@ def _edge_surface_options(
                 real_fever_time=float(real_fever_time),
                 use_forced_great_timing=bool(use_forced_great_timing),
                 timestamps=timestamps,
-                perfect_candidate_timestamps=perfect_candidate_timestamps,
+                perfect_candidate_timestamps=perfect_activation_ts,
                 great_candidate_timestamps=great_candidate_timestamps,
                 perfect_floor_timestamps=perfect_floor_timestamps,
             )
