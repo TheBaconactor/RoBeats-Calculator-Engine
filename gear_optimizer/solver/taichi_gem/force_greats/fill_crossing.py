@@ -253,6 +253,44 @@ def build_late_great_forbidden_mask(
     return forbidden
 
 
+def build_reachable_perfect_candidate(
+    timestamps: np.ndarray,
+    perfect_candidate_timestamps: np.ndarray,
+    n: int,
+) -> np.ndarray:
+    """Per-note PERFECT-activation clock capped to the hit-time REACHABLE value.
+
+    A Perfect activation at note ``a`` extends the fever window using ``a``'s own latest legal Perfect
+    hit ``pc[a]`` (+40 normal, +80 held tail). That is UNREACHABLE when a later-indexed note ``j``
+    (within ``a``'s window) has its own latest hit ``pc[j] < pc[a]`` -- ``j`` is hit on-time FIRST and
+    completes the fever bar earlier, so the reachable clock cannot exceed ``pc[j]`` (a held-tail
+    ``+80`` activation with a narrower normal ``+40`` sibling indexed after it: the normal crosses
+    first). This caps ``pc[a]`` to that value -- the single-window analog of the base
+    :func:`gear_optimizer.solver.timeline_exact_frontier._reachable_act_hi` and the FG late-Great
+    forbid, for the PERFECT activation clock. Off overlap (no narrower later note within the window)
+    the value is UNCHANGED, so non-held-tail / distinct-timestamp charts are bit-identical.
+
+    Returns a NEW float32 array; the ORIGINAL ``perfect_candidate_timestamps`` is kept unchanged for
+    reachability CHECKS (each note's own actual latest hit, e.g. :func:`late_great_activation_is_reachable`)
+    -- only the perfect-activation WINDOW (``perfect_end_idx`` / ``_edge_end`` start-time) consumes
+    this capped clock.
+    """
+    total = int(n)
+    ts = np.asarray(timestamps, dtype=np.float32)
+    pc = np.asarray(perfect_candidate_timestamps, dtype=np.float32)
+    out = pc.copy()
+    for a in range(total):
+        h_a = pc[a]
+        cap = h_a
+        j = a + 1
+        while j < total and ts[j] < h_a:  # once chart time reaches h_a, later latest-hits are >= h_a
+            if pc[j] < cap:
+                cap = pc[j]
+            j += 1
+        out[a] = cap
+    return out
+
+
 def server_fill_crossing(
     is_great: Sequence[bool],
     fever_fill_denom: float,

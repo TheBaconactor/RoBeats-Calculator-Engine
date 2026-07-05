@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 
 from .fill_crossing import (
+    build_reachable_perfect_candidate,
     late_great_activation_is_reachable,
     late_great_activation_prefix,
     perfect_fill_crossing_offset,
@@ -335,6 +336,11 @@ def _edge_surface_options(
     prev_e = -1
     perfect_ts = timestamps if perfect_candidate_timestamps is None else perfect_candidate_timestamps
     great_ts = timestamps if great_candidate_timestamps is None else great_candidate_timestamps
+    # Reachable PERFECT-activation clock: a held-tail +80 activation whose narrower later-indexed
+    # sibling is hit first is capped to the reachable value, matching the frontier build's
+    # perfect_end_idx (built from the same capped clock). `perfect_ts` (uncapped) is retained for the
+    # late-Great reachability check -- each note's own actual latest hit.
+    perfect_activation_ts = build_reachable_perfect_candidate(timestamps, perfect_ts, int(n))
 
     def _great_floor_end(start_time: float, a: int) -> int:
         # Issue #44: the early-Great extended fever end -- searchsorted of the earliest-Great
@@ -386,7 +392,7 @@ def _edge_surface_options(
             real_fever_time=float(real_fever_time),
             use_forced_great_timing=bool(use_forced_great_timing),
             timestamps=timestamps,
-            perfect_candidate_timestamps=perfect_candidate_timestamps,
+            perfect_candidate_timestamps=perfect_activation_ts,
             great_candidate_timestamps=great_candidate_timestamps,
             perfect_floor_timestamps=perfect_floor_timestamps,
         )
@@ -414,8 +420,8 @@ def _edge_surface_options(
                     "_witness": {
                         "activation_idx": int(a),
                         "chart_time": float(chart_time),
-                        "lo": min(float(chart_time), float(perfect_ts[int(a)])),
-                        "hi": max(float(chart_time), float(perfect_ts[int(a)])),
+                        "lo": min(float(chart_time), float(perfect_activation_ts[int(a)])),
+                        "hi": max(float(chart_time), float(perfect_activation_ts[int(a)])),
                         "target_end": int(e),
                         "carry_idx": int(carry_idx),
                         "activation_great": False,
@@ -455,7 +461,7 @@ def _edge_surface_options(
                 real_fever_time=float(real_fever_time),
                 use_forced_great_timing=bool(use_forced_great_timing),
                 timestamps=timestamps,
-                perfect_candidate_timestamps=perfect_candidate_timestamps,
+                perfect_candidate_timestamps=perfect_activation_ts,
                 great_candidate_timestamps=great_candidate_timestamps,
                 perfect_floor_timestamps=perfect_floor_timestamps,
             )

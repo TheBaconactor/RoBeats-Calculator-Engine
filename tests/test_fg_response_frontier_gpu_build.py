@@ -549,11 +549,19 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
         real_times=np.asarray([real_fever_time], dtype=np.float64),
     )
     rt_idx = int(real_time_index[0])
-    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import build_late_great_forbidden_mask
+    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+        build_late_great_forbidden_mask, build_reachable_perfect_candidate)
     forbidden = build_late_great_forbidden_mask(
         np.asarray(song_inputs.timestamps, dtype=np.float64),
         np.asarray(song_inputs.perfect_candidates, dtype=np.float64),
         np.asarray(song_inputs.great_candidates, dtype=np.float64),
+        int(song_inputs.timestamps.shape[0]),
+    )
+    # perfect_end_idx is built from the hit-time REACHABLE perfect clock (a held-tail +80 activation
+    # capped when a narrower later sibling is hit first), so perfect_e must use the same capped clock.
+    reachable_pc = build_reachable_perfect_candidate(
+        np.asarray(song_inputs.timestamps, dtype=np.float64),
+        np.asarray(song_inputs.perfect_candidates, dtype=np.float64),
         int(song_inputs.timestamps.shape[0]),
     )
 
@@ -574,7 +582,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
             real_fever_time=real_fever_time,
             use_forced_great_timing=True,
             timestamps=song_inputs.timestamps,
-            perfect_candidate_timestamps=song_inputs.perfect_candidates,
+            perfect_candidate_timestamps=reachable_pc,
             great_candidate_timestamps=song_inputs.great_candidates,
             perfect_floor_timestamps=song_inputs.perfect_floor,
         )

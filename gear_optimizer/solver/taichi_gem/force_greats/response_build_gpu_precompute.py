@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .fill_crossing import build_late_great_forbidden_mask
+from .fill_crossing import build_late_great_forbidden_mask, build_reachable_perfect_candidate
 
 _GPU_EDGE_BATCH_MAX_BYTES = 4 * 1024 * 1024 * 1024
 
@@ -163,6 +163,13 @@ def _precompute_end_indices(
     ts64 = np.asarray(ts, dtype=np.float64)
     perfect_ts64 = np.asarray(perfect_ts, dtype=np.float64)
     great_ts64 = np.asarray(great_ts, dtype=np.float64)
+    # Hit-time reachability of the PERFECT activation clock: a held-tail Perfect activation (+80)
+    # whose narrower later-indexed sibling (+40) is hit first over-extends the drain window. Cap the
+    # perfect-activation clock to the reachable value; the Perfect fever-end table below searches this
+    # capped clock. Off overlap it equals perfect_ts64 exactly -> bit-identical. (The GREAT clock is
+    # handled by the forbid clamp; each note's own uncapped hit stays in perfect_ts64 for reach checks.)
+    reachable_perfect_ts64 = np.asarray(
+        build_reachable_perfect_candidate(ts64, perfect_ts64, int(ts.shape[0])), dtype=np.float64)
     timestamp_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0])), dtype=np.int32)
     perfect_end_idx = np.empty_like(timestamp_end_idx)
     great_end_idx = np.empty_like(timestamp_end_idx)
@@ -171,7 +178,7 @@ def _precompute_end_indices(
     great_floor_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0]), 2), dtype=np.int32)
     for idx, real_time in enumerate(unique_real_times):
         rt = float(real_time)
-        perfect_cutoff = np.asarray(perfect_ts64 + rt, dtype=np.float32)
+        perfect_cutoff = np.asarray(reachable_perfect_ts64 + rt, dtype=np.float32)
         great_cutoff = np.asarray(great_ts64 + rt, dtype=np.float32)
         timestamp_end_idx[idx] = np.searchsorted(floor_ts, np.asarray(ts64 + rt, dtype=np.float32), side="left").astype(
             np.int32,

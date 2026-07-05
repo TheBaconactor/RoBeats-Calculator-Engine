@@ -31,7 +31,8 @@ from gear_optimizer.data.database_codecs import _unpack_stats_after_load
 from gear_optimizer.solver.score_math import lookup_reference_py
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-    server_fill_crossing, server_fever_end, late_great_activation_is_reachable)
+    server_fill_crossing, server_fever_end, late_great_activation_is_reachable,
+    build_reachable_perfect_candidate)
 from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
 
 _DIFF_DIRS = ("Easy", "Normal", "Hard")
@@ -55,6 +56,10 @@ def audit_fg_loadout(fg: dict, calc_song: dict, ref: dict) -> list[str]:
     n = int(len(sd["timestamps"]))
     ts = np.asarray(sd["timestamps"], np.float32)
     floor = np.asarray(sd["fg_perfect_floor_timestamps"], np.float32)
+    # Reachable PERFECT-activation clock (a held-tail +80 activation whose narrower later sibling is
+    # hit first is capped) -- the perfect drain must be measured from this, so a +80 phantom window
+    # shows a fever_end past the reachable drain.
+    rpcand = build_reachable_perfect_candidate(ts, np.asarray(sd["fg_perfect_candidate_timestamps"], np.float32), n)
     gfloor = np.asarray(sd["fg_great_floor_timestamps"], np.float32)
     pcand = np.asarray(sd["fg_perfect_candidate_timestamps"], np.float32)
     gcand = np.asarray(sd["fg_great_candidate_timestamps"], np.float32)
@@ -80,7 +85,7 @@ def audit_fg_loadout(fg: dict, calc_song: dict, ref: dict) -> list[str]:
         if cross is None:
             viol.append(f"sec{sec}: reported {j}@{ra} but the bar never fills (unreachable)")
             state = re; continue
-        hit = float(gcand[cross]) if is_g else float(pcand[cross])
+        hit = float(gcand[cross]) if is_g else float(rpcand[cross])  # perfect: reachable (capped) clock
         base_e = server_fever_end(floor, hit, rft, cross, n=n)
         great_e = server_fever_end(gfloor, hit, rft, cross, n=n)
         kind = "late_great" if is_g else "perfect"

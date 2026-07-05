@@ -13,6 +13,7 @@ import numpy as np
 
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
     build_late_great_forbidden_mask,
+    build_reachable_perfect_candidate,
     late_great_activation_is_reachable,
     late_great_activation_prefix,
     late_great_prefix_is_legal,
@@ -73,6 +74,29 @@ def test_d_off_overlap_noop_and_mask_equivalence():
         # well-separated (>0.5s) => no note can be a later must-precede => nothing forbidden
         sep = np.arange(n, dtype=float)
         assert not build_late_great_forbidden_mask(sep, sep + 0.040, sep + 0.190, n).any()
+
+
+def test_perfect_activation_clock_capped_on_held_tail():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _edge_end
+    # Held tail idx0 (+80) is the perfect-activation crossing; a narrower normal idx1 (+40) at the
+    # SAME timestamp is indexed AFTER it and hit FIRST; idx2's earliest hit (0.560) sits in the gap
+    # between the reachable window end (0.040+0.5=0.540) and the phantom +80 end (0.080+0.5=0.580).
+    ts = np.array([0.0, 0.0, 0.580], np.float32)
+    pcand = np.array([0.080, 0.040, 0.620], np.float32)
+    floor = np.array([-0.040, -0.020, 0.560], np.float32)
+    gcand = np.array([0.198, 0.190, 0.770], np.float32)
+    # the cap lowers the held tail's perfect clock to the narrower sibling's +40:
+    capped = build_reachable_perfect_candidate(ts, pcand, 3)
+    assert abs(float(capped[0]) - 0.040) < 1e-6 and abs(float(capped[1]) - 0.040) < 1e-6
+
+    def _pe(pc):
+        e, start, _ = _edge_end(n=3, a=0, activation_great=False, real_fever_time=0.5,
+                                use_forced_great_timing=True, timestamps=ts,
+                                perfect_candidate_timestamps=pc, great_candidate_timestamps=gcand,
+                                perfect_floor_timestamps=floor)
+        return int(e), round(float(start), 3)
+    assert _pe(pcand) == (3, 0.080)      # UNCAPPED (+80): phantom -- idx2 swept in
+    assert _pe(capped) == (2, 0.040)     # CAPPED (+40): reachable -- idx2 correctly excluded
 
 
 def test_e_dense_forbids_late_greats_sparse_does_not():

@@ -68,6 +68,25 @@ def test_persist_guard_raises_on_phantom_and_passes_reachable():
         [{"section": 1, "activation_index": 0, "activation_judgment": "late_great"}], reachable)  # no raise
 
 
+def test_audit_flags_perfect_activation_phantom_drain():
+    # Perfect activation on a held tail (idx0, +80) with a narrower normal sibling (idx1, +40) at the
+    # same timestamp indexed after it. raw=1 -> the crossing is idx0. The +80 window over-extends and
+    # pulls idx2@0.640 into fever (as an early-Great), which the reachable +40 window does not reach.
+    cs = {"song_data": {
+        "timestamps": np.array([0.0, 0.0, 0.640], np.float32),
+        "fg_perfect_floor_timestamps": np.array([-0.040, -0.020, 0.620], np.float32),
+        "fg_great_floor_timestamps": np.array([-0.190, -0.095, 0.545], np.float32),
+        "fg_perfect_candidate_timestamps": np.array([0.080, 0.040, 0.680], np.float32),
+        "fg_great_candidate_timestamps": np.array([0.198, 0.190, 0.830], np.float32),
+    }}
+    fg = {"ForceGreats": {"raw_fever_fill": 1.0, "real_fever_time": 0.5,
+                          "frontier_trace": [_section(ra=0, judgment="perfect", fever_end=3)]}}
+    viol = audit_fg_loadout(fg, cs, {})
+    assert len(viol) == 1 and "PHANTOM drain" in viol[0], viol
+    fg["ForceGreats"]["frontier_trace"] = [_section(ra=0, judgment="perfect", fever_end=2)]  # reachable
+    assert audit_fg_loadout(fg, cs, {}) == []
+
+
 def test_audit_passes_reachable_late_great():
     # A Perfect (note0) fills the bar to just below denom, then the tail (note1) crosses as the
     # late-Great -- and NO same-timestamp note preempts it (note0 is earlier, the rest far later),

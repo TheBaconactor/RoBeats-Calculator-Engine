@@ -65,7 +65,11 @@ from .response_types import FgResponseFrontierResult
 #             fever bar first), so stale bundles carry phantom late-Great over-reports and MUST
 #             rebuild. The DP fingerprint over fill_crossing.py + response_build_gpu_precompute.py
 #             already moves the version automatically; this backstop bump records the behaviour change.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v21"
+# v21 -> v22: the PERFECT activation clock is now capped to the reachable value too (a held-tail +80
+#             perfect activation whose narrower later-indexed sibling is hit first over-extended the
+#             drain window). perfect_end_idx is built from the capped clock, so stale bundles carry the
+#             phantom perfect-activation window and MUST rebuild.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v22"
 _HERE = Path(__file__).resolve().parent
 # Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
 # build/search/pack path, add it here (the base version stays the human backstop).
