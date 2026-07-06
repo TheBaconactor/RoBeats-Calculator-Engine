@@ -128,12 +128,47 @@ def _late_great_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, flo
     return float(_PERFECT_UPPER_MS * mult + 1), float(_GREAT_UPPER_MS * mult)
 
 
+def _selector_default_delta_ms(note_types: np.ndarray, j: int, result: str, delta: Any) -> float:
+    if delta is not None:
+        return float(delta)
+    if result == "Perfect":
+        return 0.0
+    if result == "Great":
+        late_lo, _late_hi = _late_great_bounds_ms_at(note_types, j)
+        return float(late_lo)
+    raise ValueError(f"note_graph: cannot infer timing for result {result!r} at note {j}")
+
+
+def _delta_at_or_after_ms(note_types: np.ndarray, j: int, result: str, min_delta_ms: float) -> float:
+    min_delta = float(min_delta_ms)
+    if result == "Perfect":
+        lo, hi = _perfect_bounds_ms_at(note_types, j)
+        chosen = max(float(lo), float(min_delta))
+        if chosen <= float(hi):
+            return float(chosen)
+    elif result == "Great":
+        early_lo, early_hi = _early_great_bounds_ms_at(note_types, j)
+        late_lo, late_hi = _late_great_bounds_ms_at(note_types, j)
+        if float(min_delta) <= float(early_hi):
+            return float(max(float(early_lo), float(min_delta)))
+        chosen = max(float(late_lo), float(min_delta))
+        if chosen <= float(late_hi):
+            return float(chosen)
+    else:
+        raise ValueError(f"note_graph: cannot delay unsupported result {result!r} at note {j}")
+    raise ValueError(
+        "note_graph: delayed activation witness cannot be made input-order legal "
+        f"without changing note {j}'s {result} judgment"
+    )
+
+
 def _center_safe_delta(*, low_ms: float, high_ms: float) -> float:
     return 0.5 * (float(low_ms) + float(high_ms))
 
 
 def _same_chart_time_ms(a: float, b: float) -> bool:
     return abs(float(a) - float(b)) <= _FEVER_END_SAME_CHART_TIME_MS
+
 
 def _hit_time_ms(timestamps: np.ndarray, idx: int) -> float:
     return float(timestamps[int(idx)]) * 1000.0
@@ -250,6 +285,53 @@ def _mark_same_time_selector_order_deltas(
                     f"at note {j} ({fixed_delta}ms < {previous_delta}ms)"
                 )
             previous_delta = fixed_delta
+
+
+def _mark_activation_preemptor_order_deltas(
+    notes: list[dict[str, Any]],
+    *,
+    frontier_trace: Sequence[Mapping[str, Any]],
+    total_notes: int,
+    note_types: Sequence[int] | np.ndarray | None,
+) -> None:
+    """Delay following notes that would otherwise preempt a delayed activation witness.
+
+    A response surface can legally activate on a late-Great witness only if nearby following notes
+    that could be hit first are held until after that activation hit. This pass materializes that
+    existing input order locally; it never changes a Perfect/Great label or fever membership.
+    """
+    n = min(int(total_notes), len(notes))
+    if n <= 1:
+        return
+    if note_types is None:
+        raise ValueError(
+            "note_graph: note_types (length == total_notes) is required to display "
+            "delayed activation ordering at judgment bounds -- it is never guessed"
+        )
+    nt = np.asarray(note_types).reshape(-1)
+
+    for sec in frontier_trace:
+        a = int(sec.get("activation_index", -1))
+        if not (0 <= a < n):
+            continue
+        activation_delta = notes[a].get("delta_ms")
+        if activation_delta is None:
+            continue
+
+        activation_press = float(notes[a]["hit_time_ms"]) + float(activation_delta)
+        required_press = activation_press + 1.0
+
+        for j in range(a + 1, n):
+            note = notes[j]
+            result = str(note.get("note_result", "Perfect"))
+            current_delta = _selector_default_delta_ms(nt, j, result, note.get("delta_ms"))
+            current_press = float(note["hit_time_ms"]) + float(current_delta)
+            if current_press >= required_press:
+                break
+
+            needed_delta = required_press - float(note["hit_time_ms"])
+            note["delta_ms"] = _delta_at_or_after_ms(nt, j, result, needed_delta)
+            required_press = float(note["hit_time_ms"]) + float(note["delta_ms"]) + 1.0
 
 
 def _mark_endpoint_early_hits(
@@ -833,6 +915,12 @@ def force_greats_note_graph(
     if apply_guidance:
         _mark_same_time_selector_order_deltas(
             notes,
+            total_notes=n,
+            note_types=note_types,
+        )
+        _mark_activation_preemptor_order_deltas(
+            notes,
+            frontier_trace=frontier_trace,
             total_notes=n,
             note_types=note_types,
         )

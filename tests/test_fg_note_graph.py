@@ -186,7 +186,7 @@ def test_fg_note_graph_body_counts_synthetic():
     trace2 = [{
         "section": 1, "activation_index": 102, "fever_end_index": 108,
         "forced_start_index": 0, "forced_prefix_count": 0,
-        "activation_judgment": "late_great", "activation_hit_offset_ms": 190.0,
+        "activation_judgment": "late_great", "activation_hit_offset_ms": 41.0,
     }]
     g2 = force_greats_note_graph(frontier_trace=trace2, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     reconcile_force_greats_note_graph(
@@ -195,7 +195,7 @@ def test_fg_note_graph_body_counts_synthetic():
         body_fever=6, body_great=1, body_fever_great=1,
     )
     wit = next(x for x in g2 if x["is_activation_witness"])
-    assert wit["note_index"] == 102 and wit["note_result"] == "Great" and wit["delta_ms"] == 190.0
+    assert wit["note_index"] == 102 and wit["note_result"] == "Great" and wit["delta_ms"] == 41.0
     assert wit["fever"] is True  # the witness is both fever and great
 
     # Case 3: optimized Perfect-window activation WITNESS -> delayed, but not Great.
@@ -222,7 +222,7 @@ def test_fg_note_graph_body_counts_synthetic():
         "section": 1, "activation_index": 3, "fever_end_index": 6,
         "forced_start_index": 0, "forced_prefix_count": 0,
         "forced_run_start_index": 2, "forced_run_count": 2,
-        "activation_judgment": "late_great", "activation_hit_offset_ms": 181.0,
+        "activation_judgment": "late_great", "activation_hit_offset_ms": 41.0,
     }]
     gr = force_greats_note_graph(
         frontier_trace=trace_run,
@@ -285,6 +285,39 @@ def test_fg_note_graph_same_time_head_great_selector_preserves_ramp_order():
     assert graph[2]["delta_ms"] < -20.0
     assert graph[3]["delta_ms"] == 0.0
     assert graph[2]["hit_time_ms"] + graph[2]["delta_ms"] < graph[3]["hit_time_ms"] + graph[3]["delta_ms"]
+
+
+def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_order():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 6
+    ts = np.asarray([0.0, 0.1, 10.0, 10.160, 10.300, 10.500], dtype=np.float32)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 2,
+            "fever_end_index": 6,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 181.0,
+        }
+    ]
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=n,
+        timestamps=ts,
+        note_types=np.ones(n, dtype=np.int16),
+    )
+
+    activation_press = graph[2]["hit_time_ms"] + graph[2]["delta_ms"]
+    next_press = graph[3]["hit_time_ms"] + graph[3]["delta_ms"]
+
+    assert graph[2]["note_result"] == "Great"
+    assert graph[3]["note_result"] == "Perfect"
+    assert graph[3]["delta_ms"] == pytest.approx(22.0, abs=1e-3)
+    assert next_press > activation_press
+    assert graph[4]["delta_ms"] == 0.0
 
 
 def test_fg_note_graph_marks_fever_end_witness():
