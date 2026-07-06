@@ -102,6 +102,22 @@ def ranked_mini_colors(mini: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
     return tuple((color, value) for color, value, _order in ranked)
 
 
+def _provisional_export_destination(
+    *,
+    pet_color: str,
+    song_primary_color: str,
+    song_secondary_color: str,
+) -> str:
+    """Return the current isolated export-audit interpretation for elemental insertion.
+
+    The match-quality tiers are confirmed, but the decompiled final insertion path is noisy.
+    Keep this distribution rule isolated and explicitly provisional until cleaner source or
+    controlled in-game fixtures confirm the exact destination behavior.
+    """
+    secondary = normalize_song_secondary(song_primary_color, song_secondary_color)
+    return secondary if secondary and str(pet_color or "").strip() == secondary else str(song_primary_color or "").strip()
+
+
 def mini_ascension_elemental_bonus(
     mini: Mapping[str, Any],
     *,
@@ -109,6 +125,12 @@ def mini_ascension_elemental_bonus(
     song_secondary_color: str,
     ascension_level: int = MINI_ASCENSION_MAX_LEVEL,
 ) -> tuple[dict[str, int], tuple[tuple[str, bool, float, str, int], ...]]:
+    """Compute Mini Ascension elemental bonuses.
+
+    Match-quality tiers are confirmed from export audit. The final destination distribution is
+    intentionally routed through ``_provisional_export_destination`` because that insertion
+    path remains decompiler-noisy pending stronger evidence.
+    """
     primary = str(song_primary_color or "").strip()
     if primary not in _ELEMENT_STAT_SET:
         raise ValueError(f"Mini ascension song primary color must be one of {sorted(_ELEMENT_STAT_SET)}, got {primary!r}")
@@ -136,7 +158,11 @@ def mini_ascension_elemental_bonus(
         amount = int(math.floor(float(pet_value) * scale * float(quality)))
         if amount <= 0:
             continue
-        destination = secondary if secondary and pet_color == secondary else primary
+        destination = _provisional_export_destination(
+            pet_color=pet_color,
+            song_primary_color=primary,
+            song_secondary_color=secondary,
+        )
         bonus[destination] = int(bonus.get(destination, 0) or 0) + amount
         quality_rows.append((pet_color, bool(is_primary), float(quality), destination, amount))
     return bonus, tuple(quality_rows)
