@@ -451,6 +451,7 @@ def _apply_fixed_pool_constraints(
     optimize_minis: bool,
     fixed_gear: list[dict] | None,
     fixed_minis: list[dict] | None,
+    materialized_mini_catalog: list[dict] | None = None,
 ) -> tuple[dict[str, list[dict]], list[dict]]:
     out_gear = {slot: list(gear_pool.get(slot, []) or []) for slot in GEAR_SLOTS}
     out_mini = list(mini_pool or [])
@@ -462,9 +463,12 @@ def _apply_fixed_pool_constraints(
                 out_gear[slot] = [fixed[idx]]
 
     if not bool(optimize_minis) and fixed_minis:
+        fixed_source = list(materialized_mini_catalog or [])
+        if not fixed_source:
+            fixed_source = out_mini
         materialized_by_name = {
             str((mini or {}).get("Name", "") or "").strip(): mini
-            for mini in out_mini
+            for mini in fixed_source
             if str((mini or {}).get("Name", "") or "").strip()
         }
         resolved_minis: list[dict] = []
@@ -476,7 +480,7 @@ def _apply_fixed_pool_constraints(
                 raise ValueError("Fixed mini entries must include a non-empty Name")
             materialized = materialized_by_name.get(name)
             if materialized is None:
-                raise ValueError(f"Fixed mini {name!r} is not present in the materialized mini pool")
+                raise ValueError(f"Fixed mini {name!r} is not present in the materialized mini catalog")
             resolved_minis.append(materialized)
         out_mini = resolved_minis
 
@@ -547,7 +551,9 @@ def prepare_solver_context(
         gear_pool, mini_pool, _total_before, _total_after = pools
     else:
         gear_pool, mini_pool, _total_before, _total_after, _whitelisted = pools
-    if gear_pool is None or not mini_pool:
+    if gear_pool is None:
+        return None
+    if not mini_pool and bool(optimize_minis):
         return None
 
     gear_pool, mini_pool = _apply_fixed_pool_constraints(
@@ -557,6 +563,7 @@ def prepare_solver_context(
         optimize_minis=bool(optimize_minis),
         fixed_gear=fixed_gear,
         fixed_minis=fixed_minis,
+        materialized_mini_catalog=all_minis,
     )
 
     mode = str(pre_prune_mode or "none").strip().lower()
