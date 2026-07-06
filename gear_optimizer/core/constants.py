@@ -89,7 +89,22 @@ MEMORY_WATCHDOG_INTERVAL_SEC = 5
 
 # --- GEAR/MINI METADATA ---
 # Keys to skip when aggregating gear/mini stats (metadata, not actual stats)
-SKIP_ITEM_KEYS = frozenset({"Name", "type"})
+SKIP_ITEM_KEYS = frozenset(
+    {
+        "Name",
+        "type",
+        "Song Target",
+        "Mini Ascension Enabled",
+        "Mini Ascension Level",
+        "Mini Ascension Song Target Applied",
+        "Mini Ascension Elemental Bonus",
+        "Mini Ascension Match Qualities",
+        "Mini Ascension Materialized",
+        "Mini Ascension Materialized Song",
+        "Mini Ascension Materialized Primary Color",
+        "Mini Ascension Materialized Secondary Color",
+    }
+)
 
 
 @dataclass(frozen=True)

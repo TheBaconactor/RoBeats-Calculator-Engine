@@ -127,6 +127,63 @@ def test_save_loadouts_batch_unions_equivalent_mini_variants(db_path, monkeypatc
     assert decoded[0].get("mini_groups") == [["MiniA", "MiniB"]]
 
 
+def test_save_loadouts_batch_persists_song_aware_mini_ascension_stats(db_path, monkeypatch):
+    song = "Ascension Target by Artist"
+    minis_by_name = {
+        "Target Mini": {
+            "Name": "Target Mini",
+            "type": "Mini",
+            "Rush": 50,
+            "Flow": 0,
+            "Chill": 0,
+            "Beat": 0,
+            "Vibe": 0,
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Fever Time": 0,
+            "Fever Fill Rate": 0,
+            "Song Target": [song],
+            "Mini Ascension Enabled": True,
+            "Mini Ascension Level": 10,
+        }
+    }
+    monkeypatch.setattr("gear_optimizer.data.database.get_minis_by_name_cached", lambda: minis_by_name)
+
+    details = {
+        "PrimaryColor": "Rush",
+        "SecondaryColor": "Flow",
+        "SelectedElement": "Rush",
+        "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0},
+        "FT": 0,
+        "FF": 0,
+    }
+
+    save_loadouts_batch(
+        song,
+        [{"score": 100, "fg_score": 0, "gear": [], "minis": ["Target Mini"], "details": details, "force": None}],
+        db_path=db_path,
+        team_buff="NONE",
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT details_json
+            FROM team_buff_loadouts
+            WHERE song_name=? AND team_buff='NONE'
+            """,
+            (song,),
+        ).fetchone()
+        unpacked = _unpack_stats_after_load(json.loads(row["details_json"]))
+        stats = unpacked["Stats"]
+        assert stats["Perfect Points"] == 20
+        assert stats["Rush"] == 100
+    finally:
+        conn.close()
+
+
 def test_save_loadouts_batch_unions_equivalent_mini_variants_with_missing_colors(db_path, monkeypatch):
     minis_by_name = {
         "MiniA": {

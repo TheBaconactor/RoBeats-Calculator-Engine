@@ -3,11 +3,13 @@ CSV parsing functions for loading gear, minis, and stats data.
 """
 
 import csv
+import json
 import os
 import logging
 from ..core.constants import SCRIPT_DIR
 from ..core.stats_calculator import build_base_stats_from_config
 from ..core.utils import cfg_to_dict, safe_int, empty_stats
+from .mini_ascension import MINI_ASCENSION_MAX_LEVEL
 from .models import WarnOnce
 
 
@@ -76,6 +78,19 @@ def _first_val(row_map, keys):
         if v:
             return v
     return ""
+
+
+def _parse_json_string_list(raw_value: str, *, column_name: str, item_name: str) -> list[str]:
+    value = str(raw_value or "").strip()
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{column_name} for {item_name} must be a JSON string list") from exc
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        raise ValueError(f"{column_name} for {item_name} must be a JSON string list")
+    return [item.strip() for item in parsed if item.strip()]
 
 
 def parse_gear_rows(filepath):
@@ -164,6 +179,7 @@ def parse_mini_rows(filepath):
 
         header = [h.strip() for h in rows[0]]
         header_lower = [h.lower() for h in header]
+        has_song_target_column = any(h in {"song target", "song_target", "song-target"} for h in header_lower)
 
         modern_format = "type" in header_lower and any(name in header_lower for name in ("mini name", "name", "mini"))
         if not modern_format:
@@ -191,6 +207,13 @@ def parse_mini_rows(filepath):
                 "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fvmlt", "fever multiplier"))),
                 "Fever Time": safe_int(_first_val(row_map, ("fvtim", "time", "ft", "fever time"))),
                 "Fever Fill Rate": safe_int(_first_val(row_map, ("fvfil", "fill", "ff", "fever fill"))),
+                "Song Target": _parse_json_string_list(
+                    _first_val(row_map, ("song target", "song_target", "song-target")),
+                    column_name="Song Target",
+                    item_name=name,
+                ),
+                "Mini Ascension Enabled": bool(has_song_target_column),
+                "Mini Ascension Level": MINI_ASCENSION_MAX_LEVEL if has_song_target_column else 0,
             }
             minis_list.append(stats)
     except Exception as exc:

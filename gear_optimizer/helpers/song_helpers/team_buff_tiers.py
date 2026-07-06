@@ -3,6 +3,7 @@ from __future__ import annotations
 from heapq import nsmallest
 import re
 
+from ...core.constants import SKIP_ITEM_KEYS
 from ...core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     normalize_team_buff_sequence,
@@ -16,6 +17,7 @@ from ...data.loadout_equivalence import (
     get_minis_by_name_cached,
     representative_mini_names,
 )
+from ...data.mini_ascension import materialize_minis_for_song
 from .fg_config import has_valid_fg_config, require_response_surface
 from .force_greats.result_application import materialize_stats_from_payload
 from .ref_array_builder import resolve_exact_replay_ref_arrays
@@ -227,7 +229,7 @@ def _apply_stat_delta(stats: dict, delta: dict[str, int]) -> dict:
     return out
 
 
-def _entry_loadout_items(entry: dict) -> list[dict]:
+def _entry_loadout_items(entry: dict, calc_song: dict | None = None) -> list[dict]:
     """The 6 gear + 3 mini stat dicts before any gem allocation is applied.
 
     Two callers feed entries here. The on-demand serving path passes entries
@@ -251,12 +253,22 @@ def _entry_loadout_items(entry: dict) -> list[dict]:
         # representative names exactly as the per-entry "minis" field does above.
         gears_by_name = get_gears_by_name_cached()
         minis_by_name = get_minis_by_name_cached()
+        if calc_song is not None:
+            _all_minis, minis_by_name, _mini_ascension_context = materialize_minis_for_song(
+                minis_by_name=minis_by_name,
+                calc_song=calc_song,
+            )
         gear = [dict(gears_by_name[name]) for name in _flat_item_names(raw_gear) if name in gears_by_name]
         minis = [
             dict(minis_by_name[name])
             for name in _representative_mini_names_from_any(raw_minis)
             if name in minis_by_name
         ]
+    elif calc_song is not None:
+        minis, _minis_by_name, _mini_ascension_context = materialize_minis_for_song(
+            minis,
+            calc_song=calc_song,
+        )
     if len(gear) != 6 or len(minis) != 3:
         raise ValueError(
             f"tier re-solve needs 6 gear + 3 mini stat-dicts, got {len(gear)} gear + {len(minis)} minis "
@@ -272,7 +284,7 @@ def _pre_gem_loadout_stats(fixed_song_stats: dict, loadout_items: list[dict]) ->
         if not isinstance(item, dict):
             continue
         for key, value in item.items():
-            if key in {"Name", "type"}:
+            if key in SKIP_ITEM_KEYS:
                 continue
             out[str(key)] = int(out.get(key, 0) or 0) + int(value or 0)
     return out
@@ -681,7 +693,7 @@ def compute_team_buff_tier_leaderboards(
         # stats + loadout item stats via the canonical GPU base exhaustive search + CPU-f64 exact
         # rescore at the mode's timing. Both zero_ms and perfect_window re-solve per tier -- the
         # persisted gems are a T5 allocation that is NOT the per-tier optimum at either timing.
-        base_loadouts = [_entry_loadout_items(e.get("_entry") or {}) for e in per_entry]
+        base_loadouts = [_entry_loadout_items(e.get("_entry") or {}, calc_song) for e in per_entry]
         for tier in tier_list:
             delta_map = _team_buff_delta_map(
                 base_team_buff=base_team_buff,
@@ -727,7 +739,7 @@ def compute_team_buff_tier_leaderboards(
         # f32/f64) + CPU-f64 exact rescore -> served == native optimum. Both modes re-solve per tier:
         # the persisted FG surface + gems are a T5 allocation, NOT the per-tier optimum at either
         # timing (the tier shifts stats -> the optimal great placement + gems shift too).
-        fg_loadouts = [_entry_loadout_items(per_entry[idx].get("_entry") or {}) for idx in fg_indices]
+        fg_loadouts = [_entry_loadout_items(per_entry[idx].get("_entry") or {}, calc_song) for idx in fg_indices]
         for tier in tier_list:
             out_list = fg_scores_by_tier[str(tier)]
             witness_for_tier = resolved_fg_force_by_tier_hash.setdefault(str(tier), {})

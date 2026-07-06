@@ -9,9 +9,10 @@ from typing import Any, Callable, Iterable, Iterator
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
+from gear_optimizer.core.constants import GEM_SCALE_FEVER, SKIP_ITEM_KEYS, TOTAL_GEM_BUDGET
 from gear_optimizer.core.gem_defs import UserGemsSettings
 from gear_optimizer.core.parsing import env_get
+from gear_optimizer.data.mini_ascension import materialize_minis_for_song
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
 
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
@@ -207,7 +208,7 @@ def _add_genome_item_stats(base_stats: dict[str, Any], genome: list[dict]) -> di
         if not item:
             continue
         for key, value in item.items():
-            if key in {"Name", "type"}:
+            if key in SKIP_ITEM_KEYS:
                 continue
             merged[key] = merged.get(key, 0) + value
     return merged
@@ -450,6 +451,7 @@ def _apply_fixed_pool_constraints(
     optimize_minis: bool,
     fixed_gear: list[dict] | None,
     fixed_minis: list[dict] | None,
+    materialized_mini_catalog: list[dict] | None = None,
 ) -> tuple[dict[str, list[dict]], list[dict]]:
     out_gear = {slot: list(gear_pool.get(slot, []) or []) for slot in GEAR_SLOTS}
     out_mini = list(mini_pool or [])
@@ -461,7 +463,26 @@ def _apply_fixed_pool_constraints(
                 out_gear[slot] = [fixed[idx]]
 
     if not bool(optimize_minis) and fixed_minis:
-        out_mini = [mini for mini in (fixed_minis or []) if mini]
+        fixed_source = list(materialized_mini_catalog or [])
+        if not fixed_source:
+            fixed_source = out_mini
+        materialized_by_name = {
+            str((mini or {}).get("Name", "") or "").strip(): mini
+            for mini in fixed_source
+            if str((mini or {}).get("Name", "") or "").strip()
+        }
+        resolved_minis: list[dict] = []
+        for mini in fixed_minis or []:
+            if not mini:
+                continue
+            name = str((mini or {}).get("Name", "") or "").strip()
+            if not name:
+                raise ValueError("Fixed mini entries must include a non-empty Name")
+            materialized = materialized_by_name.get(name)
+            if materialized is None:
+                raise ValueError(f"Fixed mini {name!r} is not present in the materialized mini catalog")
+            resolved_minis.append(materialized)
+        out_mini = resolved_minis
 
     return out_gear, out_mini
 
@@ -511,6 +532,12 @@ def prepare_solver_context(
     p_color = str((calc_song or {}).get("metadata", {}).get("Primary Color", "Rush") or "Rush")
     s_color = str((calc_song or {}).get("metadata", {}).get("Secondary Color", "") or "")
     selected_color = p_color
+    all_minis, _minis_by_name, _mini_ascension_context = materialize_minis_for_song(
+        all_minis,
+        calc_song=calc_song,
+        primary_color=p_color,
+        secondary_color=s_color,
+    )
 
     cfg_data = build_solver_cfg_data(cfg, p_color=p_color, s_color=s_color, selected_color=selected_color)
     base_fixed_stats_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
@@ -524,7 +551,9 @@ def prepare_solver_context(
         gear_pool, mini_pool, _total_before, _total_after = pools
     else:
         gear_pool, mini_pool, _total_before, _total_after, _whitelisted = pools
-    if gear_pool is None or not mini_pool:
+    if gear_pool is None:
+        return None
+    if not mini_pool and bool(optimize_minis):
         return None
 
     gear_pool, mini_pool = _apply_fixed_pool_constraints(
@@ -534,6 +563,7 @@ def prepare_solver_context(
         optimize_minis=bool(optimize_minis),
         fixed_gear=fixed_gear,
         fixed_minis=fixed_minis,
+        materialized_mini_catalog=all_minis,
     )
 
     mode = str(pre_prune_mode or "none").strip().lower()
@@ -572,7 +602,7 @@ def prepare_solver_context(
     )
 
     registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
-    registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
+    registry_fixed_minis = list(mini_pool) if not bool(optimize_minis) else None
     registry = ItemRegistry(
         gear_pool,
         mini_pool,
@@ -608,7 +638,7 @@ def prepare_solver_context(
         optimize_gear=bool(optimize_gear),
         optimize_minis=bool(optimize_minis),
         fixed_gear=list(fixed_gear or []) or None,
-        fixed_minis=list(fixed_minis or []) or None,
+        fixed_minis=list(mini_pool) if not bool(optimize_minis) else (list(fixed_minis or []) or None),
         song_slot=int(song_slot),
         gpu_client=gpu_client,
         status_cb=status_cb,

@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from gear_optimizer.core.utils import cfg_from_dict
+from gear_optimizer.data.mini_ascension import MiniAscensionSongContext, materialize_minis_for_song
 from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
 from gear_optimizer.solver.song_db_context import PreparedSongDbContext, load_prepared_song_db_context
 
@@ -39,6 +40,9 @@ class PreparedSongCore:
     prepared_calc_song: PreparedCalcSong
     prepared_config: PreparedSongConfig
     db_context: PreparedSongDbContext
+    all_minis: list[dict[str, Any]]
+    minis_by_name: dict[str, dict[str, Any]]
+    mini_ascension_context: MiniAscensionSongContext
     meta_primary_color: str
     meta_secondary_color: str
     setup_sec: float
@@ -122,6 +126,7 @@ def build_prepared_song_core(
     paths,
     gears_by_name: dict,
     minis_by_name: dict,
+    all_minis: list[dict] | None = None,
     cfg: Any | None = None,
     preloaded_calc_song: dict[str, Any] | None = None,
     cache_db_context: bool = False,
@@ -133,6 +138,12 @@ def build_prepared_song_core(
         preloaded_calc_song=preloaded_calc_song,
     )
     calc_song = prepared_calc_song.calc_song
+    materialized_minis, materialized_minis_by_name, mini_ascension_context = materialize_minis_for_song(
+        all_minis=all_minis,
+        minis_by_name=minis_by_name,
+        calc_song=calc_song,
+        song_name=found_song_name,
+    )
 
     t_setup0 = time.perf_counter()
     prepared_config = build_prepared_song_config(
@@ -140,7 +151,7 @@ def build_prepared_song_core(
         calc_song=calc_song,
         paths=paths,
         gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
+        minis_by_name=materialized_minis_by_name,
     )
     setup_sec = time.perf_counter() - t_setup0
 
@@ -151,7 +162,7 @@ def build_prepared_song_core(
         cfg=cfg_obj,
         cfg_dict=cfg_dict,
         gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
+        minis_by_name=materialized_minis_by_name,
         cache_db_context=bool(cache_db_context),
     )
     db_load_sec = time.perf_counter() - t_db0
@@ -163,6 +174,9 @@ def build_prepared_song_core(
         prepared_calc_song=prepared_calc_song,
         prepared_config=prepared_config,
         db_context=db_context,
+        all_minis=materialized_minis,
+        minis_by_name=materialized_minis_by_name,
+        mini_ascension_context=mini_ascension_context,
         meta_primary_color=str(metadata.get("Primary Color", "") or ""),
         meta_secondary_color=str(metadata.get("Secondary Color", "") or ""),
         setup_sec=float(setup_sec),

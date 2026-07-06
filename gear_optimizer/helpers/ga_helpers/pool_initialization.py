@@ -6,6 +6,7 @@ useful for pool construction and reference-only tuning logic.
 """
 
 from ...core.utils import prune_gear_pool_lossless_for_song, prune_mini_pool_lossless_for_song
+from ...data.mini_ascension import normalize_song_secondary
 
 _PRUNED_GEAR_POOL_CACHE: dict[tuple[int, int, str, str, tuple[str, ...]], tuple[dict[str, list[dict]], int, int]] = {}
 
@@ -87,12 +88,19 @@ def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
         - Mini primary matches song primary OR secondary, OR
         - Mini secondary matches song primary
         """
+        normalized_secondary = normalize_song_secondary(song_primary, song_secondary)
+        if bool((mini or {}).get("Mini Ascension Song Target Applied")):
+            if song_primary and int((mini or {}).get(song_primary, 0) or 0) > 0:
+                return True
+            if normalized_secondary and int((mini or {}).get(normalized_secondary, 0) or 0) > 0:
+                return True
+
         mini_primary, mini_secondary = get_mini_colors(mini)
 
         # Mini primary color matches song's primary OR secondary
         if mini_primary == song_primary:
             return True
-        if song_secondary and mini_primary == song_secondary:
+        if normalized_secondary and mini_primary == normalized_secondary:
             return True
 
         # Mini secondary matches song primary
