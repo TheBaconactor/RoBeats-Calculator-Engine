@@ -9,9 +9,10 @@ from typing import Any, Callable, Iterable, Iterator
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
+from gear_optimizer.core.constants import GEM_SCALE_FEVER, SKIP_ITEM_KEYS, TOTAL_GEM_BUDGET
 from gear_optimizer.core.gem_defs import UserGemsSettings
 from gear_optimizer.core.parsing import env_get
+from gear_optimizer.data.mini_ascension import materialize_minis_for_song
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
 
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
@@ -207,7 +208,7 @@ def _add_genome_item_stats(base_stats: dict[str, Any], genome: list[dict]) -> di
         if not item:
             continue
         for key, value in item.items():
-            if key in {"Name", "type"}:
+            if key in SKIP_ITEM_KEYS:
                 continue
             merged[key] = merged.get(key, 0) + value
     return merged
@@ -511,6 +512,12 @@ def prepare_solver_context(
     p_color = str((calc_song or {}).get("metadata", {}).get("Primary Color", "Rush") or "Rush")
     s_color = str((calc_song or {}).get("metadata", {}).get("Secondary Color", "") or "")
     selected_color = p_color
+    all_minis, _minis_by_name, _mini_ascension_context = materialize_minis_for_song(
+        all_minis,
+        calc_song=calc_song,
+        primary_color=p_color,
+        secondary_color=s_color,
+    )
 
     cfg_data = build_solver_cfg_data(cfg, p_color=p_color, s_color=s_color, selected_color=selected_color)
     base_fixed_stats_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)

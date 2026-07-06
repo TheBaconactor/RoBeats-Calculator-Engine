@@ -35,9 +35,9 @@ _POOL_CACHE_MAX = 32
 _REGISTRY_CACHE_MAX = 32
 _INIT_HEURISTIC_CACHE_MAX = 64
 _PREP_CACHE_LOCK = threading.Lock()
-_POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[list, list]]" = OrderedDict()
-_REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[ItemRegistry, dict]]" = OrderedDict()
-_INIT_HEURISTIC_TOPK_CACHE: "OrderedDict[tuple[tuple[str, str, tuple[str, ...]], int], np.ndarray]" = OrderedDict()
+_POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...], tuple], tuple[list, list]]" = OrderedDict()
+_REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...], tuple], tuple[ItemRegistry, dict]]" = OrderedDict()
+_INIT_HEURISTIC_TOPK_CACHE: "OrderedDict[tuple[tuple[str, str, tuple[str, ...], tuple], int], np.ndarray]" = OrderedDict()
 _CACHE_STATS = {
     "pools_hit": 0,
     "pools_miss": 0,
@@ -168,10 +168,14 @@ def prepare_native_song(task: tuple) -> NativeSong:
         paths=paths,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
+        all_minis=all_minis,
         cfg=cfg,
         cache_db_context=True,
     )
     calc_song = prepared_core.calc_song
+    all_minis = prepared_core.all_minis
+    minis_by_name = prepared_core.minis_by_name
+    mini_ascension_context = prepared_core.mini_ascension_context
     meta_primary_color = prepared_core.meta_primary_color
     meta_secondary_color = prepared_core.meta_secondary_color
     prepared_config = prepared_core.prepared_config
@@ -191,7 +195,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     s_color = calc_song.get("metadata", {}).get("Secondary Color", "")
     selected_color = p_color
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
-    pool_key = (str(p_color), str(s_color), tuple(slots))
+    pool_key = (str(p_color), str(s_color), tuple(slots), tuple(mini_ascension_context.cache_key))
     with _PREP_CACHE_LOCK:
         cached_pools = _lru_get(_POOL_CACHE, pool_key)
     if cached_pools is None:

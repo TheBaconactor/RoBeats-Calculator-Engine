@@ -47,6 +47,7 @@ from ..loadout_equivalence import (
     representative_mini_names,
     rotate_mini_groups_for_slot_display,
 )
+from ..mini_ascension import materialize_minis_for_song
 from gear_optimizer.core.parsing import env_get
 from .connection import get_db_connection, get_evolution_db_path, get_db_connection_cached
 from .loadout_io import _compact_gear_for_db, _compact_minis_for_db
@@ -299,13 +300,34 @@ def save_team_buff_loadouts_batch(
                     break
         except sqlite3.Error:
             pass
+    song_aware_minis_cache: Dict[tuple[str, str], Dict[str, dict]] = {}
+    def _song_aware_minis_by_name(p_color: str, s_color: str) -> Dict[str, dict]:
+        source = minis_by_name if isinstance(minis_by_name, dict) else {}
+        if not source:
+            return {}
+        primary = str(p_color or "").strip()
+        secondary = str(s_color or "").strip()
+        if not primary and not secondary:
+            return source
+        key = (primary, secondary)
+        cached = song_aware_minis_cache.get(key)
+        if cached is not None:
+            return cached
+        _minis, by_name, _context = materialize_minis_for_song(
+            minis_by_name=source,
+            song_name=song_name,
+            primary_color=primary,
+            secondary_color=secondary,
+        )
+        song_aware_minis_cache[key] = by_name
+        return by_name
     mini_sig_cache: Dict[tuple[str, str, str, str], tuple[Any, ...]] = {}
     def _mini_signature_cached(name: str, p_color: str, s_color: str, sel_color: str) -> tuple[Any, ...]:
         key = (str(name or ""), str(p_color or ""), str(s_color or ""), str(sel_color or ""))
         sig = mini_sig_cache.get(key)
         if sig is not None:
             return sig
-        sig = effective_mini_signature_for_name(name, minis_by_name, p_color, s_color, sel_color)
+        sig = effective_mini_signature_for_name(name, _song_aware_minis_by_name(p_color, s_color), p_color, s_color, sel_color)
         mini_sig_cache[key] = sig
         return sig
     entry_names_cache: Dict[int, tuple[list[str], list[str]]] = {}
@@ -442,13 +464,17 @@ def save_team_buff_loadouts_batch(
         gem_counts["Fever Fill Rate"] = int(details_obj.get("FF", 0) or 0)
         selected_element = details_obj.get("SelectedElement") or details_obj.get("Selected Element") or ""
         selected_element = str(selected_element or "").strip()
+        stats_primary, stats_secondary, _stats_selected = extract_song_colors(details_obj)
+        if not stats_primary:
+            stats_primary = buff_color
+        minis_for_stats = _song_aware_minis_by_name(stats_primary, stats_secondary)
         computed = compute_full_stats(
             gear_names_local,
             mini_names_local,
             gem_counts,
             selected_element,
             gears_by_name if isinstance(gears_by_name, dict) else {},
-            minis_by_name if isinstance(minis_by_name, dict) else {},
+            minis_for_stats,
             base_stats,
         )
         if not isinstance(computed, dict) or not computed:
@@ -473,9 +499,10 @@ def save_team_buff_loadouts_batch(
                 *mini_names_local
             ]
         loadout_hash, mini_sigs, p_color, s_color, sel_color = eff
+        minis_for_hash = _song_aware_minis_by_name(p_color, s_color)
         groups = canonical_minis_groups_from_names(
             mini_names_local,
-            minis_by_name,
+            minis_for_hash,
             p_color,
             s_color,
             sel_color,
@@ -510,11 +537,16 @@ def save_team_buff_loadouts_batch(
         current_stats = details_unpacked.get("Stats")
         if isinstance(current_stats, dict) and current_stats:
             return details_unpacked
+        fallback_primary, fallback_secondary, _fallback_selected = extract_song_colors(details_unpacked)
+        if eff is not None and (not fallback_primary and not fallback_secondary):
+            _hash, _sigs, fallback_primary, fallback_secondary, _sel_color = eff
+        if not fallback_primary:
+            fallback_primary = team_color_for_stats
         return _ensure_stats_in_details(
             details_unpacked,
             original_gear,
             original_minis,
-            minis_by_name,
+            _song_aware_minis_by_name(fallback_primary, fallback_secondary),
             team_buff=team_buff,
             team_color=team_color_for_stats,
         )
@@ -927,8 +959,9 @@ def save_team_buff_loadouts_batch(
                     details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
                     p_color, s_color, sel_color = extract_song_colors(details_row)
                     if p_color or s_color:
+                        minis_for_verify = _song_aware_minis_by_name(p_color, s_color)
                         mini_sigs_row = [
-                            effective_mini_signature_for_name(n, minis_by_name, p_color, s_color, sel_color)
+                            effective_mini_signature_for_name(n, minis_for_verify, p_color, s_color, sel_color)
                             for n in mini_names_row
                         ]
                         expected_hash = effective_loadout_hash_from_names(gear_names_row, mini_sigs_row)

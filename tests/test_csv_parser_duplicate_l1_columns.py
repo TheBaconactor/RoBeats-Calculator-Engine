@@ -36,6 +36,27 @@ def test_parse_mini_rows_ignores_duplicate_l1_stat_columns(tmp_path):
     assert minis[0]["Fever Fill Rate"] == 0
 
 
+def test_parse_mini_rows_reads_song_target_column(tmp_path):
+    file_path = tmp_path / "Minis.csv"
+    header = [
+        "Type",
+        "Mini Name",
+        "Song Target",
+    ]
+    row = [
+        "Chill",
+        "Mini Example",
+        '["Song A by Artist","Song A (Hard) by Artist"]',
+    ]
+    _write_csv(file_path, header, row)
+
+    minis = parse_mini_rows(str(file_path))
+    assert len(minis) == 1
+    assert minis[0]["Song Target"] == ["Song A by Artist", "Song A (Hard) by Artist"]
+    assert minis[0]["Mini Ascension Enabled"] is True
+    assert minis[0]["Mini Ascension Level"] == 10
+
+
 def test_parse_gear_rows_ignores_duplicate_l1_stat_columns(tmp_path):
     file_path = tmp_path / "Gears.csv"
     header = [
