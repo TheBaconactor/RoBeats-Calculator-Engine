@@ -315,9 +315,108 @@ def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_orde
 
     assert graph[2]["note_result"] == "Great"
     assert graph[3]["note_result"] == "Perfect"
-    assert graph[3]["delta_ms"] == pytest.approx(22.0, abs=1e-3)
-    assert next_press > activation_press
+    assert graph[3]["delta_ms"] == pytest.approx(21.0, abs=1e-3)
+    assert next_press >= activation_press
     assert graph[4]["delta_ms"] == 0.0
+
+
+def test_fg_note_graph_uses_activation_upper_edge_for_priced_fever_cutoff():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 4
+    ts = np.asarray([10.000, 10.160, 10.300, 10.500], dtype=np.float32)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 4,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 50.0,
+            "activation_hit_offset_upper_ms": 190.0,
+            "fever_window_end_ms": 12000.0,
+        }
+    ]
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=n,
+        timestamps=ts,
+        note_types=np.ones(n, dtype=np.int16),
+    )
+
+    activation_press = graph[0]["hit_time_ms"] + graph[0]["delta_ms"]
+    next_press = graph[1]["hit_time_ms"] + graph[1]["delta_ms"]
+
+    assert graph[0]["delta_ms"] == pytest.approx(190.0)
+    assert graph[1]["note_result"] == "Perfect"
+    assert graph[1]["delta_ms"] == pytest.approx(30.0, abs=1e-3)
+    assert next_press >= activation_press
+
+
+def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 3
+    ts = np.asarray([10.000, 10.130, 10.500], dtype=np.float32)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 3,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 120.0,
+            "activation_hit_offset_lower_ms": 80.0,
+            "activation_hit_offset_upper_ms": 190.0,
+            "fever_window_end_ms": 11190.0,
+        }
+    ]
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=n,
+        timestamps=ts,
+        note_types=np.ones(n, dtype=np.int16),
+    )
+
+    activation_press = graph[0]["hit_time_ms"] + graph[0]["delta_ms"]
+    next_press = graph[1]["hit_time_ms"] + graph[1]["delta_ms"]
+
+    assert graph[0]["delta_ms"] == pytest.approx(169.999, abs=1e-3)
+    assert graph[1]["note_result"] == "Perfect"
+    assert graph[1]["delta_ms"] == pytest.approx(39.999, abs=1e-3)
+    assert next_press >= activation_press
+    assert graph[2]["fever_end_ms"] == pytest.approx(11169.999, abs=1e-3)
+
+
+def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 2
+    ts = np.asarray([10.000, 10.000], dtype=np.float32)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 2,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 120.0,
+            "activation_hit_offset_lower_ms": 80.0,
+            "activation_hit_offset_upper_ms": 190.0,
+            "fever_window_end_ms": 11190.0,
+        }
+    ]
+
+    with pytest.raises(ValueError, match="activation witness cannot preserve following note order"):
+        force_greats_note_graph(
+            frontier_trace=trace,
+            total_notes=n,
+            timestamps=ts,
+            note_types=np.ones(n, dtype=np.int16),
+        )
 
 
 def test_fg_note_graph_marks_fever_end_witness():

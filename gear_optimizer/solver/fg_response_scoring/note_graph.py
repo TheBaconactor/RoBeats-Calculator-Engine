@@ -69,9 +69,11 @@ __all__ = [
 _PERFECT_LOWER_MS = -20
 _PERFECT_UPPER_MS = 40
 _GREAT_UPPER_MS = 190
+_HELD_HEAD_TYPE = 2
 _HELD_TAIL_TYPE = 3
 _HELD_TAIL_TIME_MULT = 2
 _FEVER_END_SAME_CHART_TIME_MS = 0.01
+_INPUT_ORDER_EPS_MS = 0.001
 _TIMING_MODES = frozenset({"perfect_window", "zero_ms"})
 _EARLY_GREAT_LOWER_EXTRA_MS = -75.0
 _EARLY_GREAT_FLOOR_MS = float(_PERFECT_LOWER_MS) + float(_EARLY_GREAT_LOWER_EXTRA_MS)  # -95
@@ -137,6 +139,121 @@ def _selector_default_delta_ms(note_types: np.ndarray, j: int, result: str, delt
         late_lo, _late_hi = _late_great_bounds_ms_at(note_types, j)
         return float(late_lo)
     raise ValueError(f"note_graph: cannot infer timing for result {result!r} at note {j}")
+
+
+def _activation_materialized_delta_ms(
+    sec: Mapping[str, Any],
+    *,
+    notes: Sequence[Mapping[str, Any]] | None = None,
+    total_notes: int | None = None,
+    note_types: Sequence[int] | np.ndarray | None,
+    note_index: int,
+    judgment: str,
+) -> float:
+    """Return the latest activation hit that preserves the scored input order."""
+    nt = None if note_types is None else np.asarray(note_types).reshape(-1)
+    a = int(note_index)
+    center = float(sec["activation_hit_offset_ms"])
+    if nt is None:
+        return float(center)
+    if judgment == "late_great":
+        judge_lo, judge_hi = _late_great_bounds_ms_at(nt, a)
+    elif judgment == "perfect":
+        judge_lo, judge_hi = _perfect_bounds_ms_at(nt, a)
+    else:
+        return float(center)
+
+    is_hold_head = int(nt[a]) == _HELD_HEAD_TYPE
+    has_hit_window = any(
+        sec.get(key) is not None
+        for key in (
+            "activation_hit_offset_lower_ms",
+            "activation_hit_offset_upper_ms",
+            "activation_hit_window_lower_ms",
+            "activation_hit_window_upper_ms",
+        )
+    )
+    if not has_hit_window:
+        return float(center)
+
+    if notes is not None and 0 <= a < len(notes):
+        chart_ms = float(notes[a]["hit_time_ms"])
+    else:
+        chart_ms = float(sec.get("activation_ms", 0.0) or 0.0)
+
+    def _offset_field(name: str, fallback: float) -> float:
+        offset_key = f"activation_hit_offset_{name}_ms"
+        value = sec.get(offset_key)
+        if value is not None:
+            return float(value)
+        window_key = f"activation_hit_window_{name}_ms"
+        value = sec.get(window_key)
+        if value is not None and chart_ms:
+            return float(value) - float(chart_ms)
+        return float(fallback)
+
+    lo = max(float(judge_lo), _offset_field("lower", center))
+    hi = min(float(judge_hi), _offset_field("upper", center))
+    if is_hold_head:
+        hi = min(float(hi), float(center))
+        lo = min(float(lo), float(hi))
+    if lo > hi:
+        raise ValueError(
+            f"note_graph: activation witness interval is empty at note {a} "
+            f"({lo:.3f}ms > {hi:.3f}ms)"
+        )
+
+    cap_press = float(chart_ms) + float(hi)
+    if notes is not None and total_notes is not None:
+        n = min(int(total_notes), len(notes), int(nt.shape[0]))
+        for j in range(a + 1, n):
+            note = notes[j]
+            note_chart_ms = float(note["hit_time_ms"])
+            result = str(note.get("note_result", "Perfect"))
+            current_delta = _selector_default_delta_ms(nt, j, result, note.get("delta_ms"))
+            current_press = float(note_chart_ms) + float(current_delta)
+            if current_press >= cap_press:
+                break
+            if result == "Perfect":
+                _label_lo, label_hi = _perfect_bounds_ms_at(nt, j)
+            elif result == "Great":
+                _early_lo, early_hi = _early_great_bounds_ms_at(nt, j)
+                _late_lo, late_hi = _late_great_bounds_ms_at(nt, j)
+                label_hi = max(float(early_hi), float(late_hi))
+            else:
+                raise ValueError(f"note_graph: cannot order unsupported result {result!r} at note {j}")
+            cap_press = min(float(cap_press), float(note_chart_ms) + float(label_hi) - _INPUT_ORDER_EPS_MS)
+
+    delta = min(float(hi), float(cap_press) - float(chart_ms))
+    if delta < lo:
+        raise ValueError(
+            "note_graph: activation witness cannot preserve following note order without "
+            f"changing note {a}'s {judgment} judgment"
+        )
+    return float(delta)
+
+
+def _materialized_fever_window_end_ms(
+    sec: Mapping[str, Any],
+    *,
+    activation_delta_ms: float | None,
+    activation_chart_ms: float | None = None,
+) -> float | None:
+    fever_end = sec.get("fever_window_end_ms")
+    if fever_end is None or activation_delta_ms is None:
+        return None if fever_end is None else float(fever_end)
+    chart_ms = (
+        float(activation_chart_ms)
+        if activation_chart_ms is not None
+        else float(sec.get("activation_ms", 0.0) or 0.0)
+    )
+    priced_delta = sec.get("activation_hit_offset_upper_ms", sec.get("activation_hit_offset_ms"))
+    if priced_delta is None:
+        return float(fever_end)
+    duration_ms = float(fever_end) - (float(chart_ms) + float(priced_delta))
+    if duration_ms <= 0.0:
+        return float(fever_end)
+    return float(chart_ms) + float(activation_delta_ms) + float(duration_ms)
 
 
 def _delta_at_or_after_ms(note_types: np.ndarray, j: int, result: str, min_delta_ms: float) -> float:
@@ -252,18 +369,18 @@ def _mark_same_time_selector_order_deltas(
             if result == "Great" and delta is None:
                 early_lo, early_hi = _early_great_bounds_ms_at(nt, j)
                 late_lo, late_hi = _late_great_bounds_ms_at(nt, j)
-                if previous_delta < early_hi:
+                if previous_delta <= early_hi:
                     chosen = max(
                         _center_safe_delta(low_ms=early_lo, high_ms=early_hi),
                         float(early_lo),
                         float(previous_delta) + 1.0,
                     )
                     if chosen > early_hi:
-                        chosen = float(early_hi)
-                elif previous_delta < late_hi:
+                        chosen = float(previous_delta) if float(previous_delta) >= float(early_lo) else float(early_hi)
+                elif previous_delta <= late_hi:
                     chosen = max(float(late_lo), float(previous_delta) + 1.0)
                     if chosen > late_hi:
-                        chosen = float(late_hi)
+                        chosen = float(previous_delta) if float(previous_delta) >= float(late_lo) else float(late_hi)
                 else:
                     raise ValueError(
                         "note_graph: same-time forced-Great selector cluster cannot preserve "
@@ -319,7 +436,7 @@ def _mark_activation_preemptor_order_deltas(
             continue
 
         activation_press = float(notes[a]["hit_time_ms"]) + float(activation_delta)
-        required_press = activation_press + 1.0
+        required_press = activation_press
 
         for j in range(a + 1, n):
             note = notes[j]
@@ -331,7 +448,7 @@ def _mark_activation_preemptor_order_deltas(
 
             needed_delta = required_press - float(note["hit_time_ms"])
             note["delta_ms"] = _delta_at_or_after_ms(nt, j, result, needed_delta)
-            required_press = float(note["hit_time_ms"]) + float(note["delta_ms"]) + 1.0
+            required_press = float(note["hit_time_ms"]) + float(note["delta_ms"])
 
 
 def _mark_endpoint_early_hits(
@@ -850,16 +967,21 @@ def force_greats_note_graph(
         # Fever-end witness: last note of the fever run, carrying the largest-cushion
         # cutoff (`fever_window_end_ms`). Symmetric to the base note-graph.
         fever_end_ms = sec.get("fever_window_end_ms")
-        _mark_fever_end_witness(
-            notes, activation_index=a, fever_end_index=e, total_notes=n,
-            fever_window_end_ms=fever_end_ms, section=section,
-        )
+        materialized_activation_delta_ms: float | None = None
 
         if apply_guidance:
             activation_judgment = str(sec.get("activation_judgment", ""))
             if activation_judgment == "late_great" and 0 <= a < n:
                 notes[a]["note_result"] = "Great"             # activation Late Great = the WITNESS
-                notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
+                materialized_activation_delta_ms = _activation_materialized_delta_ms(
+                    sec,
+                    notes=notes,
+                    total_notes=n,
+                    note_types=note_types,
+                    note_index=a,
+                    judgment=activation_judgment,
+                )
+                notes[a]["delta_ms"] = float(materialized_activation_delta_ms)
                 notes[a]["is_activation_witness"] = True
                 notes[a]["section"] = section
             elif (
@@ -867,10 +989,30 @@ def force_greats_note_graph(
                 and 0 <= a < n
                 and float(sec.get("activation_hit_offset_ms", 0.0) or 0.0) != 0.0
             ):
-                notes[a]["delta_ms"] = float(sec["activation_hit_offset_ms"])
+                materialized_activation_delta_ms = _activation_materialized_delta_ms(
+                    sec,
+                    notes=notes,
+                    total_notes=n,
+                    note_types=note_types,
+                    note_index=a,
+                    judgment=activation_judgment,
+                )
+                notes[a]["delta_ms"] = float(materialized_activation_delta_ms)
                 notes[a]["is_activation_witness"] = True
                 notes[a]["section"] = section
 
+            fever_end_ms = _materialized_fever_window_end_ms(
+                sec,
+                activation_delta_ms=materialized_activation_delta_ms,
+                activation_chart_ms=float(notes[a]["hit_time_ms"]) if 0 <= a < n else None,
+            )
+
+        _mark_fever_end_witness(
+            notes, activation_index=a, fever_end_index=e, total_notes=n,
+            fever_window_end_ms=fever_end_ms, section=section,
+        )
+
+        if apply_guidance:
             # Endpoint-early (issue #42): any Perfect fever note at/after the cutoff is shown with its
             # LARGEST-CUSHION legal early hit -- the center of its legal in-fever range (most error
             # margin), display-only so the scored fever set is unchanged. Great selectors (delta_ms
