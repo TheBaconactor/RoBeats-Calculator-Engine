@@ -84,11 +84,16 @@ from .response_types import FgResponseFrontierResult
 # v25->v26: input-engine-aware same-time sibling bundles. A region-delay late-Great activation may
 # require following same-time/early-hit siblings to also be forced Great so their Perfect hits do not
 # fill the bar first; stale v25 bundles miss legal higher-scoring surfaces such as ART Hard 835/3/3.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v26"
+# v26->v27: shared input-order breakpoint owner. Delayed activation hits are capped by following
+# notes' scored label upper edges, and capped hits own the fever end / early-Great extension. Stale
+# v26 bundles can miss legal capped-breakpoint surfaces or price them from the wrong activation edge.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v27"
 _HERE = Path(__file__).resolve().parent
+_SOLVER_DIR = _HERE.parents[1]
 # Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
 # build/search/pack path, add it here (the base version stays the human backstop).
 _FG_DP_SOURCES = (
+    _SOLVER_DIR / "input_engine_breakpoints.py",
     _HERE / "fill_crossing.py",
     _HERE / "response_builder.py",
     _HERE / "response_types.py",

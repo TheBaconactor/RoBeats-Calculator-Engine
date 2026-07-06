@@ -54,6 +54,7 @@ def _first_frontier_result_from_precomputed_end_indices(
     perfect_end_idx: np.ndarray,
     great_end_idx: np.ndarray,
     great_floor_end_idx: np.ndarray,
+    real_fever_time: float,
     real_time_idx: int,
     use_forced_great_timing: bool,
 ) -> FgResponseFrontierResult:
@@ -79,6 +80,7 @@ def _first_frontier_result_from_precomputed_end_indices(
             perfect_end_idx,
             great_end_idx,
             great_floor_end_idx,
+            float(real_fever_time),
             int(real_time_idx),
             1 if bool(use_forced_great_timing) else 0,
             # Issue #44 Route A: head cone-dominance size gate, read LIVE from the module constant so
@@ -150,6 +152,7 @@ def _first_frontier_results_for_precomputed_range(
                     perfect_end_idx=perfect_end_idx,
                     great_end_idx=great_end_idx,
                     great_floor_end_idx=great_floor_end_idx,
+                    real_fever_time=float(item[3]),
                     real_time_idx=int(real_time_index[int(local_idx)]),
                     use_forced_great_timing=bool(use_forced_great_timing),
                 ),

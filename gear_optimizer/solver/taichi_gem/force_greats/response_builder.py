@@ -5,6 +5,8 @@ from typing import Any
 
 import numpy as np
 
+from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_for_contiguous_great_run
+
 from .fill_crossing import (
     activation_hit_is_reachable_weighted_lane_aware,
     late_great_activation_prefix,
@@ -70,6 +72,25 @@ def _edge_end(
             start_time = activation_t
             carry_idx = int(a)
     e = _lower_bound_from(floor_ts, start_time + float(real_fever_time))
+    if e <= int(a):
+        e = int(a) + 1
+    if e > int(n):
+        e = int(n)
+    return int(e), float(start_time), int(carry_idx)
+
+
+def _edge_end_at_hit(
+    *,
+    n: int,
+    a: int,
+    hit: float,
+    activation_great: bool,
+    real_fever_time: float,
+    perfect_floor_timestamps: np.ndarray,
+) -> tuple[int, float, int]:
+    start_time = float(hit)
+    carry_idx = int(a) if bool(activation_great) else -1
+    e = _lower_bound_from(perfect_floor_timestamps, float(start_time) + float(real_fever_time))
     if e <= int(a):
         e = int(a) + 1
     if e > int(n):
@@ -385,6 +406,29 @@ def _edge_surface_options(
             section_end=int(n),
         )
 
+    def _latest_activation_hit_for_labels(
+        *,
+        a: int,
+        hit_lo: float,
+        hit_hi: float,
+        great_start: int,
+        great_count: int,
+        activation_great: bool,
+    ) -> float | None:
+        great_start_i = max(0, min(int(great_start), int(n)))
+        great_count_i = max(0, int(great_count))
+        return latest_activation_hit_for_contiguous_great_run(
+            activation_index=int(a),
+            hit_lo=float(hit_lo),
+            hit_hi=float(hit_hi),
+            chart_timestamps=timestamps,
+            perfect_high_timestamps=perfect_ts,
+            great_high_timestamps=great_ts,
+            great_start=int(great_start_i),
+            great_count=int(great_count_i),
+            section_end=int(n),
+        )
+
     def _region_run_offsets(*, section_start: int, k: int) -> tuple[int, ...]:
         if int(k) <= 0:
             return ()
@@ -412,21 +456,37 @@ def _edge_surface_options(
                 offsets.add(int(offset))
         return tuple(sorted(offsets))
 
-    def _minimal_reachable_region_great_end(*, a: int, section_start: int, run_start: int) -> int | None:
-        hit = float(great_ts[int(a)])
+    def _minimal_reachable_region_great_end(
+        *,
+        a: int,
+        section_start: int,
+        run_start: int,
+    ) -> tuple[int, float] | None:
+        hit_hi = float(great_ts[int(a)])
+        hit_lo = float(np.float32(np.float32(perfect_ts[int(a)]) + np.float32(0.001)))
         max_great_end = int(a) + 1
-        while max_great_end < int(n) and float(perfect_ts[int(max_great_end)]) < hit:
+        while max_great_end < int(n) and float(perfect_ts[int(max_great_end)]) < hit_hi:
             max_great_end += 1
         for great_end in range(int(a) + 1, int(max_great_end) + 1):
+            hit = _latest_activation_hit_for_labels(
+                a=int(a),
+                hit_lo=float(hit_lo),
+                hit_hi=float(hit_hi),
+                great_start=int(run_start),
+                great_count=int(great_end) - int(run_start),
+                activation_great=True,
+            )
+            if hit is None:
+                continue
             if _activation_reachable(
                 a=int(a),
-                hit=hit,
+                hit=float(hit),
                 section_start=int(section_start),
                 great_start=int(run_start),
                 great_count=int(great_end) - int(run_start),
                 activation_great=True,
             ):
-                return int(great_end)
+                return int(great_end), float(hit)
         return None
 
     def _great_floor_end(start_time: float, a: int) -> int:
@@ -472,27 +532,35 @@ def _edge_surface_options(
             break
         section_start = 0 if first else int(i) + 1
         forced_applied = int(forced_values[action_idx])
-        e, start_time, carry_idx = _edge_end(
-            n=int(n),
+        chart_time = float(timestamps[int(a)])
+        perfect_hit = _latest_activation_hit_for_labels(
             a=int(a),
+            hit_lo=min(float(chart_time), float(perfect_activation_ts[int(a)])),
+            hit_hi=max(float(chart_time), float(perfect_activation_ts[int(a)])),
+            great_start=int(section_start),
+            great_count=int(forced_applied),
             activation_great=False,
-            real_fever_time=float(real_fever_time),
-            use_forced_great_timing=bool(use_forced_great_timing),
-            timestamps=timestamps,
-            perfect_candidate_timestamps=perfect_activation_ts,
-            great_candidate_timestamps=great_candidate_timestamps,
-            perfect_floor_timestamps=perfect_floor_timestamps,
         )
-        perfect_reachable = _activation_reachable(
+        perfect_reachable = perfect_hit is not None and _activation_reachable(
             a=int(a),
-            hit=float(perfect_activation_ts[int(a)]),
+            hit=float(perfect_hit),
             section_start=int(section_start),
             great_start=int(section_start),
             great_count=int(forced_applied),
             activation_great=False,
         )
+        if perfect_hit is None:
+            e, start_time, carry_idx = -1, float(chart_time), -1
+        else:
+            e, start_time, carry_idx = _edge_end_at_hit(
+                n=int(n),
+                a=int(a),
+                hit=float(perfect_hit),
+                activation_great=False,
+                real_fever_time=float(real_fever_time),
+                perfect_floor_timestamps=perfect_floor_timestamps,
+            )
         if perfect_reachable and (fill != prev_fill or (start_time != prev_start_time and e != prev_e)):
-            chart_time = float(timestamps[int(a)])
             great_end = min(int(n), int(section_start) + int(forced_applied))
             out.append(
                 {
@@ -519,7 +587,7 @@ def _edge_surface_options(
                         "activation_idx": int(a),
                         "chart_time": float(chart_time),
                         "lo": min(float(chart_time), float(perfect_activation_ts[int(a)])),
-                        "hi": max(float(chart_time), float(perfect_activation_ts[int(a)])),
+                        "hi": float(perfect_hit),
                         "target_end": int(e),
                         "carry_idx": int(carry_idx),
                         "activation_great": False,
@@ -540,13 +608,28 @@ def _edge_surface_options(
         # Input-engine reachability: the prefix gate is only the fill arithmetic. The activation also
         # has to be scheduleable under earliest-hittable-first and lane overlap using the same weighted
         # Perfect/Great units this surface prices.
-        if lg_prefix is not None and not _activation_reachable(
-            a=int(a),
-            hit=float(great_ts[int(a)]),
-            section_start=int(section_start),
-            great_start=int(section_start),
-            great_count=int(lg_prefix),
-            activation_great=True,
+        prefix_late_hit: float | None = None
+        late_lo = float(np.float32(np.float32(perfect_ts[int(a)]) + np.float32(0.001)))
+        great_hi = float(great_ts[int(a)])
+        if lg_prefix is not None:
+            prefix_late_hit = _latest_activation_hit_for_labels(
+                a=int(a),
+                hit_lo=float(late_lo),
+                hit_hi=float(great_hi),
+                great_start=int(section_start),
+                great_count=int(lg_prefix),
+                activation_great=True,
+            )
+        if lg_prefix is not None and (
+            prefix_late_hit is None
+            or not _activation_reachable(
+                a=int(a),
+                hit=float(prefix_late_hit),
+                section_start=int(section_start),
+                great_start=int(section_start),
+                great_count=int(lg_prefix),
+                activation_great=True,
+            )
         ):
             lg_prefix = None
         if (
@@ -556,21 +639,18 @@ def _edge_surface_options(
             and lg_prefix is not None
         ):
             prefix_forced = int(lg_prefix)
-            activation_e, _activation_start_time, activation_carry_idx = _edge_end(
+            if prefix_late_hit is None:
+                continue
+            activation_e, _activation_start_time, activation_carry_idx = _edge_end_at_hit(
                 n=int(n),
                 a=int(a),
+                hit=float(prefix_late_hit),
                 activation_great=True,
                 real_fever_time=float(real_fever_time),
-                use_forced_great_timing=bool(use_forced_great_timing),
-                timestamps=timestamps,
-                perfect_candidate_timestamps=perfect_activation_ts,
-                great_candidate_timestamps=great_candidate_timestamps,
                 perfect_floor_timestamps=perfect_floor_timestamps,
             )
             if int(activation_e) > int(e):
                 chart_time = float(timestamps[int(a)])
-                great_hi = float(great_ts[int(a)])
-                late_lo = float(np.float32(np.float32(perfect_ts[int(a)]) + np.float32(0.001)))
                 activation_surface = _edge_surface(
                     n=int(n),
                     fever_start=int(a),
@@ -600,7 +680,7 @@ def _edge_surface_options(
                             "activation_idx": int(a),
                             "chart_time": float(chart_time),
                             "lo": float(late_lo),
-                            "hi": float(great_hi),
+                            "hi": float(prefix_late_hit),
                             "target_end": int(activation_e),
                             "carry_idx": int(activation_carry_idx),
                             "activation_great": True,
@@ -640,44 +720,49 @@ def _edge_surface_options(
                     )
                     if actual_great_end is None:
                         continue
-                    activation_e, activation_start_time, activation_carry_idx = _edge_end(
+                    actual_great_end_i, activation_hit = actual_great_end
+                    activation_e, activation_start_time, activation_carry_idx = _edge_end_at_hit(
                         n=int(n),
                         a=int(a_region),
+                        hit=float(activation_hit),
                         activation_great=True,
                         real_fever_time=float(real_fever_time),
-                        use_forced_great_timing=bool(use_forced_great_timing),
-                        timestamps=timestamps,
-                        perfect_candidate_timestamps=perfect_activation_ts,
-                        great_candidate_timestamps=great_candidate_timestamps,
                         perfect_floor_timestamps=perfect_floor_timestamps,
                     )
-                    perfect_e_region, _perfect_start_time, _perfect_carry_idx = _edge_end(
-                        n=int(n),
+                    perfect_hit_region = _latest_activation_hit_for_labels(
                         a=int(a_region),
+                        hit_lo=min(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)])),
+                        hit_hi=max(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)])),
+                        great_start=int(run_start),
+                        great_count=int(actual_great_end_i) - int(run_start),
                         activation_great=False,
-                        real_fever_time=float(real_fever_time),
-                        use_forced_great_timing=bool(use_forced_great_timing),
-                        timestamps=timestamps,
-                        perfect_candidate_timestamps=perfect_activation_ts,
-                        great_candidate_timestamps=great_candidate_timestamps,
-                        perfect_floor_timestamps=perfect_floor_timestamps,
                     )
+                    if perfect_hit_region is None:
+                        perfect_e_region = -1
+                    else:
+                        perfect_e_region, _perfect_start_time, _perfect_carry_idx = _edge_end_at_hit(
+                            n=int(n),
+                            a=int(a_region),
+                            hit=float(perfect_hit_region),
+                            activation_great=False,
+                            real_fever_time=float(real_fever_time),
+                            perfect_floor_timestamps=perfect_floor_timestamps,
+                        )
                     if int(activation_e) <= int(perfect_e_region):
                         continue
                     chart_time = float(timestamps[int(a_region)])
-                    great_hi = float(great_ts[int(a_region)])
                     late_lo = float(np.float32(np.float32(perfect_ts[int(a_region)]) + np.float32(0.001)))
                     surface = _edge_surface(
                         n=int(n),
                         fever_start=int(a_region),
                         fever_end=int(activation_e),
                         great_start=int(run_start),
-                        great_end=int(actual_great_end),
+                        great_end=int(actual_great_end_i),
                         activation_great_idx=int(a_region),
                     )
                     out.append(
                         {
-                            "k": int(actual_great_end) - int(run_start),
+                            "k": int(actual_great_end_i) - int(run_start),
                             "next_state": int(activation_e),
                             "activation_index": int(a_region),
                             "activation_ms": float(chart_time) * 1000.0,
@@ -685,7 +770,7 @@ def _edge_surface_options(
                             **_forced_fields(
                                 section_start=int(section_start),
                                 great_start=int(run_start),
-                                great_count=int(actual_great_end) - int(run_start),
+                                great_count=int(actual_great_end_i) - int(run_start),
                             ),
                             "fever_end_index": int(activation_e),
                             "fever_end_ms": None
@@ -696,7 +781,7 @@ def _edge_surface_options(
                                 "activation_idx": int(a_region),
                                 "chart_time": float(chart_time),
                                 "lo": float(late_lo),
-                                "hi": float(great_hi),
+                                "hi": float(activation_hit),
                                 "target_end": int(activation_e),
                                 "carry_idx": int(activation_carry_idx),
                                 "activation_great": True,
@@ -706,31 +791,36 @@ def _edge_surface_options(
                     _early_great_options(
                         out[-1], int(activation_e),
                         _great_floor_end(float(activation_start_time), int(a_region)),
-                        a=int(a_region), great_start=int(run_start), great_end=int(actual_great_end),
+                        a=int(a_region), great_start=int(run_start), great_end=int(actual_great_end_i),
                         activation_great_idx=int(a_region),
                     )
                 else:
                     actual_great_end = min(int(n), int(run_start) + int(k))
                     if actual_great_end <= int(run_start):
                         continue
-                    if not _activation_reachable(
+                    perfect_region_hit = _latest_activation_hit_for_labels(
                         a=int(a_region),
-                        hit=float(perfect_activation_ts[int(a_region)]),
+                        hit_lo=min(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)])),
+                        hit_hi=max(float(timestamps[int(a_region)]), float(perfect_activation_ts[int(a_region)])),
+                        great_start=int(run_start),
+                        great_count=int(actual_great_end) - int(run_start),
+                        activation_great=False,
+                    )
+                    if perfect_region_hit is None or not _activation_reachable(
+                        a=int(a_region),
+                        hit=float(perfect_region_hit),
                         section_start=int(section_start),
                         great_start=int(run_start),
                         great_count=int(actual_great_end) - int(run_start),
                         activation_great=False,
                     ):
                         continue
-                    e_region, region_start_time, region_carry_idx = _edge_end(
+                    e_region, region_start_time, region_carry_idx = _edge_end_at_hit(
                         n=int(n),
                         a=int(a_region),
+                        hit=float(perfect_region_hit),
                         activation_great=False,
                         real_fever_time=float(real_fever_time),
-                        use_forced_great_timing=bool(use_forced_great_timing),
-                        timestamps=timestamps,
-                        perfect_candidate_timestamps=perfect_activation_ts,
-                        great_candidate_timestamps=great_candidate_timestamps,
                         perfect_floor_timestamps=perfect_floor_timestamps,
                     )
                     chart_time = float(timestamps[int(a_region)])
@@ -761,7 +851,7 @@ def _edge_surface_options(
                                 "activation_idx": int(a_region),
                                 "chart_time": float(chart_time),
                                 "lo": min(float(chart_time), float(perfect_activation_ts[int(a_region)])),
-                                "hi": max(float(chart_time), float(perfect_activation_ts[int(a_region)])),
+                                "hi": float(perfect_region_hit),
                                 "target_end": int(e_region),
                                 "carry_idx": int(region_carry_idx),
                                 "activation_great": False,

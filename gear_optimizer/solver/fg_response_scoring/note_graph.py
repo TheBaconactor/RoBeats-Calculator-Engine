@@ -52,6 +52,8 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
+
 __all__ = [
     "base_note_graph",
     "timeline_frontier_note_graph",
@@ -73,7 +75,6 @@ _HELD_HEAD_TYPE = 2
 _HELD_TAIL_TYPE = 3
 _HELD_TAIL_TIME_MULT = 2
 _FEVER_END_SAME_CHART_TIME_MS = 0.01
-_INPUT_ORDER_EPS_MS = 0.001
 _TIMING_MODES = frozenset({"perfect_window", "zero_ms"})
 _EARLY_GREAT_LOWER_EXTRA_MS = -75.0
 _EARLY_GREAT_FLOOR_MS = float(_PERFECT_LOWER_MS) + float(_EARLY_GREAT_LOWER_EXTRA_MS)  # -95
@@ -203,17 +204,15 @@ def _activation_materialized_delta_ms(
             f"({lo:.3f}ms > {hi:.3f}ms)"
         )
 
-    cap_press = float(chart_ms) + float(hi)
+    label_high_ms: np.ndarray | None = None
     if notes is not None and total_notes is not None:
         n = min(int(total_notes), len(notes), int(nt.shape[0]))
-        for j in range(a + 1, n):
+        chart_timestamps_ms = np.empty((n,), dtype=np.float64)
+        label_high_ms = np.empty((n,), dtype=np.float64)
+        for j in range(n):
             note = notes[j]
-            note_chart_ms = float(note["hit_time_ms"])
+            chart_timestamps_ms[j] = float(note["hit_time_ms"])
             result = str(note.get("note_result", "Perfect"))
-            current_delta = _selector_default_delta_ms(nt, j, result, note.get("delta_ms"))
-            current_press = float(note_chart_ms) + float(current_delta)
-            if current_press >= cap_press:
-                break
             if result == "Perfect":
                 _label_lo, label_hi = _perfect_bounds_ms_at(nt, j)
             elif result == "Great":
@@ -222,9 +221,26 @@ def _activation_materialized_delta_ms(
                 label_hi = max(float(early_hi), float(late_hi))
             else:
                 raise ValueError(f"note_graph: cannot order unsupported result {result!r} at note {j}")
-            cap_press = min(float(cap_press), float(note_chart_ms) + float(label_hi) - _INPUT_ORDER_EPS_MS)
+            label_high_ms[j] = float(note["hit_time_ms"]) + float(label_hi)
+        hit_ms = latest_activation_hit_from_label_highs(
+            activation_index=a,
+            hit_lo=float(chart_ms) + float(lo),
+            hit_hi=float(chart_ms) + float(hi),
+            chart_timestamps=chart_timestamps_ms,
+            label_high_timestamps=label_high_ms,
+            section_end=n,
+            epsilon=0.001,
+        )
+    else:
+        hit_ms = float(chart_ms) + float(hi)
 
-    delta = min(float(hi), float(cap_press) - float(chart_ms))
+    if hit_ms is None:
+        raise ValueError(
+            "note_graph: activation witness cannot preserve following note order without "
+            f"changing note {a}'s {judgment} judgment"
+        )
+
+    delta = min(float(hi), float(hit_ms) - float(chart_ms))
     if delta < lo:
         raise ValueError(
             "note_graph: activation witness cannot preserve following note order without "

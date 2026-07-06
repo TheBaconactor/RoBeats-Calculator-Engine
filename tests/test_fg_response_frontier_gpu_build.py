@@ -759,6 +759,87 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
     assert any(int(option["surface"].body_fever_great) >= 2 for option in bundle)
 
 
+def test_fg_response_frontier_caps_activation_at_following_label_breakpoint() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        _action_table,
+        _edge_surface_option_details,
+    )
+
+    timestamps = np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32)
+    perfect_candidates = timestamps + np.float32(0.04)
+    great_candidates = timestamps + np.float32(0.19)
+    perfect_floor = timestamps - np.float32(0.019)
+    great_floor = timestamps - np.float32(0.094)
+    raw_fever_fill = 2.25
+    actions, later_fill, first_fill, later_forced, first_forced = _action_table(
+        raw_fever_fill=raw_fever_fill,
+        non_fever_base=6,
+        use_forced_great_timing=True,
+    )
+
+    options = _edge_surface_option_details(
+        i=0,
+        first=True,
+        n=int(timestamps.shape[0]),
+        actions=actions,
+        later_fill=later_fill,
+        first_fill=first_fill,
+        later_forced=later_forced,
+        first_forced=first_forced,
+        real_fever_time=1.0,
+        use_forced_great_timing=True,
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=perfect_floor,
+        great_floor_timestamps=great_floor,
+        lanes=_lanes_for(timestamps),
+        raw_fever_fill=raw_fever_fill,
+    )
+
+    capped = [
+        option
+        for option in options
+        if int(option["activation_index"]) == 2
+        and str(option["activation_judgment"]) == "late_great"
+        and int(option.get("forced_run_count", 0)) == 0
+    ]
+
+    assert capped
+    assert min(float(option["activation_hit_offset_upper_ms"]) for option in capped) == pytest.approx(
+        169.999,
+        abs=0.01,
+    )
+    assert all(float(option["activation_hit_offset_upper_ms"]) < 190.0 for option in capped)
+
+
+def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+        build_force_greats_response_first_frontiers_gpu_batch,
+    )
+
+    timestamps = np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32)
+    perfect_candidates = timestamps + np.float32(0.04)
+    great_candidates = timestamps + np.float32(0.19)
+    perfect_floor = timestamps - np.float32(0.019)
+    great_floor = timestamps - np.float32(0.094)
+    lanes = _lanes_for(timestamps)
+
+    numba_frontier = build_force_greats_response_first_frontiers_gpu_batch(
+        timestamps=[timestamps],
+        perfect_candidate_timestamps=[perfect_candidates],
+        great_candidate_timestamps=[great_candidates],
+        perfect_floor_timestamps=[perfect_floor],
+        great_floor_timestamps=[great_floor],
+        lanes=[lanes],
+        geometries=[(2.25, 6, 1.0)],
+        use_forced_great_timing=True,
+    )[0]
+    surfaces = {tuple(map(int, row)) for row in numba_frontier.first_frontier}
+    assert (28, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0) in surfaces
+    assert (60, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0) in surfaces
+
+
 def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
     from numba.typed import List
 
