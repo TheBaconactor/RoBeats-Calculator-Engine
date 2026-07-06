@@ -462,7 +462,23 @@ def _apply_fixed_pool_constraints(
                 out_gear[slot] = [fixed[idx]]
 
     if not bool(optimize_minis) and fixed_minis:
-        out_mini = [mini for mini in (fixed_minis or []) if mini]
+        materialized_by_name = {
+            str((mini or {}).get("Name", "") or "").strip(): mini
+            for mini in out_mini
+            if str((mini or {}).get("Name", "") or "").strip()
+        }
+        resolved_minis: list[dict] = []
+        for mini in fixed_minis or []:
+            if not mini:
+                continue
+            name = str((mini or {}).get("Name", "") or "").strip()
+            if not name:
+                raise ValueError("Fixed mini entries must include a non-empty Name")
+            materialized = materialized_by_name.get(name)
+            if materialized is None:
+                raise ValueError(f"Fixed mini {name!r} is not present in the materialized mini pool")
+            resolved_minis.append(materialized)
+        out_mini = resolved_minis
 
     return out_gear, out_mini
 
@@ -579,7 +595,7 @@ def prepare_solver_context(
     )
 
     registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
-    registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
+    registry_fixed_minis = list(mini_pool) if not bool(optimize_minis) else None
     registry = ItemRegistry(
         gear_pool,
         mini_pool,
@@ -615,7 +631,7 @@ def prepare_solver_context(
         optimize_gear=bool(optimize_gear),
         optimize_minis=bool(optimize_minis),
         fixed_gear=list(fixed_gear or []) or None,
-        fixed_minis=list(fixed_minis or []) or None,
+        fixed_minis=list(mini_pool) if not bool(optimize_minis) else (list(fixed_minis or []) or None),
         song_slot=int(song_slot),
         gpu_client=gpu_client,
         status_cb=status_cb,
