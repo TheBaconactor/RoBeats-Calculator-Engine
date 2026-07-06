@@ -1,7 +1,10 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 pytestmark = pytest.mark.gpu
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _ref_arrays():
@@ -529,6 +532,59 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
 
     assert int(exact_score) == int(result.best_score)
     assert int(base_score) >= int(result.best_score)
+
+
+def test_all_right_there_served_fixed_cell_prefers_region_delay_bundle(tmp_path, monkeypatch):
+    from gear_optimizer.data.csv_parser import read_table
+    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        build_or_load_response_frontier_payload,
+        load_response_frontier_scoring_bundle,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        prepare_force_greats_response_frontier_scoring_batch,
+        score_prepared_force_greats_response_frontier_batch_cpu_sync,
+    )
+
+    calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"), {})
+    apply_timing_envelope(calc_song, mode="perfect_window")
+    ref_arrays = build_ref_arrays_from_stats(read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")), dtype=np.float64)
+    final_stats = {
+        "Perfect Points": 25,
+        "Combo Multiplier": 55,
+        "Fever Multiplier": 70,
+        "Fever Time": 43,
+        "Fever Fill Rate": 58,
+        "Beat": 34,
+        "Vibe": 768,
+        "Rush": 35,
+        "Flow": 0,
+        "Chill": 100,
+    }
+    stat_key = (final_stats["Fever Time"], final_stats["Fever Fill Rate"])
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
+    build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=(stat_key,))
+    scoring_bundle = load_response_frontier_scoring_bundle(calc_song, ref_arrays, stat_keys=(stat_key,))
+    batch = prepare_force_greats_response_frontier_scoring_batch(
+        base_stats_list=[final_stats],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_color="Vibe",
+        total_budget=0,
+        scoring_bundle=scoring_bundle,
+    )
+
+    result = score_prepared_force_greats_response_frontier_batch_cpu_sync(
+        batch,
+        include_forced_counts=True,
+    )[0]
+
+    assert int(result.best_score) == 29_376_216
+    assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 0, 0, 0, 0, 835, 3, 3)
+    assert tuple(result.forced_counts) == (0, 3)
 
 
 def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkeypatch):

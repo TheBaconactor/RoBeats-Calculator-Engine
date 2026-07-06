@@ -13,6 +13,301 @@ def _lanes_for(timestamps):
     return np.arange(int(np.asarray(timestamps).reshape(-1).shape[0]), dtype=np.int32)
 
 
+def _bruteforce_pg_contiguous_run_first_frontier(
+    *,
+    timestamps: np.ndarray,
+    perfect_candidate_timestamps: np.ndarray,
+    great_candidate_timestamps: np.ndarray,
+    perfect_floor_timestamps: np.ndarray,
+    great_floor_timestamps: np.ndarray,
+    lanes: np.ndarray,
+    raw_fever_fill: float,
+    non_fever_base: int,
+    real_fever_time: float,
+):
+    from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_for_contiguous_great_run
+    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+        activation_hit_is_reachable_weighted_lane_aware,
+        server_fill_crossing_run,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+        _combine_surfaces,
+        _reduce_surfaces,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        _edge_end_at_hit,
+        _edge_surface,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import _EMPTY_SURFACE
+
+    n = int(timestamps.shape[0])
+    lane_arr = np.asarray(lanes, dtype=np.int32).reshape(-1)
+
+    def _latest_hit(
+        *,
+        activation_index: int,
+        hit_lo: float,
+        hit_hi: float,
+        great_start: int,
+        great_count: int,
+    ) -> float | None:
+        return latest_activation_hit_for_contiguous_great_run(
+            activation_index=int(activation_index),
+            hit_lo=float(hit_lo),
+            hit_hi=float(hit_hi),
+            chart_timestamps=timestamps,
+            perfect_high_timestamps=perfect_candidate_timestamps,
+            great_high_timestamps=great_candidate_timestamps,
+            great_start=int(great_start),
+            great_count=int(great_count),
+            section_end=int(n),
+        )
+
+    def _activation_reachable(
+        *,
+        activation_index: int,
+        hit: float,
+        section_start: int,
+        great_start: int,
+        great_count: int,
+        activation_great: bool,
+    ) -> bool:
+        lo = np.asarray(perfect_floor_timestamps, dtype=np.float32).copy()
+        hi = np.asarray(perfect_candidate_timestamps, dtype=np.float32).copy()
+        units = np.ones((n,), dtype=np.float32)
+        great_start_i = max(0, min(int(great_start), n))
+        great_end_i = min(n, great_start_i + max(0, int(great_count)))
+        if great_end_i > great_start_i:
+            lo[great_start_i:great_end_i] = np.asarray(great_floor_timestamps, dtype=np.float32)[
+                great_start_i:great_end_i
+            ]
+            hi[great_start_i:great_end_i] = np.asarray(great_candidate_timestamps, dtype=np.float32)[
+                great_start_i:great_end_i
+            ]
+            units[great_start_i:great_end_i] = np.float32(0.5)
+        if bool(activation_great):
+            lo[int(activation_index)] = np.asarray(great_floor_timestamps, dtype=np.float32)[int(activation_index)]
+            hi[int(activation_index)] = np.asarray(great_candidate_timestamps, dtype=np.float32)[
+                int(activation_index)
+            ]
+            units[int(activation_index)] = np.float32(0.5)
+        return activation_hit_is_reachable_weighted_lane_aware(
+            activation_index=int(activation_index),
+            activation_hit_timestamp=float(hit),
+            low_hit_timestamps=lo,
+            high_hit_timestamps=hi,
+            lanes=lane_arr,
+            fill_units=units,
+            fever_fill_denom=float(raw_fever_fill),
+            section_start=int(section_start),
+            section_end=int(n),
+        )
+
+    def _great_floor_end(start_time: float, activation_index: int) -> int:
+        end = int(np.searchsorted(great_floor_timestamps, np.float32(float(start_time) + float(real_fever_time))))
+        if end <= int(activation_index):
+            end = int(activation_index) + 1
+        return min(end, n)
+
+    def _append_with_early_great_tails(
+        surfaces: list,
+        *,
+        activation_index: int,
+        activation_hit: float,
+        activation_great: bool,
+        great_start: int,
+        great_end: int,
+    ) -> None:
+        fever_end, start_time, _carry_idx = _edge_end_at_hit(
+            n=n,
+            a=int(activation_index),
+            hit=float(activation_hit),
+            activation_great=bool(activation_great),
+            real_fever_time=float(real_fever_time),
+            perfect_floor_timestamps=perfect_floor_timestamps,
+        )
+        activation_great_idx = int(activation_index) if bool(activation_great) else -1
+        surfaces.append(
+            _edge_surface(
+                n=n,
+                fever_start=int(activation_index),
+                fever_end=int(fever_end),
+                great_start=int(great_start),
+                great_end=int(great_end),
+                activation_great_idx=int(activation_great_idx),
+            )
+        )
+        for early_great_end in range(int(fever_end) + 1, _great_floor_end(float(start_time), int(activation_index)) + 1):
+            surfaces.append(
+                _edge_surface(
+                    n=n,
+                    fever_start=int(activation_index),
+                    fever_end=int(early_great_end),
+                    great_start=int(great_start),
+                    great_end=int(great_end),
+                    activation_great_idx=int(activation_great_idx),
+                    early_great_start=int(fever_end),
+                    early_great_end=int(early_great_end),
+                )
+            )
+
+    def _edge_surfaces(state: int, first: bool) -> tuple:
+        section_start = 0 if bool(first) else int(state) + 1
+        if section_start >= n:
+            return (_EMPTY_SURFACE,)
+        generated = []
+        for run_start in range(section_start, n):
+            max_count = min(n - int(run_start), max(n, int(non_fever_base) + 4))
+            for great_count in range(0, max_count + 1):
+                if great_count == 0 and run_start != section_start:
+                    continue
+                crossing, crossing_is_great = server_fill_crossing_run(
+                    int(section_start),
+                    int(run_start),
+                    int(great_count),
+                    float(raw_fever_fill),
+                    int(n),
+                )
+                if crossing is None or int(crossing) >= n:
+                    continue
+                activation_index = int(crossing)
+                great_end = min(n, int(run_start) + int(great_count))
+                if bool(crossing_is_great):
+                    great_end = max(great_end, activation_index + 1)
+                    hit_lo = float(
+                        np.float32(
+                            np.float32(perfect_candidate_timestamps[activation_index]) + np.float32(0.001)
+                        )
+                    )
+                    hit_hi = float(great_candidate_timestamps[activation_index])
+                    max_great_end = great_end
+                    while max_great_end < n and float(perfect_candidate_timestamps[max_great_end]) < hit_hi:
+                        max_great_end += 1
+                    for legal_great_end in range(great_end, max_great_end + 1):
+                        hit = _latest_hit(
+                            activation_index=activation_index,
+                            hit_lo=hit_lo,
+                            hit_hi=hit_hi,
+                            great_start=run_start,
+                            great_count=int(legal_great_end) - int(run_start),
+                        )
+                        if hit is None:
+                            continue
+                        if not _activation_reachable(
+                            activation_index=activation_index,
+                            hit=float(hit),
+                            section_start=section_start,
+                            great_start=run_start,
+                            great_count=int(legal_great_end) - int(run_start),
+                            activation_great=True,
+                        ):
+                            continue
+                        _append_with_early_great_tails(
+                            generated,
+                            activation_index=activation_index,
+                            activation_hit=float(hit),
+                            activation_great=True,
+                            great_start=run_start,
+                            great_end=int(legal_great_end),
+                        )
+                        break
+                    continue
+                if int(great_count) > 0 and activation_index < great_end:
+                    continue
+                hit = _latest_hit(
+                    activation_index=activation_index,
+                    hit_lo=min(
+                        float(timestamps[activation_index]),
+                        float(perfect_candidate_timestamps[activation_index]),
+                    ),
+                    hit_hi=max(
+                        float(timestamps[activation_index]),
+                        float(perfect_candidate_timestamps[activation_index]),
+                    ),
+                    great_start=run_start,
+                    great_count=int(great_end) - int(run_start),
+                )
+                if hit is None:
+                    continue
+                if not _activation_reachable(
+                    activation_index=activation_index,
+                    hit=float(hit),
+                    section_start=section_start,
+                    great_start=run_start,
+                    great_count=int(great_end) - int(run_start),
+                    activation_great=False,
+                ):
+                    continue
+                _append_with_early_great_tails(
+                    generated,
+                    activation_index=activation_index,
+                    activation_hit=float(hit),
+                    activation_great=False,
+                    great_start=run_start,
+                    great_end=int(great_end),
+                )
+        return _reduce_surfaces(tuple(generated), lo_pos=int(state), hi_pos=min(n, 100))
+
+    memo: dict[tuple[int, bool], tuple] = {}
+
+    def _surface_fever_end(surface) -> int:
+        words = (int(surface.fever0), int(surface.fever1), int(surface.fever2), int(surface.fever3))
+        for idx in range(min(n, 100) - 1, -1, -1):
+            word = words[idx // 32]
+            if word & (1 << (idx % 32)):
+                return idx + 1
+        return int(surface.body_fever)
+
+    def _frontier(state: int, first: bool) -> tuple:
+        if int(state) >= n:
+            return (_EMPTY_SURFACE,)
+        key = (int(state), bool(first))
+        cached = memo.get(key)
+        if cached is not None:
+            return cached
+        generated = []
+        for edge in _edge_surfaces(int(state), bool(first)):
+            if edge == _EMPTY_SURFACE:
+                generated.append(edge)
+                continue
+            next_state = _surface_fever_end(edge)
+            if next_state <= int(state):
+                raise ValueError("bruteforce P/G oracle emitted a non-advancing section")
+            tails = (_EMPTY_SURFACE,) if next_state >= n else _frontier(next_state, False)
+            for tail in tails:
+                generated.append(_combine_surfaces(edge, tail))
+        reduced = _reduce_surfaces(tuple(generated), lo_pos=int(state), hi_pos=min(n, 100))
+        memo[key] = reduced
+        return reduced
+
+    return _frontier(0, True)
+
+
+def _missing_pg_oracle_surfaces(production_surfaces, oracle_surfaces) -> list[tuple[int, ...]]:
+    def _score_dominates(left, right) -> bool:
+        left_normal_great = int(left.body_great) - int(left.body_fever_great)
+        right_normal_great = int(right.body_great) - int(right.body_fever_great)
+        return (
+            int(left.body_fever) >= int(right.body_fever)
+            and int(left_normal_great) <= int(right_normal_great)
+            and int(left.body_fever_great) <= int(right.body_fever_great)
+            and (int(right.fever0) & ~int(left.fever0)) == 0
+            and (int(right.fever1) & ~int(left.fever1)) == 0
+            and (int(right.fever2) & ~int(left.fever2)) == 0
+            and (int(right.fever3) & ~int(left.fever3)) == 0
+            and (int(left.great0) & ~int(right.great0)) == 0
+            and (int(left.great1) & ~int(right.great1)) == 0
+            and (int(left.great2) & ~int(right.great2)) == 0
+            and (int(left.great3) & ~int(right.great3)) == 0
+        )
+
+    missing = []
+    for oracle_surface in oracle_surfaces:
+        if not any(_score_dominates(production_surface, oracle_surface) for production_surface in production_surfaces):
+            missing.append(tuple(map(int, oracle_surface)))
+    return missing
+
+
 def test_fg_response_first_frontier_reducer_uses_one_canonical_chunk() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_precompute
 
@@ -882,6 +1177,83 @@ def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> Non
     assert (24, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0) in oracle_surfaces
     assert (56, 0, 0, 0, 38, 0, 0, 0, 0, 0, 0) in oracle_surfaces
     assert numba_surfaces == oracle_surfaces
+
+
+@pytest.mark.parametrize(
+    (
+        "timestamps",
+        "lanes",
+        "raw_fever_fill",
+        "non_fever_base",
+        "real_fever_time",
+    ),
+    [
+        (
+            np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32),
+            np.arange(8, dtype=np.int32),
+            2.25,
+            6,
+            1.0,
+        ),
+        (
+            np.asarray([0.0, 0.24, 0.48, 0.72, 0.96, 1.10, 1.10, 1.10, 1.32], dtype=np.float32),
+            np.asarray([0, 1, 2, 3, 0, 1, 2, 3, 1], dtype=np.int32),
+            4.25,
+            8,
+            0.55,
+        ),
+        (
+            np.asarray([0.0, 0.25, 0.50, 0.76, 1.01, 1.28, 1.55, 1.83, 2.12], dtype=np.float32),
+            np.asarray([0, 1, 0, 2, 1, 3, 0, 2, 3], dtype=np.int32),
+            2.25,
+            6,
+            0.42,
+        ),
+    ],
+)
+def test_fg_response_frontier_dominates_bruteforce_pg_contiguous_run_oracle(
+    timestamps: np.ndarray,
+    lanes: np.ndarray,
+    raw_fever_fill: float,
+    non_fever_base: int,
+    real_fever_time: float,
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+        build_force_greats_response_first_frontiers_gpu_batch,
+    )
+
+    perfect_candidates = timestamps + np.float32(0.04)
+    great_candidates = timestamps + np.float32(0.19)
+    perfect_floor = timestamps - np.float32(0.019)
+    great_floor = timestamps - np.float32(0.094)
+
+    oracle_surfaces = _bruteforce_pg_contiguous_run_first_frontier(
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=perfect_floor,
+        great_floor_timestamps=great_floor,
+        lanes=lanes,
+        raw_fever_fill=raw_fever_fill,
+        non_fever_base=non_fever_base,
+        real_fever_time=real_fever_time,
+    )
+    production = build_force_greats_response_first_frontiers_gpu_batch(
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=perfect_floor,
+        great_floor_timestamps=great_floor,
+        lanes=lanes,
+        geometries=((raw_fever_fill, non_fever_base, real_fever_time),),
+        use_forced_great_timing=True,
+    )[0]
+
+    missing = _missing_pg_oracle_surfaces(production.first_frontier, oracle_surfaces)
+    assert not missing, (
+        f"production frontier missed {len(missing)} legal P/G oracle surfaces "
+        f"(production={len(production.first_frontier)}, oracle={len(oracle_surfaces)}): {missing[:8]}"
+    )
 
 
 def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
