@@ -87,7 +87,11 @@ from .response_types import FgResponseFrontierResult
 # v26->v27: shared input-order breakpoint owner. Delayed activation hits are capped by following
 # notes' scored label upper edges, and capped hits own the fever end / early-Great extension. Stale
 # v26 bundles can miss legal capped-breakpoint surfaces or price them from the wrong activation edge.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v27"
+# v27->v28: shifted-head region representative. The numba first-frontier producer now emits the
+# earliest shifted-head run representative (plus the normal crossing offset) and both Perfect /
+# late-Great crossing branches. Stale v27 bundles can miss score-equivalent timing witnesses and
+# shifted-head breakpoint surfaces.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v28"
 _HERE = Path(__file__).resolve().parent
 _SOLVER_DIR = _HERE.parents[1]
 # Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG

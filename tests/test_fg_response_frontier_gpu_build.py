@@ -840,6 +840,50 @@ def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> Non
     assert (60, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0) in surfaces
 
 
+def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+        _input_engine_rebuild_first_frontier,
+        build_force_greats_response_first_frontiers_gpu_batch,
+    )
+
+    timestamps = np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32)
+    perfect_candidates = timestamps + np.float32(0.04)
+    great_candidates = timestamps + np.float32(0.19)
+    perfect_floor = timestamps - np.float32(0.019)
+    great_floor = timestamps - np.float32(0.094)
+    lanes = _lanes_for(timestamps)
+
+    oracle = _input_engine_rebuild_first_frontier(
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=perfect_floor,
+        great_floor_timestamps=great_floor,
+        lanes=lanes,
+        raw_fever_fill=2.25,
+        non_fever_base=6,
+        real_fever_time=1.0,
+        use_forced_great_timing=True,
+    )
+    numba_frontier = build_force_greats_response_first_frontiers_gpu_batch(
+        timestamps=[timestamps],
+        perfect_candidate_timestamps=[perfect_candidates],
+        great_candidate_timestamps=[great_candidates],
+        perfect_floor_timestamps=[perfect_floor],
+        great_floor_timestamps=[great_floor],
+        lanes=[lanes],
+        geometries=[(2.25, 6, 1.0)],
+        use_forced_great_timing=True,
+    )[0]
+
+    oracle_surfaces = {tuple(map(int, row)) for row in oracle.first_frontier}
+    numba_surfaces = {tuple(map(int, row)) for row in numba_frontier.first_frontier}
+
+    assert (24, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0) in oracle_surfaces
+    assert (56, 0, 0, 0, 38, 0, 0, 0, 0, 0, 0) in oracle_surfaces
+    assert numba_surfaces == oracle_surfaces
+
+
 def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
     from numba.typed import List
 
