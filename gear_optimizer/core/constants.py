@@ -87,6 +87,7 @@ SKIP_ITEM_KEYS = frozenset(
         "Song Target",
         "Mini Ascension Enabled",
         "Mini Ascension Level",
+        "Mini Ascension Source Version",
         "Mini Ascension Song Target Applied",
         "Mini Ascension Elemental Bonus",
         "Mini Ascension Match Qualities",

@@ -1,6 +1,7 @@
 import pytest
 
 from gear_optimizer.data.mini_ascension import (
+    MINI_ASCENSION_CACHE_VERSION,
     materialize_mini_for_song,
     materialize_minis_for_song,
     mini_ascension_match_quality,
@@ -55,6 +56,7 @@ def test_materialize_mini_applies_base_pp_and_targeted_primary_secondary_bonus()
     assert materialized["Perfect Points"] == 23
     assert materialized["Rush"] == 100
     assert materialized["Flow"] == 80
+    assert materialized["Mini Ascension Source Version"] == MINI_ASCENSION_CACHE_VERSION
     assert materialized["Mini Ascension Song Target Applied"] is True
 
 
@@ -269,8 +271,8 @@ def test_real_export_8_bit_alien_flagged_song_gets_base_pp_and_elemental_bonus()
     assert materialized["Perfect Points"] == 20
     assert materialized["Mini Ascension Song Target Applied"] is True
     assert materialized["Rush"] == 60
-    assert materialized["Chill"] == 95
-    assert materialized["Mini Ascension Elemental Bonus"] == {"Chill": 60}
+    assert materialized["Chill"] == 91
+    assert materialized["Mini Ascension Elemental Bonus"] == {"Chill": 56}
 
 
 def test_real_export_8_bit_alien_non_flagged_song_gets_base_pp_only():

@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from gear_optimizer.data.mini_ascension import MINI_ASCENSION_CACHE_VERSION
 from gear_optimizer.data.database import (
     get_db_connection,
     get_song_counters,
@@ -180,6 +181,11 @@ def test_save_loadouts_batch_persists_song_aware_mini_ascension_stats(db_path, m
         stats = unpacked["Stats"]
         assert stats["Perfect Points"] == 20
         assert stats["Rush"] == 100
+        assert unpacked["Mini Ascension Materialized"] is True
+        assert unpacked["Mini Ascension Source Version"] == MINI_ASCENSION_CACHE_VERSION
+        assert unpacked["Mini Ascension Materialized Song"] == song
+        assert unpacked["Mini Ascension Materialized Primary Color"] == "Rush"
+        assert unpacked["Mini Ascension Materialized Secondary Color"] == "Flow"
     finally:
         conn.close()
 

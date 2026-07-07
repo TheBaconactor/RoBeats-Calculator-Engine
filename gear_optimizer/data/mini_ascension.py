@@ -17,6 +17,7 @@ MINI_ASCENSION_METADATA_KEYS = frozenset(
         "Song Target",
         "Mini Ascension Enabled",
         "Mini Ascension Level",
+        "Mini Ascension Source Version",
         "Mini Ascension Song Target Applied",
         "Mini Ascension Elemental Bonus",
         "Mini Ascension Match Qualities",
@@ -198,6 +199,7 @@ def materialize_mini_for_song(
     level = max(0, min(MINI_ASCENSION_MAX_LEVEL, level))
     out = dict(mini)
     out["Mini Ascension Materialized"] = True
+    out["Mini Ascension Source Version"] = MINI_ASCENSION_CACHE_VERSION
     out["Mini Ascension Materialized Song"] = song
     out["Mini Ascension Materialized Primary Color"] = primary
     out["Mini Ascension Materialized Secondary Color"] = secondary

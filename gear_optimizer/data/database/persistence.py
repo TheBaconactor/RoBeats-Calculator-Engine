@@ -47,7 +47,7 @@ from ..loadout_equivalence import (
     representative_mini_names,
     rotate_mini_groups_for_slot_display,
 )
-from ..mini_ascension import materialize_minis_for_song
+from ..mini_ascension import MINI_ASCENSION_CACHE_VERSION, materialize_minis_for_song
 from gear_optimizer.core.parsing import env_get
 from .connection import get_db_connection, get_evolution_db_path, get_db_connection_cached
 from .loadout_io import _compact_gear_for_db, _compact_minis_for_db
@@ -482,6 +482,15 @@ def save_team_buff_loadouts_batch(
         out = dict(details_obj)
         out.pop("st", None)  # Always repack from Stats at persistence time.
         out["Stats"] = computed
+        if any(
+            bool((minis_for_stats.get(name) or {}).get("Mini Ascension Materialized"))
+            for name in mini_names_local
+        ):
+            out["Mini Ascension Materialized"] = True
+            out["Mini Ascension Source Version"] = MINI_ASCENSION_CACHE_VERSION
+            out["Mini Ascension Materialized Song"] = song_name
+            out["Mini Ascension Materialized Primary Color"] = stats_primary
+            out["Mini Ascension Materialized Secondary Color"] = stats_secondary
         return out
     def _canonical_persistence_minis(
         gear_names_local: list[str],
