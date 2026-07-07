@@ -68,6 +68,17 @@ _admission = threading.Condition()
 _active_solves = 0
 
 
+@dataclass(frozen=True)
+class _OfficialSongCatalog:
+    songs: tuple[dict[str, str], ...]
+    paths_by_song_id: dict[str, Path]
+
+
+_OFFICIAL_CATALOG_LOCK = threading.Lock()
+_OFFICIAL_CATALOG_CACHE_KEY: tuple[Path, tuple[str, ...]] | None = None
+_OFFICIAL_CATALOG_CACHE: _OfficialSongCatalog | None = None
+
+
 def _available_bytes() -> int:
     import psutil
 
@@ -203,15 +214,21 @@ def _read_full_header(path: Path) -> dict[str, str]:
     return header
 
 
-def list_official_songs() -> list[dict[str, str]]:
-    """The official chart list for the website picker, read from the catalog Data/ headers.
+def _official_catalog_cache_key() -> tuple[Path, tuple[str, ...]]:
+    return (DATA_ROOT, tuple(DIFFICULTIES))
 
-    Every chart file's header is read in full so the picker gets title, artist, audioId, and
-    coverImageId directly from the source — no catalog or evolution.db dependency. The difficulty
-    suffix is stripped from the title so the frontend collapses all difficulties of a song into
-    one entry (same title+artist = same family key).
-    """
+
+def clear_official_song_catalog_cache() -> None:
+    """Clear the process-local official song catalog cache used by tests and controlled reloads."""
+    global _OFFICIAL_CATALOG_CACHE, _OFFICIAL_CATALOG_CACHE_KEY
+    with _OFFICIAL_CATALOG_LOCK:
+        _OFFICIAL_CATALOG_CACHE = None
+        _OFFICIAL_CATALOG_CACHE_KEY = None
+
+
+def _build_official_song_catalog() -> _OfficialSongCatalog:
     songs: list[dict[str, str]] = []
+    paths_by_song_id: dict[str, Path] = {}
     for difficulty in DIFFICULTIES:
         diff_dir = DATA_ROOT / difficulty
         if not diff_dir.is_dir():
@@ -238,7 +255,31 @@ def list_official_songs() -> list[dict[str, str]]:
                 "audioId": audio_raw.replace("rbxassetid://", "") if audio_raw else "",
                 "coverImageId": str(h.get("Cover Image ID") or "").strip(),
             })
-    return songs
+            paths_by_song_id.setdefault(song_id, chart)
+    return _OfficialSongCatalog(songs=tuple(songs), paths_by_song_id=paths_by_song_id)
+
+
+def _official_song_catalog() -> _OfficialSongCatalog:
+    global _OFFICIAL_CATALOG_CACHE, _OFFICIAL_CATALOG_CACHE_KEY
+    cache_key = _official_catalog_cache_key()
+    with _OFFICIAL_CATALOG_LOCK:
+        if _OFFICIAL_CATALOG_CACHE is not None and _OFFICIAL_CATALOG_CACHE_KEY == cache_key:
+            return _OFFICIAL_CATALOG_CACHE
+        catalog = _build_official_song_catalog()
+        _OFFICIAL_CATALOG_CACHE = catalog
+        _OFFICIAL_CATALOG_CACHE_KEY = cache_key
+        return catalog
+
+
+def list_official_songs() -> list[dict[str, str]]:
+    """The official chart list for the website picker, read from the catalog Data/ headers.
+
+    Every chart file's header is read in full so the picker gets title, artist, audioId, and
+    coverImageId directly from the source — no catalog or evolution.db dependency. The difficulty
+    suffix is stripped from the title so the frontend collapses all difficulties of a song into
+    one entry (same title+artist = same family key).
+    """
+    return [dict(song) for song in _official_song_catalog().songs]
 
 
 def find_official_chart(song_id: str) -> Path:
@@ -250,14 +291,9 @@ def find_official_chart(song_id: str) -> Path:
     target = str(song_id or "").strip()
     if not target:
         raise RequestError("missing targetSongId")
-    for difficulty in DIFFICULTIES:
-        diff_dir = DATA_ROOT / difficulty
-        if not diff_dir.is_dir():
-            continue
-        for chart in sorted(diff_dir.glob("*.txt")):
-            h = _read_full_header(chart)
-            if str(h.get("Song Name") or "").strip() == target:
-                return chart
+    chart = _official_song_catalog().paths_by_song_id.get(target)
+    if chart is not None:
+        return chart
     raise RequestError(f"no official chart matches {target!r}")
 
 
