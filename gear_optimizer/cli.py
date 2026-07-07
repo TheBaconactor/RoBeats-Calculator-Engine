@@ -86,6 +86,15 @@ def _apply_gpu_song_slots_default() -> None:
         os.environ.setdefault("GPU_SONG_SLOTS", str(cfg_slots))
 
 
+def _apply_service_mode_frontier_threads() -> None:
+    if not env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_MODE"):
+        return
+    from gear_optimizer.core.cpu_affinity import frontier_prebuild_cpu_count
+    from gear_optimizer.solver.timeline_exact_frontier import configure_timeline_pair_build_threads
+
+    configure_timeline_pair_build_threads(frontier_prebuild_cpu_count())
+
+
 def run() -> int:
     common_init()
     try:
@@ -102,6 +111,7 @@ def run() -> int:
         _apply_debug_profile_env(cfg_path)
         _apply_gpu_song_slots_default()
         _apply_throughput_mode_env()
+        _apply_service_mode_frontier_threads()
         from gear_optimizer.app import GearOptimizerApp
 
         GearOptimizerApp().run()

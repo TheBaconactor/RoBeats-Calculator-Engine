@@ -10,6 +10,7 @@ from gear_optimizer.solver.timeline_exact_frontier import (
     _enumerate_first_exit_boundary_intervals_from_context,
     _exit_trace_certifies_d_ms,
     _reachable_act_hi,
+    _timeline_pair_build_tasks,
     reconstruct_timeline_frontier_trace,
     reduce_timeline_frontier,
 )
@@ -141,6 +142,14 @@ def test_exact_frontier_builder_is_deterministic_and_canonical() -> None:
     assert pack_a.canonical in pack_a.surfaces
     assert pack_a.head_len == 6
     assert pack_a.body_fever + pack_a.body_normal == 0
+
+
+def test_timeline_pair_build_tasks_split_single_fill_count_across_d_ms_threads() -> None:
+    tasks = _timeline_pair_build_tasks([7], [100, 200, 300, 400, 500], thread_count=3)
+
+    assert [fill_count for fill_count, _ in tasks] == [7, 7, 7]
+    assert [d_ms for _, chunk in tasks for d_ms in chunk] == [100, 200, 300, 400, 500]
+    assert [chunk for _, chunk in tasks] == [[100], [200, 300], [400, 500]]
 
 
 def test_timeline_frontier_trace_reconstructs_selected_surface() -> None:

@@ -29,7 +29,11 @@ def data_root(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(service, "DATA_ROOT", tmp_path / "Data")
     monkeypatch.setattr(service, "GEAR_DIR", tmp_path / "Data" / "Gear")
-    return tmp_path
+    with service._INFLIGHT_SOLVES_LOCK:
+        service._INFLIGHT_SOLVES.clear()
+    yield tmp_path
+    with service._INFLIGHT_SOLVES_LOCK:
+        service._INFLIGHT_SOLVES.clear()
 
 
 def test_list_official_songs_reads_headers(data_root):
@@ -129,6 +133,60 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     assert env["EVOLUTION_DB_PATH"].endswith("result.db")  # output DB redirected off evolution.db
     assert env["ROBEATSMETA_OPTIMIZER_DATA_DIR"].endswith("job_abc/Data")  # isolated song source
     assert env["ROBEATSMETA_OPTIMIZER_BIN_DIR"].endswith("job_abc/bin")  # isolated run state
+
+
+def test_solve_joins_duplicate_live_job_instead_of_spawning_again(data_root, monkeypatch):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    gear = data_root / "Data" / "Gear"
+    gear.mkdir(parents=True, exist_ok=True)
+    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
+
+    started = threading.Event()
+    release = threading.Event()
+    popen_count = 0
+    popen_lock = threading.Lock()
+    entry = {"loadout_hash": "h", "score": 999, "gear": ["A"], "minis": ["B"], "details": {}}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            nonlocal popen_count
+            with popen_lock:
+                popen_count += 1
+            self.returncode = 0
+            started.set()
+
+        def communicate(self, timeout=None):
+            assert release.wait(timeout=2.0)
+            return ("", "")
+
+    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(service, "get_best_loadouts", lambda *args, **kwargs: [entry])
+
+    results: list[list[dict[str, object]]] = []
+    errors: list[BaseException] = []
+
+    def call_solve() -> None:
+        try:
+            results.append(service.solve({"jobId": "job_abc", "targetSongId": "Feeding [Hard]"}))
+        except BaseException as exc:  # pragma: no cover - makes thread failures visible in assertion
+            errors.append(exc)
+
+    first = threading.Thread(target=call_solve)
+    second = threading.Thread(target=call_solve)
+    first.start()
+    assert started.wait(timeout=2.0)
+    second.start()
+    time.sleep(0.05)
+    release.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert results == [[entry], [entry]]
+    assert popen_count == 1
 
 
 def test_solve_propagates_optimizer_failure(data_root, monkeypatch):

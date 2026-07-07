@@ -1,5 +1,5 @@
-"""Verify the FG prebuild's worker pool hard-pins each worker to a distinct core band that, together,
-covers every logical core (P + E). Run: python tools/dev/verify_band_pinning.py"""
+"""Verify the FG prebuild's worker pool hard-pins each worker to a distinct frontier CPU band.
+Run: python tools/dev/verify_band_pinning.py"""
 import concurrent.futures as cf
 import multiprocessing as mp
 import pathlib
@@ -41,7 +41,11 @@ if __name__ == "__main__":
     for name, aff in sorted(seen.items()):
         cover |= aff
         print(f"  {name}: affinity=0x{aff:08X}  ({bin(aff).count('1')} cores)")
-    from gear_optimizer.core.cpu_affinity import logical_core_count
+    from gear_optimizer.core.cpu_affinity import frontier_prebuild_cpu_count, logical_core_count
 
     print(f"distinct band masks: {len(set(seen.values()))} (want {w})")
-    print(f"union covers 0x{cover:X}  = {bin(cover).count('1')} of {logical_core_count()} logical cores")
+    print(
+        "union covers "
+        f"0x{cover:X}  = {bin(cover).count('1')} of "
+        f"{frontier_prebuild_cpu_count()} frontier CPUs ({logical_core_count()} total logical)"
+    )

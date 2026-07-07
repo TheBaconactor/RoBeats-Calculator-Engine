@@ -1371,6 +1371,25 @@ class _TimelineFillCountPairBuild:
     pack_sig_counts: dict[tuple[int, int], int]
 
 
+def _timeline_pair_build_tasks(
+    fill_counts_list: list[int],
+    d_ms_list: list[int],
+    thread_count: int,
+) -> list[tuple[int, list[int]]]:
+    if not fill_counts_list or not d_ms_list:
+        return []
+    thread_count_i = max(1, int(thread_count))
+    chunks_per_fill = max(1, min(len(d_ms_list), thread_count_i // max(1, len(fill_counts_list))))
+    tasks: list[tuple[int, list[int]]] = []
+    for fill_count_i in fill_counts_list:
+        for chunk_i in range(chunks_per_fill):
+            lo = (chunk_i * len(d_ms_list)) // chunks_per_fill
+            hi = ((chunk_i + 1) * len(d_ms_list)) // chunks_per_fill
+            if lo < hi:
+                tasks.append((int(fill_count_i), d_ms_list[lo:hi]))
+    return tasks
+
+
 def _build_timeline_pair_cache_for_fill_count(
     ctx: _GroupedTimelineContext,
     fill_count_i: int,
@@ -1587,18 +1606,19 @@ def build_timeline_frontier_grid_payload(
     pack_sig_counts: dict[tuple[int, int], int] = {}
     trace_equivalent_reused_pair_count = 0
     thread_count = max(1, int(_TIMELINE_PAIR_BUILD_THREADS))
-    if thread_count <= 1 or len(fill_counts_list) <= 1:
+    tasks = _timeline_pair_build_tasks(fill_counts_list, d_ms_list, thread_count)
+    if thread_count <= 1 or len(tasks) <= 1:
         builds = [
-            _build_timeline_pair_cache_for_fill_count(ctx, int(fill_count_i), d_ms_list)
-            for fill_count_i in fill_counts_list
+            _build_timeline_pair_cache_for_fill_count(ctx, int(fill_count_i), list(d_ms_chunk))
+            for fill_count_i, d_ms_chunk in tasks
         ]
     else:
-        workers = min(thread_count, len(fill_counts_list))
+        workers = min(thread_count, len(tasks))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             builds = list(
                 executor.map(
-                    lambda fill_count_i: _build_timeline_pair_cache_for_fill_count(ctx, int(fill_count_i), d_ms_list),
-                    fill_counts_list,
+                    lambda task: _build_timeline_pair_cache_for_fill_count(ctx, int(task[0]), list(task[1])),
+                    tasks,
                 )
             )
     for build in builds:

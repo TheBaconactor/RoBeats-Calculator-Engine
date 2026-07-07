@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -112,6 +113,42 @@ _MAX_BODY_BYTES = max(1024, env_int("ROBEATSMETA_OPTIMIZER_MAX_BODY_BYTES", 32 *
 # Hard wall-clock cap on a single solve subprocess: on timeout the whole process group is killed
 # (so main.py's GPU/worker children don't linger) and the request fails. Must exceed a real solve.
 _SOLVE_TIMEOUT_S = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_TIMEOUT_S", 30 * 60))
+
+
+@dataclass
+class _InFlightSolve:
+    done: threading.Event = field(default_factory=threading.Event)
+    result: list[dict[str, Any]] | None = None
+    error: BaseException | None = None
+
+    def wait(self) -> list[dict[str, Any]]:
+        self.done.wait()
+        if self.error is not None:
+            raise self.error
+        if self.result is None:
+            raise RuntimeError("optimizer solve completed without a result")
+        return self.result
+
+
+_INFLIGHT_SOLVES_LOCK = threading.Lock()
+_INFLIGHT_SOLVES: dict[str, _InFlightSolve] = {}
+
+
+def _claim_job_solve(job: str) -> tuple[_InFlightSolve, bool]:
+    """Return the in-flight solve for a job and whether this caller owns running it."""
+    with _INFLIGHT_SOLVES_LOCK:
+        existing = _INFLIGHT_SOLVES.get(job)
+        if existing is not None:
+            return existing, False
+        state = _InFlightSolve()
+        _INFLIGHT_SOLVES[job] = state
+        return state, True
+
+
+def _release_job_solve(job: str, state: _InFlightSolve) -> None:
+    with _INFLIGHT_SOLVES_LOCK:
+        if _INFLIGHT_SOLVES.get(job) is state:
+            del _INFLIGHT_SOLVES[job]
 
 
 def _sweep_frontier_cache() -> None:
@@ -292,19 +329,8 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
             pass
 
 
-def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
-    """Solve one chart in an isolated per-request workspace and return its full T5 leaderboard.
-
-    The returned list is the merged top-N base + FG leaderboard (ranked by score / fg_score, deduped
-    by loadout_hash) exactly as `get_best_loadouts` yields for the catalog. The website writes this
-    verbatim into a per-job evolution.db-format file via `save_loadouts_batch`, so every downstream
-    replay (any tier / mode / rank / color / timing) runs through the catalog's own on-demand re-score
-    path (`build_team_buff_tier_db_batches`) and produces a byte-identical SongBuild.
-    """
-    job = _job_slug(request.get("jobId") or request.get("resultKey"))
-    chart_text, result_song_name = chart_text_and_result_song_name_for_request(request, fallback_name=job)
-    repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
-
+def _solve_isolated(job: str, chart_text: str, result_song_name: str, repeats: int) -> list[dict[str, Any]]:
+    """Run the canonical optimizer pipeline once in a throwaway per-job workspace."""
     work = _service_run_root() / job
     shutil.rmtree(work, ignore_errors=True)
     data_dir = work / "Data"
@@ -366,6 +392,33 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         finally:
             _release_solve_slot()
             shutil.rmtree(work, ignore_errors=True)
+
+
+def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
+    """Solve one chart in an isolated per-request workspace and return its full T5 leaderboard.
+
+    The returned list is the merged top-N base + FG leaderboard (ranked by score / fg_score, deduped
+    by loadout_hash) exactly as `get_best_loadouts` yields for the catalog. The website writes this
+    verbatim into a per-job evolution.db-format file via `save_loadouts_batch`, so every downstream
+    replay (any tier / mode / rank / color / timing) runs through the catalog's own on-demand re-score
+    path (`build_team_buff_tier_db_batches`) and produces a byte-identical SongBuild.
+    """
+    job = _job_slug(request.get("jobId") or request.get("resultKey"))
+    chart_text, result_song_name = chart_text_and_result_song_name_for_request(request, fallback_name=job)
+    repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
+    state, owner = _claim_job_solve(job)
+    if not owner:
+        logger.info("joining in-flight optimizer solve for job %s", job)
+        return state.wait()
+    try:
+        state.result = _solve_isolated(job, chart_text, result_song_name, repeats)
+        return state.result
+    except BaseException as exc:
+        state.error = exc
+        raise
+    finally:
+        state.done.set()
+        _release_job_solve(job, state)
 
 
 # --- HTTP --------------------------------------------------------------------
