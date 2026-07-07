@@ -63,6 +63,28 @@ def test_chart_text_official_reads_file(data_root):
     assert "Song Name\tFeeding [Hard]" in service.chart_text_for_request({"targetSongId": "Feeding [Hard]"})
 
 
+def test_chart_text_and_result_song_name_preserves_official_identity(data_root):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+
+    chart_text, result_song_name = service.chart_text_and_result_song_name_for_request(
+        {"jobId": "job_abc", "targetSongId": "Feeding [Hard]"},
+        fallback_name="job_abc",
+    )
+
+    assert "Song Name\tFeeding [Hard]" in chart_text
+    assert result_song_name == "Feeding [Hard]"
+
+
+def test_chart_text_and_result_song_name_custom_uses_job_key(data_root):
+    chart_text, result_song_name = service.chart_text_and_result_song_name_for_request(
+        {"jobId": "job_abc", "chartText": "Song Name\tCustom\nSong Data\n500\t0\t0\t1"},
+        fallback_name="job_abc",
+    )
+
+    assert chart_text.startswith("Song Name\tCustom")
+    assert result_song_name == "job_abc"
+
+
 def test_chart_text_requires_a_source(data_root):
     with pytest.raises(service.RequestError):
         service.chart_text_for_request({"jobId": "x"})
@@ -82,16 +104,17 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
         def __init__(self, cmd, **kwargs):
             env = kwargs["env"]
             captured["env"] = env
-            # the chart was written into the isolated Data dir, keyed by the job slug
+            # The chart file is keyed by the job slug, but its Song Name remains the official
+            # song identity. Mini Ascension song targets match against this header.
             chart = (Path(env["ROBEATSMETA_OPTIMIZER_DATA_DIR"]) / "Hard" / "job_abc.txt").read_text("utf-8")
-            assert "Song Name\tjob_abc" in chart
+            assert "Song Name\tFeeding [Hard]" in chart
             self.returncode = 0
 
         def communicate(self, timeout=None):
             return ("", "")
 
     def fake_loadouts(song_name, **kwargs):
-        assert song_name == "job_abc"
+        assert song_name == "Feeding [Hard]"
         assert kwargs["team_buff"] == "T5"
         assert kwargs["limit"] == 51  # full leaderboard, not a single rank #1
         return [entry]

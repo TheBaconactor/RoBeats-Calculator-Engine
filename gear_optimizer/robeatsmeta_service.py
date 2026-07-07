@@ -231,14 +231,17 @@ def _job_slug(value: Any) -> str:
     return slug or "job"
 
 
-def _normalize_chart(chart_text: str, name: str) -> str:
-    """Force Song Name (the unique job slug, so the output is keyed by it) and Difficulty (the
-    isolated Hard bucket the per-request workspace uses) so the header matches the run config."""
+def _normalize_chart(chart_text: str, song_name: str) -> str:
+    """Force Song Name and Difficulty so the isolated chart matches the run config.
+
+    The file name is the unique job slug. The Song Name header is the semantic song identity:
+    Mini Ascension song targets and the output DB rows key off it.
+    """
     out: list[str] = []
     have_name = have_diff = False
     for line in chart_text.splitlines():
         if line.startswith("Song Name\t") and not have_name:
-            out.append(f"Song Name\t{name}")
+            out.append(f"Song Name\t{song_name}")
             have_name = True
         elif line.startswith("Difficulty\t") and not have_diff:
             out.append("Difficulty\tHard")
@@ -247,7 +250,7 @@ def _normalize_chart(chart_text: str, name: str) -> str:
             out.append(line)
     prefix: list[str] = []
     if not have_name:
-        prefix.append(f"Song Name\t{name}")
+        prefix.append(f"Song Name\t{song_name}")
     if not have_diff:
         prefix.append("Difficulty\tHard")
     return "\n".join(prefix + out) + "\n"
@@ -255,12 +258,21 @@ def _normalize_chart(chart_text: str, name: str) -> str:
 
 def chart_text_for_request(request: dict[str, Any]) -> str:
     """The chart to solve: custom `chartText` when present, else the official `targetSongId`."""
+    return chart_text_and_result_song_name_for_request(
+        request,
+        fallback_name=_job_slug(request.get("jobId") or request.get("resultKey")),
+    )[0]
+
+
+def chart_text_and_result_song_name_for_request(request: dict[str, Any], *, fallback_name: str) -> tuple[str, str]:
+    """Return the chart text plus the song_name key expected in the result DB."""
+    fallback = _job_slug(fallback_name)
     chart_text = str(request.get("chartText") or "").strip()
     if chart_text:
-        return chart_text + "\n"
+        return chart_text + "\n", fallback
     song_id = str(request.get("targetSongId") or "").strip()
     if song_id:
-        return find_official_chart(song_id).read_text(encoding="utf-8")
+        return find_official_chart(song_id).read_text(encoding="utf-8"), song_id
     raise RequestError("request must include targetSongId or chartText")
 
 
@@ -290,7 +302,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     path (`build_team_buff_tier_db_batches`) and produces a byte-identical SongBuild.
     """
     job = _job_slug(request.get("jobId") or request.get("resultKey"))
-    chart_text = chart_text_for_request(request)
+    chart_text, result_song_name = chart_text_and_result_song_name_for_request(request, fallback_name=job)
     repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
 
     work = _service_run_root() / job
@@ -298,7 +310,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     data_dir = work / "Data"
     (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
     shutil.copytree(GEAR_DIR, data_dir / "Gear")  # real files; discovery does not follow symlinks
-    (data_dir / "Hard" / f"{job}.txt").write_text(_normalize_chart(chart_text, job), encoding="utf-8")
+    (data_dir / "Hard" / f"{job}.txt").write_text(_normalize_chart(chart_text, result_song_name), encoding="utf-8")
     # The isolated Data dir holds exactly this one chart, so "process discovered charts once"
     # (empty Song_Name + LoopForever off) solves it; a fresh bin means no resume/candidate queue.
     (work / "config.ini").write_text(
@@ -346,7 +358,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
                 tail = " | ".join((err or out or "").strip().splitlines()[-20:])
                 raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
             entries = get_best_loadouts(
-                job, limit=LOADOUTS_PER_SONG_LIMIT, team_buff="T5", db_path=str(db_path)
+                result_song_name, limit=LOADOUTS_PER_SONG_LIMIT, team_buff="T5", db_path=str(db_path)
             )
             if not entries:
                 raise RuntimeError("optimizer produced no T5 loadout")
