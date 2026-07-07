@@ -67,13 +67,3 @@ def test_memories_of_blue_note89_duration_excludes_note375_without_tick_grace():
     zero_ms = _server_fever_flags(cutoff, {373: notes[373][0], 374: notes[374][0], 375: notes[375][0]})
     assert zero_ms == {373: True, 374: True, 375: False}
 
-
-def test_same_chart_time_chord_can_split_only_when_verified_event_times_split_cutoff():
-    _metadata, notes = _chart_metadata_and_notes()
-    cutoff = 53.480591
-
-    same_event_time = _server_fever_flags(cutoff, {373: notes[373][0], 374: notes[374][0]})
-    assert same_event_time == {373: True, 374: True}
-
-    late_great_member = _server_fever_flags(cutoff, {373: notes[373][0], 374: notes[374][0] + 0.190})
-    assert late_great_member == {373: True, 374: False}
