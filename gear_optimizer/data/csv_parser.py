@@ -9,7 +9,7 @@ import logging
 from ..core.constants import SCRIPT_DIR
 from ..core.stats_calculator import build_base_stats_from_config
 from ..core.utils import cfg_to_dict, safe_int, empty_stats
-from .mini_ascension import MINI_ASCENSION_MAX_LEVEL
+from .mini_ascension import MINI_ASCENSION_BASE_STAT_PREFIX, MINI_ASCENSION_MAX_LEVEL
 from .models import WarnOnce
 
 
@@ -78,6 +78,13 @@ def _first_val(row_map, keys):
         if v:
             return v
     return ""
+
+
+def _nth_val(row_map, key, index):
+    values = row_map.get(key, [])
+    if index < 0 or index >= len(values):
+        return ""
+    return str(values[index]).strip() if values[index] is not None else ""
 
 
 def _parse_json_string_list(raw_value: str, *, column_name: str, item_name: str) -> list[str]:
@@ -215,6 +222,11 @@ def parse_mini_rows(filepath):
                 "Mini Ascension Enabled": bool(has_song_target_column),
                 "Mini Ascension Level": MINI_ASCENSION_MAX_LEVEL if has_song_target_column else 0,
             }
+            if has_song_target_column:
+                for color in ("Chill", "Flow", "Rush", "Beat", "Vibe"):
+                    base_value = _nth_val(row_map, color.lower(), 1)
+                    if base_value:
+                        stats[f"{MINI_ASCENSION_BASE_STAT_PREFIX}{color}"] = safe_int(base_value)
             minis_list.append(stats)
     except Exception as exc:
         WARN_ONCE.warn("mini-csv", f"Failed to parse minis CSV {filepath}: {exc}")

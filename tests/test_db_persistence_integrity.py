@@ -180,7 +180,8 @@ def test_save_loadouts_batch_persists_song_aware_mini_ascension_stats(db_path, m
         unpacked = _unpack_stats_after_load(json.loads(row["details_json"]))
         stats = unpacked["Stats"]
         assert stats["Perfect Points"] == 20
-        assert stats["Rush"] == 100
+        assert stats["Rush"] == 216
+        assert stats["Flow"] == 83
         assert unpacked["Mini Ascension Materialized"] is True
         assert unpacked["Mini Ascension Source Version"] == MINI_ASCENSION_CACHE_VERSION
         assert unpacked["Mini Ascension Materialized Song"] == song

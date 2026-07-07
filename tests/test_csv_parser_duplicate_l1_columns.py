@@ -57,6 +57,38 @@ def test_parse_mini_rows_reads_song_target_column(tmp_path):
     assert minis[0]["Mini Ascension Level"] == 10
 
 
+def test_parse_mini_rows_keeps_l1_color_stats_for_mini_ascension(tmp_path):
+    file_path = tmp_path / "Minis.csv"
+    header = [
+        "Type",
+        "Mini Name",
+        "Rush",
+        "Vibe",
+        "L1 Stats",
+        "Rush",
+        "Vibe",
+        "Song Target",
+    ]
+    row = [
+        "Vibe",
+        "Ringmaster Roxie",
+        "35",
+        "65",
+        "",
+        "7",
+        "13",
+        '["Clouds in the Blue (Hard) by Camellia"]',
+    ]
+    _write_csv(file_path, header, row)
+
+    minis = parse_mini_rows(str(file_path))
+    assert len(minis) == 1
+    assert minis[0]["Rush"] == 35
+    assert minis[0]["Vibe"] == 65
+    assert minis[0]["Mini Ascension Base Rush"] == 7
+    assert minis[0]["Mini Ascension Base Vibe"] == 13
+
+
 def test_parse_gear_rows_ignores_duplicate_l1_stat_columns(tmp_path):
     file_path = tmp_path / "Gears.csv"
     header = [

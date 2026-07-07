@@ -9,8 +9,10 @@ from gear_optimizer.core.utils import safe_int
 
 MINI_ASCENSION_MAX_LEVEL = 10
 MINI_ASCENSION_BASE_PP_PER_LEVEL = 2
-MINI_ASCENSION_CACHE_VERSION = "mini-ascension-v1"
+MINI_ASCENSION_ELEMENTAL_SCALE_PER_LEVEL = 0.5
+MINI_ASCENSION_CACHE_VERSION = "mini-ascension-v2"
 MINI_ASCENSION_DISABLED_CACHE_KEY = ("mini-ascension-disabled",)
+MINI_ASCENSION_BASE_STAT_PREFIX = "Mini Ascension Base "
 
 MINI_ASCENSION_METADATA_KEYS = frozenset(
     {
@@ -25,6 +27,11 @@ MINI_ASCENSION_METADATA_KEYS = frozenset(
         "Mini Ascension Materialized Song",
         "Mini Ascension Materialized Primary Color",
         "Mini Ascension Materialized Secondary Color",
+        "Mini Ascension Base Chill",
+        "Mini Ascension Base Flow",
+        "Mini Ascension Base Rush",
+        "Mini Ascension Base Beat",
+        "Mini Ascension Base Vibe",
     }
 )
 
@@ -94,29 +101,55 @@ def mini_song_target_active(mini: Mapping[str, Any], song_name: str) -> bool:
 
 
 def ranked_mini_colors(mini: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
+    return _ranked_color_values(mini, use_ascension_base_stats=False)
+
+
+def ranked_mini_ascension_colors(mini: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
+    return _ranked_color_values(mini, use_ascension_base_stats=True)
+
+
+def _ranked_color_values(
+    mini: Mapping[str, Any],
+    *,
+    use_ascension_base_stats: bool,
+) -> tuple[tuple[str, int], ...]:
     ranked: list[tuple[str, int, int]] = []
     for order, color in enumerate(_RANKED_COLOR_ORDER):
-        value = safe_int((mini or {}).get(color, 0), 0)
+        if use_ascension_base_stats:
+            base_key = f"{MINI_ASCENSION_BASE_STAT_PREFIX}{color}"
+            raw_value = (mini or {}).get(base_key, (mini or {}).get(color, 0))
+        else:
+            raw_value = (mini or {}).get(color, 0)
+        value = safe_int(raw_value, 0)
         if value > 0:
             ranked.append((color, value, order))
     ranked.sort(key=lambda item: (-int(item[1]), int(item[2])))
     return tuple((color, value) for color, value, _order in ranked)
 
 
-def _provisional_export_destination(
+def _provisional_export_distribution(
     *,
-    pet_color: str,
+    budget: int,
     song_primary_color: str,
     song_secondary_color: str,
-) -> str:
+) -> dict[str, int]:
     """Return the current isolated export-audit interpretation for elemental insertion.
 
-    The match-quality tiers are confirmed, but the decompiled final insertion path is noisy.
-    Keep this distribution rule isolated and explicitly provisional until cleaner source or
-    controlled in-game fixtures confirm the exact destination behavior.
+    The decompiled final insertion path accumulates a raw base-stat ascension budget, then inserts
+    it into the song primary for one-color songs or splits it 2:1 across primary/secondary. Keep
+    this distribution rule isolated because that final block is decompiler-noisy.
     """
+    amount = max(0, int(budget))
+    if amount <= 0:
+        return {}
+    primary = str(song_primary_color or "").strip()
     secondary = normalize_song_secondary(song_primary_color, song_secondary_color)
-    return secondary if secondary and str(pet_color or "").strip() == secondary else str(song_primary_color or "").strip()
+    if secondary:
+        return {
+            primary: int(math.floor((amount * 2) / 3)),
+            secondary: int(math.floor(amount / 3)),
+        }
+    return {primary: amount}
 
 
 def mini_ascension_elemental_bonus(
@@ -128,9 +161,11 @@ def mini_ascension_elemental_bonus(
 ) -> tuple[dict[str, int], tuple[tuple[str, bool, float, str, int], ...]]:
     """Compute Mini Ascension elemental bonuses.
 
-    Match-quality tiers are confirmed from export audit. The final destination distribution is
-    intentionally routed through ``_provisional_export_destination`` because that insertion
-    path remains decompiler-noisy pending stronger evidence.
+    The decompiled PetUtils path scales each ranked base Mini color by ``ascension * 0.5``. The
+    normal optimizer color stats are max-level values, so generated CSV rows also carry the base/L1
+    color stats used by Mini Ascension. The final destination distribution is intentionally routed
+    through ``_provisional_export_distribution`` because that insertion path remains
+    decompiler-noisy pending stronger evidence.
     """
     primary = str(song_primary_color or "").strip()
     if primary not in _ELEMENT_STAT_SET:
@@ -145,10 +180,10 @@ def mini_ascension_elemental_bonus(
     if level <= 0:
         return {}, ()
 
-    scale = float(level) / float(MINI_ASCENSION_MAX_LEVEL)
-    bonus: dict[str, int] = {}
+    scale = float(level) * float(MINI_ASCENSION_ELEMENTAL_SCALE_PER_LEVEL)
+    budget = 0
     quality_rows: list[tuple[str, bool, float, str, int]] = []
-    for index, (pet_color, pet_value) in enumerate(ranked_mini_colors(mini)[:2]):
+    for index, (pet_color, pet_value) in enumerate(ranked_mini_ascension_colors(mini)[:2]):
         is_primary = index == 0
         quality = mini_ascension_match_quality(
             pet_color,
@@ -156,16 +191,16 @@ def mini_ascension_elemental_bonus(
             song_primary_color=primary,
             song_secondary_color=secondary,
         )
-        amount = int(math.floor(float(pet_value) * scale * float(quality)))
+        amount = int(math.floor(float(pet_value) * scale))
         if amount <= 0:
             continue
-        destination = _provisional_export_destination(
-            pet_color=pet_color,
-            song_primary_color=primary,
-            song_secondary_color=secondary,
-        )
-        bonus[destination] = int(bonus.get(destination, 0) or 0) + amount
-        quality_rows.append((pet_color, bool(is_primary), float(quality), destination, amount))
+        budget += amount
+        quality_rows.append((pet_color, bool(is_primary), float(quality), "Element Budget", amount))
+    bonus = _provisional_export_distribution(
+        budget=budget,
+        song_primary_color=primary,
+        song_secondary_color=secondary,
+    )
     return bonus, tuple(quality_rows)
 
 

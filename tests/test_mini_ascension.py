@@ -54,13 +54,13 @@ def test_materialize_mini_applies_base_pp_and_targeted_primary_secondary_bonus()
     )
 
     assert materialized["Perfect Points"] == 23
-    assert materialized["Rush"] == 100
-    assert materialized["Flow"] == 80
+    assert materialized["Rush"] == 350
+    assert materialized["Flow"] == 190
     assert materialized["Mini Ascension Source Version"] == MINI_ASCENSION_CACHE_VERSION
     assert materialized["Mini Ascension Song Target Applied"] is True
 
 
-def test_provisional_export_distribution_nonmatch_quality_adds_to_song_primary():
+def test_provisional_export_distribution_nonmatch_budget_adds_to_song_elements():
     mini = {
         "Name": "Nonmatch Mini",
         "type": "Mini",
@@ -79,12 +79,13 @@ def test_provisional_export_distribution_nonmatch_quality_adds_to_song_primary()
         secondary_color="Flow",
     )
 
-    assert materialized["Rush"] == 45
+    assert materialized["Rush"] == 300
+    assert materialized["Flow"] == 150
     assert materialized["Beat"] == 50
     assert materialized["Vibe"] == 40
 
 
-def test_provisional_export_distribution_cross_primary_to_song_secondary_uses_point_seven_five():
+def test_provisional_export_distribution_cross_primary_to_song_secondary_uses_element_budget():
     mini = {
         "Name": "Cross Mini",
         "type": "Mini",
@@ -102,7 +103,8 @@ def test_provisional_export_distribution_cross_primary_to_song_secondary_uses_po
         secondary_color="Flow",
     )
 
-    assert materialized["Flow"] == 70
+    assert materialized["Rush"] == 133
+    assert materialized["Flow"] == 106
 
 
 def test_materialize_mini_non_target_gets_base_pp_only():
@@ -172,7 +174,7 @@ def test_materialize_minis_is_idempotent_for_same_song_and_loud_for_different_so
     )
 
     assert by_name["Target Mini"]["Perfect Points"] == 20
-    assert by_name["Target Mini"]["Rush"] == 100
+    assert by_name["Target Mini"]["Rush"] == 300
     assert context.applied_mini_names == ("Target Mini",)
     assert rematerialized[0]["Perfect Points"] == 20
 
@@ -252,7 +254,8 @@ def test_fixed_mini_constraints_resolve_materialized_song_aware_minis():
 
     assert fixed_pool == materialized_minis
     assert fixed_pool[0]["Perfect Points"] == 21
-    assert fixed_pool[0]["Rush"] == 100
+    assert fixed_pool[0]["Rush"] == 216
+    assert fixed_pool[0]["Flow"] == 83
     assert fixed_pool[0]["Mini Ascension Materialized"] is True
 
 
@@ -271,8 +274,33 @@ def test_real_export_8_bit_alien_flagged_song_gets_base_pp_and_elemental_bonus()
     assert materialized["Perfect Points"] == 20
     assert materialized["Mini Ascension Song Target Applied"] is True
     assert materialized["Rush"] == 60
-    assert materialized["Chill"] == 91
-    assert materialized["Mini Ascension Elemental Bonus"] == {"Chill": 56}
+    assert materialized["Chill"] == 98
+    assert materialized["Beat"] == 31
+    assert materialized["Mini Ascension Elemental Bonus"] == {"Chill": 63, "Beat": 31}
+
+
+def test_real_export_ringmaster_roxie_clouds_in_blue_uses_ascension_half_scale():
+    from gear_optimizer.data.csv_parser import parse_mini_rows
+
+    mini = next(m for m in parse_mini_rows("Data/Gear/Minis.csv") if m["Name"] == "Ringmaster Roxie")
+
+    materialized = materialize_mini_for_song(
+        mini,
+        song_name="Clouds in the Blue (Hard) by Camellia",
+        primary_color="Chill",
+        secondary_color="Chill",
+    )
+
+    assert materialized["Perfect Points"] == 20
+    assert materialized["Mini Ascension Song Target Applied"] is True
+    assert materialized["Vibe"] == 65
+    assert materialized["Rush"] == 35
+    assert materialized["Chill"] == 100
+    assert materialized["Mini Ascension Elemental Bonus"] == {"Chill": 100}
+    assert materialized["Mini Ascension Match Qualities"] == [
+        ("Vibe", True, 0.5, "Element Budget", 65),
+        ("Rush", False, 0.5, "Element Budget", 35),
+    ]
 
 
 def test_real_export_8_bit_alien_non_flagged_song_gets_base_pp_only():

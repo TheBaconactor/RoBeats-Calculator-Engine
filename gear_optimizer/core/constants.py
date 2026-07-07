@@ -95,6 +95,11 @@ SKIP_ITEM_KEYS = frozenset(
         "Mini Ascension Materialized Song",
         "Mini Ascension Materialized Primary Color",
         "Mini Ascension Materialized Secondary Color",
+        "Mini Ascension Base Chill",
+        "Mini Ascension Base Flow",
+        "Mini Ascension Base Rush",
+        "Mini Ascension Base Beat",
+        "Mini Ascension Base Vibe",
     }
 )
 
