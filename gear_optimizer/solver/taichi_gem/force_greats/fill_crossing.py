@@ -262,8 +262,8 @@ def activation_hit_is_reachable_weighted_lane_aware(
     h_a = np.float32(activation_hit_timestamp)
     activation_lane = int(lane[a])
     forced_units = 0.0
-    optional_units = 0.0
-    optional_has_half = False
+    optional_lane_ids: list[int] = []
+    optional_half_units: list[int] = []  # per optional note, in chart order: 1 = Great, 2 = Perfect
     for j in range(start, end):
         if int(j) == a:
             continue
@@ -280,26 +280,47 @@ def activation_hit_is_reachable_weighted_lane_aware(
         if lo[j] <= h_a:
             if same_lane and int(j) > a:
                 continue
-            optional_units += float(units[j])
-            if float(units[j]) == 0.5:
-                optional_has_half = True
+            optional_lane_ids.append(int(lane[j]))
+            optional_half_units.append(1 if float(units[j]) == 0.5 else 2)
 
-    # There must exist a schedule whose pre-activation fill S = forced + (a SUBSET of the optional
-    # units) satisfies  S < denom <= S + unit_a.  The subset sums are DISCRETE: with at least one
-    # optional half-unit they form the full 0.5-grid of [0, optional_units]; all-Perfect optional
-    # pools only reach the integer grid, and a Great activation's width-0.5 window can dodge every
-    # integer (the scalar capacity check over-accepted exactly there). Take the smallest grid
-    # point at or above the needed fill and require it to stay under the bar and within capacity.
+    # There must exist a schedule whose pre-activation fill S = forced + S_opt satisfies
+    #   S < denom <= S + unit_a.
+    # S_opt is NOT a free subset sum: earliest-hittable-first consumes each lane in chart order,
+    # so hitting a later same-lane optional note before h_a requires hitting every earlier
+    # same-lane optional note first (their fill lands pre-activation too). The achievable S_opt
+    # set is therefore the Minkowski sum over lanes of each lane's optional PREFIX sums --
+    # computed exactly below on the half-unit integer grid (external review, record 16.36; the
+    # free-grid form over-accepted when the only half-unit sat behind a same-lane Perfect).
     if forced_units >= denom:
         return False
-    needed_before_activation = max(0.0, denom - unit_a - forced_units)
-    grid = 0.5 if optional_has_half else 1.0
-    steps = needed_before_activation / grid
-    step_count = int(steps)
-    if float(step_count) < steps:
-        step_count += 1
-    smallest_fill = float(step_count) * grid
-    return bool(smallest_fill <= optional_units and forced_units + smallest_fill < denom)
+    lo_needed = max(0.0, denom - unit_a - forced_units)
+    hi_open = denom - forced_units  # feasible S_opt window: [lo_needed, hi_open)
+    cap = int(np.ceil(2.0 * hi_open)) + 2
+    achievable = np.zeros(int(cap) + 1, dtype=np.bool_)
+    achievable[0] = True
+    for lane_id in sorted(set(optional_lane_ids)):
+        prefix_sums = [0]
+        running = 0
+        for note_lane, half_units in zip(optional_lane_ids, optional_half_units):
+            if int(note_lane) != int(lane_id):
+                continue
+            running += int(half_units)
+            if running > int(cap):
+                break
+            prefix_sums.append(int(running))
+        if len(prefix_sums) == 1:
+            continue
+        merged = np.zeros_like(achievable)
+        for p in prefix_sums:
+            merged[p:] |= achievable[: achievable.shape[0] - p] if p else achievable
+        achievable = merged
+    for s_half in range(int(cap) + 1):
+        if not achievable[int(s_half)]:
+            continue
+        s_opt = 0.5 * float(s_half)
+        if s_opt >= lo_needed and s_opt < hi_open:
+            return True
+    return False
 
 
 def server_fill_crossing(

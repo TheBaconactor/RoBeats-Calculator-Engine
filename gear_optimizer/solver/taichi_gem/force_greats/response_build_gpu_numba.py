@@ -507,8 +507,9 @@ def _numba_activation_reachable_contiguous_run(
     lo_a = great_floor_timestamps[a] if activation_is_great else perfect_floor_timestamps[a]
     unit_a = 0.5 if activation_is_great else 1.0
     forced_units = 0.0
-    optional_units = 0.0
-    optional_has_half = False
+    opt_lane = np.empty(int(end) - int(start), dtype=np.int32)
+    opt_half = np.empty(int(end) - int(start), dtype=np.int8)
+    opt_count = 0
     scan_start = int(start)
     guaranteed_forced_end = _numba_lower_bound_from(
         timestamps,
@@ -550,23 +551,49 @@ def _numba_activation_reachable_contiguous_run(
         if lo_j <= h_a:
             if same_lane and int(j) > int(a):
                 continue
-            optional_units += float(unit_j)
-            if float(unit_j) == 0.5:
-                optional_has_half = True
+            opt_lane[int(opt_count)] = int(lanes[int(j)])
+            opt_half[int(opt_count)] = np.int8(1) if float(unit_j) == 0.5 else np.int8(2)
+            opt_count += 1
 
-    # Discrete feasibility (twin of activation_hit_is_reachable_weighted_lane_aware): the optional
-    # subset sums live on the 0.5-grid only when a half-unit is choosable; all-Perfect pools reach
-    # the integer grid alone and a Great activation's width-0.5 window can dodge every integer.
+    # Discrete PREFIX-CLOSED feasibility (twin of activation_hit_is_reachable_weighted_lane_aware):
+    # earliest-hittable-first consumes each lane in chart order, so the achievable optional fill is
+    # the Minkowski sum over lanes of per-lane optional PREFIX sums, not a free subset grid
+    # (record 16.36: the only half-unit behind a same-lane Perfect is NOT selectable alone).
     if forced_units >= denom:
         return False
-    needed_before_activation = max(0.0, denom - float(unit_a) - forced_units)
-    grid = 0.5 if optional_has_half else 1.0
-    steps = needed_before_activation / grid
-    step_count = int(steps)
-    if float(step_count) < steps:
-        step_count += 1
-    smallest_fill = float(step_count) * grid
-    return bool(smallest_fill <= optional_units and forced_units + smallest_fill < denom)
+    lo_needed = max(0.0, denom - float(unit_a) - forced_units)
+    hi_open = denom - forced_units
+    cap = int(np.ceil(2.0 * hi_open)) + 2
+    achievable = np.zeros(int(cap) + 1, dtype=np.bool_)
+    achievable[0] = True
+    processed = np.zeros(int(opt_count) if int(opt_count) > 0 else 1, dtype=np.bool_)
+    for i0 in range(int(opt_count)):
+        if processed[int(i0)]:
+            continue
+        lane_id = int(opt_lane[int(i0)])
+        merged = achievable.copy()
+        running = 0
+        overflow = False
+        for i1 in range(int(i0), int(opt_count)):
+            if processed[int(i1)] or int(opt_lane[int(i1)]) != lane_id:
+                continue
+            processed[int(i1)] = True
+            if overflow:
+                continue
+            running += int(opt_half[int(i1)])
+            if int(running) > int(cap):
+                overflow = True
+                continue
+            for s in range(int(cap) - int(running), -1, -1):
+                if achievable[int(s)]:
+                    merged[int(s) + int(running)] = True
+        achievable = merged
+    for s_half in range(int(cap) + 1):
+        if achievable[int(s_half)]:
+            s_opt = 0.5 * float(s_half)
+            if s_opt >= lo_needed and s_opt < hi_open:
+                return True
+    return False
 
 
 @njit(cache=True, nogil=True)
