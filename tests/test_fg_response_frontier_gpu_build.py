@@ -367,6 +367,162 @@ def test_fg_response_first_frontier_reducer_has_no_public_warmup_route() -> None
     assert not hasattr(response_build_gpu_reducer, "warm_force_greats_response_first_frontier_reducer")
 
 
+def test_fg_response_prefix_activation_hit_table_matches_direct_scan() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
+
+    timestamps = np.asarray([0.000, 0.018, 0.041, 0.060, 0.083, 0.140, 0.161, 0.184], dtype=np.float32)
+    perfect_hi = np.asarray([0.040, 0.058, 0.081, 0.100, 0.123, 0.180, 0.201, 0.224], dtype=np.float32)
+    great_hi = np.asarray([0.095, 0.113, 0.136, 0.155, 0.178, 0.235, 0.256, 0.279], dtype=np.float32)
+    n = int(timestamps.shape[0])
+
+    perfect_hit, perfect_valid, late_hit, late_valid = rb._numba_build_prefix_activation_hit_tables(
+        n,
+        timestamps,
+        perfect_hi,
+        great_hi,
+    )
+
+    for activation in range(n):
+        expected_hit, expected_valid = rb._numba_perfect_activation_hit_for_run(
+            activation,
+            timestamps,
+            perfect_hi,
+            great_hi,
+            activation,
+            0,
+            n,
+        )
+        assert int(perfect_valid[activation]) == int(expected_valid)
+        assert float(perfect_hit[activation]) == pytest.approx(float(expected_hit))
+
+        expected_late_hit, expected_late_valid = rb._numba_late_great_activation_hit_for_run(
+            activation,
+            timestamps,
+            perfect_hi,
+            great_hi,
+            activation,
+            1,
+            n,
+        )
+        assert int(late_valid[activation]) == int(expected_late_valid)
+        assert float(late_hit[activation]) == pytest.approx(float(expected_late_hit))
+
+        for great_start in range(max(0, activation - 3), activation + 1):
+            great_count = max(0, activation - great_start)
+            direct_hit, direct_valid = rb._numba_perfect_activation_hit_for_run(
+                activation,
+                timestamps,
+                perfect_hi,
+                great_hi,
+                great_start,
+                great_count,
+                n,
+            )
+            assert int(perfect_valid[activation]) == int(direct_valid)
+            assert float(perfect_hit[activation]) == pytest.approx(float(direct_hit))
+
+            direct_late_hit, direct_late_valid = rb._numba_late_great_activation_hit_for_run(
+                activation,
+                timestamps,
+                perfect_hi,
+                great_hi,
+                great_start,
+                great_count,
+                n,
+            )
+            assert int(late_valid[activation]) == int(direct_late_valid)
+            assert float(late_hit[activation]) == pytest.approx(float(direct_late_hit))
+
+
+def test_fg_response_region2_packet_family_matches_direct_edges() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
+
+    timestamps = np.asarray([idx * 0.071 for idx in range(180)], dtype=np.float32)
+    timestamps[28:31] = timestamps[28]
+    timestamps[63:65] = timestamps[63]
+    perfect_candidates = timestamps + np.float32(0.04)
+    great_candidates = timestamps + np.float32(0.19)
+    perfect_floor = timestamps - np.float32(0.019)
+    great_floor = timestamps - np.float32(0.095)
+    lanes = np.asarray([(idx * 3) % 4 for idx in range(int(timestamps.shape[0]))], dtype=np.int32)
+    raw_fever_fill = 8.2
+    actions, *_rest = _action_table(
+        raw_fever_fill=raw_fever_fill,
+        non_fever_base=9,
+        use_forced_great_timing=True,
+    )
+    action_k = np.asarray(actions, dtype=np.int32)
+
+    family_count, family_defect, family_start, family_end = rb._numba_build_region2_packet_families(
+        int(action_k.shape[0]),
+        float(raw_fever_fill),
+        action_k,
+        int(timestamps.shape[0]),
+    )
+    assert any(int(family_end[idx]) > int(family_start[idx]) for idx in range(int(family_count)))
+
+    checked = 0
+    for family_idx in range(int(family_count)):
+        start = int(family_start[family_idx])
+        end = int(family_end[family_idx])
+        defect = int(family_defect[family_idx])
+        if end <= start:
+            continue
+        first_activation = max(100 + int(end), int(end) + 4)
+        for activation in range(first_activation, min(int(timestamps.shape[0]) - 4, first_activation + 18)):
+            expected = None
+            for activation_offset in range(start, end + 1):
+                k = 2 * int(activation_offset) + int(defect) + 1
+                region_offset = int(activation_offset) - int(k)
+                state_i = int(activation) - int(activation_offset)
+                section_start = int(state_i) + 1
+                assert region_offset >= 1
+                direct = rb._numba_region_run_edge_for_offset(
+                    int(timestamps.shape[0]),
+                    int(section_start),
+                    int(region_offset),
+                    int(k),
+                    float(raw_fever_fill),
+                    timestamps,
+                    0.190001,
+                    perfect_floor,
+                    perfect_candidates,
+                    great_floor,
+                    great_candidates,
+                    lanes,
+                    1.75,
+                )
+                activation_i, edge_e, run_start, great_end, activation_great_idx, hit, valid = direct
+                assert int(activation_i) == int(activation)
+                assert int(valid) != 0
+                assert int(activation_great_idx) == int(activation)
+                edge = rb._numba_pack_edge(
+                    int(timestamps.shape[0]),
+                    int(activation_i),
+                    int(edge_e),
+                    int(run_start),
+                    int(great_end),
+                    int(activation_i),
+                )
+                edge_normal = int(edge[5]) - int(edge[6])
+                extra_normal = int(edge_normal) - ((2 * int(activation_offset)) + int(defect))
+                signature = (
+                    int(edge_e),
+                    int(great_end),
+                    round(float(hit), 7),
+                    int(extra_normal),
+                    int(edge[4]),
+                    int(edge[6]),
+                )
+                if expected is None:
+                    expected = signature
+                else:
+                    assert signature == expected
+                checked += 1
+    assert checked > 0
+
+
 def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch, response_build_gpu_reducer
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
@@ -1179,6 +1335,137 @@ def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> Non
     assert numba_surfaces == oracle_surfaces
 
 
+def test_fg_response_reachability_prefix_reduction_matches_full_scan() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _numba_activation_reachable_contiguous_run,
+        _numba_region2_k_scan_stop,
+        _numba_region2_offset_for_count,
+    )
+
+    def full_scan(
+        *,
+        activation_index: int,
+        activation_hit_timestamp: float,
+        perfect_floor_timestamps: np.ndarray,
+        perfect_candidate_timestamps: np.ndarray,
+        great_floor_timestamps: np.ndarray,
+        great_candidate_timestamps: np.ndarray,
+        lanes: np.ndarray,
+        fever_fill_denom: float,
+        section_start: int,
+        section_end: int,
+        great_start: int,
+        great_count: int,
+        activation_great_i: int,
+    ) -> bool:
+        a = int(activation_index)
+        start = int(section_start)
+        end = int(section_end)
+        if start < 0 or end < start or not (start <= a < end):
+            return False
+        g0 = max(start, int(great_start), 0)
+        g1 = min(end, int(great_start) + int(great_count))
+        if g1 < g0:
+            g1 = g0
+        h_a = np.float32(float(activation_hit_timestamp))
+        lane_a = int(lanes[a])
+        activation_is_great = int(activation_great_i) != 0 or (g0 <= a < g1)
+        lo_a = great_floor_timestamps[a] if activation_is_great else perfect_floor_timestamps[a]
+        unit_a = 0.5 if activation_is_great else 1.0
+        forced_units = 0.0
+        optional_units = 0.0
+        for j in range(start, end):
+            if j == a:
+                continue
+            is_great = g0 <= j < g1
+            lo_j = great_floor_timestamps[j] if is_great else perfect_floor_timestamps[j]
+            hi_j = great_candidate_timestamps[j] if is_great else perfect_candidate_timestamps[j]
+            unit_j = 0.5 if is_great else 1.0
+            same_lane = int(lanes[j]) == lane_a
+            if same_lane and j > a and hi_j < h_a and lo_a <= hi_j:
+                return False
+            forced_any_lane = hi_j < h_a
+            forced_same_lane_older = same_lane and j < a and lo_j <= h_a
+            if forced_any_lane or forced_same_lane_older:
+                forced_units += float(unit_j)
+                if forced_units >= float(fever_fill_denom):
+                    return False
+                continue
+            if lo_j <= h_a:
+                if same_lane and j > a:
+                    continue
+                optional_units += float(unit_j)
+        needed_before_activation = max(0.0, float(fever_fill_denom) - float(unit_a))
+        return bool(forced_units < float(fever_fill_denom) and forced_units + optional_units >= needed_before_activation)
+
+    rng = np.random.default_rng(20260706)
+    gaps = rng.uniform(0.04, 0.31, size=48).astype(np.float64)
+    timestamps = np.cumsum(gaps).astype(np.float32)
+    timestamps -= timestamps[0]
+    perfect_floor = np.maximum.accumulate((timestamps.astype(np.float64) - 0.019).astype(np.float32))
+    great_floor = np.maximum.accumulate((timestamps.astype(np.float64) - 0.095).astype(np.float32))
+    perfect_candidates = (timestamps.astype(np.float64) + rng.uniform(0.035, 0.045, size=48)).astype(np.float32)
+    great_candidates = (timestamps.astype(np.float64) + rng.uniform(0.18, 0.19, size=48)).astype(np.float32)
+    lanes = rng.integers(0, 4, size=48, dtype=np.int32)
+    high_delta = float(
+        np.float32(max(0.0, float(np.max(np.maximum(perfect_candidates, great_candidates) - timestamps))) + 1.0e-6)
+    )
+
+    for _ in range(300):
+        section_start = int(rng.integers(0, 47))
+        section_end = int(rng.integers(section_start + 1, 49))
+        activation = int(rng.integers(section_start, section_end))
+        great_start = int(rng.integers(max(0, section_start - 2), min(48, section_end + 2)))
+        great_count = int(rng.integers(0, min(10, 48 - great_start) + 1))
+        activation_great_i = int(rng.integers(0, 2))
+        hit = (
+            great_candidates[activation]
+            if activation_great_i or great_start <= activation < great_start + great_count
+            else perfect_candidates[activation]
+        )
+        denom = float(rng.choice(np.asarray([1.25, 2.25, 3.5, 8.0, 63.2118], dtype=np.float64)))
+        assert bool(
+            _numba_activation_reachable_contiguous_run(
+                activation,
+                float(hit),
+                high_delta,
+                timestamps,
+                perfect_floor,
+                perfect_candidates,
+                great_floor,
+                great_candidates,
+                lanes,
+                denom,
+                section_start,
+                section_end,
+                great_start,
+                great_count,
+                activation_great_i,
+            )
+        ) is full_scan(
+            activation_index=activation,
+            activation_hit_timestamp=float(hit),
+            perfect_floor_timestamps=perfect_floor,
+            perfect_candidate_timestamps=perfect_candidates,
+            great_floor_timestamps=great_floor,
+            great_candidate_timestamps=great_candidates,
+            lanes=lanes,
+            fever_fill_denom=denom,
+            section_start=section_start,
+            section_end=section_end,
+            great_start=great_start,
+            great_count=great_count,
+            activation_great_i=activation_great_i,
+        )
+
+    for action_count in (1, 2, 5, 64, 274):
+        for denom in (1.25, 2.25, 3.5, 8.0, 63.2118, 273.726):
+            stop = int(_numba_region2_k_scan_stop(int(action_count), float(denom)))
+            for start in (0, 1, 17, 46):
+                for k in range(stop, int(action_count)):
+                    assert _numba_region2_offset_for_count(int(start), int(k), float(denom), 48) < 1
+
+
 @pytest.mark.parametrize(
     (
         "timestamps",
@@ -1273,6 +1560,41 @@ def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
         (0, 0, 0, 0, 10, 1, 0),
         (0, 0, 0, 0, 9, 0, 0),
     ]
+
+
+def test_fg_response_same_end_head_edge_prune_keeps_different_end_edges() -> None:
+    from numba import types
+    from numba.typed import Dict
+    from numba.typed import List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_SURFACE_LIST_TYPE,
+        _numba_append_head_edge_to_end_buckets,
+    )
+
+    def _surface(values):
+        return tuple(np.uint64(v) for v in values)
+
+    weak = _surface((0, 0, 0, 0, 0, 0, 0))
+    stronger_same_end = _surface((1, 0, 0, 0, 0, 0, 0))
+
+    edge_buckets = Dict.empty(types.int64, _NUMBA_SURFACE_LIST_TYPE)
+    edge_ends = List.empty_list(types.int64)
+    edge_buckets, edge_ends, kept = _numba_append_head_edge_to_end_buckets(edge_buckets, edge_ends, weak, 4)
+    assert kept == 1
+
+    edge_buckets, edge_ends, kept = _numba_append_head_edge_to_end_buckets(
+        edge_buckets, edge_ends, stronger_same_end, 4
+    )
+    assert kept == 1
+    assert list(edge_buckets[4]) == [stronger_same_end]
+    assert list(edge_ends) == [4]
+
+    edge_buckets, edge_ends, kept = _numba_append_head_edge_to_end_buckets(edge_buckets, edge_ends, weak, 5)
+    assert kept == 1
+    assert list(edge_buckets[4]) == [stronger_same_end]
+    assert list(edge_buckets[5]) == [weak]
+    assert list(edge_ends) == [4, 5]
 
 
 def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:

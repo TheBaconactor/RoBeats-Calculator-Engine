@@ -343,6 +343,7 @@ def _edge_surface_options(
     great_floor_timestamps: np.ndarray,
     raw_fever_fill: float,
     lanes: np.ndarray | None = None,
+    visitor: Any = None,
 ) -> list[dict[str, Any]]:
     """Enumerate candidate fever sections with their response-surface edges.
 
@@ -352,6 +353,7 @@ def _edge_surface_options(
     with `_option_with_witness` once an option is accepted.
     """
     out: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
     fills = first_fill if first else later_fill
     forced_values = first_forced if first else later_forced
     prev_fill = -1
@@ -367,6 +369,25 @@ def _edge_surface_options(
     # Production uses each note's actual latest Perfect hit; reachability is owned by the
     # weighted, lane-aware input-engine predicate below, not by the legacy global cap.
     perfect_activation_ts = perfect_ts
+
+    def _emit(option: dict[str, Any]) -> bool:
+        key = (
+            option["surface"],
+            int(option["next_state"]),
+            int(option["activation_index"]),
+            str(option["activation_judgment"]),
+            int(option.get("forced_run_start_index", option["forced_start_index"])),
+            int(option.get("forced_run_count", option["forced_prefix_count"])),
+            int(option.get("early_great_start", -1)),
+            int(option.get("early_great_end", -1)),
+        )
+        if key in seen:
+            return False
+        seen.add(key)
+        if visitor is not None:
+            return bool(visitor(option))
+        out.append(option)
+        return False
 
     def _forced_fields(*, section_start: int, great_start: int, great_count: int) -> dict[str, int]:
         great_start_i = max(0, min(int(great_start), int(n)))
@@ -447,13 +468,11 @@ def _edge_surface_options(
         if lo == hi and lo >= 1 and s + lo + int(k) - 1 < int(n):
             offsets.add(int(lo))
 
-        # Region 3 starts after the section head can change which high-value head notes are Great.
-        # Body-only pre-activation placements with the same crossing collapse to the same scored
-        # surface, so the prefix representative already covers them.
-        if s < 100:
-            head_hi = min(99 - s, int(ceil(denom)) - 1)
-            for offset in range(1, max(0, int(head_hi)) + 1):
-                offsets.add(int(offset))
+        # Region-3 shifted-head runs share activation/end for a fixed k. The earliest shifted
+        # head run is the score-dominant representative; later starts only move the same Great
+        # count onto later ramp notes. Keep reconstruction aligned with the Numba producer.
+        if s < 99 and int(ceil(denom)) > 1 and s + 1 < int(n):
+            offsets.add(1)
         return tuple(sorted(offsets))
 
     def _minimal_reachable_region_great_end(
@@ -501,7 +520,7 @@ def _edge_surface_options(
         return int(ee)
 
     def _early_great_options(base: dict[str, Any], base_e: int, eg_e: int, *, a: int,
-                             great_start: int, great_end: int, activation_great_idx: int) -> None:
+                             great_start: int, great_end: int, activation_great_idx: int) -> bool:
         # One Pareto surface per end ee in (base_e, eg_e]; the tail [base_e, ee) is fever-great.
         # The activation witness is unchanged (it still reproduces the Perfect/late extent
         # base_e), so reuse the base witness (its target_end is already base_e).
@@ -523,7 +542,9 @@ def _edge_surface_options(
                 early_great_end=int(ee),
             )
             opt["_witness"] = dict(base["_witness"])
-            out.append(opt)
+            if _emit(opt):
+                return True
+        return False
 
     for action_idx, k in enumerate(actions):
         fill = int(fills[action_idx])
@@ -562,44 +583,45 @@ def _edge_surface_options(
             )
         if perfect_reachable and (fill != prev_fill or (start_time != prev_start_time and e != prev_e)):
             great_end = min(int(n), int(section_start) + int(forced_applied))
-            out.append(
-                {
-                    "k": int(k),
-                    "next_state": int(e),
-                    "activation_index": int(a),
-                    "activation_ms": float(chart_time) * 1000.0,
-                    "activation_judgment": "perfect",
-                    **_forced_fields(
-                        section_start=int(section_start),
-                        great_start=int(section_start),
-                        great_count=int(forced_applied),
-                    ),
-                    "fever_end_index": int(e),
-                    "fever_end_ms": None if int(e) >= int(n) else float(timestamps[int(e)]) * 1000.0,
-                    "surface": _edge_surface(
-                        n=int(n),
-                        fever_start=int(a),
-                        fever_end=int(e),
-                        great_start=int(section_start),
-                        great_end=int(great_end),
-                    ),
-                    "_witness": {
-                        "activation_idx": int(a),
-                        "chart_time": float(chart_time),
-                        "lo": min(float(chart_time), float(perfect_activation_ts[int(a)])),
-                        "hi": float(perfect_hit),
-                        "target_end": int(e),
-                        "carry_idx": int(carry_idx),
-                        "activation_great": False,
-                    },
-                }
-            )
+            base = {
+                "k": int(k),
+                "next_state": int(e),
+                "activation_index": int(a),
+                "activation_ms": float(chart_time) * 1000.0,
+                "activation_judgment": "perfect",
+                **_forced_fields(
+                    section_start=int(section_start),
+                    great_start=int(section_start),
+                    great_count=int(forced_applied),
+                ),
+                "fever_end_index": int(e),
+                "fever_end_ms": None if int(e) >= int(n) else float(timestamps[int(e)]) * 1000.0,
+                "surface": _edge_surface(
+                    n=int(n),
+                    fever_start=int(a),
+                    fever_end=int(e),
+                    great_start=int(section_start),
+                    great_end=int(great_end),
+                ),
+                "_witness": {
+                    "activation_idx": int(a),
+                    "chart_time": float(chart_time),
+                    "lo": min(float(chart_time), float(perfect_activation_ts[int(a)])),
+                    "hi": float(perfect_hit),
+                    "target_end": int(e),
+                    "carry_idx": int(carry_idx),
+                    "activation_great": False,
+                },
+            }
+            if _emit(base):
+                return out
             # Issue #44: early-Great extension of the Perfect-activation section.
-            _early_great_options(
-                out[-1], int(e), _great_floor_end(float(start_time), int(a)),
+            if _early_great_options(
+                base, int(e), _great_floor_end(float(start_time), int(a)),
                 a=int(a), great_start=int(section_start), great_end=int(great_end),
                 activation_great_idx=-1,
-            )
+            ):
+                return out
         # Late-Great activation, single-sourced with the search's `_compact_first_frontier_action_arrays`
         # via `late_great_activation_prefix`: the forced-Great prefix when the activation Great IS the
         # server fill-crossing, or None when a Perfect crosses first (a phantom over-report). Same O(1)
@@ -659,42 +681,43 @@ def _edge_surface_options(
                     great_end=min(int(n), int(section_start) + int(prefix_forced)),
                     activation_great_idx=int(a),
                 )
-                out.append(
-                    {
-                        "k": int(k),
-                        "next_state": int(activation_e),
-                        "activation_index": int(a),
-                        "activation_ms": float(chart_time) * 1000.0,
-                        "activation_judgment": "late_great",
-                        **_forced_fields(
-                            section_start=int(section_start),
-                            great_start=int(section_start),
-                            great_count=int(prefix_forced),
-                        ),
-                        "fever_end_index": int(activation_e),
-                        "fever_end_ms": None
-                        if int(activation_e) >= int(n)
-                        else float(timestamps[int(activation_e)]) * 1000.0,
-                        "surface": activation_surface,
-                        "_witness": {
-                            "activation_idx": int(a),
-                            "chart_time": float(chart_time),
-                            "lo": float(late_lo),
-                            "hi": float(prefix_late_hit),
-                            "target_end": int(activation_e),
-                            "carry_idx": int(activation_carry_idx),
-                            "activation_great": True,
-                        },
-                    }
-                )
+                base = {
+                    "k": int(k),
+                    "next_state": int(activation_e),
+                    "activation_index": int(a),
+                    "activation_ms": float(chart_time) * 1000.0,
+                    "activation_judgment": "late_great",
+                    **_forced_fields(
+                        section_start=int(section_start),
+                        great_start=int(section_start),
+                        great_count=int(prefix_forced),
+                    ),
+                    "fever_end_index": int(activation_e),
+                    "fever_end_ms": None
+                    if int(activation_e) >= int(n)
+                    else float(timestamps[int(activation_e)]) * 1000.0,
+                    "surface": activation_surface,
+                    "_witness": {
+                        "activation_idx": int(a),
+                        "chart_time": float(chart_time),
+                        "lo": float(late_lo),
+                        "hi": float(prefix_late_hit),
+                        "target_end": int(activation_e),
+                        "carry_idx": int(activation_carry_idx),
+                        "activation_great": True,
+                    },
+                }
+                if _emit(base):
+                    return out
                 # Issue #44: early-Great extension of the late-Great-activation section.
-                _early_great_options(
-                    out[-1], int(activation_e),
+                if _early_great_options(
+                    base, int(activation_e),
                     _great_floor_end(float(_activation_start_time), int(a)),
                     a=int(a), great_start=int(section_start),
                     great_end=min(int(n), int(section_start) + int(prefix_forced)),
                     activation_great_idx=int(a),
-                )
+                ):
+                    return out
         if bool(use_forced_great_timing) and int(k) > 0:
             for offset in _region_run_offsets(section_start=int(section_start), k=int(k)):
                 run_start = int(section_start) + int(offset)
@@ -760,40 +783,41 @@ def _edge_surface_options(
                         great_end=int(actual_great_end_i),
                         activation_great_idx=int(a_region),
                     )
-                    out.append(
-                        {
-                            "k": int(actual_great_end_i) - int(run_start),
-                            "next_state": int(activation_e),
-                            "activation_index": int(a_region),
-                            "activation_ms": float(chart_time) * 1000.0,
-                            "activation_judgment": "late_great",
-                            **_forced_fields(
-                                section_start=int(section_start),
-                                great_start=int(run_start),
-                                great_count=int(actual_great_end_i) - int(run_start),
-                            ),
-                            "fever_end_index": int(activation_e),
-                            "fever_end_ms": None
-                            if int(activation_e) >= int(n)
-                            else float(timestamps[int(activation_e)]) * 1000.0,
-                            "surface": surface,
-                            "_witness": {
-                                "activation_idx": int(a_region),
-                                "chart_time": float(chart_time),
-                                "lo": float(late_lo),
-                                "hi": float(activation_hit),
-                                "target_end": int(activation_e),
-                                "carry_idx": int(activation_carry_idx),
-                                "activation_great": True,
-                            },
-                        }
-                    )
-                    _early_great_options(
-                        out[-1], int(activation_e),
+                    base = {
+                        "k": int(actual_great_end_i) - int(run_start),
+                        "next_state": int(activation_e),
+                        "activation_index": int(a_region),
+                        "activation_ms": float(chart_time) * 1000.0,
+                        "activation_judgment": "late_great",
+                        **_forced_fields(
+                            section_start=int(section_start),
+                            great_start=int(run_start),
+                            great_count=int(actual_great_end_i) - int(run_start),
+                        ),
+                        "fever_end_index": int(activation_e),
+                        "fever_end_ms": None
+                        if int(activation_e) >= int(n)
+                        else float(timestamps[int(activation_e)]) * 1000.0,
+                        "surface": surface,
+                        "_witness": {
+                            "activation_idx": int(a_region),
+                            "chart_time": float(chart_time),
+                            "lo": float(late_lo),
+                            "hi": float(activation_hit),
+                            "target_end": int(activation_e),
+                            "carry_idx": int(activation_carry_idx),
+                            "activation_great": True,
+                        },
+                    }
+                    if _emit(base):
+                        return out
+                    if _early_great_options(
+                        base, int(activation_e),
                         _great_floor_end(float(activation_start_time), int(a_region)),
                         a=int(a_region), great_start=int(run_start), great_end=int(actual_great_end_i),
                         activation_great_idx=int(a_region),
-                    )
+                    ):
+                        return out
                 else:
                     actual_great_end = min(int(n), int(run_start) + int(k))
                     if actual_great_end <= int(run_start):
@@ -824,66 +848,50 @@ def _edge_surface_options(
                         perfect_floor_timestamps=perfect_floor_timestamps,
                     )
                     chart_time = float(timestamps[int(a_region)])
-                    out.append(
-                        {
-                            "k": int(actual_great_end) - int(run_start),
-                            "next_state": int(e_region),
-                            "activation_index": int(a_region),
-                            "activation_ms": float(chart_time) * 1000.0,
-                            "activation_judgment": "perfect",
-                            **_forced_fields(
-                                section_start=int(section_start),
-                                great_start=int(run_start),
-                                great_count=int(actual_great_end) - int(run_start),
-                            ),
-                            "fever_end_index": int(e_region),
-                            "fever_end_ms": None
-                            if int(e_region) >= int(n)
-                            else float(timestamps[int(e_region)]) * 1000.0,
-                            "surface": _edge_surface(
-                                n=int(n),
-                                fever_start=int(a_region),
-                                fever_end=int(e_region),
-                                great_start=int(run_start),
-                                great_end=int(actual_great_end),
-                            ),
-                            "_witness": {
-                                "activation_idx": int(a_region),
-                                "chart_time": float(chart_time),
-                                "lo": min(float(chart_time), float(perfect_activation_ts[int(a_region)])),
-                                "hi": float(perfect_region_hit),
-                                "target_end": int(e_region),
-                                "carry_idx": int(region_carry_idx),
-                                "activation_great": False,
-                            },
-                        }
-                    )
-                    _early_great_options(
-                        out[-1], int(e_region), _great_floor_end(float(region_start_time), int(a_region)),
+                    base = {
+                        "k": int(actual_great_end) - int(run_start),
+                        "next_state": int(e_region),
+                        "activation_index": int(a_region),
+                        "activation_ms": float(chart_time) * 1000.0,
+                        "activation_judgment": "perfect",
+                        **_forced_fields(
+                            section_start=int(section_start),
+                            great_start=int(run_start),
+                            great_count=int(actual_great_end) - int(run_start),
+                        ),
+                        "fever_end_index": int(e_region),
+                        "fever_end_ms": None
+                        if int(e_region) >= int(n)
+                        else float(timestamps[int(e_region)]) * 1000.0,
+                        "surface": _edge_surface(
+                            n=int(n),
+                            fever_start=int(a_region),
+                            fever_end=int(e_region),
+                            great_start=int(run_start),
+                            great_end=int(actual_great_end),
+                        ),
+                        "_witness": {
+                            "activation_idx": int(a_region),
+                            "chart_time": float(chart_time),
+                            "lo": min(float(chart_time), float(perfect_activation_ts[int(a_region)])),
+                            "hi": float(perfect_region_hit),
+                            "target_end": int(e_region),
+                            "carry_idx": int(region_carry_idx),
+                            "activation_great": False,
+                        },
+                    }
+                    if _emit(base):
+                        return out
+                    if _early_great_options(
+                        base, int(e_region), _great_floor_end(float(region_start_time), int(a_region)),
                         a=int(a_region), great_start=int(run_start), great_end=int(actual_great_end),
                         activation_great_idx=-1,
-                    )
+                    ):
+                        return out
         prev_fill = fill
         prev_start_time = start_time
         prev_e = e
-    unique: list[dict[str, Any]] = []
-    seen: set[tuple[Any, ...]] = set()
-    for option in out:
-        key = (
-            option["surface"],
-            int(option["next_state"]),
-            int(option["activation_index"]),
-            str(option["activation_judgment"]),
-            int(option.get("forced_run_start_index", option["forced_start_index"])),
-            int(option.get("forced_run_count", option["forced_prefix_count"])),
-            int(option.get("early_great_start", -1)),
-            int(option.get("early_great_end", -1)),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(option)
-    return unique
+    return out
 
 
 def _option_with_witness(
@@ -1165,7 +1173,26 @@ def reconstruct_force_greats_response_trace(
         key = (int(state), bool(first), remaining)
         if key in memo:
             return None
-        for option in _edge_surface_options(
+        found: tuple[dict[str, Any], ...] | None = None
+
+        def _visit(option: dict[str, Any]) -> bool:
+            nonlocal found
+            edge = option["surface"]
+            next_remaining = _subtract_edge(remaining, edge)
+            if next_remaining is None:
+                return False
+            if _empty(next_remaining):
+                found = (_accepted_section(option, edge),)
+                return True
+            if int(option["next_state"]) >= int(n):
+                return False
+            tail = _search(int(option["next_state"]), False, next_remaining)
+            if tail is not None:
+                found = (_accepted_section(option, edge),) + tail
+                return True
+            return False
+
+        _edge_surface_options(
             i=int(state),
             first=bool(first),
             n=int(n),
@@ -1183,18 +1210,10 @@ def reconstruct_force_greats_response_trace(
             great_floor_timestamps=great_floor_ts,
             lanes=lane_arr,
             raw_fever_fill=float(raw_fever_fill),
-        ):
-            edge = option["surface"]
-            next_remaining = _subtract_edge(remaining, edge)
-            if next_remaining is None:
-                continue
-            if _empty(next_remaining):
-                return (_accepted_section(option, edge),)
-            if int(option["next_state"]) >= int(n):
-                continue
-            tail = _search(int(option["next_state"]), False, next_remaining)
-            if tail is not None:
-                return (_accepted_section(option, edge),) + tail
+            visitor=_visit,
+        )
+        if found is not None:
+            return found
         memo.add(key)
         return None
 

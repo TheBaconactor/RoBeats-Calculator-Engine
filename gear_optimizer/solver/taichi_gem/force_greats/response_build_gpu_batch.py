@@ -6,11 +6,12 @@ from typing import Any
 import numpy as np
 
 from .fill_crossing import late_great_activation_prefix
-from .response_builder import _action_table, _edge_surface_options, reconstruct_force_greats_response_trace
+from .response_builder import _action_table, _edge_surface_options
 from .response_build_gpu_precompute import (
     _canonicalize_first_only_prepared_items_with_end_indices,
     _first_only_chunks,
 )
+from . import response_build_gpu_numba as _rb_numba
 from .response_build_gpu_reducer import (
     _first_frontier_results_for_precomputed_range,
     _first_frontier_reducer_executor,
@@ -222,62 +223,6 @@ def _input_engine_rebuild_first_frontier(
     )
 
 
-def _input_engine_filter_first_frontier(
-    frontier: FgResponseFrontierResult,
-    *,
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
-    perfect_floor_timestamps: np.ndarray,
-    great_floor_timestamps: np.ndarray,
-    lanes: np.ndarray,
-    raw_fever_fill: float,
-    real_fever_time: float,
-    use_forced_great_timing: bool,
-) -> FgResponseFrontierResult:
-    """Canonicalize first-frontier surfaces through the lane-aware input-engine owner.
-
-    The numba producer emits prefix/endpoint and region-delay surfaces. This pass is the semantic
-    owner for input-engine legality: it keeps only surfaces witnessable by the same option owner
-    reconstruction uses.
-    """
-    kept = []
-    for surface in frontier.first_frontier:
-        try:
-            reconstruct_force_greats_response_trace(
-                non_fever_base=int(frontier.non_fever_base),
-                target_surface=surface,
-                timestamps=timestamps,
-                perfect_candidate_timestamps=perfect_candidate_timestamps,
-                great_candidate_timestamps=great_candidate_timestamps,
-                perfect_floor_timestamps=perfect_floor_timestamps,
-                great_floor_timestamps=great_floor_timestamps,
-                lanes=lanes,
-                raw_fever_fill=float(raw_fever_fill),
-                real_fever_time=float(real_fever_time),
-                use_forced_great_timing=bool(use_forced_great_timing),
-            )
-        except ValueError:
-            continue
-        kept.append(surface)
-    if len(kept) == len(frontier.first_frontier):
-        return frontier
-    if not kept:
-        kept = [_EMPTY_SURFACE]
-    return FgResponseFrontierResult(
-        first_frontier=tuple(kept),
-        state_frontiers=frontier.state_frontiers,
-        states_evaluated=int(frontier.states_evaluated),
-        actions=int(frontier.actions),
-        transitions_evaluated=int(frontier.transitions_evaluated),
-        generated_surfaces=int(frontier.generated_surfaces),
-        retained_surfaces_total=int(len(kept)),
-        max_state_frontier=min(int(frontier.max_state_frontier), int(len(kept))),
-        non_fever_base=int(frontier.non_fever_base),
-        seconds=float(frontier.seconds),
-    )
-
-
 def _compact_first_frontier_action_arrays(
     actions: list[int],
     later_fill: list[int],
@@ -287,11 +232,24 @@ def _compact_first_frontier_action_arrays(
     raw_fever_fill: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     rows: list[tuple[int, int, int, int, int, int, int]] = []
+    row_by_fill: dict[tuple[int, int], int] = {}
     for action_idx, k in enumerate(actions):
         later = int(later_fill[int(action_idx)])
         first = int(first_fill[int(action_idx)])
+        key = (int(later), int(first))
+        row_idx = row_by_fill.get(key)
         later_activation = -1
         first_activation = -1
+        if row_idx is not None:
+            (
+                _normal_k,
+                normal_later,
+                normal_first,
+                normal_later_forced,
+                normal_first_forced,
+                later_activation,
+                first_activation,
+            ) = rows[int(row_idx)]
         # Late-Great activation (single-sourced with the reconstruct mirror `_edge_surface_options`
         # via late_great_activation_prefix): the forced-Great prefix when the activation Great IS the
         # server fill-crossing, else None -> the -1 sentinel stays, so the phantom late-Great
@@ -304,22 +262,34 @@ def _compact_first_frontier_action_arrays(
             candidate = late_great_activation_prefix(int(first), int(k), first=True, fever_fill_denom=float(raw_fever_fill))
             if candidate is not None:
                 first_activation = int(candidate) if int(first_activation) < 0 else min(int(first_activation), int(candidate))
-        rows.append(
-            (
-                int(k),
-                int(later),
-                int(first),
-                int(later_forced[int(action_idx)]),
-                int(first_forced[int(action_idx)]),
+        if row_idx is None:
+            row_by_fill[key] = len(rows)
+            rows.append(
+                (
+                    int(k),
+                    int(later),
+                    int(first),
+                    int(later_forced[int(action_idx)]),
+                    int(first_forced[int(action_idx)]),
+                    int(later_activation),
+                    int(first_activation),
+                )
+            )
+        else:
+            rows[int(row_idx)] = (
+                int(_normal_k),
+                int(normal_later),
+                int(normal_first),
+                int(normal_later_forced),
+                int(normal_first_forced),
                 int(later_activation),
                 int(first_activation),
             )
-        )
     if not rows:
         rows.append((0, 0, 0, 0, 0, -1, -1))
     row_arr = np.asarray(rows, dtype=np.int32)
     return (
-        np.ascontiguousarray(row_arr[:, 0], dtype=np.int32),
+        np.ascontiguousarray(np.asarray(actions if actions else [0], dtype=np.int32), dtype=np.int32),
         np.ascontiguousarray(row_arr[:, 1], dtype=np.int32),
         np.ascontiguousarray(row_arr[:, 2], dtype=np.int32),
         np.ascontiguousarray(row_arr[:, 3], dtype=np.int32),
@@ -377,6 +347,17 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
     if int(lane_arr.shape[0]) != n:
         raise ValueError("lanes length must match timestamps")
+    candidate_high_delta_max = float(
+        np.float32(max(0.0, float(np.max(np.maximum(perfect_ts, great_ts) - ts))) + 1.0e-6)
+    )
+    prefix_perfect_hit, prefix_perfect_valid, prefix_late_hit, prefix_late_valid = (
+        _rb_numba._numba_build_prefix_activation_hit_tables(
+            int(n),
+            ts,
+            perfect_ts,
+            great_ts,
+        )
+    )
 
     prepared = []
     action_table_cache: dict[
@@ -460,11 +441,16 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         start=0,
                         stop=int(geometry_count),
                         timestamps=ts,
+                        candidate_high_delta_max=candidate_high_delta_max,
                         perfect_candidate_timestamps=perfect_ts,
                         great_candidate_timestamps=great_ts,
                         perfect_floor_timestamps=floor_ts,
                         great_floor_timestamps=great_floor_ts,
                         lanes=lane_arr,
+                        prefix_perfect_hit=prefix_perfect_hit,
+                        prefix_perfect_valid=prefix_perfect_valid,
+                        prefix_late_hit=prefix_late_hit,
+                        prefix_late_valid=prefix_late_valid,
                         timestamp_end_idx=canonical.timestamp_end_idx,
                         perfect_end_idx=canonical.perfect_end_idx,
                         great_end_idx=canonical.great_end_idx,
@@ -490,11 +476,16 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         start=int(start),
                         stop=int(stop),
                         timestamps=ts,
+                        candidate_high_delta_max=candidate_high_delta_max,
                         perfect_candidate_timestamps=perfect_ts,
                         great_candidate_timestamps=great_ts,
                         perfect_floor_timestamps=floor_ts,
                         great_floor_timestamps=great_floor_ts,
                         lanes=lane_arr,
+                        prefix_perfect_hit=prefix_perfect_hit,
+                        prefix_perfect_valid=prefix_perfect_valid,
+                        prefix_late_hit=prefix_late_hit,
+                        prefix_late_valid=prefix_late_valid,
                         timestamp_end_idx=canonical.timestamp_end_idx,
                         perfect_end_idx=canonical.perfect_end_idx,
                         great_end_idx=canonical.great_end_idx,
@@ -507,19 +498,6 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                 range_results = tuple(future.result() for future in futures)
             for result_rows in range_results:
                 for source_idx, frontier in result_rows:
-                    raw_fever_fill, _non_fever_base, real_fever_time = geometry_rows[int(source_idx)]
-                    frontier = _input_engine_filter_first_frontier(
-                        frontier,
-                        timestamps=ts,
-                        perfect_candidate_timestamps=perfect_ts,
-                        great_candidate_timestamps=great_ts,
-                        perfect_floor_timestamps=floor_ts,
-                        great_floor_timestamps=great_floor_ts,
-                        lanes=lane_arr,
-                        raw_fever_fill=float(raw_fever_fill),
-                        real_fever_time=float(real_fever_time),
-                        use_forced_great_timing=bool(use_forced_great_timing),
-                    )
                     for duplicate_source_idx in duplicate_sources_by_source[int(source_idx)]:
                         out[int(duplicate_source_idx)] = frontier
     finally:
