@@ -153,16 +153,52 @@ def perfect_fill_crossing_offset(fever_fill_denom: float, k: int, first: bool) -
     return int(fill if not bool(first) else max(0, fill - 1))
 
 
+def perfect_crossing_is_region3(fill: int, k: int, first: bool, fever_fill_denom: float) -> bool:
+    """Whether the Perfect-activation (normal) edge for action ``k`` at offset ``fill`` is the
+    region-3 crossing -- the placement the prefix family actually models: ``k`` forced Greats
+    packed at the section's first accumulating slot, then Perfects, then the PERFECT activation
+    at offset ``fill``.
+
+    Two conditions, both required (record 16.28 follow-up: the fixture's phantom family is the
+    normal edges of rows violating them):
+
+    * the forced run must FIT before the activation: ``k <= slots`` where ``slots`` is the number
+      of accumulating notes before the activation (``fill`` on a first section, ``fill - 1`` on a
+      later one -- the wasted note does not accumulate);
+    * the bar must still be short of full after every pre-activation note: ``slots - 0.5*k <
+      denom`` (otherwise the crossing happened ON a Great inside the run -- region 2, which is the
+      region-run family's placement, priced there with lane-aware reachability).
+
+    The matching upper bound (``denom <= bar_before + 1``) holds by construction for any ``fill``
+    produced by :func:`perfect_fill_crossing_offset` for the same ``k``.
+    """
+    denom = float(fever_fill_denom)
+    if denom <= 0.0:
+        raise ValueError("fever_fill_denom must be > 0 (a real fill denominator)")
+    if int(k) <= 0:
+        return True
+    slots = int(fill) if bool(first) else int(fill) - 1
+    if int(k) > int(slots):
+        return False
+    return float(slots) - 0.5 * float(int(k)) < denom
+
+
 def late_great_activation_prefix(fill: int, k: int, first: bool, fever_fill_denom: float) -> int | None:
     """Canonical forced-Great PREFIX for a late-Great activation, or ``None`` if a late-Great is
     illegal there (a Perfect crosses first -> phantom over-report) -- the ONE owner of the late-Great
     placement math that BOTH the search compaction (``_compact_first_frontier_action_arrays``) and the
-    reconstruct mirror (``_edge_surface_options``) consume, so the ``min(k-1, fill - wasted)`` +
+    reconstruct mirror (``_edge_surface_options``) consume, so the prefix cap +
     :func:`late_great_prefix_is_legal` pair is written once.
 
     ``prefix`` is the number of forced Greats before the activation Great; the section burns one wasted
     note on later sections (``wasted = 1``) and none on the first (``wasted = 0``).  Returns ``None``
     for ``k <= 0`` (no forced Great to activate on).
+
+    The first-section ``prefix == fill`` placement (every pre-activation slot a Great, the
+    activation Great crossing on the run's end) is LEGAL and required: the P/G brute-force oracle
+    realizes it and the reconstruct mirror re-finds it (record 16.28's cap-to-``fill - 1``
+    direction was refuted by that oracle -- the fixture phantoms were the region-2 NORMAL edges,
+    fixed by :func:`perfect_crossing_is_region3`, not this chooser).
     """
     if int(k) <= 0:
         return None

@@ -307,7 +307,11 @@ def test_consolidated_owners_match_the_legacy_inline_formulas():
     # The DRY consolidation routed _action_table's fill and both the search compaction + reconstruct
     # mirror's late-Great math through perfect_fill_crossing_offset / late_great_activation_prefix.
     # Pin those single owners to the EXACT legacy inline formulas they replaced, so a future edit to a
-    # helper that diverges from the shipped (bit-exact-verified) behavior is caught here.
+    # helper that diverges from the shipped (bit-exact-verified) behavior is caught here. The
+    # first-section `prefix == fill` placement is deliberately IN scope: the P/G brute-force oracle
+    # realizes it (pure run, activation Great crossing on the run's end), so a cap to `fill - 1`
+    # under-reports (record 16.28's cap direction was refuted; the fixture phantoms were the
+    # region-2 normal edges, gated by perfect_crossing_is_region3 instead).
     from math import ceil
 
     for raw_i in range(20, 6000, 11):

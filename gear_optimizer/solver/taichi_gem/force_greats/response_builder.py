@@ -10,6 +10,7 @@ from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit
 from .fill_crossing import (
     activation_hit_is_reachable_weighted_lane_aware,
     late_great_activation_prefix,
+    perfect_crossing_is_region3,
     perfect_fill_crossing_offset,
     server_fill_crossing_run,
 )
@@ -628,7 +629,13 @@ def _edge_surface_options(
             perfect_ts=perfect_ts,
             great_ts=great_ts,
         )
-        perfect_reachable = perfect_hit is not None and _activation_reachable(
+        # Region-3 gate, single-sourced with the search compaction (perfect_crossing_is_region3):
+        # a forced run that swallows or pre-crosses the Perfect activation has no normal edge in
+        # the prefix family (the contiguous-run placement is the region-run family's).
+        perfect_region3 = perfect_crossing_is_region3(
+            int(fill), int(k), first=bool(first), fever_fill_denom=float(raw_fever_fill)
+        )
+        perfect_reachable = perfect_region3 and perfect_hit is not None and _activation_reachable(
             a=int(a),
             hit=float(perfect_hit),
             section_start=int(section_start),

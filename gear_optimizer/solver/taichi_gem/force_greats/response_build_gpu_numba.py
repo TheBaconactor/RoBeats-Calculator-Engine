@@ -3616,7 +3616,11 @@ def _first_frontier_from_precomputed_end_indices_numba(
             forced_count = int(later_forced[int(action_idx)])
             perfect_hit = float(prefix_perfect_hit[int(activation)])
             perfect_valid = int(prefix_perfect_valid[int(activation)])
-            if int(perfect_valid) == 0:
+            # forced_count < 0 = region-3 sentinel from the compaction: the forced run would
+            # swallow or pre-cross the Perfect activation (record 16.28 follow-up); the normal
+            # edge (and its early-Great extension) must not exist. Late-activation variants gate
+            # separately on their own sentinel.
+            if int(perfect_valid) == 0 or int(forced_count) < 0:
                 edge_e = -1
             else:
                 edge_e = _numba_edge_end_idx_at_hit(
@@ -3833,7 +3837,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 edge_hit = float(prefix_perfect_hit[int(fill)])
                 edge_valid = int(prefix_perfect_valid[int(fill)])
             edge_e = -1
-            if int(edge_valid) != 0:
+            if int(edge_valid) != 0 and int(forced_count) >= 0:
                 edge_e = _numba_edge_end_idx_at_hit(
                     int(n),
                     int(fill),
@@ -4092,7 +4096,7 @@ def _first_frontier_from_precomputed_end_indices_numba(
             forced_count = int(first_forced[int(action_idx)])
             perfect_hit = float(prefix_perfect_hit[int(fill)])
             perfect_valid = int(prefix_perfect_valid[int(fill)])
-            if int(perfect_valid) == 0:
+            if int(perfect_valid) == 0 or int(forced_count) < 0:
                 edge_e = -1
             else:
                 edge_e = _numba_edge_end_idx_at_hit(

@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from .fill_crossing import late_great_activation_prefix
+from .fill_crossing import late_great_activation_prefix, perfect_crossing_is_region3
 from .response_builder import _action_table, _edge_surface_options
 from .response_build_gpu_precompute import (
     _canonicalize_first_only_prepared_items_with_end_indices,
@@ -263,14 +263,29 @@ def _compact_first_frontier_action_arrays(
             if candidate is not None:
                 first_activation = int(candidate) if int(first_activation) < 0 else min(int(first_activation), int(candidate))
         if row_idx is None:
+            # Normal (Perfect-activation) edges exist only for region-3 rows: the forced run must
+            # fit before the activation and leave the bar short of full (perfect_crossing_is_region3;
+            # record 16.28 follow-up -- the k >= 2*denom rows' normal edges packed the activation
+            # inside the forced run and emitted unreconstructable phantom surfaces). The -1 sentinel
+            # suppresses the normal edge per section kind; late-activation variants gate separately.
+            later_forced_out = (
+                int(later_forced[int(action_idx)])
+                if perfect_crossing_is_region3(int(later), int(k), first=False, fever_fill_denom=float(raw_fever_fill))
+                else -1
+            )
+            first_forced_out = (
+                int(first_forced[int(action_idx)])
+                if perfect_crossing_is_region3(int(first), int(k), first=True, fever_fill_denom=float(raw_fever_fill))
+                else -1
+            )
             row_by_fill[key] = len(rows)
             rows.append(
                 (
                     int(k),
                     int(later),
                     int(first),
-                    int(later_forced[int(action_idx)]),
-                    int(first_forced[int(action_idx)]),
+                    int(later_forced_out),
+                    int(first_forced_out),
                     int(later_activation),
                     int(first_activation),
                 )
