@@ -960,7 +960,7 @@ def test_fg_response_edge_end_does_not_let_prefix_great_carry_perfect_activation
 
 def test_fg_response_numba_edge_end_does_not_let_prefix_great_carry_perfect_activation() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
-        _numba_edge_end_idx_precomputed,
+        _numba_edge_end_idx_from_tables,
     )
 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
@@ -968,22 +968,23 @@ def test_fg_response_numba_edge_end_does_not_let_prefix_great_carry_perfect_acti
     great_candidates[0] = np.float32(2.4)
     great_candidates[1] = np.float32(1.1)
     timestamp_end_idx = np.searchsorted(timestamps, timestamps + np.float32(1.0), side="left").astype(np.int32)
+    perfect_end_idx = timestamp_end_idx.copy()
     great_end_idx = np.searchsorted(timestamps, great_candidates + np.float32(1.0), side="left").astype(np.int32)
+    # A later Great end at the activation index that a PERFECT activation must NOT carry.
+    great_end_idx[2] = 4
 
-    edge_end, start_time = _numba_edge_end_idx_precomputed(
+    edge_end = _numba_edge_end_idx_from_tables(
         int(timestamps.shape[0]),
         2,
         0,
         1,
-        timestamps,
-        great_candidates,
         timestamp_end_idx.reshape(1, -1),
+        perfect_end_idx.reshape(1, -1),
         great_end_idx.reshape(1, -1),
         0,
     )
 
     assert edge_end == 3
-    assert start_time == pytest.approx(2.0)
 
 
 def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_boundaries() -> None:

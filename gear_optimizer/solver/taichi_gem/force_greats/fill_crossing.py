@@ -187,9 +187,10 @@ def activation_hit_is_reachable_weighted_lane_aware(
 ) -> bool:
     """Canonical full-combo activation reachability for one concrete hit time.
 
-    This is the input-engine-aware predicate the fragmented legacy gates are being collapsed into:
-    an activation is legal only when the same weighted, lane-aware hit-time walk that the surface
-    prices can make ``activation_index`` the first note whose fill reaches the fever denominator.
+    This is the ONE input-engine-aware reachability owner: the fragmented lane-blind legacy gates
+    were collapsed into it (their deletion landed 2026-07-07, not merely shadowed). An activation is
+    legal only when the same weighted, lane-aware hit-time walk that the surface prices can make
+    ``activation_index`` the first note whose fill reaches the fever denominator.
 
     ``fill_units`` is in Perfect-fill units: Perfect = 1.0, Great = 0.5. ``low_hit_timestamps`` and
     ``high_hit_timestamps`` are the legal hit interval for each note under the surface's chosen label.
@@ -250,125 +251,6 @@ def activation_hit_is_reachable_weighted_lane_aware(
     # the interval check is the exact reachability condition for the retained full-combo surface.
     needed_before_activation = max(0.0, denom - unit_a)
     return bool(forced_units < denom and forced_units + optional_units >= needed_before_activation)
-
-
-# Legacy narrow owner retained while production wiring is migrated to the weighted/lane-aware owner above.
-def late_great_activation_is_reachable(
-    activation_index: int,
-    timestamps: Sequence[float] | np.ndarray,
-    perfect_candidate_timestamps: Sequence[float] | np.ndarray,
-    great_candidate_timestamps: Sequence[float] | np.ndarray,
-    n: int,
-) -> bool:
-    """HIT-TIME-ORDER reachability of a late-Great activation the INDEX gate already accepted.
-
-    :func:`late_great_prefix_is_legal` counts the pre-activation fill by ARRAY INDEX; that equals the
-    physical (latest-legal-hit-order) fill ONLY where chart order == hit-time order. Inside an overlap
-    window (a same-timestamp chord, or a wide held tail beside a narrow note ahead) they diverge, and
-    the index gate can bless an activation whose bar is actually completed FIRST by an earlier-hit
-    note -- the chord phantom (All Right There: a +198ms held-tail Great "activation" whose two
-    on-time normal siblings fill the bar at ~+40ms; DB 29,465,604 vs reachable 29,383,635).
-
-    Reachability is a scheduling condition: the bar, filled in hit-time order, must first reach the
-    denominator EXACTLY on the activation. A note ``j`` whose LATEST legal hit ``pc[j]`` still
-    precedes the activation Great's own latest hit ``h_a = gc[a]`` is unavoidably hit before it and
-    adds a FULL perfect-unit to the pre-activation fill. Since the index gate already placed the
-    crossing on ``a`` (pre-activation fill in ``(denom-0.5, denom]``), even ONE such unavoidable unit
-    pushes the fill past ``denom`` -> the bar completes before ``a`` -> the late Great is unreachable.
-    So the exact predicate collapses to::
-
-        reachable  <=>  NO note j (a < j, pc[j] < h_a) exists
-
-    Bounded: once chart time reaches ``h_a`` every later note's latest hit is >= ``h_a`` (windows are
-    non-negative-upper), so the scan stops there -- a small neighbourhood, never the whole section,
-    and exactly 0 iterations that matter off overlap (non-chord charts unchanged, no cost). A note
-    ahead that only *could* be hit before ``h_a`` (its earliest hit precedes it) but whose LATEST hit
-    is at/after ``h_a`` is delayable past the activation, so ``pc[j] >= h_a`` excludes it -- a
-    genuinely reachable late tail is never downgraded. This is the ONE reachability owner; the
-    vectorized :func:`build_late_great_forbidden_mask` is its whole-chart form (proven equal in
-    tests), consumed by the numba frontier build.
-    """
-    a = int(activation_index)
-    total = int(n)
-    # Compare in float32 -- the game (and the frontier's searchsorted end-index tables) resolve hit
-    # times in float32, so reachability must agree bit-for-bit with the numba build's clamp on the
-    # measure-zero float boundary (and be independent of whether the caller passes f32 or f64 arrays).
-    ts = np.asarray(timestamps, dtype=np.float32)
-    pc = np.asarray(perfect_candidate_timestamps, dtype=np.float32)
-    h_a = np.float32(great_candidate_timestamps[a])
-    j = a + 1
-    while j < total and ts[j] < h_a:
-        if pc[j] < h_a:
-            return False  # an earlier-hit note (chord sibling or near note-ahead) completes the bar first
-        j += 1
-    return True
-
-
-def build_late_great_forbidden_mask(
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
-    n: int,
-) -> np.ndarray:
-    """Per-note ``forbidden[a]`` = ``not`` :func:`late_great_activation_is_reachable` -- the whole-chart
-    vectorized reachability mask the numba frontier build consumes (loadout-independent, O(n) amortized).
-
-    ``forbidden[a]`` is True iff some later-indexed note within ``a``'s overlap window has a latest
-    Perfect hit before ``a``'s late-Great hit ``gc[a]``. Bounded per note by the window span, so total
-    work is O(n * window) once per song, never per loadout.
-    """
-    total = int(n)
-    ts = np.asarray(timestamps, dtype=np.float32)          # float32: match the game / searchsorted tables
-    pc = np.asarray(perfect_candidate_timestamps, dtype=np.float32)
-    gc = np.asarray(great_candidate_timestamps, dtype=np.float32)
-    forbidden = np.zeros(total, dtype=bool)
-    for a in range(total):
-        h_a = gc[a]
-        j = a + 1
-        while j < total and ts[j] < h_a:
-            if pc[j] < h_a:
-                forbidden[a] = True
-                break
-            j += 1
-    return forbidden
-
-
-def build_reachable_perfect_candidate(
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    n: int,
-) -> np.ndarray:
-    """Per-note PERFECT-activation clock capped to the hit-time REACHABLE value.
-
-    A Perfect activation at note ``a`` extends the fever window using ``a``'s own latest legal Perfect
-    hit ``pc[a]`` (+40 normal, +80 held tail). That is UNREACHABLE when a later-indexed note ``j``
-    (within ``a``'s window) has its own latest hit ``pc[j] < pc[a]`` -- ``j`` is hit on-time FIRST and
-    completes the fever bar earlier, so the reachable clock cannot exceed ``pc[j]`` (a held-tail
-    ``+80`` activation with a narrower normal ``+40`` sibling indexed after it: the normal crosses
-    first). This caps ``pc[a]`` to that value -- the single-window analog of the base
-    :func:`gear_optimizer.solver.timeline_exact_frontier._reachable_act_hi` and the FG late-Great
-    forbid, for the PERFECT activation clock. Off overlap (no narrower later note within the window)
-    the value is UNCHANGED, so non-held-tail / distinct-timestamp charts are bit-identical.
-
-    Returns a NEW float32 array; the ORIGINAL ``perfect_candidate_timestamps`` is kept unchanged for
-    reachability CHECKS (each note's own actual latest hit, e.g. :func:`late_great_activation_is_reachable`)
-    -- only the perfect-activation WINDOW (``perfect_end_idx`` / ``_edge_end`` start-time) consumes
-    this capped clock.
-    """
-    total = int(n)
-    ts = np.asarray(timestamps, dtype=np.float32)
-    pc = np.asarray(perfect_candidate_timestamps, dtype=np.float32)
-    out = pc.copy()
-    for a in range(total):
-        h_a = pc[a]
-        cap = h_a
-        j = a + 1
-        while j < total and ts[j] < h_a:  # once chart time reaches h_a, later latest-hits are >= h_a
-            if pc[j] < cap:
-                cap = pc[j]
-            j += 1
-        out[a] = cap
-    return out
 
 
 def server_fill_crossing(
