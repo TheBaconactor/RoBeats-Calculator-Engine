@@ -332,3 +332,76 @@ def test_consolidated_owners_match_the_legacy_inline_formulas():
                 assert late_great_activation_prefix(fill, k, first=first, fever_fill_denom=raw) == legacy, (
                     raw, k, first, fill,
                 )
+
+
+def test_weighted_reachability_discrete_fill_grid_fractional_denom():
+    # External-review witness (record 16.35): pre-activation fill is a DISCRETE subset sum, not
+    # continuous capacity. With an all-Perfect optional pool the sums live on the integer grid,
+    # and a Great activation's width-0.5 window [denom-0.5, denom) with frac(denom) in (0.5, 1)
+    # dodges every integer -- the old scalar check over-accepted exactly there.
+    import numpy as np
+
+    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+        activation_hit_is_reachable_weighted_lane_aware,
+    )
+
+    n = 5
+    a = 3
+    h_a = 1.0
+    lanes = np.arange(n, dtype=np.int32)  # all distinct lanes: no lane-order constraints
+    lo = np.zeros(n, dtype=np.float32)    # every window already open at h_a
+    hi = np.full(n, 2.0, dtype=np.float32)  # every window still open at h_a -> all optional
+
+    def reachable(units):
+        return activation_hit_is_reachable_weighted_lane_aware(
+            activation_index=a,
+            activation_hit_timestamp=h_a,
+            low_hit_timestamps=lo,
+            high_hit_timestamps=hi,
+            lanes=lanes,
+            fill_units=np.asarray(units, dtype=np.float32),
+            fever_fill_denom=2.75,
+            section_start=0,
+            section_end=n,
+        )
+
+    # All-Perfect optional pool: achievable S in {0,1,2,3,4}; window [2.25, 2.75) has no integer.
+    assert reachable([1.0, 1.0, 1.0, 0.5, 1.0]) is False
+    # One optional Great restores the 0.5-grid: S = 2.5 lands inside the window.
+    assert reachable([1.0, 0.5, 1.0, 0.5, 1.0]) is True
+    # Perfect activation (unit 1.0): width-1.0 window always contains an integer-grid point.
+    assert reachable([1.0, 1.0, 1.0, 1.0, 1.0]) is True
+
+
+def test_weighted_reachability_discrete_fill_respects_forced_offset():
+    # Forced fill shifts the window; the optional grid must still land inside it. Forced note 0
+    # (window closed before h_a) contributes 1.0; needed optional = [1.25, 1.75) -> integer grid
+    # misses, half-grid hits.
+    import numpy as np
+
+    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+        activation_hit_is_reachable_weighted_lane_aware,
+    )
+
+    n = 5
+    a = 3
+    lanes = np.arange(n, dtype=np.int32)
+    lo = np.zeros(n, dtype=np.float32)
+    hi = np.full(n, 2.0, dtype=np.float32)
+    hi[0] = 0.5  # closes before h_a = 1.0 -> forced
+
+    def reachable(units):
+        return activation_hit_is_reachable_weighted_lane_aware(
+            activation_index=a,
+            activation_hit_timestamp=1.0,
+            low_hit_timestamps=lo,
+            high_hit_timestamps=hi,
+            lanes=lanes,
+            fill_units=np.asarray(units, dtype=np.float32),
+            fever_fill_denom=2.75,
+            section_start=0,
+            section_end=n,
+        )
+
+    assert reachable([1.0, 1.0, 1.0, 0.5, 1.0]) is False
+    assert reachable([1.0, 0.5, 1.0, 0.5, 1.0]) is True

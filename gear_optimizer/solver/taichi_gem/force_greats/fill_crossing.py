@@ -263,6 +263,7 @@ def activation_hit_is_reachable_weighted_lane_aware(
     activation_lane = int(lane[a])
     forced_units = 0.0
     optional_units = 0.0
+    optional_has_half = False
     for j in range(start, end):
         if int(j) == a:
             continue
@@ -280,13 +281,25 @@ def activation_hit_is_reachable_weighted_lane_aware(
             if same_lane and int(j) > a:
                 continue
             optional_units += float(units[j])
+            if float(units[j]) == 0.5:
+                optional_has_half = True
 
-    # There must exist a schedule with some optional pre-activation fill S such that
-    #   forced_units <= S < denom <= S + unit_a.
-    # Since all modeled units are 0.5-grid Perfect/Great fill and the game threshold is continuous,
-    # the interval check is the exact reachability condition for the retained full-combo surface.
-    needed_before_activation = max(0.0, denom - unit_a)
-    return bool(forced_units < denom and forced_units + optional_units >= needed_before_activation)
+    # There must exist a schedule whose pre-activation fill S = forced + (a SUBSET of the optional
+    # units) satisfies  S < denom <= S + unit_a.  The subset sums are DISCRETE: with at least one
+    # optional half-unit they form the full 0.5-grid of [0, optional_units]; all-Perfect optional
+    # pools only reach the integer grid, and a Great activation's width-0.5 window can dodge every
+    # integer (the scalar capacity check over-accepted exactly there). Take the smallest grid
+    # point at or above the needed fill and require it to stay under the bar and within capacity.
+    if forced_units >= denom:
+        return False
+    needed_before_activation = max(0.0, denom - unit_a - forced_units)
+    grid = 0.5 if optional_has_half else 1.0
+    steps = needed_before_activation / grid
+    step_count = int(steps)
+    if float(step_count) < steps:
+        step_count += 1
+    smallest_fill = float(step_count) * grid
+    return bool(smallest_fill <= optional_units and forced_units + smallest_fill < denom)
 
 
 def server_fill_crossing(

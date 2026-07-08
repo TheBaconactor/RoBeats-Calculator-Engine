@@ -508,6 +508,7 @@ def _numba_activation_reachable_contiguous_run(
     unit_a = 0.5 if activation_is_great else 1.0
     forced_units = 0.0
     optional_units = 0.0
+    optional_has_half = False
     scan_start = int(start)
     guaranteed_forced_end = _numba_lower_bound_from(
         timestamps,
@@ -550,9 +551,22 @@ def _numba_activation_reachable_contiguous_run(
             if same_lane and int(j) > int(a):
                 continue
             optional_units += float(unit_j)
+            if float(unit_j) == 0.5:
+                optional_has_half = True
 
-    needed_before_activation = max(0.0, denom - float(unit_a))
-    return bool(forced_units < denom and forced_units + optional_units >= needed_before_activation)
+    # Discrete feasibility (twin of activation_hit_is_reachable_weighted_lane_aware): the optional
+    # subset sums live on the 0.5-grid only when a half-unit is choosable; all-Perfect pools reach
+    # the integer grid alone and a Great activation's width-0.5 window can dodge every integer.
+    if forced_units >= denom:
+        return False
+    needed_before_activation = max(0.0, denom - float(unit_a) - forced_units)
+    grid = 0.5 if optional_has_half else 1.0
+    steps = needed_before_activation / grid
+    step_count = int(steps)
+    if float(step_count) < steps:
+        step_count += 1
+    smallest_fill = float(step_count) * grid
+    return bool(smallest_fill <= optional_units and forced_units + smallest_fill < denom)
 
 
 @njit(cache=True, nogil=True)
