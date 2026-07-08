@@ -269,10 +269,13 @@ _frontier_payload_cache_lock = threading.RLock()
 # boundary (-20/-40 -> -19/-39). timing_envelope.py is NOT in _TIMELINE_DP_SOURCE, so this explicit
 # bump is what invalidates the stale (1ms-over-generous) base fever-membership floor. Re-solve to
 # re-persist best_score.
-# v11->v12: lane identity is now part of the timing cache key for input-engine-aware reachability.
-# The exact-frontier payload must not reuse a lane-blind artifact when same-lane overlap can change
-# activation-clock legality.
-_FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v12"
+# NOTE (2026-07-07, input-engine workstream): lane identity is deliberately NOT part of this key
+# and the base DP stays lane-blind. That is CORRECT for the all-Perfect base family: follower
+# reachability binds only through label-window uppers regardless of lane (physically validated via
+# game_sim), and prefix carry anchors are always achievable because the engine permits pressing a
+# later same-lane note while an earlier hold is held (NoteSystem.pressLane skips Holding notes) and
+# same-window taps cannot inflate the carry. See INPUT_ENGINE_AWARE_FEVER_REACHABILITY.md 16.25.
+_FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v11"
 _TIMELINE_DP_SOURCE = Path(__file__).resolve().parents[2] / "timeline_exact_frontier.py"
 _FRONTIER_DISK_CACHE_VERSION = (
     f"{_FRONTIER_DISK_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint([_TIMELINE_DP_SOURCE])}"
@@ -830,7 +833,7 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
     cached = calc_song.get("_gpu_timing_cache_key_frontier", None)
-    if isinstance(cached, tuple) and len(cached) == 12:
+    if isinstance(cached, tuple) and len(cached) == 11:
         return cached
     chart_ts = song_data.get("chart_timestamps", None)
     timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
@@ -849,15 +852,9 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
         nt_arr = np.asarray(nt_raw, dtype=np.int16).reshape(-1)
     else:
         nt_arr = np.ones(n_notes, dtype=np.int16)
-    lanes_raw = song_data.get("lanes")
-    if lanes_raw is not None and len(lanes_raw) == n_notes:
-        lane_arr = np.asarray(lanes_raw, dtype=np.int32).reshape(-1)
-    else:
-        lane_arr = np.arange(n_notes, dtype=np.int32)
-    canonical = np.lexsort((lane_arr, nt_arr, ts_arr))  # primary: timestamp, then note type, then lane
+    canonical = np.lexsort((nt_arr, ts_arr))  # primary: timestamp, secondary: note type
     ts_sig = array_sig16(np.ascontiguousarray(ts_arr[canonical]))
     nt_sig = array_sig16(np.ascontiguousarray(nt_arr[canonical]))
-    lane_sig = array_sig16(np.ascontiguousarray(lane_arr[canonical]))
     key = (
         str(meta.get("Song Name", "")),
         str(meta.get("Difficulty", "")),
@@ -866,7 +863,6 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
         int(meta.get("Long Notes", 0) or 0),
         bytes(ts_sig),
         bytes(nt_sig),
-        bytes(lane_sig),
     ) + timing_envelope_timing_context(calc_song)
     # Cache on the calc_song dict to avoid repeated full-array hashing when the
     # same song is revisited and precompute_timeline_gpu() hits the slot cache.
@@ -1059,7 +1055,6 @@ def _timeline_payload_lookup_context(calc_song: dict, ref_arrays: dict, *, ref_s
         "ref_ft": ref_ft,
         "ref_ff": ref_ff,
         "note_types": song_data.get("note_types", None),
-        "lanes": song_data.get("lanes", None),
     }
 
 
