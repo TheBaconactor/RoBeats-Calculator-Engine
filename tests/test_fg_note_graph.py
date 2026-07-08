@@ -1212,3 +1212,38 @@ def test_note_graph_lower_edges_are_reachable_not_the_exclusive_edge():
     # ms below the Perfect-low (-19 / -39): a visible gap, and never overlapping the Perfect band.
     assert g_tap_hi == -20 and g_tail_hi == -40, (g_tap_hi, g_tail_hi)
     assert g_tap_hi < p_tap_lo and g_tail_hi < p_tail_lo
+
+
+def test_preemptor_delay_reaches_partners_behind_delayed_sibling() -> None:
+    """Regression (Aurora 47,502,676 witness): the forward preemptor-delay scan must not stop at
+    a delayed same-time forced-Great sibling.
+
+    Press times are not monotone over chart order once a witness is delayed: the bundle sibling
+    at the activation's own late edge already satisfies the ordering requirement, but the
+    still-on-time chord partners BEHIND it would press before the activation and steal the fill
+    crossing (the engine activates fever on their Perfect fill, ending the window early). The
+    scan must delay every window note whose press precedes the chained requirement, and stop
+    only on the chart-time bound.
+    """
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        _mark_activation_preemptor_order_deltas,
+    )
+
+    nt = np.asarray([1, 1, 1, 1, 1], dtype=np.int16)
+    notes = [
+        {"note_index": 0, "hit_time_ms": 96017.0, "note_result": "Great", "delta_ms": 189.999},
+        {"note_index": 1, "hit_time_ms": 96017.0, "note_result": "Great", "delta_ms": 189.999},
+        {"note_index": 2, "hit_time_ms": 96180.0, "note_result": "Perfect", "delta_ms": 0.0},
+        {"note_index": 3, "hit_time_ms": 96180.0, "note_result": "Perfect", "delta_ms": 0.0},
+        {"note_index": 4, "hit_time_ms": 97000.0, "note_result": "Perfect", "delta_ms": 0.0},
+    ]
+    _mark_activation_preemptor_order_deltas(
+        notes, frontier_trace=[{"activation_index": 0}], total_notes=5, note_types=nt
+    )
+
+    required_delta = (96017.0 + 189.999) - 96180.0  # press at/after the activation hit
+    assert float(notes[2]["delta_ms"]) >= required_delta, notes[2]  # was 0.0 pre-fix (break at sibling)
+    assert float(notes[3]["delta_ms"]) >= required_delta, notes[3]
+    assert float(notes[2]["delta_ms"]) <= 40.0  # stays a legal Perfect
+    assert float(notes[3]["delta_ms"]) <= 40.0
+    assert float(notes[4]["delta_ms"]) == 0.0  # beyond the 200ms chart window: untouched

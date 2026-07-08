@@ -456,15 +456,29 @@ def _mark_activation_preemptor_order_deltas(
 
         for j in range(a + 1, n):
             note = notes[j]
+            chart_j = float(note["hit_time_ms"])
+            # Chart times are monotone and every legal Perfect/Great press lies within 200ms of
+            # chart, so once chart_j - 200 clears the chained requirement nothing later can press
+            # before it. Do NOT stop at the first note whose press already satisfies the
+            # requirement: press times are not monotone over chart order once a witness is
+            # delayed -- a forced-Great bundle sibling at the activation's own late edge satisfies
+            # the requirement while still-on-time chord partners behind it would preempt the
+            # activation's fill (the Aurora 47,502,676 witness shape).
+            if chart_j - 200.0 > required_press:
+                break
             result = str(note.get("note_result", "Perfect"))
             current_delta = _selector_default_delta_ms(nt, j, result, note.get("delta_ms"))
-            current_press = float(note["hit_time_ms"]) + float(current_delta)
+            current_press = chart_j + float(current_delta)
             if current_press >= required_press:
-                break
+                # Already after everything chained before it; it becomes the new ordering floor
+                # so later window notes cannot be scheduled before it (per-lane earliest-
+                # hittable-first matching requires chart-order presses within the window).
+                required_press = current_press
+                continue
 
-            needed_delta = required_press - float(note["hit_time_ms"])
+            needed_delta = required_press - chart_j
             note["delta_ms"] = _delta_at_or_after_ms(nt, j, result, needed_delta)
-            required_press = float(note["hit_time_ms"]) + float(note["delta_ms"])
+            required_press = chart_j + float(note["delta_ms"])
 
 
 def _mark_endpoint_early_hits(
