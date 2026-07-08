@@ -62,6 +62,7 @@ def _first_frontier_result_from_precomputed_end_indices(
     real_fever_time: float,
     real_time_idx: int,
     use_forced_great_timing: bool,
+    region_table: tuple,
 ) -> FgResponseFrontierResult:
     first_rows, states_evaluated, generated_surfaces, retained_total, max_state_frontier = (
         _first_frontier_from_precomputed_end_indices_numba(
@@ -99,6 +100,14 @@ def _first_frontier_result_from_precomputed_end_indices(
             # can disable the prune via monkeypatch (no njit recompile) to recover the full reduce-only
             # frontier. Production always gets the default _HEAD_FILTER_MIN_SURFACES.
             int(_rb_numba._HEAD_FILTER_MIN_SURFACES),
+            region_table[0],
+            region_table[1],
+            region_table[2],
+            region_table[3],
+            region_table[4],
+            region_table[5],
+            region_table[6],
+            region_table[7],
         )
     )
     return FgResponseFrontierResult(
@@ -138,11 +147,13 @@ def _first_frontier_results_for_precomputed_range(
     great_floor_end_idx: np.ndarray,
     real_time_index: np.ndarray,
     use_forced_great_timing: bool,
+    region_tables_by_key: dict,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
     results: list[tuple[int, FgResponseFrontierResult]] = []
     for local_idx in range(int(start), int(stop)):
         item = chunk[int(local_idx)]
         source_idx = int(item[0])
+        region_table = region_tables_by_key[(float(item[2]), int(item[1]))]
         results.append(
             (
                 source_idx,
@@ -176,6 +187,7 @@ def _first_frontier_results_for_precomputed_range(
                     real_fever_time=float(item[3]),
                     real_time_idx=int(real_time_index[int(local_idx)]),
                     use_forced_great_timing=bool(use_forced_great_timing),
+                    region_table=region_table,
                 ),
             )
         )

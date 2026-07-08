@@ -422,6 +422,61 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     duplicate_sources_by_source = canonical.duplicate_sources_by_source
     chunk_iter = _first_only_chunks(n=int(n), items=prepared)
 
+    # Per-denom region core tables (Phase B stage 2): the region-run core work depends on the
+    # geometry only through (raw_fever_fill, non_fever_base), never real_fever_time, so it is
+    # computed ONCE per action-key group and shared read-only across every rt variant of that
+    # group. Entry order replicates the per-geometry enumeration exactly (bit-exact stream for
+    # the order-sensitive consumers). Without forced-great timing the region family is never
+    # enumerated, so every key shares one empty table.
+    region_tables_by_key: dict[tuple[float, int], tuple] = {}
+    if bool(use_forced_great_timing):
+        build_specs: list[tuple[tuple[float, int], np.ndarray]] = []
+        for item in prepared:
+            table_key = (float(item[2]), int(item[1]))
+            if table_key in region_tables_by_key:
+                continue
+            region_tables_by_key[table_key] = ()
+            build_specs.append((table_key, np.ascontiguousarray(item[4], dtype=np.int32)))
+
+        def _build_region_table(spec):
+            table_key, action_k_arr = spec
+            return table_key, _rb_numba._numba_build_region_core_table(
+                int(n),
+                int(action_k_arr.shape[0]),
+                action_k_arr,
+                float(table_key[0]),
+                ts,
+                candidate_high_delta_max,
+                floor_ts,
+                perfect_ts,
+                great_floor_ts,
+                great_ts,
+                lane_arr,
+            )
+
+        table_threads = _resolve_first_only_reducer_threads(len(build_specs))
+        if int(table_threads) <= 1 or len(build_specs) <= 1:
+            for spec in build_specs:
+                table_key, table = _build_region_table(spec)
+                region_tables_by_key[table_key] = table
+        else:
+            with _first_frontier_reducer_executor(int(table_threads)) as table_executor:
+                for table_key, table in table_executor.map(_build_region_table, build_specs):
+                    region_tables_by_key[table_key] = table
+    else:
+        empty_region_table = (
+            np.zeros(int(n) + 2, dtype=np.int64),
+            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.float64),
+            np.empty(0, dtype=np.float64),
+            np.empty(0, dtype=np.int32),
+        )
+        for item in prepared:
+            region_tables_by_key[(float(item[2]), int(item[1]))] = empty_region_table
+
     first_only_executor: concurrent.futures.ThreadPoolExecutor | None = None
     try:
         for action_count, chunk in chunk_iter:
@@ -457,6 +512,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         great_floor_end_idx=canonical.great_floor_end_idx,
                         real_time_index=real_time_index,
                         use_forced_great_timing=bool(use_forced_great_timing),
+                        region_tables_by_key=region_tables_by_key,
                     ),
                 )
             else:
@@ -492,6 +548,7 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                         great_floor_end_idx=canonical.great_floor_end_idx,
                         real_time_index=real_time_index,
                         use_forced_great_timing=bool(use_forced_great_timing),
+                        region_tables_by_key=region_tables_by_key,
                     )
                     for start, stop in ranges
                 )

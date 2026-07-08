@@ -805,54 +805,6 @@ def _numba_region_run_edge_for_offset(
 
 
 @njit(cache=True, nogil=True)
-def _numba_mark_region_run_reachable_for_offset(
-    reachable,
-    n: int,
-    section_start: int,
-    offset: int,
-    k: int,
-    raw_fever_fill: float,
-    timestamps,
-    candidate_high_delta_max,
-    perfect_floor_timestamps,
-    perfect_candidate_timestamps,
-    great_floor_timestamps,
-    great_candidate_timestamps,
-    lanes,
-    real_fever_time: float,
-):
-    activation, edge_e, _run_start, _great_end, _activation_great_idx, activation_hit, valid = (
-        _numba_region_run_edge_for_offset(
-            int(n),
-            int(section_start),
-            int(offset),
-            int(k),
-            float(raw_fever_fill),
-            timestamps,
-            candidate_high_delta_max,
-            perfect_floor_timestamps,
-            perfect_candidate_timestamps,
-            great_floor_timestamps,
-            great_candidate_timestamps,
-            lanes,
-            float(real_fever_time),
-        )
-    )
-    if int(valid) == 0:
-        return 0
-    reachable[int(edge_e)] = True
-    return _numba_mark_early_great_reachable_from_hit(
-        reachable,
-        int(n),
-        int(activation),
-        int(edge_e),
-        float(activation_hit),
-        great_floor_timestamps,
-        float(real_fever_time),
-    )
-
-
-@njit(cache=True, nogil=True)
 def _numba_mark_early_great_reachable_from_hit(
     reachable,
     n: int,
@@ -870,6 +822,159 @@ def _numba_mark_early_great_reachable_from_hit(
     for e in range(int(base_e) + 1, int(eg_e) + 1):
         reachable[int(e)] = True
     return max(0, int(eg_e) - int(base_e))
+
+
+@njit(cache=True, nogil=True)
+def _numba_build_region_core_table(
+    n: int,
+    region_action_count: int,
+    action_k,
+    raw_fever_fill: float,
+    timestamps,
+    candidate_high_delta_max,
+    perfect_floor_timestamps,
+    perfect_candidate_timestamps,
+    great_floor_timestamps,
+    great_candidate_timestamps,
+    lanes,
+):
+    """Per-denom CSR table of VALID region-run cores.
+
+    The region-run core (fill crossing, minimal reachable region Great end, capped hits, weighted
+    lane-aware reachability) depends on the geometry only through the fever-fill denom, never
+    real_fever_time — so it is computed ONCE per (raw_fever_fill, non_fever_base) action-key group
+    and shared read-only across every rt variant of that group (~115x reuse on a full stat grid).
+
+    Entries for each ``section_start`` row are stored in EXACTLY the enumeration order of the
+    per-geometry loops they replace — ``(action_idx asc, offset_kind asc)`` with the same
+    region-2 / shifted-head gating — so the rt consumers (reachability prepass marking and the
+    order-sensitive same-end head-edge bucket prune) see an identical candidate stream.
+
+    Returns ``(starts, offsets, activations, great_ends, is_greats, act_hits, perfect_hits,
+    perfect_valids)`` with ``starts`` of length ``n + 2`` (rows ``section_start = 0..n``)."""
+    cap = (int(n) + 1) * max(1, int(region_action_count)) * 2
+    starts = np.zeros(int(n) + 2, dtype=np.int64)
+    e_offset = np.empty(int(cap), dtype=np.int32)
+    e_activation = np.empty(int(cap), dtype=np.int32)
+    e_great_end = np.empty(int(cap), dtype=np.int32)
+    e_is_great = np.empty(int(cap), dtype=np.int32)
+    e_act_hit = np.empty(int(cap), dtype=np.float64)
+    e_perfect_hit = np.empty(int(cap), dtype=np.float64)
+    e_perfect_valid = np.empty(int(cap), dtype=np.int32)
+    region_k_stop = _numba_region2_k_scan_stop(int(region_action_count), float(raw_fever_fill))
+    cursor = 0
+    for section_start in range(0, int(n) + 1):
+        starts[int(section_start)] = int(cursor)
+        shifted_head_offset = (
+            1 if _numba_has_shifted_head_region(int(section_start), float(raw_fever_fill)) else -1
+        )
+        for action_idx in range(int(region_action_count)):
+            k = int(action_k[int(action_idx)])
+            region_offset = -1
+            if int(action_idx) < int(region_k_stop):
+                region_offset = _numba_region2_offset_for_count(
+                    int(section_start), int(k), float(raw_fever_fill), int(n)
+                )
+            for offset_idx in range(2):
+                if int(offset_idx) == 0:
+                    offset = int(region_offset)
+                else:
+                    offset = int(shifted_head_offset)
+                    if int(offset) == int(region_offset):
+                        continue
+                if int(offset) < 1:
+                    continue
+                activation, great_end, is_great, act_hit, perfect_hit, perfect_valid, valid = (
+                    _numba_region_run_core_for_offset(
+                        int(n),
+                        int(section_start),
+                        int(offset),
+                        int(k),
+                        float(raw_fever_fill),
+                        timestamps,
+                        candidate_high_delta_max,
+                        perfect_floor_timestamps,
+                        perfect_candidate_timestamps,
+                        great_floor_timestamps,
+                        great_candidate_timestamps,
+                        lanes,
+                    )
+                )
+                if int(valid) == 0:
+                    continue
+                e_offset[int(cursor)] = int(offset)
+                e_activation[int(cursor)] = int(activation)
+                e_great_end[int(cursor)] = int(great_end)
+                e_is_great[int(cursor)] = int(is_great)
+                e_act_hit[int(cursor)] = float(act_hit)
+                e_perfect_hit[int(cursor)] = float(perfect_hit)
+                e_perfect_valid[int(cursor)] = int(perfect_valid)
+                cursor += 1
+    starts[int(n) + 1] = int(cursor)
+    return (
+        starts,
+        e_offset[: int(cursor)].copy(),
+        e_activation[: int(cursor)].copy(),
+        e_great_end[: int(cursor)].copy(),
+        e_is_great[: int(cursor)].copy(),
+        e_act_hit[: int(cursor)].copy(),
+        e_perfect_hit[: int(cursor)].copy(),
+        e_perfect_valid[: int(cursor)].copy(),
+    )
+
+
+@njit(cache=True, nogil=True)
+def _numba_mark_region_entries_for_section(
+    reachable,
+    n: int,
+    section_start: int,
+    region_starts,
+    region_offsets,
+    region_activations,
+    region_great_ends,
+    region_is_greats,
+    region_act_hits,
+    region_perfect_hits,
+    region_perfect_valids,
+    real_fever_time: float,
+    perfect_floor_timestamps,
+    great_floor_timestamps,
+) -> int:
+    """rt-finish + reachability marking for every valid region core of one section row. Returns
+    the max early-Great extension width, exactly like the per-candidate marking it replaces."""
+    max_width = 0
+    for idx in range(int(region_starts[int(section_start)]), int(region_starts[int(section_start) + 1])):
+        activation, edge_e, _run_start, _great_end, _activation_great_idx, activation_hit, valid = (
+            _numba_region_run_edge_from_core(
+                int(n),
+                int(section_start),
+                int(region_offsets[int(idx)]),
+                int(region_activations[int(idx)]),
+                int(region_great_ends[int(idx)]),
+                int(region_is_greats[int(idx)]),
+                float(region_act_hits[int(idx)]),
+                float(region_perfect_hits[int(idx)]),
+                int(region_perfect_valids[int(idx)]),
+                1,
+                float(real_fever_time),
+                perfect_floor_timestamps,
+            )
+        )
+        if int(valid) == 0:
+            continue
+        reachable[int(edge_e)] = True
+        width = _numba_mark_early_great_reachable_from_hit(
+            reachable,
+            int(n),
+            int(activation),
+            int(edge_e),
+            float(activation_hit),
+            great_floor_timestamps,
+            float(real_fever_time),
+        )
+        if int(width) > int(max_width):
+            max_width = int(width)
+    return int(max_width)
 
 
 @njit(cache=True, nogil=True)
@@ -1296,22 +1401,17 @@ def _numba_emit_region2_head_edges(
     generated_basis,
     n: int,
     section_start: int,
-    action_count: int,
-    raw_fever_fill: float,
-    action_k,
-    timestamp_end_idx,
-    perfect_end_idx,
-    great_end_idx,
-    great_floor_end_idx,
-    timestamps,
-    candidate_high_delta_max,
-    perfect_candidate_timestamps,
-    great_candidate_timestamps,
+    region_starts,
+    region_offsets,
+    region_activations,
+    region_great_ends,
+    region_is_greats,
+    region_act_hits,
+    region_perfect_hits,
+    region_perfect_valids,
     perfect_floor_timestamps,
     great_floor_timestamps,
-    lanes,
     real_fever_time: float,
-    real_time_idx: int,
     use_forced_great_timing_i: int,
     body_values,
     body_starts,
@@ -1323,74 +1423,59 @@ def _numba_emit_region2_head_edges(
     min_surfaces: int,
     bounded_mode: int,
 ):
+    # Candidates come from the per-denom region core table (rt-free work computed once per
+    # action-key group); only the rt-dependent finish runs here. Entry order per section row is
+    # the exact (action_idx, offset_kind) enumeration order the table build replicated, so the
+    # order-sensitive same-end bucket prune below sees an identical candidate stream. The
+    # shifted-head earliest-representative rule and region-2 offset gating are applied at build.
     if int(use_forced_great_timing_i) == 0:
         return generated, generated_basis, 0, int(bounded_mode)
     added_total = 0
     pending_edge_buckets = Dict.empty(types.int64, _NUMBA_SURFACE_LIST_TYPE)
     pending_edge_ends = List.empty_list(types.int64)
-    shifted_head_offset = 1 if _numba_has_shifted_head_region(int(section_start), float(raw_fever_fill)) else -1
-    region_k_stop = _numba_region2_k_scan_stop(int(action_count), float(raw_fever_fill))
-    for action_idx in range(int(action_count)):
-        k = int(action_k[int(action_idx)])
-        region_offset = -1
-        if int(action_idx) < int(region_k_stop):
-            region_offset = _numba_region2_offset_for_count(int(section_start), int(k), float(raw_fever_fill), int(n))
-        for offset_idx in range(2):
-            if int(offset_idx) == 0:
-                offset = int(region_offset)
-            else:
-                # For region-3 shifted-head runs, activation/end are offset-invariant for a fixed
-                # k. The earliest run is the score-dominant representative because head Great
-                # penalty is nondecreasing with chart index; later starts only move the same Great
-                # count onto higher-ramp notes.
-                offset = int(shifted_head_offset)
-                if int(offset) == int(region_offset):
-                    continue
-            if int(offset) < 1:
-                continue
-            activation, edge_e, run_start, great_end, activation_great_idx, activation_hit, valid = (
-                _numba_region_run_edge_for_offset(
-                    int(n),
-                    int(section_start),
-                    int(offset),
-                    int(k),
-                    float(raw_fever_fill),
-                    timestamps,
-                    candidate_high_delta_max,
-                    perfect_floor_timestamps,
-                    perfect_candidate_timestamps,
-                    great_floor_timestamps,
-                    great_candidate_timestamps,
-                    lanes,
-                    float(real_fever_time),
-                )
-            )
-            if int(valid) == 0:
-                continue
-            edge = _numba_pack_edge(
+    for entry_idx in range(int(region_starts[int(section_start)]), int(region_starts[int(section_start) + 1])):
+        activation, edge_e, run_start, great_end, activation_great_idx, activation_hit, valid = (
+            _numba_region_run_edge_from_core(
                 int(n),
-                int(activation),
-                int(edge_e),
-                int(run_start),
-                int(great_end),
-                int(activation_great_idx),
-            )
-            pending_edge_buckets, pending_edge_ends, _kept = _numba_append_head_edge_to_end_buckets(
-                pending_edge_buckets, pending_edge_ends, edge, int(edge_e)
-            )
-            pending_edge_buckets, pending_edge_ends, _kept_eg = _numba_collect_early_great_head_edges(
-                pending_edge_buckets,
-                pending_edge_ends,
-                int(n),
-                int(activation),
-                int(edge_e),
-                float(activation_hit),
-                int(run_start),
-                int(great_end),
-                int(activation_great_idx),
-                great_floor_timestamps,
+                int(section_start),
+                int(region_offsets[int(entry_idx)]),
+                int(region_activations[int(entry_idx)]),
+                int(region_great_ends[int(entry_idx)]),
+                int(region_is_greats[int(entry_idx)]),
+                float(region_act_hits[int(entry_idx)]),
+                float(region_perfect_hits[int(entry_idx)]),
+                int(region_perfect_valids[int(entry_idx)]),
+                1,
                 float(real_fever_time),
+                perfect_floor_timestamps,
             )
+        )
+        if int(valid) == 0:
+            continue
+        edge = _numba_pack_edge(
+            int(n),
+            int(activation),
+            int(edge_e),
+            int(run_start),
+            int(great_end),
+            int(activation_great_idx),
+        )
+        pending_edge_buckets, pending_edge_ends, _kept = _numba_append_head_edge_to_end_buckets(
+            pending_edge_buckets, pending_edge_ends, edge, int(edge_e)
+        )
+        pending_edge_buckets, pending_edge_ends, _kept_eg = _numba_collect_early_great_head_edges(
+            pending_edge_buckets,
+            pending_edge_ends,
+            int(n),
+            int(activation),
+            int(edge_e),
+            float(activation_hit),
+            int(run_start),
+            int(great_end),
+            int(activation_great_idx),
+            great_floor_timestamps,
+            float(real_fever_time),
+        )
     for pending_end_idx in range(len(pending_edge_ends)):
         end_e = int(pending_edge_ends[pending_end_idx])
         bucket = pending_edge_buckets[np.int64(end_e)]
@@ -3138,6 +3223,14 @@ def _first_frontier_from_precomputed_end_indices_numba(
     real_time_idx: int,
     use_forced_great_timing_i: int,
     head_filter_min: int,
+    region_starts,
+    region_offsets,
+    region_activations,
+    region_great_ends,
+    region_is_greats,
+    region_act_hits,
+    region_perfect_hits,
+    region_perfect_valids,
 ):
     if int(use_forced_great_timing_i) == 0 and int(action_count) > 0 and int(first_fill[0]) >= 100:
         zero_body_fever = _numba_zero_forced_body_fever_precomputed(
@@ -3186,8 +3279,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
     reachable[int(n)] = True
     # Issue #44: widest early-Great band over every enumerated activation -> sizes the body-pair radix.
     max_eg_width = 0
-    region_k_stop = _numba_region2_k_scan_stop(int(region_action_count), float(raw_fever_fill))
-    first_shifted_head_offset = 1 if _numba_has_shifted_head_region(0, float(raw_fever_fill)) else -1
     for action_idx in range(int(action_count)):
         fill = int(first_fill[int(action_idx)])
         edge_hit = 0.0
@@ -3239,44 +3330,29 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 ),
             )
     if int(use_forced_great_timing_i) != 0:
-        for action_idx in range(int(region_action_count)):
-            k = int(action_k[int(action_idx)])
-            region_offset = -1
-            if int(action_idx) < int(region_k_stop):
-                region_offset = _numba_region2_offset_for_count(0, int(k), float(raw_fever_fill), int(n))
-            for offset_idx in range(2):
-                if int(offset_idx) == 0:
-                    offset = int(region_offset)
-                else:
-                    offset = int(first_shifted_head_offset)
-                    if int(offset) == int(region_offset):
-                        continue
-                if int(offset) < 1:
-                    continue
-                max_eg_width = max(
-                    int(max_eg_width),
-                    _numba_mark_region_run_reachable_for_offset(
-                        reachable,
-                        int(n),
-                        0,
-                        int(offset),
-                        int(k),
-                        float(raw_fever_fill),
-                        timestamps,
-                        candidate_high_delta_max,
-                        perfect_floor_timestamps,
-                        perfect_candidate_timestamps,
-                        great_floor_timestamps,
-                        great_candidate_timestamps,
-                        lanes,
-                        float(real_fever_time),
-                    ),
-                )
+        max_eg_width = max(
+            int(max_eg_width),
+            _numba_mark_region_entries_for_section(
+                reachable,
+                int(n),
+                0,
+                region_starts,
+                region_offsets,
+                region_activations,
+                region_great_ends,
+                region_is_greats,
+                region_act_hits,
+                region_perfect_hits,
+                region_perfect_valids,
+                float(real_fever_time),
+                perfect_floor_timestamps,
+                great_floor_timestamps,
+            ),
+        )
     for state_i in range(int(n)):
         if not reachable[state_i]:
             continue
         section_start = int(state_i) + 1
-        shifted_head_offset = 1 if _numba_has_shifted_head_region(int(section_start), float(raw_fever_fill)) else -1
         for action_idx in range(int(action_count)):
             activation = int(state_i) + int(later_fill[int(action_idx)])
             edge_hit = 0.0
@@ -3332,41 +3408,25 @@ def _first_frontier_from_precomputed_end_indices_numba(
                     ),
                 )
         if int(use_forced_great_timing_i) != 0:
-            for action_idx in range(int(region_action_count)):
-                k = int(action_k[int(action_idx)])
-                region_offset = -1
-                if int(action_idx) < int(region_k_stop):
-                    region_offset = _numba_region2_offset_for_count(
-                        int(section_start), int(k), float(raw_fever_fill), int(n)
-                    )
-                for offset_idx in range(2):
-                    if int(offset_idx) == 0:
-                        offset = int(region_offset)
-                    else:
-                        offset = int(shifted_head_offset)
-                        if int(offset) == int(region_offset):
-                            continue
-                    if int(offset) < 1:
-                        continue
-                    max_eg_width = max(
-                        int(max_eg_width),
-                        _numba_mark_region_run_reachable_for_offset(
-                            reachable,
-                            int(n),
-                            int(section_start),
-                            int(offset),
-                            int(k),
-                            float(raw_fever_fill),
-                            timestamps,
-                            candidate_high_delta_max,
-                            perfect_floor_timestamps,
-                            perfect_candidate_timestamps,
-                            great_floor_timestamps,
-                            great_candidate_timestamps,
-                            lanes,
-                            float(real_fever_time),
-                        ),
-                    )
+            max_eg_width = max(
+                int(max_eg_width),
+                _numba_mark_region_entries_for_section(
+                    reachable,
+                    int(n),
+                    int(section_start),
+                    region_starts,
+                    region_offsets,
+                    region_activations,
+                    region_great_ends,
+                    region_is_greats,
+                    region_act_hits,
+                    region_perfect_hits,
+                    region_perfect_valids,
+                    float(real_fever_time),
+                    perfect_floor_timestamps,
+                    great_floor_timestamps,
+                ),
+            )
     states_evaluated = 0
     retained_total = 1
     max_state_frontier = 1
@@ -3613,22 +3673,17 @@ def _first_frontier_from_precomputed_end_indices_numba(
             generated_basis,
             int(n),
             int(state_i) + 1,
-            int(region_action_count),
-            float(raw_fever_fill),
-            action_k,
-            timestamp_end_idx,
-            perfect_end_idx,
-            great_end_idx,
-            great_floor_end_idx,
-            timestamps,
-            candidate_high_delta_max,
-            perfect_candidate_timestamps,
-            great_candidate_timestamps,
+            region_starts,
+            region_offsets,
+            region_activations,
+            region_great_ends,
+            region_is_greats,
+            region_act_hits,
+            region_perfect_hits,
+            region_perfect_valids,
             perfect_floor_timestamps,
             great_floor_timestamps,
-            lanes,
             float(real_fever_time),
-            int(real_time_idx),
             int(use_forced_great_timing_i),
             body_values,
             body_starts,
@@ -3892,22 +3947,17 @@ def _first_frontier_from_precomputed_end_indices_numba(
             first_region_basis,
             int(n),
             0,
-            int(region_action_count),
-            float(raw_fever_fill),
-            action_k,
-            timestamp_end_idx,
-            perfect_end_idx,
-            great_end_idx,
-            great_floor_end_idx,
-            timestamps,
-            candidate_high_delta_max,
-            perfect_candidate_timestamps,
-            great_candidate_timestamps,
+            region_starts,
+            region_offsets,
+            region_activations,
+            region_great_ends,
+            region_is_greats,
+            region_act_hits,
+            region_perfect_hits,
+            region_perfect_valids,
             perfect_floor_timestamps,
             great_floor_timestamps,
-            lanes,
             float(real_fever_time),
-            int(real_time_idx),
             int(use_forced_great_timing_i),
             body_values,
             body_starts,
@@ -4080,22 +4130,17 @@ def _first_frontier_from_precomputed_end_indices_numba(
             first_generated_basis,
             int(n),
             0,
-            int(region_action_count),
-            float(raw_fever_fill),
-            action_k,
-            timestamp_end_idx,
-            perfect_end_idx,
-            great_end_idx,
-            great_floor_end_idx,
-            timestamps,
-            candidate_high_delta_max,
-            perfect_candidate_timestamps,
-            great_candidate_timestamps,
+            region_starts,
+            region_offsets,
+            region_activations,
+            region_great_ends,
+            region_is_greats,
+            region_act_hits,
+            region_perfect_hits,
+            region_perfect_valids,
             perfect_floor_timestamps,
             great_floor_timestamps,
-            lanes,
             float(real_fever_time),
-            int(real_time_idx),
             int(use_forced_great_timing_i),
             body_values,
             body_starts,
