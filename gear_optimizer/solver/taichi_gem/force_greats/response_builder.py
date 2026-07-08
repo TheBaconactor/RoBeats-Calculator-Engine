@@ -763,7 +763,15 @@ def _edge_surface_options(
                 real_fever_time=float(real_fever_time),
                 perfect_floor_timestamps=perfect_floor_timestamps,
             )
-            if int(activation_e) > int(e):
+            if int(activation_e) > int(e) or _great_floor_end(
+                float(_activation_start_time), int(a),
+                great_floor_timestamps=great_floor_timestamps,
+                real_fever_time=float(real_fever_time), n=int(n),
+            ) > _great_floor_end(
+                float(start_time), int(a),
+                great_floor_timestamps=great_floor_timestamps,
+                real_fever_time=float(real_fever_time), n=int(n),
+            ):
                 chart_time = float(timestamps[int(a)])
                 activation_surface = _edge_surface(
                     n=int(n),
@@ -878,7 +886,18 @@ def _edge_surface_options(
                             real_fever_time=float(real_fever_time),
                             perfect_floor_timestamps=perfect_floor_timestamps,
                         )
-                    if int(activation_e) <= int(perfect_e_region):
+                    if int(activation_e) <= int(perfect_e_region) and not (
+                        perfect_hit_region is not None
+                        and _great_floor_end(
+                            float(activation_start_time), int(a_region),
+                            great_floor_timestamps=great_floor_timestamps,
+                            real_fever_time=float(real_fever_time), n=int(n),
+                        ) > _great_floor_end(
+                            float(perfect_hit_region), int(a_region),
+                            great_floor_timestamps=great_floor_timestamps,
+                            real_fever_time=float(real_fever_time), n=int(n),
+                        )
+                    ):
                         continue
                     chart_time = float(timestamps[int(a_region)])
                     late_lo = float(np.float32(np.float32(perfect_ts[int(a_region)]) + np.float32(0.001)))

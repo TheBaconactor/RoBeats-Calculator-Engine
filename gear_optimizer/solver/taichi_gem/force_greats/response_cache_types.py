@@ -91,7 +91,12 @@ from .response_types import FgResponseFrontierResult
 # earliest shifted-head run representative (plus the normal crossing offset) and both Perfect /
 # late-Great crossing branches. Stale v27 bundles can miss score-equivalent timing witnesses and
 # shifted-head breakpoint surfaces.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v28"
+# v28->v29: region-3 normal-edge gate + either-envelope late-activation gate (records 16.31/16.34).
+# Stale v28 bundles carry unreconstructable region-2 normal-edge phantom surfaces (k >= ~2*denom
+# rows packed the Perfect activation inside the forced run) AND miss legal late-Great activation
+# edges whose perfect-floor extent ties the Perfect edge but whose early-Great reach is strictly
+# longer (the +337.5-point tiny-chart oracle witness). Both directions require a rebuild.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v29"
 _HERE = Path(__file__).resolve().parent
 _SOLVER_DIR = _HERE.parents[1]
 # Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
