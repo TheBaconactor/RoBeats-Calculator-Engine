@@ -1247,3 +1247,34 @@ def test_preemptor_delay_reaches_partners_behind_delayed_sibling() -> None:
     assert float(notes[2]["delta_ms"]) <= 40.0  # stays a legal Perfect
     assert float(notes[3]["delta_ms"]) <= 40.0
     assert float(notes[4]["delta_ms"]) == 0.0  # beyond the 200ms chart window: untouched
+
+
+def test_activation_preemptor_order_deltas_are_lane_scoped_when_lanes_are_supplied():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        _mark_activation_preemptor_order_deltas,
+    )
+
+    nt = np.asarray([1, 1], dtype=np.int16)
+    notes = [
+        {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": 190.0},
+        {"note_index": 1, "hit_time_ms": 1160.0, "note_result": "Perfect", "delta_ms": 0.0},
+    ]
+
+    _mark_activation_preemptor_order_deltas(
+        notes,
+        frontier_trace=[{"activation_index": 0}],
+        total_notes=2,
+        note_types=nt,
+        lanes=np.asarray([1, 2], dtype=np.int32),
+    )
+    assert float(notes[1]["delta_ms"]) == 0.0
+
+    _mark_activation_preemptor_order_deltas(
+        notes,
+        frontier_trace=[{"activation_index": 0}],
+        total_notes=2,
+        note_types=nt,
+        lanes=np.asarray([1, 1], dtype=np.int32),
+    )
+    assert float(notes[1]["delta_ms"]) >= 30.0
+    assert float(notes[1]["delta_ms"]) <= 40.0

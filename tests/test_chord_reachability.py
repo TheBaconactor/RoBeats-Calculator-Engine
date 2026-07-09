@@ -7,6 +7,7 @@ make an activation unreachable. The lane-blind predicates it superseded were del
 """
 import numpy as np
 
+from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
     activation_hit_is_reachable_weighted_lane_aware,
 )
@@ -131,3 +132,74 @@ def test_l_weighted_lane_owner_rejects_later_same_lane_note_closing_before_activ
         section_start=0,
         section_end=3,
     ) is False
+
+
+def test_m_weighted_lane_owner_optional_fill_is_prefix_closed_per_lane():
+    # Cross-lane optional fill is still lane-local chart-order constrained. With denom=1.0 and a
+    # Great activation, the pre-activation optional fill must be exactly 0.5. If that 0.5 Great is
+    # behind a same-lane Perfect, it cannot be selected by itself: the Perfect is consumed first and
+    # crosses too early. Moving the half-unit to the lane prefix, or to a separate lane, makes it legal.
+    lo = np.array([0.000, 0.000, 0.000], dtype=np.float32)
+    hi = np.array([0.200, 0.200, 0.100], dtype=np.float32)
+
+    assert activation_hit_is_reachable_weighted_lane_aware(
+        activation_index=2,
+        activation_hit_timestamp=0.100,
+        low_hit_timestamps=lo,
+        high_hit_timestamps=hi,
+        lanes=np.array([1, 1, 2], dtype=np.int32),
+        fill_units=np.array([1.0, 0.5, 0.5], dtype=np.float32),
+        fever_fill_denom=1.0,
+        section_start=0,
+        section_end=3,
+    ) is False
+    assert activation_hit_is_reachable_weighted_lane_aware(
+        activation_index=2,
+        activation_hit_timestamp=0.100,
+        low_hit_timestamps=lo,
+        high_hit_timestamps=hi,
+        lanes=np.array([1, 1, 2], dtype=np.int32),
+        fill_units=np.array([0.5, 1.0, 0.5], dtype=np.float32),
+        fever_fill_denom=1.0,
+        section_start=0,
+        section_end=3,
+    ) is True
+    assert activation_hit_is_reachable_weighted_lane_aware(
+        activation_index=2,
+        activation_hit_timestamp=0.100,
+        low_hit_timestamps=lo,
+        high_hit_timestamps=hi,
+        lanes=np.array([1, 3, 2], dtype=np.int32),
+        fill_units=np.array([1.0, 0.5, 0.5], dtype=np.float32),
+        fever_fill_denom=1.0,
+        section_start=0,
+        section_end=3,
+    ) is True
+
+
+def test_n_note_graph_activation_cap_can_be_lane_scoped_for_display_witnesses():
+    ts = np.array([1.000, 1.100], dtype=np.float64)
+    highs = np.array([1.190, 1.140], dtype=np.float64)
+
+    assert latest_activation_hit_from_label_highs(
+        activation_index=0,
+        hit_lo=1.041,
+        hit_hi=1.190,
+        chart_timestamps=ts,
+        label_high_timestamps=highs,
+        section_end=2,
+        lanes=np.array([1, 2], dtype=np.int32),
+        epsilon=0.001,
+    ) == 1.190
+    same_lane_hit = latest_activation_hit_from_label_highs(
+        activation_index=0,
+        hit_lo=1.041,
+        hit_hi=1.190,
+        chart_timestamps=ts,
+        label_high_timestamps=highs,
+        section_end=2,
+        lanes=np.array([1, 1], dtype=np.int32),
+        epsilon=0.001,
+    )
+    assert same_lane_hit is not None
+    assert abs(same_lane_hit - 1.139) < 1.0e-9

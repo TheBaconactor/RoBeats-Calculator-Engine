@@ -873,7 +873,7 @@ def _build_aurora_intended():
 
     ng = force_greats_note_graph(
         frontier_trace=fd["ForceGreats"]["frontier_trace"],
-        total_notes=n, timestamps=ts, note_types=nt, timing_mode="perfect_window",
+        total_notes=n, timestamps=ts, note_types=nt, lanes=lanes, timing_mode="perfect_window",
     )
     intended: list[IntendedNote] = []
     for node in ng:

@@ -148,11 +148,13 @@ def _activation_materialized_delta_ms(
     notes: Sequence[Mapping[str, Any]] | None = None,
     total_notes: int | None = None,
     note_types: Sequence[int] | np.ndarray | None,
+    lanes: Sequence[int] | np.ndarray | None = None,
     note_index: int,
     judgment: str,
 ) -> float:
     """Return the latest activation hit that preserves the scored input order."""
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
+    lane_arr = None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1)
     a = int(note_index)
     center = float(sec["activation_hit_offset_ms"])
     if nt is None:
@@ -207,6 +209,8 @@ def _activation_materialized_delta_ms(
     label_high_ms: np.ndarray | None = None
     if notes is not None and total_notes is not None:
         n = min(int(total_notes), len(notes), int(nt.shape[0]))
+        if lane_arr is not None:
+            n = min(n, int(lane_arr.shape[0]))
         chart_timestamps_ms = np.empty((n,), dtype=np.float64)
         label_high_ms = np.empty((n,), dtype=np.float64)
         for j in range(n):
@@ -229,6 +233,7 @@ def _activation_materialized_delta_ms(
             chart_timestamps=chart_timestamps_ms,
             label_high_timestamps=label_high_ms,
             section_end=n,
+            lanes=lane_arr,
             epsilon=0.001,
         )
     else:
@@ -426,6 +431,7 @@ def _mark_activation_preemptor_order_deltas(
     frontier_trace: Sequence[Mapping[str, Any]],
     total_notes: int,
     note_types: Sequence[int] | np.ndarray | None,
+    lanes: Sequence[int] | np.ndarray | None = None,
 ) -> None:
     """Delay following notes that would otherwise preempt a delayed activation witness.
 
@@ -442,6 +448,9 @@ def _mark_activation_preemptor_order_deltas(
             "delayed activation ordering at judgment bounds -- it is never guessed"
         )
     nt = np.asarray(note_types).reshape(-1)
+    lane_arr = None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1)
+    if lane_arr is not None:
+        n = min(n, int(lane_arr.shape[0]))
 
     for sec in frontier_trace:
         a = int(sec.get("activation_index", -1))
@@ -452,6 +461,7 @@ def _mark_activation_preemptor_order_deltas(
             continue
 
         activation_press = float(notes[a]["hit_time_ms"]) + float(activation_delta)
+        activation_lane = None if lane_arr is None else int(lane_arr[a])
         required_press = activation_press
 
         for j in range(a + 1, n):
@@ -466,6 +476,8 @@ def _mark_activation_preemptor_order_deltas(
             # activation's fill (the Aurora 47,502,676 witness shape).
             if chart_j - 200.0 > required_press:
                 break
+            if activation_lane is not None and int(lane_arr[j]) != activation_lane:
+                continue
             result = str(note.get("note_result", "Perfect"))
             current_delta = _selector_default_delta_ms(nt, j, result, note.get("delta_ms"))
             current_press = chart_j + float(current_delta)
@@ -953,6 +965,7 @@ def force_greats_note_graph(
     total_notes: int,
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray | None = None,
+    lanes: Sequence[int] | np.ndarray | None = None,
     timing_mode: str = "perfect_window",
 ) -> list[dict[str, Any]]:
     """FG note-graph (fg frontier + timeline frontier) from the persisted witness trace.
@@ -1008,6 +1021,7 @@ def force_greats_note_graph(
                     notes=notes,
                     total_notes=n,
                     note_types=note_types,
+                    lanes=lanes,
                     note_index=a,
                     judgment=activation_judgment,
                 )
@@ -1024,6 +1038,7 @@ def force_greats_note_graph(
                     notes=notes,
                     total_notes=n,
                     note_types=note_types,
+                    lanes=lanes,
                     note_index=a,
                     judgment=activation_judgment,
                 )
@@ -1095,6 +1110,7 @@ def force_greats_note_graph(
             frontier_trace=frontier_trace,
             total_notes=n,
             note_types=note_types,
+            lanes=lanes,
         )
 
     return notes

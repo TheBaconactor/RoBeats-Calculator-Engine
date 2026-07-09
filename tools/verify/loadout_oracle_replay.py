@@ -230,6 +230,7 @@ def main(argv=None) -> int:
     meta = cs["metadata"]
     ts = np.asarray(sd["timestamps"])
     nt = np.asarray(sd["note_types"])
+    lanes = np.asarray(sd["lanes"])
     n = int(len(ts))
 
     note_graph = force_greats_note_graph(
@@ -237,6 +238,7 @@ def main(argv=None) -> int:
         total_notes=n,
         timestamps=ts,
         note_types=nt,
+        lanes=lanes,
         timing_mode="perfect_window",
     )
     events = _events_from_note_graph(note_graph)
