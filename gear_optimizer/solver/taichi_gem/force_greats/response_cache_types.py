@@ -74,11 +74,35 @@ from .response_types import FgResponseFrontierResult
 # The floor envelopes are frontier-build INPUTS but timing_envelope.py is NOT in _FG_DP_SOURCES, so
 # the logic fingerprint does not cover it -- this explicit base-version bump is what invalidates the
 # stale (over-generous) fever-membership floors. Re-solve to re-persist best_fg_score.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v23"
+# v23->v24: input-engine-aware reachability. The frontier now carries lanes in the cache key, keeps
+# raw timing edges in precompute, and filters reconstructed surfaces through the weighted lane-aware
+# owner. Stale v23 bundles can either keep phantoms the input engine cannot play or miss legal
+# region-delay surfaces the lane-blind clamp removed.
+# v24->v25: region-delay producer. The numba first-frontier graph now emits late-Great activations
+# from non-prefix contiguous Great runs, and traces persist forced_run_start/count so the note graph
+# and audits render the same run the surface scored. v24 bundles are prefix-only after filtering.
+# v25->v26: input-engine-aware same-time sibling bundles. A region-delay late-Great activation may
+# require following same-time/early-hit siblings to also be forced Great so their Perfect hits do not
+# fill the bar first; stale v25 bundles miss legal higher-scoring surfaces such as ART Hard 835/3/3.
+# v26->v27: shared input-order breakpoint owner. Delayed activation hits are capped by following
+# notes' scored label upper edges, and capped hits own the fever end / early-Great extension. Stale
+# v26 bundles can miss legal capped-breakpoint surfaces or price them from the wrong activation edge.
+# v27->v28: shifted-head region representative. The numba first-frontier producer now emits the
+# earliest shifted-head run representative (plus the normal crossing offset) and both Perfect /
+# late-Great crossing branches. Stale v27 bundles can miss score-equivalent timing witnesses and
+# shifted-head breakpoint surfaces.
+# v28->v29: region-3 normal-edge gate + either-envelope late-activation gate (records 16.31/16.34).
+# Stale v28 bundles carry unreconstructable region-2 normal-edge phantom surfaces (k >= ~2*denom
+# rows packed the Perfect activation inside the forced run) AND miss legal late-Great activation
+# edges whose perfect-floor extent ties the Perfect edge but whose early-Great reach is strictly
+# longer (the +337.5-point tiny-chart oracle witness). Both directions require a rebuild.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v29"
 _HERE = Path(__file__).resolve().parent
+_SOLVER_DIR = _HERE.parents[1]
 # Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
 # build/search/pack path, add it here (the base version stays the human backstop).
 _FG_DP_SOURCES = (
+    _SOLVER_DIR / "input_engine_breakpoints.py",
     _HERE / "fill_crossing.py",
     _HERE / "response_builder.py",
     _HERE / "response_types.py",

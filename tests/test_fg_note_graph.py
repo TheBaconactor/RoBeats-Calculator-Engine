@@ -40,6 +40,7 @@ def _build_options(n, non_fever_base, real_fever_time):
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
         great_floor_timestamps=timestamps,
+        lanes=np.arange(int(timestamps.shape[0]), dtype=np.int32),
         raw_fever_fill=raw_fever_fill,
     )
     return timestamps, great_candidates, actions, options
@@ -74,6 +75,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
                 great_candidate_timestamps=great_candidates,
                 perfect_floor_timestamps=timestamps,
                 great_floor_timestamps=timestamps,
+                lanes=np.arange(n, dtype=np.int32),
                 raw_fever_fill=1.0,
                 real_fever_time=real_fever_time,
                 use_forced_great_timing=True,
@@ -136,6 +138,7 @@ def test_reconstruct_force_greats_response_trace_is_stats_free():
         "great_candidate_timestamps",
         "perfect_floor_timestamps",
         "great_floor_timestamps",
+        "lanes",
         "raw_fever_fill",
         "real_fever_time",
         "use_forced_great_timing",
@@ -183,7 +186,7 @@ def test_fg_note_graph_body_counts_synthetic():
     trace2 = [{
         "section": 1, "activation_index": 102, "fever_end_index": 108,
         "forced_start_index": 0, "forced_prefix_count": 0,
-        "activation_judgment": "late_great", "activation_hit_offset_ms": 190.0,
+        "activation_judgment": "late_great", "activation_hit_offset_ms": 41.0,
     }]
     g2 = force_greats_note_graph(frontier_trace=trace2, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
     reconcile_force_greats_note_graph(
@@ -192,7 +195,7 @@ def test_fg_note_graph_body_counts_synthetic():
         body_fever=6, body_great=1, body_fever_great=1,
     )
     wit = next(x for x in g2 if x["is_activation_witness"])
-    assert wit["note_index"] == 102 and wit["note_result"] == "Great" and wit["delta_ms"] == 190.0
+    assert wit["note_index"] == 102 and wit["note_result"] == "Great" and wit["delta_ms"] == 41.0
     assert wit["fever"] is True  # the witness is both fever and great
 
     # Case 3: optimized Perfect-window activation WITNESS -> delayed, but not Great.
@@ -213,6 +216,28 @@ def test_fg_note_graph_body_counts_synthetic():
     assert witp["note_result"] == "Perfect"
     assert witp["delta_ms"] == 40.0
 
+    # Case 3b: non-prefix forced-Great run. The legacy prefix fields say "none"; the load-bearing
+    # run fields place Greats at {2, 3}, with idx3 also carrying the late-Great witness.
+    trace_run = [{
+        "section": 1, "activation_index": 3, "fever_end_index": 6,
+        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_run_start_index": 2, "forced_run_count": 2,
+        "activation_judgment": "late_great", "activation_hit_offset_ms": 41.0,
+    }]
+    gr = force_greats_note_graph(
+        frontier_trace=trace_run,
+        total_notes=n,
+        timestamps=ts,
+        note_types=np.ones(n, dtype=np.int16),
+    )
+    reconcile_force_greats_note_graph(
+        gr, total_notes=n,
+        fever_words=_words_from_indices(set(range(3, 6))), great_words=_words_from_indices({2, 3}),
+        body_fever=0, body_great=0, body_fever_great=0,
+    )
+    assert [i for i, x in enumerate(gr) if x["note_result"] == "Great"] == [2, 3]
+    assert gr[3]["is_activation_witness"] is True
+
     # Case 4: multi-section (two fever windows), head fever + body fever.
     trace3 = [
         {"section": 1, "activation_index": 50, "fever_end_index": 56,
@@ -230,6 +255,168 @@ def test_fg_note_graph_body_counts_synthetic():
         great_words=_words_from_indices({0, 1}),
         body_fever=6, body_great=4, body_fever_great=0,
     )
+
+
+def test_fg_note_graph_same_time_head_great_selector_preserves_ramp_order():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 8
+    ts = np.asarray([0.095, 0.581, 0.743, 0.743, 1.067, 1.392, 1.878, 2.040], dtype=np.float32)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 6,
+            "fever_end_index": 8,
+            "forced_start_index": 2,
+            "forced_prefix_count": 1,
+            "activation_judgment": "perfect",
+            "activation_hit_offset_ms": 0.0,
+        }
+    ]
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=n,
+        timestamps=ts,
+        note_types=np.ones(n, dtype=np.int16),
+    )
+
+    assert graph[2]["note_result"] == "Great"
+    assert graph[3]["note_result"] == "Perfect"
+    assert graph[2]["delta_ms"] < -20.0
+    assert graph[3]["delta_ms"] == 0.0
+    assert graph[2]["hit_time_ms"] + graph[2]["delta_ms"] < graph[3]["hit_time_ms"] + graph[3]["delta_ms"]
+
+
+def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_order():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 6
+    ts = np.asarray([0.0, 0.1, 10.0, 10.160, 10.300, 10.500], dtype=np.float32)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 2,
+            "fever_end_index": 6,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 181.0,
+        }
+    ]
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=n,
+        timestamps=ts,
+        note_types=np.ones(n, dtype=np.int16),
+    )
+
+    activation_press = graph[2]["hit_time_ms"] + graph[2]["delta_ms"]
+    next_press = graph[3]["hit_time_ms"] + graph[3]["delta_ms"]
+
+    assert graph[2]["note_result"] == "Great"
+    assert graph[3]["note_result"] == "Perfect"
+    assert graph[3]["delta_ms"] == pytest.approx(21.0, abs=1e-3)
+    assert next_press >= activation_press
+    assert graph[4]["delta_ms"] == 0.0
+
+
+def test_fg_note_graph_uses_activation_upper_edge_for_priced_fever_cutoff():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 4
+    ts = np.asarray([10.000, 10.160, 10.300, 10.500], dtype=np.float32)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 4,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 50.0,
+            "activation_hit_offset_upper_ms": 190.0,
+            "fever_window_end_ms": 12000.0,
+        }
+    ]
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=n,
+        timestamps=ts,
+        note_types=np.ones(n, dtype=np.int16),
+    )
+
+    activation_press = graph[0]["hit_time_ms"] + graph[0]["delta_ms"]
+    next_press = graph[1]["hit_time_ms"] + graph[1]["delta_ms"]
+
+    assert graph[0]["delta_ms"] == pytest.approx(190.0)
+    assert graph[1]["note_result"] == "Perfect"
+    assert graph[1]["delta_ms"] == pytest.approx(30.0, abs=1e-3)
+    assert next_press >= activation_press
+
+
+def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 3
+    ts = np.asarray([10.000, 10.130, 10.500], dtype=np.float32)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 3,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 120.0,
+            "activation_hit_offset_lower_ms": 80.0,
+            "activation_hit_offset_upper_ms": 190.0,
+            "fever_window_end_ms": 11190.0,
+        }
+    ]
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=n,
+        timestamps=ts,
+        note_types=np.ones(n, dtype=np.int16),
+    )
+
+    activation_press = graph[0]["hit_time_ms"] + graph[0]["delta_ms"]
+    next_press = graph[1]["hit_time_ms"] + graph[1]["delta_ms"]
+
+    assert graph[0]["delta_ms"] == pytest.approx(169.999, abs=1e-3)
+    assert graph[1]["note_result"] == "Perfect"
+    assert graph[1]["delta_ms"] == pytest.approx(39.999, abs=1e-3)
+    assert next_press >= activation_press
+    assert graph[2]["fever_end_ms"] == pytest.approx(11169.999, abs=1e-3)
+
+
+def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    n = 2
+    ts = np.asarray([10.000, 10.000], dtype=np.float32)
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 2,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 120.0,
+            "activation_hit_offset_lower_ms": 80.0,
+            "activation_hit_offset_upper_ms": 190.0,
+            "fever_window_end_ms": 11190.0,
+        }
+    ]
+
+    with pytest.raises(ValueError, match="activation witness cannot preserve following note order"):
+        force_greats_note_graph(
+            frontier_trace=trace,
+            total_notes=n,
+            timestamps=ts,
+            note_types=np.ones(n, dtype=np.int16),
+        )
 
 
 def test_fg_note_graph_marks_fever_end_witness():
@@ -1025,3 +1212,69 @@ def test_note_graph_lower_edges_are_reachable_not_the_exclusive_edge():
     # ms below the Perfect-low (-19 / -39): a visible gap, and never overlapping the Perfect band.
     assert g_tap_hi == -20 and g_tail_hi == -40, (g_tap_hi, g_tail_hi)
     assert g_tap_hi < p_tap_lo and g_tail_hi < p_tail_lo
+
+
+def test_preemptor_delay_reaches_partners_behind_delayed_sibling() -> None:
+    """Regression (Aurora 47,502,676 witness): the forward preemptor-delay scan must not stop at
+    a delayed same-time forced-Great sibling.
+
+    Press times are not monotone over chart order once a witness is delayed: the bundle sibling
+    at the activation's own late edge already satisfies the ordering requirement, but the
+    still-on-time chord partners BEHIND it would press before the activation and steal the fill
+    crossing (the engine activates fever on their Perfect fill, ending the window early). The
+    scan must delay every window note whose press precedes the chained requirement, and stop
+    only on the chart-time bound.
+    """
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        _mark_activation_preemptor_order_deltas,
+    )
+
+    nt = np.asarray([1, 1, 1, 1, 1], dtype=np.int16)
+    notes = [
+        {"note_index": 0, "hit_time_ms": 96017.0, "note_result": "Great", "delta_ms": 189.999},
+        {"note_index": 1, "hit_time_ms": 96017.0, "note_result": "Great", "delta_ms": 189.999},
+        {"note_index": 2, "hit_time_ms": 96180.0, "note_result": "Perfect", "delta_ms": 0.0},
+        {"note_index": 3, "hit_time_ms": 96180.0, "note_result": "Perfect", "delta_ms": 0.0},
+        {"note_index": 4, "hit_time_ms": 97000.0, "note_result": "Perfect", "delta_ms": 0.0},
+    ]
+    _mark_activation_preemptor_order_deltas(
+        notes, frontier_trace=[{"activation_index": 0}], total_notes=5, note_types=nt
+    )
+
+    required_delta = (96017.0 + 189.999) - 96180.0  # press at/after the activation hit
+    assert float(notes[2]["delta_ms"]) >= required_delta, notes[2]  # was 0.0 pre-fix (break at sibling)
+    assert float(notes[3]["delta_ms"]) >= required_delta, notes[3]
+    assert float(notes[2]["delta_ms"]) <= 40.0  # stays a legal Perfect
+    assert float(notes[3]["delta_ms"]) <= 40.0
+    assert float(notes[4]["delta_ms"]) == 0.0  # beyond the 200ms chart window: untouched
+
+
+def test_activation_preemptor_order_deltas_are_lane_scoped_when_lanes_are_supplied():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        _mark_activation_preemptor_order_deltas,
+    )
+
+    nt = np.asarray([1, 1], dtype=np.int16)
+    notes = [
+        {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": 190.0},
+        {"note_index": 1, "hit_time_ms": 1160.0, "note_result": "Perfect", "delta_ms": 0.0},
+    ]
+
+    _mark_activation_preemptor_order_deltas(
+        notes,
+        frontier_trace=[{"activation_index": 0}],
+        total_notes=2,
+        note_types=nt,
+        lanes=np.asarray([1, 2], dtype=np.int32),
+    )
+    assert float(notes[1]["delta_ms"]) == 0.0
+
+    _mark_activation_preemptor_order_deltas(
+        notes,
+        frontier_trace=[{"activation_index": 0}],
+        total_notes=2,
+        note_types=nt,
+        lanes=np.asarray([1, 1], dtype=np.int32),
+    )
+    assert float(notes[1]["delta_ms"]) >= 30.0
+    assert float(notes[1]["delta_ms"]) <= 40.0

@@ -307,7 +307,11 @@ def test_consolidated_owners_match_the_legacy_inline_formulas():
     # The DRY consolidation routed _action_table's fill and both the search compaction + reconstruct
     # mirror's late-Great math through perfect_fill_crossing_offset / late_great_activation_prefix.
     # Pin those single owners to the EXACT legacy inline formulas they replaced, so a future edit to a
-    # helper that diverges from the shipped (bit-exact-verified) behavior is caught here.
+    # helper that diverges from the shipped (bit-exact-verified) behavior is caught here. The
+    # first-section `prefix == fill` placement is deliberately IN scope: the P/G brute-force oracle
+    # realizes it (pure run, activation Great crossing on the run's end), so a cap to `fill - 1`
+    # under-reports (record 16.28's cap direction was refuted; the fixture phantoms were the
+    # region-2 normal edges, gated by perfect_crossing_is_region3 instead).
     from math import ceil
 
     for raw_i in range(20, 6000, 11):
@@ -328,3 +332,124 @@ def test_consolidated_owners_match_the_legacy_inline_formulas():
                 assert late_great_activation_prefix(fill, k, first=first, fever_fill_denom=raw) == legacy, (
                     raw, k, first, fill,
                 )
+
+
+def test_weighted_reachability_discrete_fill_grid_fractional_denom():
+    # External-review witness (record 16.35): pre-activation fill is a DISCRETE subset sum, not
+    # continuous capacity. With an all-Perfect optional pool the sums live on the integer grid,
+    # and a Great activation's width-0.5 window [denom-0.5, denom) with frac(denom) in (0.5, 1)
+    # dodges every integer -- the old scalar check over-accepted exactly there.
+    import numpy as np
+
+    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+        activation_hit_is_reachable_weighted_lane_aware,
+    )
+
+    n = 5
+    a = 3
+    h_a = 1.0
+    lanes = np.arange(n, dtype=np.int32)  # all distinct lanes: no lane-order constraints
+    lo = np.zeros(n, dtype=np.float32)    # every window already open at h_a
+    hi = np.full(n, 2.0, dtype=np.float32)  # every window still open at h_a -> all optional
+
+    def reachable(units):
+        return activation_hit_is_reachable_weighted_lane_aware(
+            activation_index=a,
+            activation_hit_timestamp=h_a,
+            low_hit_timestamps=lo,
+            high_hit_timestamps=hi,
+            lanes=lanes,
+            fill_units=np.asarray(units, dtype=np.float32),
+            fever_fill_denom=2.75,
+            section_start=0,
+            section_end=n,
+        )
+
+    # All-Perfect optional pool: achievable S in {0,1,2,3,4}; window [2.25, 2.75) has no integer.
+    assert reachable([1.0, 1.0, 1.0, 0.5, 1.0]) is False
+    # One optional Great restores the 0.5-grid: S = 2.5 lands inside the window.
+    assert reachable([1.0, 0.5, 1.0, 0.5, 1.0]) is True
+    # Perfect activation (unit 1.0): width-1.0 window always contains an integer-grid point.
+    assert reachable([1.0, 1.0, 1.0, 1.0, 1.0]) is True
+
+
+def test_weighted_reachability_discrete_fill_respects_forced_offset():
+    # Forced fill shifts the window; the optional grid must still land inside it. Forced note 0
+    # (window closed before h_a) contributes 1.0; needed optional = [1.25, 1.75) -> integer grid
+    # misses, half-grid hits.
+    import numpy as np
+
+    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+        activation_hit_is_reachable_weighted_lane_aware,
+    )
+
+    n = 5
+    a = 3
+    lanes = np.arange(n, dtype=np.int32)
+    lo = np.zeros(n, dtype=np.float32)
+    hi = np.full(n, 2.0, dtype=np.float32)
+    hi[0] = 0.5  # closes before h_a = 1.0 -> forced
+
+    def reachable(units):
+        return activation_hit_is_reachable_weighted_lane_aware(
+            activation_index=a,
+            activation_hit_timestamp=1.0,
+            low_hit_timestamps=lo,
+            high_hit_timestamps=hi,
+            lanes=lanes,
+            fill_units=np.asarray(units, dtype=np.float32),
+            fever_fill_denom=2.75,
+            section_start=0,
+            section_end=n,
+        )
+
+    assert reachable([1.0, 1.0, 1.0, 0.5, 1.0]) is False
+    assert reachable([1.0, 0.5, 1.0, 0.5, 1.0]) is True
+
+
+def test_weighted_reachability_same_lane_optional_prefix_closure():
+    # External-review round 2 (record 16.36): optional fill is PREFIX-CLOSED per lane under
+    # earliest-hittable-first -- hitting a later same-lane optional note before the activation
+    # requires hitting every earlier same-lane optional note first. The lone optional half-unit
+    # behind a same-lane Perfect is therefore NOT selectable alone: choosing it forces +1.5, and
+    # a window needing exactly +0.5 must be infeasible.
+    import numpy as np
+
+    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+        activation_hit_is_reachable_weighted_lane_aware,
+    )
+
+    # denom 2.25, Great activation (unit 0.5): S_opt window = [1.75, 2.25). forced = 0.
+    # Optional pool: lane1 = [P(1.0), G(0.5)] (prefix sums {0, 1.0, 1.5}), lane2 = [P(1.0)]
+    # ({0, 1.0}). Achievable S_opt = {0, 1, 1.5, 2, 2.5}: 2.0 lands in the window -> True; but
+    # with lane2 absent, achievable = {0, 1, 1.5}: nothing in [1.75, 2.25) -> False, even though
+    # the FREE subset grid (0.5-grid up to 1.5... and scalar capacity 1.5 < 1.75) also fails.
+    # Sharper witness: window [1.25, 1.75) (denom 1.75): free grid says S_opt = 1.5 works only if
+    # the half-unit were selectable WITH the Perfect (1.5 = P+G ✓ prefix-closed too) -> True; and
+    # window [0.25, 0.75) (denom 0.75... too small). Use the canonical shape: G alone needed.
+    n = 4
+    a = 3
+    h_a = 1.0
+    lo = np.zeros(n, dtype=np.float32)
+    hi = np.full(n, 2.0, dtype=np.float32)
+
+    def reachable(units, lanes, denom):
+        return activation_hit_is_reachable_weighted_lane_aware(
+            activation_index=a,
+            activation_hit_timestamp=h_a,
+            low_hit_timestamps=lo,
+            high_hit_timestamps=hi,
+            lanes=np.asarray(lanes, dtype=np.int32),
+            fill_units=np.asarray(units, dtype=np.float32),
+            fever_fill_denom=float(denom),
+            section_start=0,
+            section_end=n,
+        )
+
+    # Window [0.5, 1.0): needs S_opt = 0.5 exactly (0.5-grid). The only half-unit (note 1) sits
+    # BEHIND a same-lane Perfect (note 0): its smallest prefix including it is 1.5 -> infeasible.
+    assert reachable([1.0, 0.5, 1.0, 0.5], [1, 1, 2, 0], 1.0) is False
+    # Same pool but the half-unit leads its lane: prefix {0, 0.5, 1.5} -> 0.5 feasible.
+    assert reachable([0.5, 1.0, 1.0, 0.5], [1, 1, 2, 0], 1.0) is True
+    # Cross-lane independence: the half-unit alone on its own lane is selectable.
+    assert reachable([1.0, 0.5, 1.0, 0.5], [1, 2, 3, 0], 1.0) is True

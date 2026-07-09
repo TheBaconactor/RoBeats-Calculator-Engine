@@ -51,6 +51,9 @@ def fg_response_frontier_song_cache_key(calc_song: dict[str, Any]) -> tuple:
     # Issue #44: the early-Great floor is part of the frontier inputs, so it joins the cache key.
     # Pre-#44 bundles (built without the early-Great surfaces) thus cannot be silently reused.
     great_floor = np.asarray(song_inputs.great_floor, dtype=np.float32).reshape(-1)
+    lanes = np.asarray(song_inputs.lanes, dtype=np.int32).reshape(-1)
+    if int(lanes.shape[0]) != int(timestamps.shape[0]):
+        raise ValueError("FG response lanes length must match timestamps")
     return (
         int(song_inputs.total_notes),
         int(song_inputs.long_notes),
@@ -61,6 +64,7 @@ def fg_response_frontier_song_cache_key(calc_song: dict[str, Any]) -> tuple:
         bytes(array_sig16(great_candidates)),
         bytes(array_sig16(perfect_floor)),
         bytes(array_sig16(great_floor)),
+        bytes(array_sig16(lanes)),
     )
 
 

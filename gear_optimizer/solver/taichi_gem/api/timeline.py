@@ -269,6 +269,12 @@ _frontier_payload_cache_lock = threading.RLock()
 # boundary (-20/-40 -> -19/-39). timing_envelope.py is NOT in _TIMELINE_DP_SOURCE, so this explicit
 # bump is what invalidates the stale (1ms-over-generous) base fever-membership floor. Re-solve to
 # re-persist best_score.
+# NOTE (2026-07-07, input-engine workstream): lane identity is deliberately NOT part of this key
+# and the base DP stays lane-blind. That is CORRECT for the all-Perfect base family: follower
+# reachability binds only through label-window uppers regardless of lane (physically validated via
+# game_sim), and prefix carry anchors are always achievable because the engine permits pressing a
+# later same-lane note while an earlier hold is held (NoteSystem.pressLane skips Holding notes) and
+# same-window taps cannot inflate the carry. See INPUT_ENGINE_AWARE_FEVER_REACHABILITY.md 16.25.
 _FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v11"
 _TIMELINE_DP_SOURCE = Path(__file__).resolve().parents[2] / "timeline_exact_frontier.py"
 _FRONTIER_DISK_CACHE_VERSION = (

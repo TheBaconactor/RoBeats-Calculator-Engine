@@ -153,16 +153,52 @@ def perfect_fill_crossing_offset(fever_fill_denom: float, k: int, first: bool) -
     return int(fill if not bool(first) else max(0, fill - 1))
 
 
+def perfect_crossing_is_region3(fill: int, k: int, first: bool, fever_fill_denom: float) -> bool:
+    """Whether the Perfect-activation (normal) edge for action ``k`` at offset ``fill`` is the
+    region-3 crossing -- the placement the prefix family actually models: ``k`` forced Greats
+    packed at the section's first accumulating slot, then Perfects, then the PERFECT activation
+    at offset ``fill``.
+
+    Two conditions, both required (record 16.28 follow-up: the fixture's phantom family is the
+    normal edges of rows violating them):
+
+    * the forced run must FIT before the activation: ``k <= slots`` where ``slots`` is the number
+      of accumulating notes before the activation (``fill`` on a first section, ``fill - 1`` on a
+      later one -- the wasted note does not accumulate);
+    * the bar must still be short of full after every pre-activation note: ``slots - 0.5*k <
+      denom`` (otherwise the crossing happened ON a Great inside the run -- region 2, which is the
+      region-run family's placement, priced there with lane-aware reachability).
+
+    The matching upper bound (``denom <= bar_before + 1``) holds by construction for any ``fill``
+    produced by :func:`perfect_fill_crossing_offset` for the same ``k``.
+    """
+    denom = float(fever_fill_denom)
+    if denom <= 0.0:
+        raise ValueError("fever_fill_denom must be > 0 (a real fill denominator)")
+    if int(k) <= 0:
+        return True
+    slots = int(fill) if bool(first) else int(fill) - 1
+    if int(k) > int(slots):
+        return False
+    return float(slots) - 0.5 * float(int(k)) < denom
+
+
 def late_great_activation_prefix(fill: int, k: int, first: bool, fever_fill_denom: float) -> int | None:
     """Canonical forced-Great PREFIX for a late-Great activation, or ``None`` if a late-Great is
     illegal there (a Perfect crosses first -> phantom over-report) -- the ONE owner of the late-Great
     placement math that BOTH the search compaction (``_compact_first_frontier_action_arrays``) and the
-    reconstruct mirror (``_edge_surface_options``) consume, so the ``min(k-1, fill - wasted)`` +
+    reconstruct mirror (``_edge_surface_options``) consume, so the prefix cap +
     :func:`late_great_prefix_is_legal` pair is written once.
 
     ``prefix`` is the number of forced Greats before the activation Great; the section burns one wasted
     note on later sections (``wasted = 1``) and none on the first (``wasted = 0``).  Returns ``None``
     for ``k <= 0`` (no forced Great to activate on).
+
+    The first-section ``prefix == fill`` placement (every pre-activation slot a Great, the
+    activation Great crossing on the run's end) is LEGAL and required: the P/G brute-force oracle
+    realizes it and the reconstruct mirror re-finds it (record 16.28's cap-to-``fill - 1``
+    direction was refuted by that oracle -- the fixture phantoms were the region-2 NORMAL edges,
+    fixed by :func:`perfect_crossing_is_region3`, not this chooser).
     """
     if int(k) <= 0:
         return None
@@ -173,122 +209,118 @@ def late_great_activation_prefix(fill: int, k: int, first: bool, fever_fill_deno
     return None
 
 
-def late_great_activation_is_reachable(
+def activation_hit_is_reachable_weighted_lane_aware(
+    *,
     activation_index: int,
-    timestamps: Sequence[float] | np.ndarray,
-    perfect_candidate_timestamps: Sequence[float] | np.ndarray,
-    great_candidate_timestamps: Sequence[float] | np.ndarray,
-    n: int,
+    activation_hit_timestamp: float,
+    low_hit_timestamps: Sequence[float] | np.ndarray,
+    high_hit_timestamps: Sequence[float] | np.ndarray,
+    lanes: Sequence[int] | np.ndarray,
+    fill_units: Sequence[float] | np.ndarray,
+    fever_fill_denom: float,
+    section_start: int,
+    section_end: int,
 ) -> bool:
-    """HIT-TIME-ORDER reachability of a late-Great activation the INDEX gate already accepted.
+    """Canonical full-combo activation reachability for one concrete hit time.
 
-    :func:`late_great_prefix_is_legal` counts the pre-activation fill by ARRAY INDEX; that equals the
-    physical (latest-legal-hit-order) fill ONLY where chart order == hit-time order. Inside an overlap
-    window (a same-timestamp chord, or a wide held tail beside a narrow note ahead) they diverge, and
-    the index gate can bless an activation whose bar is actually completed FIRST by an earlier-hit
-    note -- the chord phantom (All Right There: a +198ms held-tail Great "activation" whose two
-    on-time normal siblings fill the bar at ~+40ms; DB 29,465,604 vs reachable 29,383,635).
+    This is the ONE input-engine-aware reachability owner: the fragmented lane-blind legacy gates
+    were collapsed into it (their deletion landed 2026-07-07, not merely shadowed). An activation is
+    legal only when the same weighted, lane-aware hit-time walk that the surface prices can make
+    ``activation_index`` the first note whose fill reaches the fever denominator.
 
-    Reachability is a scheduling condition: the bar, filled in hit-time order, must first reach the
-    denominator EXACTLY on the activation. A note ``j`` whose LATEST legal hit ``pc[j]`` still
-    precedes the activation Great's own latest hit ``h_a = gc[a]`` is unavoidably hit before it and
-    adds a FULL perfect-unit to the pre-activation fill. Since the index gate already placed the
-    crossing on ``a`` (pre-activation fill in ``(denom-0.5, denom]``), even ONE such unavoidable unit
-    pushes the fill past ``denom`` -> the bar completes before ``a`` -> the late Great is unreachable.
-    So the exact predicate collapses to::
-
-        reachable  <=>  NO note j (a < j, pc[j] < h_a) exists
-
-    Bounded: once chart time reaches ``h_a`` every later note's latest hit is >= ``h_a`` (windows are
-    non-negative-upper), so the scan stops there -- a small neighbourhood, never the whole section,
-    and exactly 0 iterations that matter off overlap (non-chord charts unchanged, no cost). A note
-    ahead that only *could* be hit before ``h_a`` (its earliest hit precedes it) but whose LATEST hit
-    is at/after ``h_a`` is delayable past the activation, so ``pc[j] >= h_a`` excludes it -- a
-    genuinely reachable late tail is never downgraded. This is the ONE reachability owner; the
-    vectorized :func:`build_late_great_forbidden_mask` is its whole-chart form (proven equal in
-    tests), consumed by the numba frontier build.
+    ``fill_units`` is in Perfect-fill units: Perfect = 1.0, Great = 0.5. ``low_hit_timestamps`` and
+    ``high_hit_timestamps`` are the legal hit interval for each note under the surface's chosen label.
+    A note is forced before ``activation_hit_timestamp`` if either its own latest legal hit is earlier
+    on any lane, or it is an earlier same-lane note whose hittable interval still overlaps the
+    activation hit. Other cross-lane notes hittable before ``h_a`` are optional capacity: they may be
+    scheduled before the activation if needed to reach the crossing, or delayed after it if they would
+    preempt. Later same-lane notes cannot supply pre-activation fill while ``a`` is still unhit,
+    because earliest-hittable-first would consume ``a`` first.
     """
     a = int(activation_index)
-    total = int(n)
-    # Compare in float32 -- the game (and the frontier's searchsorted end-index tables) resolve hit
-    # times in float32, so reachability must agree bit-for-bit with the numba build's clamp on the
-    # measure-zero float boundary (and be independent of whether the caller passes f32 or f64 arrays).
-    ts = np.asarray(timestamps, dtype=np.float32)
-    pc = np.asarray(perfect_candidate_timestamps, dtype=np.float32)
-    h_a = np.float32(great_candidate_timestamps[a])
-    j = a + 1
-    while j < total and ts[j] < h_a:
-        if pc[j] < h_a:
-            return False  # an earlier-hit note (chord sibling or near note-ahead) completes the bar first
-        j += 1
-    return True
+    start = int(section_start)
+    end = int(section_end)
+    denom = float(fever_fill_denom)
+    if denom <= 0.0:
+        raise ValueError("fever_fill_denom must be > 0")
+    if start < 0 or end < start:
+        raise ValueError("invalid section bounds")
 
+    lo = np.asarray(low_hit_timestamps, dtype=np.float32).reshape(-1)
+    hi = np.asarray(high_hit_timestamps, dtype=np.float32).reshape(-1)
+    lane = np.asarray(lanes, dtype=np.int32).reshape(-1)
+    units = np.asarray(fill_units, dtype=np.float32).reshape(-1)
+    total = int(lo.shape[0])
+    if int(hi.shape[0]) != total or int(lane.shape[0]) != total or int(units.shape[0]) != total:
+        raise ValueError("hit timestamps, lanes, and fill_units must have the same length")
+    if not (start <= a < end <= total):
+        raise ValueError("activation_index must be inside [section_start, section_end)")
+    unit_a = float(units[a])
+    if unit_a <= 0.0:
+        return False
 
-def build_late_great_forbidden_mask(
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    great_candidate_timestamps: np.ndarray,
-    n: int,
-) -> np.ndarray:
-    """Per-note ``forbidden[a]`` = ``not`` :func:`late_great_activation_is_reachable` -- the whole-chart
-    vectorized reachability mask the numba frontier build consumes (loadout-independent, O(n) amortized).
+    h_a = np.float32(activation_hit_timestamp)
+    activation_lane = int(lane[a])
+    forced_units = 0.0
+    optional_lane_ids: list[int] = []
+    optional_half_units: list[int] = []  # per optional note, in chart order: 1 = Great, 2 = Perfect
+    for j in range(start, end):
+        if int(j) == a:
+            continue
+        same_lane = bool(int(lane[j]) == activation_lane)
+        if same_lane and int(j) > a and hi[j] < h_a and lo[a] <= hi[j]:
+            return False
+        forced_any_lane = bool(hi[j] < h_a)
+        forced_same_lane_older = bool(same_lane and int(j) < a and lo[j] <= h_a)
+        if forced_any_lane or forced_same_lane_older:
+            forced_units += float(units[j])
+            if forced_units >= denom:
+                return False
+            continue
+        if lo[j] <= h_a:
+            if same_lane and int(j) > a:
+                continue
+            optional_lane_ids.append(int(lane[j]))
+            optional_half_units.append(1 if float(units[j]) == 0.5 else 2)
 
-    ``forbidden[a]`` is True iff some later-indexed note within ``a``'s overlap window has a latest
-    Perfect hit before ``a``'s late-Great hit ``gc[a]``. Bounded per note by the window span, so total
-    work is O(n * window) once per song, never per loadout.
-    """
-    total = int(n)
-    ts = np.asarray(timestamps, dtype=np.float32)          # float32: match the game / searchsorted tables
-    pc = np.asarray(perfect_candidate_timestamps, dtype=np.float32)
-    gc = np.asarray(great_candidate_timestamps, dtype=np.float32)
-    forbidden = np.zeros(total, dtype=bool)
-    for a in range(total):
-        h_a = gc[a]
-        j = a + 1
-        while j < total and ts[j] < h_a:
-            if pc[j] < h_a:
-                forbidden[a] = True
+    # There must exist a schedule whose pre-activation fill S = forced + S_opt satisfies
+    #   S < denom <= S + unit_a.
+    # S_opt is NOT a free subset sum: earliest-hittable-first consumes each lane in chart order,
+    # so hitting a later same-lane optional note before h_a requires hitting every earlier
+    # same-lane optional note first (their fill lands pre-activation too). The achievable S_opt
+    # set is therefore the Minkowski sum over lanes of each lane's optional PREFIX sums --
+    # computed exactly below on the half-unit integer grid (external review, record 16.36; the
+    # free-grid form over-accepted when the only half-unit sat behind a same-lane Perfect).
+    if forced_units >= denom:
+        return False
+    lo_needed = max(0.0, denom - unit_a - forced_units)
+    hi_open = denom - forced_units  # feasible S_opt window: [lo_needed, hi_open)
+    cap = int(np.ceil(2.0 * hi_open)) + 2
+    achievable = np.zeros(int(cap) + 1, dtype=np.bool_)
+    achievable[0] = True
+    for lane_id in sorted(set(optional_lane_ids)):
+        prefix_sums = [0]
+        running = 0
+        for note_lane, half_units in zip(optional_lane_ids, optional_half_units):
+            if int(note_lane) != int(lane_id):
+                continue
+            running += int(half_units)
+            if running > int(cap):
                 break
-            j += 1
-    return forbidden
-
-
-def build_reachable_perfect_candidate(
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    n: int,
-) -> np.ndarray:
-    """Per-note PERFECT-activation clock capped to the hit-time REACHABLE value.
-
-    A Perfect activation at note ``a`` extends the fever window using ``a``'s own latest legal Perfect
-    hit ``pc[a]`` (+40 normal, +80 held tail). That is UNREACHABLE when a later-indexed note ``j``
-    (within ``a``'s window) has its own latest hit ``pc[j] < pc[a]`` -- ``j`` is hit on-time FIRST and
-    completes the fever bar earlier, so the reachable clock cannot exceed ``pc[j]`` (a held-tail
-    ``+80`` activation with a narrower normal ``+40`` sibling indexed after it: the normal crosses
-    first). This caps ``pc[a]`` to that value -- the single-window analog of the base
-    :func:`gear_optimizer.solver.timeline_exact_frontier._reachable_act_hi` and the FG late-Great
-    forbid, for the PERFECT activation clock. Off overlap (no narrower later note within the window)
-    the value is UNCHANGED, so non-held-tail / distinct-timestamp charts are bit-identical.
-
-    Returns a NEW float32 array; the ORIGINAL ``perfect_candidate_timestamps`` is kept unchanged for
-    reachability CHECKS (each note's own actual latest hit, e.g. :func:`late_great_activation_is_reachable`)
-    -- only the perfect-activation WINDOW (``perfect_end_idx`` / ``_edge_end`` start-time) consumes
-    this capped clock.
-    """
-    total = int(n)
-    ts = np.asarray(timestamps, dtype=np.float32)
-    pc = np.asarray(perfect_candidate_timestamps, dtype=np.float32)
-    out = pc.copy()
-    for a in range(total):
-        h_a = pc[a]
-        cap = h_a
-        j = a + 1
-        while j < total and ts[j] < h_a:  # once chart time reaches h_a, later latest-hits are >= h_a
-            if pc[j] < cap:
-                cap = pc[j]
-            j += 1
-        out[a] = cap
-    return out
+            prefix_sums.append(int(running))
+        if len(prefix_sums) == 1:
+            continue
+        merged = np.zeros_like(achievable)
+        for p in prefix_sums:
+            merged[p:] |= achievable[: achievable.shape[0] - p] if p else achievable
+        achievable = merged
+    for s_half in range(int(cap) + 1):
+        if not achievable[int(s_half)]:
+            continue
+        s_opt = 0.5 * float(s_half)
+        if s_opt >= lo_needed and s_opt < hi_open:
+            return True
+    return False
 
 
 def server_fill_crossing(

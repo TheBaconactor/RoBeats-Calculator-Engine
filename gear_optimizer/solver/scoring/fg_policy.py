@@ -34,6 +34,7 @@ class FGSongInputs:
     great_candidates: Any
     perfect_floor: Any
     great_floor: Any
+    lanes: Any
     use_forced_great_timing: bool
     total_notes: int
     long_notes: int
@@ -99,6 +100,13 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
     except (ValueError, TypeError):
         total_notes = 0
 
+    lanes = song_data.get("lanes")
+    if lanes is None or len(lanes) != total_notes:
+        # Missing lanes are an external chart-ingest boundary. Use all-distinct lanes so reachability
+        # imposes no fabricated same-lane constraint; production call sites that require real lanes
+        # can still fail loudly when overlap makes lane identity load-bearing.
+        lanes = tuple(range(total_notes))
+
     long_notes = safe_int(metadata.get("Long Notes"), 0)
 
     base_ts = song_data.get("timestamps", timestamps)
@@ -113,6 +121,7 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
         great_candidates=great_candidates,
         perfect_floor=perfect_floor,
         great_floor=great_floor,
+        lanes=lanes,
         use_forced_great_timing=bool(use_forced_great_timing),
         total_notes=int(total_notes),
         long_notes=int(long_notes),

@@ -27,7 +27,7 @@ def _base_calc_song() -> dict[str, Any]:
             "Long Notes": 0,
             "Last Note Time": 1.0,
         },
-        "song_data": {"timestamps": [0.0, 1.0]},
+        "song_data": {"timestamps": [0.0, 1.0], "lanes": [0, 1]},
     }
 
 
@@ -107,6 +107,8 @@ def _solve_result(base_stats: dict[str, Any], *, selected_color: str) -> FgRespo
         inner=inner,
         seconds=0.0,
         forced_counts=(),
+        raw_fever_fill=1.0,
+        real_fever_time=1.0,
     )
 
 
@@ -116,7 +118,7 @@ def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[st
     monkeypatch.setattr(
         planner_mod,
         "extract_fg_song_inputs",
-        lambda _song: SimpleNamespace(total_notes=2),
+        lambda _song: SimpleNamespace(total_notes=2, lanes=[0, 1]),
     )
     monkeypatch.setattr(
         reducer_mod,
@@ -127,13 +129,19 @@ def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[st
             great_candidates=[0.0, 1.0],
             perfect_floor=[0.0, 1.0],
             great_floor=[0.0, 1.0],
+            lanes=[0, 1],
             use_forced_great_timing=True,
         ),
     )
     monkeypatch.setattr(
         reducer_mod,
         "reconstruct_force_greats_response_trace",
-        lambda **_kwargs: ({"forced_count": 1}, {"forced_count": 0}),
+        lambda **_kwargs: (
+            {"forced_count": 1, "activation_index": 0, "activation_judgment": "perfect",
+             "forced_start_index": 0, "forced_prefix_count": 0, "activation_hit_window_upper_ms": 0.0},
+            {"forced_count": 0, "activation_index": 0, "activation_judgment": "perfect",
+             "forced_start_index": 0, "forced_prefix_count": 0, "activation_hit_window_upper_ms": 0.0},
+        ),
     )
     monkeypatch.setattr(
         reducer_mod,
@@ -240,7 +248,7 @@ def test_skyline_scores_retained_candidates_through_shared_service(tmp_path: Any
     for record in records:
         payload = record["force"]
         assert record["data"]["force"] is payload
-        assert payload["ForceGreats"]["frontier_trace"] == [{"forced_count": 1}, {"forced_count": 0}]
+        assert [row["forced_count"] for row in payload["ForceGreats"]["frontier_trace"]] == [1, 0]
         assert payload["response_surface"] == [
             0,
             0,

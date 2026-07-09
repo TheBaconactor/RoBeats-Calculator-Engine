@@ -202,6 +202,8 @@ def _surface_sections(fd: dict) -> list[dict]:
                 "fever_window_end_ms": float(e.get("fever_window_end_ms", 0.0)),
                 "forced_start_index": int(e["forced_start_index"]),
                 "forced_prefix_count": int(e["forced_prefix_count"]),
+                "forced_run_start_index": int(e.get("forced_run_start_index", e["forced_start_index"])),
+                "forced_run_count": int(e.get("forced_run_count", e["forced_prefix_count"])),
                 "body_fever": int(e.get("body_fever", 0)),
                 "early_great_start": int(e.get("early_great_start", -1)),
                 "early_great_end": int(e.get("early_great_end", -1)),
@@ -228,6 +230,7 @@ def main(argv=None) -> int:
     meta = cs["metadata"]
     ts = np.asarray(sd["timestamps"])
     nt = np.asarray(sd["note_types"])
+    lanes = np.asarray(sd["lanes"])
     n = int(len(ts))
 
     note_graph = force_greats_note_graph(
@@ -235,6 +238,7 @@ def main(argv=None) -> int:
         total_notes=n,
         timestamps=ts,
         note_types=nt,
+        lanes=lanes,
         timing_mode="perfect_window",
     )
     events = _events_from_note_graph(note_graph)

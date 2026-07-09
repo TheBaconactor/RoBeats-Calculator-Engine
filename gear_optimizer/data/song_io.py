@@ -87,6 +87,17 @@ def _build_base_calc_song_from_file(fp: str) -> dict:
     if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
         song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
 
+    lanes_raw = song_data.get("lanes")
+    if isinstance(lanes_raw, np.ndarray):
+        song_lanes_np = lanes_raw.astype(np.int32, copy=False)
+    else:
+        song_lanes_np = np.asarray(lanes_raw if lanes_raw is not None else [], dtype=np.int32)
+    if song_lanes_np.shape[0] != song_timestamps_np.shape[0]:
+        # Missing/malformed lane column: fall back to all-distinct lanes (every note its own lane),
+        # which imposes NO same-lane ordering constraint -- lane-aware reachability then degenerates
+        # to the lane-blind result. Fail-safe: never fabricate a constraint that isn't in the chart.
+        song_lanes_np = np.arange(song_timestamps_np.shape[0], dtype=np.int32)
+
     # The frontier cache key (timeline._song_timing_cache_key) now derives its own
     # order-invariant signature from the live (timestamp, note-type) arrays, so no
     # precomputed load-order signature is stored here.
@@ -96,6 +107,7 @@ def _build_base_calc_song_from_file(fp: str) -> dict:
             "timestamps": song_timestamps_np,
             "chart_timestamps": song_timestamps_np,
             "note_types": song_note_types_np,
+            "lanes": song_lanes_np,
         },
     }
 
@@ -300,6 +312,12 @@ def read_song_file(fp):
         },
         "timestamps": np.empty((0,), dtype=np.float32),
         "note_types": np.empty((0,), dtype=np.int16),
+        # Column 2 (0-indexed) is the LANE/track (1..4); column 3 is the note type. Preserved for lane-aware fever
+        # reachability: same-lane notes must be HIT in time order, so an activation can only be
+        # delayed as far as its same-lane successor's window allows, and a clawed-in endpoint
+        # cannot precede its same-lane predecessor. Lane-blind reachability over-reports the fever
+        # window extension (it assumes an out-of-lane-order schedule the game cannot play).
+        "lanes": np.empty((0,), dtype=np.int16),
     }
     if not fp:
         return data
@@ -340,6 +358,9 @@ def read_song_file(fp):
                     timestamps = np.asarray(nd[:, 0], dtype=np.float32)
                     # Column 4 is the note type: 1=normal, 2=held head, 3=held tail.
                     note_types = nd[:, 3].astype(np.int16, copy=False)
+                    # Column 3 (0-indexed 2) is the lane/track (1..4). Kept for lane-aware fever
+                    # reachability (same-lane notes are hit in time order).
+                    lanes = nd[:, 2].astype(np.int16, copy=False)
                     # Canonicalize external chart order at ingest: the game exporter
                     # (SongLoggerProd) preserves the in-engine HitObjects array order, NOT
                     # chronological order -- a hold's synthesized tail (type 3) is emitted right
@@ -354,6 +375,7 @@ def read_song_file(fp):
                     order = np.argsort(timestamps, kind="stable")
                     data["timestamps"] = np.ascontiguousarray(timestamps[order])
                     data["note_types"] = np.ascontiguousarray(note_types[order])
+                    data["lanes"] = np.ascontiguousarray(lanes[order])
         return data
     except Exception as exc:
         WARN_ONCE.warn("song-file", f"Failed to read song file {fp}: {exc}")

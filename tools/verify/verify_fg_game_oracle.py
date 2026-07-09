@@ -196,8 +196,8 @@ def fever_great_masks_from_trace(
     for sec in trace:
         activation_index = int(sec["activation_index"])
         fever_end_index = int(sec["fever_end_index"])
-        forced_start = int(sec["forced_start_index"])
-        forced_prefix = int(sec["forced_prefix_count"])
+        forced_start = int(sec.get("forced_run_start_index", sec["forced_start_index"]))
+        forced_prefix = int(sec.get("forced_run_count", sec["forced_prefix_count"]))
         if activation_index < 0 or fever_end_index < activation_index or fever_end_index > total_notes:
             raise ValueError("FG trace contains an invalid activation/fever interval")
         if forced_start < 0 or forced_start + forced_prefix > total_notes:

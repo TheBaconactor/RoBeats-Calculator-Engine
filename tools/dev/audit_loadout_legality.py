@@ -1,9 +1,9 @@
 """Loadout legality / reachability audit -- the "no fake/illegal loadout" monitor.
 
 Sweeps a DB's FG loadouts and verifies EACH is REACHABLE-as-reported against the canonical
-server fill-crossing model (fill_crossing.py, validated 1:1 vs the WebPort ScoreEngine at the
-delta=0 anchors). For every fever section it checks:
+server fill-crossing model plus the weighted lane-aware input-engine owner. For every fever section it checks:
   - the reported activation index == the canonical server fill-crossing for the placement, and
+  - that activation is reachable under earliest-hittable-first lane matching, and
   - the reported fever_end is within the reachable drain range [base_e, great_e]
     (issue #42 Perfect-floor drain .. issue #44 early-Great extension).
 A section that fails is a PHANTOM (over-report): fever started on a note the bar had not yet
@@ -31,8 +31,7 @@ from gear_optimizer.data.database_codecs import _unpack_stats_after_load
 from gear_optimizer.solver.score_math import lookup_reference_py
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-    server_fill_crossing, server_fever_end, late_great_activation_is_reachable,
-    build_reachable_perfect_candidate)
+    activation_hit_is_reachable_weighted_lane_aware, server_fill_crossing, server_fever_end)
 from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
 
 _DIFF_DIRS = ("Easy", "Normal", "Hard")
@@ -56,13 +55,12 @@ def audit_fg_loadout(fg: dict, calc_song: dict, ref: dict) -> list[str]:
     n = int(len(sd["timestamps"]))
     ts = np.asarray(sd["timestamps"], np.float32)
     floor = np.asarray(sd["fg_perfect_floor_timestamps"], np.float32)
-    # Reachable PERFECT-activation clock (a held-tail +80 activation whose narrower later sibling is
-    # hit first is capped) -- the perfect drain must be measured from this, so a +80 phantom window
-    # shows a fever_end past the reachable drain.
-    rpcand = build_reachable_perfect_candidate(ts, np.asarray(sd["fg_perfect_candidate_timestamps"], np.float32), n)
     gfloor = np.asarray(sd["fg_great_floor_timestamps"], np.float32)
     pcand = np.asarray(sd["fg_perfect_candidate_timestamps"], np.float32)
     gcand = np.asarray(sd["fg_great_candidate_timestamps"], np.float32)
+    lanes = np.asarray(sd["lanes"], np.int32).reshape(-1)
+    if any(int(arr.shape[0]) != n for arr in (floor, gfloor, pcand, gcand, lanes)):
+        raise ValueError("audit timing arrays and lanes must match timestamps")
     fgp = fg["ForceGreats"]
     # Authoritative fever-window params persisted with the surface (raw_fever_fill == the server's
     # feverFillDenom; real_fever_time == fever duration s). Older DBs carry the _debug_ variants.
@@ -76,31 +74,49 @@ def audit_fg_loadout(fg: dict, calc_song: dict, ref: dict) -> list[str]:
     state = -1
     for e in trace:
         sec = e["section"]; fs = int(e["forced_start_index"]); pc = int(e["forced_prefix_count"])
+        run_start = int(e.get("forced_run_start_index", fs))
+        run_count = int(e.get("forced_run_count", pc))
         ra = int(e["activation_index"]); re = int(e["fever_end_index"]); j = e["activation_judgment"]
         start = fs if sec == 1 else state + 1
-        ig = np.zeros(n, bool); ig[fs:fs + pc] = True
+        run_end = min(n, max(0, run_start) + max(0, run_count))
+        ig = np.zeros(n, bool); ig[max(0, run_start):run_end] = True
         if j == "late_great" and ra < n:
             ig[ra] = True
         cross, is_g = server_fill_crossing(ig, raw, start=start, n=n)
         if cross is None:
             viol.append(f"sec{sec}: reported {j}@{ra} but the bar never fills (unreachable)")
             state = re; continue
-        hit = float(gcand[cross]) if is_g else float(rpcand[cross])  # perfect: reachable (capped) clock
+        lo = floor.copy()
+        hi = pcand.copy()
+        units = np.ones((n,), dtype=np.float32)
+        if run_end > max(0, run_start):
+            lo[max(0, run_start):run_end] = gfloor[max(0, run_start):run_end]
+            hi[max(0, run_start):run_end] = gcand[max(0, run_start):run_end]
+            units[max(0, run_start):run_end] = np.float32(0.5)
+        if is_g and cross < n:
+            lo[cross] = gfloor[cross]
+            hi[cross] = gcand[cross]
+            units[cross] = np.float32(0.5)
+        hit = float(gcand[cross]) if is_g else float(pcand[cross])
         base_e = server_fever_end(floor, hit, rft, cross, n=n)
         great_e = server_fever_end(gfloor, hit, rft, cross, n=n)
         kind = "late_great" if is_g else "perfect"
-        # server_fill_crossing walks ARRAY-INDEX order, which equals the physical HIT-TIME order only
-        # where chart order == latest-legal-hit order. A late-Great activation the index walk blesses
-        # can still be a hit-time PHANTOM: a same-timestamp sibling (or on-time note-ahead) whose
-        # latest legal hit precedes the Great's late hit is hit FIRST and completes the bar earlier
-        # (the chord phantom, e.g. All Right There). This is the check the old index-only oracle could
-        # not make -- it now uses the same reachability owner the producer enforces.
-        reachable = kind != "late_great" or late_great_activation_is_reachable(int(cross), ts, pcand, gcand, n)
+        reachable = activation_hit_is_reachable_weighted_lane_aware(
+            activation_index=int(cross),
+            activation_hit_timestamp=float(hit),
+            low_hit_timestamps=lo,
+            high_hit_timestamps=hi,
+            lanes=lanes,
+            fill_units=units,
+            fever_fill_denom=float(raw),
+            section_start=int(start),
+            section_end=n,
+        )
         if cross != ra or kind != j:
             viol.append(f"sec{sec}: reported {j}@{ra} but canonical crossing is {kind}@{cross} (PHANTOM activation)")
         elif not reachable:
-            viol.append(f"sec{sec}: late_great@{ra} is index-legal but HIT-TIME unreachable -- an "
-                        f"earlier-hit same-timestamp sibling / on-time note-ahead completes the bar first (PHANTOM)")
+            viol.append(f"sec{sec}: {kind}@{ra} is index-legal but input-engine unreachable under "
+                        f"weighted lane-aware fill (PHANTOM activation)")
         elif not (base_e <= re <= great_e):
             viol.append(f"sec{sec}: fever_end {re} outside reachable drain [{base_e},{great_e}] (PHANTOM drain)")
         state = re

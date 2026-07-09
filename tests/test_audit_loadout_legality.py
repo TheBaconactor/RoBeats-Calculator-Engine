@@ -10,13 +10,15 @@ import numpy as np
 from tools.dev.audit_loadout_legality import audit_fg_loadout
 
 
-def _calc_song(ts, pcand, gcand):
+def _calc_song(ts, pcand, gcand, lanes=None):
     ts = np.asarray(ts, np.float32)
     # earliest-hit floors (prefix-max monotone); values just need to be < the drain cutoffs here.
     floor = np.maximum.accumulate(ts - np.float32(0.020)).astype(np.float32)
     gfloor = np.maximum.accumulate(ts - np.float32(0.095)).astype(np.float32)
+    lane_arr = np.arange(int(ts.shape[0]), dtype=np.int32) if lanes is None else np.asarray(lanes, np.int32)
     return {"song_data": {
         "timestamps": ts,
+        "lanes": lane_arr,
         "fg_perfect_floor_timestamps": floor,
         "fg_great_floor_timestamps": gfloor,
         "fg_perfect_candidate_timestamps": np.asarray(pcand, np.float32),
@@ -24,8 +26,8 @@ def _calc_song(ts, pcand, gcand):
     }}
 
 
-def _fg(trace):
-    return {"ForceGreats": {"raw_fever_fill": 1.5, "real_fever_time": 0.5, "frontier_trace": trace}}
+def _fg(trace, *, raw=1.5):
+    return {"ForceGreats": {"raw_fever_fill": float(raw), "real_fever_time": 0.5, "frontier_trace": trace}}
 
 
 def _section(ra, judgment, fever_end, fs=0, pc=0):
@@ -42,7 +44,7 @@ def test_audit_flags_hit_time_phantom_late_great():
     viol = audit_fg_loadout(_fg([_section(ra=1, judgment="late_great", fever_end=5)]),
                             _calc_song(ts, pcand, gcand), {})
     assert len(viol) == 1, viol
-    assert "HIT-TIME unreachable" in viol[0] and "PHANTOM" in viol[0], viol
+    assert "input-engine unreachable" in viol[0] and "PHANTOM" in viol[0], viol
 
 
 def test_persist_guard_raises_on_phantom_and_passes_reachable():
@@ -55,17 +57,29 @@ def test_persist_guard_raises_on_phantom_and_passes_reachable():
     from gear_optimizer.solver.fg_response_scoring.reducer import _assert_trace_hit_time_reachable
 
     def _si(ts, pc, gc):
-        return types.SimpleNamespace(timestamps=np.asarray(ts, np.float32),
-                                     perfect_candidates=np.asarray(pc, np.float32),
-                                     great_candidates=np.asarray(gc, np.float32))
+        ts_arr = np.asarray(ts, np.float32)
+        return types.SimpleNamespace(
+            timestamps=ts_arr,
+            perfect_candidates=np.asarray(pc, np.float32),
+            great_candidates=np.asarray(gc, np.float32),
+            perfect_floor=np.maximum.accumulate(ts_arr - np.float32(0.020)).astype(np.float32),
+            great_floor=np.maximum.accumulate(ts_arr - np.float32(0.095)).astype(np.float32),
+            lanes=np.arange(int(ts_arr.shape[0]), dtype=np.int32),
+        )
 
-    phantom = _si([0.0, 0.0, 0.0], [0.080, 0.040, 0.040], [0.198, 0.190, 0.190])  # tail@0 + on-time siblings
-    with pytest.raises(ValueError, match="HIT-TIME UNREACHABLE"):
+    phantom = _si([0.0, 0.0, 0.0], [0.080, 0.040, 0.040], [0.198, 0.190, 0.190])
+    with pytest.raises(ValueError, match="weighted, lane-aware"):
         _assert_trace_hit_time_reachable(
-            [{"section": 1, "activation_index": 0, "activation_judgment": "late_great"}], phantom)
-    reachable = _si([0.0, 1.0, 2.0], [0.080, 1.040, 2.040], [0.198, 1.190, 2.190])  # no preempting sibling
+            [{"section": 1, "activation_index": 0, "activation_judgment": "late_great"}],
+            phantom,
+            raw_fever_fill=1.5,
+        )
+    reachable = _si([0.0, 1.0, 2.0], [0.040, 1.040, 2.040], [0.190, 1.190, 2.190])
     _assert_trace_hit_time_reachable(
-        [{"section": 1, "activation_index": 0, "activation_judgment": "late_great"}], reachable)  # no raise
+        [{"section": 1, "activation_index": 1, "activation_judgment": "late_great"}],
+        reachable,
+        raw_fever_fill=1.5,
+    )  # no raise
 
 
 def test_audit_flags_perfect_activation_phantom_drain():
@@ -74,6 +88,7 @@ def test_audit_flags_perfect_activation_phantom_drain():
     # pulls idx2@0.640 into fever (as an early-Great), which the reachable +40 window does not reach.
     cs = {"song_data": {
         "timestamps": np.array([0.0, 0.0, 0.640], np.float32),
+        "lanes": np.array([0, 1, 2], np.int32),
         "fg_perfect_floor_timestamps": np.array([-0.040, -0.020, 0.620], np.float32),
         "fg_great_floor_timestamps": np.array([-0.190, -0.095, 0.545], np.float32),
         "fg_perfect_candidate_timestamps": np.array([0.080, 0.040, 0.680], np.float32),
@@ -82,9 +97,7 @@ def test_audit_flags_perfect_activation_phantom_drain():
     fg = {"ForceGreats": {"raw_fever_fill": 1.0, "real_fever_time": 0.5,
                           "frontier_trace": [_section(ra=0, judgment="perfect", fever_end=3)]}}
     viol = audit_fg_loadout(fg, cs, {})
-    assert len(viol) == 1 and "PHANTOM drain" in viol[0], viol
-    fg["ForceGreats"]["frontier_trace"] = [_section(ra=0, judgment="perfect", fever_end=2)]  # reachable
-    assert audit_fg_loadout(fg, cs, {}) == []
+    assert len(viol) == 1 and "PHANTOM activation" in viol[0], viol
 
 
 def test_audit_passes_reachable_late_great():

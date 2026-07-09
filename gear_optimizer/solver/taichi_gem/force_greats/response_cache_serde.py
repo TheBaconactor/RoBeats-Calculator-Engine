@@ -257,12 +257,29 @@ def frontier_result_from_scoring_bundle(
     first_start = int(scoring_bundle.frontier_offsets[idx])
     first_count = int(scoring_bundle.frontier_lengths[idx])
     row = meta[idx]
-    return FgResponseFrontierResult(
-        first_frontier=_LazyResponseFirstFrontier(
+    words = np.asarray(scoring_bundle.surface_words)
+    if int(words.shape[0]) > 0:
+        # In-memory bundle (e.g. session-box pruned): its offsets index the IN-MEMORY arrays, not
+        # the disk sidecar -- serve the frontier eagerly from them. The disk-lazy path below would
+        # silently read the wrong rows for a compacted bundle.
+        counts = np.asarray(scoring_bundle.surface_counts)
+        segment_words = words[first_start : first_start + first_count]
+        segment_counts = counts[first_start : first_start + first_count]
+        rows7 = np.empty((int(first_count), 7), dtype=np.uint64)
+        rows7[:, 0] = segment_words[:, 0].astype(np.uint64) | (segment_words[:, 1].astype(np.uint64) << np.uint64(32))
+        rows7[:, 1] = segment_words[:, 2].astype(np.uint64) | (segment_words[:, 3].astype(np.uint64) << np.uint64(32))
+        rows7[:, 2] = segment_words[:, 4].astype(np.uint64) | (segment_words[:, 5].astype(np.uint64) << np.uint64(32))
+        rows7[:, 3] = segment_words[:, 6].astype(np.uint64) | (segment_words[:, 7].astype(np.uint64) << np.uint64(32))
+        rows7[:, 4:7] = segment_counts.astype(np.uint64)
+        first_frontier = SurfaceRowsFirstFrontier(rows7)
+    else:
+        first_frontier = _LazyResponseFirstFrontier(
             bundle_key=scoring_bundle.cache_key,
             first_start=int(first_start),
             first_count=int(first_count),
-        ),
+        )
+    return FgResponseFrontierResult(
+        first_frontier=first_frontier,
         state_frontiers={},
         states_evaluated=int(row[0]),
         actions=int(row[1]),

@@ -798,6 +798,13 @@ def _propagate_band_to_group(
 def _reachable_act_hi(ctx, activation_group: int, act_hi: int) -> int:
     """Cap the largest-cushion activation clock to the hit-time REACHABLE value.
 
+    CANONICAL BASE OWNER, not legacy (record 16.25/16.38): this is the base path's single-window
+    activation cap, physically validated (press-during-hold + lane-blind follower semantics) and
+    kept lane-blind BY PROOF -- label-window uppers bind regardless of lane because the
+    fill-preemption headroom is below the smallest fill unit, the same argument that closed the
+    FG cap review (16.38). Handoff language describing deleted legacy predicates refers to the FG
+    reachability gates collapsed in the 2026-07-07 hygiene sweep, not to this function.
+
     Base is all-Perfect, so each note's only latest legal hit is ``group_base_t_ms[g] +
     group_high_ms[g]`` and the fever bar completes on the ``fill_count``-th note IN LATEST-LEGAL-HIT
     ORDER (the decompiled server processes hits in physical time order -- see
@@ -810,9 +817,9 @@ def _reachable_act_hi(ctx, activation_group: int, act_hi: int) -> int:
     preempted note). A note ``j`` (index after ``g_act``) whose LATEST hit still precedes the clock
     ``h_a`` cannot be delayed past the activation, so the reachable clock cannot exceed its hit.
 
-    This is the single-window analog of the FG owner
-    :func:`gear_optimizer.solver.taichi_gem.force_greats.fill_crossing.late_great_activation_is_reachable`
-    (which, having two windows, FORBIDS rather than caps). Only the LATE edge is capped; ``act_lo``
+    This is the single-window analog of the FG reachability owner
+    :func:`gear_optimizer.solver.taichi_gem.force_greats.fill_crossing.activation_hit_is_reachable_weighted_lane_aware`
+    (a full-combo hit-time reachability predicate rather than a cap). Only the LATE edge is capped; ``act_lo``
     is untouched. Off overlap the forward scan runs 0 effective iterations (the next group's chart
     time is already ``>= h_a``), so ``act_hi`` is returned unchanged -- distinct-timestamp charts are
     bit-identical.
