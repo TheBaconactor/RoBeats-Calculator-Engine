@@ -2748,6 +2748,14 @@ def _numba_region2_packet_queue_push_activation(
     great_floor_timestamps,
     lanes,
     real_fever_time: float,
+    region_starts,
+    region_offsets,
+    region_activations,
+    region_great_ends,
+    region_is_greats,
+    region_act_hits,
+    region_perfect_hits,
+    region_perfect_valids,
     back_alpha,
     back_packet,
     back_aggregate,
@@ -2763,23 +2771,65 @@ def _numba_region2_packet_queue_push_activation(
     if int(section_start) < 0 or int(section_start) >= int(n):
         return
 
-    activation_i, edge_e, run_start, great_end, activation_great_idx, activation_hit, valid = (
-        _numba_region_run_edge_for_offset(
-            int(n),
-            int(section_start),
-            int(region_offset),
-            int(k),
-            float(raw_fever_fill),
-            timestamps,
-            candidate_high_delta_max,
-            perfect_floor_timestamps,
-            perfect_candidate_timestamps,
-            great_floor_timestamps,
-            great_candidate_timestamps,
-            lanes,
-            float(real_fever_time),
+    # Shared-core lookup: the great-branch region-run core (great_end, capped hits) is a pure
+    # function of (section_start, run_start, activation) -- k participates only via the
+    # within-run test of the fill crossing -- so a stored CSR entry matching (offset, activation,
+    # is_great) with the activation inside THIS push's k-run is byte-identical to re-deriving the
+    # core live. Entries the table's fits-in-chart guard skipped (clamped near-end runs) miss the
+    # lookup and take the exact live path below, preserving current emitted frontiers verbatim.
+    push_run_start = int(section_start) + int(region_offset)
+    looked_up = 0
+    activation_i = -1
+    edge_e = -1
+    run_start = -1
+    great_end = -1
+    activation_great_idx = -1
+    activation_hit = 0.0
+    valid = 0
+    for entry_idx in range(int(region_starts[int(section_start)]), int(region_starts[int(section_start) + 1])):
+        if (
+            int(region_offsets[int(entry_idx)]) == int(region_offset)
+            and int(region_activations[int(entry_idx)]) == int(activation)
+            and int(region_is_greats[int(entry_idx)]) == 1
+            and int(region_activations[int(entry_idx)]) < int(push_run_start) + int(k)
+        ):
+            activation_i, edge_e, run_start, great_end, activation_great_idx, activation_hit, valid = (
+                _numba_region_run_edge_from_core(
+                    int(n),
+                    int(section_start),
+                    int(region_offset),
+                    int(region_activations[int(entry_idx)]),
+                    int(region_great_ends[int(entry_idx)]),
+                    1,
+                    float(region_act_hits[int(entry_idx)]),
+                    float(region_perfect_hits[int(entry_idx)]),
+                    int(region_perfect_valids[int(entry_idx)]),
+                    1,
+                    float(real_fever_time),
+                    perfect_floor_timestamps,
+                    great_floor_timestamps,
+                )
+            )
+            looked_up = 1
+            break
+    if int(looked_up) == 0:
+        activation_i, edge_e, run_start, great_end, activation_great_idx, activation_hit, valid = (
+            _numba_region_run_edge_for_offset(
+                int(n),
+                int(section_start),
+                int(region_offset),
+                int(k),
+                float(raw_fever_fill),
+                timestamps,
+                candidate_high_delta_max,
+                perfect_floor_timestamps,
+                perfect_candidate_timestamps,
+                great_floor_timestamps,
+                great_candidate_timestamps,
+                lanes,
+                float(real_fever_time),
+            )
         )
-    )
     if int(valid) == 0 or int(activation_great_idx) < 0 or int(activation_i) != int(activation):
         return
 
@@ -3264,6 +3314,14 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     perfect_floor_timestamps,
     great_floor_timestamps,
     lanes,
+    region_starts,
+    region_offsets,
+    region_activations,
+    region_great_ends,
+    region_is_greats,
+    region_act_hits,
+    region_perfect_hits,
+    region_perfect_valids,
     prefix_perfect_hit,
     prefix_perfect_valid,
     prefix_late_hit,
@@ -3420,6 +3478,14 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                         great_floor_timestamps,
                         lanes,
                         float(real_fever_time),
+                        region_starts,
+                        region_offsets,
+                        region_activations,
+                        region_great_ends,
+                        region_is_greats,
+                        region_act_hits,
+                        region_perfect_hits,
+                        region_perfect_valids,
                         region_back_alpha_by_family[int(family_idx)],
                         region_back_packet_by_family[int(family_idx)],
                         region_back_aggregate_by_family[int(family_idx)],
@@ -3823,6 +3889,14 @@ def _first_frontier_from_precomputed_end_indices_numba(
         perfect_floor_timestamps,
         great_floor_timestamps,
         lanes,
+        region_starts,
+        region_offsets,
+        region_activations,
+        region_great_ends,
+        region_is_greats,
+        region_act_hits,
+        region_perfect_hits,
+        region_perfect_valids,
         prefix_perfect_hit,
         prefix_perfect_valid,
         prefix_late_hit,
