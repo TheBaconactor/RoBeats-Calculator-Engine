@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import threading
 
 import numpy as np
 
@@ -11,6 +12,84 @@ from .response_build_gpu_surfaces import SurfaceRowsFirstFrontier
 from .response_types import FgResponseFrontierResult
 
 _FIRST_ONLY_REDUCER_THREADS = max(1, int(os.cpu_count() or 1))
+
+# Reset a stamp workspace once its epoch counter passes this bound. The stamps live in int32
+# arrays; one kernel call advances an epoch by at most n + 101, so resetting above 2**30 leaves
+# > 2**30 headroom to INT32_MAX -- overflow is impossible for any real chart. Deterministic:
+# depends only on the per-thread call sequence (and bit-exactness never depends on the epoch
+# values themselves, only on their monotone carry).
+_STAMP_EPOCH_RESET_LIMIT = 1 << 30
+
+
+class _FirstFrontierStampWorkspace:
+    """Per-thread reusable stamp-radix scratch for the first-frontier kernel.
+
+    The kernel validates a scratch cell by comparing its stamp to the current epoch, so reuse
+    across calls is bit-exact as long as epochs only grow: stale cells keep older epochs and are
+    invisible, exactly like stale cells between consecutive states within one call. Stamp arrays
+    are zeroed only on (re)creation (a fresh np.empty could contain garbage colliding with a live
+    epoch); value/touched arrays are only ever read under a matching stamp or a write-first
+    touched count, so their initial contents are irrelevant. Capacities are the kernel's hard
+    per-chart maxima (pair_mod <= n + 1, branch_a width == n + 2), so one workspace serves every
+    geometry of a chart; a bigger chart forces recreation.
+    """
+
+    __slots__ = (
+        "capacity_n",
+        "pair_values",
+        "pair_stamps",
+        "pair_touched",
+        "bit_values",
+        "bit_stamps",
+        "branch_a_values",
+        "branch_a_stamps",
+        "pair_epoch",
+        "bit_epoch",
+        "branch_a_epoch",
+    )
+
+    def __init__(self, n: int) -> None:
+        pair_capacity = (int(n) + 1) * (int(n) + 1)
+        bit_capacity = (int(n) + 1) + 1
+        branch_a_capacity = ((int(n) + 1) + 1) * (int(n) + 2)
+        self.capacity_n = int(n)
+        self.pair_values = np.zeros(pair_capacity, dtype=np.int32)
+        self.pair_stamps = np.zeros(pair_capacity, dtype=np.int32)
+        self.pair_touched = np.zeros(pair_capacity, dtype=np.int32)
+        self.bit_values = np.zeros(bit_capacity, dtype=np.int32)
+        self.bit_stamps = np.zeros(bit_capacity, dtype=np.int32)
+        self.branch_a_values = np.zeros(branch_a_capacity, dtype=np.int32)
+        self.branch_a_stamps = np.zeros(branch_a_capacity, dtype=np.int32)
+        self.pair_epoch = 0
+        self.bit_epoch = 0
+        self.branch_a_epoch = 0
+
+    def store_epochs(self, pair_epoch: int, bit_epoch: int, branch_a_epoch: int) -> None:
+        """Persist the kernel's final epochs, resetting any counter that passed the int32
+        headroom bound (zero its stamps so epoch 0 is fresh again, like a new workspace)."""
+        self.pair_epoch = int(pair_epoch)
+        self.bit_epoch = int(bit_epoch)
+        self.branch_a_epoch = int(branch_a_epoch)
+        if self.pair_epoch > _STAMP_EPOCH_RESET_LIMIT:
+            self.pair_stamps[:] = 0
+            self.pair_epoch = 0
+        if self.bit_epoch > _STAMP_EPOCH_RESET_LIMIT:
+            self.bit_stamps[:] = 0
+            self.bit_epoch = 0
+        if self.branch_a_epoch > _STAMP_EPOCH_RESET_LIMIT:
+            self.branch_a_stamps[:] = 0
+            self.branch_a_epoch = 0
+
+
+_WORKSPACE_TLS = threading.local()
+
+
+def _thread_first_frontier_workspace(n: int) -> _FirstFrontierStampWorkspace:
+    workspace = getattr(_WORKSPACE_TLS, "workspace", None)
+    if workspace is None or int(workspace.capacity_n) < int(n):
+        workspace = _FirstFrontierStampWorkspace(int(n))
+        _WORKSPACE_TLS.workspace = workspace
+    return workspace
 
 
 def configure_force_greats_response_first_frontier_threads(max_threads: int) -> int:
@@ -67,8 +146,18 @@ def _first_frontier_result_from_precomputed_end_indices(
     real_time_idx: int,
     use_forced_great_timing: bool,
     region_table: tuple,
+    workspace: _FirstFrontierStampWorkspace,
 ) -> FgResponseFrontierResult:
-    first_rows, states_evaluated, generated_surfaces, retained_total, max_state_frontier = (
+    (
+        first_rows,
+        states_evaluated,
+        generated_surfaces,
+        retained_total,
+        max_state_frontier,
+        pair_epoch,
+        bit_epoch,
+        branch_a_epoch,
+    ) = (
         _first_frontier_from_precomputed_end_indices_numba(
             int(n),
             int(action_count),
@@ -116,8 +205,19 @@ def _first_frontier_result_from_precomputed_end_indices(
             region_table[5],
             region_table[6],
             region_table[7],
+            workspace.pair_values,
+            workspace.pair_stamps,
+            workspace.pair_touched,
+            workspace.bit_values,
+            workspace.bit_stamps,
+            workspace.branch_a_values,
+            workspace.branch_a_stamps,
+            int(workspace.pair_epoch),
+            int(workspace.bit_epoch),
+            int(workspace.branch_a_epoch),
         )
     )
+    workspace.store_epochs(int(pair_epoch), int(bit_epoch), int(branch_a_epoch))
     return FgResponseFrontierResult(
         first_frontier=SurfaceRowsFirstFrontier(first_rows),
         state_frontiers={},
@@ -162,6 +262,7 @@ def _first_frontier_results_for_precomputed_range(
     region_tables_by_key: dict,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
     results: list[tuple[int, FgResponseFrontierResult]] = []
+    workspace = _thread_first_frontier_workspace(int(n))
     for local_idx in range(int(start), int(stop)):
         item = chunk[int(local_idx)]
         source_idx = int(item[0])
@@ -204,6 +305,7 @@ def _first_frontier_results_for_precomputed_range(
                     real_time_idx=int(real_time_index[int(local_idx)]),
                     use_forced_great_timing=bool(use_forced_great_timing),
                     region_table=region_table,
+                    workspace=workspace,
                 ),
             )
         )

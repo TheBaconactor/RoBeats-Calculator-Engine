@@ -3629,6 +3629,16 @@ def _first_frontier_from_precomputed_end_indices_numba(
     region_act_hits,
     region_perfect_hits,
     region_perfect_valids,
+    ws_pair_values,
+    ws_pair_stamps,
+    ws_pair_touched,
+    ws_bit_values,
+    ws_bit_stamps,
+    ws_branch_a_values,
+    ws_branch_a_stamps,
+    pair_epoch_in: int,
+    bit_epoch_in: int,
+    branch_a_epoch_in: int,
 ):
     if int(use_forced_great_timing_i) == 0 and int(action_count) > 0 and int(first_fill[0]) >= 100:
         zero_body_fever = _numba_zero_forced_body_fever_precomputed(
@@ -3650,7 +3660,17 @@ def _first_frontier_from_precomputed_end_indices_numba(
         )
         if int(zero_body_fever) >= 0:
             if int(zero_body_fever) >= max(0, int(n) - 100):
-                return _numba_single_body_frontier_row(int(zero_body_fever)), 0, 0, 1, 1
+                # Workspace untouched on this path -> epochs pass through unchanged.
+                return (
+                    _numba_single_body_frontier_row(int(zero_body_fever)),
+                    0,
+                    0,
+                    1,
+                    1,
+                    int(pair_epoch_in),
+                    int(bit_epoch_in),
+                    int(branch_a_epoch_in),
+                )
             max_body_fever = _numba_max_body_fever_precomputed(
                 int(n),
                 int(action_count),
@@ -3671,7 +3691,17 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 int(real_time_idx),
             )
             if int(zero_body_fever) == int(max_body_fever):
-                return _numba_single_body_frontier_row(int(zero_body_fever)), 0, 0, 1, 1
+                # Workspace untouched on this path -> epochs pass through unchanged.
+                return (
+                    _numba_single_body_frontier_row(int(zero_body_fever)),
+                    0,
+                    0,
+                    1,
+                    1,
+                    int(pair_epoch_in),
+                    int(bit_epoch_in),
+                    int(branch_a_epoch_in),
+                )
 
     reachable = np.zeros(int(n) + 1, dtype=np.bool_)
     reachable[int(n)] = True
@@ -3841,13 +3871,20 @@ def _first_frontier_from_precomputed_end_indices_numba(
     section_bound = int(n) // int(min_later_fill) + 4
     pair_mod = min(int(n) + 1, int(section_bound) * (1 + int(max_eg_width)) + 1)
     pair_size = (int(n) + 1) * int(pair_mod)
-    best_fever_by_pair = np.zeros(int(pair_size), dtype=np.int32)
-    pair_stamp = np.zeros(int(pair_size), dtype=np.int32)
-    touched_pair = np.empty(int(pair_size), dtype=np.int32)
-    pair_stamp_value = 0
-    bit_values = np.zeros(int(pair_mod) + 1, dtype=np.int32)
-    bit_stamps = np.zeros(int(pair_mod) + 1, dtype=np.int32)
-    bit_stamp_value = 0
+    # Reused per-thread stamp-radix workspace (allocation-lifetime change only). A cell is valid
+    # iff its stamp equals the current epoch, and epochs carry monotonically across calls (the
+    # incoming epoch is the max stamp any earlier call wrote), so stale cells from earlier
+    # geometries hold older epochs and are invisible -- the same invariant that hides stale cells
+    # between consecutive states within one call. The views are sliced to this geometry's exact
+    # sizes so every shape-derived bound (pair radix guard, stamped-Fenwick ascent limits,
+    # branch-A out-of-bounds guard) is identical to the fresh-allocation behavior.
+    best_fever_by_pair = ws_pair_values[: int(pair_size)]
+    pair_stamp = ws_pair_stamps[: int(pair_size)]
+    touched_pair = ws_pair_touched[: int(pair_size)]
+    pair_stamp_value = int(pair_epoch_in)
+    bit_values = ws_bit_values[: int(pair_mod) + 1]
+    bit_stamps = ws_bit_stamps[: int(pair_mod) + 1]
+    bit_stamp_value = int(bit_epoch_in)
 
     (
         body_values,
@@ -4136,6 +4173,9 @@ def _first_frontier_from_precomputed_end_indices_numba(
     first_region_basis = List.empty_list(_NUMBA_HEAD_BASIS_TYPE)
     first_region_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
     first_region_bounded = 0
+    # Branch-A workspace epoch: consumed only by the first-fill>=100 branch below; unchanged
+    # (and its stamp array untouched) when that branch is not taken.
+    branch_a_epoch_out = int(branch_a_epoch_in)
     if int(action_count) > 0 and int(first_fill[0]) >= 100:
         first_edge_e_by_action = np.empty(int(action_count), dtype=np.int32)
         first_normal_head_by_action = np.empty(int(action_count), dtype=np.int32)
@@ -4164,9 +4204,14 @@ def _first_frontier_from_precomputed_end_indices_numba(
             first_activation_head_by_action[int(action_idx)] = min(100, max(0, int(prefix_forced)))
         branch_a_width = int(n) + 2
         branch_a_size = (int(pair_mod) + 1) * int(branch_a_width)
-        branch_a_values = np.zeros(int(branch_a_size), dtype=np.int32)
-        branch_a_stamps = np.zeros(int(branch_a_size), dtype=np.int32)
-        branch_a_stamp = 1
+        # Branch-A keeps ONE epoch for the whole call (the stamped Fenwick deliberately
+        # accumulates across all 101 head_great_count buckets), so the fresh in-call epoch is
+        # incoming+1: strictly above every stamp any earlier call wrote, exactly like the
+        # fresh-zeroed arrays' constant stamp 1 sat strictly above the zeroed stamps.
+        branch_a_values = ws_branch_a_values[: int(branch_a_size)]
+        branch_a_stamps = ws_branch_a_stamps[: int(branch_a_size)]
+        branch_a_epoch_out = int(branch_a_epoch_in) + 1
+        branch_a_stamp = int(branch_a_epoch_out)
         normal_bucket_offsets = np.zeros(102, dtype=np.int32)
         activation_bucket_offsets = np.zeros(102, dtype=np.int32)
         for action_idx in range(int(action_count)):
@@ -4597,4 +4642,13 @@ def _first_frontier_from_precomputed_end_indices_numba(
         surface = first_frontier[idx]
         for col in range(7):
             out[idx, col] = surface[col]
-    return out, states_evaluated, generated_surfaces, retained_total, max_state_frontier
+    return (
+        out,
+        states_evaluated,
+        generated_surfaces,
+        retained_total,
+        max_state_frontier,
+        int(pair_stamp_value),
+        int(bit_stamp_value),
+        int(branch_a_epoch_out),
+    )

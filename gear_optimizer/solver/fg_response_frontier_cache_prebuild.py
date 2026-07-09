@@ -65,21 +65,24 @@ _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
 # when siblings complete and free RAM) before the OS runs out of commit (this box has no
 # pagefile; overshoot is a hard system crash, not a slowdown).
 _FG_PREBUILD_FLOOR_COMMIT_GB = 2.0  # prior: measured ~1.76 GB retained worker baseline + working headroom
-# Giant prior after the region-table sub-batching fix (response_cache.py): the worst 7k-note chart
-# measured 2.70 GB total at 1 reducer thread (~1.65 GB/thread kernel scratch + baseline + one live
-# region table), so 2 threads ~= 4.4 GB; 5.5 keeps a 25% margin. The pre-fix 12-16 GB was ~161
-# region core tables held live for the whole all-FT/FF batch -- fixed at the build layer, not here.
-_FG_PREBUILD_PEAK_COMMIT_GB = 5.5
+# Giant prior, re-anchored on run-6 telemetry (region-fix kernel, 2 reducer threads): peak
+# single-worker commit over 105 guard samples spanning the giant wave was 2.64 GB (~1.05 GB
+# baseline+table + ~0.8 GB/thread live). The workspace-reuse kernel preallocates the stamp radix
+# per thread (~1.0 GB ceiling on 7k-note charts), so 4 threads bound at ~1.05 + 4x~1.0 + live
+# packet Lists ~= 5.5-6.5 GB; 7.0 keeps the margin. The closed-loop ledger and suspend guard
+# remain the enforced bound; this prior only shapes admission width.
+_FG_PREBUILD_PEAK_COMMIT_GB = 7.0
 _FG_PREBUILD_PEAK_COMMIT_NOTES = 7000.0  # note count of the charts that anchored the prior
 _FG_PREBUILD_SYSTEM_RESERVE_GB = 6.0  # main process + OS/desktop headroom the pool must never claim
 _FG_PREBUILD_SUSPEND_FLOOR_GB = 5.0  # guard: below this free RAM, suspend the youngest workers
 _FG_PREBUILD_RESUME_FLOOR_GB = 12.0  # guard: above this free RAM, resume one suspended worker per poll
 _FG_PREBUILD_GUARD_POLL_SECONDS = 5.0
 _FG_PREBUILD_ADMIT_POLL_SECONDS = 10.0  # re-run admission as in-flight commits materialize
-# Reducer threads are capped at the width all commit observations were made at. The 2026-07-09
-# 4-thread relaunch added ~+1.65 GB/extra thread of reducer scratch on top of the climb above;
-# widening requires re-anchoring the prior from prebuild_song_done telemetry at the wider width.
-_FG_PREBUILD_MAX_REDUCER_THREADS = 2
+# Widened 2 -> 4 with the workspace-reuse kernel: per-thread scratch is now a PREALLOCATED
+# ~1.0 GB ceiling (stamp radix sized to the chart's hard maxima) instead of an unbounded
+# per-call transient, so the peak prior above covers 4 threads arithmetically. The historical
+# rule stands: this cap and the peak prior must move together, anchored on guard telemetry.
+_FG_PREBUILD_MAX_REDUCER_THREADS = 4
 
 
 def _fg_prebuild_song_weight_gb(note_count: int) -> float:
