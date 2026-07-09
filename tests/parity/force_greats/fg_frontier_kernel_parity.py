@@ -28,6 +28,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
     _HEAD_FILTER_MIN_SURFACES,
     _first_frontier_from_precomputed_end_indices_numba,
+    _numba_build_prefix_activation_hit_tables,
 )
 
 
@@ -98,18 +99,32 @@ def build_kernel_args(
     )
 
     real_times = np.asarray([float(real_fever_time)], dtype=np.float32)
+    prefix_perfect_hit, _prefix_perfect_valid, prefix_late_hit, _prefix_late_valid = (
+        _numba_build_prefix_activation_hit_tables(
+            int(n),
+            ts,
+            perfect_ts,
+            great_ts,
+        )
+    )
     (
         real_time_index,
         timestamp_end_idx,
         perfect_end_idx,
         great_end_idx,
         great_floor_end_idx,
+        capped_perfect_edge_e,
+        capped_late_edge_e,
+        capped_eg_perfect_e,
+        capped_eg_late_e,
     ) = _precompute_end_indices(
         timestamps=ts,
         perfect_candidate_timestamps=perfect_ts,
         great_candidate_timestamps=great_ts,
         perfect_floor_timestamps=floor_ts,
         great_floor_timestamps=great_floor_ts,
+        prefix_perfect_hit=prefix_perfect_hit,
+        prefix_late_hit=prefix_late_hit,
         lanes=lane_arr,
         real_times=real_times,
     )
@@ -135,6 +150,10 @@ def build_kernel_args(
         "perfect_end_idx": perfect_end_idx,
         "great_end_idx": great_end_idx,
         "great_floor_end_idx": great_floor_end_idx,
+        "capped_perfect_edge_e": capped_perfect_edge_e,
+        "capped_late_edge_e": capped_late_edge_e,
+        "capped_eg_perfect_e": capped_eg_perfect_e,
+        "capped_eg_late_e": capped_eg_late_e,
         "real_time_idx": int(real_time_index[0]),
         "use_forced_great_timing_i": 1 if bool(use_forced_great_timing) else 0,
     }

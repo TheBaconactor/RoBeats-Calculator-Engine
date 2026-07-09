@@ -32,6 +32,10 @@ class FirstOnlyCanonicalization:
     perfect_end_idx: np.ndarray
     great_end_idx: np.ndarray
     great_floor_end_idx: np.ndarray
+    capped_perfect_edge_e: np.ndarray
+    capped_late_edge_e: np.ndarray
+    capped_eg_perfect_e: np.ndarray
+    capped_eg_late_e: np.ndarray
 
 
 def _canonicalize_first_only_prepared_items_with_end_indices(
@@ -42,19 +46,33 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     great_candidate_timestamps: np.ndarray,
     perfect_floor_timestamps: np.ndarray,
     great_floor_timestamps: np.ndarray,
+    prefix_perfect_hit: np.ndarray,
+    prefix_late_hit: np.ndarray,
     lanes: np.ndarray | None = None,
 ) -> FirstOnlyCanonicalization:
     if not prepared:
         empty = np.empty((0, 0), dtype=np.int32)
         empty3 = np.empty((0, 0, 2), dtype=np.int32)
-        return FirstOnlyCanonicalization([], {}, {}, empty, empty, empty, empty3)
+        return FirstOnlyCanonicalization([], {}, {}, empty, empty, empty, empty3, empty, empty, empty, empty)
     real_times = np.asarray([item[3] for item in prepared], dtype=np.float64)
-    real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx, great_floor_end_idx = _precompute_end_indices(
+    (
+        real_time_index,
+        timestamp_end_idx,
+        perfect_end_idx,
+        great_end_idx,
+        great_floor_end_idx,
+        capped_perfect_edge_e,
+        capped_late_edge_e,
+        capped_eg_perfect_e,
+        capped_eg_late_e,
+    ) = _precompute_end_indices(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidate_timestamps,
         great_candidate_timestamps=great_candidate_timestamps,
         perfect_floor_timestamps=perfect_floor_timestamps,
         great_floor_timestamps=great_floor_timestamps,
+        prefix_perfect_hit=prefix_perfect_hit,
+        prefix_late_hit=prefix_late_hit,
         lanes=lanes,
         real_times=real_times,
     )
@@ -68,6 +86,10 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             perfect_end_idx,
             great_end_idx,
             great_floor_end_idx,
+            capped_perfect_edge_e,
+            capped_late_edge_e,
+            capped_eg_perfect_e,
+            capped_eg_late_e,
         )
     end_class_by_index = np.empty((int(timestamp_end_idx.shape[0]),), dtype=np.int32)
     end_class_by_signature: dict[tuple[bytes, bytes, bytes, bytes], int] = {}
@@ -127,6 +149,10 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
         perfect_end_idx,
         great_end_idx,
         great_floor_end_idx,
+        capped_perfect_edge_e,
+        capped_late_edge_e,
+        capped_eg_perfect_e,
+        capped_eg_late_e,
     )
 
 
@@ -139,8 +165,10 @@ def _precompute_end_indices(
     perfect_floor_timestamps: np.ndarray,
     great_floor_timestamps: np.ndarray,
     real_times: np.ndarray,
+    prefix_perfect_hit: np.ndarray,
+    prefix_late_hit: np.ndarray,
     lanes: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, ...]:
     unique_real_times, inverse = np.unique(np.asarray(real_times, dtype=np.float64), return_inverse=True)
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     perfect_ts = np.ascontiguousarray(np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1))
@@ -176,9 +204,26 @@ def _precompute_end_indices(
     # The legacy global perfect cap was lane-blind. Input-engine-aware production keeps each note's
     # own latest Perfect hit and lets reconstruction/persistence enforce the lane-aware owner.
     reachable_perfect_ts64 = perfect_ts64
+    # Capped-hit activation clocks (rt-invariant, built once per chart): the per-activation latest
+    # reachable Perfect / late-Great hit the kernel would otherwise re-derive with a live binary
+    # search per (state, action). The four capped_* tables below memoize those searches per unique
+    # real_fever_time, CLAMPED to (activation, n] exactly like `_numba_clamped_end_idx`, so a kernel
+    # lookup `capped_*[rt_idx, a]` is bit-identical to
+    # `_numba_edge_end_idx_at_hit` / `_numba_great_floor_extended_end_at_hit` at the prefix hit.
+    prefix_perfect64 = np.ascontiguousarray(np.asarray(prefix_perfect_hit, dtype=np.float64).reshape(-1))
+    prefix_late64 = np.ascontiguousarray(np.asarray(prefix_late_hit, dtype=np.float64).reshape(-1))
+    if int(prefix_perfect64.shape[0]) != int(ts.shape[0]) or int(prefix_late64.shape[0]) != int(ts.shape[0]):
+        raise ValueError("prefix activation-hit tables length must match timestamps")
+    # clamp lower bound per activation column a is a+1; upper bound is n (same order as
+    # `_numba_clamped_end_idx`: max(e, a+1) then min(e, n)).
+    capped_clamp_lo = np.arange(1, int(ts.shape[0]) + 1, dtype=np.int64)
     timestamp_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0])), dtype=np.int32)
     perfect_end_idx = np.empty_like(timestamp_end_idx)
     great_end_idx = np.empty_like(timestamp_end_idx)
+    capped_perfect_edge_e = np.empty_like(timestamp_end_idx)
+    capped_late_edge_e = np.empty_like(timestamp_end_idx)
+    capped_eg_perfect_e = np.empty_like(timestamp_end_idx)
+    capped_eg_late_e = np.empty_like(timestamp_end_idx)
     # [..., 0] = extended end for a Perfect activation (cutoff = perfect_candidate + rt);
     # [..., 1] = extended end for a late-Great activation (cutoff = great_candidate + rt).
     great_floor_end_idx = np.empty((int(unique_real_times.shape[0]), int(ts.shape[0]), 2), dtype=np.int32)
@@ -198,6 +243,23 @@ def _precompute_end_indices(
         great_floor_end_idx[idx, :, 1] = np.searchsorted(great_floor_ts, great_cutoff, side="left").astype(
             np.int32, copy=False
         )
+        # Capped-hit fever ends: float64 add then float32 needle, matching the kernel's
+        # `np.float32(float(hit) + float(real_fever_time))` bit for bit; invalid activations
+        # (prefix_*_valid == 0) get the same deterministic formula -- the kernel never reads them.
+        capped_perfect_cutoff = np.asarray(prefix_perfect64 + rt, dtype=np.float32)
+        capped_late_cutoff = np.asarray(prefix_late64 + rt, dtype=np.float32)
+        capped_perfect_edge_e[idx] = np.clip(
+            np.searchsorted(floor_ts, capped_perfect_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
+        ).astype(np.int32, copy=False)
+        capped_late_edge_e[idx] = np.clip(
+            np.searchsorted(floor_ts, capped_late_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
+        ).astype(np.int32, copy=False)
+        capped_eg_perfect_e[idx] = np.clip(
+            np.searchsorted(great_floor_ts, capped_perfect_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
+        ).astype(np.int32, copy=False)
+        capped_eg_late_e[idx] = np.clip(
+            np.searchsorted(great_floor_ts, capped_late_cutoff, side="left"), capped_clamp_lo, int(ts.shape[0])
+        ).astype(np.int32, copy=False)
     # Hit-time reachability (chord + notes-ahead): a late-Great activation is UNREACHABLE when an
     # earlier-hit note (a same-timestamp sibling, or an on-time note within the ~late-Great window
     # after it) completes the fever bar first -- delaying the activation to its late hit lets those
@@ -216,4 +278,8 @@ def _precompute_end_indices(
         np.ascontiguousarray(perfect_end_idx),
         np.ascontiguousarray(great_end_idx),
         np.ascontiguousarray(great_floor_end_idx),
+        np.ascontiguousarray(capped_perfect_edge_e),
+        np.ascontiguousarray(capped_late_edge_e),
+        np.ascontiguousarray(capped_eg_perfect_e),
+        np.ascontiguousarray(capped_eg_late_e),
     )

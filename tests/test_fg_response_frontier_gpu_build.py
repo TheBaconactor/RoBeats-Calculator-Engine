@@ -1005,12 +1005,34 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
     )
     song_inputs, _raw_fill_by_ff, _non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
     real_fever_time = float(real_time_by_ft[51])
-    real_time_index, timestamp_end_idx, perfect_end_idx, great_end_idx, _great_floor_end_idx = _precompute_end_indices(
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
+
+    prefix_perfect_hit, _prefix_perfect_valid, prefix_late_hit, _prefix_late_valid = (
+        rb._numba_build_prefix_activation_hit_tables(
+            int(song_inputs.timestamps.shape[0]),
+            song_inputs.timestamps,
+            song_inputs.perfect_candidates,
+            song_inputs.great_candidates,
+        )
+    )
+    (
+        real_time_index,
+        timestamp_end_idx,
+        perfect_end_idx,
+        great_end_idx,
+        _great_floor_end_idx,
+        _capped_perfect_edge_e,
+        _capped_late_edge_e,
+        _capped_eg_perfect_e,
+        _capped_eg_late_e,
+    ) = _precompute_end_indices(
         timestamps=song_inputs.timestamps,
         perfect_candidate_timestamps=song_inputs.perfect_candidates,
         great_candidate_timestamps=song_inputs.great_candidates,
         perfect_floor_timestamps=song_inputs.perfect_floor,
         great_floor_timestamps=song_inputs.great_floor,
+        prefix_perfect_hit=prefix_perfect_hit,
+        prefix_late_hit=prefix_late_hit,
         lanes=song_inputs.lanes,
         real_times=np.asarray([real_fever_time], dtype=np.float64),
     )
