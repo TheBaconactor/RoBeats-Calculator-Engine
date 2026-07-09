@@ -1081,13 +1081,19 @@ def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -
     calc_song = {"song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)}}
     ref_arrays = {"Fever Time": np.asarray([0.0]), "Fever Fill Rate": np.asarray([0.0])}
     canonical_keys = ((0, 0), (1, 1))
-    bundle = SimpleNamespace(cache_key=("bundle-key",))
+    # surface_row_count=0 -> the session-box prune early-returns the bundle unchanged, keeping
+    # this a pure wiring test (the prune itself is covered by test_fg_session_box_prune).
+    bundle = SimpleNamespace(cache_key=("bundle-key",), surface_row_count=0)
     seen: dict[str, object] = {}
-    monkeypatch.setattr(
-        response_cache_store,
-        "warm_surface_sidecar_page_cache",
-        lambda _key: seen.__setitem__("sidecar_warm", 1),
-    )
+    # The session-box prune replaced the sidecar page-cache warm in the prep path (it reads and
+    # materializes the surviving rows itself); the wiring must route the loaded bundle through it.
+    real_prune = response_cache.session_prune_scoring_bundle
+
+    def _prune(bundle_arg, ref_arrays_arg):
+        seen["session_prune"] = 1
+        return real_prune(bundle_arg, ref_arrays_arg)
+
+    monkeypatch.setattr(response_cache, "session_prune_scoring_bundle", _prune)
     monkeypatch.setattr(pipeline, "resolve_active_fg_calc_song", lambda _song: calc_song)
     monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: canonical_keys)
 
@@ -1112,7 +1118,7 @@ def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -
         "calc_song": calc_song,
         "ref_arrays": ref_arrays,
         "stat_keys": canonical_keys,
-        "sidecar_warm": 1,
+        "session_prune": 1,
     }
 
 

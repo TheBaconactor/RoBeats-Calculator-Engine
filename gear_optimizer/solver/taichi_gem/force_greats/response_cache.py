@@ -12,7 +12,7 @@ from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
 from .response_build_gpu_batch import build_force_greats_response_first_frontiers_gpu_batch
-from .response_build_gpu_numba import _HEAD_DOM_C, _HEAD_DOM_F
+from .response_build_gpu_numba import _HEAD_DOM_C, _HEAD_DOM_F, _HEAD_DOM_G, _HEAD_DOM_V, _numba_session_box_keep_mask
 from .response_cache_keys import (
     _fg_response_disk_cache_dir,
     _fg_response_disk_cache_path,
@@ -76,6 +76,8 @@ __all__ = [
     "frontier_result_from_scoring_bundle_for_stats",
     "all_response_stat_keys",
     "load_first_surface_scoring_rows",
+    "session_head_dominance_box",
+    "session_prune_scoring_bundle",
     "load_response_frontier_scoring_bundle",
     "normalize_fg_response_stat_keys",
     "purge_stale_version_cache_files",
@@ -172,6 +174,94 @@ def _assert_head_dominance_box_covers(ref_arrays: dict[str, Any]) -> None:
             f"[{float(fm.min()):.4f},{float(fm.max()):.4f}] -- update _HEAD_DOM_C/_HEAD_DOM_F in "
             f"response_build_gpu_numba.py (the lossless head prune requires the box to be a superset)."
         )
+
+
+def session_head_dominance_box(ref_arrays: dict[str, Any]) -> tuple[float, float, float, float, float, float, float, float]:
+    """The SESSION's 16-corner dominance box: combo/fever corners tightened to the inventory's
+    measured LUT ranges (the same arrays `_assert_head_dominance_box_covers` validates), value and
+    great corners kept at the global box (v1: their per-note derivation is color-coupled; the
+    global corners stay a sound cover). Fails loud without the LUTs -- the session prune is a
+    GA-solve feature and the solve path always carries full reference arrays."""
+    cm_lut = ref_arrays.get("Combo Multiplier")
+    fm_lut = ref_arrays.get("Fever Multiplier")
+    if cm_lut is None or fm_lut is None:
+        raise ValueError("session dominance box requires Combo Multiplier / Fever Multiplier reference arrays")
+    cm = np.asarray(cm_lut, dtype=np.float64)
+    fm = np.asarray(fm_lut, dtype=np.float64)
+    if cm.size == 0 or fm.size == 0:
+        raise ValueError("session dominance box requires non-empty multiplier reference arrays")
+    c_lo, c_hi = float(cm.min()), float(cm.max())
+    f_lo, f_hi = float(fm.min()), float(fm.max())
+    # The payload's envelope was pruned against the GLOBAL box; a session box escaping it means the
+    # payload never covered these cells -- the same invariant _assert_head_dominance_box_covers
+    # enforces at build time. Never widen silently.
+    if c_lo < float(_HEAD_DOM_C[0]) or c_hi > float(_HEAD_DOM_C[1]) or f_lo < float(_HEAD_DOM_F[0]) or f_hi > float(_HEAD_DOM_F[1]):
+        raise ValueError(
+            f"session dominance box combo[{c_lo:.4f},{c_hi:.4f}] fever[{f_lo:.4f},{f_hi:.4f}] escapes the "
+            f"global box combo{_HEAD_DOM_C} fever{_HEAD_DOM_F} the payload envelope was built against"
+        )
+    return (
+        float(_HEAD_DOM_V[0]), float(_HEAD_DOM_V[1]),
+        c_lo, c_hi,
+        f_lo, f_hi,
+        float(_HEAD_DOM_G[0]), float(_HEAD_DOM_G[1]),
+    )
+
+
+def session_prune_scoring_bundle(
+    bundle: FgResponseFrontierScoringBundle,
+    ref_arrays: dict[str, Any],
+) -> FgResponseFrontierScoringBundle:
+    """Session-box cone prune of a scoring bundle for ONE solve run (GA path only; persist/audit
+    consumers load the full bundle). Re-runs the 16-corner dominance filter with corners at the
+    session's realizable stat box: every dropped row is dominated at every cell this inventory can
+    evaluate, so scoring winners are identical while the GPU score loop, uploads, and VRAM shrink
+    to the session-relevant rows. Also materializes the surviving rows in memory, which subsumes
+    the sidecar page-cache warm (no per-batch memmap gathers afterwards)."""
+    import dataclasses
+
+    row_count = int(bundle.surface_row_count)
+    if row_count <= 0:
+        return bundle
+    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = session_head_dominance_box(ref_arrays)
+    rows, coeff_rows = load_first_surface_scoring_rows(bundle.cache_key, ((0, row_count),))
+    words = np.ascontiguousarray(rows[:, :8], dtype=np.uint32)
+    counts = np.ascontiguousarray(rows[:, 8:11].astype(np.int32), dtype=np.int32)
+    head_len = min(int(bundle.total_notes), 100)
+    keep = _numba_session_box_keep_mask(
+        words,
+        counts,
+        np.ascontiguousarray(bundle.frontier_offsets, dtype=np.int32),
+        np.ascontiguousarray(bundle.frontier_lengths, dtype=np.int32),
+        0,
+        int(head_len),
+        v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi,
+    )
+    keep = np.asarray(keep, dtype=bool)
+    lengths_all = np.asarray(bundle.frontier_lengths, dtype=np.int64)
+    offsets_all = np.asarray(bundle.frontier_offsets, dtype=np.int64)
+    kept_lengths = np.zeros_like(lengths_all)
+    for frontier_idx in range(int(lengths_all.shape[0])):
+        start = int(offsets_all[int(frontier_idx)])
+        length = int(lengths_all[int(frontier_idx)])
+        kept_lengths[int(frontier_idx)] = int(np.count_nonzero(keep[start : start + length])) if length > 0 else 0
+    if bool(np.any((lengths_all > 0) & (kept_lengths <= 0))):
+        raise ValueError("session-box prune emptied a frontier -- the greedy filter must keep at least one row")
+    new_offsets = np.zeros_like(offsets_all)
+    if int(new_offsets.shape[0]) > 0:
+        np.cumsum(kept_lengths[:-1], out=new_offsets[1:])
+    pruned_words = np.ascontiguousarray(words[keep], dtype=np.uint32)
+    pruned_counts = np.ascontiguousarray(counts[keep], dtype=np.int32)
+    pruned_coeffs = np.ascontiguousarray(coeff_rows[keep].astype(np.int32), dtype=np.int32)
+    return dataclasses.replace(
+        bundle,
+        surface_words=pruned_words,
+        surface_counts=pruned_counts,
+        surface_head_coeffs=pruned_coeffs,
+        frontier_offsets=np.ascontiguousarray(new_offsets, dtype=np.int32),
+        frontier_lengths=np.ascontiguousarray(kept_lengths, dtype=np.int32),
+        surface_row_count=int(pruned_words.shape[0]),
+    )
 
 
 def _build_response_frontier_cache_payload(

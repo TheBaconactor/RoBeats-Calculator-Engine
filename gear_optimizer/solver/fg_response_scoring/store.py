@@ -13,9 +13,7 @@ class ResponseFrontierStore:
         from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
             all_response_stat_keys,
             load_response_frontier_scoring_bundle,
-        )
-        from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
-            warm_surface_sidecar_page_cache,
+            session_prune_scoring_bundle,
         )
 
         from gear_optimizer.solver import native_inflight_pipeline as pipeline
@@ -31,9 +29,11 @@ class ResponseFrontierStore:
             ref_arrays,
             stat_keys=all_response_stat_keys(),
         )
-        # Prep-thread page-cache warm: the fused turn's owner-thread sidecar gather
-        # then reads from memory instead of cold (WOF-compressed) disk.
-        warm_surface_sidecar_page_cache(bundle.cache_key)
+        # Session-box cone prune (prep thread, once per song): drops rows no cell this
+        # inventory can reach could ever win -- identical winners, fewer GPU score-loop rows.
+        # Materializing the surviving rows also subsumes the old sidecar page-cache warm
+        # (the fused turn reads the in-memory arrays, not the memmap).
+        bundle = session_prune_scoring_bundle(bundle, ref_arrays)
         song.runtime.fg.fg_response_scoring_bundle = bundle
         try:
             song.runtime.fg.fg_static_prep_done = True

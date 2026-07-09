@@ -2222,6 +2222,167 @@ def _numba_head_envelope_filter(frontier, lo_pos, hi_pos, min_surfaces):
 
 
 @njit(cache=True, nogil=True)
+def _numba_session_surface_basis(
+    fl, fh, gl, gh, bf, bg, bfg, lo_pos: int, hi_pos: int, c_lo: float, c_hi: float
+):
+    """Session-box twin of `_numba_head_surface_basis`: identical construction with the combo
+    ramp slopes taken from the SESSION box corners instead of the global _HEAD_DOM_C. Serve-side
+    only (the packed uint32 pool format); the build path is untouched."""
+    lo = int(lo_pos)
+    hi = int(hi_pos)
+    hlen = hi - lo
+    one = np.uint64(1)
+    k_lo = (float(c_lo) - 1.0) / 100.0
+    k_hi = (float(c_hi) - 1.0) / 100.0
+    b_lo = 0.0
+    c_lo_arr = 0.0
+    d_lo = 0.0
+    b_hi = 0.0
+    c_hi_arr = 0.0
+    d_hi = 0.0
+    for idx in range(hlen):
+        pos = lo + idx
+        if pos < 64:
+            fbit = (fl >> np.uint64(pos)) & one
+            gbit = (gl >> np.uint64(pos)) & one
+        else:
+            fbit = (fh >> np.uint64(pos - 64)) & one
+            gbit = (gh >> np.uint64(pos - 64)) & one
+        if fbit == 0 and gbit == 0:
+            continue
+        slo = 1.0 + k_lo * float(lo + idx + 1)
+        shi = 1.0 + k_hi * float(lo + idx + 1)
+        if fbit != 0:
+            b_lo += slo
+            b_hi += shi
+        if gbit != 0:
+            c_lo_arr += slo
+            c_hi_arr += shi
+        if fbit != 0 and gbit != 0:
+            d_lo += slo
+            d_hi += shi
+    return (
+        fl,
+        fh,
+        gl,
+        gh,
+        np.int64(bf),
+        np.int64(bg) - np.int64(bfg),
+        np.int64(bfg),
+        b_lo,
+        c_lo_arr,
+        d_lo,
+        b_hi,
+        c_hi_arr,
+        d_hi,
+    )
+
+
+@njit(cache=True, nogil=True)
+def _numba_session_corner_scores_row(
+    basis, row, v_lo: float, v_hi: float, c_lo: float, c_hi: float,
+    f_lo: float, f_hi: float, g_lo: float, g_hi: float
+) -> None:
+    col = 0
+    for iv in range(2):
+        v = v_lo if iv == 0 else v_hi
+        for ic in range(2):
+            c = c_lo if ic == 0 else c_hi
+            for iff in range(2):
+                f = f_lo if iff == 0 else f_hi
+                for ig in range(2):
+                    g = g_lo if ig == 0 else g_hi
+                    row[int(col)] = _numba_head_basis_corner_score(
+                        basis, float(v), float(c), float(f), float(g), int(ic)
+                    )
+                    col += 1
+
+
+@njit(cache=True, nogil=True)
+def _numba_session_box_keep_mask(
+    words,
+    counts,
+    offsets,
+    lengths,
+    lo_pos: int,
+    hi_pos: int,
+    v_lo: float,
+    v_hi: float,
+    c_lo: float,
+    c_hi: float,
+    f_lo: float,
+    f_hi: float,
+    g_lo: float,
+    g_hi: float,
+) -> np.ndarray:
+    """Serve-time session-box cone prune over the PACKED first-frontier pool: per frontier, the
+    same greedy 16-corner dominance-with-margin filter as `_numba_head_envelope_filter`, with the
+    corners at the SESSION's realizable stat box instead of the global _HEAD_DOM box. A dropped
+    row is dominated at every session-reachable cell (multilinear extrema at the covering box's
+    corners; the per-pair floor margin is box-independent), so the pruned pool serves the SAME
+    winner for every cell this solve can evaluate. Rows: words (N,8) uint32 mask words, counts
+    (N,3) int32 body counts."""
+    total = int(words.shape[0])
+    keep = np.zeros(total, dtype=np.bool_)
+    frontier_count = int(lengths.shape[0])
+    for frontier_idx in range(frontier_count):
+        start = int(offsets[int(frontier_idx)])
+        length = int(lengths[int(frontier_idx)])
+        if length <= 0:
+            continue
+        basis_list = List.empty_list(_NUMBA_HEAD_BASIS_TYPE)
+        scores = np.empty((length, 16), dtype=np.float64)
+        kept_rows = np.empty(length, dtype=np.int64)
+        kept_count = 0
+        for local_idx in range(length):
+            row_idx = start + local_idx
+            fl = np.uint64(words[row_idx, 0]) | (np.uint64(words[row_idx, 1]) << np.uint64(32))
+            fh = np.uint64(words[row_idx, 2]) | (np.uint64(words[row_idx, 3]) << np.uint64(32))
+            gl = np.uint64(words[row_idx, 4]) | (np.uint64(words[row_idx, 5]) << np.uint64(32))
+            gh = np.uint64(words[row_idx, 6]) | (np.uint64(words[row_idx, 7]) << np.uint64(32))
+            basis = _numba_session_surface_basis(
+                fl, fh, gl, gh,
+                np.uint64(counts[row_idx, 0]), np.uint64(counts[row_idx, 1]), np.uint64(counts[row_idx, 2]),
+                int(lo_pos), int(hi_pos), float(c_lo), float(c_hi),
+            )
+            basis_list.append(basis)
+            _numba_session_corner_scores_row(
+                basis, scores[int(local_idx)],
+                float(v_lo), float(v_hi), float(c_lo), float(c_hi),
+                float(f_lo), float(f_hi), float(g_lo), float(g_hi),
+            )
+        for local_idx in range(length):
+            dominated = False
+            for ki in range(kept_count):
+                k = int(kept_rows[int(ki)])
+                if not _numba_head_scores_dominate(scores, int(k), int(local_idx), 0.0):
+                    continue
+                if _numba_head_scores_dominate(
+                    scores, int(k), int(local_idx),
+                    _numba_head_basis_margin(basis_list[int(k)], basis_list[int(local_idx)]),
+                ):
+                    dominated = True
+                    break
+            if dominated:
+                continue
+            write = 0
+            for ki in range(kept_count):
+                k = int(kept_rows[int(ki)])
+                if _numba_head_scores_dominate(scores, int(local_idx), int(k), 0.0) and _numba_head_scores_dominate(
+                    scores, int(local_idx), int(k),
+                    _numba_head_basis_margin(basis_list[int(local_idx)], basis_list[int(k)]),
+                ):
+                    continue
+                kept_rows[int(write)] = int(k)
+                write += 1
+            kept_rows[int(write)] = int(local_idx)
+            kept_count = int(write) + 1
+        for ki in range(kept_count):
+            keep[start + int(kept_rows[int(ki)])] = True
+    return keep
+
+
+@njit(cache=True, nogil=True)
 def _numba_reduce_touched_body_pairs(
     pair_mod: int,
     touched_pair,
