@@ -60,10 +60,15 @@ _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
 # on the ~6.3-7.0k-note giants (2026-07-09, 2 reducer threads) -- the flat 4.0 GB/worker cap this
 # replaces admitted 12 such workers and crashed the machine (commit exhaustion, no pagefile).
 _FG_PREBUILD_FLOOR_COMMIT_GB = 1.7  # interpreter + numba cache + ref arrays + light-chart build transient
-_FG_PREBUILD_PEAK_COMMIT_GB = 8.0  # measured ~7.0 GB giant peak + margin for up to 4 reducer threads
+_FG_PREBUILD_PEAK_COMMIT_GB = 8.0  # measured ~7.0 GB giant peak at 2 reducer threads + margin
 _FG_PREBUILD_PEAK_COMMIT_NOTES = 7000.0  # note count of the charts that measured the peak
 _FG_PREBUILD_SYSTEM_RESERVE_GB = 6.0  # main process + OS/desktop headroom the pool must never claim
-_FG_PREBUILD_MAX_REDUCER_THREADS = 4  # peak anchor above covers <=4 threads; wider is unmeasured
+# Reducer threads are capped at the width the peak anchor was MEASURED at. Per-thread reducer
+# scratch is real and steep: the 2026-07-09 relaunch ran giants at 4 threads under the same 8.0
+# anchor and each materialized ~10.3 GB commit (~+1.65 GB/extra thread), over-committing the
+# ledger before the live backstop could see it. Widening this cap requires re-anchoring
+# _FG_PREBUILD_PEAK_COMMIT_GB from prebuild_song_done telemetry at the wider setting first.
+_FG_PREBUILD_MAX_REDUCER_THREADS = 2
 
 
 def _fg_prebuild_song_weight_gb(note_count: int) -> float:
