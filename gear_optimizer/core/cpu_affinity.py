@@ -214,6 +214,22 @@ def pin_current_process_to_core_band(index: int, total: int) -> None:
             # >64 logical processors -> Windows processor groups; a single 64-bit affinity mask can't
             # address them, so the band scheme would silently drop cores. Leave placement to the OS.
             return
+        cores = _windows_logical_cpu_efficiency_classes()
+        if cores and len({int(eff) for _, eff in cores}) == 1:
+            # Uniform silicon (e.g. Ryzen, no E-cores): the E-core parking pathology hard bands exist
+            # to defeat cannot occur, so give every worker the FULL frontier CPU set (EcoQoS still
+            # cleared, priority still lifted) and let the OS balance. The FG prebuild's weighted
+            # admission needs this: live concurrency varies with per-song memory weight (a few
+            # multi-thread giant builds vs many single-thread light builds), so fixed per-worker
+            # bands would strand a giant's reducer threads on a 1-CPU band while other bands idle.
+            # Hybrid CPUs keep the hard bands below (measured i9-13900K: anything softer parks
+            # background workers on E-cores).
+            mask = 0
+            for cpu in cpus:
+                mask |= 1 << cpu
+            _apply_affinity_mask(mask)
+            logger.debug("CPU: worker %d/%d pinned to full frontier CPU set (uniform cores), EcoQoS off.", index, total)
+            return
         total = max(1, int(total))
         index = int(index) % total
         lo = (index * len(cpus)) // total
@@ -229,14 +245,15 @@ def pin_current_process_to_core_band(index: int, total: int) -> None:
         logger.debug("pin_current_process_to_core_band skipped: %s", e)
 
 
-# Per-worker available-RAM budgets for the cold builds. Timeline exact frontiers peak modestly
-# (~1.5 GB/worker). FG response-frontier cold builds are the multi-GB ones: the EXTENDED CUT giant
-# charts (FREEDOM DiVE Koneko, Soulless 5, Galaxy Collapse, Camellia EXTENDED CUTs) peak at several
-# GB RSS each, and the prebuild schedules heaviest-first so every worker starts on a giant chart at
-# once -- exactly the concurrency that hit "Unable to allocate memory" on 2026-07-02. Size FG to
-# that real peak, not timeline's budget.
+# Per-worker available-RAM budget for the timeline cold build, whose per-song builds peak modestly
+# and uniformly (~1.5 GB/worker), so a flat per-worker cap is the honest model there. The FG
+# response-frontier cold build is NOT sized this way: its per-song peak spans ~1.7-8 GB commit
+# (median chart vs EXTENDED CUT giants) and it schedules heaviest-first, so any flat constant
+# either over-commits on giants (4.0 GB/worker admitted 12 workers x ~7 GB measured commit ->
+# 2026-07-09 system-wide commit exhaustion + hard crash) or wastes cores on the light tail. FG
+# concurrency is owned by the per-song memory-weighted admission scheduler in
+# fg_response_frontier_cache_prebuild.py.
 TIMELINE_PREBUILD_GB_PER_WORKER = 1.5
-FG_RESPONSE_PREBUILD_GB_PER_WORKER = 4.0
 
 
 def frontier_prebuild_worker_count() -> int:
@@ -267,15 +284,6 @@ def _ram_capped_prebuild_worker_count(gb_per_worker: float) -> int:
 def timeline_prebuild_worker_count() -> int:
     """Frontier prebuild worker count with the timeline low-RAM guard (~1.5 GB/worker)."""
     return _ram_capped_prebuild_worker_count(TIMELINE_PREBUILD_GB_PER_WORKER)
-
-
-def fg_response_prebuild_worker_count() -> int:
-    """Frontier prebuild worker count with the FG response low-RAM guard (~several GB/worker).
-
-    FG response-frontier cold builds are the memory-heavy ones and run heaviest-first, so unlike
-    timeline this guard is load-bearing: without it every worker piles onto a giant EXTENDED CUT
-    chart simultaneously and exhausts RAM."""
-    return _ram_capped_prebuild_worker_count(FG_RESPONSE_PREBUILD_GB_PER_WORKER)
 
 
 def init_process_pool_worker_band(total_workers: int) -> None:

@@ -192,7 +192,11 @@ def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path)
         def __init__(self, *_args, **_kwargs):
             raise AssertionError("single missing path must not spawn a process pool")
 
-    monkeypatch.setattr(prebuild, "_dedupe_paths_by_response_bundle_key", lambda paths, _ref_arrays: (list(paths), {}))
+    monkeypatch.setattr(
+        prebuild,
+        "_dedupe_paths_by_response_bundle_key",
+        lambda paths, _ref_arrays: ([(str(path), 0) for path in paths], {}),
+    )
     monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", lambda **_kwargs: _UnexpectedExecutor())
     monkeypatch.setattr(
         prebuild,
@@ -212,6 +216,68 @@ def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path)
     assert summary.completed == 1
     assert summary.disk == 1
     assert results[0].path == str(song_path)
+
+
+def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all(monkeypatch) -> None:
+    """The admission scheduler must (a) never let the sum of in-flight memory weights exceed the
+    RAM budget -- the invariant whose absence crashed the machine on 2026-07-09 -- while (b) still
+    completing every song (progress guarantee: one build is always admitted)."""
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+
+    # 20 GB available -> budget 14 GB: one ~8 GB giant at a time, light charts backfill.
+    monkeypatch.setattr(prebuild, "_fg_prebuild_available_ram_gb", lambda: 20.0)
+    monkeypatch.setattr(prebuild, "frontier_prebuild_worker_count", lambda: 8)
+    monkeypatch.setattr(prebuild, "frontier_prebuild_cpu_count", lambda: 31)
+    items = [(f"giant{i}.txt", 7000) for i in range(3)] + [(f"light{i}.txt", 500) for i in range(4)]
+    monkeypatch.setattr(
+        prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _ref_arrays: (list(items), {})
+    )
+
+    budget_gb = 20.0 - prebuild._FG_PREBUILD_SYSTEM_RESERVE_GB
+    ledger_peaks: list[float] = []
+
+    class _FakeFuture:
+        def __init__(self, path: str):
+            self._result = prebuild.FgResponseFrontierCacheBuildResult(
+                path=path, source="built", build_ms=1.0, cache_file=f"{path}.npz"
+            )
+
+        def result(self):
+            return self._result
+
+    class _FakeExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, _fn, path, reducer_threads):
+            assert int(reducer_threads) >= 1
+            return _FakeFuture(str(path))
+
+    def _fake_wait(futures, return_when=None):
+        del return_when
+        # Record the in-flight weight peak at each drain point, then complete exactly one build.
+        ordered = list(futures)
+        ledger_peaks.append(sum(weight for _path, weight in (futures[f] for f in ordered)))
+        return {ordered[0]}, set(ordered[1:])
+
+    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(prebuild.concurrent.futures, "wait", _fake_wait)
+
+    summary, results = prebuild._run_missing_fg_prebuild(
+        [path for path, _notes in items], {}, ((0, 0),)
+    )
+
+    assert summary.completed == len(items)
+    assert summary.failures == 0
+    assert sorted(result.path for result in results) == sorted(path for path, _notes in items)
+    assert ledger_peaks, "admission loop never drained"
+    assert max(ledger_peaks) <= budget_gb + 1e-9
 
 
 def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypatch, tmp_path: Path) -> None:
@@ -240,10 +306,10 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
         lambda: 0,
     )
 
-    def _unexpected_priority(_path: str):
-        raise AssertionError("manifest hits must not parse songs for priority ordering")
+    def _unexpected_parse(_paths, _ref_arrays):
+        raise AssertionError("manifest hits must not reach the dedupe/weight parse pass")
 
-    monkeypatch.setattr(prebuild, "_fg_response_frontier_prebuild_priority", _unexpected_priority)
+    monkeypatch.setattr(prebuild, "_dedupe_paths_by_response_bundle_key", _unexpected_parse)
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
         cfg=object(),

@@ -557,7 +557,9 @@ def test_fg_response_prebuild_dedupes_duplicate_bundle_keys(tmp_path: Path) -> N
         _ref_arrays(),
     )
 
-    assert representatives == [str(first_path)]
+    # Representatives carry the note count from the same parse pass (admission weight input).
+    assert [path for path, _notes in representatives] == [str(first_path)]
+    assert all(isinstance(notes, int) and notes > 0 for _path, notes in representatives)
     assert duplicates == {str(first_path): (str(second_path),)}
 
 
@@ -1039,38 +1041,34 @@ def test_fg_response_frontier_cache_build_has_single_production_owner() -> None:
     assert offenders == []
 
 
-def test_fg_response_prebuild_uses_band_pinned_worker_topology(monkeypatch) -> None:
-    from gear_optimizer.core import cpu_affinity
+def test_fg_prebuild_admission_weight_is_anchored_to_measured_peaks() -> None:
+    """Weight model invariants: floored baseline for tiny charts, the measured ~7k-note giant maps
+    to the peak anchor, extrapolation above the anchor never clamps down (a bigger future chart
+    must weigh more -- clamping would re-create the 2026-07-09 over-commit crash)."""
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
-    seen: dict[str, object] = {}
+    assert prebuild._fg_prebuild_song_weight_gb(0) == prebuild._FG_PREBUILD_FLOOR_COMMIT_GB
+    anchor = prebuild._fg_prebuild_song_weight_gb(int(prebuild._FG_PREBUILD_PEAK_COMMIT_NOTES))
+    assert abs(anchor - prebuild._FG_PREBUILD_PEAK_COMMIT_GB) < 1e-9
+    assert prebuild._fg_prebuild_song_weight_gb(14000) > prebuild._FG_PREBUILD_PEAK_COMMIT_GB
+    # Monotone in note count.
+    weights = [prebuild._fg_prebuild_song_weight_gb(n) for n in (0, 1000, 3500, 7000, 10000)]
+    assert weights == sorted(weights)
 
-    class FakeExecutor:
-        def __init__(self, **kwargs):
-            seen.update(kwargs)
 
-        def __enter__(self):
-            return self
+def test_fg_prebuild_reducer_threads_size_to_memory_weight_class(monkeypatch) -> None:
+    """Giants (few admitted concurrently by weight) get the freed cores as reducer threads, capped
+    at the measured-safe width; light charts that run wide get one thread. No flat worker cap."""
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
-        def __exit__(self, *_args):
-            return False
-
-    monkeypatch.setattr(prebuild, "fg_response_prebuild_worker_count", lambda: 8)
-    monkeypatch.setattr(cpu_affinity, "frontier_prebuild_intra_worker_threads", lambda _workers: 4)
-    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", FakeExecutor)
-
-    worker_count = prebuild.fg_response_prebuild_worker_count()
-    reducer_threads = cpu_affinity.frontier_prebuild_intra_worker_threads(worker_count)
-    prebuild.concurrent.futures.ProcessPoolExecutor(
-        max_workers=worker_count,
-        initializer=prebuild._init_prebuild_worker,
-        initargs=({}, ((0, 0),), int(reducer_threads), int(worker_count)),
-    ).__enter__()
-
-    assert worker_count == 8
-    assert seen["max_workers"] == 8
-    assert seen["initargs"][2] == 4
-    assert seen["initargs"][3] == 8
+    # 42 GB budget, 31 frontier CPUs, up to 24 workers (the 2026-07-09 box shape).
+    giant = prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=42.0, max_workers=24, frontier_cpus=31)
+    light = prebuild._fg_prebuild_reducer_threads(2.0, budget_gb=42.0, max_workers=24, frontier_cpus=31)
+    assert giant == prebuild._FG_PREBUILD_MAX_REDUCER_THREADS  # 42/8 -> 5 concurrent -> 31//5=6, capped 4
+    assert light == 1  # 42/2 -> 21 concurrent -> 31//21=1
+    # No psutil (budget unknown): fall back to the core-derived worker cap.
+    assert prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=None, max_workers=8, frontier_cpus=31) == 3  # 31//8
+    assert prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=None, max_workers=31, frontier_cpus=31) == 1
 
 
 def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -> None:

@@ -13,12 +13,12 @@ import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.cpu_affinity import (
-    fg_response_prebuild_worker_count,
-    frontier_prebuild_intra_worker_threads,
+    frontier_prebuild_cpu_count,
+    frontier_prebuild_worker_count,
     init_process_pool_worker_band,
 )
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
-from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
 from gear_optimizer.solver.frontier_cache_manifest import (
     apply_manifest_results as _shared_apply_manifest_results,
     build_manifest_plan as _shared_build_manifest_plan,
@@ -52,6 +52,54 @@ _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
 _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
 
+# Memory-weighted admission model for the cold FG build. Per-song peak worker COMMIT spans ~4x
+# (median ~1k-note chart vs ~7k-note EXTENDED CUT giants), so concurrency is admitted per song by
+# estimated weight instead of a flat worker count: sum(in-flight weights) stays within the RAM
+# budget, giants self-throttle to a few concurrent builds, and the light tail runs wide. Anchors
+# are measured, not guessed: Windows Resource-Exhaustion-Detector logged ~7.0 GB commit per worker
+# on the ~6.3-7.0k-note giants (2026-07-09, 2 reducer threads) -- the flat 4.0 GB/worker cap this
+# replaces admitted 12 such workers and crashed the machine (commit exhaustion, no pagefile).
+_FG_PREBUILD_FLOOR_COMMIT_GB = 1.7  # interpreter + numba cache + ref arrays + light-chart build transient
+_FG_PREBUILD_PEAK_COMMIT_GB = 8.0  # measured ~7.0 GB giant peak + margin for up to 4 reducer threads
+_FG_PREBUILD_PEAK_COMMIT_NOTES = 7000.0  # note count of the charts that measured the peak
+_FG_PREBUILD_SYSTEM_RESERVE_GB = 6.0  # main process + OS/desktop headroom the pool must never claim
+_FG_PREBUILD_MAX_REDUCER_THREADS = 4  # peak anchor above covers <=4 threads; wider is unmeasured
+
+
+def _fg_prebuild_song_weight_gb(note_count: int) -> float:
+    """Estimated peak worker commit (GB) for one song build, linear in note count.
+
+    Anchored at the measured giant peak and extrapolating above it (a future bigger chart must
+    weigh more, never clamp down); floored at the per-process baseline for tiny charts.
+    """
+    slope = (_FG_PREBUILD_PEAK_COMMIT_GB - _FG_PREBUILD_FLOOR_COMMIT_GB) / _FG_PREBUILD_PEAK_COMMIT_NOTES
+    return _FG_PREBUILD_FLOOR_COMMIT_GB + max(0, int(note_count)) * slope
+
+
+def _fg_prebuild_available_ram_gb() -> float | None:
+    """Currently-available RAM in GB, or None when psutil is unavailable (optional dependency
+    boundary, mirroring cpu_affinity: without it admission falls back to the core-derived cap)."""
+    try:
+        import psutil
+
+        return float(psutil.virtual_memory().available) / 1e9
+    except Exception:
+        return None
+
+
+def _fg_prebuild_reducer_threads(weight_gb: float, *, budget_gb: float | None, max_workers: int, frontier_cpus: int) -> int:
+    """Intra-worker reducer threads for one song, sized to the concurrency its weight class allows.
+
+    A giant that memory-admits ~5-at-once gets the cores those absent siblings free up (capped at
+    the measured-safe thread count); a light chart that runs ~20-wide gets 1. Thread count never
+    changes results -- the reducer is exact at any width -- so this is placement, not semantics.
+    """
+    if budget_gb is None:
+        concurrency = max(1, int(max_workers))
+    else:
+        concurrency = max(1, min(int(max_workers), int(float(budget_gb) / max(float(weight_gb), _FG_PREBUILD_FLOOR_COMMIT_GB))))
+    return max(1, min(_FG_PREBUILD_MAX_REDUCER_THREADS, int(frontier_cpus) // concurrency))
+
 
 def _init_prebuild_worker(
     ref_arrays: dict,
@@ -68,7 +116,15 @@ def _init_prebuild_worker(
     response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(max(1, int(reducer_threads)))
 
 
-def _build_fg_response_frontier_cache_for_path_shared(song_path_text: str) -> FgResponseFrontierCacheBuildResult:
+def _build_fg_response_frontier_cache_for_path_shared(
+    song_path_text: str,
+    reducer_threads: int | None = None,
+) -> FgResponseFrontierCacheBuildResult:
+    if reducer_threads is not None:
+        from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
+
+        # Per-task width from the admission scheduler: sized to this song's memory weight class.
+        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(int(reducer_threads))
     shared = _PREBUILD_WORKER_REF_ARRAYS if isinstance(_PREBUILD_WORKER_REF_ARRAYS, dict) else {}
     return build_fg_response_frontier_cache_for_path(
         song_path_text,
@@ -151,12 +207,20 @@ def _apply_manifest_results(*, plan, results: Iterable[object], stat_keys: Itera
     )
 
 
-def _dedupe_paths_by_response_bundle_key(paths: Iterable[str], ref_arrays: dict) -> tuple[list[str], dict[str, tuple[str, ...]]]:
+def _dedupe_paths_by_response_bundle_key(
+    paths: Iterable[str], ref_arrays: dict
+) -> tuple[list[tuple[str, int]], dict[str, tuple[str, ...]]]:
+    """Deduplicate songs by response bundle key; representatives carry their note count.
+
+    This is the single full-pool parse pass: the note count feeds both heaviest-first ordering and
+    the admission memory weights, so no second per-song parse happens on the coordinating process.
+    Duplicates share the bundle key (same chart timing content), hence the same note count.
+    """
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    representatives: list[str] = []
+    representatives: list[tuple[str, int]] = []
     duplicates: dict[str, list[str]] = {}
     representative_by_key: dict[tuple, str] = {}
     for path_text in paths:
@@ -166,8 +230,10 @@ def _dedupe_paths_by_response_bundle_key(paths: Iterable[str], ref_arrays: dict)
         key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
         representative = representative_by_key.get(key)
         if representative is None:
+            timestamps = calc_song.get("song_data", {}).get("timestamps", ())
+            note_count = int(len(timestamps) if timestamps is not None else 0)
             representative_by_key[key] = path
-            representatives.append(path)
+            representatives.append((path, note_count))
             duplicates[path] = []
         else:
             duplicates[representative].append(path)
@@ -217,6 +283,30 @@ def build_fg_response_frontier_cache_for_path(
         # driver on EXTENDED CUT charts. Release sweeps every per-song cache tier by key
         # prefix; the bundle just written re-opens from disk wherever it is next needed.
         release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays))
+    if profile_events_active():
+        # Per-song worker memory ground truth: calibrates/validates the admission weight anchors
+        # (peak_wset/private are Windows-only psutil fields; 0.0 elsewhere).
+        try:
+            import psutil
+
+            memory = psutil.Process().memory_info()
+        except ImportError:
+            memory = None
+        if memory is not None:
+            timestamps = calc_song.get("song_data", {}).get("timestamps", ())
+            emit_profile_event(
+                component="fg_response_cache",
+                event="prebuild_song_done",
+                song_key=song_path.name,
+                metrics={
+                    "build_ms": float(result.elapsed_ms),
+                    "source": str(result.cache_source),
+                    "note_count": int(len(timestamps) if timestamps is not None else 0),
+                    "rss_gb": float(memory.rss) / 1e9,
+                    "peak_wset_gb": float(getattr(memory, "peak_wset", 0)) / 1e9,
+                    "private_gb": float(getattr(memory, "private", 0)) / 1e9,
+                },
+            )
     return FgResponseFrontierCacheBuildResult(
         path=str(song_path),
         source=str(result.cache_source),
@@ -262,16 +352,6 @@ def ensure_response_frontier_cache_for_calc_song(
     build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
 
 
-def _fg_response_frontier_prebuild_priority(path_text: str) -> tuple[int, str]:
-    from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-
-    calc_song = get_base_calc_song(str(path_text), {})
-    apply_timing_envelope(calc_song)
-    timestamps = calc_song.get("song_data", {}).get("timestamps", ())
-    return (-int(len(timestamps) if timestamps is not None else 0), str(path_text).lower())
-
-
 def _run_missing_fg_prebuild(
     paths: list[str],
     ref_arrays: dict,
@@ -284,11 +364,11 @@ def _run_missing_fg_prebuild(
     failures = 0
     completed = 0
     results: list[FgResponseFrontierCacheBuildResult] = []
-    worker_count = fg_response_prebuild_worker_count()
-    reducer_threads = frontier_prebuild_intra_worker_threads(worker_count)
-    build_paths, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(paths, ref_arrays)
-    if len(build_paths) == 1:
-        path = str(build_paths[0])
+    build_items, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(paths, ref_arrays)
+    # Heaviest-first (same makespan ordering as before), note counts from the dedupe parse pass.
+    build_items.sort(key=lambda item: (-int(item[1]), str(item[0]).lower()))
+    if len(build_items) == 1:
+        path = str(build_items[0][0])
         duplicate_paths = duplicate_paths_by_representative.get(path, ())
         try:
             result = build_fg_response_frontier_cache_for_path(path, ref_arrays, stat_keys=stat_keys)
@@ -331,47 +411,134 @@ def _run_missing_fg_prebuild(
             int(duplicate_count),
             int(len(paths)),
         )
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=worker_count,
-        initializer=_init_prebuild_worker,
-        initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), int(reducer_threads), int(worker_count)),
-    ) as executor:
-        futures = {executor.submit(_build_fg_response_frontier_cache_for_path_shared, path): path for path in build_paths}
-        for future in concurrent.futures.as_completed(futures):
-            path = futures[future]
-            duplicate_paths = duplicate_paths_by_representative.get(path, ())
-            try:
-                result = future.result()
-            except Exception as exc:
-                failures += 1 + int(len(duplicate_paths))
-                logger.warning("[FGResponseCache] Failed to prebuild %s: %s", path, exc)
-                continue
-            completed += 1
-            results.append(result)
-            source_counts[result.source] += 1
-            if duplicate_paths:
-                duplicate_source = "disk" if result.cache_file and os.path.exists(result.cache_file) else result.source
-                for duplicate_path in duplicate_paths:
-                    completed += 1
-                    duplicate_result = FgResponseFrontierCacheBuildResult(
-                        path=str(duplicate_path),
-                        source=str(duplicate_source),
-                        build_ms=0.0,
-                        cache_file=str(result.cache_file),
-                    )
-                    results.append(duplicate_result)
-                    source_counts[duplicate_source] += 1
-            if completed == 1 or completed % 10 == 0:
+    available_gb = _fg_prebuild_available_ram_gb()
+    budget_gb: float | None = None
+    if available_gb is not None:
+        # Never below one giant: paired with the always-admit-one guarantee below, a single
+        # heaviest build alone in the machine is always schedulable.
+        budget_gb = max(_FG_PREBUILD_PEAK_COMMIT_GB, float(available_gb) - _FG_PREBUILD_SYSTEM_RESERVE_GB)
+    max_workers = frontier_prebuild_worker_count()
+    if budget_gb is not None:
+        max_workers = min(max_workers, max(1, int(budget_gb / _FG_PREBUILD_FLOOR_COMMIT_GB)))
+    frontier_cpus = frontier_prebuild_cpu_count()
+    heaviest_weight = _fg_prebuild_song_weight_gb(int(build_items[0][1]))
+    logger.info(
+        "[FGResponseCache] Weighted admission: %s song(s), budget=%s GB (available=%s GB, reserve=%.1f GB), "
+        "max_workers=%s, heaviest=%s notes (~%.1f GB).",
+        len(build_items),
+        f"{budget_gb:.1f}" if budget_gb is not None else "uncapped",
+        f"{available_gb:.1f}" if available_gb is not None else "unknown",
+        _FG_PREBUILD_SYSTEM_RESERVE_GB,
+        int(max_workers),
+        int(build_items[0][1]),
+        float(heaviest_weight),
+    )
+    pending: list[tuple[str, int]] = list(build_items)
+    in_flight: dict[concurrent.futures.Future, tuple[str, float]] = {}
+    admitted_weight_gb = 0.0
+
+    def _admit_ready(executor: concurrent.futures.ProcessPoolExecutor) -> None:
+        # First-fit over the heaviest-first queue: the head giant is admitted the moment it fits;
+        # when it does not, lighter charts backfill the remaining budget instead of idling cores.
+        nonlocal admitted_weight_gb
+        while pending and len(in_flight) < max_workers:
+            live_available_gb = _fg_prebuild_available_ram_gb()
+            admit_index: int | None = None
+            weight_gb = 0.0
+            for index, (_path, note_count) in enumerate(pending):
+                weight_gb = _fg_prebuild_song_weight_gb(int(note_count))
+                if not in_flight:
+                    # Progress guarantee: one build is always admitted, whatever the ledger says.
+                    admit_index = index
+                    break
+                if budget_gb is not None and admitted_weight_gb + weight_gb > budget_gb:
+                    continue
+                if live_available_gb is not None and weight_gb > live_available_gb - _FG_PREBUILD_SYSTEM_RESERVE_GB:
+                    # Live backstop: already-materialized commit (model shortfall, other apps,
+                    # allocator ratchet) throttles admission before the OS runs out.
+                    continue
+                admit_index = index
+                break
+            if admit_index is None:
+                return
+            path, note_count = pending.pop(admit_index)
+            reducer_threads = _fg_prebuild_reducer_threads(
+                weight_gb, budget_gb=budget_gb, max_workers=max_workers, frontier_cpus=frontier_cpus
+            )
+            future = executor.submit(_build_fg_response_frontier_cache_for_path_shared, path, int(reducer_threads))
+            in_flight[future] = (path, float(weight_gb))
+            admitted_weight_gb += float(weight_gb)
+            if weight_gb >= 4.0:
                 logger.info(
-                    "[FGResponseCache] %s/%s complete (built=%s disk=%s memory=%s, latest=%s %.1fms)",
-                    completed,
-                    len(paths),
-                    int(source_counts.get("built", 0)),
-                    int(source_counts.get("disk", 0)),
-                    int(source_counts.get("memory", 0)),
-                    result.source,
-                    float(result.build_ms),
+                    "[FGResponseCache] Admitted giant %s (%s notes, ~%.1f GB, %s reducer threads); "
+                    "in-flight=%s (~%.1f/%s GB).",
+                    os.path.basename(path),
+                    int(note_count),
+                    float(weight_gb),
+                    int(reducer_threads),
+                    len(in_flight),
+                    float(admitted_weight_gb),
+                    f"{budget_gb:.1f}" if budget_gb is not None else "uncapped",
                 )
+            emit_profile_event(
+                component="fg_response_cache",
+                event="prebuild_admit",
+                song_key=os.path.basename(path),
+                metrics={
+                    "note_count": int(note_count),
+                    "weight_gb": float(weight_gb),
+                    "reducer_threads": int(reducer_threads),
+                    "in_flight": int(len(in_flight)),
+                    "admitted_weight_gb": float(admitted_weight_gb),
+                    "available_gb": float(live_available_gb) if live_available_gb is not None else -1.0,
+                },
+            )
+
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_init_prebuild_worker,
+        initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), 1, int(max_workers)),
+    ) as executor:
+        _admit_ready(executor)
+        while in_flight:
+            done, _not_done = concurrent.futures.wait(in_flight, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                path, weight_gb = in_flight.pop(future)
+                admitted_weight_gb -= float(weight_gb)
+                duplicate_paths = duplicate_paths_by_representative.get(path, ())
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    failures += 1 + int(len(duplicate_paths))
+                    logger.warning("[FGResponseCache] Failed to prebuild %s: %s", path, exc)
+                    continue
+                completed += 1
+                results.append(result)
+                source_counts[result.source] += 1
+                if duplicate_paths:
+                    duplicate_source = "disk" if result.cache_file and os.path.exists(result.cache_file) else result.source
+                    for duplicate_path in duplicate_paths:
+                        completed += 1
+                        duplicate_result = FgResponseFrontierCacheBuildResult(
+                            path=str(duplicate_path),
+                            source=str(duplicate_source),
+                            build_ms=0.0,
+                            cache_file=str(result.cache_file),
+                        )
+                        results.append(duplicate_result)
+                        source_counts[duplicate_source] += 1
+                if completed == 1 or completed % 10 == 0:
+                    logger.info(
+                        "[FGResponseCache] %s/%s complete (built=%s disk=%s memory=%s, latest=%s %.1fms)",
+                        completed,
+                        len(paths),
+                        int(source_counts.get("built", 0)),
+                        int(source_counts.get("disk", 0)),
+                        int(source_counts.get("memory", 0)),
+                        result.source,
+                        float(result.build_ms),
+                    )
+            _admit_ready(executor)
     elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
     summary = FgResponseFrontierCachePrebuildSummary(
         total=int(len(paths)),
@@ -453,7 +620,9 @@ def run_fg_response_frontier_cache_prebuild(
                 "[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale)
             )
 
-        missing_paths = sorted(manifest_plan.missing_paths, key=_fg_response_frontier_prebuild_priority)
+        # Deterministic input order; heaviest-first execution ordering happens inside
+        # _run_missing_fg_prebuild from the same parse pass that computes admission weights.
+        missing_paths = sorted(str(path) for path in manifest_plan.missing_paths)
         run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
         _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
         elapsed_ms = float((time.perf_counter() - started) * 1000.0)
