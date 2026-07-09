@@ -29,9 +29,11 @@ def data_root(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(service, "DATA_ROOT", tmp_path / "Data")
     monkeypatch.setattr(service, "GEAR_DIR", tmp_path / "Data" / "Gear")
+    service.clear_official_song_catalog_cache()
     with service._INFLIGHT_SOLVES_LOCK:
         service._INFLIGHT_SOLVES.clear()
     yield tmp_path
+    service.clear_official_song_catalog_cache()
     with service._INFLIGHT_SOLVES_LOCK:
         service._INFLIGHT_SOLVES.clear()
 
@@ -49,6 +51,27 @@ def test_find_official_chart_exact_match(data_root):
     _write_chart(data_root, "Normal", "Canon in D [Normal]")
     chart = service.find_official_chart("Canon in D [Normal]")
     assert chart.read_text(encoding="utf-8").startswith("Song Name\tCanon in D [Normal]")
+
+
+def test_official_song_catalog_reuses_header_scan_for_lookup(data_root, monkeypatch):
+    _write_chart(data_root, "Normal", "Canon in D [Normal]", filename="canon.txt")
+    _write_chart(data_root, "Hard", "Feeding [Hard]", filename="feeding.txt")
+
+    real_read_full_header = service._read_full_header
+    scanned: list[Path] = []
+
+    def counted_read_full_header(path: Path) -> dict[str, str]:
+        scanned.append(path)
+        return real_read_full_header(path)
+
+    monkeypatch.setattr(service, "_read_full_header", counted_read_full_header)
+
+    songs = service.list_official_songs()
+    chart = service.find_official_chart("Feeding [Hard]")
+
+    assert [song["songId"] for song in songs] == ["Canon in D [Normal]", "Feeding [Hard]"]
+    assert chart.name == "feeding.txt"
+    assert len(scanned) == 2
 
 
 def test_find_official_chart_unknown_raises(data_root):
