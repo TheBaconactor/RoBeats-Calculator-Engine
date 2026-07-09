@@ -54,20 +54,27 @@ _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
 
 # Memory-weighted admission model for the cold FG build. Per-song peak worker COMMIT spans ~4x
 # (median ~1k-note chart vs ~7k-note EXTENDED CUT giants), so concurrency is admitted per song by
-# estimated weight instead of a flat worker count: sum(in-flight weights) stays within the RAM
-# budget, giants self-throttle to a few concurrent builds, and the light tail runs wide. Anchors
-# are measured, not guessed: Windows Resource-Exhaustion-Detector logged ~7.0 GB commit per worker
-# on the ~6.3-7.0k-note giants (2026-07-09, 2 reducer threads) -- the flat 4.0 GB/worker cap this
-# replaces admitted 12 such workers and crashed the machine (commit exhaustion, no pagefile).
-_FG_PREBUILD_FLOOR_COMMIT_GB = 1.7  # interpreter + numba cache + ref arrays + light-chart build transient
-_FG_PREBUILD_PEAK_COMMIT_GB = 8.0  # measured ~7.0 GB giant peak at 2 reducer threads + margin
-_FG_PREBUILD_PEAK_COMMIT_NOTES = 7000.0  # note count of the charts that measured the peak
+# estimated weight instead of a flat worker count. Admission is CLOSED-LOOP: a build's commit
+# climbs for its whole 30-70 minute run, so every point sample understates its peak (2026-07-09
+# history: 7.0 GB at the crash snapshot -> 10.3 GB at the 4-thread abort -> >=14.8 GB and still
+# climbing at 2 threads), and the new Gear/Mini data grew the response grid so no historical
+# baseline binds. The weights below are therefore a THROUGHPUT PRIOR for ordering/backfill only;
+# the memory invariant is enforced directly against reality: (a) the admission ledger counts
+# max(model prior, live measured worker commit), (b) admission re-evaluates on a timer as commits
+# materialize, and (c) an emergency guard SUSPENDS climbing workers (losslessly -- they resume
+# when siblings complete and free RAM) before the OS runs out of commit (this box has no
+# pagefile; overshoot is a hard system crash, not a slowdown).
+_FG_PREBUILD_FLOOR_COMMIT_GB = 1.7  # prior: interpreter + numba cache + ref arrays + light-chart transient
+_FG_PREBUILD_PEAK_COMMIT_GB = 12.0  # prior: giants observed 9.7-14.8 GB commit at 2 threads (mid-climb)
+_FG_PREBUILD_PEAK_COMMIT_NOTES = 7000.0  # note count of the charts that anchored the prior
 _FG_PREBUILD_SYSTEM_RESERVE_GB = 6.0  # main process + OS/desktop headroom the pool must never claim
-# Reducer threads are capped at the width the peak anchor was MEASURED at. Per-thread reducer
-# scratch is real and steep: the 2026-07-09 relaunch ran giants at 4 threads under the same 8.0
-# anchor and each materialized ~10.3 GB commit (~+1.65 GB/extra thread), over-committing the
-# ledger before the live backstop could see it. Widening this cap requires re-anchoring
-# _FG_PREBUILD_PEAK_COMMIT_GB from prebuild_song_done telemetry at the wider setting first.
+_FG_PREBUILD_SUSPEND_FLOOR_GB = 5.0  # guard: below this free RAM, suspend the youngest workers
+_FG_PREBUILD_RESUME_FLOOR_GB = 12.0  # guard: above this free RAM, resume one suspended worker per poll
+_FG_PREBUILD_GUARD_POLL_SECONDS = 5.0
+_FG_PREBUILD_ADMIT_POLL_SECONDS = 10.0  # re-run admission as in-flight commits materialize
+# Reducer threads are capped at the width all commit observations were made at. The 2026-07-09
+# 4-thread relaunch added ~+1.65 GB/extra thread of reducer scratch on top of the climb above;
+# widening requires re-anchoring the prior from prebuild_song_done telemetry at the wider width.
 _FG_PREBUILD_MAX_REDUCER_THREADS = 2
 
 
@@ -90,6 +97,147 @@ def _fg_prebuild_available_ram_gb() -> float | None:
         return float(psutil.virtual_memory().available) / 1e9
     except Exception:
         return None
+
+
+def _fg_prebuild_pool_worker_processes() -> list:
+    """psutil handles for the live pool workers (direct python children of this process)."""
+    try:
+        import psutil
+
+        children = psutil.Process().children(recursive=False)
+    except Exception:
+        return []
+    workers = []
+    for child in children:
+        try:
+            if "python" in (child.name() or "").lower():
+                workers.append(child)
+        except Exception:
+            continue
+    return workers
+
+
+def _fg_prebuild_live_worker_commit_gb() -> float:
+    """Sum of the pool workers' MEASURED committed memory (GB). This is the closed-loop half of
+    the admission ledger: builds climb for their whole run, so the model prior alone under-admits
+    protection -- reality wins whenever it exceeds the prior."""
+    total = 0.0
+    for proc in _fg_prebuild_pool_worker_processes():
+        try:
+            memory = proc.memory_info()
+            total += float(getattr(memory, "private", 0) or memory.vms) / 1e9
+        except Exception:
+            continue
+    return total
+
+
+class _FgPrebuildRamGuard:
+    """Emergency brake for the cold build on a no-pagefile box: when free RAM falls below the
+    suspend floor, SUSPEND the youngest pool workers (their commit stops climbing; nothing is
+    lost -- a suspended build resumes exactly where it stopped once siblings complete and free
+    their memory). At least one worker always keeps running so completions keep freeing RAM.
+    Suspension is the only hard bound available mid-flight: an admitted build's true peak is
+    unknowable up front and ProcessPoolExecutor cannot survive killing a worker."""
+
+    def __init__(self) -> None:
+        import threading
+
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="fg-prebuild-ram-guard", daemon=True)
+        self._suspended: list = []
+        self._samples = 0
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=_FG_PREBUILD_GUARD_POLL_SECONDS * 3)
+        for proc in list(self._suspended):
+            self._resume(proc)
+
+    def _resume(self, proc) -> None:
+        try:
+            proc.resume()
+        except Exception:
+            pass
+        if proc in self._suspended:
+            self._suspended.remove(proc)
+
+    def _run(self) -> None:
+        while not self._stop.wait(_FG_PREBUILD_GUARD_POLL_SECONDS):
+            free_gb = _fg_prebuild_available_ram_gb()
+            if free_gb is None:
+                return
+            workers = _fg_prebuild_pool_worker_processes()
+            suspended_pids = {proc.pid for proc in self._suspended}
+            self._suspended = [proc for proc in self._suspended if proc.is_running()]
+            running = [proc for proc in workers if proc.pid not in suspended_pids]
+            if free_gb < _FG_PREBUILD_SUSPEND_FLOOR_GB and len(running) > 1:
+                # Youngest first: it has the least sunk work and the steepest remaining climb.
+                youngest = max(running, key=lambda proc: proc.create_time())
+                try:
+                    youngest.suspend()
+                except Exception:
+                    pass
+                else:
+                    self._suspended.append(youngest)
+                    logger.warning(
+                        "[FGResponseCache] RAM guard: %.1f GB free < %.1f floor; suspended worker %s "
+                        "(%s/%s workers now suspended).",
+                        free_gb,
+                        _FG_PREBUILD_SUSPEND_FLOOR_GB,
+                        youngest.pid,
+                        len(self._suspended),
+                        len(workers),
+                    )
+                    emit_profile_event(
+                        component="fg_response_cache",
+                        event="ram_guard_suspend",
+                        metrics={"free_gb": float(free_gb), "suspended": len(self._suspended), "workers": len(workers)},
+                    )
+            elif free_gb > _FG_PREBUILD_RESUME_FLOOR_GB and self._suspended:
+                # One per poll: a thundering resume would re-create the climb that tripped the guard.
+                proc = self._suspended[-1]
+                self._resume(proc)
+                logger.info(
+                    "[FGResponseCache] RAM guard: %.1f GB free; resumed worker %s (%s still suspended).",
+                    free_gb,
+                    proc.pid,
+                    len(self._suspended),
+                )
+                emit_profile_event(
+                    component="fg_response_cache",
+                    event="ram_guard_resume",
+                    metrics={"free_gb": float(free_gb), "suspended": len(self._suspended)},
+                )
+            self._samples += 1
+            if self._samples % 12 == 0:
+                # Once a minute: the per-worker commit climb curves that end anchor guesswork.
+                commits = []
+                for proc in workers:
+                    try:
+                        memory = proc.memory_info()
+                        commits.append(round(float(getattr(memory, "private", 0) or memory.vms) / 1e9, 2))
+                    except Exception:
+                        continue
+                emit_profile_event(
+                    component="fg_response_cache",
+                    event="ram_guard_sample",
+                    metrics={
+                        "free_gb": float(free_gb),
+                        "worker_commit_gb": commits,
+                        "suspended": len(self._suspended),
+                    },
+                )
+
+
+def _start_fg_prebuild_ram_guard() -> _FgPrebuildRamGuard | None:
+    if _fg_prebuild_available_ram_gb() is None:
+        return None
+    guard = _FgPrebuildRamGuard()
+    guard.start()
+    return guard
 
 
 def _fg_prebuild_reducer_threads(weight_gb: float, *, budget_gb: float | None, max_workers: int, frontier_cpus: int) -> int:
@@ -448,6 +596,9 @@ def _run_missing_fg_prebuild(
         nonlocal admitted_weight_gb
         while pending and len(in_flight) < max_workers:
             live_available_gb = _fg_prebuild_available_ram_gb()
+            # Closed-loop ledger: builds climb for their whole run, so whenever measured worker
+            # commit exceeds the model prior, reality replaces the prior in the admission bound.
+            effective_ledger_gb = max(float(admitted_weight_gb), _fg_prebuild_live_worker_commit_gb())
             admit_index: int | None = None
             weight_gb = 0.0
             for index, (_path, note_count) in enumerate(pending):
@@ -456,7 +607,7 @@ def _run_missing_fg_prebuild(
                     # Progress guarantee: one build is always admitted, whatever the ledger says.
                     admit_index = index
                     break
-                if budget_gb is not None and admitted_weight_gb + weight_gb > budget_gb:
+                if budget_gb is not None and effective_ledger_gb + weight_gb > budget_gb:
                     continue
                 if live_available_gb is not None and weight_gb > live_available_gb - _FG_PREBUILD_SYSTEM_RESERVE_GB:
                     # Live backstop: already-materialized commit (model shortfall, other apps,
@@ -495,55 +646,67 @@ def _run_missing_fg_prebuild(
                     "reducer_threads": int(reducer_threads),
                     "in_flight": int(len(in_flight)),
                     "admitted_weight_gb": float(admitted_weight_gb),
+                    "effective_ledger_gb": float(effective_ledger_gb),
                     "available_gb": float(live_available_gb) if live_available_gb is not None else -1.0,
                 },
             )
 
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=max_workers,
-        initializer=_init_prebuild_worker,
-        initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), 1, int(max_workers)),
-    ) as executor:
-        _admit_ready(executor)
-        while in_flight:
-            done, _not_done = concurrent.futures.wait(in_flight, return_when=concurrent.futures.FIRST_COMPLETED)
-            for future in done:
-                path, weight_gb = in_flight.pop(future)
-                admitted_weight_gb -= float(weight_gb)
-                duplicate_paths = duplicate_paths_by_representative.get(path, ())
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    failures += 1 + int(len(duplicate_paths))
-                    logger.warning("[FGResponseCache] Failed to prebuild %s: %s", path, exc)
-                    continue
-                completed += 1
-                results.append(result)
-                source_counts[result.source] += 1
-                if duplicate_paths:
-                    duplicate_source = "disk" if result.cache_file and os.path.exists(result.cache_file) else result.source
-                    for duplicate_path in duplicate_paths:
-                        completed += 1
-                        duplicate_result = FgResponseFrontierCacheBuildResult(
-                            path=str(duplicate_path),
-                            source=str(duplicate_source),
-                            build_ms=0.0,
-                            cache_file=str(result.cache_file),
-                        )
-                        results.append(duplicate_result)
-                        source_counts[duplicate_source] += 1
-                if completed == 1 or completed % 10 == 0:
-                    logger.info(
-                        "[FGResponseCache] %s/%s complete (built=%s disk=%s memory=%s, latest=%s %.1fms)",
-                        completed,
-                        len(paths),
-                        int(source_counts.get("built", 0)),
-                        int(source_counts.get("disk", 0)),
-                        int(source_counts.get("memory", 0)),
-                        result.source,
-                        float(result.build_ms),
-                    )
+    ram_guard = _start_fg_prebuild_ram_guard()
+    try:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_init_prebuild_worker,
+            initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), 1, int(max_workers)),
+        ) as executor:
             _admit_ready(executor)
+            while in_flight:
+                # Timed wait: admission must re-evaluate as in-flight commits materialize, not
+                # only at completions (builds run 30-70 minutes; the ledger is closed-loop).
+                done, _not_done = concurrent.futures.wait(
+                    in_flight,
+                    timeout=_FG_PREBUILD_ADMIT_POLL_SECONDS,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    path, weight_gb = in_flight.pop(future)
+                    admitted_weight_gb -= float(weight_gb)
+                    duplicate_paths = duplicate_paths_by_representative.get(path, ())
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        failures += 1 + int(len(duplicate_paths))
+                        logger.warning("[FGResponseCache] Failed to prebuild %s: %s", path, exc)
+                        continue
+                    completed += 1
+                    results.append(result)
+                    source_counts[result.source] += 1
+                    if duplicate_paths:
+                        duplicate_source = "disk" if result.cache_file and os.path.exists(result.cache_file) else result.source
+                        for duplicate_path in duplicate_paths:
+                            completed += 1
+                            duplicate_result = FgResponseFrontierCacheBuildResult(
+                                path=str(duplicate_path),
+                                source=str(duplicate_source),
+                                build_ms=0.0,
+                                cache_file=str(result.cache_file),
+                            )
+                            results.append(duplicate_result)
+                            source_counts[duplicate_source] += 1
+                    if completed == 1 or completed % 10 == 0:
+                        logger.info(
+                            "[FGResponseCache] %s/%s complete (built=%s disk=%s memory=%s, latest=%s %.1fms)",
+                            completed,
+                            len(paths),
+                            int(source_counts.get("built", 0)),
+                            int(source_counts.get("disk", 0)),
+                            int(source_counts.get("memory", 0)),
+                            result.source,
+                            float(result.build_ms),
+                        )
+                _admit_ready(executor)
+    finally:
+        if ram_guard is not None:
+            ram_guard.stop()
     elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
     summary = FgResponseFrontierCachePrebuildSummary(
         total=int(len(paths)),

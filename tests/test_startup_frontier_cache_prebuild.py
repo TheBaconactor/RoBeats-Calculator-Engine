@@ -224,16 +224,20 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     completing every song (progress guarantee: one build is always admitted)."""
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
-    # 20 GB available -> budget 14 GB: one ~8 GB giant at a time, light charts backfill.
-    monkeypatch.setattr(prebuild, "_fg_prebuild_available_ram_gb", lambda: 20.0)
+    # 26 GB available -> budget 20 GB: one ~12 GB giant at a time, light charts backfill.
+    monkeypatch.setattr(prebuild, "_fg_prebuild_available_ram_gb", lambda: 26.0)
     monkeypatch.setattr(prebuild, "frontier_prebuild_worker_count", lambda: 8)
     monkeypatch.setattr(prebuild, "frontier_prebuild_cpu_count", lambda: 31)
+    # Hermetic closed-loop inputs: no real pool workers exist under the fake executor, and the
+    # RAM guard thread has nothing real to guard.
+    monkeypatch.setattr(prebuild, "_fg_prebuild_live_worker_commit_gb", lambda: 0.0)
+    monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: None)
     items = [(f"giant{i}.txt", 7000) for i in range(3)] + [(f"light{i}.txt", 500) for i in range(4)]
     monkeypatch.setattr(
         prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _ref_arrays: (list(items), {})
     )
 
-    budget_gb = 20.0 - prebuild._FG_PREBUILD_SYSTEM_RESERVE_GB
+    budget_gb = 26.0 - prebuild._FG_PREBUILD_SYSTEM_RESERVE_GB
     ledger_peaks: list[float] = []
 
     class _FakeFuture:
@@ -259,8 +263,8 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
             assert int(reducer_threads) >= 1
             return _FakeFuture(str(path))
 
-    def _fake_wait(futures, return_when=None):
-        del return_when
+    def _fake_wait(futures, timeout=None, return_when=None):
+        del timeout, return_when
         # Record the in-flight weight peak at each drain point, then complete exactly one build.
         ordered = list(futures)
         ledger_peaks.append(sum(weight for _path, weight in (futures[f] for f in ordered)))
