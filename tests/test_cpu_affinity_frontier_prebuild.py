@@ -32,7 +32,13 @@ def test_frontier_prebuild_reserves_one_weakest_efficiency_cpu() -> None:
     assert cpu_affinity._frontier_prebuild_cpu_indices_from_efficiency(None, 1) == [0]
 
 
-def test_windows_frontier_band_pinning_excludes_reserved_e_core(monkeypatch) -> None:
+def test_windows_frontier_worker_pinning_uses_full_set_and_excludes_reserved_cpu(monkeypatch) -> None:
+    """Every frontier prebuild worker gets the FULL frontier CPU set (reserved weakest CPU
+    excluded) on hybrid silicon. Per-worker bands are gone: with weighted admission the live
+    worker count varies with per-song memory weight, and bands degenerated to 1-CPU masks that
+    timeshared a giant's reducer threads on a single CPU (measured i9-13900K 2026-07-09:
+    37% -> 60% total CPU after re-masking the same workers to the full set, no E-core parking
+    at ABOVE_NORMAL priority with EcoQoS cleared)."""
     from gear_optimizer.core import cpu_affinity
 
     masks: list[int] = []
@@ -41,15 +47,14 @@ def test_windows_frontier_band_pinning_excludes_reserved_e_core(monkeypatch) -> 
     monkeypatch.setattr(
         cpu_affinity,
         "_windows_logical_cpu_efficiency_classes",
-        lambda: [(0, 1), (1, 1), (2, 0), (3, 0)],
+        lambda: [(0, 1), (1, 1), (2, 0), (3, 0)],  # hybrid: P=class1, E=class0; CPU 3 reserved
     )
     monkeypatch.setattr(cpu_affinity, "_apply_affinity_mask", lambda mask: masks.append(int(mask)))
 
-    for index in range(3):
-        cpu_affinity.pin_current_process_to_core_band(index, 3)
+    for _worker in range(3):
+        cpu_affinity.pin_frontier_prebuild_worker()
 
-    assert masks == [0b001, 0b010, 0b100]
-    assert (masks[0] | masks[1] | masks[2]) == 0b0111
+    assert masks == [0b0111, 0b0111, 0b0111]
 
 
 def test_timeline_prebuild_worker_count_caps_by_available_ram(monkeypatch) -> None:
@@ -98,10 +103,8 @@ def test_fg_response_flat_worker_ram_cap_is_deleted() -> None:
     assert not hasattr(cpu_affinity, "FG_RESPONSE_PREBUILD_GB_PER_WORKER")
 
 
-def test_windows_band_pinning_uses_full_frontier_set_on_uniform_cores(monkeypatch) -> None:
-    """On uniform silicon (no E-cores) every worker gets the full frontier CPU set: weighted
-    admission varies live concurrency with per-song memory weight, so fixed per-worker bands would
-    strand a giant's reducer threads on a 1-CPU band while sibling bands idle."""
+def test_windows_frontier_worker_pinning_full_set_on_uniform_cores(monkeypatch) -> None:
+    """Uniform silicon (no E-cores): same full-set mask, reserved weakest CPU still excluded."""
     from gear_optimizer.core import cpu_affinity
 
     masks: list[int] = []
@@ -114,8 +117,6 @@ def test_windows_band_pinning_uses_full_frontier_set_on_uniform_cores(monkeypatc
     )
     monkeypatch.setattr(cpu_affinity, "_apply_affinity_mask", lambda mask: masks.append(int(mask)))
 
-    for index in range(3):
-        cpu_affinity.pin_current_process_to_core_band(index, 3)
+    cpu_affinity.pin_frontier_prebuild_worker()
 
-    # Reserved weakest CPU (index 3) stays excluded; every worker spans the whole frontier set.
-    assert masks == [0b0111, 0b0111, 0b0111]
+    assert masks == [0b0111]

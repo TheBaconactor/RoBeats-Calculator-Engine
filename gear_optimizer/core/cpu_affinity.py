@@ -7,8 +7,8 @@ build. This forces the fast P-cores and lifts the process out of EcoQoS so they 
 
 The affinity pieces are OS/hardware boundary helpers: exact core masks are Windows-only and failures
 must never break startup. pin_to_performance_cores keeps the lightweight main process on the P-cores;
-the FG prebuild's worker pool re-pins each worker across its own P+E core band
-(pin_current_process_to_core_band) so the heavy build uses the frontier CPU budget where masks are
+the FG prebuild's worker pool pins each worker to the FULL frontier CPU set at lifted priority
+(pin_frontier_prebuild_worker) so the heavy build uses the frontier CPU budget where masks are
 available. Worker/thread sizing uses that same budget on every platform.
 """
 from __future__ import annotations
@@ -99,7 +99,7 @@ def _apply_affinity_mask(mask: int) -> None:
 
 def pin_to_performance_cores() -> None:
     """Best-effort: confine this MAIN process to the P-cores at full clock. The FG prebuild's worker
-    pool then re-pins each worker across its own P+E core band (pin_current_process_to_core_band) so the
+    pool then pins each worker to the full P+E frontier set (pin_frontier_prebuild_worker) so the
     heavy build uses every core; this call keeps the lightweight main/coordination process fast."""
     if sys.platform != "win32":
         return
@@ -193,17 +193,22 @@ def frontier_prebuild_cpu_count() -> int:
     return max(1, len(frontier_prebuild_logical_cpu_indices()))
 
 
-def pin_current_process_to_core_band(index: int, total: int) -> None:
-    """Hard-pin THIS process to a contiguous band of logical cores, so that `total` sibling workers
-    collectively cover the frontier prebuild CPU budget.
+def pin_frontier_prebuild_worker() -> None:
+    """Pin THIS frontier prebuild worker to the FULL frontier CPU set (all logical CPUs minus the
+    reserved weakest one), lift priority out of background, and clear EcoQoS throttling.
 
-    Why a hard split: when a background compute process is left free to choose, the Windows hybrid
-    scheduler parks it on the slow E-cores even with EcoQoS throttling cleared (measured on the
-    i9-13900K: unpinned -> E-cores at 100%, P-cores idle). The only reliable way to use the intended
-    cores is to pin workers across the core space explicitly -- a hard mask the scheduler cannot
-    migrate off. Also clears EcoQoS execution-speed throttling + lifts priority so an E-core band
-    still runs at full clock. Affinity masks are Windows-only here; other platforms still use the
-    same worker/thread CPU budget but leave exact placement to the OS."""
+    This replaces the per-worker contiguous core BANDS this function grew up as. Bands assumed all
+    max_workers siblings are simultaneously active and identical; the memory-weighted admission
+    scheduler broke that -- live concurrency varies with per-song weight (a few multi-thread giant
+    builds vs many single-thread light builds), and with max_workers ~= CPU count the bands
+    degenerated to 1 logical CPU per worker, timesharing each giant's reducer threads on a single
+    CPU while 2/3 of the machine idled (observed live on the i9-13900K, 2026-07-09: 9 giants x 2
+    threads -> P 67% / E 8% / total 37%). The historical rationale for bands -- the hybrid
+    scheduler parking background workers on E-cores -- does not apply to these workers: they run
+    ABOVE_NORMAL with EcoQoS cleared, and re-masking the same live workers to the full frontier
+    set held P 61% / E 63% / total 60% (= 18 runnable threads / 31 CPUs) with no parking over
+    sustained sampling on the same box. Affinity masks are Windows-only here; other platforms
+    leave placement to the OS."""
     if sys.platform != "win32":
         return
     try:
@@ -211,38 +216,16 @@ def pin_current_process_to_core_band(index: int, total: int) -> None:
         if not cpus:
             return
         if max(cpus) >= 64:
-            # >64 logical processors -> Windows processor groups; a single 64-bit affinity mask can't
-            # address them, so the band scheme would silently drop cores. Leave placement to the OS.
+            # >64 logical processors -> Windows processor groups; a single 64-bit affinity mask
+            # can't address them. Leave placement to the OS.
             return
-        cores = _windows_logical_cpu_efficiency_classes()
-        if cores and len({int(eff) for _, eff in cores}) == 1:
-            # Uniform silicon (e.g. Ryzen, no E-cores): the E-core parking pathology hard bands exist
-            # to defeat cannot occur, so give every worker the FULL frontier CPU set (EcoQoS still
-            # cleared, priority still lifted) and let the OS balance. The FG prebuild's weighted
-            # admission needs this: live concurrency varies with per-song memory weight (a few
-            # multi-thread giant builds vs many single-thread light builds), so fixed per-worker
-            # bands would strand a giant's reducer threads on a 1-CPU band while other bands idle.
-            # Hybrid CPUs keep the hard bands below (measured i9-13900K: anything softer parks
-            # background workers on E-cores).
-            mask = 0
-            for cpu in cpus:
-                mask |= 1 << cpu
-            _apply_affinity_mask(mask)
-            logger.debug("CPU: worker %d/%d pinned to full frontier CPU set (uniform cores), EcoQoS off.", index, total)
-            return
-        total = max(1, int(total))
-        index = int(index) % total
-        lo = (index * len(cpus)) // total
-        hi = max(lo + 1, ((index + 1) * len(cpus)) // total)
         mask = 0
-        for cpu in cpus[lo:hi]:
+        for cpu in cpus:
             mask |= 1 << cpu
-        if mask == 0:
-            return
         _apply_affinity_mask(mask)
-        logger.debug("CPU: worker %d/%d pinned to frontier logical CPUs %s, EcoQoS off.", index, total, cpus[lo:hi])
+        logger.debug("CPU: frontier worker pinned to full frontier CPU set (%d CPUs), EcoQoS off.", len(cpus))
     except Exception as e:  # fail-safe: scheduling is an optimization, never block the build
-        logger.debug("pin_current_process_to_core_band skipped: %s", e)
+        logger.debug("pin_frontier_prebuild_worker skipped: %s", e)
 
 
 # Per-worker available-RAM budget for the timeline cold build, whose per-song builds peak modestly
@@ -287,11 +270,9 @@ def timeline_prebuild_worker_count() -> int:
 
 
 def init_process_pool_worker_band(total_workers: int) -> None:
-    """Pin a ProcessPoolExecutor worker to its band (index from ``SpawnProcess-<seq>``)."""
-    import multiprocessing as mp
+    """Pin a ProcessPoolExecutor frontier prebuild worker to the full frontier CPU set.
 
-    try:
-        seq = int(mp.current_process().name.rsplit("-", 1)[-1])
-    except (ValueError, IndexError, AttributeError):
-        return
-    pin_current_process_to_core_band(seq, int(total_workers))
+    The ``total_workers`` parameter is retained for initializer-signature stability but no longer
+    selects a band -- every worker gets the whole frontier set (see pin_frontier_prebuild_worker)."""
+    del total_workers
+    pin_frontier_prebuild_worker()
