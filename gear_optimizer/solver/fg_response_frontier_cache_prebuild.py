@@ -65,7 +65,11 @@ _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
 # when siblings complete and free RAM) before the OS runs out of commit (this box has no
 # pagefile; overshoot is a hard system crash, not a slowdown).
 _FG_PREBUILD_FLOOR_COMMIT_GB = 1.7  # prior: interpreter + numba cache + ref arrays + light-chart transient
-_FG_PREBUILD_PEAK_COMMIT_GB = 12.0  # prior: giants observed 9.7-14.8 GB commit at 2 threads (mid-climb)
+# Giant prior after the region-table sub-batching fix (response_cache.py): the worst 7k-note chart
+# measured 2.70 GB total at 1 reducer thread (~1.65 GB/thread kernel scratch + baseline + one live
+# region table), so 2 threads ~= 4.4 GB; 5.5 keeps a 25% margin. The pre-fix 12-16 GB was ~161
+# region core tables held live for the whole all-FT/FF batch -- fixed at the build layer, not here.
+_FG_PREBUILD_PEAK_COMMIT_GB = 5.5
 _FG_PREBUILD_PEAK_COMMIT_NOTES = 7000.0  # note count of the charts that anchored the prior
 _FG_PREBUILD_SYSTEM_RESERVE_GB = 6.0  # main process + OS/desktop headroom the pool must never claim
 _FG_PREBUILD_SUSPEND_FLOOR_GB = 5.0  # guard: below this free RAM, suspend the youngest workers
