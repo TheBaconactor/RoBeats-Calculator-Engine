@@ -64,7 +64,7 @@ _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
 # materialize, and (c) an emergency guard SUSPENDS climbing workers (losslessly -- they resume
 # when siblings complete and free RAM) before the OS runs out of commit (this box has no
 # pagefile; overshoot is a hard system crash, not a slowdown).
-_FG_PREBUILD_FLOOR_COMMIT_GB = 1.7  # prior: interpreter + numba cache + ref arrays + light-chart transient
+_FG_PREBUILD_FLOOR_COMMIT_GB = 2.0  # prior: measured ~1.76 GB retained worker baseline + working headroom
 # Giant prior after the region-table sub-batching fix (response_cache.py): the worst 7k-note chart
 # measured 2.70 GB total at 1 reducer thread (~1.65 GB/thread kernel scratch + baseline + one live
 # region table), so 2 threads ~= 4.4 GB; 5.5 keeps a 25% margin. The pre-fix 12-16 GB was ~161
@@ -657,10 +657,17 @@ def _run_missing_fg_prebuild(
 
     ram_guard = _start_fg_prebuild_ram_guard()
     try:
+        # max_tasks_per_child: pool workers permanently retain their allocator high-water
+        # (~1.76 GB measured idle after a giant; the 2026-07-09 overnight run pinned ~26 GB of
+        # retained commit across the pool and thrashed the RAM guard for hours). Recycling a
+        # worker after a bounded number of builds releases ALL its commit; the respawn cost is a
+        # warm numba cache load (~seconds), amortized over 16 songs and overlapped with the
+        # other workers.
         with concurrent.futures.ProcessPoolExecutor(
             max_workers=max_workers,
             initializer=_init_prebuild_worker,
             initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), 1, int(max_workers)),
+            max_tasks_per_child=16,
         ) as executor:
             _admit_ready(executor)
             while in_flight:
