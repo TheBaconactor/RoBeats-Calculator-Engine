@@ -309,6 +309,16 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
         lambda: 0,
     )
+    compression_calls = 0
+
+    def _compress() -> None:
+        nonlocal compression_calls
+        compression_calls += 1
+
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.compress_cache_dir_sidecars",
+        _compress,
+    )
 
     def _unexpected_parse(_paths, _ref_arrays):
         raise AssertionError("manifest hits must not reach the dedupe/weight parse pass")
@@ -325,6 +335,7 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
     assert summary.total == 2
     assert summary.completed == 2
     assert summary.disk == 2
+    assert compression_calls == 1
 
 
 def test_startup_frontier_cache_prebuild_has_no_scope_or_disable_flags() -> None:

@@ -348,6 +348,64 @@ def test_fg_response_first_frontier_reducer_thread_count_is_capped() -> None:
         response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous)
 
 
+def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba
+
+    timestamps = np.arange(12, dtype=np.float32) * np.float32(0.1)
+    perfect_hi = timestamps + np.float32(0.04)
+    great_hi = timestamps + np.float32(0.09)
+    action_k = np.asarray([0, 1, 2, 3], dtype=np.int32)
+    capacity = response_build_gpu_numba._numba_region_core_candidate_capacity(
+        12,
+        4,
+        action_k,
+        4.0,
+    )
+    brute_capacity = 0
+    region_stop = response_build_gpu_numba._numba_region2_k_scan_stop(4, 4.0)
+    for section_start in range(13):
+        shifted = 1 if response_build_gpu_numba._numba_has_shifted_head_region(section_start, 4.0) else -1
+        for action_idx, k in enumerate(action_k):
+            region = -1
+            if action_idx < region_stop:
+                region = response_build_gpu_numba._numba_region2_offset_for_count(
+                    section_start, int(k), 4.0, 12
+                )
+            brute_capacity += int(region >= 1)
+            brute_capacity += int(shifted >= 1 and shifted != region)
+    assert capacity == brute_capacity
+    table = response_build_gpu_numba._numba_build_region_core_table(
+        12,
+        4,
+        action_k,
+        4.0,
+        timestamps,
+        0.1,
+        timestamps - np.float32(0.04),
+        perfect_hi,
+        timestamps - np.float32(0.09),
+        great_hi,
+        np.arange(12, dtype=np.int32),
+    )
+
+    starts, *columns = table
+    retained = int(starts[-1])
+    assert retained > 0
+    assert retained <= capacity < (13 * 4 * 2)
+    assert np.all(starts[1:] >= starts[:-1])
+    assert all(column.shape == (retained,) for column in columns)
+    assert all(column.flags.c_contiguous for column in columns)
+    assert [column.dtype for column in columns] == [
+        np.dtype(np.int32),
+        np.dtype(np.int32),
+        np.dtype(np.int32),
+        np.dtype(np.int32),
+        np.dtype(np.float64),
+        np.dtype(np.float64),
+        np.dtype(np.int32),
+    ]
+
+
 def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority(monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
 
