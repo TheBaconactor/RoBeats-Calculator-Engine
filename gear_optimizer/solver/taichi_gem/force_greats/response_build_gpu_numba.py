@@ -5,7 +5,9 @@ from numba.typed import Dict, List
 _NUMBA_SURFACE_TYPE = types.UniTuple(types.uint64, 7)
 _NUMBA_HEAD_OVERLAP_KEY_TYPE = types.UniTuple(types.uint64, 2)
 _NUMBA_BODY_PAIR_TYPE = types.UniTuple(types.uint64, 3)
-_NUMBA_PACKET_POINT_TYPE = types.UniTuple(types.int64, 3)
+# Packet-point arena rows: (body_fever, shifted normal-great, fever_great) int64 triples in a
+# cursor-managed flat (cap, 3) array, one arena per packet family (grow-doubling).
+_NUMBA_PACKET_ARENA_TYPE = types.int64[:, ::1]
 _NUMBA_HEAD_BASIS_TYPE = types.Tuple((
     types.uint64,
     types.uint64,
@@ -21,9 +23,6 @@ _NUMBA_HEAD_BASIS_TYPE = types.Tuple((
     types.float64,
     types.float64,
 ))
-_NUMBA_PACKET_POINT_LIST_TYPE = types.ListType(_NUMBA_PACKET_POINT_TYPE)
-_NUMBA_PACKET_POINT_STACK_TYPE = types.ListType(_NUMBA_PACKET_POINT_LIST_TYPE)
-_NUMBA_INT_LIST_TYPE = types.ListType(types.int64)
 _NUMBA_SURFACE_LIST_TYPE = types.ListType(_NUMBA_SURFACE_TYPE)
 _NUMBA_HEAD_BASIS_LIST_TYPE = types.ListType(_NUMBA_HEAD_BASIS_TYPE)
 # Cached 16-corner score row per retained envelope surface (same floats the per-pair dominance
@@ -1359,7 +1358,9 @@ def _numba_append_body_tail_array_surfaces(generated, edge, body_values, body_st
     start = int(body_starts[int(state)])
     for tail_idx in range(count):
         value_idx = int(start) + int(tail_idx)
-        tail_fever, tail_great, tail_fever_great = body_values[int(value_idx)]
+        tail_fever = body_values[int(value_idx), 0]
+        tail_great = body_values[int(value_idx), 1]
+        tail_fever_great = body_values[int(value_idx), 2]
         generated.append((
             edge[0],
             edge[1],
@@ -2028,7 +2029,9 @@ def _numba_append_edge_tail_bounded(
         tail_start = int(body_starts[int(end_e)])
         for tail_idx in range(int(tail_count)):
             value_idx = int(tail_start) + int(tail_idx)
-            tail_fever, tail_great, tail_fever_great = body_values[int(value_idx)]
+            tail_fever = body_values[int(value_idx), 0]
+            tail_great = body_values[int(value_idx), 1]
+            tail_fever_great = body_values[int(value_idx), 2]
             bf = edge[4] + tail_fever
             bg = edge[5] + tail_great
             bfg = edge[6] + tail_fever_great
@@ -2413,74 +2416,147 @@ def _numba_reduce_touched_body_pairs(
 
 
 @njit(cache=True, nogil=True)
-def _numba_append_packet_point(bucket, point) -> bool:
-    cf, cn, cq = point
-    original_len = len(bucket)
-    for idx in range(original_len):
-        kept = bucket[idx]
-        kf, kn, kq = kept
-        if kf >= cf and kn <= cn and kq <= cq:
-            return False
-
-    write = 0
-    for idx in range(original_len):
-        kept = bucket[idx]
-        kf, kn, kq = kept
-        if not (cf >= kf and cn <= kn and cq <= kq):
-            bucket[write] = kept
-            write += 1
-    while len(bucket) > write:
-        bucket.pop()
-    bucket.append((np.int64(cf), np.int64(cn), np.int64(cq)))
-    return True
+def _numba_packet_arena_ensure(arenas, family_idx: int, used: int, extra: int):
+    """Grow-doubling reservation on one family's flat packet-point arena. Rows [0, used) are
+    live and preserved verbatim on growth (ranges are offsets, so every stored (start, end)
+    stays valid); returns the (possibly replaced) arena with >= used + extra row capacity."""
+    arena = arenas[int(family_idx)]
+    need = int(used) + int(extra)
+    cap = int(arena.shape[0])
+    if need <= cap:
+        return arena
+    new_cap = int(cap)
+    while new_cap < need:
+        new_cap *= 2
+    grown = np.empty((int(new_cap), 3), dtype=np.int64)
+    grown[: int(used)] = arena[: int(used)]
+    arenas[int(family_idx)] = grown
+    return grown
 
 
 @njit(cache=True, nogil=True)
-def _numba_packet_union(left, right):
-    if len(left) <= 0:
-        return right
-    if len(right) <= 0:
-        return left
-    if len(left) == 1:
-        cf, cn, cq = left[0]
-        original_len = len(right)
-        for idx in range(original_len):
-            kept = right[idx]
-            kf, kn, kq = kept
-            if kf >= cf and kn <= cn and kq <= cq:
-                return right
+def _numba_packet_points_copy(src, src_start: int, src_end: int, dst, dst_cursor: int) -> int:
+    write = int(dst_cursor)
+    for idx in range(int(src_start), int(src_end)):
+        dst[int(write), 0] = src[int(idx), 0]
+        dst[int(write), 1] = src[int(idx), 1]
+        dst[int(write), 2] = src[int(idx), 2]
+        write += 1
+    return int(write)
 
-        out = List.empty_list(_NUMBA_PACKET_POINT_TYPE)
-        out.append((np.int64(cf), np.int64(cn), np.int64(cq)))
-        for idx in range(original_len):
-            kept = right[idx]
-            kf, kn, kq = kept
-            if not (cf >= kf and cn <= kn and cq <= kq):
-                out.append(kept)
-        return out
-    if len(right) == 1:
-        cf, cn, cq = right[0]
-        original_len = len(left)
-        for idx in range(original_len):
-            kept = left[idx]
-            kf, kn, kq = kept
-            if kf >= cf and kn <= cn and kq <= cq:
-                return left
 
-        out = List.empty_list(_NUMBA_PACKET_POINT_TYPE)
-        for idx in range(original_len):
-            kept = left[idx]
-            kf, kn, kq = kept
+@njit(cache=True, nogil=True)
+def _numba_packet_points_append(buf, base: int, write: int, cf: int, cn: int, cq: int) -> int:
+    """Flat twin of the retired List-based packet-point Pareto insert: identical dominated
+    check, identical survivor compaction order, candidate appended last. The working set is
+    buf rows [base, write); returns the new write cursor."""
+    for idx in range(int(base), int(write)):
+        if buf[int(idx), 0] >= cf and buf[int(idx), 1] <= cn and buf[int(idx), 2] <= cq:
+            return int(write)
+
+    out = int(base)
+    for idx in range(int(base), int(write)):
+        kf = buf[int(idx), 0]
+        kn = buf[int(idx), 1]
+        kq = buf[int(idx), 2]
+        if not (cf >= kf and cn <= kn and cq <= kq):
+            if int(out) != int(idx):
+                buf[int(out), 0] = kf
+                buf[int(out), 1] = kn
+                buf[int(out), 2] = kq
+            out += 1
+    buf[int(out), 0] = np.int64(cf)
+    buf[int(out), 1] = np.int64(cn)
+    buf[int(out), 2] = np.int64(cq)
+    return int(out) + 1
+
+
+@njit(cache=True, nogil=True)
+def _numba_packet_union(
+    left_buf,
+    left_start: int,
+    left_end: int,
+    right_buf,
+    right_start: int,
+    right_end: int,
+    out_buf,
+    out_cursor: int,
+):
+    """Flat-range twin of the retired List-based packet union, case for case. Returns
+    (code, start, end): code 1 keeps the left range verbatim (the List version returned the
+    ``left`` object), code 2 the right range, code 0 wrote a fresh union into ``out_buf`` at
+    [out_cursor, end). Content and order match the List version exactly; the caller must
+    reserve (left_len + right_len) rows at ``out_cursor`` and guarantee [out_cursor, ...)
+    does not overlap either input range (arena writes only ever land at the cursor, past
+    every live range, so this holds by construction)."""
+    left_len = int(left_end) - int(left_start)
+    right_len = int(right_end) - int(right_start)
+    if left_len <= 0:
+        return 2, int(right_start), int(right_end)
+    if right_len <= 0:
+        return 1, int(left_start), int(left_end)
+    if left_len == 1:
+        cf = left_buf[int(left_start), 0]
+        cn = left_buf[int(left_start), 1]
+        cq = left_buf[int(left_start), 2]
+        for idx in range(int(right_start), int(right_end)):
+            if right_buf[int(idx), 0] >= cf and right_buf[int(idx), 1] <= cn and right_buf[int(idx), 2] <= cq:
+                return 2, int(right_start), int(right_end)
+
+        write = int(out_cursor)
+        out_buf[int(write), 0] = cf
+        out_buf[int(write), 1] = cn
+        out_buf[int(write), 2] = cq
+        write += 1
+        for idx in range(int(right_start), int(right_end)):
+            kf = right_buf[int(idx), 0]
+            kn = right_buf[int(idx), 1]
+            kq = right_buf[int(idx), 2]
             if not (cf >= kf and cn <= kn and cq <= kq):
-                out.append(kept)
-        out.append((np.int64(cf), np.int64(cn), np.int64(cq)))
-        return out
-    out = List.empty_list(_NUMBA_PACKET_POINT_TYPE)
-    for idx in range(len(left)):
-        out.append(left[idx])
-    for idx in range(len(right)):
-        _numba_append_packet_point(out, right[idx])
-    return out
+                out_buf[int(write), 0] = kf
+                out_buf[int(write), 1] = kn
+                out_buf[int(write), 2] = kq
+                write += 1
+        return 0, int(out_cursor), int(write)
+    if right_len == 1:
+        cf = right_buf[int(right_start), 0]
+        cn = right_buf[int(right_start), 1]
+        cq = right_buf[int(right_start), 2]
+        for idx in range(int(left_start), int(left_end)):
+            if left_buf[int(idx), 0] >= cf and left_buf[int(idx), 1] <= cn and left_buf[int(idx), 2] <= cq:
+                return 1, int(left_start), int(left_end)
+
+        write = int(out_cursor)
+        for idx in range(int(left_start), int(left_end)):
+            kf = left_buf[int(idx), 0]
+            kn = left_buf[int(idx), 1]
+            kq = left_buf[int(idx), 2]
+            if not (cf >= kf and cn <= kn and cq <= kq):
+                out_buf[int(write), 0] = kf
+                out_buf[int(write), 1] = kn
+                out_buf[int(write), 2] = kq
+                write += 1
+        out_buf[int(write), 0] = cf
+        out_buf[int(write), 1] = cn
+        out_buf[int(write), 2] = cq
+        write += 1
+        return 0, int(out_cursor), int(write)
+    write = int(out_cursor)
+    for idx in range(int(left_start), int(left_end)):
+        out_buf[int(write), 0] = left_buf[int(idx), 0]
+        out_buf[int(write), 1] = left_buf[int(idx), 1]
+        out_buf[int(write), 2] = left_buf[int(idx), 2]
+        write += 1
+    for idx in range(int(right_start), int(right_end)):
+        write = _numba_packet_points_append(
+            out_buf,
+            int(out_cursor),
+            int(write),
+            int(right_buf[int(idx), 0]),
+            int(right_buf[int(idx), 1]),
+            int(right_buf[int(idx), 2]),
+        )
+    return 0, int(out_cursor), int(write)
 
 
 @njit(cache=True, nogil=True)
@@ -2566,51 +2642,179 @@ def _numba_build_region2_packet_families(action_count: int, raw_fever_fill: floa
 
 
 @njit(cache=True, nogil=True)
-def _numba_packet_queue_transfer(front_alpha, front_aggregate, back_alpha, back_packet, back_aggregate):
-    aggregate = List.empty_list(_NUMBA_PACKET_POINT_TYPE)
-    while len(back_alpha) > 0:
-        alpha = int(back_alpha.pop())
-        packet = back_packet.pop()
-        back_aggregate.pop()
-        if len(aggregate) <= 0:
-            aggregate = packet
+def _numba_packet_queue_transfer(
+    family_idx: int,
+    seg_base: int,
+    front_alpha,
+    front_ag_start,
+    front_ag_end,
+    front_len,
+    back_alpha,
+    back_pk_off,
+    back_len,
+    back_pk_arenas,
+    front_ag_arenas,
+) -> None:
+    """Flat twin of the retired List-based back->front transfer: pop back entries newest
+    first, fold each packet into the running union exactly like ``union(packet, aggregate)``,
+    and append (alpha, aggregate range) to the front stack. Alias-returning unions become
+    range shares (aggregate kept -> the new front entry reuses the previous entry's range) or
+    materialized copies (packet kept -> its points are copied into the front arena, content
+    identical to the aliased List object). Front aggregate ends are non-decreasing along the
+    stack, so the arena cursor is always the top entry's end and pops rewind losslessly."""
+    f = int(family_idx)
+    base = int(seg_base)
+    pk_buf = back_pk_arenas[f]
+    front_count = int(front_len[f])
+    front_cursor = int(front_ag_end[base + front_count - 1]) if front_count > 0 else 0
+    run_start = 0
+    run_end = 0
+    back_count = int(back_len[f])
+    while back_count > 0:
+        entry = int(back_count) - 1
+        alpha = int(back_alpha[base + entry])
+        pk_start = int(back_pk_off[base + entry])
+        pk_end = int(back_pk_off[base + entry + 1])
+        back_count = int(entry)
+        pk_len = int(pk_end) - int(pk_start)
+        if int(run_end) - int(run_start) <= 0:
+            front_arena = _numba_packet_arena_ensure(front_ag_arenas, f, int(front_cursor), int(pk_len))
+            run_start = int(front_cursor)
+            run_end = _numba_packet_points_copy(pk_buf, int(pk_start), int(pk_end), front_arena, int(front_cursor))
+            front_cursor = int(run_end)
         else:
-            aggregate = _numba_packet_union(packet, aggregate)
-        front_alpha.append(np.int64(alpha))
-        front_aggregate.append(aggregate)
+            front_arena = _numba_packet_arena_ensure(
+                front_ag_arenas, f, int(front_cursor), int(pk_len) + (int(run_end) - int(run_start))
+            )
+            code, out_start, out_end = _numba_packet_union(
+                pk_buf,
+                int(pk_start),
+                int(pk_end),
+                front_arena,
+                int(run_start),
+                int(run_end),
+                front_arena,
+                int(front_cursor),
+            )
+            if int(code) == 1:
+                # Union kept the packet alone (the List version aliased the packet object):
+                # materialize its points into the front arena, content identical.
+                run_start = int(front_cursor)
+                run_end = _numba_packet_points_copy(
+                    pk_buf, int(pk_start), int(pk_end), front_arena, int(front_cursor)
+                )
+                front_cursor = int(run_end)
+            elif int(code) == 0:
+                run_start = int(out_start)
+                run_end = int(out_end)
+                front_cursor = int(run_end)
+            # code 2: union kept the running aggregate -> share the previous entry's range.
+        front_alpha[base + front_count] = np.int64(alpha)
+        front_ag_start[base + front_count] = np.int64(run_start)
+        front_ag_end[base + front_count] = np.int64(run_end)
+        front_count += 1
+    front_len[f] = np.int64(front_count)
+    back_len[f] = np.int64(0)
 
 
 @njit(cache=True, nogil=True)
 def _numba_packet_queue_pop_expired_after(
     high_alpha: int,
+    family_idx: int,
+    seg_base: int,
     front_alpha,
-    front_aggregate,
+    front_ag_start,
+    front_ag_end,
+    front_len,
     back_alpha,
-    back_packet,
-    back_aggregate,
-):
+    back_pk_off,
+    back_len,
+    back_pk_arenas,
+    front_ag_arenas,
+) -> None:
+    f = int(family_idx)
+    base = int(seg_base)
     while True:
-        if len(front_alpha) <= 0:
-            _numba_packet_queue_transfer(front_alpha, front_aggregate, back_alpha, back_packet, back_aggregate)
-        if len(front_alpha) <= 0:
+        if int(front_len[f]) <= 0:
+            _numba_packet_queue_transfer(
+                f,
+                base,
+                front_alpha,
+                front_ag_start,
+                front_ag_end,
+                front_len,
+                back_alpha,
+                back_pk_off,
+                back_len,
+                back_pk_arenas,
+                front_ag_arenas,
+            )
+        if int(front_len[f]) <= 0:
             return
-        if int(front_alpha[len(front_alpha) - 1]) <= int(high_alpha):
+        if int(front_alpha[base + int(front_len[f]) - 1]) <= int(high_alpha):
             return
-        front_alpha.pop()
-        front_aggregate.pop()
+        front_len[f] = np.int64(int(front_len[f]) - 1)
 
 
 @njit(cache=True, nogil=True)
-def _numba_packet_queue_push_back(alpha: int, packet, back_alpha, back_packet, back_aggregate):
-    if len(packet) <= 0:
-        return
-    if len(back_aggregate) > 0:
-        aggregate = _numba_packet_union(back_aggregate[len(back_aggregate) - 1], packet)
+def _numba_packet_queue_push_back(
+    alpha: int,
+    pk_start: int,
+    pk_end: int,
+    family_idx: int,
+    seg_base: int,
+    seg_limit: int,
+    back_alpha,
+    back_pk_off,
+    back_ag_start,
+    back_ag_end,
+    back_len,
+    back_pk_arenas,
+    back_ag_arenas,
+) -> None:
+    """Flat twin of the retired List-based push_back. The packet occupies back-packet-arena
+    rows [pk_start, pk_end), already written at the arena cursor by the caller; callers
+    return early on empty packets exactly like the List version's length guard. The new top
+    aggregate is ``union(old_top, packet)``: fresh unions land at the aggregate-arena cursor,
+    an old-top alias shares the old range, and a packet alias (or the empty-back seed, which
+    the List version aliased by reference) is materialized with identical content."""
+    f = int(family_idx)
+    base = int(seg_base)
+    count = int(back_len[f])
+    if base + count + 1 >= int(seg_limit):
+        raise ValueError("FG packet queue exceeded its family window bound")
+    pk_len = int(pk_end) - int(pk_start)
+    pk_buf = back_pk_arenas[f]
+    if count > 0:
+        top_start = int(back_ag_start[base + count - 1])
+        top_end = int(back_ag_end[base + count - 1])
+        ag_cursor = int(top_end)
+        ag_buf = _numba_packet_arena_ensure(
+            back_ag_arenas, f, int(ag_cursor), (int(top_end) - int(top_start)) + int(pk_len)
+        )
+        code, out_start, out_end = _numba_packet_union(
+            ag_buf,
+            int(top_start),
+            int(top_end),
+            pk_buf,
+            int(pk_start),
+            int(pk_end),
+            ag_buf,
+            int(ag_cursor),
+        )
+        if int(code) == 2:
+            # Union kept the packet alone: materialize into the aggregate arena.
+            out_start = int(ag_cursor)
+            out_end = _numba_packet_points_copy(pk_buf, int(pk_start), int(pk_end), ag_buf, int(ag_cursor))
     else:
-        aggregate = packet
-    back_alpha.append(np.int64(alpha))
-    back_packet.append(packet)
-    back_aggregate.append(aggregate)
+        ag_buf = _numba_packet_arena_ensure(back_ag_arenas, f, 0, int(pk_len))
+        out_start = 0
+        out_end = _numba_packet_points_copy(pk_buf, int(pk_start), int(pk_end), ag_buf, 0)
+    back_alpha[base + count] = np.int64(alpha)
+    back_ag_start[base + count] = np.int64(out_start)
+    back_ag_end[base + count] = np.int64(out_end)
+    back_pk_off[base + count + 1] = np.int64(pk_end)
+    back_len[f] = np.int64(count + 1)
 
 
 @njit(cache=True, nogil=True)
@@ -2650,9 +2854,16 @@ def _numba_packet_queue_push_activation(
     lanes,
     real_fever_time: float,
     real_time_idx: int,
+    family_idx: int,
+    seg_base: int,
+    seg_limit: int,
     back_alpha,
-    back_packet,
-    back_aggregate,
+    back_pk_off,
+    back_ag_start,
+    back_ag_end,
+    back_len,
+    back_pk_arenas,
+    back_ag_arenas,
 ):
     if int(activation) < 100 or int(activation) >= int(n):
         return
@@ -2684,7 +2895,14 @@ def _numba_packet_queue_push_activation(
     # length. eg_e == edge_e on the overwhelming majority of activations -> the loop runs once
     # and this is bit-for-bit the pre-#44 behaviour at zero added cost.
     eg_e = int(edge_eg_e)
-    packet = List.empty_list(_NUMBA_PACKET_POINT_TYPE)
+    total_points = 0
+    for end_e in range(int(edge_e), int(eg_e) + 1):
+        total_points += int(body_counts[int(end_e)])
+    if int(total_points) <= 0:
+        return
+    pk_cursor = int(back_pk_off[int(seg_base) + int(back_len[int(family_idx)])])
+    pk_buf = _numba_packet_arena_ensure(back_pk_arenas, int(family_idx), int(pk_cursor), int(total_points))
+    write = int(pk_cursor)
     for end_e in range(int(edge_e), int(eg_e) + 1):
         tail_count = int(body_counts[int(end_e)])
         if int(tail_count) <= 0:
@@ -2694,23 +2912,30 @@ def _numba_packet_queue_push_activation(
         tail_start = int(body_starts[int(end_e)])
         for tail_idx in range(int(tail_count)):
             value_idx = int(tail_start) + int(tail_idx)
-            tail_fever, tail_great, tail_fever_great = body_values[int(value_idx)]
+            tail_fever = body_values[int(value_idx), 0]
+            tail_great = body_values[int(value_idx), 1]
+            tail_fever_great = body_values[int(value_idx), 2]
             tail_normal_great = int(tail_great) - int(tail_fever_great)
             shifted_normal_great = int(tail_normal_great) + (2 * int(activation)) + int(defect)
             packet_fever_great = int(tail_fever_great) + int(fever_great_delta) + int(extra_fever_great)
-            packet.append((
-                np.int64(int(tail_fever) + int(fever_len)),
-                np.int64(int(shifted_normal_great)),
-                np.int64(int(packet_fever_great)),
-            ))
-    if len(packet) <= 0:
-        return
+            pk_buf[int(write), 0] = np.int64(int(tail_fever) + int(fever_len))
+            pk_buf[int(write), 1] = np.int64(int(shifted_normal_great))
+            pk_buf[int(write), 2] = np.int64(int(packet_fever_great))
+            write += 1
     _numba_packet_queue_push_back(
         int(activation),
-        packet,
+        int(pk_cursor),
+        int(write),
+        int(family_idx),
+        int(seg_base),
+        int(seg_limit),
         back_alpha,
-        back_packet,
-        back_aggregate,
+        back_pk_off,
+        back_ag_start,
+        back_ag_end,
+        back_len,
+        back_pk_arenas,
+        back_ag_arenas,
     )
 
 
@@ -2740,9 +2965,16 @@ def _numba_region2_packet_queue_push_activation(
     region_act_hits,
     region_perfect_hits,
     region_perfect_valids,
+    family_idx: int,
+    seg_base: int,
+    seg_limit: int,
     back_alpha,
-    back_packet,
-    back_aggregate,
+    back_pk_off,
+    back_ag_start,
+    back_ag_end,
+    back_len,
+    back_pk_arenas,
+    back_ag_arenas,
 ):
     if int(activation) < 100 or int(activation) >= int(n):
         return
@@ -2817,7 +3049,6 @@ def _numba_region2_packet_queue_push_activation(
     if int(valid) == 0 or int(activation_great_idx) < 0 or int(activation_i) != int(activation):
         return
 
-    packet = List.empty_list(_NUMBA_PACKET_POINT_TYPE)
     eg_e = _numba_great_floor_extended_end_at_hit(
         int(n),
         int(activation),
@@ -2825,7 +3056,18 @@ def _numba_region2_packet_queue_push_activation(
         float(real_fever_time),
         great_floor_timestamps,
     )
+    total_points = 0
     for end_e in range(int(edge_e), int(eg_e) + 1):
+        total_points += int(body_counts[int(end_e)])
+    if int(total_points) <= 0:
+        return
+    pk_cursor = int(back_pk_off[int(seg_base) + int(back_len[int(family_idx)])])
+    pk_buf = _numba_packet_arena_ensure(back_pk_arenas, int(family_idx), int(pk_cursor), int(total_points))
+    write = int(pk_cursor)
+    for end_e in range(int(edge_e), int(eg_e) + 1):
+        tail_count = int(body_counts[int(end_e)])
+        if int(tail_count) <= 0:
+            continue
         if int(end_e) == int(edge_e):
             edge = _numba_pack_edge(
                 int(n),
@@ -2850,33 +3092,41 @@ def _numba_region2_packet_queue_push_activation(
         edge_fever_great = int(edge[6])
         edge_normal = int(edge[5]) - int(edge[6])
         extra_normal = int(edge_normal) - ((2 * int(activation_offset)) + int(defect))
-        tail_count = int(body_counts[int(end_e)])
-        if int(tail_count) <= 0:
-            continue
         tail_start = int(body_starts[int(end_e)])
         for tail_idx in range(int(tail_count)):
             value_idx = int(tail_start) + int(tail_idx)
-            tail_fever, tail_great, tail_fever_great = body_values[int(value_idx)]
+            tail_fever = body_values[int(value_idx), 0]
+            tail_great = body_values[int(value_idx), 1]
+            tail_fever_great = body_values[int(value_idx), 2]
             tail_normal_great = int(tail_great) - int(tail_fever_great)
-            packet.append((
-                np.int64(int(tail_fever) + int(edge_fever)),
-                np.int64(int(tail_normal_great) + (2 * int(activation)) + int(defect) + int(extra_normal)),
-                np.int64(int(tail_fever_great) + int(edge_fever_great)),
-            ))
-    if len(packet) <= 0:
-        return
+            pk_buf[int(write), 0] = np.int64(int(tail_fever) + int(edge_fever))
+            pk_buf[int(write), 1] = np.int64(
+                int(tail_normal_great) + (2 * int(activation)) + int(defect) + int(extra_normal)
+            )
+            pk_buf[int(write), 2] = np.int64(int(tail_fever_great) + int(edge_fever_great))
+            write += 1
     _numba_packet_queue_push_back(
         int(activation),
-        packet,
+        int(pk_cursor),
+        int(write),
+        int(family_idx),
+        int(seg_base),
+        int(seg_limit),
         back_alpha,
-        back_packet,
-        back_aggregate,
+        back_pk_off,
+        back_ag_start,
+        back_ag_end,
+        back_len,
+        back_pk_arenas,
+        back_ag_arenas,
     )
 
 
 @njit(cache=True, nogil=True)
 def _numba_touch_packet_points_for_state(
-    packet,
+    points,
+    point_start: int,
+    point_end: int,
     state_i: int,
     pair_mod: int,
     pair_stamp_value: int,
@@ -2886,8 +3136,10 @@ def _numba_touch_packet_points_for_state(
     touched_count: int,
 ):
     generated_count = 0
-    for packet_idx in range(len(packet)):
-        body_fever, shifted_normal, fever_great = packet[packet_idx]
+    for packet_idx in range(int(point_start), int(point_end)):
+        body_fever = points[int(packet_idx), 0]
+        shifted_normal = points[int(packet_idx), 1]
+        fever_great = points[int(packet_idx), 2]
         true_normal_great = int(shifted_normal) - (2 * int(state_i))
         touched_count = _numba_touch_body_candidate(
             np.uint64(int(body_fever)),
@@ -2914,13 +3166,33 @@ def _numba_store_shared_empty_body_tail(body_starts, body_counts, state: int) ->
 
 
 @njit(cache=True, nogil=True)
-def _numba_store_body_tail_frontier(body_values, body_starts, body_counts, state: int, cursor: int, frontier) -> int:
+def _numba_body_values_ensure(body_values, used: int, extra: int):
+    """Grow-doubling reservation on the flat (cap, 3) uint64 body-tail value store. Rows
+    [0, used) are live and preserved verbatim; offsets in body_starts stay valid."""
+    need = int(used) + int(extra)
+    cap = int(body_values.shape[0])
+    if need <= cap:
+        return body_values
+    new_cap = int(cap)
+    while new_cap < need:
+        new_cap *= 2
+    grown = np.empty((int(new_cap), 3), dtype=np.uint64)
+    grown[: int(used)] = body_values[: int(used)]
+    return grown
+
+
+@njit(cache=True, nogil=True)
+def _numba_store_body_tail_frontier(body_values, body_starts, body_counts, state: int, cursor: int, frontier):
     count = len(frontier)
+    grown = _numba_body_values_ensure(body_values, int(cursor), int(count))
     body_starts[int(state)] = int(cursor)
     body_counts[int(state)] = int(count)
     for idx in range(count):
-        body_values.append(frontier[idx])
-    return int(cursor) + int(count)
+        tail_fever, tail_great, tail_fever_great = frontier[idx]
+        grown[int(cursor) + int(idx), 0] = tail_fever
+        grown[int(cursor) + int(idx), 1] = tail_great
+        grown[int(cursor) + int(idx), 2] = tail_fever_great
+    return grown, int(cursor) + int(count)
 
 
 @njit(cache=True, nogil=True)
@@ -2941,7 +3213,9 @@ def _numba_touch_body_tail_array_candidates(
     start = int(body_starts[int(state)])
     for tail_idx in range(count):
         value_idx = int(start) + int(tail_idx)
-        tail_fever, tail_great, tail_fever_great = body_values[int(value_idx)]
+        tail_fever = body_values[int(value_idx), 0]
+        tail_great = body_values[int(value_idx), 1]
+        tail_fever_great = body_values[int(value_idx), 2]
         touched_count = _numba_touch_body_candidate(
             edge[4],
             edge[5],
@@ -3329,10 +3603,12 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     bit_stamps,
     bit_stamp_value: int,
 ):
-    body_values = List.empty_list(_NUMBA_BODY_PAIR_TYPE)
+    body_values = np.empty((1024, 3), dtype=np.uint64)
     body_starts = np.zeros(int(n) + 1, dtype=np.int32)
     body_counts = np.zeros(int(n) + 1, dtype=np.int32)
-    body_values.append((np.uint64(0), np.uint64(0), np.uint64(0)))
+    body_values[0, 0] = np.uint64(0)
+    body_values[0, 1] = np.uint64(0)
+    body_values[0, 2] = np.uint64(0)
     _numba_store_shared_empty_body_tail(body_starts, body_counts, int(n))
     body_cursor = 1
 
@@ -3342,17 +3618,35 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
         later_forced,
         later_activation_forced,
     )
-    front_alpha_by_family = List.empty_list(_NUMBA_INT_LIST_TYPE)
-    back_alpha_by_family = List.empty_list(_NUMBA_INT_LIST_TYPE)
-    back_packet_by_family = List.empty_list(_NUMBA_PACKET_POINT_STACK_TYPE)
-    front_aggregate_by_family = List.empty_list(_NUMBA_PACKET_POINT_STACK_TYPE)
-    back_aggregate_by_family = List.empty_list(_NUMBA_PACKET_POINT_STACK_TYPE)
+    # Cursor-managed flat packet queues (one two-stack sliding-window queue per family).
+    # Stacks live in CSR segments of shared 1D arrays: family f owns slots
+    # [seg_off[f], seg_off[f + 1]) sized to its window width plus slack -- the queue holds at
+    # most (family_end - family_start + 1) live entries (each alpha is pushed once, expired
+    # entries are popped before pushes, and at touch time every entry is window-live).
+    # Packet points and aggregates live in per-family grow-doubling (cap, 3) int64 arenas;
+    # per-entry (start, end) ranges replace the retired List objects, with union alias
+    # returns represented as range shares (see _numba_packet_queue_transfer / push_back).
+    seg_off = np.zeros(int(family_count) + 1, dtype=np.int64)
+    for family_idx in range(int(family_count)):
+        width = int(family_end[int(family_idx)]) - int(family_start[int(family_idx)]) + 1
+        seg_off[int(family_idx) + 1] = int(seg_off[int(family_idx)]) + int(width) + 3
+    total_slots = max(1, int(seg_off[int(family_count)]))
+    front_alpha = np.zeros(int(total_slots), dtype=np.int64)
+    front_ag_start = np.zeros(int(total_slots), dtype=np.int64)
+    front_ag_end = np.zeros(int(total_slots), dtype=np.int64)
+    front_len = np.zeros(max(1, int(family_count)), dtype=np.int64)
+    back_alpha = np.zeros(int(total_slots), dtype=np.int64)
+    back_pk_off = np.zeros(int(total_slots), dtype=np.int64)
+    back_ag_start = np.zeros(int(total_slots), dtype=np.int64)
+    back_ag_end = np.zeros(int(total_slots), dtype=np.int64)
+    back_len = np.zeros(max(1, int(family_count)), dtype=np.int64)
+    back_pk_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
+    back_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
+    front_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
     for _family_idx in range(int(family_count)):
-        front_alpha_by_family.append(List.empty_list(types.int64))
-        back_alpha_by_family.append(List.empty_list(types.int64))
-        back_packet_by_family.append(List.empty_list(_NUMBA_PACKET_POINT_LIST_TYPE))
-        front_aggregate_by_family.append(List.empty_list(_NUMBA_PACKET_POINT_LIST_TYPE))
-        back_aggregate_by_family.append(List.empty_list(_NUMBA_PACKET_POINT_LIST_TYPE))
+        back_pk_arenas.append(np.empty((64, 3), dtype=np.int64))
+        back_ag_arenas.append(np.empty((64, 3), dtype=np.int64))
+        front_ag_arenas.append(np.empty((64, 3), dtype=np.int64))
     next_push_state_by_family = np.empty(int(family_count), dtype=np.int32)
     for family_idx in range(int(family_count)):
         next_push_state_by_family[int(family_idx)] = int(n) - 1
@@ -3363,17 +3657,27 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
         action_k,
         int(n),
     )
-    region_front_alpha_by_family = List.empty_list(_NUMBA_INT_LIST_TYPE)
-    region_back_alpha_by_family = List.empty_list(_NUMBA_INT_LIST_TYPE)
-    region_back_packet_by_family = List.empty_list(_NUMBA_PACKET_POINT_STACK_TYPE)
-    region_front_aggregate_by_family = List.empty_list(_NUMBA_PACKET_POINT_STACK_TYPE)
-    region_back_aggregate_by_family = List.empty_list(_NUMBA_PACKET_POINT_STACK_TYPE)
+    region_seg_off = np.zeros(int(region_family_count) + 1, dtype=np.int64)
+    for family_idx in range(int(region_family_count)):
+        width = int(region_family_end[int(family_idx)]) - int(region_family_start[int(family_idx)]) + 1
+        region_seg_off[int(family_idx) + 1] = int(region_seg_off[int(family_idx)]) + int(width) + 3
+    region_total_slots = max(1, int(region_seg_off[int(region_family_count)]))
+    region_front_alpha = np.zeros(int(region_total_slots), dtype=np.int64)
+    region_front_ag_start = np.zeros(int(region_total_slots), dtype=np.int64)
+    region_front_ag_end = np.zeros(int(region_total_slots), dtype=np.int64)
+    region_front_len = np.zeros(max(1, int(region_family_count)), dtype=np.int64)
+    region_back_alpha = np.zeros(int(region_total_slots), dtype=np.int64)
+    region_back_pk_off = np.zeros(int(region_total_slots), dtype=np.int64)
+    region_back_ag_start = np.zeros(int(region_total_slots), dtype=np.int64)
+    region_back_ag_end = np.zeros(int(region_total_slots), dtype=np.int64)
+    region_back_len = np.zeros(max(1, int(region_family_count)), dtype=np.int64)
+    region_back_pk_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
+    region_back_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
+    region_front_ag_arenas = List.empty_list(_NUMBA_PACKET_ARENA_TYPE)
     for _family_idx in range(int(region_family_count)):
-        region_front_alpha_by_family.append(List.empty_list(types.int64))
-        region_back_alpha_by_family.append(List.empty_list(types.int64))
-        region_back_packet_by_family.append(List.empty_list(_NUMBA_PACKET_POINT_LIST_TYPE))
-        region_front_aggregate_by_family.append(List.empty_list(_NUMBA_PACKET_POINT_LIST_TYPE))
-        region_back_aggregate_by_family.append(List.empty_list(_NUMBA_PACKET_POINT_LIST_TYPE))
+        region_back_pk_arenas.append(np.empty((64, 3), dtype=np.int64))
+        region_back_ag_arenas.append(np.empty((64, 3), dtype=np.int64))
+        region_front_ag_arenas.append(np.empty((64, 3), dtype=np.int64))
     next_push_state_by_region_family = np.empty(max(1, int(region_family_count)), dtype=np.int32)
     for family_idx in range(int(region_family_count)):
         next_push_state_by_region_family[int(family_idx)] = int(n) - 1
@@ -3391,11 +3695,17 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
             high_alpha = int(state_i) + int(family_end[int(family_idx)])
             _numba_packet_queue_pop_expired_after(
                 int(high_alpha),
-                front_alpha_by_family[int(family_idx)],
-                front_aggregate_by_family[int(family_idx)],
-                back_alpha_by_family[int(family_idx)],
-                back_packet_by_family[int(family_idx)],
-                back_aggregate_by_family[int(family_idx)],
+                int(family_idx),
+                int(seg_off[int(family_idx)]),
+                front_alpha,
+                front_ag_start,
+                front_ag_end,
+                front_len,
+                back_alpha,
+                back_pk_off,
+                back_len,
+                back_pk_arenas,
+                front_ag_arenas,
             )
             push_state = int(next_push_state_by_family[int(family_idx)])
             max_live_push_state = int(high_alpha) - int(family_start[int(family_idx)])
@@ -3429,9 +3739,16 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                     lanes,
                     float(real_fever_time),
                     int(real_time_idx),
-                    back_alpha_by_family[int(family_idx)],
-                    back_packet_by_family[int(family_idx)],
-                    back_aggregate_by_family[int(family_idx)],
+                    int(family_idx),
+                    int(seg_off[int(family_idx)]),
+                    int(seg_off[int(family_idx) + 1]),
+                    back_alpha,
+                    back_pk_off,
+                    back_ag_start,
+                    back_ag_end,
+                    back_len,
+                    back_pk_arenas,
+                    back_ag_arenas,
                 )
                 push_state -= 1
             next_push_state_by_family[int(family_idx)] = int(state_i) - 1
@@ -3441,11 +3758,17 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                 high_alpha = int(state_i) + int(region_family_end[int(family_idx)])
                 _numba_packet_queue_pop_expired_after(
                     int(high_alpha),
-                    region_front_alpha_by_family[int(family_idx)],
-                    region_front_aggregate_by_family[int(family_idx)],
-                    region_back_alpha_by_family[int(family_idx)],
-                    region_back_packet_by_family[int(family_idx)],
-                    region_back_aggregate_by_family[int(family_idx)],
+                    int(family_idx),
+                    int(region_seg_off[int(family_idx)]),
+                    region_front_alpha,
+                    region_front_ag_start,
+                    region_front_ag_end,
+                    region_front_len,
+                    region_back_alpha,
+                    region_back_pk_off,
+                    region_back_len,
+                    region_back_pk_arenas,
+                    region_front_ag_arenas,
                 )
                 push_state = int(next_push_state_by_region_family[int(family_idx)])
                 max_live_push_state = int(high_alpha) - int(region_family_start[int(family_idx)])
@@ -3478,9 +3801,16 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                         region_act_hits,
                         region_perfect_hits,
                         region_perfect_valids,
-                        region_back_alpha_by_family[int(family_idx)],
-                        region_back_packet_by_family[int(family_idx)],
-                        region_back_aggregate_by_family[int(family_idx)],
+                        int(family_idx),
+                        int(region_seg_off[int(family_idx)]),
+                        int(region_seg_off[int(family_idx) + 1]),
+                        region_back_alpha,
+                        region_back_pk_off,
+                        region_back_ag_start,
+                        region_back_ag_end,
+                        region_back_len,
+                        region_back_pk_arenas,
+                        region_back_ag_arenas,
                     )
                     push_state -= 1
                 next_push_state_by_region_family[int(family_idx)] = int(state_i) - 1
@@ -3489,10 +3819,13 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
         touched_count = 0
         pair_stamp_value += 1
         for family_idx in range(int(family_count)):
-            front_aggregate = front_aggregate_by_family[int(family_idx)]
-            if len(front_aggregate) > 0:
+            base = int(seg_off[int(family_idx)])
+            fcount = int(front_len[int(family_idx)])
+            if fcount > 0:
                 touched_count, generated_count = _numba_touch_packet_points_for_state(
-                    front_aggregate[len(front_aggregate) - 1],
+                    front_ag_arenas[int(family_idx)],
+                    int(front_ag_start[base + fcount - 1]),
+                    int(front_ag_end[base + fcount - 1]),
                     int(state_i),
                     int(pair_mod),
                     int(pair_stamp_value),
@@ -3502,10 +3835,12 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                     int(touched_count),
                 )
                 generated_surfaces += int(generated_count)
-            back_aggregate = back_aggregate_by_family[int(family_idx)]
-            if len(back_aggregate) > 0:
+            bcount = int(back_len[int(family_idx)])
+            if bcount > 0:
                 touched_count, generated_count = _numba_touch_packet_points_for_state(
-                    back_aggregate[len(back_aggregate) - 1],
+                    back_ag_arenas[int(family_idx)],
+                    int(back_ag_start[base + bcount - 1]),
+                    int(back_ag_end[base + bcount - 1]),
                     int(state_i),
                     int(pair_mod),
                     int(pair_stamp_value),
@@ -3518,10 +3853,13 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
 
         if int(use_forced_great_timing_i) != 0:
             for family_idx in range(int(region_family_count)):
-                front_aggregate = region_front_aggregate_by_family[int(family_idx)]
-                if len(front_aggregate) > 0:
+                base = int(region_seg_off[int(family_idx)])
+                fcount = int(region_front_len[int(family_idx)])
+                if fcount > 0:
                     touched_count, generated_count = _numba_touch_packet_points_for_state(
-                        front_aggregate[len(front_aggregate) - 1],
+                        region_front_ag_arenas[int(family_idx)],
+                        int(region_front_ag_start[base + fcount - 1]),
+                        int(region_front_ag_end[base + fcount - 1]),
                         int(state_i),
                         int(pair_mod),
                         int(pair_stamp_value),
@@ -3531,10 +3869,12 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                         int(touched_count),
                     )
                     generated_surfaces += int(generated_count)
-                back_aggregate = region_back_aggregate_by_family[int(family_idx)]
-                if len(back_aggregate) > 0:
+                bcount = int(region_back_len[int(family_idx)])
+                if bcount > 0:
                     touched_count, generated_count = _numba_touch_packet_points_for_state(
-                        back_aggregate[len(back_aggregate) - 1],
+                        region_back_ag_arenas[int(family_idx)],
+                        int(region_back_ag_start[base + bcount - 1]),
+                        int(region_back_ag_end[base + bcount - 1]),
                         int(state_i),
                         int(pair_mod),
                         int(pair_stamp_value),
@@ -3560,7 +3900,7 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                 int(bit_stamp_value),
             )
             frontier_len = len(frontier)
-            body_cursor = _numba_store_body_tail_frontier(
+            body_values, body_cursor = _numba_store_body_tail_frontier(
                 body_values,
                 body_starts,
                 body_counts,
@@ -3871,6 +4211,24 @@ def _first_frontier_from_precomputed_end_indices_numba(
     section_bound = int(n) // int(min_later_fill) + 4
     pair_mod = min(int(n) + 1, int(section_bound) * (1 + int(max_eg_width)) + 1)
     pair_size = (int(n) + 1) * int(pair_mod)
+    # Workspace capacity guard (fail loud, never resize): the host sizes the per-thread stamp
+    # workspaces to a provable song-level pair_mod bound (_song_first_frontier_pair_mod_bound).
+    # If this geometry's true radix ever escaped that bound, numpy's silent slice truncation
+    # below would hand the stamp loops short arrays -> out-of-bounds writes under njit. Raise
+    # instead; a violation means the host bound derivation is wrong, never a recoverable state.
+    branch_a_bound = (int(pair_mod) + 1) * (int(n) + 2)
+    if (
+        int(ws_pair_values.shape[0]) < int(pair_size)
+        or int(ws_pair_stamps.shape[0]) < int(pair_size)
+        or int(ws_pair_touched.shape[0]) < int(pair_size)
+        or int(ws_bit_values.shape[0]) < int(pair_mod) + 1
+        or int(ws_bit_stamps.shape[0]) < int(pair_mod) + 1
+        or int(ws_branch_a_values.shape[0]) < int(branch_a_bound)
+        or int(ws_branch_a_stamps.shape[0]) < int(branch_a_bound)
+    ):
+        raise ValueError(
+            "FG first-frontier stamp workspace is undersized for this geometry's pair radix"
+        )
     # Reused per-thread stamp-radix workspace (allocation-lifetime change only). A cell is valid
     # iff its stamp equals the current epoch, and epochs carry monotonically across calls (the
     # incoming epoch is the max stamp any earlier call wrote), so stale cells from earlier

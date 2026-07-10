@@ -297,36 +297,32 @@ def _build_response_frontier_cache_payload(
         source_counts[source] += 1
     if missing_by_geometry:
         missing_items = tuple(missing_by_geometry.items())
-        # Sub-batch by region-core-table key (raw_fever_fill, non_fever_base). The batch builder
-        # materializes one region core table per distinct key and keeps EVERY key's table alive
-        # for the whole call -- on an all-FT/FF grid that is ~161 tables (~14 GB measured on a
-        # 7k-note chart, the dominant cold-build commit driver). Each geometry's frontier is a
-        # pure function of (geometry, chart); the tables are shared only ACROSS the fever-time
-        # variants of one key, and grouping keeps every variant of a key in the same call -- so
-        # per-key sub-batching preserves all table sharing, returns bit-identical frontiers, and
-        # bounds live tables to exactly one.
-        grouped_items: dict[tuple[float, int], list[tuple]] = {}
-        for item in missing_items:
-            geometry = item[1]
-            grouped_items.setdefault((float(geometry[0]), int(geometry[1])), []).append(item)
+        # ONE batch call per song build: the batch entry owns the region-core-table streaming
+        # (build one key's table, reduce its geometries, release it before the next key), so the
+        # one-live-table memory bound of the former per-group sub-batching here is preserved while
+        # every song-invariant input -- chart arrays, prefix activation-hit tables, the end-index
+        # tables for ALL unique fever times, the global geometry canonicalization, the reducer
+        # executor and its per-thread stamp workspaces -- is built exactly once per song.
+        batch_stats: dict[str, Any] = {}
         build_t0 = time.perf_counter()
-        for group_items in grouped_items.values():
-            built_frontiers = build_force_greats_response_first_frontiers_gpu_batch(
-                timestamps=song_inputs.timestamps,
-                perfect_candidate_timestamps=song_inputs.perfect_candidates,
-                great_candidate_timestamps=song_inputs.great_candidates,
-                perfect_floor_timestamps=song_inputs.perfect_floor,
-                great_floor_timestamps=song_inputs.great_floor,
-                lanes=song_inputs.lanes,
-                geometries=tuple(item[1] for item in group_items),
-                use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-            )
-            if len(built_frontiers) != len(group_items):
-                raise ValueError("FG response frontier GPU batch returned the wrong number of frontiers")
-            for (geometry_key, _geometry), frontier in zip(group_items, built_frontiers, strict=True):
-                if not _frontier_is_complete(frontier):
-                    raise ValueError("FG response frontier cache requires first-frontier surfaces")
-                frontier_by_geometry[geometry_key] = frontier
+        built_frontiers = build_force_greats_response_first_frontiers_gpu_batch(
+            timestamps=song_inputs.timestamps,
+            perfect_candidate_timestamps=song_inputs.perfect_candidates,
+            great_candidate_timestamps=song_inputs.great_candidates,
+            perfect_floor_timestamps=song_inputs.perfect_floor,
+            great_floor_timestamps=song_inputs.great_floor,
+            lanes=song_inputs.lanes,
+            geometries=tuple(item[1] for item in missing_items),
+            use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+            stats_sink=batch_stats,
+        )
+        batch_entry_invocations = 1
+        if len(built_frontiers) != len(missing_items):
+            raise ValueError("FG response frontier GPU batch returned the wrong number of frontiers")
+        for (geometry_key, _geometry), frontier in zip(missing_items, built_frontiers, strict=True):
+            if not _frontier_is_complete(frontier):
+                raise ValueError("FG response frontier cache requires first-frontier surfaces")
+            frontier_by_geometry[geometry_key] = frontier
         frontier_build_ms = float((time.perf_counter() - build_t0) * 1000.0)
         emit_profile_event(
             component="fg_response_cache",
@@ -334,10 +330,11 @@ def _build_response_frontier_cache_payload(
             metrics={
                 "requested_stat_keys": int(len(keys)),
                 "missing_geometries": int(len(missing_items)),
-                "region_table_groups": int(len(grouped_items)),
+                "batch_entry_invocations": int(batch_entry_invocations),
                 "frontier_build_ms": frontier_build_ms,
                 "total_notes": int(song_inputs.total_notes),
                 "long_notes": int(song_inputs.long_notes),
+                **{str(key): value for key, value in batch_stats.items()},
             },
         )
     for ft_stat, ff_stat in keys:

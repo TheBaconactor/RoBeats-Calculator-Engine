@@ -4,19 +4,19 @@ from dataclasses import dataclass
 
 import numpy as np
 
-_GPU_EDGE_BATCH_MAX_BYTES = 4 * 1024 * 1024 * 1024
+def _first_only_region_groups(items: list[tuple]) -> dict[tuple[float, int], list[tuple]]:
+    """Partition canonical prepared items by their region-core-table key.
 
-def _batch_chunk_size(*, n: int, action_count: int, geometry_count: int, bytes_per_edge: int = 64) -> int:
-    denom = max(1, int(n) * max(1, int(action_count)) * bytes_per_edge)
-    return max(1, min(int(geometry_count), int(_GPU_EDGE_BATCH_MAX_BYTES) // denom))
-
-
-
-def _first_only_chunks(*, n: int, items: list[tuple]) -> list[tuple[int, list[tuple]]]:
-    del n
-    if not items:
-        return []
-    return [(0, list(items))]
+    The region-run core work depends on the geometry only through
+    ``(raw_fever_fill, non_fever_base)`` — item slots 2 and 1 — never ``real_fever_time``, so all
+    fever-time variants of one key share one table. Keys keep first-appearance order and items
+    keep their canonical order within a key, so the batch entry can stream one region table at a
+    time (build -> reduce the key's geometries -> release) with peak live tables exactly one.
+    """
+    groups: dict[tuple[float, int], list[tuple]] = {}
+    for item in items:
+        groups.setdefault((float(item[2]), int(item[1])), []).append(item)
+    return groups
 
 
 def _action_arrays_signature(item: tuple) -> tuple[bytes, ...]:
