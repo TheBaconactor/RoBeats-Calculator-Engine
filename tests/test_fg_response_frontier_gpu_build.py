@@ -348,22 +348,41 @@ def test_fg_response_first_frontier_reducer_thread_count_is_capped() -> None:
         response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous)
 
 
-def test_fg_region_core_arenas_grow_exactly_and_fail_at_bound() -> None:
+def test_fg_region_core_chunked_arena_materializes_exact_arrays() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba
 
-    ints = np.arange(64, dtype=np.int32)
-    grown_ints = response_build_gpu_numba._numba_region_i32_arena_grow(ints, 64, 128)
-    assert grown_ints.shape == (128,)
-    assert np.array_equal(grown_ints[:64], ints)
-    with pytest.raises(ValueError, match="int32 arena exhausted"):
-        response_build_gpu_numba._numba_region_i32_arena_grow(grown_ints, 128, 128)
+    timestamps = np.arange(12, dtype=np.float32) * np.float32(0.1)
+    perfect_hi = timestamps + np.float32(0.04)
+    great_hi = timestamps + np.float32(0.09)
+    table = response_build_gpu_numba._numba_build_region_core_table(
+        12,
+        4,
+        np.asarray([0, 1, 2, 3], dtype=np.int32),
+        4.0,
+        timestamps,
+        0.1,
+        timestamps - np.float32(0.04),
+        perfect_hi,
+        timestamps - np.float32(0.09),
+        great_hi,
+        np.arange(12, dtype=np.int32),
+    )
 
-    floats = np.arange(64, dtype=np.float64) / 3.0
-    grown_floats = response_build_gpu_numba._numba_region_f64_arena_grow(floats, 64, 128)
-    assert grown_floats.shape == (128,)
-    assert np.array_equal(grown_floats[:64], floats)
-    with pytest.raises(ValueError, match="float64 arena exhausted"):
-        response_build_gpu_numba._numba_region_f64_arena_grow(grown_floats, 128, 128)
+    starts, *columns = table
+    retained = int(starts[-1])
+    assert retained > 0
+    assert np.all(starts[1:] >= starts[:-1])
+    assert all(column.shape == (retained,) for column in columns)
+    assert all(column.flags.c_contiguous for column in columns)
+    assert [column.dtype for column in columns] == [
+        np.dtype(np.int32),
+        np.dtype(np.int32),
+        np.dtype(np.int32),
+        np.dtype(np.int32),
+        np.dtype(np.float64),
+        np.dtype(np.float64),
+        np.dtype(np.int32),
+    ]
 
 
 def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority(monkeypatch) -> None:

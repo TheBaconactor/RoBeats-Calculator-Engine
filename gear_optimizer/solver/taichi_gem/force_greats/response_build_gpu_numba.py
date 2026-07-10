@@ -7,6 +7,9 @@ _NUMBA_HEAD_OVERLAP_KEY_TYPE = types.UniTuple(types.uint64, 2)
 # Packet-point arena rows: (body_fever, shifted normal-great, fever_great) int64 triples in a
 # cursor-managed flat (cap, 3) array, one arena per packet family (grow-doubling).
 _NUMBA_PACKET_ARENA_TYPE = types.int64[:, ::1]
+_NUMBA_REGION_I32_CHUNK_TYPE = types.int32[:, ::1]
+_NUMBA_REGION_F64_CHUNK_TYPE = types.float64[:, ::1]
+_REGION_CORE_CHUNK_ROWS = 65_536
 _NUMBA_HEAD_BASIS_TYPE = types.Tuple((
     types.uint64,
     types.uint64,
@@ -903,32 +906,6 @@ def _numba_mark_early_great_reachable_from_hit(
 
 
 @njit(cache=True, nogil=True)
-def _numba_region_i32_arena_grow(values, used: int, maximum: int):
-    old_capacity = int(values.shape[0])
-    if int(used) < int(old_capacity):
-        return values
-    new_capacity = min(int(maximum), max(64, int(old_capacity) * 2))
-    if int(new_capacity) <= int(used):
-        raise ValueError("FG region-core int32 arena exhausted its exact capacity bound")
-    grown = np.empty(int(new_capacity), dtype=np.int32)
-    grown[: int(used)] = values[: int(used)]
-    return grown
-
-
-@njit(cache=True, nogil=True)
-def _numba_region_f64_arena_grow(values, used: int, maximum: int):
-    old_capacity = int(values.shape[0])
-    if int(used) < int(old_capacity):
-        return values
-    new_capacity = min(int(maximum), max(64, int(old_capacity) * 2))
-    if int(new_capacity) <= int(used):
-        raise ValueError("FG region-core float64 arena exhausted its exact capacity bound")
-    grown = np.empty(int(new_capacity), dtype=np.float64)
-    grown[: int(used)] = values[: int(used)]
-    return grown
-
-
-@njit(cache=True, nogil=True)
 def _numba_build_region_core_table(
     n: int,
     region_action_count: int,
@@ -958,14 +935,11 @@ def _numba_build_region_core_table(
     perfect_valids)`` with ``starts`` of length ``n + 2`` (rows ``section_start = 0..n``)."""
     cap = (int(n) + 1) * max(1, int(region_action_count)) * 2
     starts = np.zeros(int(n) + 2, dtype=np.int64)
-    initial_capacity = min(int(cap), 64)
-    e_offset = np.empty(int(initial_capacity), dtype=np.int32)
-    e_activation = np.empty(int(initial_capacity), dtype=np.int32)
-    e_great_end = np.empty(int(initial_capacity), dtype=np.int32)
-    e_is_great = np.empty(int(initial_capacity), dtype=np.int32)
-    e_act_hit = np.empty(int(initial_capacity), dtype=np.float64)
-    e_perfect_hit = np.empty(int(initial_capacity), dtype=np.float64)
-    e_perfect_valid = np.empty(int(initial_capacity), dtype=np.int32)
+    # Append-only chunks avoid both the speculative dense reservation and grow-doubling's repeated
+    # copying of every retained row. Five int32 fields and two float64 fields share two chunk lists;
+    # the exact contiguous consumer arrays are materialized once after enumeration completes.
+    i32_chunks = List.empty_list(_NUMBA_REGION_I32_CHUNK_TYPE)
+    f64_chunks = List.empty_list(_NUMBA_REGION_F64_CHUNK_TYPE)
     region_k_stop = _numba_region2_k_scan_stop(int(region_action_count), float(raw_fever_fill))
     cursor = 0
     for section_start in range(0, int(n) + 1):
@@ -1007,44 +981,61 @@ def _numba_build_region_core_table(
                 )
                 if int(valid) == 0:
                     continue
-                if int(cursor) >= int(e_offset.shape[0]):
-                    e_offset = _numba_region_i32_arena_grow(e_offset, int(cursor), int(cap))
-                    e_activation = _numba_region_i32_arena_grow(
-                        e_activation, int(cursor), int(cap)
-                    )
-                    e_great_end = _numba_region_i32_arena_grow(
-                        e_great_end, int(cursor), int(cap)
-                    )
-                    e_is_great = _numba_region_i32_arena_grow(
-                        e_is_great, int(cursor), int(cap)
-                    )
-                    e_act_hit = _numba_region_f64_arena_grow(
-                        e_act_hit, int(cursor), int(cap)
-                    )
-                    e_perfect_hit = _numba_region_f64_arena_grow(
-                        e_perfect_hit, int(cursor), int(cap)
-                    )
-                    e_perfect_valid = _numba_region_i32_arena_grow(
-                        e_perfect_valid, int(cursor), int(cap)
-                    )
-                e_offset[int(cursor)] = int(offset)
-                e_activation[int(cursor)] = int(activation)
-                e_great_end[int(cursor)] = int(great_end)
-                e_is_great[int(cursor)] = int(is_great)
-                e_act_hit[int(cursor)] = float(act_hit)
-                e_perfect_hit[int(cursor)] = float(perfect_hit)
-                e_perfect_valid[int(cursor)] = int(perfect_valid)
+                if int(cursor) >= int(cap):
+                    raise ValueError("FG region-core chunks exhausted their exact capacity bound")
+                chunk_idx = int(cursor) // int(_REGION_CORE_CHUNK_ROWS)
+                chunk_row = int(cursor) % int(_REGION_CORE_CHUNK_ROWS)
+                if int(chunk_idx) == len(i32_chunks):
+                    chunk_rows = min(int(_REGION_CORE_CHUNK_ROWS), int(cap) - int(cursor))
+                    if int(chunk_rows) <= 0:
+                        raise ValueError("FG region-core chunk has no remaining exact capacity")
+                    i32_chunks.append(np.empty((int(chunk_rows), 5), dtype=np.int32))
+                    f64_chunks.append(np.empty((int(chunk_rows), 2), dtype=np.float64))
+                elif int(chunk_idx) > len(i32_chunks):
+                    raise ValueError("FG region-core chunk cursor skipped an allocation")
+                i32_chunk = i32_chunks[int(chunk_idx)]
+                f64_chunk = f64_chunks[int(chunk_idx)]
+                i32_chunk[int(chunk_row), 0] = int(offset)
+                i32_chunk[int(chunk_row), 1] = int(activation)
+                i32_chunk[int(chunk_row), 2] = int(great_end)
+                i32_chunk[int(chunk_row), 3] = int(is_great)
+                i32_chunk[int(chunk_row), 4] = int(perfect_valid)
+                f64_chunk[int(chunk_row), 0] = float(act_hit)
+                f64_chunk[int(chunk_row), 1] = float(perfect_hit)
                 cursor += 1
     starts[int(n) + 1] = int(cursor)
+    e_offset = np.empty(int(cursor), dtype=np.int32)
+    e_activation = np.empty(int(cursor), dtype=np.int32)
+    e_great_end = np.empty(int(cursor), dtype=np.int32)
+    e_is_great = np.empty(int(cursor), dtype=np.int32)
+    e_act_hit = np.empty(int(cursor), dtype=np.float64)
+    e_perfect_hit = np.empty(int(cursor), dtype=np.float64)
+    e_perfect_valid = np.empty(int(cursor), dtype=np.int32)
+    copied = 0
+    for chunk_idx in range(len(i32_chunks)):
+        i32_chunk = i32_chunks[int(chunk_idx)]
+        f64_chunk = f64_chunks[int(chunk_idx)]
+        chunk_count = min(int(i32_chunk.shape[0]), int(cursor) - int(copied))
+        chunk_stop = int(copied) + int(chunk_count)
+        e_offset[int(copied) : int(chunk_stop)] = i32_chunk[: int(chunk_count), 0]
+        e_activation[int(copied) : int(chunk_stop)] = i32_chunk[: int(chunk_count), 1]
+        e_great_end[int(copied) : int(chunk_stop)] = i32_chunk[: int(chunk_count), 2]
+        e_is_great[int(copied) : int(chunk_stop)] = i32_chunk[: int(chunk_count), 3]
+        e_perfect_valid[int(copied) : int(chunk_stop)] = i32_chunk[: int(chunk_count), 4]
+        e_act_hit[int(copied) : int(chunk_stop)] = f64_chunk[: int(chunk_count), 0]
+        e_perfect_hit[int(copied) : int(chunk_stop)] = f64_chunk[: int(chunk_count), 1]
+        copied = int(chunk_stop)
+    if int(copied) != int(cursor) or len(i32_chunks) != len(f64_chunks):
+        raise ValueError("FG region-core chunk materialization did not consume every retained row")
     return (
         starts,
-        e_offset[: int(cursor)].copy(),
-        e_activation[: int(cursor)].copy(),
-        e_great_end[: int(cursor)].copy(),
-        e_is_great[: int(cursor)].copy(),
-        e_act_hit[: int(cursor)].copy(),
-        e_perfect_hit[: int(cursor)].copy(),
-        e_perfect_valid[: int(cursor)].copy(),
+        e_offset,
+        e_activation,
+        e_great_end,
+        e_is_great,
+        e_act_hit,
+        e_perfect_hit,
+        e_perfect_valid,
     )
 
 
