@@ -646,44 +646,6 @@ def _numba_has_shifted_head_region(section_start: int, raw_fever_fill: float) ->
     return 1 if int(np.ceil(float(raw_fever_fill))) > 1 else 0
 
 
-@njit(cache=True, nogil=True)
-def _numba_region_core_candidate_capacity(
-    n: int,
-    region_action_count: int,
-    action_k,
-    raw_fever_fill: float,
-) -> int:
-    """Exact count of offsets that can reach the expensive region-core producer.
-
-    This is an allocation bound only: validity still belongs exclusively to
-    ``_numba_region_run_core_for_offset``. Counting repeats the cheap offset arithmetic but never
-    reconstructs semantics, and the fill pass retains the canonical section/action/offset order.
-    """
-    region_k_stop = _numba_region2_k_scan_stop(int(region_action_count), float(raw_fever_fill))
-    shifted_sections = 0
-    if int(np.ceil(float(raw_fever_fill))) > 1:
-        shifted_sections = min(99, int(n) + 1)
-    # Every action owns the shifted-head offset in the first 99 sections. A region-2 offset is
-    # independent of section_start until its final chart-boundary cutoff, so each action's count
-    # is one interval length. If that offset is also 1, subtract the overlapping shifted rows.
-    candidate_count = int(shifted_sections) * int(region_action_count)
-    for action_idx in range(int(region_k_stop)):
-        k = int(action_k[int(action_idx)])
-        region_offset = _numba_region2_offset_for_count(
-            0, int(k), float(raw_fever_fill), int(n)
-        )
-        if int(region_offset) < 1:
-            continue
-        section_count = max(0, int(n) - int(region_offset) - int(k) + 1)
-        candidate_count += int(section_count)
-        if int(region_offset) == 1:
-            candidate_count -= min(int(shifted_sections), int(section_count))
-    maximum = (int(n) + 1) * max(1, int(region_action_count)) * 2
-    if int(candidate_count) > int(maximum):
-        raise ValueError("FG region-core candidate capacity exceeds its exhaustive bound")
-    return int(candidate_count)
-
-
 @njit(cache=True, nogil=True, inline="always")
 def _numba_region_run_core_for_offset(
     n: int,
@@ -968,9 +930,7 @@ def _numba_build_region_core_table(
 
     Returns ``(starts, offsets, activations, great_ends, is_greats, act_hits, perfect_hits,
     perfect_valids)`` with ``starts`` of length ``n + 2`` (rows ``section_start = 0..n``)."""
-    cap = _numba_region_core_candidate_capacity(
-        int(n), int(region_action_count), action_k, float(raw_fever_fill)
-    )
+    cap = (int(n) + 1) * max(1, int(region_action_count)) * 2
     starts = np.zeros(int(n) + 2, dtype=np.int64)
     e_offset = np.empty(int(cap), dtype=np.int32)
     e_activation = np.empty(int(cap), dtype=np.int32)
@@ -1020,8 +980,6 @@ def _numba_build_region_core_table(
                 )
                 if int(valid) == 0:
                     continue
-                if int(cursor) >= int(cap):
-                    raise ValueError("FG region-core rows exceed the producer-owned candidate capacity")
                 e_offset[int(cursor)] = int(offset)
                 e_activation[int(cursor)] = int(activation)
                 e_great_end[int(cursor)] = int(great_end)
