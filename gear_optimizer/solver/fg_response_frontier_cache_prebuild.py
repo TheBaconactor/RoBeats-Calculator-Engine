@@ -802,6 +802,11 @@ def run_fg_response_frontier_cache_prebuild(
                 "[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale)
             )
 
+        # Recover completed sidecars left uncompressed by an interrupted earlier prebuild. This
+        # runs under the single-builder lock and before any workers start, so no live writer can
+        # overlap the filesystem operation. Already-compressed files are skipped by `compact`.
+        compress_cache_dir_sidecars()
+
         # Deterministic input order; heaviest-first execution ordering happens inside
         # _run_missing_fg_prebuild from the same parse pass that computes admission weights.
         missing_paths = sorted(str(path) for path in manifest_plan.missing_paths)
