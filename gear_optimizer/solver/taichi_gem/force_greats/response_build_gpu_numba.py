@@ -660,24 +660,24 @@ def _numba_region_core_candidate_capacity(
     reconstructs semantics, and the fill pass retains the canonical section/action/offset order.
     """
     region_k_stop = _numba_region2_k_scan_stop(int(region_action_count), float(raw_fever_fill))
-    candidate_count = 0
-    for section_start in range(0, int(n) + 1):
-        shifted_head_offset = (
-            1 if _numba_has_shifted_head_region(int(section_start), float(raw_fever_fill)) else -1
+    shifted_sections = 0
+    if int(np.ceil(float(raw_fever_fill))) > 1:
+        shifted_sections = min(99, int(n) + 1)
+    # Every action owns the shifted-head offset in the first 99 sections. A region-2 offset is
+    # independent of section_start until its final chart-boundary cutoff, so each action's count
+    # is one interval length. If that offset is also 1, subtract the overlapping shifted rows.
+    candidate_count = int(shifted_sections) * int(region_action_count)
+    for action_idx in range(int(region_k_stop)):
+        k = int(action_k[int(action_idx)])
+        region_offset = _numba_region2_offset_for_count(
+            0, int(k), float(raw_fever_fill), int(n)
         )
-        for action_idx in range(int(region_action_count)):
-            region_offset = -1
-            if int(action_idx) < int(region_k_stop):
-                region_offset = _numba_region2_offset_for_count(
-                    int(section_start),
-                    int(action_k[int(action_idx)]),
-                    float(raw_fever_fill),
-                    int(n),
-                )
-            if int(region_offset) >= 1:
-                candidate_count += 1
-            if int(shifted_head_offset) >= 1 and int(shifted_head_offset) != int(region_offset):
-                candidate_count += 1
+        if int(region_offset) < 1:
+            continue
+        section_count = max(0, int(n) - int(region_offset) - int(k) + 1)
+        candidate_count += int(section_count)
+        if int(region_offset) == 1:
+            candidate_count -= min(int(shifted_sections), int(section_count))
     maximum = (int(n) + 1) * max(1, int(region_action_count)) * 2
     if int(candidate_count) > int(maximum):
         raise ValueError("FG region-core candidate capacity exceeds its exhaustive bound")

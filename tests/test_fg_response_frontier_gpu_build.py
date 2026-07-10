@@ -361,6 +361,19 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
         action_k,
         4.0,
     )
+    brute_capacity = 0
+    region_stop = response_build_gpu_numba._numba_region2_k_scan_stop(4, 4.0)
+    for section_start in range(13):
+        shifted = 1 if response_build_gpu_numba._numba_has_shifted_head_region(section_start, 4.0) else -1
+        for action_idx, k in enumerate(action_k):
+            region = -1
+            if action_idx < region_stop:
+                region = response_build_gpu_numba._numba_region2_offset_for_count(
+                    section_start, int(k), 4.0, 12
+                )
+            brute_capacity += int(region >= 1)
+            brute_capacity += int(shifted >= 1 and shifted != region)
+    assert capacity == brute_capacity
     table = response_build_gpu_numba._numba_build_region_core_table(
         12,
         4,
