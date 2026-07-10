@@ -1,30 +1,29 @@
-"""Two-directional FG frontier oracle on tiny charts (input-engine ground truth).
+"""Bounded FG frontier replay sweep on tiny charts.
 
-Enumerates PHYSICAL press schedules (per-note band-extreme press times) on synthetic tiny charts,
-replays every schedule through the faithful engine simulator (``tools/verify/game_sim.py`` --
-earliest-hittable-first matching, +200ms despawn, frame-integrated fever, exact-time judging), and
-compares the achieved full-combo P/G surfaces against the production FG response frontier built
-for the SAME chart and the SIM-DERIVED fever geometry.
+Enumerates a finite set of PHYSICAL press schedules (per-note band-extreme press times) on
+synthetic tiny charts, replays every candidate through the faithful engine simulator
+(``tools/verify/game_sim.py`` -- earliest-hittable-first matching, +200ms despawn,
+frame-integrated fever, exact-time judging), and compares the observed full-combo P/G surfaces
+against the production FG response frontier for the SAME chart and SIM-DERIVED fever geometry.
 
-Directions:
+This sweep is sound-positive, not complete: every surface it reports as reachable came from exact
+replay, so an observed winning under-report is authoritative. Band extremes do not enumerate every
+interior cross-note breakpoint, so the absence of an under-report is regression evidence, not a
+completeness proof. The explicit replay witnesses in ``tests/test_fg_tail_activation_dbis.py`` are
+authoritative for their directed claims; random/directed ``check_chart`` sweeps are bug-discovery
+and regression tools.
 
-* UNDER-report: a reachable surface no production surface structurally dominates AND that beats
-  the whole produced set at some stat cell -- the frontier is missing a legal play. Winning
-  witnesses whose fever start is not the chart-index-order fill crossing (given their own P/G
-  labels) are classified KNOWN-GAP: they are reachable only through hit-order inversion
-  (delay-and-catch / same-timestamp closer choice), the enumeration family DESIGNED but not
-  implemented in FG_TAIL_ACTIVATION_DBIS.md section 5. They are printed loudly and fail the run
-  only under ``--strict``; any other winning witness always fails.
-* OVER-report: a production surface that no band-extreme schedule achieves exactly. Before
-  calling it a phantom, a targeted realization pass tries to construct a schedule for it: a
-  greedy target scheduler over the activation's CROSS-NOTE-breakpoint-enriched candidate hits
-  (optimal presses are generally interior points pinned by a follower's label edge or by a
-  same-lane predecessor's press -- the 16.33 completeness caveat), then a one-note-enriched
-  band-extreme product backstop; every construction is verified by exact replay. If some
-  reachable surface structurally dominates the claim it is score-harmless (``over_dominated``);
-  if a constructed schedule replays it exactly it is ``over_realized`` (oracle-enumeration
-  artifact); otherwise it is a HARD over-report (a phantom strictly better than everything
-  achievable somewhere in stat space) and always fails.
+Classifications:
+
+* OBSERVED UNDER-report: an exactly replayed surface that no production surface structurally
+  dominates and that beats the whole produced set at a checked stat cell. Index-inverted witnesses
+  are the DESIGNED known-gap family from ``FG_TAIL_ACTIVATION_DBIS.md`` section 5; they fail only
+  under ``--strict``. Any other observed winning witness always fails.
+* PRODUCED BUT NOT OBSERVED: a targeted heuristic realizer probes enriched interior candidates. A
+  successful construction is exact replay (``over_realized``), and an observed reachable surface
+  may prove a claim score-dominated (``over_dominated``). If neither succeeds, the claim is
+  ``over_unresolved``: this is conservative evidence requiring adjudication, not proof of a
+  phantom. Unresolved claims still fail the sweep.
 
 Independence: press candidates come from the simulator's own judgment edges
 (``game_sim._JUDGE_EDGES_TAP``), fever membership from ``RegisteredHit.fever``, and the dominance
@@ -32,16 +31,13 @@ relation is the semantic structural one -- no production placement/enumeration p
 reused, so this oracle cannot inherit a producer bug (the circularity the 2026-07-07 audit flagged
 in the contiguous-run oracle).
 
-Scope (v2, D-bis): full-combo P/G universe (runs with any okay/miss/whiff are filtered out --
-those judgments leave the FG product's placement space) over TAP AND HOLD charts. A hold is a
-(head=2, tail=3) same-lane pair; the tail is its own scored note with doubled judge edges and
-the +200ms despawn cap, played as a RELEASE edge. Band extremes per note (6 candidates: both
-edges of Perfect and of each Great band, despawn-capped for tails) cover every judgment-band
-choice and, through the cross-product, every hit-order inversion those bands allow; interior
-offsets only interpolate fever ends between the extremes, so maximal surfaces are captured.
-Schedules that are not physically playable are excluded BEFORE replay: a hold's release must
-follow its press, and a lane's key is DOWN for the whole hold span, so no same-lane press may
-land inside it (the engine matcher would happily accept such edges; a player cannot).
+Scope (v2, D-bis): bounded full-combo P/G schedules (runs with any okay/miss/whiff are filtered
+out) over TAP AND HOLD charts. A hold is a (head=2, tail=3) same-lane pair; the tail is its own
+scored note with doubled judge edges and the +200ms despawn cap, played as a RELEASE edge. The six
+band-extreme candidates per note sample every judgment band but not every interior ordering/fever
+breakpoint. Schedules that are not physically playable are excluded BEFORE replay: a hold's
+release must follow its press, and a lane's key is DOWN through its release edge, so no same-lane
+press may land inside that closed span.
 
 Production envelopes come from the canonical per-note builders (`timing_envelope.py`), exactly
 as `apply_timing_envelope` feeds the real FG build -- held tails keep their widened per-note
@@ -147,7 +143,7 @@ def _schedule_is_physical(
         if int(nt) == 3:
             continue  # the release edge itself ends its span
         for lo, hi in spans.get(int(lanes[i]), ()):
-            if lo < times[i] < hi:
+            if lo < times[i] <= hi:
                 return False
             if times[i] == lo and int(nt) != 2:
                 return False  # a second press at the head instant on a held lane
@@ -310,7 +306,7 @@ def _realize_surface(
     """OVER-direction refinement: try to physically realize ONE claimed surface.
 
     Phase A: target-driven greedy schedules over the activation's enriched candidate hits
-    (cheap, covers activation-interior, end-boundary and same-lane-order interior needs).
+    (a cheap probe for activation-interior, end-boundary and same-lane-order interior needs).
     Phase B: blind band-extreme product with ONE note's candidate set enriched, for the
     activation and the last two fevered notes (backstop for shapes the greedy misses).
     Returns True the moment a physical schedule replays to exactly ``target``.
@@ -404,8 +400,7 @@ def enumerate_reachable_surfaces(
     config: dict,
     note_types: list[int] | None = None,
 ) -> tuple[set[tuple[int, int]], float, float]:
-    """All (fever_mask, great_mask) surfaces achievable by physically playable band-extreme
-    schedules (presses for taps/heads, releases for tails)."""
+    """Exactly replayed surfaces found by the bounded, physical band-extreme sweep."""
     n = len(timestamps_ms)
     nts = [1] * n if note_types is None else [int(x) for x in note_types]
     chart = NoteChart(timestamps_ms=list(timestamps_ms), lanes=list(lanes), note_types=nts)
@@ -483,6 +478,7 @@ def check_chart(
     label: str = "",
     note_types: list[int] | None = None,
 ) -> dict:
+    """Run the sound-positive bounded sweep; absence of a witness is not completeness proof."""
     n = len(timestamps_ms)
     nts = [1] * n if note_types is None else [int(x) for x in note_types]
     stats = dict(statsdict or {})
@@ -508,12 +504,13 @@ def check_chart(
         for r in under_structural
         if (margin := _witness_wins_a_cell(r, produced, n)) > 1e-9
     ]
-    # Classify winning witnesses: index-inverted deposits are the DESIGNED (not implemented)
-    # enumeration family (FG_TAIL_ACTIVATION_DBIS.md section 5) -- reported loudly, failed only
-    # under --strict. Anything else is a live producer under-report and always fails.
+    # Every member of `reachable` came from exact replay, so an observed winning witness is sound.
+    # Index-inverted deposits are the DESIGNED (not implemented) family from
+    # FG_TAIL_ACTIVATION_DBIS.md section 5 -- reported loudly, failed only under --strict. Absence
+    # of a witness says only that this bounded candidate sweep did not find one.
     under = [(r, m) for (r, m) in scored_under if not _witness_is_index_inverted(r, denom, n)]
     under_design = [(r, m) for (r, m) in scored_under if _witness_is_index_inverted(r, denom, n)]
-    over_hard: list[tuple[int, int]] = []
+    over_unresolved: list[tuple[int, int]] = []
     over_dominated: list[tuple[int, int]] = []
     over_realized: list[tuple[int, int]] = []
     for p in sorted(produced):
@@ -522,11 +519,13 @@ def check_chart(
         if any(_structurally_dominates(r, p) for r in reachable):
             over_dominated.append(p)
         elif _realize_surface(p, timestamps_ms, lanes, nts, stats, config):
-            # Physically replayed after cross-note breakpoint enrichment: an enumeration-
-            # completeness artifact of the band-extreme grid, not a producer phantom.
+            # Physically replayed after cross-note breakpoint enrichment: exact positive evidence
+            # that the bounded base sweep omitted this schedule.
             over_realized.append(p)
         else:
-            over_hard.append(p)
+            # A failed heuristic construction does not prove infeasibility. Keep the claim
+            # unresolved and fail conservatively until an independent proof adjudicates it.
+            over_unresolved.append(p)
     return {
         "label": label,
         "n": n,
@@ -537,7 +536,7 @@ def check_chart(
         "under": under,
         "under_design": under_design,
         "under_structural": len(under_structural),
-        "over_hard": over_hard,
+        "over_unresolved": over_unresolved,
         "over_dominated": over_dominated,
         "over_realized": over_realized,
     }
@@ -577,7 +576,7 @@ def _mask_str(mask: int, n: int) -> str:
 
 
 def _report(res: dict, strict: bool = False) -> bool:
-    ok = not res["under"] and not res["over_hard"]
+    ok = not res["under"] and not res["over_unresolved"]
     if strict:
         ok = ok and not res["under_design"]
     status = "OK " if ok else "FAIL"
@@ -585,7 +584,7 @@ def _report(res: dict, strict: bool = False) -> bool:
         f"[{status}] {res['label']}: n={res['n']} denom={res['denom']:.4f} rt={res['rt']:.3f} "
         f"reachable={res['reachable']} produced={res['produced']} "
         f"under={len(res['under'])}+{len(res['under_design'])}known (structural {res['under_structural']}) "
-        f"over_hard={len(res['over_hard'])} over_realized={len(res['over_realized'])} "
+        f"over_unresolved={len(res['over_unresolved'])} over_realized={len(res['over_realized'])} "
         f"over_dominated={len(res['over_dominated'])}"
     )
     for (fever, great), margin in res["under"][:6]:
@@ -597,8 +596,11 @@ def _report(res: dict, strict: bool = False) -> bool:
         )
     for fever, great in res["over_realized"][:6]:
         print(f"    over_realized (breakpoint schedule replays it): F={_mask_str(fever, res['n'])} G={_mask_str(great, res['n'])}")
-    for fever, great in res["over_hard"][:6]:
-        print(f"    over_hard: F={_mask_str(fever, res['n'])} G={_mask_str(great, res['n'])}")
+    for fever, great in res["over_unresolved"][:6]:
+        print(
+            f"    over_unresolved (requires adjudication): "
+            f"F={_mask_str(fever, res['n'])} G={_mask_str(great, res['n'])}"
+        )
     return ok
 
 
@@ -722,7 +724,11 @@ def main(argv=None) -> int:
     ap.add_argument("--hold-charts", type=int, default=6, help="random tap+hold charts to sweep")
     ap.add_argument("--max-notes", type=int, default=6, help="max notes per random chart (>=4)")
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--directed", action="store_true", help="run the curated witness shapes only")
+    ap.add_argument(
+        "--directed",
+        action="store_true",
+        help="run only the curated bounded regression shapes",
+    )
     ap.add_argument("--fever-fill", type=int, default=0, help="FeverFillRate stat (shrinks denom)")
     ap.add_argument("--fever-time", type=int, default=0, help="FeverTime stat (stretches rt)")
     ap.add_argument(
@@ -755,10 +761,10 @@ def main(argv=None) -> int:
         known_gaps += len(res["under_design"])
         if not _report(res, strict=bool(args.strict)):
             failures += 1
-    verdict = "PASS" if failures == 0 else f"FAIL ({failures} charts with witnesses)"
+    verdict = "SWEEP PASS" if failures == 0 else f"SWEEP FAIL ({failures} charts with witnesses)"
     if failures == 0 and known_gaps:
         verdict += f" with {known_gaps} KNOWN-GAP witnesses (designed family, not implemented)"
-    print(f"\nVERDICT: {verdict}")
+    print(f"\nBOUNDED VERDICT: {verdict}")
     return 0 if failures == 0 else 1
 
 
