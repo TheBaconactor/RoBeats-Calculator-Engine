@@ -348,6 +348,24 @@ def test_fg_response_first_frontier_reducer_thread_count_is_capped() -> None:
         response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous)
 
 
+def test_fg_region_core_arenas_grow_exactly_and_fail_at_bound() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba
+
+    ints = np.arange(64, dtype=np.int32)
+    grown_ints = response_build_gpu_numba._numba_region_i32_arena_grow(ints, 64, 128)
+    assert grown_ints.shape == (128,)
+    assert np.array_equal(grown_ints[:64], ints)
+    with pytest.raises(ValueError, match="int32 arena exhausted"):
+        response_build_gpu_numba._numba_region_i32_arena_grow(grown_ints, 128, 128)
+
+    floats = np.arange(64, dtype=np.float64) / 3.0
+    grown_floats = response_build_gpu_numba._numba_region_f64_arena_grow(floats, 64, 128)
+    assert grown_floats.shape == (128,)
+    assert np.array_equal(grown_floats[:64], floats)
+    with pytest.raises(ValueError, match="float64 arena exhausted"):
+        response_build_gpu_numba._numba_region_f64_arena_grow(grown_floats, 128, 128)
+
+
 def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority(monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
 

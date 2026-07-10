@@ -903,6 +903,32 @@ def _numba_mark_early_great_reachable_from_hit(
 
 
 @njit(cache=True, nogil=True)
+def _numba_region_i32_arena_grow(values, used: int, maximum: int):
+    old_capacity = int(values.shape[0])
+    if int(used) < int(old_capacity):
+        return values
+    new_capacity = min(int(maximum), max(64, int(old_capacity) * 2))
+    if int(new_capacity) <= int(used):
+        raise ValueError("FG region-core int32 arena exhausted its exact capacity bound")
+    grown = np.empty(int(new_capacity), dtype=np.int32)
+    grown[: int(used)] = values[: int(used)]
+    return grown
+
+
+@njit(cache=True, nogil=True)
+def _numba_region_f64_arena_grow(values, used: int, maximum: int):
+    old_capacity = int(values.shape[0])
+    if int(used) < int(old_capacity):
+        return values
+    new_capacity = min(int(maximum), max(64, int(old_capacity) * 2))
+    if int(new_capacity) <= int(used):
+        raise ValueError("FG region-core float64 arena exhausted its exact capacity bound")
+    grown = np.empty(int(new_capacity), dtype=np.float64)
+    grown[: int(used)] = values[: int(used)]
+    return grown
+
+
+@njit(cache=True, nogil=True)
 def _numba_build_region_core_table(
     n: int,
     region_action_count: int,
@@ -932,13 +958,14 @@ def _numba_build_region_core_table(
     perfect_valids)`` with ``starts`` of length ``n + 2`` (rows ``section_start = 0..n``)."""
     cap = (int(n) + 1) * max(1, int(region_action_count)) * 2
     starts = np.zeros(int(n) + 2, dtype=np.int64)
-    e_offset = np.empty(int(cap), dtype=np.int32)
-    e_activation = np.empty(int(cap), dtype=np.int32)
-    e_great_end = np.empty(int(cap), dtype=np.int32)
-    e_is_great = np.empty(int(cap), dtype=np.int32)
-    e_act_hit = np.empty(int(cap), dtype=np.float64)
-    e_perfect_hit = np.empty(int(cap), dtype=np.float64)
-    e_perfect_valid = np.empty(int(cap), dtype=np.int32)
+    initial_capacity = min(int(cap), 64)
+    e_offset = np.empty(int(initial_capacity), dtype=np.int32)
+    e_activation = np.empty(int(initial_capacity), dtype=np.int32)
+    e_great_end = np.empty(int(initial_capacity), dtype=np.int32)
+    e_is_great = np.empty(int(initial_capacity), dtype=np.int32)
+    e_act_hit = np.empty(int(initial_capacity), dtype=np.float64)
+    e_perfect_hit = np.empty(int(initial_capacity), dtype=np.float64)
+    e_perfect_valid = np.empty(int(initial_capacity), dtype=np.int32)
     region_k_stop = _numba_region2_k_scan_stop(int(region_action_count), float(raw_fever_fill))
     cursor = 0
     for section_start in range(0, int(n) + 1):
@@ -980,6 +1007,26 @@ def _numba_build_region_core_table(
                 )
                 if int(valid) == 0:
                     continue
+                if int(cursor) >= int(e_offset.shape[0]):
+                    e_offset = _numba_region_i32_arena_grow(e_offset, int(cursor), int(cap))
+                    e_activation = _numba_region_i32_arena_grow(
+                        e_activation, int(cursor), int(cap)
+                    )
+                    e_great_end = _numba_region_i32_arena_grow(
+                        e_great_end, int(cursor), int(cap)
+                    )
+                    e_is_great = _numba_region_i32_arena_grow(
+                        e_is_great, int(cursor), int(cap)
+                    )
+                    e_act_hit = _numba_region_f64_arena_grow(
+                        e_act_hit, int(cursor), int(cap)
+                    )
+                    e_perfect_hit = _numba_region_f64_arena_grow(
+                        e_perfect_hit, int(cursor), int(cap)
+                    )
+                    e_perfect_valid = _numba_region_i32_arena_grow(
+                        e_perfect_valid, int(cursor), int(cap)
+                    )
                 e_offset[int(cursor)] = int(offset)
                 e_activation[int(cursor)] = int(activation)
                 e_great_end[int(cursor)] = int(great_end)
