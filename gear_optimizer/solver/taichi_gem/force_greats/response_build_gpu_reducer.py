@@ -29,13 +29,17 @@ class _FirstFrontierStampWorkspace:
     invisible, exactly like stale cells between consecutive states within one call. Stamp arrays
     are zeroed only on (re)creation (a fresh np.empty could contain garbage colliding with a live
     epoch); value/touched arrays are only ever read under a matching stamp or a write-first
-    touched count, so their initial contents are irrelevant. Capacities are the kernel's hard
-    per-chart maxima (pair_mod <= n + 1, branch_a width == n + 2), so one workspace serves every
-    geometry of a chart; a bigger chart forces recreation.
+    touched count, so their initial contents are irrelevant. Capacities come from the song's
+    workspace plan (a provable upper bound on every geometry's pair radix, see
+    ``_FirstFrontierWorkspacePlan``), so one workspace serves every geometry of a song build;
+    a song needing more capacity forces recreation. The kernel fail-loud-guards the capacities
+    against its true per-geometry radix, so an undersized plan can never corrupt memory.
     """
 
     __slots__ = (
-        "capacity_n",
+        "pair_capacity",
+        "bit_capacity",
+        "branch_a_capacity",
         "pair_values",
         "pair_stamps",
         "pair_touched",
@@ -48,21 +52,32 @@ class _FirstFrontierStampWorkspace:
         "branch_a_epoch",
     )
 
-    def __init__(self, n: int) -> None:
-        pair_capacity = (int(n) + 1) * (int(n) + 1)
-        bit_capacity = (int(n) + 1) + 1
-        branch_a_capacity = ((int(n) + 1) + 1) * (int(n) + 2)
-        self.capacity_n = int(n)
-        self.pair_values = np.zeros(pair_capacity, dtype=np.int32)
-        self.pair_stamps = np.zeros(pair_capacity, dtype=np.int32)
-        self.pair_touched = np.zeros(pair_capacity, dtype=np.int32)
-        self.bit_values = np.zeros(bit_capacity, dtype=np.int32)
-        self.bit_stamps = np.zeros(bit_capacity, dtype=np.int32)
-        self.branch_a_values = np.zeros(branch_a_capacity, dtype=np.int32)
-        self.branch_a_stamps = np.zeros(branch_a_capacity, dtype=np.int32)
+    def __init__(self, pair_capacity: int, bit_capacity: int, branch_a_capacity: int) -> None:
+        self.pair_capacity = int(pair_capacity)
+        self.bit_capacity = int(bit_capacity)
+        self.branch_a_capacity = int(branch_a_capacity)
+        self.pair_values = np.zeros(self.pair_capacity, dtype=np.int32)
+        self.pair_stamps = np.zeros(self.pair_capacity, dtype=np.int32)
+        self.pair_touched = np.zeros(self.pair_capacity, dtype=np.int32)
+        self.bit_values = np.zeros(self.bit_capacity, dtype=np.int32)
+        self.bit_stamps = np.zeros(self.bit_capacity, dtype=np.int32)
+        self.branch_a_values = np.zeros(self.branch_a_capacity, dtype=np.int32)
+        self.branch_a_stamps = np.zeros(self.branch_a_capacity, dtype=np.int32)
         self.pair_epoch = 0
         self.bit_epoch = 0
         self.branch_a_epoch = 0
+
+    @property
+    def total_bytes(self) -> int:
+        return int(
+            self.pair_values.nbytes
+            + self.pair_stamps.nbytes
+            + self.pair_touched.nbytes
+            + self.bit_values.nbytes
+            + self.bit_stamps.nbytes
+            + self.branch_a_values.nbytes
+            + self.branch_a_stamps.nbytes
+        )
 
     def store_epochs(self, pair_epoch: int, bit_epoch: int, branch_a_epoch: int) -> None:
         """Persist the kernel's final epochs, resetting any counter that passed the int32
@@ -84,12 +99,109 @@ class _FirstFrontierStampWorkspace:
 _WORKSPACE_TLS = threading.local()
 
 
-def _thread_first_frontier_workspace(n: int) -> _FirstFrontierStampWorkspace:
-    workspace = getattr(_WORKSPACE_TLS, "workspace", None)
-    if workspace is None or int(workspace.capacity_n) < int(n):
-        workspace = _FirstFrontierStampWorkspace(int(n))
-        _WORKSPACE_TLS.workspace = workspace
-    return workspace
+def _early_great_extension_gap_bound(
+    perfect_floor_timestamps: np.ndarray,
+    great_floor_timestamps: np.ndarray,
+) -> int:
+    """Provable song-level upper bound on the kernel prepass's ``max_eg_width``.
+
+    Every ``max_eg_width`` contribution in ``_first_frontier_from_precomputed_end_indices_numba``
+    is ``clamp(lb(great_floor, c)) - clamp(lb(perfect_floor, c))`` at ONE shared float32 cutoff
+    ``c = f32(hit + real_fever_time)`` with identical ``_numba_clamped_end_idx`` clamps:
+
+    - prefix Perfect / late-Great edges read the ``capped_eg_*`` vs ``capped_*_edge_e`` table
+      pair, both built by ``_precompute_end_indices`` from the SAME cutoff array;
+    - region-run entries compute both ends live via ``_numba_edge_end_idx_at_hit`` /
+      ``_numba_great_floor_extended_end_at_hit`` at the same core hit
+      (``_numba_region_run_edge_from_core`` + ``_numba_mark_early_great_reachable_from_hit``).
+
+    ``clamp`` is monotone and 1-Lipschitz, so each width is at most
+    ``lb(great_floor, c) - lb(perfect_floor, c) = #{i: great_floor[i] < c <= perfect_floor[i]}``.
+    That step function over real ``c`` only increases just past an array value, so evaluating
+    ``searchsorted(side='right')`` at every value of both floors covers every supremum; the sup
+    over real ``c`` dominates the sup over the float32 cutoffs the kernel can form. The bound is
+    geometry- and fever-time-independent: it holds for every (raw_fill, non_fever_base,
+    real_fever_time) of the song. NEVER an under-estimate; the kernel's capacity guard is the
+    fail-loud backstop should this derivation ever rot.
+    """
+    floor_ts = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
+    great_floor_ts = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
+    if int(floor_ts.shape[0]) == 0:
+        return 0
+    cutoffs = np.concatenate((floor_ts, great_floor_ts))
+    gap = np.searchsorted(great_floor_ts, cutoffs, side="right").astype(np.int64) - np.searchsorted(
+        floor_ts, cutoffs, side="right"
+    ).astype(np.int64)
+    return max(0, int(gap.max()))
+
+
+def _song_first_frontier_pair_mod_bound(
+    *,
+    n: int,
+    prepared: list[tuple],
+    eg_gap_bound: int,
+) -> int:
+    """Host mirror of the kernel's pair radix sizing, maximized over the song's geometries.
+
+    The kernel computes ``pair_mod = min(n + 1, section_bound * (1 + max_eg_width) + 1)`` with
+    ``section_bound = n // max(1, later_fill[0]) + 4``. ``later_fill[0]`` is known per prepared
+    item up front; ``max_eg_width`` is only discovered inside the kernel's reachability prepass,
+    so it is replaced by the provable song-level ``eg_gap_bound``
+    (``_early_great_extension_gap_bound``). Monotonicity of the formula in ``max_eg_width``
+    makes the result an upper bound on every geometry's true ``pair_mod`` — never an
+    under-estimate — while staying far below the old hard ``n + 1`` reservation on charts whose
+    early-Great band is narrow.
+    """
+    bound = 1
+    for item in prepared:
+        later_fill_arr = item[5]
+        min_later_fill = max(1, int(later_fill_arr[0])) if int(later_fill_arr.shape[0]) > 0 else 1
+        section_bound = int(n) // int(min_later_fill) + 4
+        bound = max(bound, min(int(n) + 1, int(section_bound) * (1 + int(eg_gap_bound)) + 1))
+    return int(bound)
+
+
+class _FirstFrontierWorkspacePlan:
+    """Song-build-scoped sizing + accounting for the per-thread stamp workspaces.
+
+    Built ONCE per batch entry (song build) from the provable pair_mod bound; every thread that
+    reduces geometries acquires its TLS workspace through the plan, so capacities are uniform,
+    allocations are counted exactly (telemetry), and an already-sufficient workspace from an
+    earlier song is reused without reallocation. Threads of the song's single reducer executor
+    live for the whole build, so their workspaces (and carried stamp epochs) persist across
+    every region-table group.
+    """
+
+    __slots__ = ("n", "pair_mod_bound", "pair_capacity", "bit_capacity", "branch_a_capacity", "_lock", "allocations", "allocated_bytes")
+
+    def __init__(self, *, n: int, pair_mod_bound: int) -> None:
+        if int(pair_mod_bound) < 1 or int(pair_mod_bound) > int(n) + 1:
+            raise ValueError("FG first-frontier workspace plan pair_mod bound must be in [1, n + 1]")
+        self.n = int(n)
+        self.pair_mod_bound = int(pair_mod_bound)
+        self.pair_capacity = (int(n) + 1) * int(pair_mod_bound)
+        self.bit_capacity = int(pair_mod_bound) + 1
+        self.branch_a_capacity = (int(pair_mod_bound) + 1) * (int(n) + 2)
+        self._lock = threading.Lock()
+        self.allocations = 0
+        self.allocated_bytes = 0
+
+    def thread_workspace(self) -> _FirstFrontierStampWorkspace:
+        workspace = getattr(_WORKSPACE_TLS, "workspace", None)
+        if (
+            workspace is None
+            or int(workspace.pair_capacity) < int(self.pair_capacity)
+            or int(workspace.bit_capacity) < int(self.bit_capacity)
+            or int(workspace.branch_a_capacity) < int(self.branch_a_capacity)
+        ):
+            workspace = _FirstFrontierStampWorkspace(
+                int(self.pair_capacity), int(self.bit_capacity), int(self.branch_a_capacity)
+            )
+            _WORKSPACE_TLS.workspace = workspace
+            with self._lock:
+                self.allocations += 1
+                self.allocated_bytes += int(workspace.total_bytes)
+        return workspace
 
 
 def configure_force_greats_response_first_frontier_threads(max_threads: int) -> int:
@@ -260,9 +372,10 @@ def _first_frontier_results_for_precomputed_range(
     real_time_index: np.ndarray,
     use_forced_great_timing: bool,
     region_tables_by_key: dict,
+    workspace_plan: _FirstFrontierWorkspacePlan,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
     results: list[tuple[int, FgResponseFrontierResult]] = []
-    workspace = _thread_first_frontier_workspace(int(n))
+    workspace = workspace_plan.thread_workspace()
     for local_idx in range(int(start), int(stop)):
         item = chunk[int(local_idx)]
         source_idx = int(item[0])

@@ -308,15 +308,27 @@ def _missing_pg_oracle_surfaces(production_surfaces, oracle_surfaces) -> list[tu
     return missing
 
 
-def test_fg_response_first_frontier_reducer_uses_one_canonical_chunk() -> None:
+def test_fg_response_first_frontier_region_groups_partition_in_canonical_order() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_precompute
 
     action_row = np.asarray([1, 2, 3, 4], dtype=np.int32)
-    items = [(idx, 0, 1.0, action_row, action_row, action_row, action_row) for idx in range(5)]
 
-    chunks = response_build_gpu_precompute._first_only_chunks(n=10, items=items)
+    def _item(idx: int, non_fever_base: int, raw_fill: float) -> tuple:
+        return (idx, non_fever_base, raw_fill, 1.0, action_row, action_row, action_row)
 
-    assert chunks == [(0, items)]
+    items = [_item(0, 3, 2.5), _item(1, 3, 2.5), _item(2, 4, 2.5), _item(3, 3, 2.5), _item(4, 4, 7.0)]
+
+    groups = response_build_gpu_precompute._first_only_region_groups(items)
+
+    # Keys stream in first-appearance order; items keep canonical order within a key -- the
+    # batch entry builds ONE region core table per key, reduces, and releases it (peak live 1).
+    assert list(groups.keys()) == [(2.5, 3), (2.5, 4), (7.0, 4)]
+    assert groups[(2.5, 3)] == [items[0], items[1], items[3]]
+    assert groups[(2.5, 4)] == [items[2]]
+    assert groups[(7.0, 4)] == [items[4]]
+    # The pre-song-context chunk machinery is gone: one canonical streamed-group route only.
+    assert not hasattr(response_build_gpu_precompute, "_first_only_chunks")
+    assert not hasattr(response_build_gpu_precompute, "_batch_chunk_size")
     assert not hasattr(response_build_gpu_precompute, "_FIRST_ONLY_REDUCER_BATCH_MAX_BYTES")
 
 

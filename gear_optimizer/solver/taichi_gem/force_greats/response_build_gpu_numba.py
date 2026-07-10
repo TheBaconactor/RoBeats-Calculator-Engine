@@ -4211,6 +4211,24 @@ def _first_frontier_from_precomputed_end_indices_numba(
     section_bound = int(n) // int(min_later_fill) + 4
     pair_mod = min(int(n) + 1, int(section_bound) * (1 + int(max_eg_width)) + 1)
     pair_size = (int(n) + 1) * int(pair_mod)
+    # Workspace capacity guard (fail loud, never resize): the host sizes the per-thread stamp
+    # workspaces to a provable song-level pair_mod bound (_song_first_frontier_pair_mod_bound).
+    # If this geometry's true radix ever escaped that bound, numpy's silent slice truncation
+    # below would hand the stamp loops short arrays -> out-of-bounds writes under njit. Raise
+    # instead; a violation means the host bound derivation is wrong, never a recoverable state.
+    branch_a_bound = (int(pair_mod) + 1) * (int(n) + 2)
+    if (
+        int(ws_pair_values.shape[0]) < int(pair_size)
+        or int(ws_pair_stamps.shape[0]) < int(pair_size)
+        or int(ws_pair_touched.shape[0]) < int(pair_size)
+        or int(ws_bit_values.shape[0]) < int(pair_mod) + 1
+        or int(ws_bit_stamps.shape[0]) < int(pair_mod) + 1
+        or int(ws_branch_a_values.shape[0]) < int(branch_a_bound)
+        or int(ws_branch_a_stamps.shape[0]) < int(branch_a_bound)
+    ):
+        raise ValueError(
+            "FG first-frontier stamp workspace is undersized for this geometry's pair radix"
+        )
     # Reused per-thread stamp-radix workspace (allocation-lifetime change only). A cell is valid
     # iff its stamp equals the current epoch, and epochs carry monotonically across calls (the
     # incoming epoch is the max stamp any earlier call wrote), so stale cells from earlier
