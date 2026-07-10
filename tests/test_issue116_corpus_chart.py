@@ -191,6 +191,7 @@ class _Case:
         self.mode = "success"
         self.load_called = False
         self.build_called = False
+        self.configured_reducer_threads: int | None = None
         self.capacity_calls = 0
         self.call_log: list[str] = []
         self.args = [
@@ -210,6 +211,8 @@ class _Case:
             str(_HELD_COUNT),
             "--expected-cache-version",
             _VERSION,
+            "--reducer-threads",
+            "4",
         ]
         self.dependencies = self._dependencies()
 
@@ -304,9 +307,16 @@ class _Case:
             "Fever Fill Rate",
             "Fever Time",
         )
+        def _configure_reducer_threads(value: int) -> None:
+            self.configured_reducer_threads = int(value)
+
+        def _resolve_reducer_threads(work: int) -> int:
+            assert self.configured_reducer_threads is not None
+            return min(int(work), int(self.configured_reducer_threads))
+
         reducer = SimpleNamespace(
-            configure_force_greats_response_first_frontier_threads=lambda value: None,
-            _resolve_first_only_reducer_threads=lambda work: 2,
+            configure_force_greats_response_first_frontier_threads=_configure_reducer_threads,
+            _resolve_first_only_reducer_threads=_resolve_reducer_threads,
         )
         config_path = self.config if self.mode != "config_resolution" else self.target / "wrong.ini"
         process = _FakeProcess(self)
@@ -335,6 +345,7 @@ class _Case:
             prebuild=SimpleNamespace(
                 _FG_PREBUILD_PEAK_COMMIT_GB=7.0,
                 _FG_PREBUILD_SYSTEM_RESERVE_GB=6.0,
+                _FG_PREBUILD_MAX_REDUCER_THREADS=4,
                 build_fg_response_frontier_cache_for_path=self._build,
             ),
             reducer=reducer,
@@ -396,7 +407,10 @@ def test_issue116_corpus_runner_success_is_atomic_and_imports_after_validation(c
     report = json.loads(case.completed.read_text(encoding="utf-8"))
     assert report["ok"] is True
     assert report["completed_build_anchor"] is True
-    assert report["configuration"]["reducer_threads"] == 2
+    assert report["configuration"]["reducer_threads_requested"] == 4
+    assert report["configuration"]["reducer_threads"] == 4
+    assert report["configuration"]["production_reducer_thread_cap"] == 4
+    assert case.configured_reducer_threads == 4
     assert report["inputs"]["reference_grid"]["stat_key_count"] == 25_921
     assert report["cache"]["source"] == "built"
     assert report["cache"]["wall_ms"] == 1000.0
@@ -409,6 +423,30 @@ def test_issue116_corpus_runner_success_is_atomic_and_imports_after_validation(c
     assert case.call_log[builder_return + 1] == "memory_info"
     assert case.call_log.index("capacity") < case.call_log.index("load_runtime")
     assert case.call_log.index("git:hash-object") < case.call_log.index("load_runtime")
+
+
+@pytest.mark.parametrize("threads", (0, -1))
+def test_issue116_corpus_runner_rejects_nonpositive_reducer_width_before_import(
+    case: _Case,
+    threads: int,
+) -> None:
+    index = case.args.index("--reducer-threads") + 1
+    case.args[index] = str(threads)
+
+    assert case.run() == 1
+    assert not case.load_called
+    assert not case.build_called
+    assert not case.completed.exists()
+
+
+def test_issue116_corpus_runner_rejects_width_above_production_memory_cap(case: _Case) -> None:
+    index = case.args.index("--reducer-threads") + 1
+    case.args[index] = "5"
+
+    assert case.run() == 1
+    assert case.load_called
+    assert not case.build_called
+    assert not case.completed.exists()
 
 
 def test_issue116_corpus_runner_accepts_registered_sibling_tool_without_importing_its_runtime(

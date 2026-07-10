@@ -1094,6 +1094,12 @@ def _parse_chart_path(target_root: Path, relative_text: str) -> Path:
 
 def _execute(args: argparse.Namespace, context: _ManifestContext, deps: _Dependencies) -> dict[str, Any]:
     _require(_path_key(Path.cwd()) == _path_key(context.paths.worktree_root), "Current directory must be the target worktree root")
+    requested_threads = int(args.reducer_threads)
+    host_threads = int(os.cpu_count() or 1)
+    _require(
+        1 <= requested_threads <= host_threads,
+        f"Requested reducer threads must be in [1, {host_threads}]",
+    )
     environment_report = _apply_and_validate_environment(
         context,
         hash_randomization=deps.hash_randomization,
@@ -1177,13 +1183,22 @@ def _execute(args: argparse.Namespace, context: _ManifestContext, deps: _Depende
         and float(runtime.prebuild._FG_PREBUILD_SYSTEM_RESERVE_GB) == 6.0,
         "Production FG capacity anchors drifted from the ratified 13 GB reservation",
     )
+    production_thread_cap = int(runtime.prebuild._FG_PREBUILD_MAX_REDUCER_THREADS)
+    _require(production_thread_cap > 0, "Production FG reducer-thread cap is invalid")
+    _require(
+        requested_threads <= production_thread_cap,
+        "Requested reducer threads exceed the production memory-ratified cap",
+    )
     runtime_version = str(runtime.cache_types._FG_RESPONSE_CACHE_VERSION)
     _require(runtime_version == expected_version, "Target FG cache version disagrees with expected version")
     refs, stat_keys = _ref_array_report(runtime, stats_path)
     ref_arrays = refs.pop("ref_arrays")
-    runtime.reducer.configure_force_greats_response_first_frontier_threads(2)
+    runtime.reducer.configure_force_greats_response_first_frontier_threads(requested_threads)
     effective_threads = int(runtime.reducer._resolve_first_only_reducer_threads(len(stat_keys)))
-    _require(effective_threads == 2, "FG reducer thread count was not pinned to two")
+    _require(
+        effective_threads == requested_threads,
+        "FG reducer thread count disagrees with the explicit requested width",
+    )
 
     capacity_at_build_entry = _validate_capacity(deps.read_capacity())
     process = runtime.psutil.Process()
@@ -1314,7 +1329,9 @@ def _execute(args: argparse.Namespace, context: _ManifestContext, deps: _Depende
         "configuration": {
             "builder_cfg_dict": {},
             "config_loaded": False,
+            "reducer_threads_requested": requested_threads,
             "reducer_threads": effective_threads,
+            "production_reducer_thread_cap": production_thread_cap,
             "environment": environment_report,
         },
         "cache": cache_report | {"wall_ms": wall_ms},
@@ -1387,6 +1404,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-note-count", required=True, type=int)
     parser.add_argument("--expected-held-count", required=True, type=int)
     parser.add_argument("--expected-cache-version", required=True)
+    parser.add_argument("--reducer-threads", required=True, type=int)
     return parser
 
 
