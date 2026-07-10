@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -321,13 +322,13 @@ def test_fg_response_first_frontier_region_groups_partition_in_canonical_order()
 
     groups = response_build_gpu_precompute._first_only_region_groups(items)
 
-    # Keys stream in first-appearance order; items keep canonical order within a key -- the
-    # batch entry builds ONE region core table per key, reduces, and releases it (peak live 1).
+    # Keys keep first-appearance order and items keep canonical order within each independent
+    # table group; concurrent completion therefore cannot change returned geometry order.
     assert list(groups.keys()) == [(2.5, 3), (2.5, 4), (7.0, 4)]
     assert groups[(2.5, 3)] == [items[0], items[1], items[3]]
     assert groups[(2.5, 4)] == [items[2]]
     assert groups[(7.0, 4)] == [items[4]]
-    # The pre-song-context chunk machinery is gone: one canonical streamed-group route only.
+    # The pre-song-context chunk machinery is gone: one canonical grouped route only.
     assert not hasattr(response_build_gpu_precompute, "_first_only_chunks")
     assert not hasattr(response_build_gpu_precompute, "_batch_chunk_size")
     assert not hasattr(response_build_gpu_precompute, "_FIRST_ONLY_REDUCER_BATCH_MAX_BYTES")
@@ -404,6 +405,172 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
         np.dtype(np.float64),
         np.dtype(np.int32),
     ]
+
+
+def test_fg_response_region_group_admission_uses_worst_concurrent_bounds() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
+
+    assert response_build_gpu_batch._admitted_region_group_threads(
+        current_peak_bounds=(20, 40, 30),
+        legacy_single_peak_bound=70,
+        thread_limit=3,
+    ) == (2, 70)
+    assert response_build_gpu_batch._admitted_region_group_threads(
+        current_peak_bounds=(20, 40, 30),
+        legacy_single_peak_bound=70,
+        thread_limit=1,
+    ) == (1, 40)
+    assert response_build_gpu_batch._admitted_region_group_threads(
+        current_peak_bounds=(),
+        legacy_single_peak_bound=0,
+        thread_limit=8,
+    ) == (1, 0)
+    with pytest.raises(MemoryError, match="historical single-table peak bound"):
+        response_build_gpu_batch._admitted_region_group_threads(
+            current_peak_bounds=(71,),
+            legacy_single_peak_bound=70,
+            thread_limit=1,
+        )
+
+
+def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import (
+        response_build_gpu_batch,
+        response_build_gpu_numba,
+    )
+
+    n = 12
+    action_k = np.asarray([0, 1, 2, 3], dtype=np.int32)
+    capacity = response_build_gpu_numba._numba_region_core_candidate_capacity(
+        n,
+        int(action_k.shape[0]),
+        action_k,
+        4.0,
+    )
+    expected = (n + 2) * np.dtype(np.int64).itemsize + 2 * int(capacity) * 36
+    assert response_build_gpu_batch._region_table_build_peak_bound_bytes(
+        n=n,
+        action_k=action_k,
+        raw_fever_fill=4.0,
+    ) == expected
+    assert response_build_gpu_batch._legacy_single_region_table_peak_bound_bytes(
+        n=n,
+        region_action_count=int(action_k.shape[0]),
+    ) == (n + 2) * 8 + 2 * ((n + 1) * 4 * 2) * 36
+
+
+def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import (
+        response_build_gpu_batch,
+        response_build_gpu_reducer,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+        FgResponseFrontierResult,
+        FgResponseSurface,
+    )
+
+    barrier = threading.Barrier(2, timeout=5.0)
+    worker_ids: list[int] = []
+    result = FgResponseFrontierResult(
+        (FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0),),
+        {},
+        1,
+        4,
+        0,
+        1,
+        1,
+        1,
+        3,
+        0.0,
+    )
+
+    def _fake_group(**kwargs):
+        worker_ids.append(threading.get_ident())
+        barrier.wait()
+        return [(int(item[0]), result) for item in kwargs["group_items"]]
+
+    monkeypatch.setattr(response_build_gpu_batch, "_region_table_build_peak_bound_bytes", lambda **_kwargs: 1)
+    monkeypatch.setattr(
+        response_build_gpu_batch,
+        "_legacy_single_region_table_peak_bound_bytes",
+        lambda **_kwargs: 2,
+    )
+    monkeypatch.setattr(response_build_gpu_batch, "_build_and_reduce_first_frontier_group", _fake_group)
+    previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(2)
+    stats: dict = {}
+    try:
+        frontiers = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
+            timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            great_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            lanes=np.arange(3, dtype=np.int32),
+            geometries=((2.0, 3, 1.0), (3.0, 4, 1.0)),
+            use_forced_great_timing=True,
+            stats_sink=stats,
+        )
+    finally:
+        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+
+    assert frontiers == (result, result)
+    assert len(set(worker_ids)) == 2
+    assert stats["region_table_groups"] == 2
+    assert stats["region_table_parallelism"] == 2
+    assert stats["region_table_parallel_peak_bound_bytes"] == 2
+    assert stats["region_table_legacy_single_peak_bound_bytes"] == 2
+    assert stats["executor_creations"] == 1
+
+
+def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import (
+        response_build_gpu_batch,
+        response_build_gpu_reducer,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+        FgResponseFrontierResult,
+        FgResponseSurface,
+    )
+
+    result = FgResponseFrontierResult(
+        (FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0),),
+        {},
+        1,
+        4,
+        0,
+        1,
+        1,
+        1,
+        3,
+        0.0,
+    )
+    calls: list[tuple[int, int]] = []
+
+    def _fake_range(**kwargs):
+        start = int(kwargs["start"])
+        stop = int(kwargs["stop"])
+        calls.append((start, stop))
+        return [(int(kwargs["chunk"][idx][0]), result) for idx in range(start, stop)]
+
+    monkeypatch.setattr(response_build_gpu_batch, "_first_frontier_results_for_precomputed_range", _fake_range)
+    previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(2)
+    stats: dict = {}
+    try:
+        frontiers = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
+            timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            perfect_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            great_floor_timestamps=np.asarray([0.0, 1.0, 2.0], dtype=np.float32),
+            lanes=np.arange(3, dtype=np.int32),
+            geometries=((2.0, 3, 1.0), (2.0, 3, 2.0)),
+            use_forced_great_timing=False,
+            stats_sink=stats,
+        )
+    finally:
+        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
+
+    assert frontiers == (result, result)
+    assert sorted(calls) == [(0, 1), (1, 2)]
+    assert stats["region_table_groups"] == 1
+    assert stats["region_table_parallelism"] == 1
+    assert stats["executor_creations"] == 1
 
 
 def test_fg_response_first_frontier_reducer_executor_uses_normal_worker_priority(monkeypatch) -> None:
