@@ -311,7 +311,7 @@ def _body_hull_filter_reference(points):
 
 
 def test_body_hull_filter_preserves_max_for_every_cone_direction():
-    """Issue #44 perf: the body-tail hull filter (`_numba_hull_filter_body_pairs`) is BIT-EXACT.
+    """Issue #44 perf: the body-tail hull filter (fused into `_numba_reduce_touched_body_pairs`) is BIT-EXACT.
     For any fixed stat cell the body score is linear: A*body_fever - pnp*normal_great -
     pfp*fever_great with A,pnp,pfp >= 0. So pruning each body-tail frontier to its convex hull may
     NEVER change the max for any (A,pnp,pfp) in the cone. This locks that invariant against a
@@ -433,11 +433,10 @@ def test_head_generated_incremental_bound_preserves_best_score():
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _HEAD_DOM_C,
         _HEAD_DOM_F,
-        _NUMBA_HEAD_BASIS_TYPE,
         _NUMBA_HEAD_SCORES_TYPE,
         _NUMBA_SURFACE_TYPE,
         _numba_head_envelope_filter,
-        _numba_maybe_promote_head_generated_with_basis,
+        _numba_maybe_promote_head_generated_with_scores,
         _numba_reduce,
     )
 
@@ -451,20 +450,19 @@ def test_head_generated_incremental_bound_preserves_best_score():
 
     full = List.empty_list(_NUMBA_SURFACE_TYPE)
     stream = List.empty_list(_NUMBA_SURFACE_TYPE)
-    stream_basis = List.empty_list(_NUMBA_HEAD_BASIS_TYPE)
     stream_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
     for idx, (fever, great) in enumerate(family):
         surface = _mk_head_surface(fever, great)
         full.append(surface)
         stream.append(surface)
         if idx % 137 == 0:
-            # `_numba_maybe_promote_head_generated_with_basis` with bounded_mode=0 is the
-            # basis-carrying periodic bound: over threshold it returns the same
+            # `_numba_maybe_promote_head_generated_with_scores` with bounded_mode=0 is the
+            # score-carrying periodic bound: over threshold it returns the same
             # `_numba_head_envelope_filter(_numba_reduce(...))` reduction the deleted
             # `_numba_bound_head_generated` did, else the stream unchanged.
-            stream, stream_basis, stream_scores, _bounded = (
-                _numba_maybe_promote_head_generated_with_basis(
-                    stream, stream_basis, stream_scores, 0, head_len, 0, 0
+            stream, stream_scores, _bounded = (
+                _numba_maybe_promote_head_generated_with_scores(
+                    stream, stream_scores, 0, head_len, 0, 0
                 )
             )
 
@@ -515,14 +513,13 @@ def test_head_generation_promotion_then_bounded_insert_preserves_best_score():
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _HEAD_DOM_C,
         _HEAD_DOM_F,
-        _NUMBA_HEAD_BASIS_TYPE,
         _NUMBA_HEAD_SCORES_TYPE,
         _NUMBA_SURFACE_TYPE,
         _numba_head_basis_corner_scores_row,
         _numba_head_envelope_filter,
-        _numba_head_envelope_insert_with_basis,
+        _numba_head_envelope_insert_with_scores,
         _numba_head_surface_basis,
-        _numba_maybe_promote_head_generated_with_basis,
+        _numba_maybe_promote_head_generated_with_scores,
         _numba_reduce,
     )
 
@@ -536,7 +533,6 @@ def test_head_generation_promotion_then_bounded_insert_preserves_best_score():
 
     full = List.empty_list(_NUMBA_SURFACE_TYPE)
     stream = List.empty_list(_NUMBA_SURFACE_TYPE)
-    stream_basis = List.empty_list(_NUMBA_HEAD_BASIS_TYPE)
     stream_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
     cand_scores = np.empty(16, dtype=np.float64)
     bounded_mode = 0
@@ -546,9 +542,9 @@ def test_head_generation_promotion_then_bounded_insert_preserves_best_score():
         full.append(surface)
         if bounded_mode == 0:
             stream.append(surface)
-            stream, stream_basis, stream_scores, bounded_mode = (
-                _numba_maybe_promote_head_generated_with_basis(
-                    stream, stream_basis, stream_scores, 0, head_len, 0, bounded_mode
+            stream, stream_scores, bounded_mode = (
+                _numba_maybe_promote_head_generated_with_scores(
+                    stream, stream_scores, 0, head_len, 0, bounded_mode
                 )
             )
             if bounded_mode != 0 and promoted_at < 0:
@@ -556,8 +552,8 @@ def test_head_generation_promotion_then_bounded_insert_preserves_best_score():
         else:
             candidate_basis = _numba_head_surface_basis(surface, 0, head_len)
             _numba_head_basis_corner_scores_row(candidate_basis, cand_scores)
-            stream, stream_basis, stream_scores = _numba_head_envelope_insert_with_basis(
-                stream, stream_basis, stream_scores, surface, candidate_basis, cand_scores
+            stream, stream_scores = _numba_head_envelope_insert_with_scores(
+                stream, stream_scores, surface, cand_scores
             )
 
     assert promoted_at >= 4096
