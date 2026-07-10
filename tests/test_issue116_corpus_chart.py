@@ -266,6 +266,21 @@ class _Case:
             events.append(
                 {
                     "component": "fg_response_cache",
+                    "event": "frontier_build",
+                    "song_key": self.chart.name,
+                    "metrics": {
+                        "frontier_build_ms": 1.0,
+                        "total_notes": _NOTE_COUNT,
+                        "pair_mod_bound": 3,
+                        "workspace_allocations": int(self.configured_reducer_threads or 0),
+                        "workspace_bytes": int(self.configured_reducer_threads or 0) * 404,
+                        "geometries_canonical": 10,
+                    },
+                }
+            )
+            events.append(
+                {
+                    "component": "fg_response_cache",
                     "event": "prebuild_song_done",
                     "song_key": self.chart.name,
                     "metrics": {
@@ -276,7 +291,7 @@ class _Case:
                 }
             )
         if self.mode == "profile_duplicate":
-            events.append(dict(events[0]))
+            events.append(dict(events[-1]))
         if events:
             self.profile.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
         if self.mode == "database":
@@ -349,6 +364,8 @@ class _Case:
                 build_fg_response_frontier_cache_for_path=self._build,
             ),
             reducer=reducer,
+            response_batch=SimpleNamespace(),
+            response_cache=SimpleNamespace(),
             cache_types=SimpleNamespace(
                 _FG_RESPONSE_CACHE_VERSION=_VERSION,
                 all_response_stat_keys=lambda: tuple(
@@ -357,6 +374,7 @@ class _Case:
             ),
             constants=SimpleNamespace(TOTAL_ROWS=160),
             config=SimpleNamespace(get_config_path=lambda: str(config_path)),
+            timing_envelope=SimpleNamespace(),
         )
 
     def _load_runtime(self, target: Path) -> corpus._Runtime:
@@ -371,6 +389,13 @@ class _Case:
             read_capacity=self._read_capacity,
             read_hardware=lambda: {"hardware": "fixture"},
             load_runtime=self._load_runtime,
+            plan_workspace=lambda runtime, chart, refs, keys: {
+                "note_count": _NOTE_COUNT,
+                "action_table_count": 2,
+                "early_great_gap_bound": 1,
+                "pair_mod_bound": 3,
+                "workspace_bytes_per_thread": 404,
+            },
             sampler_factory=lambda psutil, reader: _FakeSampler(),
             validate_bench_root=lambda value: self.base.resolve()
             if Path(value).resolve() == self.base.resolve()
@@ -407,9 +432,11 @@ def test_issue116_corpus_runner_success_is_atomic_and_imports_after_validation(c
     report = json.loads(case.completed.read_text(encoding="utf-8"))
     assert report["ok"] is True
     assert report["completed_build_anchor"] is True
+    assert report["schema_version"] == 2
     assert report["configuration"]["reducer_threads_requested"] == 4
     assert report["configuration"]["reducer_threads"] == 4
     assert report["configuration"]["production_reducer_thread_cap"] == 4
+    assert report["configuration"]["experimental_wide_threads"] is False
     assert case.configured_reducer_threads == 4
     assert report["inputs"]["reference_grid"]["stat_key_count"] == 25_921
     assert report["cache"]["source"] == "built"
@@ -439,14 +466,132 @@ def test_issue116_corpus_runner_rejects_nonpositive_reducer_width_before_import(
     assert not case.completed.exists()
 
 
-def test_issue116_corpus_runner_rejects_width_above_production_memory_cap(case: _Case) -> None:
+def test_issue116_corpus_runner_accepts_producer_planned_wide_width_without_manual_bound(
+    case: _Case,
+) -> None:
     index = case.args.index("--reducer-threads") + 1
     case.args[index] = "5"
+
+    assert case.run() == 0
+    report = json.loads(case.completed.read_text(encoding="utf-8"))
+    assert report["configuration"]["producer_workspace_plan"]["pair_mod_bound"] == 3
+    assert report["memory"]["required_headroom_bytes"] == 13_000_000_404
+
+
+def test_issue116_corpus_runner_accepts_memory_reserved_wide_width(case: _Case) -> None:
+    index = case.args.index("--reducer-threads") + 1
+    case.args[index] = "5"
+    case.args.extend(("--expected-pair-mod-bound", "3"))
+
+    assert case.run() == 0
+    report = json.loads(case.completed.read_text(encoding="utf-8"))
+    assert report["configuration"]["experimental_wide_threads"] is True
+    reservation = report["memory"]["thread_width_reservation"]
+    assert reservation["workspace_bytes_per_thread"] == 404
+    assert reservation["extra_threads"] == 1
+    assert reservation["extra_workspace_bytes"] == 404
+    assert reservation["required_headroom_bytes"] == 13_000_000_404
+    assert report["profile_events"]["frontier_build"] == {
+        "frontier_build_ms": 1.0,
+        "geometries_canonical": 10,
+        "pair_mod_bound": 3,
+        "workspace_allocations": 5,
+        "workspace_bytes": 2020,
+        "workspace_bytes_per_thread": 404,
+    }
+
+
+def test_issue116_corpus_runner_rejects_wide_width_when_exact_reservation_does_not_fit(
+    case: _Case,
+) -> None:
+    index = case.args.index("--reducer-threads") + 1
+    case.args[index] = "5"
+    case.args.extend(("--expected-pair-mod-bound", "3"))
+    case.dependencies = replace(
+        case.dependencies,
+        read_capacity=lambda: _capacity(available=13_000_000_403),
+    )
 
     assert case.run() == 1
     assert case.load_called
     assert not case.build_called
     assert not case.completed.exists()
+
+
+def test_workspace_bytes_per_thread_matches_production_array_shape() -> None:
+    assert corpus._workspace_bytes_per_thread(note_count=6843, pair_mod_bound=163) == 22_368_816
+
+
+def test_producer_workspace_plan_uses_distinct_action_inputs_and_producer_bound() -> None:
+    applied: list[dict] = []
+    action_calls: list[tuple[float, int, bool]] = []
+
+    def _action_table(*, raw_fever_fill: float, non_fever_base: int, use_forced_great_timing: bool):
+        action_calls.append((raw_fever_fill, non_fever_base, use_forced_great_timing))
+        return (), (), (), (), ()
+
+    def _compact(actions, later_fill, first_fill, later_forced, first_forced, raw_fever_fill):
+        del actions, later_fill, first_fill, later_forced, first_forced
+        first_later_fill = 2 if raw_fever_fill == 1.0 else 3
+        return (
+            np.asarray([0], dtype=np.int32),
+            np.asarray([first_later_fill], dtype=np.int32),
+            np.asarray([0], dtype=np.int32),
+            np.asarray([0], dtype=np.int32),
+            np.asarray([0], dtype=np.int32),
+            np.asarray([0], dtype=np.int32),
+            np.asarray([0], dtype=np.int32),
+        )
+
+    def _song_bound(*, n: int, prepared: list[tuple], eg_gap_bound: int) -> int:
+        assert n == 4
+        assert eg_gap_bound == 2
+        assert [int(item[5][0]) for item in prepared] == [2, 3]
+        return 5
+
+    song_inputs = SimpleNamespace(
+        timestamps=np.arange(4, dtype=np.float32),
+        perfect_floor=np.arange(4, dtype=np.float32),
+        great_floor=np.arange(4, dtype=np.float32),
+        use_forced_great_timing=True,
+    )
+    runtime = SimpleNamespace(
+        get_base_calc_song=lambda path, cfg: {"path": path, "cfg": cfg},
+        timing_envelope=SimpleNamespace(apply_timing_envelope=lambda calc: applied.append(calc)),
+        response_cache=SimpleNamespace(
+            _response_axes=lambda calc, refs: (
+                song_inputs,
+                np.asarray([1.0, 1.0, 2.0], dtype=np.float32),
+                np.asarray([10, 10, 20], dtype=np.int32),
+                np.asarray([0.0, 1.0], dtype=np.float32),
+            )
+        ),
+        response_batch=SimpleNamespace(
+            _action_table=_action_table,
+            _compact_first_frontier_action_arrays=_compact,
+        ),
+        reducer=SimpleNamespace(
+            _early_great_extension_gap_bound=lambda perfect, great: 2,
+            _song_first_frontier_pair_mod_bound=_song_bound,
+        ),
+    )
+
+    plan = corpus._producer_workspace_plan(
+        runtime,
+        Path("chart.txt"),
+        {},
+        ((0, 0), (1, 0), (0, 1), (0, 2)),
+    )
+
+    assert len(applied) == 1
+    assert action_calls == [(1.0, 10, True), (2.0, 20, True)]
+    assert plan == {
+        "action_table_count": 2,
+        "early_great_gap_bound": 2,
+        "note_count": 4,
+        "pair_mod_bound": 5,
+        "workspace_bytes_per_thread": 636,
+    }
 
 
 def test_issue116_corpus_runner_accepts_registered_sibling_tool_without_importing_its_runtime(

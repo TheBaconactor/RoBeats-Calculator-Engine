@@ -32,6 +32,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 _COMPLETED_REPORT_NAME = "completed_build.json"
 _FAILURE_REPORT_NAME = "failure.json"
 _REQUIRED_HEADROOM_BYTES = 13_000_000_000
+_INT32_BYTES = 4
 _SAMPLE_INTERVAL_SECONDS = 5.0
 _FIXED_BENCH_ROOT = Path(r"C:\mfbench")
 _WINDOWS_REPARSE_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -155,9 +156,12 @@ class _Runtime:
     build_ref_arrays_from_stats: Callable[..., Any]
     prebuild: Any
     reducer: Any
+    response_batch: Any
+    response_cache: Any
     cache_types: Any
     constants: Any
     config: Any
+    timing_envelope: Any
 
 
 @dataclass(frozen=True)
@@ -166,6 +170,7 @@ class _Dependencies:
     read_capacity: Callable[[], dict[str, int]]
     read_hardware: Callable[[], dict[str, Any]]
     load_runtime: Callable[[Path], _Runtime]
+    plan_workspace: Callable[[_Runtime, Path, dict, tuple[tuple[int, int], ...]], dict[str, int]]
     sampler_factory: Callable[[Any, Callable[[], dict[str, int]]], Any]
     validate_bench_root: Callable[[str | Path], Path]
     runner_path: Path
@@ -622,7 +627,67 @@ def _validate_live_bench_root(value: str | Path) -> Path:
     return absolute
 
 
-def _validate_capacity(snapshot: Mapping[str, int]) -> dict[str, int]:
+def _workspace_bytes_per_thread(*, note_count: int, pair_mod_bound: int) -> int:
+    """Exact bytes allocated by one production first-frontier stamp workspace."""
+    n = int(note_count)
+    bound = int(pair_mod_bound)
+    _require(n > 0, "Workspace note count must be positive")
+    _require(1 <= bound <= n + 1, "Expected pair_mod bound must be in [1, note_count + 1]")
+    pair_capacity = (n + 1) * bound
+    bit_capacity = bound + 1
+    branch_a_capacity = (bound + 1) * (n + 2)
+    return _INT32_BYTES * (
+        3 * int(pair_capacity) + 2 * int(bit_capacity) + 2 * int(branch_a_capacity)
+    )
+
+
+def _thread_width_memory_reservation(
+    *,
+    note_count: int,
+    pair_mod_bound: int,
+    requested_threads: int,
+    production_thread_cap: int,
+    production_peak_commit_gb: float,
+    system_reserve_gb: float,
+) -> dict[str, Any]:
+    """Reserve wide-run memory from the exact chart workspace shape.
+
+    The ratified production worker envelope already covers ``production_thread_cap``
+    workspaces. Experimental widths add only the exact per-thread workspace allocation above
+    that cap. The system reserve remains untouched. A completed profile later verifies both the
+    bound and the allocation arithmetic against producer-owned telemetry.
+    """
+    requested = int(requested_threads)
+    production_cap = int(production_thread_cap)
+    experimental = requested > production_cap
+    _require(production_cap > 0, "Production FG reducer-thread cap is invalid")
+    per_thread_bytes = _workspace_bytes_per_thread(
+        note_count=int(note_count),
+        pair_mod_bound=int(pair_mod_bound),
+    )
+    extra_threads = max(0, requested - production_cap)
+    extra_workspace_bytes = int(extra_threads) * int(per_thread_bytes)
+    production_worker_bytes = int(math.ceil(float(production_peak_commit_gb) * 1_000_000_000.0))
+    system_reserve_bytes = int(math.ceil(float(system_reserve_gb) * 1_000_000_000.0))
+    required_headroom_bytes = production_worker_bytes + system_reserve_bytes + extra_workspace_bytes
+    return {
+        "experimental_wide_threads": bool(experimental),
+        "pair_mod_bound": int(pair_mod_bound),
+        "workspace_bytes_per_thread": int(per_thread_bytes),
+        "production_covered_threads": min(requested, production_cap),
+        "extra_threads": int(extra_threads),
+        "extra_workspace_bytes": int(extra_workspace_bytes),
+        "production_worker_reservation_bytes": int(production_worker_bytes),
+        "system_reserve_bytes": int(system_reserve_bytes),
+        "required_headroom_bytes": int(required_headroom_bytes),
+    }
+
+
+def _validate_capacity(
+    snapshot: Mapping[str, int],
+    *,
+    required_headroom_bytes: int = _REQUIRED_HEADROOM_BYTES,
+) -> dict[str, int]:
     required = {
         "page_size_bytes",
         "commit_total_bytes",
@@ -646,13 +711,15 @@ def _validate_capacity(snapshot: Mapping[str, int]) -> dict[str, int]:
         normalized["physical_available_bytes"] <= normalized["physical_total_bytes"],
         "Windows physical-availability accounting is incoherent",
     )
+    required = int(required_headroom_bytes)
+    _require(required >= _REQUIRED_HEADROOM_BYTES, "Issue #116 memory reservation is below the ratified floor")
     _require(
-        normalized["commit_available_bytes"] >= _REQUIRED_HEADROOM_BYTES,
-        "Insufficient Windows commit headroom for one Issue #116 build",
+        normalized["commit_available_bytes"] >= required,
+        f"Insufficient Windows commit headroom for the {required}-byte Issue #116 reservation",
     )
     _require(
-        normalized["physical_available_bytes"] >= _REQUIRED_HEADROOM_BYTES,
-        "Insufficient physical-memory headroom for one Issue #116 build",
+        normalized["physical_available_bytes"] >= required,
+        f"Insufficient physical-memory headroom for the {required}-byte Issue #116 reservation",
     )
     return normalized
 
@@ -735,11 +802,18 @@ def _load_live_runtime(target_root: Path) -> _Runtime:
     reducer = importlib.import_module(
         "gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer"
     )
+    response_batch = importlib.import_module(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch"
+    )
+    response_cache = importlib.import_module(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache"
+    )
     cache_types = importlib.import_module(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache_types"
     )
     constants = importlib.import_module("gear_optimizer.core.constants")
     config = importlib.import_module("gear_optimizer.core.config")
+    timing_envelope = importlib.import_module("gear_optimizer.solver.timing_envelope")
 
     target = target_root.resolve()
     wrong_owner: list[str] = []
@@ -766,9 +840,12 @@ def _load_live_runtime(target_root: Path) -> _Runtime:
         build_ref_arrays_from_stats=ref_builder.build_ref_arrays_from_stats,
         prebuild=prebuild,
         reducer=reducer,
+        response_batch=response_batch,
+        response_cache=response_cache,
         cache_types=cache_types,
         constants=constants,
         config=config,
+        timing_envelope=timing_envelope,
     )
 
 
@@ -919,6 +996,83 @@ def _ref_array_report(runtime: _Runtime, stats_path: Path) -> tuple[dict[str, An
     }, keys
 
 
+def _producer_workspace_plan(
+    runtime: _Runtime,
+    chart_path: Path,
+    ref_arrays: dict,
+    stat_keys: tuple[tuple[int, int], ...],
+) -> dict[str, int]:
+    """Derive the exact pre-allocation workspace bound through producer-owned primitives.
+
+    The bound depends on chart length, the timing-envelope early-Great gap, and each distinct
+    action table's first later-fill value; real fever time does not enter its formula. This calls
+    the same target-checkout response-axis, action-table, compaction, gap, and song-bound owners as
+    the production batch without evaluating a frontier or retaining the full geometry corpus.
+    """
+    calc_song = runtime.get_base_calc_song(str(chart_path), {})
+    runtime.timing_envelope.apply_timing_envelope(calc_song)
+    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, _real_time_by_ft = (
+        runtime.response_cache._response_axes(calc_song, ref_arrays)
+    )
+    note_count = int(len(song_inputs.timestamps))
+    prepared: list[tuple] = []
+    action_keys: set[tuple[float, int]] = set()
+    for _ft_stat, ff_stat in stat_keys:
+        raw_fever_fill = float(raw_fill_by_ff[int(ff_stat)])
+        non_fever_base = max(0, int(non_fever_base_by_ff[int(ff_stat)]))
+        action_key = (raw_fever_fill, non_fever_base)
+        if action_key in action_keys:
+            continue
+        action_keys.add(action_key)
+        actions, later_fill, first_fill, later_forced, first_forced = (
+            runtime.response_batch._action_table(
+                raw_fever_fill=raw_fever_fill,
+                non_fever_base=non_fever_base,
+                use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+            )
+        )
+        action_arrays = runtime.response_batch._compact_first_frontier_action_arrays(
+            actions,
+            later_fill,
+            first_fill,
+            later_forced,
+            first_forced,
+            raw_fever_fill,
+        )
+        prepared.append(
+            (
+                len(prepared),
+                non_fever_base,
+                raw_fever_fill,
+                0.0,
+                *action_arrays,
+            )
+        )
+    early_great_gap_bound = int(
+        runtime.reducer._early_great_extension_gap_bound(
+            song_inputs.perfect_floor,
+            song_inputs.great_floor,
+        )
+    )
+    pair_mod_bound = int(
+        runtime.reducer._song_first_frontier_pair_mod_bound(
+            n=note_count,
+            prepared=prepared,
+            eg_gap_bound=early_great_gap_bound,
+        )
+    )
+    return {
+        "note_count": note_count,
+        "action_table_count": int(len(prepared)),
+        "early_great_gap_bound": int(early_great_gap_bound),
+        "pair_mod_bound": int(pair_mod_bound),
+        "workspace_bytes_per_thread": _workspace_bytes_per_thread(
+            note_count=note_count,
+            pair_mod_bound=pair_mod_bound,
+        ),
+    }
+
+
 def _strict_metadata_int(metadata: Mapping[str, Any], key: str) -> int:
     value = str(metadata.get(key, "")).strip()
     _require(bool(re.fullmatch(r"[0-9]+", value)), f"Chart metadata {key} is not an integer")
@@ -1006,7 +1160,14 @@ def _cache_outputs(
     }
 
 
-def _profile_events(path: Path, *, chart_name: str, expected_notes: int) -> dict[str, Any]:
+def _profile_events(
+    path: Path,
+    *,
+    chart_name: str,
+    expected_notes: int,
+    requested_threads: int,
+    planned_pair_mod_bound: int,
+) -> dict[str, Any]:
     hashed = _sha256_file(path)
     events: list[dict[str, Any]] = []
     try:
@@ -1031,6 +1192,34 @@ def _profile_events(path: Path, *, chart_name: str, expected_notes: int) -> dict
     _require(str(metrics.get("source")) == "built", "FG completion profile source was not built")
     _require(int(metrics.get("note_count", -1)) == expected_notes, "FG completion profile note count disagrees")
     _require(str(done.get("song_key")) == chart_name, "FG completion profile chart name disagrees")
+    frontier_builds = [
+        event
+        for event in events
+        if event.get("component") == "fg_response_cache" and event.get("event") == "frontier_build"
+    ]
+    _require(len(frontier_builds) == 1, "Expected exactly one FG frontier_build profile event")
+    frontier_metrics = frontier_builds[0].get("metrics")
+    _require(isinstance(frontier_metrics, dict), "FG frontier-build event has no metrics")
+    pair_mod_bound = int(frontier_metrics.get("pair_mod_bound", -1))
+    workspace_allocations = int(frontier_metrics.get("workspace_allocations", -1))
+    workspace_bytes = int(frontier_metrics.get("workspace_bytes", -1))
+    _require(1 <= pair_mod_bound <= int(expected_notes) + 1, "FG frontier-build pair_mod bound is invalid")
+    _require(
+        pair_mod_bound == int(planned_pair_mod_bound),
+        "FG frontier-build pair_mod bound disagrees with the producer-owned pre-run plan",
+    )
+    _require(
+        1 <= workspace_allocations <= int(requested_threads),
+        "FG frontier-build workspace allocation count is invalid",
+    )
+    workspace_bytes_per_thread = _workspace_bytes_per_thread(
+        note_count=int(expected_notes),
+        pair_mod_bound=int(pair_mod_bound),
+    )
+    _require(
+        workspace_bytes == int(workspace_allocations) * int(workspace_bytes_per_thread),
+        "FG frontier-build workspace bytes disagree with the exact allocation shape",
+    )
     counts = Counter((str(event.get("component", "")), str(event.get("event", ""))) for event in events)
     return {
         "path": str(path),
@@ -1039,6 +1228,14 @@ def _profile_events(path: Path, *, chart_name: str, expected_notes: int) -> dict
         "line_count": len(events),
         "event_counts": {
             f"{component}/{event}": count for (component, event), count in sorted(counts.items())
+        },
+        "frontier_build": {
+            "pair_mod_bound": int(pair_mod_bound),
+            "workspace_allocations": int(workspace_allocations),
+            "workspace_bytes": int(workspace_bytes),
+            "workspace_bytes_per_thread": int(workspace_bytes_per_thread),
+            "frontier_build_ms": float(frontier_metrics.get("frontier_build_ms", 0.0)),
+            "geometries_canonical": int(frontier_metrics.get("geometries_canonical", 0)),
         },
         "_hashed": hashed,
     }
@@ -1140,6 +1337,14 @@ def _execute(args: argparse.Namespace, context: _ManifestContext, deps: _Depende
     _require(0 <= expected_held <= expected_notes, "Expected held count is invalid")
     expected_version = str(args.expected_cache_version).strip()
     _require(bool(expected_version), "Expected cache version is required")
+    asserted_pair_mod_bound = (
+        int(args.expected_pair_mod_bound) if args.expected_pair_mod_bound is not None else None
+    )
+    if asserted_pair_mod_bound is not None:
+        _workspace_bytes_per_thread(
+            note_count=int(expected_notes),
+            pair_mod_bound=int(asserted_pair_mod_bound),
+        )
 
     chart_path = _parse_chart_path(context.paths.worktree_root, args.chart_relative)
     stats_path = (context.paths.worktree_root / "Data" / "Gear" / "Stats.txt").resolve()
@@ -1184,15 +1389,48 @@ def _execute(args: argparse.Namespace, context: _ManifestContext, deps: _Depende
         "Production FG capacity anchors drifted from the ratified 13 GB reservation",
     )
     production_thread_cap = int(runtime.prebuild._FG_PREBUILD_MAX_REDUCER_THREADS)
-    _require(production_thread_cap > 0, "Production FG reducer-thread cap is invalid")
-    _require(
-        requested_threads <= production_thread_cap,
-        "Requested reducer threads exceed the production memory-ratified cap",
-    )
     runtime_version = str(runtime.cache_types._FG_RESPONSE_CACHE_VERSION)
     _require(runtime_version == expected_version, "Target FG cache version disagrees with expected version")
     refs, stat_keys = _ref_array_report(runtime, stats_path)
     ref_arrays = refs.pop("ref_arrays")
+    producer_workspace_plan = deps.plan_workspace(runtime, chart_path, ref_arrays, stat_keys)
+    _require(
+        set(producer_workspace_plan)
+        == {
+            "note_count",
+            "action_table_count",
+            "early_great_gap_bound",
+            "pair_mod_bound",
+            "workspace_bytes_per_thread",
+        },
+        "Producer workspace-plan schema drifted",
+    )
+    _require(
+        int(producer_workspace_plan["note_count"]) == expected_notes,
+        "Producer workspace-plan note count disagrees",
+    )
+    planned_pair_mod_bound = int(producer_workspace_plan["pair_mod_bound"])
+    _require(
+        int(producer_workspace_plan["workspace_bytes_per_thread"])
+        == _workspace_bytes_per_thread(
+            note_count=expected_notes,
+            pair_mod_bound=planned_pair_mod_bound,
+        ),
+        "Producer workspace-plan byte count disagrees with its exact array shape",
+    )
+    if asserted_pair_mod_bound is not None:
+        _require(
+            planned_pair_mod_bound == asserted_pair_mod_bound,
+            "Producer workspace plan disagrees with --expected-pair-mod-bound",
+        )
+    memory_reservation = _thread_width_memory_reservation(
+        note_count=int(expected_notes),
+        pair_mod_bound=int(planned_pair_mod_bound),
+        requested_threads=int(requested_threads),
+        production_thread_cap=int(production_thread_cap),
+        production_peak_commit_gb=float(runtime.prebuild._FG_PREBUILD_PEAK_COMMIT_GB),
+        system_reserve_gb=float(runtime.prebuild._FG_PREBUILD_SYSTEM_RESERVE_GB),
+    )
     runtime.reducer.configure_force_greats_response_first_frontier_threads(requested_threads)
     effective_threads = int(runtime.reducer._resolve_first_only_reducer_threads(len(stat_keys)))
     _require(
@@ -1200,7 +1438,10 @@ def _execute(args: argparse.Namespace, context: _ManifestContext, deps: _Depende
         "FG reducer thread count disagrees with the explicit requested width",
     )
 
-    capacity_at_build_entry = _validate_capacity(deps.read_capacity())
+    capacity_at_build_entry = _validate_capacity(
+        deps.read_capacity(),
+        required_headroom_bytes=int(memory_reservation["required_headroom_bytes"]),
+    )
     process = runtime.psutil.Process()
     process_before = _memory_info(process)
     virtual_before = runtime.psutil.virtual_memory()
@@ -1241,6 +1482,8 @@ def _execute(args: argparse.Namespace, context: _ManifestContext, deps: _Depende
         context.paths.profile_events_path,
         chart_name=chart_path.name,
         expected_notes=expected_notes,
+        requested_threads=requested_threads,
+        planned_pair_mod_bound=planned_pair_mod_bound,
     )
     _require(not context.paths.database_path.exists(), "Direct FG build unexpectedly created the isolated database")
     _require_empty_directory(context.paths.timeline_cache_dir, label="isolated timeline cache after build")
@@ -1310,7 +1553,7 @@ def _execute(args: argparse.Namespace, context: _ManifestContext, deps: _Depende
     final_capacity = _validate_capacity_schema_only(deps.read_capacity())
 
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "ok": True,
         "completed_build_anchor": True,
         "target": {"before": _git_report(target_pre), "after": _git_report(target_post)},
@@ -1332,13 +1575,16 @@ def _execute(args: argparse.Namespace, context: _ManifestContext, deps: _Depende
             "reducer_threads_requested": requested_threads,
             "reducer_threads": effective_threads,
             "production_reducer_thread_cap": production_thread_cap,
+            "experimental_wide_threads": bool(memory_reservation["experimental_wide_threads"]),
+            "producer_workspace_plan": producer_workspace_plan,
             "environment": environment_report,
         },
         "cache": cache_report | {"wall_ms": wall_ms},
         "profile_events": profile_report,
         "memory": {
             "completed_build_anchor": True,
-            "required_headroom_bytes": _REQUIRED_HEADROOM_BYTES,
+            "required_headroom_bytes": int(memory_reservation["required_headroom_bytes"]),
+            "thread_width_reservation": memory_reservation,
             "capacity_before_imports": pre_capacity,
             "capacity_at_build_entry": capacity_at_build_entry,
             "capacity_after": final_capacity,
@@ -1405,6 +1651,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-held-count", required=True, type=int)
     parser.add_argument("--expected-cache-version", required=True)
     parser.add_argument("--reducer-threads", required=True, type=int)
+    parser.add_argument("--expected-pair-mod-bound", type=int)
     return parser
 
 
@@ -1414,6 +1661,7 @@ def _live_dependencies() -> _Dependencies:
         read_capacity=_windows_capacity_snapshot,
         read_hardware=_windows_hardware_snapshot,
         load_runtime=_load_live_runtime,
+        plan_workspace=_producer_workspace_plan,
         sampler_factory=_live_sampler_factory,
         validate_bench_root=_validate_live_bench_root,
         runner_path=Path(__file__).resolve(),
