@@ -348,16 +348,23 @@ def test_fg_response_first_frontier_reducer_thread_count_is_capped() -> None:
         response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous)
 
 
-def test_fg_region_core_chunked_arena_materializes_exact_arrays() -> None:
+def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba
 
     timestamps = np.arange(12, dtype=np.float32) * np.float32(0.1)
     perfect_hi = timestamps + np.float32(0.04)
     great_hi = timestamps + np.float32(0.09)
+    action_k = np.asarray([0, 1, 2, 3], dtype=np.int32)
+    capacity = response_build_gpu_numba._numba_region_core_candidate_capacity(
+        12,
+        4,
+        action_k,
+        4.0,
+    )
     table = response_build_gpu_numba._numba_build_region_core_table(
         12,
         4,
-        np.asarray([0, 1, 2, 3], dtype=np.int32),
+        action_k,
         4.0,
         timestamps,
         0.1,
@@ -371,6 +378,7 @@ def test_fg_region_core_chunked_arena_materializes_exact_arrays() -> None:
     starts, *columns = table
     retained = int(starts[-1])
     assert retained > 0
+    assert retained <= capacity < (13 * 4 * 2)
     assert np.all(starts[1:] >= starts[:-1])
     assert all(column.shape == (retained,) for column in columns)
     assert all(column.flags.c_contiguous for column in columns)
