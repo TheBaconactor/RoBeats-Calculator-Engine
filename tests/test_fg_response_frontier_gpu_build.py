@@ -1598,38 +1598,52 @@ def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
 
 
 def test_fg_response_same_end_head_edge_prune_keeps_different_end_edges() -> None:
-    from numba import types
-    from numba.typed import Dict
-    from numba.typed import List
-
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
-        _NUMBA_SURFACE_LIST_TYPE,
-        _numba_append_head_edge_to_end_buckets,
+        _numba_append_head_edge_to_end_chains,
     )
 
     def _surface(values):
         return tuple(np.uint64(v) for v in values)
 
+    def _chain(bucket_head, node_next, node_surface, end_e):
+        out = []
+        pos = int(bucket_head[end_e])
+        while pos != -1:
+            out.append(tuple(np.uint64(v) for v in node_surface[pos]))
+            pos = int(node_next[pos])
+        return out
+
     weak = _surface((0, 0, 0, 0, 0, 0, 0))
     stronger_same_end = _surface((1, 0, 0, 0, 0, 0, 0))
 
-    edge_buckets = Dict.empty(types.int64, _NUMBA_SURFACE_LIST_TYPE)
-    edge_ends = List.empty_list(types.int64)
-    edge_buckets, edge_ends, kept = _numba_append_head_edge_to_end_buckets(edge_buckets, edge_ends, weak, 4)
-    assert kept == 1
+    node_surface = np.empty((1, 7), dtype=np.uint64)
+    node_next = np.empty(1, dtype=np.int64)
+    bucket_head = np.full(8, -1, dtype=np.int64)
+    bucket_tail = np.full(8, -1, dtype=np.int64)
+    pending_ends = np.empty(8, dtype=np.int64)
+    cursor = 0
+    pending = 0
 
-    edge_buckets, edge_ends, kept = _numba_append_head_edge_to_end_buckets(
-        edge_buckets, edge_ends, stronger_same_end, 4
+    node_surface, node_next, cursor, pending, kept = _numba_append_head_edge_to_end_chains(
+        node_surface, node_next, cursor, bucket_head, bucket_tail, pending_ends, pending, weak, 4
     )
     assert kept == 1
-    assert list(edge_buckets[4]) == [stronger_same_end]
-    assert list(edge_ends) == [4]
 
-    edge_buckets, edge_ends, kept = _numba_append_head_edge_to_end_buckets(edge_buckets, edge_ends, weak, 5)
+    node_surface, node_next, cursor, pending, kept = _numba_append_head_edge_to_end_chains(
+        node_surface, node_next, cursor, bucket_head, bucket_tail, pending_ends, pending,
+        stronger_same_end, 4
+    )
     assert kept == 1
-    assert list(edge_buckets[4]) == [stronger_same_end]
-    assert list(edge_buckets[5]) == [weak]
-    assert list(edge_ends) == [4, 5]
+    assert _chain(bucket_head, node_next, node_surface, 4) == [stronger_same_end]
+    assert list(pending_ends[:pending]) == [4]
+
+    node_surface, node_next, cursor, pending, kept = _numba_append_head_edge_to_end_chains(
+        node_surface, node_next, cursor, bucket_head, bucket_tail, pending_ends, pending, weak, 5
+    )
+    assert kept == 1
+    assert _chain(bucket_head, node_next, node_surface, 4) == [stronger_same_end]
+    assert _chain(bucket_head, node_next, node_surface, 5) == [weak]
+    assert list(pending_ends[:pending]) == [4, 5]
 
 
 def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:
