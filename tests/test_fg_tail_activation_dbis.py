@@ -5,12 +5,11 @@ Pins the Stage-1 engine verdicts with executable game_sim replays:
 * Q1/Q2 matcher facts: a pending (Holding) tail can never consume a press, and a release never
   binds a tap -- the premises behind the follower-tail analysis.
 * Gap (a) verdict: the activation cap at a following tail's widened label edge is the exact
-  fill-crossing-identity bound -- delaying the activation press past it flips WHICH note crosses
-  (replay-proven), so the capped production surface is not an under-report and the wider claim
-  is not physically realizable.
-* Gap (b) verdict: a tail IS an activation candidate today with its own widened +80 Perfect /
-  +200 despawn-capped late-Great window (per-note envelopes), and the produced tail surfaces are
-  physically replayable (two-directional check on the directed tail charts).
+  fill-crossing-identity bound -- directed replay demonstrates that delaying the activation press
+  past it flips WHICH note crosses; the deposit-order argument establishes the cap semantics.
+* Gap (b) regression: a tail IS an activation candidate today with its own widened +80 Perfect /
+  +200 despawn-capped late-Great window (per-note envelopes); the bounded replay sweep checks the
+  directed tail charts for observed regressions without claiming exhaustive schedule coverage.
 * Gap (c): the index-inversion classifier recognizes the designed family's live witness and
   rejects index-ordered surfaces (guards the oracle gate against silent drift).
 * Physicality filter: hold bracketing (press < release, no same-lane press inside a span).
@@ -31,7 +30,9 @@ if str(_TOOLS_VERIFY) not in sys.path:
 
 from game_sim import NoteChart, Press, simulate  # noqa: E402
 from two_directional_frontier_oracle import (  # noqa: E402
+    _directed_tail_charts,
     _realize_surface,
+    _report,
     _schedule_is_physical,
     _surface_key_from_sim,
     _tail_head_pairs,
@@ -151,13 +152,12 @@ def test_follower_tail_edge_is_a_fill_identity_cap_not_a_matcher_cap():
     assert r_out.fever_sections[0]["activationMs"] == 540.0  # crossing = the TAIL's release
 
 
-def test_claimed_surface_past_tail_edge_is_not_realizable():
-    """Adversarial over-report probe: what skipping the follower tail as a preemptor would have
-    claimed -- the in-cap surface with the fever window stretched to cover the next note
-    (activation pushed past the tail's +80 while everything keeps its label) -- is physically
-    unrealizable: to fever idx4 the activation must be >= ~544ms, but the tail's Perfect label
-    forces its 1.0-unit deposit by 540ms, which crosses the bar first. The breakpoint-enriched
-    realizer confirms no schedule replays it."""
+def test_past_tail_edge_overclaim_remains_unresolved_by_target_realizer():
+    """Conservative adversarial probe for the wider claim rejected by the deposit-order proof.
+
+    The bounded target realizer does not find a replay. Its failure is regression evidence only,
+    not an independent infeasibility proof.
+    """
     r_in = _sim(_gap_a_chart(), _gap_a_schedule(539.0, _GAP_A_TS[3] + 80.0), _GAP_A_CFG)
     key_in = _surface_key_from_sim(r_in, 5)
     assert key_in is not None
@@ -170,22 +170,66 @@ def test_claimed_surface_past_tail_edge_is_not_realizable():
 
 
 # ---------------------------------------------------------------------------------------------
-# Gap (b) verdict: tails are activation candidates with their widened self-window, exactly
+# Gap (b) regression: bounded candidate sweep over tails and their widened self-window
 # ---------------------------------------------------------------------------------------------
 
 
-def test_directed_tail_charts_two_directional_exact():
-    """The directed tail shapes are two-directionally exact on current production up to the
-    DESIGNED index-inverted family: no hard over-report (every produced tail surface is
-    physically replayable, breakpoint pass included) and no un-designed winning witness."""
-    cases = [
-        ([0.0, 100.0, 240.0, 460.0, 480.0, 800.0], [0, 1, 0, 1, 0, 0], [1, 2, 1, 3, 1, 1]),
-        ([0.0, 100.0, 120.0, 240.0, 460.0, 700.0], [0, 1, 0, 0, 1, 0], [1, 2, 1, 1, 3, 1]),
-    ]
-    for ts, lanes, nts in cases:
-        res = check_chart(ts, lanes, {}, "directed", note_types=nts)
-        assert res["over_hard"] == [], f"hard over-report on {ts}: {res['over_hard']}"
-        assert res["under"] == [], f"un-designed under-report on {ts}: {res['under']}"
+def test_directed_tail_charts_bounded_sweep_matches_observed_classifications():
+    """The sound-positive bounded sweep finds no unresolved produced claim or observed
+    non-designed under-report on these directed tail shapes. Absence is regression evidence, not
+    a proof that every physically possible interior schedule was enumerated."""
+    expected = {
+        "tail-follower": {
+            "under": [],
+            "under_design": [((0b111110, 0b100010), 337.5)],
+            "over_realized": [],
+        },
+        "tail-activation": {
+            "under": [],
+            "under_design": [],
+            "over_realized": [(0b111100, 0b000101), (0b111100, 0b000110)],
+        },
+        "same-ts-tail-then-tap": {
+            "under": [],
+            "under_design": [((0b111110, 0b100010), 337.5)],
+            "over_realized": [],
+        },
+        "same-ts-tap-then-tail": {
+            "under": [],
+            "under_design": [((0b111110, 0b100010), 337.5)],
+            "over_realized": [],
+        },
+    }
+    cases = _directed_tail_charts()
+    assert [label for _ts, _lanes, _nts, label in cases] == list(expected)
+    for ts, lanes, nts, label in cases:
+        res = check_chart(ts, lanes, {}, label, note_types=nts)
+        assert res["under"] == expected[label]["under"]
+        assert res["under_design"] == expected[label]["under_design"]
+        assert res["over_realized"] == expected[label]["over_realized"]
+        assert res["over_unresolved"] == [], (
+            f"produced surface unresolved by bounded tail sweep {label} on {ts}: "
+            f"{res['over_unresolved']}"
+        )
+
+
+def test_bounded_sweep_fails_conservatively_on_unresolved_produced_claim(capsys):
+    result = {
+        "label": "unresolved-regression",
+        "n": 1,
+        "denom": 1.0,
+        "rt": 1.0,
+        "reachable": 1,
+        "produced": 1,
+        "under": [],
+        "under_design": [],
+        "under_structural": 0,
+        "over_unresolved": [(1, 0)],
+        "over_dominated": [],
+        "over_realized": [],
+    }
+    assert not _report(result)
+    assert "over_unresolved (requires adjudication)" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------------------------
@@ -218,5 +262,7 @@ def test_schedule_physicality_bracketing():
     assert not _schedule_is_physical([300.0, 900.0, 200.0], nts, lanes, pairs)
     # same-lane press inside the held span: impossible
     assert not _schedule_is_physical([0.0, 200.0, 400.0], nts, lanes, pairs)
+    # same-lane press exactly at release: press is processed before release, so still impossible
+    assert not _schedule_is_physical([0.0, 400.0, 400.0], nts, lanes, pairs)
     # same-lane press after the release: fine
     assert _schedule_is_physical([0.0, 500.0, 400.0], nts, lanes, pairs)

@@ -1,0 +1,193 @@
+"""Test-only references for retired Issue #116 B/C frontier semantics.
+
+These deliberately use plain Python scans and Lists instead of the production Fenwick tree,
+fused hull stack, and chained node arena.  They are differential oracles, not alternate runtime
+routes.
+
+Provenance is committed main ``f00747a5``.  Body mirrors the retired
+``_numba_touch_body_candidate`` -> ``_numba_reduce_touched_body_pairs`` ->
+``_numba_hull_filter_body_pairs`` pipeline.  Region buckets mirror retired
+``_numba_append_same_end_head_edge_to_bucket`` and
+``_numba_append_head_edge_to_end_buckets``.
+"""
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+
+BodyRow = tuple[int, int, int]
+SurfaceRow = tuple[int, int, int, int, int, int, int]
+
+
+def retired_touch_body_candidates(
+    rows: Sequence[BodyRow], *, pair_mod: int
+) -> tuple[list[int], dict[int, int]]:
+    """Plain-Python first-stamp registration and packed-pair max from raw candidate rows."""
+    touched_pair: list[int] = []
+    best_fever_by_pair: dict[int, int] = {}
+    for raw_body_fever, raw_body_great, raw_body_fever_great in rows:
+        body_fever = int(raw_body_fever)
+        body_great = int(raw_body_great)
+        body_fever_great = int(raw_body_fever_great)
+        if body_fever_great > body_great:
+            continue
+        normal_great = int(body_great) - int(body_fever_great)
+        if body_fever_great < 0 or body_fever_great >= int(pair_mod):
+            raise ValueError("retired body candidate exceeded pair radix")
+        pair_idx = int(normal_great) * int(pair_mod) + int(body_fever_great)
+        if pair_idx not in best_fever_by_pair:
+            touched_pair.append(int(pair_idx))
+            best_fever_by_pair[int(pair_idx)] = int(body_fever)
+        elif int(body_fever) > int(best_fever_by_pair[int(pair_idx)]):
+            best_fever_by_pair[int(pair_idx)] = int(body_fever)
+    return touched_pair, best_fever_by_pair
+
+
+def retired_body_reduce_from_raw_candidates(
+    rows: Sequence[BodyRow], *, pair_mod: int
+) -> list[BodyRow]:
+    touched_pair, best_fever_by_pair = retired_touch_body_candidates(
+        rows, pair_mod=int(pair_mod)
+    )
+    return retired_two_stage_body_reduce(
+        pair_mod=int(pair_mod),
+        touched_pair=touched_pair,
+        best_fever_by_pair=best_fever_by_pair,
+    )
+
+
+def retired_two_stage_body_reduce(
+    *,
+    pair_mod: int,
+    touched_pair: Sequence[int],
+    best_fever_by_pair: Mapping[int, int] | Sequence[int],
+) -> list[BodyRow]:
+    """Retired sorted Pareto reduce followed by its per-normal-Great hull filter."""
+    reduced: list[BodyRow] = []
+    processed: list[tuple[int, int]] = []
+    sorted_pairs = sorted(int(value) for value in touched_pair)
+    idx = 0
+    while idx < len(sorted_pairs):
+        pair_idx = int(sorted_pairs[idx])
+        idx += 1
+        while idx < len(sorted_pairs) and int(sorted_pairs[idx]) == int(pair_idx):
+            idx += 1
+        normal_great, fever_great = divmod(int(pair_idx), int(pair_mod))
+        body_fever = int(best_fever_by_pair[int(pair_idx)])
+        prefix_max = max(
+            (
+                prior_fever
+                for prior_fever_great, prior_fever in processed
+                if int(prior_fever_great) <= int(fever_great)
+            ),
+            default=-1,
+        )
+        if int(body_fever) > int(prefix_max):
+            reduced.append(
+                (int(body_fever), int(normal_great) + int(fever_great), int(fever_great))
+            )
+        processed.append((int(fever_great), int(body_fever)))
+
+    if len(reduced) <= 2:
+        return reduced
+
+    ordered = sorted(
+        reduced,
+        key=lambda row: (int(row[1]) - int(row[2]), int(row[0]), -int(row[2])),
+    )
+    output: list[BodyRow] = []
+    group: list[BodyRow] = []
+    group_normal_great: int | None = None
+    for row in ordered:
+        normal_great = int(row[1]) - int(row[2])
+        if group_normal_great is None or int(normal_great) == int(group_normal_great):
+            group.append(row)
+            group_normal_great = int(normal_great)
+            continue
+        output.extend(_retired_body_hull_group(group))
+        group = [row]
+        group_normal_great = int(normal_great)
+    output.extend(_retired_body_hull_group(group))
+    return output
+
+
+def _retired_body_hull_group(rows: Sequence[BodyRow]) -> list[BodyRow]:
+    if len(rows) <= 2:
+        return list(rows)
+    stack: list[BodyRow] = []
+    for row in rows:
+        x = int(row[0])
+        y = -int(row[2])
+        while len(stack) >= 2:
+            x1, y1 = int(stack[-2][0]), -int(stack[-2][2])
+            x2, y2 = int(stack[-1][0]), -int(stack[-1][2])
+            cross = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)
+            if int(cross) < 0:
+                break
+            stack.pop()
+        stack.append(row)
+    return stack
+
+
+def retired_surface_structurally_dominates(left: SurfaceRow, right: SurfaceRow) -> bool:
+    lf_lo, lf_hi, lg_lo, lg_hi, lbf, lbg, lbfg = (int(value) for value in left)
+    rf_lo, rf_hi, rg_lo, rg_hi, rbf, rbg, rbfg = (int(value) for value in right)
+    if (lf_lo & lg_lo) != (rf_lo & rg_lo) or (lf_hi & lg_hi) != (rf_hi & rg_hi):
+        return False
+    return (
+        lbf >= rbf
+        and lbg - lbfg <= rbg - rbfg
+        and lbfg <= rbfg
+        and (rf_lo & ~lf_lo) == 0
+        and (rf_hi & ~lf_hi) == 0
+        and (lg_lo & ~rg_lo) == 0
+        and (lg_hi & ~rg_hi) == 0
+    )
+
+
+class RetiredRegionEndBuckets:
+    """Retired Dict[end, List[surface]] insertion, pending order, and drain behavior."""
+
+    def __init__(self) -> None:
+        self._buckets: dict[int, list[SurfaceRow]] = {}
+        self.pending_ends: list[int] = []
+
+    def append(self, end_e: int, edge: Iterable[int]) -> bool:
+        row = tuple(int(value) for value in edge)
+        if len(row) != 7:
+            raise ValueError("retired region-bucket surface must contain seven values")
+        surface: SurfaceRow = (
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            row[5],
+            row[6],
+        )
+        bucket = self._buckets.get(int(end_e))
+        if bucket is None:
+            bucket = []
+            self._buckets[int(end_e)] = bucket
+            self.pending_ends.append(int(end_e))
+        if any(retired_surface_structurally_dominates(kept, surface) for kept in bucket):
+            return False
+        bucket[:] = [
+            kept
+            for kept in bucket
+            if not retired_surface_structurally_dominates(surface, kept)
+        ]
+        bucket.append(surface)
+        return True
+
+    def bucket(self, end_e: int) -> list[SurfaceRow]:
+        return list(self._buckets.get(int(end_e), ()))
+
+    def drain(self) -> list[tuple[int, SurfaceRow]]:
+        rows = [
+            (int(end_e), surface)
+            for end_e in self.pending_ends
+            for surface in self._buckets[int(end_e)]
+        ]
+        self._buckets.clear()
+        self.pending_ends.clear()
+        return rows

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -1644,6 +1645,635 @@ def test_fg_response_same_end_head_edge_prune_keeps_different_end_edges() -> Non
     assert _chain(bucket_head, node_next, node_surface, 4) == [stronger_same_end]
     assert _chain(bucket_head, node_next, node_surface, 5) == [weak]
     assert list(pending_ends[:pending]) == [4, 5]
+
+
+def _ordered_rows_digest(value) -> str:
+    return hashlib.blake2b(repr(value).encode("utf-8"), digest_size=16).hexdigest()
+
+
+class _BodyReducerDifferentialHarness:
+    def __init__(self, *, pair_mod: int = 33, normal_great_capacity: int = 65) -> None:
+        from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+            _numba_reduce_touched_body_pairs,
+            _numba_touch_body_candidate,
+        )
+
+        self._reduce = _numba_reduce_touched_body_pairs
+        self._touch = _numba_touch_body_candidate
+        self.pair_mod = int(pair_mod)
+        pair_size = int(normal_great_capacity) * int(pair_mod)
+        self.pair_stamp = np.zeros((pair_size,), dtype=np.int32)
+        self.best_fever_by_pair = np.zeros((pair_size,), dtype=np.int32)
+        self.touched_pair = np.empty((pair_size,), dtype=np.int32)
+        self.bit_values = np.zeros((int(pair_mod) + 1,), dtype=np.int32)
+        self.bit_stamps = np.zeros((int(pair_mod) + 1,), dtype=np.int32)
+        self.frontier_values = np.empty((1, 3), dtype=np.uint64)
+        self.stamp = 0
+
+    def reduce(self, rows) -> tuple[list[tuple[int, int, int]], list[tuple[int, int, int]]]:
+        from tests.retired_fg_frontier_semantics import retired_body_reduce_from_raw_candidates
+
+        self.stamp += 1
+        touched_count = 0
+        for body_fever, body_great, body_fever_great in rows:
+            touched_count = self._touch(
+                np.uint64(body_fever),
+                np.uint64(body_great),
+                np.uint64(body_fever_great),
+                np.uint64(0),
+                np.uint64(0),
+                np.uint64(0),
+                int(self.pair_mod),
+                int(self.stamp),
+                self.pair_stamp,
+                self.best_fever_by_pair,
+                self.touched_pair,
+                int(touched_count),
+            )
+        self.last_touched_count = int(touched_count)
+        self.last_touched_pairs = [
+            int(value) for value in self.touched_pair[: int(touched_count)]
+        ]
+        self.last_best_fever_by_pair = {
+            int(pair_idx): int(self.best_fever_by_pair[int(pair_idx)])
+            for pair_idx in self.last_touched_pairs
+        }
+        reference = retired_body_reduce_from_raw_candidates(
+            rows,
+            pair_mod=int(self.pair_mod),
+        )
+        self.frontier_values, count = self._reduce(
+            int(self.pair_mod),
+            self.touched_pair,
+            int(touched_count),
+            self.best_fever_by_pair,
+            self.bit_values,
+            self.bit_stamps,
+            int(self.stamp),
+            self.frontier_values,
+        )
+        actual = [
+            tuple(int(value) for value in row)
+            for row in self.frontier_values[: int(count)]
+        ]
+        return actual, reference
+
+
+def test_fg_response_fused_body_reduce_matches_retired_edge_case_matrix() -> None:
+    cases = [
+        ("empty", ()),
+        ("one-row", ((4, 0, 0),)),
+        ("two-row", ((3, 0, 0), (7, 2, 1))),
+        ("dominated-and-duplicate-pair", ((10, 0, 0), (9, 1, 1), (12, 0, 0))),
+        ("collinear-hull", ((2, 0, 0), (4, 1, 1), (6, 2, 2), (8, 3, 3))),
+        (
+            "multiple-normal-great-levels",
+            ((2, 0, 0), (5, 2, 1), (7, 4, 2), (8, 4, 1), (11, 7, 3)),
+        ),
+        (
+            "output-growth",
+            tuple((normal_great + 1, normal_great, 0) for normal_great in range(20)),
+        ),
+        ("reuse-after-growth", ((20, 4, 2), (19, 5, 2), (21, 7, 3))),
+    ]
+    harness = _BodyReducerDifferentialHarness()
+    ordered_outputs = []
+    for name, rows in cases:
+        actual, reference = harness.reduce(rows)
+        assert actual == reference, name
+        ordered_outputs.append((name, actual))
+
+    assert len(cases) == 8
+    assert harness.pair_stamp.dtype == np.dtype(np.int32)
+    assert harness.best_fever_by_pair.dtype == np.dtype(np.int32)
+    assert harness.touched_pair.dtype == np.dtype(np.int32)
+    assert harness.bit_values.dtype == np.dtype(np.int32)
+    assert harness.bit_stamps.dtype == np.dtype(np.int32)
+    assert harness.frontier_values.dtype == np.dtype(np.uint64)
+    assert harness.frontier_values.shape == (32, 3)
+    assert _ordered_rows_digest(ordered_outputs) == "caf27bad32e81f377f7f4536b82218fd"
+
+
+def test_fg_response_body_touch_first_stamp_duplicate_and_tie_contract() -> None:
+    from tests.retired_fg_frontier_semantics import (
+        retired_touch_body_candidates,
+        retired_two_stage_body_reduce,
+    )
+
+    harness = _BodyReducerDifferentialHarness(pair_mod=17)
+    rows = ((5, 9, 3), (11, 9, 3), (11, 9, 3), (7, 9, 3))
+    pair_idx = 6 * 17 + 3
+
+    actual, reference = harness.reduce(rows)
+    retired_touched, retired_best = retired_touch_body_candidates(rows, pair_mod=17)
+
+    assert actual == reference == [(11, 9, 3)]
+    assert harness.last_touched_count == 1
+    assert harness.last_touched_pairs == [pair_idx]
+    assert harness.last_best_fever_by_pair == {pair_idx: 11}
+    assert retired_touched == [pair_idx]
+    assert retired_best == {pair_idx: 11}
+    assert retired_two_stage_body_reduce(
+        pair_mod=17,
+        touched_pair=[pair_idx, pair_idx],
+        best_fever_by_pair={pair_idx: 11},
+    ) == [(11, 9, 3)]
+
+
+def test_fg_response_fused_body_reduce_matches_retired_randomized_production_shapes() -> None:
+    rng = np.random.default_rng(116_20260710)
+    harness = _BodyReducerDifferentialHarness()
+    ordered_outputs = []
+    for case_idx in range(256):
+        row_count = int(rng.integers(0, 81))
+        rows = []
+        for _ in range(row_count):
+            fever_great = int(rng.integers(0, harness.pair_mod))
+            normal_great = int(rng.integers(0, 48))
+            body_fever = int(rng.integers(fever_great, 181))
+            assert 0 <= fever_great <= body_fever
+            assert normal_great >= 0
+            rows.append((body_fever, normal_great + fever_great, fever_great))
+        actual, reference = harness.reduce(rows)
+        assert actual == reference, f"randomized body case {case_idx}"
+        ordered_outputs.append(actual)
+
+    assert len(ordered_outputs) == 256
+    assert _ordered_rows_digest(ordered_outputs) == "df557def33f781b6c69582442ba71e09"
+
+
+class _ChainedRegionBucketHarness:
+    def __init__(self, *, end_capacity: int = 32) -> None:
+        from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+            _numba_append_head_edge_to_end_chains,
+        )
+
+        self._append = _numba_append_head_edge_to_end_chains
+        self.node_surface = np.empty((1, 7), dtype=np.uint64)
+        self.node_next = np.empty((1,), dtype=np.int64)
+        self.bucket_head = np.full((end_capacity,), -1, dtype=np.int64)
+        self.bucket_tail = np.full((end_capacity,), -1, dtype=np.int64)
+        self.pending_ends = np.empty((end_capacity,), dtype=np.int64)
+        self.cursor = 0
+        self.pending_count = 0
+
+    def append(self, end_e: int, edge) -> bool:
+        surface = tuple(np.uint64(value) for value in edge)
+        (
+            self.node_surface,
+            self.node_next,
+            self.cursor,
+            self.pending_count,
+            kept,
+        ) = self._append(
+            self.node_surface,
+            self.node_next,
+            int(self.cursor),
+            self.bucket_head,
+            self.bucket_tail,
+            self.pending_ends,
+            int(self.pending_count),
+            surface,
+            int(end_e),
+        )
+        return bool(kept)
+
+    def pending(self) -> list[int]:
+        return [int(value) for value in self.pending_ends[: int(self.pending_count)]]
+
+    def bucket(self, end_e: int) -> list[tuple[int, ...]]:
+        rows = []
+        pos = int(self.bucket_head[int(end_e)])
+        while pos != -1:
+            rows.append(tuple(int(value) for value in self.node_surface[int(pos)]))
+            pos = int(self.node_next[int(pos)])
+        return rows
+
+    def drain(self) -> list[tuple[int, tuple[int, ...]]]:
+        rows = []
+        for end_e in self.pending():
+            rows.extend((int(end_e), row) for row in self.bucket(int(end_e)))
+            self.bucket_head[int(end_e)] = -1
+            self.bucket_tail[int(end_e)] = -1
+        self.cursor = 0
+        self.pending_count = 0
+        return rows
+
+
+def _body_only_surface(body_fever: int, normal_great: int, fever_great: int = 0) -> tuple[int, ...]:
+    return (0, 0, 0, 0, body_fever, normal_great + fever_great, fever_great)
+
+
+def _range_mask_words(start: int, end: int) -> tuple[int, int]:
+    width = int(end) - int(start)
+    mask = ((1 << width) - 1) << int(start) if width > 0 else 0
+    return int(mask & ((1 << 64) - 1)), int(mask >> 64)
+
+
+def _range_surface(
+    *,
+    fever: tuple[int, int],
+    great: tuple[int, int],
+    body_fever: int,
+    normal_great: int,
+    fever_great: int,
+) -> tuple[int, ...]:
+    fever_lo, fever_hi = _range_mask_words(*fever)
+    great_lo, great_hi = _range_mask_words(*great)
+    return (
+        fever_lo,
+        fever_hi,
+        great_lo,
+        great_hi,
+        int(body_fever),
+        int(normal_great) + int(fever_great),
+        int(fever_great),
+    )
+
+
+def _assert_region_buckets_match_retired(actual, retired) -> None:
+    assert actual.pending() == retired.pending_ends
+    for end_e in retired.pending_ends:
+        assert actual.bucket(end_e) == retired.bucket(end_e)
+
+
+def test_fg_response_chained_region_duplicate_is_first_wins_without_cursor_growth() -> None:
+    from tests.retired_fg_frontier_semantics import RetiredRegionEndBuckets
+
+    edge = (0, 0xF0, 0, 0xC0, 12, 3, 2)
+    actual = _ChainedRegionBucketHarness()
+    retired = RetiredRegionEndBuckets()
+
+    assert actual.append(4, edge) == retired.append(4, edge) is True
+    cursor_after_first = int(actual.cursor)
+    assert actual.append(4, edge) == retired.append(4, edge) is False
+
+    assert cursor_after_first == actual.cursor == 1
+    assert actual.bucket(4) == retired.bucket(4) == [edge]
+    assert actual.node_surface.dtype == np.dtype(np.uint64)
+    assert actual.node_next.dtype == np.dtype(np.int64)
+    assert actual.bucket_head.dtype == np.dtype(np.int64)
+    assert actual.bucket_tail.dtype == np.dtype(np.int64)
+    assert actual.pending_ends.dtype == np.dtype(np.int64)
+
+
+def test_fg_response_region_structural_dominance_low_high_word_contracts() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _numba_surface_structurally_dominates,
+    )
+    from tests.retired_fg_frontier_semantics import (
+        RetiredRegionEndBuckets,
+        retired_surface_structurally_dominates,
+    )
+
+    high_strong = (0, 0xF0, 0, 0xC0, 12, 3, 2)
+    high_weak = (0, 0xC0, 0, 0x3C0, 10, 7, 4)
+    cross_word_strong = _range_surface(
+        fever=(60, 68), great=(62, 66), body_fever=12, normal_great=1, fever_great=2
+    )
+    cross_word_weak = _range_surface(
+        fever=(62, 66), great=(62, 66), body_fever=10, normal_great=3, fever_great=4
+    )
+    great_subset_strong = _range_surface(
+        fever=(60, 64), great=(66, 68), body_fever=12, normal_great=1, fever_great=2
+    )
+    great_subset_weak = _range_surface(
+        fever=(60, 64), great=(65, 69), body_fever=10, normal_great=3, fever_great=4
+    )
+    same_masks = _range_surface(
+        fever=(10, 15), great=(11, 13), body_fever=12, normal_great=1, fever_great=2
+    )
+    worse_normal = _range_surface(
+        fever=(10, 15), great=(11, 13), body_fever=12, normal_great=3, fever_great=2
+    )
+    worse_fever_great = _range_surface(
+        fever=(10, 15), great=(11, 13), body_fever=12, normal_great=1, fever_great=4
+    )
+    intersection_mismatch_right = (0, 0x30, 0, 0xF0, 10, 7, 4)
+    fever_blocker_left = _range_surface(
+        fever=(10, 15), great=(20, 22), body_fever=12, normal_great=1, fever_great=2
+    )
+    fever_blocker_right = _range_surface(
+        fever=(9, 15), great=(20, 22), body_fever=10, normal_great=3, fever_great=4
+    )
+    great_blocker_left = _range_surface(
+        fever=(10, 15), great=(20, 23), body_fever=12, normal_great=1, fever_great=2
+    )
+    great_blocker_right = _range_surface(
+        fever=(10, 15), great=(20, 22), body_fever=10, normal_great=3, fever_great=4
+    )
+    cases = [
+        ("high-half exact intersection", high_strong, high_weak, True),
+        ("cross-word fever superset", cross_word_strong, cross_word_weak, True),
+        ("low-high Great subset", great_subset_strong, great_subset_weak, True),
+        ("normal-Great improvement", same_masks, worse_normal, True),
+        ("fever-Great improvement", same_masks, worse_fever_great, True),
+        ("intersection mismatch", high_strong, intersection_mismatch_right, False),
+        ("fever non-superset", fever_blocker_left, fever_blocker_right, False),
+        ("Great non-subset", great_blocker_left, great_blocker_right, False),
+        ("worse normal-Great", worse_normal, same_masks, False),
+        ("worse fever-Great", worse_fever_great, same_masks, False),
+    ]
+    for name, left, right, expected in cases:
+        retired = retired_surface_structurally_dominates(left, right)
+        production = bool(
+            _numba_surface_structurally_dominates(
+                tuple(np.uint64(value) for value in left),
+                tuple(np.uint64(value) for value in right),
+            )
+        )
+        assert retired is expected, name
+        assert production is expected, name
+
+    actual = _ChainedRegionBucketHarness()
+    retired_buckets = RetiredRegionEndBuckets()
+    assert actual.append(6, high_weak) == retired_buckets.append(6, high_weak) is True
+    assert actual.append(6, high_weak) == retired_buckets.append(6, high_weak) is False
+    assert actual.append(6, high_strong) == retired_buckets.append(6, high_strong) is True
+    assert actual.append(6, high_weak) == retired_buckets.append(6, high_weak) is False
+    assert actual.bucket(6) == retired_buckets.bucket(6) == [high_strong]
+
+
+@pytest.mark.parametrize(
+    ("replacement", "expected"),
+    [
+        (_body_only_surface(4, 0), [_body_only_surface(5, 3), _body_only_surface(7, 5), _body_only_surface(4, 0)]),
+        (_body_only_surface(6, 2), [_body_only_surface(3, 1), _body_only_surface(7, 5), _body_only_surface(6, 2)]),
+        (_body_only_surface(8, 4), [_body_only_surface(3, 1), _body_only_surface(5, 3), _body_only_surface(8, 4)]),
+    ],
+    ids=("head-unlink", "middle-unlink", "tail-unlink"),
+)
+def test_fg_response_chained_region_bucket_matches_retired_unlink_positions(
+    replacement, expected
+) -> None:
+    from tests.retired_fg_frontier_semantics import RetiredRegionEndBuckets
+
+    initial = [
+        _body_only_surface(3, 1),
+        _body_only_surface(5, 3),
+        _body_only_surface(7, 5),
+    ]
+    actual = _ChainedRegionBucketHarness()
+    retired = RetiredRegionEndBuckets()
+    for edge in [*initial, replacement]:
+        assert actual.append(4, edge) == retired.append(4, edge)
+        _assert_region_buckets_match_retired(actual, retired)
+    assert actual.bucket(4) == expected
+
+
+def test_fg_response_chained_region_bucket_matches_retired_rejection_and_multiple_removal() -> None:
+    from tests.retired_fg_frontier_semantics import RetiredRegionEndBuckets
+
+    actual = _ChainedRegionBucketHarness()
+    retired = RetiredRegionEndBuckets()
+    mutually_nondominating = [
+        _body_only_surface(3, 1),
+        _body_only_surface(5, 3),
+        _body_only_surface(7, 5),
+    ]
+    for edge in mutually_nondominating:
+        assert actual.append(9, edge) == retired.append(9, edge) is True
+    rejected = _body_only_surface(2, 6)
+    assert actual.append(9, rejected) == retired.append(9, rejected) is False
+    assert actual.bucket(9) == mutually_nondominating
+    dominates_all = _body_only_surface(8, 0)
+    assert actual.append(9, dominates_all) == retired.append(9, dominates_all) is True
+    _assert_region_buckets_match_retired(actual, retired)
+    assert actual.bucket(9) == [dominates_all]
+
+
+def test_fg_response_chained_region_bucket_preserves_pending_drain_growth_and_scratch_reuse() -> None:
+    from tests.retired_fg_frontier_semantics import RetiredRegionEndBuckets
+
+    actual = _ChainedRegionBucketHarness()
+    retired = RetiredRegionEndBuckets()
+    first_batch = [
+        (4, _body_only_surface(3, 1)),
+        (2, _body_only_surface(4, 2)),
+        (4, _body_only_surface(5, 3)),
+        (7, _body_only_surface(6, 4)),
+        (2, _body_only_surface(7, 5)),
+    ]
+    for end_e, edge in first_batch:
+        assert actual.append(end_e, edge) == retired.append(end_e, edge)
+        _assert_region_buckets_match_retired(actual, retired)
+    assert actual.pending() == [4, 2, 7]
+    assert actual.node_surface.shape == (8, 7)
+    assert actual.node_next.shape == (8,)
+    assert actual.drain() == retired.drain()
+    assert np.all(actual.bucket_head == -1)
+    assert np.all(actual.bucket_tail == -1)
+
+    second_batch = [
+        (7, _body_only_surface(10, 1)),
+        (1, _body_only_surface(11, 2)),
+        (7, _body_only_surface(12, 3)),
+    ]
+    for end_e, edge in second_batch:
+        assert actual.append(end_e, edge) == retired.append(end_e, edge)
+        _assert_region_buckets_match_retired(actual, retired)
+    assert actual.pending() == [7, 1]
+    assert actual.drain() == retired.drain()
+    assert actual.node_surface.shape == (8, 7)
+    assert actual.node_next.shape == (8,)
+
+
+def test_fg_response_chained_region_bucket_matches_retired_structured_streams() -> None:
+    from tests.retired_fg_frontier_semantics import RetiredRegionEndBuckets
+
+    rng = np.random.default_rng(116_20260710)
+    actual = _ChainedRegionBucketHarness()
+    ordered_drains = []
+    accepted_flags = []
+    insertion_count = 0
+    accepted_count = 0
+    rejected_count = 0
+    removed_count = 0
+    for batch_idx in range(32):
+        retired = RetiredRegionEndBuckets()
+        for endpoint_idx, end_e in enumerate((2, 5, 8)):
+            high_half = (int(batch_idx) + int(endpoint_idx)) % 2 != 0
+            overlap_start = (72 if high_half else 8) + int(rng.integers(0, 16))
+            overlap_width = int(rng.integers(2, 5))
+            fever_extra = int(rng.integers(1, 4))
+            great_extra = int(rng.integers(1, 4))
+            weak_body_fever = 24 + int(rng.integers(0, 8))
+            weak = _range_surface(
+                fever=(overlap_start, overlap_start + overlap_width),
+                great=(overlap_start, overlap_start + overlap_width + great_extra),
+                body_fever=weak_body_fever,
+                normal_great=6,
+                fever_great=4,
+            )
+            strong = _range_surface(
+                fever=(overlap_start - fever_extra, overlap_start + overlap_width),
+                great=(overlap_start, overlap_start + overlap_width),
+                body_fever=weak_body_fever + 2,
+                normal_great=4,
+                fever_great=3,
+            )
+            tradeoff = _range_surface(
+                fever=(overlap_start - fever_extra, overlap_start + overlap_width),
+                great=(overlap_start, overlap_start + overlap_width),
+                body_fever=weak_body_fever + 5,
+                normal_great=7,
+                fever_great=3,
+            )
+            scripted = (
+                (weak, True, 0),
+                (weak, False, 0),
+                (strong, True, 1),
+                (weak, False, 0),
+                (tradeoff, True, 0),
+            )
+            for edge, expected_kept, expected_removed in scripted:
+                assert 0 <= int(edge[6]) <= int(edge[4])
+                assert int(edge[5]) - int(edge[6]) >= 0
+                before = len(retired.bucket(end_e))
+                actual_before = len(actual.bucket(end_e))
+                actual_kept = actual.append(end_e, edge)
+                retired_kept = retired.append(end_e, edge)
+                after = len(retired.bucket(end_e))
+                actual_after = len(actual.bucket(end_e))
+                removed = int(before) + int(retired_kept) - int(after)
+                actual_removed = int(actual_before) + int(actual_kept) - int(actual_after)
+                assert actual_kept == retired_kept == expected_kept, (
+                    batch_idx,
+                    endpoint_idx,
+                    insertion_count,
+                )
+                assert actual_removed == removed == expected_removed
+                accepted_flags.append(actual_kept)
+                accepted_count += int(actual_kept)
+                rejected_count += int(not actual_kept)
+                removed_count += int(removed)
+                insertion_count += 1
+                _assert_region_buckets_match_retired(actual, retired)
+        assert actual.pending() == [2, 5, 8]
+        assert actual.node_surface.shape == (16, 7)
+        assert actual.node_next.shape == (16,)
+        actual_drain = actual.drain()
+        retired_drain = retired.drain()
+        assert actual_drain == retired_drain, batch_idx
+        ordered_drains.append(actual_drain)
+
+    assert insertion_count == 480
+    assert accepted_count == 288
+    assert rejected_count == 192
+    assert removed_count == 96
+    assert _ordered_rows_digest(
+        (accepted_flags, removed_count, ordered_drains)
+    ) == "250a9644c3ff65c07db4b60c80af5c82"
+
+
+def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_order() -> None:
+    from numba.typed import List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_HEAD_SCORES_TYPE,
+        _NUMBA_SURFACE_TYPE,
+        _numba_emit_region2_head_edges,
+    )
+    from tests.retired_fg_frontier_semantics import RetiredRegionEndBuckets
+
+    n = 8
+    floors = np.arange(n, dtype=np.float32)
+    body_values = np.zeros((1, 3), dtype=np.uint64)
+    body_starts = np.zeros((n + 1,), dtype=np.int32)
+    body_counts = np.zeros((n + 1,), dtype=np.int32)
+    head_pool = np.zeros((n, 7), dtype=np.uint64)
+    head_state_start = np.arange(n, dtype=np.int64)
+    head_state_count = np.ones((n,), dtype=np.int64)
+    node_surface = np.empty((1, 7), dtype=np.uint64)
+    node_next = np.empty((1,), dtype=np.int64)
+    bucket_head = np.full((n + 2,), -1, dtype=np.int64)
+    bucket_tail = np.full((n + 2,), -1, dtype=np.int64)
+    pending_ends = np.empty((n + 2,), dtype=np.int64)
+    starts = np.full((n + 2,), 2, dtype=np.int64)
+    starts[0] = 0
+    table_columns = (
+        np.asarray([1, 2], dtype=np.int32),
+        np.asarray([2, 3], dtype=np.int32),
+        np.asarray([2, 3], dtype=np.int32),
+        np.asarray([0, 0], dtype=np.int32),
+        np.asarray([4.0, 6.0], dtype=np.float64),
+        np.asarray([4.0, 6.0], dtype=np.float64),
+        np.asarray([1, 1], dtype=np.int32),
+    )
+    row12 = (12, 0, 2, 0, 0, 0, 0)
+    row56 = (56, 0, 4, 0, 0, 0, 0)
+
+    def _retired_drain(candidates):
+        retired = RetiredRegionEndBuckets()
+        for end_e, row in candidates:
+            assert retired.append(end_e, row)
+        return [row for _end_e, row in retired.drain()]
+
+    def _emit(columns, shared_surface, shared_next):
+        generated = List.empty_list(_NUMBA_SURFACE_TYPE)
+        generated_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+        return _numba_emit_region2_head_edges(
+            generated,
+            generated_scores,
+            shared_surface,
+            shared_next,
+            bucket_head,
+            bucket_tail,
+            pending_ends,
+            n,
+            0,
+            starts,
+            columns[0],
+            columns[1],
+            columns[2],
+            columns[3],
+            columns[4],
+            columns[5],
+            columns[6],
+            floors,
+            floors,
+            0.0,
+            1,
+            body_values,
+            body_starts,
+            body_counts,
+            head_pool,
+            head_state_start,
+            head_state_count,
+            n,
+            0,
+            n,
+            999,
+            0,
+        )
+
+    first = _emit(table_columns, node_surface, node_next)
+    first_generated, _first_scores, first_added, first_bounded, node_surface, node_next = first
+    first_rows = [tuple(int(value) for value in row) for row in first_generated]
+    assert first_rows == _retired_drain(((4, row12), (6, row56))) == [row12, row56]
+    assert first_added == 2
+    assert first_bounded == 0
+    assert node_surface.shape == (2, 7)
+    assert node_next.shape == (2,)
+    assert np.all(bucket_head == -1)
+    assert np.all(bucket_tail == -1)
+
+    reversed_columns = tuple(column[::-1].copy() for column in table_columns)
+    second = _emit(reversed_columns, node_surface, node_next)
+    second_generated, _second_scores, second_added, second_bounded, node_surface, node_next = second
+    second_rows = [tuple(int(value) for value in row) for row in second_generated]
+    assert second_rows == _retired_drain(((6, row56), (4, row12))) == [row56, row12]
+    assert second_added == 2
+    assert second_bounded == 0
+    assert node_surface.shape == (2, 7)
+    assert node_next.shape == (2,)
+    assert node_surface.dtype == np.dtype(np.uint64)
+    assert node_next.dtype == np.dtype(np.int64)
+    assert bucket_head.dtype == np.dtype(np.int64)
+    assert bucket_tail.dtype == np.dtype(np.int64)
+    assert pending_ends.dtype == np.dtype(np.int64)
+    assert np.all(bucket_head == -1)
+    assert np.all(bucket_tail == -1)
 
 
 def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:
