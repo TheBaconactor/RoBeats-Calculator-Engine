@@ -102,14 +102,22 @@ from .response_types import FgResponseFrontierResult
 _FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v30"
 _HERE = Path(__file__).resolve().parent
 _SOLVER_DIR = _HERE.parents[1]
-# Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
-# build/search/pack path, add it here (the base version stays the human backstop).
-_FG_DP_SOURCES = (
-    _SOLVER_DIR.parent / "core" / "time_quantize.py",
+_CORE_DIR = _SOLVER_DIR.parent / "core"
+# Canonical game-engine inputs to the cached transition producer. Keep this ownership explicit:
+# cache compaction may reuse exact producer output, but it must never make timing, input-order,
+# lane-reachability, fever, or witness semantics invisible to cache compatibility.
+_FG_GAME_ENGINE_SOURCES = (
+    _CORE_DIR / "constants.py",
+    _CORE_DIR / "time_quantize.py",
     _SOLVER_DIR / "input_engine_breakpoints.py",
     _SOLVER_DIR / "timing_envelope.py",
     _SOLVER_DIR / "scoring" / "fg_policy.py",
     _SOLVER_DIR / "fg_response_scoring" / "note_graph.py",
+)
+# Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
+# build/search/pack path, add it here (the base version stays the human backstop).
+_FG_DP_SOURCES = (
+    *_FG_GAME_ENGINE_SOURCES,
     _HERE / "fill_crossing.py",
     _HERE / "response_cache_keys.py",
     _HERE / "response_builder.py",

@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -20,10 +21,13 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from tools.bench.issue116_run_preflight import resolve_production_fg_cache_dir
-
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools.bench.issue116_run_preflight import resolve_production_fg_cache_dir  # noqa: E402
+
+
 TOTAL_ROWS = 160
 STAT_AXIS = TOTAL_ROWS + 1
 STAT_KEY_COUNT = STAT_AXIS * STAT_AXIS
