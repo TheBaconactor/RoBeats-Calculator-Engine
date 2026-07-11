@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-from dataclasses import dataclass
 import os
 import threading
 
@@ -20,42 +19,6 @@ _FIRST_ONLY_REDUCER_THREADS = max(1, int(os.cpu_count() or 1))
 # depends only on the per-thread call sequence (and bit-exactness never depends on the epoch
 # values themselves, only on their monotone carry).
 _STAMP_EPOCH_RESET_LIMIT = 1 << 30
-
-
-@dataclass(frozen=True, slots=True)
-class _BodyReducerCache:
-    body_values: np.ndarray
-    body_starts: np.ndarray
-    body_counts: np.ndarray
-    input_values: np.ndarray
-    input_starts: np.ndarray
-    input_counts: np.ndarray
-    reductions_reused: int
-    reductions_executed: int
-
-    @property
-    def allocated_bytes(self) -> int:
-        return int(
-            self.body_values.nbytes
-            + self.body_starts.nbytes
-            + self.body_counts.nbytes
-            + self.input_values.nbytes
-            + self.input_starts.nbytes
-            + self.input_counts.nbytes
-        )
-
-
-def _empty_body_reducer_cache(n: int) -> _BodyReducerCache:
-    return _BodyReducerCache(
-        body_values=np.zeros((1, 3), dtype=np.uint64),
-        body_starts=np.zeros(int(n) + 1, dtype=np.int32),
-        body_counts=np.zeros(int(n) + 1, dtype=np.int32),
-        input_values=np.zeros((1, 2), dtype=np.uint64),
-        input_starts=np.zeros(int(n) + 1, dtype=np.int32),
-        input_counts=np.zeros(int(n) + 1, dtype=np.int32),
-        reductions_reused=0,
-        reductions_executed=0,
-    )
 
 
 class _FirstFrontierStampWorkspace:
@@ -209,19 +172,7 @@ class _FirstFrontierWorkspacePlan:
     every region-table group.
     """
 
-    __slots__ = (
-        "n",
-        "pair_mod_bound",
-        "pair_capacity",
-        "bit_capacity",
-        "branch_a_capacity",
-        "_lock",
-        "allocations",
-        "allocated_bytes",
-        "body_reductions_reused",
-        "body_reductions_executed",
-        "body_cache_peak_bytes",
-    )
+    __slots__ = ("n", "pair_mod_bound", "pair_capacity", "bit_capacity", "branch_a_capacity", "_lock", "allocations", "allocated_bytes")
 
     def __init__(self, *, n: int, pair_mod_bound: int) -> None:
         if int(pair_mod_bound) < 1 or int(pair_mod_bound) > int(n) + 1:
@@ -234,9 +185,6 @@ class _FirstFrontierWorkspacePlan:
         self._lock = threading.Lock()
         self.allocations = 0
         self.allocated_bytes = 0
-        self.body_reductions_reused = 0
-        self.body_reductions_executed = 0
-        self.body_cache_peak_bytes = 0
 
     def thread_workspace(self) -> _FirstFrontierStampWorkspace:
         workspace = getattr(_WORKSPACE_TLS, "workspace", None)
@@ -254,14 +202,6 @@ class _FirstFrontierWorkspacePlan:
                 self.allocations += 1
                 self.allocated_bytes += int(workspace.total_bytes)
         return workspace
-
-    def record_body_cache(self, cache: _BodyReducerCache) -> None:
-        with self._lock:
-            self.body_reductions_reused += int(cache.reductions_reused)
-            self.body_reductions_executed += int(cache.reductions_executed)
-            self.body_cache_peak_bytes = max(
-                int(self.body_cache_peak_bytes), int(cache.allocated_bytes)
-            )
 
 
 def configure_force_greats_response_first_frontier_threads(max_threads: int) -> int:
@@ -282,7 +222,7 @@ def _first_frontier_reducer_executor(max_workers: int) -> concurrent.futures.Thr
     )
 
 
-def _first_frontier_result_and_body_cache_from_precomputed_end_indices(
+def _first_frontier_result_from_precomputed_end_indices(
     *,
     n: int,
     action_count: int,
@@ -319,9 +259,7 @@ def _first_frontier_result_and_body_cache_from_precomputed_end_indices(
     use_forced_great_timing: bool,
     region_table: tuple,
     workspace: _FirstFrontierStampWorkspace,
-    previous_body_cache: _BodyReducerCache | None,
-) -> tuple[FgResponseFrontierResult, _BodyReducerCache]:
-    prior = previous_body_cache or _empty_body_reducer_cache(int(n))
+) -> FgResponseFrontierResult:
     (
         first_rows,
         states_evaluated,
@@ -331,14 +269,6 @@ def _first_frontier_result_and_body_cache_from_precomputed_end_indices(
         pair_epoch,
         bit_epoch,
         branch_a_epoch,
-        body_values,
-        body_starts,
-        body_counts,
-        input_values,
-        input_starts,
-        input_counts,
-        body_reductions_reused,
-        body_reductions_executed,
     ) = (
         _first_frontier_from_precomputed_end_indices_numba(
             int(n),
@@ -397,39 +327,20 @@ def _first_frontier_result_and_body_cache_from_precomputed_end_indices(
             int(workspace.pair_epoch),
             int(workspace.bit_epoch),
             int(workspace.branch_a_epoch),
-            1 if previous_body_cache is not None else 0,
-            prior.body_values,
-            prior.body_starts,
-            prior.body_counts,
-            prior.input_values,
-            prior.input_starts,
-            prior.input_counts,
         )
     )
     workspace.store_epochs(int(pair_epoch), int(bit_epoch), int(branch_a_epoch))
-    return (
-        FgResponseFrontierResult(
-            first_frontier=SurfaceRowsFirstFrontier(first_rows),
-            state_frontiers={},
-            states_evaluated=int(states_evaluated),
-            actions=int(action_count),
-            transitions_evaluated=0,
-            generated_surfaces=int(generated_surfaces),
-            retained_surfaces_total=int(retained_total),
-            max_state_frontier=int(max_state_frontier),
-            non_fever_base=int(non_fever_base),
-            seconds=0.0,
-        ),
-        _BodyReducerCache(
-            body_values=body_values,
-            body_starts=body_starts,
-            body_counts=body_counts,
-            input_values=input_values,
-            input_starts=input_starts,
-            input_counts=input_counts,
-            reductions_reused=int(body_reductions_reused),
-            reductions_executed=int(body_reductions_executed),
-        ),
+    return FgResponseFrontierResult(
+        first_frontier=SurfaceRowsFirstFrontier(first_rows),
+        state_frontiers={},
+        states_evaluated=int(states_evaluated),
+        actions=int(action_count),
+        transitions_evaluated=0,
+        generated_surfaces=int(generated_surfaces),
+        retained_surfaces_total=int(retained_total),
+        max_state_frontier=int(max_state_frontier),
+        non_fever_base=int(non_fever_base),
+        seconds=0.0,
     )
 
 
@@ -465,60 +376,50 @@ def _first_frontier_results_for_precomputed_range(
 ) -> list[tuple[int, FgResponseFrontierResult]]:
     results: list[tuple[int, FgResponseFrontierResult]] = []
     workspace = workspace_plan.thread_workspace()
-    previous_key: tuple[float, int] | None = None
-    previous_body_cache: _BodyReducerCache | None = None
     for local_idx in range(int(start), int(stop)):
         item = chunk[int(local_idx)]
         source_idx = int(item[0])
-        table_key = (float(item[2]), int(item[1]))
-        region_table = region_tables_by_key[table_key]
-        if table_key != previous_key:
-            previous_body_cache = None
-        frontier, body_cache = _first_frontier_result_and_body_cache_from_precomputed_end_indices(
-            n=int(n),
-            action_count=int(item[5].shape[0]),
-            non_fever_base=int(item[1]),
-            raw_fever_fill=float(item[2]),
-            action_k=np.ascontiguousarray(item[4], dtype=np.int32),
-            later_fill=np.ascontiguousarray(item[5], dtype=np.int32),
-            first_fill=np.ascontiguousarray(item[6], dtype=np.int32),
-            later_forced=np.ascontiguousarray(item[7], dtype=np.int32),
-            first_forced=np.ascontiguousarray(item[8], dtype=np.int32),
-            later_activation_forced=np.ascontiguousarray(item[9], dtype=np.int32),
-            first_activation_forced=np.ascontiguousarray(item[10], dtype=np.int32),
-            timestamps=timestamps,
-            candidate_high_delta_max=candidate_high_delta_max,
-            perfect_candidate_timestamps=perfect_candidate_timestamps,
-            great_candidate_timestamps=great_candidate_timestamps,
-            perfect_floor_timestamps=perfect_floor_timestamps,
-            great_floor_timestamps=great_floor_timestamps,
-            lanes=lanes,
-            prefix_perfect_hit=prefix_perfect_hit,
-            prefix_perfect_valid=prefix_perfect_valid,
-            prefix_late_hit=prefix_late_hit,
-            prefix_late_valid=prefix_late_valid,
-            timestamp_end_idx=timestamp_end_idx,
-            perfect_end_idx=perfect_end_idx,
-            great_end_idx=great_end_idx,
-            great_floor_end_idx=great_floor_end_idx,
-            capped_perfect_edge_e=capped_perfect_edge_e,
-            capped_late_edge_e=capped_late_edge_e,
-            capped_eg_perfect_e=capped_eg_perfect_e,
-            capped_eg_late_e=capped_eg_late_e,
-            real_fever_time=float(item[3]),
-            real_time_idx=int(real_time_index[int(local_idx)]),
-            use_forced_great_timing=bool(use_forced_great_timing),
-            region_table=region_table,
-            workspace=workspace,
-            previous_body_cache=previous_body_cache,
-        )
-        workspace_plan.record_body_cache(body_cache)
+        region_table = region_tables_by_key[(float(item[2]), int(item[1]))]
         results.append(
             (
                 source_idx,
-                frontier,
+                _first_frontier_result_from_precomputed_end_indices(
+                    n=int(n),
+                    action_count=int(item[5].shape[0]),
+                    non_fever_base=int(item[1]),
+                    raw_fever_fill=float(item[2]),
+                    action_k=np.ascontiguousarray(item[4], dtype=np.int32),
+                    later_fill=np.ascontiguousarray(item[5], dtype=np.int32),
+                    first_fill=np.ascontiguousarray(item[6], dtype=np.int32),
+                    later_forced=np.ascontiguousarray(item[7], dtype=np.int32),
+                    first_forced=np.ascontiguousarray(item[8], dtype=np.int32),
+                    later_activation_forced=np.ascontiguousarray(item[9], dtype=np.int32),
+                    first_activation_forced=np.ascontiguousarray(item[10], dtype=np.int32),
+                    timestamps=timestamps,
+                    candidate_high_delta_max=candidate_high_delta_max,
+                    perfect_candidate_timestamps=perfect_candidate_timestamps,
+                    great_candidate_timestamps=great_candidate_timestamps,
+                    perfect_floor_timestamps=perfect_floor_timestamps,
+                    great_floor_timestamps=great_floor_timestamps,
+                    lanes=lanes,
+                    prefix_perfect_hit=prefix_perfect_hit,
+                    prefix_perfect_valid=prefix_perfect_valid,
+                    prefix_late_hit=prefix_late_hit,
+                    prefix_late_valid=prefix_late_valid,
+                    timestamp_end_idx=timestamp_end_idx,
+                    perfect_end_idx=perfect_end_idx,
+                    great_end_idx=great_end_idx,
+                    great_floor_end_idx=great_floor_end_idx,
+                    capped_perfect_edge_e=capped_perfect_edge_e,
+                    capped_late_edge_e=capped_late_edge_e,
+                    capped_eg_perfect_e=capped_eg_perfect_e,
+                    capped_eg_late_e=capped_eg_late_e,
+                    real_fever_time=float(item[3]),
+                    real_time_idx=int(real_time_index[int(local_idx)]),
+                    use_forced_great_timing=bool(use_forced_great_timing),
+                    region_table=region_table,
+                    workspace=workspace,
+                ),
             )
         )
-        previous_key = table_key
-        previous_body_cache = body_cache
     return results
