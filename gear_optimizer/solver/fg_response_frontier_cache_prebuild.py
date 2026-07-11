@@ -331,7 +331,13 @@ def _derived_bundle_cache_file(song_path: str, ref_arrays: dict) -> str | None:
     return str(_fg_response_disk_cache_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)))
 
 
-def _build_manifest_plan(song_paths: Iterable[str], ref_arrays: dict, *, stat_keys: Iterable[tuple[int, int]]):
+def _build_manifest_plan(
+    song_paths: Iterable[str],
+    ref_arrays: dict,
+    *,
+    stat_keys: Iterable[tuple[int, int]],
+    persist_validated_entries: bool = True,
+):
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import fg_response_cache_file_is_complete
 
     stat_keys_tuple = tuple(stat_keys or ())
@@ -347,6 +353,7 @@ def _build_manifest_plan(song_paths: Iterable[str], ref_arrays: dict, *, stat_ke
             stat_keys=stat_keys_tuple,
         ),
         derived_cache_file_fn=lambda song_path: _derived_bundle_cache_file(song_path, ref_arrays),
+        persist_validated_entries=persist_validated_entries,
     )
 
 
@@ -778,6 +785,22 @@ def run_fg_response_frontier_cache_prebuild(
     paths = ordered_frontier_cache_song_paths(queue_paths=queue_paths, data_root=data_root)
     if not paths:
         return FgResponseFrontierCachePrebuildSummary(total=0)
+
+    # Complete cache hits are readers, not builders. Probe without mutating the manifest so they
+    # never wait behind an unrelated deployment prebuild that owns the single-builder lock.
+    optimistic_plan = _build_manifest_plan(
+        paths,
+        ref_arrays,
+        stat_keys=stat_keys,
+        persist_validated_entries=False,
+    )
+    if not optimistic_plan.missing_paths:
+        return FgResponseFrontierCachePrebuildSummary(
+            total=int(optimistic_plan.total_paths),
+            completed=int(optimistic_plan.hit_count),
+            disk=int(optimistic_plan.hit_count),
+            elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+        )
 
     # Single-builder lock: a second concurrent process waits here, then re-runs its manifest plan
     # below -- which now fast-hits everything this process wrote -- instead of duplicating the

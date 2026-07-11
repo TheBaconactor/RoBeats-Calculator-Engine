@@ -73,6 +73,16 @@ def test_zero_ms_mode_prepares_chart_only_streams_and_stamp():
     assert info["timing_mode"] == "zero_ms"
     assert cs["metadata"]["TimingEnvelopeApplied"] is True
     assert cs["metadata"]["TimingEnvelopeMode"] == "zero_ms"
+
+
+def test_chart_metadata_selects_zero_ms_when_mode_is_omitted():
+    cs = _calc_song()
+    cs["metadata"]["Timing Mode"] = "zero_ms"
+
+    info = apply_timing_envelope(cs)
+
+    assert info["timing_mode"] == "zero_ms"
+    assert cs["metadata"]["TimingEnvelopeMode"] == "zero_ms"
     # No Perfect-window envelope streams: the FG build uses the chart fallback.
     for stream in (
         "fg_perfect_candidate_timestamps",

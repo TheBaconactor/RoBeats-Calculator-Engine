@@ -85,7 +85,6 @@ _RECORDED_ENV_KEYS = (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
     "OPENBLAS_NUM_THREADS",
-    "ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS",
 )
 _HEX_HEAD_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 _SHA256_RE = re.compile(r"[0-9a-fA-F]{64}\Z")

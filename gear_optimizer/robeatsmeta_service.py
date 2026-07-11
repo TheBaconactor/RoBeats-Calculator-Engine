@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Stateless HTTP front-end over the canonical optimizer pipeline.
 #
-# The website owns identity, credits, TTL, sharing and persistence; this service only solves.
+# The website owns identity, credits, sharing and result persistence; this service only solves.
 #   GET  /songs     -> the official chart list (from Data/ headers) the website picker chooses from
 #   POST /optimize  -> solve one chart (official `targetSongId` OR custom `chartText`) and return
 #                      its full T5 baseline leaderboard (top 51 base + 51 FG by hash), in the exact
@@ -40,9 +40,9 @@ logger = logging.getLogger(__name__)
 #
 # The service is a concurrent pool: ThreadingHTTPServer handles requests in parallel, and a bounded
 # semaphore caps concurrent solves (default 10). Each solve spawns main.py as a subprocess; the
-# subprocesses share a single frontier-cache dir (TIMELINE_FRONTIER_CACHE_DIR) so a frontier built
-# for one song is reused by the next — the CPU is free while the GPU processes a song, so multiple
-# solves overlap and the frontier cache amortizes across them.
+# subprocesses share MetaFinder's canonical timeline and FG frontier caches. A valid uploaded or
+# previously-built entry is reused forever; a cache miss is built by the canonical runtime owner and
+# persisted for every later solve.
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = REPO_ROOT / "Data"
@@ -100,20 +100,17 @@ def _release_solve_slot() -> None:
         _active_solves = max(0, _active_solves - 1)
         _admission.notify_all()
 
-# Shared frontier cache: all solve subprocesses read/write the same timeline-frontier cache so a
-# frontier built for song A is reused when song B needs the same calc arrays. Pointing every
-# subprocess at this one dir (instead of the per-work bin/) is what makes the pool amortize.
-_SHARED_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "robeatsmeta_api_frontier_cache"
-_SHARED_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+# Canonical persistent frontier caches. Website solves must use the same artifacts as direct
+# MetaFinder runs and deployment prebuilds; a website-specific cache creates split authority and
+# makes an uploaded production cache invisible to live requests.
+_TIMELINE_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "timeline_frontier_cache"
+_FG_RESPONSE_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "fg_response_frontier_cache"
+_TIMELINE_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_FG_RESPONSE_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Concurrent writes to the shared frontier cache are safe: both writers (timeline frontier grid and
 # FG response cache) write to a unique per-thread temp file and atomically os.replace() it into
 # place, so a partial file is never observed and the last writer wins on identical content.
-
-# Frontier cache TTL: entries older than 24h are deleted to prevent stale frontiers and bound disk.
-# A background sweeper runs every 30min and prunes files whose mtime is older than the TTL.
-_FRONTIER_CACHE_TTL_S = max(60, env_int("ROBEATSMETA_OPTIMIZER_FRONTIER_CACHE_TTL_S", 24 * 60 * 60))
-_FRONTIER_CACHE_SWEEP_INTERVAL_S = 30 * 60.0
 
 # Body-size cap for /optimize: reject anything absurd with 413 so an oversized body can't be read
 # into memory. Sized to fit the worst-case translated chart the website accepts (up to 200k hit
@@ -191,29 +188,37 @@ def _release_job_solve(job: str, state: _InFlightSolve) -> None:
             del _INFLIGHT_SOLVES[job]
 
 
-def _sweep_frontier_cache() -> None:
-    """Delete frontier cache entries older than the TTL."""
-    import time
-    cutoff = time.time() - _FRONTIER_CACHE_TTL_S
-    pruned = 0
-    for entry in _SHARED_FRONTIER_CACHE_DIR.iterdir():
-        try:
-            if entry.is_file() and entry.stat().st_mtime < cutoff:
-                entry.unlink(missing_ok=True)
-                pruned += 1
-        except OSError:
-            pass
-    if pruned:
-        logger.info("frontier cache sweep: pruned %d stale entries", pruned)
+def _prebuild_catalog_frontier_caches() -> None:
+    """Attempt to fill missing canonical cache entries for the official catalog at deployment.
 
+    This runs in the service process after it starts listening. Existing uploaded entries are
+    manifest/disk hits; only missing or key-invalidated songs build. A failure is logged loudly but
+    does not remove live serviceability because the isolated solve path runs the same builders on a
+    cache miss.
+    """
+    try:
+        import numpy as np
 
-def _frontier_cache_sweeper_loop() -> None:
-    while True:
-        try:
-            _sweep_frontier_cache()
-        except Exception:  # noqa: BLE001 - sweeper must never crash the service
-            logger.warning("frontier cache sweep failed", exc_info=True)
-        threading.Event().wait(_FRONTIER_CACHE_SWEEP_INTERVAL_S)
+        from gear_optimizer.core.config import load_config, load_paths_cache
+        from gear_optimizer.core.constants import PATHS
+        from gear_optimizer.data.csv_parser import read_table
+        from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+        from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
+
+        cfg = load_config()
+        paths = load_paths_cache()
+        stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
+        ref_arrays = build_ref_arrays_from_stats(stats_table, dtype=np.float32)
+        run_startup_cpu_work(
+            cfg=cfg,
+            song_queue=(),
+            ref_arrays=ref_arrays,
+            data_root=DATA_ROOT,
+        )
+    except Exception:
+        logger.exception(
+            "catalog frontier cache prebuild failed; live requests will retry missing entries"
+        )
 
 
 class RequestError(ValueError):
@@ -333,14 +338,21 @@ def _job_slug(value: Any) -> str:
     return slug or "job"
 
 
-def _normalize_chart(chart_text: str, song_name: str) -> str:
-    """Force Song Name and Difficulty so the isolated chart matches the run config.
+def _normalize_timing_mode(value: Any) -> str:
+    mode = str(value or "perfect_window").strip().lower()
+    if mode not in {"perfect_window", "zero_ms"}:
+        raise RequestError(f"unknown timingMode {value!r}")
+    return mode
+
+
+def _normalize_chart(chart_text: str, song_name: str, timing_mode: str) -> str:
+    """Force Song Name, Difficulty, and timing mode so the isolated chart matches the request.
 
     The file name is the unique job slug. The Song Name header is the semantic song identity:
     Mini Ascension song targets and the output DB rows key off it.
     """
     out: list[str] = []
-    have_name = have_diff = False
+    have_name = have_diff = have_timing_mode = False
     for line in chart_text.splitlines():
         if line.startswith("Song Name\t") and not have_name:
             out.append(f"Song Name\t{song_name}")
@@ -348,6 +360,9 @@ def _normalize_chart(chart_text: str, song_name: str) -> str:
         elif line.startswith("Difficulty\t") and not have_diff:
             out.append("Difficulty\tHard")
             have_diff = True
+        elif line.startswith("Timing Mode\t") and not have_timing_mode:
+            out.append(f"Timing Mode\t{timing_mode}")
+            have_timing_mode = True
         else:
             out.append(line)
     prefix: list[str] = []
@@ -355,6 +370,8 @@ def _normalize_chart(chart_text: str, song_name: str) -> str:
         prefix.append(f"Song Name\t{song_name}")
     if not have_diff:
         prefix.append("Difficulty\tHard")
+    if not have_timing_mode:
+        prefix.append(f"Timing Mode\t{timing_mode}")
     return "\n".join(prefix + out) + "\n"
 
 
@@ -395,7 +412,12 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 
 
 def _solve_isolated(
-    job: str, chart_text: str, result_song_name: str, repeats: int, reasoning: str = "default"
+    job: str,
+    chart_text: str,
+    result_song_name: str,
+    repeats: int,
+    reasoning: str = "default",
+    timing_mode: str = "perfect_window",
 ) -> list[dict[str, Any]]:
     """Run the canonical optimizer pipeline once in a throwaway per-job workspace."""
     work = _service_run_root() / job
@@ -403,7 +425,10 @@ def _solve_isolated(
     data_dir = work / "Data"
     (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
     shutil.copytree(GEAR_DIR, data_dir / "Gear")  # real files; discovery does not follow symlinks
-    (data_dir / "Hard" / f"{job}.txt").write_text(_normalize_chart(chart_text, result_song_name), encoding="utf-8")
+    (data_dir / "Hard" / f"{job}.txt").write_text(
+        _normalize_chart(chart_text, result_song_name, _normalize_timing_mode(timing_mode)),
+        encoding="utf-8",
+    )
     # Reasoning effort scales the GA search knobs. Only write them above "default" so the default
     # path stays byte-identical to before this knob existed (config.py's own fallbacks apply).
     level = _normalize_reasoning(reasoning)
@@ -430,10 +455,8 @@ def _solve_isolated(
         "METAFINDER_CONFIG_PATH": str(work / "config.ini"),
         "ROBEATSMETA_OPTIMIZER_DATA_DIR": str(data_dir),
         "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(work / "bin"),
-        # Shared frontier cache: every solve subprocess reads/writes the same dir so a frontier
-        # built for one song is reused by the next. This is the key to the pool — the CPU-side
-        # frontier build for song B overlaps with the GPU solve of song A.
-        "TIMELINE_FRONTIER_CACHE_DIR": str(_SHARED_FRONTIER_CACHE_DIR),
+        "TIMELINE_FRONTIER_CACHE_DIR": str(_TIMELINE_FRONTIER_CACHE_DIR),
+        "FG_RESPONSE_FRONTIER_CACHE_DIR": str(_FG_RESPONSE_FRONTIER_CACHE_DIR),
     }
     with _SOLVE_SEMAPHORE:
         _acquire_solve_slot()  # memory-headroom gate: hold here until it's safe to add a solve
@@ -482,12 +505,13 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     chart_text, result_song_name = chart_text_and_result_song_name_for_request(request, fallback_name=job)
     repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
     reasoning = _normalize_reasoning(request.get("reasoning"))
+    timing_mode = _normalize_timing_mode(request.get("timingMode"))
     state, owner = _claim_job_solve(job)
     if not owner:
         logger.info("joining in-flight optimizer solve for job %s", job)
         return state.wait()
     try:
-        state.result = _solve_isolated(job, chart_text, result_song_name, repeats, reasoning)
+        state.result = _solve_isolated(job, chart_text, result_song_name, repeats, reasoning, timing_mode)
         return state.result
     except BaseException as exc:
         state.error = exc
@@ -569,14 +593,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     server = ThreadingHTTPServer((args.host, int(args.port)), RoBeatsMetaServiceHandler)
     server.daemon_threads = True
-    # Frontier cache sweeper: prunes entries older than 24h so the cache can't grow unbounded or
-    # serve stale frontiers. Daemon thread — dies with the process.
-    sweeper = threading.Thread(target=_frontier_cache_sweeper_loop, name="frontier-cache-sweeper", daemon=True)
-    sweeper.start()
+    prebuild = threading.Thread(
+        target=_prebuild_catalog_frontier_caches,
+        name="catalog-frontier-cache-prebuild",
+        daemon=True,
+    )
+    prebuild.start()
     print(
         f"[robeatsmeta-service] listening on http://{args.host}:{args.port}"
-        f" (pool={_SOLVE_POOL_SIZE}, frontier_cache={_SHARED_FRONTIER_CACHE_DIR},"
-        f" frontier_ttl={_FRONTIER_CACHE_TTL_S}s)",
+        f" (pool={_SOLVE_POOL_SIZE}, timeline_cache={_TIMELINE_FRONTIER_CACHE_DIR},"
+        f" fg_cache={_FG_RESPONSE_FRONTIER_CACHE_DIR})",
         flush=True,
     )
     try:

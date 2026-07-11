@@ -29,6 +29,8 @@ def data_root(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(service, "DATA_ROOT", tmp_path / "Data")
     monkeypatch.setattr(service, "GEAR_DIR", tmp_path / "Data" / "Gear")
+    monkeypatch.setattr(service, "_TIMELINE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "timeline_frontier_cache")
+    monkeypatch.setattr(service, "_FG_RESPONSE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "fg_response_frontier_cache")
     service.clear_official_song_catalog_cache()
     with service._INFLIGHT_SOLVES_LOCK:
         service._INFLIGHT_SOLVES.clear()
@@ -149,13 +151,53 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(service, "get_best_loadouts", fake_loadouts)
 
-    result = service.solve({"jobId": "job_abc", "targetSongId": "Feeding [Hard]"})
+    result = service.solve(
+        {"jobId": "job_abc", "targetSongId": "Feeding [Hard]", "timingMode": "zero_ms"}
+    )
 
     assert result == [entry]  # full T5 leaderboard returned verbatim (website persists + replays it)
     env = captured["env"]
     assert env["EVOLUTION_DB_PATH"].endswith("result.db")  # output DB redirected off evolution.db
     assert env["ROBEATSMETA_OPTIMIZER_DATA_DIR"].endswith("job_abc/Data")  # isolated song source
     assert env["ROBEATSMETA_OPTIMIZER_BIN_DIR"].endswith("job_abc/bin")  # isolated run state
+    assert env["TIMELINE_FRONTIER_CACHE_DIR"].endswith("bin/timeline_frontier_cache")
+    assert env["FG_RESPONSE_FRONTIER_CACHE_DIR"].endswith("bin/fg_response_frontier_cache")
+
+
+def test_solve_stamps_requested_timing_mode_into_isolated_chart(data_root, monkeypatch):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    gear = data_root / "Data" / "Gear"
+    gear.mkdir(parents=True, exist_ok=True)
+    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
+
+    captured: dict[str, str] = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            chart_path = Path(kwargs["env"]["ROBEATSMETA_OPTIMIZER_DATA_DIR"]) / "Hard" / "job_timing.txt"
+            captured["chart"] = chart_path.read_text("utf-8")
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("", "")
+
+    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(service, "get_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
+
+    service.solve(
+        {"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "zero_ms"}
+    )
+
+    assert "Timing Mode\tzero_ms" in captured["chart"]
+
+
+def test_solve_rejects_unknown_timing_mode(data_root):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    with pytest.raises(service.RequestError, match="unknown timingMode"):
+        service.solve(
+            {"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "approximate"}
+        )
 
 
 def _capture_solve_config(data_root, monkeypatch, request: dict) -> str:

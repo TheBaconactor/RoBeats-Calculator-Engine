@@ -48,7 +48,7 @@ def test_build_fg_persist_entries_refuses_identityless_winner(monkeypatch):
         lambda _entry, *, mutate=True: ([], []),
     )
     monkeypatch.setattr(payload_mod, "has_valid_fg_config", lambda data: isinstance(data, dict))
-    monkeypatch.setattr(payload_mod, "materialize_stats_from_payload", lambda obj, *, mutate_payload=True: obj)
+    monkeypatch.setattr(payload_mod, "read_visible_stats", lambda obj, *, mutate_payload=True: obj)
 
     song = make_native_song(
         song_name="Identityless (Hard) by pytest",

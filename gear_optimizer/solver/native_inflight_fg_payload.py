@@ -7,7 +7,7 @@ from typing import Any
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
-from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
+from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_candidate_names, materialize_entry_names
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
@@ -129,7 +129,7 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
         try:
             if isinstance(data, dict) and has_valid_fg_config(data):
                 force_obj = dict(data)
-                materialize_stats_from_payload(force_obj, mutate_payload=True)
+                read_visible_stats(force_obj, mutate_payload=True)
         except Exception as e:
             logger.debug(f"native_inflight_fg_payload:build_fg_persist_entries: {e}")
             force_obj = None

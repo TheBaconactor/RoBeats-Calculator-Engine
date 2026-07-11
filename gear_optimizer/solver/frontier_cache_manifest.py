@@ -116,6 +116,7 @@ def build_manifest_plan(
     cache_file_validator: Callable[[str], bool] | None = None,
     derived_cache_file_fn: Callable[[str], str | None] | None = None,
     drift_sample_size: int = 8,
+    persist_validated_entries: bool = True,
 ) -> FrontierCacheManifestPlan:
     paths = [str(path) for path in list(song_paths or []) if str(path or "").strip()]
     if not paths:
@@ -147,10 +148,9 @@ def build_manifest_plan(
         cache_identity = _path_identity(cache_file) if cache_file else None
         cache_hit = cache_identity is not None
         if cache_hit:
-            # Identity fast-path compares cache-file SIZE only, never mtime. Both frontier caches mark
-            # recently-used bundles by bumping mtime via os.utime (idle-TTL retention/purge), so a cache
-            # file's mtime is mutated with no content change. Comparing mtime here defeats the fast-path:
-            # the recorded mtime is stale the instant retention touches the file, forcing a full per-file
+            # Identity fast-path compares cache-file SIZE only, never mtime. External copies and
+            # filesystem maintenance can mutate mtime with no content change. Comparing mtime here
+            # defeats the fast-path: the recorded mtime becomes stale, forcing a full per-file
             # re-validation on every startup (measured: FG fast-path hit 0/6704 -> ~100s warm verify).
             # The cache path is content-addressed (digest of the cache key) and builds are deterministic,
             # so a same-size file at the same path is the same validated bundle; corruption is still
@@ -164,6 +164,17 @@ def build_manifest_plan(
                     cache_hit = int(entry_size) == int(cache_size)
                 except (TypeError, ValueError):
                     cache_hit = False
+        if cache_identity is None and derived_cache_file_fn is not None and cache_file_validator is not None:
+            try:
+                derived_cache_file = str(derived_cache_file_fn(song_path) or "").strip()
+            except Exception as exc:
+                logger.debug("frontier_cache_manifest:derived_cache_file_fn: %s", exc)
+                derived_cache_file = ""
+            derived_identity = _path_identity(derived_cache_file) if derived_cache_file else None
+            if derived_identity is not None:
+                cache_file = derived_cache_file
+                cache_identity = derived_identity
+
         if cache_identity is not None and not cache_hit and cache_file_validator is not None:
             try:
                 cache_hit = bool(cache_file_validator(cache_file))
@@ -185,7 +196,7 @@ def build_manifest_plan(
         else:
             misses.append(song_path)
 
-    if updated_entries > 0:
+    if persist_validated_entries and updated_entries > 0:
         _save_manifest(manifest_path, cache_version=cache_version, version_field=version_field, entries=entries)
 
     if _detect_cache_key_drift(

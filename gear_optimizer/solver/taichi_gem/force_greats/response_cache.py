@@ -44,7 +44,6 @@ from .response_cache_store import (
     purge_stale_version_cache_files,
     release_fg_response_song_memory,
     reset_fg_response_frontier_payload_cache,
-    sweep_fg_response_frontier_live_cache,
 )
 from .response_cache_patterns import intern_surface_rows, unpack_surface_patterns
 from .response_cache_types import (
@@ -86,7 +85,6 @@ __all__ = [
     "purge_stale_version_cache_files",
     "release_fg_response_song_memory",
     "reset_fg_response_frontier_payload_cache",
-    "sweep_fg_response_frontier_live_cache",
 ]
 
 

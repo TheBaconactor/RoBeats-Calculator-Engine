@@ -5,7 +5,7 @@ import logging
 
 from ...core.utils import get_selected_element, safe_int
 from .fg_config import has_valid_fg_config
-from .force_greats.result_application import materialize_stats_from_payload
+from .force_greats.result_application import read_visible_stats
 from .item_utils import names_list
 from .persistence_records import evaluate_record_update
 
@@ -16,8 +16,12 @@ def normalize_force_payload(force_obj: object) -> dict:
     """
     Normalize persisted FG payload shape.
 
-    Ensures selected element aliases are present and reconstructs `Stats` from
-    `BaseStats` + gem counts when needed.
+    Ensures selected element aliases are present and stamps the visible ``Stats`` (the
+    post-gem row) via the single canonical reader ``read_visible_stats``.
+    The reader trusts an explicit post-gem ``Stats`` when present, else returns
+    ``BaseStats`` verbatim; it NEVER re-applies gems. The anti-double-count property is
+    structural (there is no gem-application on this path to double), not an assertion —
+    this function does not raise.
     """
     if not isinstance(force_obj, dict) or not force_obj:
         return {}
@@ -29,20 +33,9 @@ def normalize_force_payload(force_obj: object) -> dict:
         out["SelectedElement"] = selected_element
         out["Selected Element"] = selected_element
 
-    stats_obj = out.get("Stats")
-    if isinstance(stats_obj, dict) and stats_obj:
-        return out
-
-    base_stats = out.get("BaseStats")
-    if not isinstance(base_stats, dict) or not base_stats:
-        return out
-
-    computed_stats = materialize_stats_from_payload(out, selected_element=selected_element, mutate_payload=False)
-    if isinstance(computed_stats, dict) and computed_stats:
-        out["Stats"] = computed_stats
-        return out
-
-    out["Stats"] = dict(base_stats)
+    stats = read_visible_stats(out, mutate_payload=False)
+    if isinstance(stats, dict) and stats:
+        out["Stats"] = stats
     return out
 
 
@@ -60,15 +53,9 @@ def make_build_details_fn(
         if not isinstance(data_dict, dict) or not data_dict:
             return {}
         selected_element = get_selected_element(data_dict, "")
-        stats_obj = data_dict.get("Stats")
-        if not (isinstance(stats_obj, dict) and stats_obj):
-            stats_obj = materialize_stats_from_payload(
-                data_dict,
-                selected_element=selected_element,
-                mutate_payload=False,
-            )
-        if not isinstance(stats_obj, dict):
-            stats_obj = {}
+        # The reader already prefers an explicit post-gem Stats and otherwise returns
+        # BaseStats verbatim — as a copy, so no mutation bleed into data_dict.
+        stats_obj = read_visible_stats(data_dict, mutate_payload=False)
         return {
             "FT": data_dict.get("FT", 0),
             "FF": data_dict.get("FF", 0),

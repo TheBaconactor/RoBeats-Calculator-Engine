@@ -46,8 +46,8 @@ def _force_payload(*, base_score=1000, fg_score=1200, base_stats=None, stats=Non
 def test_native_inflight_fg_persist_entries_use_direct_variant_payload():
     from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
 
-    base_stats = _stats(100)
-    fg_stats = _stats(999)
+    # BaseStats IS the post-gem visible row; the persisted visible Stats equals it.
+    visible = _stats(555)
     fake_song = _song_with_variants(
         [
             {
@@ -57,7 +57,7 @@ def test_native_inflight_fg_persist_entries_use_direct_variant_payload():
                 "fg_score": 1200,
                 "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
                 "minis": ["M1", "M2", "M3"],
-                "data": _force_payload(base_stats=base_stats, stats=fg_stats),
+                "data": _force_payload(base_stats=visible, stats=None),
             }
         ]
     )
@@ -69,26 +69,21 @@ def test_native_inflight_fg_persist_entries_use_direct_variant_payload():
     assert entries[0]["fg_score"] == 1200
     assert entries[0]["gear"] == ["G1", "G2", "G3", "G4", "G5", "G6"]
     assert entries[0]["minis"] == ["M1", "M2", "M3"]
-    assert entries[0]["details"]["Stats"] == fg_stats
-    assert entries[0]["force"]["Stats"] == fg_stats
+    assert entries[0]["details"]["Stats"] == visible
+    assert entries[0]["force"]["Stats"] == visible
     assert (entries[0]["force"].get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
 
 
-def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
-    from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
+def test_native_inflight_fg_persist_entries_treat_base_stats_as_post_gem_visible_row():
+    # BaseStats is already the post-gem visible row: persistence must surface it
+    # verbatim and must NOT re-apply gems on top (the 2026-07-11 Canon-in-D
+    # double-count regression, where Vibe 1018 wrongly became 1432).
     from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
+    from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 
-    base_stats = _stats(100)
-    expected_stats = apply_gems_to_base_fast(
-        base_stats,
-        "Rush",
-        9,
-        18,
-        1,
-        0,
-        0,
-        0,
-    )
+    visible = _stats(100)
+    doubled = apply_gems_to_base_stats(visible, "Rush", 9, 18, 1, 0, 0, 0)
+    assert doubled != visible  # sanity: re-applying gems WOULD change the row
     fake_song = _song_with_variants(
         [
             {
@@ -98,7 +93,7 @@ def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
                 "fg_score": 1200,
                 "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
                 "minis": ["M1", "M2", "M3"],
-                "data": _force_payload(base_stats=base_stats, stats=None),
+                "data": _force_payload(base_stats=visible, stats=None),
             }
         ]
     )
@@ -106,15 +101,18 @@ def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
     entries = build_fg_persist_entries(fake_song)
 
     assert len(entries) == 1
-    assert entries[0]["details"]["Stats"] == expected_stats
-    assert entries[0]["force"]["Stats"] == expected_stats
+    assert entries[0]["details"]["Stats"] == visible
+    assert entries[0]["force"]["Stats"] == visible
+    assert entries[0]["details"]["Stats"] != doubled
+    assert entries[0]["force"]["Stats"] != doubled
 
 
 def test_native_inflight_fg_persist_entries_accept_force_surface_when_data_is_not_force():
     from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
 
-    base_stats = _stats(100)
-    fg_stats = _stats(999)
+    # `data` is not a force payload, so the force surface is used; its BaseStats is
+    # the post-gem visible row that gets persisted verbatim.
+    visible = _stats(777)
     fake_song = _song_with_variants(
         [
             {
@@ -124,8 +122,8 @@ def test_native_inflight_fg_persist_entries_accept_force_surface_when_data_is_no
                 "fg_score": 1200,
                 "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
                 "minis": ["M1", "M2", "M3"],
-                "data": {"Stats": base_stats},
-                "force": _force_payload(base_stats=base_stats, stats=fg_stats),
+                "data": {"Stats": visible},
+                "force": _force_payload(base_stats=visible, stats=None),
             }
         ]
     )
@@ -134,7 +132,7 @@ def test_native_inflight_fg_persist_entries_accept_force_surface_when_data_is_no
 
     assert len(entries) == 1
     assert entries[0]["fg_score"] == 1200
-    assert entries[0]["details"]["Stats"] == fg_stats
+    assert entries[0]["details"]["Stats"] == visible
     assert (entries[0]["force"].get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
 
 

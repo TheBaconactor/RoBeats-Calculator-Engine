@@ -1,8 +1,8 @@
 """Regression guard for the frontier-cache manifest fast-path identity check.
 
-Both the timeline and FG response-frontier caches mark recently-used bundles by bumping their
-mtime via ``os.utime`` (idle-TTL retention/purge). The manifest fast-path must therefore key on
-cache-file *size*, not *mtime* -- otherwise a retention touch invalidates the recorded identity and
+External copies and filesystem maintenance can change frontier-cache mtimes without changing their
+bytes. The manifest fast-path must therefore key on cache-file *size*, not *mtime* -- otherwise a
+touch invalidates the recorded identity and
 the expensive per-file validator re-runs for every song on every startup (the measured FG defect:
 fast-path hit 0/6704 -> ~100s warm verify vs timeline's ~9s).
 
@@ -58,6 +58,29 @@ def _seed_manifest_entry(song_path: Path, cache_path: Path, manifest_path: Path)
     )
 
 
+def test_manifestless_derived_cache_hit_needs_no_builder_manifest_write(tmp_path: Path) -> None:
+    song_path = tmp_path / "isolated-job.txt"
+    cache_path = tmp_path / "content-addressed-cache.npz"
+    manifest_path = tmp_path / "manifest.json"
+    song_path.write_text("chart", encoding="utf-8")
+    cache_path.write_text("valid", encoding="utf-8")
+
+    plan = build_manifest_plan(
+        [str(song_path)],
+        manifest_path=manifest_path,
+        cache_version="v1",
+        version_field="version",
+        ref_sig_hex="ref",
+        cache_file_validator=lambda path: Path(path).read_text(encoding="utf-8") == "valid",
+        derived_cache_file_fn=lambda _song_path: str(cache_path),
+        persist_validated_entries=False,
+    )
+
+    assert plan.hit_paths == (str(song_path),)
+    assert plan.missing_paths == ()
+    assert not manifest_path.exists()
+
+
 def test_manifest_fast_path_survives_mtime_touch(tmp_path: Path) -> None:
     song_path = tmp_path / "Song.txt"
     cache_dir = tmp_path / "cache"
@@ -69,8 +92,7 @@ def test_manifest_fast_path_survives_mtime_touch(tmp_path: Path) -> None:
 
     _seed_manifest_entry(song_path, cache_path, manifest_path)
 
-    # Simulate the retention touch: identical bytes, a clearly different mtime (os.utime is exactly
-    # what _touch_*_bundle_files does for idle-TTL bookkeeping).
+    # Simulate an external-copy touch: identical bytes, a clearly different mtime.
     before_ns = cache_path.stat().st_mtime_ns
     future = cache_path.stat().st_mtime + 10_000.0
     os.utime(cache_path, (future, future))

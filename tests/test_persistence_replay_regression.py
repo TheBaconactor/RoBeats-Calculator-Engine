@@ -258,6 +258,22 @@ def _stale_00_hard_fg_force_payload() -> dict:
             "Flow": 29,
             "Chill": 33,
         },
+        # Stale-schema payload: `BaseStats` above is the pre-gem base while `Stats`
+        # below is the post-gem visible row (BaseStats + the solved gems, applied once).
+        # The canonical reader prefers this explicit post-gem `Stats` and never
+        # re-applies gems on top of it.
+        "Stats": {
+            "Perfect Points": 40,
+            "Combo Multiplier": 50,
+            "Fever Multiplier": 76,
+            "Fever Time": 31,
+            "Fever Fill Rate": 64,
+            "Beat": 3,
+            "Vibe": 89,
+            "Rush": 726,
+            "Flow": 29,
+            "Chill": 33,
+        },
         "ForceGreats": {
             "config": {"NonFever1": 5, "NonFever2": 0},
             "final_score": 32521173,
