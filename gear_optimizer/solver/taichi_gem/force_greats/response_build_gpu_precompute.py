@@ -10,8 +10,8 @@ def _first_only_region_groups(items: list[tuple]) -> dict[tuple[float, int], lis
     The region-run core work depends on the geometry only through
     ``(raw_fever_fill, non_fever_base)`` — item slots 2 and 1 — never ``real_fever_time``, so all
     fever-time variants of one key share one table. Keys keep first-appearance order and items
-    keep their canonical order within a key, so the batch entry can stream one region table at a
-    time (build -> reduce the key's geometries -> release) with peak live tables exactly one.
+    keep their canonical order within a key, so the batch scheduler can build tables serially,
+    reduce admitted groups concurrently, and restore canonical result order deterministically.
     """
     groups: dict[tuple[float, int], list[tuple]] = {}
     for item in items:

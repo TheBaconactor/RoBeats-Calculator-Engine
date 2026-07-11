@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import concurrent.futures
 from typing import Any
 
 import numpy as np
@@ -14,11 +13,12 @@ from .response_build_gpu_precompute import (
 from . import response_build_gpu_numba as _rb_numba
 from .response_build_gpu_reducer import (
     _early_great_extension_gap_bound,
-    _first_frontier_reducer_executor,
-    _first_frontier_results_for_precomputed_range,
     _FirstFrontierWorkspacePlan,
-    _resolve_first_only_reducer_threads,
     _song_first_frontier_pair_mod_bound,
+)
+from .response_build_gpu_scheduler import (
+    _FirstFrontierGroupContext,
+    _schedule_first_frontier_region_groups,
 )
 from .response_types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
 
@@ -342,6 +342,12 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                 "workspace_bytes": 0,
                 "region_tables_built": 0,
                 "region_table_peak_live": 0,
+                "region_table_peak_live_bytes": 0,
+                "region_table_parallelism": 1,
+                "region_table_parallel_peak_bound_bytes": 0,
+                "region_table_legacy_single_peak_bound_bytes": 0,
+                "region_table_build_work_ms": 0.0,
+                "region_group_reduce_work_ms": 0.0,
                 "region_table_groups": 0,
                 "geometries_in": int(len(geometry_rows)),
                 "geometries_canonical": 0,
@@ -462,12 +468,13 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     prepared = canonical.prepared
     duplicate_sources_by_source = canonical.duplicate_sources_by_source
 
-    # Region-core-table streaming (song-context orchestration): the region-run core work depends
+    # Region-core-table grouping (song-context orchestration): the region-run core work depends
     # on the geometry only through (raw_fever_fill, non_fever_base), never real_fever_time, so it
-    # is computed ONCE per key and shared read-only across every rt variant of that key. Keys are
-    # streamed one at a time -- build the key's table, reduce its geometries, release the table --
-    # so peak live tables stays exactly ONE (the memory bound that motivated the former per-group
-    # sub-batching in response_cache.py) while every song-invariant input above is built once.
+    # is computed ONCE per key and shared read-only across every rt variant of that key. The
+    # producer-owned candidate bounds below admit as many independent reductions as fit within the
+    # historical exhaustive one-live-table allocation. The coordinator builds tables serially to
+    # avoid temporary-allocation contention, then pipelines their reductions through that strict
+    # width. This uses the RAM eliminated by exact capacity without exceeding the safe envelope.
     # Entry order replicates the per-geometry enumeration exactly (bit-exact stream for the
     # order-sensitive consumers). Without forced-great timing the region family is never
     # enumerated, so every key shares one contentless table.
@@ -498,145 +505,51 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
             np.empty(0, dtype=np.int32),
         )
 
-    executor_creations = 0
-    region_tables_built = 0
-    region_tables_live = 0
-    region_tables_peak_live = 0
-    song_reducer_threads = max(
-        (_resolve_first_only_reducer_threads(len(group_items)) for group_items in grouped_items.values()),
-        default=1,
+    group_results, schedule_stats = _schedule_first_frontier_region_groups(
+        grouped_items=grouped_items,
+        context=_FirstFrontierGroupContext(
+            n=int(n),
+            timestamps=ts,
+            candidate_high_delta_max=float(candidate_high_delta_max),
+            perfect_candidate_timestamps=perfect_ts,
+            great_candidate_timestamps=great_ts,
+            perfect_floor_timestamps=floor_ts,
+            great_floor_timestamps=great_floor_ts,
+            lanes=lane_arr,
+            prefix_perfect_hit=prefix_perfect_hit,
+            prefix_perfect_valid=prefix_perfect_valid,
+            prefix_late_hit=prefix_late_hit,
+            prefix_late_valid=prefix_late_valid,
+            canonical=canonical,
+            use_forced_great_timing=bool(use_forced_great_timing),
+            empty_region_table=empty_region_table,
+            workspace_plan=workspace_plan,
+        ),
     )
-    first_only_executor: concurrent.futures.ThreadPoolExecutor | None = None
-    try:
-        if int(song_reducer_threads) > 1:
-            # ONE reducer executor for the whole song build: its threads live across every
-            # region-table group, so their stamp workspaces are created once per thread.
-            first_only_executor = _first_frontier_reducer_executor(int(song_reducer_threads))
-            executor_creations += 1
-        for table_key, group_items in grouped_items.items():
-            if bool(use_forced_great_timing):
-                action_k_arr = np.ascontiguousarray(group_items[0][4], dtype=np.int32)
-                region_table = _rb_numba._numba_build_region_core_table(
-                    int(n),
-                    int(action_k_arr.shape[0]),
-                    action_k_arr,
-                    float(table_key[0]),
-                    ts,
-                    candidate_high_delta_max,
-                    floor_ts,
-                    perfect_ts,
-                    great_floor_ts,
-                    great_ts,
-                    lane_arr,
-                )
-                region_tables_built += 1
-                region_tables_live += 1
-                region_tables_peak_live = max(int(region_tables_peak_live), int(region_tables_live))
-            else:
-                region_table = empty_region_table
-            region_tables_by_key = {table_key: region_table}
-            geometry_count = len(group_items)
-            real_time_index = np.ascontiguousarray(
-                np.asarray(
-                    [canonical.real_time_index_by_source[int(item[0])] for item in group_items],
-                    dtype=np.int32,
-                )
-            )
-            reducer_threads = _resolve_first_only_reducer_threads(int(geometry_count))
-            if int(reducer_threads) <= 1:
-                range_results = (
-                    _first_frontier_results_for_precomputed_range(
-                        n=int(n),
-                        chunk=group_items,
-                        start=0,
-                        stop=int(geometry_count),
-                        timestamps=ts,
-                        candidate_high_delta_max=candidate_high_delta_max,
-                        perfect_candidate_timestamps=perfect_ts,
-                        great_candidate_timestamps=great_ts,
-                        perfect_floor_timestamps=floor_ts,
-                        great_floor_timestamps=great_floor_ts,
-                        lanes=lane_arr,
-                        prefix_perfect_hit=prefix_perfect_hit,
-                        prefix_perfect_valid=prefix_perfect_valid,
-                        prefix_late_hit=prefix_late_hit,
-                        prefix_late_valid=prefix_late_valid,
-                        timestamp_end_idx=canonical.timestamp_end_idx,
-                        perfect_end_idx=canonical.perfect_end_idx,
-                        great_end_idx=canonical.great_end_idx,
-                        great_floor_end_idx=canonical.great_floor_end_idx,
-                        capped_perfect_edge_e=canonical.capped_perfect_edge_e,
-                        capped_late_edge_e=canonical.capped_late_edge_e,
-                        capped_eg_perfect_e=canonical.capped_eg_perfect_e,
-                        capped_eg_late_e=canonical.capped_eg_late_e,
-                        real_time_index=real_time_index,
-                        use_forced_great_timing=bool(use_forced_great_timing),
-                        region_tables_by_key=region_tables_by_key,
-                        workspace_plan=workspace_plan,
-                    ),
-                )
-            else:
-                target_ranges = max(int(reducer_threads), int(reducer_threads) * 256)
-                step = max(1, (int(geometry_count) + int(target_ranges) - 1) // int(target_ranges))
-                ranges = tuple(
-                    (start, min(int(geometry_count), start + int(step)))
-                    for start in range(0, int(geometry_count), int(step))
-                )
-                futures = tuple(
-                    first_only_executor.submit(
-                        _first_frontier_results_for_precomputed_range,
-                        n=int(n),
-                        chunk=group_items,
-                        start=int(start),
-                        stop=int(stop),
-                        timestamps=ts,
-                        candidate_high_delta_max=candidate_high_delta_max,
-                        perfect_candidate_timestamps=perfect_ts,
-                        great_candidate_timestamps=great_ts,
-                        perfect_floor_timestamps=floor_ts,
-                        great_floor_timestamps=great_floor_ts,
-                        lanes=lane_arr,
-                        prefix_perfect_hit=prefix_perfect_hit,
-                        prefix_perfect_valid=prefix_perfect_valid,
-                        prefix_late_hit=prefix_late_hit,
-                        prefix_late_valid=prefix_late_valid,
-                        timestamp_end_idx=canonical.timestamp_end_idx,
-                        perfect_end_idx=canonical.perfect_end_idx,
-                        great_end_idx=canonical.great_end_idx,
-                        great_floor_end_idx=canonical.great_floor_end_idx,
-                        capped_perfect_edge_e=canonical.capped_perfect_edge_e,
-                        capped_late_edge_e=canonical.capped_late_edge_e,
-                        capped_eg_perfect_e=canonical.capped_eg_perfect_e,
-                        capped_eg_late_e=canonical.capped_eg_late_e,
-                        real_time_index=real_time_index,
-                        use_forced_great_timing=bool(use_forced_great_timing),
-                        region_tables_by_key=region_tables_by_key,
-                        workspace_plan=workspace_plan,
-                    )
-                    for start, stop in ranges
-                )
-                range_results = tuple(future.result() for future in futures)
-            for result_rows in range_results:
-                for source_idx, frontier in result_rows:
-                    for duplicate_source_idx in duplicate_sources_by_source[int(source_idx)]:
-                        out[int(duplicate_source_idx)] = frontier
-            # Release the group's region table before the next build: peak live stays exactly 1.
-            del region_tables_by_key, region_table
-            if bool(use_forced_great_timing):
-                region_tables_live -= 1
-    finally:
-        if first_only_executor is not None:
-            first_only_executor.shutdown(wait=True)
+    for result_rows in group_results:
+        for source_idx, frontier in result_rows:
+            for duplicate_source_idx in duplicate_sources_by_source[int(source_idx)]:
+                out[int(duplicate_source_idx)] = frontier
 
     if stats_sink is not None:
         stats_sink.update(
             {
                 "end_table_precomputes": int(end_table_precomputes),
-                "executor_creations": int(executor_creations),
+                "executor_creations": int(schedule_stats.executor_creations),
                 "workspace_allocations": int(workspace_plan.allocations),
                 "workspace_bytes": int(workspace_plan.allocated_bytes),
-                "region_tables_built": int(region_tables_built),
-                "region_table_peak_live": int(region_tables_peak_live),
+                "region_tables_built": int(schedule_stats.region_tables_built),
+                "region_table_peak_live": int(schedule_stats.region_table_peak_live),
+                "region_table_peak_live_bytes": int(schedule_stats.region_table_peak_live_bytes),
+                "region_table_parallelism": int(schedule_stats.region_table_parallelism),
+                "region_table_parallel_peak_bound_bytes": int(
+                    schedule_stats.region_table_parallel_peak_bound_bytes
+                ),
+                "region_table_legacy_single_peak_bound_bytes": int(
+                    schedule_stats.region_table_legacy_single_peak_bound_bytes
+                ),
+                "region_table_build_work_ms": float(schedule_stats.region_table_build_work_ms),
+                "region_group_reduce_work_ms": float(schedule_stats.region_group_reduce_work_ms),
                 "region_table_groups": int(len(grouped_items)),
                 "geometries_in": int(len(geometry_rows)),
                 "geometries_canonical": int(len(prepared)),
@@ -665,10 +578,11 @@ def build_force_greats_response_first_frontiers_gpu_batch(
 
     Song-invariant work (chart array coercion, prefix activation-hit tables, end-index tables for
     every unique real_fever_time, global geometry canonicalization, the reducer executor and its
-    per-thread right-sized stamp workspaces) happens exactly once; the per-key region core tables
-    are then streamed through the reducer -- build, reduce, release -- so peak live region tables
-    stays exactly one. Returns frontiers aligned to the input geometry order. ``stats_sink``, when
-    given, is filled with the build's orchestration counters (pure telemetry, no behavior).
+    per-thread right-sized stamp workspaces) happens exactly once. Per-key region core tables build
+    serially and their independent reductions overlap only when the sum of their producer-owned
+    build-peak bounds fits the historical exhaustive one-table allocation. Returns frontiers
+    aligned to the input geometry order.
+    ``stats_sink``, when given, is filled with orchestration counters (telemetry only).
     """
     return _build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,

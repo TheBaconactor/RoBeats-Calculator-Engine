@@ -297,12 +297,12 @@ def _build_response_frontier_cache_payload(
         source_counts[source] += 1
     if missing_by_geometry:
         missing_items = tuple(missing_by_geometry.items())
-        # ONE batch call per song build: the batch entry owns the region-core-table streaming
-        # (build one key's table, reduce its geometries, release it before the next key), so the
-        # one-live-table memory bound of the former per-group sub-batching here is preserved while
-        # every song-invariant input -- chart arrays, prefix activation-hit tables, the end-index
-        # tables for ALL unique fever times, the global geometry canonicalization, the reducer
-        # executor and its per-thread stamp workspaces -- is built exactly once per song.
+        # ONE batch call per song build: the batch entry owns region-core-table admission and
+        # reduction. Tables build serially; independent reductions overlap only when their combined
+        # exact build-peak bounds fit the historical exhaustive one-table allocation, while every song-invariant
+        # input -- chart arrays, prefix activation-hit tables, end-index tables for ALL unique
+        # fever times, global geometry canonicalization, and right-sized stamp workspaces -- is
+        # built exactly once per song.
         batch_stats: dict[str, Any] = {}
         build_t0 = time.perf_counter()
         built_frontiers = build_force_greats_response_first_frontiers_gpu_batch(
