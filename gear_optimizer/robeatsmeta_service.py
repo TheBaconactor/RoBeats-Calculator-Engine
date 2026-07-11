@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.core.parsing import env_int, env_str
+from gear_optimizer.core.parsing import env_flag, env_int, env_str
 from gear_optimizer.data.database import get_best_loadouts
 
 logger = logging.getLogger(__name__)
@@ -598,12 +598,24 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     server = ThreadingHTTPServer((args.host, int(args.port)), RoBeatsMetaServiceHandler)
     server.daemon_threads = True
-    prebuild = threading.Thread(
-        target=_prebuild_catalog_frontier_caches,
-        name="catalog-frontier-cache-prebuild",
-        daemon=True,
-    )
-    prebuild.start()
+    # Service-mode external boundary: when the FG/timeline caches are provisioned externally (e.g.
+    # built on a beefier host and copied in), skip the deployment-time catalog prebuild so the box
+    # does not grind rebuilding what is about to be dropped in. Serving is unaffected -- the isolated
+    # solve path still builds any genuinely missing entry on demand.
+    if env_flag("ROBEATSMETA_SKIP_CATALOG_PREBUILD"):
+        print(
+            "[robeatsmeta-service] catalog frontier cache prebuild SKIPPED "
+            "(ROBEATSMETA_SKIP_CATALOG_PREBUILD): cache provisioned externally; missing entries build on demand.",
+            flush=True,
+        )
+        logger.info("catalog frontier cache prebuild skipped (ROBEATSMETA_SKIP_CATALOG_PREBUILD)")
+    else:
+        prebuild = threading.Thread(
+            target=_prebuild_catalog_frontier_caches,
+            name="catalog-frontier-cache-prebuild",
+            daemon=True,
+        )
+        prebuild.start()
     print(
         f"[robeatsmeta-service] listening on http://{args.host}:{args.port}"
         f" (pool={_SOLVE_POOL_SIZE}, timeline_cache={_TIMELINE_FRONTIER_CACHE_DIR},"
