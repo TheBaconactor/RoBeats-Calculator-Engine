@@ -228,6 +228,15 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
     monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
     monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: _Plan())
     monkeypatch.setattr(prebuild, "_apply_manifest_results", lambda **_kwargs: 0)
+
+    def _unexpected_lock(*_args, **_kwargs):
+        raise AssertionError("cache hits must not acquire the build lock")
+
+    monkeypatch.setattr(
+        prebuild,
+        "FrontierBuildLock",
+        _unexpected_lock,
+    )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
         lambda: 0,
@@ -248,6 +257,45 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
     assert summary.total == 2
     assert summary.completed == 2
     assert summary.disk == 2
+
+
+def test_timeline_prebuild_manifest_hits_do_not_acquire_build_lock(monkeypatch, tmp_path: Path) -> None:
+    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
+
+    song_path = tmp_path / "Song.txt"
+    song_path.write_text("fake", encoding="utf-8")
+
+    class _Plan:
+        total_paths = 1
+        hit_paths = (str(song_path),)
+        missing_paths = ()
+        key_by_norm_path = {}
+
+        @property
+        def hit_count(self) -> int:
+            return 1
+
+    monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: _Plan())
+
+    def _unexpected_lock(*_args, **_kwargs):
+        raise AssertionError("cache hits must not acquire the build lock")
+
+    monkeypatch.setattr(
+        prebuild,
+        "FrontierBuildLock",
+        _unexpected_lock,
+    )
+
+    summary = prebuild.run_timeline_frontier_cache_prebuild(
+        cfg=object(),
+        song_queue=[(str(song_path),)],
+        ref_arrays={},
+        data_root=tmp_path,
+    )
+
+    assert summary.total == 1
+    assert summary.completed == 1
+    assert summary.disk == 1
 
 
 def test_startup_frontier_cache_prebuild_has_no_scope_or_disable_flags() -> None:

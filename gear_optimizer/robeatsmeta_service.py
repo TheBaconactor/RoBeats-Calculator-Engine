@@ -338,14 +338,21 @@ def _job_slug(value: Any) -> str:
     return slug or "job"
 
 
-def _normalize_chart(chart_text: str, song_name: str) -> str:
-    """Force Song Name and Difficulty so the isolated chart matches the run config.
+def _normalize_timing_mode(value: Any) -> str:
+    mode = str(value or "perfect_window").strip().lower()
+    if mode not in {"perfect_window", "zero_ms"}:
+        raise RequestError(f"unknown timingMode {value!r}")
+    return mode
+
+
+def _normalize_chart(chart_text: str, song_name: str, timing_mode: str) -> str:
+    """Force Song Name, Difficulty, and timing mode so the isolated chart matches the request.
 
     The file name is the unique job slug. The Song Name header is the semantic song identity:
     Mini Ascension song targets and the output DB rows key off it.
     """
     out: list[str] = []
-    have_name = have_diff = False
+    have_name = have_diff = have_timing_mode = False
     for line in chart_text.splitlines():
         if line.startswith("Song Name\t") and not have_name:
             out.append(f"Song Name\t{song_name}")
@@ -353,6 +360,9 @@ def _normalize_chart(chart_text: str, song_name: str) -> str:
         elif line.startswith("Difficulty\t") and not have_diff:
             out.append("Difficulty\tHard")
             have_diff = True
+        elif line.startswith("Timing Mode\t") and not have_timing_mode:
+            out.append(f"Timing Mode\t{timing_mode}")
+            have_timing_mode = True
         else:
             out.append(line)
     prefix: list[str] = []
@@ -360,6 +370,8 @@ def _normalize_chart(chart_text: str, song_name: str) -> str:
         prefix.append(f"Song Name\t{song_name}")
     if not have_diff:
         prefix.append("Difficulty\tHard")
+    if not have_timing_mode:
+        prefix.append(f"Timing Mode\t{timing_mode}")
     return "\n".join(prefix + out) + "\n"
 
 
@@ -400,7 +412,12 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 
 
 def _solve_isolated(
-    job: str, chart_text: str, result_song_name: str, repeats: int, reasoning: str = "default"
+    job: str,
+    chart_text: str,
+    result_song_name: str,
+    repeats: int,
+    reasoning: str = "default",
+    timing_mode: str = "perfect_window",
 ) -> list[dict[str, Any]]:
     """Run the canonical optimizer pipeline once in a throwaway per-job workspace."""
     work = _service_run_root() / job
@@ -408,7 +425,10 @@ def _solve_isolated(
     data_dir = work / "Data"
     (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
     shutil.copytree(GEAR_DIR, data_dir / "Gear")  # real files; discovery does not follow symlinks
-    (data_dir / "Hard" / f"{job}.txt").write_text(_normalize_chart(chart_text, result_song_name), encoding="utf-8")
+    (data_dir / "Hard" / f"{job}.txt").write_text(
+        _normalize_chart(chart_text, result_song_name, _normalize_timing_mode(timing_mode)),
+        encoding="utf-8",
+    )
     # Reasoning effort scales the GA search knobs. Only write them above "default" so the default
     # path stays byte-identical to before this knob existed (config.py's own fallbacks apply).
     level = _normalize_reasoning(reasoning)
@@ -485,12 +505,13 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     chart_text, result_song_name = chart_text_and_result_song_name_for_request(request, fallback_name=job)
     repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
     reasoning = _normalize_reasoning(request.get("reasoning"))
+    timing_mode = _normalize_timing_mode(request.get("timingMode"))
     state, owner = _claim_job_solve(job)
     if not owner:
         logger.info("joining in-flight optimizer solve for job %s", job)
         return state.wait()
     try:
-        state.result = _solve_isolated(job, chart_text, result_song_name, repeats, reasoning)
+        state.result = _solve_isolated(job, chart_text, result_song_name, repeats, reasoning, timing_mode)
         return state.result
     except BaseException as exc:
         state.error = exc

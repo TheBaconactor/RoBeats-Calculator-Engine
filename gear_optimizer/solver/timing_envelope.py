@@ -502,13 +502,14 @@ def apply_timing_envelope(
     calc_song: dict,
     *,
     attach_fg: bool = True,
-    mode: str = "perfect_window",
+    mode: str | None = None,
     baseline_offset: np.ndarray | None = None,
 ) -> dict | None:
     """
     Attach deterministic timing-envelope streams to a calc_song.
 
-    ``mode`` selects the timing model this calc_song is prepared for. It is a
+    ``mode`` selects the timing model this calc_song is prepared for. When omitted, the chart's
+    optional ``Timing Mode`` metadata is authoritative, then defaults to ``perfect_window``. It is a
     semantic input (each mode is one canonical preparation), not a perf flag:
 
     - ``"perfect_window"`` (default): base scoring keeps chart timestamps; FG
@@ -524,7 +525,8 @@ def apply_timing_envelope(
 
     if not isinstance(calc_song, dict):
         return None
-    timing_mode = str(mode or "perfect_window").strip().lower()
+    metadata = calc_song.get("metadata", {}) or {}
+    timing_mode = str(mode if mode is not None else metadata.get("Timing Mode") or "perfect_window").strip().lower()
     if timing_mode not in {"perfect_window", "zero_ms"}:
         raise ValueError(f"apply_timing_envelope: unknown timing mode {mode!r}")
     if (

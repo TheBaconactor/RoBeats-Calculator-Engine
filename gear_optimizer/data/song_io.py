@@ -309,6 +309,7 @@ def read_song_file(fp):
             "Fever Fill": "",
             "Fever Time": "",
             "Long Notes": "",
+            "Timing Mode": "",
         },
         "timestamps": np.empty((0,), dtype=np.float32),
         "note_types": np.empty((0,), dtype=np.int16),
