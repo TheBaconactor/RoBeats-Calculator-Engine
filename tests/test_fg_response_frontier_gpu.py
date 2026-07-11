@@ -75,6 +75,92 @@ def _prebuild_response_bundle(calc_song, ref_arrays, base_stats_list, *, total_b
     build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=full_stat_grid)
 
 
+def _replay_response_result_through_input_engine(*, calc_song, final_stats, selected_color, result):
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        force_greats_note_graph,
+        reconcile_force_greats_note_graph,
+    )
+    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
+    from gear_optimizer.solver.taichi_gem.force_greats import reconstruct_force_greats_response_trace
+    from tools.verify.game_sim import IntendedNote, NoteChart, presses_from_intended, simulate
+
+    song_inputs = extract_fg_song_inputs(calc_song)
+    trace = reconstruct_force_greats_response_trace(
+        non_fever_base=int(result.frontier.non_fever_base),
+        target_surface=result.surface,
+        timestamps=song_inputs.timestamps,
+        perfect_candidate_timestamps=song_inputs.perfect_candidates,
+        great_candidate_timestamps=song_inputs.great_candidates,
+        perfect_floor_timestamps=song_inputs.perfect_floor,
+        great_floor_timestamps=song_inputs.great_floor,
+        lanes=song_inputs.lanes,
+        raw_fever_fill=float(result.raw_fever_fill),
+        real_fever_time=float(result.real_fever_time),
+        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+    )
+
+    song_data = calc_song["song_data"]
+    meta = calc_song["metadata"]
+    ts = np.asarray(song_data["timestamps"])
+    note_types = np.asarray(song_data["note_types"])
+    lanes = np.asarray(song_data["lanes"])
+    total_notes = int(len(ts))
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=total_notes,
+        timestamps=ts,
+        note_types=note_types,
+        timing_mode="perfect_window",
+    )
+    surface = tuple(map(int, result.surface))
+    reconcile_force_greats_note_graph(
+        graph,
+        total_notes=total_notes,
+        fever_words=list(surface[0:4]),
+        great_words=list(surface[4:8]),
+        body_fever=surface[8],
+        body_great=surface[9],
+        body_fever_great=surface[10],
+    )
+
+    chart = NoteChart(
+        timestamps_ms=[float(value) * 1000.0 for value in ts.tolist()],
+        lanes=[int(value) for value in lanes.tolist()],
+        note_types=[int(value) for value in note_types.tolist()],
+    )
+    intended = [
+        IntendedNote(
+            note_index=int(node["note_index"]),
+            hit_time_ms=float(node["hit_time_ms"]),
+            result="great" if node["note_result"] == "Great" else "perfect",
+            note_type=int(note_types[int(node["note_index"])]),
+            lane=int(lanes[int(node["note_index"])]),
+            delta_ms=(float(node["delta_ms"]) if node.get("delta_ms") is not None else None),
+        )
+        for node in graph
+    ]
+    statsdict = {
+        "PerfectPoints": final_stats["Perfect Points"],
+        "ComboMultiplier": final_stats["Combo Multiplier"],
+        "FeverMultiplier": final_stats["Fever Multiplier"],
+        "FeverTime": final_stats["Fever Time"],
+        "FeverFillRate": final_stats["Fever Fill Rate"],
+        "ColorBlue": final_stats[selected_color],
+    }
+    taps = int((note_types == 1).sum())
+    heads = int((note_types == 2).sum())
+    last_note_time_ms = float(meta.get("Last Note Time", ts[-1] * 1000.0))
+    if last_note_time_ms < 1000.0:
+        last_note_time_ms = float(meta["Last Note Time"]) * 1000.0
+    config = {
+        "hitCount": total_notes,
+        "hitObjectsCount": taps + heads,
+        "lastNoteTimeSec": (last_note_time_ms + 1000.0) / 1000.0,
+    }
+    presses = presses_from_intended(chart, intended)
+    return simulate(chart, statsdict, ["ColorBlue"], presses, config, frame_dt_ms=1000.0 / 60.0)
+
+
 def test_ftff_projection_matches_canonical_stats_for_consumed_fields():
     from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import _stats_after_ftff_for_inner
@@ -348,7 +434,7 @@ def test_response_frontier_exact_uses_natural_forced_great_cap_above_legacy_cap(
     rows = 161
     ref_arrays = {
         "Perfect Points": np.zeros(rows, dtype=np.float64),
-        "Combo Multiplier": np.ones(rows, dtype=np.float64),
+        "Combo Multiplier": np.full(rows, 2.0, dtype=np.float64),
         "Fever Multiplier": np.full(rows, 4.0, dtype=np.float64),
         "Fever Fill Rate": np.ones(rows, dtype=np.float64),
         "Fever Time": np.ones(rows, dtype=np.float64),
@@ -412,8 +498,8 @@ def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference(t
     rows = 161
     ref_arrays = {
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
-        "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
-        "Fever Multiplier": np.linspace(1.0, 4.0, rows, dtype=np.float64),
+        "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
+        "Fever Multiplier": np.linspace(3.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64),
         "Fever Time": np.full(rows, 0.5, dtype=np.float64),
     }
@@ -490,8 +576,8 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
     rows = 161
     ref_arrays = {
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
-        "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
-        "Fever Multiplier": np.linspace(1.0, 4.0, rows, dtype=np.float64),
+        "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
+        "Fever Multiplier": np.linspace(3.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64),
         "Fever Time": np.full(rows, 0.5, dtype=np.float64),
     }
@@ -534,7 +620,8 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
     assert int(base_score) >= int(result.best_score)
 
 
-def test_all_right_there_served_fixed_cell_prefers_region_delay_bundle(tmp_path, monkeypatch):
+def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path, monkeypatch):
+    """Pin the current event-time fever duration, not the retired extra-1/60 duration."""
     from gear_optimizer.data.csv_parser import read_table
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
@@ -582,17 +669,26 @@ def test_all_right_there_served_fixed_cell_prefers_region_delay_bundle(tmp_path,
         include_forced_counts=True,
     )[0]
 
-    assert int(result.best_score) == 29_376_216
-    assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 0, 0, 0, 0, 835, 3, 3)
+    assert int(result.best_score) == 29_340_273
+    assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 0, 0, 0, 0, 835, 6, 6)
     assert tuple(result.forced_counts) == (0, 3)
+    replay = _replay_response_result_through_input_engine(
+        calc_song=calc_song,
+        final_stats=final_stats,
+        selected_color="Vibe",
+        result=result,
+    )
+    assert int(replay.score) == int(result.best_score)
+    assert replay.tally == {"perfect": 1042, "great": 6, "okay": 0, "miss": 0}
+    assert int(replay.max_combo) == 1048
 
 
 def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkeypatch):
     rows = 161
     ref_arrays = {
         "Perfect Points": np.linspace(0.0, 5.0, rows, dtype=np.float64),
-        "Combo Multiplier": np.linspace(1.0, 2.0, rows, dtype=np.float64),
-        "Fever Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
+        "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
+        "Fever Multiplier": np.linspace(3.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.full(rows, 0.6, dtype=np.float64),
         "Fever Time": np.full(rows, 0.4, dtype=np.float64),
     }
@@ -657,8 +753,8 @@ def test_response_frontier_many_fast_path_matches_individual_exact_solves_with_f
     rows = 161
     ref_arrays = {
         "Perfect Points": np.linspace(0.0, 5.0, rows, dtype=np.float64),
-        "Combo Multiplier": np.linspace(1.0, 2.0, rows, dtype=np.float64),
-        "Fever Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
+        "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
+        "Fever Multiplier": np.linspace(3.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.full(rows, 0.6, dtype=np.float64),
         "Fever Time": np.full(rows, 0.4, dtype=np.float64),
     }
@@ -735,12 +831,6 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     from gear_optimizer.data.csv_parser import read_table
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
-    from gear_optimizer.solver.fg_response_scoring.note_graph import (
-        force_greats_note_graph,
-        reconcile_force_greats_note_graph,
-    )
-    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
-    from gear_optimizer.solver.taichi_gem.force_greats import reconstruct_force_greats_response_trace
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         load_response_frontier_scoring_bundle,
@@ -750,7 +840,6 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
         score_prepared_force_greats_response_frontier_batch_cpu_sync,
     )
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-    from tools.verify.game_sim import IntendedNote, NoteChart, presses_from_intended, simulate
 
     calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"), {})
     apply_timing_envelope(calc_song, mode="perfect_window")
@@ -789,77 +878,12 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 4095, 0, 0, 0, 1361, 5, 5)
     assert tuple(result.forced_counts) == (13, 2)
 
-    song_inputs = extract_fg_song_inputs(calc_song)
-    trace = reconstruct_force_greats_response_trace(
-        non_fever_base=int(result.frontier.non_fever_base),
-        target_surface=result.surface,
-        timestamps=song_inputs.timestamps,
-        perfect_candidate_timestamps=song_inputs.perfect_candidates,
-        great_candidate_timestamps=song_inputs.great_candidates,
-        perfect_floor_timestamps=song_inputs.perfect_floor,
-        great_floor_timestamps=song_inputs.great_floor,
-        lanes=song_inputs.lanes,
-        raw_fever_fill=float(result.raw_fever_fill),
-        real_fever_time=float(result.real_fever_time),
-        use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+    replay = _replay_response_result_through_input_engine(
+        calc_song=calc_song,
+        final_stats=final_stats,
+        selected_color="Chill",
+        result=result,
     )
-
-    song_data = calc_song["song_data"]
-    meta = calc_song["metadata"]
-    ts = np.asarray(song_data["timestamps"])
-    nt = np.asarray(song_data["note_types"])
-    lanes = np.asarray(song_data["lanes"])
-    n = int(len(ts))
-    graph = force_greats_note_graph(
-        frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt, timing_mode="perfect_window"
-    )
-    surf = tuple(map(int, result.surface))
-    reconcile_force_greats_note_graph(
-        graph,
-        total_notes=n,
-        fever_words=list(surf[0:4]),
-        great_words=list(surf[4:8]),
-        body_fever=surf[8],
-        body_great=surf[9],
-        body_fever_great=surf[10],
-    )
-
-    chart = NoteChart(
-        timestamps_ms=[float(x) * 1000.0 for x in ts.tolist()],
-        lanes=[int(x) for x in lanes.tolist()],
-        note_types=[int(x) for x in nt.tolist()],
-    )
-    intended = [
-        IntendedNote(
-            note_index=int(node["note_index"]),
-            hit_time_ms=float(node["hit_time_ms"]),
-            result="great" if node["note_result"] == "Great" else "perfect",
-            note_type=int(nt[int(node["note_index"])]),
-            lane=int(lanes[int(node["note_index"])]),
-            delta_ms=(float(node["delta_ms"]) if node.get("delta_ms") is not None else None),
-        )
-        for node in graph
-    ]
-    statsdict = {
-        "PerfectPoints": final_stats["Perfect Points"],
-        "ComboMultiplier": final_stats["Combo Multiplier"],
-        "FeverMultiplier": final_stats["Fever Multiplier"],
-        "FeverTime": final_stats["Fever Time"],
-        "FeverFillRate": final_stats["Fever Fill Rate"],
-        "ColorBlue": final_stats["Chill"],
-    }
-    taps = int((nt == 1).sum())
-    heads = int((nt == 2).sum())
-    last_note_time_ms = float(meta.get("Last Note Time", ts[-1] * 1000.0))
-    if last_note_time_ms < 1000.0:
-        last_note_time_ms = float(meta["Last Note Time"]) * 1000.0
-    config = {
-        "hitCount": n,
-        "hitObjectsCount": taps + heads,
-        "lastNoteTimeSec": (last_note_time_ms + 1000.0) / 1000.0,
-    }
-    presses = presses_from_intended(chart, intended)
-    replay = simulate(chart, statsdict, ["ColorBlue"], presses, config, frame_dt_ms=1000.0 / 60.0)
 
     assert int(replay.score) == 47_502_676  # physical == exact, full combo, no okays/misses
     assert replay.tally == {"perfect": 1692, "great": 17, "okay": 0, "miss": 0}
