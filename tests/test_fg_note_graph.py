@@ -750,6 +750,65 @@ def test_endpoint_early_frontier_includes_reattributed_activation_witness():
             assert note["hit_time_ms"] + note["delta_ms"] >= witness_shown
 
 
+def test_base_delayed_activation_materializes_physical_chord_order():
+    """A delayed base activation cannot leave its following chord sibling at chart time.
+
+    The server consumes inputs by physical timestamp.  Leaving note 2 at 0ms would make it land
+    before note 1's +40ms activation and move fever to the wrong note.  The graph must materialize
+    the frontier's priced order without changing fever membership or judgments.
+    """
+    from gear_optimizer.solver.fg_response_scoring.note_graph import base_note_graph
+
+    trace = [{
+        "section": 1,
+        "activation_index": 1,
+        "fever_start_note_index": 1,
+        "activation_hit_offset_ms": 40.0,
+        "fever_end_index": 4,
+        "fever_window_end_ms": 500.0,
+    }]
+    graph = base_note_graph(
+        total_notes=4,
+        timestamps=np.asarray([0.0, 0.1, 0.1, 0.3], dtype=np.float32),
+        is_fever_mask=np.zeros(4, bool),
+        frontier_trace=trace,
+        note_types=np.ones(4, dtype=np.int16),
+        timing_mode="perfect_window",
+    )
+
+    assert graph[1]["delta_ms"] == pytest.approx(40.0)
+    assert graph[2]["delta_ms"] == pytest.approx(40.0)
+    assert graph[1]["hit_time_ms"] + graph[1]["delta_ms"] == pytest.approx(
+        graph[2]["hit_time_ms"] + graph[2]["delta_ms"]
+    )
+    assert [note["fever"] for note in graph] == [False, True, True, True]
+    assert all(note["note_result"] == "Perfect" for note in graph)
+
+
+def test_base_zero_ms_activation_does_not_retime_chord():
+    """The physical-order materializer is an exact no-op for canonical zero-ms replay."""
+    from gear_optimizer.solver.fg_response_scoring.note_graph import base_note_graph
+
+    trace = [{
+        "section": 1,
+        "activation_index": 1,
+        "fever_start_note_index": 1,
+        "activation_hit_offset_ms": 0.0,
+        "fever_end_index": 4,
+        "fever_window_end_ms": 500.0,
+    }]
+    graph = base_note_graph(
+        total_notes=4,
+        timestamps=np.asarray([0.0, 0.1, 0.1, 0.3], dtype=np.float32),
+        is_fever_mask=np.zeros(4, bool),
+        frontier_trace=trace,
+        note_types=np.ones(4, dtype=np.int16),
+        timing_mode="zero_ms",
+    )
+
+    assert [note["delta_ms"] for note in graph] == [0.0, 0.0, 0.0, 0.0]
+
+
 def test_base_note_graph_matches_production_fever_timeline():
     """base fever mask is the production fever timeline's full per-note is_fever buffer."""
     from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
