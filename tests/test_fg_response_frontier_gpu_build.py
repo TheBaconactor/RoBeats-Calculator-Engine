@@ -425,12 +425,26 @@ def test_fg_response_region_group_admission_uses_worst_concurrent_bounds() -> No
         legacy_single_peak_bound=0,
         thread_limit=8,
     ) == (1, 0)
+    with pytest.raises(ValueError, match="memory bounds must be nonnegative"):
+        response_build_gpu_scheduler._admitted_region_group_threads(
+            build_peak_bounds=(20, -1),
+            legacy_single_peak_bound=70,
+            thread_limit=2,
+        )
     with pytest.raises(MemoryError, match="historical single-table peak bound"):
         response_build_gpu_scheduler._admitted_region_group_threads(
             build_peak_bounds=(71,),
             legacy_single_peak_bound=70,
             thread_limit=1,
         )
+
+
+def test_fg_response_group_scheduler_is_part_of_logic_fingerprint() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_types
+
+    assert "response_build_gpu_scheduler.py" in {
+        source.name for source in response_cache_types._FG_DP_SOURCES
+    }
 
 
 def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -> None:
