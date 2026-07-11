@@ -16,11 +16,12 @@ def normalize_force_payload(force_obj: object) -> dict:
     """
     Normalize persisted FG payload shape.
 
-    Ensures selected element aliases are present and materializes the visible
-    ``Stats`` (the post-gem ``BaseStats`` row) via the single canonical reader.
-    Routing every payload through ``materialize_stats_from_payload`` — instead of
-    trusting an already-present ``Stats`` — is what enforces the ``Stats == BaseStats``
-    invariant and fails loud on a doubled row instead of persisting it.
+    Ensures selected element aliases are present and stamps the visible ``Stats`` (the
+    post-gem row) via the single canonical reader ``materialize_stats_from_payload``.
+    The reader trusts an explicit post-gem ``Stats`` when present, else returns
+    ``BaseStats`` verbatim; it NEVER re-applies gems. The anti-double-count property is
+    structural (there is no gem-application on this path to double), not an assertion —
+    this function does not raise.
     """
     if not isinstance(force_obj, dict) or not force_obj:
         return {}
