@@ -19,7 +19,7 @@ from ...data.loadout_equivalence import (
 )
 from ...data.mini_ascension import materialize_minis_for_song
 from .fg_config import has_valid_fg_config, require_response_surface
-from .force_greats.result_application import materialize_stats_from_payload
+from .force_greats.result_application import read_visible_stats
 from .ref_array_builder import resolve_exact_replay_ref_arrays
 
 
@@ -194,7 +194,7 @@ def _entry_origin_priority(entry: dict) -> tuple[int, int, int]:
 def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
     if not isinstance(force_obj, dict) or not force_obj:
         return fallback_stats if isinstance(fallback_stats, dict) else {}
-    stats = materialize_stats_from_payload(force_obj, mutate_payload=False)
+    stats = read_visible_stats(force_obj, mutate_payload=False)
     return stats if isinstance(stats, dict) and stats else (fallback_stats if isinstance(fallback_stats, dict) else {})
 
 

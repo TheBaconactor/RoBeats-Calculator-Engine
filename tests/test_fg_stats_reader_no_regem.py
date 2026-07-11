@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from gear_optimizer.data.database.force_normalize import _compact_force_details_for_storage
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
-    materialize_stats_from_payload,
+    read_visible_stats,
 )
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 
@@ -47,7 +47,7 @@ def test_reader_returns_base_stats_verbatim_and_never_re_gems():
         "FF": _FF,
         "Selected Element": _SEL,
     }
-    out = materialize_stats_from_payload(payload)
+    out = read_visible_stats(payload)
     assert out == _POST_GEM
     doubled = _doubled(_POST_GEM)
     assert doubled != _POST_GEM  # sanity: the gems would change the row if re-applied
@@ -66,7 +66,7 @@ def test_reader_prefers_explicit_post_gem_stats_over_divergent_base_stats():
         "FF": _FF,
         "Selected Element": _SEL,
     }
-    out = materialize_stats_from_payload(payload)
+    out = read_visible_stats(payload)
     assert out == _POST_GEM
     assert out != pre_gem
 
@@ -79,7 +79,7 @@ def test_reader_mutate_payload_writes_post_gem_row_not_doubled():
         "FF": _FF,
         "Selected Element": _SEL,
     }
-    out = materialize_stats_from_payload(payload, mutate_payload=True)
+    out = read_visible_stats(payload, mutate_payload=True)
     assert out == _POST_GEM
     assert payload["Stats"] == _POST_GEM
     assert payload["Stats"] != _doubled(_POST_GEM)
@@ -104,7 +104,7 @@ def test_storage_promotes_post_gem_stats_to_base_stats_then_reader_is_correct():
     assert stored["BaseStats"] != pre_gem
     # Read-back through the canonical reader yields the post-gem row, never the pre-gem
     # (undercount) nor a re-gem (double-count).
-    read_back = materialize_stats_from_payload(stored)
+    read_back = read_visible_stats(stored)
     assert read_back == _POST_GEM
     assert read_back != pre_gem
     assert read_back != _doubled(_POST_GEM)
