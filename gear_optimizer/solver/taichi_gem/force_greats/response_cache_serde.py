@@ -15,11 +15,11 @@ from .response_cache_keys import (
 from .response_cache_store import (
     _frontier_is_complete,
     _open_surface_sidecar_memmap,
-    _SURFACE_POOL_COLUMNS,
     load_first_surface_scoring_rows,
     _memory_get,
     _memory_put,
 )
+from .response_cache_patterns import SURFACE_PATTERN_COLUMNS, SURFACE_ROW_COLUMNS, expand_surface_rows
 from .response_cache_types import (
     FgResponseFrontierScoringBundle,
     _normalize_stat_key,
@@ -149,22 +149,32 @@ def _pack_frontiers(frontiers: tuple[FgResponseFrontierResult, ...]) -> dict[str
     }
 
 
-def _unpack_frontiers(data: object, *, pool_sidecar: Path) -> tuple[FgResponseFrontierResult, ...]:
+def _unpack_frontiers(
+    data: object,
+    *,
+    row_sidecar: Path,
+    pattern_sidecar: Path,
+) -> tuple[FgResponseFrontierResult, ...]:
     meta = np.asarray(data["frontier_meta"], dtype=np.int32)
     first_offsets = np.asarray(data["first_offsets"], dtype=np.int32)
     first_counts = np.asarray(data["first_counts"], dtype=np.int32)
     surface_row_count = int(np.asarray(data["first_surface_row_count"]).item())
-    # Single canonical surface store: the build/prewarm path reads the SAME uncompressed pool
-    # sidecar as the hot scoring path. Materialize it once into a C-order array (mirrors the
-    # original full-pool allocation) so the long-lived FgResponseSurface tuples never alias the
-    # read-only memmap.
-    pool_memmap = _open_surface_sidecar_memmap(
-        pool_sidecar,
-        columns=_SURFACE_POOL_COLUMNS,
+    surface_pattern_count = int(np.asarray(data["first_surface_pattern_count"]).item())
+    # Materialize the same exact logical rows the scoring path sees. Long-lived surface tuples
+    # never alias either read-only memmap.
+    row_memmap = _open_surface_sidecar_memmap(
+        row_sidecar,
+        columns=SURFACE_ROW_COLUMNS,
         dtype=np.dtype(np.uint32),
         row_count=surface_row_count,
     )
-    first_pool = np.ascontiguousarray(pool_memmap, dtype=np.uint32)
+    pattern_memmap = _open_surface_sidecar_memmap(
+        pattern_sidecar,
+        columns=SURFACE_PATTERN_COLUMNS,
+        dtype=np.dtype(np.uint32),
+        row_count=surface_pattern_count,
+    )
+    first_pool, _first_coeffs = expand_surface_rows(row_memmap, pattern_memmap)
 
     out: list[FgResponseFrontierResult] = []
     surface_cache: dict[tuple[int, ...], FgResponseSurface] = {}
@@ -257,13 +267,17 @@ def frontier_result_from_scoring_bundle(
     first_start = int(scoring_bundle.frontier_offsets[idx])
     first_count = int(scoring_bundle.frontier_lengths[idx])
     row = meta[idx]
-    words = np.asarray(scoring_bundle.surface_words)
-    if int(words.shape[0]) > 0:
+    pattern_ids = np.asarray(scoring_bundle.surface_pattern_ids)
+    if int(pattern_ids.shape[0]) > 0:
         # In-memory bundle (e.g. session-box pruned): its offsets index the IN-MEMORY arrays, not
         # the disk sidecar -- serve the frontier eagerly from them. The disk-lazy path below would
         # silently read the wrong rows for a compacted bundle.
+        pattern_words = np.asarray(scoring_bundle.surface_pattern_words)
         counts = np.asarray(scoring_bundle.surface_counts)
-        segment_words = words[first_start : first_start + first_count]
+        segment_ids = np.asarray(pattern_ids[first_start : first_start + first_count], dtype=np.int64)
+        if bool(np.any(segment_ids < 0)) or bool(np.any(segment_ids >= int(pattern_words.shape[0]))):
+            raise ValueError("FG response scoring bundle references an invalid head-pattern ID")
+        segment_words = pattern_words[segment_ids]
         segment_counts = counts[first_start : first_start + first_count]
         rows7 = np.empty((int(first_count), 7), dtype=np.uint64)
         rows7[:, 0] = segment_words[:, 0].astype(np.uint64) | (segment_words[:, 1].astype(np.uint64) << np.uint64(32))

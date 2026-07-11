@@ -59,9 +59,10 @@ def _score_single_frontier_domain(
         secondary_color=str(secondary_color or ""),
         selected_color=str(selected_color or ""),
         ref_arrays=ref_arrays,
-        surface_words=np.ascontiguousarray(surface_words, dtype=np.uint32),
+        surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
+        surface_pattern_words=np.ascontiguousarray(surface_words, dtype=np.uint32),
         surface_counts=np.ascontiguousarray(surface_counts, dtype=np.int32),
-        surface_head_coeffs=np.ascontiguousarray(surface_head_coeffs, dtype=np.int32),
+        surface_pattern_head_coeffs=np.ascontiguousarray(surface_head_coeffs, dtype=np.int32),
     )
     return np.ascontiguousarray(scored, dtype=np.int32)
 

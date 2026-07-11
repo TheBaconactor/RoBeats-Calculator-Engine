@@ -164,9 +164,9 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
     assert len(list(tmp_path.glob("*.npz"))) == 1
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _surface_sidecar_paths
 
-    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(first.disk_path)
-    assert pool_sidecar.exists()
-    assert coeff_sidecar.exists()
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths(first.disk_path)
+    assert row_sidecar.exists()
+    assert pattern_sidecar.exists()
     with np.load(first.disk_path, allow_pickle=False) as data:
         assert data["stat_keys"].dtype == np.dtype("uint8")
         assert data["stat_keys"].flags.f_contiguous
@@ -177,7 +177,9 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
         assert "first_surface_pool_chunk_00000" not in data.files
         assert "first_surface_head_coeffs_chunk_00000" not in data.files
         surface_row_count = int(data["first_surface_row_count"])
+        surface_pattern_count = int(data["first_surface_pattern_count"])
         assert surface_row_count > 0
+        assert surface_pattern_count > 0
         assert not {
             "state_offsets",
             "state_counts",
@@ -186,14 +188,13 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
             "state_surface_counts",
             "state_surface_pool",
         }.intersection(data.files)
-    # Pool sidecar: uncompressed, C-order, uint32 N x 11; coeff sidecar uint16 N x 4.
-    pool = np.load(pool_sidecar, mmap_mode="r", allow_pickle=False)
-    assert pool.dtype == np.dtype("uint32")
-    assert pool.shape == (surface_row_count, 11)
-    assert pool.flags.c_contiguous
-    coeffs = np.load(coeff_sidecar, mmap_mode="r", allow_pickle=False)
-    assert coeffs.dtype == np.dtype("uint16")
-    assert coeffs.shape == (surface_row_count, 4)
+    row_refs = np.load(row_sidecar, mmap_mode="r", allow_pickle=False)
+    assert row_refs.dtype == np.dtype("uint32")
+    assert row_refs.shape == (surface_row_count, 4)
+    assert row_refs.flags.c_contiguous
+    patterns = np.load(pattern_sidecar, mmap_mode="r", allow_pickle=False)
+    assert patterns.dtype == np.dtype("uint32")
+    assert patterns.shape == (surface_pattern_count, 10)
 
     def _raise_build(*_args, **_kwargs):
         raise AssertionError("warm sparse bundle should load without rebuilding frontiers")
@@ -249,6 +250,7 @@ def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Pa
             "first_offsets",
             "first_counts",
             "first_surface_row_count",
+            "first_surface_pattern_count",
         ),
     )
     assert arrays["frontier_ids"].tolist() == [0, 1]
@@ -257,10 +259,13 @@ def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Pa
     assert arrays["first_counts"].tolist() == [2, 2]
     assert int(arrays["first_surface_row_count"]) == 2
 
-    pool_sidecar, _coeff_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
-    pool = np.load(pool_sidecar, mmap_mode="r", allow_pickle=False)
-    assert pool.shape == (2, 11)
-    assert pool.dtype == np.dtype("uint32")
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
+    row_refs = np.load(row_sidecar, mmap_mode="r", allow_pickle=False)
+    patterns = np.load(pattern_sidecar, mmap_mode="r", allow_pickle=False)
+    assert row_refs.shape == (2, 4)
+    assert row_refs.dtype == np.dtype("uint32")
+    assert patterns.shape[1] == 10
+    assert patterns.dtype == np.dtype("uint32")
 
     loaded = _load_payload(cache_key)
     assert loaded is not None
@@ -378,7 +383,8 @@ def test_fg_response_frontier_scoring_bundle_does_not_unpack_payload_on_disk_hit
     )
 
     assert set(bundle.frontier_idx_by_key) == set(keys)
-    assert bundle.surface_words.shape == (0, 8)
+    assert bundle.surface_pattern_ids.shape == (0,)
+    assert bundle.surface_pattern_words.shape == (0, 8)
     assert int(bundle.surface_row_count) > 0
 
 
@@ -396,16 +402,16 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
     assert first.cache_source == "built"
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _surface_sidecar_paths
 
-    _pool_sidecar, coeff_sidecar = _surface_sidecar_paths(first.disk_path)
+    _row_sidecar, pattern_sidecar = _surface_sidecar_paths(first.disk_path)
     with np.load(first.disk_path, allow_pickle=False) as data:
         assert "first_surface_head_len" in data.files
         assert "first_surface_head_coeffs" not in data.files
         assert "first_surface_head_coeffs_chunk_00000" not in data.files
         assert data["first_surface_head_len"].dtype == np.dtype("uint8")
-    # Head coeffs persist uint16 in the uncompressed coeff sidecar (read back as int32).
-    persisted_coeffs = np.load(coeff_sidecar, mmap_mode="r", allow_pickle=False)
-    assert persisted_coeffs.dtype == np.dtype("uint16")
-    assert persisted_coeffs.shape[1] == 4
+    # Head coeffs persist losslessly as two packed uint32 columns in each exact pattern row.
+    persisted_patterns = np.load(pattern_sidecar, mmap_mode="r", allow_pickle=False)
+    assert persisted_patterns.dtype == np.dtype("uint32")
+    assert persisted_patterns.shape[1] == 10
 
     response_cache.reset_fg_response_frontier_payload_cache()
 
@@ -453,7 +459,8 @@ def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_
     )
 
     assert set(bundle.frontier_idx_by_key) == set(keys)
-    assert bundle.surface_words.shape == (0, 8)
+    assert bundle.surface_pattern_ids.shape == (0,)
+    assert bundle.surface_pattern_words.shape == (0, 8)
     assert int(bundle.surface_row_count) > 0
 
 
@@ -590,28 +597,42 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
 
 def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import (
+        SURFACE_PATTERN_COLUMNS,
+        SURFACE_ROW_COLUMNS,
+    )
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
         _FG_RESPONSE_CACHE_VERSION,
     )
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
 
-    def _plant(digest: str, version: str | None, *, sidecars: bool = True) -> None:
+    def _plant(
+        digest: str,
+        version: str | None,
+        *,
+        sidecars: bool = True,
+        obsolete_sidecars: bool = False,
+    ) -> None:
         members = {"payload": np.arange(3)}
         if version is not None:
             members["version"] = np.array(version)
         np.savez(str(tmp_path / f"{digest}.npz"), **members)
         if sidecars:
-            np.save(
-                str(tmp_path / f"{digest}{store._SURFACE_POOL_SIDECAR_SUFFIX}"),
-                np.zeros((2, store._SURFACE_POOL_COLUMNS), np.int32),
-            )
-            np.save(
-                str(tmp_path / f"{digest}{store._SURFACE_COEFF_SIDECAR_SUFFIX}"),
-                np.zeros((2, store._SURFACE_COEFF_COLUMNS), np.uint16),
-            )
+            if obsolete_sidecars:
+                np.save(str(tmp_path / f"{digest}.surf_pool.npy"), np.zeros((2, 11), np.uint32))
+                np.save(str(tmp_path / f"{digest}.surf_coeffs.npy"), np.zeros((2, 4), np.uint16))
+            else:
+                np.save(
+                    str(tmp_path / f"{digest}{store._SURFACE_ROW_SIDECAR_SUFFIX}"),
+                    np.zeros((2, SURFACE_ROW_COLUMNS), np.uint32),
+                )
+                np.save(
+                    str(tmp_path / f"{digest}{store._SURFACE_PATTERN_SIDECAR_SUFFIX}"),
+                    np.zeros((2, SURFACE_PATTERN_COLUMNS), np.uint32),
+                )
 
-    _plant("stale_a", "fg-response-frontier-legacy-v1")
+    _plant("stale_a", "fg-response-frontier-visible-first-v29", obsolete_sidecars=True)
     _plant("stale_b", "fg-response-frontier-legacy-v2")
     _plant("stale_c", "fg-response-frontier-legacy-v1", sidecars=False)  # sidecars already evicted
     _plant("current", _FG_RESPONSE_CACHE_VERSION)
@@ -625,11 +646,11 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
     # The current entry AND the version-less entry survive (never guess-delete), plus the marker.
     assert {p.name for p in tmp_path.iterdir()} == {
         "current.npz",
-        f"current{store._SURFACE_POOL_SIDECAR_SUFFIX}",
-        f"current{store._SURFACE_COEFF_SIDECAR_SUFFIX}",
+        f"current{store._SURFACE_ROW_SIDECAR_SUFFIX}",
+        f"current{store._SURFACE_PATTERN_SIDECAR_SUFFIX}",
         "noversion.npz",
-        f"noversion{store._SURFACE_POOL_SIDECAR_SUFFIX}",
-        f"noversion{store._SURFACE_COEFF_SIDECAR_SUFFIX}",
+        f"noversion{store._SURFACE_ROW_SIDECAR_SUFFIX}",
+        f"noversion{store._SURFACE_PATTERN_SIDECAR_SUFFIX}",
         store._PURGED_VERSION_MARKER,
     }
     assert (
@@ -648,10 +669,10 @@ def test_compress_cache_dir_sidecars_preserves_memmap_bytes(tmp_path: Path, monk
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
-    arr = np.zeros((50000, 11), dtype=np.uint32)
-    arr[:, 4] = np.arange(50000) % 33
-    arr[:, 8] = 452 + (np.arange(50000) % 600)
-    sidecar = tmp_path / f"deadbeefdeadbeef{store._SURFACE_POOL_SIDECAR_SUFFIX}"
+    arr = np.zeros((50000, 4), dtype=np.uint32)
+    arr[:, 0] = np.arange(50000) % 33
+    arr[:, 1] = 452 + (np.arange(50000) % 600)
+    sidecar = tmp_path / f"deadbeefdeadbeef{store._SURFACE_ROW_SIDECAR_SUFFIX}"
     store._save_surface_sidecar_atomic(sidecar, arr)
     logical = sidecar.stat().st_size
 
@@ -1101,9 +1122,10 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
         frontier_idx_by_stat=frontier_idx_by_stat,
         frontier_offsets=np.asarray([0], dtype=np.int32),
         frontier_lengths=np.asarray([1], dtype=np.int32),
-        surface_words=np.zeros((1, 8), dtype=np.uint32),
+        surface_pattern_ids=np.zeros((1,), dtype=np.int32),
+        surface_pattern_words=np.zeros((1, 8), dtype=np.uint32),
         surface_counts=np.zeros((1, 3), dtype=np.int32),
-        surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
+        surface_pattern_head_coeffs=np.zeros((1, 4), dtype=np.int32),
         raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
         real_time_by_ft=np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
     )
@@ -1143,9 +1165,10 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
         group_ft_stat=np.asarray([0], dtype=np.int32),
         group_ff_stat=np.asarray([0], dtype=np.int32),
         candidate_slices=((0, 1),),
-        scoring_surface_words=np.zeros((1, 8), dtype=np.uint32),
+        scoring_surface_pattern_ids=np.zeros((1,), dtype=np.int32),
+        scoring_surface_pattern_words=np.zeros((1, 8), dtype=np.uint32),
         scoring_surface_counts=np.zeros((1, 3), dtype=np.int32),
-        scoring_surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
+        scoring_surface_pattern_head_coeffs=np.zeros((1, 4), dtype=np.int32),
         scoring_group_offsets=np.asarray([0], dtype=np.int32),
         scoring_group_lengths=np.asarray([1], dtype=np.int32),
         scoring_unique_frontiers=1,
@@ -1164,9 +1187,10 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
         assert "logical_owners" not in kwargs
         assert "logical_surfaces" not in kwargs
         assert "logical_work_cumsum" not in kwargs
-        assert kwargs["surface_words"].shape == (1, 8)
+        assert kwargs["surface_pattern_ids"].shape == (1,)
+        assert kwargs["surface_pattern_words"].shape == (1, 8)
         assert kwargs["surface_counts"].shape == (1, 3)
-        assert kwargs["surface_head_coeffs"].shape == (1, 4)
+        assert kwargs["surface_pattern_head_coeffs"].shape == (1, 4)
         return np.asarray([[123, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], dtype=np.int32), 1
 
     monkeypatch.setattr(
@@ -1239,9 +1263,10 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
             frontier_idx_by_stat=frontier_idx_by_stat,
             frontier_offsets=np.asarray([0], dtype=np.int32),
             frontier_lengths=np.asarray([1], dtype=np.int32),
-            surface_words=surface_words,
+            surface_pattern_ids=np.zeros((1,), dtype=np.int32),
+            surface_pattern_words=surface_words,
             surface_counts=np.zeros((1, 3), dtype=np.int32),
-            surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
+            surface_pattern_head_coeffs=np.zeros((1, 4), dtype=np.int32),
             total_notes=1,
         )
         seen["bundle"] = bundle
@@ -1264,9 +1289,10 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
     assert batch.kept_stat_keys == ()
     assert batch.scoring_bundle_ms >= 0.0
     assert batch.group_meta is None
-    assert batch.scoring_surface_words is None
+    assert batch.scoring_surface_pattern_ids is None
+    assert batch.scoring_surface_pattern_words is None
     assert batch.scoring_surface_counts is None
-    assert batch.scoring_surface_head_coeffs is None
+    assert batch.scoring_surface_pattern_head_coeffs is None
     assert batch.scoring_group_offsets is None
     assert batch.scoring_group_lengths is None
 
@@ -1295,9 +1321,10 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
         frontier_idx_by_stat=frontier_idx_by_stat,
         frontier_offsets=np.asarray([0], dtype=np.int32),
         frontier_lengths=np.asarray([1], dtype=np.int32),
-        surface_words=np.zeros((1, 8), dtype=np.uint32),
+        surface_pattern_ids=np.zeros((1,), dtype=np.int32),
+        surface_pattern_words=np.zeros((1, 8), dtype=np.uint32),
         surface_counts=np.zeros((1, 3), dtype=np.int32),
-        surface_head_coeffs=np.zeros((1, 4), dtype=np.int32),
+        surface_pattern_head_coeffs=np.zeros((1, 4), dtype=np.int32),
         total_notes=1,
     )
 
@@ -1320,7 +1347,7 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
     assert batch.scoring_bundle is prewarmed_bundle
     assert batch.kept_stat_keys == ()
     assert batch.group_meta is None
-    assert batch.scoring_surface_head_coeffs is None
+    assert batch.scoring_surface_pattern_head_coeffs is None
 
 
 def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -> None:
@@ -1350,9 +1377,10 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
         frontier_idx_by_stat=frontier_idx_by_stat,
         frontier_offsets=np.asarray([0, 2], dtype=np.int32),
         frontier_lengths=np.asarray([2, 1], dtype=np.int32),
-        surface_words=surface_words,
+        surface_pattern_ids=np.arange(3, dtype=np.int32),
+        surface_pattern_words=surface_words,
         surface_counts=surface_counts,
-        surface_head_coeffs=surface_head_coeffs,
+        surface_pattern_head_coeffs=surface_head_coeffs,
         total_notes=3,
     )
 
@@ -1372,9 +1400,10 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
             group_ff_stat=np.asarray([0], dtype=np.int32),
             candidate_slices=((0, 1),),
             kept_stat_keys=((0, 0),),
-            scoring_surface_words=surface_words[2:3],
+            scoring_surface_pattern_ids=np.zeros((1,), dtype=np.int32),
+            scoring_surface_pattern_words=surface_words[2:3],
             scoring_surface_counts=surface_counts[2:3],
-            scoring_surface_head_coeffs=surface_head_coeffs[2:3],
+            scoring_surface_pattern_head_coeffs=surface_head_coeffs[2:3],
             scoring_group_offsets=np.asarray([0], dtype=np.int32),
             scoring_group_lengths=np.asarray([1], dtype=np.int32),
             scoring_unique_frontiers=1,
@@ -1389,15 +1418,16 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
         total_budget=0,
         scoring_bundle=prewarmed_bundle,
     )
-    assert batch.scoring_surface_words is None
+    assert batch.scoring_surface_pattern_ids is None
 
     built = response_frontier.build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
 
-    np.testing.assert_array_equal(built.scoring_surface_words, surface_words[2:3])
+    np.testing.assert_array_equal(built.scoring_surface_pattern_ids, np.zeros((1,), dtype=np.int32))
+    np.testing.assert_array_equal(built.scoring_surface_pattern_words, surface_words[2:3])
     np.testing.assert_array_equal(built.scoring_surface_counts, surface_counts[2:3])
     assert built.scoring_group_offsets.tolist() == [0]
     assert built.scoring_group_lengths.tolist() == [1]
-    np.testing.assert_array_equal(built.scoring_surface_head_coeffs, surface_head_coeffs[2:3])
+    np.testing.assert_array_equal(built.scoring_surface_pattern_head_coeffs, surface_head_coeffs[2:3])
     assert not hasattr(built, "scoring_logical_owners")
     assert not hasattr(built, "scoring_logical_surfaces")
     assert not hasattr(built, "scoring_logical_work_cumsum")
@@ -1418,13 +1448,15 @@ def test_packed_scoring_batch_dedupes_and_coalesces_selected_segments() -> None:
         frontier_idx_by_stat=frontier_idx_by_stat,
         frontier_offsets=np.asarray([0, 0, 2], dtype=np.int32),
         frontier_lengths=np.asarray([2, 2, 1], dtype=np.int32),
-        surface_words=surface_words,
+        surface_pattern_ids=np.arange(3, dtype=np.int32),
+        surface_pattern_words=surface_words,
         surface_counts=surface_counts,
-        surface_head_coeffs=surface_head_coeffs,
+        surface_pattern_head_coeffs=surface_head_coeffs,
         cache_key=("unit", "unused"),
     )
 
     (
+        packed_pattern_ids,
         packed_words,
         packed_counts,
         packed_coeffs,
@@ -1441,6 +1473,7 @@ def test_packed_scoring_batch_dedupes_and_coalesces_selected_segments() -> None:
     )
 
     assert unique_frontiers == 3
+    np.testing.assert_array_equal(packed_pattern_ids, np.arange(3, dtype=np.int32))
     np.testing.assert_array_equal(packed_words, surface_words)
     np.testing.assert_array_equal(packed_counts, surface_counts)
     np.testing.assert_array_equal(packed_coeffs, surface_head_coeffs)

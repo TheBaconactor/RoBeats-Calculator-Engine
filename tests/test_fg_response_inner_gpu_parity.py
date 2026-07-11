@@ -54,9 +54,17 @@ def _inputs():
         bg = (i * 2) % 7        # 0..6  <= body_total
         bfg = min(bf, bg) // 2  # <= min(bf,bg); bf+bg-bfg <= 11 < body_total
         surface_counts[i] = (bf, bg, bfg)
+    surface_pattern_ids = np.arange(total_surf, dtype=np.int32)
+    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import (
+        _precompute_surface_head_coeffs,
+    )
+
+    surface_pattern_head_coeffs = _precompute_surface_head_coeffs(surface_words, head_len=head_len)
     return dict(
         group_meta=group_meta, group_offsets=group_offsets, group_lengths=group_lengths,
-        ref_arrays=_ref_arrays(), surface_words=surface_words, surface_counts=surface_counts,
+        ref_arrays=_ref_arrays(), surface_pattern_ids=surface_pattern_ids,
+        surface_pattern_words=surface_words, surface_counts=surface_counts,
+        surface_pattern_head_coeffs=surface_pattern_head_coeffs,
         primary_color="Chill", secondary_color="Flow", selected_color="Chill",
     ), total_surf
 

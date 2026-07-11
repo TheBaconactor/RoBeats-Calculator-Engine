@@ -71,9 +71,8 @@ from .response_types import FgResponseFrontierResult
 #             phantom perfect-activation window and MUST rebuild.
 # v22->v23: BUG-1 judgment-edge inclusivity fix (timing_envelope.py perfect/great FLOOR early edges
 # shifted +1ms to the engine's exclusive-early boundary: -20/-40 -> -19/-39, -95/-190 -> -94/-189).
-# The floor envelopes are frontier-build INPUTS but timing_envelope.py is NOT in _FG_DP_SOURCES, so
-# the logic fingerprint does not cover it -- this explicit base-version bump is what invalidates the
-# stale (over-generous) fever-membership floors. Re-solve to re-persist best_fg_score.
+# The explicit bump invalidated those stale bundles; v30 also fingerprints timing_envelope.py so a
+# future judgment-window change cannot repeat this manifest false-hit failure.
 # v23->v24: input-engine-aware reachability. The frontier now carries lanes in the cache key, keeps
 # raw timing edges in precompute, and filters reconstructed surfaces through the weighted lane-aware
 # owner. Stale v23 bundles can either keep phantoms the input engine cannot play or miss legal
@@ -96,14 +95,31 @@ from .response_types import FgResponseFrontierResult
 # rows packed the Perfect activation inside the forced run) AND miss legal late-Great activation
 # edges whose perfect-floor extent ties the Perfect edge but whose early-Great reach is strictly
 # longer (the +337.5-point tiny-chart oracle witness). Both directions require a rebuild.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v29"
+# v29->v30: exact head-pattern interning. Logical surface order/content is unchanged, but the two
+# sidecars now persist (pattern_id + body counts) rows and exact mask/coefficient patterns instead
+# of repeating eight mask words plus four coefficients for every body-count variant. The reader
+# expands to v29-identical logical rows; the physical format change requires one deliberate rebuild.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v30"
 _HERE = Path(__file__).resolve().parent
 _SOLVER_DIR = _HERE.parents[1]
+_CORE_DIR = _SOLVER_DIR.parent / "core"
+# Canonical game-engine inputs to the cached transition producer. Keep this ownership explicit:
+# cache compaction may reuse exact producer output, but it must never make timing, input-order,
+# lane-reachability, fever, or witness semantics invisible to cache compatibility.
+_FG_GAME_ENGINE_SOURCES = (
+    _CORE_DIR / "constants.py",
+    _CORE_DIR / "time_quantize.py",
+    _SOLVER_DIR / "input_engine_breakpoints.py",
+    _SOLVER_DIR / "timing_envelope.py",
+    _SOLVER_DIR / "scoring" / "fg_policy.py",
+    _SOLVER_DIR / "fg_response_scoring" / "note_graph.py",
+)
 # Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
 # build/search/pack path, add it here (the base version stays the human backstop).
 _FG_DP_SOURCES = (
-    _SOLVER_DIR / "input_engine_breakpoints.py",
+    *_FG_GAME_ENGINE_SOURCES,
     _HERE / "fill_crossing.py",
+    _HERE / "response_cache_keys.py",
     _HERE / "response_builder.py",
     _HERE / "response_types.py",
     _HERE / "response_build_gpu_batch.py",
@@ -112,6 +128,10 @@ _FG_DP_SOURCES = (
     _HERE / "response_build_gpu_reducer.py",
     _HERE / "response_build_gpu_numba.py",
     _HERE / "response_build_gpu_surfaces.py",
+    _HERE / "response_cache_patterns.py",
+    _HERE / "response_cache_serde.py",
+    _HERE / "response_inner_host.py",
+    _HERE / "response_inner_kernels.py",
 )
 _FG_RESPONSE_CACHE_VERSION = (
     f"{_FG_RESPONSE_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint(_FG_DP_SOURCES)}"
@@ -139,6 +159,7 @@ _SCORING_BUNDLE_ARRAY_NAMES = frozenset(
         "first_offsets",
         "first_counts",
         "first_surface_row_count",
+        "first_surface_pattern_count",
     )
 )
 
@@ -212,9 +233,10 @@ class FgResponseFrontierScoringBundle:
     non_fever_base_by_ff: np.ndarray
     real_time_by_ft: np.ndarray
     frontier_meta: np.ndarray
-    surface_words: np.ndarray
+    surface_pattern_ids: np.ndarray
+    surface_pattern_words: np.ndarray
     surface_counts: np.ndarray
-    surface_head_coeffs: np.ndarray
+    surface_pattern_head_coeffs: np.ndarray
     frontier_offsets: np.ndarray
     frontier_lengths: np.ndarray
     surface_row_count: int

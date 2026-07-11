@@ -417,9 +417,10 @@ def _score_response_group_meta_gpu(
     secondary_color: str,
     selected_color: str,
     ref_arrays: dict[str, Any],
-    surface_words: np.ndarray,
+    surface_pattern_ids: np.ndarray,
+    surface_pattern_words: np.ndarray,
     surface_counts: np.ndarray,
-    surface_head_coeffs: np.ndarray | None = None,
+    surface_pattern_head_coeffs: np.ndarray,
 ) -> tuple[np.ndarray, int]:
     group_count = int(group_meta.shape[0])
     if group_count != int(group_offsets.shape[0]) or group_count != int(group_lengths.shape[0]):
@@ -434,16 +435,31 @@ def _score_response_group_meta_gpu(
     ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=SOLVER_NP_FP))
     ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=SOLVER_NP_FP))
     ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=SOLVER_NP_FP))
-    surface_words_all = np.ascontiguousarray(surface_words, dtype=np.uint32)
+    surface_pattern_ids_all = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
+    surface_pattern_words_all = np.ascontiguousarray(surface_pattern_words, dtype=np.uint32)
     surface_counts_all = np.ascontiguousarray(surface_counts, dtype=np.int32)
+    surface_pattern_head_coeffs_all = np.ascontiguousarray(surface_pattern_head_coeffs, dtype=np.int32)
     group_meta_all = np.ascontiguousarray(group_meta, dtype=np.int32)
     group_offsets_all = np.ascontiguousarray(group_offsets, dtype=np.int32)
     group_lengths_all = np.ascontiguousarray(group_lengths, dtype=np.int32)
 
-    if int(surface_words_all.shape[0]) != int(surface_counts_all.shape[0]):
+    if int(surface_pattern_ids_all.shape[0]) != int(surface_counts_all.shape[0]):
         raise ValueError("response frontier GPU surface arrays have inconsistent lengths")
-    if int(surface_words_all.shape[1]) != 8 or int(surface_counts_all.shape[1]) != 3:
+    if (
+        int(surface_pattern_ids_all.ndim) != 1
+        or int(surface_pattern_words_all.ndim) != 2
+        or int(surface_pattern_words_all.shape[1]) != 8
+        or int(surface_counts_all.ndim) != 2
+        or int(surface_counts_all.shape[1]) != 3
+        or int(surface_pattern_head_coeffs_all.ndim) != 2
+        or int(surface_pattern_head_coeffs_all.shape[0]) != int(surface_pattern_words_all.shape[0])
+        or int(surface_pattern_head_coeffs_all.shape[1]) != 4
+    ):
         raise ValueError("response frontier GPU surface arrays have invalid shape")
+    if bool(np.any(surface_pattern_ids_all < 0)) or bool(
+        np.any(surface_pattern_ids_all >= int(surface_pattern_words_all.shape[0]))
+    ):
+        raise ValueError("response frontier GPU surface references an invalid head-pattern ID")
     if bool(np.any(surface_counts_all < 0)):
         raise ValueError("response frontier GPU surface counts must be nonnegative")
     body_fever_all = surface_counts_all[:, 0]
@@ -461,17 +477,6 @@ def _score_response_group_meta_gpu(
     head_lengths = np.unique(np.ascontiguousarray(group_meta_all[:, 6], dtype=np.int32))
     if int(head_lengths.shape[0]) != 1:
         raise ValueError("response frontier GPU group metadata has inconsistent head length")
-    if surface_head_coeffs is None:
-        surface_head_coeffs_all = _precompute_surface_head_coeffs(surface_words_all, head_len=int(head_lengths[0]))
-    else:
-        surface_head_coeffs_all = np.ascontiguousarray(np.asarray(surface_head_coeffs, dtype=np.int32))
-        if (
-            int(surface_head_coeffs_all.ndim) != 2
-            or int(surface_head_coeffs_all.shape[0]) != int(surface_words_all.shape[0])
-            or int(surface_head_coeffs_all.shape[1]) != 4
-        ):
-            raise ValueError("response frontier GPU surface head coefficients have invalid shape")
-
     flags_tuple = _color_flags(primary_color, secondary_color, selected_color)
     allow_pp = bool(int(flags_tuple[0]) != 0 or int(flags_tuple[1]) != 0)
     combo_counts_all = _response_inner_combo_counts(group_meta_all, allow_pp=allow_pp)
@@ -488,19 +493,21 @@ def _score_response_group_meta_gpu(
     # per-chunk index/output slices change. Passing the numpy pool to the kernel
     # re-transfers it host->device on each launch (ti.types.ndarray semantics), so a
     # 0.5-1.5 GB pool over 143-219 chunks is 90-330 GB of redundant PCIe copy and ~95%
-    # of the heavy-song "score loop" wall time (measured 25x, bit-exact via
-    # tools/dev/measure_fg_pool_reupload.py). Upload it ONCE to device-resident
+    # of the heavy-song "score loop" wall time (measured 25x and bit-exact; see
+    # FG_SCORE_LOOP_POOL_REUPLOAD_FIX.md). Upload it ONCE to device-resident
     # ndarrays and reuse across all chunks; results are identical (same kernel, same
     # data, fewer copies).
-    d_surface_words = ti.ndarray(dtype=ti.u32, shape=surface_words_all.shape)
+    d_surface_pattern_ids = ti.ndarray(dtype=ti.i32, shape=surface_pattern_ids_all.shape)
+    d_surface_pattern_words = ti.ndarray(dtype=ti.u32, shape=surface_pattern_words_all.shape)
     d_surface_counts = ti.ndarray(dtype=ti.i32, shape=surface_counts_all.shape)
-    d_surface_head_coeffs = ti.ndarray(dtype=ti.i32, shape=surface_head_coeffs_all.shape)
+    d_surface_pattern_head_coeffs = ti.ndarray(dtype=ti.i32, shape=surface_pattern_head_coeffs_all.shape)
     # No ti.sync() here: the from_numpy uploads and the kernel launches below run on the same
     # Taichi stream, so the uploads are ordered before the first kernel reads them; the
     # per-chunk ti.sync() after each dispatch already gates the host reduce on the outputs.
-    d_surface_words.from_numpy(surface_words_all)
+    d_surface_pattern_ids.from_numpy(surface_pattern_ids_all)
+    d_surface_pattern_words.from_numpy(surface_pattern_words_all)
     d_surface_counts.from_numpy(surface_counts_all)
-    d_surface_head_coeffs.from_numpy(surface_head_coeffs_all)
+    d_surface_pattern_head_coeffs.from_numpy(surface_pattern_head_coeffs_all)
     if (
         group_count <= max_dispatch_groups
         and total_work <= max_dispatch_work
@@ -508,9 +515,10 @@ def _score_response_group_meta_gpu(
     ):
         _fg_response_inner_group_kernel(
             int(group_count),
-            d_surface_words,
+            d_surface_pattern_ids,
+            d_surface_pattern_words,
             d_surface_counts,
-            d_surface_head_coeffs,
+            d_surface_pattern_head_coeffs,
             group_offsets_all,
             group_lengths_all,
             group_meta_all,
@@ -539,9 +547,10 @@ def _score_response_group_meta_gpu(
                 chunk_stop = int(chunk_start) + 1
             _fg_response_inner_group_kernel(
                 int(chunk_stop) - int(chunk_start),
-                d_surface_words,
+                d_surface_pattern_ids,
+                d_surface_pattern_words,
                 d_surface_counts,
-                d_surface_head_coeffs,
+                d_surface_pattern_head_coeffs,
                 group_offsets_all[int(chunk_start) : int(chunk_stop)],
                 group_lengths_all[int(chunk_start) : int(chunk_stop)],
                 group_meta_all[int(chunk_start) : int(chunk_stop)],
@@ -578,7 +587,7 @@ def _score_response_group_meta_gpu(
         raise ValueError("response frontier logical surface plan references an invalid group")
     surface_indices = group_offsets_all[logical_owners_all] + logical_surfaces_all
     if bool(np.any(logical_surfaces_all < 0)) or bool(np.any(surface_indices < 0)) or bool(
-        np.any(surface_indices >= int(surface_words_all.shape[0]))
+        np.any(surface_indices >= int(surface_pattern_ids_all.shape[0]))
     ):
         raise ValueError("response frontier logical surface plan references an invalid surface")
 
@@ -615,9 +624,10 @@ def _score_response_group_meta_gpu(
             _t1 = time.perf_counter()
         _fg_response_inner_batch_kernel(
             int(row_count),
-            d_surface_words,
+            d_surface_pattern_ids,
+            d_surface_pattern_words,
             d_surface_counts,
-            d_surface_head_coeffs,
+            d_surface_pattern_head_coeffs,
             group_offsets_all,
             logical_owners_all[int(chunk_start) : int(chunk_stop)],
             logical_surfaces_all[int(chunk_start) : int(chunk_stop)],
@@ -750,7 +760,17 @@ def _optimize_response_surfaces_gpu(
         raise ValueError("response frontier GPU inner solve has groups but no packed surfaces")
     surface_words = np.ascontiguousarray(np.concatenate(surface_word_blocks, axis=0))
     surface_counts = np.ascontiguousarray(np.concatenate(surface_count_blocks, axis=0))
-    surface_head_coeffs = _precompute_surface_head_coeffs(surface_words, head_len=int(head_len))
+    surface_pattern_words, surface_pattern_ids = np.unique(
+        surface_words,
+        axis=0,
+        return_inverse=True,
+    )
+    surface_pattern_words = np.ascontiguousarray(surface_pattern_words, dtype=np.uint32)
+    surface_pattern_ids = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
+    surface_pattern_head_coeffs = _precompute_surface_head_coeffs(
+        surface_pattern_words,
+        head_len=int(head_len),
+    )
 
     flags_tuple = _color_flags(primary_color, secondary_color, selected_color)
     allow_pp = bool(int(flags_tuple[0]) != 0 or int(flags_tuple[1]) != 0)
@@ -762,9 +782,10 @@ def _optimize_response_surfaces_gpu(
     out_rows = np.zeros((len(groups), 11), dtype=np.int32)
     _fg_response_inner_group_kernel(
         int(len(groups)),
-        surface_words,
+        surface_pattern_ids,
+        surface_pattern_words,
         surface_counts,
-        surface_head_coeffs,
+        surface_pattern_head_coeffs,
         group_offsets,
         group_lengths,
         group_meta,
@@ -924,9 +945,10 @@ def _score_fg_response_groups_native_f64(
     group_offsets,
     group_lengths,
     row_meta,
-    surface_words,
+    surface_pattern_ids,
+    surface_pattern_words,
     surface_counts,
-    surface_head_coeffs,
+    surface_pattern_head_coeffs,
     color_flags,
     ref_pp,
     ref_cm,
@@ -1051,16 +1073,17 @@ def _score_fg_response_groups_native_f64(
         length = int(group_lengths[g])
         for ls in range(length):
             sr = start + ls
+            pattern_row = int(surface_pattern_ids[sr])
             body_fever = int(surface_counts[sr, 0])
             body_great = int(surface_counts[sr, 1])
             body_fever_great = int(surface_counts[sr, 2])
             body_normal = body_total - body_fever
             if body_normal < 0:
                 body_normal = 0
-            n_hn = int(surface_head_coeffs[sr, 0])
-            n_hf = int(surface_head_coeffs[sr, 1])
-            sigma_hn = int(surface_head_coeffs[sr, 2])
-            sigma_hf = int(surface_head_coeffs[sr, 3])
+            n_hn = int(surface_pattern_head_coeffs[pattern_row, 0])
+            n_hf = int(surface_pattern_head_coeffs[pattern_row, 1])
+            sigma_hn = int(surface_pattern_head_coeffs[pattern_row, 2])
+            sigma_hf = int(surface_pattern_head_coeffs[pattern_row, 3])
 
             best_score = group_best_score
             best_pp = group_best_pp
@@ -1119,8 +1142,8 @@ def _score_fg_response_groups_native_f64(
                                 )
                                 if pp_ub >= float(best_score):
                                     score = _fg_response_surface_score_native_f64(
-                                        surface_words,
-                                        sr,
+                                        surface_pattern_words,
+                                        pattern_row,
                                         body_fever,
                                         body_great,
                                         body_fever_great,
@@ -1157,8 +1180,8 @@ def _score_fg_response_groups_native_f64(
                         else:
                             pp_factor = pp_ref_cache[0] if allow_pp else pp_ref_base
                             score = _fg_response_surface_score_native_f64(
-                                surface_words,
-                                sr,
+                                surface_pattern_words,
+                                pattern_row,
                                 body_fever,
                                 body_great,
                                 body_fever_great,
@@ -1227,9 +1250,10 @@ def _score_response_group_meta_cpu(
     secondary_color: str,
     selected_color: str,
     ref_arrays: dict[str, Any],
-    surface_words: np.ndarray,
+    surface_pattern_ids: np.ndarray,
+    surface_pattern_words: np.ndarray,
     surface_counts: np.ndarray,
-    surface_head_coeffs: np.ndarray | None = None,
+    surface_pattern_head_coeffs: np.ndarray,
 ) -> tuple[np.ndarray, int]:
     """Native-f64 CPU twin of ``_score_response_group_meta_gpu`` for BOTH the gems-fixed
     (zero_ms / total_budget == 0) on-demand serving path AND the gem-search (total_budget > 0)
@@ -1260,36 +1284,41 @@ def _score_response_group_meta_cpu(
     ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=np.float64))
     ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=np.float64))
     ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=np.float64))
-    surface_words_all = np.ascontiguousarray(surface_words, dtype=np.uint32)
+    surface_pattern_ids_all = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
+    surface_pattern_words_all = np.ascontiguousarray(surface_pattern_words, dtype=np.uint32)
     surface_counts_all = np.ascontiguousarray(surface_counts, dtype=np.int32)
-    if int(surface_words_all.shape[0]) != int(surface_counts_all.shape[0]):
+    surface_pattern_head_coeffs_all = np.ascontiguousarray(surface_pattern_head_coeffs, dtype=np.int32)
+    if int(surface_pattern_ids_all.shape[0]) != int(surface_counts_all.shape[0]):
         raise ValueError("response frontier CPU surface arrays have inconsistent lengths")
-    if int(surface_words_all.shape[1]) != 8 or int(surface_counts_all.shape[1]) != 3:
+    if (
+        int(surface_pattern_ids_all.ndim) != 1
+        or int(surface_pattern_words_all.ndim) != 2
+        or int(surface_pattern_words_all.shape[1]) != 8
+        or int(surface_counts_all.ndim) != 2
+        or int(surface_counts_all.shape[1]) != 3
+        or int(surface_pattern_head_coeffs_all.ndim) != 2
+        or int(surface_pattern_head_coeffs_all.shape[0]) != int(surface_pattern_words_all.shape[0])
+        or int(surface_pattern_head_coeffs_all.shape[1]) != 4
+    ):
         raise ValueError("response frontier CPU surface arrays have invalid shape")
+    if bool(np.any(surface_pattern_ids_all < 0)) or bool(
+        np.any(surface_pattern_ids_all >= int(surface_pattern_words_all.shape[0]))
+    ):
+        raise ValueError("response frontier CPU surface references an invalid head-pattern ID")
     if bool(np.any(surface_counts_all < 0)):
         raise ValueError("response frontier CPU surface counts must be nonnegative")
 
     head_lengths = np.unique(np.ascontiguousarray(group_meta_all[:, 6], dtype=np.int32))
     if int(head_lengths.shape[0]) != 1:
         raise ValueError("response frontier CPU group metadata has inconsistent head length")
-    if surface_head_coeffs is None:
-        surface_head_coeffs_all = _precompute_surface_head_coeffs(surface_words_all, head_len=int(head_lengths[0]))
-    else:
-        surface_head_coeffs_all = np.ascontiguousarray(np.asarray(surface_head_coeffs, dtype=np.int32))
-        if (
-            int(surface_head_coeffs_all.ndim) != 2
-            or int(surface_head_coeffs_all.shape[0]) != int(surface_words_all.shape[0])
-            or int(surface_head_coeffs_all.shape[1]) != 4
-        ):
-            raise ValueError("response frontier CPU surface head coefficients have invalid shape")
-
     out_rows = _score_fg_response_groups_native_f64(
         np.ascontiguousarray(group_offsets, dtype=np.int64),
         np.ascontiguousarray(group_lengths, dtype=np.int64),
         group_meta_all,
-        surface_words_all,
+        surface_pattern_ids_all,
+        surface_pattern_words_all,
         surface_counts_all,
-        surface_head_coeffs_all,
+        surface_pattern_head_coeffs_all,
         color_flags_all,
         ref_pp,
         ref_cm,
