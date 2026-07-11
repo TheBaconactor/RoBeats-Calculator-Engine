@@ -493,8 +493,8 @@ def _score_response_group_meta_gpu(
     # per-chunk index/output slices change. Passing the numpy pool to the kernel
     # re-transfers it host->device on each launch (ti.types.ndarray semantics), so a
     # 0.5-1.5 GB pool over 143-219 chunks is 90-330 GB of redundant PCIe copy and ~95%
-    # of the heavy-song "score loop" wall time (measured 25x, bit-exact via
-    # tools/dev/measure_fg_pool_reupload.py). Upload it ONCE to device-resident
+    # of the heavy-song "score loop" wall time (measured 25x and bit-exact; see
+    # FG_SCORE_LOOP_POOL_REUPLOAD_FIX.md). Upload it ONCE to device-resident
     # ndarrays and reuse across all chunks; results are identical (same kernel, same
     # data, fewer copies).
     d_surface_pattern_ids = ti.ndarray(dtype=ti.i32, shape=surface_pattern_ids_all.shape)
