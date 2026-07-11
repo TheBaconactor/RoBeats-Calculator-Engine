@@ -1250,6 +1250,12 @@ def main() -> int:
     ap.add_argument("--fts", type=int, default=6)
     ap.add_argument("--ffs", type=int, default=6)
     ap.add_argument("--reps", type=int, default=1)
+    ap.add_argument(
+        "--dump-census",
+        default=None,
+        help="write the per-geometry census streams (region2 emit contents under a disabled "
+        "promotion threshold) to this .npz and skip the timing phases",
+    )
     args = ap.parse_args()
 
     chart = _find_chart(args.song, args.diff)
@@ -1381,6 +1387,19 @@ def main() -> int:
 
     warm_item = sp.prepared[0]
     warm_table = sp.region_table_for(float(warm_item[2]), int(warm_item[1]), warm_item[4])
+    if args.dump_census:
+        run_cfg(1, warm_item, int(sp.real_time_index[0]), warm_table, census=1, filter_min=1 << 30)
+        payload = {}
+        for gi, item in enumerate(sp.prepared):
+            rt_idx = int(sp.real_time_index[gi])
+            region_table = sp.region_table_for(float(item[2]), int(item[1]), item[4])
+            _elapsed, out = run_cfg(1, item, rt_idx, region_table, census=1, filter_min=1 << 30)
+            payload[f"stream_{gi}"] = np.ascontiguousarray(out[0])
+        out_path = Path(args.dump_census)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(out_path, **payload)
+        print(f"census streams written: {out_path} ({len(sp.prepared)} geometries)")
+        return 0
     for cfg in range(5):
         run_cfg(cfg, warm_item, int(sp.real_time_index[0]), warm_table)
     run_production(warm_item, int(sp.real_time_index[0]), warm_table)
