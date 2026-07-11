@@ -19,6 +19,7 @@ from typing import Any
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_int, env_str
 from gear_optimizer.data.database import get_best_loadouts
+from gear_optimizer.solver.zero_ms_only_temp import enforce_serviceable_timing_mode  # ZERO_MS_ONLY_TEMP issue #125
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +343,12 @@ def _normalize_timing_mode(value: Any) -> str:
     mode = str(value or "perfect_window").strip().lower()
     if mode not in {"perfect_window", "zero_ms"}:
         raise RequestError(f"unknown timingMode {value!r}")
-    return mode
+    # ZERO_MS_ONLY_TEMP (issue #125): perfect_window's timing frontier is not built on this
+    # release branch, so collapse any serviceable-but-unbuilt mode to zero_ms at this single
+    # request gate instead of letting it fail downstream with MissingFrontierCacheError. This is
+    # defense-in-depth — the website bridge already only sends zero_ms. Delete this call and
+    # restore mode selection when the timing model ships.
+    return enforce_serviceable_timing_mode(mode)
 
 
 def _normalize_chart(chart_text: str, song_name: str, timing_mode: str) -> str:

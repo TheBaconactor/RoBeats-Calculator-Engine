@@ -45,6 +45,21 @@ def _warn_once(mode: str) -> None:
         )
 
 
+def enforce_serviceable_timing_mode(mode: str) -> str:
+    """Collapse any requested timing mode to the only one this release branch can serve.
+
+    The website bridge already hardcodes ``zero_ms``, but the /optimize service must not depend on
+    that: this is the single request-level gate so an internal caller that stamps ``perfect_window``
+    still gets a serviceable answer (coerced to ``zero_ms``, warned once) instead of a frontier that
+    was never built. Remove this call and restore mode selection when the timing model ships.
+    """
+    normalized = str(mode or "").strip().lower()
+    if normalized == SERVICEABLE_TIMING_MODE:
+        return SERVICEABLE_TIMING_MODE
+    _warn_once(normalized)
+    return SERVICEABLE_TIMING_MODE
+
+
 def coerce_calc_song_to_zero_ms(calc_song: Mapping[str, Any]) -> dict:
     """Return a shallow copy of ``calc_song`` re-stamped ``TimingEnvelopeMode='zero_ms'``.
 
