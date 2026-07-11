@@ -1,12 +1,11 @@
 import pytest
 
 from gear_optimizer.domain.jobs import (
-    LEGACY_TASK_FIXED_FIELD_COUNT,
-    LegacyTaskIndex,
+    TASK_FIXED_FIELD_COUNT,
+    TaskIndex,
     effective_task_count,
     extract_repeat_bundle,
     extract_repeat_context,
-    legacy_task_tuple_from_job_context,
     materialize_repeat_task,
     seed_plan_from_song_job,
     task_cfg_dict,
@@ -14,9 +13,10 @@ from gear_optimizer.domain.jobs import (
     task_ga_seed,
     task_queue_label,
     task_song_name,
-    task_tuple_to_legacy_view,
+    task_tuple_from_job_context,
     task_tuple_to_shared_context,
     task_tuple_to_song_job,
+    task_tuple_to_view,
 )
 
 
@@ -36,18 +36,18 @@ def _legacy_task(*extras):
         6,
         True,
     )
-    assert len(prefix) == LEGACY_TASK_FIXED_FIELD_COUNT
+    assert len(prefix) == TASK_FIXED_FIELD_COUNT
     return prefix + tuple(extras)
 
 
 def test_legacy_task_indices_match_production_tuple_prefix():
     task = _legacy_task()
 
-    assert task[LegacyTaskIndex.FILE_PATH] == "Data/Hard/FakeSong.txt"
-    assert task[LegacyTaskIndex.SONG_NAME] == "Fake Song (Hard) by Tester"
-    assert task[LegacyTaskIndex.DIFFICULTY] == "Hard"
-    assert task[LegacyTaskIndex.GA_DEPTH] == 125
-    assert task[LegacyTaskIndex.PARALLEL_WORKERS] == 6
+    assert task[TaskIndex.FILE_PATH] == "Data/Hard/FakeSong.txt"
+    assert task[TaskIndex.SONG_NAME] == "Fake Song (Hard) by Tester"
+    assert task[TaskIndex.DIFFICULTY] == "Hard"
+    assert task[TaskIndex.GA_DEPTH] == 125
+    assert task[TaskIndex.PARALLEL_WORKERS] == 6
 
 
 def test_task_field_helpers_name_the_production_tuple_prefix():
@@ -56,9 +56,9 @@ def test_task_field_helpers_name_the_production_tuple_prefix():
     assert task_song_name(task) == "Fake Song (Hard) by Tester"
     assert task_difficulty(task) == "Hard"
     assert task_cfg_dict(task) == {"IterationEngine": {"GA_SearchDepth": "125"}}
-    assert task[LegacyTaskIndex.FILE_PATH] == "Data/Hard/FakeSong.txt"
-    assert task[LegacyTaskIndex.REF_ARRAYS] == ("ref",)
-    assert task[LEGACY_TASK_FIXED_FIELD_COUNT:] == ({"extra": True},)
+    assert task[TaskIndex.FILE_PATH] == "Data/Hard/FakeSong.txt"
+    assert task[TaskIndex.REF_ARRAYS] == ("ref",)
+    assert task[TASK_FIXED_FIELD_COUNT:] == ({"extra": True},)
 
 
 def test_task_tuple_to_song_job_preserves_queue_identity_and_repeat_metadata():
@@ -108,22 +108,22 @@ def test_task_tuple_to_shared_context_preserves_shared_runtime_fields():
     assert ctx.fg_debug is True
 
 
-def test_task_tuple_to_legacy_view_keeps_extras_separate_from_shared_context():
+def test_task_tuple_to_view_keeps_extras_separate_from_shared_context():
     repeat_ctx = {"repeat_index": 1, "repeat_total": 2, "ga_seed": 123}
     extra = {"debug": True}
-    view = task_tuple_to_legacy_view(_legacy_task(extra, repeat_ctx))
+    view = task_tuple_to_view(_legacy_task(extra, repeat_ctx))
 
     assert view.job.song_name == "Fake Song (Hard) by Tester"
     assert view.context.ga_depth == 125
     assert view.extras == (extra, repeat_ctx)
 
 
-def test_legacy_task_tuple_from_job_context_is_single_tuple_writer():
+def test_task_tuple_from_job_context_is_single_tuple_writer():
     repeat_ctx = {"repeat_index": 2, "repeat_total": 3, "ga_seed": 987}
     original = _legacy_task(repeat_ctx)
-    view = task_tuple_to_legacy_view(original)
+    view = task_tuple_to_view(original)
 
-    rebuilt = legacy_task_tuple_from_job_context(view.job, view.context, *view.extras)
+    rebuilt = task_tuple_from_job_context(view.job, view.context, *view.extras)
 
     assert rebuilt == original
 
@@ -168,8 +168,8 @@ def test_materialize_repeat_task_replaces_bundle_metadata_with_one_repeat_contex
     original = _legacy_task(bundle, unrelated, old_repeat)
     materialized = materialize_repeat_task(original, repeat_ctx)
 
-    assert materialized[:LEGACY_TASK_FIXED_FIELD_COUNT] == original[:LEGACY_TASK_FIXED_FIELD_COUNT]
-    assert materialized[LEGACY_TASK_FIXED_FIELD_COUNT:] == (unrelated, repeat_ctx)
+    assert materialized[:TASK_FIXED_FIELD_COUNT] == original[:TASK_FIXED_FIELD_COUNT]
+    assert materialized[TASK_FIXED_FIELD_COUNT:] == (unrelated, repeat_ctx)
 
 
 def test_short_legacy_tuple_is_rejected_at_the_adapter_boundary():

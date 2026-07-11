@@ -11,8 +11,6 @@ from typing import Any, Mapping, Sequence
 # when refactoring toward typed `SongJob`/`SharedRunContext` while keeping the
 # tuple as the durable interchange format.
 TASK_FIXED_FIELD_COUNT = 13
-# Backwards-compatible alias (kept to avoid churn across the codebase).
-LEGACY_TASK_FIXED_FIELD_COUNT = TASK_FIXED_FIELD_COUNT
 
 
 class TaskIndex(IntEnum):
@@ -30,9 +28,6 @@ class TaskIndex(IntEnum):
     PARALLEL_WORKERS = 11
     FG_DEBUG = 12
 
-
-# Backwards-compatible alias.
-LegacyTaskIndex = TaskIndex
 
 @dataclass(frozen=True, slots=True)
 class SongJob:
@@ -285,13 +280,6 @@ def task_tuple_to_view(task: Sequence[Any]) -> SongTaskView:
         extras=tuple(task[TASK_FIXED_FIELD_COUNT:]),
     )
 
-#
-# Backwards-compatible name (kept for existing call sites).
-#
-def task_tuple_to_legacy_view(task: Sequence[Any]) -> LegacySongTaskView:
-    return task_tuple_to_view(task)
-
-
 def task_tuple_from_job_context(
     job: SongJob,
     context: SharedRunContext,
@@ -313,17 +301,6 @@ def task_tuple_from_job_context(
         context.fg_debug,
         *extras,
     )
-
-#
-# Backwards-compatible name (kept for existing call sites).
-#
-def legacy_task_tuple_from_job_context(
-    job: SongJob,
-    context: SharedRunContext,
-    *extras: Any,
-) -> tuple[Any, ...]:
-    return task_tuple_from_job_context(job, context, *extras)
-
 
 def ensure_task_tuple(task: Sequence[Any]) -> tuple[Any, ...]:
     """Validate the task tuple ABI and return it as an immutable tuple.
