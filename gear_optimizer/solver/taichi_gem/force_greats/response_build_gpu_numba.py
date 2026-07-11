@@ -3401,6 +3401,55 @@ def _numba_store_body_tail_frontier(
 
 
 @njit(cache=True, nogil=True)
+def _numba_body_reducer_input_matches_previous(
+    touched_pair,
+    touched_count: int,
+    best_fever_by_pair,
+    state: int,
+    previous_input_values,
+    previous_input_starts,
+    previous_input_counts,
+) -> bool:
+    count = int(touched_count)
+    if int(previous_input_counts[int(state)]) != int(count):
+        return False
+    start = int(previous_input_starts[int(state)])
+    if int(start) < 0 or int(start) + int(count) > int(previous_input_values.shape[0]):
+        raise ValueError("FG previous body reducer input range is out of bounds")
+    for idx in range(int(count)):
+        pair_idx = int(touched_pair[int(idx)])
+        if (
+            int(previous_input_values[int(start) + int(idx), 0]) != int(pair_idx)
+            or int(previous_input_values[int(start) + int(idx), 1])
+            != int(best_fever_by_pair[int(pair_idx)])
+        ):
+            return False
+    return True
+
+
+@njit(cache=True, nogil=True)
+def _numba_store_body_reducer_input(
+    input_values,
+    input_starts,
+    input_counts,
+    state: int,
+    cursor: int,
+    touched_pair,
+    touched_count: int,
+    best_fever_by_pair,
+):
+    count = int(touched_count)
+    grown = _numba_u64_rows_ensure(input_values, int(cursor), int(count))
+    input_starts[int(state)] = int(cursor)
+    input_counts[int(state)] = int(count)
+    for idx in range(int(count)):
+        pair_idx = int(touched_pair[int(idx)])
+        grown[int(cursor) + int(idx), 0] = np.uint64(int(pair_idx))
+        grown[int(cursor) + int(idx), 1] = np.uint64(int(best_fever_by_pair[int(pair_idx)]))
+    return grown, int(cursor) + int(count)
+
+
+@njit(cache=True, nogil=True)
 def _numba_touch_body_tail_array_candidates(
     edge,
     state: int,
@@ -3807,6 +3856,13 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     bit_values,
     bit_stamps,
     bit_stamp_value: int,
+    has_previous_body_i: int,
+    previous_body_values,
+    previous_body_starts,
+    previous_body_counts,
+    previous_input_values,
+    previous_input_starts,
+    previous_input_counts,
 ):
     body_values = np.empty((1024, 3), dtype=np.uint64)
     body_starts = np.zeros(int(n) + 1, dtype=np.int32)
@@ -3816,6 +3872,10 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     body_values[0, 2] = np.uint64(0)
     _numba_store_shared_empty_body_tail(body_starts, body_counts, int(n))
     body_cursor = 1
+    input_values = np.empty((1024, 2), dtype=np.uint64)
+    input_starts = np.zeros(int(n) + 1, dtype=np.int32)
+    input_counts = np.zeros(int(n) + 1, dtype=np.int32)
+    input_cursor = 0
     # Reusable output buffer for the fused per-state reduce+hull (grow-doubling, rewritten from
     # row 0 each state; survivors are copied into body_values before the next state runs).
     reduce_values = np.empty((1024, 3), dtype=np.uint64)
@@ -3894,6 +3954,8 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     retained_total = 1
     max_state_frontier = 1
     generated_surfaces = 0
+    body_reductions_reused = 0
+    body_reductions_executed = 0
 
     for state_i in range(int(n) - 1, 99, -1):
         if not reachable[int(state_i)]:
@@ -4093,10 +4155,54 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                     )
                     generated_surfaces += int(generated_count)
 
+        input_matches_previous = False
+        if int(has_previous_body_i) != 0:
+            input_matches_previous = _numba_body_reducer_input_matches_previous(
+                touched_pair,
+                int(touched_count),
+                best_fever_by_pair,
+                int(state_i),
+                previous_input_values,
+                previous_input_starts,
+                previous_input_counts,
+            )
+        input_values, input_cursor = _numba_store_body_reducer_input(
+            input_values,
+            input_starts,
+            input_counts,
+            int(state_i),
+            int(input_cursor),
+            touched_pair,
+            int(touched_count),
+            best_fever_by_pair,
+        )
+
         if int(touched_count) == 0:
             _numba_store_shared_empty_body_tail(body_starts, body_counts, int(state_i))
             frontier_len = 1
+        elif bool(input_matches_previous):
+            previous_start = int(previous_body_starts[int(state_i)])
+            frontier_len = int(previous_body_counts[int(state_i)])
+            if (
+                int(frontier_len) <= 0
+                or int(previous_start) < 0
+                or int(previous_start) + int(frontier_len) > int(previous_body_values.shape[0])
+            ):
+                raise ValueError("FG previous body frontier range is out of bounds")
+            body_values, body_cursor = _numba_store_body_tail_frontier(
+                body_values,
+                body_starts,
+                body_counts,
+                int(state_i),
+                int(body_cursor),
+                previous_body_values[
+                    int(previous_start) : int(previous_start) + int(frontier_len)
+                ],
+                int(frontier_len),
+            )
+            body_reductions_reused += 1
         else:
+            body_reductions_executed += 1
             bit_stamp_value += 1
             reduce_values, frontier_len = _numba_reduce_touched_body_pairs(
                 int(pair_mod),
@@ -4131,6 +4237,23 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
         max_state_frontier,
         pair_stamp_value,
         bit_stamp_value,
+        input_values,
+        input_starts,
+        input_counts,
+        body_reductions_reused,
+        body_reductions_executed,
+    )
+
+
+@njit(cache=True, nogil=True)
+def _numba_empty_body_reuse_cache(n: int):
+    return (
+        np.zeros((1, 3), dtype=np.uint64),
+        np.zeros(int(n) + 1, dtype=np.int32),
+        np.zeros(int(n) + 1, dtype=np.int32),
+        np.zeros((1, 2), dtype=np.uint64),
+        np.zeros(int(n) + 1, dtype=np.int32),
+        np.zeros(int(n) + 1, dtype=np.int32),
     )
 
 
@@ -4188,6 +4311,13 @@ def _first_frontier_from_precomputed_end_indices_numba(
     pair_epoch_in: int,
     bit_epoch_in: int,
     branch_a_epoch_in: int,
+    has_previous_body_i: int,
+    previous_body_values,
+    previous_body_starts,
+    previous_body_counts,
+    previous_input_values,
+    previous_input_starts,
+    previous_input_counts,
 ):
     if int(use_forced_great_timing_i) == 0 and int(action_count) > 0 and int(first_fill[0]) >= 100:
         zero_body_fever = _numba_zero_forced_body_fever_precomputed(
@@ -4210,6 +4340,14 @@ def _first_frontier_from_precomputed_end_indices_numba(
         if int(zero_body_fever) >= 0:
             if int(zero_body_fever) >= max(0, int(n) - 100):
                 # Workspace untouched on this path -> epochs pass through unchanged.
+                (
+                    empty_body_values,
+                    empty_body_starts,
+                    empty_body_counts,
+                    empty_input_values,
+                    empty_input_starts,
+                    empty_input_counts,
+                ) = _numba_empty_body_reuse_cache(int(n))
                 return (
                     _numba_single_body_frontier_row(int(zero_body_fever)),
                     0,
@@ -4219,6 +4357,14 @@ def _first_frontier_from_precomputed_end_indices_numba(
                     int(pair_epoch_in),
                     int(bit_epoch_in),
                     int(branch_a_epoch_in),
+                    empty_body_values,
+                    empty_body_starts,
+                    empty_body_counts,
+                    empty_input_values,
+                    empty_input_starts,
+                    empty_input_counts,
+                    0,
+                    0,
                 )
             max_body_fever = _numba_max_body_fever_precomputed(
                 int(n),
@@ -4241,6 +4387,14 @@ def _first_frontier_from_precomputed_end_indices_numba(
             )
             if int(zero_body_fever) == int(max_body_fever):
                 # Workspace untouched on this path -> epochs pass through unchanged.
+                (
+                    empty_body_values,
+                    empty_body_starts,
+                    empty_body_counts,
+                    empty_input_values,
+                    empty_input_starts,
+                    empty_input_counts,
+                ) = _numba_empty_body_reuse_cache(int(n))
                 return (
                     _numba_single_body_frontier_row(int(zero_body_fever)),
                     0,
@@ -4250,6 +4404,14 @@ def _first_frontier_from_precomputed_end_indices_numba(
                     int(pair_epoch_in),
                     int(bit_epoch_in),
                     int(branch_a_epoch_in),
+                    empty_body_values,
+                    empty_body_starts,
+                    empty_body_counts,
+                    empty_input_values,
+                    empty_input_starts,
+                    empty_input_counts,
+                    0,
+                    0,
                 )
 
     reachable = np.zeros(int(n) + 1, dtype=np.bool_)
@@ -4463,6 +4625,11 @@ def _first_frontier_from_precomputed_end_indices_numba(
         max_state_frontier,
         pair_stamp_value,
         bit_stamp_value,
+        input_values,
+        input_starts,
+        input_counts,
+        body_reductions_reused,
+        body_reductions_executed,
     ) = _numba_packet_body_tails_from_precomputed_end_indices(
         int(n),
         int(action_count),
@@ -4511,6 +4678,13 @@ def _first_frontier_from_precomputed_end_indices_numba(
         bit_values,
         bit_stamps,
         int(bit_stamp_value),
+        int(has_previous_body_i),
+        previous_body_values,
+        previous_body_starts,
+        previous_body_counts,
+        previous_input_values,
+        previous_input_starts,
+        previous_input_counts,
     )
 
     head_limit = min(int(n), 100)
@@ -5273,4 +5447,12 @@ def _first_frontier_from_precomputed_end_indices_numba(
         int(pair_stamp_value),
         int(bit_stamp_value),
         int(branch_a_epoch_out),
+        body_values,
+        body_starts,
+        body_counts,
+        input_values,
+        input_starts,
+        input_counts,
+        int(body_reductions_reused),
+        int(body_reductions_executed),
     )
