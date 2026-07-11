@@ -21,13 +21,18 @@ from gear_optimizer.helpers.song_helpers.ref_array_builder import resolve_exact_
 from gear_optimizer.solver.taichi_gem import api as gem_api
 from gear_optimizer.solver.scoring.fg_policy import is_single_color_song
 
-from .response_inner_kernels import SOLVER_NP_FP
-from .response_inner_pattern_kernels import _fg_response_inner_pattern_batch_kernel
-from .response_inner_patterns import build_response_group_pattern_plan
+from .response_inner_kernels import (
+    SOLVER_NP_FP,
+    _fg_response_inner_batch_kernel,
+    _fg_response_inner_group_kernel,
+)
 from .response_types import FgResponseInnerResult, FgResponseSurface
 
-_FG_RESPONSE_INNER_GPU_MAX_PATTERN_DISPATCH_PAIRS = 262_144
-_FG_RESPONSE_INNER_GPU_MAX_PATTERN_DISPATCH_WORK = 16_000_000_000
+_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK = 1_000_000_000
+_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK = 100_000
+_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS = 262_144
+_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS = 262_144
+_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK = 16_000_000_000
 _SURFACE_HEAD_COEFF_CACHE_MAX = 4
 _U16_HEAD_VALUES = np.arange(1 << 16, dtype=np.uint16)
 _U16_HEAD_BITS = np.unpackbits(_U16_HEAD_VALUES.view(np.uint8).reshape(-1, 2), axis=1, bitorder="little").astype(
@@ -202,11 +207,54 @@ def _response_inner_combo_counts(group_meta: np.ndarray, *, allow_pp: bool) -> n
 
 
 @jit(nopython=True, cache=True)
+def _response_group_logical_surface_plan_jit(group_lengths, combo_counts, logical_surface_rows):
+    owners = np.empty((int(logical_surface_rows),), dtype=np.int32)
+    local_surfaces = np.empty((int(logical_surface_rows),), dtype=np.int32)
+    work_cumsum = np.empty((int(logical_surface_rows) + 1,), dtype=np.int64)
+    work_cumsum[0] = 0
+    row = 0
+    work = 0
+    for owner in range(int(group_lengths.shape[0])):
+        count = int(combo_counts[owner])
+        for local_surface in range(int(group_lengths[owner])):
+            owners[row] = int(owner)
+            local_surfaces[row] = int(local_surface)
+            work += count
+            work_cumsum[row + 1] = int(work)
+            row += 1
+    return owners, local_surfaces, work_cumsum
+
+
+def _response_group_logical_surface_plan(
+    group_lengths: np.ndarray,
+    combo_counts: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    group_lengths_arr = np.ascontiguousarray(np.asarray(group_lengths, dtype=np.int32))
+    combo_counts_arr = np.ascontiguousarray(np.asarray(combo_counts, dtype=np.int64))
+    if int(group_lengths_arr.ndim) != 1 or int(combo_counts_arr.ndim) != 1:
+        raise ValueError("response frontier logical surface plan requires one-dimensional inputs")
+    if int(group_lengths_arr.shape[0]) != int(combo_counts_arr.shape[0]):
+        raise ValueError("response frontier logical surface plan inputs have inconsistent lengths")
+    if bool(np.any(group_lengths_arr < 0)):
+        raise ValueError("response frontier logical surface plan received a negative group length")
+    logical_surface_rows = int(np.sum(group_lengths_arr, dtype=np.int64))
+    if logical_surface_rows <= 0:
+        empty_i32 = np.zeros((0,), dtype=np.int32)
+        return empty_i32, empty_i32, np.zeros((1,), dtype=np.int64)
+    return _response_group_logical_surface_plan_jit(
+        group_lengths_arr,
+        combo_counts_arr,
+        int(logical_surface_rows),
+    )
+
+
+@jit(nopython=True, cache=True)
 def _reduce_response_inner_chunk_jit(
     row_count,
     chunk_scores,
     chunk_details,
     chunk_owners,
+    chunk_local_surfaces,
     best_scores,
     out_rows,
 ):
@@ -218,22 +266,16 @@ def _reduce_response_inner_chunk_jit(
         row += 1
         while row < row_count and int(chunk_owners[row]) == owner:
             score = int(chunk_scores[row])
-            if score > best_score or (
-                score == best_score
-                and int(chunk_details[row, 0]) < int(chunk_details[best_row, 0])
-            ):
+            if score > best_score:
                 best_score = score
                 best_row = row
             row += 1
-        best_surface = int(chunk_details[best_row, 0])
-        if best_score > int(best_scores[owner]) or (
-            best_score == int(best_scores[owner]) and best_surface < int(out_rows[owner, 1])
-        ):
+        if best_score > int(best_scores[owner]):
             best_scores[owner] = best_score
             out_rows[owner, 0] = best_score
-            out_rows[owner, 1] = best_surface
+            out_rows[owner, 1] = int(chunk_local_surfaces[best_row])
             for col in range(9):
-                out_rows[owner, col + 2] = int(chunk_details[best_row, col + 1])
+                out_rows[owner, col + 2] = int(chunk_details[best_row, col])
 
 
 def optimize_response_frontier_inner_exact_gpu(
@@ -440,102 +482,155 @@ def _score_response_group_meta_gpu(
     combo_counts_all = _response_inner_combo_counts(group_meta_all, allow_pp=allow_pp)
     work_by_group = np.asarray(group_lengths_all, dtype=np.int64) * combo_counts_all
     total_work = int(np.sum(work_by_group, dtype=np.int64))
-    max_pattern_dispatch_pairs = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_PATTERN_DISPATCH_PAIRS))
-    max_pattern_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_PATTERN_DISPATCH_WORK))
+    max_group_work = int(np.max(work_by_group)) if group_count > 0 else 0
+    max_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK))
+    max_thread_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK))
+    max_dispatch_groups = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS))
+    max_surface_dispatch_rows = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS))
+    max_surface_dispatch_work = max(1, int(_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK))
     out_rows = np.zeros((group_count, 11), dtype=np.int32)
     # The surface pool is invariant across every chunk dispatch below -- only the
     # per-chunk index/output slices change. Passing the numpy pool to the kernel
     # re-transfers it host->device on each launch (ti.types.ndarray semantics), so a
     # 0.5-1.5 GB pool over 143-219 chunks is 90-330 GB of redundant PCIe copy and ~95%
-    # of the heavy-song "score loop" wall time (measured 25x, bit-exact in the
-    # FG score-loop implementation record). Upload it ONCE to device-resident
+    # of the heavy-song "score loop" wall time (measured 25x, bit-exact via
+    # tools/dev/measure_fg_pool_reupload.py). Upload it ONCE to device-resident
     # ndarrays and reuse across all chunks; results are identical (same kernel, same
     # data, fewer copies).
+    d_surface_pattern_ids = ti.ndarray(dtype=ti.i32, shape=surface_pattern_ids_all.shape)
     d_surface_pattern_words = ti.ndarray(dtype=ti.u32, shape=surface_pattern_words_all.shape)
     d_surface_counts = ti.ndarray(dtype=ti.i32, shape=surface_counts_all.shape)
     d_surface_pattern_head_coeffs = ti.ndarray(dtype=ti.i32, shape=surface_pattern_head_coeffs_all.shape)
     # No ti.sync() here: the from_numpy uploads and the kernel launches below run on the same
     # Taichi stream, so the uploads are ordered before the first kernel reads them; the
     # per-chunk ti.sync() after each dispatch already gates the host reduce on the outputs.
+    d_surface_pattern_ids.from_numpy(surface_pattern_ids_all)
     d_surface_pattern_words.from_numpy(surface_pattern_words_all)
     d_surface_counts.from_numpy(surface_counts_all)
     d_surface_pattern_head_coeffs.from_numpy(surface_pattern_head_coeffs_all)
-    best_scores = np.full((group_count,), np.iinfo(np.int32).min, dtype=np.int32)
-    pair_owners, pair_pattern_ids, pair_surface_offsets, pair_local_surfaces = (
-        build_response_group_pattern_plan(
-            surface_pattern_ids_all,
+    if (
+        group_count <= max_dispatch_groups
+        and total_work <= max_dispatch_work
+        and max_group_work <= max_thread_work
+    ):
+        _fg_response_inner_group_kernel(
+            int(group_count),
+            d_surface_pattern_ids,
+            d_surface_pattern_words,
+            d_surface_counts,
+            d_surface_pattern_head_coeffs,
             group_offsets_all,
             group_lengths_all,
-            pattern_count=int(surface_pattern_words_all.shape[0]),
+            group_meta_all,
+            flags,
+            ref_pp,
+            ref_cm,
+            ref_fm,
+            out_rows,
+            bool(allow_pp),
         )
+        ti.sync()
+        return out_rows, int(logical_surface_rows)
+
+    if max_group_work <= max_thread_work:
+        chunk_start = 0
+        while chunk_start < int(group_count):
+            chunk_stop = int(chunk_start)
+            chunk_work = 0
+            while chunk_stop < int(group_count) and (int(chunk_stop) - int(chunk_start)) < int(max_dispatch_groups):
+                next_work = int(chunk_work) + int(work_by_group[int(chunk_stop)])
+                if chunk_stop > chunk_start and next_work > int(max_dispatch_work):
+                    break
+                chunk_work = int(next_work)
+                chunk_stop += 1
+            if chunk_stop <= chunk_start:
+                chunk_stop = int(chunk_start) + 1
+            _fg_response_inner_group_kernel(
+                int(chunk_stop) - int(chunk_start),
+                d_surface_pattern_ids,
+                d_surface_pattern_words,
+                d_surface_counts,
+                d_surface_pattern_head_coeffs,
+                group_offsets_all[int(chunk_start) : int(chunk_stop)],
+                group_lengths_all[int(chunk_start) : int(chunk_stop)],
+                group_meta_all[int(chunk_start) : int(chunk_stop)],
+                flags,
+                ref_pp,
+                ref_cm,
+                ref_fm,
+                out_rows[int(chunk_start) : int(chunk_stop)],
+                bool(allow_pp),
+            )
+            ti.sync()
+            chunk_start = int(chunk_stop)
+        return out_rows, int(logical_surface_rows)
+
+    valid_group_indices = np.flatnonzero(np.asarray(group_lengths_all > 0, dtype=np.bool_)).astype(
+        np.int32,
+        copy=False,
     )
-    pattern_pair_count = int(pair_owners.shape[0])
-    if pattern_pair_count <= 0:
-        raise ValueError("response frontier pattern plan unexpectedly produced no work")
-    if (
-        int(pair_pattern_ids.shape[0]) != pattern_pair_count
-        or int(pair_surface_offsets.shape[0]) != pattern_pair_count + 1
-        or int(pair_surface_offsets[-1]) != int(logical_surface_rows)
-        or int(pair_local_surfaces.shape[0]) != int(logical_surface_rows)
+    if int(valid_group_indices.shape[0]) <= 0:
+        return out_rows, int(logical_surface_rows)
+
+    best_scores = np.full((group_count,), np.iinfo(np.int32).min, dtype=np.int32)
+    logical_owners_all, logical_surfaces_all, logical_work_cumsum_all = _response_group_logical_surface_plan(
+        group_lengths_all,
+        combo_counts_all,
+    )
+    if int(logical_owners_all.shape[0]) != int(logical_surface_rows) or int(logical_surfaces_all.shape[0]) != int(
+        logical_surface_rows
     ):
-        raise ValueError("response frontier pattern plan has inconsistent row counts")
-    pair_work = np.diff(np.asarray(pair_surface_offsets, dtype=np.int64)) * combo_counts_all[pair_owners]
-    pair_work_cumsum = np.empty(pattern_pair_count + 1, dtype=np.int64)
-    pair_work_cumsum[0] = 0
-    np.cumsum(pair_work, dtype=np.int64, out=pair_work_cumsum[1:])
-    if int(pair_work_cumsum[-1]) != int(total_work):
-        raise ValueError("response frontier pattern plan has inconsistent work counts")
-
-    pattern_chunks: list[tuple[int, int]] = []
-    chunk_start = 0
-    while chunk_start < int(pattern_pair_count):
-        row_stop = min(int(pattern_pair_count), int(chunk_start) + int(max_pattern_dispatch_pairs))
-        work_limit = int(pair_work_cumsum[int(chunk_start)]) + int(max_pattern_dispatch_work)
-        work_stop = int(np.searchsorted(pair_work_cumsum, work_limit, side="right") - 1)
-        if work_stop <= int(chunk_start):
-            work_stop = int(chunk_start) + 1
-        chunk_stop = min(int(row_stop), int(work_stop), int(pattern_pair_count))
-        if chunk_stop <= chunk_start:
-            raise ValueError("response frontier pattern chunk planner produced an empty chunk")
-        pattern_chunks.append((int(chunk_start), int(chunk_stop)))
-        chunk_start = int(chunk_stop)
-    del pair_work, pair_work_cumsum
-
-    d_pair_local_surfaces = ti.ndarray(dtype=ti.i32, shape=pair_local_surfaces.shape)
-    d_pair_local_surfaces.from_numpy(pair_local_surfaces)
+        raise ValueError("response frontier logical surface plan has inconsistent row counts")
+    if int(logical_work_cumsum_all.shape[0]) != int(logical_surface_rows) + 1:
+        raise ValueError("response frontier logical surface work plan has inconsistent row count")
+    if bool(np.any(logical_owners_all < 0)) or bool(np.any(logical_owners_all >= int(group_count))):
+        raise ValueError("response frontier logical surface plan references an invalid group")
+    surface_indices = group_offsets_all[logical_owners_all] + logical_surfaces_all
+    if bool(np.any(logical_surfaces_all < 0)) or bool(np.any(surface_indices < 0)) or bool(
+        np.any(surface_indices >= int(surface_pattern_ids_all.shape[0]))
+    ):
+        raise ValueError("response frontier logical surface plan references an invalid surface")
 
     # NOTE (measured 2026-07-01, net-zero, reverted): device-residency for the
     # chunk-invariant args here (group_offsets/group_meta/flags/refs) was bit-exact
     # but did NOT move enqueue_ms (398.6 -> 402.5ms warm on a 12-chunk heavy song).
     # The enqueue cost is per-launch fixed overhead, not these arrays' re-staging
     # (~5MB/chunk); do not re-attempt residency for them without new evidence.
-    chunk_capacity = max(1, min(int(max_pattern_dispatch_pairs), int(pattern_pair_count)))
+    chunk_capacity = max(1, min(int(max_surface_dispatch_rows), int(logical_surface_rows)))
     chunk_scores = np.empty((chunk_capacity,), dtype=np.int32)
-    chunk_details = np.empty((chunk_capacity, 10), dtype=np.int32)
+    chunk_details = np.empty((chunk_capacity, 9), dtype=np.int32)
     # Gated owner-thread phase profiling: split the chunk loop into plan/enqueue/
     # GPU-sync/host-reduce to decide A (move host work off owner) vs B (pipeline the
     # loop). OFF unless METAFINDER_PROFILE_EVENTS_PATH is set; no behavior change.
     _prof = profile_events_active()
     _acc_plan = _acc_enqueue = _acc_sync = _acc_reduce = 0.0
     _n_chunks = 0
-    for chunk_start, chunk_stop in pattern_chunks:
+    chunk_start = 0
+    while chunk_start < int(logical_surface_rows):
         if _prof:
             _t0 = time.perf_counter()
+        row_stop = min(int(logical_surface_rows), int(chunk_start) + int(max_surface_dispatch_rows))
+        work_limit = int(logical_work_cumsum_all[int(chunk_start)]) + int(max_surface_dispatch_work)
+        work_stop = int(np.searchsorted(logical_work_cumsum_all, work_limit, side="right") - 1)
+        if work_stop <= int(chunk_start):
+            work_stop = int(chunk_start) + 1
+        chunk_stop = min(int(row_stop), int(work_stop), int(logical_surface_rows))
         row_count = int(chunk_stop) - int(chunk_start)
+        if row_count <= 0:
+            raise ValueError("response frontier logical surface chunk planner produced an empty chunk")
         scores_view = chunk_scores[:row_count]
         details_view = chunk_details[:row_count]
         if _prof:
             _t1 = time.perf_counter()
-        _fg_response_inner_pattern_batch_kernel(
+        _fg_response_inner_batch_kernel(
             int(row_count),
+            d_surface_pattern_ids,
             d_surface_pattern_words,
             d_surface_counts,
             d_surface_pattern_head_coeffs,
             group_offsets_all,
-            pair_owners[int(chunk_start) : int(chunk_stop)],
-            pair_pattern_ids[int(chunk_start) : int(chunk_stop)],
-            pair_surface_offsets[int(chunk_start) : int(chunk_stop) + 1],
-            d_pair_local_surfaces,
+            logical_owners_all[int(chunk_start) : int(chunk_stop)],
+            logical_surfaces_all[int(chunk_start) : int(chunk_stop)],
             group_meta_all,
             flags,
             ref_pp,
@@ -554,7 +649,8 @@ def _score_response_group_meta_gpu(
             int(row_count),
             scores_view,
             details_view,
-            pair_owners[int(chunk_start) : int(chunk_stop)],
+            logical_owners_all[int(chunk_start) : int(chunk_stop)],
+            logical_surfaces_all[int(chunk_start) : int(chunk_stop)],
             best_scores,
             out_rows,
         )
@@ -565,6 +661,7 @@ def _score_response_group_meta_gpu(
             _acc_sync += _t3 - _t2
             _acc_reduce += _t4 - _t3
             _n_chunks += 1
+        chunk_start = int(chunk_stop)
     if _prof:
         emit_profile_event(
             component="fg_fused",
@@ -574,7 +671,6 @@ def _score_response_group_meta_gpu(
                 "n_chunks": int(_n_chunks),
                 "n_groups": int(group_count),
                 "logical_surface_rows": int(logical_surface_rows),
-                "logical_pattern_pairs": int(pattern_pair_count),
                 "total_work": int(total_work),
                 "plan_ms": _acc_plan * 1000.0,
                 "enqueue_ms": _acc_enqueue * 1000.0,
@@ -659,6 +755,7 @@ def _optimize_response_surfaces_gpu(
     if logical_surface_rows <= 0:
         return [], 0
 
+    gem_api.ensure_ready()
     if unique_surface_rows <= 0:
         raise ValueError("response frontier GPU inner solve has groups but no packed surfaces")
     surface_words = np.ascontiguousarray(np.concatenate(surface_word_blocks, axis=0))
@@ -675,19 +772,31 @@ def _optimize_response_surfaces_gpu(
         head_len=int(head_len),
     )
 
-    out_rows, _ = _score_response_group_meta_gpu(
-        group_meta=group_meta,
-        group_offsets=group_offsets,
-        group_lengths=group_lengths,
-        primary_color=primary_color,
-        secondary_color=secondary_color,
-        selected_color=selected_color,
-        ref_arrays=ref_arrays,
-        surface_pattern_ids=surface_pattern_ids,
-        surface_pattern_words=surface_pattern_words,
-        surface_counts=surface_counts,
-        surface_pattern_head_coeffs=surface_pattern_head_coeffs,
+    flags_tuple = _color_flags(primary_color, secondary_color, selected_color)
+    allow_pp = bool(int(flags_tuple[0]) != 0 or int(flags_tuple[1]) != 0)
+    flags = np.ascontiguousarray(np.asarray(flags_tuple, dtype=np.int32))
+    exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
+    ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=SOLVER_NP_FP))
+    ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=SOLVER_NP_FP))
+    ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=SOLVER_NP_FP))
+    out_rows = np.zeros((len(groups), 11), dtype=np.int32)
+    _fg_response_inner_group_kernel(
+        int(len(groups)),
+        surface_pattern_ids,
+        surface_pattern_words,
+        surface_counts,
+        surface_pattern_head_coeffs,
+        group_offsets,
+        group_lengths,
+        group_meta,
+        flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_rows,
+        bool(allow_pp),
     )
+    ti.sync()
 
     best_by_group: list[tuple[int, int, int, int, int, int, int, int, int, int, int] | None] = [None] * len(groups)
     for group_idx in range(len(groups)):
@@ -886,12 +995,12 @@ def _score_fg_response_groups_native_f64(
     allow_pp,
     total_rows,
 ):
-    """Independent exhaustive CPU-f64 authority for the pattern-major GPU search.
+    """Native-f64 CPU twin of ``_fg_response_inner_group_kernel`` INCLUDING the gem search.
 
-    Per group it enumerates every gem allocation and every surface in original order; it does
-    not group equal heads. The score formula, per-term ``floor`` order, and lexicographic tie
-    rule are identical, so this slower route remains a useful differential oracle. It runs in
-    CPU doubles and therefore needs no GPU
+    Bit-for-bit f64 port of the GPU owner kernel: per group it enumerates the same gem
+    allocations (the g_cm/g_fm/g_pp partition of ``residual_budget``) with the identical
+    upper-bound prune, lexicographic tie-break, and per-term ``floor`` op order, scores every
+    candidate surface, and keeps the group argmax. Runs in CPU doubles so it needs no GPU
     shaderFloat64 (MoltenVK/Metal has none, where the f32 GPU search mis-floors the razor-thin
     greats argmax and drops every FG candidate). ``residual_budget == 0`` collapses to a single
     allocation == current stats, identical to the prior gems-fixed serving twin.
