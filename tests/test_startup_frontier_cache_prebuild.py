@@ -319,7 +319,10 @@ def test_fg_prebuild_submits_longest_compatible_completed_duration_first(
     monkeypatch.setattr(prebuild, "_cache_version", lambda: "version")
     monkeypatch.setattr(prebuild, "_ref_axes_signature", lambda _arrays: "ref")
     monkeypatch.setattr(prebuild, "_stat_keys_signature", lambda _keys: "stats")
-    monkeypatch.setattr(prebuild, "fg_prebuild_cpu_identity", lambda: "cpu")
+    monkeypatch.setattr(
+        "gear_optimizer.solver.fg_response_frontier_timing_history.fg_prebuild_cpu_identity",
+        lambda: "cpu",
+    )
     charts = [
         prebuild.FgPrebuildChart("large-notes.txt", "large", 2000, 0, 200.0),
         prebuild.FgPrebuildChart("long-history.txt", "long", 1000, 0, 100.0),
@@ -331,7 +334,7 @@ def test_fg_prebuild_submits_longest_compatible_completed_duration_first(
         lambda _paths, _ref_arrays: (list(charts), {}),
     )
     history_path = tmp_path / "timing.json"
-    context = FgPrebuildTimingContext("version", "cpu", 4, "ref", "stats", 8, 2)
+    context = FgPrebuildTimingContext("version", "cpu", 4, "ref", "stats", 8)
     records = update_fg_prebuild_timing_history(
         history_path,
         [],
