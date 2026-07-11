@@ -11,7 +11,7 @@ def _build_response_group_pattern_plan_jit(
     group_offsets: np.ndarray,
     group_lengths: np.ndarray,
     pattern_count: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     group_count = int(group_offsets.shape[0])
     total_rows = 0
     pair_count = 0
@@ -50,12 +50,10 @@ def _build_response_group_pattern_plan_jit(
             pair_idx = int(pair_by_pattern[pattern_id])
             pair_counts[pair_idx] += np.int32(1)
 
-    pair_offsets = np.empty(int(pair_count) + 1, dtype=np.int64)
-    pair_offsets[0] = np.int64(0)
+    pair_offsets = np.empty(int(pair_count) + 1, dtype=np.int32)
+    pair_offsets[0] = np.int32(0)
     for pair_idx in range(int(pair_count)):
-        pair_offsets[int(pair_idx) + 1] = pair_offsets[int(pair_idx)] + np.int64(
-            pair_counts[int(pair_idx)]
-        )
+        pair_offsets[int(pair_idx) + 1] = pair_offsets[int(pair_idx)] + pair_counts[int(pair_idx)]
 
     local_surfaces = np.empty(int(total_rows), dtype=np.int32)
     write_cursors = pair_offsets[:-1].copy()
@@ -74,9 +72,9 @@ def _build_response_group_pattern_plan_jit(
             pair_idx = int(pair_by_pattern[pattern_id])
             write = int(write_cursors[pair_idx])
             local_surfaces[write] = np.int32(local_surface)
-            write_cursors[pair_idx] += np.int64(1)
+            write_cursors[pair_idx] += np.int32(1)
 
-    return pair_owners, pair_pattern_ids, pair_offsets, pair_counts, local_surfaces
+    return pair_owners, pair_pattern_ids, pair_offsets, local_surfaces
 
 
 def build_response_group_pattern_plan(
@@ -85,7 +83,7 @@ def build_response_group_pattern_plan(
     group_lengths: np.ndarray,
     *,
     pattern_count: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Group exact surface rows by ``(owner, head-pattern)`` in first-seen order.
 
     The returned local-surface rows retain their original ascending ordinals inside each pair.
@@ -105,8 +103,7 @@ def build_response_group_pattern_plan(
         return (
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
-            np.asarray((0,), dtype=np.int64),
-            np.empty(0, dtype=np.int32),
+            np.asarray((0,), dtype=np.int32),
             np.empty(0, dtype=np.int32),
         )
     if int(offsets.shape[0]) >= int(np.iinfo(np.int32).max):
@@ -115,6 +112,8 @@ def build_response_group_pattern_plan(
         raise ValueError("response pattern plan ranges must be nonnegative")
     if bool(np.any(offsets + lengths > int(ids.shape[0]))):
         raise ValueError("response pattern plan range exceeds the surface rows")
+    if int(np.sum(lengths, dtype=np.int64)) > int(np.iinfo(np.int32).max):
+        raise OverflowError("response pattern plan logical row count exceeds int32 storage")
     if bool(np.any(ids < 0)) or bool(np.any(ids >= patterns)):
         raise ValueError("response pattern plan references an invalid head-pattern ID")
     return _build_response_group_pattern_plan_jit(ids, offsets, lengths, patterns)

@@ -132,6 +132,7 @@ _FG_DP_SOURCES = (
     _HERE / "response_cache_serde.py",
     _HERE / "response_inner_host.py",
     _HERE / "response_inner_kernels.py",
+    _HERE / "response_inner_pattern_kernels.py",
     _HERE / "response_inner_patterns.py",
 )
 _FG_RESPONSE_CACHE_VERSION = (
