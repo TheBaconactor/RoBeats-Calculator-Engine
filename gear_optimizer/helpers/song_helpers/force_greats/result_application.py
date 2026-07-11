@@ -3,10 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 
-def materialize_stats_from_payload(
+def read_visible_stats(
     payload: Any,
     *,
-    selected_element: Any = None,  # accepted for call-site compatibility; intentionally unused
     mutate_payload: bool = False,
 ) -> dict[str, Any]:
     """Return the post-gem *visible* stats for an FG result / persist / serve payload.
@@ -29,8 +28,8 @@ def materialize_stats_from_payload(
       here, ``BaseStats`` in the candidate ``eval_data`` really is the pre-gem base.
 
     This is the single canonical reader for pipeline, inflight orchestration, and DB
-    persistence. ``selected_element`` is accepted for backward call-site compatibility
-    and is intentionally unused (the allocation is already reflected in the stat row).
+    persistence. The selected element is intentionally not a parameter — the allocation
+    is already baked into the stat row, so it is never needed here.
     """
     if not isinstance(payload, dict):
         return {}
