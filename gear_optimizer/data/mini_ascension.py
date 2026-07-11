@@ -10,7 +10,7 @@ from gear_optimizer.core.utils import safe_int
 MINI_ASCENSION_MAX_LEVEL = 10
 MINI_ASCENSION_BASE_PP_PER_LEVEL = 2
 MINI_ASCENSION_ELEMENTAL_SCALE_PER_LEVEL = 0.5
-MINI_ASCENSION_CACHE_VERSION = "mini-ascension-v2"
+MINI_ASCENSION_CACHE_VERSION = "mini-ascension-v3"
 MINI_ASCENSION_DISABLED_CACHE_KEY = ("mini-ascension-disabled",)
 MINI_ASCENSION_BASE_STAT_PREFIX = "Mini Ascension Base "
 
@@ -191,7 +191,12 @@ def mini_ascension_elemental_bonus(
             song_primary_color=primary,
             song_secondary_color=secondary,
         )
-        amount = int(math.floor(float(pet_value) * scale))
+        # Issue #127: the in-game helper scales each Mini-color contribution by its match
+        # quality BEFORE pooling (confirmed by the shared gameplay/menu path and the real
+        # +62 Vibe Zara/Canon UI reading, which only reconciles with the weighted budget).
+        # contribution = floor(raw_l1_stat * level * 0.5 * quality); the recorded amount is
+        # this weighted contribution, not the pre-quality value.
+        amount = int(math.floor(float(pet_value) * scale * float(quality)))
         if amount <= 0:
             continue
         budget += amount
