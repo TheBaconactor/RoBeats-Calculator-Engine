@@ -195,7 +195,19 @@ def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(
         prebuild,
         "_dedupe_paths_by_response_bundle_key",
-        lambda paths, _ref_arrays: ([(str(path), 0) for path in paths], {}),
+        lambda paths, _ref_arrays: (
+            [
+                prebuild.FgPrebuildChart(
+                    path=str(path),
+                    digest=str(path),
+                    note_count=0,
+                    long_notes=0,
+                    duration_sec=0.0,
+                )
+                for path in paths
+            ],
+            {},
+        ),
     )
     monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", lambda **_kwargs: _UnexpectedExecutor())
     monkeypatch.setattr(
@@ -232,7 +244,13 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     # RAM guard thread has nothing real to guard.
     monkeypatch.setattr(prebuild, "_fg_prebuild_live_worker_commit_gb", lambda: 0.0)
     monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: None)
-    items = [(f"giant{i}.txt", 7000) for i in range(3)] + [(f"light{i}.txt", 500) for i in range(4)]
+    items = [
+        prebuild.FgPrebuildChart(path=f"giant{i}.txt", digest=f"g{i}", note_count=7000, long_notes=0, duration_sec=1.0)
+        for i in range(3)
+    ] + [
+        prebuild.FgPrebuildChart(path=f"light{i}.txt", digest=f"l{i}", note_count=500, long_notes=0, duration_sec=1.0)
+        for i in range(4)
+    ]
     monkeypatch.setattr(
         prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _ref_arrays: (list(items), {})
     )
@@ -267,21 +285,112 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
         del timeout, return_when
         # Record the in-flight weight peak at each drain point, then complete exactly one build.
         ordered = list(futures)
-        ledger_peaks.append(sum(weight for _path, weight in (futures[f] for f in ordered)))
+        ledger_peaks.append(sum(futures[future][1] for future in ordered))
         return {ordered[0]}, set(ordered[1:])
 
     monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
     monkeypatch.setattr(prebuild.concurrent.futures, "wait", _fake_wait)
 
     summary, results = prebuild._run_missing_fg_prebuild(
-        [path for path, _notes in items], {}, ((0, 0),)
+        [item.path for item in items], {}, ((0, 0),)
     )
 
     assert summary.completed == len(items)
     assert summary.failures == 0
-    assert sorted(result.path for result in results) == sorted(path for path, _notes in items)
+    assert sorted(result.path for result in results) == sorted(item.path for item in items)
     assert ledger_peaks, "admission loop never drained"
     assert max(ledger_peaks) <= budget_gb + 1e-9
+
+
+def test_fg_prebuild_submits_longest_compatible_completed_duration_first(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+    from gear_optimizer.solver.fg_response_frontier_timing_history import (
+        FgPrebuildTimingContext,
+        update_fg_prebuild_timing_history,
+    )
+
+    monkeypatch.setattr(prebuild, "_fg_prebuild_available_ram_gb", lambda: 26.0)
+    monkeypatch.setattr(prebuild, "frontier_prebuild_worker_count", lambda: 2)
+    monkeypatch.setattr(prebuild, "frontier_prebuild_cpu_count", lambda: 8)
+    monkeypatch.setattr(prebuild, "_fg_prebuild_live_worker_commit_gb", lambda: 0.0)
+    monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: None)
+    monkeypatch.setattr(prebuild, "_cache_version", lambda: "version")
+    monkeypatch.setattr(prebuild, "_ref_axes_signature", lambda _arrays: "ref")
+    monkeypatch.setattr(prebuild, "_stat_keys_signature", lambda _keys: "stats")
+    monkeypatch.setattr(prebuild, "fg_prebuild_cpu_identity", lambda: "cpu")
+    charts = [
+        prebuild.FgPrebuildChart("large-notes.txt", "large", 2000, 0, 200.0),
+        prebuild.FgPrebuildChart("long-history.txt", "long", 1000, 0, 100.0),
+        prebuild.FgPrebuildChart("short-history.txt", "short", 900, 0, 90.0),
+    ]
+    monkeypatch.setattr(
+        prebuild,
+        "_dedupe_paths_by_response_bundle_key",
+        lambda _paths, _ref_arrays: (list(charts), {}),
+    )
+    history_path = tmp_path / "timing.json"
+    context = FgPrebuildTimingContext("version", "cpu", 4, "ref", "stats", 8, 2)
+    records = update_fg_prebuild_timing_history(
+        history_path,
+        [],
+        chart=charts[1],
+        context=context,
+        duration_ms=9000.0,
+    )
+    update_fg_prebuild_timing_history(
+        history_path,
+        records,
+        chart=charts[2],
+        context=context,
+        duration_ms=1000.0,
+    )
+    submitted: list[str] = []
+
+    class _FakeFuture:
+        def __init__(self, path: str):
+            self.path = path
+
+        def result(self):
+            return prebuild.FgResponseFrontierCacheBuildResult(
+                path=self.path,
+                source="built",
+                build_ms=500.0,
+                cache_file=f"{self.path}.npz",
+            )
+
+    class _FakeExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, _fn, path, _reducer_threads):
+            submitted.append(str(path))
+            return _FakeFuture(str(path))
+
+    def _fake_wait(futures, timeout=None, return_when=None):
+        del timeout, return_when
+        ordered = list(futures)
+        return {ordered[0]}, set(ordered[1:])
+
+    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(prebuild.concurrent.futures, "wait", _fake_wait)
+
+    summary, _results = prebuild._run_missing_fg_prebuild(
+        [chart.path for chart in charts],
+        {},
+        ((0, 0),),
+        timing_history_path=history_path,
+    )
+
+    assert summary.completed == 3
+    assert submitted[0] == "long-history.txt"
 
 
 def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypatch, tmp_path: Path) -> None:

@@ -558,8 +558,9 @@ def test_fg_response_prebuild_dedupes_duplicate_bundle_keys(tmp_path: Path) -> N
     )
 
     # Representatives carry the note count from the same parse pass (admission weight input).
-    assert [path for path, _notes in representatives] == [str(first_path)]
-    assert all(isinstance(notes, int) and notes > 0 for _path, notes in representatives)
+    assert [item.path for item in representatives] == [str(first_path)]
+    assert all(isinstance(item.note_count, int) and item.note_count > 0 for item in representatives)
+    assert all(item.digest for item in representatives)
     assert duplicates == {str(first_path): (str(second_path),)}
 
 

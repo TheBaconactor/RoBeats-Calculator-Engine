@@ -19,6 +19,16 @@ from gear_optimizer.core.cpu_affinity import (
 )
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
+from gear_optimizer.solver.fg_response_frontier_timing_history import (
+    FgPrebuildChart,
+    FgPrebuildScheduledChart,
+    FgPrebuildTimingContext,
+    fg_prebuild_chart_digest,
+    fg_prebuild_cpu_identity,
+    load_fg_prebuild_timing_history,
+    predict_fg_prebuild_duration,
+    update_fg_prebuild_timing_history,
+)
 from gear_optimizer.solver.frontier_cache_manifest import (
     apply_manifest_results as _shared_apply_manifest_results,
     build_manifest_plan as _shared_build_manifest_plan,
@@ -51,6 +61,7 @@ class FgResponseFrontierCachePrebuildSummary:
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
 _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
+_TIMING_HISTORY_FILE_NAME = "fg_response_prebuild_timing_v1.json"
 
 # Memory-weighted admission model for the cold FG build. Per-song peak worker COMMIT spans ~4x
 # (median ~1k-note chart vs ~7k-note EXTENDED CUT giants), so concurrency is admitted per song by
@@ -298,6 +309,12 @@ def _manifest_path() -> Path:
     return _fg_response_disk_cache_dir() / _MANIFEST_FILE_NAME
 
 
+def _timing_history_path() -> Path:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import _fg_response_disk_cache_dir
+
+    return _fg_response_disk_cache_dir() / _TIMING_HISTORY_FILE_NAME
+
+
 def _cache_version() -> str:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import _FG_RESPONSE_CACHE_VERSION
 
@@ -369,18 +386,21 @@ def _apply_manifest_results(*, plan, results: Iterable[object], stat_keys: Itera
 
 def _dedupe_paths_by_response_bundle_key(
     paths: Iterable[str], ref_arrays: dict
-) -> tuple[list[tuple[str, int]], dict[str, tuple[str, ...]]]:
+) -> tuple[list[FgPrebuildChart], dict[str, tuple[str, ...]]]:
     """Deduplicate songs by response bundle key; representatives carry their note count.
 
-    This is the single full-pool parse pass: the note count feeds both heaviest-first ordering and
-    the admission memory weights, so no second per-song parse happens on the coordinating process.
+    This is the single full-pool parse pass: chart structure feeds timing-history prediction while
+    note count feeds the admission memory weights, so no second coordinator parse is needed.
     Duplicates share the bundle key (same chart timing content), hence the same note count.
     """
     from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
+        fg_response_frontier_bundle_cache_key,
+        fg_response_frontier_song_cache_key,
+    )
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    representatives: list[tuple[str, int]] = []
+    representatives: list[FgPrebuildChart] = []
     duplicates: dict[str, list[str]] = {}
     representative_by_key: dict[tuple, str] = {}
     for path_text in paths:
@@ -392,8 +412,17 @@ def _dedupe_paths_by_response_bundle_key(
         if representative is None:
             timestamps = calc_song.get("song_data", {}).get("timestamps", ())
             note_count = int(len(timestamps) if timestamps is not None else 0)
+            song_key = fg_response_frontier_song_cache_key(calc_song)
             representative_by_key[key] = path
-            representatives.append((path, note_count))
+            representatives.append(
+                FgPrebuildChart(
+                    path=path,
+                    digest=fg_prebuild_chart_digest(song_key),
+                    note_count=int(note_count),
+                    long_notes=int(song_key[1]),
+                    duration_sec=float(song_key[2]),
+                )
+            )
             duplicates[path] = []
         else:
             duplicates[representative].append(path)
@@ -516,6 +545,8 @@ def _run_missing_fg_prebuild(
     paths: list[str],
     ref_arrays: dict,
     stat_keys: tuple[tuple[int, int], ...],
+    *,
+    timing_history_path: Path | None = None,
 ) -> tuple[FgResponseFrontierCachePrebuildSummary, list[FgResponseFrontierCacheBuildResult]]:
     if not paths:
         return FgResponseFrontierCachePrebuildSummary(total=0), []
@@ -525,10 +556,8 @@ def _run_missing_fg_prebuild(
     completed = 0
     results: list[FgResponseFrontierCacheBuildResult] = []
     build_items, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(paths, ref_arrays)
-    # Heaviest-first (same makespan ordering as before), note counts from the dedupe parse pass.
-    build_items.sort(key=lambda item: (-int(item[1]), str(item[0]).lower()))
     if len(build_items) == 1:
-        path = str(build_items[0][0])
+        path = str(build_items[0].path)
         duplicate_paths = duplicate_paths_by_representative.get(path, ())
         try:
             result = build_fg_response_frontier_cache_for_path(path, ref_arrays, stat_keys=stat_keys)
@@ -581,7 +610,8 @@ def _run_missing_fg_prebuild(
     if budget_gb is not None:
         max_workers = min(max_workers, max(1, int(budget_gb / _FG_PREBUILD_FLOOR_COMMIT_GB)))
     frontier_cpus = frontier_prebuild_cpu_count()
-    heaviest_weight = _fg_prebuild_song_weight_gb(int(build_items[0][1]))
+    heaviest = max(build_items, key=lambda item: int(item.note_count))
+    heaviest_weight = _fg_prebuild_song_weight_gb(int(heaviest.note_count))
     logger.info(
         "[FGResponseCache] Weighted admission: %s song(s), budget=%s GB (available=%s GB, reserve=%.1f GB), "
         "max_workers=%s, heaviest=%s notes (~%.1f GB).",
@@ -590,15 +620,54 @@ def _run_missing_fg_prebuild(
         f"{available_gb:.1f}" if available_gb is not None else "unknown",
         _FG_PREBUILD_SYSTEM_RESERVE_GB,
         int(max_workers),
-        int(build_items[0][1]),
+        int(heaviest.note_count),
         float(heaviest_weight),
     )
-    pending: list[tuple[str, int]] = list(build_items)
-    in_flight: dict[concurrent.futures.Future, tuple[str, float]] = {}
+    history_records = (
+        load_fg_prebuild_timing_history(timing_history_path)
+        if timing_history_path is not None
+        else []
+    )
+    cpu_identity = fg_prebuild_cpu_identity()
+    base_context = {
+        "algorithm_version": _cache_version(),
+        "cpu_identity": cpu_identity,
+        "ref_signature": _ref_axes_signature(ref_arrays),
+        "stat_signature": _stat_keys_signature(stat_keys),
+        "frontier_cpus": int(frontier_cpus),
+        "max_workers": int(max_workers),
+    }
+    pending = []
+    for chart in build_items:
+        weight_gb = _fg_prebuild_song_weight_gb(int(chart.note_count))
+        reducer_threads = _fg_prebuild_reducer_threads(
+            weight_gb,
+            budget_gb=budget_gb,
+            max_workers=max_workers,
+            frontier_cpus=frontier_cpus,
+        )
+        context = FgPrebuildTimingContext(
+            **base_context,
+            reducer_threads=int(reducer_threads),
+        )
+        prediction = predict_fg_prebuild_duration(chart, context, history_records)
+        pending.append(
+            FgPrebuildScheduledChart(
+                chart=chart,
+                reducer_threads=int(reducer_threads),
+                context=context,
+                prediction=prediction,
+            )
+        )
+    pending.sort(
+        key=lambda item: (-float(item.prediction.duration_ms), str(item.chart.path).lower())
+    )
+    in_flight: dict[concurrent.futures.Future, tuple[FgPrebuildScheduledChart, float]] = {}
     admitted_weight_gb = 0.0
+    prediction_relative_errors: list[float] = []
 
     def _admit_ready(executor: concurrent.futures.ProcessPoolExecutor) -> None:
-        # First-fit over the heaviest-first queue: the head giant is admitted the moment it fits;
+        # First-fit over the longest-predicted queue: the head build is admitted the moment it fits;
         # when it does not, lighter charts backfill the remaining budget instead of idling cores.
         nonlocal admitted_weight_gb
         while pending and len(in_flight) < max_workers:
@@ -608,8 +677,8 @@ def _run_missing_fg_prebuild(
             effective_ledger_gb = max(float(admitted_weight_gb), _fg_prebuild_live_worker_commit_gb())
             admit_index: int | None = None
             weight_gb = 0.0
-            for index, (_path, note_count) in enumerate(pending):
-                weight_gb = _fg_prebuild_song_weight_gb(int(note_count))
+            for index, scheduled in enumerate(pending):
+                weight_gb = _fg_prebuild_song_weight_gb(int(scheduled.chart.note_count))
                 if not in_flight:
                     # Progress guarantee: one build is always admitted, whatever the ledger says.
                     admit_index = index
@@ -624,19 +693,24 @@ def _run_missing_fg_prebuild(
                 break
             if admit_index is None:
                 return
-            path, note_count = pending.pop(admit_index)
-            reducer_threads = _fg_prebuild_reducer_threads(
-                weight_gb, budget_gb=budget_gb, max_workers=max_workers, frontier_cpus=frontier_cpus
+            scheduled = pending.pop(admit_index)
+            chart = scheduled.chart
+            reducer_threads = int(scheduled.reducer_threads)
+            prediction = scheduled.prediction
+            path = str(chart.path)
+            future = executor.submit(
+                _build_fg_response_frontier_cache_for_path_shared,
+                path,
+                int(reducer_threads),
             )
-            future = executor.submit(_build_fg_response_frontier_cache_for_path_shared, path, int(reducer_threads))
-            in_flight[future] = (path, float(weight_gb))
+            in_flight[future] = (scheduled, float(weight_gb))
             admitted_weight_gb += float(weight_gb)
             if weight_gb >= 4.0:
                 logger.info(
                     "[FGResponseCache] Admitted giant %s (%s notes, ~%.1f GB, %s reducer threads); "
                     "in-flight=%s (~%.1f/%s GB).",
                     os.path.basename(path),
-                    int(note_count),
+                    int(chart.note_count),
                     float(weight_gb),
                     int(reducer_threads),
                     len(in_flight),
@@ -648,13 +722,15 @@ def _run_missing_fg_prebuild(
                 event="prebuild_admit",
                 song_key=os.path.basename(path),
                 metrics={
-                    "note_count": int(note_count),
+                    "note_count": int(chart.note_count),
                     "weight_gb": float(weight_gb),
                     "reducer_threads": int(reducer_threads),
                     "in_flight": int(len(in_flight)),
                     "admitted_weight_gb": float(admitted_weight_gb),
                     "effective_ledger_gb": float(effective_ledger_gb),
                     "available_gb": float(live_available_gb) if live_available_gb is not None else -1.0,
+                    "predicted_ms": float(prediction.duration_ms),
+                    "prediction_source": str(prediction.source),
                 },
             )
 
@@ -682,7 +758,11 @@ def _run_missing_fg_prebuild(
                     return_when=concurrent.futures.FIRST_COMPLETED,
                 )
                 for future in done:
-                    path, weight_gb = in_flight.pop(future)
+                    scheduled, weight_gb = in_flight.pop(future)
+                    chart = scheduled.chart
+                    context = scheduled.context
+                    prediction = scheduled.prediction
+                    path = str(chart.path)
                     admitted_weight_gb -= float(weight_gb)
                     duplicate_paths = duplicate_paths_by_representative.get(path, ())
                     try:
@@ -694,6 +774,37 @@ def _run_missing_fg_prebuild(
                     completed += 1
                     results.append(result)
                     source_counts[result.source] += 1
+                    if str(result.source) == "built" and float(result.build_ms) > 0.0:
+                        if str(prediction.source) != "notes":
+                            prediction_relative_errors.append(
+                                abs(float(prediction.duration_ms) - float(result.build_ms))
+                                / float(result.build_ms)
+                            )
+                        emit_profile_event(
+                            component="fg_response_cache",
+                            event="prebuild_prediction",
+                            song_key=os.path.basename(path),
+                            metrics={
+                                "actual_ms": float(result.build_ms),
+                                "predicted_ms": float(prediction.duration_ms),
+                                "prediction_source": str(prediction.source),
+                            },
+                        )
+                        if timing_history_path is not None:
+                            try:
+                                history_records = update_fg_prebuild_timing_history(
+                                    timing_history_path,
+                                    history_records,
+                                    chart=chart,
+                                    context=context,
+                                    duration_ms=float(result.build_ms),
+                                )
+                            except OSError as exc:
+                                logger.warning(
+                                    "[FGResponseCache] Failed to persist timing history %s: %s",
+                                    timing_history_path,
+                                    exc,
+                                )
                     if duplicate_paths:
                         duplicate_source = "disk" if result.cache_file and os.path.exists(result.cache_file) else result.source
                         for duplicate_path in duplicate_paths:
@@ -752,6 +863,12 @@ def _run_missing_fg_prebuild(
             "disk": int(source_counts.get("disk", 0)),
             "memory": int(source_counts.get("memory", 0)),
             "elapsed_ms": elapsed_ms,
+            "prediction_mean_relative_error": (
+                float(sum(prediction_relative_errors) / len(prediction_relative_errors))
+                if prediction_relative_errors
+                else -1.0
+            ),
+            "prediction_error_count": int(len(prediction_relative_errors)),
         },
     )
     return summary, results
@@ -810,7 +927,12 @@ def run_fg_response_frontier_cache_prebuild(
         # Deterministic input order; heaviest-first execution ordering happens inside
         # _run_missing_fg_prebuild from the same parse pass that computes admission weights.
         missing_paths = sorted(str(path) for path in manifest_plan.missing_paths)
-        run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
+        run_summary, results = _run_missing_fg_prebuild(
+            list(missing_paths),
+            ref_arrays,
+            stat_keys,
+            timing_history_path=_timing_history_path(),
+        )
         _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
         elapsed_ms = float((time.perf_counter() - started) * 1000.0)
         if int(run_summary.built) > 0:
