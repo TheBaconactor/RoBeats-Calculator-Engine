@@ -179,8 +179,10 @@ def test_save_loadouts_batch_persists_song_aware_mini_ascension_stats(db_path, m
         ).fetchone()
         unpacked = _unpack_stats_after_load(json.loads(row["details_json"]))
         stats = unpacked["Stats"]
+        # Two-component (issue #127): pool 250 -> Rush 166 / Flow 83; same-position extra Rush +250
+        # -> bonus Rush 416 / Flow 83; +50 base Rush -> Rush 466.
         assert stats["Perfect Points"] == 20
-        assert stats["Rush"] == 216
+        assert stats["Rush"] == 466
         assert stats["Flow"] == 83
         assert unpacked["Mini Ascension Materialized"] is True
         assert unpacked["Mini Ascension Source Version"] == MINI_ASCENSION_CACHE_VERSION

@@ -9,8 +9,10 @@ from gear_optimizer.core.utils import safe_int
 
 MINI_ASCENSION_MAX_LEVEL = 10
 MINI_ASCENSION_BASE_PP_PER_LEVEL = 2
+# Universal-pool per-level scale (Component 1). The additive positional match extra (Component 2)
+# uses max(quality - 0.5, 0) -> 0.5 same-position / 0.25 cross / 0 no-match. See issue #127/#117.
 MINI_ASCENSION_ELEMENTAL_SCALE_PER_LEVEL = 0.5
-MINI_ASCENSION_CACHE_VERSION = "mini-ascension-v3"
+MINI_ASCENSION_CACHE_VERSION = "mini-ascension-v4"
 MINI_ASCENSION_DISABLED_CACHE_KEY = ("mini-ascension-disabled",)
 MINI_ASCENSION_BASE_STAT_PREFIX = "Mini Ascension Base "
 
@@ -159,13 +161,16 @@ def mini_ascension_elemental_bonus(
     song_secondary_color: str,
     ascension_level: int = MINI_ASCENSION_MAX_LEVEL,
 ) -> tuple[dict[str, int], tuple[tuple[str, bool, float, str, int], ...]]:
-    """Compute Mini Ascension elemental bonuses.
+    """Compute Mini Ascension elemental bonuses (canonical two-component model, issue #127/#117).
 
-    The decompiled PetUtils path scales each ranked base Mini color by ``ascension * 0.5``. The
-    normal optimizer color stats are max-level values, so generated CSV rows also carry the base/L1
-    color stats used by Mini Ascension. The final destination distribution is intentionally routed
-    through ``_provisional_export_distribution`` because that insertion path remains
-    decompiler-noisy pending stronger evidence.
+    The in-game helper ``pet_id_song_color_list_get_element_statsdict`` adds two components:
+    (1) a universal song-element pool ``floor(A * rawStat * 0.5)`` per ranked L1 Mini color,
+    distributed ``2/3 + 1/3`` (two-color) or fully to the primary (one-color); and (2) an additive
+    positional match extra routed to the matched song element -- ``floor(A * rawStat * 0.5)`` for a
+    same-position match, ``floor(A * rawStat * 0.25)`` for a cross-position match, ``0`` otherwise.
+    Ranked colors use the base/L1 stats (the normal optimizer color stats are max-level values, so
+    generated CSV rows also carry the base/L1 columns). Verified against the in-game readings
+    (Zara/Canon +62 at A5, +125 at A10; Monstercat own Chill/Flow +131/+68 at A10).
     """
     primary = str(song_primary_color or "").strip()
     if primary not in _ELEMENT_STAT_SET:
@@ -180,32 +185,53 @@ def mini_ascension_elemental_bonus(
     if level <= 0:
         return {}, ()
 
-    scale = float(level) * float(MINI_ASCENSION_ELEMENTAL_SCALE_PER_LEVEL)
-    budget = 0
-    quality_rows: list[tuple[str, bool, float, str, int]] = []
+    # Issue #127/#117 (canonical, owner ZIP re-audit): the in-game helper adds TWO components.
+    #   1) Universal pool (quality-INDEPENDENT): floor(A * rawStat * 0.5) per Mini color, each
+    #      floored then summed, then distributed to the song 2/3+1/3 (two-color) or all-to-primary.
+    #   2) Additive positional match extra, routed to the SONG element the Mini color matched:
+    #        same-position match -> floor(A * rawStat * 0.5)
+    #        cross-position match -> floor(A * rawStat * 0.25)   (= max(quality - 0.5, 0) * A * rawStat)
+    #        no match            -> 0
+    # Final bonus = pooled destination + positional extras. Verified: Zara/Canon +62 (A5) / +125 (A10),
+    # Monstercat own Chill/Flow +131/+68 (A10). Earlier builds pooled a quality-WEIGHTED budget and
+    # omitted component 2 entirely -- both wrong.
+    scale = float(level) * float(MINI_ASCENSION_ELEMENTAL_SCALE_PER_LEVEL)  # A * 0.5
+    pool = 0
+    match_extras: dict[str, int] = {}
+    quality_rows: list[tuple[str, bool, float, int, int]] = []
     for index, (pet_color, pet_value) in enumerate(ranked_mini_ascension_colors(mini)[:2]):
         is_primary = index == 0
+        # Component 1: universal pooled base contribution (floored per color, before summing).
+        base = int(math.floor(float(pet_value) * scale))
+        if base > 0:
+            pool += base
+        # Component 2: positional match extra, floored per color, routed to the matched song element.
         quality = mini_ascension_match_quality(
             pet_color,
             is_pet_primary=is_primary,
             song_primary_color=primary,
             song_secondary_color=secondary,
         )
-        # Issue #127: the in-game helper scales each Mini-color contribution by its match
-        # quality BEFORE pooling (confirmed by the shared gameplay/menu path and the real
-        # +62 Vibe Zara/Canon UI reading, which only reconciles with the weighted budget).
-        # contribution = floor(raw_l1_stat * level * 0.5 * quality); the recorded amount is
-        # this weighted contribution, not the pre-quality value.
-        amount = int(math.floor(float(pet_value) * scale * float(quality)))
-        if amount <= 0:
-            continue
-        budget += amount
-        quality_rows.append((pet_color, bool(is_primary), float(quality), "Element Budget", amount))
-    bonus = _provisional_export_distribution(
-        budget=budget,
-        song_primary_color=primary,
-        song_secondary_color=secondary,
+        extra_mult = max(float(quality) - 0.5, 0.0)  # 0.5 same-position, 0.25 cross, 0 no-match
+        extra = int(math.floor(float(pet_value) * float(level) * extra_mult)) if extra_mult > 0.0 else 0
+        if extra > 0:
+            if pet_color == primary:
+                match_extras[primary] = match_extras.get(primary, 0) + extra
+            elif secondary and pet_color == secondary:
+                match_extras[secondary] = match_extras.get(secondary, 0) + extra
+            else:
+                extra = 0
+        quality_rows.append((pet_color, bool(is_primary), float(quality), int(base), int(extra)))
+    bonus = dict(
+        _provisional_export_distribution(
+            budget=pool,
+            song_primary_color=primary,
+            song_secondary_color=secondary,
+        )
     )
+    for element, extra in match_extras.items():
+        if extra > 0:
+            bonus[element] = int(bonus.get(element, 0)) + int(extra)
     return bonus, tuple(quality_rows)
 
 
