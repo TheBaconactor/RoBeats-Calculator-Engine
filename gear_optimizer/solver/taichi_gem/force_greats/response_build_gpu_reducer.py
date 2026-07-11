@@ -23,27 +23,15 @@ _STAMP_EPOCH_RESET_LIMIT = 1 << 30
 
 
 @dataclass(frozen=True, slots=True)
-class _IncrementalFrontierCache:
+class _BodyReducerCache:
     body_values: np.ndarray
     body_starts: np.ndarray
     body_counts: np.ndarray
     input_values: np.ndarray
     input_starts: np.ndarray
     input_counts: np.ndarray
-    head_values: np.ndarray
-    head_starts: np.ndarray
-    head_counts: np.ndarray
-    head_generated_counts: np.ndarray
-    first_rows: np.ndarray
-    first_generated_count: int
-    real_time_idx: int
-    real_fever_time: float
     reductions_reused: int
     reductions_executed: int
-    head_states_reused: int
-    head_states_recomputed: int
-    head_states_restored: int
-    first_reused: int
 
     @property
     def allocated_bytes(self) -> int:
@@ -54,36 +42,19 @@ class _IncrementalFrontierCache:
             + self.input_values.nbytes
             + self.input_starts.nbytes
             + self.input_counts.nbytes
-            + self.head_values.nbytes
-            + self.head_starts.nbytes
-            + self.head_counts.nbytes
-            + self.head_generated_counts.nbytes
-            + self.first_rows.nbytes
         )
 
 
-def _empty_incremental_frontier_cache(n: int) -> _IncrementalFrontierCache:
-    return _IncrementalFrontierCache(
+def _empty_body_reducer_cache(n: int) -> _BodyReducerCache:
+    return _BodyReducerCache(
         body_values=np.zeros((1, 3), dtype=np.uint64),
         body_starts=np.zeros(int(n) + 1, dtype=np.int32),
         body_counts=np.zeros(int(n) + 1, dtype=np.int32),
         input_values=np.zeros((1, 2), dtype=np.uint64),
         input_starts=np.zeros(int(n) + 1, dtype=np.int32),
         input_counts=np.zeros(int(n) + 1, dtype=np.int32),
-        head_values=np.zeros((1, 7), dtype=np.uint64),
-        head_starts=np.zeros(min(int(n), 100), dtype=np.int64),
-        head_counts=np.zeros(min(int(n), 100), dtype=np.int64),
-        head_generated_counts=np.zeros(min(int(n), 100), dtype=np.int64),
-        first_rows=np.zeros((1, 7), dtype=np.uint64),
-        first_generated_count=0,
-        real_time_idx=-1,
-        real_fever_time=0.0,
         reductions_reused=0,
         reductions_executed=0,
-        head_states_reused=0,
-        head_states_recomputed=0,
-        head_states_restored=0,
-        first_reused=0,
     )
 
 
@@ -249,11 +220,7 @@ class _FirstFrontierWorkspacePlan:
         "allocated_bytes",
         "body_reductions_reused",
         "body_reductions_executed",
-        "incremental_head_states_reused",
-        "incremental_head_states_recomputed",
-        "incremental_head_states_restored",
-        "incremental_first_reused",
-        "incremental_cache_peak_bytes",
+        "body_cache_peak_bytes",
     )
 
     def __init__(self, *, n: int, pair_mod_bound: int) -> None:
@@ -269,11 +236,7 @@ class _FirstFrontierWorkspacePlan:
         self.allocated_bytes = 0
         self.body_reductions_reused = 0
         self.body_reductions_executed = 0
-        self.incremental_head_states_reused = 0
-        self.incremental_head_states_recomputed = 0
-        self.incremental_head_states_restored = 0
-        self.incremental_first_reused = 0
-        self.incremental_cache_peak_bytes = 0
+        self.body_cache_peak_bytes = 0
 
     def thread_workspace(self) -> _FirstFrontierStampWorkspace:
         workspace = getattr(_WORKSPACE_TLS, "workspace", None)
@@ -292,16 +255,12 @@ class _FirstFrontierWorkspacePlan:
                 self.allocated_bytes += int(workspace.total_bytes)
         return workspace
 
-    def record_incremental_cache(self, cache: _IncrementalFrontierCache) -> None:
+    def record_body_cache(self, cache: _BodyReducerCache) -> None:
         with self._lock:
             self.body_reductions_reused += int(cache.reductions_reused)
             self.body_reductions_executed += int(cache.reductions_executed)
-            self.incremental_head_states_reused += int(cache.head_states_reused)
-            self.incremental_head_states_recomputed += int(cache.head_states_recomputed)
-            self.incremental_head_states_restored += int(cache.head_states_restored)
-            self.incremental_first_reused += int(cache.first_reused)
-            self.incremental_cache_peak_bytes = max(
-                int(self.incremental_cache_peak_bytes), int(cache.allocated_bytes)
+            self.body_cache_peak_bytes = max(
+                int(self.body_cache_peak_bytes), int(cache.allocated_bytes)
             )
 
 
@@ -323,7 +282,7 @@ def _first_frontier_reducer_executor(max_workers: int) -> concurrent.futures.Thr
     )
 
 
-def _first_frontier_result_and_incremental_cache_from_precomputed_end_indices(
+def _first_frontier_result_and_body_cache_from_precomputed_end_indices(
     *,
     n: int,
     action_count: int,
@@ -360,9 +319,9 @@ def _first_frontier_result_and_incremental_cache_from_precomputed_end_indices(
     use_forced_great_timing: bool,
     region_table: tuple,
     workspace: _FirstFrontierStampWorkspace,
-    previous_cache: _IncrementalFrontierCache | None,
-) -> tuple[FgResponseFrontierResult, _IncrementalFrontierCache]:
-    prior = previous_cache or _empty_incremental_frontier_cache(int(n))
+    previous_body_cache: _BodyReducerCache | None,
+) -> tuple[FgResponseFrontierResult, _BodyReducerCache]:
+    prior = previous_body_cache or _empty_body_reducer_cache(int(n))
     (
         first_rows,
         states_evaluated,
@@ -380,17 +339,6 @@ def _first_frontier_result_and_incremental_cache_from_precomputed_end_indices(
         input_counts,
         body_reductions_reused,
         body_reductions_executed,
-        head_values,
-        head_starts,
-        head_counts,
-        head_generated_counts,
-        cached_first_rows,
-        first_generated_count,
-        head_states_reused,
-        head_states_recomputed,
-        head_states_restored,
-        first_reused,
-        _body_changed,
     ) = (
         _first_frontier_from_precomputed_end_indices_numba(
             int(n),
@@ -449,21 +397,13 @@ def _first_frontier_result_and_incremental_cache_from_precomputed_end_indices(
             int(workspace.pair_epoch),
             int(workspace.bit_epoch),
             int(workspace.branch_a_epoch),
-            1 if previous_cache is not None else 0,
+            1 if previous_body_cache is not None else 0,
             prior.body_values,
             prior.body_starts,
             prior.body_counts,
             prior.input_values,
             prior.input_starts,
             prior.input_counts,
-            prior.head_values,
-            prior.head_starts,
-            prior.head_counts,
-            prior.head_generated_counts,
-            prior.first_rows,
-            int(prior.first_generated_count),
-            int(prior.real_time_idx),
-            float(prior.real_fever_time),
         )
     )
     workspace.store_epochs(int(pair_epoch), int(bit_epoch), int(branch_a_epoch))
@@ -480,27 +420,15 @@ def _first_frontier_result_and_incremental_cache_from_precomputed_end_indices(
             non_fever_base=int(non_fever_base),
             seconds=0.0,
         ),
-        _IncrementalFrontierCache(
+        _BodyReducerCache(
             body_values=body_values,
             body_starts=body_starts,
             body_counts=body_counts,
             input_values=input_values,
             input_starts=input_starts,
             input_counts=input_counts,
-            head_values=head_values,
-            head_starts=head_starts,
-            head_counts=head_counts,
-            head_generated_counts=head_generated_counts,
-            first_rows=cached_first_rows,
-            first_generated_count=int(first_generated_count),
-            real_time_idx=int(real_time_idx),
-            real_fever_time=float(real_fever_time),
             reductions_reused=int(body_reductions_reused),
             reductions_executed=int(body_reductions_executed),
-            head_states_reused=int(head_states_reused),
-            head_states_recomputed=int(head_states_recomputed),
-            head_states_restored=int(head_states_restored),
-            first_reused=int(first_reused),
         ),
     )
 
@@ -538,16 +466,15 @@ def _first_frontier_results_for_precomputed_range(
     results: list[tuple[int, FgResponseFrontierResult]] = []
     workspace = workspace_plan.thread_workspace()
     previous_key: tuple[float, int] | None = None
-    previous_cache: _IncrementalFrontierCache | None = None
+    previous_body_cache: _BodyReducerCache | None = None
     for local_idx in range(int(start), int(stop)):
         item = chunk[int(local_idx)]
         source_idx = int(item[0])
         table_key = (float(item[2]), int(item[1]))
         region_table = region_tables_by_key[table_key]
         if table_key != previous_key:
-            previous_cache = None
-        frontier, incremental_cache = (
-            _first_frontier_result_and_incremental_cache_from_precomputed_end_indices(
+            previous_body_cache = None
+        frontier, body_cache = _first_frontier_result_and_body_cache_from_precomputed_end_indices(
             n=int(n),
             action_count=int(item[5].shape[0]),
             non_fever_base=int(item[1]),
@@ -583,10 +510,9 @@ def _first_frontier_results_for_precomputed_range(
             use_forced_great_timing=bool(use_forced_great_timing),
             region_table=region_table,
             workspace=workspace,
-            previous_cache=previous_cache,
+            previous_body_cache=previous_body_cache,
         )
-        )
-        workspace_plan.record_incremental_cache(incremental_cache)
+        workspace_plan.record_body_cache(body_cache)
         results.append(
             (
                 source_idx,
@@ -594,5 +520,5 @@ def _first_frontier_results_for_precomputed_range(
             )
         )
         previous_key = table_key
-        previous_cache = incremental_cache
+        previous_body_cache = body_cache
     return results

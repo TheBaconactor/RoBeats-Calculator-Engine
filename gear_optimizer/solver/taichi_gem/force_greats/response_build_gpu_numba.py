@@ -3450,240 +3450,6 @@ def _numba_store_body_reducer_input(
 
 
 @njit(cache=True, nogil=True)
-def _numba_state_rows_equal(
-    values,
-    start: int,
-    count: int,
-    previous_values,
-    previous_start: int,
-    previous_count: int,
-) -> bool:
-    if int(count) != int(previous_count):
-        return False
-    if (
-        int(start) < 0
-        or int(previous_start) < 0
-        or int(start) + int(count) > int(values.shape[0])
-        or int(previous_start) + int(previous_count) > int(previous_values.shape[0])
-        or int(values.shape[1]) != int(previous_values.shape[1])
-    ):
-        raise ValueError("FG incremental frontier row range is out of bounds")
-    for row_idx in range(int(count)):
-        for col_idx in range(int(values.shape[1])):
-            if int(values[int(start) + int(row_idx), int(col_idx)]) != int(
-                previous_values[int(previous_start) + int(row_idx), int(col_idx)]
-            ):
-                return False
-    return True
-
-
-@njit(cache=True, nogil=True, inline="always")
-def _numba_tail_frontier_changed(
-    end_e: int,
-    n: int,
-    head_limit: int,
-    body_changed,
-    head_changed,
-) -> bool:
-    if int(end_e) >= int(n) or int(end_e) >= int(head_limit) and int(end_e) < 100:
-        return False
-    if int(end_e) >= 100:
-        return bool(body_changed[int(end_e)])
-    return bool(head_changed[int(end_e)])
-
-
-@njit(cache=True, nogil=True)
-def _numba_region_recurrence_unchanged(
-    n: int,
-    section_start: int,
-    region_starts,
-    region_offsets,
-    region_activations,
-    region_great_ends,
-    region_is_greats,
-    region_act_hits,
-    region_perfect_hits,
-    region_perfect_valids,
-    perfect_floor_timestamps,
-    great_floor_timestamps,
-    real_fever_time: float,
-    previous_real_fever_time: float,
-    use_forced_great_timing_i: int,
-    head_limit: int,
-    body_changed,
-    head_changed,
-) -> bool:
-    if int(use_forced_great_timing_i) == 0:
-        return True
-    for entry_idx in range(
-        int(region_starts[int(section_start)]), int(region_starts[int(section_start) + 1])
-    ):
-        current = _numba_region_run_edge_from_core(
-            int(n),
-            int(section_start),
-            int(region_offsets[int(entry_idx)]),
-            int(region_activations[int(entry_idx)]),
-            int(region_great_ends[int(entry_idx)]),
-            int(region_is_greats[int(entry_idx)]),
-            float(region_act_hits[int(entry_idx)]),
-            float(region_perfect_hits[int(entry_idx)]),
-            int(region_perfect_valids[int(entry_idx)]),
-            1,
-            float(real_fever_time),
-            perfect_floor_timestamps,
-            great_floor_timestamps,
-        )
-        previous = _numba_region_run_edge_from_core(
-            int(n),
-            int(section_start),
-            int(region_offsets[int(entry_idx)]),
-            int(region_activations[int(entry_idx)]),
-            int(region_great_ends[int(entry_idx)]),
-            int(region_is_greats[int(entry_idx)]),
-            float(region_act_hits[int(entry_idx)]),
-            float(region_perfect_hits[int(entry_idx)]),
-            int(region_perfect_valids[int(entry_idx)]),
-            1,
-            float(previous_real_fever_time),
-            perfect_floor_timestamps,
-            great_floor_timestamps,
-        )
-        if int(current[6]) != int(previous[6]):
-            return False
-        if int(current[6]) == 0:
-            continue
-        if int(current[1]) != int(previous[1]):
-            return False
-        current_eg_e = _numba_great_floor_extended_end_at_hit(
-            int(n), int(current[0]), float(current[5]), float(real_fever_time), great_floor_timestamps
-        )
-        previous_eg_e = _numba_great_floor_extended_end_at_hit(
-            int(n),
-            int(previous[0]),
-            float(previous[5]),
-            float(previous_real_fever_time),
-            great_floor_timestamps,
-        )
-        if int(current_eg_e) != int(previous_eg_e):
-            return False
-        for end_e in range(int(current[1]), int(current_eg_e) + 1):
-            if _numba_tail_frontier_changed(
-                int(end_e), int(n), int(head_limit), body_changed, head_changed
-            ):
-                return False
-    return True
-
-
-@njit(cache=True, nogil=True)
-def _numba_prefix_recurrence_unchanged(
-    n: int,
-    state_i: int,
-    first_i: int,
-    action_count: int,
-    later_fill,
-    first_fill,
-    later_forced,
-    first_forced,
-    later_activation_forced,
-    first_activation_forced,
-    prefix_perfect_valid,
-    prefix_late_valid,
-    capped_perfect_edge_e,
-    capped_late_edge_e,
-    capped_eg_perfect_e,
-    capped_eg_late_e,
-    real_time_idx: int,
-    previous_real_time_idx: int,
-    use_forced_great_timing_i: int,
-    head_limit: int,
-    body_changed,
-    head_changed,
-) -> bool:
-    for action_idx in range(int(action_count)):
-        if int(first_i) != 0:
-            fill = int(first_fill[int(action_idx)])
-            forced_count = int(first_forced[int(action_idx)])
-            prefix_forced = int(first_activation_forced[int(action_idx)])
-            activation = int(fill)
-        else:
-            fill = int(later_fill[int(action_idx)])
-            forced_count = int(later_forced[int(action_idx)])
-            prefix_forced = int(later_activation_forced[int(action_idx)])
-            activation = int(state_i) + int(fill)
-        if int(activation) >= int(n):
-            break
-        edge_e = -1
-        previous_edge_e = -1
-        if int(prefix_perfect_valid[int(activation)]) != 0 and int(forced_count) >= 0:
-            edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
-            previous_edge_e = int(
-                capped_perfect_edge_e[int(previous_real_time_idx), int(activation)]
-            )
-        if int(edge_e) != int(previous_edge_e):
-            return False
-        if int(edge_e) >= 0:
-            eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(activation)])
-            previous_eg_e = int(
-                capped_eg_perfect_e[int(previous_real_time_idx), int(activation)]
-            )
-            if int(eg_e) != int(previous_eg_e):
-                return False
-            for end_e in range(int(edge_e), int(eg_e) + 1):
-                if _numba_tail_frontier_changed(
-                    int(end_e), int(n), int(head_limit), body_changed, head_changed
-                ):
-                    return False
-
-        activation_e = -1
-        previous_activation_e = -1
-        if (
-            int(use_forced_great_timing_i) != 0
-            and int(prefix_forced) >= 0
-            and int(prefix_late_valid[int(activation)]) != 0
-        ):
-            activation_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
-            previous_activation_e = int(
-                capped_late_edge_e[int(previous_real_time_idx), int(activation)]
-            )
-        activation_eg_e = (
-            int(capped_eg_late_e[int(real_time_idx), int(activation)])
-            if int(activation_e) >= 0
-            else -1
-        )
-        previous_activation_eg_e = (
-            int(capped_eg_late_e[int(previous_real_time_idx), int(activation)])
-            if int(previous_activation_e) >= 0
-            else -1
-        )
-        extends = int(activation_e) >= 0 and _numba_late_edge_extends(
-            int(edge_e),
-            int(activation_e),
-            int(activation_eg_e),
-            int(capped_eg_perfect_e[int(real_time_idx), int(activation)]),
-        )
-        previous_extends = int(previous_activation_e) >= 0 and _numba_late_edge_extends(
-            int(previous_edge_e),
-            int(previous_activation_e),
-            int(previous_activation_eg_e),
-            int(capped_eg_perfect_e[int(previous_real_time_idx), int(activation)]),
-        )
-        if bool(extends) != bool(previous_extends):
-            return False
-        if bool(extends):
-            if (
-                int(activation_e) != int(previous_activation_e)
-                or int(activation_eg_e) != int(previous_activation_eg_e)
-            ):
-                return False
-            for end_e in range(int(activation_e), int(activation_eg_e) + 1):
-                if _numba_tail_frontier_changed(
-                    int(end_e), int(n), int(head_limit), body_changed, head_changed
-                ):
-                    return False
-    return True
-
-
-@njit(cache=True, nogil=True)
 def _numba_touch_body_tail_array_candidates(
     edge,
     state: int,
@@ -4110,11 +3876,6 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
     input_starts = np.zeros(int(n) + 1, dtype=np.int32)
     input_counts = np.zeros(int(n) + 1, dtype=np.int32)
     input_cursor = 0
-    body_changed = np.ones(int(n) + 1, dtype=np.bool_)
-    body_changed[int(n)] = False
-    if int(has_previous_body_i) != 0:
-        for state_i in range(int(n)):
-            body_changed[int(state_i)] = int(previous_body_counts[int(state_i)]) != 0
     # Reusable output buffer for the fused per-state reduce+hull (grow-doubling, rewritten from
     # row 0 each state; survivors are copied into body_values before the next state runs).
     reduce_values = np.empty((1024, 3), dtype=np.uint64)
@@ -4462,15 +4223,6 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
                 reduce_values,
                 int(frontier_len),
             )
-        if int(has_previous_body_i) != 0:
-            body_changed[int(state_i)] = not _numba_state_rows_equal(
-                body_values,
-                int(body_starts[int(state_i)]),
-                int(body_counts[int(state_i)]),
-                previous_body_values,
-                int(previous_body_starts[int(state_i)]),
-                int(previous_body_counts[int(state_i)]),
-            )
         retained_total += int(frontier_len)
         if int(frontier_len) > max_state_frontier:
             max_state_frontier = int(frontier_len)
@@ -4490,12 +4242,11 @@ def _numba_packet_body_tails_from_precomputed_end_indices(
         input_counts,
         body_reductions_reused,
         body_reductions_executed,
-        body_changed,
     )
 
 
 @njit(cache=True, nogil=True)
-def _numba_empty_incremental_cache(n: int):
+def _numba_empty_body_reuse_cache(n: int):
     return (
         np.zeros((1, 3), dtype=np.uint64),
         np.zeros(int(n) + 1, dtype=np.int32),
@@ -4503,11 +4254,6 @@ def _numba_empty_incremental_cache(n: int):
         np.zeros((1, 2), dtype=np.uint64),
         np.zeros(int(n) + 1, dtype=np.int32),
         np.zeros(int(n) + 1, dtype=np.int32),
-        np.zeros((1, 7), dtype=np.uint64),
-        np.zeros(min(int(n), 100), dtype=np.int64),
-        np.zeros(min(int(n), 100), dtype=np.int64),
-        np.zeros(min(int(n), 100), dtype=np.int64),
-        np.ones(int(n) + 1, dtype=np.bool_),
     )
 
 
@@ -4572,14 +4318,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
     previous_input_values,
     previous_input_starts,
     previous_input_counts,
-    previous_head_values,
-    previous_head_starts,
-    previous_head_counts,
-    previous_head_generated_counts,
-    previous_first_rows,
-    previous_first_generated_count: int,
-    previous_real_time_idx: int,
-    previous_real_fever_time: float,
 ):
     if int(use_forced_great_timing_i) == 0 and int(action_count) > 0 and int(first_fill[0]) >= 100:
         zero_body_fever = _numba_zero_forced_body_fever_precomputed(
@@ -4609,15 +4347,9 @@ def _first_frontier_from_precomputed_end_indices_numba(
                     empty_input_values,
                     empty_input_starts,
                     empty_input_counts,
-                    empty_head_values,
-                    empty_head_starts,
-                    empty_head_counts,
-                    empty_head_generated_counts,
-                    empty_body_changed,
-                ) = _numba_empty_incremental_cache(int(n))
-                first_rows = _numba_single_body_frontier_row(int(zero_body_fever))
+                ) = _numba_empty_body_reuse_cache(int(n))
                 return (
-                    first_rows,
+                    _numba_single_body_frontier_row(int(zero_body_fever)),
                     0,
                     0,
                     1,
@@ -4633,17 +4365,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
                     empty_input_counts,
                     0,
                     0,
-                    empty_head_values,
-                    empty_head_starts,
-                    empty_head_counts,
-                    empty_head_generated_counts,
-                    first_rows,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    empty_body_changed,
                 )
             max_body_fever = _numba_max_body_fever_precomputed(
                 int(n),
@@ -4673,15 +4394,9 @@ def _first_frontier_from_precomputed_end_indices_numba(
                     empty_input_values,
                     empty_input_starts,
                     empty_input_counts,
-                    empty_head_values,
-                    empty_head_starts,
-                    empty_head_counts,
-                    empty_head_generated_counts,
-                    empty_body_changed,
-                ) = _numba_empty_incremental_cache(int(n))
-                first_rows = _numba_single_body_frontier_row(int(zero_body_fever))
+                ) = _numba_empty_body_reuse_cache(int(n))
                 return (
-                    first_rows,
+                    _numba_single_body_frontier_row(int(zero_body_fever)),
                     0,
                     0,
                     1,
@@ -4697,17 +4412,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
                     empty_input_counts,
                     0,
                     0,
-                    empty_head_values,
-                    empty_head_starts,
-                    empty_head_counts,
-                    empty_head_generated_counts,
-                    first_rows,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    empty_body_changed,
                 )
 
     reachable = np.zeros(int(n) + 1, dtype=np.bool_)
@@ -4926,7 +4630,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
         input_counts,
         body_reductions_reused,
         body_reductions_executed,
-        body_changed,
     ) = _numba_packet_body_tails_from_precomputed_end_indices(
         int(n),
         int(action_count),
@@ -4994,14 +4697,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
     head_pool_cursor = 0
     head_state_start = np.zeros(max(1, int(head_limit)), dtype=np.int64)
     head_state_count = np.zeros(max(1, int(head_limit)), dtype=np.int64)
-    head_generated_counts = np.zeros(max(1, int(head_limit)), dtype=np.int64)
-    head_changed = np.ones(max(1, int(head_limit)), dtype=np.bool_)
-    if int(has_previous_body_i) != 0:
-        for state_i in range(int(head_limit)):
-            head_changed[int(state_i)] = int(previous_head_counts[int(state_i)]) != 0
-    head_states_reused = 0
-    head_states_recomputed = 0
-    head_states_restored = 0
     # Region-2 same-end bucket scratch, reused across every _numba_emit_region2_head_edges call
     # of this build: chained node store + per-end head/tail tables + first-seen end order. The
     # emit drain resets every touched end to -1, so no per-call clearing is needed.
@@ -5015,84 +4710,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
         if not reachable[state_i]:
             continue
         states_evaluated += 1
-        can_reuse_head = (
-            int(has_previous_body_i) != 0
-            and int(previous_head_counts[int(state_i)]) > 0
-            and _numba_prefix_recurrence_unchanged(
-                int(n),
-                int(state_i),
-                0,
-                int(action_count),
-                later_fill,
-                first_fill,
-                later_forced,
-                first_forced,
-                later_activation_forced,
-                first_activation_forced,
-                prefix_perfect_valid,
-                prefix_late_valid,
-                capped_perfect_edge_e,
-                capped_late_edge_e,
-                capped_eg_perfect_e,
-                capped_eg_late_e,
-                int(real_time_idx),
-                int(previous_real_time_idx),
-                int(use_forced_great_timing_i),
-                int(head_limit),
-                body_changed,
-                head_changed,
-            )
-            and _numba_region_recurrence_unchanged(
-                int(n),
-                int(state_i) + 1,
-                region_starts,
-                region_offsets,
-                region_activations,
-                region_great_ends,
-                region_is_greats,
-                region_act_hits,
-                region_perfect_hits,
-                region_perfect_valids,
-                perfect_floor_timestamps,
-                great_floor_timestamps,
-                float(real_fever_time),
-                float(previous_real_fever_time),
-                int(use_forced_great_timing_i),
-                int(head_limit),
-                body_changed,
-                head_changed,
-            )
-        )
-        if bool(can_reuse_head):
-            previous_start = int(previous_head_starts[int(state_i)])
-            previous_count = int(previous_head_counts[int(state_i)])
-            if (
-                int(previous_start) < 0
-                or int(previous_start) + int(previous_count) > int(previous_head_values.shape[0])
-            ):
-                raise ValueError("FG previous head frontier range is out of bounds")
-            head_pool = _numba_u64_rows_ensure(
-                head_pool, int(head_pool_cursor), int(previous_count)
-            )
-            head_state_start[int(state_i)] = int(head_pool_cursor)
-            head_state_count[int(state_i)] = int(previous_count)
-            for frontier_idx in range(int(previous_count)):
-                for col_idx in range(7):
-                    head_pool[int(head_pool_cursor) + int(frontier_idx), int(col_idx)] = (
-                        previous_head_values[int(previous_start) + int(frontier_idx), int(col_idx)]
-                    )
-            head_pool_cursor += int(previous_count)
-            head_changed[int(state_i)] = False
-            head_states_reused += 1
-            head_generated_counts[int(state_i)] = int(
-                previous_head_generated_counts[int(state_i)]
-            )
-            generated_surfaces += int(head_generated_counts[int(state_i)])
-            retained_total += int(previous_count)
-            if int(previous_count) > int(max_state_frontier):
-                max_state_frontier = int(previous_count)
-            continue
-        head_states_recomputed += 1
         generated = List.empty_list(_NUMBA_SURFACE_TYPE)
         generated_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
         generated_count = 0
@@ -5303,7 +4920,6 @@ def _first_frontier_from_precomputed_end_indices_numba(
             )
         )
         generated_count += int(added)
-        head_generated_counts[int(state_i)] = int(generated_count)
         generated_surfaces += generated_count
         # Issue #44 Route A: prune each head-state tail set to its parametric upper envelope
         # (positions [state_i, head_limit)) before any earlier state composes against it, so the
@@ -5326,104 +4942,9 @@ def _first_frontier_from_precomputed_end_indices_numba(
             head_pool[pool_row, 5] = surface[5]
             head_pool[pool_row, 6] = surface[6]
         head_pool_cursor += len(frontier)
-        if int(has_previous_body_i) != 0:
-            head_changed[int(state_i)] = not _numba_state_rows_equal(
-                head_pool,
-                int(head_state_start[int(state_i)]),
-                int(head_state_count[int(state_i)]),
-                previous_head_values,
-                int(previous_head_starts[int(state_i)]),
-                int(previous_head_counts[int(state_i)]),
-            )
-            if not bool(head_changed[int(state_i)]):
-                head_states_restored += 1
         retained_total += len(frontier)
         if len(frontier) > max_state_frontier:
             max_state_frontier = len(frontier)
-
-    can_reuse_first = (
-        int(has_previous_body_i) != 0
-        and int(previous_first_rows.shape[0]) > 0
-        and _numba_prefix_recurrence_unchanged(
-            int(n),
-            0,
-            1,
-            int(action_count),
-            later_fill,
-            first_fill,
-            later_forced,
-            first_forced,
-            later_activation_forced,
-            first_activation_forced,
-            prefix_perfect_valid,
-            prefix_late_valid,
-            capped_perfect_edge_e,
-            capped_late_edge_e,
-            capped_eg_perfect_e,
-            capped_eg_late_e,
-            int(real_time_idx),
-            int(previous_real_time_idx),
-            int(use_forced_great_timing_i),
-            int(head_limit),
-            body_changed,
-            head_changed,
-        )
-        and _numba_region_recurrence_unchanged(
-            int(n),
-            0,
-            region_starts,
-            region_offsets,
-            region_activations,
-            region_great_ends,
-            region_is_greats,
-            region_act_hits,
-            region_perfect_hits,
-            region_perfect_valids,
-            perfect_floor_timestamps,
-            great_floor_timestamps,
-            float(real_fever_time),
-            float(previous_real_fever_time),
-            int(use_forced_great_timing_i),
-            int(head_limit),
-            body_changed,
-            head_changed,
-        )
-    )
-    if bool(can_reuse_first):
-        out = previous_first_rows.copy()
-        generated_surfaces += int(previous_first_generated_count)
-        retained_total += int(out.shape[0])
-        if int(out.shape[0]) > int(max_state_frontier):
-            max_state_frontier = int(out.shape[0])
-        return (
-            out,
-            states_evaluated,
-            generated_surfaces,
-            retained_total,
-            max_state_frontier,
-            int(pair_stamp_value),
-            int(bit_stamp_value),
-            int(branch_a_epoch_in),
-            body_values,
-            body_starts,
-            body_counts,
-            input_values,
-            input_starts,
-            input_counts,
-            int(body_reductions_reused),
-            int(body_reductions_executed),
-            head_pool[: int(head_pool_cursor)].copy(),
-            head_state_start,
-            head_state_count,
-            head_generated_counts,
-            out,
-            int(previous_first_generated_count),
-            int(head_states_reused),
-            int(head_states_recomputed),
-            int(head_states_restored),
-            1,
-            body_changed,
-        )
 
     first_generated_count = 0
     first_frontier = List.empty_list(_NUMBA_SURFACE_TYPE)
@@ -5934,15 +5455,4 @@ def _first_frontier_from_precomputed_end_indices_numba(
         input_counts,
         int(body_reductions_reused),
         int(body_reductions_executed),
-        head_pool[: int(head_pool_cursor)].copy(),
-        head_state_start,
-        head_state_count,
-        head_generated_counts,
-        out,
-        int(first_generated_count),
-        int(head_states_reused),
-        int(head_states_recomputed),
-        int(head_states_restored),
-        0,
-        body_changed,
     )

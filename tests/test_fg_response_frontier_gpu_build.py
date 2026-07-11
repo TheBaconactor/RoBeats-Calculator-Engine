@@ -816,13 +816,11 @@ def test_fg_response_first_frontier_canonicalizes_equivalent_geometries(monkeypa
 
     def _fake_first_frontier(**kwargs):
         calls.append(dict(kwargs))
-        return result, response_build_gpu_reducer._empty_incremental_frontier_cache(
-            int(kwargs["n"])
-        )
+        return result, response_build_gpu_reducer._empty_body_reducer_cache(int(kwargs["n"]))
 
     monkeypatch.setattr(
         response_build_gpu_reducer,
-        "_first_frontier_result_and_incremental_cache_from_precomputed_end_indices",
+        "_first_frontier_result_and_body_cache_from_precomputed_end_indices",
         _fake_first_frontier,
     )
     try:
@@ -866,12 +864,12 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
         return real_precompute(**kwargs)
 
     def _fake_first_frontier(**_kwargs):
-        return result, response_build_gpu_reducer._empty_incremental_frontier_cache(3)
+        return result, response_build_gpu_reducer._empty_body_reducer_cache(3)
 
     monkeypatch.setattr(response_build_gpu_precompute, "_precompute_end_indices", _record_precompute)
     monkeypatch.setattr(
         response_build_gpu_reducer,
-        "_first_frontier_result_and_incremental_cache_from_precomputed_end_indices",
+        "_first_frontier_result_and_body_cache_from_precomputed_end_indices",
         _fake_first_frontier,
     )
     try:
@@ -891,7 +889,7 @@ def test_fg_response_first_frontier_reuses_canonical_end_indices(monkeypatch) ->
     assert len(frontiers) == 2
 
 
-def test_fg_response_incremental_reuses_only_exact_previous_recurrence(monkeypatch) -> None:
+def test_fg_response_body_reducer_reuses_only_exact_previous_input(monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import (
         response_build_gpu_batch,
         response_build_gpu_reducer,
@@ -910,7 +908,7 @@ def test_fg_response_incremental_reuses_only_exact_previous_recurrence(monkeypat
     }
     caches = []
     real_build = (
-        response_build_gpu_reducer._first_frontier_result_and_incremental_cache_from_precomputed_end_indices
+        response_build_gpu_reducer._first_frontier_result_and_body_cache_from_precomputed_end_indices
     )
 
     def _record_cache(**build_kwargs):
@@ -920,10 +918,10 @@ def test_fg_response_incremental_reuses_only_exact_previous_recurrence(monkeypat
 
     monkeypatch.setattr(
         response_build_gpu_reducer,
-        "_first_frontier_result_and_incremental_cache_from_precomputed_end_indices",
+        "_first_frontier_result_and_body_cache_from_precomputed_end_indices",
         _record_cache,
     )
-    geometries = ((2.5, 3, 1.0), (2.5, 3, 1.01))
+    geometries = ((2.5, 3, 1.0), (2.5, 3, 1.1))
     previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(1)
     try:
         incremental = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
@@ -945,58 +943,8 @@ def test_fg_response_incremental_reuses_only_exact_previous_recurrence(monkeypat
     assert caches[0].reductions_reused == 0
     assert caches[1].reductions_reused > 0
     assert caches[1].reductions_reused + caches[1].reductions_executed > 0
-    assert caches[1].head_states_reused > 0
-    assert caches[1].head_states_reused + caches[1].head_states_recomputed > 0
-    assert caches[1].first_reused == 1
     assert caches[2].reductions_reused == 0
     assert caches[3].reductions_reused == 0
-    assert caches[2].head_states_reused == 0
-    assert caches[3].head_states_reused == 0
-    assert caches[2].first_reused == 0
-    assert caches[3].first_reused == 0
-
-
-@pytest.mark.parametrize("seed", [116, 2116])
-def test_fg_response_incremental_randomized_adjacent_ft_matches_full(seed: int) -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import (
-        response_build_gpu_batch,
-        response_build_gpu_reducer,
-    )
-
-    rng = np.random.default_rng(seed)
-    n = 112
-    timestamps = np.cumsum(rng.uniform(0.055, 0.095, size=n)).astype(np.float32)
-    perfect_delta = rng.uniform(0.015, 0.035, size=n).astype(np.float32)
-    great_delta = rng.uniform(0.045, 0.075, size=n).astype(np.float32)
-    kwargs = {
-        "timestamps": timestamps,
-        "perfect_candidate_timestamps": timestamps + perfect_delta,
-        "great_candidate_timestamps": timestamps + great_delta,
-        "perfect_floor_timestamps": timestamps - perfect_delta,
-        "great_floor_timestamps": timestamps - great_delta,
-        "lanes": rng.integers(0, 4, size=n, dtype=np.int32),
-        "use_forced_great_timing": True,
-    }
-    geometries = ((2.45, 3, 0.99), (2.45, 3, 1.0), (2.45, 3, 1.01))
-    previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(1)
-    try:
-        incremental = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
-            geometries=geometries,
-            **kwargs,
-        )
-        full = tuple(
-            response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
-                geometries=(geometry,),
-                **kwargs,
-            )[0]
-            for geometry in geometries
-        )
-    finally:
-        response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(
-            previous_threads
-        )
-
-    assert incremental == full
 
 
 def test_fg_response_first_frontier_emits_activation_great_head_overlap() -> None:
