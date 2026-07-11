@@ -342,7 +342,11 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                 "workspace_bytes": 0,
                 "body_reductions_reused": 0,
                 "body_reductions_executed": 0,
-                "body_cache_peak_bytes": 0,
+                "incremental_cache_peak_bytes": 0,
+                "incremental_head_states_reused": 0,
+                "incremental_head_states_recomputed": 0,
+                "incremental_head_states_restored": 0,
+                "incremental_first_reused": 0,
                 "region_tables_built": 0,
                 "region_table_peak_live": 0,
                 "region_table_peak_live_bytes": 0,
@@ -543,7 +547,17 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                 "workspace_bytes": int(workspace_plan.allocated_bytes),
                 "body_reductions_reused": int(workspace_plan.body_reductions_reused),
                 "body_reductions_executed": int(workspace_plan.body_reductions_executed),
-                "body_cache_peak_bytes": int(workspace_plan.body_cache_peak_bytes),
+                "incremental_cache_peak_bytes": int(workspace_plan.incremental_cache_peak_bytes),
+                "incremental_head_states_reused": int(
+                    workspace_plan.incremental_head_states_reused
+                ),
+                "incremental_head_states_recomputed": int(
+                    workspace_plan.incremental_head_states_recomputed
+                ),
+                "incremental_head_states_restored": int(
+                    workspace_plan.incremental_head_states_restored
+                ),
+                "incremental_first_reused": int(workspace_plan.incremental_first_reused),
                 "region_tables_built": int(schedule_stats.region_tables_built),
                 "region_table_peak_live": int(schedule_stats.region_table_peak_live),
                 "region_table_peak_live_bytes": int(schedule_stats.region_table_peak_live_bytes),
