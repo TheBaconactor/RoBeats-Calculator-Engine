@@ -158,6 +158,65 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     assert env["ROBEATSMETA_OPTIMIZER_BIN_DIR"].endswith("job_abc/bin")  # isolated run state
 
 
+def _capture_solve_config(data_root, monkeypatch, request: dict) -> str:
+    """Run one mocked solve and return the config.ini text the service generated for it."""
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    gear = data_root / "Data" / "Gear"
+    gear.mkdir(parents=True, exist_ok=True)
+    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
+
+    captured: dict[str, str] = {}
+    entry = {"loadout_hash": "h", "score": 999, "gear": ["A"], "minis": ["B"], "details": {}}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            env = kwargs["env"]
+            captured["config"] = Path(env["METAFINDER_CONFIG_PATH"]).read_text("utf-8")
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return ("", "")
+
+    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(service, "get_best_loadouts", lambda *a, **k: [entry])
+    service.solve(request)
+    return captured["config"]
+
+
+def test_solve_default_reasoning_omits_search_knobs(data_root, monkeypatch):
+    # "default" (and absent) must reproduce stock behavior: no GA search knobs are written, so
+    # config.py's own fallbacks apply exactly as before this feature existed.
+    config = _capture_solve_config(data_root, monkeypatch, {"jobId": "job_def", "targetSongId": "Feeding [Hard]"})
+    assert "GA_SearchDepth" not in config
+    assert "GA_MultiStart" not in config
+
+
+def test_solve_strong_reasoning_scales_search_knobs(data_root, monkeypatch):
+    config = _capture_solve_config(
+        data_root, monkeypatch, {"jobId": "job_str", "targetSongId": "Feeding [Hard]", "reasoning": "strong"}
+    )
+    # 1.25x of the stock bases (125, 3), rounded up.
+    assert "GA_SearchDepth = 157" in config
+    assert "GA_MultiStart = 4" in config
+
+
+def test_solve_max_reasoning_scales_search_knobs(data_root, monkeypatch):
+    config = _capture_solve_config(
+        data_root, monkeypatch, {"jobId": "job_max", "targetSongId": "Feeding [Hard]", "reasoning": "MAX"}
+    )
+    # 2x of the stock bases (125, 3). Case-insensitive; unknown values fall back to default.
+    assert "GA_SearchDepth = 250" in config
+    assert "GA_MultiStart = 6" in config
+
+
+def test_solve_unknown_reasoning_falls_back_to_default(data_root, monkeypatch):
+    config = _capture_solve_config(
+        data_root, monkeypatch, {"jobId": "job_unk", "targetSongId": "Feeding [Hard]", "reasoning": "ultra"}
+    )
+    assert "GA_SearchDepth" not in config
+
+
 def test_solve_joins_duplicate_live_job_instead_of_spawning_again(data_root, monkeypatch):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
     gear = data_root / "Data" / "Gear"

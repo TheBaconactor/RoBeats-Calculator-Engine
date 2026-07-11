@@ -125,6 +125,35 @@ _MAX_BODY_BYTES = max(1024, env_int("ROBEATSMETA_OPTIMIZER_MAX_BODY_BYTES", 32 *
 # (so main.py's GPU/worker children don't linger) and the request fails. Must exceed a real solve.
 _SOLVE_TIMEOUT_S = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_TIMEOUT_S", 30 * 60))
 
+# Reasoning effort: the website lets a user spend extra credits to make the optimizer search harder.
+# The chosen level scales the GA search knobs that most directly raise the odds of reaching the true
+# optimum -- how deep the GA evolves (GA_SearchDepth) and how many independent starting populations
+# it searches in parallel (GA_MultiStart, ~free since it runs concurrently on the GPU). Scaling is
+# linear in the multiplier; "default" reproduces the stock config defaults exactly (nothing is
+# written, so config.py's own fallbacks apply). This levels/multipliers table is a cross-repo
+# contract mirrored by the website (optimizer_job_contract.py).
+_REASONING_MULTIPLIERS: dict[str, float] = {"default": 1.0, "strong": 1.25, "max": 2.0}
+# Bases mirror the canonical config defaults: GA_SearchDepth fallback (gear_optimizer/core/config.py)
+# and GA_MULTI_RUNS_DEFAULT (gear_optimizer/core/constants.py). "default" reasoning => these exact
+# values, i.e. no behavior change from before this knob existed.
+_REASONING_BASE_SEARCH_DEPTH = 125
+_REASONING_BASE_MULTI_START = 3
+
+
+def _normalize_reasoning(value: Any) -> str:
+    level = str(value or "").strip().lower()
+    return level if level in _REASONING_MULTIPLIERS else "default"
+
+
+def _reasoning_search_knobs(reasoning: str) -> tuple[int, int]:
+    """(GA_SearchDepth, GA_MultiStart) for a reasoning level -- ceil(base x multiplier), linear."""
+    import math
+
+    mult = _REASONING_MULTIPLIERS[_normalize_reasoning(reasoning)]
+    depth = int(math.ceil(_REASONING_BASE_SEARCH_DEPTH * mult))
+    multi_start = int(math.ceil(_REASONING_BASE_MULTI_START * mult))
+    return depth, multi_start
+
 
 @dataclass
 class _InFlightSolve:
@@ -365,7 +394,9 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
             pass
 
 
-def _solve_isolated(job: str, chart_text: str, result_song_name: str, repeats: int) -> list[dict[str, Any]]:
+def _solve_isolated(
+    job: str, chart_text: str, result_song_name: str, repeats: int, reasoning: str = "default"
+) -> list[dict[str, Any]]:
     """Run the canonical optimizer pipeline once in a throwaway per-job workspace."""
     work = _service_run_root() / job
     shutil.rmtree(work, ignore_errors=True)
@@ -373,6 +404,13 @@ def _solve_isolated(job: str, chart_text: str, result_song_name: str, repeats: i
     (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
     shutil.copytree(GEAR_DIR, data_dir / "Gear")  # real files; discovery does not follow symlinks
     (data_dir / "Hard" / f"{job}.txt").write_text(_normalize_chart(chart_text, result_song_name), encoding="utf-8")
+    # Reasoning effort scales the GA search knobs. Only write them above "default" so the default
+    # path stays byte-identical to before this knob existed (config.py's own fallbacks apply).
+    level = _normalize_reasoning(reasoning)
+    reasoning_lines = ""
+    if level != "default":
+        depth, multi_start = _reasoning_search_knobs(level)
+        reasoning_lines = f"GA_SearchDepth = {depth}\nGA_MultiStart = {multi_start}\n"
     # The isolated Data dir holds exactly this one chart, so "process discovered charts once"
     # (empty Song_Name + LoopForever off) solves it; a fresh bin means no resume/candidate queue.
     (work / "config.ini").write_text(
@@ -381,7 +419,8 @@ def _solve_isolated(job: str, chart_text: str, result_song_name: str, repeats: i
         "[IterationEngine]\n"
         "IgnoreResumeQueue = true\n"
         f"SongRepeats = {repeats}\n"
-        "SongQueueLimit = 1\n",
+        "SongQueueLimit = 1\n"
+        f"{reasoning_lines}",
         encoding="utf-8",
     )
     db_path = work / "result.db"
@@ -442,12 +481,13 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     job = _job_slug(request.get("jobId") or request.get("resultKey"))
     chart_text, result_song_name = chart_text_and_result_song_name_for_request(request, fallback_name=job)
     repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
+    reasoning = _normalize_reasoning(request.get("reasoning"))
     state, owner = _claim_job_solve(job)
     if not owner:
         logger.info("joining in-flight optimizer solve for job %s", job)
         return state.wait()
     try:
-        state.result = _solve_isolated(job, chart_text, result_song_name, repeats)
+        state.result = _solve_isolated(job, chart_text, result_song_name, repeats, reasoning)
         return state.result
     except BaseException as exc:
         state.error = exc
