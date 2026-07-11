@@ -4,6 +4,8 @@ from numba.typed import Dict, List
 
 _NUMBA_SURFACE_TYPE = types.UniTuple(types.uint64, 7)
 _NUMBA_HEAD_OVERLAP_KEY_TYPE = types.UniTuple(types.uint64, 2)
+# Full head-mask group key (fever lo/hi, great lo/hi) for the region2 same-mask pre-reduction.
+_NUMBA_MASK_GROUP_KEY_TYPE = types.UniTuple(types.uint64, 4)
 # Packet-point arena rows: (body_fever, shifted normal-great, fever_great) int64 triples in a
 # cursor-managed flat (cap, 3) array, one arena per packet family (grow-doubling).
 _NUMBA_PACKET_ARENA_TYPE = types.int64[:, ::1]
@@ -1636,6 +1638,166 @@ def _numba_collect_early_great_head_edges(
 
 
 @njit(cache=True, nogil=True)
+def _numba_same_mask_prereduce_push(
+    cand_rows,
+    cand_prev,
+    cand_kept,
+    cand_cursor: int,
+    mask_head,
+    c0,
+    c1,
+    c2,
+    c3,
+    c4,
+    c5,
+    c6,
+):
+    """Online same-mask weak count-dominance reduce over composed region2 candidates.
+
+    This is `_numba_reduce`'s dominance RESTRICTED to rows with identical fever and great
+    masks, where its mask-subset conditions are trivially true and the head-overlap bucket
+    key is equal: weak (body_fever >=, normal_great <=, fever_great <=). Two phases in
+    `_numba_reduce`'s order -- a candidate weakly dominated by a kept same-mask row is
+    dropped BEFORE it can retire anything (so exact duplicates keep the first occurrence),
+    otherwise it retires every kept same-mask row it weakly dominates and is stored.
+    Removals are therefore a subset of the removals the downstream `_numba_reduce` performs
+    on the same stream, survivors keep arrival order, and dominance is transitive -- the
+    final reduce+envelope output over the surviving stream is unchanged. Groups chain
+    through `cand_prev` from `mask_head`; retired rows keep their chain slot with
+    cand_kept 0, exactly like `_numba_reduce`'s kept_flag."""
+    key = (c0, c1, c2, c3)
+    cng = c5 - c6
+    head = mask_head[key] if key in mask_head else np.int64(-1)
+    pos = int(head)
+    while pos != -1:
+        if int(cand_kept[pos]) != 0:
+            kbf = cand_rows[pos, 4]
+            kng = cand_rows[pos, 5] - cand_rows[pos, 6]
+            kbfg = cand_rows[pos, 6]
+            if kbf >= c4 and kng <= cng and kbfg <= c6:
+                return cand_rows, cand_prev, cand_kept, int(cand_cursor)
+        pos = int(cand_prev[pos])
+    pos = int(head)
+    while pos != -1:
+        if int(cand_kept[pos]) != 0:
+            kbf = cand_rows[pos, 4]
+            kng = cand_rows[pos, 5] - cand_rows[pos, 6]
+            kbfg = cand_rows[pos, 6]
+            if c4 >= kbf and cng <= kng and c6 <= kbfg:
+                cand_kept[pos] = 0
+        pos = int(cand_prev[pos])
+    cand_rows = _numba_u64_rows_ensure(cand_rows, int(cand_cursor), 1)
+    cand_prev = _numba_i64_ensure(cand_prev, int(cand_cursor), 1)
+    cand_kept = _numba_i64_ensure(cand_kept, int(cand_cursor), 1)
+    cand_rows[int(cand_cursor), 0] = c0
+    cand_rows[int(cand_cursor), 1] = c1
+    cand_rows[int(cand_cursor), 2] = c2
+    cand_rows[int(cand_cursor), 3] = c3
+    cand_rows[int(cand_cursor), 4] = c4
+    cand_rows[int(cand_cursor), 5] = c5
+    cand_rows[int(cand_cursor), 6] = c6
+    cand_prev[int(cand_cursor)] = int(head)
+    cand_kept[int(cand_cursor)] = 1
+    mask_head[key] = np.int64(int(cand_cursor))
+    return cand_rows, cand_prev, cand_kept, int(cand_cursor) + 1
+
+
+@njit(cache=True, nogil=True)
+def _numba_prereduce_edge_tails(
+    cand_rows,
+    cand_prev,
+    cand_kept,
+    cand_cursor: int,
+    mask_head,
+    edge,
+    end_e: int,
+    body_values,
+    body_starts,
+    body_counts,
+    head_pool,
+    head_state_start,
+    head_state_count,
+    head_limit: int,
+):
+    """Dispatch twin of `_numba_append_edge_tail` feeding the same-mask pre-reducer: the
+    body / terminal / head-frontier tail composition and enumeration order are identical,
+    only the destination differs. Body tails keep the edge's masks verbatim; head-frontier
+    tails combine masks via `_numba_combine` exactly like the append path. Returns the
+    (possibly regrown) reducer state plus the RAW candidate count (dropped candidates
+    included), preserving the caller's generated-surfaces accounting."""
+    raw = 0
+    if int(end_e) >= 100:
+        count = int(body_counts[int(end_e)])
+        start = int(body_starts[int(end_e)])
+        for tail_idx in range(count):
+            value_idx = int(start) + int(tail_idx)
+            cand_rows, cand_prev, cand_kept, cand_cursor = _numba_same_mask_prereduce_push(
+                cand_rows,
+                cand_prev,
+                cand_kept,
+                int(cand_cursor),
+                mask_head,
+                edge[0],
+                edge[1],
+                edge[2],
+                edge[3],
+                edge[4] + body_values[value_idx, 0],
+                edge[5] + body_values[value_idx, 1],
+                edge[6] + body_values[value_idx, 2],
+            )
+            raw += 1
+    elif int(end_e) >= int(head_limit):
+        cand_rows, cand_prev, cand_kept, cand_cursor = _numba_same_mask_prereduce_push(
+            cand_rows,
+            cand_prev,
+            cand_kept,
+            int(cand_cursor),
+            mask_head,
+            edge[0],
+            edge[1],
+            edge[2],
+            edge[3],
+            edge[4],
+            edge[5],
+            edge[6],
+        )
+        raw = 1
+    else:
+        tail_start = int(head_state_start[int(end_e)])
+        tail_count = int(head_state_count[int(end_e)])
+        for tail_idx in range(int(tail_count)):
+            row = int(tail_start) + int(tail_idx)
+            combined = _numba_combine(
+                edge,
+                (
+                    head_pool[row, 0],
+                    head_pool[row, 1],
+                    head_pool[row, 2],
+                    head_pool[row, 3],
+                    head_pool[row, 4],
+                    head_pool[row, 5],
+                    head_pool[row, 6],
+                ),
+            )
+            cand_rows, cand_prev, cand_kept, cand_cursor = _numba_same_mask_prereduce_push(
+                cand_rows,
+                cand_prev,
+                cand_kept,
+                int(cand_cursor),
+                mask_head,
+                combined[0],
+                combined[1],
+                combined[2],
+                combined[3],
+                combined[4],
+                combined[5],
+                combined[6],
+            )
+            raw += 1
+    return cand_rows, cand_prev, cand_kept, int(cand_cursor), int(raw)
+
+
+@njit(cache=True, nogil=True)
 def _numba_emit_region2_head_edges(
     generated,
     generated_scores,
@@ -1745,33 +1907,78 @@ def _numba_emit_region2_head_edges(
                 float(real_fever_time),
             )
         )
+    if int(pending_count) == 0:
+        return generated, generated_scores, 0, int(bounded_mode), node_surface, node_next
+    # Issue #116 same-mask pre-reduction: region2 candidates concentrate into few distinct
+    # head-mask groups (912 groups over 1.2M candidates measured on the 7,027-note monster
+    # chart), and within one group the downstream `_numba_reduce` keeps only the weak
+    # count-dominance maxima. Running that exact same-mask reduce here, BEFORE any 16-corner
+    # cone scoring/insertion, drops the dominated bulk (16-23.5x measured) at integer-compare
+    # cost. Removals are a subset of `_numba_reduce`'s own removals with identical first-wins
+    # tie handling, and survivors keep the exact candidate stream order, so the retained
+    # frontier is unchanged. Reducer state is call-local and grow-doubling; only rows kept at
+    # arrival are stored.
+    cand_rows = np.empty((256, 7), dtype=np.uint64)
+    cand_prev = np.empty(256, dtype=np.int64)
+    cand_kept = np.empty(256, dtype=np.int64)
+    cand_cursor = 0
+    mask_head = Dict.empty(_NUMBA_MASK_GROUP_KEY_TYPE, types.int64)
     for pending_end_idx in range(int(pending_count)):
         end_e = int(pending_ends[int(pending_end_idx)])
         pos = int(bucket_head[int(end_e)])
         while pos != -1:
-            generated, generated_scores, added, bounded_mode = (
-                _numba_append_head_generated_candidate(
+            cand_rows, cand_prev, cand_kept, cand_cursor, raw_added = _numba_prereduce_edge_tails(
+                cand_rows,
+                cand_prev,
+                cand_kept,
+                int(cand_cursor),
+                mask_head,
+                _numba_node_surface_tuple(node_surface, pos),
+                int(end_e),
+                body_values,
+                body_starts,
+                body_counts,
+                head_pool,
+                head_state_start,
+                head_state_count,
+                int(head_limit),
+            )
+            added_total += int(raw_added)
+            pos = int(node_next[pos])
+        bucket_head[int(end_e)] = -1
+        bucket_tail[int(end_e)] = -1
+    cand_scores = np.empty(16, dtype=np.float64)
+    for cand_idx in range(int(cand_cursor)):
+        if int(cand_kept[int(cand_idx)]) == 0:
+            continue
+        candidate = (
+            cand_rows[int(cand_idx), 0],
+            cand_rows[int(cand_idx), 1],
+            cand_rows[int(cand_idx), 2],
+            cand_rows[int(cand_idx), 3],
+            cand_rows[int(cand_idx), 4],
+            cand_rows[int(cand_idx), 5],
+            cand_rows[int(cand_idx), 6],
+        )
+        if int(bounded_mode) != 0:
+            _numba_head_basis_corner_scores_row(
+                _numba_head_surface_basis(candidate, int(lo_pos), int(hi_pos)), cand_scores
+            )
+            generated, generated_scores = _numba_head_envelope_insert_with_scores(
+                generated, generated_scores, candidate, cand_scores
+            )
+        else:
+            generated.append(candidate)
+            generated, generated_scores, bounded_mode = (
+                _numba_maybe_promote_head_generated_with_scores(
                     generated,
                     generated_scores,
-                    _numba_node_surface_tuple(node_surface, pos),
-                    int(end_e),
-                    body_values,
-                    body_starts,
-                    body_counts,
-                    head_pool,
-                    head_state_start,
-                    head_state_count,
-                    int(head_limit),
                     int(lo_pos),
                     int(hi_pos),
                     int(min_surfaces),
                     int(bounded_mode),
                 )
             )
-            added_total += int(added)
-            pos = int(node_next[pos])
-        bucket_head[int(end_e)] = -1
-        bucket_tail[int(end_e)] = -1
     return generated, generated_scores, int(added_total), int(bounded_mode), node_surface, node_next
 
 
