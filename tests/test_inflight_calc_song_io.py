@@ -37,6 +37,7 @@ def test_native_calc_song_uses_shared_base_song_io_and_clones_before_timing_enve
     assert native_calc_song is not base_calc_song
     assert native_calc_song["metadata"]["Song Name"] == "Shared IO Song"
     assert native_calc_song["metadata"]["TimingEnvelopeApplied"] is True
+    assert native_calc_song["metadata"]["TimingEnvelopeMode"] == "zero_ms"
     assert "TimingEnvelopeApplied" not in base_calc_song["metadata"]
 
     assert np.array_equal(

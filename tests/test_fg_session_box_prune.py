@@ -217,3 +217,52 @@ def test_session_prune_scoring_bundle_compacts_offsets(monkeypatch):
     # unchanged metadata carried through
     assert pruned.total_notes == head_len and pruned.cache_key == ("test",)
     assert dataclasses.is_dataclass(pruned)
+
+
+def test_session_prune_scoring_bundle_preserves_shared_physical_segments(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
+        FgResponseFrontierScoringBundle,
+    )
+
+    rng = np.random.default_rng(19)
+    head_len = 20
+    w0, c0 = _random_packed_frontier(rng, 40, head_len)
+    w1, c1 = _random_packed_frontier(rng, 15, head_len)
+    words = np.concatenate([w0, w1])
+    counts = np.concatenate([c0, c1])
+    coeffs = rng.integers(0, 100, size=(55, 4)).astype(np.uint16)
+    rows = np.concatenate([words, counts.astype(np.uint32)], axis=1)
+    monkeypatch.setattr(response_cache, "load_first_surface_scoring_rows", lambda _key, _ranges: (rows, coeffs))
+    bundle = FgResponseFrontierScoringBundle(
+        cache_key=("shared",),
+        frontier_idx_by_key={(0, 0): 0, (0, 1): 1, (0, 2): 2},
+        frontier_idx_by_stat=np.zeros((3, 3), dtype=np.int32),
+        raw_fill_by_ff=np.zeros(1),
+        non_fever_base_by_ff=np.zeros(1, dtype=np.int32),
+        real_time_by_ft=np.zeros(1),
+        frontier_meta=np.zeros((3, 1), dtype=np.int32),
+        surface_words=np.empty((0, 8), dtype=np.uint32),
+        surface_counts=np.empty((0, 3), dtype=np.int32),
+        surface_head_coeffs=np.empty((0, 4), dtype=np.int32),
+        frontier_offsets=np.asarray([0, 0, 40], dtype=np.int32),
+        frontier_lengths=np.asarray([40, 40, 15], dtype=np.int32),
+        surface_row_count=55,
+        total_notes=head_len,
+        long_notes=0,
+        use_forced_great_timing=True,
+    )
+    pruned = response_cache.session_prune_scoring_bundle(
+        bundle,
+        {
+            "Combo Multiplier": np.asarray([2.45, 2.72]),
+            "Fever Multiplier": np.asarray([4.6, 5.48]),
+        },
+    )
+
+    offsets = np.asarray(pruned.frontier_offsets, dtype=np.int64)
+    lengths = np.asarray(pruned.frontier_lengths, dtype=np.int64)
+    assert int(offsets[0]) == int(offsets[1]) == 0
+    assert int(lengths[0]) == int(lengths[1])
+    assert int(offsets[2]) == int(lengths[0])
+    assert int(pruned.surface_row_count) == int(lengths[0] + lengths[2])

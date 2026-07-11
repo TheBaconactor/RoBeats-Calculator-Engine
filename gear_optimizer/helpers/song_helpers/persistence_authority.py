@@ -8,6 +8,7 @@ from ...core.utils import require_int
 from ...solver.scoring.exact_rescore import (
     score_force_greats_response_surface_exact,
     score_stats_exact_with_timeline_trace,
+    score_stats_fixed_timing_exact,
 )
 from .fg_config import extract_fg_config, has_valid_fg_config, require_response_surface
 from .persistence_payload import normalize_force_payload
@@ -63,6 +64,16 @@ def _canonicalize_base_score(
 ) -> None:
     stats = _details_stats(out)
     if not stats:
+        return
+    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, Mapping) else {}
+    timing_mode = str((metadata or {}).get("TimingEnvelopeMode", "") or "").strip().lower()
+    if timing_mode == "zero_ms":
+        out["score"] = int(score_stats_fixed_timing_exact(stats, calc_song, ref_arrays))
+        details = out.get("details")
+        if isinstance(details, dict) and "TimelineFrontier" in details:
+            details_out = dict(details)
+            details_out.pop("TimelineFrontier", None)
+            out["details"] = details_out
         return
     replay = score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays)
     out["score"] = int(replay.get("score", 0) or 0)

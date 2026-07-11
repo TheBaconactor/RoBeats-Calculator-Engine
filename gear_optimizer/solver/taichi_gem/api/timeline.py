@@ -25,6 +25,7 @@ from gear_optimizer.core.utils import timing_envelope_timing_context
 from gear_optimizer.solver.frontier_cache_errors import MissingFrontierCacheError
 from gear_optimizer.solver.timeline_exact_frontier import (
     TimelineFrontierGridPayload,
+    _head_mask_coefficients_py,
     build_timeline_frontier_grid_payload,
 )
 from ..fields import (
@@ -1183,6 +1184,104 @@ def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -
     )
 
 
+def _build_zero_ms_timeline_payload(calc_song: dict, ref_arrays: dict) -> TimelineFrontierGridPayload:
+    """Build the exact singleton chart-time surface for every FT/FF cell."""
+    metadata = calc_song.get("metadata", {}) or {}
+    if str(metadata.get("TimingEnvelopeMode", "") or "").strip().lower() != "zero_ms":
+        raise ValueError("fixed chart-time timeline payload requires TimingEnvelopeMode='zero_ms'")
+
+    song_data = calc_song.get("song_data", {}) or {}
+    timestamps = np.asarray(
+        song_data.get("fg_timestamps", song_data.get("chart_timestamps", song_data.get("timestamps", ()))),
+        dtype=np.float32,
+    ).reshape(-1)
+    total_notes = int(timestamps.shape[0])
+    if total_notes > 1 and bool(np.any(np.diff(timestamps) < np.float32(0.0))):
+        raise ValueError("zero_ms chart timestamps must be non-decreasing")
+
+    ref_ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
+    ref_ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
+    grid_size = TOTAL_ROWS + 1
+    if ref_ft.shape != (grid_size,) or ref_ff.shape != (grid_size,):
+        raise ValueError(f"zero_ms timeline axes must both have shape ({grid_size},)")
+
+    shape = (1, grid_size, grid_size)
+    grid_count_body_fever = np.zeros(shape, dtype=np.int32)
+    grid_count_body_normal = np.zeros(shape, dtype=np.int32)
+    grid_head_len = np.full(shape, min(total_notes, 100), dtype=np.int8)
+    grid_fever_masks_bits = np.zeros((*shape, 4), dtype=np.uint32)
+    grid_frontier_count = np.ones(shape, dtype=np.int32)
+    grid_frontier_offset = np.zeros(shape, dtype=np.int32)
+    grid_gap = np.zeros(shape, dtype=np.int32)
+    grid_fever_activations = np.zeros(shape, dtype=np.int32)
+
+    pool_cap = int(fields.MAX_TIMELINE_FRONTIER_SURFACES)
+    body_fever_pool = np.zeros((1, pool_cap), dtype=np.int32)
+    body_normal_pool = np.zeros((1, pool_cap), dtype=np.int32)
+    masks_pool = np.zeros((1, pool_cap, 4), dtype=np.uint32)
+    head_coeffs_pool = np.zeros((1, pool_cap, 4), dtype=np.int16)
+    mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+    long_notes = int(metadata.get("Long Notes", 0) or 0)
+    last_note_time = float(metadata.get("Last Note Time", float(timestamps[-1]) if total_notes else 0.0) or 0.0)
+    pool_by_surface: dict[tuple[int, int, tuple[int, int, int, int], int, int], int] = {}
+
+    from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
+
+    for ft_idx in range(grid_size):
+        for ff_idx in range(grid_size):
+            head_mask, body_fever, body_normal, activations, last_end = calculate_fever_timeline_indices(
+                timestamps,
+                total_notes,
+                float(ref_ff[ff_idx]),
+                float(ref_ft[ft_idx]),
+                long_notes,
+                last_note_time,
+                mask_buffer,
+            )
+            words = [0, 0, 0, 0]
+            for note_idx, is_fever in enumerate(head_mask):
+                if bool(is_fever):
+                    words[note_idx // 32] |= 1 << (note_idx % 32)
+            word_tuple = tuple(int(word) for word in words)
+            gap = int(total_notes - int(last_end))
+            surface = (int(body_fever), int(body_normal), word_tuple, int(activations), gap)
+            pool_idx = pool_by_surface.get(surface)
+            if pool_idx is None:
+                pool_idx = len(pool_by_surface)
+                if pool_idx >= pool_cap:
+                    raise RuntimeError(f"zero_ms timeline surface pool overflow: cap={pool_cap}")
+                pool_by_surface[surface] = pool_idx
+                body_fever_pool[0, pool_idx] = int(body_fever)
+                body_normal_pool[0, pool_idx] = int(body_normal)
+                masks_pool[0, pool_idx, :] = np.asarray(word_tuple, dtype=np.uint32)
+                head_coeffs_pool[0, pool_idx, :] = np.asarray(
+                    _head_mask_coefficients_py(*word_tuple, head_len=min(total_notes, 100)),
+                    dtype=np.int16,
+                )
+            grid_count_body_fever[0, ft_idx, ff_idx] = int(body_fever)
+            grid_count_body_normal[0, ft_idx, ff_idx] = int(body_normal)
+            grid_fever_masks_bits[0, ft_idx, ff_idx, :] = np.asarray(word_tuple, dtype=np.uint32)
+            grid_frontier_offset[0, ft_idx, ff_idx] = int(pool_idx)
+            grid_gap[0, ft_idx, ff_idx] = gap
+            grid_fever_activations[0, ft_idx, ff_idx] = int(activations)
+
+    return TimelineFrontierGridPayload(
+        grid_count_body_fever=grid_count_body_fever,
+        grid_count_body_normal=grid_count_body_normal,
+        grid_head_len=grid_head_len,
+        grid_fever_masks_bits=grid_fever_masks_bits,
+        grid_frontier_count=grid_frontier_count,
+        grid_frontier_offset=grid_frontier_offset,
+        grid_frontier_body_fever_pool=body_fever_pool,
+        grid_frontier_body_normal_pool=body_normal_pool,
+        grid_frontier_masks_bits_pool=masks_pool,
+        grid_frontier_head_coeffs_pool=head_coeffs_pool,
+        grid_gap=grid_gap,
+        grid_fever_activations=grid_fever_activations,
+        frontier_pool_used=len(pool_by_surface),
+    )
+
+
 def load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> TimelineFrontierPrewarmResult:
     """Load the required timeline-frontier cache artifact without building it."""
     t0 = time.perf_counter()
@@ -1194,10 +1293,22 @@ def load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> Timelin
         ref_ff=lookup["ref_ff"],
     )
     if payload is None:
-        raise MissingFrontierCacheError(
-            "Timeline frontier payload is missing. Startup cache prebuild must build the "
-            "candidate-independent all-FT/FF timeline frontier before runtime scoring."
-        )
+        timing_mode = str((calc_song.get("metadata", {}) or {}).get("TimingEnvelopeMode", "") or "").strip().lower()
+        if timing_mode != "zero_ms":
+            raise MissingFrontierCacheError(
+                "Timeline frontier payload is missing. Startup cache prebuild must build the "
+                "candidate-independent all-FT/FF timeline frontier before runtime scoring."
+            )
+        payload = _build_zero_ms_timeline_payload(calc_song, ref_arrays)
+        cache_source = "fixed_zero_ms"
+        moment = time.monotonic()
+        with _frontier_payload_cache_lock:
+            _frontier_payload_cache[cache_key] = payload
+            _frontier_payload_cache.move_to_end(cache_key)
+            _frontier_payload_last_access[cache_key] = moment
+            while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
+                stale_key, _stale_value = _frontier_payload_cache.popitem(last=False)
+                _frontier_payload_last_access.pop(stale_key, None)
     return TimelineFrontierPrewarmResult(
         payload=payload,
         cache_key=cache_key,

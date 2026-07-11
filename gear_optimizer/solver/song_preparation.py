@@ -52,7 +52,7 @@ class PreparedSongCore:
 def _apply_timing_envelope(calc_song: dict[str, Any]) -> Any:
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    return apply_timing_envelope(calc_song)
+    return apply_timing_envelope(calc_song, mode="zero_ms")
 
 
 def _setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name):

@@ -297,7 +297,7 @@ def resolve_tier_fg_force(
     calc_song: dict,
     ref_arrays: dict,
     selected_color: str,
-    timing_mode: str = "zero_ms",
+    timing_mode: str = "perfect_window",
 ) -> dict:
     """Lossless FG re-solve for ONE loadout at one (tier·color·timing) config.
 
@@ -553,7 +553,7 @@ def compute_team_buff_tier_leaderboards(
     base_team_color_override: object = None,
     target_team_color_override: object = None,
     replay_surfaces: tuple[str, ...] = ("meta", "fg"),
-    timing_mode: str = "perfect_window",
+    timing_mode: str = "zero_ms",
     baseline_offset: object = None,
 ) -> dict:
     """
@@ -571,8 +571,8 @@ def compute_team_buff_tier_leaderboards(
 
     ``timing_mode`` selects which timing model the replay answers (a semantic input, not a
     toggle):
-    - "perfect_window" (default): envelope-optimal exact replay (above).
-    - "zero_ms" (issue #51): every hit at chart time. Base uses the fixed chart-time fever
+    - "perfect_window" (default): envelope-optimal exact replay.
+    - "zero_ms": every hit at chart time. Base uses the fixed chart-time fever
       timeline; FG re-optimizes each loadout's surface at chart timing (the persisted
       Perfect-window surface is not valid at 0ms) and re-scores it across tiers. Forcing
       greats still helps at 0ms (it shifts fever activation via fill length), so FG 0ms is
@@ -926,14 +926,12 @@ def build_team_buff_tier_db_batches(
 
     ``timing_mode`` selects the timing model (a semantic input, not a toggle; see
     ``compute_team_buff_tier_leaderboards``):
-    - "perfect_window" (default): envelope-optimal exact replay. Persistence
-      canonicalization always uses this.
-    - "zero_ms" (issue #51): every hit at chart time. Scores come from the 0ms
+    - "perfect_window" (default): envelope-optimal exact replay.
+    - "zero_ms": every hit at chart time. Scores come from the 0ms
       leaderboards; the base note graph is the chart-fixed timeline (no Perfect-window
       ``TimelineFrontier`` is attached, so the renderer draws delta=0 from ``Stats``), and
       each FG row carries the rebuilt 0ms ``force`` (chart-fixed ``frontier_trace``) rather
-      than the persisted Perfect-window one. zero_ms is an on-demand ranking mode and must
-      NOT be persisted to the canonical leaderboards.
+      than a Perfect-window one.
     """
     tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
     timing_mode = str(timing_mode or "perfect_window").strip().lower()

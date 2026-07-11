@@ -203,6 +203,10 @@ def _replay_batch(
     replay_ctx: ReplayContext,
     baseline_team_buff: str,
 ) -> list[dict]:
+    metadata = replay_ctx.calc_song.get("metadata", {}) or {}
+    timing_mode = str(metadata.get("TimingEnvelopeMode", "") or "").strip().lower()
+    if timing_mode not in {"perfect_window", "zero_ms"}:
+        timing_mode = "perfect_window"
     batch = build_team_buff_tier_db_batches(
         entries=entries,
         calc_song=replay_ctx.calc_song,
@@ -210,6 +214,7 @@ def _replay_batch(
         cfg_dict=dict(replay_ctx.cfg_dict),
         limit=max(1, int(len(entries))),
         tiers=(str(baseline_team_buff),),
+        timing_mode=timing_mode,
     )
     return list(batch.get(str(baseline_team_buff)) or [])
 

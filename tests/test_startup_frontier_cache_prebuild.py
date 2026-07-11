@@ -3,7 +3,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,135 +17,49 @@ def test_app_runs_startup_cache_prebuild_before_gpu_and_live_execution() -> None
     assert cache_idx < gpu_idx < execute_idx
 
 
-def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None:
+def test_cpu_work_manager_skips_timing_frontier_prebuild(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
-
-    calls: list[str] = []
-
-    def _timeline(**_kwargs):
-        calls.append("timeline_start")
-        time.sleep(0.02)
-        calls.append("timeline_end")
-        return TimelineFrontierCachePrebuildSummary(total=1, completed=1, disk=1)
-
-    def _fg(**_kwargs):
-        calls.append("fg_start")
-        calls.append("fg_end")
-        return FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=1)
-
-    monkeypatch.setattr(cpu_work_manager, "run_timeline_frontier_cache_prebuild", _timeline)
-    monkeypatch.setattr(cpu_work_manager, "run_fg_response_frontier_cache_prebuild", _fg)
-
-    cpu_work_manager.run_startup_cpu_work(
-        cfg=object(),
-        song_queue=[("Data/Easy/Fake.txt",)],
-        ref_arrays={},
-        data_root="Data",
-    )
-
-    assert calls == ["timeline_start", "timeline_end", "fg_start", "fg_end"]
-
-
-def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(monkeypatch) -> None:
-    from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
-
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_timeline_frontier_cache_prebuild",
-        lambda **_kwargs: TimelineFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
-    )
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_fg_response_frontier_cache_prebuild",
-        lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
-    )
-
-    stream = io.StringIO()
-    cpu_work_manager.run_startup_cpu_work(
-        cfg=object(),
-        song_queue=[("Data/Easy/Fake.txt",)],
-        ref_arrays={},
-        data_root="Data",
-        announce_stream=stream,
-    )
-
-    output = stream.getvalue()
-    assert "Verifying exact timeline + FG response frontier caches" in output
-    assert "Building and caching exact timeline + FG response frontiers" not in output
-
-
-def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeypatch) -> None:
-    from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
-
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_timeline_frontier_cache_prebuild",
-        lambda **_kwargs: TimelineFrontierCachePrebuildSummary(total=1, completed=1, built=1, disk=0, memory=0),
-    )
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_fg_response_frontier_cache_prebuild",
-        lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
-    )
-
-    stream = io.StringIO()
-    cpu_work_manager.run_startup_cpu_work(
-        cfg=object(),
-        song_queue=[("Data/Easy/Fake.txt",)],
-        ref_arrays={},
-        data_root="Data",
-        announce_stream=stream,
-    )
-
-    output = stream.getvalue()
-    assert "Verifying exact timeline + FG response frontier caches" in output
-    assert "Building and caching exact timeline + FG response frontiers" in output
-
-
-def test_cpu_work_manager_reports_individual_phase_elapsed(monkeypatch) -> None:
-    from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
 
     events: list[tuple[str, dict]] = []
-    perf_values = iter((100.0, 100.25, 200.0, 200.75))
-
-    monkeypatch.setattr(cpu_work_manager.time, "perf_counter", lambda: next(perf_values))
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "emit_profile_event",
-        lambda *, component, event, metrics: events.append((event, dict(metrics))),
-    )
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_timeline_frontier_cache_prebuild",
-        lambda **_kwargs: TimelineFrontierCachePrebuildSummary(total=1, completed=1, built=1),
-    )
+    monkeypatch.setattr(cpu_work_manager.time, "perf_counter", iter((10.0, 10.25)).__next__)
     monkeypatch.setattr(
         cpu_work_manager,
         "run_fg_response_frontier_cache_prebuild",
         lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=1),
     )
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "emit_profile_event",
+        lambda *, component, event, metrics: events.append((event, dict(metrics))),
+    )
 
+    stream = io.StringIO()
     cpu_work_manager.run_startup_cpu_work(
         cfg=object(),
         song_queue=[("Data/Easy/Fake.txt",)],
         ref_arrays={},
         data_root="Data",
+        announce_stream=stream,
     )
 
-    done_metrics = [metrics for event, metrics in events if event == "startup_cpu_work_done"]
-    elapsed_by_phase = {str(metrics["phase"]): float(metrics["elapsed_ms"]) for metrics in done_metrics}
-    assert elapsed_by_phase == {
-        "timeline_frontier_cache": 250.0,
-        "fg_response_frontier_cache": 750.0,
-    }
+    assert "Timing-play frontier prebuild disabled" in stream.getvalue()
+    assert "Fixed-0ms FG response data ready" in stream.getvalue()
+    assert events == [
+        (
+            "startup_cpu_work_done",
+            {
+                "phase": "fixed_zero_ms_fg_response_data",
+                "total": 1,
+                "completed": 1,
+                "failures": 0,
+                "built": 1,
+                "disk": 0,
+                "memory": 0,
+                "elapsed_ms": 250.0,
+            },
+        )
+    ]
 
 
 def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:
@@ -364,7 +277,10 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
     calc_song = {"metadata": {"Song Name": "Cached Song"}, "song_data": {"timestamps": [1.0, 2.0]}}
 
     monkeypatch.setattr("gear_optimizer.data.song_io.get_base_calc_song", lambda *_args, **_kwargs: calc_song)
-    monkeypatch.setattr("gear_optimizer.solver.timing_envelope.apply_timing_envelope", lambda _song: None)
+    monkeypatch.setattr(
+        "gear_optimizer.solver.timing_envelope.apply_timing_envelope",
+        lambda _song, *, mode: None if mode == "zero_ms" else (_ for _ in ()).throw(AssertionError(mode)),
+    )
 
     def _cache_info(_calc_song, _ref_arrays, *, stat_keys):
         return FgResponseFrontierCacheInfo(
@@ -409,7 +325,10 @@ def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> 
     calc_song = {"metadata": {"Song Name": "Missing Song"}, "song_data": {"timestamps": [1.0, 2.0, 3.0]}}
 
     monkeypatch.setattr("gear_optimizer.data.song_io.get_base_calc_song", lambda *_args, **_kwargs: calc_song)
-    monkeypatch.setattr("gear_optimizer.solver.timing_envelope.apply_timing_envelope", lambda _song: None)
+    monkeypatch.setattr(
+        "gear_optimizer.solver.timing_envelope.apply_timing_envelope",
+        lambda _song, *, mode: None if mode == "zero_ms" else (_ for _ in ()).throw(AssertionError(mode)),
+    )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.fg_response_frontier_payload_cache_info",
         lambda *_args, **_kwargs: FgResponseFrontierCacheInfo(

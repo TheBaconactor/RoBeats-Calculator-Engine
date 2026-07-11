@@ -247,9 +247,13 @@ def session_prune_scoring_bundle(
         kept_lengths[int(frontier_idx)] = int(np.count_nonzero(keep[start : start + length])) if length > 0 else 0
     if bool(np.any((lengths_all > 0) & (kept_lengths <= 0))):
         raise ValueError("session-box prune emptied a frontier -- the greedy filter must keep at least one row")
-    new_offsets = np.zeros_like(offsets_all)
-    if int(new_offsets.shape[0]) > 0:
-        np.cumsum(kept_lengths[:-1], out=new_offsets[1:])
+    # Frontiers may share one physical segment. Remap each original offset through the
+    # physical keep-mask prefix instead of summing logical frontier lengths, which would
+    # double-count shared segments and point past the compacted row arrays.
+    kept_prefix = np.empty((int(keep.shape[0]) + 1,), dtype=np.int64)
+    kept_prefix[0] = 0
+    np.cumsum(keep, dtype=np.int64, out=kept_prefix[1:])
+    new_offsets = np.ascontiguousarray(kept_prefix[offsets_all], dtype=np.int64)
     pruned_words = np.ascontiguousarray(words[keep], dtype=np.uint32)
     pruned_counts = np.ascontiguousarray(counts[keep], dtype=np.int32)
     pruned_coeffs = np.ascontiguousarray(coeff_rows[keep].astype(np.int32), dtype=np.int32)
