@@ -196,18 +196,18 @@ def test_solve_strong_reasoning_scales_search_knobs(data_root, monkeypatch):
     config = _capture_solve_config(
         data_root, monkeypatch, {"jobId": "job_str", "targetSongId": "Feeding [Hard]", "reasoning": "strong"}
     )
-    # 1.25x of the stock bases (125, 3), rounded up.
-    assert "GA_SearchDepth = 157" in config
-    assert "GA_MultiStart = 4" in config
+    # 2x of the stock bases (125, 3).
+    assert "GA_SearchDepth = 250" in config
+    assert "GA_MultiStart = 6" in config
 
 
 def test_solve_max_reasoning_scales_search_knobs(data_root, monkeypatch):
     config = _capture_solve_config(
         data_root, monkeypatch, {"jobId": "job_max", "targetSongId": "Feeding [Hard]", "reasoning": "MAX"}
     )
-    # 2x of the stock bases (125, 3). Case-insensitive; unknown values fall back to default.
-    assert "GA_SearchDepth = 250" in config
-    assert "GA_MultiStart = 6" in config
+    # 4x of the stock bases (125, 3). Case-insensitive; unknown values fall back to default.
+    assert "GA_SearchDepth = 500" in config
+    assert "GA_MultiStart = 12" in config
 
 
 def test_solve_unknown_reasoning_falls_back_to_default(data_root, monkeypatch):
