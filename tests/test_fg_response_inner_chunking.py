@@ -143,6 +143,125 @@ def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
     np.testing.assert_array_equal(shared, identity)
 
 
+def test_response_group_pattern_plan_preserves_owner_pattern_and_surface_order() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_patterns import (
+        build_response_group_pattern_plan,
+    )
+
+    pattern_ids = np.asarray((2, 1, 2, 1, 3, 0, 0, 2), dtype=np.int32)
+    owners, patterns, offsets, counts, local_surfaces = build_response_group_pattern_plan(
+        pattern_ids,
+        np.asarray((0, 5), dtype=np.int32),
+        np.asarray((5, 3), dtype=np.int32),
+        pattern_count=4,
+    )
+
+    np.testing.assert_array_equal(owners, np.asarray((0, 0, 0, 1, 1), dtype=np.int32))
+    np.testing.assert_array_equal(patterns, np.asarray((2, 1, 3, 0, 2), dtype=np.int32))
+    np.testing.assert_array_equal(offsets, np.asarray((0, 2, 4, 5, 7, 8), dtype=np.int64))
+    np.testing.assert_array_equal(counts, np.asarray((2, 2, 1, 2, 1), dtype=np.int32))
+    np.testing.assert_array_equal(
+        local_surfaces,
+        np.asarray((0, 2, 1, 3, 4, 0, 1, 2), dtype=np.int32),
+    )
+
+
+def test_response_pattern_head_plus_body_equals_canonical_surface_score_randomized() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
+
+    rng = np.random.default_rng(116)
+    for _case in range(480):
+        words = rng.integers(0, np.iinfo(np.uint32).max, size=(1, 8), dtype=np.uint32)
+        head_len = int(rng.integers(0, 101))
+        if head_len < 100:
+            for word_idx in range(4):
+                valid = max(0, min(32, head_len - 32 * word_idx))
+                mask = (1 << valid) - 1 if valid < 32 else np.iinfo(np.uint32).max
+                words[0, word_idx] &= np.uint32(mask)
+                words[0, 4 + word_idx] &= np.uint32(mask)
+        body_total = int(rng.integers(0, 5000))
+        body_fever = int(rng.integers(0, body_total + 1))
+        body_great = int(rng.integers(0, body_total + 1))
+        body_fever_great = int(rng.integers(0, min(body_fever, body_great) + 1))
+        if body_fever + body_great - body_fever_great > body_total:
+            body_great = int(body_fever_great + body_total - body_fever)
+        primary = int(rng.integers(0, 5000))
+        secondary = int(rng.integers(0, 5000))
+        pp_factor = float(rng.uniform(0.0, 2000.0))
+        combo_mul = float(rng.uniform(1.0, 4.0))
+        fever_mul = float(rng.uniform(1.0, 8.0))
+        single_color = int(rng.integers(0, 2))
+
+        canonical = response_inner._fg_response_surface_score_native_f64(
+            words,
+            0,
+            body_fever,
+            body_great,
+            body_fever_great,
+            head_len,
+            body_total,
+            primary,
+            secondary,
+            pp_factor,
+            combo_mul,
+            fever_mul,
+            single_color,
+        )
+        head = response_inner._fg_response_surface_score_native_f64(
+            words,
+            0,
+            0,
+            0,
+            0,
+            head_len,
+            0,
+            primary,
+            secondary,
+            pp_factor,
+            combo_mul,
+            fever_mul,
+            single_color,
+        )
+        body = response_inner._fg_response_body_score_native_f64(
+            body_fever,
+            body_great,
+            body_fever_great,
+            body_total,
+            primary,
+            secondary,
+            pp_factor,
+            combo_mul,
+            fever_mul,
+            single_color,
+        )
+        assert canonical == head + body
+
+
+@pytest.mark.parametrize(
+    ("pattern_ids", "offsets", "lengths", "pattern_count", "match"),
+    (
+        ((0,), (0,), (2,), 1, "range exceeds"),
+        ((1,), (0,), (1,), 1, "invalid head-pattern"),
+        ((0,), (-1,), (1,), 1, "nonnegative"),
+        ((0,), (0, 0), (1,), 1, "inconsistent lengths"),
+    ),
+)
+def test_response_group_pattern_plan_fails_loudly_on_invalid_inputs(
+    pattern_ids, offsets, lengths, pattern_count, match
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_patterns import (
+        build_response_group_pattern_plan,
+    )
+
+    with pytest.raises(ValueError, match=match):
+        build_response_group_pattern_plan(
+            np.asarray(pattern_ids, dtype=np.int32),
+            np.asarray(offsets, dtype=np.int32),
+            np.asarray(lengths, dtype=np.int32),
+            pattern_count=int(pattern_count),
+        )
+
+
 def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 

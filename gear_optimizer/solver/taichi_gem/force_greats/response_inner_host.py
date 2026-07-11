@@ -854,6 +854,45 @@ def _fg_response_upper_bound_native_f64(
 
 
 @jit(nopython=True, cache=True)
+def _fg_response_body_score_native_f64(
+    body_fever,
+    body_great,
+    body_fever_great,
+    body_total,
+    primary_val,
+    secondary_val,
+    pp_factor,
+    combo_mul,
+    fever_mul,
+    is_single_color,
+):
+    """Exact body-only term of ``_fg_response_surface_score_native_f64``."""
+    base_value = float((primary_val * 2) + secondary_val) + pp_factor
+    combo_val = int(np.floor(base_value * combo_mul))
+    fever_val = int(np.floor(base_value * combo_mul * fever_mul))
+    body_normal = max(0, body_total - body_fever)
+    score = body_fever * fever_val + body_normal * combo_val
+    if body_great > 0:
+        if is_single_color != 0:
+            great_head_base = (primary_val * 2) + 150
+        else:
+            great_head_base = (
+                int(np.floor(float(primary_val) * (4.0 / 3.0)))
+                + int(np.floor(float(secondary_val) * (2.0 / 3.0)))
+                + 150
+            )
+        great_base = float(great_head_base)
+        great_combo_val = int(np.floor(great_base * combo_mul))
+        great_fever_val = int(np.floor(great_base * combo_mul * fever_mul))
+        body_normal_great = max(0, body_great - body_fever_great)
+        body_normal_penalty = max(0, combo_val - great_combo_val)
+        body_fever_penalty = max(0, fever_val - great_fever_val)
+        score -= body_normal_great * body_normal_penalty
+        score -= body_fever_great * body_fever_penalty
+    return score
+
+
+@jit(nopython=True, cache=True)
 def _fg_response_surface_score_native_f64(
     surface_words,
     sr,
