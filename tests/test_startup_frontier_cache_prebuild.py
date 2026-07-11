@@ -515,3 +515,54 @@ def test_manifest_identity_hit_does_not_validate_payload(tmp_path: Path) -> None
 
     assert second_plan.hit_paths == (str(song_path),)
     assert second_plan.missing_paths == ()
+
+
+def test_ram_guard_force_resumes_stalled_worker_below_resume_floor(monkeypatch):
+    """Deadlock breaker: on a RAM-starved host where free RAM never reaches the resume
+    floor, a suspended worker must still be force-resumed so the build cannot hang forever
+    holding the single-builder lock (the 2026-07-11 optimizer lock-up)."""
+    import time
+
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as pb
+
+    monkeypatch.setattr(pb, "_FG_PREBUILD_GUARD_POLL_SECONDS", 0.005)
+    monkeypatch.setattr(pb, "_FG_PREBUILD_RESUME_STALL_POLLS", 2)
+    # Free RAM permanently below both the suspend (5) and resume (12) floors.
+    monkeypatch.setattr(pb, "_fg_prebuild_available_ram_gb", lambda: 0.3)
+
+    class _FakeProc:
+        def __init__(self, pid, t):
+            self.pid = pid
+            self._t = t
+            self.suspend_calls = 0
+            self.resume_calls = 0
+
+        def suspend(self):
+            self.suspend_calls += 1
+
+        def resume(self):
+            self.resume_calls += 1
+
+        def is_running(self):
+            return True
+
+        def create_time(self):
+            return self._t
+
+    younger = _FakeProc(102, 2.0)
+    older = _FakeProc(101, 1.0)
+    monkeypatch.setattr(pb, "_fg_prebuild_pool_worker_processes", lambda: [older, younger])
+
+    guard = pb._FgPrebuildRamGuard()
+    # Simulate the deadlock precondition: a worker was already suspended and, with free RAM
+    # stuck below the resume floor, the old code would never resume it.
+    guard._suspended = [younger]
+    guard.start()
+    try:
+        deadline = time.time() + 2.0
+        while time.time() < deadline and younger.resume_calls == 0:
+            time.sleep(0.02)
+    finally:
+        guard.stop()
+
+    assert younger.resume_calls >= 1, "stalled worker was never force-resumed -> deadlock"
