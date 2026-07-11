@@ -69,38 +69,26 @@ def _legacy_single_region_table_peak_bound_bytes(*, n: int, region_action_count:
     return int(starts_bytes + 2 * int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
 
 
-def _admitted_pipelined_region_group_threads(
+def _admitted_region_group_threads(
     *,
     build_peak_bounds: tuple[int, ...],
-    retained_peak_bounds: tuple[int, ...],
     legacy_single_peak_bound: int,
     thread_limit: int,
 ) -> tuple[int, int]:
-    """Largest pipeline width whose one builder plus retained reducers fit the old envelope."""
-    if len(build_peak_bounds) != len(retained_peak_bounds):
-        raise ValueError("FG region-table build and retained bound counts differ")
+    """Largest width whose worst concurrent build peaks fit the old one-table envelope."""
     if not build_peak_bounds:
         return 1, 0
     builds = tuple(int(value) for value in build_peak_bounds)
-    retained = tuple(int(value) for value in retained_peak_bounds)
-    if any(value < 0 for value in (*builds, *retained)):
+    if any(value < 0 for value in builds):
         raise ValueError("FG region-table memory bounds must be nonnegative")
     limit = max(1, min(int(thread_limit), len(builds)))
-    if max(builds) > int(legacy_single_peak_bound):
+    ordered = tuple(sorted(builds, reverse=True))
+    if int(ordered[0]) > int(legacy_single_peak_bound):
         raise MemoryError("FG exact region table exceeds the historical single-table peak bound")
     width = 1
-    admitted_peak = max(builds)
+    admitted_peak = int(ordered[0])
     for candidate_width in range(2, int(limit) + 1):
-        candidate_peak = max(
-            int(build_peak)
-            + sum(
-                sorted(
-                    (int(retained[j]) for j in range(len(retained)) if int(j) != int(build_idx)),
-                    reverse=True,
-                )[: int(candidate_width) - 1]
-            )
-            for build_idx, build_peak in enumerate(builds)
-        )
+        candidate_peak = sum(ordered[: int(candidate_width)])
         if int(candidate_peak) > int(legacy_single_peak_bound):
             break
         width = int(candidate_width)
@@ -755,9 +743,10 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     # Region-core-table grouping (song-context orchestration): the region-run core work depends
     # on the geometry only through (raw_fever_fill, non_fever_base), never real_fever_time, so it
     # is computed ONCE per key and shared read-only across every rt variant of that key. The
-    # producer-owned candidate bounds below admit as many independent keys concurrently as fit
-    # within the historical exhaustive one-live-table allocation. This uses the RAM eliminated by
-    # the exact-capacity producer without exceeding current-main's already-safe table envelope.
+    # producer-owned candidate bounds below admit as many independent reductions as fit within the
+    # historical exhaustive one-live-table allocation. The coordinator builds tables serially to
+    # avoid temporary-allocation contention, then pipelines their reductions through that strict
+    # width. This uses the RAM eliminated by exact capacity without exceeding the safe envelope.
     # Entry order replicates the per-geometry enumeration exactly (bit-exact stream for the
     # order-sensitive consumers). Without forced-great timing the region family is never
     # enumerated, so every key shares one contentless table.
@@ -828,9 +817,8 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
             default=0,
         )
         region_table_parallelism, region_table_parallel_peak_bound_bytes = (
-            _admitted_pipelined_region_group_threads(
+            _admitted_region_group_threads(
                 build_peak_bounds=group_build_peak_bounds,
-                retained_peak_bounds=group_retained_peak_bounds,
                 legacy_single_peak_bound=int(region_table_legacy_single_peak_bound_bytes),
                 thread_limit=int(group_thread_limit),
             )
@@ -1085,9 +1073,10 @@ def build_force_greats_response_first_frontiers_gpu_batch(
 
     Song-invariant work (chart array coercion, prefix activation-hit tables, end-index tables for
     every unique real_fever_time, global geometry canonicalization, the reducer executor and its
-    per-thread right-sized stamp workspaces) happens exactly once. Independent per-key region core
-    tables run concurrently only when their combined producer-owned peak bounds fit the historical
-    exhaustive one-table allocation. Returns frontiers aligned to the input geometry order.
+    per-thread right-sized stamp workspaces) happens exactly once. Per-key region core tables build
+    serially and their independent reductions overlap only when the sum of their producer-owned
+    build-peak bounds fits the historical exhaustive one-table allocation. Returns frontiers
+    aligned to the input geometry order.
     ``stats_sink``, when given, is filled with orchestration counters (telemetry only).
     """
     return _build_force_greats_response_first_frontiers_gpu_batch(

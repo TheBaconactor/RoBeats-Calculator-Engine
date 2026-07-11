@@ -298,8 +298,8 @@ def _build_response_frontier_cache_payload(
     if missing_by_geometry:
         missing_items = tuple(missing_by_geometry.items())
         # ONE batch call per song build: the batch entry owns region-core-table admission and
-        # reduction. Independent groups may run concurrently only when their combined exact peak
-        # bounds fit the historical exhaustive one-table allocation, while every song-invariant
+        # reduction. Tables build serially; independent reductions overlap only when their combined
+        # exact build-peak bounds fit the historical exhaustive one-table allocation, while every song-invariant
         # input -- chart arrays, prefix activation-hit tables, end-index tables for ALL unique
         # fever times, global geometry canonicalization, and right-sized stamp workspaces -- is
         # built exactly once per song.
