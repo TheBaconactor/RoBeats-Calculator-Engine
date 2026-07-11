@@ -79,8 +79,10 @@ def test_provisional_export_distribution_nonmatch_budget_adds_to_song_elements()
         secondary_color="Flow",
     )
 
-    assert materialized["Rush"] == 300
-    assert materialized["Flow"] == 150
+    # Issue #127: both Mini colors no-match the song (Beat/Vibe vs Rush/Flow) -> quality 0.5 each.
+    # weighted budget = floor(50*5*0.5) + floor(40*5*0.5) = 125 + 100 = 225; 2/3+1/3 -> 150 / 75.
+    assert materialized["Rush"] == 150
+    assert materialized["Flow"] == 75
     assert materialized["Beat"] == 50
     assert materialized["Vibe"] == 40
 
@@ -103,8 +105,10 @@ def test_provisional_export_distribution_cross_primary_to_song_secondary_uses_el
         secondary_color="Flow",
     )
 
-    assert materialized["Rush"] == 133
-    assert materialized["Flow"] == 106
+    # Issue #127: Flow is the Mini's primary and cross-matches the song secondary -> quality 0.75.
+    # weighted budget = floor(40*5*0.75) = 150; 2/3+1/3 -> Rush 100, Flow 50 (+40 base = 90).
+    assert materialized["Rush"] == 100
+    assert materialized["Flow"] == 90
 
 
 def test_materialize_mini_non_target_gets_base_pp_only():
@@ -273,10 +277,13 @@ def test_real_export_8_bit_alien_flagged_song_gets_base_pp_and_elemental_bonus()
 
     assert materialized["Perfect Points"] == 20
     assert materialized["Mini Ascension Song Target Applied"] is True
+    # Issue #127: 8-Bit Alien L1 = Rush 12 / Chill 7. On a Chill/Beat song, Rush no-matches (0.5)
+    # and Chill cross-matches the song primary as the Mini secondary (0.75).
+    # weighted budget = floor(12*5*0.5) + floor(7*5*0.75) = 30 + 26 = 56; 2/3+1/3 -> Chill 37, Beat 18.
     assert materialized["Rush"] == 60
-    assert materialized["Chill"] == 98
-    assert materialized["Beat"] == 31
-    assert materialized["Mini Ascension Elemental Bonus"] == {"Chill": 63, "Beat": 31}
+    assert materialized["Chill"] == 72
+    assert materialized["Beat"] == 18
+    assert materialized["Mini Ascension Elemental Bonus"] == {"Chill": 37, "Beat": 18}
 
 
 def test_real_export_ringmaster_roxie_clouds_in_blue_uses_ascension_half_scale():
@@ -293,13 +300,15 @@ def test_real_export_ringmaster_roxie_clouds_in_blue_uses_ascension_half_scale()
 
     assert materialized["Perfect Points"] == 20
     assert materialized["Mini Ascension Song Target Applied"] is True
+    # Issue #127: Roxie L1 = Vibe 13 / Rush 7; both no-match a one-color Chill song -> quality 0.5.
+    # weighted budget = floor(13*5*0.5) + floor(7*5*0.5) = 32 + 17 = 49; one-color -> +49 Chill.
     assert materialized["Vibe"] == 65
     assert materialized["Rush"] == 35
-    assert materialized["Chill"] == 100
-    assert materialized["Mini Ascension Elemental Bonus"] == {"Chill": 100}
+    assert materialized["Chill"] == 49
+    assert materialized["Mini Ascension Elemental Bonus"] == {"Chill": 49}
     assert materialized["Mini Ascension Match Qualities"] == [
-        ("Vibe", True, 0.5, "Element Budget", 65),
-        ("Rush", False, 0.5, "Element Budget", 35),
+        ("Vibe", True, 0.5, "Element Budget", 32),
+        ("Rush", False, 0.5, "Element Budget", 17),
     ]
 
 
@@ -355,3 +364,57 @@ def test_fixed_mini_constraints_resolve_materialized_minis_pruned_from_pool():
     assert fixed_pool[0]["Chill"] == 50
     assert fixed_pool[0]["Mini Ascension Materialized"] is True
     assert fixed_pool[0]["Mini Ascension Song Target Applied"] is False
+
+
+def test_issue_127_zara_canon_weighted_budget_matches_ingame_62_vibe():
+    """Confirmed real fixture (issue #127): the in-game menu reports +62 Vibe.
+
+    Trailblazing Trance Zara L1 = Chill 13 / Vibe 8. Canon In D Major is a one-color Vibe song.
+    Chill no-matches (0.5): floor(13*10*0.5*0.5) = 32. Vibe cross-matches the song primary as the
+    Mini secondary (0.75): floor(8*10*0.5*0.75) = 30. Weighted budget = 62 -> one-color +62 Vibe.
+    The pre-#127 unweighted code pooled 65 + 40 = 105 and returned +105 Vibe.
+    """
+    from gear_optimizer.data.csv_parser import parse_mini_rows
+
+    mini = next(m for m in parse_mini_rows("Data/Gear/Minis.csv") if m["Name"] == "Trailblazing Trance Zara")
+
+    materialized = materialize_mini_for_song(
+        mini,
+        song_name="Canon In D Major (EduTry Remix) by Pachelbel (Remixed by EduTry)",
+        primary_color="Vibe",
+        secondary_color="Vibe",
+    )
+
+    assert materialized["Perfect Points"] == 20
+    assert materialized["Mini Ascension Song Target Applied"] is True
+    assert materialized["Chill"] == 65
+    assert materialized["Vibe"] == 102
+    assert materialized["Mini Ascension Elemental Bonus"] == {"Vibe": 62}
+    assert materialized["Mini Ascension Match Qualities"] == [
+        ("Chill", True, 0.5, "Element Budget", 32),
+        ("Vibe", False, 0.75, "Element Budget", 30),
+    ]
+
+
+def test_issue_127_monstercat_perfect_match_control_stays_unchanged():
+    """Perfect-match control (issue #127): both qualities are 1.0, so the fix must not change it.
+
+    Monstercat L1 = Chill 13 / Flow 7 on a Chill-primary / Flow-secondary song at Ascension 10:
+    floor(13*10*0.5*1.0) = 65, floor(7*10*0.5*1.0) = 35; weighted budget = 100 -> 2/3 Chill, 1/3 Flow.
+    """
+    from gear_optimizer.data.csv_parser import parse_mini_rows
+
+    mini = next(m for m in parse_mini_rows("Data/Gear/Minis.csv") if m["Name"] == "Monstercat")
+
+    materialized = materialize_mini_for_song(
+        mini,
+        song_name="From Here by CloudNone [Monstercat]",
+        primary_color="Chill",
+        secondary_color="Flow",
+    )
+
+    assert materialized["Perfect Points"] == 20
+    assert materialized["Mini Ascension Song Target Applied"] is True
+    assert materialized["Chill"] == 131
+    assert materialized["Flow"] == 68
+    assert materialized["Mini Ascension Elemental Bonus"] == {"Chill": 66, "Flow": 33}
