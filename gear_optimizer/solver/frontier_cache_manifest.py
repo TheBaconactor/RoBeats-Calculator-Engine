@@ -147,10 +147,9 @@ def build_manifest_plan(
         cache_identity = _path_identity(cache_file) if cache_file else None
         cache_hit = cache_identity is not None
         if cache_hit:
-            # Identity fast-path compares cache-file SIZE only, never mtime. Both frontier caches mark
-            # recently-used bundles by bumping mtime via os.utime (idle-TTL retention/purge), so a cache
-            # file's mtime is mutated with no content change. Comparing mtime here defeats the fast-path:
-            # the recorded mtime is stale the instant retention touches the file, forcing a full per-file
+            # Identity fast-path compares cache-file SIZE only, never mtime. External copies and
+            # filesystem maintenance can mutate mtime with no content change. Comparing mtime here
+            # defeats the fast-path: the recorded mtime becomes stale, forcing a full per-file
             # re-validation on every startup (measured: FG fast-path hit 0/6704 -> ~100s warm verify).
             # The cache path is content-addressed (digest of the cache key) and builds are deterministic,
             # so a same-size file at the same path is the same validated bundle; corruption is still

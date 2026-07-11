@@ -17,12 +17,18 @@ def test_app_runs_startup_cache_prebuild_before_gpu_and_live_execution() -> None
     assert cache_idx < gpu_idx < execute_idx
 
 
-def test_cpu_work_manager_skips_timing_frontier_prebuild(monkeypatch) -> None:
+def test_cpu_work_manager_builds_missing_timeline_and_fg_frontiers(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
+    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
 
     events: list[tuple[str, dict]] = []
     monkeypatch.setattr(cpu_work_manager.time, "perf_counter", iter((10.0, 10.25)).__next__)
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "run_timeline_frontier_cache_prebuild",
+        lambda **_kwargs: TimelineFrontierCachePrebuildSummary(total=1, completed=1, disk=1),
+    )
     monkeypatch.setattr(
         cpu_work_manager,
         "run_fg_response_frontier_cache_prebuild",
@@ -43,19 +49,23 @@ def test_cpu_work_manager_skips_timing_frontier_prebuild(monkeypatch) -> None:
         announce_stream=stream,
     )
 
-    assert "Timing-play frontier prebuild disabled" in stream.getvalue()
-    assert "Fixed-0ms FG response data ready" in stream.getvalue()
+    assert "Filling missing timeline and FG frontiers" in stream.getvalue()
+    assert "Frontier caches ready" in stream.getvalue()
     assert events == [
         (
             "startup_cpu_work_done",
             {
-                "phase": "fixed_zero_ms_fg_response_data",
-                "total": 1,
-                "completed": 1,
-                "failures": 0,
-                "built": 1,
-                "disk": 0,
-                "memory": 0,
+                "phase": "timeline_and_fg_frontier_data",
+                "timeline_total": 1,
+                "timeline_completed": 1,
+                "timeline_failures": 0,
+                "timeline_built": 0,
+                "timeline_disk": 1,
+                "fg_total": 1,
+                "fg_completed": 1,
+                "fg_failures": 0,
+                "fg_built": 1,
+                "fg_disk": 0,
                 "elapsed_ms": 250.0,
             },
         )

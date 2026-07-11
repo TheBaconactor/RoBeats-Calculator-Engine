@@ -29,6 +29,8 @@ def data_root(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(service, "DATA_ROOT", tmp_path / "Data")
     monkeypatch.setattr(service, "GEAR_DIR", tmp_path / "Data" / "Gear")
+    monkeypatch.setattr(service, "_TIMELINE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "timeline_frontier_cache")
+    monkeypatch.setattr(service, "_FG_RESPONSE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "fg_response_frontier_cache")
     service.clear_official_song_catalog_cache()
     with service._INFLIGHT_SOLVES_LOCK:
         service._INFLIGHT_SOLVES.clear()
@@ -156,6 +158,8 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     assert env["EVOLUTION_DB_PATH"].endswith("result.db")  # output DB redirected off evolution.db
     assert env["ROBEATSMETA_OPTIMIZER_DATA_DIR"].endswith("job_abc/Data")  # isolated song source
     assert env["ROBEATSMETA_OPTIMIZER_BIN_DIR"].endswith("job_abc/bin")  # isolated run state
+    assert env["TIMELINE_FRONTIER_CACHE_DIR"].endswith("bin/timeline_frontier_cache")
+    assert env["FG_RESPONSE_FRONTIER_CACHE_DIR"].endswith("bin/fg_response_frontier_cache")
 
 
 def _capture_solve_config(data_root, monkeypatch, request: dict) -> str:
