@@ -442,12 +442,7 @@ def _mark_activation_preemptor_order_deltas(
     n = min(int(total_notes), len(notes))
     if n <= 1:
         return
-    if note_types is None:
-        raise ValueError(
-            "note_graph: note_types (length == total_notes) is required to display "
-            "delayed activation ordering at judgment bounds -- it is never guessed"
-        )
-    nt = np.asarray(note_types).reshape(-1)
+    nt = None if note_types is None else np.asarray(note_types).reshape(-1)
     lane_arr = None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1)
     if lane_arr is not None:
         n = min(n, int(lane_arr.shape[0]))
@@ -479,7 +474,16 @@ def _mark_activation_preemptor_order_deltas(
             if activation_lane is not None and int(lane_arr[j]) != activation_lane:
                 continue
             result = str(note.get("note_result", "Perfect"))
-            current_delta = _selector_default_delta_ms(nt, j, result, note.get("delta_ms"))
+            raw_delta = note.get("delta_ms")
+            if raw_delta is not None:
+                current_delta = float(raw_delta)
+            else:
+                if nt is None:
+                    raise ValueError(
+                        "note_graph: note_types (length == total_notes) is required to display "
+                        "delayed activation ordering at judgment bounds -- it is never guessed"
+                    )
+                current_delta = _selector_default_delta_ms(nt, j, result, raw_delta)
             current_press = chart_j + float(current_delta)
             if current_press >= required_press:
                 # Already after everything chained before it; it becomes the new ordering floor
@@ -489,6 +493,11 @@ def _mark_activation_preemptor_order_deltas(
                 continue
 
             needed_delta = required_press - chart_j
+            if nt is None:
+                raise ValueError(
+                    "note_graph: note_types (length == total_notes) is required to display "
+                    "delayed activation ordering at judgment bounds -- it is never guessed"
+                )
             note["delta_ms"] = _delta_at_or_after_ms(nt, j, result, needed_delta)
             required_press = chart_j + float(note["delta_ms"])
 
@@ -918,6 +927,22 @@ def timeline_frontier_note_graph(
                 notes, fever_end_index=e, total_notes=n,
                 fever_window_end_ms=fever_end_ms, note_types=note_types,
             )
+
+    if apply_guidance:
+        # The base frontier prices a delayed activation clock, but the replay wire is a stream of
+        # physical inputs sorted by ``chart time + delta``. Materialize the already-priced order:
+        # every following input that would otherwise land before the activation must be delayed to
+        # the activation clock. Without this pass, a same-time chord sibling left at 0ms can fill
+        # the bar first in game even though the frontier scored the activation witness at +40ms.
+        # FG has always applied this same canonical materialization below.
+        _mark_activation_preemptor_order_deltas(
+            notes,
+            frontier_trace=frontier_trace,
+            total_notes=n,
+            note_types=note_types,
+        )
+
+    return notes
     return notes
 
 
