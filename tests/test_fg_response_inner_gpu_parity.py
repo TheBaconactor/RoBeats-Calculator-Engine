@@ -73,13 +73,16 @@ def test_gpu_device_pool_reuse_is_chunk_invariant(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as rih
 
     kwargs, total_surf = _inputs()
-    # Both runs use the one canonical pattern-major kernel and differ only in chunk count.
-    # Many chunks: 20 logical pattern pairs / 3 per chunk -> 7 launches.
-    monkeypatch.setattr(rih, "_FG_RESPONSE_INNER_GPU_MAX_PATTERN_DISPATCH_PAIRS", 3)
+    # max_thread_work=1 forces the surface-batch lane (skips the single/group-chunk lanes) for
+    # both runs, so they use the SAME batch kernel and differ only in chunk count.
+    monkeypatch.setattr(rih, "_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK", 1)
+
+    # Many chunks: 20 logical rows / 3 per chunk -> 7 launches reusing the one device pool.
+    monkeypatch.setattr(rih, "_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS", 3)
     multi_rows, multi_logical = rih._score_response_group_meta_gpu(**kwargs)
 
     # One chunk: all 20 rows in a single launch of the same kernel + same one-time upload.
-    monkeypatch.setattr(rih, "_FG_RESPONSE_INNER_GPU_MAX_PATTERN_DISPATCH_PAIRS", 100_000)
+    monkeypatch.setattr(rih, "_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS", 100_000)
     single_rows, single_logical = rih._score_response_group_meta_gpu(**kwargs)
 
     assert multi_logical == single_logical == total_surf

@@ -39,31 +39,6 @@ def _stub_device_pool_upload(monkeypatch):
     monkeypatch.setattr(response_inner.ti, "ndarray", lambda dtype, shape: _PassthroughNdarray())
 
 
-def _fake_pattern_batch_scores(*args) -> None:
-    row_count = int(args[0])
-    surface_counts = np.asarray(args[2])
-    group_offsets = np.asarray(args[4])
-    pair_owners = np.asarray(args[5])
-    pair_surface_offsets = np.asarray(args[7])
-    pair_local_surfaces = np.asarray(args[8])
-    out_scores = np.asarray(args[14])
-    out_details = np.asarray(args[15])
-    for pair_row in range(row_count):
-        owner = int(pair_owners[pair_row])
-        pair_start = int(pair_surface_offsets[pair_row])
-        pair_count = int(pair_surface_offsets[pair_row + 1]) - pair_start
-        best_local = int(pair_local_surfaces[pair_start])
-        best_score = int(surface_counts[int(group_offsets[owner]) + best_local, 0])
-        for pair_pos in range(1, pair_count):
-            local_surface = int(pair_local_surfaces[pair_start + pair_pos])
-            score = int(surface_counts[int(group_offsets[owner]) + local_surface, 0])
-            if score > best_score:
-                best_score = score
-                best_local = local_surface
-        out_scores[pair_row] = best_score
-        out_details[pair_row, 0] = best_local
-
-
 def test_response_surface_head_coeffs_match_bruteforce():
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
@@ -174,7 +149,7 @@ def test_response_group_pattern_plan_preserves_owner_pattern_and_surface_order()
     )
 
     pattern_ids = np.asarray((2, 1, 2, 1, 3, 0, 0, 2), dtype=np.int32)
-    owners, patterns, offsets, local_surfaces = build_response_group_pattern_plan(
+    owners, patterns, offsets, counts, local_surfaces = build_response_group_pattern_plan(
         pattern_ids,
         np.asarray((0, 5), dtype=np.int32),
         np.asarray((5, 3), dtype=np.int32),
@@ -183,7 +158,8 @@ def test_response_group_pattern_plan_preserves_owner_pattern_and_surface_order()
 
     np.testing.assert_array_equal(owners, np.asarray((0, 0, 0, 1, 1), dtype=np.int32))
     np.testing.assert_array_equal(patterns, np.asarray((2, 1, 3, 0, 2), dtype=np.int32))
-    np.testing.assert_array_equal(offsets, np.asarray((0, 2, 4, 5, 7, 8), dtype=np.int32))
+    np.testing.assert_array_equal(offsets, np.asarray((0, 2, 4, 5, 7, 8), dtype=np.int64))
+    np.testing.assert_array_equal(counts, np.asarray((2, 2, 1, 2, 1), dtype=np.int32))
     np.testing.assert_array_equal(
         local_surfaces,
         np.asarray((0, 2, 1, 3, 4, 0, 1, 2), dtype=np.int32),
@@ -286,57 +262,83 @@ def test_response_group_pattern_plan_fails_loudly_on_invalid_inputs(
         )
 
 
-def test_response_pattern_chunk_reduce_keeps_earliest_surface_on_score_tie() -> None:
+def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
-    best_scores = np.asarray((np.iinfo(np.int32).min,), dtype=np.int32)
-    out_rows = np.zeros((1, 11), dtype=np.int32)
-    later_details = np.zeros((1, 10), dtype=np.int32)
-    later_details[0, 0] = 5
-    earlier_details = np.zeros((1, 10), dtype=np.int32)
-    earlier_details[0, 0] = 2
+    batch_calls: list[dict[str, int]] = []
+    group_calls: list[dict[str, int]] = []
 
-    response_inner._reduce_response_inner_chunk_jit(
-        1,
-        np.asarray((100,), dtype=np.int32),
-        later_details,
-        np.asarray((0,), dtype=np.int32),
-        best_scores,
+    def fake_group_kernel(
+        group_count,
+        surface_pattern_ids,
+        surface_pattern_words,
+        surface_counts,
+        surface_pattern_head_coeffs,
+        group_offsets,
+        group_lengths,
+        group_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
         out_rows,
-    )
-    response_inner._reduce_response_inner_chunk_jit(
-        1,
-        np.asarray((100,), dtype=np.int32),
-        earlier_details,
-        np.asarray((0,), dtype=np.int32),
-        best_scores,
-        out_rows,
-    )
+        allow_pp_template,
+    ):
+        group_calls.append({"group_count": int(group_count), "allow_pp": bool(allow_pp_template)})
+        for local_idx in range(int(group_count)):
+            offset = int(group_offsets[local_idx])
+            length = int(group_lengths[local_idx])
+            segment = surface_counts[offset : offset + length, 0]
+            best_local = int(np.argmax(segment))
+            out_rows[local_idx, 0] = int(segment[best_local])
+            out_rows[local_idx, 1] = int(best_local)
 
-    assert int(out_rows[0, 0]) == 100
-    assert int(out_rows[0, 1]) == 2
-
-
-def test_response_inner_pattern_scoring_chunks_exact_pairs(monkeypatch):
-    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
-
-    batch_calls: list[dict[str, int | bool]] = []
-
-    def fake_kernel(*args):
+    def fake_kernel(
+        row_count,
+        surface_pattern_ids,
+        surface_pattern_words,
+        surface_counts,
+        surface_pattern_head_coeffs,
+        group_offsets,
+        logical_owners,
+        logical_surfaces,
+        row_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_scores,
+        out_details,
+        allow_pp_template,
+    ):
         batch_calls.append(
             {
-                "row_count": int(args[0]),
-                "allow_pp": bool(args[16]),
-                "surface_pool_rows": int(args[2].shape[0]),
+                "row_count": int(row_count),
+                "allow_pp": bool(allow_pp_template),
+                "surface_pool_rows": int(surface_counts.shape[0]),
             }
         )
-        _fake_pattern_batch_scores(*args)
+        for row_idx in range(int(row_count)):
+            owner = int(logical_owners[row_idx])
+            local_surface = int(logical_surfaces[row_idx])
+            surface_row = int(group_offsets[owner]) + int(local_surface)
+            out_scores[row_idx] = int(surface_counts[surface_row, 0])
 
     monkeypatch.setattr(response_inner.gem_api, "ensure_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
-    monkeypatch.setattr(response_inner, "_fg_response_inner_pattern_batch_kernel", fake_kernel)
-    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_PATTERN_DISPATCH_PAIRS", 3)
-    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_PATTERN_DISPATCH_WORK", 3)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_group_kernel", fake_group_kernel)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_batch_kernel", fake_kernel)
+    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK", 5)
+    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK", 4)
+    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS", 3)
+    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK", 3)
+    monkeypatch.setattr(
+        response_inner,
+        "_response_group_logical_surface_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("group chunks must not materialize logical surface owner rows")
+        ),
+    )
 
     group_meta = np.zeros((3, 8), dtype=np.int32)
     group_meta[:, 7] = 10
@@ -380,27 +382,66 @@ def test_response_inner_pattern_scoring_chunks_exact_pairs(monkeypatch):
     )
 
     assert logical_surface_rows == 9
-    assert [call["row_count"] for call in batch_calls] == [3, 3, 3]
-    assert all(not call["allow_pp"] for call in batch_calls)
-    assert all(call["surface_pool_rows"] == 9 for call in batch_calls)
+    assert [call["group_count"] for call in group_calls] == [1, 2]
+    assert all(not call["allow_pp"] for call in group_calls)
+    assert batch_calls == []
     assert rows[:, 0].tolist() == [7, 9, 8]
     assert rows[:, 1].tolist() == [1, 1, 0]
 
 
-def test_response_inner_always_uses_pattern_batch_kernel(monkeypatch):
+def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
+    group_calls: list[int] = []
     batch_calls: list[int] = []
 
-    def fake_batch_kernel(*args):
-        batch_calls.append(int(args[0]))
-        _fake_pattern_batch_scores(*args)
+    def fake_group_kernel(
+        group_count,
+        surface_pattern_ids,
+        surface_pattern_words,
+        surface_counts,
+        surface_pattern_head_coeffs,
+        group_offsets,
+        group_lengths,
+        group_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_rows,
+        allow_pp_template,
+    ):
+        group_calls.append(int(group_count))
+
+    def fake_batch_kernel(
+        row_count,
+        surface_pattern_ids,
+        surface_pattern_words,
+        surface_counts,
+        surface_pattern_head_coeffs,
+        group_offsets,
+        logical_owners,
+        logical_surfaces,
+        row_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_scores,
+        out_details,
+        allow_pp_template,
+    ):
+        batch_calls.append(int(row_count))
+        out_scores[:] = 1
 
     monkeypatch.setattr(response_inner.gem_api, "ensure_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
-    monkeypatch.setattr(response_inner, "_fg_response_inner_pattern_batch_kernel", fake_batch_kernel)
-    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_PATTERN_DISPATCH_PAIRS", 10)
-    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_PATTERN_DISPATCH_WORK", 10)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_group_kernel", fake_group_kernel)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_batch_kernel", fake_batch_kernel)
+    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK", 1)
+    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_THREAD_WORK", 1)
+    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS", 10)
+    monkeypatch.setattr(response_inner, "_FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK", 10)
 
     group_meta = np.zeros((1, 8), dtype=np.int32)
     group_offsets = np.asarray([0], dtype=np.int32)
@@ -429,21 +470,72 @@ def test_response_inner_always_uses_pattern_batch_kernel(monkeypatch):
         ),
     )
 
+    assert group_calls == []
     assert batch_calls == [4]
 
 
-def test_response_inner_default_pattern_work_cap_keeps_safe_large_batch_together(monkeypatch):
+def test_response_inner_logical_surface_plan_matches_group_work_order():
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
+    owners, local_surfaces, work_cumsum = response_inner._response_group_logical_surface_plan(
+        np.asarray([2, 0, 3], dtype=np.int32),
+        np.asarray([5, 7, 11], dtype=np.int64),
+    )
+
+    np.testing.assert_array_equal(owners, np.asarray([0, 0, 2, 2, 2], dtype=np.int32))
+    np.testing.assert_array_equal(local_surfaces, np.asarray([0, 1, 0, 1, 2], dtype=np.int32))
+    np.testing.assert_array_equal(work_cumsum, np.asarray([0, 5, 10, 21, 32, 43], dtype=np.int64))
+
+
+def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together(monkeypatch):
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
+
+    group_calls: list[int] = []
     batch_calls: list[int] = []
 
-    def fake_batch_kernel(*args):
-        batch_calls.append(int(args[0]))
-        _fake_pattern_batch_scores(*args)
+    def fake_group_kernel(
+        group_count,
+        surface_pattern_ids,
+        surface_pattern_words,
+        surface_counts,
+        surface_pattern_head_coeffs,
+        group_offsets,
+        group_lengths,
+        group_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_rows,
+        allow_pp_template,
+    ):
+        group_calls.append(int(group_count))
+
+    def fake_batch_kernel(
+        row_count,
+        surface_pattern_ids,
+        surface_pattern_words,
+        surface_counts,
+        surface_pattern_head_coeffs,
+        group_offsets,
+        logical_owners,
+        logical_surfaces,
+        row_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_scores,
+        out_details,
+        allow_pp_template,
+    ):
+        batch_calls.append(int(row_count))
+        out_scores[:] = 1
 
     monkeypatch.setattr(response_inner.gem_api, "ensure_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
-    monkeypatch.setattr(response_inner, "_fg_response_inner_pattern_batch_kernel", fake_batch_kernel)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_group_kernel", fake_group_kernel)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_batch_kernel", fake_batch_kernel)
 
     surface_count = 20_000
     group_meta = np.zeros((1, 8), dtype=np.int32)
@@ -474,21 +566,39 @@ def test_response_inner_default_pattern_work_cap_keeps_safe_large_batch_together
         ),
     )
 
+    assert group_calls == []
     assert batch_calls == [surface_count]
 
 
-def test_response_inner_default_pattern_work_cap_keeps_high_work_batch_together(monkeypatch):
+def test_response_inner_default_surface_work_cap_keeps_high_work_batch_together(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     batch_calls: list[int] = []
 
-    def fake_batch_kernel(*args):
-        batch_calls.append(int(args[0]))
-        _fake_pattern_batch_scores(*args)
+    def fake_batch_kernel(
+        row_count,
+        surface_pattern_ids,
+        surface_pattern_words,
+        surface_counts,
+        surface_pattern_head_coeffs,
+        group_offsets,
+        logical_owners,
+        logical_surfaces,
+        row_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_scores,
+        out_details,
+        allow_pp_template,
+    ):
+        batch_calls.append(int(row_count))
+        out_scores[:] = np.arange(int(row_count), dtype=np.int32)
 
     monkeypatch.setattr(response_inner.gem_api, "ensure_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
-    monkeypatch.setattr(response_inner, "_fg_response_inner_pattern_batch_kernel", fake_batch_kernel)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_batch_kernel", fake_batch_kernel)
     monkeypatch.setattr(
         response_inner,
         "_response_inner_combo_counts",
@@ -531,16 +641,28 @@ def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
 
     seen_allow_pp: list[bool] = []
 
-    def fake_pattern_kernel(*args):
-        group_count = int(args[0])
-        out_scores = np.asarray(args[14])
-        allow_pp_template = bool(args[16])
+    def fake_group_kernel(
+        group_count,
+        surface_pattern_ids,
+        surface_pattern_words,
+        surface_counts,
+        surface_pattern_head_coeffs,
+        group_offsets,
+        group_lengths,
+        group_meta,
+        color_flags,
+        ref_pp,
+        ref_cm,
+        ref_fm,
+        out_rows,
+        allow_pp_template,
+    ):
         seen_allow_pp.append(bool(allow_pp_template))
-        out_scores[:group_count] = 1
+        out_rows[: int(group_count), 0] = 1
 
     monkeypatch.setattr(response_inner.gem_api, "ensure_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(response_inner.ti, "sync", lambda: None)
-    monkeypatch.setattr(response_inner, "_fg_response_inner_pattern_batch_kernel", fake_pattern_kernel)
+    monkeypatch.setattr(response_inner, "_fg_response_inner_group_kernel", fake_group_kernel)
 
     group_meta = np.zeros((1, 8), dtype=np.int32)
     group_offsets = np.asarray([0], dtype=np.int32)
