@@ -17,6 +17,7 @@ from gear_optimizer.core.utils import full_pipeline_signature
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
 from gear_optimizer.solver.scoring.exact_rescore import (
     calculate_score_exact,
+    score_stats_exact_batch,
     score_stats_fixed_timing_exact,
     score_stats_fixed_timing_exact_batch,
 )
@@ -190,3 +191,29 @@ def test_fixed_timing_base_scorer_batch_matches_single():
     singles = [score_stats_fixed_timing_exact(s, cs, ref) for s in stats_rows]
     assert batch == singles
     assert batch[0] != batch[1]  # different FT/FF -> different fixed timeline
+
+
+def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_without_disk_cache(tmp_path, monkeypatch):
+    from gear_optimizer.solver.taichi_gem.api import timeline
+
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    timeline.reset_timeline_state()
+    cs = _calc_song()
+    apply_timing_envelope(cs, mode="zero_ms")
+    ref = _ref_arrays()
+    stats_rows = [
+        _stats(),
+        {**_stats(), "Fever Time": 0, "Fever Fill Rate": 0},
+        {**_stats(), "Fever Time": TOTAL_ROWS, "Fever Fill Rate": TOTAL_ROWS},
+        {**_stats(), "Fever Time": 17, "Fever Fill Rate": 143, "Combo Multiplier": 160},
+    ]
+
+    loaded = timeline.load_timeline_frontier_payload(cs, ref)
+
+    assert loaded.cache_source == "fixed_zero_ms"
+    assert loaded.payload.frontier_pool_used > 0
+    assert np.all(loaded.payload.grid_frontier_count == 1)
+    assert list(tmp_path.glob("*.npz")) == []
+    assert score_stats_exact_batch(stats_rows, cs, ref) == score_stats_fixed_timing_exact_batch(
+        stats_rows, cs, ref
+    )

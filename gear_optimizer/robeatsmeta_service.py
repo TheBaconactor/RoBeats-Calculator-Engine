@@ -339,10 +339,15 @@ def _job_slug(value: Any) -> str:
 
 
 def _normalize_timing_mode(value: Any) -> str:
+    from gear_optimizer.solver.timing_service_mode import enforce_service_timing_mode
+
     mode = str(value or "perfect_window").strip().lower()
     if mode not in {"perfect_window", "zero_ms"}:
         raise RequestError(f"unknown timingMode {value!r}")
-    return mode
+    # Strict zero_ms service mode coerces a valid-but-unbuilt perfect_window request to zero_ms
+    # (the only model this deployment serves). No-op when the flag is off. Unknown modes still
+    # fail loud above.
+    return enforce_service_timing_mode(mode)
 
 
 def _normalize_chart(chart_text: str, song_name: str, timing_mode: str) -> str:

@@ -423,7 +423,9 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
     calc_song = {"metadata": {"Song Name": "Cached Song"}, "song_data": {"timestamps": [1.0, 2.0]}}
 
     monkeypatch.setattr("gear_optimizer.data.song_io.get_base_calc_song", lambda *_args, **_kwargs: calc_song)
-    monkeypatch.setattr("gear_optimizer.solver.timing_envelope.apply_timing_envelope", lambda _song: None)
+    monkeypatch.setattr(
+        "gear_optimizer.solver.timing_envelope.apply_timing_envelope", lambda _song, *, mode=None: None
+    )
 
     def _cache_info(_calc_song, _ref_arrays, *, stat_keys):
         return FgResponseFrontierCacheInfo(
@@ -468,7 +470,9 @@ def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> 
     calc_song = {"metadata": {"Song Name": "Missing Song"}, "song_data": {"timestamps": [1.0, 2.0, 3.0]}}
 
     monkeypatch.setattr("gear_optimizer.data.song_io.get_base_calc_song", lambda *_args, **_kwargs: calc_song)
-    monkeypatch.setattr("gear_optimizer.solver.timing_envelope.apply_timing_envelope", lambda _song: None)
+    monkeypatch.setattr(
+        "gear_optimizer.solver.timing_envelope.apply_timing_envelope", lambda _song, *, mode=None: None
+    )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.fg_response_frontier_payload_cache_info",
         lambda *_args, **_kwargs: FgResponseFrontierCacheInfo(
