@@ -410,24 +410,35 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
 def test_fg_response_region_group_admission_uses_worst_concurrent_bounds() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
 
-    assert response_build_gpu_batch._admitted_region_group_threads(
-        current_peak_bounds=(20, 40, 30),
-        legacy_single_peak_bound=70,
+    assert response_build_gpu_batch._admitted_pipelined_region_group_threads(
+        build_peak_bounds=(20, 40, 30),
+        retained_peak_bounds=(10, 20, 15),
+        legacy_single_peak_bound=55,
         thread_limit=3,
-    ) == (2, 70)
-    assert response_build_gpu_batch._admitted_region_group_threads(
-        current_peak_bounds=(20, 40, 30),
-        legacy_single_peak_bound=70,
+    ) == (2, 55)
+    assert response_build_gpu_batch._admitted_pipelined_region_group_threads(
+        build_peak_bounds=(20, 40, 30),
+        retained_peak_bounds=(10, 20, 15),
+        legacy_single_peak_bound=55,
         thread_limit=1,
     ) == (1, 40)
-    assert response_build_gpu_batch._admitted_region_group_threads(
-        current_peak_bounds=(),
+    assert response_build_gpu_batch._admitted_pipelined_region_group_threads(
+        build_peak_bounds=(),
+        retained_peak_bounds=(),
         legacy_single_peak_bound=0,
         thread_limit=8,
     ) == (1, 0)
+    with pytest.raises(ValueError, match="bound counts differ"):
+        response_build_gpu_batch._admitted_pipelined_region_group_threads(
+            build_peak_bounds=(20,),
+            retained_peak_bounds=(),
+            legacy_single_peak_bound=70,
+            thread_limit=1,
+        )
     with pytest.raises(MemoryError, match="historical single-table peak bound"):
-        response_build_gpu_batch._admitted_region_group_threads(
-            current_peak_bounds=(71,),
+        response_build_gpu_batch._admitted_pipelined_region_group_threads(
+            build_peak_bounds=(71,),
+            retained_peak_bounds=(35,),
             legacy_single_peak_bound=70,
             thread_limit=1,
         )
@@ -453,6 +464,11 @@ def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -
         action_k=action_k,
         raw_fever_fill=4.0,
     ) == expected
+    assert response_build_gpu_batch._region_table_retained_bound_bytes(
+        n=n,
+        action_k=action_k,
+        raw_fever_fill=4.0,
+    ) == (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 36
     assert response_build_gpu_batch._legacy_single_region_table_peak_bound_bytes(
         n=n,
         region_action_count=int(action_k.shape[0]),
@@ -470,6 +486,8 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
     )
 
     barrier = threading.Barrier(2, timeout=5.0)
+    caller_id = threading.get_ident()
+    builder_ids: list[int] = []
     worker_ids: list[int] = []
     result = FgResponseFrontierResult(
         (FgResponseSurface(1, 0, 0, 0, 0, 0, 0, 0, 0, 0),),
@@ -484,18 +502,35 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
         0.0,
     )
 
-    def _fake_group(**kwargs):
+    empty_table = (
+        np.zeros(5, dtype=np.int64),
+        np.empty(0, dtype=np.int32),
+        np.empty(0, dtype=np.int32),
+        np.empty(0, dtype=np.int32),
+        np.empty(0, dtype=np.int32),
+        np.empty(0, dtype=np.float64),
+        np.empty(0, dtype=np.float64),
+        np.empty(0, dtype=np.int32),
+    )
+
+    def _fake_build(*_args):
+        builder_ids.append(threading.get_ident())
+        return empty_table
+
+    def _fake_reduce(**kwargs):
         worker_ids.append(threading.get_ident())
         barrier.wait()
         return [(int(item[0]), result) for item in kwargs["group_items"]]
 
-    monkeypatch.setattr(response_build_gpu_batch, "_region_table_build_peak_bound_bytes", lambda **_kwargs: 1)
+    monkeypatch.setattr(response_build_gpu_batch, "_region_table_build_peak_bound_bytes", lambda **_kwargs: 200)
+    monkeypatch.setattr(response_build_gpu_batch, "_region_table_retained_bound_bytes", lambda **_kwargs: 100)
     monkeypatch.setattr(
         response_build_gpu_batch,
         "_legacy_single_region_table_peak_bound_bytes",
-        lambda **_kwargs: 2,
+        lambda **_kwargs: 300,
     )
-    monkeypatch.setattr(response_build_gpu_batch, "_build_and_reduce_first_frontier_group", _fake_group)
+    monkeypatch.setattr(response_build_gpu_batch._rb_numba, "_numba_build_region_core_table", _fake_build)
+    monkeypatch.setattr(response_build_gpu_batch, "_reduce_first_frontier_group", _fake_reduce)
     previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(2)
     stats: dict = {}
     try:
@@ -512,11 +547,12 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
         response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
 
     assert frontiers == (result, result)
+    assert builder_ids == [caller_id, caller_id]
     assert len(set(worker_ids)) == 2
     assert stats["region_table_groups"] == 2
     assert stats["region_table_parallelism"] == 2
-    assert stats["region_table_parallel_peak_bound_bytes"] == 2
-    assert stats["region_table_legacy_single_peak_bound_bytes"] == 2
+    assert stats["region_table_parallel_peak_bound_bytes"] == 300
+    assert stats["region_table_legacy_single_peak_bound_bytes"] == 300
     assert stats["executor_creations"] == 1
 
 

@@ -45,6 +45,23 @@ def _region_table_build_peak_bound_bytes(
     return int(starts_bytes + 2 * int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
 
 
+def _region_table_retained_bound_bytes(
+    *,
+    n: int,
+    action_k: np.ndarray,
+    raw_fever_fill: float,
+) -> int:
+    """Exact upper bound after the candidate arrays have been replaced by retained copies."""
+    actions = np.ascontiguousarray(np.asarray(action_k, dtype=np.int32).reshape(-1))
+    capacity = int(
+        _rb_numba._numba_region_core_candidate_capacity(
+            int(n), int(actions.shape[0]), actions, float(raw_fever_fill)
+        )
+    )
+    starts_bytes = (int(n) + 2) * np.dtype(np.int64).itemsize
+    return int(starts_bytes + int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
+
+
 def _legacy_single_region_table_peak_bound_bytes(*, n: int, region_action_count: int) -> int:
     """Historical exhaustive one-live-table bound that current-main already reserves safely."""
     capacity = (int(n) + 1) * max(1, int(region_action_count)) * 2
@@ -52,23 +69,38 @@ def _legacy_single_region_table_peak_bound_bytes(*, n: int, region_action_count:
     return int(starts_bytes + 2 * int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
 
 
-def _admitted_region_group_threads(
+def _admitted_pipelined_region_group_threads(
     *,
-    current_peak_bounds: tuple[int, ...],
+    build_peak_bounds: tuple[int, ...],
+    retained_peak_bounds: tuple[int, ...],
     legacy_single_peak_bound: int,
     thread_limit: int,
 ) -> tuple[int, int]:
-    """Largest width whose worst concurrent table set fits the old one-table memory envelope."""
-    limit = max(1, min(int(thread_limit), len(current_peak_bounds)))
-    if not current_peak_bounds:
+    """Largest pipeline width whose one builder plus retained reducers fit the old envelope."""
+    if len(build_peak_bounds) != len(retained_peak_bounds):
+        raise ValueError("FG region-table build and retained bound counts differ")
+    if not build_peak_bounds:
         return 1, 0
-    ordered = tuple(sorted((int(value) for value in current_peak_bounds), reverse=True))
-    if int(ordered[0]) > int(legacy_single_peak_bound):
+    builds = tuple(int(value) for value in build_peak_bounds)
+    retained = tuple(int(value) for value in retained_peak_bounds)
+    if any(value < 0 for value in (*builds, *retained)):
+        raise ValueError("FG region-table memory bounds must be nonnegative")
+    limit = max(1, min(int(thread_limit), len(builds)))
+    if max(builds) > int(legacy_single_peak_bound):
         raise MemoryError("FG exact region table exceeds the historical single-table peak bound")
     width = 1
-    admitted_peak = int(ordered[0])
+    admitted_peak = max(builds)
     for candidate_width in range(2, int(limit) + 1):
-        candidate_peak = sum(ordered[: int(candidate_width)])
+        candidate_peak = max(
+            int(build_peak)
+            + sum(
+                sorted(
+                    (int(retained[j]) for j in range(len(retained)) if int(j) != int(build_idx)),
+                    reverse=True,
+                )[: int(candidate_width) - 1]
+            )
+            for build_idx, build_peak in enumerate(builds)
+        )
         if int(candidate_peak) > int(legacy_single_peak_bound):
             break
         width = int(candidate_width)
@@ -118,6 +150,10 @@ class _ConcurrentRegionTableStats:
             self.live_bytes -= int(table_bytes)
             if int(self.live) < 0 or int(self.live_bytes) < 0:
                 raise ValueError("FG concurrent region-table accounting underflowed")
+
+    def reduced(self, *, reduce_seconds: float) -> None:
+        with self._lock:
+            self.reduce_seconds += float(reduce_seconds)
 
 
 def _combine_surfaces(edge: FgResponseSurface, tail: FgResponseSurface) -> FgResponseSurface:
@@ -493,11 +529,14 @@ def _reduce_first_frontier_group(
     return [row for future in futures for row in future.result()]
 
 
-def _build_and_reduce_first_frontier_group(
+def _reduce_prebuilt_first_frontier_group(
     *,
     n: int,
     table_key: tuple[float, int],
     group_items: list[tuple],
+    region_table: tuple,
+    table_bytes: int,
+    tracked_table: bool,
     timestamps: np.ndarray,
     candidate_high_delta_max: float,
     perfect_candidate_timestamps: np.ndarray,
@@ -511,37 +550,9 @@ def _build_and_reduce_first_frontier_group(
     prefix_late_valid: np.ndarray,
     canonical: Any,
     use_forced_great_timing: bool,
-    empty_region_table: tuple | None,
     workspace_plan: _FirstFrontierWorkspacePlan,
     table_stats: _ConcurrentRegionTableStats,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
-    table_bytes = 0
-    tracked_table = False
-    if bool(use_forced_great_timing):
-        build_t0 = time.perf_counter()
-        action_k_arr = np.ascontiguousarray(group_items[0][4], dtype=np.int32)
-        region_table = _rb_numba._numba_build_region_core_table(
-            int(n),
-            int(action_k_arr.shape[0]),
-            action_k_arr,
-            float(table_key[0]),
-            timestamps,
-            candidate_high_delta_max,
-            perfect_floor_timestamps,
-            perfect_candidate_timestamps,
-            great_floor_timestamps,
-            great_candidate_timestamps,
-            lanes,
-        )
-        build_seconds = float(time.perf_counter() - build_t0)
-        table_bytes = _region_table_bytes(region_table)
-        table_stats.opened(table_bytes=int(table_bytes), build_seconds=build_seconds)
-        tracked_table = True
-    else:
-        if empty_region_table is None:
-            raise ValueError("FG empty region table is missing for non-forced timing")
-        region_table = empty_region_table
-
     reduce_t0 = time.perf_counter()
     try:
         return _reduce_first_frontier_group(
@@ -572,6 +583,22 @@ def _build_and_reduce_first_frontier_group(
                 table_bytes=int(table_bytes),
                 reduce_seconds=float(time.perf_counter() - reduce_t0),
             )
+        else:
+            table_stats.reduced(reduce_seconds=float(time.perf_counter() - reduce_t0))
+
+
+def _consume_completed_group_futures(
+    *,
+    completed: set[concurrent.futures.Future],
+    inflight: dict[concurrent.futures.Future, tuple[int, int]],
+    group_results: list[list[tuple[int, FgResponseFrontierResult]] | None],
+) -> int:
+    released_bytes = 0
+    for future in completed:
+        group_idx, table_bytes = inflight.pop(future)
+        group_results[int(group_idx)] = future.result()
+        released_bytes += int(table_bytes)
+    return int(released_bytes)
 
 
 def _build_force_greats_response_first_frontiers_gpu_batch(
@@ -772,14 +799,23 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     region_table_parallel_peak_bound_bytes = 0
     region_table_legacy_single_peak_bound_bytes = 0
     group_thread_limit = _resolve_first_only_reducer_threads(len(grouped_items))
+    group_entries = tuple(grouped_items.items())
     if bool(use_forced_great_timing):
-        group_peak_bounds = tuple(
+        group_build_peak_bounds = tuple(
             _region_table_build_peak_bound_bytes(
                 n=int(n),
                 action_k=np.ascontiguousarray(group_items[0][4], dtype=np.int32),
                 raw_fever_fill=float(table_key[0]),
             )
-            for table_key, group_items in grouped_items.items()
+            for table_key, group_items in group_entries
+        )
+        group_retained_peak_bounds = tuple(
+            _region_table_retained_bound_bytes(
+                n=int(n),
+                action_k=np.ascontiguousarray(group_items[0][4], dtype=np.int32),
+                raw_fever_fill=float(table_key[0]),
+            )
+            for table_key, group_items in group_entries
         )
         region_table_legacy_single_peak_bound_bytes = max(
             (
@@ -792,13 +828,16 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
             default=0,
         )
         region_table_parallelism, region_table_parallel_peak_bound_bytes = (
-            _admitted_region_group_threads(
-                current_peak_bounds=group_peak_bounds,
+            _admitted_pipelined_region_group_threads(
+                build_peak_bounds=group_build_peak_bounds,
+                retained_peak_bounds=group_retained_peak_bounds,
                 legacy_single_peak_bound=int(region_table_legacy_single_peak_bound_bytes),
                 thread_limit=int(group_thread_limit),
             )
         )
     else:
+        group_build_peak_bounds = (0,) * len(group_entries)
+        group_retained_peak_bounds = (0,) * len(group_entries)
         region_table_parallelism = int(group_thread_limit)
 
     song_reducer_threads = max(
@@ -807,14 +846,78 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     )
     if int(region_table_parallelism) > 1:
         table_stats = _ConcurrentRegionTableStats()
+        group_results: list[list[tuple[int, FgResponseFrontierResult]] | None] = [
+            None
+        ] * len(group_entries)
+        inflight: dict[concurrent.futures.Future, tuple[int, int]] = {}
+        inflight_table_bytes = 0
         executor_creations += 1
         with _first_frontier_reducer_executor(int(region_table_parallelism)) as group_executor:
-            group_futures = tuple(
-                group_executor.submit(
-                    _build_and_reduce_first_frontier_group,
+            for group_idx, ((table_key, group_items), build_peak_bound, retained_peak_bound) in enumerate(
+                zip(
+                    group_entries,
+                    group_build_peak_bounds,
+                    group_retained_peak_bounds,
+                    strict=True,
+                )
+            ):
+                while len(inflight) >= int(region_table_parallelism) or (
+                    bool(use_forced_great_timing)
+                    and int(inflight_table_bytes) + int(build_peak_bound)
+                    > int(region_table_legacy_single_peak_bound_bytes)
+                ):
+                    if not inflight:
+                        raise MemoryError("FG region-table pipeline cannot admit its next exact build")
+                    completed, _pending = concurrent.futures.wait(
+                        tuple(inflight),
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    inflight_table_bytes -= _consume_completed_group_futures(
+                        completed=completed,
+                        inflight=inflight,
+                        group_results=group_results,
+                    )
+
+                if bool(use_forced_great_timing):
+                    build_t0 = time.perf_counter()
+                    action_k_arr = np.ascontiguousarray(group_items[0][4], dtype=np.int32)
+                    region_table = _rb_numba._numba_build_region_core_table(
+                        int(n),
+                        int(action_k_arr.shape[0]),
+                        action_k_arr,
+                        float(table_key[0]),
+                        ts,
+                        candidate_high_delta_max,
+                        floor_ts,
+                        perfect_ts,
+                        great_floor_ts,
+                        great_ts,
+                        lane_arr,
+                    )
+                    build_seconds = float(time.perf_counter() - build_t0)
+                    table_bytes = _region_table_bytes(region_table)
+                    if int(table_bytes) > int(retained_peak_bound):
+                        raise MemoryError("FG retained region table exceeds its producer-owned bound")
+                    table_stats.opened(
+                        table_bytes=int(table_bytes),
+                        build_seconds=float(build_seconds),
+                    )
+                    tracked_table = True
+                else:
+                    if empty_region_table is None:
+                        raise ValueError("FG empty region table is missing for non-forced timing")
+                    region_table = empty_region_table
+                    table_bytes = 0
+                    tracked_table = False
+
+                future = group_executor.submit(
+                    _reduce_prebuilt_first_frontier_group,
                     n=int(n),
                     table_key=table_key,
                     group_items=group_items,
+                    region_table=region_table,
+                    table_bytes=int(table_bytes),
+                    tracked_table=bool(tracked_table),
                     timestamps=ts,
                     candidate_high_delta_max=candidate_high_delta_max,
                     perfect_candidate_timestamps=perfect_ts,
@@ -828,16 +931,28 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
                     prefix_late_valid=prefix_late_valid,
                     canonical=canonical,
                     use_forced_great_timing=bool(use_forced_great_timing),
-                    empty_region_table=empty_region_table,
                     workspace_plan=workspace_plan,
                     table_stats=table_stats,
                 )
-                for table_key, group_items in grouped_items.items()
-            )
-            # Consume in canonical group order. Task completion order therefore cannot affect the
-            # returned geometry order or deterministic duplicate assignment.
-            group_results = tuple(future.result() for future in group_futures)
+                inflight[future] = (int(group_idx), int(table_bytes))
+                inflight_table_bytes += int(table_bytes)
+                del region_table
+
+            while inflight:
+                completed, _pending = concurrent.futures.wait(
+                    tuple(inflight),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                inflight_table_bytes -= _consume_completed_group_futures(
+                    completed=completed,
+                    inflight=inflight,
+                    group_results=group_results,
+                )
+        if int(inflight_table_bytes) != 0:
+            raise ValueError("FG region-table pipeline byte accounting did not drain")
         for result_rows in group_results:
+            if result_rows is None:
+                raise ValueError("FG region-table pipeline missed a group result")
             for source_idx, frontier in result_rows:
                 for duplicate_source_idx in duplicate_sources_by_source[int(source_idx)]:
                     out[int(duplicate_source_idx)] = frontier
