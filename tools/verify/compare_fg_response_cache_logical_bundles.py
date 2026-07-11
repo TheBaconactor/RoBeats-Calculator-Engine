@@ -344,6 +344,44 @@ def _compare_resolutions(baseline: Bundle, candidate: Bundle) -> dict[str, Any]:
     return {"equal": True, "keys": STAT_KEY_COUNT, "sha256": digest.hexdigest()}
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _compare_same_version_physical_bytes(baseline: Bundle, candidate: Bundle) -> dict[str, Any] | None:
+    if baseline.format != candidate.format or baseline.version != candidate.version:
+        return None
+    for name in sorted(baseline.raw_members):
+        if baseline.raw_members[name] != candidate.raw_members[name]:
+            raise OracleFailure(
+                "repeated_npz_member_mismatch",
+                "same-version repeated build has a byte-different NPZ member",
+                member=name,
+            )
+    sidecar_hashes: list[str] = []
+    for sidecar_idx, (left, right) in enumerate(
+        zip(baseline.sidecar_paths, candidate.sidecar_paths, strict=True)
+    ):
+        left_hash = _file_sha256(left)
+        right_hash = _file_sha256(right)
+        if left.stat().st_size != right.stat().st_size or left_hash != right_hash:
+            raise OracleFailure(
+                "repeated_sidecar_mismatch",
+                "same-version repeated build has a byte-different sidecar",
+                sidecar_index=int(sidecar_idx),
+            )
+        sidecar_hashes.append(left_hash)
+    return {
+        "equal": True,
+        "npz_members": len(baseline.raw_members),
+        "sidecar_sha256": sidecar_hashes,
+    }
+
+
 def compare(
     baseline_path: str | Path,
     candidate_path: str | Path,
@@ -364,6 +402,7 @@ def compare(
         )
     logical = _compare_logical_rows(baseline, candidate)
     resolutions = _compare_resolutions(baseline, candidate)
+    repeated_physical = _compare_same_version_physical_bytes(baseline, candidate)
     baseline_physical = sum(path.stat().st_size for path in baseline.sidecar_paths)
     candidate_physical = sum(path.stat().st_size for path in candidate.sidecar_paths)
     return {
@@ -386,6 +425,7 @@ def compare(
             "common_metadata_bytes_equal": True,
             "logical": logical,
             "resolutions": resolutions,
+            "same_version_physical_bytes": repeated_physical,
             "sidecar_logical_ratio": baseline_physical / candidate_physical,
         },
     }

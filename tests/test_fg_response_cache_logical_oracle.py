@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -145,3 +146,31 @@ def test_logical_oracle_rejects_common_metadata_drift(tmp_path: Path) -> None:
         _compare(baseline, candidate)
 
     assert caught.value.code == "metadata_bytes_mismatch"
+
+
+def test_logical_oracle_requires_same_version_physical_determinism(tmp_path: Path) -> None:
+    _baseline, candidate, _row_refs, _patterns = _fixture(tmp_path)
+    repeat = tmp_path / "repeat.npz"
+    shutil.copyfile(candidate, repeat)
+    shutil.copyfile(tmp_path / "candidate.surf_rows.npy", tmp_path / "repeat.surf_rows.npy")
+    shutil.copyfile(tmp_path / "candidate.surf_patterns.npy", tmp_path / "repeat.surf_patterns.npy")
+
+    report = oracle.compare(
+        candidate,
+        repeat,
+        baseline_version=CANDIDATE_VERSION,
+        candidate_version=CANDIDATE_VERSION,
+    )
+
+    assert report["comparison"]["same_version_physical_bytes"]["equal"] is True
+
+    with (tmp_path / "repeat.surf_rows.npy").open("ab") as handle:
+        handle.write(b"trailing-nondeterministic-byte")
+    with pytest.raises(oracle.OracleFailure) as caught:
+        oracle.compare(
+            candidate,
+            repeat,
+            baseline_version=CANDIDATE_VERSION,
+            candidate_version=CANDIDATE_VERSION,
+        )
+    assert caught.value.code == "repeated_sidecar_mismatch"
