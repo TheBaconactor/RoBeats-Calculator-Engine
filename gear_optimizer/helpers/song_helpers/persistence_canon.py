@@ -203,6 +203,13 @@ def _replay_batch(
     replay_ctx: ReplayContext,
     baseline_team_buff: str,
 ) -> list[dict]:
+    # Thread the calc_song's prepared timing model into the re-solve so a zero_ms-prepared song
+    # canonicalizes at fixed chart time. Absent/unknown stamp -> perfect_window, which is
+    # build_team_buff_tier_db_batches' own default, so the perfect_window path is unchanged.
+    metadata = replay_ctx.calc_song.get("metadata", {}) or {}
+    timing_mode = str(metadata.get("TimingEnvelopeMode", "") or "").strip().lower()
+    if timing_mode not in {"perfect_window", "zero_ms"}:
+        timing_mode = "perfect_window"
     batch = build_team_buff_tier_db_batches(
         entries=entries,
         calc_song=replay_ctx.calc_song,
@@ -210,6 +217,7 @@ def _replay_batch(
         cfg_dict=dict(replay_ctx.cfg_dict),
         limit=max(1, int(len(entries))),
         tiers=(str(baseline_team_buff),),
+        timing_mode=timing_mode,
     )
     return list(batch.get(str(baseline_team_buff)) or [])
 
