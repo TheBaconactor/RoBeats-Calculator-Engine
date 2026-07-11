@@ -3,7 +3,7 @@
 On macOS (Taichi ti.vulkan -> MoltenVK -> Metal, no shaderFloat64) the FG inner gem-search
 runs f32, which mis-floors the razor-thin greats argmax; so the optimizer's macOS FG authority
 is the native-CPU-f64 port `_score_fg_response_groups_native_f64`. This test pins that port to
-the GPU kernel `_fg_response_inner_group_kernel` on a controlled nonzero-budget batch.
+the canonical pattern-major GPU kernel on a controlled nonzero-budget batch.
 
 CPU-f64 == GPU-f64 only holds on a shaderFloat64 device, so the exact-equality assertion is
 `@gpu` and skipped on darwin (there the GPU is intentionally f32). Run on the AMD/Vulkan box:
@@ -19,8 +19,11 @@ from gear_optimizer.core.constants import TOTAL_ROWS
 
 
 def _build_controlled_batch(allow_pp: bool):
-    """One group, three surfaces (greats-free, light-greats, heavy-greats), nonzero budget.
-    Fractional ref multipliers so per-term floor() matters (the f32-vs-f64 divergence point)."""
+    """One group with repeated exact heads, distinct bodies, and a nonzero gem budget.
+
+    Fractional ref multipliers make per-term floor() matter, while repeated heads prove that
+    pattern-major evaluation keeps each body's full winner and ordinal semantics.
+    """
     head_len = 40
     body_total = 100
     residual_budget = 20
@@ -52,12 +55,21 @@ def _build_controlled_batch(allow_pp: bool):
         return words, counts
 
     surfaces = [
-        _mk_surface(range(0, 20), [], 30, 0, 0),          # greats-free
-        _mk_surface(range(0, 25), range(5, 12), 28, 10, 4),   # light greats
-        _mk_surface(range(0, 30), range(0, 20), 25, 18, 9),   # heavy greats
+        _mk_surface(range(0, 20), [], 30, 0, 0),
+        _mk_surface(range(0, 20), [], 24, 12, 4),
+        _mk_surface(range(0, 25), range(5, 12), 28, 10, 4),
+        _mk_surface(range(0, 25), range(5, 12), 22, 17, 8),
+        _mk_surface(range(0, 30), range(0, 20), 25, 18, 9),
     ]
     surface_words = np.ascontiguousarray(np.stack([s[0] for s in surfaces]), dtype=np.uint32)
     surface_counts = np.ascontiguousarray(np.stack([s[1] for s in surfaces]), dtype=np.int32)
+    surface_pattern_words, surface_pattern_ids = np.unique(
+        surface_words,
+        axis=0,
+        return_inverse=True,
+    )
+    surface_pattern_words = np.ascontiguousarray(surface_pattern_words, dtype=np.uint32)
+    surface_pattern_ids = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
 
     group_offsets = np.array([0], dtype=np.int32)
     group_lengths = np.array([len(surfaces)], dtype=np.int32)
@@ -66,13 +78,13 @@ def _build_controlled_batch(allow_pp: bool):
         _precompute_surface_head_coeffs,
     )
 
-    surface_head_coeffs = _precompute_surface_head_coeffs(surface_words, head_len=head_len)
+    surface_head_coeffs = _precompute_surface_head_coeffs(surface_pattern_words, head_len=head_len)
     return dict(
         group_offsets=group_offsets,
         group_lengths=group_lengths,
         row_meta=row_meta,
-        surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
-        surface_pattern_words=surface_words,
+        surface_pattern_ids=surface_pattern_ids,
+        surface_pattern_words=surface_pattern_words,
         surface_counts=surface_counts,
         surface_pattern_head_coeffs=surface_head_coeffs,
         color_flags=color_flags,
@@ -110,27 +122,56 @@ def _run_cpu_f64(b, allow_pp):
 def _run_gpu(b, allow_pp):
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi, ti
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_kernels as rik
+    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import (
+        _reduce_response_inner_chunk_jit,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_pattern_kernels import (
+        _fg_response_inner_pattern_batch_kernel,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_patterns import (
+        build_response_group_pattern_plan,
+    )
 
     init_taichi()
     fp = rik.SOLVER_NP_FP
-    out = np.zeros((int(b["row_meta"].shape[0]), 11), dtype=np.int32)
-    rik._fg_response_inner_group_kernel(
-        int(b["row_meta"].shape[0]),
+    pair_owners, pair_pattern_ids, pair_offsets, pair_local_surfaces = build_response_group_pattern_plan(
         b["surface_pattern_ids"],
+        b["group_offsets"],
+        b["group_lengths"],
+        pattern_count=int(b["surface_pattern_words"].shape[0]),
+    )
+    pair_count = int(pair_owners.shape[0])
+    scores = np.zeros(pair_count, dtype=np.int32)
+    details = np.zeros((pair_count, 10), dtype=np.int32)
+    out = np.zeros((int(b["row_meta"].shape[0]), 11), dtype=np.int32)
+    _fg_response_inner_pattern_batch_kernel(
+        pair_count,
         b["surface_pattern_words"],
         b["surface_counts"],
         np.ascontiguousarray(b["surface_pattern_head_coeffs"], dtype=np.int32),
         np.ascontiguousarray(b["group_offsets"], dtype=np.int32),
-        np.ascontiguousarray(b["group_lengths"], dtype=np.int32),
+        pair_owners,
+        pair_pattern_ids,
+        pair_offsets,
+        pair_local_surfaces,
         b["row_meta"],
         b["color_flags"],
         np.ascontiguousarray(b["ref_pp"], dtype=fp),
         np.ascontiguousarray(b["ref_cm"], dtype=fp),
         np.ascontiguousarray(b["ref_fm"], dtype=fp),
-        out,
+        scores,
+        details,
         bool(allow_pp),
     )
     ti.sync()
+    _reduce_response_inner_chunk_jit(
+        pair_count,
+        scores,
+        details,
+        pair_owners,
+        np.full(out.shape[0], np.iinfo(np.int32).min, dtype=np.int32),
+        out,
+    )
     return np.asarray(out, dtype=np.int64)
 
 
