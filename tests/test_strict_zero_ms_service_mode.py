@@ -174,3 +174,31 @@ def test_canonicalize_base_score_perfect_window_unchanged(monkeypatch):
     )
     assert out["score"] == 999
     assert out["details"]["TimelineFrontier"] == {"y": 2}
+
+
+def test_team_buff_unknown_mode_fails_loud_even_when_strict(strict_on):
+    """Validate-then-coerce: an unknown timing_mode must still raise under strict (fail loud)."""
+    from gear_optimizer.helpers.song_helpers import team_buff_tiers as tbt
+
+    with pytest.raises(ValueError):
+        tbt.build_team_buff_tier_db_batches(
+            entries=[{}], calc_song={}, ref_arrays={}, cfg_dict={}, timing_mode="bogus_mode"
+        )
+    with pytest.raises(ValueError):
+        tbt.compute_team_buff_tier_leaderboards(
+            entries=[{}], calc_song={}, ref_arrays={}, cfg_dict={}, timing_mode="bogus_mode"
+        )
+
+
+def test_gpu_warmup_song_stamped_zero_ms_when_strict(strict_on):
+    from gear_optimizer.solver.taichi_gem.api import ga_operations, skyline_operations
+
+    assert ga_operations._warmup_calc_song()["metadata"]["TimingEnvelopeMode"] == "zero_ms"
+    assert skyline_operations._warmup_calc_song()["metadata"]["TimingEnvelopeMode"] == "zero_ms"
+
+
+def test_gpu_warmup_song_unstamped_when_off(strict_off):
+    from gear_optimizer.solver.taichi_gem.api import ga_operations, skyline_operations
+
+    assert "TimingEnvelopeMode" not in ga_operations._warmup_calc_song()["metadata"]
+    assert "TimingEnvelopeMode" not in skyline_operations._warmup_calc_song()["metadata"]

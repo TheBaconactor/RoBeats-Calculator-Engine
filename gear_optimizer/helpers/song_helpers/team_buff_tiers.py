@@ -582,11 +582,12 @@ def compute_team_buff_tier_leaderboards(
     if not entries or n <= 0:
         return {"tiers": {}, "meta": {"candidate_count": 0}}
     timing_mode = str(timing_mode or "perfect_window").strip().lower()
+    if timing_mode not in {"perfect_window", "zero_ms"}:
+        raise ValueError(f"compute_team_buff_tier_leaderboards: unknown timing_mode {timing_mode!r}")
+    # Validate first (fail loud on unknown), THEN coerce a valid mode to the serviceable one.
     from gear_optimizer.solver.timing_service_mode import enforce_service_timing_mode
 
     timing_mode = enforce_service_timing_mode(timing_mode)
-    if timing_mode not in {"perfect_window", "zero_ms"}:
-        raise ValueError(f"compute_team_buff_tier_leaderboards: unknown timing_mode {timing_mode!r}")
     if baseline_offset is not None:
         if timing_mode != "zero_ms":
             raise ValueError(
@@ -940,11 +941,12 @@ def build_team_buff_tier_db_batches(
     """
     tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
     timing_mode = str(timing_mode or "perfect_window").strip().lower()
+    if timing_mode not in {"perfect_window", "zero_ms"}:
+        raise ValueError(f"build_team_buff_tier_db_batches: unknown timing_mode {timing_mode!r}")
+    # Validate first (fail loud on unknown), THEN coerce a valid mode to the serviceable one.
     from gear_optimizer.solver.timing_service_mode import enforce_service_timing_mode
 
     timing_mode = enforce_service_timing_mode(timing_mode)
-    if timing_mode not in {"perfect_window", "zero_ms"}:
-        raise ValueError(f"build_team_buff_tier_db_batches: unknown timing_mode {timing_mode!r}")
     is_zero_ms = timing_mode == "zero_ms"
     surface = str(replay_surface or "both").strip().lower()
     if surface not in {"meta", "fg", "both"}:
