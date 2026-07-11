@@ -132,7 +132,7 @@ _SOLVE_TIMEOUT_S = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_TIMEOUT_S", 30 
 # linear in the multiplier; "default" reproduces the stock config defaults exactly (nothing is
 # written, so config.py's own fallbacks apply). This levels/multipliers table is a cross-repo
 # contract mirrored by the website (optimizer_job_contract.py).
-_REASONING_MULTIPLIERS: dict[str, float] = {"default": 1.0, "strong": 1.25, "max": 2.0}
+_REASONING_MULTIPLIERS: dict[str, float] = {"default": 1.0, "strong": 2.0, "max": 4.0}
 # Bases mirror the canonical config defaults: GA_SearchDepth fallback (gear_optimizer/core/config.py)
 # and GA_MULTI_RUNS_DEFAULT (gear_optimizer/core/constants.py). "default" reasoning => these exact
 # values, i.e. no behavior change from before this knob existed.
