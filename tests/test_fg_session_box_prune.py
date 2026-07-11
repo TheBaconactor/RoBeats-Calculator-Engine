@@ -184,18 +184,18 @@ def test_session_prune_scoring_bundle_compacts_offsets(monkeypatch):
     )
     bundle = FgResponseFrontierScoringBundle(
         cache_key=("test",),
-        frontier_idx_by_key={(0, 0): 0, (0, 1): 1},
+        frontier_idx_by_key={(0, 0): 0, (0, 1): 1, (1, 0): 2},
         frontier_idx_by_stat=np.zeros((2, 2), dtype=np.int32),
         raw_fill_by_ff=np.zeros(1),
         non_fever_base_by_ff=np.zeros(1, dtype=np.int32),
         real_time_by_ft=np.zeros(1),
-        frontier_meta=np.zeros((2, 1), dtype=np.int32),
+        frontier_meta=np.zeros((3, 1), dtype=np.int32),
         surface_pattern_ids=np.empty((0,), dtype=np.int32),
         surface_pattern_words=np.empty((0, 8), dtype=np.uint32),
         surface_counts=np.empty((0, 3), dtype=np.int32),
         surface_pattern_head_coeffs=np.empty((0, 4), dtype=np.int32),
-        frontier_offsets=np.asarray([0, 40], dtype=np.int32),
-        frontier_lengths=np.asarray([40, 15], dtype=np.int32),
+        frontier_offsets=np.asarray([0, 0, 40], dtype=np.int32),
+        frontier_lengths=np.asarray([40, 40, 15], dtype=np.int32),
         surface_row_count=55,
         total_notes=head_len,
         long_notes=0,
@@ -214,8 +214,10 @@ def test_session_prune_scoring_bundle_compacts_offsets(monkeypatch):
     lengths = np.asarray(pruned.frontier_lengths, dtype=np.int64)
     offsets = np.asarray(pruned.frontier_offsets, dtype=np.int64)
     assert bool(np.all(lengths >= 1))
-    assert int(offsets[0]) == 0 and int(offsets[1]) == int(lengths[0])
-    assert int(lengths.sum()) == int(pruned.surface_row_count)
+    assert int(offsets[0]) == int(offsets[1]) == 0
+    assert int(lengths[0]) == int(lengths[1])
+    assert int(offsets[2]) == int(lengths[0])
+    assert int(lengths[0] + lengths[2]) == int(pruned.surface_row_count)
     # unchanged metadata carried through
     assert pruned.total_notes == head_len and pruned.cache_key == ("test",)
     assert dataclasses.is_dataclass(pruned)

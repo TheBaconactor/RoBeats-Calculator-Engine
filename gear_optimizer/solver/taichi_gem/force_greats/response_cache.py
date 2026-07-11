@@ -243,16 +243,18 @@ def session_prune_scoring_bundle(
     keep = np.asarray(keep, dtype=bool)
     lengths_all = np.asarray(bundle.frontier_lengths, dtype=np.int64)
     offsets_all = np.asarray(bundle.frontier_offsets, dtype=np.int64)
-    kept_lengths = np.zeros_like(lengths_all)
-    for frontier_idx in range(int(lengths_all.shape[0])):
-        start = int(offsets_all[int(frontier_idx)])
-        length = int(lengths_all[int(frontier_idx)])
-        kept_lengths[int(frontier_idx)] = int(np.count_nonzero(keep[start : start + length])) if length > 0 else 0
+    ends_all = offsets_all + lengths_all
+    if bool(np.any(offsets_all < 0)) or bool(np.any(lengths_all < 0)) or bool(np.any(ends_all > row_count)):
+        raise ValueError("session-box prune received a frontier outside the surface pool")
+    kept_prefix = np.empty(int(row_count) + 1, dtype=np.int64)
+    kept_prefix[0] = 0
+    np.cumsum(np.asarray(keep, dtype=np.int64), out=kept_prefix[1:])
+    kept_lengths = kept_prefix[ends_all] - kept_prefix[offsets_all]
     if bool(np.any((lengths_all > 0) & (kept_lengths <= 0))):
         raise ValueError("session-box prune emptied a frontier -- the greedy filter must keep at least one row")
-    new_offsets = np.zeros_like(offsets_all)
-    if int(new_offsets.shape[0]) > 0:
-        np.cumsum(kept_lengths[:-1], out=new_offsets[1:])
+    new_offsets = kept_prefix[offsets_all]
+    if int(kept_prefix[-1]) > int(np.iinfo(np.int32).max):
+        raise OverflowError("session-box prune compact surface pool exceeds int32 offsets")
     pruned_words = np.ascontiguousarray(words[keep], dtype=np.uint32)
     pruned_counts = np.ascontiguousarray(counts[keep], dtype=np.int32)
     pruned_coeffs = np.ascontiguousarray(coeff_rows[keep].astype(np.int32), dtype=np.int32)
