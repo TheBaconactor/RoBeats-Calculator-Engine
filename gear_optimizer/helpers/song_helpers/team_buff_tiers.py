@@ -557,26 +557,38 @@ def compute_team_buff_tier_leaderboards(
     baseline_offset: object = None,
 ) -> dict:
     """
-    Re-score persisted entries under TeamBuff tiers and return per-tier leaderboards.
+    Re-solve each persisted entry's loadout under TeamBuff tiers and return per-tier
+    leaderboards.
 
-    Base and FG scoring use CPU exact replay for retained rows. GPU scoring remains
-    the search path; replay/canonicalization is the final user-visible score authority.
+    The persisted entries supply only the loadout SET (gear + minis). The gem allocation is
+    RE-SOLVED per (tier, color) on BOTH surfaces -- the persisted T5 gems are never reused
+    as-is, because a different tier or team color shifts the stat vector (a color selects
+    which element stat is buffed; the tier sets the magnitude) and therefore the optimal gem
+    split. Base and FG scoring use CPU-f64 exact replay for retained rows; GPU remains the
+    search path and replay/canonicalization is the final user-visible score authority.
 
-    This is designed for post-processing:
-    - Uses the existing gem allocations (Stats in details) as-is.
-    - Scores the persisted FG response surface exactly (the canonical FG
-      representation; tier deltas never shift FT/FF, so the fever timeline is
-      tier-invariant and only stat values re-derive).
+    Per tier (and per team color):
+    - BASE: re-allocate the full gem budget from the tier/color-shifted song fixed stats +
+      loadout item stats via the canonical GPU base exhaustive search, then CPU-f64 exact
+      rescore (see the base re-solve loop below). The meta leaderboard always shows the
+      per-tier optimum, never inherited T5 gems.
+    - FG: re-allocate the 90-gem budget from pre-gem stats via the canonical FG response
+      frontier, then CPU-f64 exact rescore. ONE exception -- an EXACT identical-context
+      carry: when ``timing_mode == "perfect_window"`` AND the tier is the baseline team buff
+      AND there is no team-color shift, no re-solve variable differs from the solve that
+      produced the entry, so the persisted force payload already IS this (tier, color,
+      timing) optimum and is carried verbatim (exact, not an approximation).
     - Produces top-N lists by base score and FG score per tier.
 
     ``timing_mode`` selects which timing model the replay answers (a semantic input, not a
     toggle):
-    - "perfect_window" (default): envelope-optimal exact replay (above).
-    - "zero_ms" (issue #51): every hit at chart time. Base uses the fixed chart-time fever
-      timeline; FG re-optimizes each loadout's surface at chart timing (the persisted
-      Perfect-window surface is not valid at 0ms) and re-scores it across tiers. Forcing
-      greats still helps at 0ms (it shifts fever activation via fill length), so FG 0ms is
-      not base 0ms.
+    - "perfect_window" (default): envelope-optimal exact replay (the baseline-tier FG carry
+      above applies only here).
+    - "zero_ms" (issue #51): every hit at chart time. BOTH surfaces still re-solve gems per
+      tier -- the persisted Perfect-window surface is not valid at 0ms -- so no carry applies
+      here. Base scores on the fixed chart-time fever timeline; FG re-optimizes each loadout's
+      surface at chart timing. Forcing greats still helps at 0ms (it shifts fever activation
+      via fill length), so FG 0ms is not base 0ms.
     """
     n = max(0, int(limit))
     if not entries or n <= 0:
