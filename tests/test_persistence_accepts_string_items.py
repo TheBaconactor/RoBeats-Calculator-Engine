@@ -164,19 +164,23 @@ def test_normalize_force_payload_materializes_stats_from_base_stats():
     assert stats.get("Vibe", 0) >= base_stats["Vibe"]
 
 
-def test_make_build_details_fn_materializes_stats_from_base_stats():
+def test_make_build_details_fn_uses_base_stats_as_post_gem_visible_row():
+    # In FG result payloads BaseStats IS the post-gem visible row: build_details must
+    # surface it verbatim and must NOT re-apply gems on top of it (the 2026-07-11
+    # Canon-in-D double-count regression).
     build_details = make_build_details_fn("Rush", "Flow", "Hard")
+    base_stats = {
+        "Perfect Points": 10,
+        "Combo Multiplier": 20,
+        "Fever Multiplier": 30,
+        "Fever Time": 5,
+        "Fever Fill Rate": 6,
+        "Rush": 7,
+        "Flow": 8,
+    }
     details = build_details(
         {
-            "BaseStats": {
-                "Perfect Points": 10,
-                "Combo Multiplier": 20,
-                "Fever Multiplier": 30,
-                "Fever Time": 5,
-                "Fever Fill Rate": 6,
-                "Rush": 7,
-                "Flow": 8,
-            },
+            "BaseStats": dict(base_stats),
             "GemCounts": {
                 "Perfect Points": 1,
                 "Combo Multiplier": 1,
@@ -190,9 +194,7 @@ def test_make_build_details_fn_materializes_stats_from_base_stats():
     )
 
     stats = details.get("Stats") or {}
-    assert stats["Perfect Points"] > 10
-    assert stats["Fever Time"] > 5
-    assert stats["Rush"] > 7
+    assert stats == base_stats
 
 
 def test_build_persistence_entries_materializes_lazy_ga_entry_names():

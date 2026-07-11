@@ -16,8 +16,11 @@ def normalize_force_payload(force_obj: object) -> dict:
     """
     Normalize persisted FG payload shape.
 
-    Ensures selected element aliases are present and reconstructs `Stats` from
-    `BaseStats` + gem counts when needed.
+    Ensures selected element aliases are present and materializes the visible
+    ``Stats`` (the post-gem ``BaseStats`` row) via the single canonical reader.
+    Routing every payload through ``materialize_stats_from_payload`` — instead of
+    trusting an already-present ``Stats`` — is what enforces the ``Stats == BaseStats``
+    invariant and fails loud on a doubled row instead of persisting it.
     """
     if not isinstance(force_obj, dict) or not force_obj:
         return {}
@@ -29,20 +32,9 @@ def normalize_force_payload(force_obj: object) -> dict:
         out["SelectedElement"] = selected_element
         out["Selected Element"] = selected_element
 
-    stats_obj = out.get("Stats")
-    if isinstance(stats_obj, dict) and stats_obj:
-        return out
-
-    base_stats = out.get("BaseStats")
-    if not isinstance(base_stats, dict) or not base_stats:
-        return out
-
-    computed_stats = materialize_stats_from_payload(out, selected_element=selected_element, mutate_payload=False)
-    if isinstance(computed_stats, dict) and computed_stats:
-        out["Stats"] = computed_stats
-        return out
-
-    out["Stats"] = dict(base_stats)
+    stats = materialize_stats_from_payload(out, selected_element=selected_element, mutate_payload=False)
+    if isinstance(stats, dict) and stats:
+        out["Stats"] = stats
     return out
 
 
