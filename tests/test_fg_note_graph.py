@@ -1143,7 +1143,7 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, team_buff_effect
     from gear_optimizer.data.database import get_evolution_db_path
     from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
-    from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
+    from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
     from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
     from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs, resolve_stat_factors
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
@@ -1182,7 +1182,7 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
         frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt
     )
 
-    stats = materialize_stats_from_payload(fd)
+    stats = read_visible_stats(fd)
     for key, val in {
         k: team_buff_effect("T1", "Rush").get(k, 0)
         - team_buff_effect(OPTIMIZER_BASELINE_TEAM_BUFF, "Rush").get(k, 0)

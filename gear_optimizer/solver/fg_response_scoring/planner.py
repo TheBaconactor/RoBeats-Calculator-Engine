@@ -121,9 +121,9 @@ class FgPlanner:
 
         stats = eval_data.get("Stats")
         if not isinstance(stats, dict) or not stats:
-            from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
+            from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
 
-            stats = materialize_stats_from_payload(eval_data, selected_element=selected, mutate_payload=True)
+            stats = read_visible_stats(eval_data, mutate_payload=True)
         if not isinstance(stats, dict) or not stats:
             raise ValueError("ForceGreats response frontier requires Stats or BaseStats")
 

@@ -138,7 +138,7 @@ def _base_details_from_force_payload(base_details: Any, force_data: Any) -> dict
     """
     if not isinstance(force_data, dict):
         return {}
-    from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
+    from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
     payload = force_data.get("details") if isinstance(force_data.get("details"), dict) else force_data
     if not isinstance(payload, dict):
         return {}
@@ -149,7 +149,7 @@ def _base_details_from_force_payload(base_details: Any, force_data: Any) -> dict
         or (base_details.get("Selected Element") if isinstance(base_details, dict) else None)
         or ""
     )
-    stats = materialize_stats_from_payload(payload, selected_element=selected)
+    stats = read_visible_stats(payload)
     if not isinstance(stats, dict) or not stats:
         return {}
     out: dict[str, Any] = {}
@@ -182,7 +182,7 @@ def _compact_force_details_for_storage(force_data: Any) -> Any:
 
     Storage contract: on disk, `BaseStats` IS the post-gem visible stats row — the
     solved gem allocation is already baked into it. The reader
-    (`materialize_stats_from_payload`) returns it verbatim and NEVER re-applies gems.
+    (`read_visible_stats`) returns it verbatim and NEVER re-applies gems.
     Some producers (the GA/response-frontier reducer) emit a PRE-gem `BaseStats`
     alongside the authoritative post-gem `Stats`; before dropping the redundant
     `Stats`, we PROMOTE it to `BaseStats` so the stored `BaseStats` is unambiguously
