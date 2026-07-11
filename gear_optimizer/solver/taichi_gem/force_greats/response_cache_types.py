@@ -107,6 +107,7 @@ _FG_DP_SOURCES = (
     _HERE / "response_builder.py",
     _HERE / "response_types.py",
     _HERE / "response_build_gpu_batch.py",
+    _HERE / "response_build_gpu_scheduler.py",
     _HERE / "response_build_gpu_precompute.py",
     _HERE / "response_build_gpu_reducer.py",
     _HERE / "response_build_gpu_numba.py",

@@ -408,25 +408,25 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
 
 
 def test_fg_response_region_group_admission_uses_worst_concurrent_bounds() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_batch
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_scheduler
 
-    assert response_build_gpu_batch._admitted_region_group_threads(
+    assert response_build_gpu_scheduler._admitted_region_group_threads(
         build_peak_bounds=(20, 40, 30),
         legacy_single_peak_bound=70,
         thread_limit=3,
     ) == (2, 70)
-    assert response_build_gpu_batch._admitted_region_group_threads(
+    assert response_build_gpu_scheduler._admitted_region_group_threads(
         build_peak_bounds=(20, 40, 30),
         legacy_single_peak_bound=70,
         thread_limit=1,
     ) == (1, 40)
-    assert response_build_gpu_batch._admitted_region_group_threads(
+    assert response_build_gpu_scheduler._admitted_region_group_threads(
         build_peak_bounds=(),
         legacy_single_peak_bound=0,
         thread_limit=8,
     ) == (1, 0)
     with pytest.raises(MemoryError, match="historical single-table peak bound"):
-        response_build_gpu_batch._admitted_region_group_threads(
+        response_build_gpu_scheduler._admitted_region_group_threads(
             build_peak_bounds=(71,),
             legacy_single_peak_bound=70,
             thread_limit=1,
@@ -435,8 +435,8 @@ def test_fg_response_region_group_admission_uses_worst_concurrent_bounds() -> No
 
 def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import (
-        response_build_gpu_batch,
         response_build_gpu_numba,
+        response_build_gpu_scheduler,
     )
 
     n = 12
@@ -448,17 +448,17 @@ def test_fg_response_region_group_peak_bound_covers_build_and_trimmed_arrays() -
         4.0,
     )
     expected = (n + 2) * np.dtype(np.int64).itemsize + 2 * int(capacity) * 36
-    assert response_build_gpu_batch._region_table_build_peak_bound_bytes(
+    assert response_build_gpu_scheduler._region_table_build_peak_bound_bytes(
         n=n,
         action_k=action_k,
         raw_fever_fill=4.0,
     ) == expected
-    assert response_build_gpu_batch._region_table_retained_bound_bytes(
+    assert response_build_gpu_scheduler._region_table_retained_bound_bytes(
         n=n,
         action_k=action_k,
         raw_fever_fill=4.0,
     ) == (n + 2) * np.dtype(np.int64).itemsize + int(capacity) * 36
-    assert response_build_gpu_batch._legacy_single_region_table_peak_bound_bytes(
+    assert response_build_gpu_scheduler._legacy_single_region_table_peak_bound_bytes(
         n=n,
         region_action_count=int(action_k.shape[0]),
     ) == (n + 2) * 8 + 2 * ((n + 1) * 4 * 2) * 36
@@ -468,6 +468,7 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
     from gear_optimizer.solver.taichi_gem.force_greats import (
         response_build_gpu_batch,
         response_build_gpu_reducer,
+        response_build_gpu_scheduler,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
@@ -511,15 +512,15 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
         barrier.wait()
         return [(int(item[0]), result) for item in kwargs["group_items"]]
 
-    monkeypatch.setattr(response_build_gpu_batch, "_region_table_build_peak_bound_bytes", lambda **_kwargs: 200)
-    monkeypatch.setattr(response_build_gpu_batch, "_region_table_retained_bound_bytes", lambda **_kwargs: 100)
+    monkeypatch.setattr(response_build_gpu_scheduler, "_region_table_build_peak_bound_bytes", lambda **_kwargs: 200)
+    monkeypatch.setattr(response_build_gpu_scheduler, "_region_table_retained_bound_bytes", lambda **_kwargs: 100)
     monkeypatch.setattr(
-        response_build_gpu_batch,
+        response_build_gpu_scheduler,
         "_legacy_single_region_table_peak_bound_bytes",
         lambda **_kwargs: 400,
     )
-    monkeypatch.setattr(response_build_gpu_batch._rb_numba, "_numba_build_region_core_table", _fake_build)
-    monkeypatch.setattr(response_build_gpu_batch, "_reduce_first_frontier_group", _fake_reduce)
+    monkeypatch.setattr(response_build_gpu_scheduler._rb_numba, "_numba_build_region_core_table", _fake_build)
+    monkeypatch.setattr(response_build_gpu_scheduler, "_reduce_first_frontier_group", _fake_reduce)
     previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(2)
     stats: dict = {}
     try:
@@ -549,6 +550,7 @@ def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> N
     from gear_optimizer.solver.taichi_gem.force_greats import (
         response_build_gpu_batch,
         response_build_gpu_reducer,
+        response_build_gpu_scheduler,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
@@ -575,7 +577,7 @@ def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> N
         calls.append((start, stop))
         return [(int(kwargs["chunk"][idx][0]), result) for idx in range(start, stop)]
 
-    monkeypatch.setattr(response_build_gpu_batch, "_first_frontier_results_for_precomputed_range", _fake_range)
+    monkeypatch.setattr(response_build_gpu_scheduler, "_first_frontier_results_for_precomputed_range", _fake_range)
     previous_threads = response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(2)
     stats: dict = {}
     try:
