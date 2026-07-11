@@ -60,6 +60,10 @@ _NPZ_FAST_COMPRESS_LEVEL = 1
 # with the interned representation. IDs are uint32 for every chart -- no size-dependent format.
 _SURFACE_ROW_SIDECAR_SUFFIX = ".surf_rows.npy"
 _SURFACE_PATTERN_SIDECAR_SUFFIX = ".surf_patterns.npy"
+# Cleanup-only names from V29. They are never read: the V30 version gate requires the compact
+# row/pattern format. The stale-version sweeper must still remove them when it deletes a V29 bundle,
+# otherwise every deliberate rotation strands the largest files from the old full pool.
+_OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 
 
 def _memory_cache_get_locked(
@@ -112,6 +116,15 @@ def _surface_sidecar_paths(bundle_path: Path) -> tuple[Path, Path]:
         base.with_name(f"{stem}{_SURFACE_ROW_SIDECAR_SUFFIX}"),
         base.with_name(f"{stem}{_SURFACE_PATTERN_SIDECAR_SUFFIX}"),
     )
+
+
+def _stale_surface_sidecar_paths(bundle_path: Path) -> tuple[Path, ...]:
+    """All known sidecars to delete with a stale bundle; no obsolete format is readable."""
+    current = _surface_sidecar_paths(bundle_path)
+    base = Path(bundle_path)
+    stem = base.name[: -len(".npz")]
+    obsolete = tuple(base.with_name(f"{stem}{suffix}") for suffix in _OBSOLETE_SURFACE_SIDECAR_SUFFIXES)
+    return (*current, *obsolete)
 
 
 def _surface_sidecar_paths_for_key(cache_key: tuple) -> tuple[Path, Path]:
@@ -216,7 +229,7 @@ def purge_stale_version_cache_files() -> int:
             version = None
         if version is None or version == current:
             continue
-        for stale in (npz, *_surface_sidecar_paths(npz)):
+        for stale in (npz, *_stale_surface_sidecar_paths(npz)):
             try:
                 stale.unlink()
                 removed += 1

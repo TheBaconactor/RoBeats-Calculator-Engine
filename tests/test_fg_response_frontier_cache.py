@@ -607,22 +607,32 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
 
-    def _plant(digest: str, version: str | None, *, sidecars: bool = True) -> None:
+    def _plant(
+        digest: str,
+        version: str | None,
+        *,
+        sidecars: bool = True,
+        obsolete_sidecars: bool = False,
+    ) -> None:
         members = {"payload": np.arange(3)}
         if version is not None:
             members["version"] = np.array(version)
         np.savez(str(tmp_path / f"{digest}.npz"), **members)
         if sidecars:
-            np.save(
-                str(tmp_path / f"{digest}{store._SURFACE_ROW_SIDECAR_SUFFIX}"),
-                np.zeros((2, SURFACE_ROW_COLUMNS), np.uint32),
-            )
-            np.save(
-                str(tmp_path / f"{digest}{store._SURFACE_PATTERN_SIDECAR_SUFFIX}"),
-                np.zeros((2, SURFACE_PATTERN_COLUMNS), np.uint32),
-            )
+            if obsolete_sidecars:
+                np.save(str(tmp_path / f"{digest}.surf_pool.npy"), np.zeros((2, 11), np.uint32))
+                np.save(str(tmp_path / f"{digest}.surf_coeffs.npy"), np.zeros((2, 4), np.uint16))
+            else:
+                np.save(
+                    str(tmp_path / f"{digest}{store._SURFACE_ROW_SIDECAR_SUFFIX}"),
+                    np.zeros((2, SURFACE_ROW_COLUMNS), np.uint32),
+                )
+                np.save(
+                    str(tmp_path / f"{digest}{store._SURFACE_PATTERN_SIDECAR_SUFFIX}"),
+                    np.zeros((2, SURFACE_PATTERN_COLUMNS), np.uint32),
+                )
 
-    _plant("stale_a", "fg-response-frontier-legacy-v1")
+    _plant("stale_a", "fg-response-frontier-visible-first-v29", obsolete_sidecars=True)
     _plant("stale_b", "fg-response-frontier-legacy-v2")
     _plant("stale_c", "fg-response-frontier-legacy-v1", sidecars=False)  # sidecars already evicted
     _plant("current", _FG_RESPONSE_CACHE_VERSION)
