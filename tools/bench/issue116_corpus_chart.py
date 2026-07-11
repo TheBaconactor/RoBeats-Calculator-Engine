@@ -1132,9 +1132,9 @@ def _cache_outputs(
     _require(cache_file.parent == context.paths.fg_response_cache_dir, "Returned cache file escaped isolated FG cache")
     _require(cache_file.suffix == ".npz", "Returned cache file is not an NPZ bundle")
     stem = cache_file.stem
-    pool = cache_file.with_name(f"{stem}.surf_pool.npy")
-    coeffs = cache_file.with_name(f"{stem}.surf_coeffs.npy")
-    expected_files = {cache_file, pool, coeffs}
+    rows = cache_file.with_name(f"{stem}.surf_rows.npy")
+    patterns = cache_file.with_name(f"{stem}.surf_patterns.npy")
+    expected_files = {cache_file, rows, patterns}
     actual_entries = set(context.paths.fg_response_cache_dir.iterdir())
     _require(actual_entries == expected_files, "Isolated FG cache did not contain exactly one bundle and two sidecars")
     for path in expected_files:

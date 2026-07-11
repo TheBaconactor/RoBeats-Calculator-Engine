@@ -26,7 +26,7 @@ from .response_cache import (
     FgResponseFrontierScoringBundle,
     all_response_stat_keys,
     frontier_result_from_scoring_bundle_for_stats,
-    load_first_surface_scoring_rows,
+    load_first_surface_scoring_patterns,
     load_response_frontier_scoring_bundle,
 )
 from .response_ftff_prune import element_ftff_delta
@@ -81,7 +81,7 @@ class FgBatchStage(Enum):
 
 
 def fg_batch_stage(batch: FgResponseFrontierPackedScoringBatch) -> FgBatchStage:
-    if batch.scoring_surface_words is not None:
+    if batch.scoring_surface_pattern_ids is not None:
         return FgBatchStage.SURFACES_PACKED
     if batch.group_meta is not None:
         return FgBatchStage.GROUP_BUILT
@@ -133,9 +133,10 @@ class FgResponseFrontierPackedScoringBatch:
     group_ff_stat: np.ndarray | None = None
     candidate_slices: tuple[tuple[int, int], ...] = ()
     kept_stat_keys: tuple[tuple[int, int], ...] = ()
-    scoring_surface_words: np.ndarray | None = None
+    scoring_surface_pattern_ids: np.ndarray | None = None
+    scoring_surface_pattern_words: np.ndarray | None = None
     scoring_surface_counts: np.ndarray | None = None
-    scoring_surface_head_coeffs: np.ndarray | None = None
+    scoring_surface_pattern_head_coeffs: np.ndarray | None = None
     scoring_group_offsets: np.ndarray | None = None
     scoring_group_lengths: np.ndarray | None = None
     scoring_unique_frontiers: int = 0
@@ -212,14 +213,18 @@ def _stats_after_ftff_for_inner(
 
 def _surface_from_packed_arrays(
     *,
-    surface_words: np.ndarray,
+    surface_pattern_ids: np.ndarray,
+    surface_pattern_words: np.ndarray,
     surface_counts: np.ndarray,
     surface_idx: int,
 ) -> FgResponseSurface:
     idx = int(surface_idx)
-    if idx < 0 or idx >= int(surface_words.shape[0]) or idx >= int(surface_counts.shape[0]):
+    if idx < 0 or idx >= int(surface_pattern_ids.shape[0]) or idx >= int(surface_counts.shape[0]):
         raise ValueError("response frontier exact GPU selected surface is outside the packed pool")
-    word_row = np.asarray(surface_words[idx], dtype=np.uint32)
+    pattern_idx = int(surface_pattern_ids[idx])
+    if pattern_idx < 0 or pattern_idx >= int(surface_pattern_words.shape[0]):
+        raise ValueError("response frontier exact GPU selected surface has an invalid head-pattern ID")
+    word_row = np.asarray(surface_pattern_words[pattern_idx], dtype=np.uint32)
     count_row = np.asarray(surface_counts[idx], dtype=np.int32)
     return FgResponseSurface(
         int(word_row[0]),
@@ -243,6 +248,7 @@ def _pack_scoring_surfaces_for_batch(
     group_ft_stat: np.ndarray,
     group_ff_stat: np.ndarray,
 ) -> tuple[
+    np.ndarray,
     np.ndarray,
     np.ndarray,
     np.ndarray,
@@ -303,48 +309,69 @@ def _pack_scoring_surfaces_for_batch(
     if bool(np.any(group_offsets < 0)):
         raise ValueError("FG response frontier packed batch failed to remap selected frontiers")
 
-    full_surface_words = np.asarray(scoring_bundle.surface_words)
+    full_surface_pattern_ids = np.asarray(scoring_bundle.surface_pattern_ids)
+    full_surface_pattern_words = np.asarray(scoring_bundle.surface_pattern_words)
     full_surface_counts = np.asarray(scoring_bundle.surface_counts)
-    full_surface_head_coeffs = np.asarray(scoring_bundle.surface_head_coeffs)
-    if int(full_surface_words.shape[0]) > 0:
+    full_surface_pattern_head_coeffs = np.asarray(scoring_bundle.surface_pattern_head_coeffs)
+    if int(full_surface_pattern_ids.shape[0]) > 0:
         if (
-            int(full_surface_words.ndim) != 2
-            or int(full_surface_words.shape[1]) != 8
+            int(full_surface_pattern_ids.ndim) != 1
+            or int(full_surface_pattern_words.ndim) != 2
+            or int(full_surface_pattern_words.shape[1]) != 8
             or int(full_surface_counts.ndim) != 2
-            or int(full_surface_counts.shape[0]) != int(full_surface_words.shape[0])
+            or int(full_surface_counts.shape[0]) != int(full_surface_pattern_ids.shape[0])
             or int(full_surface_counts.shape[1]) != 3
-            or int(full_surface_head_coeffs.ndim) != 2
-            or int(full_surface_head_coeffs.shape[0]) != int(full_surface_words.shape[0])
-            or int(full_surface_head_coeffs.shape[1]) != 4
+            or int(full_surface_pattern_head_coeffs.ndim) != 2
+            or int(full_surface_pattern_head_coeffs.shape[0]) != int(full_surface_pattern_words.shape[0])
+            or int(full_surface_pattern_head_coeffs.shape[1]) != 4
         ):
             raise ValueError("FG response frontier scoring bundle has invalid in-memory surface arrays")
-        surface_words = np.empty((int(cursor), 8), dtype=np.uint32)
+        selected_pattern_ids = np.empty((int(cursor),), dtype=np.int32)
         surface_counts = np.empty((int(cursor), 3), dtype=np.int32)
-        surface_head_coeffs = np.empty((int(cursor), 4), dtype=np.int32)
         for source_start, length, compact_start in copy_ranges:
             source_end = int(source_start) + int(length)
             target_start = int(compact_start)
             target_end = target_start + int(length)
-            surface_words[target_start:target_end] = full_surface_words[int(source_start) : source_end]
+            selected_pattern_ids[target_start:target_end] = full_surface_pattern_ids[int(source_start) : source_end]
             surface_counts[target_start:target_end] = full_surface_counts[int(source_start) : source_end]
-            surface_head_coeffs[target_start:target_end] = full_surface_head_coeffs[int(source_start) : source_end]
+        if bool(np.any(selected_pattern_ids < 0)) or bool(
+            np.any(selected_pattern_ids >= int(full_surface_pattern_words.shape[0]))
+        ):
+            raise ValueError("FG response frontier scoring bundle references an invalid head-pattern ID")
+        used_pattern_ids, surface_pattern_ids = np.unique(selected_pattern_ids, return_inverse=True)
+        surface_pattern_words = np.ascontiguousarray(
+            full_surface_pattern_words[used_pattern_ids],
+            dtype=np.uint32,
+        )
+        surface_pattern_head_coeffs = np.ascontiguousarray(
+            full_surface_pattern_head_coeffs[used_pattern_ids],
+            dtype=np.int32,
+        )
+        surface_pattern_ids = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
     else:
-        surface_rows, surface_head_coeffs = load_first_surface_scoring_rows(scoring_bundle.cache_key, ranges)
-        surface_words = np.ascontiguousarray(surface_rows[:, :8], dtype=np.uint32)
-        surface_counts = np.ascontiguousarray(surface_rows[:, 8:11], dtype=np.int32)
-        surface_head_coeffs = np.ascontiguousarray(surface_head_coeffs, dtype=np.int32)
+        (
+            surface_pattern_ids,
+            surface_counts,
+            surface_pattern_words,
+            surface_pattern_head_coeffs,
+        ) = load_first_surface_scoring_patterns(scoring_bundle.cache_key, ranges)
     compact_ms = float((time.perf_counter() - phase_t0) * 1000.0)
     head_coeff_ms = 0.0
     if (
-        int(surface_head_coeffs.ndim) != 2
-        or int(surface_head_coeffs.shape[0]) != int(surface_words.shape[0])
-        or int(surface_head_coeffs.shape[1]) != 4
+        int(surface_pattern_ids.ndim) != 1
+        or int(surface_pattern_ids.shape[0]) != int(surface_counts.shape[0])
+        or int(surface_pattern_words.ndim) != 2
+        or int(surface_pattern_words.shape[1]) != 8
+        or int(surface_pattern_head_coeffs.ndim) != 2
+        or int(surface_pattern_head_coeffs.shape[0]) != int(surface_pattern_words.shape[0])
+        or int(surface_pattern_head_coeffs.shape[1]) != 4
     ):
-        raise ValueError("FG response frontier scoring bundle has invalid surface head coefficients")
+        raise ValueError("FG response frontier scoring bundle has invalid compact surface arrays")
     return (
-        np.ascontiguousarray(surface_words, dtype=np.uint32),
+        np.ascontiguousarray(surface_pattern_ids, dtype=np.int32),
+        np.ascontiguousarray(surface_pattern_words, dtype=np.uint32),
         np.ascontiguousarray(surface_counts, dtype=np.int32),
-        surface_head_coeffs,
+        np.ascontiguousarray(surface_pattern_head_coeffs, dtype=np.int32),
         group_offsets,
         group_lengths,
         int(unique_frontiers.shape[0]),
@@ -672,9 +699,10 @@ def pack_prepared_force_greats_response_frontier_scoring_surfaces(
     if fg_batch_stage(batch) is FgBatchStage.SURFACES_PACKED:
         return batch
     (
-        scoring_surface_words,
+        scoring_surface_pattern_ids,
+        scoring_surface_pattern_words,
         scoring_surface_counts,
-        scoring_surface_head_coeffs,
+        scoring_surface_pattern_head_coeffs,
         scoring_group_offsets,
         scoring_group_lengths,
         scoring_unique_frontiers,
@@ -688,9 +716,10 @@ def pack_prepared_force_greats_response_frontier_scoring_surfaces(
     )
     return replace(
         batch,
-        scoring_surface_words=scoring_surface_words,
+        scoring_surface_pattern_ids=scoring_surface_pattern_ids,
+        scoring_surface_pattern_words=scoring_surface_pattern_words,
         scoring_surface_counts=scoring_surface_counts,
-        scoring_surface_head_coeffs=scoring_surface_head_coeffs,
+        scoring_surface_pattern_head_coeffs=scoring_surface_pattern_head_coeffs,
         scoring_group_offsets=scoring_group_offsets,
         scoring_group_lengths=scoring_group_lengths,
         scoring_unique_frontiers=scoring_unique_frontiers,
@@ -759,9 +788,10 @@ def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
             "FG response frontier GPU owner score requires a finalized batch "
             "(group rows built and scoring surfaces packed before submit)"
         )
-    surface_words = batch.scoring_surface_words
+    surface_pattern_ids = batch.scoring_surface_pattern_ids
+    surface_pattern_words = batch.scoring_surface_pattern_words
     surface_counts = batch.scoring_surface_counts
-    surface_head_coeffs = batch.scoring_surface_head_coeffs
+    surface_pattern_head_coeffs = batch.scoring_surface_pattern_head_coeffs
     group_offsets = batch.scoring_group_offsets
     group_lengths = batch.scoring_group_lengths
     if int(group_offsets.shape[0]) != int(batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
@@ -769,12 +799,13 @@ def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
     ):
         raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
     if (
-        int(surface_words.ndim) != 2
-        or int(surface_words.shape[1]) != 8
+        int(surface_pattern_ids.ndim) != 1
+        or int(surface_pattern_words.ndim) != 2
+        or int(surface_pattern_words.shape[1]) != 8
         or int(surface_counts.ndim) != 2
         or int(surface_counts.shape[1]) != 3
-        or int(surface_head_coeffs.ndim) != 2
-        or int(surface_head_coeffs.shape[1]) != 4
+        or int(surface_pattern_head_coeffs.ndim) != 2
+        or int(surface_pattern_head_coeffs.shape[1]) != 4
     ):
         raise ValueError("response frontier prepared scoring arrays have invalid shape")
     inner_rows, _logical_surface_rows = _score_response_group_meta_gpu(
@@ -785,9 +816,10 @@ def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
         secondary_color=batch.secondary_color,
         selected_color=batch.selected_color,
         ref_arrays=batch.ref_arrays,
-        surface_words=surface_words,
+        surface_pattern_ids=surface_pattern_ids,
+        surface_pattern_words=surface_pattern_words,
         surface_counts=surface_counts,
-        surface_head_coeffs=surface_head_coeffs,
+        surface_pattern_head_coeffs=surface_pattern_head_coeffs,
     )
     if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
         raise ValueError("response frontier exact GPU batch returned the wrong number of group results")
@@ -809,9 +841,10 @@ def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
             "FG response frontier CPU owner score requires a finalized batch "
             "(group rows built and scoring surfaces packed before submit)"
         )
-    surface_words = batch.scoring_surface_words
+    surface_pattern_ids = batch.scoring_surface_pattern_ids
+    surface_pattern_words = batch.scoring_surface_pattern_words
     surface_counts = batch.scoring_surface_counts
-    surface_head_coeffs = batch.scoring_surface_head_coeffs
+    surface_pattern_head_coeffs = batch.scoring_surface_pattern_head_coeffs
     group_offsets = batch.scoring_group_offsets
     group_lengths = batch.scoring_group_lengths
     if int(group_offsets.shape[0]) != int(batch.group_meta.shape[0]) or int(group_lengths.shape[0]) != int(
@@ -819,12 +852,13 @@ def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
     ):
         raise ValueError("response frontier prepared scoring arrays have inconsistent group lengths")
     if (
-        int(surface_words.ndim) != 2
-        or int(surface_words.shape[1]) != 8
+        int(surface_pattern_ids.ndim) != 1
+        or int(surface_pattern_words.ndim) != 2
+        or int(surface_pattern_words.shape[1]) != 8
         or int(surface_counts.ndim) != 2
         or int(surface_counts.shape[1]) != 3
-        or int(surface_head_coeffs.ndim) != 2
-        or int(surface_head_coeffs.shape[1]) != 4
+        or int(surface_pattern_head_coeffs.ndim) != 2
+        or int(surface_pattern_head_coeffs.shape[1]) != 4
     ):
         raise ValueError("response frontier prepared scoring arrays have invalid shape")
     inner_rows, _logical_surface_rows = _score_response_group_meta_cpu(
@@ -835,9 +869,10 @@ def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
         secondary_color=batch.secondary_color,
         selected_color=batch.selected_color,
         ref_arrays=batch.ref_arrays,
-        surface_words=surface_words,
+        surface_pattern_ids=surface_pattern_ids,
+        surface_pattern_words=surface_pattern_words,
         surface_counts=surface_counts,
-        surface_head_coeffs=surface_head_coeffs,
+        surface_pattern_head_coeffs=surface_pattern_head_coeffs,
     )
     if int(inner_rows.shape[0]) != int(batch.group_meta.shape[0]):
         raise ValueError("response frontier exact CPU batch returned the wrong number of group results")
@@ -858,7 +893,7 @@ def score_prepared_force_greats_response_frontier_batch_cpu_sync(
     surface scoring runs on CPU doubles. For the gems-fixed (residual_budget == 0) zero_ms
     rebuild this returns bit-identical results to the GPU owner, with no GPU f64 dependency.
     """
-    if batch.scoring_surface_words is None:
+    if batch.scoring_surface_pattern_ids is None:
         batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
     owner = score_prepared_force_greats_response_frontier_batch_on_cpu_owner(batch)
     return materialize_prepared_force_greats_response_frontier_batch_results(
@@ -889,7 +924,8 @@ def materialize_prepared_force_greats_response_frontier_batch_results(
     include_forced_counts: bool = False,
 ) -> list[FgResponseFrontierSolveResult]:
     scoring_bundle = batch.scoring_bundle
-    surface_words = batch.scoring_surface_words
+    surface_pattern_ids = batch.scoring_surface_pattern_ids
+    surface_pattern_words = batch.scoring_surface_pattern_words
     surface_counts = batch.scoring_surface_counts
     group_offsets = batch.scoring_group_offsets
     inner_rows = np.asarray(inner_rows, dtype=np.int32)
@@ -927,7 +963,8 @@ def materialize_prepared_force_greats_response_frontier_batch_results(
         result_row = np.asarray(inner_rows[int(row_idx)], dtype=np.int32).copy()
         result_surface_idx = int(group_offsets[int(row_idx)]) + int(result_row[1])
         result_surface = _surface_from_packed_arrays(
-            surface_words=surface_words,
+            surface_pattern_ids=surface_pattern_ids,
+            surface_pattern_words=surface_pattern_words,
             surface_counts=surface_counts,
             surface_idx=int(result_surface_idx),
         )
@@ -958,7 +995,8 @@ def resolve_fused_owner_score_rows_from_batch(
     row per ``batch.candidate_slices`` entry, in batch order. The caller keys these
     by the batch's ``base_components`` rows (aligned 1:1 with candidate_slices).
     """
-    surface_words = batch.scoring_surface_words
+    surface_pattern_ids = batch.scoring_surface_pattern_ids
+    surface_pattern_words = batch.scoring_surface_pattern_words
     surface_counts = batch.scoring_surface_counts
     group_offsets = batch.scoring_group_offsets
     inner_rows = np.asarray(inner_rows, dtype=np.int32)
@@ -977,7 +1015,8 @@ def resolve_fused_owner_score_rows_from_batch(
         result_row = np.asarray(inner_rows[int(row_idx)], dtype=np.int32).copy()
         result_surface_idx = int(group_offsets[int(row_idx)]) + int(result_row[1])
         result_surface = _surface_from_packed_arrays(
-            surface_words=surface_words,
+            surface_pattern_ids=surface_pattern_ids,
+            surface_pattern_words=surface_pattern_words,
             surface_counts=surface_counts,
             surface_idx=int(result_surface_idx),
         )
@@ -1154,7 +1193,7 @@ def score_prepared_force_greats_response_frontier_batch_sync(
     *,
     include_forced_counts: bool = False,
 ) -> list[FgResponseFrontierSolveResult]:
-    if batch.scoring_surface_words is None:
+    if batch.scoring_surface_pattern_ids is None:
         batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
     scoring_bundle_ms = float(batch.scoring_bundle_ms)
     owner_t0 = time.perf_counter()
@@ -1185,7 +1224,8 @@ def score_prepared_force_greats_response_frontier_batch_sync(
             "group_count": int(batch.group_meta.shape[0]),
             "kept_stat_keys": int(len(batch.kept_stat_keys)),
             "unique_frontiers": int(batch.scoring_unique_frontiers),
-            "surface_rows": int(batch.scoring_surface_words.shape[0]),
+            "surface_rows": int(batch.scoring_surface_pattern_ids.shape[0]),
+            "surface_patterns": int(batch.scoring_surface_pattern_words.shape[0]),
             "include_forced_counts": int(bool(include_forced_counts)),
             "cache_source": "bundle",
         },

@@ -190,9 +190,10 @@ def test_session_prune_scoring_bundle_compacts_offsets(monkeypatch):
         non_fever_base_by_ff=np.zeros(1, dtype=np.int32),
         real_time_by_ft=np.zeros(1),
         frontier_meta=np.zeros((2, 1), dtype=np.int32),
-        surface_words=np.empty((0, 8), dtype=np.uint32),
+        surface_pattern_ids=np.empty((0,), dtype=np.int32),
+        surface_pattern_words=np.empty((0, 8), dtype=np.uint32),
         surface_counts=np.empty((0, 3), dtype=np.int32),
-        surface_head_coeffs=np.empty((0, 4), dtype=np.int32),
+        surface_pattern_head_coeffs=np.empty((0, 4), dtype=np.int32),
         frontier_offsets=np.asarray([0, 40], dtype=np.int32),
         frontier_lengths=np.asarray([40, 15], dtype=np.int32),
         surface_row_count=55,
@@ -205,10 +206,11 @@ def test_session_prune_scoring_bundle_compacts_offsets(monkeypatch):
         "Fever Multiplier": np.asarray([4.6, 5.48]),
     }
     pruned = response_cache.session_prune_scoring_bundle(bundle, ref_arrays)
-    assert int(pruned.surface_row_count) == int(pruned.surface_words.shape[0])
-    assert int(pruned.surface_words.shape[0]) <= 55
+    assert int(pruned.surface_row_count) == int(pruned.surface_pattern_ids.shape[0])
+    assert int(pruned.surface_pattern_ids.shape[0]) <= 55
     assert pruned.surface_counts.shape == (int(pruned.surface_row_count), 3)
-    assert pruned.surface_head_coeffs.shape == (int(pruned.surface_row_count), 4)
+    assert pruned.surface_pattern_words.shape[1] == 8
+    assert pruned.surface_pattern_head_coeffs.shape == (int(pruned.surface_pattern_words.shape[0]), 4)
     lengths = np.asarray(pruned.frontier_lengths, dtype=np.int64)
     offsets = np.asarray(pruned.frontier_offsets, dtype=np.int64)
     assert bool(np.all(lengths >= 1))

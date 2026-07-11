@@ -257,8 +257,8 @@ class _Case:
             total_notes=np.asarray(_NOTE_COUNT, dtype=np.int32),
             long_notes=np.asarray(_HELD_COUNT, dtype=np.int32),
         )
-        np.save(self.fg_cache / "bundle.surf_pool.npy", np.zeros((1, 11), dtype=np.uint32))
-        np.save(self.fg_cache / "bundle.surf_coeffs.npy", np.zeros((1, 8), dtype=np.uint16))
+        np.save(self.fg_cache / "bundle.surf_rows.npy", np.zeros((1, 4), dtype=np.uint32))
+        np.save(self.fg_cache / "bundle.surf_patterns.npy", np.zeros((1, 10), dtype=np.uint32))
         if self.mode == "extra_cache":
             (self.fg_cache / "unexpected").write_text("x", encoding="utf-8")
         events = []

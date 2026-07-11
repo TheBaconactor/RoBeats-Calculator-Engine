@@ -22,6 +22,13 @@ from .response_cache_keys import (
     _fg_response_disk_cache_path,
     _fg_response_cache_version,
 )
+from .response_cache_patterns import (
+    SURFACE_PATTERN_COLUMNS,
+    SURFACE_ROW_COLUMNS,
+    expand_surface_rows,
+    intern_surface_rows,
+    unpack_surface_patterns,
+)
 from .response_cache_types import (
     _BUNDLE_ARRAY_CACHE_MAX,
     _MEMORY_CACHE_MAX,
@@ -46,15 +53,14 @@ _frontier_cache_lock = threading.RLock()
 _RESPONSE_BUNDLE_BUILD_PARALLELISM = 1
 _response_bundle_build_slots = threading.BoundedSemaphore(int(_RESPONSE_BUNDLE_BUILD_PARALLELISM))
 _NPZ_FAST_COMPRESS_LEVEL = 1
-# Scoring surfaces (the first-frontier pool + head coeffs) live in uncompressed, C-order,
-# memmap-able sidecar .npy files next to the bundle .npz. The reader pages only the requested
-# rows through the OS mmap instead of inflating + fully materializing the whole pool, which is
-# what made the per-song disk load (Issue #34) bandwidth-bound. The bundle .npz keeps every
-# non-surface metadata array plus a `first_surface_row_count` scalar that pins the sidecar shape.
-_SURFACE_POOL_SIDECAR_SUFFIX = ".surf_pool.npy"
-_SURFACE_COEFF_SIDECAR_SUFFIX = ".surf_coeffs.npy"
-_SURFACE_POOL_COLUMNS = 11
-_SURFACE_COEFF_COLUMNS = 4
+# Scoring surfaces live in two uncompressed, C-order, memmap-able sidecars next to the bundle
+# .npz. Every logical surface row stores one exact head-pattern ID plus its three body counts;
+# every distinct head pattern stores the eight fever/Great mask words plus four uint16 head
+# coefficients packed into two uint32 words. The reader expands only requested row ranges, so the
+# scorer still sees the canonical 11-word rows and four coefficients while disk traffic scales
+# with the interned representation. IDs are uint32 for every chart -- no size-dependent format.
+_SURFACE_ROW_SIDECAR_SUFFIX = ".surf_rows.npy"
+_SURFACE_PATTERN_SIDECAR_SUFFIX = ".surf_patterns.npy"
 
 
 def _fg_response_idle_ttl_seconds() -> float | None:
@@ -160,7 +166,7 @@ class FgResponseSurfaceSidecarError(RuntimeError):
 
 
 def _surface_sidecar_paths(bundle_path: Path) -> tuple[Path, Path]:
-    """Return (pool_sidecar, coeff_sidecar) paths for a bundle .npz path.
+    """Return (row_sidecar, pattern_sidecar) paths for a bundle .npz path.
 
     Both sidecars share the bundle digest stem so they migrate/evict as one unit.
     """
@@ -169,8 +175,8 @@ def _surface_sidecar_paths(bundle_path: Path) -> tuple[Path, Path]:
         raise ValueError(f"FG response frontier bundle path must be a .npz: {base}")
     stem = base.name[: -len(".npz")]
     return (
-        base.with_name(f"{stem}{_SURFACE_POOL_SIDECAR_SUFFIX}"),
-        base.with_name(f"{stem}{_SURFACE_COEFF_SIDECAR_SUFFIX}"),
+        base.with_name(f"{stem}{_SURFACE_ROW_SIDECAR_SUFFIX}"),
+        base.with_name(f"{stem}{_SURFACE_PATTERN_SIDECAR_SUFFIX}"),
     )
 
 
@@ -403,17 +409,19 @@ def _persisted_packed_frontier_metadata(
     packed_frontiers: dict[str, np.ndarray],
     *,
     surface_row_count: int,
+    surface_pattern_count: int,
 ) -> dict[str, np.ndarray]:
     """Slim-.npz metadata for a packed bundle. Surfaces live in the sidecars, not here.
 
-    `first_surface_row_count` pins the pool/coeff sidecar shape so the reader can fail loud
-    on any sidecar/npz desync without re-deriving the row count from per-chunk offsets.
+    The explicit row/pattern counts pin both sidecar shapes so the reader can fail loud on any
+    sidecar/npz desync without guessing from IDs or per-frontier offsets.
     """
     return {
         "frontier_meta": np.asfortranarray(np.asarray(packed_frontiers["frontier_meta"], dtype=np.int32)),
         "first_offsets": np.asarray(packed_frontiers["first_offsets"], dtype=np.int32),
         "first_counts": np.asarray(packed_frontiers["first_counts"], dtype=np.int32),
         "first_surface_row_count": np.asarray(int(surface_row_count), dtype=np.int64),
+        "first_surface_pattern_count": np.asarray(int(surface_pattern_count), dtype=np.int64),
     }
 
 
@@ -512,7 +520,7 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
     from .response_inner_host import _precompute_surface_head_coeffs
 
     path = _fg_response_disk_cache_path(cache_key)
-    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(path)
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths(path)
     tmp: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -534,9 +542,15 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
         if bool(np.any(first_surface_head_coeffs < 0)) or bool(np.any(first_surface_head_coeffs > np.iinfo(np.uint16).max)):
             raise ValueError("FG response surface head coefficients exceed persisted uint16 bounds")
         first_surface_head_coeffs = np.ascontiguousarray(np.asarray(first_surface_head_coeffs, dtype=np.uint16))
-        # Sidecars first (atomic each), then the slim .npz last: a present .npz implies present sidecars.
-        _save_surface_sidecar_atomic(pool_sidecar, first_surface_pool)
-        _save_surface_sidecar_atomic(coeff_sidecar, first_surface_head_coeffs)
+        first_surface_rows, first_surface_patterns = intern_surface_rows(
+            first_surface_pool,
+            first_surface_head_coeffs,
+        )
+        surface_pattern_count = int(first_surface_patterns.shape[0])
+        # Sidecars first (atomic each), then the slim .npz last: a present .npz implies both exact
+        # row/pattern stores are present. The full expanded arrays are never persisted.
+        _save_surface_sidecar_atomic(row_sidecar, first_surface_rows)
+        _save_surface_sidecar_atomic(pattern_sidecar, first_surface_patterns)
         _save_npz_fast_compressed(
             tmp,
             {
@@ -556,7 +570,11 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
                     "FG response first surface head length",
                     np.asarray(int(first_surface_head_len), dtype=np.int32),
                 ),
-                **_persisted_packed_frontier_metadata(packed_frontiers, surface_row_count=surface_row_count),
+                **_persisted_packed_frontier_metadata(
+                    packed_frontiers,
+                    surface_row_count=surface_row_count,
+                    surface_pattern_count=surface_pattern_count,
+                ),
             },
         )
         tmp.replace(path)
@@ -588,7 +606,7 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
     path = _live_fg_response_bundle_path(_fg_response_disk_cache_path(cache_key))
     if path is None:
         return None
-    pool_sidecar, _coeff_sidecar = _surface_sidecar_paths(path)
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths(path)
     try:
         with np.load(path, allow_pickle=False) as data:
             version = str(data["version"].item())
@@ -596,7 +614,11 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
                 return None
             stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
             frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
-            frontiers = _unpack_frontiers(data, pool_sidecar=pool_sidecar)
+            frontiers = _unpack_frontiers(
+                data,
+                row_sidecar=row_sidecar,
+                pattern_sidecar=pattern_sidecar,
+            )
             frontier_by_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
             for idx, key_row in enumerate(stat_keys):
                 frontier_idx = int(frontier_ids[idx])
@@ -633,7 +655,7 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
     if path is None:
         return None
     required = {"version", *_SCORING_BUNDLE_ARRAY_NAMES}
-    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(path)
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths(path)
     try:
         with np.load(path, allow_pickle=False) as data:
             files = set(data.files)
@@ -648,6 +670,7 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
             frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
             meta = np.asarray(data["frontier_meta"], dtype=np.int32)
             surface_row_count = int(np.asarray(data["first_surface_row_count"]).item())
+            surface_pattern_count = int(np.asarray(data["first_surface_pattern_count"]).item())
             first_offsets = np.asarray(data["first_offsets"], dtype=np.int64).reshape(-1)
             first_counts = np.asarray(data["first_counts"], dtype=np.int64).reshape(-1)
             raw_fill_by_ff = np.asarray(data["raw_fill_by_ff"])
@@ -671,18 +694,18 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
                 return None
             if int(np.asarray(data["first_surface_head_len"]).item()) != min(total_notes, 100):
                 return None
-            if surface_row_count < 0:
+            if surface_row_count < 0 or surface_pattern_count <= 0:
                 return None
             if bool(np.any(first_offsets < 0)) or bool(np.any(first_counts <= 0)):
                 return None
             max_surface_end = int(np.max(first_offsets + first_counts))
             if surface_row_count < max_surface_end:
                 return None
-            pool_header = _surface_sidecar_header(pool_sidecar)
-            coeff_header = _surface_sidecar_header(coeff_sidecar)
-            if pool_header != ((surface_row_count, _SURFACE_POOL_COLUMNS), np.dtype(np.uint32)):
+            row_header = _surface_sidecar_header(row_sidecar)
+            pattern_header = _surface_sidecar_header(pattern_sidecar)
+            if row_header != ((surface_row_count, SURFACE_ROW_COLUMNS), np.dtype(np.uint32)):
                 return None
-            if coeff_header != ((surface_row_count, _SURFACE_COEFF_COLUMNS), np.dtype(np.uint16)):
+            if pattern_header != ((surface_pattern_count, SURFACE_PATTERN_COLUMNS), np.dtype(np.uint32)):
                 return None
             present: set[tuple[int, int]] = set()
             for idx, key_row in enumerate(stat_keys):
@@ -766,15 +789,18 @@ def _normalize_surface_ranges(ranges: Iterable[tuple[int, int]]) -> tuple[tuple[
     return tuple(normalized)
 
 
-def _surface_row_count_for_key(cache_key: tuple) -> int:
-    row_count = int(
-        np.asarray(
-            _load_bundle_array_members(cache_key, names=("first_surface_row_count",))["first_surface_row_count"]
-        ).item()
+def _surface_counts_for_key(cache_key: tuple) -> tuple[int, int]:
+    arrays = _load_bundle_array_members(
+        cache_key,
+        names=("first_surface_row_count", "first_surface_pattern_count"),
     )
+    row_count = int(np.asarray(arrays["first_surface_row_count"]).item())
+    pattern_count = int(np.asarray(arrays["first_surface_pattern_count"]).item())
     if row_count < 0:
         raise ValueError("FG response frontier bundle has a negative surface row count")
-    return int(row_count)
+    if pattern_count <= 0:
+        raise ValueError("FG response frontier bundle has no surface head patterns")
+    return int(row_count), int(pattern_count)
 
 
 def load_first_surface_scoring_rows(
@@ -783,26 +809,27 @@ def load_first_surface_scoring_rows(
 ) -> tuple[np.ndarray, np.ndarray]:
     started = time.perf_counter()
     normalized = _normalize_surface_ranges(ranges)
-    surface_row_count = _surface_row_count_for_key(cache_key)
-    pool_sidecar, coeff_sidecar = _surface_sidecar_paths_for_key(cache_key)
+    surface_row_count, surface_pattern_count = _surface_counts_for_key(cache_key)
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths_for_key(cache_key)
     row_count = sum(int(count) for _start, count in normalized)
-    rows = np.empty((int(row_count), _SURFACE_POOL_COLUMNS), dtype=np.uint32)
-    coeff_rows = np.empty((int(row_count), _SURFACE_COEFF_COLUMNS), dtype=np.uint16)
+    row_refs = np.empty((int(row_count), SURFACE_ROW_COLUMNS), dtype=np.uint32)
     load_t0 = time.perf_counter()
-    pool_memmap = _open_surface_sidecar_memmap(
-        pool_sidecar, columns=_SURFACE_POOL_COLUMNS, dtype=np.dtype(np.uint32), row_count=surface_row_count
+    row_memmap = _open_surface_sidecar_memmap(
+        row_sidecar, columns=SURFACE_ROW_COLUMNS, dtype=np.dtype(np.uint32), row_count=surface_row_count
     )
-    coeff_memmap = _open_surface_sidecar_memmap(
-        coeff_sidecar, columns=_SURFACE_COEFF_COLUMNS, dtype=np.dtype(np.uint16), row_count=surface_row_count
+    pattern_memmap = _open_surface_sidecar_memmap(
+        pattern_sidecar,
+        columns=SURFACE_PATTERN_COLUMNS,
+        dtype=np.dtype(np.uint32),
+        row_count=surface_pattern_count,
     )
     load_ms = float((time.perf_counter() - load_t0) * 1000.0)
     copy_t0 = time.perf_counter()
     # Slice-copy out of the read-only memmaps into freshly-owned contiguous arrays so the returned
     # arrays never alias a memmap (which could be evicted/closed across songs).
-    _gather_surface_ranges(pool_memmap, ranges=normalized, out=rows)
-    _gather_surface_ranges(coeff_memmap, ranges=normalized, out=coeff_rows)
+    _gather_surface_ranges(row_memmap, ranges=normalized, out=row_refs)
+    rows, coeffs = expand_surface_rows(row_refs, pattern_memmap)
     copy_ms = float((time.perf_counter() - copy_t0) * 1000.0)
-    coeffs = np.ascontiguousarray(coeff_rows, dtype=np.int32)
     emit_profile_event(
         component="fg_response_cache",
         event="surface_chunk_load",
@@ -815,7 +842,66 @@ def load_first_surface_scoring_rows(
             "elapsed_ms": float((time.perf_counter() - started) * 1000.0),
         },
     )
-    return np.ascontiguousarray(rows, dtype=np.uint32), coeffs
+    return rows, coeffs
+
+
+def load_first_surface_scoring_patterns(
+    cache_key: tuple,
+    ranges: Iterable[tuple[int, int]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Load the canonical compact scoring representation for requested frontier ranges.
+
+    Returns ``(surface_pattern_ids, surface_counts, pattern_words, pattern_coeffs)``. Pattern IDs
+    are remapped densely for this gather, but surface-row order is untouched; therefore exact-score
+    ties retain the producer's original first-row priority.
+    """
+    started = time.perf_counter()
+    normalized = _normalize_surface_ranges(ranges)
+    surface_row_count, surface_pattern_count = _surface_counts_for_key(cache_key)
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths_for_key(cache_key)
+    row_count = sum(int(count) for _start, count in normalized)
+    row_refs = np.empty((int(row_count), SURFACE_ROW_COLUMNS), dtype=np.uint32)
+    load_t0 = time.perf_counter()
+    row_memmap = _open_surface_sidecar_memmap(
+        row_sidecar,
+        columns=SURFACE_ROW_COLUMNS,
+        dtype=np.dtype(np.uint32),
+        row_count=surface_row_count,
+    )
+    pattern_memmap = _open_surface_sidecar_memmap(
+        pattern_sidecar,
+        columns=SURFACE_PATTERN_COLUMNS,
+        dtype=np.dtype(np.uint32),
+        row_count=surface_pattern_count,
+    )
+    load_ms = float((time.perf_counter() - load_t0) * 1000.0)
+    copy_t0 = time.perf_counter()
+    _gather_surface_ranges(row_memmap, ranges=normalized, out=row_refs)
+    global_pattern_ids = np.asarray(row_refs[:, 0], dtype=np.uint64)
+    if bool(np.any(global_pattern_ids >= int(surface_pattern_count))):
+        raise ValueError("FG response surface row references an invalid head-pattern ID")
+    unique_ids, local_ids = np.unique(global_pattern_ids, return_inverse=True)
+    selected_patterns = np.ascontiguousarray(
+        pattern_memmap[np.asarray(unique_ids, dtype=np.intp)],
+        dtype=np.uint32,
+    )
+    pattern_words, pattern_coeffs = unpack_surface_patterns(selected_patterns)
+    surface_counts = np.ascontiguousarray(row_refs[:, 1:4], dtype=np.int32)
+    surface_pattern_ids = np.ascontiguousarray(local_ids, dtype=np.int32)
+    copy_ms = float((time.perf_counter() - copy_t0) * 1000.0)
+    emit_profile_event(
+        component="fg_response_cache",
+        event="surface_pattern_load",
+        metrics={
+            "ranges": int(len(normalized)),
+            "rows": int(row_count),
+            "patterns": int(pattern_words.shape[0]),
+            "load_ms": float(load_ms),
+            "copy_ms": float(copy_ms),
+            "elapsed_ms": float((time.perf_counter() - started) * 1000.0),
+        },
+    )
+    return surface_pattern_ids, surface_counts, pattern_words, pattern_coeffs
 
 
 def _invalidate_bundle_array_views(bundle_key: tuple) -> None:

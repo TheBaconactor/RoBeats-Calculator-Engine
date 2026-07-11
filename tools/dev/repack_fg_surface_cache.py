@@ -9,8 +9,8 @@ This is a MECHANICAL storage-format migration, NOT a semantic rebuild. For each 
 1. Reassembles the contiguous first-surface pool (uint32 N x 11) and head coeffs (uint16 N x 4)
    from the legacy 32768-row ``first_surface_pool_chunk_*`` / ``first_surface_head_coeffs_chunk_*``
    members, validated against ``first_surface_chunk_offsets``.
-2. Writes them as uncompressed, C-order, memmap-able sidecars ``<hash>.surf_pool.npy`` /
-   ``<hash>.surf_coeffs.npy`` (atomic tmp + os.replace each).
+2. Interns exact head masks/coefficients and writes C-order, memmap-able ``<hash>.surf_rows.npy`` /
+   ``<hash>.surf_patterns.npy`` sidecars (atomic tmp + os.replace each).
 3. Rewrites the ``.npz`` slim: every non-surface metadata member is copied byte-for-byte from the
    source archive (so stat_keys / frontier_meta keep their exact Fortran-order bytes), the chunk
    members + ``first_surface_chunk_offsets`` are dropped, and a single ``first_surface_row_count``
@@ -54,8 +54,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _LEGACY_CHUNK_ROWS = 32768
 _POOL_COLUMNS = 11
 _COEFF_COLUMNS = 4
-_POOL_SIDECAR_SUFFIX = ".surf_pool.npy"
-_COEFF_SIDECAR_SUFFIX = ".surf_coeffs.npy"
+_ROW_SIDECAR_SUFFIX = ".surf_rows.npy"
+_PATTERN_SIDECAR_SUFFIX = ".surf_patterns.npy"
+_ROW_COLUMNS = 4
+_PATTERN_COLUMNS = 10
 
 # Members that survive verbatim in the slim .npz (everything except the surface chunks and the
 # chunk-offsets array, which are replaced by the sidecars + first_surface_row_count).
@@ -75,6 +77,7 @@ _SLIM_METADATA_MEMBERS = (
     "first_counts",
 )
 _ROW_COUNT_MEMBER = "first_surface_row_count"
+_PATTERN_COUNT_MEMBER = "first_surface_pattern_count"
 _NPZ_FAST_COMPRESS_LEVEL = 1
 
 
@@ -122,8 +125,8 @@ def _sidecar_paths(npz_path: Path) -> tuple[Path, Path]:
         raise ValueError(f"bundle path must be a .npz: {npz_path}")
     stem = npz_path.name[: -len(".npz")]
     return (
-        npz_path.with_name(f"{stem}{_POOL_SIDECAR_SUFFIX}"),
-        npz_path.with_name(f"{stem}{_COEFF_SIDECAR_SUFFIX}"),
+        npz_path.with_name(f"{stem}{_ROW_SIDECAR_SUFFIX}"),
+        npz_path.with_name(f"{stem}{_PATTERN_SIDECAR_SUFFIX}"),
     )
 
 
@@ -203,21 +206,22 @@ def _npz_has_slim_shape(archive_names: set[str]) -> bool:
     )
     has_chunk_offsets = "first_surface_chunk_offsets.npy" in archive_names
     has_row_count = f"{_ROW_COUNT_MEMBER}.npy" in archive_names
-    return has_row_count and not has_chunks and not has_chunk_offsets
+    has_pattern_count = f"{_PATTERN_COUNT_MEMBER}.npy" in archive_names
+    return has_row_count and has_pattern_count and not has_chunks and not has_chunk_offsets
 
 
-def _slim_sidecar_problems(npz_path: Path, row_count: int) -> list[str]:
+def _slim_sidecar_problems(npz_path: Path, row_count: int, pattern_count: int) -> list[str]:
     """Describe any problem with a slim bundle's surface sidecars (empty list == both present + OK).
 
     Mirrors the production reader's ``_open_surface_sidecar_memmap`` checks (existence, 2-D shape
     with the right column count, dtype, and exact row count) so the tool's diagnostic matches the
     runtime fail-loud behavior.
     """
-    pool_sidecar, coeff_sidecar = _sidecar_paths(npz_path)
+    row_sidecar, pattern_sidecar = _sidecar_paths(npz_path)
     problems: list[str] = []
-    for path, columns, dtype in (
-        (pool_sidecar, _POOL_COLUMNS, np.dtype(np.uint32)),
-        (coeff_sidecar, _COEFF_COLUMNS, np.dtype(np.uint16)),
+    for path, rows, columns, dtype in (
+        (row_sidecar, row_count, _ROW_COLUMNS, np.dtype(np.uint32)),
+        (pattern_sidecar, pattern_count, _PATTERN_COLUMNS, np.dtype(np.uint32)),
     ):
         if not path.exists():
             problems.append(f"{path.name} is missing")
@@ -227,15 +231,21 @@ def _slim_sidecar_problems(npz_path: Path, row_count: int) -> list[str]:
             problems.append(f"{path.name} is unreadable or not a .npy")
             continue
         shape, header_dtype = header
-        if shape != (int(row_count), int(columns)) or header_dtype != dtype:
+        if shape != (int(rows), int(columns)) or header_dtype != dtype:
             problems.append(
                 f"{path.name} has shape/dtype {shape}/{header_dtype}, "
-                f"expected {(int(row_count), int(columns))}/{dtype}"
+                f"expected {(int(rows), int(columns))}/{dtype}"
             )
     return problems
 
 
-def _write_slim_npz(npz_path: Path, *, metadata_bytes: dict[str, bytes], row_count: int) -> None:
+def _write_slim_npz(
+    npz_path: Path,
+    *,
+    metadata_bytes: dict[str, bytes],
+    row_count: int,
+    pattern_count: int,
+) -> None:
     """Write the slim .npz from pre-buffered metadata .npy bytes plus a fresh row-count scalar.
 
     Bytes are pre-read by the caller so the SOURCE archive can be closed first -- on Windows you
@@ -260,6 +270,8 @@ def _write_slim_npz(npz_path: Path, *, metadata_bytes: dict[str, bytes], row_cou
                     handle.write(metadata_bytes[member])
             with target.open(f"{_ROW_COUNT_MEMBER}.npy", mode="w", force_zip64=True) as handle:
                 np_format.write_array(handle, np.asarray(int(row_count), dtype=np.int64), allow_pickle=False)
+            with target.open(f"{_PATTERN_COUNT_MEMBER}.npy", mode="w", force_zip64=True) as handle:
+                np_format.write_array(handle, np.asarray(int(pattern_count), dtype=np.int64), allow_pickle=False)
         os.replace(tmp, npz_path)
     except Exception:
         Path(tmp).unlink(missing_ok=True)
@@ -271,7 +283,7 @@ def repack_bundle(npz_path: Path, *, dry_run: bool = False) -> str:
 
     Raises on any malformed/inconsistent source. Idempotent on already-slim bundles.
     """
-    pool_sidecar, coeff_sidecar = _sidecar_paths(npz_path)
+    row_sidecar, pattern_sidecar = _sidecar_paths(npz_path)
     # Read EVERYTHING needed out of the source while it is open, then close it before writing the
     # sidecars / replacing the .npz (Windows can't os.replace over an open file).
     with zipfile.ZipFile(npz_path, mode="r") as source:
@@ -284,7 +296,9 @@ def repack_bundle(npz_path: Path, *, dry_run: bool = False) -> str:
             # "neither slim nor legacy-chunked" error from the legacy branch below).
             with source.open(f"{_ROW_COUNT_MEMBER}.npy", mode="r") as handle:
                 row_count = int(np.asarray(np.load(io.BytesIO(handle.read()), allow_pickle=False)).item())
-            problems = _slim_sidecar_problems(npz_path, row_count)
+            with source.open(f"{_PATTERN_COUNT_MEMBER}.npy", mode="r") as handle:
+                pattern_count = int(np.asarray(np.load(io.BytesIO(handle.read()), allow_pickle=False)).item())
+            problems = _slim_sidecar_problems(npz_path, row_count, pattern_count)
             if not problems:
                 return "skipped"
             raise SlimBundleMissingSidecarError(
@@ -335,19 +349,31 @@ def repack_bundle(npz_path: Path, *, dry_run: bool = False) -> str:
 
     if dry_run:
         return "dry-run"
+    _ensure_repo_on_path()
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import intern_surface_rows
+
+    row_refs, patterns = intern_surface_rows(pool, coeffs)
+    pattern_count = int(patterns.shape[0])
     # Sidecars first (atomic each), then the slim .npz last so a present slim .npz implies present
     # sidecars.
-    _atomic_write_sidecar(pool_sidecar, np.ascontiguousarray(pool, dtype=np.uint32))
-    _atomic_write_sidecar(coeff_sidecar, np.ascontiguousarray(coeffs, dtype=np.uint16))
-    _write_slim_npz(npz_path, metadata_bytes=metadata_bytes, row_count=row_count)
+    _atomic_write_sidecar(row_sidecar, row_refs)
+    _atomic_write_sidecar(pattern_sidecar, patterns)
+    _write_slim_npz(
+        npz_path,
+        metadata_bytes=metadata_bytes,
+        row_count=row_count,
+        pattern_count=pattern_count,
+    )
 
     # Post-write fail-loud validation: sidecars must match the recorded row count exactly.
-    pool_header = _sidecar_header(pool_sidecar)
-    coeff_header = _sidecar_header(coeff_sidecar)
-    if pool_header != ((row_count, _POOL_COLUMNS), np.dtype(np.uint32)):
-        raise ValueError(f"pool sidecar failed post-write validation: {pool_sidecar} -> {pool_header}")
-    if coeff_header != ((row_count, _COEFF_COLUMNS), np.dtype(np.uint16)):
-        raise ValueError(f"coeff sidecar failed post-write validation: {coeff_sidecar} -> {coeff_header}")
+    row_header = _sidecar_header(row_sidecar)
+    pattern_header = _sidecar_header(pattern_sidecar)
+    if row_header != ((row_count, _ROW_COLUMNS), np.dtype(np.uint32)):
+        raise ValueError(f"row sidecar failed post-write validation: {row_sidecar} -> {row_header}")
+    if pattern_header != ((pattern_count, _PATTERN_COLUMNS), np.dtype(np.uint32)):
+        raise ValueError(
+            f"pattern sidecar failed post-write validation: {pattern_sidecar} -> {pattern_header}"
+        )
     return "repacked"
 
 

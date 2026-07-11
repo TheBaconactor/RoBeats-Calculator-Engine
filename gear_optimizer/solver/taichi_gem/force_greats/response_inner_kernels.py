@@ -267,9 +267,10 @@ def _fg_response_surface_upper_bound(
 @ti.kernel
 def _fg_response_inner_batch_kernel(
     row_count: ti.i32,
-    surface_words: ti.types.ndarray(dtype=ti.u32, ndim=2),
+    surface_pattern_ids: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    surface_pattern_words: ti.types.ndarray(dtype=ti.u32, ndim=2),
     surface_counts: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    surface_head_coeffs: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    surface_pattern_head_coeffs: ti.types.ndarray(dtype=ti.i32, ndim=2),
     group_offsets: ti.types.ndarray(dtype=ti.i32, ndim=1),
     logical_owners: ti.types.ndarray(dtype=ti.i32, ndim=1),
     logical_surfaces: ti.types.ndarray(dtype=ti.i32, ndim=1),
@@ -377,14 +378,15 @@ def _fg_response_inner_batch_kernel(
             fm_ref_cache[g_fm_cache] = _fg_response_lookup_ref(ref_fm, cur_fm + g_fm_cache * GEM_SCALE_FEVER)
             g_fm_cache += 1
 
-        fever0: ti.u32 = surface_words[surface_row, 0]
-        fever1: ti.u32 = surface_words[surface_row, 1]
-        fever2: ti.u32 = surface_words[surface_row, 2]
-        fever3: ti.u32 = surface_words[surface_row, 3]
-        great0: ti.u32 = surface_words[surface_row, 4]
-        great1: ti.u32 = surface_words[surface_row, 5]
-        great2: ti.u32 = surface_words[surface_row, 6]
-        great3: ti.u32 = surface_words[surface_row, 7]
+        pattern_row: ti.i32 = surface_pattern_ids[surface_row]
+        fever0: ti.u32 = surface_pattern_words[pattern_row, 0]
+        fever1: ti.u32 = surface_pattern_words[pattern_row, 1]
+        fever2: ti.u32 = surface_pattern_words[pattern_row, 2]
+        fever3: ti.u32 = surface_pattern_words[pattern_row, 3]
+        great0: ti.u32 = surface_pattern_words[pattern_row, 4]
+        great1: ti.u32 = surface_pattern_words[pattern_row, 5]
+        great2: ti.u32 = surface_pattern_words[pattern_row, 6]
+        great3: ti.u32 = surface_pattern_words[pattern_row, 7]
         body_fever: ti.i32 = surface_counts[surface_row, 0]
         body_great: ti.i32 = surface_counts[surface_row, 1]
         body_fever_great: ti.i32 = surface_counts[surface_row, 2]
@@ -403,10 +405,10 @@ def _fg_response_inner_batch_kernel(
         body_normal: ti.i32 = body_total - body_fever
         if body_normal < 0:
             body_normal = 0
-        n_hn = surface_head_coeffs[surface_row, 0]
-        n_hf = surface_head_coeffs[surface_row, 1]
-        sigma_hn = surface_head_coeffs[surface_row, 2]
-        sigma_hf = surface_head_coeffs[surface_row, 3]
+        n_hn = surface_pattern_head_coeffs[pattern_row, 0]
+        n_hf = surface_pattern_head_coeffs[pattern_row, 1]
+        sigma_hn = surface_pattern_head_coeffs[pattern_row, 2]
+        sigma_hf = surface_pattern_head_coeffs[pattern_row, 3]
 
         g_cm: ti.i32 = 0
         while g_cm <= max_cm_gems:
@@ -614,9 +616,10 @@ def _fg_response_inner_batch_kernel(
 @ti.kernel
 def _fg_response_inner_group_kernel(
     group_count: ti.i32,
-    surface_words: ti.types.ndarray(dtype=ti.u32, ndim=2),
+    surface_pattern_ids: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    surface_pattern_words: ti.types.ndarray(dtype=ti.u32, ndim=2),
     surface_counts: ti.types.ndarray(dtype=ti.i32, ndim=2),
-    surface_head_coeffs: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    surface_pattern_head_coeffs: ti.types.ndarray(dtype=ti.i32, ndim=2),
     group_offsets: ti.types.ndarray(dtype=ti.i32, ndim=1),
     group_lengths: ti.types.ndarray(dtype=ti.i32, ndim=1),
     row_meta: ti.types.ndarray(dtype=ti.i32, ndim=2),
@@ -736,14 +739,15 @@ def _fg_response_inner_group_kernel(
         local_surface: ti.i32 = 0
         while local_surface < length:
             surface_row: ti.i32 = start + local_surface
-            fever0: ti.u32 = surface_words[surface_row, 0]
-            fever1: ti.u32 = surface_words[surface_row, 1]
-            fever2: ti.u32 = surface_words[surface_row, 2]
-            fever3: ti.u32 = surface_words[surface_row, 3]
-            great0: ti.u32 = surface_words[surface_row, 4]
-            great1: ti.u32 = surface_words[surface_row, 5]
-            great2: ti.u32 = surface_words[surface_row, 6]
-            great3: ti.u32 = surface_words[surface_row, 7]
+            pattern_row: ti.i32 = surface_pattern_ids[surface_row]
+            fever0: ti.u32 = surface_pattern_words[pattern_row, 0]
+            fever1: ti.u32 = surface_pattern_words[pattern_row, 1]
+            fever2: ti.u32 = surface_pattern_words[pattern_row, 2]
+            fever3: ti.u32 = surface_pattern_words[pattern_row, 3]
+            great0: ti.u32 = surface_pattern_words[pattern_row, 4]
+            great1: ti.u32 = surface_pattern_words[pattern_row, 5]
+            great2: ti.u32 = surface_pattern_words[pattern_row, 6]
+            great3: ti.u32 = surface_pattern_words[pattern_row, 7]
             body_fever: ti.i32 = surface_counts[surface_row, 0]
             body_great: ti.i32 = surface_counts[surface_row, 1]
             body_fever_great: ti.i32 = surface_counts[surface_row, 2]
@@ -762,10 +766,10 @@ def _fg_response_inner_group_kernel(
             body_normal: ti.i32 = body_total - body_fever
             if body_normal < 0:
                 body_normal = 0
-            n_hn = surface_head_coeffs[surface_row, 0]
-            n_hf = surface_head_coeffs[surface_row, 1]
-            sigma_hn = surface_head_coeffs[surface_row, 2]
-            sigma_hf = surface_head_coeffs[surface_row, 3]
+            n_hn = surface_pattern_head_coeffs[pattern_row, 0]
+            n_hf = surface_pattern_head_coeffs[pattern_row, 1]
+            sigma_hn = surface_pattern_head_coeffs[pattern_row, 2]
+            sigma_hf = surface_pattern_head_coeffs[pattern_row, 3]
 
             g_cm: ti.i32 = 0
             while g_cm <= max_cm_gems:

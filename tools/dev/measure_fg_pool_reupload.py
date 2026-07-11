@@ -137,6 +137,7 @@ def _score_upload_once(*, group_meta, group_offsets, group_lengths, primary, sec
     ref_cm = np.ascontiguousarray(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float64))
     ref_fm = np.ascontiguousarray(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float64))
     sw = np.ascontiguousarray(surface_words, dtype=np.uint32)
+    spid = np.arange(sw.shape[0], dtype=np.int32)
     sc = np.ascontiguousarray(surface_counts, dtype=np.int32)
     shc = np.ascontiguousarray(surface_head_coeffs, dtype=np.int32)
     group_offsets_all = np.ascontiguousarray(group_offsets, dtype=np.int32)
@@ -154,9 +155,11 @@ def _score_upload_once(*, group_meta, group_offsets, group_lengths, primary, sec
     best_scores = np.full((group_count,), np.iinfo(np.int32).min, dtype=np.int32)
 
     # ---- upload the pool ONCE ----
+    d_pattern_ids = ti.ndarray(dtype=ti.i32, shape=spid.shape)
     d_words = ti.ndarray(dtype=ti.u32, shape=sw.shape)
     d_counts = ti.ndarray(dtype=ti.i32, shape=sc.shape)
     d_coeffs = ti.ndarray(dtype=ti.i32, shape=shc.shape)
+    d_pattern_ids.from_numpy(spid)
     d_words.from_numpy(sw)
     d_counts.from_numpy(sc)
     d_coeffs.from_numpy(shc)
@@ -179,7 +182,7 @@ def _score_upload_once(*, group_meta, group_offsets, group_lengths, primary, sec
         details_view = chunk_details[:row_count]
         _fg_response_inner_batch_kernel(
             int(row_count),
-            d_words, d_counts, d_coeffs,            # <-- device-resident, uploaded once
+            d_pattern_ids, d_words, d_counts, d_coeffs,  # device-resident, uploaded once
             group_offsets_all,
             logical_owners_all[int(chunk_start):int(chunk_stop)],
             logical_surfaces_all[int(chunk_start):int(chunk_stop)],
@@ -248,8 +251,11 @@ def main() -> None:
         lambda: _score_response_group_meta_gpu(
             group_meta=group_meta, group_offsets=group_offsets, group_lengths=group_lengths,
             primary_color=primary, secondary_color=secondary, selected_color=selected,
-            ref_arrays=ref, surface_words=surface_words, surface_counts=surface_counts,
-            surface_head_coeffs=surface_head_coeffs,
+            ref_arrays=ref,
+            surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
+            surface_pattern_words=surface_words,
+            surface_counts=surface_counts,
+            surface_pattern_head_coeffs=surface_head_coeffs,
         ),
         label="current (numpy/chunk)",
     )

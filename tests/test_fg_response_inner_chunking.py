@@ -97,6 +97,52 @@ def test_response_surface_head_coeffs_do_not_unpack_per_surface_bits(monkeypatch
     )
 
 
+def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
+
+    pattern_a = np.zeros((8,), dtype=np.uint32)
+    pattern_b = np.zeros((8,), dtype=np.uint32)
+    pattern_b[0] = np.uint32(0b0101)
+    identity_words = np.stack((pattern_a, pattern_a, pattern_b)).astype(np.uint32)
+    shared_words = np.stack((pattern_a, pattern_b)).astype(np.uint32)
+    counts = np.asarray(((0, 0, 0), (2, 0, 0), (1, 0, 0)), dtype=np.int32)
+    group_meta = np.asarray(((0, 10, 10, 10, 120, 60, 4, 3),), dtype=np.int32)
+    common = {
+        "group_meta": group_meta,
+        "group_offsets": np.asarray((0,), dtype=np.int32),
+        "group_lengths": np.asarray((3,), dtype=np.int32),
+        "primary_color": "Rush",
+        "secondary_color": "Flow",
+        "selected_color": "Rush",
+        "ref_arrays": {
+            "Perfect Points": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float64),
+            "Combo Multiplier": np.linspace(2.0, 2.6, TOTAL_ROWS + 1, dtype=np.float64),
+            "Fever Multiplier": np.linspace(3.0, 5.0, TOTAL_ROWS + 1, dtype=np.float64),
+        },
+        "surface_counts": counts,
+    }
+    identity, identity_rows = response_inner._score_response_group_meta_cpu(
+        **common,
+        surface_pattern_ids=np.asarray((0, 1, 2), dtype=np.int32),
+        surface_pattern_words=identity_words,
+        surface_pattern_head_coeffs=response_inner._precompute_surface_head_coeffs(
+            identity_words, head_len=4
+        ),
+    )
+    shared, shared_rows = response_inner._score_response_group_meta_cpu(
+        **common,
+        surface_pattern_ids=np.asarray((0, 0, 1), dtype=np.int32),
+        surface_pattern_words=shared_words,
+        surface_pattern_head_coeffs=response_inner._precompute_surface_head_coeffs(
+            shared_words, head_len=4
+        ),
+    )
+
+    assert identity_rows == shared_rows == 3
+    np.testing.assert_array_equal(shared, identity)
+
+
 def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
@@ -105,9 +151,10 @@ def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monk
 
     def fake_group_kernel(
         group_count,
-        surface_words,
+        surface_pattern_ids,
+        surface_pattern_words,
         surface_counts,
-        surface_head_coeffs,
+        surface_pattern_head_coeffs,
         group_offsets,
         group_lengths,
         group_meta,
@@ -129,9 +176,10 @@ def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monk
 
     def fake_kernel(
         row_count,
-        surface_words,
+        surface_pattern_ids,
+        surface_pattern_words,
         surface_counts,
-        surface_head_coeffs,
+        surface_pattern_head_coeffs,
         group_offsets,
         logical_owners,
         logical_surfaces,
@@ -206,8 +254,12 @@ def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monk
         secondary_color="Flow",
         selected_color="Rush",
         ref_arrays=ref_arrays,
-        surface_words=surface_words,
+        surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
+        surface_pattern_words=surface_words,
         surface_counts=surface_counts,
+        surface_pattern_head_coeffs=response_inner._precompute_surface_head_coeffs(
+            surface_words, head_len=int(group_meta[0, 6])
+        ),
     )
 
     assert logical_surface_rows == 9
@@ -226,9 +278,10 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
 
     def fake_group_kernel(
         group_count,
-        surface_words,
+        surface_pattern_ids,
+        surface_pattern_words,
         surface_counts,
-        surface_head_coeffs,
+        surface_pattern_head_coeffs,
         group_offsets,
         group_lengths,
         group_meta,
@@ -243,9 +296,10 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
 
     def fake_batch_kernel(
         row_count,
-        surface_words,
+        surface_pattern_ids,
+        surface_pattern_words,
         surface_counts,
-        surface_head_coeffs,
+        surface_pattern_head_coeffs,
         group_offsets,
         logical_owners,
         logical_surfaces,
@@ -289,8 +343,12 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
         secondary_color="Flow",
         selected_color="Rush",
         ref_arrays=ref_arrays,
-        surface_words=surface_words,
+        surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
+        surface_pattern_words=surface_words,
         surface_counts=surface_counts,
+        surface_pattern_head_coeffs=response_inner._precompute_surface_head_coeffs(
+            surface_words, head_len=int(group_meta[0, 6])
+        ),
     )
 
     assert group_calls == []
@@ -318,9 +376,10 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
 
     def fake_group_kernel(
         group_count,
-        surface_words,
+        surface_pattern_ids,
+        surface_pattern_words,
         surface_counts,
-        surface_head_coeffs,
+        surface_pattern_head_coeffs,
         group_offsets,
         group_lengths,
         group_meta,
@@ -335,9 +394,10 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
 
     def fake_batch_kernel(
         row_count,
-        surface_words,
+        surface_pattern_ids,
+        surface_pattern_words,
         surface_counts,
-        surface_head_coeffs,
+        surface_pattern_head_coeffs,
         group_offsets,
         logical_owners,
         logical_surfaces,
@@ -379,8 +439,12 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
         secondary_color="Flow",
         selected_color="Rush",
         ref_arrays=ref_arrays,
-        surface_words=surface_words,
+        surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
+        surface_pattern_words=surface_words,
         surface_counts=surface_counts,
+        surface_pattern_head_coeffs=response_inner._precompute_surface_head_coeffs(
+            surface_words, head_len=int(group_meta[0, 6])
+        ),
     )
 
     assert group_calls == []
@@ -394,9 +458,10 @@ def test_response_inner_default_surface_work_cap_keeps_high_work_batch_together(
 
     def fake_batch_kernel(
         row_count,
-        surface_words,
+        surface_pattern_ids,
+        surface_pattern_words,
         surface_counts,
-        surface_head_coeffs,
+        surface_pattern_head_coeffs,
         group_offsets,
         logical_owners,
         logical_surfaces,
@@ -441,8 +506,12 @@ def test_response_inner_default_surface_work_cap_keeps_high_work_batch_together(
         secondary_color="Flow",
         selected_color="Rush",
         ref_arrays=ref_arrays,
-        surface_words=surface_words,
+        surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
+        surface_pattern_words=surface_words,
         surface_counts=surface_counts,
+        surface_pattern_head_coeffs=response_inner._precompute_surface_head_coeffs(
+            surface_words, head_len=int(group_meta[0, 6])
+        ),
     )
 
     assert batch_calls == [surface_count]
@@ -455,9 +524,10 @@ def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
 
     def fake_group_kernel(
         group_count,
-        surface_words,
+        surface_pattern_ids,
+        surface_pattern_words,
         surface_counts,
-        surface_head_coeffs,
+        surface_pattern_head_coeffs,
         group_offsets,
         group_lengths,
         group_meta,
@@ -494,8 +564,12 @@ def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
         secondary_color="Flow",
         selected_color="Rush",
         ref_arrays=ref_arrays,
-        surface_words=surface_words,
+        surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
+        surface_pattern_words=surface_words,
         surface_counts=surface_counts,
+        surface_pattern_head_coeffs=response_inner._precompute_surface_head_coeffs(
+            surface_words, head_len=int(group_meta[0, 6])
+        ),
     )
 
     assert logical_surface_rows == 1

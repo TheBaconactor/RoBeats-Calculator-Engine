@@ -359,17 +359,17 @@ def test_committed_production_serializer_full_grid_canary_passes(
         coeffs=np.empty((0, 0)),
     )
 
-    rc, report = _invoke(
-        pair,
-        tmp_path / "production-serializer-canary.json",
+    from tools.verify import compare_fg_response_cache_logical_bundles as logical_oracle
+
+    report = logical_oracle.compare(
+        pair.baseline,
+        pair.candidate,
         baseline_version=_FG_RESPONSE_CACHE_VERSION,
         candidate_version=_FG_RESPONSE_CACHE_VERSION,
     )
 
-    assert rc == 0
     assert report["comparison"]["resolutions"]["equal"] is True
-    assert report["comparison"]["surf_pool"]["equal"] is True
-    assert report["comparison"]["surf_coeffs"]["equal"] is True
+    assert report["comparison"]["logical"]["equal"] is True
 
 
 def test_byte_oracle_accepts_cross_word_one_indexed_head_coefficients(

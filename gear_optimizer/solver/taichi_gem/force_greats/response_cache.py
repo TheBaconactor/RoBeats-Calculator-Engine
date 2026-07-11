@@ -39,12 +39,14 @@ from .response_cache_store import (
     _scoring_bundle_memory_get,
     _scoring_bundle_memory_put,
     compress_cache_dir_sidecars,
+    load_first_surface_scoring_patterns,
     load_first_surface_scoring_rows,
     purge_stale_version_cache_files,
     release_fg_response_song_memory,
     reset_fg_response_frontier_payload_cache,
     sweep_fg_response_frontier_live_cache,
 )
+from .response_cache_patterns import intern_surface_rows, unpack_surface_patterns
 from .response_cache_types import (
     _FG_RESPONSE_CACHE_VERSION,
     _SCORING_BUNDLE_ARRAY_NAMES,
@@ -76,6 +78,7 @@ __all__ = [
     "frontier_result_from_scoring_bundle_for_stats",
     "all_response_stat_keys",
     "load_first_surface_scoring_rows",
+    "load_first_surface_scoring_patterns",
     "session_head_dominance_box",
     "session_prune_scoring_bundle",
     "load_response_frontier_scoring_bundle",
@@ -253,14 +256,20 @@ def session_prune_scoring_bundle(
     pruned_words = np.ascontiguousarray(words[keep], dtype=np.uint32)
     pruned_counts = np.ascontiguousarray(counts[keep], dtype=np.int32)
     pruned_coeffs = np.ascontiguousarray(coeff_rows[keep].astype(np.int32), dtype=np.int32)
+    pruned_rows = np.empty((int(pruned_words.shape[0]), 11), dtype=np.uint32)
+    pruned_rows[:, :8] = pruned_words
+    pruned_rows[:, 8:11] = np.asarray(pruned_counts, dtype=np.uint32)
+    row_refs, patterns = intern_surface_rows(pruned_rows, pruned_coeffs)
+    pattern_words, pattern_coeffs = unpack_surface_patterns(patterns)
     return dataclasses.replace(
         bundle,
-        surface_words=pruned_words,
-        surface_counts=pruned_counts,
-        surface_head_coeffs=pruned_coeffs,
+        surface_pattern_ids=np.ascontiguousarray(row_refs[:, 0], dtype=np.int32),
+        surface_pattern_words=pattern_words,
+        surface_counts=np.ascontiguousarray(row_refs[:, 1:4], dtype=np.int32),
+        surface_pattern_head_coeffs=pattern_coeffs,
         frontier_offsets=np.ascontiguousarray(new_offsets, dtype=np.int32),
         frontier_lengths=np.ascontiguousarray(kept_lengths, dtype=np.int32),
-        surface_row_count=int(pruned_words.shape[0]),
+        surface_row_count=int(row_refs.shape[0]),
     )
 
 
@@ -448,9 +457,10 @@ def _materialize_scoring_bundle_from_arrays(
     persisted_head_len = arrays.get("first_surface_head_len")
     if persisted_head_len is None or int(np.asarray(persisted_head_len).item()) != int(expected_head_len):
         raise ValueError("FG response frontier scoring bundle has invalid surface head coefficient metadata")
-    surface_words = np.empty((0, 8), dtype=np.uint32)
+    surface_pattern_ids = np.empty((0,), dtype=np.int32)
+    surface_pattern_words = np.empty((0, 8), dtype=np.uint32)
     surface_counts = np.empty((0, 3), dtype=np.int32)
-    surface_head_coeffs = np.empty((0, 4), dtype=np.int32)
+    surface_pattern_head_coeffs = np.empty((0, 4), dtype=np.int32)
     return FgResponseFrontierScoringBundle(
         cache_key=cache_key,
         frontier_idx_by_key=frontier_idx_by_key,
@@ -459,9 +469,10 @@ def _materialize_scoring_bundle_from_arrays(
         non_fever_base_by_ff=np.asarray(arrays["non_fever_base_by_ff"], dtype=np.int32),
         real_time_by_ft=np.asarray(arrays["real_time_by_ft"], dtype=np.float64),
         frontier_meta=np.asarray(arrays["frontier_meta"], dtype=np.int32),
-        surface_words=surface_words,
+        surface_pattern_ids=surface_pattern_ids,
+        surface_pattern_words=surface_pattern_words,
         surface_counts=surface_counts,
-        surface_head_coeffs=surface_head_coeffs,
+        surface_pattern_head_coeffs=surface_pattern_head_coeffs,
         frontier_offsets=np.asarray(arrays["first_offsets"], dtype=np.int32),
         frontier_lengths=np.asarray(arrays["first_counts"], dtype=np.int32),
         surface_row_count=int(np.asarray(arrays["first_surface_row_count"]).item()),

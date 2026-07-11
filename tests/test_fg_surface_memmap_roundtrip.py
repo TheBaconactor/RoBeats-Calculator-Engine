@@ -25,10 +25,15 @@ import pytest
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
+from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import (
+    expand_surface_rows,
+    intern_surface_rows,
+)
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
     _fg_response_disk_cache_path,
     _save_payload,
     _surface_sidecar_paths,
+    load_first_surface_scoring_patterns,
     load_first_surface_scoring_rows,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
@@ -196,11 +201,13 @@ def test_memmap_read_matches_legacy_chunked_read(tmp_path: Path, monkeypatch) ->
     cache_key = ("unit", "memmap-vs-legacy")
     _save_payload(cache_key, _build_payload(pool, total_notes=total_notes))
     new_npz = _fg_response_disk_cache_path(cache_key)
-    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(new_npz)
-    assert pool_sidecar.exists() and coeff_sidecar.exists()
-    # Sidecar bytes match the synthetic surfaces exactly (C-order uint32 / uint16).
-    assert np.array_equal(np.load(pool_sidecar, allow_pickle=False), pool)
-    assert np.array_equal(np.load(coeff_sidecar, allow_pickle=False), coeffs)
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths(new_npz)
+    assert row_sidecar.exists() and pattern_sidecar.exists()
+    row_refs = np.load(row_sidecar, allow_pickle=False)
+    patterns = np.load(pattern_sidecar, allow_pickle=False)
+    expanded_rows, expanded_coeffs = expand_surface_rows(row_refs, patterns)
+    assert np.array_equal(expanded_rows, pool)
+    assert np.array_equal(expanded_coeffs, coeffs.astype(np.int32))
 
     # Legacy path: chunked bundle with a deliberately tiny chunk size to force many chunks.
     legacy_npz = tmp_path / "legacy.npz"
@@ -307,6 +314,66 @@ def test_reader_fails_loud_on_missing_sidecar(tmp_path: Path, monkeypatch) -> No
         load_first_surface_scoring_rows(cache_key, ((0, 1),))
 
 
+def test_surface_pattern_interning_preserves_row_order_and_repeated_patterns() -> None:
+    pool = _synthetic_pool(6)
+    pool[2, :8] = pool[0, :8]
+    pool[4, :8] = pool[0, :8]
+    coeffs = _coeffs_for(pool, total_notes=80)
+
+    row_refs, patterns = intern_surface_rows(pool, coeffs)
+    expanded_rows, expanded_coeffs = expand_surface_rows(row_refs, patterns)
+
+    assert row_refs.shape == (6, 4)
+    assert int(row_refs[0, 0]) == int(row_refs[2, 0]) == int(row_refs[4, 0])
+    assert np.array_equal(expanded_rows, pool)
+    assert np.array_equal(expanded_coeffs, coeffs.astype(np.int32))
+
+
+def test_surface_pattern_interning_rejects_equal_masks_with_different_coefficients() -> None:
+    pool = _synthetic_pool(2)
+    pool[1, :8] = pool[0, :8]
+    coeffs = _coeffs_for(pool, total_notes=80)
+    coeffs[1, 0] = np.uint16(int(coeffs[1, 0]) + 1)
+
+    with pytest.raises(ValueError, match="inconsistent scoring coefficients"):
+        intern_surface_rows(pool, coeffs)
+
+
+def test_surface_pattern_expansion_rejects_invalid_pattern_id() -> None:
+    row_refs = np.asarray([[1, 2, 3, 4]], dtype=np.uint32)
+    patterns = np.zeros((1, 10), dtype=np.uint32)
+
+    with pytest.raises(ValueError, match="invalid head-pattern ID"):
+        expand_surface_rows(row_refs, patterns)
+
+
+def test_compact_scoring_loader_preserves_range_order_and_pattern_sharing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    response_cache_store.reset_fg_response_frontier_payload_cache()
+    pool = _synthetic_pool(6)
+    pool[2, :8] = pool[0, :8]
+    pool[4, :8] = pool[0, :8]
+    cache_key = ("unit", "compact-scoring-loader")
+    _save_payload(cache_key, _build_payload(pool, total_notes=80))
+    ranges = ((4, 2), (0, 3))
+
+    pattern_ids, counts, pattern_words, pattern_coeffs = load_first_surface_scoring_patterns(
+        cache_key,
+        ranges,
+    )
+    expanded_rows, expanded_coeffs = load_first_surface_scoring_rows(cache_key, ranges)
+
+    assert pattern_ids.shape == (5,)
+    assert counts.shape == (5, 3)
+    assert pattern_words.shape[0] < pattern_ids.shape[0]
+    np.testing.assert_array_equal(pattern_words[pattern_ids], expanded_rows[:, :8])
+    np.testing.assert_array_equal(counts, expanded_rows[:, 8:11].astype(np.int32))
+    np.testing.assert_array_equal(pattern_coeffs[pattern_ids], expanded_coeffs)
+
+
 # --------------------------------------------------------------------------------------------------
 # Helper that rewrites a slim bundle back into the legacy chunked layout (for the migration test).
 # --------------------------------------------------------------------------------------------------
@@ -329,7 +396,7 @@ def _make_legacy_layout_from_slim(
     with zipfile.ZipFile(npz_path, mode="r") as source:
         with zipfile.ZipFile(tmp, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as target:
             for member in source.infolist():
-                if member.filename == "first_surface_row_count.npy":
+                if member.filename in {"first_surface_row_count.npy", "first_surface_pattern_count.npy"}:
                     continue
                 target.writestr(member, source.read(member.filename))
 
@@ -345,9 +412,9 @@ def _make_legacy_layout_from_slim(
                 _put(_legacy_coeff_chunk_name(chunk_idx), np.ascontiguousarray(coeffs[start:end]))
     tmp.replace(npz_path)
     # Drop the sidecars the slim writer made so the migration tool re-creates them from chunks.
-    pool_sidecar, coeff_sidecar = _surface_sidecar_paths(npz_path)
-    pool_sidecar.unlink(missing_ok=True)
-    coeff_sidecar.unlink(missing_ok=True)
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths(npz_path)
+    row_sidecar.unlink(missing_ok=True)
+    pattern_sidecar.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------------------------------
