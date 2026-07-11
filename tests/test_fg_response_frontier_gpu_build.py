@@ -2562,6 +2562,138 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
     assert np.all(bucket_tail == -1)
 
 
+def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> None:
+    """Same-mask thinning may feed the first exact reduce, never the bounded suffix.
+
+    The bounded cone inserter is deliberately order-sensitive: a structurally dominated row
+    can still evict a harmless extra before its own later dominator arrives.  A whole-stream
+    pre-reduce therefore changes retained witnesses.  This production-shaped stream crosses
+    the 4,096-row promotion threshold in its first edge batch and pins the retired per-edge
+    schedule exactly; the second batch must still enter the bounded inserter row by row.
+    """
+    from numba.typed import List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_HEAD_SCORES_TYPE,
+        _NUMBA_SURFACE_TYPE,
+        _numba_append_head_generated_candidate,
+        _numba_emit_region2_head_edges,
+        _numba_pack_edge,
+    )
+
+    n = 128
+    first_count = 4_200
+    second_count = 800
+    rng = np.random.default_rng(0)
+    body_fever = rng.integers(0, 80, first_count + second_count, dtype=np.uint64)
+    normal_great = rng.integers(0, 80, first_count + second_count, dtype=np.uint64)
+    fever_great = rng.integers(0, 40, first_count + second_count, dtype=np.uint64)
+    body_values = np.stack(
+        (body_fever, normal_great + fever_great, fever_great), axis=1
+    )
+    body_starts = np.zeros((n + 1,), dtype=np.int32)
+    body_counts = np.zeros((n + 1,), dtype=np.int32)
+    body_starts[101] = 0
+    body_counts[101] = first_count
+    body_starts[102] = first_count
+    body_counts[102] = second_count
+    head_pool = np.zeros((1, 7), dtype=np.uint64)
+    head_state_start = np.zeros((n,), dtype=np.int64)
+    head_state_count = np.zeros((n,), dtype=np.int64)
+    floors = np.arange(n, dtype=np.float32)
+    node_surface = np.empty((1, 7), dtype=np.uint64)
+    node_next = np.empty((1,), dtype=np.int64)
+    bucket_head = np.full((n + 2,), -1, dtype=np.int64)
+    bucket_tail = np.full((n + 2,), -1, dtype=np.int64)
+    pending_ends = np.empty((n + 2,), dtype=np.int64)
+    starts = np.full((n + 2,), 2, dtype=np.int64)
+    starts[0] = 0
+    table_columns = (
+        np.asarray([1, 1], dtype=np.int32),
+        np.asarray([0, 0], dtype=np.int32),
+        np.asarray([1, 1], dtype=np.int32),
+        np.asarray([0, 0], dtype=np.int32),
+        np.asarray([101.0, 102.0], dtype=np.float64),
+        np.asarray([101.0, 102.0], dtype=np.float64),
+        np.asarray([1, 1], dtype=np.int32),
+    )
+
+    expected = List.empty_list(_NUMBA_SURFACE_TYPE)
+    expected_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    bounded = 0
+    for end_e in (101, 102):
+        edge = _numba_pack_edge(n, 0, end_e, 1, 1, -1)
+        expected, expected_scores, added, bounded = (
+            _numba_append_head_generated_candidate(
+                expected,
+                expected_scores,
+                edge,
+                end_e,
+                body_values,
+                body_starts,
+                body_counts,
+                head_pool,
+                head_state_start,
+                head_state_count,
+                100,
+                0,
+                100,
+                0,
+                bounded,
+            )
+        )
+        assert added == body_counts[end_e]
+    assert bounded == 1
+
+    actual = List.empty_list(_NUMBA_SURFACE_TYPE)
+    actual_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    actual, actual_scores, added, actual_bounded, _node_surface, _node_next = (
+        _numba_emit_region2_head_edges(
+            actual,
+            actual_scores,
+            node_surface,
+            node_next,
+            bucket_head,
+            bucket_tail,
+            pending_ends,
+            n,
+            0,
+            starts,
+            table_columns[0],
+            table_columns[1],
+            table_columns[2],
+            table_columns[3],
+            table_columns[4],
+            table_columns[5],
+            table_columns[6],
+            floors,
+            floors,
+            0.0,
+            1,
+            body_values,
+            body_starts,
+            body_counts,
+            head_pool,
+            head_state_start,
+            head_state_count,
+            100,
+            0,
+            100,
+            0,
+            0,
+        )
+    )
+
+    assert added == first_count + second_count
+    assert actual_bounded == bounded == 1
+    assert list(actual) == list(expected)
+    assert len(actual_scores) == len(expected_scores) == len(actual)
+    for actual_row, expected_row in zip(actual_scores, expected_scores, strict=True):
+        np.testing.assert_array_equal(actual_row, expected_row)
+    assert np.all(bucket_head == -1)
+    assert np.all(bucket_tail == -1)
+
+
 def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:
     from numba.typed import List
 

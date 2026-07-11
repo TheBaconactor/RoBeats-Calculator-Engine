@@ -1909,76 +1909,105 @@ def _numba_emit_region2_head_edges(
         )
     if int(pending_count) == 0:
         return generated, generated_scores, 0, int(bounded_mode), node_surface, node_next
-    # Issue #116 same-mask pre-reduction: region2 candidates concentrate into few distinct
-    # head-mask groups (912 groups over 1.2M candidates measured on the 7,027-note monster
-    # chart), and within one group the downstream `_numba_reduce` keeps only the weak
-    # count-dominance maxima. Running that exact same-mask reduce here, BEFORE any 16-corner
-    # cone scoring/insertion, drops the dominated bulk (16-23.5x measured) at integer-compare
-    # cost. Removals are a subset of `_numba_reduce`'s own removals with identical first-wins
-    # tie handling, and survivors keep the exact candidate stream order, so the retained
-    # frontier is unchanged. Reducer state is call-local and grow-doubling; only rows kept at
-    # arrival are stored.
+    # Same-mask pre-reduction is exact only while the canonical path is still accumulating
+    # rows for its first `_numba_reduce`. Once promotion enters the order-sensitive cone
+    # inserter, even a structurally dominated row can affect which harmless extra witnesses
+    # survive. Preserve the old per-edge promotion schedule: pre-reduce the unbounded prefix,
+    # force the same first promotion after the same raw batch crosses the threshold, then feed
+    # every later row through the unchanged bounded inserter in producer order.
     cand_rows = np.empty((256, 7), dtype=np.uint64)
     cand_prev = np.empty(256, dtype=np.int64)
     cand_kept = np.empty(256, dtype=np.int64)
     cand_cursor = 0
     mask_head = Dict.empty(_NUMBA_MASK_GROUP_KEY_TYPE, types.int64)
+    raw_unbounded_len = len(generated)
+    prereduced_rows_flushed = 0
+    promotion_threshold = int(_numba_head_generated_threshold(int(min_surfaces)))
     for pending_end_idx in range(int(pending_count)):
         end_e = int(pending_ends[int(pending_end_idx)])
         pos = int(bucket_head[int(end_e)])
         while pos != -1:
-            cand_rows, cand_prev, cand_kept, cand_cursor, raw_added = _numba_prereduce_edge_tails(
-                cand_rows,
-                cand_prev,
-                cand_kept,
-                int(cand_cursor),
-                mask_head,
-                _numba_node_surface_tuple(node_surface, pos),
-                int(end_e),
-                body_values,
-                body_starts,
-                body_counts,
-                head_pool,
-                head_state_start,
-                head_state_count,
-                int(head_limit),
-            )
+            edge = _numba_node_surface_tuple(node_surface, pos)
+            if int(bounded_mode) != 0:
+                generated, generated_scores, raw_added, bounded_mode = (
+                    _numba_append_head_generated_candidate(
+                        generated,
+                        generated_scores,
+                        edge,
+                        int(end_e),
+                        body_values,
+                        body_starts,
+                        body_counts,
+                        head_pool,
+                        head_state_start,
+                        head_state_count,
+                        int(head_limit),
+                        int(lo_pos),
+                        int(hi_pos),
+                        int(min_surfaces),
+                        int(bounded_mode),
+                    )
+                )
+            else:
+                cand_rows, cand_prev, cand_kept, cand_cursor, raw_added = (
+                    _numba_prereduce_edge_tails(
+                        cand_rows,
+                        cand_prev,
+                        cand_kept,
+                        int(cand_cursor),
+                        mask_head,
+                        edge,
+                        int(end_e),
+                        body_values,
+                        body_starts,
+                        body_counts,
+                        head_pool,
+                        head_state_start,
+                        head_state_count,
+                        int(head_limit),
+                    )
+                )
+                raw_unbounded_len += int(raw_added)
+                if int(raw_unbounded_len) > int(promotion_threshold):
+                    for cand_idx in range(int(cand_cursor)):
+                        if int(cand_kept[int(cand_idx)]) != 0:
+                            generated.append(
+                                (
+                                    cand_rows[int(cand_idx), 0],
+                                    cand_rows[int(cand_idx), 1],
+                                    cand_rows[int(cand_idx), 2],
+                                    cand_rows[int(cand_idx), 3],
+                                    cand_rows[int(cand_idx), 4],
+                                    cand_rows[int(cand_idx), 5],
+                                    cand_rows[int(cand_idx), 6],
+                                )
+                            )
+                    generated, generated_scores = _numba_promote_head_generated_with_scores(
+                        generated,
+                        int(lo_pos),
+                        int(hi_pos),
+                        int(min_surfaces),
+                    )
+                    bounded_mode = 1
+                    prereduced_rows_flushed = 1
             added_total += int(raw_added)
             pos = int(node_next[pos])
         bucket_head[int(end_e)] = -1
         bucket_tail[int(end_e)] = -1
-    cand_scores = np.empty(16, dtype=np.float64)
-    for cand_idx in range(int(cand_cursor)):
-        if int(cand_kept[int(cand_idx)]) == 0:
-            continue
-        candidate = (
-            cand_rows[int(cand_idx), 0],
-            cand_rows[int(cand_idx), 1],
-            cand_rows[int(cand_idx), 2],
-            cand_rows[int(cand_idx), 3],
-            cand_rows[int(cand_idx), 4],
-            cand_rows[int(cand_idx), 5],
-            cand_rows[int(cand_idx), 6],
-        )
-        if int(bounded_mode) != 0:
-            _numba_head_basis_corner_scores_row(
-                _numba_head_surface_basis(candidate, int(lo_pos), int(hi_pos)), cand_scores
-            )
-            generated, generated_scores = _numba_head_envelope_insert_with_scores(
-                generated, generated_scores, candidate, cand_scores
-            )
-        else:
-            generated.append(candidate)
-            generated, generated_scores, bounded_mode = (
-                _numba_maybe_promote_head_generated_with_scores(
-                    generated,
-                    generated_scores,
-                    int(lo_pos),
-                    int(hi_pos),
-                    int(min_surfaces),
-                    int(bounded_mode),
+    if int(prereduced_rows_flushed) == 0:
+        for cand_idx in range(int(cand_cursor)):
+            if int(cand_kept[int(cand_idx)]) != 0:
+                generated.append(
+                    (
+                        cand_rows[int(cand_idx), 0],
+                        cand_rows[int(cand_idx), 1],
+                        cand_rows[int(cand_idx), 2],
+                        cand_rows[int(cand_idx), 3],
+                        cand_rows[int(cand_idx), 4],
+                        cand_rows[int(cand_idx), 5],
+                        cand_rows[int(cand_idx), 6],
+                    )
                 )
-            )
     return generated, generated_scores, int(added_total), int(bounded_mode), node_surface, node_next
 
 
@@ -2489,6 +2518,26 @@ def _numba_append_head_generated_candidate(
 
 
 @njit(cache=True, nogil=True)
+def _numba_promote_head_generated_with_scores(
+    generated,
+    lo_pos,
+    hi_pos,
+    min_surfaces,
+):
+    promoted = _numba_head_envelope_filter(
+        _numba_reduce(generated), int(lo_pos), int(hi_pos), int(min_surfaces)
+    )
+    promoted_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    for idx in range(len(promoted)):
+        row = np.empty(16, dtype=np.float64)
+        _numba_head_basis_corner_scores_row(
+            _numba_head_surface_basis(promoted[idx], int(lo_pos), int(hi_pos)), row
+        )
+        promoted_scores.append(row)
+    return promoted, promoted_scores
+
+
+@njit(cache=True, nogil=True)
 def _numba_maybe_promote_head_generated_with_scores(
     generated,
     generated_scores,
@@ -2501,16 +2550,9 @@ def _numba_maybe_promote_head_generated_with_scores(
         return generated, generated_scores, 1
     if len(generated) <= int(_numba_head_generated_threshold(int(min_surfaces))):
         return generated, generated_scores, 0
-    promoted = _numba_head_envelope_filter(
-        _numba_reduce(generated), int(lo_pos), int(hi_pos), int(min_surfaces)
+    promoted, promoted_scores = _numba_promote_head_generated_with_scores(
+        generated, int(lo_pos), int(hi_pos), int(min_surfaces)
     )
-    promoted_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
-    for idx in range(len(promoted)):
-        row = np.empty(16, dtype=np.float64)
-        _numba_head_basis_corner_scores_row(
-            _numba_head_surface_basis(promoted[idx], int(lo_pos), int(hi_pos)), row
-        )
-        promoted_scores.append(row)
     return promoted, promoted_scores, 1
 
 
