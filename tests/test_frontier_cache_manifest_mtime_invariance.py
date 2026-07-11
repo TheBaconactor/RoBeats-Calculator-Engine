@@ -58,6 +58,29 @@ def _seed_manifest_entry(song_path: Path, cache_path: Path, manifest_path: Path)
     )
 
 
+def test_manifestless_derived_cache_hit_needs_no_builder_manifest_write(tmp_path: Path) -> None:
+    song_path = tmp_path / "isolated-job.txt"
+    cache_path = tmp_path / "content-addressed-cache.npz"
+    manifest_path = tmp_path / "manifest.json"
+    song_path.write_text("chart", encoding="utf-8")
+    cache_path.write_text("valid", encoding="utf-8")
+
+    plan = build_manifest_plan(
+        [str(song_path)],
+        manifest_path=manifest_path,
+        cache_version="v1",
+        version_field="version",
+        ref_sig_hex="ref",
+        cache_file_validator=lambda path: Path(path).read_text(encoding="utf-8") == "valid",
+        derived_cache_file_fn=lambda _song_path: str(cache_path),
+        persist_validated_entries=False,
+    )
+
+    assert plan.hit_paths == (str(song_path),)
+    assert plan.missing_paths == ()
+    assert not manifest_path.exists()
+
+
 def test_manifest_fast_path_survives_mtime_touch(tmp_path: Path) -> None:
     song_path = tmp_path / "Song.txt"
     cache_dir = tmp_path / "cache"
