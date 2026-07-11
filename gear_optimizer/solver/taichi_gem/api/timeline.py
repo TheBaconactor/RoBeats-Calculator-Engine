@@ -1295,10 +1295,21 @@ def load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> Timelin
     if payload is None:
         timing_mode = str((calc_song.get("metadata", {}) or {}).get("TimingEnvelopeMode", "") or "").strip().lower()
         if timing_mode != "zero_ms":
-            raise MissingFrontierCacheError(
-                "Timeline frontier payload is missing. Startup cache prebuild must build the "
-                "candidate-independent all-FT/FF timeline frontier before runtime scoring."
-            )
+            # >>> ZERO_MS_ONLY_TEMP (github issue #125): temporary fallback begin <<<
+            # The Perfect-window (input-aware) timing frontier is under development and is
+            # intentionally NOT prebuilt on the website-no-timing-frontiers release branch, so a
+            # non-zero_ms request finds no payload here. Only zero_ms can be served, so rather
+            # than fail loud we coerce the request to the fixed chart-time (zero_ms) payload --
+            # the chart timeline is identical either way -- and the call still gets through.
+            # RESTORE the raise below (and delete the coercion) when the timing model ships.
+            #     raise MissingFrontierCacheError(
+            #         "Timeline frontier payload is missing. Startup cache prebuild must build the "
+            #         "candidate-independent all-FT/FF timeline frontier before runtime scoring."
+            #     )
+            from gear_optimizer.solver.zero_ms_only_temp import coerce_calc_song_to_zero_ms
+
+            calc_song = coerce_calc_song_to_zero_ms(calc_song)
+            # >>> ZERO_MS_ONLY_TEMP end <<<
         payload = _build_zero_ms_timeline_payload(calc_song, ref_arrays)
         cache_source = "fixed_zero_ms"
         moment = time.monotonic()
