@@ -32,6 +32,7 @@ def _context(**changes) -> FgPrebuildTimingContext:
         "ref_signature": "ref-a",
         "stat_signature": "stats-a",
         "frontier_cpus": 31,
+        "max_workers": 6,
     }
     values.update(changes)
     return FgPrebuildTimingContext(**values)

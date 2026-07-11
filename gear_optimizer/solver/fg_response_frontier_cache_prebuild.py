@@ -22,8 +22,12 @@ from gear_optimizer.core.profile_events import emit_profile_event, profile_event
 from gear_optimizer.solver.fg_response_frontier_timing_history import (
     FgPrebuildChart,
     FgPrebuildScheduledChart,
-    FgPrebuildTimingHistory,
+    FgPrebuildTimingContext,
     fg_prebuild_chart_digest,
+    fg_prebuild_cpu_identity,
+    load_fg_prebuild_timing_history,
+    predict_fg_prebuild_duration,
+    update_fg_prebuild_timing_history,
 )
 from gear_optimizer.solver.frontier_cache_manifest import (
     apply_manifest_results as _shared_apply_manifest_results,
@@ -619,13 +623,20 @@ def _run_missing_fg_prebuild(
         int(heaviest.note_count),
         float(heaviest_weight),
     )
-    timing_history = FgPrebuildTimingHistory.open(
-        timing_history_path,
-        algorithm_version=_cache_version(),
-        ref_signature=_ref_axes_signature(ref_arrays),
-        stat_signature=_stat_keys_signature(stat_keys),
-        frontier_cpus=int(frontier_cpus),
+    history_records = (
+        load_fg_prebuild_timing_history(timing_history_path)
+        if timing_history_path is not None
+        else []
     )
+    cpu_identity = fg_prebuild_cpu_identity()
+    base_context = {
+        "algorithm_version": _cache_version(),
+        "cpu_identity": cpu_identity,
+        "ref_signature": _ref_axes_signature(ref_arrays),
+        "stat_signature": _stat_keys_signature(stat_keys),
+        "frontier_cpus": int(frontier_cpus),
+        "max_workers": int(max_workers),
+    }
     pending = []
     for chart in build_items:
         weight_gb = _fg_prebuild_song_weight_gb(int(chart.note_count))
@@ -635,7 +646,19 @@ def _run_missing_fg_prebuild(
             max_workers=max_workers,
             frontier_cpus=frontier_cpus,
         )
-        pending.append(timing_history.schedule(chart, reducer_threads=int(reducer_threads)))
+        context = FgPrebuildTimingContext(
+            **base_context,
+            reducer_threads=int(reducer_threads),
+        )
+        prediction = predict_fg_prebuild_duration(chart, context, history_records)
+        pending.append(
+            FgPrebuildScheduledChart(
+                chart=chart,
+                reducer_threads=int(reducer_threads),
+                context=context,
+                prediction=prediction,
+            )
+        )
     pending.sort(
         key=lambda item: (-float(item.prediction.duration_ms), str(item.chart.path).lower())
     )
@@ -737,6 +760,7 @@ def _run_missing_fg_prebuild(
                 for future in done:
                     scheduled, weight_gb = in_flight.pop(future)
                     chart = scheduled.chart
+                    context = scheduled.context
                     prediction = scheduled.prediction
                     path = str(chart.path)
                     admitted_weight_gb -= float(weight_gb)
@@ -751,12 +775,11 @@ def _run_missing_fg_prebuild(
                     results.append(result)
                     source_counts[result.source] += 1
                     if str(result.source) == "built" and float(result.build_ms) > 0.0:
-                        relative_error = timing_history.record_completed(
-                            scheduled,
-                            duration_ms=float(result.build_ms),
-                        )
-                        if relative_error is not None:
-                            prediction_relative_errors.append(float(relative_error))
+                        if str(prediction.source) != "notes":
+                            prediction_relative_errors.append(
+                                abs(float(prediction.duration_ms) - float(result.build_ms))
+                                / float(result.build_ms)
+                            )
                         emit_profile_event(
                             component="fg_response_cache",
                             event="prebuild_prediction",
@@ -767,6 +790,21 @@ def _run_missing_fg_prebuild(
                                 "prediction_source": str(prediction.source),
                             },
                         )
+                        if timing_history_path is not None:
+                            try:
+                                history_records = update_fg_prebuild_timing_history(
+                                    timing_history_path,
+                                    history_records,
+                                    chart=chart,
+                                    context=context,
+                                    duration_ms=float(result.build_ms),
+                                )
+                            except OSError as exc:
+                                logger.warning(
+                                    "[FGResponseCache] Failed to persist timing history %s: %s",
+                                    timing_history_path,
+                                    exc,
+                                )
                     if duplicate_paths:
                         duplicate_source = "disk" if result.cache_file and os.path.exists(result.cache_file) else result.source
                         for duplicate_path in duplicate_paths:

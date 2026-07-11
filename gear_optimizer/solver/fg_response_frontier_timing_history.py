@@ -6,7 +6,6 @@ import logging
 import math
 import os
 import platform
-import statistics
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -35,6 +34,7 @@ class FgPrebuildTimingContext:
     ref_signature: str
     stat_signature: str
     frontier_cpus: int
+    max_workers: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,75 +49,6 @@ class FgPrebuildScheduledChart:
     reducer_threads: int
     context: FgPrebuildTimingContext
     prediction: FgPrebuildTimingPrediction
-
-
-@dataclass(slots=True)
-class FgPrebuildTimingHistory:
-    path: Path | None
-    algorithm_version: str
-    ref_signature: str
-    stat_signature: str
-    frontier_cpus: int
-    cpu_identity: str
-    records: list[dict[str, Any]]
-
-    @classmethod
-    def open(
-        cls,
-        path: Path | None,
-        *,
-        algorithm_version: str,
-        ref_signature: str,
-        stat_signature: str,
-        frontier_cpus: int,
-    ) -> FgPrebuildTimingHistory:
-        return cls(
-            path=path,
-            algorithm_version=str(algorithm_version),
-            ref_signature=str(ref_signature),
-            stat_signature=str(stat_signature),
-            frontier_cpus=int(frontier_cpus),
-            cpu_identity=fg_prebuild_cpu_identity(),
-            records=load_fg_prebuild_timing_history(path) if path is not None else [],
-        )
-
-    def schedule(self, chart: FgPrebuildChart, *, reducer_threads: int) -> FgPrebuildScheduledChart:
-        context = FgPrebuildTimingContext(
-            algorithm_version=self.algorithm_version,
-            cpu_identity=self.cpu_identity,
-            reducer_threads=int(reducer_threads),
-            ref_signature=self.ref_signature,
-            stat_signature=self.stat_signature,
-            frontier_cpus=self.frontier_cpus,
-        )
-        return FgPrebuildScheduledChart(
-            chart=chart,
-            reducer_threads=int(reducer_threads),
-            context=context,
-            prediction=predict_fg_prebuild_duration(chart, context, self.records),
-        )
-
-    def record_completed(self, scheduled: FgPrebuildScheduledChart, *, duration_ms: float) -> float | None:
-        measured_ms = _finite_positive(duration_ms)
-        if measured_ms is None:
-            raise ValueError("FG timing history received an invalid completed-build duration")
-        relative_error = None
-        if scheduled.prediction.source != "notes":
-            relative_error = abs(float(scheduled.prediction.duration_ms) - measured_ms) / measured_ms
-        if self.path is not None:
-            try:
-                self.records = update_fg_prebuild_timing_history(
-                    self.path,
-                    self.records,
-                    chart=scheduled.chart,
-                    context=scheduled.context,
-                    duration_ms=measured_ms,
-                )
-            except OSError as exc:
-                logger.warning(
-                    "[FGResponseCache] Failed to persist timing history %s: %s", self.path, exc
-                )
-        return relative_error
 
 
 def fg_prebuild_chart_digest(song_cache_key: tuple) -> str:
@@ -171,6 +102,7 @@ def _structural_prediction_ms(
 ) -> float | None:
     candidates: list[tuple[float, float]] = []
     current_notes = max(1, int(chart.note_count))
+    current_long_ratio = float(chart.long_notes) / float(current_notes)
     current_duration = max(0.001, float(chart.duration_sec))
     for record in compatible:
         duration_ms = _finite_positive(record.get("duration_ms"))
@@ -179,17 +111,24 @@ def _structural_prediction_ms(
         chart_duration = _finite_positive(record.get("chart_duration_sec"))
         if duration_ms is None or note_count <= 0 or chart_duration is None:
             continue
+        long_ratio = float(long_notes) / float(note_count)
         distance = (
             abs(math.log(float(current_notes) / float(note_count)))
-            + abs(math.log(float(max(0, int(chart.long_notes)) + 1) / float(max(0, long_notes) + 1)))
-            + abs(math.log(current_duration / float(chart_duration)))
+            + abs(current_long_ratio - long_ratio)
+            + 0.25 * abs(math.log(current_duration / float(chart_duration)))
         )
         scaled_ms = float(duration_ms) * float(current_notes) / float(note_count)
         candidates.append((float(distance), float(scaled_ms)))
     if len(candidates) < 3:
         return None
-    nearest = sorted(candidates)[:3]
-    return float(statistics.median(scaled_ms for _distance, scaled_ms in nearest))
+    nearest = sorted(candidates)[: min(5, len(candidates))]
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for distance, scaled_ms in nearest:
+        weight = 1.0 / max(0.05, float(distance))
+        weighted_sum += float(scaled_ms) * weight
+        total_weight += weight
+    return float(weighted_sum / total_weight)
 
 
 def predict_fg_prebuild_duration(
