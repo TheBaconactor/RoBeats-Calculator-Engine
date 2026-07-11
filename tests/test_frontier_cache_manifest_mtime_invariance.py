@@ -1,8 +1,8 @@
 """Regression guard for the frontier-cache manifest fast-path identity check.
 
-Both the timeline and FG response-frontier caches mark recently-used bundles by bumping their
-mtime via ``os.utime`` (idle-TTL retention/purge). The manifest fast-path must therefore key on
-cache-file *size*, not *mtime* -- otherwise a retention touch invalidates the recorded identity and
+External copies and filesystem maintenance can change frontier-cache mtimes without changing their
+bytes. The manifest fast-path must therefore key on cache-file *size*, not *mtime* -- otherwise a
+touch invalidates the recorded identity and
 the expensive per-file validator re-runs for every song on every startup (the measured FG defect:
 fast-path hit 0/6704 -> ~100s warm verify vs timeline's ~9s).
 
@@ -69,8 +69,7 @@ def test_manifest_fast_path_survives_mtime_touch(tmp_path: Path) -> None:
 
     _seed_manifest_entry(song_path, cache_path, manifest_path)
 
-    # Simulate the retention touch: identical bytes, a clearly different mtime (os.utime is exactly
-    # what _touch_*_bundle_files does for idle-TTL bookkeeping).
+    # Simulate an external-copy touch: identical bytes, a clearly different mtime.
     before_ns = cache_path.stat().st_mtime_ns
     future = cache_path.stat().st_mtime + 10_000.0
     os.utime(cache_path, (future, future))

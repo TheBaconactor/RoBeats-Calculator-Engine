@@ -14,7 +14,6 @@ import numpy as np
 from numpy.lib import format as np_format
 
 from gear_optimizer.core.constants import TOTAL_ROWS
-from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 
 from .response_cache_keys import (
@@ -57,38 +56,6 @@ _SURFACE_POOL_COLUMNS = 11
 _SURFACE_COEFF_COLUMNS = 4
 
 
-def _fg_response_idle_ttl_seconds() -> float | None:
-    raw = str(env_get("ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS", "") or "").strip()
-    if not raw:
-        return None
-    try:
-        ttl = float(raw)
-    except (TypeError, ValueError):
-        return None
-    return ttl if ttl > 0.0 else None
-
-
-_LIVE_CACHE_DISK_IDLE_TTL_MULTIPLIER = 2.0
-
-
-def _fg_response_disk_idle_ttl_seconds(idle_ttl_seconds: float | None = None) -> float | None:
-    ram_ttl = _fg_response_idle_ttl_seconds() if idle_ttl_seconds is None else idle_ttl_seconds
-    if ram_ttl is None or float(ram_ttl) <= 0.0:
-        return None
-    return float(ram_ttl) * _LIVE_CACHE_DISK_IDLE_TTL_MULTIPLIER
-
-
-def _fg_response_entry_idle_expired(
-    last_access: float | None,
-    *,
-    idle_ttl_seconds: float | None,
-    moment: float,
-) -> bool:
-    return idle_ttl_seconds is not None and idle_ttl_seconds > 0.0 and (
-        last_access is None or moment - float(last_access) > float(idle_ttl_seconds)
-    )
-
-
 def _memory_cache_get_locked(
     cache: OrderedDict,
     last_access: dict[tuple, float],
@@ -97,16 +64,7 @@ def _memory_cache_get_locked(
     cached = cache.get(cache_key)
     if cached is None:
         return None
-    ttl = _fg_response_idle_ttl_seconds()
     moment = time.monotonic()
-    if _fg_response_entry_idle_expired(
-        last_access.get(cache_key),
-        idle_ttl_seconds=ttl,
-        moment=moment,
-    ):
-        cache.pop(cache_key, None)
-        last_access.pop(cache_key, None)
-        return None
     cache.move_to_end(cache_key)
     last_access[cache_key] = moment
     return cached
@@ -127,30 +85,6 @@ def _memory_cache_put_locked(
     while len(cache) > int(max_entries):
         stale_key, _stale_value = cache.popitem(last=False)
         last_access.pop(stale_key, None)
-
-
-def _sweep_fg_response_memory_cache_locked(
-    cache: OrderedDict,
-    last_access: dict[tuple, float],
-    *,
-    idle_ttl_seconds: float | None,
-    moment: float,
-) -> int:
-    if idle_ttl_seconds is None or idle_ttl_seconds <= 0.0:
-        return 0
-    removed = 0
-    while cache:
-        oldest_key = next(iter(cache))
-        if not _fg_response_entry_idle_expired(
-            last_access.get(oldest_key),
-            idle_ttl_seconds=idle_ttl_seconds,
-            moment=moment,
-        ):
-            break
-        cache.pop(oldest_key, None)
-        last_access.pop(oldest_key, None)
-        removed += 1
-    return removed
 
 
 class FgResponseSurfaceSidecarError(RuntimeError):
@@ -194,14 +128,6 @@ def warm_surface_sidecar_page_cache(cache_key: tuple) -> None:
             return
 
 
-def _touch_fg_response_bundle_files(bundle_path: Path) -> None:
-    for path in (bundle_path, *_surface_sidecar_paths(bundle_path)):
-        try:
-            os.utime(path, None)
-        except OSError:
-            pass
-
-
 def _remove_fg_response_bundle_files(bundle_path: Path) -> int:
     removed = 0
     for path in (bundle_path, *_surface_sidecar_paths(bundle_path)):
@@ -217,24 +143,8 @@ def _remove_fg_response_bundle_files(bundle_path: Path) -> int:
 
 def _live_fg_response_bundle_path(
     bundle_path: Path,
-    *,
-    idle_ttl_seconds: float | None = None,
-    now: float | None = None,
 ) -> Path | None:
-    if not bundle_path.exists():
-        return None
-    ttl = _fg_response_idle_ttl_seconds() if idle_ttl_seconds is None else idle_ttl_seconds
-    disk_ttl = _fg_response_disk_idle_ttl_seconds(ttl)
-    if disk_ttl is not None and disk_ttl > 0.0:
-        try:
-            stat = bundle_path.stat()
-        except OSError:
-            return None
-        moment = time.time() if now is None else float(now)
-        if moment - float(stat.st_mtime) > float(disk_ttl):
-            _remove_fg_response_bundle_files(bundle_path)
-            return None
-    return bundle_path
+    return bundle_path if bundle_path.exists() else None
 
 
 def compress_cache_dir_sidecars() -> None:
@@ -474,9 +384,8 @@ def release_fg_response_song_memory(bundle_key: tuple) -> int:
 
     Called once a song's FG scoring is complete: the ~0.5-1.5 GB surface pool it loaded is no
     longer needed for the rest of this run, so drop it from every memory tier instead of letting
-    it sit until the entry-count LRU (`_MEMORY_CACHE_MAX`/`_BUNDLE_ARRAY_CACHE_MAX`) or the
-    serving-only idle sweep (`sweep_fg_response_frontier_live_cache`) evicts it. A standalone
-    optimizer run calls neither, so without this the surfaces accumulate one-per-scored-song and
+    it sit until the entry-count LRU (`_MEMORY_CACHE_MAX`/`_BUNDLE_ARRAY_CACHE_MAX`) evicts it.
+    Without this the surfaces accumulate one-per-scored-song and
     trip the memory guard after only a few dozen songs. Lossless: any later access rebuilds from
     the on-disk bundle.
 
@@ -615,7 +524,6 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
             )
             if payload.raw_fill_by_ff.shape[0] != TOTAL_ROWS + 1 or payload.real_time_by_ft.shape[0] != TOTAL_ROWS + 1:
                 return None
-            _touch_fg_response_bundle_files(path)
             return payload
     except FgResponseSurfaceSidecarError:
         # A current-version .npz whose surface sidecar is gone/mismatched is a desync, not a cache
@@ -692,7 +600,6 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
                 present.add(_normalize_stat_key((int(key_row[0]), int(key_row[1]))))
             if not requested.issubset(present):
                 return None
-            _touch_fg_response_bundle_files(path)
             return (
                 int(total_notes),
                 int(long_notes),
@@ -738,7 +645,6 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
         if missing:
             raise ValueError(f"FG response frontier bundle cache is missing arrays: {missing[:5]!r}")
         loaded = {name: np.asarray(data[name]) for name in requested}
-    _touch_fg_response_bundle_files(path)
     with _frontier_cache_lock:
         cached = _bundle_array_cache.get(cache_key)
         if cached is None:
@@ -841,123 +747,3 @@ def _scoring_bundle_memory_put(bundle_key: tuple, scoring_bundle: FgResponseFron
             scoring_bundle,
             max_entries=_BUNDLE_ARRAY_CACHE_MAX,
         )
-
-
-def _enforce_fg_response_disk_cap(
-    *,
-    max_disk_bytes: int | None,
-    max_disk_files: int | None,
-) -> int:
-    """Bound the on-disk FG response-frontier cache to a hard size/file budget, evicting the
-    least-recently-used bundles (oldest mtime) first. Returns the number of files removed.
-
-    This is a SERVING-mode safety: only ``sweep_fg_response_frontier_live_cache`` (the API's
-    periodic live-cache sweep) passes caps, so a standalone optimizer run -- which writes bundles
-    but never calls the live sweep -- is never throttled by it (it keeps the idle-TTL-only
-    behavior). Lossless: an evicted bundle is rebuilt on next access. Each bundle is sized as its
-    .npz plus the two surface sidecars so they evict as one unit (mirrors the on-demand rank
-    cache's prune_cache_dir)."""
-    cap_bytes = int(max_disk_bytes) if max_disk_bytes and int(max_disk_bytes) > 0 else 0
-    cap_files = int(max_disk_files) if max_disk_files and int(max_disk_files) > 0 else 0
-    if cap_bytes <= 0 and cap_files <= 0:
-        return 0
-    try:
-        bundles = tuple(_fg_response_disk_cache_dir().glob("*.npz"))
-    except OSError:
-        return 0
-    entries: list[tuple[float, int, Path]] = []
-    total_bytes = 0
-    for npz in bundles:
-        size = 0
-        mtime = 0.0
-        present = False
-        for path in (npz, *_surface_sidecar_paths(npz)):
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
-            size += int(stat.st_size)
-            mtime = max(mtime, float(stat.st_mtime))
-            present = True
-        if present:
-            entries.append((mtime, size, npz))
-            total_bytes += size
-    entries.sort(key=lambda item: item[0])  # least-recently-used (oldest mtime) first
-    remaining_files = len(entries)
-    removed = 0
-    for _mtime, size, npz in entries:
-        over_bytes = cap_bytes > 0 and total_bytes > cap_bytes
-        over_files = cap_files > 0 and remaining_files > cap_files
-        if not over_bytes and not over_files:
-            break
-        freed = _remove_fg_response_bundle_files(npz)
-        if freed:
-            removed += freed
-            total_bytes -= size
-            remaining_files -= 1
-    return removed
-
-
-def sweep_fg_response_frontier_live_cache(
-    *,
-    idle_ttl_seconds: float | None = None,
-    now_mono: float | None = None,
-    now_wall: float | None = None,
-    max_disk_bytes: int | None = None,
-    max_disk_files: int | None = None,
-) -> int:
-    ttl = _fg_response_idle_ttl_seconds() if idle_ttl_seconds is None else idle_ttl_seconds
-    if ttl is None or ttl <= 0.0:
-        return 0
-    disk_ttl = _fg_response_disk_idle_ttl_seconds(ttl)
-    removed = 0
-    moment_mono = time.monotonic() if now_mono is None else float(now_mono)
-    with _frontier_cache_lock:
-        removed += _sweep_fg_response_memory_cache_locked(
-            _frontier_cache,
-            _frontier_cache_last_access,
-            idle_ttl_seconds=ttl,
-            moment=moment_mono,
-        )
-        removed += _sweep_fg_response_memory_cache_locked(
-            _payload_cache,
-            _payload_cache_last_access,
-            idle_ttl_seconds=ttl,
-            moment=moment_mono,
-        )
-        removed += _sweep_fg_response_memory_cache_locked(
-            _bundle_array_cache,
-            _bundle_array_cache_last_access,
-            idle_ttl_seconds=ttl,
-            moment=moment_mono,
-        )
-        removed += _sweep_fg_response_memory_cache_locked(
-            _scoring_bundle_cache,
-            _scoring_bundle_cache_last_access,
-            idle_ttl_seconds=ttl,
-            moment=moment_mono,
-        )
-    if disk_ttl is not None and disk_ttl > 0.0:
-        moment_wall = time.time() if now_wall is None else float(now_wall)
-        try:
-            bundle_paths = tuple(_fg_response_disk_cache_dir().glob("*.npz"))
-        except OSError:
-            bundle_paths = ()
-        for bundle_path in bundle_paths:
-            if not bundle_path.exists():
-                continue
-            try:
-                stat = bundle_path.stat()
-            except OSError:
-                continue
-            if moment_wall - float(stat.st_mtime) <= float(disk_ttl):
-                continue
-            removed += _remove_fg_response_bundle_files(bundle_path)
-    # Hard size/file cap (serving-mode): after the idle-TTL pass, evict the oldest bundles until
-    # the on-disk cache is within budget. Runs independently of the disk TTL (the cap bounds total
-    # SSD even when many songs are touched inside one TTL window). Pure disk I/O, idempotent.
-    removed += _enforce_fg_response_disk_cap(
-        max_disk_bytes=max_disk_bytes,
-        max_disk_files=max_disk_files,
-    )
-    return removed
