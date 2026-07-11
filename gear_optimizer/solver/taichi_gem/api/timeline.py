@@ -5,7 +5,6 @@ Startup builds the candidate-independent timeline frontier cache; runtime upload
 the cached grid/frontier payload for the active song slot.
 """
 
-import os
 import time
 import hashlib
 import threading
