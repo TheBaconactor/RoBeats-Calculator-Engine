@@ -18,6 +18,16 @@ def test_app_runs_startup_cache_prebuild_before_gpu_and_live_execution() -> None
     assert cache_idx < gpu_idx < execute_idx
 
 
+def test_standalone_and_website_share_the_startup_cache_owner() -> None:
+    app_source = Path("gear_optimizer/app.py").read_text(encoding="utf-8")
+    service_source = Path("gear_optimizer/robeatsmeta_service.py").read_text(encoding="utf-8")
+
+    assert "run_startup_cpu_work(" in app_source
+    assert "run_startup_cpu_work(" in service_source
+    assert "run_fg_response_frontier_cache_prebuild(" not in service_source
+    assert 'str(REPO_ROOT / "main.py"), "run"' in service_source
+
+
 def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
@@ -395,6 +405,10 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
     monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: _Plan())
     monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
     monkeypatch.setattr(prebuild, "_apply_manifest_results", lambda **_kwargs: 0)
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cache_dir_sidecars_need_compression",
+        lambda: False,
+    )
 
     def _unexpected_lock(*_args, **_kwargs):
         raise AssertionError("cache hits must not acquire the build lock")
@@ -435,6 +449,81 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
     assert summary.completed == 2
     assert summary.disk == 2
     assert compression_calls == 0
+
+
+def test_complete_manifest_enters_locked_maintenance_when_sidecars_need_compression(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from contextlib import nullcontext
+
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+
+    song_path = tmp_path / "Song.txt"
+    song_path.write_text("fake", encoding="utf-8")
+
+    class _Plan:
+        total_paths = 1
+        hit_paths = (str(song_path),)
+        missing_paths = ()
+        key_by_norm_path = {}
+
+        @property
+        def hit_count(self) -> int:
+            return 1
+
+    plan_calls = 0
+
+    def _plan(*_args, **_kwargs):
+        nonlocal plan_calls
+        plan_calls += 1
+        return _Plan()
+
+    compression_calls = 0
+
+    def _compress() -> None:
+        nonlocal compression_calls
+        compression_calls += 1
+
+    monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
+    monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
+    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
+    monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cache_dir_sidecars_need_compression",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
+        lambda: 0,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
+        lambda: 0,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.compress_cache_dir_sidecars",
+        _compress,
+    )
+    monkeypatch.setattr(
+        prebuild,
+        "_run_missing_fg_prebuild",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("complete pool maintenance must not start workers")
+        ),
+    )
+
+    summary = prebuild.run_fg_response_frontier_cache_prebuild(
+        cfg=object(),
+        song_queue=[(str(song_path),)],
+        ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        data_root=tmp_path,
+    )
+
+    assert plan_calls == 2
+    assert compression_calls == 1
+    assert summary.completed == 1
+    assert summary.disk == 1
+    assert summary.built == 0
 
 
 def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch, tmp_path: Path) -> None:
