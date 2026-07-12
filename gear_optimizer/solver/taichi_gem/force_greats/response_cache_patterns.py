@@ -9,37 +9,23 @@ EXPANDED_SURFACE_COLUMNS = 11
 EXPANDED_COEFF_COLUMNS = 4
 
 
-def intern_surface_rows(
+def _intern_surface_row_words(
     surface_rows: np.ndarray,
-    surface_coeffs: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Intern exact head behavior without changing logical surface order.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return row references, exact unique words, and their first source indices.
 
-    Returns ``(row_refs, patterns)``. ``row_refs`` is uint32 ``(rows, 4)`` with
-    ``[pattern_id, body_fever, body_great, body_fever_great]``. ``patterns`` is uint32
-    ``(patterns, 10)`` with eight mask words and two words packing four uint16 coefficients.
-    Equality is structural: every mask word is compared, and the coefficient consistency check
-    prevents a future scoring change from silently merging rows with equal masks but different
-    derived coefficients.
+    ``np.unique(..., axis=0)`` remains the sole pattern-ID owner. Its lexicographic ordering is
+    therefore unchanged from the original V30 writer, while callers that derive coefficients from
+    head words can do that once per returned pattern instead of once per logical surface row.
     """
     rows = np.ascontiguousarray(np.asarray(surface_rows, dtype=np.uint32))
-    coeffs = np.ascontiguousarray(np.asarray(surface_coeffs))
     if rows.ndim != 2 or rows.shape[1] != EXPANDED_SURFACE_COLUMNS:
         raise ValueError("FG response expanded surface rows must have shape (n, 11)")
-    if coeffs.ndim != 2 or coeffs.shape != (rows.shape[0], EXPANDED_COEFF_COLUMNS):
-        raise ValueError("FG response surface coefficients must have shape (n, 4)")
-    if coeffs.size:
-        coeff_min = int(np.min(coeffs))
-        coeff_max = int(np.max(coeffs))
-        if coeff_min < 0 or coeff_max > int(np.iinfo(np.uint16).max):
-            raise ValueError(
-                f"FG response surface head coefficients exceed uint16 bounds: {coeff_min}..{coeff_max}"
-            )
-    coeffs_u16 = np.ascontiguousarray(coeffs, dtype=np.uint16)
     if int(rows.shape[0]) == 0:
         return (
             np.empty((0, SURFACE_ROW_COLUMNS), dtype=np.uint32),
-            np.empty((0, SURFACE_PATTERN_COLUMNS), dtype=np.uint32),
+            np.empty((0, 8), dtype=np.uint32),
+            np.empty((0,), dtype=np.intp),
         )
 
     unique_words, first_indices, inverse = np.unique(
@@ -51,20 +37,81 @@ def intern_surface_rows(
     pattern_count = int(unique_words.shape[0])
     if pattern_count > int(np.iinfo(np.int32).max):
         raise ValueError("FG response surface head-pattern count exceeds scorer int32 ID capacity")
-    pattern_coeffs = np.ascontiguousarray(coeffs_u16[first_indices], dtype=np.uint16)
-    if not np.array_equal(coeffs_u16, pattern_coeffs[inverse]):
-        raise ValueError("FG response equal head masks produced inconsistent scoring coefficients")
 
     row_refs = np.empty((int(rows.shape[0]), SURFACE_ROW_COLUMNS), dtype=np.uint32)
     row_refs[:, 0] = np.asarray(inverse, dtype=np.uint32)
     row_refs[:, 1:4] = rows[:, 8:11]
+    return (
+        np.ascontiguousarray(row_refs),
+        np.ascontiguousarray(unique_words, dtype=np.uint32),
+        np.ascontiguousarray(first_indices, dtype=np.intp),
+    )
 
-    patterns = np.empty((pattern_count, SURFACE_PATTERN_COLUMNS), dtype=np.uint32)
-    patterns[:, :8] = np.asarray(unique_words, dtype=np.uint32)
-    coeffs_u32 = np.asarray(pattern_coeffs, dtype=np.uint32)
+
+def intern_surface_row_words(surface_rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Intern exact head words while retaining every logical row in producer order."""
+    row_refs, unique_words, _first_indices = _intern_surface_row_words(surface_rows)
+    return row_refs, unique_words
+
+
+def pack_surface_patterns(
+    pattern_words: np.ndarray,
+    pattern_coeffs: np.ndarray,
+) -> np.ndarray:
+    """Pack one exact coefficient row for each already-interned head pattern."""
+    words = np.ascontiguousarray(np.asarray(pattern_words, dtype=np.uint32))
+    coeffs = np.ascontiguousarray(np.asarray(pattern_coeffs))
+    if words.ndim != 2 or words.shape[1] != 8:
+        raise ValueError("FG response surface pattern words must have shape (n, 8)")
+    if coeffs.ndim != 2 or coeffs.shape != (words.shape[0], EXPANDED_COEFF_COLUMNS):
+        raise ValueError("FG response surface pattern coefficients must have shape (n, 4)")
+    if int(words.shape[0]) > int(np.iinfo(np.int32).max):
+        raise ValueError("FG response surface head-pattern count exceeds scorer int32 ID capacity")
+    if coeffs.size:
+        coeff_min = int(np.min(coeffs))
+        coeff_max = int(np.max(coeffs))
+        if coeff_min < 0 or coeff_max > int(np.iinfo(np.uint16).max):
+            raise ValueError(
+                f"FG response surface head coefficients exceed uint16 bounds: {coeff_min}..{coeff_max}"
+            )
+    coeffs_u16 = np.ascontiguousarray(coeffs, dtype=np.uint16)
+
+    patterns = np.empty((int(words.shape[0]), SURFACE_PATTERN_COLUMNS), dtype=np.uint32)
+    patterns[:, :8] = words
+    coeffs_u32 = np.asarray(coeffs_u16, dtype=np.uint32)
     patterns[:, 8] = coeffs_u32[:, 0] | (coeffs_u32[:, 1] << np.uint32(16))
     patterns[:, 9] = coeffs_u32[:, 2] | (coeffs_u32[:, 3] << np.uint32(16))
-    return np.ascontiguousarray(row_refs), np.ascontiguousarray(patterns)
+    return np.ascontiguousarray(patterns)
+
+
+def intern_surface_rows(
+    surface_rows: np.ndarray,
+    surface_coeffs: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Intern exact head behavior without changing logical surface order.
+
+    This row-coefficient entry remains the differential/oracle helper. The production writer
+    derives coefficients from the exact unique words via ``intern_surface_row_words`` and
+    ``pack_surface_patterns`` so equal masks cannot compute inconsistent coefficients in the first
+    place. Structural equality and the V30 ``np.unique`` pattern ordering are shared by both paths.
+    """
+    row_refs, unique_words, first_indices = _intern_surface_row_words(surface_rows)
+    coeffs = np.ascontiguousarray(np.asarray(surface_coeffs))
+    if coeffs.ndim != 2 or coeffs.shape != (row_refs.shape[0], EXPANDED_COEFF_COLUMNS):
+        raise ValueError("FG response surface coefficients must have shape (n, 4)")
+    if coeffs.size:
+        coeff_min = int(np.min(coeffs))
+        coeff_max = int(np.max(coeffs))
+        if coeff_min < 0 or coeff_max > int(np.iinfo(np.uint16).max):
+            raise ValueError(
+                f"FG response surface head coefficients exceed uint16 bounds: {coeff_min}..{coeff_max}"
+            )
+    coeffs_u16 = np.ascontiguousarray(coeffs, dtype=np.uint16)
+    pattern_coeffs = np.ascontiguousarray(coeffs_u16[first_indices], dtype=np.uint16)
+    pattern_ids = np.asarray(row_refs[:, 0], dtype=np.intp)
+    if not np.array_equal(coeffs_u16, pattern_coeffs[pattern_ids]):
+        raise ValueError("FG response equal head masks produced inconsistent scoring coefficients")
+    return row_refs, pack_surface_patterns(unique_words, pattern_coeffs)
 
 
 def unpack_surface_patterns(patterns: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

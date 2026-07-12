@@ -45,7 +45,6 @@ from .response_cache_store import (
     release_fg_response_song_memory,
     reset_fg_response_frontier_payload_cache,
 )
-from .response_cache_patterns import intern_surface_rows, unpack_surface_patterns
 from .response_cache_types import (
     _FG_RESPONSE_CACHE_VERSION,
     _SCORING_BUNDLE_ARRAY_NAMES,
@@ -217,17 +216,39 @@ def session_prune_scoring_bundle(
     consumers load the full bundle). Re-runs the 16-corner dominance filter with corners at the
     session's realizable stat box: every dropped row is dominated at every cell this inventory can
     evaluate, so scoring winners are identical while the GPU score loop, uploads, and VRAM shrink
-    to the session-relevant rows. Also materializes the surviving rows in memory, which subsumes
-    the sidecar page-cache warm (no per-batch memmap gathers afterwards)."""
+    to the session-relevant rows. Also materializes the surviving compact pattern IDs/counts in
+    memory, which subsumes the sidecar page-cache warm (no per-batch memmap gathers afterwards)."""
     import dataclasses
 
     row_count = int(bundle.surface_row_count)
     if row_count <= 0:
         return bundle
     v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = session_head_dominance_box(ref_arrays)
-    rows, coeff_rows = load_first_surface_scoring_rows(bundle.cache_key, ((0, row_count),))
-    words = np.ascontiguousarray(rows[:, :8], dtype=np.uint32)
-    counts = np.ascontiguousarray(rows[:, 8:11].astype(np.int32), dtype=np.int32)
+    pattern_ids, counts, pattern_words, pattern_coeffs = load_first_surface_scoring_patterns(
+        bundle.cache_key,
+        ((0, row_count),),
+    )
+    pattern_ids = np.ascontiguousarray(pattern_ids, dtype=np.int32)
+    counts = np.ascontiguousarray(counts, dtype=np.int32)
+    pattern_words = np.ascontiguousarray(pattern_words, dtype=np.uint32)
+    pattern_coeffs = np.ascontiguousarray(pattern_coeffs, dtype=np.int32)
+    if (
+        int(pattern_ids.ndim) != 1
+        or int(pattern_ids.shape[0]) != int(row_count)
+        or int(counts.ndim) != 2
+        or tuple(counts.shape) != (int(row_count), 3)
+        or int(pattern_words.ndim) != 2
+        or int(pattern_words.shape[1]) != 8
+        or int(pattern_coeffs.ndim) != 2
+        or tuple(pattern_coeffs.shape) != (int(pattern_words.shape[0]), 4)
+    ):
+        raise ValueError("session-box prune received an invalid compact surface bundle")
+    if bool(np.any(pattern_ids < 0)) or bool(np.any(pattern_ids >= int(pattern_words.shape[0]))):
+        raise ValueError("session-box prune received an invalid head-pattern ID")
+    # The canonical keep kernel still consumes row-aligned words. Materialize only that predicate
+    # input; IDs, counts, and coefficients remain compact throughout, and survivors never expand
+    # to 11-word logical rows or pass through a second interning step.
+    words = np.ascontiguousarray(pattern_words[pattern_ids], dtype=np.uint32)
     head_len = min(int(bundle.total_notes), 100)
     keep = _numba_session_box_keep_mask(
         words,
@@ -239,6 +260,8 @@ def session_prune_scoring_bundle(
         v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi,
     )
     keep = np.asarray(keep, dtype=bool)
+    if tuple(keep.shape) != (int(row_count),):
+        raise ValueError("session-box prune keep mask has the wrong shape")
     lengths_all = np.asarray(bundle.frontier_lengths, dtype=np.int64)
     offsets_all = np.asarray(bundle.frontier_offsets, dtype=np.int64)
     ends_all = offsets_all + lengths_all
@@ -253,23 +276,22 @@ def session_prune_scoring_bundle(
     new_offsets = kept_prefix[offsets_all]
     if int(kept_prefix[-1]) > int(np.iinfo(np.int32).max):
         raise OverflowError("session-box prune compact surface pool exceeds int32 offsets")
-    pruned_words = np.ascontiguousarray(words[keep], dtype=np.uint32)
     pruned_counts = np.ascontiguousarray(counts[keep], dtype=np.int32)
-    pruned_coeffs = np.ascontiguousarray(coeff_rows[keep].astype(np.int32), dtype=np.int32)
-    pruned_rows = np.empty((int(pruned_words.shape[0]), 11), dtype=np.uint32)
-    pruned_rows[:, :8] = pruned_words
-    pruned_rows[:, 8:11] = np.asarray(pruned_counts, dtype=np.uint32)
-    row_refs, patterns = intern_surface_rows(pruned_rows, pruned_coeffs)
-    pattern_words, pattern_coeffs = unpack_surface_patterns(patterns)
+    # Compact-loader IDs follow the persisted lexicographic pattern order. Uniquing the surviving
+    # IDs therefore recreates exactly the dense IDs/table the retired row re-intern produced.
+    used_pattern_ids, pruned_pattern_ids = np.unique(pattern_ids[keep], return_inverse=True)
+    pruned_pattern_ids = np.ascontiguousarray(pruned_pattern_ids, dtype=np.int32)
+    pruned_pattern_words = np.ascontiguousarray(pattern_words[used_pattern_ids], dtype=np.uint32)
+    pruned_pattern_coeffs = np.ascontiguousarray(pattern_coeffs[used_pattern_ids], dtype=np.int32)
     return dataclasses.replace(
         bundle,
-        surface_pattern_ids=np.ascontiguousarray(row_refs[:, 0], dtype=np.int32),
-        surface_pattern_words=pattern_words,
-        surface_counts=np.ascontiguousarray(row_refs[:, 1:4], dtype=np.int32),
-        surface_pattern_head_coeffs=pattern_coeffs,
+        surface_pattern_ids=pruned_pattern_ids,
+        surface_pattern_words=pruned_pattern_words,
+        surface_counts=pruned_counts,
+        surface_pattern_head_coeffs=pruned_pattern_coeffs,
         frontier_offsets=np.ascontiguousarray(new_offsets, dtype=np.int32),
         frontier_lengths=np.ascontiguousarray(kept_lengths, dtype=np.int32),
-        surface_row_count=int(row_refs.shape[0]),
+        surface_row_count=int(pruned_pattern_ids.shape[0]),
     )
 
 
