@@ -1237,6 +1237,8 @@ def _numba_reduce_pattern_runs(surfaces):
             np.uint64(0),
         ))
         return kept
+    if n > 2_147_483_647:
+        raise OverflowError("pattern-run reducer row count exceeds int32 index capacity")
     # Exact head-pattern-run index for the structural Pareto maximum. Dominance requires equal
     # fever/Great overlap, a fever-mask superset, and a Great-mask subset. Grouping live rows by
     # their complete four-word head pattern lets each run test those cheap mask conditions once,
@@ -1252,15 +1254,24 @@ def _numba_reduce_pattern_runs(surfaces):
     previous_pattern = List.empty_list(types.int64)
     pattern_row_head = List.empty_list(types.int64)
     kept_flag = np.zeros(n, dtype=np.bool_)
-    previous_live = np.full(n, -1, dtype=np.int64)
-    dominator_runs = np.empty(n, dtype=np.int64)
-    dominated_runs = np.empty(n, dtype=np.int64)
+    # Live-row scans consume only these three body coordinates. Project them once into contiguous
+    # columns instead of repeatedly loading a seven-word typed-list tuple and recomputing normal
+    # Great. Links and transient run IDs are checked int32 row indices, halving their footprint.
+    previous_live = np.full(n, -1, dtype=np.int32)
+    body_fever = np.empty(n, dtype=np.uint64)
+    body_normal_great = np.empty(n, dtype=np.uint64)
+    body_fever_great = np.empty(n, dtype=np.uint64)
+    dominator_runs = np.empty(n, dtype=np.int32)
+    dominated_runs = np.empty(n, dtype=np.int32)
     dominator_run_count = 0
     dominated_run_count = 0
     candidate_pattern = -1
     for idx in range(n):
         cf_lo, cf_hi, cg_lo, cg_hi, cbf, cbg, cbfg = surfaces[int(idx)]
         cng = cbg - cbfg
+        body_fever[int(idx)] = cbf
+        body_normal_great[int(idx)] = cng
+        body_fever_great[int(idx)] = cbfg
         overlap_key = (cf_lo & cg_lo, cf_hi & cg_hi)
         if int(candidate_pattern) < 0:
             starts_new_run = True
@@ -1313,11 +1324,10 @@ def _numba_reduce_pattern_runs(surfaces):
             pid = int(dominator_runs[int(run_idx)])
             pos = int(pattern_row_head[int(pid)])
             while int(pos) >= 0:
-                kept_surface = surfaces[int(pos)]
                 if (
-                    kept_surface[4] >= cbf
-                    and kept_surface[5] - kept_surface[6] <= cng
-                    and kept_surface[6] <= cbfg
+                    body_fever[int(pos)] >= cbf
+                    and body_normal_great[int(pos)] <= cng
+                    and body_fever_great[int(pos)] <= cbfg
                 ):
                     dominated = True
                     break
@@ -1334,11 +1344,10 @@ def _numba_reduce_pattern_runs(surfaces):
             previous = -1
             while int(pos) >= 0:
                 next_pos = int(previous_live[int(pos)])
-                kept_surface = surfaces[int(pos)]
                 if (
-                    cbf >= kept_surface[4]
-                    and cng <= kept_surface[5] - kept_surface[6]
-                    and cbfg <= kept_surface[6]
+                    cbf >= body_fever[int(pos)]
+                    and cng <= body_normal_great[int(pos)]
+                    and cbfg <= body_fever_great[int(pos)]
                 ):
                     kept_flag[int(pos)] = False
                     if int(previous) < 0:
