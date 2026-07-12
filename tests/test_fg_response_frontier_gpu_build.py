@@ -407,35 +407,42 @@ def test_fg_region_core_candidate_capacity_bounds_exact_arrays() -> None:
     ]
 
 
-def test_fg_response_region_group_admission_uses_worst_concurrent_bounds() -> None:
+def test_fg_response_region_group_admission_validates_exact_memory_bounds() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_scheduler
 
-    assert response_build_gpu_scheduler._admitted_region_group_threads(
+    assert response_build_gpu_scheduler._validate_region_group_memory_bounds(
         build_peak_bounds=(20, 40, 30),
+        retained_peak_bounds=(10, 20, 15),
         legacy_single_peak_bound=70,
-        thread_limit=3,
-    ) == (2, 70)
-    assert response_build_gpu_scheduler._admitted_region_group_threads(
-        build_peak_bounds=(20, 40, 30),
-        legacy_single_peak_bound=70,
-        thread_limit=1,
-    ) == (1, 40)
-    assert response_build_gpu_scheduler._admitted_region_group_threads(
+    ) is None
+    assert response_build_gpu_scheduler._validate_region_group_memory_bounds(
         build_peak_bounds=(),
+        retained_peak_bounds=(),
         legacy_single_peak_bound=0,
-        thread_limit=8,
-    ) == (1, 0)
+    ) is None
     with pytest.raises(ValueError, match="memory bounds must be nonnegative"):
-        response_build_gpu_scheduler._admitted_region_group_threads(
+        response_build_gpu_scheduler._validate_region_group_memory_bounds(
             build_peak_bounds=(20, -1),
+            retained_peak_bounds=(10, 1),
             legacy_single_peak_bound=70,
-            thread_limit=2,
+        )
+    with pytest.raises(ValueError, match="must align"):
+        response_build_gpu_scheduler._validate_region_group_memory_bounds(
+            build_peak_bounds=(20, 30),
+            retained_peak_bounds=(10,),
+            legacy_single_peak_bound=70,
+        )
+    with pytest.raises(ValueError, match="cannot exceed"):
+        response_build_gpu_scheduler._validate_region_group_memory_bounds(
+            build_peak_bounds=(20,),
+            retained_peak_bounds=(21,),
+            legacy_single_peak_bound=70,
         )
     with pytest.raises(MemoryError, match="historical single-table peak bound"):
-        response_build_gpu_scheduler._admitted_region_group_threads(
+        response_build_gpu_scheduler._validate_region_group_memory_bounds(
             build_peak_bounds=(71,),
+            retained_peak_bounds=(35,),
             legacy_single_peak_bound=70,
-            thread_limit=1,
         )
 
 
@@ -509,7 +516,8 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
         FgResponseSurface,
     )
 
-    barrier = threading.Barrier(2, timeout=5.0)
+    build_barrier = threading.Barrier(2, timeout=5.0)
+    reduce_barrier = threading.Barrier(2, timeout=5.0)
     caller_id = threading.get_ident()
     builder_ids: list[int] = []
     worker_ids: list[int] = []
@@ -539,11 +547,12 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
 
     def _fake_build(*_args):
         builder_ids.append(threading.get_ident())
+        build_barrier.wait()
         return empty_table
 
     def _fake_reduce(**kwargs):
         worker_ids.append(threading.get_ident())
-        barrier.wait()
+        reduce_barrier.wait()
         return [(int(item[0]), result) for item in kwargs["group_items"]]
 
     monkeypatch.setattr(response_build_gpu_scheduler, "_region_table_build_peak_bound_bytes", lambda **_kwargs: 200)
@@ -571,13 +580,14 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
         response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(previous_threads)
 
     assert frontiers == (result, result)
-    assert builder_ids == [caller_id, caller_id]
+    assert caller_id not in builder_ids
+    assert len(set(builder_ids)) == 2
     assert len(set(worker_ids)) == 2
     assert stats["region_table_groups"] == 2
     assert stats["region_table_parallelism"] == 2
     assert stats["region_table_parallel_peak_bound_bytes"] == 400
     assert stats["region_table_legacy_single_peak_bound_bytes"] == 400
-    assert stats["executor_creations"] == 1
+    assert stats["executor_creations"] == 2
 
 
 def test_fg_response_single_group_retains_within_group_reducer(monkeypatch) -> None:
@@ -1884,6 +1894,99 @@ def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
     ]
 
 
+def test_fg_response_pattern_indexed_reducer_matches_sequential_semantics() -> None:
+    from numba.typed import List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_SURFACE_TYPE,
+        _numba_reduce,
+        _numba_reduce_pattern_runs,
+    )
+
+    def dominates(left, right):
+        lf0, lf1, lg0, lg1, lbf, lbg, lbfg = (int(value) for value in left)
+        rf0, rf1, rg0, rg1, rbf, rbg, rbfg = (int(value) for value in right)
+        return (
+            (lf0 & lg0, lf1 & lg1) == (rf0 & rg0, rf1 & rg1)
+            and lbf >= rbf
+            and lbg - lbfg <= rbg - rbfg
+            and lbfg <= rbfg
+            and (rf0 & ~lf0) == 0
+            and (rf1 & ~lf1) == 0
+            and (lg0 & ~rg0) == 0
+            and (lg1 & ~rg1) == 0
+        )
+
+    def sequential(rows):
+        kept = []
+        for candidate in rows:
+            if any(dominates(row, candidate) for row in kept):
+                continue
+            kept = [row for row in kept if not dominates(candidate, row)]
+            kept.append(candidate)
+        return kept
+
+    def assert_matches(rows):
+        surfaces = List.empty_list(_NUMBA_SURFACE_TYPE)
+        for row in rows:
+            surfaces.append(tuple(np.uint64(value) for value in row))
+        expected = sequential(rows)
+        assert list(_numba_reduce(surfaces)) == expected
+        assert list(_numba_reduce_pattern_runs(surfaces)) == expected
+
+    pattern_a = (0b0011, 0, 0b0101, 0)
+    pattern_b = (0b1011, 0, 0b0001, 0)
+    directed_rows = []
+    for pattern, fever_bias, normal_bias in (
+        (pattern_a, 0, 3),
+        (pattern_b, 5, 0),
+        (pattern_a, 2, 1),
+    ):
+        for value in range(24):
+            fever_great = value % 4
+            directed_rows.append(
+                (
+                    *pattern,
+                    fever_bias + value,
+                    normal_bias + value + fever_great,
+                    fever_great,
+                )
+            )
+    directed_rows.extend((directed_rows[3], directed_rows[27], directed_rows[3]))
+    assert_matches(directed_rows)
+
+    rng = np.random.default_rng(116)
+    for _case in range(24):
+        rows = []
+        patterns = []
+        overlaps = [
+            (int(rng.integers(0, 1 << 8)), int(rng.integers(0, 1 << 8)))
+            for _ in range(3)
+        ]
+        for pattern_idx in range(12):
+            overlap0, overlap1 = overlaps[int(pattern_idx) % len(overlaps)]
+            fever0 = overlap0 | int(rng.integers(0, 1 << 16))
+            fever1 = overlap1 | int(rng.integers(0, 1 << 16))
+            great0 = overlap0 | (int(rng.integers(0, 1 << 16)) & ~fever0)
+            great1 = overlap1 | (int(rng.integers(0, 1 << 16)) & ~fever1)
+            patterns.append((fever0, fever1, great0, great1))
+        for row_idx in range(96):
+            pattern = patterns[int(rng.integers(0, len(patterns)))]
+            body_fever_great = int(rng.integers(0, 20))
+            normal_great = int(rng.integers(0, 20))
+            row = (
+                *pattern,
+                int(rng.integers(0, 40)),
+                normal_great + body_fever_great,
+                body_fever_great,
+            )
+            rows.append(row)
+            if row_idx % 17 == 0:
+                rows.append(row)
+
+        assert_matches(rows)
+
+
 def test_fg_response_same_end_head_edge_prune_keeps_different_end_edges() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _numba_append_head_edge_to_end_chains,
@@ -2453,10 +2556,12 @@ def test_fg_response_chained_region_bucket_matches_retired_structured_streams() 
 
 
 def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_order() -> None:
-    from numba.typed import List
+    from numba import types
+    from numba.typed import Dict, List
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _NUMBA_HEAD_SCORES_TYPE,
+        _NUMBA_HEAD_SCORE_MATRIX_TYPE,
         _NUMBA_SURFACE_TYPE,
         _numba_emit_region2_head_edges,
     )
@@ -2498,9 +2603,15 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
     def _emit(columns, shared_surface, shared_next):
         generated = List.empty_list(_NUMBA_SURFACE_TYPE)
         generated_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+        generated_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+        score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+        score_matrix_count = np.zeros(1, dtype=np.int64)
         return _numba_emit_region2_head_edges(
             generated,
             generated_scores,
+            generated_seen,
+            score_matrix_holder,
+            score_matrix_count,
             shared_surface,
             shared_next,
             bucket_head,
@@ -2560,6 +2671,220 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
     assert pending_ends.dtype == np.dtype(np.int64)
     assert np.all(bucket_head == -1)
     assert np.all(bucket_tail == -1)
+
+
+def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> None:
+    """Same-mask thinning may feed the first exact reduce, never the bounded suffix.
+
+    The bounded cone inserter is deliberately order-sensitive: a structurally dominated row
+    can still evict a harmless extra before its own later dominator arrives.  A whole-stream
+    pre-reduce therefore changes retained witnesses.  This production-shaped stream crosses
+    the 4,096-row promotion threshold in its first edge batch and pins the retired per-edge
+    schedule exactly; the second batch must still enter the bounded inserter row by row.
+    """
+    from numba import types
+    from numba.typed import Dict, List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_HEAD_SCORES_TYPE,
+        _NUMBA_HEAD_SCORE_MATRIX_TYPE,
+        _NUMBA_SURFACE_TYPE,
+        _numba_append_head_generated_candidate,
+        _numba_emit_region2_head_edges,
+        _numba_pack_edge,
+    )
+
+    n = 128
+    first_count = 4_200
+    second_count = 800
+    rng = np.random.default_rng(0)
+    body_fever = rng.integers(0, 80, first_count + second_count, dtype=np.uint64)
+    normal_great = rng.integers(0, 80, first_count + second_count, dtype=np.uint64)
+    fever_great = rng.integers(0, 40, first_count + second_count, dtype=np.uint64)
+    body_values = np.stack(
+        (body_fever, normal_great + fever_great, fever_great), axis=1
+    )
+    body_starts = np.zeros((n + 1,), dtype=np.int32)
+    body_counts = np.zeros((n + 1,), dtype=np.int32)
+    body_starts[101] = 0
+    body_counts[101] = first_count
+    body_starts[102] = first_count
+    body_counts[102] = second_count
+    head_pool = np.zeros((1, 7), dtype=np.uint64)
+    head_state_start = np.zeros((n,), dtype=np.int64)
+    head_state_count = np.zeros((n,), dtype=np.int64)
+    floors = np.arange(n, dtype=np.float32)
+    node_surface = np.empty((1, 7), dtype=np.uint64)
+    node_next = np.empty((1,), dtype=np.int64)
+    bucket_head = np.full((n + 2,), -1, dtype=np.int64)
+    bucket_tail = np.full((n + 2,), -1, dtype=np.int64)
+    pending_ends = np.empty((n + 2,), dtype=np.int64)
+    starts = np.full((n + 2,), 2, dtype=np.int64)
+    starts[0] = 0
+    table_columns = (
+        np.asarray([1, 1], dtype=np.int32),
+        np.asarray([0, 0], dtype=np.int32),
+        np.asarray([1, 1], dtype=np.int32),
+        np.asarray([0, 0], dtype=np.int32),
+        np.asarray([101.0, 102.0], dtype=np.float64),
+        np.asarray([101.0, 102.0], dtype=np.float64),
+        np.asarray([1, 1], dtype=np.int32),
+    )
+
+    expected = List.empty_list(_NUMBA_SURFACE_TYPE)
+    expected_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    expected_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+    expected_score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+    expected_score_matrix_count = np.zeros(1, dtype=np.int64)
+    bounded = 0
+    for end_e in (101, 102):
+        edge = _numba_pack_edge(n, 0, end_e, 1, 1, -1)
+        expected, expected_scores, added, bounded = (
+            _numba_append_head_generated_candidate(
+                expected,
+                expected_scores,
+                expected_seen,
+                expected_score_matrix_holder,
+                expected_score_matrix_count,
+                edge,
+                end_e,
+                body_values,
+                body_starts,
+                body_counts,
+                head_pool,
+                head_state_start,
+                head_state_count,
+                100,
+                0,
+                100,
+                0,
+                bounded,
+            )
+        )
+        assert added == body_counts[end_e]
+    assert bounded == 1
+
+    actual = List.empty_list(_NUMBA_SURFACE_TYPE)
+    actual_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    actual_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+    actual_score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+    actual_score_matrix_count = np.zeros(1, dtype=np.int64)
+    actual, actual_scores, added, actual_bounded, _node_surface, _node_next = (
+        _numba_emit_region2_head_edges(
+            actual,
+            actual_scores,
+            actual_seen,
+            actual_score_matrix_holder,
+            actual_score_matrix_count,
+            node_surface,
+            node_next,
+            bucket_head,
+            bucket_tail,
+            pending_ends,
+            n,
+            0,
+            starts,
+            table_columns[0],
+            table_columns[1],
+            table_columns[2],
+            table_columns[3],
+            table_columns[4],
+            table_columns[5],
+            table_columns[6],
+            floors,
+            floors,
+            0.0,
+            1,
+            body_values,
+            body_starts,
+            body_counts,
+            head_pool,
+            head_state_start,
+            head_state_count,
+            100,
+            0,
+            100,
+            0,
+            0,
+        )
+    )
+
+    assert added == first_count + second_count
+    assert actual_bounded == bounded == 1
+    assert list(actual) == list(expected)
+    assert len(actual_scores) == len(expected_scores) == len(actual)
+    for actual_row, expected_row in zip(actual_scores, expected_scores, strict=True):
+        np.testing.assert_array_equal(actual_row, expected_row)
+    assert np.all(bucket_head == -1)
+    assert np.all(bucket_tail == -1)
+
+
+def test_fg_response_bounded_exact_duplicate_skip_matches_every_retired_prefix() -> None:
+    """A duplicate remains inert after its first copy is rejected or repeatedly evicted."""
+    from numba import types
+    from numba.typed import Dict, List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_HEAD_SCORES_TYPE,
+        _NUMBA_HEAD_SCORE_MATRIX_TYPE,
+        _NUMBA_SURFACE_TYPE,
+        _numba_head_basis_corner_scores_row,
+        _numba_head_envelope_insert_blocked_with_scores,
+        _numba_head_envelope_insert_with_scores,
+        _numba_head_surface_basis,
+        _numba_mark_head_surface_first_seen,
+    )
+
+    weak = (0, 0, 0, 0, 25, 50, 25)
+    strong = (0, 0, 0, 0, 60, 50, 25)
+    strongest = (0, 0, 0, 0, 100, 50, 25)
+    stream = (
+        weak,
+        weak,       # duplicate while the original is retained
+        strong,     # evicts weak
+        weak,       # duplicate after its original was evicted
+        strong,
+        strongest,  # evicts strong
+        weak,       # duplicate after a two-link dominator chain
+        strong,
+        strongest,
+    )
+
+    retired = List.empty_list(_NUMBA_SURFACE_TYPE)
+    retired_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    actual = List.empty_list(_NUMBA_SURFACE_TYPE)
+    actual_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+    score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+    score_matrix_count = np.zeros(1, dtype=np.int64)
+    eligible = np.empty(8, dtype=np.uint8)
+    for prefix_len, candidate in enumerate(stream, start=1):
+        row = tuple(np.uint64(value) for value in candidate)
+        scores = np.empty(16, dtype=np.float64)
+        _numba_head_basis_corner_scores_row(
+            _numba_head_surface_basis(row, 0, 100), scores
+        )
+        retired, retired_scores = _numba_head_envelope_insert_with_scores(
+            retired, retired_scores, row, scores
+        )
+        if _numba_mark_head_surface_first_seen(seen, row):
+            actual, actual_scores = _numba_head_envelope_insert_blocked_with_scores(
+                actual,
+                actual_scores,
+                score_matrix_holder,
+                score_matrix_count,
+                row,
+                scores,
+                eligible,
+            )
+
+        assert list(actual) == list(retired), prefix_len
+        assert len(actual_scores) == len(retired_scores)
+        for actual_row, retired_row in zip(actual_scores, retired_scores, strict=True):
+            np.testing.assert_array_equal(actual_row, retired_row)
+
+    assert list(actual) == [tuple(np.uint64(value) for value in strongest)]
+    assert len(seen) == 3
 
 
 def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:

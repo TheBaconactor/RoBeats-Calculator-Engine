@@ -1049,10 +1049,26 @@ def test_fg_prebuild_reducer_threads_size_to_memory_weight_class(monkeypatch) ->
     # 42 GB budget, 31 frontier CPUs, up to 24 workers (the 2026-07-09 box shape).
     giant = prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=42.0, max_workers=24, frontier_cpus=31)
     light = prebuild._fg_prebuild_reducer_threads(2.0, budget_gb=42.0, max_workers=24, frontier_cpus=31)
-    # 42/8 -> 5 concurrent -> 31//5=6, capped at the anchored-safe width (4 with the
-    # workspace-reuse kernel's preallocated ~1 GB/thread scratch ceiling).
-    assert giant == prebuild._FG_PREBUILD_MAX_REDUCER_THREADS == 4
+    # 42/8 -> 5 concurrent -> 31//5=6, below the measured-safe saturation cap of 9.
+    assert giant == 6
+    assert prebuild._FG_PREBUILD_MAX_REDUCER_THREADS == 11
     assert light == 1  # 42/2 -> 21 concurrent -> 31//21=1
+    # A one-song queue owns otherwise-idle CPUs, capped at the measured saturation width.
+    assert prebuild._fg_prebuild_reducer_threads(
+        8.0,
+        budget_gb=42.0,
+        max_workers=24,
+        frontier_cpus=31,
+        workload_count=1,
+    ) == 11
+    with pytest.raises(ValueError, match="workload count must be positive"):
+        prebuild._fg_prebuild_reducer_threads(
+            8.0,
+            budget_gb=42.0,
+            max_workers=24,
+            frontier_cpus=31,
+            workload_count=0,
+        )
     # No psutil (budget unknown): fall back to the core-derived worker cap, still capped.
     assert prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=None, max_workers=8, frontier_cpus=31) == 3  # min(cap, 31//8)
     assert prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=None, max_workers=31, frontier_cpus=31) == 1
