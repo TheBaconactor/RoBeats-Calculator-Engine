@@ -161,59 +161,70 @@ def _probe_prepass_body(
     # --- reachability prepass (verbatim) ---
     reachable = np.zeros(int(n) + 1, dtype=np.bool_)
     reachable[int(n)] = True
+    perfect_activation_processed = np.zeros(int(n), dtype=np.bool_)
+    late_activation_processed = np.zeros(int(n), dtype=np.bool_)
     max_eg_width = 0
     for action_idx in range(int(action_count)):
         fill = int(first_fill[int(action_idx)])
-        edge_hit = 0.0
-        edge_valid = 0
-        if int(fill) < int(n):
-            edge_hit = float(prefix_perfect_hit[int(fill)])
-            edge_valid = int(prefix_perfect_valid[int(fill)])
+        if int(fill) >= int(n):
+            continue
+        prefix_forced = int(first_activation_forced[int(action_idx)])
+        needs_perfect = not perfect_activation_processed[int(fill)]
+        needs_late = (
+            int(use_forced_great_timing_i) != 0
+            and int(prefix_forced) >= 0
+            and not late_activation_processed[int(fill)]
+        )
+        if not needs_perfect and not needs_late:
+            continue
+        edge_hit = float(prefix_perfect_hit[int(fill)])
+        edge_valid = int(prefix_perfect_valid[int(fill)])
         edge_e = -1
         edge_eg_e = 0
         if int(edge_valid) != 0:
             edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(fill)])
             edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(fill)])
-        if int(edge_e) >= 0:
-            reachable[int(edge_e)] = True
-            max_eg_width = max(
-                max_eg_width,
-                _rb._numba_mark_early_great_reachable_from_hit(
-                    reachable,
-                    int(n),
-                    int(fill),
-                    int(edge_e),
-                    float(edge_hit),
-                    great_floor_timestamps,
-                    float(real_fever_time),
-                ),
-            )
-        prefix_forced = int(first_activation_forced[int(action_idx)])
-        activation_e = -1
-        activation_eg_e = 0
-        activation_hit = 0.0
-        if int(use_forced_great_timing_i) != 0 and int(prefix_forced) >= 0 and int(fill) < int(n):
+        if needs_perfect:
+            perfect_activation_processed[int(fill)] = True
+            if int(edge_e) >= 0:
+                reachable[int(edge_e)] = True
+                max_eg_width = max(
+                    max_eg_width,
+                    _rb._numba_mark_early_great_reachable_from_hit(
+                        reachable,
+                        int(n),
+                        int(fill),
+                        int(edge_e),
+                        float(edge_hit),
+                        great_floor_timestamps,
+                        float(real_fever_time),
+                    ),
+                )
+        if needs_late:
+            late_activation_processed[int(fill)] = True
             activation_hit = float(prefix_late_hit[int(fill)])
             activation_valid = int(prefix_late_valid[int(fill)])
+            activation_e = -1
+            activation_eg_e = 0
             if int(activation_valid) != 0:
                 activation_e = int(capped_late_edge_e[int(real_time_idx), int(fill)])
                 activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(fill)])
-        if _rb._numba_late_edge_extends(
-            int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
-        ):
-            reachable[int(activation_e)] = True
-            max_eg_width = max(
-                max_eg_width,
-                _rb._numba_mark_early_great_reachable_from_hit(
-                    reachable,
-                    int(n),
-                    int(fill),
-                    int(activation_e),
-                    float(activation_hit),
-                    great_floor_timestamps,
-                    float(real_fever_time),
-                ),
-            )
+            if _rb._numba_late_edge_extends(
+                int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
+            ):
+                reachable[int(activation_e)] = True
+                max_eg_width = max(
+                    max_eg_width,
+                    _rb._numba_mark_early_great_reachable_from_hit(
+                        reachable,
+                        int(n),
+                        int(fill),
+                        int(activation_e),
+                        float(activation_hit),
+                        great_floor_timestamps,
+                        float(real_fever_time),
+                    ),
+                )
     if int(use_forced_great_timing_i) != 0:
         max_eg_width = max(
             int(max_eg_width),
@@ -240,56 +251,65 @@ def _probe_prepass_body(
         section_start = int(state_i) + 1
         for action_idx in range(int(action_count)):
             activation = int(state_i) + int(later_fill[int(action_idx)])
-            edge_hit = 0.0
-            edge_valid = 0
-            if int(activation) < int(n):
-                edge_hit = float(prefix_perfect_hit[int(activation)])
-                edge_valid = int(prefix_perfect_valid[int(activation)])
+            if int(activation) >= int(n):
+                continue
+            prefix_forced = int(later_activation_forced[int(action_idx)])
+            needs_perfect = not perfect_activation_processed[int(activation)]
+            needs_late = (
+                int(use_forced_great_timing_i) != 0
+                and int(prefix_forced) >= 0
+                and not late_activation_processed[int(activation)]
+            )
+            if not needs_perfect and not needs_late:
+                continue
+            edge_hit = float(prefix_perfect_hit[int(activation)])
+            edge_valid = int(prefix_perfect_valid[int(activation)])
             edge_e = -1
             edge_eg_e = 0
             if int(edge_valid) != 0:
                 edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
                 edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(activation)])
-            if int(edge_e) >= 0:
-                reachable[int(edge_e)] = True
-                max_eg_width = max(
-                    max_eg_width,
-                    _rb._numba_mark_early_great_reachable_from_hit(
-                        reachable,
-                        int(n),
-                        int(activation),
-                        int(edge_e),
-                        float(edge_hit),
-                        great_floor_timestamps,
-                        float(real_fever_time),
-                    ),
-                )
-            prefix_forced = int(later_activation_forced[int(action_idx)])
-            activation_hit = 0.0
-            activation_e = -1
-            activation_eg_e = 0
-            if int(use_forced_great_timing_i) != 0 and int(prefix_forced) >= 0 and int(activation) < int(n):
+            if needs_perfect:
+                perfect_activation_processed[int(activation)] = True
+                if int(edge_e) >= 0:
+                    reachable[int(edge_e)] = True
+                    max_eg_width = max(
+                        max_eg_width,
+                        _rb._numba_mark_early_great_reachable_from_hit(
+                            reachable,
+                            int(n),
+                            int(activation),
+                            int(edge_e),
+                            float(edge_hit),
+                            great_floor_timestamps,
+                            float(real_fever_time),
+                        ),
+                    )
+            if needs_late:
+                late_activation_processed[int(activation)] = True
                 activation_hit = float(prefix_late_hit[int(activation)])
                 activation_valid = int(prefix_late_valid[int(activation)])
+                activation_e = -1
+                activation_eg_e = 0
                 if int(activation_valid) != 0:
                     activation_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
                     activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(activation)])
-            if _rb._numba_late_edge_extends(
-                int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
-            ):
-                reachable[int(activation_e)] = True
-                max_eg_width = max(
-                    max_eg_width,
-                    _rb._numba_mark_early_great_reachable_from_hit(
-                        reachable,
-                        int(n),
-                        int(activation),
-                        int(activation_e),
-                        float(activation_hit),
-                        great_floor_timestamps,
-                        float(real_fever_time),
-                    ),
-                )
+                if _rb._numba_late_edge_extends(
+                    int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
+                ):
+                    reachable[int(activation_e)] = True
+                    max_eg_width = max(
+                        max_eg_width,
+                        _rb._numba_mark_early_great_reachable_from_hit(
+                            reachable,
+                            int(n),
+                            int(activation),
+                            int(activation_e),
+                            float(activation_hit),
+                            great_floor_timestamps,
+                            float(real_fever_time),
+                        ),
+                    )
         if int(use_forced_great_timing_i) != 0:
             max_eg_width = max(
                 int(max_eg_width),

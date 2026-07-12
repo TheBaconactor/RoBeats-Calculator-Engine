@@ -676,7 +676,9 @@ def _run_missing_fg_prebuild(
                 budget_gb=budget_gb,
                 max_workers=max_workers,
                 frontier_cpus=frontier_cpus,
-                workload_count=len(pending) + len(in_flight),
+                # Include the song just removed from pending. In the one-worker tail both
+                # collections are empty here, but this admission still owns one unit of work.
+                workload_count=1 + len(pending) + len(in_flight),
             )
             future = executor.submit(_build_fg_response_frontier_cache_for_path_shared, path, int(reducer_threads))
             in_flight[future] = (path, float(weight_gb))

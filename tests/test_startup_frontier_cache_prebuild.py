@@ -284,6 +284,60 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     assert max(ledger_peaks) <= budget_gb + 1e-9
 
 
+def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch) -> None:
+    """After the first one-worker task drains, the final popped song is still one workload unit."""
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+
+    items = [("first.txt", 100), ("last.txt", 100)]
+    monkeypatch.setattr(prebuild, "_fg_prebuild_available_ram_gb", lambda: 64.0)
+    monkeypatch.setattr(prebuild, "frontier_prebuild_worker_count", lambda: 1)
+    monkeypatch.setattr(prebuild, "frontier_prebuild_cpu_count", lambda: 31)
+    monkeypatch.setattr(prebuild, "_fg_prebuild_live_worker_commit_gb", lambda: 0.0)
+    monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: None)
+    monkeypatch.setattr(
+        prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _refs: (list(items), {})
+    )
+    submitted_widths: list[int] = []
+
+    class _FakeFuture:
+        def __init__(self, path: str):
+            self._result = prebuild.FgResponseFrontierCacheBuildResult(
+                path=path, source="built", build_ms=1.0, cache_file=f"{path}.npz"
+            )
+
+        def result(self):
+            return self._result
+
+    class _FakeExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, _fn, path, reducer_threads):
+            submitted_widths.append(int(reducer_threads))
+            return _FakeFuture(str(path))
+
+    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(
+        prebuild.concurrent.futures,
+        "wait",
+        lambda futures, **_kwargs: ({next(iter(futures))}, set()),
+    )
+
+    summary, results = prebuild._run_missing_fg_prebuild(
+        [path for path, _notes in items], {}, ((0, 0),)
+    )
+
+    assert summary.completed == 2
+    assert [result.path for result in results] == ["first.txt", "last.txt"]
+    assert submitted_widths == [11, 11]
+
+
 def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
