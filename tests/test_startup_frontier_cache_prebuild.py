@@ -358,6 +358,7 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
 
     monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
     monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: _Plan())
+    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
     monkeypatch.setattr(prebuild, "_apply_manifest_results", lambda **_kwargs: 0)
 
     def _unexpected_lock(*_args, **_kwargs):
@@ -399,6 +400,61 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
     assert summary.completed == 2
     assert summary.disk == 2
     assert compression_calls == 0
+
+
+def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch, tmp_path: Path) -> None:
+    from contextlib import nullcontext
+
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+
+    song_path = tmp_path / "Song.txt"
+    song_path.write_text("fake", encoding="utf-8")
+
+    class _Plan:
+        total_paths = 1
+        hit_paths = (str(song_path),)
+        missing_paths = ()
+        key_by_norm_path = {}
+
+        @property
+        def hit_count(self) -> int:
+            return 1
+
+    persist_calls: list[bool] = []
+
+    def _plan(*_args, **kwargs):
+        persist_calls.append(bool(kwargs.get("persist_validated_entries", True)))
+        return _Plan()
+
+    monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
+    monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
+    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: False)
+    monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
+        lambda: 0,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
+        lambda: 0,
+    )
+
+    def _unexpected_build(*_args, **_kwargs):
+        raise AssertionError("compatible complete pool must not start workers")
+
+    monkeypatch.setattr(prebuild, "_run_missing_fg_prebuild", _unexpected_build)
+    summary = prebuild.run_fg_response_frontier_cache_prebuild(
+        cfg=object(),
+        song_queue=[(str(song_path),)],
+        ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        data_root=tmp_path,
+    )
+
+    assert persist_calls == [True]
+    assert summary.total == 1
+    assert summary.completed == 1
+    assert summary.disk == 1
+    assert summary.built == 0
 
 
 def test_timeline_prebuild_manifest_hits_do_not_acquire_build_lock(monkeypatch, tmp_path: Path) -> None:

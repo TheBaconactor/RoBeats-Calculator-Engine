@@ -354,17 +354,25 @@ def _stat_keys_signature(stat_keys: Iterable[tuple[int, int]]) -> str:
 def _derived_bundle_cache_file(song_path: str, ref_arrays: dict) -> str | None:
     """Parse one chart and return the cache file its CURRENT bundle key derives (drift probe)."""
     from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
-        _fg_response_disk_cache_path,
-        fg_response_frontier_bundle_cache_key,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import resolve_fg_response_bundle_path
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     calc_song = get_base_calc_song(str(song_path), {})
     if not calc_song:
         return None
     apply_timing_envelope(calc_song)
-    return str(_fg_response_disk_cache_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)))
+    return str(resolve_fg_response_bundle_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)))
+
+
+def _manifest_records_current_cache_version() -> bool:
+    import json
+
+    try:
+        payload = json.loads(_manifest_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and str(payload.get("cache_version", "") or "") == _cache_version()
 
 
 def _build_manifest_plan(
@@ -828,21 +836,22 @@ def run_fg_response_frontier_cache_prebuild(
     if not paths:
         return FgResponseFrontierCachePrebuildSummary(total=0)
 
-    # Complete cache hits are readers, not builders. Probe without mutating the manifest so they
-    # never wait behind an unrelated deployment prebuild that owns the single-builder lock.
-    optimistic_plan = _build_manifest_plan(
-        paths,
-        ref_arrays,
-        stat_keys=stat_keys,
-        persist_validated_entries=False,
-    )
-    if not optimistic_plan.missing_paths:
-        return FgResponseFrontierCachePrebuildSummary(
-            total=int(optimistic_plan.total_paths),
-            completed=int(optimistic_plan.hit_count),
-            disk=int(optimistic_plan.hit_count),
-            elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+    if _manifest_records_current_cache_version():
+        # Complete current-manifest hits are readers, not builders. Probe without mutating the
+        # manifest so they never wait behind an unrelated deployment prebuild that owns the lock.
+        optimistic_plan = _build_manifest_plan(
+            paths,
+            ref_arrays,
+            stat_keys=stat_keys,
+            persist_validated_entries=False,
         )
+        if not optimistic_plan.missing_paths:
+            return FgResponseFrontierCachePrebuildSummary(
+                total=int(optimistic_plan.total_paths),
+                completed=int(optimistic_plan.hit_count),
+                disk=int(optimistic_plan.hit_count),
+                elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+            )
 
     # Single-builder lock: a second concurrent process waits here, then re-runs its manifest plan
     # below -- which now fast-hits everything this process wrote -- instead of duplicating the
@@ -865,6 +874,14 @@ def run_fg_response_frontier_cache_prebuild(
         if int(removed_stale) > 0:
             logger.info(
                 "[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale)
+            )
+
+        if not manifest_plan.missing_paths:
+            return FgResponseFrontierCachePrebuildSummary(
+                total=int(manifest_plan.total_paths),
+                completed=int(manifest_hits),
+                disk=int(manifest_hits),
+                elapsed_ms=float((time.perf_counter() - started) * 1000.0),
             )
 
         # Recover completed sidecars left uncompressed by an interrupted earlier prebuild. This
