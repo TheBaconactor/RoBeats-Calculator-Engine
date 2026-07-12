@@ -317,6 +317,9 @@ def _first_frontier_result_from_precomputed_end_indices(
     prefix_perfect_valid: np.ndarray,
     prefix_late_hit: np.ndarray,
     prefix_late_valid: np.ndarray,
+    region_hit_token_to_id: np.ndarray,
+    region_perfect_end_by_real_time: np.ndarray,
+    region_great_end_by_real_time: np.ndarray,
     timestamp_end_idx: np.ndarray,
     perfect_end_idx: np.ndarray,
     great_end_idx: np.ndarray,
@@ -332,6 +335,16 @@ def _first_frontier_result_from_precomputed_end_indices(
     workspace: _FirstFrontierStampWorkspace,
 ) -> FgResponseFrontierResult:
     successor_epoch = workspace.next_successor_epoch()
+    if (
+        int(region_perfect_end_by_real_time.ndim) != 2
+        or int(region_great_end_by_real_time.ndim) != 2
+        or region_perfect_end_by_real_time.shape != region_great_end_by_real_time.shape
+    ):
+        raise ValueError("FG region endpoint tables must be aligned two-dimensional arrays")
+    if int(real_time_idx) < 0 or int(real_time_idx) >= int(region_perfect_end_by_real_time.shape[0]):
+        raise ValueError("FG region real-time index escaped its endpoint tables")
+    region_perfect_end_by_hit = region_perfect_end_by_real_time[int(real_time_idx)]
+    region_great_end_by_hit = region_great_end_by_real_time[int(real_time_idx)]
     (
         first_rows,
         states_evaluated,
@@ -393,6 +406,9 @@ def _first_frontier_result_from_precomputed_end_indices(
             region_table[5],
             region_table[6],
             region_table[7],
+            region_hit_token_to_id,
+            region_perfect_end_by_hit,
+            region_great_end_by_hit,
             workspace.pair_values,
             workspace.pair_stamps,
             workspace.pair_touched,
@@ -442,6 +458,9 @@ def _first_frontier_results_for_precomputed_range(
     prefix_perfect_valid: np.ndarray,
     prefix_late_hit: np.ndarray,
     prefix_late_valid: np.ndarray,
+    region_hit_token_to_id: np.ndarray,
+    region_perfect_end_by_real_time: np.ndarray,
+    region_great_end_by_real_time: np.ndarray,
     timestamp_end_idx: np.ndarray,
     perfect_end_idx: np.ndarray,
     great_end_idx: np.ndarray,
@@ -495,6 +514,9 @@ def _first_frontier_results_for_precomputed_range(
                     prefix_perfect_valid=prefix_perfect_valid,
                     prefix_late_hit=prefix_late_hit,
                     prefix_late_valid=prefix_late_valid,
+                    region_hit_token_to_id=region_hit_token_to_id,
+                    region_perfect_end_by_real_time=region_perfect_end_by_real_time,
+                    region_great_end_by_real_time=region_great_end_by_real_time,
                     timestamp_end_idx=timestamp_end_idx,
                     perfect_end_idx=perfect_end_idx,
                     great_end_idx=great_end_idx,

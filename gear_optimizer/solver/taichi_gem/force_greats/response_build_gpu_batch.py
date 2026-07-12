@@ -9,6 +9,8 @@ from .response_builder import _action_table, _edge_surface_options
 from .response_build_gpu_precompute import (
     _canonicalize_first_only_prepared_items_with_end_indices,
     _first_only_region_groups,
+    _region_hit_end_index_tables,
+    _region_hit_value_universe,
 )
 from . import response_build_gpu_numba as _rb_numba
 from .response_build_gpu_reducer import (
@@ -391,6 +393,15 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     candidate_high_delta_max = float(
         np.float32(max(0.0, float(np.max(np.maximum(perfect_ts, great_ts) - ts))) + 1.0e-6)
     )
+    if bool(use_forced_great_timing):
+        region_hit_values, region_hit_token_to_id = _region_hit_value_universe(
+            ts,
+            perfect_ts,
+            great_ts,
+        )
+    else:
+        region_hit_values = np.empty(0, dtype=np.float64)
+        region_hit_token_to_id = np.empty(0, dtype=np.int32)
     prefix_perfect_hit, prefix_perfect_valid, prefix_late_hit, prefix_late_valid = (
         _rb_numba._numba_build_prefix_activation_hit_tables(
             int(n),
@@ -467,6 +478,14 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
     )
     prepared = canonical.prepared
     duplicate_sources_by_source = canonical.duplicate_sources_by_source
+    region_perfect_end_by_real_time, region_great_end_by_real_time = (
+        _region_hit_end_index_tables(
+            region_hit_values,
+            canonical.unique_real_times,
+            floor_ts,
+            great_floor_ts,
+        )
+    )
 
     # Region-core-table grouping (song-context orchestration): the region-run core work depends
     # on the geometry only through (raw_fever_fill, non_fever_base), never real_fever_time, so it
@@ -500,8 +519,8 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.float64),
-            np.empty(0, dtype=np.float64),
+            np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
         )
 
@@ -520,6 +539,9 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
             prefix_perfect_valid=prefix_perfect_valid,
             prefix_late_hit=prefix_late_hit,
             prefix_late_valid=prefix_late_valid,
+            region_hit_token_to_id=region_hit_token_to_id,
+            region_perfect_end_by_real_time=region_perfect_end_by_real_time,
+            region_great_end_by_real_time=region_great_end_by_real_time,
             canonical=canonical,
             use_forced_great_timing=bool(use_forced_great_timing),
             empty_region_table=empty_region_table,
@@ -535,6 +557,11 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
         stats_sink.update(
             {
                 "end_table_precomputes": int(end_table_precomputes),
+                "region_hit_values": int(region_hit_values.shape[0]),
+                "region_hit_endpoint_bytes": int(
+                    region_perfect_end_by_real_time.nbytes
+                    + region_great_end_by_real_time.nbytes
+                ),
                 "executor_creations": int(schedule_stats.executor_creations),
                 "workspace_allocations": int(workspace_plan.allocations),
                 "workspace_bytes": int(workspace_plan.allocated_bytes),

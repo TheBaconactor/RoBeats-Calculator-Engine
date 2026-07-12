@@ -52,9 +52,10 @@ def retired_nested_action_reachability_prepass(
 ):
     """Retired O(reachable states * actions) activation scan from main ``c3d13ac3``."""
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _numba_edge_end_idx_at_hit,
+        _numba_great_floor_extended_end_at_hit,
         _numba_late_edge_extends,
         _numba_mark_early_great_reachable_from_hit,
-        _numba_mark_region_entries_for_section,
     )
 
     def mark_perfect(activation: int) -> int:
@@ -104,6 +105,88 @@ def retired_nested_action_reachability_prepass(
             )
         )
 
+    def mark_region(section_start: int) -> int:
+        max_width = 0
+        for idx in range(
+            int(region_starts[int(section_start)]),
+            int(region_starts[int(section_start) + 1]),
+        ):
+            activation = int(region_activations[int(idx)])
+            if int(region_is_greats[int(idx)]) != 0:
+                perfect_e = -1
+                perfect_eg_e = -1
+                if int(region_perfect_valids[int(idx)]) != 0:
+                    perfect_e = int(
+                        _numba_edge_end_idx_at_hit(
+                            int(n),
+                            int(activation),
+                            float(region_perfect_hits[int(idx)]),
+                            float(real_fever_time),
+                            perfect_floor_timestamps,
+                        )
+                    )
+                    perfect_eg_e = int(
+                        _numba_great_floor_extended_end_at_hit(
+                            int(n),
+                            int(activation),
+                            float(region_perfect_hits[int(idx)]),
+                            float(real_fever_time),
+                            great_floor_timestamps,
+                        )
+                    )
+                activation_hit = float(region_act_hits[int(idx)])
+                edge_e = int(
+                    _numba_edge_end_idx_at_hit(
+                        int(n),
+                        int(activation),
+                        float(activation_hit),
+                        float(real_fever_time),
+                        perfect_floor_timestamps,
+                    )
+                )
+                activation_eg_e = int(
+                    _numba_great_floor_extended_end_at_hit(
+                        int(n),
+                        int(activation),
+                        float(activation_hit),
+                        float(real_fever_time),
+                        great_floor_timestamps,
+                    )
+                )
+                if int(perfect_e) >= 0 and not _numba_late_edge_extends(
+                    int(perfect_e),
+                    int(edge_e),
+                    int(activation_eg_e),
+                    int(perfect_eg_e),
+                ):
+                    continue
+            else:
+                activation_hit = float(region_perfect_hits[int(idx)])
+                edge_e = int(
+                    _numba_edge_end_idx_at_hit(
+                        int(n),
+                        int(activation),
+                        float(activation_hit),
+                        float(real_fever_time),
+                        perfect_floor_timestamps,
+                    )
+                )
+            reachable[int(edge_e)] = True
+            width = int(
+                _numba_mark_early_great_reachable_from_hit(
+                    reachable,
+                    int(n),
+                    int(activation),
+                    int(edge_e),
+                    float(activation_hit),
+                    great_floor_timestamps,
+                    float(real_fever_time),
+                )
+            )
+            if int(width) > int(max_width):
+                max_width = int(width)
+        return int(max_width)
+
     reachable = np.zeros(int(n) + 1, dtype=np.bool_)
     reachable[int(n)] = True
     perfect_activation_processed = np.zeros(int(n), dtype=np.bool_)
@@ -129,22 +212,7 @@ def retired_nested_action_reachability_prepass(
         max_eg_width = max(
             int(max_eg_width),
             int(
-                _numba_mark_region_entries_for_section(
-                    reachable,
-                    int(n),
-                    0,
-                    region_starts,
-                    region_offsets,
-                    region_activations,
-                    region_great_ends,
-                    region_is_greats,
-                    region_act_hits,
-                    region_perfect_hits,
-                    region_perfect_valids,
-                    float(real_fever_time),
-                    perfect_floor_timestamps,
-                    great_floor_timestamps,
-                )
+                mark_region(0)
             ),
         )
 
@@ -169,22 +237,7 @@ def retired_nested_action_reachability_prepass(
             max_eg_width = max(
                 int(max_eg_width),
                 int(
-                    _numba_mark_region_entries_for_section(
-                        reachable,
-                        int(n),
-                        int(state_i) + 1,
-                        region_starts,
-                        region_offsets,
-                        region_activations,
-                        region_great_ends,
-                        region_is_greats,
-                        region_act_hits,
-                        region_perfect_hits,
-                        region_perfect_valids,
-                        float(real_fever_time),
-                        perfect_floor_timestamps,
-                        great_floor_timestamps,
-                    )
+                    mark_region(int(state_i) + 1)
                 ),
             )
     return reachable, int(max_eg_width)
