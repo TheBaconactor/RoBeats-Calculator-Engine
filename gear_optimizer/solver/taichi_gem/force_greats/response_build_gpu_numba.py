@@ -1239,9 +1239,9 @@ def _numba_reduce_pattern_runs(surfaces):
         return kept
     # Exact head-pattern-run index for the structural Pareto maximum. Dominance requires equal
     # fever/Great overlap, a fever-mask superset, and a Great-mask subset. Grouping live rows by
-    # their complete four-word head pattern lets each candidate test those cheap mask conditions
-    # once per contiguous pattern run, then scan body triples only in compatible run lists. The old
-    # reducer repeated the same four mask tests for every historical row in the overlap bucket.
+    # their complete four-word head pattern lets each run test those cheap mask conditions once,
+    # then every row in the run scans body triples only in the cached compatible-run lists. The old
+    # reducer repeated the same four mask tests for every historical row and candidate.
     #
     # Rows are still processed in producer order. Each per-run list contains only currently
     # live rows; retirement unlinks in place, while kept_flag restores the identical final producer
@@ -1253,6 +1253,10 @@ def _numba_reduce_pattern_runs(surfaces):
     pattern_row_head = List.empty_list(types.int64)
     kept_flag = np.zeros(n, dtype=np.bool_)
     previous_live = np.full(n, -1, dtype=np.int64)
+    dominator_runs = np.empty(n, dtype=np.int64)
+    dominated_runs = np.empty(n, dtype=np.int64)
+    dominator_run_count = 0
+    dominated_run_count = 0
     candidate_pattern = -1
     for idx in range(n):
         cf_lo, cf_hi, cg_lo, cg_hi, cbf, cbg, cbfg = surfaces[int(idx)]
@@ -1277,53 +1281,73 @@ def _numba_reduce_pattern_runs(surfaces):
             pattern_row_head.append(-1)
             overlap_head[overlap_key] = int(candidate_pattern)
 
+            # Mask compatibility is invariant across this complete contiguous run. Cache the two
+            # exact relation lists once here instead of repeating four word tests for every body
+            # row. Both arrays have the producer-owned row count as an exact capacity bound.
+            dominator_run_count = 0
+            dominated_run_count = 0
+            pid = int(candidate_pattern)
+            while int(pid) >= 0:
+                representative = surfaces[int(pattern_representative[int(pid)])]
+                if (
+                    (cf_lo & ~representative[0]) == 0
+                    and (cf_hi & ~representative[1]) == 0
+                    and (representative[2] & ~cg_lo) == 0
+                    and (representative[3] & ~cg_hi) == 0
+                ):
+                    dominator_runs[int(dominator_run_count)] = int(pid)
+                    dominator_run_count += 1
+                if (
+                    (representative[0] & ~cf_lo) == 0
+                    and (representative[1] & ~cf_hi) == 0
+                    and (cg_lo & ~representative[2]) == 0
+                    and (cg_hi & ~representative[3]) == 0
+                ):
+                    dominated_runs[int(dominated_run_count)] = int(pid)
+                    dominated_run_count += 1
+                pid = int(previous_pattern[int(pid)])
+
         # Phase 1: does any mask-compatible live pattern contain a body dominator?
         dominated = False
-        pid = int(overlap_head[overlap_key])
-        while int(pid) >= 0 and not dominated:
-            representative = surfaces[int(pattern_representative[int(pid)])]
-            if (
-                (cf_lo & ~representative[0]) == 0
-                and (cf_hi & ~representative[1]) == 0
-                and (representative[2] & ~cg_lo) == 0
-                and (representative[3] & ~cg_hi) == 0
-            ):
-                pos = int(pattern_row_head[int(pid)])
-                while int(pos) >= 0:
-                    _kf0, _kf1, _kg0, _kg1, kbf, kbg, kbfg = surfaces[int(pos)]
-                    if kbf >= cbf and kbg - kbfg <= cng and kbfg <= cbfg:
-                        dominated = True
-                        break
-                    pos = int(previous_live[int(pos)])
-            pid = int(previous_pattern[int(pid)])
+        for run_idx in range(int(dominator_run_count)):
+            pid = int(dominator_runs[int(run_idx)])
+            pos = int(pattern_row_head[int(pid)])
+            while int(pos) >= 0:
+                kept_surface = surfaces[int(pos)]
+                if (
+                    kept_surface[4] >= cbf
+                    and kept_surface[5] - kept_surface[6] <= cng
+                    and kept_surface[6] <= cbfg
+                ):
+                    dominated = True
+                    break
+                pos = int(previous_live[int(pos)])
+            if dominated:
+                break
         if dominated:
             continue
 
         # Phase 2: unlink every body row this candidate dominates from compatible patterns.
-        pid = int(overlap_head[overlap_key])
-        while int(pid) >= 0:
-            representative = surfaces[int(pattern_representative[int(pid)])]
-            if (
-                (representative[0] & ~cf_lo) == 0
-                and (representative[1] & ~cf_hi) == 0
-                and (cg_lo & ~representative[2]) == 0
-                and (cg_hi & ~representative[3]) == 0
-            ):
-                pos = int(pattern_row_head[int(pid)])
-                previous = -1
-                while int(pos) >= 0:
-                    next_pos = int(previous_live[int(pos)])
-                    _kf0, _kf1, _kg0, _kg1, kbf, kbg, kbfg = surfaces[int(pos)]
-                    if cbf >= kbf and cng <= kbg - kbfg and cbfg <= kbfg:
-                        kept_flag[int(pos)] = False
-                        if int(previous) < 0:
-                            pattern_row_head[int(pid)] = int(next_pos)
-                        else:
-                            previous_live[int(previous)] = int(next_pos)
+        for run_idx in range(int(dominated_run_count)):
+            pid = int(dominated_runs[int(run_idx)])
+            pos = int(pattern_row_head[int(pid)])
+            previous = -1
+            while int(pos) >= 0:
+                next_pos = int(previous_live[int(pos)])
+                kept_surface = surfaces[int(pos)]
+                if (
+                    cbf >= kept_surface[4]
+                    and cng <= kept_surface[5] - kept_surface[6]
+                    and cbfg <= kept_surface[6]
+                ):
+                    kept_flag[int(pos)] = False
+                    if int(previous) < 0:
+                        pattern_row_head[int(pid)] = int(next_pos)
                     else:
-                        previous = int(pos)
-                    pos = int(next_pos)
-            pid = int(previous_pattern[int(pid)])
+                        previous_live[int(previous)] = int(next_pos)
+                else:
+                    previous = int(pos)
+                pos = int(next_pos)
 
         previous_live[int(idx)] = int(pattern_row_head[int(candidate_pattern)])
         pattern_row_head[int(candidate_pattern)] = int(idx)

@@ -1926,6 +1926,35 @@ def test_fg_response_pattern_indexed_reducer_matches_sequential_semantics() -> N
             kept.append(candidate)
         return kept
 
+    def assert_matches(rows):
+        surfaces = List.empty_list(_NUMBA_SURFACE_TYPE)
+        for row in rows:
+            surfaces.append(tuple(np.uint64(value) for value in row))
+        expected = sequential(rows)
+        assert list(_numba_reduce(surfaces)) == expected
+        assert list(_numba_reduce_pattern_runs(surfaces)) == expected
+
+    pattern_a = (0b0011, 0, 0b0101, 0)
+    pattern_b = (0b1011, 0, 0b0001, 0)
+    directed_rows = []
+    for pattern, fever_bias, normal_bias in (
+        (pattern_a, 0, 3),
+        (pattern_b, 5, 0),
+        (pattern_a, 2, 1),
+    ):
+        for value in range(24):
+            fever_great = value % 4
+            directed_rows.append(
+                (
+                    *pattern,
+                    fever_bias + value,
+                    normal_bias + value + fever_great,
+                    fever_great,
+                )
+            )
+    directed_rows.extend((directed_rows[3], directed_rows[27], directed_rows[3]))
+    assert_matches(directed_rows)
+
     rng = np.random.default_rng(116)
     for _case in range(24):
         rows = []
@@ -1955,12 +1984,7 @@ def test_fg_response_pattern_indexed_reducer_matches_sequential_semantics() -> N
             if row_idx % 17 == 0:
                 rows.append(row)
 
-        surfaces = List.empty_list(_NUMBA_SURFACE_TYPE)
-        for row in rows:
-            surfaces.append(tuple(np.uint64(value) for value in row))
-        expected = sequential(rows)
-        assert list(_numba_reduce(surfaces)) == expected
-        assert list(_numba_reduce_pattern_runs(surfaces)) == expected
+        assert_matches(rows)
 
 
 def test_fg_response_same_end_head_edge_prune_keeps_different_end_edges() -> None:
