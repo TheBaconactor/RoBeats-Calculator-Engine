@@ -412,28 +412,47 @@ def test_fg_response_region_group_admission_uses_worst_concurrent_bounds() -> No
 
     assert response_build_gpu_scheduler._admitted_region_group_threads(
         build_peak_bounds=(20, 40, 30),
+        retained_peak_bounds=(10, 20, 15),
         legacy_single_peak_bound=70,
         thread_limit=3,
-    ) == (2, 70)
+    ) == (3, 65)
     assert response_build_gpu_scheduler._admitted_region_group_threads(
         build_peak_bounds=(20, 40, 30),
+        retained_peak_bounds=(10, 20, 15),
         legacy_single_peak_bound=70,
         thread_limit=1,
     ) == (1, 40)
     assert response_build_gpu_scheduler._admitted_region_group_threads(
         build_peak_bounds=(),
+        retained_peak_bounds=(),
         legacy_single_peak_bound=0,
         thread_limit=8,
     ) == (1, 0)
     with pytest.raises(ValueError, match="memory bounds must be nonnegative"):
         response_build_gpu_scheduler._admitted_region_group_threads(
             build_peak_bounds=(20, -1),
+            retained_peak_bounds=(10, 1),
             legacy_single_peak_bound=70,
             thread_limit=2,
+        )
+    with pytest.raises(ValueError, match="must align"):
+        response_build_gpu_scheduler._admitted_region_group_threads(
+            build_peak_bounds=(20, 30),
+            retained_peak_bounds=(10,),
+            legacy_single_peak_bound=70,
+            thread_limit=2,
+        )
+    with pytest.raises(ValueError, match="cannot exceed"):
+        response_build_gpu_scheduler._admitted_region_group_threads(
+            build_peak_bounds=(20,),
+            retained_peak_bounds=(21,),
+            legacy_single_peak_bound=70,
+            thread_limit=1,
         )
     with pytest.raises(MemoryError, match="historical single-table peak bound"):
         response_build_gpu_scheduler._admitted_region_group_threads(
             build_peak_bounds=(71,),
+            retained_peak_bounds=(35,),
             legacy_single_peak_bound=70,
             thread_limit=1,
         )
@@ -575,7 +594,7 @@ def test_fg_response_first_frontier_runs_admitted_groups_concurrently(monkeypatc
     assert len(set(worker_ids)) == 2
     assert stats["region_table_groups"] == 2
     assert stats["region_table_parallelism"] == 2
-    assert stats["region_table_parallel_peak_bound_bytes"] == 400
+    assert stats["region_table_parallel_peak_bound_bytes"] == 300
     assert stats["region_table_legacy_single_peak_bound_bytes"] == 400
     assert stats["executor_creations"] == 1
 

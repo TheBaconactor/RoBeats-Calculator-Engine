@@ -78,11 +78,13 @@ _FG_PREBUILD_SUSPEND_FLOOR_GB = 5.0  # guard: below this free RAM, suspend the y
 _FG_PREBUILD_RESUME_FLOOR_GB = 12.0  # guard: above this free RAM, resume one suspended worker per poll
 _FG_PREBUILD_GUARD_POLL_SECONDS = 5.0
 _FG_PREBUILD_ADMIT_POLL_SECONDS = 10.0  # re-run admission as in-flight commits materialize
-# Widened 2 -> 4 with the workspace-reuse kernel: per-thread scratch is now a PREALLOCATED
-# ~1.0 GB ceiling (stamp radix sized to the chart's hard maxima) instead of an unbounded
-# per-call transient, so the peak prior above covers 4 threads arithmetically. The historical
-# rule stands: this cap and the peak prior must move together, anchored on guard telemetry.
-_FG_PREBUILD_MAX_REDUCER_THREADS = 4
+# Layer-3 blocked scans plus exact pair-radix workspace sizing measured the complete Stars build
+# at 4/8/9 admitted group threads: 29.06/16.14/15.19 s, with 9-thread peak working set only
+# 265 MB. Calamity's exact region-table bound admits 11 and measured 10m36s -> 3m57s at 1.085 GB
+# peak working set. Region-table scheduling separately proves live memory against the historical
+# one-table envelope; this cap prevents a short queue from claiming every logical CPU after the
+# measured useful range.
+_FG_PREBUILD_MAX_REDUCER_THREADS = 11
 
 
 def _fg_prebuild_song_weight_gb(note_count: int) -> float:
@@ -247,7 +249,14 @@ def _start_fg_prebuild_ram_guard() -> _FgPrebuildRamGuard | None:
     return guard
 
 
-def _fg_prebuild_reducer_threads(weight_gb: float, *, budget_gb: float | None, max_workers: int, frontier_cpus: int) -> int:
+def _fg_prebuild_reducer_threads(
+    weight_gb: float,
+    *,
+    budget_gb: float | None,
+    max_workers: int,
+    frontier_cpus: int,
+    workload_count: int | None = None,
+) -> int:
     """Intra-worker reducer threads for one song, sized to the concurrency its weight class allows.
 
     A giant that memory-admits ~5-at-once gets the cores those absent siblings free up (capped at
@@ -258,6 +267,10 @@ def _fg_prebuild_reducer_threads(weight_gb: float, *, budget_gb: float | None, m
         concurrency = max(1, int(max_workers))
     else:
         concurrency = max(1, min(int(max_workers), int(float(budget_gb) / max(float(weight_gb), _FG_PREBUILD_FLOOR_COMMIT_GB))))
+    if workload_count is not None:
+        if int(workload_count) < 1:
+            raise ValueError("FG prebuild reducer workload count must be positive")
+        concurrency = min(int(concurrency), int(workload_count))
     return max(1, min(_FG_PREBUILD_MAX_REDUCER_THREADS, int(frontier_cpus) // concurrency))
 
 
@@ -633,7 +646,11 @@ def _run_missing_fg_prebuild(
                 return
             path, note_count = pending.pop(admit_index)
             reducer_threads = _fg_prebuild_reducer_threads(
-                weight_gb, budget_gb=budget_gb, max_workers=max_workers, frontier_cpus=frontier_cpus
+                weight_gb,
+                budget_gb=budget_gb,
+                max_workers=max_workers,
+                frontier_cpus=frontier_cpus,
+                workload_count=len(pending) + len(in_flight),
             )
             future = executor.submit(_build_fg_response_frontier_cache_for_path_shared, path, int(reducer_threads))
             in_flight[future] = (path, float(weight_gb))

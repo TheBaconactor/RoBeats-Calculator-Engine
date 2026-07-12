@@ -98,23 +98,41 @@ def _legacy_single_region_table_peak_bound_bytes(*, n: int, region_action_count:
 def _admitted_region_group_threads(
     *,
     build_peak_bounds: tuple[int, ...],
+    retained_peak_bounds: tuple[int, ...],
     legacy_single_peak_bound: int,
     thread_limit: int,
 ) -> tuple[int, int]:
-    """Largest width whose worst concurrent build peaks fit the old one-table envelope."""
+    """Largest width whose serial-build/live-retained peak fits the old envelope.
+
+    The coordinator builds exactly one table at a time. Every other in-flight group has already
+    discarded its temporary candidate arrays and retains only the trimmed table while reducing.
+    Therefore a width-W peak is one group's build peak plus the W-1 largest retained peaks of
+    other groups, never W simultaneous build peaks.
+    """
     if not build_peak_bounds:
         return 1, 0
     builds = tuple(int(value) for value in build_peak_bounds)
-    if any(value < 0 for value in builds):
+    retained = tuple(int(value) for value in retained_peak_bounds)
+    if len(builds) != len(retained):
+        raise ValueError("FG region-table build and retained memory bounds must align")
+    if any(value < 0 for value in (*builds, *retained)):
         raise ValueError("FG region-table memory bounds must be nonnegative")
+    if any(int(retained_value) > int(build_value) for build_value, retained_value in zip(builds, retained, strict=True)):
+        raise ValueError("FG retained region-table bound cannot exceed its build peak")
     limit = max(1, min(int(thread_limit), len(builds)))
-    ordered = tuple(sorted(builds, reverse=True))
-    if int(ordered[0]) > int(legacy_single_peak_bound):
+    if max(builds) > int(legacy_single_peak_bound):
         raise MemoryError("FG exact region table exceeds the historical single-table peak bound")
     width = 1
-    admitted_peak = int(ordered[0])
+    admitted_peak = max(builds)
     for candidate_width in range(2, int(limit) + 1):
-        candidate_peak = sum(ordered[: int(candidate_width)])
+        candidate_peak = 0
+        for build_idx, build_peak in enumerate(builds):
+            other_retained = sorted(
+                (retained[idx] for idx in range(len(retained)) if int(idx) != int(build_idx)),
+                reverse=True,
+            )
+            live_peak = int(build_peak) + sum(other_retained[: int(candidate_width) - 1])
+            candidate_peak = max(int(candidate_peak), int(live_peak))
         if int(candidate_peak) > int(legacy_single_peak_bound):
             break
         width = int(candidate_width)
@@ -468,6 +486,7 @@ def _schedule_first_frontier_region_groups(
         )
         parallelism, parallel_peak_bound = _admitted_region_group_threads(
             build_peak_bounds=build_peak_bounds,
+            retained_peak_bounds=retained_peak_bounds,
             legacy_single_peak_bound=int(legacy_peak_bound),
             thread_limit=int(thread_limit),
         )
