@@ -1,515 +1,324 @@
+<div align="center">
+
 # RoBeats MetaFinder
 
-A high-performance genetic algorithm solver for optimizing gear and mini loadouts in rhythm games. Features JIT-compiled scoring, GPU-accelerated gem allocation, parallel song processing, and intelligent caching for maximum throughput.
+**GPU-first loadout optimization and exact score modeling for RoBeats.**
 
-**Version:** 2.0.0
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Numba](https://img.shields.io/badge/Numba-JIT-00A3E0)
+![Taichi](https://img.shields.io/badge/Taichi-Vulkan-000000)
+![SQLite](https://img.shields.io/badge/SQLite-persistence-003B57?logo=sqlite&logoColor=white)
+![Status](https://img.shields.io/badge/status-active%20development-orange)
 
----
+MetaFinder searches gear, Minis, gems, fever timing, and Force Great strategies, then stores separate Base and Force Great leaderboards for every processed chart.
 
-## Quick Start
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Commands](#commands) · [Documentation](#documentation)
 
-### 1. Install Dependencies
+</div>
 
-```bash
-pip install -r requirements.txt
+> [!IMPORTANT]
+> MetaFinder preserves exact integer scoring, floor operations, ordering, ties, witnesses, timing-frontier semantics, and modeled input-engine reachability. The **outer gear/Mini search is a multi-start GPU genetic search**, so a result is the best solution found under the configured search budget—not a mathematical proof that no better loadout exists.
+
+## What MetaFinder does
+
+| Area | Current production behavior |
+|---|---|
+| **Loadout search** | GPU-native multi-start search over six gear slots and three Mini slots, with deterministic persistence and warm starts from prior results. |
+| **Base timing** | Builds and caches the exact non-dominated fever-timing frontier instead of selecting from a small set of guessed timelines. |
+| **Force Greats** | Uses one canonical exact response-frontier scorer; obsolete manual and alternate FG modes are rejected. |
+| **Physical reachability** | Accounts for lane identity, chart order, legal Perfect/Great timing, half-fill Greats, section placement, and ordered witnesses when constructing reachable FG surfaces. |
+| **Score math** | Preserves per-note integer floors, combo order, Fever membership, Great penalties, head-note masks, and body counts. |
+| **Mini Ascension** | Materializes maxed Mini Ascension stats per song, including universal Perfect Points and song-targeted elemental bonuses. |
+| **Persistence** | Stores separate Base and Force Great results in SQLite and reuses compatible results and exact frontier caches across runs. |
+| **Website integration** | Includes a stateless HTTP optimizer service for official charts and uploaded custom charts. |
+
+### Accuracy boundary
+
+MetaFinder is designed around the canonical **full-combo** optimization surface. Exact scoring does not turn the outer genetic search into an exhaustive loadout proof, and deliberate Okay/Miss/combo-break strategies are not silently treated as supported search actions.
+
+The project also has no CPU production fallback. CPU implementations and the faithful game simulator exist for reference, differential testing, and oracle verification; production optimization is GPU-first.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Chart data] --> B[Song-aware gear and Mini preparation]
+    B --> C[Load or build exact timeline frontier]
+    B --> D[Load or build exact FG response frontier]
+    C --> E[GPU-native multi-start loadout search]
+    D --> E
+    E --> F[Canonical gem allocation and exact rescore]
+    F --> G[Base leaderboard]
+    F --> H[Force Great leaderboard]
+    G --> I[(evolution.db)]
+    H --> I
 ```
 
-Dev/test tools: `pip install -r requirements-dev.txt`
+1. The app discovers the chart, gear, Mini, and Stats data.
+2. Song-specific state is materialized, including Mini Ascension effects.
+3. Exact timeline and Force Great frontier payloads are loaded from compatible caches or built once.
+4. The Taichi/Vulkan engine searches candidate loadouts while CPU preparation, decode, post-processing, and database work overlap through the native in-flight scheduler.
+5. Canonical results are written to `evolution.db` with Base and Force Great leaderboards kept separate.
 
-### 2. Run the Optimizer
+## Quick start
 
-No additional setup required! The optimizer automatically discovers your Data folder structure on first run.
+### Requirements
+
+- Python **3.10 or newer**
+- A working **Vulkan-capable GPU** and current graphics driver
+- Enough system memory and disk space for JIT output and persistent frontier caches
+
+The maintained production target is Taichi on `ti.vulkan`. CPU-only environments can run reference tests, but not the production optimizer path.
+
+### Install
+
+```bash
+git clone https://github.com/TheBaconactor/RoBeats-Calculator-Engine.git
+cd RoBeats-Calculator-Engine
+
+python -m venv .venv
+```
+
+Activate the environment:
+
+```powershell
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+```
+
+```bash
+# Linux/macOS shell
+source .venv/bin/activate
+```
+
+Install the pinned runtime dependencies:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Development and test dependencies are separate:
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+### Configure the target
+
+The root `config.ini` intentionally exposes only the normal song-selection surface:
+
+```ini
+[CalculateSong]
+Song_Name =
+Difficulty =
+TargetPrimary = All
+TargetSecondary = All
+LoopForever = false
+```
+
+- Set `Song_Name` to target one chart by its exact catalog identity.
+- Leave `Song_Name` blank to scan the matching queue.
+- Use `Difficulty`, `TargetPrimary`, and `TargetSecondary` to narrow the queue.
+- Set `LoopForever = true` only when continuous queue processing is intended.
+- Override the config path with `METAFINDER_CONFIG_PATH=/path/to/config.ini`.
+
+Production scoring modes are not user-selectable compatibility switches. The exact timeline frontier and exact FG response frontier are the canonical paths.
+
+### Run
 
 ```bash
 python main.py
 ```
 
-To stop safely:
-- Press `Ctrl+C` once to request a graceful stop (finishes current work, flushes DB, then exits)
-- Press `Ctrl+C` again to force-exit
-- Or create a stop file at `bin/STOP` (override path via `METAFINDER_STOP_FILE`)
+Safe shutdown:
 
-The optimizer will:
-- Load all songs from Data folders (Easy/Normal/Hard)
-- Run native GPU genetic optimization for each song
-- Score Force Greats inside the native optimizer pipeline
-- Store separate base and Force Greats records in `evolution.db`
-- Use one GPU owner with CPU/GPU in-flight overlap
+- Press `Ctrl+C` once to request a graceful stop after current work and database flushes.
+- Press `Ctrl+C` again to force termination.
+- Create `bin/STOP` to request a stop from another process. Override that path with `METAFINDER_STOP_FILE`.
 
----
-
-## Features
-
-### 🚀 Performance Optimizations
-- **JIT Compilation:** Numba-accelerated scoring functions (10-100x speedup)
-- **GPU Acceleration:** Taichi/Vulkan-native GA and Force Greats scoring (5-20x speedup)
-- **Batch Execution:** Native in-flight GPU scheduling with CPU/GPU overlap
-- **Single GPU Owner:** One app coordinator owns the GPU context; CPU prep/decode work runs around it
-- **Triple-Layer Caching:** LRU caches for gem solver (5K), fever timelines (10K), force greats (2K)
-- **Memory Watchdog:** Auto-restart when RAM usage exceeds threshold with resume capability
-
-### 🧬 Algorithm Features
-- **Co-Evolution GA:** Simultaneous gear (6 slots) and mini (3 slots) optimization
-- **Memetic Search:** Local search hill-climbing after crossover for elite solutions
-- **Multi-Start Restarts:** Escape local optima with fresh populations (3-30 restarts)
-- **Pareto Pruning:** Remove dominated gear to reduce search space
-- **Adaptive Mutation:** Dynamic mutation rate (0.35-0.55) based on stagnation
-
-### 💾 Data Management
-- **SQLite Database:** Efficient storage with WAL mode, batch inserts, indexed queries
-- **Loadout Deduplication:** MD5 hashing prevents redundant evaluations
-- **Stats Signatures:** Deterministic cache keys for identical configurations
-- **Dual-Table Architecture:** Clean separation of Base and Force Greats loadouts
-
----
-
-## Configuration
-
-### Basic Configuration
-
-Edit `config.ini` for song targeting only:
-
-```ini
-[CalculateSong]
-; Leave Song_Name blank to scan the queue.
-Song_Name =
-Difficulty = All
-TargetPrimary = All
-TargetSecondary = All
-LoopForever = true
-```
-
-Production optimizer behavior is native GPU GA plus native FG-inside-GA with Evolution DB persistence. Those are not
-user-selectable config switches.
-
-### Advanced Configuration
-
-Environment variable overrides:
-
-```bash
-# Custom config.ini location
-export METAFINDER_CONFIG_PATH=/path/to/config.ini
-
-# Custom database location
-export EVOLUTION_DB_PATH=/path/to/evolution.db
-
-# Deterministic testing
-export GA_SEED=42
-
-# Profiling / timing (opt-in; gated)
-# First enable the profiling gate:
-export METAFINDER_DEBUG_PROFILE=1
-# (Alias: export DEBUG_PROFILE=1)
-#
-# Then turn on individual probes:
-export PERF_TIMING=1
-export GPU_PROFILER=1
-export GPU_EXECUTOR_PROFILE=1
-
-Note: without the debug-profile gate, some profiling flags are intentionally ignored by production code.
-```
-
----
-
-## Project Structure
-
-Quick navigation: see `docs/README.md` for the docs index, `docs/NAVIGATION.md` for the code map, and `docs/ENGINEERING_PRINCIPLES.md` for repo-wide engineering doctrine.
-
-High-level layout (current):
+## Data and generated state
 
 ```text
 RoBeats-Calculator-Engine/
-├── main.py                      # Optimizer entrypoint
-├── general_meta_main.py         # Cross-song/meta analysis entrypoint
-├── config.ini                   # User configuration
-├── gear_optimizer/              # Main package
-├── tests/                       # Pytest suite
-├── tools/                       # Maintained utilities/bench/verifiers
-├── scripts/                     # Ad-hoc profiling/debug scripts
-├── docs/                        # Design + math + schema docs
-├── Data/                        # Inputs (songs + gear metadata)
-├── bin/                         # Caches/logs/profiles (generated)
-└── artifacts/                   # Run outputs (generated)
+├── Data/
+│   ├── Easy/ Normal/ Hard/          # Official chart files
+│   ├── Gear/                        # Gear and Mini source tables
+│   └── exported_game_data.json      # Optional source for CSV regeneration
+├── gear_optimizer/                  # Optimizer package
+├── tests/                           # CPU, GPU, parity, and regression coverage
+├── tools/                           # Maintained verification and maintenance tools
+├── scripts/                         # Ad-hoc profiling and research scripts
+├── docs/                            # Architecture, math, decisions, and operating notes
+├── evolution.db                     # Canonical result database
+├── bin/                             # Caches, logs, profiles, and run state
+└── artifacts/                       # Generated reports and exports
 ```
 
-<details>
-<summary>Historical: detailed tree (may be out-of-date)</summary>
+Important generated paths:
 
-```
-RoBeats-Calculator-Engine/
-├── main.py                           # Entry point → GearOptimizerApp
-├── config.ini                        # User song targeting configuration
-├── requirements.txt                  # Runtime dependencies
-├── requirements-dev.txt              # Dev/test dependencies
-├── evolution.db                      # SQLite results database
-├── pyproject.toml                    # Ruff + pytest configuration
-│
-├── gear_optimizer/                   # Main package (v2.0.0, 70+ files)
-│   ├── __init__.py                   # Package metadata
-│   │
-│   ├── core/                         # Foundation layer (6 modules, 1,083 LOC)
-│   │   ├── constants.py              # GA/scoring constants, PathConfig
-│   │   ├── config.py                 # INI file parsing, path detection
-│   │   ├── utils.py                  # Pure utility functions
-│   │   ├── memory.py                 # Memory watchdog, OOM recovery
-│   │   ├── jit_setup.py              # Numba JIT wrapper
-│   │   └── math_utils.py             # Specialized math utilities
-│   │
-│   ├── data/                         # Data persistence layer (5 modules, 1,967 LOC)
-│   │   ├── models.py                 # Tee, WarnOnce, GASettings dataclasses
-│   │   ├── database.py               # SQLite CRUD, loadout hashing, batch inserts
-│   │   ├── csv_parser.py             # Gear/mini/stats CSV parsing
-│   │
-│   ├── solver/                       # Algorithm layer (40+ modules, 7,200+ LOC)
-│   │   ├── genetic.py                # Main GA loop with multi-start restarts
-│   │   ├── fever_timeline.py         # Fever timeline calculation (Rules layer)
-│   │   ├── gpu_executor.py           # GPU worker process management & IPC
-│   │   ├── gpu_profiler.py           # GPU performance profiling
-│   │   ├── taichi_gem/               # Taichi gem solver runtime, APIs, and kernels
-│   │   │
-│   │   ├── scoring/                  # Scoring package (7 modules, 1,010 → 178 avg LOC)
-│   │   │   ├── batch_evaluation.py   # Batch genome evaluation with GPU/CPU
-│   │   │   ├── cache_management.py   # Triple-layer LRU caching system
-│   │   │   ├── core_scoring.py       # JIT-optimized core scoring (Numba)
-│   │   │   ├── force_greats.py       # Force greats simulation & optimization
-│   │   │   ├── orchestration.py      # Scoring dispatch (CPU+GPU paths)
-│   │   │   ├── stat_extraction.py    # Base stats extraction utilities
-│   │   │   └── utils.py               # Scoring helper utilities
-│   │   │
-│   │   └── taichi_gem/               # GPU kernels package (25+ modules)
-│   │       ├── runtime.py            # Taichi initialization
-│   │       ├── fields.py             # Taichi field definitions
-│   │       │
-│   │       ├── kernels/              # Kernels package (6 modules, 1,757 → 293 avg)
-│   │       │   ├── helpers.py        # Field placeholders, lookup functions
-│   │       │   ├── ga.py             # GA operations (selection, crossover, mutation)
-│   │       │   ├── scoring.py        # Score calculation + greedy gem allocation
-│   │       │   ├── solvers_batch.py  # Batch processing kernels
-│   │       │   ├── ga_eval.py        # GA evaluation & reduction kernels
-│   │       │   └── timeline.py       # Timeline grid precomputation (161×161)
-│   │       │
-│   │       ├── api/                  # API package (6 modules, 1,754 → 292 avg)
-│   │       │   ├── initialization.py # GPU/field initialization, ref arrays
-│   │       │   ├── single_batch.py   # Single-item & batch gem optimization
-│   │       │   ├── mega_batch.py     # Mega-batch solver (highest performance)
-│   │       │   ├── timeline.py       # GPU timeline precomputation
-│   │       │   ├── parallel_solvers.py # Maximum parallelism solvers (~400k threads)
-│   │       │   └── ga_operations.py  # GPU-native GA infrastructure
-│   │       │
-│   │       └── force_greats/         # Force greats GPU kernels (3 modules)
-│   │           ├── api.py            # FG finder GPU API
-│   │           ├── kernels.py        # FG simulation kernels
-│   │           └── fields.py         # FG field definitions
-│   │
-│   ├── helpers/                      # Modular helper packages (song + GA helper packages)
-│   │   │
-│   │   ├── ga_helpers/               # GA helpers package (6 modules, 1,368 → 228 avg)
-│   │   │   ├── pool_initialization.py # Gear/mini pools with dominance pruning
-│   │   │   ├── genome_factory.py      # Genome creation & manipulation
-│   │   │   ├── evaluation.py          # Evaluation with caching (in-memory + DB)
-│   │   │   ├── local_search.py        # Hill-climbing local search
-│   │   │   ├── population.py          # Population init, crossover, mutation
-│   │   │   └── diversity.py           # Diversity metrics & adaptive mutation
-│   │   │
-│   │   └── song_helpers/             # Song helpers package (6 modules, 1,327 → 221 avg)
-│   │       ├── database_context.py    # DB seeds & known loadouts loading
-│   │       ├── song_config.py         # Configuration setup with auto-buff
-│   │       ├── loadout_builder.py     # Build union of DB + GA loadouts
-│   │       ├── force_greats.py        # Force greats processing (GPU/CPU)
-│   │       ├── persistence.py         # DB payload & persistence entries
-│   │       └── results_printer.py     # Results display & formatting
-│   │
-│   ├── pipeline/                     # Orchestration layer (1 module)
-│   │   └── song_processor.py         # Main song processing workflow
-│   │
-│   └── app.py                        # GearOptimizerApp orchestrator (main loop)
-│
-├── Data/                             # Song files (CSV format)
-│   ├── Easy/, Normal/, Hard/         # Song files by difficulty
-│   ├── Gear/                         # Gear definitions
-│   ├── Gear.csv                      # Gear metadata
-│   ├── Minis.csv                     # Mini definitions
-│   └── Stats.txt                     # Reference stats
-│
-├── bin/                              # Runtime data
-│   ├── paths_cache.json              # Cached folder discovery
-│   ├── memory_guard_resume.json      # OOM recovery state
-│   ├── error.log                     # Error logging
-│   └── build/                        # JIT compilation cache
-│
-├── tests/                            # Test suite (26 files, 3,862 LOC)
-│   ├── conftest.py                   # Pytest configuration
-│   ├── test_*.py                     # Unit & integration tests
-│   ├── profile_*.py                  # Performance profiling scripts
-│   └── regression_*.py               # Regression validation
-│
-├── scripts/                          # Utility scripts (14 files, 2,174 LOC)
-│   ├── profile_*.py                  # Performance analysis
-│   ├── evaluate_reference_loadout.py # Loadout evaluation
-│   └── debug_*.py                    # Debugging utilities
-│
-├── tools/                            # Additional utilities
-│   ├── check_db.py                   # Database inspection
-│   └── verify_loadout.py             # Loadout verification
-│
-└── docs/                             # Documentation
-    ├── ARCHITECTURE.md               # System architecture (15KB)
-    ├── TAICHI_PORT_ROADMAP.md        # GPU optimization roadmap
-    ├── CHANGES_SUMMARY.md            # Change log
-    ├── HELPER_EXTRACTION.md          # Refactoring notes
-    ├── REFACTORING_VALIDATION.md     # Test results
-    └── Implementation Records/       # Detailed change logs
-```
+| Path | Purpose |
+|---|---|
+| `evolution.db` | Canonical Base and Force Great leaderboards. |
+| `bin/timeline_frontier_cache/` | Persistent exact fever-timeline frontier payloads. |
+| `bin/fg_response_frontier_cache/` | Persistent exact Force Great response-frontier payloads. |
+| `bin/paths_cache.json` | Auto-discovered data paths. |
+| `bin/error.log` | Durable runtime diagnostics. |
+| `artifacts/` | Generated analysis and export output. |
 
-</details>
+Cache fingerprints include semantic inputs. When scoring logic, timing inputs, lane data, or cache formats change, incompatible entries are rejected and rebuilt rather than relabeled as valid.
 
-**Note:** `bin/`, `artifacts/`, and `evolution.db` are typically generated during runs.
+## Commands
 
----
-
-## Architecture
-
-### Layered Design
-
-```
-┌─────────────────────────────────────────┐
-│      Orchestration Layer               │
-│  main.py                               │
-│  gear_optimizer/app.py (GearOptimizerApp) │
-│  gear_optimizer/solver/native_inflight_orchestrator.py │
-│  gear_optimizer/pipeline/post_processor.py │
-└────────────────────┬────────────────────┘
-                     │
-┌────────────────────┴────────────────────┐
-│      Algorithm Layer                   │
-│  gear_optimizer/solver/genetic.py (CPU GA) │
-│  gear_optimizer/solver/inflight_* (in-flight) │
-│  gear_optimizer/solver/gpu_executor.py (GPU IPC) │
-└────────────────────┬────────────────────┘
-                     │
-┌────────────────────┴────────────────────┐
-│      Rules/Compute Layers              │
-│  gear_optimizer/solver/scoring/ (CPU/GPU dispatch) │
-│  gear_optimizer/solver/score_math.py (JIT scoring) │
-│  gear_optimizer/solver/fever_timeline.py (CPU logic) │
-│  gear_optimizer/solver/taichi_gem/ (GPU kernels) │
-└────────────────────┬────────────────────┘
-                     │
-┌────────────────────┴────────────────────┐
-│      Helper Layer                      │
-│  gear_optimizer/helpers/ga_helpers/ + song_helpers/ │
-└────────────────────┬────────────────────┘
-                     │
-┌────────────────────┴────────────────────┐
-│      Data Layer                        │
-│  gear_optimizer/data/database.py + migrations/ │
-│  gear_optimizer/data/csv_parser.py                      │
-└────────────────────┬────────────────────┘
-                     │
-┌────────────────────┴────────────────────┐
-│      Foundation Layer                  │
-│  gear_optimizer/core/                  │
-└─────────────────────────────────────────┘
-```
-
-**Import Hierarchy:** Zero circular dependencies - clean hierarchical structure (Level 0-6)
-
-### Key Algorithms
-
-#### Genetic Algorithm ([genetic.py](gear_optimizer/solver/genetic.py))
-- **Population:** 705 individuals (configurable)
-- **Generations:** Runtime GA settings determine search depth
-- **Multi-Start:** 3-30 restarts to escape local optima
-- **Selection:** Tournament selection (k=3)
-- **Crossover:** Single-point crossover
-- **Mutation:** Adaptive rate (0.35 default, up to 0.55 on stagnation)
-- **Elitism:** Preserve top 10% across generations
-- **Memetic Search:** Local hill-climbing on elite offspring
-
-#### Scoring Engine ([scoring/](gear_optimizer/solver/scoring/) + [score_math.py](gear_optimizer/solver/score_math.py))
-- **Reference Lookup:** JIT-compiled O(1) stat-to-multiplier conversion
-- **Fever Timeline:** CPU-side complex fever calculations ([fever_timeline.py](gear_optimizer/solver/fever_timeline.py))
-- **Gem Optimization:** GPU-accelerated greedy gem allocation ([taichi_gem/](gear_optimizer/solver/taichi_gem/))
-- **Combo Ramp:** Multiplier calculation with fever bonuses
-- **Force Greats:** Native scoring inside the GA pipeline with separate base/FG persistence
-- **Caching:** Triple-layer LRU caching system
-
-#### GPU Acceleration ([gpu_executor.py](gear_optimizer/solver/gpu_executor.py) + [taichi_gem/](gear_optimizer/solver/taichi_gem/))
-- **Single GPU Ownership:** One native GPU executor in the app process
-- **In-Flight Queue Architecture:** CPU preparation, GA execution, decode, FG scoring, post-processing, and DB writes overlap
-- **Native GA + FG:** Force Greats is scored inside the native optimizer surface, not as a separate production pipeline
-- **Multi-Song Grid Slots:** 8 parallel song slots for batch processing
-- **Lazy Initialization:** Deferred Taichi/Vulkan setup for faster startup
-
----
-
-## Testing
-
-### Run Test Suite
+### Optimizer and data commands
 
 ```bash
-# All tests
-python -m pytest tests/
+# Normal optimizer run
+python main.py
+# Equivalent module command
+python -m gear_optimizer.cli run
 
-# CPU-only
-python -m pytest -m "not gpu" tests/
+# Cross-song GeneralMeta analysis
+python -m gear_optimizer.cli meta
 
-# GPU (Taichi/Vulkan)
-python -m pytest -m gpu tests/
+# Regenerate gear and Mini CSV data from exported_game_data.json
+python -m gear_optimizer.cli sync-data
 ```
 
-### Test Coverage
-
-See `tests/` for CPU/GPU parity checks, DB correctness, and regression coverage.
-
----
-
-## Performance
-
-### Benchmarks
-
-| Optimization | Speedup | Implementation |
-|--------------|---------|----------------|
-| JIT Compilation | 10-100x | Numba @jit on scoring functions |
-| GPU Acceleration | 5-20x | Taichi gem solver + force greats kernels |
-| LRU Caching | ~100x | Triple-layer cache system (hit rate) |
-| Native In-Flight Overlap | Throughput | Single GPU owner with CPU prep/decode/FG overlap |
-| Batch Execution | 2-5x | True batched GPU kernel dispatch |
-| Lazy Loading | Faster startup | Deferred Taichi/GPU initialization |
-
-### Performance Tips
-
-1. **Memory Management:** Use maintained profile/bench configs or env overrides for memory guard experiments
-2. **Worker Count:** Production uses one GPU owner; tune profile configs instead of per-song process pools
-3. **GA Depth:** Increase profile GA depth for better solutions (slower)
-4. **GPU Profiling:** Enable `GPU_EXECUTOR_PROFILE=1` to measure utilization
-5. **Caching:** Avoid clearing `bin/numba_cache/` (JIT cache) and `bin/paths_cache.json` (data discovery cache) unless troubleshooting
-6. **Dual-GPU (experimental):** Set `GPU_EXECUTOR_SECONDARY_WORKERS=<n>` and `GPU_EXECUTOR_SECONDARY_VULKAN_VISIBLE_DEVICE=<idx>` to split workers across two Vulkan devices (multi-process Taichi)
-
----
-
-## Development
-
-### Unified Script Runner
-
-Use the unified script runner to reduce clutter when working across both `tools/` and `scripts/`:
+### Maintained tools
 
 ```bash
-# List maintained scripts
+# Discover maintained tools and scripts
 python -m tools list
 
-# Show inventory + clutter hotspots (private/scratch counts)
+# Show inventory and clutter hotspots
 python -m tools audit
 
-# Run a script by id (tool ids are shown by `list`)
+# Run one discovered tool by ID
 python -m tools run tools:db/check_db
 python -m tools run scripts:query/query_top_loadouts -- --help
 ```
 
-By default, private/scratch scripts (for example `_tmp_*`, underscore-prefixed files, and nested `tests/` scripts) are hidden from `list`. Include them explicitly with `--all`.
+### Optimizer HTTP service
 
-### Code Quality Metrics
+```bash
+python -m gear_optimizer.robeatsmeta_service --host 127.0.0.1 --port 8765
+```
 
-- ✅ **Architecture:** Clean layered design, zero circular dependencies
-- ✅ **Testing:** 26 test files, comprehensive coverage
-- ✅ **Performance:** JIT, GPU, caching, memory management
-- ✅ **Documentation:** Architecture docs, implementation records
-- ✅ **Maintainability:** Modular design, extracted helpers (16 functions)
+The service exposes:
 
-### Recent Improvements (Phase 3 & 4 - December 2024)
+- `GET /songs` — official chart metadata
+- `POST /optimize` — isolated optimization for an official chart or supplied chart text
 
-#### Phase 4 - GPU Batch Execution
-1. ✅ Fixed force greats persistence bug
-2. ✅ Implemented true batched kernel execution
-3. ✅ Added GPU executor batch gathering infrastructure
-4. ✅ Multi-song grid slot infrastructure (8 slots)
-5. ✅ In-flight single-process multi-song pipeline (`InFlightSongs`)
-6. ✅ Cleaned up codebase (removed stale `__pycache__`)
+It binds to loopback by default. Set `ROBEATSMETA_OPTIMIZER_API_TOKEN` before exposing it outside a trusted local environment, and place any public deployment behind TLS and an appropriate reverse proxy. Request solves use isolated working directories while sharing canonical compatible frontier caches.
 
-#### Phase 3 - Large File Refactoring (COMPLETE)
-**Transformed 5 monolithic files (7,216 lines) into 31 focused modules across 5 packages:**
+## Architecture
 
-1. ✅ **scoring.py** split → 7 modules (1,010 → 178 avg LOC)
-   - Batch evaluation, cache management, core scoring, force greats, orchestration
+| Layer | Primary ownership |
+|---|---|
+| Application | [`gear_optimizer/app.py`](gear_optimizer/app.py), CLI startup, graceful shutdown, queue ownership |
+| Scheduling | [`gear_optimizer/solver/native_inflight_orchestrator.py`](gear_optimizer/solver/native_inflight_orchestrator.py), overlapping CPU/GPU stages |
+| Search | [`gear_optimizer/solver/genetic.py`](gear_optimizer/solver/genetic.py), GPU-native multi-start candidate search |
+| Exact timing | [`gear_optimizer/solver/timeline_exact_frontier.py`](gear_optimizer/solver/timeline_exact_frontier.py), packed non-dominated fever surfaces |
+| Force Greats | [`gear_optimizer/solver/taichi_gem/force_greats/`](gear_optimizer/solver/taichi_gem/force_greats/), exact response-frontier construction and scoring |
+| Score verification | [`gear_optimizer/solver/scoring/`](gear_optimizer/solver/scoring/), integer exact rescoring and parity paths |
+| Data | [`gear_optimizer/data/`](gear_optimizer/data/), ingest, Mini Ascension, SQLite persistence, migrations |
+| Integration | [`gear_optimizer/robeatsmeta_service.py`](gear_optimizer/robeatsmeta_service.py), stateless website-facing solve service |
 
-2. ✅ **kernels.py** split → 6 modules (1,757 → 293 avg LOC)
-   - Helpers, GA operations, scoring, solvers, evaluation, timeline
+The repository enforces a single canonical production implementation per semantic behavior: no song exceptions, silent degraded modes, or old/new compatibility switches in internal optimizer logic.
 
-3. ✅ **api.py** split → 6 modules (1,754 → 292 avg LOC)
-   - Initialization, single batch, mega batch, timeline, parallel solvers, GA ops
+## Testing and quality gates
 
-4. ✅ **ga_helpers.py** split → 6 modules (1,368 → 228 avg LOC)
-   - Pool init, genome factory, evaluation, local search, population, diversity
+```bash
+# CPU/reference suite
+python -m pytest -m "not gpu" tests/
 
-5. ✅ **song_helpers.py** split → 6 modules (1,327 → 221 avg LOC)
-   - DB context, song config, loadout builder, force greats, persistence, results
+# Vulkan-facing suite
+python -m pytest -m gpu tests/
 
-**Benefits:**
-- Improved maintainability (220-290 lines per module vs 1,000-1,700)
-- Clear module boundaries and single responsibilities
-- Easier navigation and understanding
-- Direct module boundaries only
-- Zero circular dependencies introduced
-- Foundation for future refactoring
+# Lint
+python -m ruff check .
 
----
+# Repository quality gate on Windows
+powershell -ExecutionPolicy Bypass -File tools/dev/quality_check.ps1
+```
+
+GPU, timing, cache, or physical-reachability changes require Vulkan-facing and oracle/parity evidence. Documentation-only changes normally do not require the full GPU suite.
 
 ## Troubleshooting
 
-### Common Issues
+<details>
+<summary><strong>Data paths are not discovered</strong></summary>
 
-**"Could not find Data folder"**
-- Delete `bin/paths_cache.json` and re-run `python main.py` to regenerate it automatically
+Delete `bin/paths_cache.json`, verify the required `Data/` files exist, and run `python main.py` again.
 
-**"Memory limit exceeded"**
-- Use a lower-depth profile or memory-guard profile before re-running
+</details>
 
-**"No module named 'numba'" or "No module named 'taichi'"**
-- Install dependencies: `pip install -r requirements.txt`
+<details>
+<summary><strong>Taichi cannot initialize Vulkan</strong></summary>
 
-**JIT compilation warnings on first run**
-- Normal behavior: first run compiles functions (slow), subsequent runs use cached JIT code
+Update the GPU driver and verify the pinned Taichi installation can initialize Vulkan:
 
-**GPU not detected**
-- Ensure Taichi with Vulkan backend is installed: `pip install taichi`
-- Check GPU availability: `python -c "import taichi as ti; ti.init(arch=ti.vulkan)"`
+```bash
+python -c "import taichi as ti; ti.init(arch=ti.vulkan); print('Vulkan ready')"
+```
 
----
+The production optimizer intentionally does not fall back to CPU scoring.
 
-## Credits
+</details>
 
-**Original Implementation:** 5,196-line monolith (archived off-repo)
+<details>
+<summary><strong>The first run appears much slower</strong></summary>
 
-**Refactored Architecture (v2.0.0):** Modular design with layered architecture
-- 39 modules organized into 6 layers
-- 16 extracted helper functions for improved modularity
-- Zero circular dependencies
-- Comprehensive testing and documentation
+A cold run may compile Numba/Taichi code and build missing exact timeline or FG frontier caches. Compatible later runs reuse the persisted artifacts. Do not delete `bin/numba_cache/`, `bin/timeline_frontier_cache/`, or `bin/fg_response_frontier_cache/` unless troubleshooting or intentionally forcing a rebuild.
 
-**GPU Optimization (Phase 4):** True batched kernel execution with multi-song grid slots
+</details>
 
-**Date:** December 2025
+<details>
+<summary><strong>A cache rebuild starts after an update</strong></summary>
 
----
+That is expected when the semantic fingerprint or cache format changes. Never rename or manually relabel an older cache generation as compatible; rebuild it through the canonical producer.
 
-## License
+</details>
 
-This project is for personal use. All rights reserved.
+<details>
+<summary><strong>The optimizer service runs out of memory</strong></summary>
 
----
+The service gates concurrent solve starts using available memory, but the configured pool may still be too aggressive for the host. Reduce `ROBEATSMETA_OPTIMIZER_SERVICE_POOL`, leave the memory admission guard enabled, and pre-provision compatible frontier caches on a larger machine when appropriate.
 
-## Security Note
+</details>
 
-⚠️ **Never commit tokens.**
+## Documentation
 
----
+Start here:
+
+- [`docs/README.md`](docs/README.md) — documentation index
+- [`docs/NAVIGATION.md`](docs/NAVIGATION.md) — current file-level code map
+- [`docs/ENGINEERING_PRINCIPLES.md`](docs/ENGINEERING_PRINCIPLES.md) — canonical engineering doctrine
+- [`docs/Implementation Records/TIMING_ENVELOPE_EXACT_FRONTIER.md`](docs/Implementation%20Records/TIMING_ENVELOPE_EXACT_FRONTIER.md) — exact timing-frontier model
+- [`docs/Implementation Records/INPUT_ENGINE_AWARE_FEVER_REACHABILITY.md`](docs/Implementation%20Records/INPUT_ENGINE_AWARE_FEVER_REACHABILITY.md) — input-engine reachability design and evidence
+- [`docs/Implementation Records/MINI_ASCENSION_OPTIMIZER_SCORING.md`](docs/Implementation%20Records/MINI_ASCENSION_OPTIMIZER_SCORING.md) — song-aware Mini Ascension scoring
+- [`docs/DATABASE_SCHEMA.md`](docs/DATABASE_SCHEMA.md) — persistence schema
+- [`AGENTS.md`](AGENTS.md) — repository-wide contributor and agent rules
+
+Implementation records preserve design decisions and validation history. They are not a substitute for the current production code or the navigation guide when older sections describe superseded intermediate states.
 
 ## Contributing
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design details and [docs/ENGINEERING_PRINCIPLES.md](docs/ENGINEERING_PRINCIPLES.md) for the repo's root-cause, ownership, and refactoring standards.
+Before submitting a change:
 
-Repo-wide agent routing starts in [AGENTS.md](AGENTS.md). Subtree-specific guidance lives in nested `AGENTS.md` files close to the code they govern.
+1. Read [`AGENTS.md`](AGENTS.md) and the nearest subtree-specific `AGENTS.md`.
+2. Fix the owning invariant rather than adding a fallback or song-specific exception.
+3. Keep Base and Force Great outputs separate.
+4. Add the narrowest tests that prove the change; include Vulkan-facing coverage for GPU behavior.
+5. Run the applicable lint, test, and repository quality gates.
 
-Use `python -m tools list` to discover centralized tooling entry points.
+Behavior or policy changes require an implementation record and a `docs/CODEX_WORKLOG.md` entry.
 
-Run `powershell -ExecutionPolicy Bypass -File tools/dev/quality_check.ps1` to verify code quality before submitting changes.
+## Security
+
+Never commit API tokens, credentials, private chart uploads, or deployment secrets. The optimizer HTTP service is intended to sit behind a trusted boundary and optional bearer-token authentication; loopback binding is the safe default.
+
+## License
+
+Personal use only. All rights reserved.
