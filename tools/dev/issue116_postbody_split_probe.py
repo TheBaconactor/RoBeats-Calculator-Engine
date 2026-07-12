@@ -36,8 +36,8 @@ _TOOLS_DEV = Path(__file__).resolve().parent
 if str(_TOOLS_DEV) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DEV))
 
-from numba import njit  # noqa: E402
-from numba.typed import List  # noqa: E402
+from numba import njit, types  # noqa: E402
+from numba.typed import Dict, List  # noqa: E402
 
 from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as _rb  # noqa: E402
 from issue116_amdahl_probe import SongProbeInputs, _find_chart  # noqa: E402
@@ -429,6 +429,9 @@ def _split_driver(
             states_evaluated += 1
             generated = List.empty_list(_SURFACE_TYPE)
             generated_scores = List.empty_list(_SCORES_TYPE)
+            generated_seen = Dict.empty(_SURFACE_TYPE, types.uint8)
+            generated_score_matrix_holder = List.empty_list(_rb._NUMBA_HEAD_SCORE_MATRIX_TYPE)
+            generated_score_matrix_count = np.zeros(1, dtype=np.int64)
             generated_count = 0
             bounded_mode = 0
             prev_fill = -1
@@ -472,6 +475,9 @@ def _split_driver(
                         _rb._numba_append_head_generated_candidate(
                             generated,
                             generated_scores,
+                            generated_seen,
+                            generated_score_matrix_holder,
+                            generated_score_matrix_count,
                             edge,
                             int(edge_e),
                             body_values,
@@ -492,6 +498,9 @@ def _split_driver(
                         _rb._numba_emit_early_great_edges(
                             generated,
                             generated_scores,
+                            generated_seen,
+                            generated_score_matrix_holder,
+                            generated_score_matrix_count,
                             int(n),
                             int(activation),
                             int(edge_e),
@@ -550,6 +559,9 @@ def _split_driver(
                         _rb._numba_append_head_generated_candidate(
                             generated,
                             generated_scores,
+                            generated_seen,
+                            generated_score_matrix_holder,
+                            generated_score_matrix_count,
                             activation_edge,
                             int(activation_e),
                             body_values,
@@ -570,6 +582,9 @@ def _split_driver(
                         _rb._numba_emit_early_great_edges(
                             generated,
                             generated_scores,
+                            generated_seen,
+                            generated_score_matrix_holder,
+                            generated_score_matrix_count,
                             int(n),
                             int(activation),
                             int(activation_e),
@@ -597,6 +612,9 @@ def _split_driver(
                 _rb._numba_emit_region2_head_edges(
                     generated,
                     generated_scores,
+                    generated_seen,
+                    generated_score_matrix_holder,
+                    generated_score_matrix_count,
                     region_node_surface,
                     region_node_next,
                     region_bucket_head,
@@ -659,6 +677,9 @@ def _split_driver(
     first_frontier = List.empty_list(_SURFACE_TYPE)
     first_region_generated = List.empty_list(_SURFACE_TYPE)
     first_region_scores = List.empty_list(_SCORES_TYPE)
+    first_region_seen = Dict.empty(_SURFACE_TYPE, types.uint8)
+    first_region_score_matrix_holder = List.empty_list(_rb._NUMBA_HEAD_SCORE_MATRIX_TYPE)
+    first_region_score_matrix_count = np.zeros(1, dtype=np.int64)
     first_region_bounded = 0
     branch_a_epoch_out = int(branch_a_epoch_in)
     if int(action_count) > 0 and int(first_fill[0]) >= 100:
@@ -878,6 +899,9 @@ def _split_driver(
                 _rb._numba_emit_region2_head_edges(
                     first_region_generated,
                     first_region_scores,
+                    first_region_seen,
+                    first_region_score_matrix_holder,
+                    first_region_score_matrix_count,
                     region_node_surface,
                     region_node_next,
                     region_bucket_head,
@@ -915,6 +939,9 @@ def _split_driver(
     else:
         first_generated = List.empty_list(_SURFACE_TYPE)
         first_generated_scores = List.empty_list(_SCORES_TYPE)
+        first_generated_seen = Dict.empty(_SURFACE_TYPE, types.uint8)
+        first_generated_score_matrix_holder = List.empty_list(_rb._NUMBA_HEAD_SCORE_MATRIX_TYPE)
+        first_generated_score_matrix_count = np.zeros(1, dtype=np.int64)
         first_bounded_mode = 0
         prev_fill = -1
         prev_edge_e = -1
@@ -954,6 +981,9 @@ def _split_driver(
                         _rb._numba_append_head_generated_candidate(
                             first_generated,
                             first_generated_scores,
+                            first_generated_seen,
+                            first_generated_score_matrix_holder,
+                            first_generated_score_matrix_count,
                             edge,
                             int(edge_e),
                             body_values,
@@ -974,6 +1004,9 @@ def _split_driver(
                         _rb._numba_emit_early_great_edges(
                             first_generated,
                             first_generated_scores,
+                            first_generated_seen,
+                            first_generated_score_matrix_holder,
+                            first_generated_score_matrix_count,
                             int(n),
                             int(fill),
                             int(edge_e),
@@ -1032,6 +1065,9 @@ def _split_driver(
                         _rb._numba_append_head_generated_candidate(
                             first_generated,
                             first_generated_scores,
+                            first_generated_seen,
+                            first_generated_score_matrix_holder,
+                            first_generated_score_matrix_count,
                             activation_edge,
                             int(activation_e),
                             body_values,
@@ -1052,6 +1088,9 @@ def _split_driver(
                         _rb._numba_emit_early_great_edges(
                             first_generated,
                             first_generated_scores,
+                            first_generated_seen,
+                            first_generated_score_matrix_holder,
+                            first_generated_score_matrix_count,
                             int(n),
                             int(fill),
                             int(activation_e),
@@ -1081,6 +1120,9 @@ def _split_driver(
                 _rb._numba_emit_region2_head_edges(
                     first_generated,
                     first_generated_scores,
+                    first_generated_seen,
+                    first_generated_score_matrix_holder,
+                    first_generated_score_matrix_count,
                     region_node_surface,
                     region_node_next,
                     region_bucket_head,
@@ -1123,7 +1165,10 @@ def _split_driver(
         for idx in range(len(first_frontier)):
             first_region_generated.append(first_frontier[idx])
         first_frontier = _rb._numba_head_envelope_filter(
-            _rb._numba_reduce(first_region_generated), 0, int(head_limit), int(head_filter_min)
+            _rb._numba_reduce_pattern_runs(first_region_generated),
+            0,
+            int(head_limit),
+            int(head_filter_min),
         )
     generated_surfaces += first_generated_count
     retained_total += len(first_frontier)

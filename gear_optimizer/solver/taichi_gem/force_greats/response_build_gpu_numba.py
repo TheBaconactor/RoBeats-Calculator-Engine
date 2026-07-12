@@ -1175,7 +1175,7 @@ def _numba_reduce(surfaces):
         cng = cbg - cbfg
         key = (cf_lo & cg_lo, cf_hi & cg_hi)
         head = bucket_head[key] if key in bucket_head else -1
-        # phase 1: dominated by a currently-kept surface in the same class?
+        # Phase 1: dominated by a currently-kept surface in the same class?
         dominated = False
         pos = head
         while pos != -1:
@@ -1196,7 +1196,7 @@ def _numba_reduce(surfaces):
             pos = prev_same[pos]
         if dominated:
             continue
-        # phase 2: retire currently-kept surfaces in the same class that this one dominates.
+        # Phase 2: retire currently-kept surfaces in the same class that this one dominates.
         pos = head
         while pos != -1:
             if kept_flag[pos]:
@@ -1216,6 +1216,118 @@ def _numba_reduce(surfaces):
         prev_same[idx] = head
         bucket_head[key] = idx
         kept_flag[idx] = True
+    for idx in range(n):
+        if kept_flag[idx]:
+            kept.append(surfaces[idx])
+    return kept
+
+
+@njit(cache=True, nogil=True)
+def _numba_reduce_pattern_runs(surfaces):
+    kept = List.empty_list(_NUMBA_SURFACE_TYPE)
+    n = len(surfaces)
+    if n == 0:
+        kept.append((
+            np.uint64(0),
+            np.uint64(0),
+            np.uint64(0),
+            np.uint64(0),
+            np.uint64(0),
+            np.uint64(0),
+            np.uint64(0),
+        ))
+        return kept
+    # Exact head-pattern-run index for the structural Pareto maximum. Dominance requires equal
+    # fever/Great overlap, a fever-mask superset, and a Great-mask subset. Grouping live rows by
+    # their complete four-word head pattern lets each candidate test those cheap mask conditions
+    # once per contiguous pattern run, then scan body triples only in compatible run lists. The old
+    # reducer repeated the same four mask tests for every historical row in the overlap bucket.
+    #
+    # Rows are still processed in producer order. Each per-run list contains only currently
+    # live rows; retirement unlinks in place, while kept_flag restores the identical final producer
+    # order. A pattern that recurs after another run simply owns another exact run node; no hash,
+    # global interning, or equality shortcut participates in semantics.
+    overlap_head = Dict.empty(_NUMBA_HEAD_OVERLAP_KEY_TYPE, types.int64)
+    pattern_representative = List.empty_list(types.int64)
+    previous_pattern = List.empty_list(types.int64)
+    pattern_row_head = List.empty_list(types.int64)
+    kept_flag = np.zeros(n, dtype=np.bool_)
+    previous_live = np.full(n, -1, dtype=np.int64)
+    candidate_pattern = -1
+    for idx in range(n):
+        cf_lo, cf_hi, cg_lo, cg_hi, cbf, cbg, cbfg = surfaces[int(idx)]
+        cng = cbg - cbfg
+        overlap_key = (cf_lo & cg_lo, cf_hi & cg_hi)
+        if int(candidate_pattern) < 0:
+            starts_new_run = True
+        else:
+            current_pattern = surfaces[int(pattern_representative[int(candidate_pattern)])]
+            starts_new_run = (
+                cf_lo != current_pattern[0]
+                or cf_hi != current_pattern[1]
+                or cg_lo != current_pattern[2]
+                or cg_hi != current_pattern[3]
+            )
+        if starts_new_run:
+            candidate_pattern = len(pattern_representative)
+            pattern_representative.append(int(idx))
+            previous_pattern.append(
+                int(overlap_head[overlap_key]) if overlap_key in overlap_head else -1
+            )
+            pattern_row_head.append(-1)
+            overlap_head[overlap_key] = int(candidate_pattern)
+
+        # Phase 1: does any mask-compatible live pattern contain a body dominator?
+        dominated = False
+        pid = int(overlap_head[overlap_key])
+        while int(pid) >= 0 and not dominated:
+            representative = surfaces[int(pattern_representative[int(pid)])]
+            if (
+                (cf_lo & ~representative[0]) == 0
+                and (cf_hi & ~representative[1]) == 0
+                and (representative[2] & ~cg_lo) == 0
+                and (representative[3] & ~cg_hi) == 0
+            ):
+                pos = int(pattern_row_head[int(pid)])
+                while int(pos) >= 0:
+                    _kf0, _kf1, _kg0, _kg1, kbf, kbg, kbfg = surfaces[int(pos)]
+                    if kbf >= cbf and kbg - kbfg <= cng and kbfg <= cbfg:
+                        dominated = True
+                        break
+                    pos = int(previous_live[int(pos)])
+            pid = int(previous_pattern[int(pid)])
+        if dominated:
+            continue
+
+        # Phase 2: unlink every body row this candidate dominates from compatible patterns.
+        pid = int(overlap_head[overlap_key])
+        while int(pid) >= 0:
+            representative = surfaces[int(pattern_representative[int(pid)])]
+            if (
+                (representative[0] & ~cf_lo) == 0
+                and (representative[1] & ~cf_hi) == 0
+                and (cg_lo & ~representative[2]) == 0
+                and (cg_hi & ~representative[3]) == 0
+            ):
+                pos = int(pattern_row_head[int(pid)])
+                previous = -1
+                while int(pos) >= 0:
+                    next_pos = int(previous_live[int(pos)])
+                    _kf0, _kf1, _kg0, _kg1, kbf, kbg, kbfg = surfaces[int(pos)]
+                    if cbf >= kbf and cng <= kbg - kbfg and cbfg <= kbfg:
+                        kept_flag[int(pos)] = False
+                        if int(previous) < 0:
+                            pattern_row_head[int(pid)] = int(next_pos)
+                        else:
+                            previous_live[int(previous)] = int(next_pos)
+                    else:
+                        previous = int(pos)
+                    pos = int(next_pos)
+            pid = int(previous_pattern[int(pid)])
+
+        previous_live[int(idx)] = int(pattern_row_head[int(candidate_pattern)])
+        pattern_row_head[int(candidate_pattern)] = int(idx)
+        kept_flag[int(idx)] = True
     for idx in range(n):
         if kept_flag[idx]:
             kept.append(surfaces[idx])
@@ -5748,7 +5860,10 @@ def _first_frontier_from_precomputed_end_indices_numba(
         for idx in range(len(first_frontier)):
             first_region_generated.append(first_frontier[idx])
         first_frontier = _numba_head_envelope_filter(
-            _numba_reduce(first_region_generated), 0, int(head_limit), int(head_filter_min)
+            _numba_reduce_pattern_runs(first_region_generated),
+            0,
+            int(head_limit),
+            int(head_filter_min),
         )
     generated_surfaces += first_generated_count
     retained_total += len(first_frontier)

@@ -1894,6 +1894,75 @@ def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
     ]
 
 
+def test_fg_response_pattern_indexed_reducer_matches_sequential_semantics() -> None:
+    from numba.typed import List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_SURFACE_TYPE,
+        _numba_reduce,
+        _numba_reduce_pattern_runs,
+    )
+
+    def dominates(left, right):
+        lf0, lf1, lg0, lg1, lbf, lbg, lbfg = (int(value) for value in left)
+        rf0, rf1, rg0, rg1, rbf, rbg, rbfg = (int(value) for value in right)
+        return (
+            (lf0 & lg0, lf1 & lg1) == (rf0 & rg0, rf1 & rg1)
+            and lbf >= rbf
+            and lbg - lbfg <= rbg - rbfg
+            and lbfg <= rbfg
+            and (rf0 & ~lf0) == 0
+            and (rf1 & ~lf1) == 0
+            and (lg0 & ~rg0) == 0
+            and (lg1 & ~rg1) == 0
+        )
+
+    def sequential(rows):
+        kept = []
+        for candidate in rows:
+            if any(dominates(row, candidate) for row in kept):
+                continue
+            kept = [row for row in kept if not dominates(candidate, row)]
+            kept.append(candidate)
+        return kept
+
+    rng = np.random.default_rng(116)
+    for _case in range(24):
+        rows = []
+        patterns = []
+        overlaps = [
+            (int(rng.integers(0, 1 << 8)), int(rng.integers(0, 1 << 8)))
+            for _ in range(3)
+        ]
+        for pattern_idx in range(12):
+            overlap0, overlap1 = overlaps[int(pattern_idx) % len(overlaps)]
+            fever0 = overlap0 | int(rng.integers(0, 1 << 16))
+            fever1 = overlap1 | int(rng.integers(0, 1 << 16))
+            great0 = overlap0 | (int(rng.integers(0, 1 << 16)) & ~fever0)
+            great1 = overlap1 | (int(rng.integers(0, 1 << 16)) & ~fever1)
+            patterns.append((fever0, fever1, great0, great1))
+        for row_idx in range(96):
+            pattern = patterns[int(rng.integers(0, len(patterns)))]
+            body_fever_great = int(rng.integers(0, 20))
+            normal_great = int(rng.integers(0, 20))
+            row = (
+                *pattern,
+                int(rng.integers(0, 40)),
+                normal_great + body_fever_great,
+                body_fever_great,
+            )
+            rows.append(row)
+            if row_idx % 17 == 0:
+                rows.append(row)
+
+        surfaces = List.empty_list(_NUMBA_SURFACE_TYPE)
+        for row in rows:
+            surfaces.append(tuple(np.uint64(value) for value in row))
+        expected = sequential(rows)
+        assert list(_numba_reduce(surfaces)) == expected
+        assert list(_numba_reduce_pattern_runs(surfaces)) == expected
+
+
 def test_fg_response_same_end_head_edge_prune_keeps_different_end_edges() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _numba_append_head_edge_to_end_chains,
