@@ -918,11 +918,12 @@ def run_native_inflight_song_pipeline(
                     pending_fg=pending_fg,
                 ):
                     t_wait = time.perf_counter()
-                    has_gpu = bool(ga_inflight) or bool(fg_futures)
+                    has_gpu = bool(ga_inflight)
                     has_cpu = (
                         bool(prep_inflight)
                         or bool(decode_inflight)
                         or bool(fg_prep_inflight)
+                        or bool(fg_futures)
                     )
                     signaled = bool(completion_tracker.is_set())
                     if signaled:

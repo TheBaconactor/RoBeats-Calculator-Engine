@@ -595,7 +595,12 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
     assert len(list(tmp_path.glob("*.npz"))) == 2
 
 
-def test_ratified_compatible_version_reuses_complete_bundle_without_build(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("predecessor_index", (1, 2))
+def test_ratified_compatible_version_reuses_complete_bundle_without_build(
+    tmp_path: Path,
+    monkeypatch,
+    predecessor_index: int,
+) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
@@ -605,9 +610,10 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(tmp_pa
     compatible_versions = response_cache_store.fg_response_compatible_cache_versions()
     assert compatible_versions[0] == current_version
     assert compatible_versions[1:] == (
+        "fg-response-frontier-visible-first-v30+logic-584d8e8c6077",
         "fg-response-frontier-visible-first-v30+logic-a6d09c0280bd",
     )
-    predecessor = compatible_versions[1]
+    predecessor = compatible_versions[int(predecessor_index)]
 
     monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", predecessor)
     legacy = response_cache.build_or_load_response_frontier_payload(
