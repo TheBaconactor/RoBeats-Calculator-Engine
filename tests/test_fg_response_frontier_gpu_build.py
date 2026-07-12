@@ -2453,7 +2453,8 @@ def test_fg_response_chained_region_bucket_matches_retired_structured_streams() 
 
 
 def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_order() -> None:
-    from numba.typed import List
+    from numba import types
+    from numba.typed import Dict, List
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _NUMBA_HEAD_SCORES_TYPE,
@@ -2498,9 +2499,11 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
     def _emit(columns, shared_surface, shared_next):
         generated = List.empty_list(_NUMBA_SURFACE_TYPE)
         generated_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+        generated_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
         return _numba_emit_region2_head_edges(
             generated,
             generated_scores,
+            generated_seen,
             shared_surface,
             shared_next,
             bucket_head,
@@ -2571,7 +2574,8 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
     the 4,096-row promotion threshold in its first edge batch and pins the retired per-edge
     schedule exactly; the second batch must still enter the bounded inserter row by row.
     """
-    from numba.typed import List
+    from numba import types
+    from numba.typed import Dict, List
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _NUMBA_HEAD_SCORES_TYPE,
@@ -2620,6 +2624,7 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
 
     expected = List.empty_list(_NUMBA_SURFACE_TYPE)
     expected_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    expected_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
     bounded = 0
     for end_e in (101, 102):
         edge = _numba_pack_edge(n, 0, end_e, 1, 1, -1)
@@ -2627,6 +2632,7 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
             _numba_append_head_generated_candidate(
                 expected,
                 expected_scores,
+                expected_seen,
                 edge,
                 end_e,
                 body_values,
@@ -2647,10 +2653,12 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
 
     actual = List.empty_list(_NUMBA_SURFACE_TYPE)
     actual_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    actual_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
     actual, actual_scores, added, actual_bounded, _node_surface, _node_next = (
         _numba_emit_region2_head_edges(
             actual,
             actual_scores,
+            actual_seen,
             node_surface,
             node_next,
             bucket_head,
@@ -2692,6 +2700,63 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
         np.testing.assert_array_equal(actual_row, expected_row)
     assert np.all(bucket_head == -1)
     assert np.all(bucket_tail == -1)
+
+
+def test_fg_response_bounded_exact_duplicate_skip_matches_every_retired_prefix() -> None:
+    """A duplicate remains inert after its first copy is rejected or repeatedly evicted."""
+    from numba import types
+    from numba.typed import Dict, List
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _NUMBA_HEAD_SCORES_TYPE,
+        _NUMBA_SURFACE_TYPE,
+        _numba_head_basis_corner_scores_row,
+        _numba_head_envelope_insert_with_scores,
+        _numba_head_surface_basis,
+        _numba_mark_head_surface_first_seen,
+    )
+
+    weak = (0, 0, 0, 0, 25, 50, 25)
+    strong = (0, 0, 0, 0, 60, 50, 25)
+    strongest = (0, 0, 0, 0, 100, 50, 25)
+    stream = (
+        weak,
+        weak,       # duplicate while the original is retained
+        strong,     # evicts weak
+        weak,       # duplicate after its original was evicted
+        strong,
+        strongest,  # evicts strong
+        weak,       # duplicate after a two-link dominator chain
+        strong,
+        strongest,
+    )
+
+    retired = List.empty_list(_NUMBA_SURFACE_TYPE)
+    retired_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    actual = List.empty_list(_NUMBA_SURFACE_TYPE)
+    actual_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+    seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+    for prefix_len, candidate in enumerate(stream, start=1):
+        row = tuple(np.uint64(value) for value in candidate)
+        scores = np.empty(16, dtype=np.float64)
+        _numba_head_basis_corner_scores_row(
+            _numba_head_surface_basis(row, 0, 100), scores
+        )
+        retired, retired_scores = _numba_head_envelope_insert_with_scores(
+            retired, retired_scores, row, scores
+        )
+        if _numba_mark_head_surface_first_seen(seen, row):
+            actual, actual_scores = _numba_head_envelope_insert_with_scores(
+                actual, actual_scores, row, scores
+            )
+
+        assert list(actual) == list(retired), prefix_len
+        assert len(actual_scores) == len(retired_scores)
+        for actual_row, retired_row in zip(actual_scores, retired_scores, strict=True):
+            np.testing.assert_array_equal(actual_row, retired_row)
+
+    assert list(actual) == [tuple(np.uint64(value) for value in strongest)]
+    assert len(seen) == 3
 
 
 def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:
