@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Any, Dict
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS, TOTAL_ROWS
-from gear_optimizer.core.stats_calculator import compute_full_stats
 from gear_optimizer.core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     resolve_baseline_team_buff_from_cfg,
@@ -15,7 +14,7 @@ from gear_optimizer.core.team_buff import (
 )
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
-from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display
+from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display, representative_mini_names
 
 from .analysis import (
     _ELEMENT_ORDER,
@@ -24,6 +23,7 @@ from .analysis import (
     format_gem_counts,
     sort_gears_by_slot,
 )
+from .loadout_stats import build_general_meta_loadout_stats
 from .song_scan import get_songs_by_elemental_combo
 
 
@@ -71,11 +71,6 @@ def _assert_no_stats_only_duplicate_loadouts(loadouts: list[dict], *, context: s
                 "with different stats/stats_base. You cannot override stats for a 1:1 loadout "
                 "because it will cause a duplicate; manual review required."
             )
-
-
-def _representative_mini_names(mini_groups: object) -> list[str]:
-    groups = normalize_minis_groups_for_display(mini_groups or [])
-    return sorted([min(group) for group in groups if group])
 
 
 def _assert_known_mini_names(
@@ -264,7 +259,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         loadout_key = str(loadout_data.get("loadout_key") or "").strip()
         gear_names = sort_gears_by_slot(loadout_data["gear_names"], gears_by_name)
         minis_groups = normalize_minis_groups_for_display(loadout_data.get("mini_groups") or [])
-        mini_names = _representative_mini_names(minis_groups)
+        mini_names = representative_mini_names(minis_groups)
         _assert_known_mini_names(
             mini_names,
             minis_by_name,
@@ -276,19 +271,16 @@ def run_general_meta(cfg, paths: dict) -> dict:
         peak_in_songs_fg = loadout_data.get("peak_in_songs_fg") or []
         song_wins = loadout_data.get("song_wins") or []
 
-        stats_base = compute_full_stats(
-            gear_names,
-            mini_names,
-            format_gem_counts(avg_gems),
-            selected_element,
-            gears_by_name,
-            minis_by_name,
-            {},
-        )
         base_stats = _team_buff_base_stats(team_buff, team_color)
         gem_counts = format_gem_counts(avg_gems)
-        full_stats = compute_full_stats(
-            gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
+        stats_base, stats = build_general_meta_loadout_stats(
+            gear_names=gear_names,
+            mini_names=mini_names,
+            gem_counts=gem_counts,
+            selected_element=selected_element,
+            gears_by_name=gears_by_name,
+            minis_by_name=minis_by_name,
+            team_buff_stats=base_stats,
         )
         return {
             "rank": loadout_data["rank"],
@@ -303,7 +295,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
             "songs_with_set": loadout_data["songs_with_set"],
             "win_frequency": loadout_data["win_frequency"],
             "stats_base": stats_base,
-            "stats": full_stats,
+            "stats": stats,
             "gems": avg_gems,
             "avg_score": loadout_data["avg_score"],
         }

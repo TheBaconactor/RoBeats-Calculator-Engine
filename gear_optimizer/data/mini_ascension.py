@@ -56,6 +56,21 @@ def mini_ascension_base_perfect_points(ascension_level: int = MINI_ASCENSION_MAX
     return int(MINI_ASCENSION_BASE_PP_PER_LEVEL * level)
 
 
+def mini_ascension_base_perfect_points_for_mini(mini: Mapping[str, Any]) -> int:
+    """Return the unconditional ascension PP contribution for one raw mini row.
+
+    Materialized rows already contain this contribution in ``Perfect Points`` and are
+    rejected so callers cannot add it twice.
+    """
+    if bool((mini or {}).get("Mini Ascension Materialized")):
+        raise ValueError("Mini ascension base PP must be derived from an unmaterialized mini row")
+    if not mini_ascension_enabled(mini):
+        return 0
+    return mini_ascension_base_perfect_points(
+        safe_int((mini or {}).get("Mini Ascension Level"), MINI_ASCENSION_MAX_LEVEL)
+    )
+
+
 def normalize_song_secondary(primary_color: object, secondary_color: object) -> str:
     primary = str(primary_color or "").strip()
     secondary = str(secondary_color or "").strip()
@@ -269,7 +284,7 @@ def materialize_mini_for_song(
     out["Mini Ascension Materialized Song"] = song
     out["Mini Ascension Materialized Primary Color"] = primary
     out["Mini Ascension Materialized Secondary Color"] = secondary
-    out[GemKey.PP.value] = safe_int(out.get(GemKey.PP.value), 0) + mini_ascension_base_perfect_points(level)
+    out[GemKey.PP.value] = safe_int(out.get(GemKey.PP.value), 0) + mini_ascension_base_perfect_points_for_mini(mini)
 
     applies = mini_song_target_active(mini, song)
     out["Mini Ascension Song Target Applied"] = bool(applies)

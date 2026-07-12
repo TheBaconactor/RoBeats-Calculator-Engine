@@ -123,3 +123,51 @@ def test_general_meta_does_not_merge_mini_variants_when_secondary_varies():
         assert r["peak_in_songs_meta"] == r["peak_in_songs"]
         assert r["peak_in_songs_fg"] == []
     assert sorted([r["mini_groups"] for r in results]) == [[["MiniA"]], [["MiniB"]]]
+
+
+def test_general_meta_does_not_merge_minis_with_different_ascension_target_coverage():
+    base_mini = {
+        "Chill": 0,
+        "Flow": 0,
+        "Rush": 0,
+        "Beat": 0,
+        "Vibe": 55,
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Time": 0,
+        "Fever Fill Rate": 0,
+        "Mini Ascension Base Vibe": 11,
+        "Mini Ascension Enabled": True,
+        "Mini Ascension Level": 10,
+    }
+    minis_by_name = {
+        "MiniA": {**base_mini, "Name": "MiniA", "Song Target": ["Song1"]},
+        "MiniB": {**base_mini, "Name": "MiniB", "Song Target": ["Song2"]},
+    }
+    songs = [
+        {"song_name": "Song1", "primary": "Vibe", "secondary": "Vibe"},
+        {"song_name": "Song2", "primary": "Vibe", "secondary": "Vibe"},
+    ]
+    all_loadouts = [
+        {
+            "song_name": "Song1",
+            "score": 100,
+            "gear": ["Gear1"],
+            "mini_groups": [["MiniA"]],
+            "details_json": None,
+        },
+        {
+            "song_name": "Song2",
+            "score": 100,
+            "gear": ["Gear1"],
+            "mini_groups": [["MiniB"]],
+            "details_json": None,
+        },
+    ]
+
+    results = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=None)
+
+    assert len(results) == 2
+    assert [result["win_frequency"] for result in results] == [1, 1]
+    assert sorted(result["mini_groups"] for result in results) == [[["MiniA"]], [["MiniB"]]]

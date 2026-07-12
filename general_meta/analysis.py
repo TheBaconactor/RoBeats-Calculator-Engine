@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from gear_optimizer.core.gem_defs import extract_gem_totals
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
+from gear_optimizer.data.mini_ascension import materialize_mini_for_song
 from gear_optimizer.core.utils import safe_int as _safe_int
 
 _ELEMENT_ORDER: Tuple[str, ...] = ("Chill", "Flow", "Rush", "Beat", "Vibe")
@@ -73,12 +74,14 @@ def _mini_set_effect_signature(
     mini_names: Tuple[str, ...],
     minis_by_name: Dict[str, dict],
     relevant_elements: Tuple[str, ...],
+    songs: Tuple[dict, ...],
 ) -> Tuple[Any, ...]:
     """
-    Build a category-aware signature for a mini set.
+    Build the exact category-wide scoring signature for a mini set.
 
     This allows GeneralMeta to merge mini variants that differ only in stats that
-    cannot affect scoring for the current category (e.g., extra Rush in a Vibe/Vibe category).
+    cannot affect scoring for the current category (e.g., extra Rush in a Vibe/Vibe category),
+    while keeping variants with different song-target Ascension effects distinct.
     """
     if not mini_names:
         return ("stats", 0, 0, 0, 0, 0, *([0] * len(relevant_elements)))
@@ -87,20 +90,30 @@ def _mini_set_effect_signature(
         if name not in minis_by_name:
             return ("names", mini_names)
 
-    pp = cm = fm = ft = ff = 0
-    elem_totals = [0] * len(relevant_elements)
+    per_song_stats: list[tuple[Any, ...]] = []
+    for song in songs:
+        song_name = _song_name(song)
+        primary = str(song.get("primary") or "").strip()
+        secondary = str(song.get("secondary") or "").strip()
+        pp = cm = fm = ft = ff = 0
+        elem_totals = [0] * len(relevant_elements)
+        for name in mini_names:
+            mini = materialize_mini_for_song(
+                minis_by_name[name],
+                song_name=song_name,
+                primary_color=primary,
+                secondary_color=secondary,
+            )
+            pp += int(mini.get("Perfect Points", 0) or 0)
+            cm += int(mini.get("Combo Multiplier", 0) or 0)
+            fm += int(mini.get("Fever Multiplier", 0) or 0)
+            ft += int(mini.get("Fever Time", 0) or 0)
+            ff += int(mini.get("Fever Fill Rate", 0) or 0)
+            for idx, element in enumerate(relevant_elements):
+                elem_totals[idx] += int(mini.get(element, 0) or 0)
+        per_song_stats.append((song_name, pp, cm, fm, ft, ff, *elem_totals))
 
-    for name in mini_names:
-        m = minis_by_name.get(name) or {}
-        pp += int(m.get("Perfect Points", 0) or 0)
-        cm += int(m.get("Combo Multiplier", 0) or 0)
-        fm += int(m.get("Fever Multiplier", 0) or 0)
-        ft += int(m.get("Fever Time", 0) or 0)
-        ff += int(m.get("Fever Fill Rate", 0) or 0)
-        for idx, el in enumerate(relevant_elements):
-            elem_totals[idx] += int(m.get(el, 0) or 0)
-
-    return ("stats", pp, cm, fm, ft, ff, *elem_totals)
+    return ("song-aware-stats", *per_song_stats)
 
 
 def _pick_representative_variant(variants: Counter) -> Tuple[Any, ...]:
@@ -222,6 +235,8 @@ def find_most_common_loadout(
         if _is_general_meta_ranked_song(song)
     }
     relevant_elements = _relevant_elements_for_category(songs)
+    signature_songs = tuple(sorted(songs_by_name.values(), key=_song_name))
+    signature_cache: dict[tuple[str, ...], Tuple[Any, ...]] = {}
 
     if loadouts_by_song is None:
         loadouts_by_song = {}
@@ -245,7 +260,10 @@ def find_most_common_loadout(
         mode = _row_mode(best)
         gears = list(best.get("gear") or [])
         rep_names, variant_key = _minis_keys_from_groups(best.get("mini_groups"))
-        sig = _mini_set_effect_signature(rep_names, minis_by_name, relevant_elements)
+        sig = signature_cache.get(rep_names)
+        if sig is None:
+            sig = _mini_set_effect_signature(rep_names, minis_by_name, relevant_elements, signature_songs)
+            signature_cache[rep_names] = sig
 
         if gears_by_name:
             ordered_gears = sort_gears_by_slot(list(gears), gears_by_name)
