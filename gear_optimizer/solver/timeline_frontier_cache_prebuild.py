@@ -50,6 +50,7 @@ class TimelineFrontierCachePrebuildSummary:
 
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _MANIFEST_FILE_NAME = "manifest_v1.json"
+_TIMELINE_PREBUILD_MAX_TASKS_PER_CHILD = 64
 
 
 def _init_prebuild_worker(ref_arrays: dict, pair_build_threads: int, total_workers: int) -> None:
@@ -250,6 +251,10 @@ def _run_missing_timeline_prebuild(paths: list[str], ref_arrays: dict) -> tuple[
         max_workers=worker_count,
         initializer=_init_prebuild_worker,
         initargs=(dict(ref_arrays or {}), int(pair_build_threads), int(worker_count)),
+        # Release native/NumPy allocator high-water before a full-pool worker reaches the heavy
+        # chart tail. Persistent workers exhausted commit after ~2,216 successes and then failed
+        # allocations as small as 1 MiB on the production 2,249-song pool.
+        max_tasks_per_child=_TIMELINE_PREBUILD_MAX_TASKS_PER_CHILD,
     ) as executor:
         futures = {executor.submit(_build_timeline_frontier_cache_for_path_shared, path): path for path in paths}
         for future in concurrent.futures.as_completed(futures):

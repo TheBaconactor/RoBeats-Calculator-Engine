@@ -229,14 +229,17 @@ def pin_frontier_prebuild_worker() -> None:
 
 
 # Per-worker available-RAM budget for the timeline cold build, whose per-song builds peak modestly
-# and uniformly (~1.5 GB/worker), so a flat per-worker cap is the honest model there. The FG
+# and uniformly (~1.5 GB/worker). Keep measured headroom and a system reserve: using every byte
+# reported available admitted 26 persistent workers on the 64 GB/no-pagefile production host, then
+# late heavy charts failed even 1 MiB allocations after allocator high-water accumulated. The FG
 # response-frontier cold build is NOT sized this way: its per-song peak spans ~1.7-8 GB commit
 # (median chart vs EXTENDED CUT giants) and it schedules heaviest-first, so any flat constant
 # either over-commits on giants (4.0 GB/worker admitted 12 workers x ~7 GB measured commit ->
 # 2026-07-09 system-wide commit exhaustion + hard crash) or wastes cores on the light tail. FG
 # concurrency is owned by the per-song memory-weighted admission scheduler in
 # fg_response_frontier_cache_prebuild.py.
-TIMELINE_PREBUILD_GB_PER_WORKER = 1.5
+TIMELINE_PREBUILD_GB_PER_WORKER = 1.75
+TIMELINE_PREBUILD_SYSTEM_RESERVE_GB = 8.0
 
 
 def frontier_prebuild_worker_count() -> int:
@@ -249,7 +252,7 @@ def frontier_prebuild_intra_worker_threads(worker_count: int) -> int:
     return max(1, frontier_prebuild_cpu_count() // max(1, int(worker_count)))
 
 
-def _ram_capped_prebuild_worker_count(gb_per_worker: float) -> int:
+def _ram_capped_prebuild_worker_count(gb_per_worker: float, *, system_reserve_gb: float = 0.0) -> int:
     """Core-derived worker count, capped so concurrent workers fit in currently-available RAM at
     ``gb_per_worker`` each. psutil is the only available-RAM source; if it is missing the core-based
     count stands (the guard is a safety cap, not a hard requirement)."""
@@ -258,15 +261,19 @@ def _ram_capped_prebuild_worker_count(gb_per_worker: float) -> int:
         import psutil
 
         available_gb = float(psutil.virtual_memory().available) / 1e9
-        workers = min(workers, max(1, int(available_gb / max(0.1, float(gb_per_worker)))))
+        worker_budget_gb = max(0.0, available_gb - max(0.0, float(system_reserve_gb)))
+        workers = min(workers, max(1, int(worker_budget_gb / max(0.1, float(gb_per_worker)))))
     except Exception:
         pass
     return max(1, workers)
 
 
 def timeline_prebuild_worker_count() -> int:
-    """Frontier prebuild worker count with the timeline low-RAM guard (~1.5 GB/worker)."""
-    return _ram_capped_prebuild_worker_count(TIMELINE_PREBUILD_GB_PER_WORKER)
+    """Timeline workers admitted inside the measured envelope with no-pagefile headroom."""
+    return _ram_capped_prebuild_worker_count(
+        TIMELINE_PREBUILD_GB_PER_WORKER,
+        system_reserve_gb=TIMELINE_PREBUILD_SYSTEM_RESERVE_GB,
+    )
 
 
 def init_process_pool_worker_band(total_workers: int) -> None:

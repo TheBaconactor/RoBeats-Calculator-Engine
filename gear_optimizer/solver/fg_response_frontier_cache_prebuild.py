@@ -876,6 +876,12 @@ def run_fg_response_frontier_cache_prebuild(
                 "[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale)
             )
 
+        # A copied/restored pool and complete bundles left by an interrupted prebuild can have lost
+        # their WOF backing even though every manifest entry validates. Run maintenance before the
+        # complete-pool return so those exact cache hits regain lossless XPRESS16K compression. The
+        # builder lock prevents this filesystem pass from overlapping a live bundle writer.
+        compress_cache_dir_sidecars()
+
         if not manifest_plan.missing_paths:
             return FgResponseFrontierCachePrebuildSummary(
                 total=int(manifest_plan.total_paths),
@@ -883,11 +889,6 @@ def run_fg_response_frontier_cache_prebuild(
                 disk=int(manifest_hits),
                 elapsed_ms=float((time.perf_counter() - started) * 1000.0),
             )
-
-        # Recover completed sidecars left uncompressed by an interrupted earlier prebuild. This
-        # runs under the single-builder lock and before any workers start, so no live writer can
-        # overlap the filesystem operation. Already-compressed files are skipped by `compact`.
-        compress_cache_dir_sidecars()
 
         # Deterministic input order; heaviest-first execution ordering happens inside
         # _run_missing_fg_prebuild from the same parse pass that computes admission weights.

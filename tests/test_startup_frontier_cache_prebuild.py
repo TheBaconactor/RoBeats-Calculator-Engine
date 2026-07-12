@@ -181,6 +181,41 @@ def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path:
     assert results[0].path == str(song_path)
 
 
+def test_timeline_multi_prebuild_recycles_worker_allocator_high_water(monkeypatch) -> None:
+    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
+
+    captured_kwargs = {}
+
+    class _FakeExecutor:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, _fn, path):
+            future = prebuild.concurrent.futures.Future()
+            future.set_result(
+                prebuild.TimelineFrontierCacheBuildResult(
+                    path=str(path), source="disk", build_ms=0.0, cache_file=f"{path}.npz"
+                )
+            )
+            return future
+
+    monkeypatch.setattr(prebuild, "timeline_prebuild_worker_count", lambda: 2)
+    monkeypatch.setattr(prebuild, "frontier_prebuild_intra_worker_threads", lambda _workers: 1)
+    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
+
+    summary, results = prebuild._run_missing_timeline_prebuild(["a.txt", "b.txt"], {})
+
+    assert summary.completed == 2
+    assert len(results) == 2
+    assert captured_kwargs["max_tasks_per_child"] == prebuild._TIMELINE_PREBUILD_MAX_TASKS_PER_CHILD
+
+
 def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
 
@@ -438,6 +473,16 @@ def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
         lambda: 0,
     )
+    compression_calls = 0
+
+    def _compress() -> None:
+        nonlocal compression_calls
+        compression_calls += 1
+
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.compress_cache_dir_sidecars",
+        _compress,
+    )
 
     def _unexpected_build(*_args, **_kwargs):
         raise AssertionError("compatible complete pool must not start workers")
@@ -455,6 +500,7 @@ def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch
     assert summary.completed == 1
     assert summary.disk == 1
     assert summary.built == 0
+    assert compression_calls == 1
 
 
 def test_timeline_prebuild_manifest_hits_do_not_acquire_build_lock(monkeypatch, tmp_path: Path) -> None:

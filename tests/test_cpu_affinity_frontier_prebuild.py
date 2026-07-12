@@ -57,10 +57,8 @@ def test_windows_frontier_worker_pinning_uses_full_set_and_excludes_reserved_cpu
     assert masks == [0b0111, 0b0111, 0b0111]
 
 
-def test_timeline_prebuild_worker_count_caps_by_available_ram(monkeypatch) -> None:
-    """Timeline builds peak modestly and uniformly, so a flat per-worker RAM cap is its honest
-    model. (FG has no flat cap: its per-song peak spans ~4x, so its concurrency is owned by the
-    memory-weighted admission scheduler in fg_response_frontier_cache_prebuild.)"""
+def test_timeline_prebuild_worker_count_reserves_system_ram(monkeypatch) -> None:
+    """Timeline admission must leave commit headroom on the no-pagefile production host."""
     from gear_optimizer.core import cpu_affinity
 
     monkeypatch.setattr(cpu_affinity, "logical_core_count", lambda: 32)  # 31 CPU-budget workers
@@ -68,12 +66,12 @@ def test_timeline_prebuild_worker_count_caps_by_available_ram(monkeypatch) -> No
     import psutil
 
     class _FakeVM:
-        available = int(10 * 1e9)  # 10 GB available
+        available = int(39.5 * 1e9)
 
     monkeypatch.setattr(psutil, "virtual_memory", lambda: _FakeVM())
 
-    # 10 GB / 1.5 GB-per-worker -> 6 workers, below the 31-worker CPU budget.
-    assert cpu_affinity.timeline_prebuild_worker_count() == 6
+    # (39.5 - 8 reserve) / 1.75 GB-per-worker -> 18 workers, below the 31-worker CPU budget.
+    assert cpu_affinity.timeline_prebuild_worker_count() == 18
 
 
 def test_timeline_prebuild_worker_count_floor_is_one(monkeypatch) -> None:
