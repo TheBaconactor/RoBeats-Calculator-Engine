@@ -43,6 +43,8 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch impo
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import (  # noqa: E402
     _precompute_end_indices,
+    _region_hit_end_index_tables,
+    _region_hit_value_universe,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer import (  # noqa: E402
     _early_great_extension_gap_bound,
@@ -102,9 +104,12 @@ def _probe_prepass_body(
     region_activations,
     region_great_ends,
     region_is_greats,
-    region_act_hits,
-    region_perfect_hits,
+    region_act_hit_ids,
+    region_perfect_hit_ids,
     region_perfect_valids,
+    region_hit_token_to_id,
+    region_perfect_end_by_hit,
+    region_great_end_by_hit,
     ws_pair_values,
     ws_pair_stamps,
     ws_pair_touched,
@@ -194,9 +199,11 @@ def _probe_prepass_body(
         region_activations,
         region_great_ends,
         region_is_greats,
-        region_act_hits,
-        region_perfect_hits,
+        region_act_hit_ids,
+        region_perfect_hit_ids,
         region_perfect_valids,
+        region_perfect_end_by_hit,
+        region_great_end_by_hit,
         perfect_floor_timestamps,
         great_floor_timestamps,
         ws_perfect_successor,
@@ -267,9 +274,12 @@ def _probe_prepass_body(
         region_activations,
         region_great_ends,
         region_is_greats,
-        region_act_hits,
-        region_perfect_hits,
+        region_act_hit_ids,
+        region_perfect_hit_ids,
         region_perfect_valids,
+        region_hit_token_to_id,
+        region_perfect_end_by_hit,
+        region_great_end_by_hit,
         prefix_perfect_hit,
         prefix_perfect_valid,
         prefix_late_hit,
@@ -385,6 +395,11 @@ class SongProbeInputs:
                 max(0.0, float(np.max(np.maximum(self.perfect_ts, self.great_ts) - self.ts))) + 1.0e-6
             )
         )
+        self.region_hit_values, self.region_hit_token_to_id = _region_hit_value_universe(
+            self.ts,
+            self.perfect_ts,
+            self.great_ts,
+        )
         (
             self.prefix_perfect_hit,
             self.prefix_perfect_valid,
@@ -431,6 +446,15 @@ class SongProbeInputs:
             lanes=self.lane_arr,
             real_times=real_times,
         )
+        (
+            self.region_perfect_end_by_real_time,
+            self.region_great_end_by_real_time,
+        ) = _region_hit_end_index_tables(
+            self.region_hit_values,
+            np.unique(real_times),
+            self.floor_ts,
+            self.great_floor_ts,
+        )
 
         self.pair_mod_bound = _song_first_frontier_pair_mod_bound(
             n=self.n,
@@ -454,8 +478,8 @@ class SongProbeInputs:
                 np.empty(0, dtype=np.int32),
                 np.empty(0, dtype=np.int32),
                 np.empty(0, dtype=np.int32),
-                np.empty(0, dtype=np.float64),
-                np.empty(0, dtype=np.float64),
+                np.empty(0, dtype=np.int32),
+                np.empty(0, dtype=np.int32),
                 np.empty(0, dtype=np.int32),
             )
         rkey = (float(raw_fill), int(nfb))
@@ -474,6 +498,7 @@ class SongProbeInputs:
                 self.great_floor_ts,
                 self.great_ts,
                 self.lane_arr,
+                self.region_hit_token_to_id,
             )
             self.region_build_s += time.perf_counter() - t0
             self._region_cache[rkey] = table
@@ -514,6 +539,9 @@ def main() -> int:
     capped_late_edge_e = sp.capped_late_edge_e
     capped_eg_perfect_e = sp.capped_eg_perfect_e
     capped_eg_late_e = sp.capped_eg_late_e
+    region_hit_token_to_id = sp.region_hit_token_to_id
+    region_perfect_end_by_real_time = sp.region_perfect_end_by_real_time
+    region_great_end_by_real_time = sp.region_great_end_by_real_time
     ws = sp.ws
     region_table_for = sp.region_table_for
     print(
@@ -536,6 +564,8 @@ def main() -> int:
 
     def run_full(item, rt_idx: int, region_table) -> tuple[float, tuple]:
         perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends = fill_runs_for(item)
+        region_perfect_end_by_hit = region_perfect_end_by_real_time[int(rt_idx)]
+        region_great_end_by_hit = region_great_end_by_real_time[int(rt_idx)]
         successor_epoch = ws.next_successor_epoch()
         t0 = time.perf_counter()
         (
@@ -594,6 +624,9 @@ def main() -> int:
             region_table[5],
             region_table[6],
             region_table[7],
+            region_hit_token_to_id,
+            region_perfect_end_by_hit,
+            region_great_end_by_hit,
             ws.pair_values,
             ws.pair_stamps,
             ws.pair_touched,
@@ -616,6 +649,8 @@ def main() -> int:
 
     def run_probe(mode: int, item, rt_idx: int, region_table) -> tuple[float, tuple]:
         perfect_run_starts, perfect_run_ends, late_run_starts, late_run_ends = fill_runs_for(item)
+        region_perfect_end_by_hit = region_perfect_end_by_real_time[int(rt_idx)]
+        region_great_end_by_hit = region_great_end_by_real_time[int(rt_idx)]
         successor_epoch = ws.next_successor_epoch()
         t0 = time.perf_counter()
         out = _probe_prepass_body(
@@ -665,6 +700,9 @@ def main() -> int:
             region_table[5],
             region_table[6],
             region_table[7],
+            region_hit_token_to_id,
+            region_perfect_end_by_hit,
+            region_great_end_by_hit,
             ws.pair_values,
             ws.pair_stamps,
             ws.pair_touched,

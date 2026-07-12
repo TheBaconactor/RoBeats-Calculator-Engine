@@ -44,6 +44,8 @@ def _run_production(sp: SongProbeInputs, item, rt_idx: int, region_table):
     ws = sp.ws
     perfect_run_starts, perfect_run_ends = _exact_action_fill_runs(item[5])
     late_run_starts, late_run_ends = _exact_action_fill_runs(item[5], item[9])
+    region_perfect_end_by_hit = sp.region_perfect_end_by_real_time[int(rt_idx)]
+    region_great_end_by_hit = sp.region_great_end_by_real_time[int(rt_idx)]
     successor_epoch = ws.next_successor_epoch()
     result = _rb._first_frontier_from_precomputed_end_indices_numba(
         sp.n,
@@ -92,6 +94,9 @@ def _run_production(sp: SongProbeInputs, item, rt_idx: int, region_table):
         region_table[5],
         region_table[6],
         region_table[7],
+        sp.region_hit_token_to_id,
+        region_perfect_end_by_hit,
+        region_great_end_by_hit,
         ws.pair_values,
         ws.pair_stamps,
         ws.pair_touched,

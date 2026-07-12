@@ -4,6 +4,100 @@ from dataclasses import dataclass
 
 import numpy as np
 
+
+def _region_hit_value_universe(
+    timestamps: np.ndarray,
+    perfect_candidate_timestamps: np.ndarray,
+    great_candidate_timestamps: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Intern every exact float64 value the canonical region hit selector can return.
+
+    Tokens are laid out as chart / Perfect / Great / capped-Perfect / capped-Great, each with
+    ``n`` note slots. The selector's cap is always one of those values; the returned token-to-ID
+    map therefore replaces repeated table timestamps without reconstructing game-engine semantics.
+    """
+    chart = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
+    perfect = np.ascontiguousarray(
+        np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1)
+    )
+    great = np.ascontiguousarray(
+        np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1)
+    )
+    if int(perfect.shape[0]) != int(chart.shape[0]) or int(great.shape[0]) != int(chart.shape[0]):
+        raise ValueError("FG region hit-universe timestamp arrays must align")
+    if int(chart.shape[0]) > np.iinfo(np.int32).max // 5:
+        raise OverflowError("FG region hit-universe token count exceeds int32 capacity")
+    if not (
+        np.all(np.isfinite(chart))
+        and np.all(np.isfinite(perfect))
+        and np.all(np.isfinite(great))
+    ):
+        raise ValueError("FG region hit-universe timestamps must be finite")
+    chart64 = chart.astype(np.float64)
+    perfect64 = perfect.astype(np.float64)
+    great64 = great.astype(np.float64)
+    token_values = np.concatenate(
+        (
+            chart64,
+            perfect64,
+            great64,
+            perfect64 - 1.0e-6,
+            great64 - 1.0e-6,
+        )
+    )
+    unique_values, token_to_id = np.unique(token_values, return_inverse=True)
+    if int(unique_values.shape[0]) > np.iinfo(np.int32).max:
+        raise OverflowError("FG region hit-universe ID count exceeds int32 capacity")
+    return (
+        np.ascontiguousarray(unique_values, dtype=np.float64),
+        np.ascontiguousarray(token_to_id, dtype=np.int32),
+    )
+
+
+def _region_hit_end_index_tables(
+    hit_values: np.ndarray,
+    unique_real_times: np.ndarray,
+    perfect_floor_timestamps: np.ndarray,
+    great_floor_timestamps: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve every interned region hit once per distinct fever time for the whole song."""
+    values = np.ascontiguousarray(np.asarray(hit_values, dtype=np.float64).reshape(-1))
+    real_times = np.ascontiguousarray(
+        np.asarray(unique_real_times, dtype=np.float64).reshape(-1)
+    )
+    perfect_floor = np.ascontiguousarray(
+        np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1)
+    )
+    great_floor = np.ascontiguousarray(
+        np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1)
+    )
+    if int(perfect_floor.shape[0]) != int(great_floor.shape[0]):
+        raise ValueError("FG region endpoint floor arrays must align")
+    if int(perfect_floor.shape[0]) > np.iinfo(np.int32).max:
+        raise OverflowError("FG region endpoint count exceeds int32 capacity")
+    if not np.all(np.isfinite(real_times)):
+        raise ValueError("FG region real-time table contains a non-finite value")
+    if real_times.shape[0] > 1 and np.any(real_times[1:] <= real_times[:-1]):
+        raise ValueError("FG region real-time table must be strictly increasing")
+
+    shape = (int(real_times.shape[0]), int(values.shape[0]))
+    perfect_end = np.empty(shape, dtype=np.int32)
+    great_end = np.empty(shape, dtype=np.int32)
+    for real_time_idx, real_fever_time in enumerate(real_times):
+        cutoffs = np.asarray(values + float(real_fever_time), dtype=np.float32)
+        perfect_end[int(real_time_idx)] = np.searchsorted(
+            perfect_floor,
+            cutoffs,
+            side="left",
+        )
+        great_end[int(real_time_idx)] = np.searchsorted(
+            great_floor,
+            cutoffs,
+            side="left",
+        )
+    return perfect_end, great_end
+
+
 def _first_only_region_groups(items: list[tuple]) -> dict[tuple[float, int], list[tuple]]:
     """Partition canonical prepared items by their region-core-table key.
 
@@ -28,6 +122,7 @@ class FirstOnlyCanonicalization:
     prepared: list[tuple]
     duplicate_sources_by_source: dict[int, tuple[int, ...]]
     real_time_index_by_source: dict[int, int]
+    unique_real_times: np.ndarray
     timestamp_end_idx: np.ndarray
     perfect_end_idx: np.ndarray
     great_end_idx: np.ndarray
@@ -53,8 +148,22 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
     if not prepared:
         empty = np.empty((0, 0), dtype=np.int32)
         empty3 = np.empty((0, 0, 2), dtype=np.int32)
-        return FirstOnlyCanonicalization([], {}, {}, empty, empty, empty, empty3, empty, empty, empty, empty)
+        return FirstOnlyCanonicalization(
+            [],
+            {},
+            {},
+            np.empty(0, dtype=np.float64),
+            empty,
+            empty,
+            empty,
+            empty3,
+            empty,
+            empty,
+            empty,
+            empty,
+        )
     real_times = np.asarray([item[3] for item in prepared], dtype=np.float64)
+    unique_real_times = np.unique(real_times)
     (
         real_time_index,
         timestamp_end_idx,
@@ -82,6 +191,7 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             prepared,
             {source_idx: (source_idx,)},
             {source_idx: int(real_time_index[0])},
+            unique_real_times,
             timestamp_end_idx,
             perfect_end_idx,
             great_end_idx,
@@ -145,6 +255,7 @@ def _canonicalize_first_only_prepared_items_with_end_indices(
             for source_idx, source_indices in duplicate_sources_by_source.items()
         },
         real_time_index_by_source,
+        unique_real_times,
         timestamp_end_idx,
         perfect_end_idx,
         great_end_idx,

@@ -19,7 +19,7 @@ from .response_build_gpu_reducer import (
 from .response_types import FgResponseFrontierResult
 
 
-_REGION_TABLE_ENTRY_BYTES = 5 * np.dtype(np.int32).itemsize + 2 * np.dtype(np.float64).itemsize
+_REGION_TABLE_ENTRY_BYTES = 7 * np.dtype(np.int32).itemsize
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +36,9 @@ class _FirstFrontierGroupContext:
     prefix_perfect_valid: np.ndarray
     prefix_late_hit: np.ndarray
     prefix_late_valid: np.ndarray
+    region_hit_token_to_id: np.ndarray
+    region_perfect_end_by_real_time: np.ndarray
+    region_great_end_by_real_time: np.ndarray
     canonical: FirstOnlyCanonicalization
     use_forced_great_timing: bool
     empty_region_table: tuple | None
@@ -187,6 +190,9 @@ def _reduce_first_frontier_group(
         "prefix_perfect_valid": context.prefix_perfect_valid,
         "prefix_late_hit": context.prefix_late_hit,
         "prefix_late_valid": context.prefix_late_valid,
+        "region_hit_token_to_id": context.region_hit_token_to_id,
+        "region_perfect_end_by_real_time": context.region_perfect_end_by_real_time,
+        "region_great_end_by_real_time": context.region_great_end_by_real_time,
         "timestamp_end_idx": canonical.timestamp_end_idx,
         "perfect_end_idx": canonical.perfect_end_idx,
         "great_end_idx": canonical.great_end_idx,
@@ -289,6 +295,7 @@ def _build_region_table(
         context.great_floor_timestamps,
         context.great_candidate_timestamps,
         context.lanes,
+        context.region_hit_token_to_id,
     )
     return region_table, _region_table_bytes(region_table), float(time.perf_counter() - build_t0)
 
