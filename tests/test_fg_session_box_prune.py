@@ -164,7 +164,7 @@ def test_session_head_dominance_box_reads_luts_and_fails_loud():
         })
 
 
-def test_session_prune_scoring_bundle_compacts_offsets(monkeypatch):
+def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_table(monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
         FgResponseFrontierScoringBundle,
@@ -174,14 +174,22 @@ def test_session_prune_scoring_bundle_compacts_offsets(monkeypatch):
     head_len = 20
     w0, c0 = _random_packed_frontier(rng, 40, head_len)
     w1, c1 = _random_packed_frontier(rng, 15, head_len)
-    words = np.concatenate([w0, w1])
-    counts = np.concatenate([c0, c1])
-    coeffs = rng.integers(0, 100, size=(55, 4)).astype(np.uint16)
-    rows = np.concatenate([words, counts.astype(np.uint32)], axis=1)
+    words = np.ascontiguousarray(np.concatenate([w0, w1]), dtype=np.uint32)
+    counts = np.ascontiguousarray(np.concatenate([c0, c1]), dtype=np.int32)
+    pattern_words, pattern_ids = np.unique(words, axis=0, return_inverse=True)
+    pattern_words = np.ascontiguousarray(pattern_words, dtype=np.uint32)
+    pattern_ids = np.ascontiguousarray(pattern_ids, dtype=np.int32)
+    pattern_coeffs = rng.integers(0, 100, size=(int(pattern_words.shape[0]), 4)).astype(np.int32)
 
-    monkeypatch.setattr(
-        response_cache, "load_first_surface_scoring_rows", lambda _key, _ranges: (rows, coeffs)
-    )
+    def _load_compact(_key, ranges):
+        assert tuple(ranges) == ((0, 55),)
+        return pattern_ids, counts, pattern_words, pattern_coeffs
+
+    def _expanded_loader_must_not_run(*_args, **_kwargs):
+        raise AssertionError("session prune must not expand V30 logical rows")
+
+    monkeypatch.setattr(response_cache, "load_first_surface_scoring_patterns", _load_compact)
+    monkeypatch.setattr(response_cache, "load_first_surface_scoring_rows", _expanded_loader_must_not_run)
     bundle = FgResponseFrontierScoringBundle(
         cache_key=("test",),
         frontier_idx_by_key={(0, 0): 0, (0, 1): 1, (1, 0): 2},
@@ -205,12 +213,37 @@ def test_session_prune_scoring_bundle_compacts_offsets(monkeypatch):
         "Combo Multiplier": np.asarray([2.45, 2.72]),
         "Fever Multiplier": np.asarray([4.6, 5.48]),
     }
+    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = response_cache.session_head_dominance_box(ref_arrays)
+    original_offsets = np.asarray(bundle.frontier_offsets, dtype=np.int32)
+    original_lengths = np.asarray(bundle.frontier_lengths, dtype=np.int32)
+    expected_keep = np.asarray(
+        _numba_session_box_keep_mask(
+            words,
+            counts,
+            original_offsets,
+            original_lengths,
+            0,
+            head_len,
+            v_lo,
+            v_hi,
+            c_lo,
+            c_hi,
+            f_lo,
+            f_hi,
+            g_lo,
+            g_hi,
+        ),
+        dtype=bool,
+    )
+    expected_used_patterns, expected_pattern_ids = np.unique(pattern_ids[expected_keep], return_inverse=True)
     pruned = response_cache.session_prune_scoring_bundle(bundle, ref_arrays)
     assert int(pruned.surface_row_count) == int(pruned.surface_pattern_ids.shape[0])
     assert int(pruned.surface_pattern_ids.shape[0]) <= 55
     assert pruned.surface_counts.shape == (int(pruned.surface_row_count), 3)
-    assert pruned.surface_pattern_words.shape[1] == 8
-    assert pruned.surface_pattern_head_coeffs.shape == (int(pruned.surface_pattern_words.shape[0]), 4)
+    assert np.array_equal(pruned.surface_pattern_ids, expected_pattern_ids.astype(np.int32))
+    assert np.array_equal(pruned.surface_counts, counts[expected_keep])
+    assert np.array_equal(pruned.surface_pattern_words, pattern_words[expected_used_patterns])
+    assert np.array_equal(pruned.surface_pattern_head_coeffs, pattern_coeffs[expected_used_patterns])
     lengths = np.asarray(pruned.frontier_lengths, dtype=np.int64)
     offsets = np.asarray(pruned.frontier_offsets, dtype=np.int64)
     assert bool(np.all(lengths >= 1))

@@ -25,7 +25,8 @@ from .response_cache_patterns import (
     SURFACE_PATTERN_COLUMNS,
     SURFACE_ROW_COLUMNS,
     expand_surface_rows,
-    intern_surface_rows,
+    intern_surface_row_words,
+    pack_surface_patterns,
     unpack_surface_patterns,
 )
 from .response_cache_types import (
@@ -457,16 +458,18 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
         surface_row_count = int(first_surface_pool.shape[0])
         stat_keys = np.asarray([key for key, _frontier in sorted_items], dtype=np.int32)
         first_surface_head_len = min(int(payload.total_notes), 100)
-        first_surface_head_coeffs = _precompute_surface_head_coeffs(
-            first_surface_pool,
+        # Pattern identity is established from every exact mask word before coefficient work.
+        # Head coefficients depend only on those words plus head_len, so computing them for the
+        # unique table is identical to computing N logical rows and selecting each pattern's first
+        # row, while deleting the N x 4 int32 + uint16 coefficient staging arrays.
+        first_surface_rows, first_surface_pattern_words = intern_surface_row_words(first_surface_pool)
+        first_surface_pattern_coeffs = _precompute_surface_head_coeffs(
+            first_surface_pattern_words,
             head_len=int(first_surface_head_len),
         )
-        if bool(np.any(first_surface_head_coeffs < 0)) or bool(np.any(first_surface_head_coeffs > np.iinfo(np.uint16).max)):
-            raise ValueError("FG response surface head coefficients exceed persisted uint16 bounds")
-        first_surface_head_coeffs = np.ascontiguousarray(np.asarray(first_surface_head_coeffs, dtype=np.uint16))
-        first_surface_rows, first_surface_patterns = intern_surface_rows(
-            first_surface_pool,
-            first_surface_head_coeffs,
+        first_surface_patterns = pack_surface_patterns(
+            first_surface_pattern_words,
+            first_surface_pattern_coeffs,
         )
         surface_pattern_count = int(first_surface_patterns.shape[0])
         # Sidecars first (atomic each), then the slim .npz last: a present .npz implies both exact
