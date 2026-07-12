@@ -221,7 +221,10 @@ class BubbleTracker:
             + pending_fg_count
             + fg_prep_inflight_count
         )
-        gpu_idle = int(ga_inflight_count) <= 0 and int(fg_futures_count) <= 0
+        # FG futures are host-only materialization jobs. Counting them as owner work hides the
+        # exact underfeed condition this tracker exists to report: a drained GPU queue waiting on
+        # long-running FG trace reconstruction.
+        gpu_idle = int(ga_inflight_count) <= 0
         return self.snapshot(
             now_mono=float(now_mono),
             ready_ga_count=int(prepared_count),

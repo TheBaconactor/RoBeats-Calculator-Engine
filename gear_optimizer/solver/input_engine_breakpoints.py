@@ -26,8 +26,11 @@ def latest_activation_hit_from_label_highs(
     matching after the later note's scored label window has closed.
     """
     a = int(activation_index)
-    ts = np.asarray(chart_timestamps, dtype=np.float64).reshape(-1)
-    highs = np.asarray(label_high_timestamps, dtype=np.float64).reshape(-1)
+    # Callers already own the numeric timing arrays. Element access is normalized with ``float``
+    # below, so forcing whole-chart float64 copies for every breakpoint query adds O(n) traffic
+    # without changing a comparison.
+    ts = np.asarray(chart_timestamps).reshape(-1)
+    highs = np.asarray(label_high_timestamps).reshape(-1)
     lane_arr = None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1)
     n = min(int(section_end), int(ts.shape[0]), int(highs.shape[0]))
     if lane_arr is not None:
@@ -69,9 +72,9 @@ def latest_activation_hit_for_contiguous_great_run(
 ) -> float | None:
     """Latest activation hit when scored Greats form one contiguous run."""
     a = int(activation_index)
-    ts = np.asarray(chart_timestamps, dtype=np.float64).reshape(-1)
-    perfect_hi = np.asarray(perfect_high_timestamps, dtype=np.float64).reshape(-1)
-    great_hi = np.asarray(great_high_timestamps, dtype=np.float64).reshape(-1)
+    ts = np.asarray(chart_timestamps).reshape(-1)
+    perfect_hi = np.asarray(perfect_high_timestamps).reshape(-1)
+    great_hi = np.asarray(great_high_timestamps).reshape(-1)
     lane_arr = None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1)
     n = min(int(section_end), int(ts.shape[0]), int(perfect_hi.shape[0]), int(great_hi.shape[0]))
     if lane_arr is not None:

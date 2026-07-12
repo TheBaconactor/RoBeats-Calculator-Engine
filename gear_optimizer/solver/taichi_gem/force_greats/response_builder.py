@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import ceil
 from typing import Any
 
@@ -8,13 +9,75 @@ import numpy as np
 from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_for_contiguous_great_run
 
 from .fill_crossing import (
-    activation_hit_is_reachable_weighted_lane_aware,
     late_great_activation_prefix,
     perfect_crossing_is_region3,
     perfect_fill_crossing_offset,
     server_fill_crossing_run,
 )
+from . import response_build_gpu_numba as _rb_numba
 from .response_types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
+
+
+@dataclass(frozen=True, slots=True)
+class _ActivationReachabilityContext:
+    timestamps: np.ndarray
+    perfect_floor_timestamps: np.ndarray
+    perfect_candidate_timestamps: np.ndarray
+    great_floor_timestamps: np.ndarray
+    great_candidate_timestamps: np.ndarray
+    lanes: np.ndarray
+    fever_fill_denom: float
+    candidate_high_delta_max: float
+    workspace: tuple[np.ndarray, ...]
+
+
+def _build_activation_reachability_context(
+    *,
+    timestamps: Any,
+    perfect_floor_timestamps: Any,
+    perfect_candidate_timestamps: Any,
+    great_floor_timestamps: Any,
+    great_candidate_timestamps: Any,
+    lanes: Any,
+    fever_fill_denom: float,
+) -> _ActivationReachabilityContext:
+    ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
+    perfect_floor = np.ascontiguousarray(np.asarray(perfect_floor_timestamps, dtype=np.float32).reshape(-1))
+    perfect_candidates = np.ascontiguousarray(
+        np.asarray(perfect_candidate_timestamps, dtype=np.float32).reshape(-1)
+    )
+    great_floor = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
+    great_candidates = np.ascontiguousarray(
+        np.asarray(great_candidate_timestamps, dtype=np.float32).reshape(-1)
+    )
+    lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
+    n = int(ts.shape[0])
+    if n <= 0:
+        raise ValueError("FG activation reachability requires at least one note")
+    if any(
+        int(values.shape[0]) != n
+        for values in (perfect_floor, perfect_candidates, great_floor, great_candidates, lane_arr)
+    ):
+        raise ValueError("FG activation reachability arrays must match timestamps")
+    candidate_high_delta_max = float(
+        np.float32(
+            max(0.0, float(np.max(np.maximum(perfect_candidates, great_candidates) - ts))) + 1.0e-6
+        )
+    )
+    return _ActivationReachabilityContext(
+        timestamps=ts,
+        perfect_floor_timestamps=perfect_floor,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_floor_timestamps=great_floor,
+        great_candidate_timestamps=great_candidates,
+        lanes=lane_arr,
+        fever_fill_denom=float(fever_fill_denom),
+        candidate_high_delta_max=float(candidate_high_delta_max),
+        workspace=_rb_numba._numba_build_activation_reachability_workspace(
+            lane_arr,
+            float(fever_fill_denom),
+        ),
+    )
 
 
 def _action_table(*, raw_fever_fill: float, non_fever_base: int, use_forced_great_timing: bool):
@@ -356,6 +419,7 @@ def _forced_fields(*, section_start: int, great_start: int, great_count: int, n:
 
 def _activation_reachable(
     *,
+    context: _ActivationReachabilityContext,
     a: int,
     hit: float,
     section_start: int,
@@ -363,36 +427,32 @@ def _activation_reachable(
     great_count: int,
     activation_great: bool,
     n: int,
-    perfect_floor_timestamps: np.ndarray,
-    perfect_ts: np.ndarray,
-    great_floor_timestamps: np.ndarray,
-    great_ts: np.ndarray,
-    lane_arr: np.ndarray,
-    raw_fever_fill: float,
 ) -> bool:
-    lo = np.asarray(perfect_floor_timestamps, dtype=np.float32).copy()
-    hi = np.asarray(perfect_ts, dtype=np.float32).copy()
-    units = np.ones((int(n),), dtype=np.float32)
-    great_start_i = max(0, min(int(great_start), int(n)))
-    great_end = min(int(n), int(great_start_i) + max(0, int(great_count)))
-    if great_end > int(great_start_i):
-        lo[int(great_start_i):great_end] = np.asarray(great_floor_timestamps, dtype=np.float32)[int(great_start_i):great_end]
-        hi[int(great_start_i):great_end] = np.asarray(great_ts, dtype=np.float32)[int(great_start_i):great_end]
-        units[int(great_start_i):great_end] = np.float32(0.5)
-    if bool(activation_great):
-        lo[int(a)] = np.asarray(great_floor_timestamps, dtype=np.float32)[int(a)]
-        hi[int(a)] = np.asarray(great_ts, dtype=np.float32)[int(a)]
-        units[int(a)] = np.float32(0.5)
-    return activation_hit_is_reachable_weighted_lane_aware(
-        activation_index=int(a),
-        activation_hit_timestamp=float(hit),
-        low_hit_timestamps=lo,
-        high_hit_timestamps=hi,
-        lanes=lane_arr,
-        fill_units=units,
-        fever_fill_denom=float(raw_fever_fill),
-        section_start=int(section_start),
-        section_end=int(n),
+    if int(n) != int(context.timestamps.shape[0]):
+        raise ValueError("FG activation reachability context length does not match the chart")
+    if not (0 <= int(section_start) <= int(a) < int(n)):
+        raise ValueError("FG activation reachability received invalid section bounds")
+    if not (int(section_start) <= int(great_start) <= int(n)) or int(great_count) < 0:
+        raise ValueError("FG activation reachability received an invalid Great run")
+    return bool(
+        _rb_numba._numba_activation_reachable_contiguous_run_with_scratch(
+            int(a),
+            float(hit),
+            float(context.candidate_high_delta_max),
+            context.timestamps,
+            context.perfect_floor_timestamps,
+            context.perfect_candidate_timestamps,
+            context.great_floor_timestamps,
+            context.great_candidate_timestamps,
+            context.lanes,
+            float(context.fever_fill_denom),
+            int(section_start),
+            int(n),
+            int(great_start),
+            int(great_count),
+            int(bool(activation_great)),
+            *context.workspace,
+        )
     )
 
 
@@ -452,6 +512,7 @@ def _region_run_offsets(*, section_start: int, k: int, n: int, raw_fever_fill: f
 
 def _minimal_reachable_region_great_end(
     *,
+    reachability_context: _ActivationReachabilityContext,
     a: int,
     section_start: int,
     run_start: int,
@@ -485,6 +546,7 @@ def _minimal_reachable_region_great_end(
         if hit is None:
             continue
         if _activation_reachable(
+            context=reachability_context,
             a=int(a),
             hit=float(hit),
             section_start=int(section_start),
@@ -492,12 +554,6 @@ def _minimal_reachable_region_great_end(
             great_count=int(great_end) - int(run_start),
             activation_great=True,
             n=int(n),
-            perfect_floor_timestamps=perfect_floor_timestamps,
-            perfect_ts=perfect_ts,
-            great_floor_timestamps=great_floor_timestamps,
-            great_ts=great_ts,
-            lane_arr=lane_arr,
-            raw_fever_fill=raw_fever_fill,
         ):
             return int(great_end), float(hit)
     return None
@@ -519,6 +575,7 @@ def _great_floor_end(
 
 def _edge_surface_options(
     *,
+    reachability_context: _ActivationReachabilityContext,
     i: int,
     first: bool,
     n: int,
@@ -636,6 +693,7 @@ def _edge_surface_options(
             int(fill), int(k), first=bool(first), fever_fill_denom=float(raw_fever_fill)
         )
         perfect_reachable = perfect_region3 and perfect_hit is not None and _activation_reachable(
+            context=reachability_context,
             a=int(a),
             hit=float(perfect_hit),
             section_start=int(section_start),
@@ -643,12 +701,6 @@ def _edge_surface_options(
             great_count=int(forced_applied),
             activation_great=False,
             n=int(n),
-            perfect_floor_timestamps=perfect_floor_timestamps,
-            perfect_ts=perfect_ts,
-            great_floor_timestamps=great_floor_timestamps,
-            great_ts=great_ts,
-            lane_arr=lane_arr,
-            raw_fever_fill=raw_fever_fill,
         )
         if perfect_hit is None:
             e, start_time, carry_idx = -1, float(chart_time), -1
@@ -730,6 +782,7 @@ def _edge_surface_options(
         if lg_prefix is not None and (
             prefix_late_hit is None
             or not _activation_reachable(
+                context=reachability_context,
                 a=int(a),
                 hit=float(prefix_late_hit),
                 section_start=int(section_start),
@@ -737,12 +790,6 @@ def _edge_surface_options(
                 great_count=int(lg_prefix),
                 activation_great=True,
                 n=int(n),
-                perfect_floor_timestamps=perfect_floor_timestamps,
-                perfect_ts=perfect_ts,
-                great_floor_timestamps=great_floor_timestamps,
-                great_ts=great_ts,
-                lane_arr=lane_arr,
-                raw_fever_fill=raw_fever_fill,
             )
         ):
             lg_prefix = None
@@ -840,6 +887,7 @@ def _edge_surface_options(
                     continue
                 if bool(crossing_is_great):
                     actual_great_end = _minimal_reachable_region_great_end(
+                        reachability_context=reachability_context,
                         a=int(a_region),
                         section_start=int(section_start),
                         run_start=int(run_start),
@@ -962,6 +1010,7 @@ def _edge_surface_options(
                         great_ts=great_ts,
                     )
                     if perfect_region_hit is None or not _activation_reachable(
+                        context=reachability_context,
                         a=int(a_region),
                         hit=float(perfect_region_hit),
                         section_start=int(section_start),
@@ -969,12 +1018,6 @@ def _edge_surface_options(
                         great_count=int(actual_great_end) - int(run_start),
                         activation_great=False,
                         n=int(n),
-                        perfect_floor_timestamps=perfect_floor_timestamps,
-                        perfect_ts=perfect_ts,
-                        great_floor_timestamps=great_floor_timestamps,
-                        great_ts=great_ts,
-                        lane_arr=lane_arr,
-                        raw_fever_fill=raw_fever_fill,
                     ):
                         continue
                     e_region, region_start_time, region_carry_idx = _edge_end_at_hit(
@@ -1116,6 +1159,19 @@ def _edge_surface_option_details(
     lanes: np.ndarray | None = None,
 ) -> list[dict[str, Any]]:
     """Full option details (surface edge + witness fields) for every option."""
+    if lanes is None:
+        raise ValueError("lanes are required for input-engine-aware FG response reconstruction")
+    reachability_context = _build_activation_reachability_context(
+        timestamps=timestamps,
+        perfect_floor_timestamps=perfect_floor_timestamps,
+        perfect_candidate_timestamps=(
+            timestamps if perfect_candidate_timestamps is None else perfect_candidate_timestamps
+        ),
+        great_floor_timestamps=great_floor_timestamps,
+        great_candidate_timestamps=timestamps if great_candidate_timestamps is None else great_candidate_timestamps,
+        lanes=lanes,
+        fever_fill_denom=float(raw_fever_fill),
+    )
     return [
         _option_with_witness(
             option,
@@ -1125,6 +1181,7 @@ def _edge_surface_option_details(
             perfect_floor_timestamps=perfect_floor_timestamps,
         )
         for option in _edge_surface_options(
+            reachability_context=reachability_context,
             i=int(i),
             first=bool(first),
             n=int(n),
@@ -1221,6 +1278,15 @@ def reconstruct_force_greats_response_trace(
     )
     if int(lane_arr.shape[0]) != n:
         raise ValueError("lanes length must match timestamps")
+    reachability_context = _build_activation_reachability_context(
+        timestamps=ts,
+        perfect_floor_timestamps=floor_ts,
+        perfect_candidate_timestamps=perfect_ts,
+        great_floor_timestamps=great_floor_ts,
+        great_candidate_timestamps=great_ts,
+        lanes=lane_arr,
+        fever_fill_denom=float(raw_fever_fill),
+    )
 
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=float(raw_fever_fill),
@@ -1332,6 +1398,7 @@ def reconstruct_force_greats_response_trace(
             return False
 
         _edge_surface_options(
+            reachability_context=reachability_context,
             i=int(state),
             first=bool(first),
             n=int(n),

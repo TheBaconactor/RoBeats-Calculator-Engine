@@ -5,7 +5,11 @@ from typing import Any
 import numpy as np
 
 from .fill_crossing import late_great_activation_prefix, perfect_crossing_is_region3
-from .response_builder import _action_table, _edge_surface_options
+from .response_builder import (
+    _action_table,
+    _build_activation_reachability_context,
+    _edge_surface_options,
+)
 from .response_build_gpu_precompute import (
     _canonicalize_first_only_prepared_items_with_end_indices,
     _first_only_region_groups,
@@ -164,6 +168,15 @@ def _input_engine_rebuild_first_frontier(
         use_forced_great_timing=bool(use_forced_great_timing),
     )
     n = int(timestamps.shape[0])
+    reachability_context = _build_activation_reachability_context(
+        timestamps=timestamps,
+        perfect_floor_timestamps=perfect_floor_timestamps,
+        perfect_candidate_timestamps=perfect_candidate_timestamps,
+        great_floor_timestamps=great_floor_timestamps,
+        great_candidate_timestamps=great_candidate_timestamps,
+        lanes=lanes,
+        fever_fill_denom=float(raw_fever_fill),
+    )
     memo: dict[tuple[int, bool], tuple[FgResponseSurface, ...]] = {}
     states_evaluated = 0
     generated_surfaces = 0
@@ -181,6 +194,7 @@ def _input_engine_rebuild_first_frontier(
         states_evaluated += 1
         generated: list[FgResponseSurface] = []
         for option in _edge_surface_options(
+            reachability_context=reachability_context,
             i=int(state),
             first=bool(first),
             n=int(n),

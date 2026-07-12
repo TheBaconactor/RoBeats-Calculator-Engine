@@ -1578,6 +1578,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
 def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _action_table,
+        _build_activation_reachability_context,
         _edge_surface_options,
     )
 
@@ -1589,8 +1590,19 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
         non_fever_base=7,
         use_forced_great_timing=True,
     )
+    lanes = _lanes_for(timestamps)
+    reachability_context = _build_activation_reachability_context(
+        timestamps=timestamps,
+        perfect_floor_timestamps=timestamps,
+        perfect_candidate_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
+        great_candidate_timestamps=great_candidates,
+        lanes=lanes,
+        fever_fill_denom=2.0,
+    )
 
     options = _edge_surface_options(
+        reachability_context=reachability_context,
         i=0,
         first=False,
         n=int(timestamps.shape[0]),
@@ -1605,7 +1617,7 @@ def test_fg_response_activation_great_requires_same_fill_ordinal() -> None:
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
         great_floor_timestamps=timestamps,
-            lanes=_lanes_for(timestamps),
+        lanes=lanes,
         raw_fever_fill=2.0,
     )
 
@@ -1668,6 +1680,7 @@ def test_fg_response_frontier_emits_reconstructable_non_prefix_great_run() -> No
 def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _action_table,
+        _build_activation_reachability_context,
         _edge_surface_options,
     )
 
@@ -1683,8 +1696,19 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
         non_fever_base=3,
         use_forced_great_timing=True,
     )
+    lanes = _lanes_for(timestamps)
+    reachability_context = _build_activation_reachability_context(
+        timestamps=timestamps,
+        perfect_floor_timestamps=perfect_floor,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_floor_timestamps=great_floor,
+        great_candidate_timestamps=great_candidates,
+        lanes=lanes,
+        fever_fill_denom=raw_fever_fill,
+    )
 
     options = _edge_surface_options(
+        reachability_context=reachability_context,
         i=99,
         first=False,
         n=int(timestamps.shape[0]),
@@ -1700,7 +1724,7 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=perfect_floor,
         great_floor_timestamps=great_floor,
-        lanes=_lanes_for(timestamps),
+        lanes=lanes,
         raw_fever_fill=raw_fever_fill,
     )
 
@@ -1740,7 +1764,6 @@ def test_fg_response_frontier_caps_activation_at_following_label_breakpoint() ->
         non_fever_base=6,
         use_forced_great_timing=True,
     )
-
     options = _edge_surface_option_details(
         i=0,
         first=True,
@@ -3471,6 +3494,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _EMPTY_SURFACE,
         _action_table,
+        _build_activation_reachability_context,
         _edge_surface_options,
         reconstruct_force_greats_response_counts,
         reconstruct_force_greats_response_trace,
@@ -3497,12 +3521,13 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
     raw_fever_fill = 2.25
     non_fever_base = 7
     real_fever_time = 0.55
+    lanes = _lanes_for(timestamps)
     slim = response_build_gpu_batch.build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
         great_floor_timestamps=timestamps,
-            lanes=_lanes_for(timestamps),
+        lanes=lanes,
         geometries=((raw_fever_fill, non_fever_base, real_fever_time),),
         use_forced_great_timing=True,
     )[0]
@@ -3515,7 +3540,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
         great_floor_timestamps=timestamps,
-            lanes=_lanes_for(timestamps),
+        lanes=lanes,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
         use_forced_great_timing=True,
@@ -3527,7 +3552,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         great_candidate_timestamps=great_candidates,
         perfect_floor_timestamps=timestamps,
         great_floor_timestamps=timestamps,
-            lanes=_lanes_for(timestamps),
+        lanes=lanes,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
         use_forced_great_timing=True,
@@ -3537,6 +3562,15 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
         raw_fever_fill=raw_fever_fill,
         non_fever_base=non_fever_base,
         use_forced_great_timing=True,
+    )
+    reachability_context = _build_activation_reachability_context(
+        timestamps=timestamps,
+        perfect_floor_timestamps=timestamps,
+        perfect_candidate_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
+        great_candidate_timestamps=great_candidates,
+        lanes=lanes,
+        fever_fill_denom=raw_fever_fill,
     )
     assert [row["forced_count"] for row in trace] == list(counts)
     assert all(
@@ -3564,6 +3598,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
     for row in trace:
         edge_match = None
         for option in _edge_surface_options(
+            reachability_context=reachability_context,
             i=state,
             first=first,
             n=int(timestamps.shape[0]),
@@ -3578,7 +3613,7 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
             great_candidate_timestamps=great_candidates,
             perfect_floor_timestamps=timestamps,
             great_floor_timestamps=timestamps,
-            lanes=_lanes_for(timestamps),
+            lanes=lanes,
             raw_fever_fill=raw_fever_fill,
         ):
             if (

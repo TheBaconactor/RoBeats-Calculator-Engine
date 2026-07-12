@@ -10,6 +10,10 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba impo
     _numba_build_activation_reachability_workspace,
     _numba_exact_lane_classes,
 )
+from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+    _activation_reachable,
+    _build_activation_reachability_context,
+)
 
 
 def _retired_boolean_prefix_reachable(
@@ -199,6 +203,70 @@ def test_lane_prefix_bitset_reused_scratch_matches_boolean_oracle() -> None:
         )
         actual = _numba_activation_reachable_contiguous_run_with_scratch(*args, *workspace)
         assert bool(actual) is _retired_boolean_prefix_reachable(*args), _case_idx
+
+
+def test_trace_reachability_context_reuses_exact_numba_workspace() -> None:
+    timestamps, perfect_floor, perfect_candidates, great_floor, great_candidates, lanes = _dense_inputs()
+    denom = 37.25
+    context = _build_activation_reachability_context(
+        timestamps=timestamps,
+        perfect_floor_timestamps=perfect_floor,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_floor_timestamps=great_floor,
+        great_candidate_timestamps=great_candidates,
+        lanes=lanes,
+        fever_fill_denom=denom,
+    )
+    workspace_ids = tuple(id(array) for array in context.workspace)
+    rng = np.random.default_rng(20260713)
+    for case_idx in range(240):
+        start = int(rng.integers(0, 72))
+        end = int(timestamps.shape[0])
+        activation = int(rng.integers(start, end))
+        great_start = int(rng.integers(start, end))
+        great_count = int(rng.integers(0, min(70, 96 - great_start) + 1))
+        activation_great = bool(int(rng.integers(0, 2)))
+        hit = (timestamps, perfect_candidates, great_candidates)[int(rng.integers(0, 3))][activation]
+        args = (
+            activation,
+            float(hit),
+            float(context.candidate_high_delta_max),
+            timestamps,
+            perfect_floor,
+            perfect_candidates,
+            great_floor,
+            great_candidates,
+            lanes,
+            denom,
+            start,
+            end,
+            great_start,
+            great_count,
+            int(activation_great),
+        )
+        actual = _activation_reachable(
+            context=context,
+            a=activation,
+            hit=float(hit),
+            section_start=start,
+            great_start=great_start,
+            great_count=great_count,
+            activation_great=activation_great,
+            n=end,
+        )
+        assert actual is _retired_boolean_prefix_reachable(*args), case_idx
+    assert tuple(id(array) for array in context.workspace) == workspace_ids
+    with pytest.raises(ValueError, match="invalid Great run"):
+        _activation_reachable(
+            context=context,
+            a=40,
+            hit=float(timestamps[40]),
+            section_start=12,
+            great_start=11,
+            great_count=3,
+            activation_great=False,
+            n=int(timestamps.shape[0]),
+        )
 
 
 def test_lane_classification_uses_full_signed_integer_equality() -> None:

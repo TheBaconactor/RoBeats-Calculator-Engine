@@ -383,7 +383,7 @@ def test_bubble_snapshot_reports_zero_idle_while_gpu_work_is_inflight():
     assert snapshot["bubble_kpi"] == 0.0
 
 
-def test_bubble_snapshot_reports_idle_only_when_gpu_owner_has_no_inflight_work():
+def test_bubble_snapshot_reports_idle_during_host_only_fg_materialization():
     snapshot = BubbleTracker().snapshot_from_pipeline_counts(
         now_mono=12.5,
         prepared_count=3,
@@ -395,7 +395,7 @@ def test_bubble_snapshot_reports_idle_only_when_gpu_owner_has_no_inflight_work()
         pending_fg_count=2,
         fg_prep_inflight_count=0,
         ga_inflight_count=0,
-        fg_futures_count=0,
+        fg_futures_count=2,
         last_progress=10.0,
         oldest_fg_wait_s=2.0,
     )
