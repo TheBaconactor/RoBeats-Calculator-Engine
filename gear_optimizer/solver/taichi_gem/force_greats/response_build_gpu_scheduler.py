@@ -95,22 +95,13 @@ def _legacy_single_region_table_peak_bound_bytes(*, n: int, region_action_count:
     return int(starts_bytes + 2 * int(capacity) * int(_REGION_TABLE_ENTRY_BYTES))
 
 
-def _admitted_region_group_threads(
+def _validate_region_group_memory_bounds(
     *,
     build_peak_bounds: tuple[int, ...],
     retained_peak_bounds: tuple[int, ...],
     legacy_single_peak_bound: int,
-    thread_limit: int,
-) -> tuple[int, int]:
-    """Largest width whose serial-build/live-retained peak fits the old envelope.
-
-    The coordinator builds exactly one table at a time. Every other in-flight group has already
-    discarded its temporary candidate arrays and retains only the trimmed table while reducing.
-    Therefore a width-W peak is one group's build peak plus the W-1 largest retained peaks of
-    other groups, never W simultaneous build peaks.
-    """
-    if not build_peak_bounds:
-        return 1, 0
+) -> None:
+    """Validate producer-owned bounds used by dynamic build/reduce admission."""
     builds = tuple(int(value) for value in build_peak_bounds)
     retained = tuple(int(value) for value in retained_peak_bounds)
     if len(builds) != len(retained):
@@ -119,25 +110,8 @@ def _admitted_region_group_threads(
         raise ValueError("FG region-table memory bounds must be nonnegative")
     if any(int(retained_value) > int(build_value) for build_value, retained_value in zip(builds, retained, strict=True)):
         raise ValueError("FG retained region-table bound cannot exceed its build peak")
-    limit = max(1, min(int(thread_limit), len(builds)))
-    if max(builds) > int(legacy_single_peak_bound):
+    if builds and max(builds) > int(legacy_single_peak_bound):
         raise MemoryError("FG exact region table exceeds the historical single-table peak bound")
-    width = 1
-    admitted_peak = max(builds)
-    for candidate_width in range(2, int(limit) + 1):
-        candidate_peak = 0
-        for build_idx, build_peak in enumerate(builds):
-            other_retained = sorted(
-                (retained[idx] for idx in range(len(retained)) if int(idx) != int(build_idx)),
-                reverse=True,
-            )
-            live_peak = int(build_peak) + sum(other_retained[: int(candidate_width) - 1])
-            candidate_peak = max(int(candidate_peak), int(live_peak))
-        if int(candidate_peak) > int(legacy_single_peak_bound):
-            break
-        width = int(candidate_width)
-        admitted_peak = int(candidate_peak)
-    return int(width), int(admitted_peak)
 
 
 def _region_table_bytes(region_table: tuple) -> int:
@@ -320,6 +294,17 @@ def _schedule_parallel_groups(
 ) -> tuple[tuple[list[tuple[int, FgResponseFrontierResult]], ...], _ConcurrentRegionTableStats]:
     table_stats = _ConcurrentRegionTableStats()
     group_results: list[list[tuple[int, FgResponseFrontierResult]] | None] = [None] * len(group_entries)
+    if bool(context.use_forced_great_timing):
+        return _schedule_parallel_built_groups(
+            group_entries=group_entries,
+            build_peak_bounds=build_peak_bounds,
+            retained_peak_bounds=retained_peak_bounds,
+            legacy_peak_bound=int(legacy_peak_bound),
+            worker_limit=int(parallelism),
+            context=context,
+            table_stats=table_stats,
+            group_results=group_results,
+        )
     inflight: dict[concurrent.futures.Future, tuple[int, int]] = {}
     inflight_table_bytes = 0
     with _first_frontier_reducer_executor(int(parallelism)) as group_executor:
@@ -383,6 +368,98 @@ def _schedule_parallel_groups(
             )
     if int(inflight_table_bytes) != 0:
         raise ValueError("FG region-table pipeline byte accounting did not drain")
+    if int(table_stats.live) != 0 or int(table_stats.live_bytes) != 0:
+        raise ValueError("FG concurrent region-table accounting did not drain")
+    if any(result is None for result in group_results):
+        raise ValueError("FG region-table pipeline missed a group result")
+    return tuple(result for result in group_results if result is not None), table_stats
+
+
+def _schedule_parallel_built_groups(
+    *,
+    group_entries: tuple[tuple[tuple[float, int], list[tuple]], ...],
+    build_peak_bounds: tuple[int, ...],
+    retained_peak_bounds: tuple[int, ...],
+    legacy_peak_bound: int,
+    worker_limit: int,
+    context: _FirstFrontierGroupContext,
+    table_stats: _ConcurrentRegionTableStats,
+    group_results: list[list[tuple[int, FgResponseFrontierResult]] | None],
+) -> tuple[tuple[list[tuple[int, FgResponseFrontierResult]], ...], _ConcurrentRegionTableStats]:
+    """Pipeline independent table producers and consumers under one exact byte reservation."""
+    build_inflight: dict[concurrent.futures.Future, tuple[int, int, int]] = {}
+    reduce_inflight: dict[concurrent.futures.Future, tuple[int, int]] = {}
+    reserved_bytes = 0
+    next_group_idx = 0
+    with (
+        _first_frontier_reducer_executor(int(worker_limit)) as build_executor,
+        _first_frontier_reducer_executor(int(worker_limit)) as reduce_executor,
+    ):
+        while (
+            int(next_group_idx) < len(group_entries)
+            or bool(build_inflight)
+            or bool(reduce_inflight)
+        ):
+            while int(next_group_idx) < len(group_entries):
+                active = len(build_inflight) + len(reduce_inflight)
+                build_peak_bound = int(build_peak_bounds[int(next_group_idx)])
+                if int(active) >= int(worker_limit):
+                    break
+                if int(reserved_bytes) + int(build_peak_bound) > int(legacy_peak_bound):
+                    break
+                table_key, group_items = group_entries[int(next_group_idx)]
+                future = build_executor.submit(
+                    _build_region_table,
+                    table_key=table_key,
+                    group_items=group_items,
+                    context=context,
+                )
+                build_inflight[future] = (
+                    int(next_group_idx),
+                    int(build_peak_bound),
+                    int(retained_peak_bounds[int(next_group_idx)]),
+                )
+                reserved_bytes += int(build_peak_bound)
+                next_group_idx += 1
+
+            futures = tuple(build_inflight) + tuple(reduce_inflight)
+            if not futures:
+                raise MemoryError("FG region-table pipeline cannot admit its next exact build")
+            completed, _pending = concurrent.futures.wait(
+                futures, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+            completed_reductions = {future for future in completed if future in reduce_inflight}
+            if completed_reductions:
+                reserved_bytes -= _consume_completed_group_futures(
+                    completed=completed_reductions,
+                    inflight=reduce_inflight,
+                    group_results=group_results,
+                )
+            for future in (value for value in completed if value in build_inflight):
+                group_idx, build_peak_bound, retained_peak_bound = build_inflight.pop(future)
+                region_table, table_bytes, build_seconds = future.result()
+                reserved_bytes -= int(build_peak_bound)
+                if int(table_bytes) > int(retained_peak_bound):
+                    raise MemoryError("FG retained region table exceeds its producer-owned bound")
+                table_stats.opened(table_bytes=int(table_bytes), build_seconds=float(build_seconds))
+                reserved_bytes += int(table_bytes)
+                table_key, group_items = group_entries[int(group_idx)]
+                reduction = reduce_executor.submit(
+                    _reduce_prebuilt_first_frontier_group,
+                    table_key=table_key,
+                    group_items=group_items,
+                    region_table=region_table,
+                    table_bytes=int(table_bytes),
+                    tracked_table=True,
+                    context=context,
+                    table_stats=table_stats,
+                )
+                reduce_inflight[reduction] = (int(group_idx), int(table_bytes))
+                del region_table
+            if int(reserved_bytes) < 0 or int(reserved_bytes) > int(legacy_peak_bound):
+                raise ValueError("FG region-table pipeline reservation escaped its exact bound")
+    if int(reserved_bytes) != 0:
+        raise ValueError("FG region-table pipeline byte reservation did not drain")
     if int(table_stats.live) != 0 or int(table_stats.live_bytes) != 0:
         raise ValueError("FG concurrent region-table accounting did not drain")
     if any(result is None for result in group_results):
@@ -484,12 +561,16 @@ def _schedule_first_frontier_region_groups(
             ),
             default=0,
         )
-        parallelism, parallel_peak_bound = _admitted_region_group_threads(
+        _validate_region_group_memory_bounds(
             build_peak_bounds=build_peak_bounds,
             retained_peak_bounds=retained_peak_bounds,
             legacy_single_peak_bound=int(legacy_peak_bound),
-            thread_limit=int(thread_limit),
         )
+        # Builders and reducers now share the configured worker budget dynamically. Admission is
+        # performed against exact per-group reservations inside the pipeline, so completed builds
+        # release their temporary half before the retained table enters reduction.
+        parallelism = int(thread_limit)
+        parallel_peak_bound = int(legacy_peak_bound)
     else:
         build_peak_bounds = (0,) * len(group_entries)
         retained_peak_bounds = (0,) * len(group_entries)
@@ -506,7 +587,7 @@ def _schedule_first_frontier_region_groups(
             parallelism=int(parallelism),
             context=context,
         )
-        executor_creations = 1
+        executor_creations = 2 if bool(context.use_forced_great_timing) else 1
     else:
         group_results, table_stats, executor_creations = _schedule_sequential_groups(
             group_entries=group_entries,
