@@ -43,6 +43,7 @@ from .response_cache_store import (
     load_first_surface_scoring_rows,
     purge_stale_version_cache_files,
     release_fg_response_song_memory,
+    resolve_fg_response_bundle_path,
     reset_fg_response_frontier_payload_cache,
 )
 from .response_cache_types import (
@@ -402,7 +403,7 @@ def fg_response_frontier_payload_cache_info(
     if payload is not None:
         return FgResponseFrontierCacheInfo(
             cache_key=payload_key,
-            disk_path=_fg_response_disk_cache_path(payload_key),
+            disk_path=resolve_fg_response_bundle_path(payload_key),
             cache_source="memory",
             total_notes=int(payload.total_notes),
             long_notes=int(payload.long_notes),
@@ -413,7 +414,7 @@ def fg_response_frontier_payload_cache_info(
         total_notes, long_notes, frontier_count = disk_info
         return FgResponseFrontierCacheInfo(
             cache_key=payload_key,
-            disk_path=_fg_response_disk_cache_path(payload_key),
+            disk_path=resolve_fg_response_bundle_path(payload_key),
             cache_source="disk",
             total_notes=int(total_notes),
             long_notes=int(long_notes),
@@ -425,7 +426,7 @@ def fg_response_frontier_payload_cache_info(
         if subset is not None:
             return FgResponseFrontierCacheInfo(
                 cache_key=payload_key,
-                disk_path=_fg_response_disk_cache_path(bundle_key),
+                disk_path=resolve_fg_response_bundle_path(bundle_key),
                 cache_source="disk",
                 total_notes=int(subset.total_notes),
                 long_notes=int(subset.long_notes),
@@ -436,7 +437,7 @@ def fg_response_frontier_payload_cache_info(
         total_notes, long_notes, frontier_count = bundle_disk_info
         return FgResponseFrontierCacheInfo(
             cache_key=payload_key,
-            disk_path=_fg_response_disk_cache_path(bundle_key),
+            disk_path=resolve_fg_response_bundle_path(bundle_key),
             cache_source="disk",
             total_notes=int(total_notes),
             long_notes=int(long_notes),
@@ -445,7 +446,7 @@ def fg_response_frontier_payload_cache_info(
     song_inputs = extract_fg_song_inputs(calc_song)
     return FgResponseFrontierCacheInfo(
         cache_key=payload_key,
-        disk_path=_fg_response_disk_cache_path(payload_key),
+        disk_path=resolve_fg_response_bundle_path(payload_key),
         cache_source="missing",
         total_notes=int(song_inputs.total_notes),
         long_notes=int(song_inputs.long_notes),
@@ -551,7 +552,7 @@ def build_or_load_response_frontier_payload(
     keys = normalize_fg_response_stat_keys(stat_keys)
     cache_key = fg_response_frontier_payload_cache_key(calc_song, ref_arrays, keys)
     bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
-    bundle_path = _fg_response_disk_cache_path(bundle_key)
+    bundle_path = resolve_fg_response_bundle_path(bundle_key)
     payload = _payload_memory_get(cache_key)
     if payload is not None and _payload_subset(payload, keys) is not None:
         return FgResponseFrontierPrewarmResult(
@@ -619,7 +620,7 @@ def build_or_load_response_frontier_payload(
     return FgResponseFrontierPrewarmResult(
         payload=payload,
         cache_key=cache_key,
-        disk_path=bundle_path,
+        disk_path=resolve_fg_response_bundle_path(bundle_key),
         cache_source=source,
         elapsed_ms=float((time.perf_counter() - started) * 1000.0),
         total_notes=int(payload.total_notes),

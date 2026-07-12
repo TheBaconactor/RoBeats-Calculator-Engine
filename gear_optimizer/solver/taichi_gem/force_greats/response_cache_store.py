@@ -66,6 +66,60 @@ _SURFACE_PATTERN_SIDECAR_SUFFIX = ".surf_patterns.npy"
 # otherwise every deliberate rotation strands the largest files from the old full pool.
 _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 
+# Exact cache-output compatibility is narrower than the conservative DP source fingerprint. PR
+# #141 changed the region physicality representation and cache staging ownership, but independent
+# M1LLI0N/Calamity logical oracles matched every ordered surface at all 25,921 stat keys and both
+# persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
+# receives a different current fingerprint and therefore inherits no compatibility automatically.
+_EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    "fg-response-frontier-visible-first-v30+logic-584d8e8c6077": (
+        "fg-response-frontier-visible-first-v30+logic-a6d09c0280bd",
+    ),
+}
+
+
+def fg_response_compatible_cache_versions() -> tuple[str, ...]:
+    """Current version followed by explicitly ratified, byte-compatible predecessors."""
+    current = _fg_response_cache_version()
+    predecessors = _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS.get(current, ())
+    return (current, *predecessors)
+
+
+def _cache_key_with_version(cache_key: tuple, version: str) -> tuple:
+    key = tuple(cache_key)
+    if not key:
+        raise ValueError("FG response cache key must contain a version")
+    return (str(version), *key[1:])
+
+
+def resolve_fg_response_bundle_path(cache_key: tuple) -> Path:
+    """Resolve the canonical current path or an exact compatible predecessor path.
+
+    Writes always target ``_fg_response_disk_cache_path(cache_key)``. This resolver is read-only and
+    only considers a predecessor when the caller owns the current full cache key and the current
+    content-addressed file is absent. Full NPZ/sidecar validation still gates every cache hit.
+    """
+    current_path = _fg_response_disk_cache_path(cache_key)
+    if current_path.exists():
+        return current_path
+    key = tuple(cache_key)
+    current = _fg_response_cache_version()
+    if not key or str(key[0]) != current:
+        return current_path
+    for predecessor in fg_response_compatible_cache_versions()[1:]:
+        predecessor_path = _fg_response_disk_cache_path(_cache_key_with_version(key, predecessor))
+        if predecessor_path.exists():
+            return predecessor_path
+    return current_path
+
+
+def _fg_response_cache_version_is_compatible(version: str) -> bool:
+    return str(version) in fg_response_compatible_cache_versions()
+
+
+def _purged_version_marker_value() -> str:
+    return "\n".join(fg_response_compatible_cache_versions())
+
 
 def _memory_cache_get_locked(
     cache: OrderedDict,
@@ -129,7 +183,7 @@ def _stale_surface_sidecar_paths(bundle_path: Path) -> tuple[Path, ...]:
 
 
 def _surface_sidecar_paths_for_key(cache_key: tuple) -> tuple[Path, Path]:
-    return _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
+    return _surface_sidecar_paths(resolve_fg_response_bundle_path(cache_key))
 
 
 def warm_surface_sidecar_page_cache(cache_key: tuple) -> None:
@@ -199,22 +253,23 @@ _PURGED_VERSION_MARKER = ".purged_version"
 
 
 def purge_stale_version_cache_files() -> int:
-    """Delete on-disk cache entries whose embedded version != the current cache version.
+    """Delete bundles outside the current exact compatibility lineage.
 
-    Old-version bundles are already dead weight — the reader rejects any version mismatch — so left
-    alone they accumulate ~one full pool per version bump. This sweeps them exactly once per version
-    change, guarded by a `.purged_version` marker so the routine startup path stays O(1). Returns the
-    number of files removed. External filesystem boundary: unreadable/corrupt bundles are left in
-    place rather than guessed at, and if any unlink fails (e.g. a locked file) the marker is left
-    unwritten so the sweep retries on the next prebuild instead of permanently stranding the file.
+    Versions outside the explicit compatible set are dead weight because every reader rejects them;
+    left alone they accumulate roughly one full pool per version bump. This sweeps them exactly once
+    per compatibility-lineage change, guarded by a `.purged_version` marker so routine startup stays
+    O(1). Returns the number of files removed. External filesystem boundary: unreadable/corrupt
+    bundles are left in place rather than guessed at, and if any unlink fails (e.g. a locked file)
+    the marker remains unwritten so the next prebuild retries instead of stranding the file.
     """
     directory = _fg_response_disk_cache_dir()
     if not directory.exists():
         return 0
-    current = _fg_response_cache_version()
+    compatible = frozenset(fg_response_compatible_cache_versions())
+    marker_value = _purged_version_marker_value()
     marker = directory / _PURGED_VERSION_MARKER
     try:
-        if marker.read_text(encoding="utf-8").strip() == current:
+        if marker.read_text(encoding="utf-8").strip() == marker_value:
             return 0
     except OSError:
         pass
@@ -228,7 +283,7 @@ def purge_stale_version_cache_files() -> int:
             # Any unreadable/corrupt bundle (bad zip, corrupt member, IO error): keep it rather than
             # crash the whole sweep. This is the documented FS boundary, matching the bundle readers.
             version = None
-        if version is None or version == current:
+        if version is None or version in compatible:
             continue
         for stale in (npz, *_stale_surface_sidecar_paths(npz)):
             try:
@@ -240,7 +295,7 @@ def purge_stale_version_cache_files() -> int:
                 purge_complete = False  # locked/in-use: leave marker unwritten, retry next prebuild
     if purge_complete:
         try:
-            marker.write_text(current, encoding="utf-8")
+            marker.write_text(marker_value, encoding="utf-8")
         except OSError:
             pass
     return removed
@@ -528,14 +583,14 @@ def _save_npz_fast_compressed(path: Path, arrays: dict[str, np.ndarray]) -> None
 def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
     from .response_cache_serde import _unpack_frontiers
 
-    path = _live_fg_response_bundle_path(_fg_response_disk_cache_path(cache_key))
+    path = _live_fg_response_bundle_path(resolve_fg_response_bundle_path(cache_key))
     if path is None:
         return None
     row_sidecar, pattern_sidecar = _surface_sidecar_paths(path)
     try:
         with np.load(path, allow_pickle=False) as data:
             version = str(data["version"].item())
-            if version != _fg_response_cache_version():
+            if not _fg_response_cache_version_is_compatible(version):
                 return None
             stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
             frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
@@ -588,7 +643,7 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
             if files != required:
                 return None
             version = str(data["version"].item())
-            if version != _fg_response_cache_version():
+            if not _fg_response_cache_version_is_compatible(version):
                 return None
             stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
             frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
@@ -661,7 +716,7 @@ def _payload_disk_info_if_complete(
     cache_key: tuple,
     keys: Iterable[tuple[int, int]],
 ) -> tuple[int, int, int] | None:
-    return _payload_file_info_if_complete(_fg_response_disk_cache_path(cache_key), keys)
+    return _payload_file_info_if_complete(resolve_fg_response_bundle_path(cache_key), keys)
 
 
 def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dict[str, np.ndarray]:
@@ -672,13 +727,13 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
         cached = _memory_cache_get_locked(_bundle_array_cache, _bundle_array_cache_last_access, cache_key)
         if cached is not None and all(name in cached for name in requested):
             return {name: cached[name] for name in requested}
-    bundle_path = _fg_response_disk_cache_path(cache_key)
+    bundle_path = resolve_fg_response_bundle_path(cache_key)
     path = _live_fg_response_bundle_path(bundle_path)
     if path is None:
         raise ValueError(f"FG response frontier bundle cache is missing: {bundle_path}")
     with np.load(path, allow_pickle=False) as data:
         version = str(data["version"].item())
-        if version != _fg_response_cache_version():
+        if not _fg_response_cache_version_is_compatible(version):
             raise ValueError("FG response frontier bundle cache version is invalid")
         missing = [name for name in requested if name not in data.files]
         if missing:
