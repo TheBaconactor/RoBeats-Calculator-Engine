@@ -824,6 +824,7 @@ def run_fg_response_frontier_cache_prebuild(
     del cfg
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         _fg_response_disk_cache_dir,
+        cache_dir_sidecars_need_compression,
         cleanup_fg_response_frontier_cache_temp_files,
         compress_cache_dir_sidecars,
         purge_stale_version_cache_files,
@@ -845,7 +846,7 @@ def run_fg_response_frontier_cache_prebuild(
             stat_keys=stat_keys,
             persist_validated_entries=False,
         )
-        if not optimistic_plan.missing_paths:
+        if not optimistic_plan.missing_paths and not cache_dir_sidecars_need_compression():
             return FgResponseFrontierCachePrebuildSummary(
                 total=int(optimistic_plan.total_paths),
                 completed=int(optimistic_plan.hit_count),
@@ -897,8 +898,8 @@ def run_fg_response_frontier_cache_prebuild(
         _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
         elapsed_ms = float((time.perf_counter() - started) * 1000.0)
         if int(run_summary.built) > 0:
-            # Bulk-compress newly written sidecars once (NTFS WOF XPRESS16K, ~6x, memmap preserved).
-            # Housekeeping after the timed region so elapsed_ms reflects build cost, not compaction.
+            # Bulk-compress newly written sidecars once with the platform's transparent filesystem
+            # codec. Housekeeping stays after the timed region so elapsed_ms reflects build cost.
             compress_cache_dir_sidecars()
         return FgResponseFrontierCachePrebuildSummary(
             total=int(manifest_plan.total_paths),

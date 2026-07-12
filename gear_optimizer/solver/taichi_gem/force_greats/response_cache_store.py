@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -41,6 +43,8 @@ from .response_cache_types import (
 )
 from .response_types import FgResponseFrontierResult
 
+logger = logging.getLogger(__name__)
+
 _frontier_cache: OrderedDict[tuple, FgResponseFrontierResult] = OrderedDict()
 _payload_cache: OrderedDict[tuple, FgResponseFrontierCachePayload] = OrderedDict()
 _bundle_array_cache: OrderedDict[tuple, dict[str, np.ndarray]] = OrderedDict()
@@ -61,6 +65,9 @@ _NPZ_FAST_COMPRESS_LEVEL = 1
 # with the interned representation. IDs are uint32 for every chart -- no size-dependent format.
 _SURFACE_ROW_SIDECAR_SUFFIX = ".surf_rows.npy"
 _SURFACE_PATTERN_SIDECAR_SUFFIX = ".surf_patterns.npy"
+_FILESYSTEM_COMPRESSION_MIN_BYTES = 4096
+_MACOS_COMPRESSION_BATCH_FILES = 32
+_MACOS_COMPRESSION_STAGING_DIR = ".macos_hfs_compression_staging"
 # Cleanup-only names from V29. They are never read: the V30 version gate requires the compact
 # row/pattern format. The stale-version sweeper must still remove them when it deletes a V29 bundle,
 # otherwise every deliberate rotation strands the largest files from the old full pool.
@@ -221,32 +228,122 @@ def _live_fg_response_bundle_path(
     return bundle_path if bundle_path.exists() else None
 
 
-def compress_cache_dir_sidecars() -> None:
-    """Bulk-compress the cache directory with NTFS WOF XPRESS16K (~6x measured) at the
-    end of a prebuild.
+def _surface_sidecar_files(directory: Path) -> tuple[Path, ...]:
+    rows = directory.glob(f"*{_SURFACE_ROW_SIDECAR_SUFFIX}")
+    patterns = directory.glob(f"*{_SURFACE_PATTERN_SIDECAR_SUFFIX}")
+    return tuple(sorted((*rows, *patterns), key=lambda path: path.name))
 
-    The `.npy` payload stays uncompressed at the numpy layer, so files remain
-    `np.load(mmap_mode="r")`-able — WOF decompresses pages on fault, and the scorer's sparse row
-    reads cost only ~0.2ms more (verified bit-identical, memmap intact). One bulk `compact` pass
-    (~1 min / 90 GB at ~1.4 GB/s) instead of per-file subprocess spawns; already-compressed files
-    are skipped so re-running each build is cheap. Windows-only; a harmless no-op elsewhere or if
-    `compact` is unavailable. External OS/filesystem boundary, not an optimizer invariant.
-    """
-    if sys.platform != "win32":
-        return
+
+def _file_allocated_bytes(path: Path) -> int:
+    stat = path.stat()
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        get_compressed_size = ctypes.windll.kernel32.GetCompressedFileSizeW
+        get_compressed_size.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+        get_compressed_size.restype = wintypes.DWORD
+        high = wintypes.DWORD(0)
+        low = int(get_compressed_size(str(path), ctypes.byref(high)))
+        return (int(high.value) << 32) | low
+    blocks = getattr(stat, "st_blocks", None)
+    if blocks is not None:
+        return int(blocks) * 512
+    return int(stat.st_size)
+
+
+def _sidecar_needs_filesystem_compression(path: Path) -> bool:
+    try:
+        logical = int(path.stat().st_size)
+        if logical < _FILESYSTEM_COMPRESSION_MIN_BYTES:
+            return False
+        return _file_allocated_bytes(path) >= logical
+    except OSError:
+        return False
+
+
+def cache_dir_sidecars_need_compression() -> bool:
+    """Whether startup should enter locked filesystem maintenance for exact sidecars."""
+    if sys.platform not in {"darwin", "win32"}:
+        return False
     directory = _fg_response_disk_cache_dir()
     if not directory.exists():
-        return
+        return False
+    return any(_sidecar_needs_filesystem_compression(path) for path in _surface_sidecar_files(directory))
+
+
+def _compress_cache_dir_sidecars_windows(directory: Path) -> None:
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["compact", "/c", "/exe:XPRESS16K", "/s:" + str(directory)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=3600,
             check=False,
         )
-    except Exception:
-        pass
+        if int(result.returncode) != 0:
+            logger.warning("FG cache XPRESS16K compression exited %s", int(result.returncode))
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("FG cache XPRESS16K compression failed: %s", exc)
+
+
+def _compress_cache_dir_sidecars_macos(directory: Path) -> None:
+    candidates = tuple(
+        path for path in _surface_sidecar_files(directory) if _sidecar_needs_filesystem_compression(path)
+    )
+    if not candidates:
+        return
+    staging = directory / _MACOS_COMPRESSION_STAGING_DIR
+    try:
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir()
+        for start in range(0, len(candidates), _MACOS_COMPRESSION_BATCH_FILES):
+            batch = candidates[start : start + _MACOS_COMPRESSION_BATCH_FILES]
+            result = subprocess.run(
+                [
+                    "/usr/bin/ditto",
+                    "--hfsCompression",
+                    "--nocache",
+                    *(str(path) for path in batch),
+                    str(staging),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3600,
+                check=False,
+            )
+            if int(result.returncode) != 0:
+                logger.warning("FG cache APFS/HFS+ compression exited %s", int(result.returncode))
+                return
+            staged_batch = tuple(staging / path.name for path in batch)
+            for source, staged in zip(batch, staged_batch, strict=True):
+                if not staged.is_file() or int(staged.stat().st_size) != int(source.stat().st_size):
+                    logger.warning("FG cache APFS/HFS+ copy validation failed: %s", source)
+                    return
+            for source, staged in zip(batch, staged_batch, strict=True):
+                os.replace(staged, source)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("FG cache APFS/HFS+ compression failed: %s", exc)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def compress_cache_dir_sidecars() -> None:
+    """Losslessly compress exact sidecars while preserving the mmap-visible file bytes.
+
+    Windows uses one NTFS WOF XPRESS16K pass. macOS copies uncompressed sidecars in bounded batches
+    through ``ditto --hfsCompression`` and atomically replaces each original; APFS/HFS+ then
+    decompresses pages transparently for ``np.load(mmap_mode="r")``. Unsupported platforms are a
+    no-op because no general filesystem-transparent compressor exists there. This is an external
+    filesystem boundary and never changes cache semantics or the logic fingerprint.
+    """
+    directory = _fg_response_disk_cache_dir()
+    if not directory.exists():
+        return
+    if sys.platform == "win32":
+        _compress_cache_dir_sidecars_windows(directory)
+    elif sys.platform == "darwin":
+        _compress_cache_dir_sidecars_macos(directory)
 
 
 _PURGED_VERSION_MARKER = ".purged_version"

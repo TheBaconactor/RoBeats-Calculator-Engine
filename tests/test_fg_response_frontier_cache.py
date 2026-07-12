@@ -754,6 +754,83 @@ def test_compress_cache_dir_sidecars_preserves_memmap_bytes(tmp_path: Path, monk
     assert on_disk <= logical
 
 
+def test_macos_sidecar_compression_copies_in_bounded_batches_and_preserves_bytes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import shutil
+
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(store.sys, "platform", "darwin")
+    monkeypatch.setattr(store, "_sidecar_needs_filesystem_compression", lambda _path: True)
+    row_sidecar = tmp_path / f"deadbeef{store._SURFACE_ROW_SIDECAR_SUFFIX}"
+    pattern_sidecar = tmp_path / f"deadbeef{store._SURFACE_PATTERN_SIDECAR_SUFFIX}"
+    rows = np.arange(20000, dtype=np.uint32).reshape(5000, 4)
+    patterns = np.arange(1000, dtype=np.uint32).reshape(100, 10)
+    store._save_surface_sidecar_atomic(row_sidecar, rows)
+    store._save_surface_sidecar_atomic(pattern_sidecar, patterns)
+    expected = {path.name: path.read_bytes() for path in (row_sidecar, pattern_sidecar)}
+    calls: list[list[str]] = []
+
+    def _fake_ditto(args, **_kwargs):
+        command = [str(value) for value in args]
+        assert command[:3] == ["/usr/bin/ditto", "--hfsCompression", "--nocache"]
+        staging = Path(command[-1])
+        for source_text in command[3:-1]:
+            source = Path(source_text)
+            shutil.copy2(source, staging / source.name)
+        calls.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(store.subprocess, "run", _fake_ditto)
+
+    store.compress_cache_dir_sidecars()
+
+    assert len(calls) == 1
+    assert row_sidecar.read_bytes() == expected[row_sidecar.name]
+    assert pattern_sidecar.read_bytes() == expected[pattern_sidecar.name]
+    assert not (tmp_path / store._MACOS_COMPRESSION_STAGING_DIR).exists()
+
+
+def test_macos_sidecar_compression_failure_keeps_original_bytes(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(store.sys, "platform", "darwin")
+    monkeypatch.setattr(store, "_sidecar_needs_filesystem_compression", lambda _path: True)
+    sidecar = tmp_path / f"deadbeef{store._SURFACE_ROW_SIDECAR_SUFFIX}"
+    store._save_surface_sidecar_atomic(sidecar, np.arange(20000, dtype=np.uint32))
+    expected = sidecar.read_bytes()
+    monkeypatch.setattr(
+        store.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1),
+    )
+
+    store.compress_cache_dir_sidecars()
+
+    assert sidecar.read_bytes() == expected
+    assert not (tmp_path / store._MACOS_COMPRESSION_STAGING_DIR).exists()
+
+
+@pytest.mark.parametrize("destination_platform", ["darwin", "win32"])
+def test_plain_cross_platform_export_is_detected_for_destination_compression(
+    tmp_path: Path, monkeypatch, destination_platform: str
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(store.sys, "platform", destination_platform)
+    sidecar = tmp_path / f"exported{store._SURFACE_ROW_SIDECAR_SUFFIX}"
+    store._save_surface_sidecar_atomic(sidecar, np.arange(20000, dtype=np.uint32))
+    expected = sidecar.read_bytes()
+    monkeypatch.setattr(store, "_file_allocated_bytes", lambda path: int(path.stat().st_size))
+
+    assert store.cache_dir_sidecars_need_compression()
+    assert sidecar.read_bytes() == expected
+
+
 def test_fg_response_frontier_uint8_persistence_bounds_fail_loud() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _as_uint8_exact
 
