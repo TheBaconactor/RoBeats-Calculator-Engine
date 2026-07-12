@@ -85,11 +85,10 @@ def resolve_active_fg_calc_song(song: NativeSong) -> dict | None:
     if not isinstance(fg_calc_song, dict):
         fg_calc_song = clone_calc_song(calc_song)
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-    from gear_optimizer.solver.timing_service_mode import prepared_timing_mode_override
 
     # Fail loud: FG scored without the timing envelope would silently use chart floors --
     # a plausible-but-wrong best_fg_score, not a recoverable state.
-    if apply_timing_envelope(fg_calc_song, mode=prepared_timing_mode_override()) is None:
+    if apply_timing_envelope(fg_calc_song) is None:
         raise ValueError("resolve_active_fg_calc_song: calc_song carries no chart timestamps to envelope")
     _sync_fg_runtime_calc_song_keys(calc_song, fg_calc_song)
     try:

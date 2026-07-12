@@ -74,16 +74,6 @@ class EnvConfig:
     # there. Read once at import (the API sets the env var before sys.path insert).
     serving_api: bool  # ROBEATSMETA_SERVING_API
 
-    # Timing service mode: a deploy-time external boundary (NOT a behavior/perf toggle).
-    # When true, this deployment serves ONLY the zero_ms (fixed chart-time) timing model:
-    # every request is prepared/scored at zero_ms and the expensive perfect_window timeline
-    # frontier is never prebuilt. It exists because the input-aware perfect_window timing
-    # model is under development and a deployment may need to run zero_ms-only until it ships
-    # (see docs/Implementation Records/STRICT_ZERO_MS_SERVICE_MODE.md). Default false ==
-    # precise/perfect_window default, exactly as the standalone optimizer runs. Read once at
-    # import; the service is restarted on deploy, so the frozen snapshot cannot go stale.
-    strict_zero_ms: bool  # ROBEATSMETA_STRICT_ZERO_MS
-
     @classmethod
     def from_environment(cls) -> "EnvConfig":
         """
@@ -123,8 +113,6 @@ class EnvConfig:
             gpu_executor_max_batch=8,  # GPU-owner loop batch base (effective owner-batch widened downstream)
             # Serving context (see field doc above)
             serving_api=env_flag("ROBEATSMETA_SERVING_API"),
-            # Timing service mode (see field doc above)
-            strict_zero_ms=env_flag("ROBEATSMETA_STRICT_ZERO_MS"),
         )
 
 

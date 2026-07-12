@@ -359,12 +359,11 @@ def _derived_bundle_cache_file(song_path: str, ref_arrays: dict) -> str | None:
         fg_response_frontier_bundle_cache_key,
     )
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-    from gear_optimizer.solver.timing_service_mode import prepared_timing_mode_override
 
     calc_song = get_base_calc_song(str(song_path), {})
     if not calc_song:
         return None
-    apply_timing_envelope(calc_song, mode=prepared_timing_mode_override())
+    apply_timing_envelope(calc_song)
     return str(_fg_response_disk_cache_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)))
 
 
@@ -423,7 +422,6 @@ def _dedupe_paths_by_response_bundle_key(
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-    from gear_optimizer.solver.timing_service_mode import prepared_timing_mode_override
 
     representatives: list[tuple[str, int]] = []
     duplicates: dict[str, list[str]] = {}
@@ -431,7 +429,7 @@ def _dedupe_paths_by_response_bundle_key(
     for path_text in paths:
         path = str(path_text)
         calc_song = get_base_calc_song(path, {})
-        apply_timing_envelope(calc_song, mode=prepared_timing_mode_override())
+        apply_timing_envelope(calc_song)
         key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
         representative = representative_by_key.get(key)
         if representative is None:
@@ -465,11 +463,10 @@ def build_fg_response_frontier_cache_for_path(
         fg_response_frontier_bundle_cache_key,
     )
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-    from gear_optimizer.solver.timing_service_mode import prepared_timing_mode_override
 
     song_path = Path(song_path_text)
     calc_song = get_base_calc_song(str(song_path), {})
-    apply_timing_envelope(calc_song, mode=prepared_timing_mode_override())
+    apply_timing_envelope(calc_song)
     cache_info = fg_response_frontier_payload_cache_info(calc_song, ref_arrays, stat_keys=stat_keys)
     if cache_info.cache_source in {"disk", "memory"}:
         return FgResponseFrontierCacheBuildResult(
