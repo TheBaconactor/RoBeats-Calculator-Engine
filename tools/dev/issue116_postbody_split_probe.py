@@ -1,14 +1,14 @@
-"""Post-body phase split for the FG first-frontier kernel (Issue #116 K0 audit).
+"""Phase split for the FG first-frontier kernel (Issue #116 K0 audit).
 
-The Amdahl probe showed the body-tail DP is a small share of monster-chart kernel
-time. This probe splits the remaining ("head stage") time into its real phases by
-running a VERBATIM copy of the production driver with cumulative skip flags:
+This probe splits the current production driver into its real phases by running a
+VERBATIM copy with cumulative skip flags:
 
   cfg=0  full driver (output byte-checked against the production kernel)
   cfg=1  skip the FINAL reduce+envelope filter(s) of the first frontier
   cfg=2  ... and skip the first-frontier region2 emit
   cfg=3  ... and skip the branch-A bucket loop / else-branch first generation
   cfg=4  ... and skip the whole head-state loop (leaves prepass + body DP)
+  cfg=5  ... and skip the body DP (leaves the reachability/radix prepass)
 
 Deltas between consecutive configs price each phase with production-real upstream
 inputs. Measurement-only research tooling: production sub-kernels are called
@@ -174,59 +174,70 @@ def _split_driver(
 
     reachable = np.zeros(int(n) + 1, dtype=np.bool_)
     reachable[int(n)] = True
+    perfect_activation_processed = np.zeros(int(n), dtype=np.bool_)
+    late_activation_processed = np.zeros(int(n), dtype=np.bool_)
     max_eg_width = 0
     for action_idx in range(int(action_count)):
         fill = int(first_fill[int(action_idx)])
-        edge_hit = 0.0
-        edge_valid = 0
-        if int(fill) < int(n):
-            edge_hit = float(prefix_perfect_hit[int(fill)])
-            edge_valid = int(prefix_perfect_valid[int(fill)])
+        if int(fill) >= int(n):
+            continue
+        prefix_forced = int(first_activation_forced[int(action_idx)])
+        needs_perfect = not perfect_activation_processed[int(fill)]
+        needs_late = (
+            int(use_forced_great_timing_i) != 0
+            and int(prefix_forced) >= 0
+            and not late_activation_processed[int(fill)]
+        )
+        if not needs_perfect and not needs_late:
+            continue
+        edge_hit = float(prefix_perfect_hit[int(fill)])
+        edge_valid = int(prefix_perfect_valid[int(fill)])
         edge_e = -1
         edge_eg_e = 0
         if int(edge_valid) != 0:
             edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(fill)])
             edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(fill)])
-        if int(edge_e) >= 0:
-            reachable[int(edge_e)] = True
-            max_eg_width = max(
-                max_eg_width,
-                _rb._numba_mark_early_great_reachable_from_hit(
-                    reachable,
-                    int(n),
-                    int(fill),
-                    int(edge_e),
-                    float(edge_hit),
-                    great_floor_timestamps,
-                    float(real_fever_time),
-                ),
-            )
-        prefix_forced = int(first_activation_forced[int(action_idx)])
-        activation_e = -1
-        activation_eg_e = 0
-        activation_hit = 0.0
-        if int(use_forced_great_timing_i) != 0 and int(prefix_forced) >= 0 and int(fill) < int(n):
+        if needs_perfect:
+            perfect_activation_processed[int(fill)] = True
+            if int(edge_e) >= 0:
+                reachable[int(edge_e)] = True
+                max_eg_width = max(
+                    max_eg_width,
+                    _rb._numba_mark_early_great_reachable_from_hit(
+                        reachable,
+                        int(n),
+                        int(fill),
+                        int(edge_e),
+                        float(edge_hit),
+                        great_floor_timestamps,
+                        float(real_fever_time),
+                    ),
+                )
+        if needs_late:
+            late_activation_processed[int(fill)] = True
             activation_hit = float(prefix_late_hit[int(fill)])
             activation_valid = int(prefix_late_valid[int(fill)])
+            activation_e = -1
+            activation_eg_e = 0
             if int(activation_valid) != 0:
                 activation_e = int(capped_late_edge_e[int(real_time_idx), int(fill)])
                 activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(fill)])
-        if _rb._numba_late_edge_extends(
-            int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
-        ):
-            reachable[int(activation_e)] = True
-            max_eg_width = max(
-                max_eg_width,
-                _rb._numba_mark_early_great_reachable_from_hit(
-                    reachable,
-                    int(n),
-                    int(fill),
-                    int(activation_e),
-                    float(activation_hit),
-                    great_floor_timestamps,
-                    float(real_fever_time),
-                ),
-            )
+            if _rb._numba_late_edge_extends(
+                int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
+            ):
+                reachable[int(activation_e)] = True
+                max_eg_width = max(
+                    max_eg_width,
+                    _rb._numba_mark_early_great_reachable_from_hit(
+                        reachable,
+                        int(n),
+                        int(fill),
+                        int(activation_e),
+                        float(activation_hit),
+                        great_floor_timestamps,
+                        float(real_fever_time),
+                    ),
+                )
     if int(use_forced_great_timing_i) != 0:
         max_eg_width = max(
             int(max_eg_width),
@@ -253,56 +264,65 @@ def _split_driver(
         section_start = int(state_i) + 1
         for action_idx in range(int(action_count)):
             activation = int(state_i) + int(later_fill[int(action_idx)])
-            edge_hit = 0.0
-            edge_valid = 0
-            if int(activation) < int(n):
-                edge_hit = float(prefix_perfect_hit[int(activation)])
-                edge_valid = int(prefix_perfect_valid[int(activation)])
+            if int(activation) >= int(n):
+                continue
+            prefix_forced = int(later_activation_forced[int(action_idx)])
+            needs_perfect = not perfect_activation_processed[int(activation)]
+            needs_late = (
+                int(use_forced_great_timing_i) != 0
+                and int(prefix_forced) >= 0
+                and not late_activation_processed[int(activation)]
+            )
+            if not needs_perfect and not needs_late:
+                continue
+            edge_hit = float(prefix_perfect_hit[int(activation)])
+            edge_valid = int(prefix_perfect_valid[int(activation)])
             edge_e = -1
             edge_eg_e = 0
             if int(edge_valid) != 0:
                 edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
                 edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(activation)])
-            if int(edge_e) >= 0:
-                reachable[int(edge_e)] = True
-                max_eg_width = max(
-                    max_eg_width,
-                    _rb._numba_mark_early_great_reachable_from_hit(
-                        reachable,
-                        int(n),
-                        int(activation),
-                        int(edge_e),
-                        float(edge_hit),
-                        great_floor_timestamps,
-                        float(real_fever_time),
-                    ),
-                )
-            prefix_forced = int(later_activation_forced[int(action_idx)])
-            activation_hit = 0.0
-            activation_e = -1
-            activation_eg_e = 0
-            if int(use_forced_great_timing_i) != 0 and int(prefix_forced) >= 0 and int(activation) < int(n):
+            if needs_perfect:
+                perfect_activation_processed[int(activation)] = True
+                if int(edge_e) >= 0:
+                    reachable[int(edge_e)] = True
+                    max_eg_width = max(
+                        max_eg_width,
+                        _rb._numba_mark_early_great_reachable_from_hit(
+                            reachable,
+                            int(n),
+                            int(activation),
+                            int(edge_e),
+                            float(edge_hit),
+                            great_floor_timestamps,
+                            float(real_fever_time),
+                        ),
+                    )
+            if needs_late:
+                late_activation_processed[int(activation)] = True
                 activation_hit = float(prefix_late_hit[int(activation)])
                 activation_valid = int(prefix_late_valid[int(activation)])
+                activation_e = -1
+                activation_eg_e = 0
                 if int(activation_valid) != 0:
                     activation_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
                     activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(activation)])
-            if _rb._numba_late_edge_extends(
-                int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
-            ):
-                reachable[int(activation_e)] = True
-                max_eg_width = max(
-                    max_eg_width,
-                    _rb._numba_mark_early_great_reachable_from_hit(
-                        reachable,
-                        int(n),
-                        int(activation),
-                        int(activation_e),
-                        float(activation_hit),
-                        great_floor_timestamps,
-                        float(real_fever_time),
-                    ),
-                )
+                if _rb._numba_late_edge_extends(
+                    int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
+                ):
+                    reachable[int(activation_e)] = True
+                    max_eg_width = max(
+                        max_eg_width,
+                        _rb._numba_mark_early_great_reachable_from_hit(
+                            reachable,
+                            int(n),
+                            int(activation),
+                            int(activation_e),
+                            float(activation_hit),
+                            great_floor_timestamps,
+                            float(real_fever_time),
+                        ),
+                    )
         if int(use_forced_great_timing_i) != 0:
             max_eg_width = max(
                 int(max_eg_width),
@@ -342,6 +362,20 @@ def _split_driver(
         or int(ws_branch_a_stamps.shape[0]) < int(branch_a_bound)
     ):
         raise ValueError("split-probe stamp workspace is undersized for this geometry's pair radix")
+    if int(cfg) >= 5:
+        return (
+            np.zeros((0, 7), dtype=np.uint64),
+            0,
+            0,
+            1,
+            1,
+            int(pair_epoch_in),
+            int(bit_epoch_in),
+            int(branch_a_epoch_in),
+            0,
+            0,
+            0,
+        )
     best_fever_by_pair = ws_pair_values[: int(pair_size)]
     pair_stamp = ws_pair_stamps[: int(pair_size)]
     touched_pair = ws_pair_touched[: int(pair_size)]
@@ -1445,11 +1479,11 @@ def main() -> int:
         np.savez_compressed(out_path, **payload)
         print(f"census streams written: {out_path} ({len(sp.prepared)} geometries)")
         return 0
-    for cfg in range(5):
+    for cfg in range(6):
         run_cfg(cfg, warm_item, int(sp.real_time_index[0]), warm_table)
     run_production(warm_item, int(sp.real_time_index[0]), warm_table)
 
-    totals = [0.0] * 5
+    totals = [0.0] * 6
     mismatches = 0
     sum_bucket = sum_region2 = sum_headloop = 0
     for gi, item in enumerate(sp.prepared):
@@ -1457,7 +1491,7 @@ def main() -> int:
         region_table = sp.region_table_for(float(item[2]), int(item[1]), item[4])
         prod = run_production(item, rt_idx, region_table)
         outs = []
-        for cfg in range(5):
+        for cfg in range(6):
             best = None
             for _ in range(args.reps):
                 elapsed, out = run_cfg(cfg, item, rt_idx, region_table)
@@ -1482,8 +1516,9 @@ def main() -> int:
         "- first region2 emit  ",
         "- bucket/first gen    ",
         "- head-state loop     ",
+        "- body DP             ",
     ]
-    for cfg in range(5):
+    for cfg in range(6):
         print(f"  cfg={cfg} {labels[cfg]}: {totals[cfg]:8.3f} s")
     full = totals[0]
     print("\n  phase costs (deltas):")
@@ -1491,7 +1526,8 @@ def main() -> int:
     print(f"    first-frontier region2 emit  : {totals[1] - totals[2]:8.3f} s ({100 * (totals[1] - totals[2]) / full:5.1f}%)")
     print(f"    bucket loop / first gen      : {totals[2] - totals[3]:8.3f} s ({100 * (totals[2] - totals[3]) / full:5.1f}%)")
     print(f"    head-state loop              : {totals[3] - totals[4]:8.3f} s ({100 * (totals[3] - totals[4]) / full:5.1f}%)")
-    print(f"    prepass + body DP            : {totals[4]:8.3f} s ({100 * totals[4] / full:5.1f}%)")
+    print(f"    body DP                      : {totals[4] - totals[5]:8.3f} s ({100 * (totals[4] - totals[5]) / full:5.1f}%)")
+    print(f"    reachability/radix prepass   : {totals[5]:8.3f} s ({100 * totals[5] / full:5.1f}%)")
     print("\n  candidate counts: bucket/firstgen={:,} region2={:,} headloop={:,}".format(sum_bucket, sum_region2, sum_headloop))
 
     # Region2 stream census: how do the raw candidates group by head mask? Same-mask
