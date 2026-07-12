@@ -1825,8 +1825,6 @@ def _warmup_ref_arrays() -> dict[str, np.ndarray]:
 
 
 def _warmup_calc_song() -> dict:
-    from gear_optimizer.solver.timing_service_mode import prepared_timing_mode_override
-
     timestamps = np.linspace(0.0, 18.0, 48, dtype=np.float32)
     note_types = np.zeros((timestamps.shape[0],), dtype=np.int32)
     metadata = {
@@ -1835,11 +1833,6 @@ def _warmup_calc_song() -> dict:
         "Long Notes": 0,
         "Last Note Time": float(timestamps[-1]) if timestamps.size else 0.0,
     }
-    # Under strict zero_ms, warm the timing path actually served (the cheap chart-time singleton),
-    # not the perfect_window DP that deployment never uses. No-op otherwise (mode is None).
-    warm_mode = prepared_timing_mode_override()
-    if warm_mode:
-        metadata["TimingEnvelopeMode"] = warm_mode
     return {
         "metadata": metadata,
         "song_data": {

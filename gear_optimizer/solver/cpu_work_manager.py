@@ -8,10 +8,8 @@ from typing import TextIO
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.fg_response_frontier_cache_prebuild import run_fg_response_frontier_cache_prebuild
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import (
-    TimelineFrontierCachePrebuildSummary,
     run_timeline_frontier_cache_prebuild,
 )
-from gear_optimizer.solver.timing_service_mode import strict_zero_ms
 
 logger = logging.getLogger(__name__)
 
@@ -81,27 +79,12 @@ def run_startup_cpu_work(
         stream.flush()
         logger.info(verify_message)
     timeline_t0 = time.perf_counter()
-    if strict_zero_ms():
-        # Strict zero_ms service mode: the perfect_window timeline frontier is never served here, so
-        # its expensive candidate-frontier prebuild is skipped entirely. zero_ms serves the cheap
-        # fixed chart-time singleton on demand (see timing_service_mode / _build_zero_ms_timeline_payload).
-        # An empty summary keeps every downstream reader (announce/emit/failure gate) behaving exactly
-        # as a clean, no-op timeline run would -- the FG prebuild and failure aggregation are unchanged.
-        skip_message = (
-            "[Startup][Cache] strict_zero_ms: skipping perfect_window timeline frontier prebuild "
-            f"for {len(queue_items)} queued song(s); building fixed-0ms FG response data only."
-        )
-        stream.write(f"{skip_message}\n")
-        stream.flush()
-        logger.info(skip_message)
-        timeline_summary = TimelineFrontierCachePrebuildSummary()
-    else:
-        timeline_summary = run_timeline_frontier_cache_prebuild(
-            cfg=cfg,
-            song_queue=queue_items,
-            ref_arrays=ref_arrays,
-            data_root=data_root,
-        )
+    timeline_summary = run_timeline_frontier_cache_prebuild(
+        cfg=cfg,
+        song_queue=queue_items,
+        ref_arrays=ref_arrays,
+        data_root=data_root,
+    )
     timeline_elapsed_ms = float((time.perf_counter() - timeline_t0) * 1000.0)
     _announce_cache_summary(stream, label="Timeline frontier cache", summary=timeline_summary, elapsed_ms=timeline_elapsed_ms)
     fg_t0 = time.perf_counter()

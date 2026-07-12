@@ -51,9 +51,8 @@ class PreparedSongCore:
 
 def _apply_timing_envelope(calc_song: dict[str, Any]) -> Any:
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-    from gear_optimizer.solver.timing_service_mode import prepared_timing_mode_override
 
-    return apply_timing_envelope(calc_song, mode=prepared_timing_mode_override())
+    return apply_timing_envelope(calc_song)
 
 
 def _setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name):
