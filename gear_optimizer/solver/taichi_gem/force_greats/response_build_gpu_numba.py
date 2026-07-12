@@ -27,6 +27,7 @@ _NUMBA_HEAD_BASIS_TYPE = types.Tuple((
 # Cached 16-corner score row per retained envelope surface (same floats the per-pair dominance
 # checks would recompute from the basis; caching them cannot change any comparison outcome).
 _NUMBA_HEAD_SCORES_TYPE = types.float64[::1]
+_NUMBA_HEAD_SCORE_MATRIX_TYPE = types.float64[:, ::1]
 _HEAD_BASIS_FEVER_LO = 0
 _HEAD_BASIS_FEVER_HI = 1
 _HEAD_BASIS_GREAT_LO = 2
@@ -1523,6 +1524,8 @@ def _numba_emit_early_great_edges(
     generated,
     generated_scores,
     generated_seen,
+    generated_score_matrix_holder,
+    generated_score_matrix_count,
     n: int,
     fill_pos: int,
     base_e: int,
@@ -1569,6 +1572,8 @@ def _numba_emit_early_great_edges(
                 generated,
                 generated_scores,
                 generated_seen,
+                generated_score_matrix_holder,
+                generated_score_matrix_count,
                 edge_eg,
                 int(end_e),
                 body_values,
@@ -1804,6 +1809,8 @@ def _numba_emit_region2_head_edges(
     generated,
     generated_scores,
     generated_seen,
+    generated_score_matrix_holder,
+    generated_score_matrix_count,
     node_surface,
     node_next,
     bucket_head,
@@ -1937,6 +1944,8 @@ def _numba_emit_region2_head_edges(
                         generated,
                         generated_scores,
                         generated_seen,
+                        generated_score_matrix_holder,
+                        generated_score_matrix_count,
                         edge,
                         int(end_e),
                         body_values,
@@ -2377,6 +2386,149 @@ def _numba_head_envelope_insert_with_scores(frontier, frontier_scores, candidate
 
 
 @njit(cache=True, nogil=True)
+def _numba_head_score_matrix_ensure(score_matrix_holder, required: int):
+    if len(score_matrix_holder) == 0:
+        cap = 256
+        while int(cap) < int(required):
+            cap *= 2
+        score_matrix_holder.append(np.empty((16, int(cap)), dtype=np.float64))
+        return score_matrix_holder[0]
+    matrix = score_matrix_holder[0]
+    if int(matrix.shape[1]) >= int(required):
+        return matrix
+    cap = int(matrix.shape[1])
+    while int(cap) < int(required):
+        cap *= 2
+    grown = np.empty((16, int(cap)), dtype=np.float64)
+    grown[:, : int(matrix.shape[1])] = matrix
+    score_matrix_holder[0] = grown
+    return grown
+
+
+@njit(cache=True, nogil=True)
+def _numba_head_score_matrix_sync(frontier_scores, score_matrix_holder, score_matrix_count):
+    matrix = _numba_head_score_matrix_ensure(score_matrix_holder, len(frontier_scores))
+    if int(score_matrix_count[0]) != len(frontier_scores):
+        for idx in range(len(frontier_scores)):
+            row = frontier_scores[idx]
+            for corner in range(16):
+                matrix[int(corner), int(idx)] = row[int(corner)]
+        score_matrix_count[0] = len(frontier_scores)
+    return matrix
+
+
+@njit(cache=True, nogil=True)
+def _numba_head_block_has_dominator(
+    frontier,
+    score_matrix,
+    candidate,
+    candidate_scores,
+    eligible,
+) -> bool:
+    block_width = 8
+    for start in range(0, len(frontier), int(block_width)):
+        width = min(int(block_width), len(frontier) - int(start))
+        for lane in range(int(width)):
+            eligible[int(lane)] = 1
+        for corner in range(16):
+            active = 0
+            candidate_score = candidate_scores[int(corner)]
+            for lane in range(int(width)):
+                if (
+                    int(eligible[int(lane)]) != 0
+                    and score_matrix[int(corner), int(start) + int(lane)] < candidate_score
+                ):
+                    eligible[int(lane)] = 0
+                active += int(eligible[int(lane)])
+            if int(active) == 0:
+                break
+        for lane in range(int(width)):
+            if int(eligible[int(lane)]) == 0:
+                continue
+            idx = int(start) + int(lane)
+            retained = frontier[int(idx)]
+            margin = _numba_head_surface_margin(retained, candidate)
+            if margin <= 0.0:
+                return True
+            dominates = True
+            for corner in range(16):
+                if (
+                    score_matrix[int(corner), int(idx)] - candidate_scores[int(corner)]
+                    < margin
+                ):
+                    dominates = False
+                    break
+            if dominates:
+                return True
+    return False
+
+
+@njit(cache=True, nogil=True)
+def _numba_head_envelope_insert_blocked_with_scores(
+    frontier,
+    frontier_scores,
+    score_matrix_holder,
+    score_matrix_count,
+    candidate,
+    candidate_scores,
+    eligible,
+):
+    """Exact producer-order insert with a corner-major rejection precheck.
+
+    The 16 independent `float64` comparisons are transposed over fixed blocks of eight retained
+    rows. No arithmetic is reassociated. The canonical lists still own eviction, compaction,
+    witness order, and output; the matrix is only their grow-doubling score mirror.
+    """
+    score_matrix = _numba_head_score_matrix_sync(
+        frontier_scores, score_matrix_holder, score_matrix_count
+    )
+    if _numba_head_block_has_dominator(
+        frontier, score_matrix, candidate, candidate_scores, eligible
+    ):
+        return frontier, frontier_scores
+
+    dominated_idx = -1
+    for idx in range(len(frontier)):
+        if _numba_head_cached_scores_dominate(
+            candidate_scores, frontier_scores[idx], candidate, frontier[idx]
+        ):
+            dominated_idx = idx
+            break
+    if dominated_idx < 0:
+        frontier_idx = len(frontier)
+        frontier.append(candidate)
+        frontier_scores.append(candidate_scores.copy())
+        score_matrix = _numba_head_score_matrix_ensure(
+            score_matrix_holder, int(frontier_idx) + 1
+        )
+        for corner in range(16):
+            score_matrix[int(corner), int(frontier_idx)] = candidate_scores[int(corner)]
+        score_matrix_count[0] = len(frontier)
+        return frontier, frontier_scores
+
+    write = int(dominated_idx)
+    for idx in range(int(dominated_idx) + 1, len(frontier)):
+        kept_scores = frontier_scores[idx]
+        if not _numba_head_cached_scores_dominate(
+            candidate_scores, kept_scores, candidate, frontier[idx]
+        ):
+            frontier[int(write)] = frontier[idx]
+            frontier_scores[int(write)] = kept_scores
+            for corner in range(16):
+                score_matrix[int(corner), int(write)] = score_matrix[int(corner), int(idx)]
+            write += 1
+    while len(frontier) > int(write):
+        frontier.pop()
+        frontier_scores.pop()
+    frontier.append(candidate)
+    frontier_scores.append(candidate_scores.copy())
+    for corner in range(16):
+        score_matrix[int(corner), int(write)] = candidate_scores[int(corner)]
+    score_matrix_count[0] = len(frontier)
+    return frontier, frontier_scores
+
+
+@njit(cache=True, nogil=True)
 def _numba_mark_head_surface_first_seen(seen, candidate) -> bool:
     """Record one complete bounded-inserter input row.
 
@@ -2396,6 +2548,8 @@ def _numba_append_edge_tail_bounded(
     frontier,
     frontier_scores,
     seen,
+    score_matrix_holder,
+    score_matrix_count,
     edge,
     end_e: int,
     body_values,
@@ -2410,6 +2564,7 @@ def _numba_append_edge_tail_bounded(
 ):
     count = 0
     cand_scores = np.empty(16, dtype=np.float64)
+    eligible = np.empty(8, dtype=np.uint8)
     if int(end_e) >= 100:
         # Body tails keep the edge's head masks verbatim, so the mask-derived basis floats
         # (b/c/d at both combo corners) are the edge's own: computed once here and reused per
@@ -2447,8 +2602,14 @@ def _numba_append_edge_tail_bounded(
                 edge_basis[12],
             )
             _numba_head_basis_corner_scores_row(candidate_basis, cand_scores)
-            frontier, frontier_scores = _numba_head_envelope_insert_with_scores(
-                frontier, frontier_scores, candidate, cand_scores
+            frontier, frontier_scores = _numba_head_envelope_insert_blocked_with_scores(
+                frontier,
+                frontier_scores,
+                score_matrix_holder,
+                score_matrix_count,
+                candidate,
+                cand_scores,
+                eligible,
             )
         return frontier, frontier_scores, int(count)
     if int(end_e) >= int(head_limit):
@@ -2456,8 +2617,14 @@ def _numba_append_edge_tail_bounded(
             return frontier, frontier_scores, 1
         edge_basis = _numba_head_surface_basis(edge, int(lo_pos), int(hi_pos))
         _numba_head_basis_corner_scores_row(edge_basis, cand_scores)
-        frontier, frontier_scores = _numba_head_envelope_insert_with_scores(
-            frontier, frontier_scores, edge, cand_scores
+        frontier, frontier_scores = _numba_head_envelope_insert_blocked_with_scores(
+            frontier,
+            frontier_scores,
+            score_matrix_holder,
+            score_matrix_count,
+            edge,
+            cand_scores,
+            eligible,
         )
         return frontier, frontier_scores, 1
     tail_start = int(head_state_start[int(end_e)])
@@ -2479,8 +2646,14 @@ def _numba_append_edge_tail_bounded(
             continue
         candidate_basis = _numba_head_surface_basis(candidate, int(lo_pos), int(hi_pos))
         _numba_head_basis_corner_scores_row(candidate_basis, cand_scores)
-        frontier, frontier_scores = _numba_head_envelope_insert_with_scores(
-            frontier, frontier_scores, candidate, cand_scores
+        frontier, frontier_scores = _numba_head_envelope_insert_blocked_with_scores(
+            frontier,
+            frontier_scores,
+            score_matrix_holder,
+            score_matrix_count,
+            candidate,
+            cand_scores,
+            eligible,
         )
     return frontier, frontier_scores, int(count)
 
@@ -2490,6 +2663,8 @@ def _numba_append_head_generated_candidate(
     generated,
     generated_scores,
     generated_seen,
+    generated_score_matrix_holder,
+    generated_score_matrix_count,
     edge,
     end_e: int,
     body_values,
@@ -2509,6 +2684,8 @@ def _numba_append_head_generated_candidate(
             generated,
             generated_scores,
             generated_seen,
+            generated_score_matrix_holder,
+            generated_score_matrix_count,
             edge,
             int(end_e),
             body_values,
@@ -4816,6 +4993,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
         generated = List.empty_list(_NUMBA_SURFACE_TYPE)
         generated_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
         generated_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+        generated_score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+        generated_score_matrix_count = np.zeros(1, dtype=np.int64)
         generated_count = 0
         bounded_mode = 0
         prev_fill = -1
@@ -4864,6 +5043,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         generated,
                         generated_scores,
                         generated_seen,
+                        generated_score_matrix_holder,
+                        generated_score_matrix_count,
                         edge,
                         int(edge_e),
                         body_values,
@@ -4887,6 +5068,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         generated,
                         generated_scores,
                         generated_seen,
+                        generated_score_matrix_holder,
+                        generated_score_matrix_count,
                         int(n),
                         int(activation),
                         int(edge_e),
@@ -4946,6 +5129,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         generated,
                         generated_scores,
                         generated_seen,
+                        generated_score_matrix_holder,
+                        generated_score_matrix_count,
                         activation_edge,
                         int(activation_e),
                         body_values,
@@ -4968,6 +5153,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         generated,
                         generated_scores,
                         generated_seen,
+                        generated_score_matrix_holder,
+                        generated_score_matrix_count,
                         int(n),
                         int(activation),
                         int(activation_e),
@@ -4996,6 +5183,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 generated,
                 generated_scores,
                 generated_seen,
+                generated_score_matrix_holder,
+                generated_score_matrix_count,
                 region_node_surface,
                 region_node_next,
                 region_bucket_head,
@@ -5060,6 +5249,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
     first_region_generated = List.empty_list(_NUMBA_SURFACE_TYPE)
     first_region_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
     first_region_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+    first_region_score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+    first_region_score_matrix_count = np.zeros(1, dtype=np.int64)
     first_region_bounded = 0
     # Branch-A workspace epoch: consumed only by the first-fill>=100 branch below; unchanged
     # (and its stamp array untouched) when that branch is not taken.
@@ -5294,6 +5485,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 first_region_generated,
                 first_region_scores,
                 first_region_seen,
+                first_region_score_matrix_holder,
+                first_region_score_matrix_count,
                 region_node_surface,
                 region_node_next,
                 region_bucket_head,
@@ -5331,6 +5524,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
         first_generated = List.empty_list(_NUMBA_SURFACE_TYPE)
         first_generated_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
         first_generated_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+        first_generated_score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+        first_generated_score_matrix_count = np.zeros(1, dtype=np.int64)
         first_bounded_mode = 0
         prev_fill = -1
         prev_edge_e = -1
@@ -5370,6 +5565,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         first_generated,
                         first_generated_scores,
                         first_generated_seen,
+                        first_generated_score_matrix_holder,
+                        first_generated_score_matrix_count,
                         edge,
                         int(edge_e),
                         body_values,
@@ -5392,6 +5589,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         first_generated,
                         first_generated_scores,
                         first_generated_seen,
+                        first_generated_score_matrix_holder,
+                        first_generated_score_matrix_count,
                         int(n),
                         int(fill),
                         int(edge_e),
@@ -5451,6 +5650,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         first_generated,
                         first_generated_scores,
                         first_generated_seen,
+                        first_generated_score_matrix_holder,
+                        first_generated_score_matrix_count,
                         activation_edge,
                         int(activation_e),
                         body_values,
@@ -5473,6 +5674,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                         first_generated,
                         first_generated_scores,
                         first_generated_seen,
+                        first_generated_score_matrix_holder,
+                        first_generated_score_matrix_count,
                         int(n),
                         int(fill),
                         int(activation_e),
@@ -5501,6 +5704,8 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 first_generated,
                 first_generated_scores,
                 first_generated_seen,
+                first_generated_score_matrix_holder,
+                first_generated_score_matrix_count,
                 region_node_surface,
                 region_node_next,
                 region_bucket_head,

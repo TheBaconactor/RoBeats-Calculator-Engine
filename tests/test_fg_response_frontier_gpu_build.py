@@ -2458,6 +2458,7 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _NUMBA_HEAD_SCORES_TYPE,
+        _NUMBA_HEAD_SCORE_MATRIX_TYPE,
         _NUMBA_SURFACE_TYPE,
         _numba_emit_region2_head_edges,
     )
@@ -2500,10 +2501,14 @@ def test_fg_response_region_emitter_drains_and_reuses_actual_scratch_in_pending_
         generated = List.empty_list(_NUMBA_SURFACE_TYPE)
         generated_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
         generated_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+        score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+        score_matrix_count = np.zeros(1, dtype=np.int64)
         return _numba_emit_region2_head_edges(
             generated,
             generated_scores,
             generated_seen,
+            score_matrix_holder,
+            score_matrix_count,
             shared_surface,
             shared_next,
             bucket_head,
@@ -2579,6 +2584,7 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _NUMBA_HEAD_SCORES_TYPE,
+        _NUMBA_HEAD_SCORE_MATRIX_TYPE,
         _NUMBA_SURFACE_TYPE,
         _numba_append_head_generated_candidate,
         _numba_emit_region2_head_edges,
@@ -2625,6 +2631,8 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
     expected = List.empty_list(_NUMBA_SURFACE_TYPE)
     expected_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
     expected_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+    expected_score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+    expected_score_matrix_count = np.zeros(1, dtype=np.int64)
     bounded = 0
     for end_e in (101, 102):
         edge = _numba_pack_edge(n, 0, end_e, 1, 1, -1)
@@ -2633,6 +2641,8 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
                 expected,
                 expected_scores,
                 expected_seen,
+                expected_score_matrix_holder,
+                expected_score_matrix_count,
                 edge,
                 end_e,
                 body_values,
@@ -2654,11 +2664,15 @@ def test_fg_response_region_prereduce_preserves_retired_promotion_schedule() -> 
     actual = List.empty_list(_NUMBA_SURFACE_TYPE)
     actual_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
     actual_seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+    actual_score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+    actual_score_matrix_count = np.zeros(1, dtype=np.int64)
     actual, actual_scores, added, actual_bounded, _node_surface, _node_next = (
         _numba_emit_region2_head_edges(
             actual,
             actual_scores,
             actual_seen,
+            actual_score_matrix_holder,
+            actual_score_matrix_count,
             node_surface,
             node_next,
             bucket_head,
@@ -2709,8 +2723,10 @@ def test_fg_response_bounded_exact_duplicate_skip_matches_every_retired_prefix()
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _NUMBA_HEAD_SCORES_TYPE,
+        _NUMBA_HEAD_SCORE_MATRIX_TYPE,
         _NUMBA_SURFACE_TYPE,
         _numba_head_basis_corner_scores_row,
+        _numba_head_envelope_insert_blocked_with_scores,
         _numba_head_envelope_insert_with_scores,
         _numba_head_surface_basis,
         _numba_mark_head_surface_first_seen,
@@ -2736,6 +2752,9 @@ def test_fg_response_bounded_exact_duplicate_skip_matches_every_retired_prefix()
     actual = List.empty_list(_NUMBA_SURFACE_TYPE)
     actual_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
     seen = Dict.empty(_NUMBA_SURFACE_TYPE, types.uint8)
+    score_matrix_holder = List.empty_list(_NUMBA_HEAD_SCORE_MATRIX_TYPE)
+    score_matrix_count = np.zeros(1, dtype=np.int64)
+    eligible = np.empty(8, dtype=np.uint8)
     for prefix_len, candidate in enumerate(stream, start=1):
         row = tuple(np.uint64(value) for value in candidate)
         scores = np.empty(16, dtype=np.float64)
@@ -2746,8 +2765,14 @@ def test_fg_response_bounded_exact_duplicate_skip_matches_every_retired_prefix()
             retired, retired_scores, row, scores
         )
         if _numba_mark_head_surface_first_seen(seen, row):
-            actual, actual_scores = _numba_head_envelope_insert_with_scores(
-                actual, actual_scores, row, scores
+            actual, actual_scores = _numba_head_envelope_insert_blocked_with_scores(
+                actual,
+                actual_scores,
+                score_matrix_holder,
+                score_matrix_count,
+                row,
+                scores,
+                eligible,
             )
 
         assert list(actual) == list(retired), prefix_len
