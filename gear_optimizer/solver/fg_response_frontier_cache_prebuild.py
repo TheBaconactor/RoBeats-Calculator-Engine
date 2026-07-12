@@ -77,6 +77,10 @@ _FG_PREBUILD_SYSTEM_RESERVE_GB = 6.0  # main process + OS/desktop headroom the p
 _FG_PREBUILD_SUSPEND_FLOOR_GB = 5.0  # guard: below this free RAM, suspend the youngest workers
 _FG_PREBUILD_RESUME_FLOOR_GB = 12.0  # guard: above this free RAM, resume one suspended worker per poll
 _FG_PREBUILD_GUARD_POLL_SECONDS = 5.0
+# Deadlock breaker: on a RAM-starved host free RAM may never reach the resume floor, so after this
+# many consecutive polls suspended without a normal resume (~60s at the poll interval) force-resume
+# the oldest-suspended worker so the build cannot hang forever holding the single-builder lock.
+_FG_PREBUILD_RESUME_STALL_POLLS = 12
 _FG_PREBUILD_ADMIT_POLL_SECONDS = 10.0  # re-run admission as in-flight commits materialize
 # Layer-3 blocked scans plus exact pair-radix workspace sizing measured the complete Stars build
 # at 4/8/9 admitted group threads: 29.06/16.14/15.19 s, with 9-thread peak working set only
@@ -174,6 +178,7 @@ class _FgPrebuildRamGuard:
             self._suspended.remove(proc)
 
     def _run(self) -> None:
+        polls_since_resume = 0
         while not self._stop.wait(_FG_PREBUILD_GUARD_POLL_SECONDS):
             free_gb = _fg_prebuild_available_ram_gb()
             if free_gb is None:
@@ -182,7 +187,19 @@ class _FgPrebuildRamGuard:
             suspended_pids = {proc.pid for proc in self._suspended}
             self._suspended = [proc for proc in self._suspended if proc.is_running()]
             running = [proc for proc in workers if proc.pid not in suspended_pids]
-            if free_gb < _FG_PREBUILD_SUSPEND_FLOOR_GB and len(running) > 1:
+
+            # Deadlock breaker: the build must always be able to make forward progress. On a
+            # RAM-starved host free RAM can stay permanently below the resume floor, so a worker
+            # suspended to save memory would never resume -- its ProcessPoolExecutor task never
+            # returns, the main thread blocks on that future forever, and the single-builder lock
+            # is held indefinitely, hanging every request behind it. Force-resume the
+            # oldest-suspended worker when nothing is left running to free RAM, or when
+            # suspensions have stalled past the timeout without a normal (RAM-recovered) resume.
+            force_resume = bool(self._suspended) and (
+                not running or polls_since_resume >= _FG_PREBUILD_RESUME_STALL_POLLS
+            )
+
+            if free_gb < _FG_PREBUILD_SUSPEND_FLOOR_GB and len(running) > 1 and not force_resume:
                 # Youngest first: it has the least sunk work and the steepest remaining climb.
                 youngest = max(running, key=lambda proc: proc.create_time())
                 try:
@@ -205,21 +222,27 @@ class _FgPrebuildRamGuard:
                         event="ram_guard_suspend",
                         metrics={"free_gb": float(free_gb), "suspended": len(self._suspended), "workers": len(workers)},
                     )
-            elif free_gb > _FG_PREBUILD_RESUME_FLOOR_GB and self._suspended:
-                # One per poll: a thundering resume would re-create the climb that tripped the guard.
-                proc = self._suspended[-1]
+                polls_since_resume += 1
+            elif self._suspended and (free_gb > _FG_PREBUILD_RESUME_FLOOR_GB or force_resume):
+                # One per poll: a thundering resume would re-create the climb that tripped the
+                # guard. When breaking a stall, resume the oldest-suspended (it has waited longest).
+                proc = self._suspended[0] if force_resume else self._suspended[-1]
                 self._resume(proc)
+                polls_since_resume = 0
                 logger.info(
-                    "[FGResponseCache] RAM guard: %.1f GB free; resumed worker %s (%s still suspended).",
+                    "[FGResponseCache] RAM guard: %.1f GB free; resumed worker %s (forced=%s, %s still suspended).",
                     free_gb,
                     proc.pid,
+                    force_resume,
                     len(self._suspended),
                 )
                 emit_profile_event(
                     component="fg_response_cache",
                     event="ram_guard_resume",
-                    metrics={"free_gb": float(free_gb), "suspended": len(self._suspended)},
+                    metrics={"free_gb": float(free_gb), "suspended": len(self._suspended), "forced": bool(force_resume)},
                 )
+            else:
+                polls_since_resume += 1
             self._samples += 1
             if self._samples % 12 == 0:
                 # Once a minute: the per-worker commit climb curves that end anchor guesswork.
@@ -336,11 +359,12 @@ def _derived_bundle_cache_file(song_path: str, ref_arrays: dict) -> str | None:
         fg_response_frontier_bundle_cache_key,
     )
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_service_mode import prepared_timing_mode_override
 
     calc_song = get_base_calc_song(str(song_path), {})
     if not calc_song:
         return None
-    apply_timing_envelope(calc_song)
+    apply_timing_envelope(calc_song, mode=prepared_timing_mode_override())
     return str(_fg_response_disk_cache_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)))
 
 
@@ -399,6 +423,7 @@ def _dedupe_paths_by_response_bundle_key(
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_service_mode import prepared_timing_mode_override
 
     representatives: list[tuple[str, int]] = []
     duplicates: dict[str, list[str]] = {}
@@ -406,7 +431,7 @@ def _dedupe_paths_by_response_bundle_key(
     for path_text in paths:
         path = str(path_text)
         calc_song = get_base_calc_song(path, {})
-        apply_timing_envelope(calc_song)
+        apply_timing_envelope(calc_song, mode=prepared_timing_mode_override())
         key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
         representative = representative_by_key.get(key)
         if representative is None:
@@ -440,10 +465,11 @@ def build_fg_response_frontier_cache_for_path(
         fg_response_frontier_bundle_cache_key,
     )
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_service_mode import prepared_timing_mode_override
 
     song_path = Path(song_path_text)
     calc_song = get_base_calc_song(str(song_path), {})
-    apply_timing_envelope(calc_song)
+    apply_timing_envelope(calc_song, mode=prepared_timing_mode_override())
     cache_info = fg_response_frontier_payload_cache_info(calc_song, ref_arrays, stat_keys=stat_keys)
     if cache_info.cache_source in {"disk", "memory"}:
         return FgResponseFrontierCacheBuildResult(
