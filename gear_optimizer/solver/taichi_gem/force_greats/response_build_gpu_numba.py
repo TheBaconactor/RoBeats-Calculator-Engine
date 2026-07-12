@@ -1101,6 +1101,388 @@ def _numba_mark_region_entries_for_section(
     return int(max_width)
 
 
+@njit(cache=True, nogil=True, inline="always")
+def _numba_successor_find(successor, successor_stamps, successor_epoch: int, index: int) -> int:
+    """Return the first live index at/after ``index`` in one stamped successor epoch."""
+    root = int(index)
+    while int(successor_stamps[int(root)]) == int(successor_epoch):
+        root = int(successor[int(root)])
+    cursor = int(index)
+    while int(successor_stamps[int(cursor)]) == int(successor_epoch):
+        next_cursor = int(successor[int(cursor)])
+        successor[int(cursor)] = int(root)
+        cursor = int(next_cursor)
+    return int(root)
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _numba_successor_remove(
+    successor,
+    successor_stamps,
+    successor_epoch: int,
+    index: int,
+) -> int:
+    """Remove one live index and return its next live successor."""
+    next_index = _numba_successor_find(
+        successor,
+        successor_stamps,
+        int(successor_epoch),
+        int(index) + 1,
+    )
+    successor[int(index)] = int(next_index)
+    successor_stamps[int(index)] = int(successor_epoch)
+    return int(next_index)
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _numba_mark_perfect_activation_closure(
+    reachable,
+    n: int,
+    activation: int,
+    real_time_idx: int,
+    prefix_perfect_hit,
+    prefix_perfect_valid,
+    capped_perfect_edge_e,
+    great_floor_timestamps,
+    real_fever_time: float,
+) -> int:
+    if int(prefix_perfect_valid[int(activation)]) == 0:
+        return 0
+    edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
+    if int(edge_e) < 0:
+        return 0
+    reachable[int(edge_e)] = True
+    return _numba_mark_early_great_reachable_from_hit(
+        reachable,
+        int(n),
+        int(activation),
+        int(edge_e),
+        float(prefix_perfect_hit[int(activation)]),
+        great_floor_timestamps,
+        float(real_fever_time),
+    )
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _numba_mark_late_activation_closure(
+    reachable,
+    n: int,
+    activation: int,
+    real_time_idx: int,
+    prefix_perfect_valid,
+    prefix_late_hit,
+    prefix_late_valid,
+    capped_perfect_edge_e,
+    capped_late_edge_e,
+    capped_eg_perfect_e,
+    capped_eg_late_e,
+    great_floor_timestamps,
+    real_fever_time: float,
+) -> int:
+    edge_e = -1
+    edge_eg_e = 0
+    if int(prefix_perfect_valid[int(activation)]) != 0:
+        edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
+        edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(activation)])
+    activation_e = -1
+    activation_eg_e = 0
+    if int(prefix_late_valid[int(activation)]) != 0:
+        activation_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
+        activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(activation)])
+    if not _numba_late_edge_extends(
+        int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
+    ):
+        return 0
+    reachable[int(activation_e)] = True
+    return _numba_mark_early_great_reachable_from_hit(
+        reachable,
+        int(n),
+        int(activation),
+        int(activation_e),
+        float(prefix_late_hit[int(activation)]),
+        great_floor_timestamps,
+        float(real_fever_time),
+    )
+
+
+@njit(cache=True, nogil=True)
+def _numba_first_frontier_reachability_prepass(
+    n: int,
+    action_count: int,
+    later_fill,
+    first_fill,
+    later_activation_forced,
+    first_activation_forced,
+    perfect_run_starts,
+    perfect_run_ends,
+    late_run_starts,
+    late_run_ends,
+    prefix_perfect_hit,
+    prefix_perfect_valid,
+    prefix_late_hit,
+    prefix_late_valid,
+    capped_perfect_edge_e,
+    capped_late_edge_e,
+    capped_eg_perfect_e,
+    capped_eg_late_e,
+    real_fever_time: float,
+    real_time_idx: int,
+    use_forced_great_timing_i: int,
+    region_starts,
+    region_offsets,
+    region_activations,
+    region_great_ends,
+    region_is_greats,
+    region_act_hits,
+    region_perfect_hits,
+    region_perfect_valids,
+    perfect_floor_timestamps,
+    great_floor_timestamps,
+    perfect_successor,
+    perfect_successor_stamps,
+    late_successor,
+    late_successor_stamps,
+    successor_epoch: int,
+):
+    """Build the exact reachable-state closure with interval successor traversal.
+
+    The former nested scan probed every action for every reachable state even after an absolute
+    activation had already been evaluated. Exact fill runs turn each state's action set into
+    activation intervals; disjoint-set successors skip globally processed activations. Perfect and
+    late-Great closures remain separate because only some action routes permit a late activation.
+    """
+    if int(n) < 0 or int(action_count) < 0:
+        raise ValueError("FG reachability dimensions must be nonnegative")
+    if int(first_fill.shape[0]) < int(action_count):
+        raise ValueError("FG first-fill offsets are shorter than action_count")
+    if int(first_activation_forced.shape[0]) < int(action_count):
+        raise ValueError("FG first activation-forced rows are shorter than action_count")
+    if int(perfect_run_starts.shape[0]) != int(perfect_run_ends.shape[0]):
+        raise ValueError("FG Perfect fill-run arrays must align")
+    if int(late_run_starts.shape[0]) != int(late_run_ends.shape[0]):
+        raise ValueError("FG late-Great fill-run arrays must align")
+    previous_end = -2
+    for run_idx in range(int(perfect_run_starts.shape[0])):
+        run_start = int(perfect_run_starts[int(run_idx)])
+        run_end = int(perfect_run_ends[int(run_idx)])
+        if int(run_start) < 0 or int(run_end) < int(run_start) or int(run_start) <= int(previous_end):
+            raise ValueError("FG Perfect fill runs must be nonnegative, ordered, and disjoint")
+        previous_end = int(run_end)
+    previous_end = -2
+    for run_idx in range(int(late_run_starts.shape[0])):
+        run_start = int(late_run_starts[int(run_idx)])
+        run_end = int(late_run_ends[int(run_idx)])
+        if int(run_start) < 0 or int(run_end) < int(run_start) or int(run_start) <= int(previous_end):
+            raise ValueError("FG late-Great fill runs must be nonnegative, ordered, and disjoint")
+        previous_end = int(run_end)
+    if int(successor_epoch) < 1:
+        raise ValueError("FG successor epoch must be positive")
+    if (
+        int(perfect_successor.shape[0]) < int(n) + 1
+        or int(perfect_successor_stamps.shape[0]) < int(n) + 1
+        or int(late_successor.shape[0]) < int(n) + 1
+        or int(late_successor_stamps.shape[0]) < int(n) + 1
+    ):
+        raise ValueError("FG successor workspace is shorter than n + 1")
+
+    reachable = np.zeros(int(n) + 1, dtype=np.bool_)
+    reachable[int(n)] = True
+
+    # First-section actions retain their original producer order. Removing an activation from its
+    # successor set is exactly the former processed-bit write, with the same Perfect/late split.
+    max_eg_width = 0
+    for action_idx in range(int(action_count)):
+        fill = int(first_fill[int(action_idx)])
+        if int(fill) < 0:
+            raise ValueError("FG first-fill offsets must be nonnegative")
+        if int(fill) >= int(n):
+            continue
+        if int(
+            _numba_successor_find(
+                perfect_successor,
+                perfect_successor_stamps,
+                int(successor_epoch),
+                int(fill),
+            )
+        ) == int(fill):
+            width = _numba_mark_perfect_activation_closure(
+                reachable,
+                int(n),
+                int(fill),
+                int(real_time_idx),
+                prefix_perfect_hit,
+                prefix_perfect_valid,
+                capped_perfect_edge_e,
+                great_floor_timestamps,
+                float(real_fever_time),
+            )
+            _numba_successor_remove(
+                perfect_successor,
+                perfect_successor_stamps,
+                int(successor_epoch),
+                int(fill),
+            )
+            if int(width) > int(max_eg_width):
+                max_eg_width = int(width)
+        if (
+            int(use_forced_great_timing_i) != 0
+            and int(first_activation_forced[int(action_idx)]) >= 0
+            and int(
+                _numba_successor_find(
+                    late_successor,
+                    late_successor_stamps,
+                    int(successor_epoch),
+                    int(fill),
+                )
+            )
+            == int(fill)
+        ):
+            width = _numba_mark_late_activation_closure(
+                reachable,
+                int(n),
+                int(fill),
+                int(real_time_idx),
+                prefix_perfect_valid,
+                prefix_late_hit,
+                prefix_late_valid,
+                capped_perfect_edge_e,
+                capped_late_edge_e,
+                capped_eg_perfect_e,
+                capped_eg_late_e,
+                great_floor_timestamps,
+                float(real_fever_time),
+            )
+            _numba_successor_remove(
+                late_successor,
+                late_successor_stamps,
+                int(successor_epoch),
+                int(fill),
+            )
+            if int(width) > int(max_eg_width):
+                max_eg_width = int(width)
+
+    if int(use_forced_great_timing_i) != 0:
+        max_eg_width = max(
+            int(max_eg_width),
+            _numba_mark_region_entries_for_section(
+                reachable,
+                int(n),
+                0,
+                region_starts,
+                region_offsets,
+                region_activations,
+                region_great_ends,
+                region_is_greats,
+                region_act_hits,
+                region_perfect_hits,
+                region_perfect_valids,
+                float(real_fever_time),
+                perfect_floor_timestamps,
+                great_floor_timestamps,
+            ),
+        )
+
+    for state_i in range(int(n)):
+        if not reachable[int(state_i)]:
+            continue
+
+        for run_idx in range(int(perfect_run_starts.shape[0])):
+            interval_start = int(state_i) + int(perfect_run_starts[int(run_idx)])
+            if int(interval_start) >= int(n):
+                continue
+            interval_end = min(
+                int(n) - 1,
+                int(state_i) + int(perfect_run_ends[int(run_idx)]),
+            )
+            activation = _numba_successor_find(
+                perfect_successor,
+                perfect_successor_stamps,
+                int(successor_epoch),
+                int(interval_start),
+            )
+            while int(activation) <= int(interval_end):
+                width = _numba_mark_perfect_activation_closure(
+                    reachable,
+                    int(n),
+                    int(activation),
+                    int(real_time_idx),
+                    prefix_perfect_hit,
+                    prefix_perfect_valid,
+                    capped_perfect_edge_e,
+                    great_floor_timestamps,
+                    float(real_fever_time),
+                )
+                activation = _numba_successor_remove(
+                    perfect_successor,
+                    perfect_successor_stamps,
+                    int(successor_epoch),
+                    int(activation),
+                )
+                if int(width) > int(max_eg_width):
+                    max_eg_width = int(width)
+
+        if int(use_forced_great_timing_i) != 0:
+            for run_idx in range(int(late_run_starts.shape[0])):
+                interval_start = int(state_i) + int(late_run_starts[int(run_idx)])
+                if int(interval_start) >= int(n):
+                    continue
+                interval_end = min(
+                    int(n) - 1,
+                    int(state_i) + int(late_run_ends[int(run_idx)]),
+                )
+                activation = _numba_successor_find(
+                    late_successor,
+                    late_successor_stamps,
+                    int(successor_epoch),
+                    int(interval_start),
+                )
+                while int(activation) <= int(interval_end):
+                    width = _numba_mark_late_activation_closure(
+                        reachable,
+                        int(n),
+                        int(activation),
+                        int(real_time_idx),
+                        prefix_perfect_valid,
+                        prefix_late_hit,
+                        prefix_late_valid,
+                        capped_perfect_edge_e,
+                        capped_late_edge_e,
+                        capped_eg_perfect_e,
+                        capped_eg_late_e,
+                        great_floor_timestamps,
+                        float(real_fever_time),
+                    )
+                    activation = _numba_successor_remove(
+                        late_successor,
+                        late_successor_stamps,
+                        int(successor_epoch),
+                        int(activation),
+                    )
+                    if int(width) > int(max_eg_width):
+                        max_eg_width = int(width)
+
+            max_eg_width = max(
+                int(max_eg_width),
+                _numba_mark_region_entries_for_section(
+                    reachable,
+                    int(n),
+                    int(state_i) + 1,
+                    region_starts,
+                    region_offsets,
+                    region_activations,
+                    region_great_ends,
+                    region_is_greats,
+                    region_act_hits,
+                    region_perfect_hits,
+                    region_perfect_valids,
+                    float(real_fever_time),
+                    perfect_floor_timestamps,
+                    great_floor_timestamps,
+                ),
+            )
+    return reachable, int(max_eg_width)
+
+
 @njit(cache=True, nogil=True)
 def _numba_append_edge_tail(
     generated,
@@ -4746,6 +5128,10 @@ def _first_frontier_from_precomputed_end_indices_numba(
     first_forced,
     later_activation_forced,
     first_activation_forced,
+    perfect_run_starts,
+    perfect_run_ends,
+    late_run_starts,
+    late_run_ends,
     timestamps,
     candidate_high_delta_max,
     perfect_candidate_timestamps,
@@ -4784,6 +5170,11 @@ def _first_frontier_from_precomputed_end_indices_numba(
     ws_bit_stamps,
     ws_branch_a_values,
     ws_branch_a_stamps,
+    ws_perfect_successor,
+    ws_perfect_successor_stamps,
+    ws_late_successor,
+    ws_late_successor_stamps,
+    successor_epoch_in: int,
     pair_epoch_in: int,
     bit_epoch_in: int,
     branch_a_epoch_in: int,
@@ -4851,182 +5242,44 @@ def _first_frontier_from_precomputed_end_indices_numba(
                     int(branch_a_epoch_in),
                 )
 
-    reachable = np.zeros(int(n) + 1, dtype=np.bool_)
-    reachable[int(n)] = True
-    # Endpoint lookup and early-Great closure are pure in (activation, real_time_idx). Different
-    # reachable (state, action) pairs can produce the same absolute activation, so applying that
-    # closure again only repeats identical boolean writes. Track perfect and late work separately:
-    # a later action may be the first route whose forced-count contract permits the late edge.
-    perfect_activation_processed = np.zeros(int(n), dtype=np.bool_)
-    late_activation_processed = np.zeros(int(n), dtype=np.bool_)
-    # Issue #44: widest early-Great band over every enumerated activation -> sizes the body-pair radix.
-    max_eg_width = 0
-    for action_idx in range(int(action_count)):
-        fill = int(first_fill[int(action_idx)])
-        if int(fill) >= int(n):
-            continue
-        prefix_forced = int(first_activation_forced[int(action_idx)])
-        needs_perfect = not perfect_activation_processed[int(fill)]
-        needs_late = (
-            int(use_forced_great_timing_i) != 0
-            and int(prefix_forced) >= 0
-            and not late_activation_processed[int(fill)]
-        )
-        if not needs_perfect and not needs_late:
-            continue
-        edge_hit = float(prefix_perfect_hit[int(fill)])
-        edge_valid = int(prefix_perfect_valid[int(fill)])
-        edge_e = -1
-        edge_eg_e = 0
-        if int(edge_valid) != 0:
-            edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(fill)])
-            edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(fill)])
-        if needs_perfect:
-            perfect_activation_processed[int(fill)] = True
-            if int(edge_e) >= 0:
-                reachable[int(edge_e)] = True
-                max_eg_width = max(
-                    max_eg_width,
-                    _numba_mark_early_great_reachable_from_hit(
-                        reachable,
-                        int(n),
-                        int(fill),
-                        int(edge_e),
-                        float(edge_hit),
-                        great_floor_timestamps,
-                        float(real_fever_time),
-                    ),
-                )
-        if needs_late:
-            late_activation_processed[int(fill)] = True
-            activation_hit = float(prefix_late_hit[int(fill)])
-            activation_valid = int(prefix_late_valid[int(fill)])
-            activation_e = -1
-            activation_eg_e = 0
-            if int(activation_valid) != 0:
-                activation_e = int(capped_late_edge_e[int(real_time_idx), int(fill)])
-                activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(fill)])
-            if _numba_late_edge_extends(
-                int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
-            ):
-                reachable[int(activation_e)] = True
-                max_eg_width = max(
-                    max_eg_width,
-                    _numba_mark_early_great_reachable_from_hit(
-                        reachable,
-                        int(n),
-                        int(fill),
-                        int(activation_e),
-                        float(activation_hit),
-                        great_floor_timestamps,
-                        float(real_fever_time),
-                    ),
-                )
-    if int(use_forced_great_timing_i) != 0:
-        max_eg_width = max(
-            int(max_eg_width),
-            _numba_mark_region_entries_for_section(
-                reachable,
-                int(n),
-                0,
-                region_starts,
-                region_offsets,
-                region_activations,
-                region_great_ends,
-                region_is_greats,
-                region_act_hits,
-                region_perfect_hits,
-                region_perfect_valids,
-                float(real_fever_time),
-                perfect_floor_timestamps,
-                great_floor_timestamps,
-            ),
-        )
-    for state_i in range(int(n)):
-        if not reachable[state_i]:
-            continue
-        section_start = int(state_i) + 1
-        for action_idx in range(int(action_count)):
-            activation = int(state_i) + int(later_fill[int(action_idx)])
-            if int(activation) >= int(n):
-                continue
-            prefix_forced = int(later_activation_forced[int(action_idx)])
-            needs_perfect = not perfect_activation_processed[int(activation)]
-            needs_late = (
-                int(use_forced_great_timing_i) != 0
-                and int(prefix_forced) >= 0
-                and not late_activation_processed[int(activation)]
-            )
-            if not needs_perfect and not needs_late:
-                continue
-            edge_hit = float(prefix_perfect_hit[int(activation)])
-            edge_valid = int(prefix_perfect_valid[int(activation)])
-            edge_e = -1
-            edge_eg_e = 0
-            if int(edge_valid) != 0:
-                edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
-                edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(activation)])
-            if needs_perfect:
-                perfect_activation_processed[int(activation)] = True
-                if int(edge_e) >= 0:
-                    reachable[int(edge_e)] = True
-                    max_eg_width = max(
-                        max_eg_width,
-                        _numba_mark_early_great_reachable_from_hit(
-                            reachable,
-                            int(n),
-                            int(activation),
-                            int(edge_e),
-                            float(edge_hit),
-                            great_floor_timestamps,
-                            float(real_fever_time),
-                        ),
-                    )
-            if needs_late:
-                late_activation_processed[int(activation)] = True
-                activation_hit = float(prefix_late_hit[int(activation)])
-                activation_valid = int(prefix_late_valid[int(activation)])
-                activation_e = -1
-                activation_eg_e = 0
-                if int(activation_valid) != 0:
-                    activation_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
-                    activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(activation)])
-                if _numba_late_edge_extends(
-                    int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
-                ):
-                    reachable[int(activation_e)] = True
-                    max_eg_width = max(
-                        max_eg_width,
-                        _numba_mark_early_great_reachable_from_hit(
-                            reachable,
-                            int(n),
-                            int(activation),
-                            int(activation_e),
-                            float(activation_hit),
-                            great_floor_timestamps,
-                            float(real_fever_time),
-                        ),
-                    )
-        if int(use_forced_great_timing_i) != 0:
-            max_eg_width = max(
-                int(max_eg_width),
-                _numba_mark_region_entries_for_section(
-                    reachable,
-                    int(n),
-                    int(section_start),
-                    region_starts,
-                    region_offsets,
-                    region_activations,
-                    region_great_ends,
-                    region_is_greats,
-                    region_act_hits,
-                    region_perfect_hits,
-                    region_perfect_valids,
-                    float(real_fever_time),
-                    perfect_floor_timestamps,
-                    great_floor_timestamps,
-                ),
-            )
+    reachable, max_eg_width = _numba_first_frontier_reachability_prepass(
+        int(n),
+        int(action_count),
+        later_fill,
+        first_fill,
+        later_activation_forced,
+        first_activation_forced,
+        perfect_run_starts,
+        perfect_run_ends,
+        late_run_starts,
+        late_run_ends,
+        prefix_perfect_hit,
+        prefix_perfect_valid,
+        prefix_late_hit,
+        prefix_late_valid,
+        capped_perfect_edge_e,
+        capped_late_edge_e,
+        capped_eg_perfect_e,
+        capped_eg_late_e,
+        float(real_fever_time),
+        int(real_time_idx),
+        int(use_forced_great_timing_i),
+        region_starts,
+        region_offsets,
+        region_activations,
+        region_great_ends,
+        region_is_greats,
+        region_act_hits,
+        region_perfect_hits,
+        region_perfect_valids,
+        perfect_floor_timestamps,
+        great_floor_timestamps,
+        ws_perfect_successor,
+        ws_perfect_successor_stamps,
+        ws_late_successor,
+        ws_late_successor_stamps,
+        int(successor_epoch_in),
+    )
     states_evaluated = 0
     retained_total = 1
     max_state_frontier = 1

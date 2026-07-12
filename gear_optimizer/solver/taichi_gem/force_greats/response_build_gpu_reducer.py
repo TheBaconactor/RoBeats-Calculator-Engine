@@ -27,10 +27,10 @@ class _FirstFrontierStampWorkspace:
     The kernel validates a scratch cell by comparing its stamp to the current epoch, so reuse
     across calls is bit-exact as long as epochs only grow: stale cells keep older epochs and are
     invisible, exactly like stale cells between consecutive states within one call. Stamp arrays
-    are zeroed only on (re)creation (a fresh np.empty could contain garbage colliding with a live
-    epoch); value/touched arrays are only ever read under a matching stamp or a write-first
-    touched count, so their initial contents are irrelevant. Capacities come from the song's
-    workspace plan (a provable upper bound on every geometry's pair radix, see
+    are zeroed on (re)creation and deterministic epoch rollover (a fresh np.empty could contain
+    garbage colliding with a live epoch); value/touched arrays are only ever read under a matching
+    stamp or a write-first touched count, so their initial contents are irrelevant. Capacities come
+    from the song's workspace plan (a provable upper bound on every geometry's pair radix, see
     ``_FirstFrontierWorkspacePlan``), so one workspace serves every geometry of a song build;
     a song needing more capacity forces recreation. The kernel fail-loud-guards the capacities
     against its true per-geometry radix, so an undersized plan can never corrupt memory.
@@ -40,6 +40,7 @@ class _FirstFrontierStampWorkspace:
         "pair_capacity",
         "bit_capacity",
         "branch_a_capacity",
+        "successor_capacity",
         "pair_values",
         "pair_stamps",
         "pair_touched",
@@ -47,15 +48,29 @@ class _FirstFrontierStampWorkspace:
         "bit_stamps",
         "branch_a_values",
         "branch_a_stamps",
+        "perfect_successor",
+        "perfect_successor_stamps",
+        "late_successor",
+        "late_successor_stamps",
         "pair_epoch",
         "bit_epoch",
         "branch_a_epoch",
+        "successor_epoch",
     )
 
-    def __init__(self, pair_capacity: int, bit_capacity: int, branch_a_capacity: int) -> None:
+    def __init__(
+        self,
+        pair_capacity: int,
+        bit_capacity: int,
+        branch_a_capacity: int,
+        successor_capacity: int,
+    ) -> None:
         self.pair_capacity = int(pair_capacity)
         self.bit_capacity = int(bit_capacity)
         self.branch_a_capacity = int(branch_a_capacity)
+        self.successor_capacity = int(successor_capacity)
+        if int(self.successor_capacity) < 1:
+            raise ValueError("FG successor workspace capacity must be positive")
         self.pair_values = np.zeros(self.pair_capacity, dtype=np.int32)
         self.pair_stamps = np.zeros(self.pair_capacity, dtype=np.int32)
         self.pair_touched = np.zeros(self.pair_capacity, dtype=np.int32)
@@ -63,9 +78,14 @@ class _FirstFrontierStampWorkspace:
         self.bit_stamps = np.zeros(self.bit_capacity, dtype=np.int32)
         self.branch_a_values = np.zeros(self.branch_a_capacity, dtype=np.int32)
         self.branch_a_stamps = np.zeros(self.branch_a_capacity, dtype=np.int32)
+        self.perfect_successor = np.empty(self.successor_capacity, dtype=np.int32)
+        self.perfect_successor_stamps = np.zeros(self.successor_capacity, dtype=np.int32)
+        self.late_successor = np.empty(self.successor_capacity, dtype=np.int32)
+        self.late_successor_stamps = np.zeros(self.successor_capacity, dtype=np.int32)
         self.pair_epoch = 0
         self.bit_epoch = 0
         self.branch_a_epoch = 0
+        self.successor_epoch = 0
 
     @property
     def total_bytes(self) -> int:
@@ -77,7 +97,19 @@ class _FirstFrontierStampWorkspace:
             + self.bit_stamps.nbytes
             + self.branch_a_values.nbytes
             + self.branch_a_stamps.nbytes
+            + self.perfect_successor.nbytes
+            + self.perfect_successor_stamps.nbytes
+            + self.late_successor.nbytes
+            + self.late_successor_stamps.nbytes
         )
+
+    def next_successor_epoch(self) -> int:
+        self.successor_epoch += 1
+        if int(self.successor_epoch) > _STAMP_EPOCH_RESET_LIMIT:
+            self.perfect_successor_stamps[:] = 0
+            self.late_successor_stamps[:] = 0
+            self.successor_epoch = 1
+        return int(self.successor_epoch)
 
     def store_epochs(self, pair_epoch: int, bit_epoch: int, branch_a_epoch: int) -> None:
         """Persist the kernel's final epochs, resetting any counter that passed the int32
@@ -133,6 +165,37 @@ def _early_great_extension_gap_bound(
         floor_ts, cutoffs, side="right"
     ).astype(np.int64)
     return max(0, int(gap.max()))
+
+
+def _exact_action_fill_runs(
+    fills: np.ndarray,
+    activation_forced: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build inclusive runs for one producer-owned action-fill set.
+
+    Duplicate and unsorted offsets are legal inputs; exact integer membership defines the runs.
+    When ``activation_forced`` is supplied, only late-Great-eligible rows (value >= 0) contribute,
+    while every fill offset is still validated. The result is shared across all fever-time variants
+    of the same action table instead of being rebuilt inside each geometry kernel.
+    """
+    fill_arr = np.ascontiguousarray(np.asarray(fills, dtype=np.int32).reshape(-1))
+    if bool(np.any(fill_arr < 0)):
+        raise ValueError("FG action fill offsets must be nonnegative")
+    if activation_forced is None:
+        selected = fill_arr
+    else:
+        eligible = np.ascontiguousarray(np.asarray(activation_forced, dtype=np.int32).reshape(-1))
+        if int(eligible.shape[0]) != int(fill_arr.shape[0]):
+            raise ValueError("FG fill and activation-forced arrays must align")
+        selected = fill_arr[eligible >= 0]
+    if int(selected.shape[0]) == 0:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
+
+    values = np.unique(selected).astype(np.int32, copy=False)
+    breaks = np.flatnonzero(np.diff(values.astype(np.int64, copy=False)) > 1)
+    starts = np.concatenate((values[:1], values[breaks + 1])).astype(np.int32, copy=False)
+    ends = np.concatenate((values[breaks], values[-1:])).astype(np.int32, copy=False)
+    return np.ascontiguousarray(starts), np.ascontiguousarray(ends)
 
 
 def _song_first_frontier_pair_mod_bound(
@@ -193,9 +256,13 @@ class _FirstFrontierWorkspacePlan:
             or int(workspace.pair_capacity) < int(self.pair_capacity)
             or int(workspace.bit_capacity) < int(self.bit_capacity)
             or int(workspace.branch_a_capacity) < int(self.branch_a_capacity)
+            or int(workspace.successor_capacity) < int(self.n) + 1
         ):
             workspace = _FirstFrontierStampWorkspace(
-                int(self.pair_capacity), int(self.bit_capacity), int(self.branch_a_capacity)
+                int(self.pair_capacity),
+                int(self.bit_capacity),
+                int(self.branch_a_capacity),
+                int(self.n) + 1,
             )
             _WORKSPACE_TLS.workspace = workspace
             with self._lock:
@@ -235,6 +302,10 @@ def _first_frontier_result_from_precomputed_end_indices(
     first_forced: np.ndarray,
     later_activation_forced: np.ndarray,
     first_activation_forced: np.ndarray,
+    perfect_run_starts: np.ndarray,
+    perfect_run_ends: np.ndarray,
+    late_run_starts: np.ndarray,
+    late_run_ends: np.ndarray,
     timestamps: np.ndarray,
     candidate_high_delta_max: float,
     perfect_candidate_timestamps: np.ndarray,
@@ -260,6 +331,7 @@ def _first_frontier_result_from_precomputed_end_indices(
     region_table: tuple,
     workspace: _FirstFrontierStampWorkspace,
 ) -> FgResponseFrontierResult:
+    successor_epoch = workspace.next_successor_epoch()
     (
         first_rows,
         states_evaluated,
@@ -282,6 +354,10 @@ def _first_frontier_result_from_precomputed_end_indices(
             first_forced,
             later_activation_forced,
             first_activation_forced,
+            perfect_run_starts,
+            perfect_run_ends,
+            late_run_starts,
+            late_run_ends,
             timestamps,
             candidate_high_delta_max,
             perfect_candidate_timestamps,
@@ -324,6 +400,11 @@ def _first_frontier_result_from_precomputed_end_indices(
             workspace.bit_stamps,
             workspace.branch_a_values,
             workspace.branch_a_stamps,
+            workspace.perfect_successor,
+            workspace.perfect_successor_stamps,
+            workspace.late_successor,
+            workspace.late_successor_stamps,
+            int(successor_epoch),
             int(workspace.pair_epoch),
             int(workspace.bit_epoch),
             int(workspace.branch_a_epoch),
@@ -371,6 +452,10 @@ def _first_frontier_results_for_precomputed_range(
     capped_eg_late_e: np.ndarray,
     real_time_index: np.ndarray,
     use_forced_great_timing: bool,
+    perfect_run_starts: np.ndarray,
+    perfect_run_ends: np.ndarray,
+    late_run_starts: np.ndarray,
+    late_run_ends: np.ndarray,
     region_tables_by_key: dict,
     workspace_plan: _FirstFrontierWorkspacePlan,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
@@ -395,6 +480,10 @@ def _first_frontier_results_for_precomputed_range(
                     first_forced=np.ascontiguousarray(item[8], dtype=np.int32),
                     later_activation_forced=np.ascontiguousarray(item[9], dtype=np.int32),
                     first_activation_forced=np.ascontiguousarray(item[10], dtype=np.int32),
+                    perfect_run_starts=perfect_run_starts,
+                    perfect_run_ends=perfect_run_ends,
+                    late_run_starts=late_run_starts,
+                    late_run_ends=late_run_ends,
                     timestamps=timestamps,
                     candidate_high_delta_max=candidate_high_delta_max,
                     perfect_candidate_timestamps=perfect_candidate_timestamps,

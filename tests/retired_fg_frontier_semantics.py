@@ -14,8 +14,180 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 
+import numpy as np
+
 BodyRow = tuple[int, int, int]
 SurfaceRow = tuple[int, int, int, int, int, int, int]
+
+
+def retired_nested_action_reachability_prepass(
+    *,
+    n: int,
+    action_count: int,
+    later_fill,
+    first_fill,
+    later_activation_forced,
+    first_activation_forced,
+    prefix_perfect_hit,
+    prefix_perfect_valid,
+    prefix_late_hit,
+    prefix_late_valid,
+    capped_perfect_edge_e,
+    capped_late_edge_e,
+    capped_eg_perfect_e,
+    capped_eg_late_e,
+    real_fever_time: float,
+    real_time_idx: int,
+    use_forced_great_timing_i: int,
+    region_starts,
+    region_offsets,
+    region_activations,
+    region_great_ends,
+    region_is_greats,
+    region_act_hits,
+    region_perfect_hits,
+    region_perfect_valids,
+    perfect_floor_timestamps,
+    great_floor_timestamps,
+):
+    """Retired O(reachable states * actions) activation scan from main ``c3d13ac3``."""
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _numba_late_edge_extends,
+        _numba_mark_early_great_reachable_from_hit,
+        _numba_mark_region_entries_for_section,
+    )
+
+    def mark_perfect(activation: int) -> int:
+        if int(prefix_perfect_valid[int(activation)]) == 0:
+            return 0
+        edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
+        if int(edge_e) < 0:
+            return 0
+        reachable[int(edge_e)] = True
+        return int(
+            _numba_mark_early_great_reachable_from_hit(
+                reachable,
+                int(n),
+                int(activation),
+                int(edge_e),
+                float(prefix_perfect_hit[int(activation)]),
+                great_floor_timestamps,
+                float(real_fever_time),
+            )
+        )
+
+    def mark_late(activation: int) -> int:
+        edge_e = -1
+        edge_eg_e = 0
+        if int(prefix_perfect_valid[int(activation)]) != 0:
+            edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
+            edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(activation)])
+        activation_e = -1
+        activation_eg_e = 0
+        if int(prefix_late_valid[int(activation)]) != 0:
+            activation_e = int(capped_late_edge_e[int(real_time_idx), int(activation)])
+            activation_eg_e = int(capped_eg_late_e[int(real_time_idx), int(activation)])
+        if not _numba_late_edge_extends(
+            int(edge_e), int(activation_e), int(activation_eg_e), int(edge_eg_e)
+        ):
+            return 0
+        reachable[int(activation_e)] = True
+        return int(
+            _numba_mark_early_great_reachable_from_hit(
+                reachable,
+                int(n),
+                int(activation),
+                int(activation_e),
+                float(prefix_late_hit[int(activation)]),
+                great_floor_timestamps,
+                float(real_fever_time),
+            )
+        )
+
+    reachable = np.zeros(int(n) + 1, dtype=np.bool_)
+    reachable[int(n)] = True
+    perfect_activation_processed = np.zeros(int(n), dtype=np.bool_)
+    late_activation_processed = np.zeros(int(n), dtype=np.bool_)
+    max_eg_width = 0
+
+    for action_idx in range(int(action_count)):
+        fill = int(first_fill[int(action_idx)])
+        if int(fill) >= int(n):
+            continue
+        if not perfect_activation_processed[int(fill)]:
+            perfect_activation_processed[int(fill)] = True
+            max_eg_width = max(int(max_eg_width), mark_perfect(int(fill)))
+        if (
+            int(use_forced_great_timing_i) != 0
+            and int(first_activation_forced[int(action_idx)]) >= 0
+            and not late_activation_processed[int(fill)]
+        ):
+            late_activation_processed[int(fill)] = True
+            max_eg_width = max(int(max_eg_width), mark_late(int(fill)))
+
+    if int(use_forced_great_timing_i) != 0:
+        max_eg_width = max(
+            int(max_eg_width),
+            int(
+                _numba_mark_region_entries_for_section(
+                    reachable,
+                    int(n),
+                    0,
+                    region_starts,
+                    region_offsets,
+                    region_activations,
+                    region_great_ends,
+                    region_is_greats,
+                    region_act_hits,
+                    region_perfect_hits,
+                    region_perfect_valids,
+                    float(real_fever_time),
+                    perfect_floor_timestamps,
+                    great_floor_timestamps,
+                )
+            ),
+        )
+
+    for state_i in range(int(n)):
+        if not reachable[int(state_i)]:
+            continue
+        for action_idx in range(int(action_count)):
+            activation = int(state_i) + int(later_fill[int(action_idx)])
+            if int(activation) >= int(n):
+                continue
+            if not perfect_activation_processed[int(activation)]:
+                perfect_activation_processed[int(activation)] = True
+                max_eg_width = max(int(max_eg_width), mark_perfect(int(activation)))
+            if (
+                int(use_forced_great_timing_i) != 0
+                and int(later_activation_forced[int(action_idx)]) >= 0
+                and not late_activation_processed[int(activation)]
+            ):
+                late_activation_processed[int(activation)] = True
+                max_eg_width = max(int(max_eg_width), mark_late(int(activation)))
+        if int(use_forced_great_timing_i) != 0:
+            max_eg_width = max(
+                int(max_eg_width),
+                int(
+                    _numba_mark_region_entries_for_section(
+                        reachable,
+                        int(n),
+                        int(state_i) + 1,
+                        region_starts,
+                        region_offsets,
+                        region_activations,
+                        region_great_ends,
+                        region_is_greats,
+                        region_act_hits,
+                        region_perfect_hits,
+                        region_perfect_valids,
+                        float(real_fever_time),
+                        perfect_floor_timestamps,
+                        great_floor_timestamps,
+                    )
+                ),
+            )
+    return reachable, int(max_eg_width)
 
 
 def retired_touch_body_candidates(

@@ -10,6 +10,7 @@ import numpy as np
 from . import response_build_gpu_numba as _rb_numba
 from .response_build_gpu_precompute import FirstOnlyCanonicalization
 from .response_build_gpu_reducer import (
+    _exact_action_fill_runs,
     _first_frontier_reducer_executor,
     _first_frontier_results_for_precomputed_range,
     _FirstFrontierWorkspacePlan,
@@ -160,7 +161,12 @@ def _reduce_first_frontier_group(
     executor: concurrent.futures.ThreadPoolExecutor | None,
     reducer_threads: int,
 ) -> list[tuple[int, FgResponseFrontierResult]]:
+    if not group_items:
+        raise ValueError("FG region-table group cannot be empty")
     canonical = context.canonical
+    representative = group_items[0]
+    perfect_run_starts, perfect_run_ends = _exact_action_fill_runs(representative[5])
+    late_run_starts, late_run_ends = _exact_action_fill_runs(representative[5], representative[9])
     real_time_index = np.ascontiguousarray(
         np.asarray(
             [canonical.real_time_index_by_source[int(item[0])] for item in group_items],
@@ -191,6 +197,10 @@ def _reduce_first_frontier_group(
         "capped_eg_late_e": canonical.capped_eg_late_e,
         "real_time_index": real_time_index,
         "use_forced_great_timing": bool(context.use_forced_great_timing),
+        "perfect_run_starts": perfect_run_starts,
+        "perfect_run_ends": perfect_run_ends,
+        "late_run_starts": late_run_starts,
+        "late_run_ends": late_run_ends,
         "region_tables_by_key": {table_key: region_table},
         "workspace_plan": context.workspace_plan,
     }
