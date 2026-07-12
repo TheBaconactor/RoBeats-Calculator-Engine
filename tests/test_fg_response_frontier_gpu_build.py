@@ -1667,6 +1667,230 @@ def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> Non
     assert numba_surfaces == oracle_surfaces
 
 
+@pytest.mark.parametrize(
+    ("fills", "eligible", "require_late", "expected_starts", "expected_ends"),
+    [
+        ([], [], False, [], []),
+        ([4], [-1], False, [4], [4]),
+        ([7, 2, 3, 3, 5, 6, 12], [0, 0, -1, 2, 3, -1, 0], False, [2, 5, 12], [3, 7, 12]),
+        (
+            [7, 2, 3, 3, 5, 6, 12],
+            [0, 0, -1, 2, 3, -1, 0],
+            True,
+            [2, 5, 7, 12],
+            [3, 5, 7, 12],
+        ),
+        ([9, 8, 7, 4, 2, 1, 0], [0] * 7, False, [0, 4, 7], [2, 4, 9]),
+    ],
+)
+def test_fg_response_exact_fill_runs_preserve_arbitrary_membership(
+    fills: list[int],
+    eligible: list[int],
+    require_late: bool,
+    expected_starts: list[int],
+    expected_ends: list[int],
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer import (
+        _exact_action_fill_runs,
+    )
+
+    starts, ends = _exact_action_fill_runs(
+        np.asarray(fills, dtype=np.int32),
+        np.asarray(eligible, dtype=np.int32) if require_late else None,
+    )
+    assert starts.tolist() == expected_starts
+    assert ends.tolist() == expected_ends
+
+
+def test_fg_response_exact_fill_runs_reject_negative_offsets() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer import (
+        _exact_action_fill_runs,
+    )
+
+    with pytest.raises(ValueError, match="must be nonnegative"):
+        _exact_action_fill_runs(
+            np.asarray([2, -1], dtype=np.int32),
+        )
+
+
+def test_fg_response_interval_successor_skips_removed_indices() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _numba_successor_find,
+        _numba_successor_remove,
+    )
+
+    successor = np.empty(9, dtype=np.int32)
+    stamps = np.zeros(9, dtype=np.int32)
+    epoch = 1
+    assert _numba_successor_remove(successor, stamps, epoch, 2) == 3
+    assert _numba_successor_remove(successor, stamps, epoch, 5) == 6
+    assert _numba_successor_remove(successor, stamps, epoch, 3) == 4
+    assert _numba_successor_remove(successor, stamps, epoch, 4) == 6
+    assert _numba_successor_find(successor, stamps, epoch, 2) == 6
+    assert _numba_successor_find(successor, stamps, epoch, 5) == 6
+    assert _numba_successor_find(successor, stamps, epoch, 6) == 6
+
+    # A new epoch makes every old removal logically live without clearing either scratch array.
+    next_epoch = 2
+    assert _numba_successor_find(successor, stamps, next_epoch, 2) == 2
+    assert _numba_successor_find(successor, stamps, next_epoch, 5) == 5
+    assert _numba_successor_remove(successor, stamps, next_epoch, 2) == 3
+    assert _numba_successor_find(successor, stamps, next_epoch, 2) == 3
+
+
+def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _numba_build_prefix_activation_hit_tables,
+        _numba_first_frontier_reachability_prepass,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import (
+        _precompute_end_indices,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer import (
+        _exact_action_fill_runs,
+    )
+    from tests.retired_fg_frontier_semantics import (
+        retired_nested_action_reachability_prepass,
+    )
+
+    rng = np.random.default_rng(20260712)
+    n = 64
+    timestamps = np.cumsum(rng.uniform(0.04, 0.28, size=n)).astype(np.float32)
+    timestamps -= timestamps[0]
+    perfect_candidates = (timestamps.astype(np.float64) + rng.uniform(0.035, 0.045, size=n)).astype(
+        np.float32
+    )
+    great_candidates = (timestamps.astype(np.float64) + rng.uniform(0.18, 0.19, size=n)).astype(
+        np.float32
+    )
+    perfect_floor = np.maximum.accumulate((timestamps.astype(np.float64) - 0.019).astype(np.float32))
+    great_floor = np.maximum.accumulate((timestamps.astype(np.float64) - 0.095).astype(np.float32))
+    lanes = rng.integers(0, 4, size=n, dtype=np.int32)
+    (
+        prefix_perfect_hit,
+        prefix_perfect_valid,
+        prefix_late_hit,
+        prefix_late_valid,
+    ) = _numba_build_prefix_activation_hit_tables(
+        int(n),
+        timestamps,
+        perfect_candidates,
+        great_candidates,
+    )
+    real_times = np.asarray([0.45, 1.0, 2.25], dtype=np.float32)
+    (
+        real_time_index,
+        _timestamp_end_idx,
+        _perfect_end_idx,
+        _great_end_idx,
+        _great_floor_end_idx,
+        capped_perfect_edge_e,
+        capped_late_edge_e,
+        capped_eg_perfect_e,
+        capped_eg_late_e,
+    ) = _precompute_end_indices(
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=perfect_floor,
+        great_floor_timestamps=great_floor,
+        prefix_perfect_hit=prefix_perfect_hit,
+        prefix_late_hit=prefix_late_hit,
+        lanes=lanes,
+        real_times=real_times,
+    )
+    region_starts = np.zeros(n + 2, dtype=np.int64)
+    empty_i32 = np.empty(0, dtype=np.int32)
+    empty_f64 = np.empty(0, dtype=np.float64)
+
+    for case_idx in range(80):
+        action_count = int(rng.integers(0, 25))
+        later_fill = rng.integers(0, n + 8, size=action_count, dtype=np.int32)
+        first_fill = rng.integers(0, n + 8, size=action_count, dtype=np.int32)
+        later_activation_forced = rng.integers(-1, 4, size=action_count, dtype=np.int32)
+        first_activation_forced = rng.integers(-1, 4, size=action_count, dtype=np.int32)
+        use_forced = int(case_idx % 2)
+        real_time_idx = int(real_time_index[int(case_idx % len(real_times))])
+        common = {
+            "n": int(n),
+            "action_count": int(action_count),
+            "later_fill": later_fill,
+            "first_fill": first_fill,
+            "later_activation_forced": later_activation_forced,
+            "first_activation_forced": first_activation_forced,
+            "prefix_perfect_hit": prefix_perfect_hit,
+            "prefix_perfect_valid": prefix_perfect_valid,
+            "prefix_late_hit": prefix_late_hit,
+            "prefix_late_valid": prefix_late_valid,
+            "capped_perfect_edge_e": capped_perfect_edge_e,
+            "capped_late_edge_e": capped_late_edge_e,
+            "capped_eg_perfect_e": capped_eg_perfect_e,
+            "capped_eg_late_e": capped_eg_late_e,
+            "real_fever_time": float(real_times[int(case_idx % len(real_times))]),
+            "real_time_idx": int(real_time_idx),
+            "use_forced_great_timing_i": int(use_forced),
+            "region_starts": region_starts,
+            "region_offsets": empty_i32,
+            "region_activations": empty_i32,
+            "region_great_ends": empty_i32,
+            "region_is_greats": empty_i32,
+            "region_act_hits": empty_f64,
+            "region_perfect_hits": empty_f64,
+            "region_perfect_valids": empty_i32,
+            "perfect_floor_timestamps": perfect_floor,
+            "great_floor_timestamps": great_floor,
+        }
+        expected_reachable, expected_width = retired_nested_action_reachability_prepass(**common)
+        perfect_run_starts, perfect_run_ends = _exact_action_fill_runs(later_fill)
+        late_run_starts, late_run_ends = _exact_action_fill_runs(
+            later_fill, later_activation_forced
+        )
+        perfect_successor = np.empty(n + 1, dtype=np.int32)
+        perfect_successor_stamps = np.zeros(n + 1, dtype=np.int32)
+        late_successor = np.empty(n + 1, dtype=np.int32)
+        late_successor_stamps = np.zeros(n + 1, dtype=np.int32)
+        actual_reachable, actual_width = _numba_first_frontier_reachability_prepass(
+            int(common["n"]),
+            int(common["action_count"]),
+            common["later_fill"],
+            common["first_fill"],
+            common["later_activation_forced"],
+            common["first_activation_forced"],
+            perfect_run_starts,
+            perfect_run_ends,
+            late_run_starts,
+            late_run_ends,
+            common["prefix_perfect_hit"],
+            common["prefix_perfect_valid"],
+            common["prefix_late_hit"],
+            common["prefix_late_valid"],
+            common["capped_perfect_edge_e"],
+            common["capped_late_edge_e"],
+            common["capped_eg_perfect_e"],
+            common["capped_eg_late_e"],
+            float(common["real_fever_time"]),
+            int(common["real_time_idx"]),
+            int(common["use_forced_great_timing_i"]),
+            common["region_starts"],
+            common["region_offsets"],
+            common["region_activations"],
+            common["region_great_ends"],
+            common["region_is_greats"],
+            common["region_act_hits"],
+            common["region_perfect_hits"],
+            common["region_perfect_valids"],
+            common["perfect_floor_timestamps"],
+            common["great_floor_timestamps"],
+            perfect_successor,
+            perfect_successor_stamps,
+            late_successor,
+            late_successor_stamps,
+            1,
+        )
+        assert np.array_equal(actual_reachable, expected_reachable), case_idx
+        assert int(actual_width) == int(expected_width), case_idx
+
+
 def test_fg_response_reachability_prefix_reduction_matches_full_scan() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _numba_activation_reachable_contiguous_run,

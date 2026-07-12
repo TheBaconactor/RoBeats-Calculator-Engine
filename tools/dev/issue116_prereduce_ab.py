@@ -34,11 +34,17 @@ if str(_TOOLS_DEV) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DEV))
 
 from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as _rb  # noqa: E402
+from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_reducer import (  # noqa: E402
+    _exact_action_fill_runs,
+)
 from issue116_amdahl_probe import SongProbeInputs, _find_chart  # noqa: E402
 
 
 def _run_production(sp: SongProbeInputs, item, rt_idx: int, region_table):
     ws = sp.ws
+    perfect_run_starts, perfect_run_ends = _exact_action_fill_runs(item[5])
+    late_run_starts, late_run_ends = _exact_action_fill_runs(item[5], item[9])
+    successor_epoch = ws.next_successor_epoch()
     result = _rb._first_frontier_from_precomputed_end_indices_numba(
         sp.n,
         int(item[5].shape[0]),
@@ -51,6 +57,10 @@ def _run_production(sp: SongProbeInputs, item, rt_idx: int, region_table):
         item[8],
         item[9],
         item[10],
+        perfect_run_starts,
+        perfect_run_ends,
+        late_run_starts,
+        late_run_ends,
         sp.ts,
         sp.candidate_high_delta_max,
         sp.perfect_ts,
@@ -89,6 +99,11 @@ def _run_production(sp: SongProbeInputs, item, rt_idx: int, region_table):
         ws.bit_stamps,
         ws.branch_a_values,
         ws.branch_a_stamps,
+        ws.perfect_successor,
+        ws.perfect_successor_stamps,
+        ws.late_successor,
+        ws.late_successor_stamps,
+        int(successor_epoch),
         int(ws.pair_epoch),
         int(ws.bit_epoch),
         int(ws.branch_a_epoch),
