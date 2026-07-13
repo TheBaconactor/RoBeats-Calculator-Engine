@@ -181,7 +181,7 @@ def test_directed_tail_charts_bounded_sweep_matches_observed_classifications():
     expected = {
         "tail-follower": {
             "under": [],
-            "under_design": [((0b111110, 0b100010), 337.5)],
+            "under_design": [],
             "over_realized": [],
         },
         "tail-activation": {

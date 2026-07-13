@@ -1,11 +1,11 @@
 """Game-faithful replay of a persisted FG loadout through the WebPort ScoreEngine oracle.
 
 Given a DB, a song, and a rank (0 = top by fg_score), this tool:
-  1. decodes the loadout's persisted ForceGreats surface (frontier_trace, base stats, gems),
+  1. decodes the loadout's persisted ForceGreats surface (frontier_trace and visible stats),
   2. reconstructs the per-note play (Perfect/Great + hit offsets) via the canonical
      ``force_greats_note_graph`` witness reconstruction,
-  3. rebuilds the FINAL (base + gem) stat vector with the canonical ``apply_gems_to_base_stats``
-     and maps it into the WebPort ``GEAR_STAT_TYPES`` raw-point statsdict the oracle expects,
+  3. reads the persisted post-gem visible stat vector and maps it into the WebPort
+     ``GEAR_STAT_TYPES`` raw-point statsdict the oracle expects,
   4. replays the resulting event stream through ``tools/verify/webport_oracle/oracle.mjs`` (a 1:1
      port of the game's ScoreEngine / fever gate),
   5. prints the GAME score + fever membership (feverHits, per-section activation/end/noteCount)
@@ -22,8 +22,8 @@ Usage:
     python tools/verify/loadout_oracle_replay.py --db .calc/aurora_fix.db --song "Aurora" [--rank 0]
 
 The fever MEMBERSHIP (which notes are fevered, per-section activation index/ms + window endMs,
-feverHits) is gem-INDEPENDENT and authoritative. The exact SCORE additionally requires the final
-base+gem stat vector, which this tool builds canonically.
+feverHits) is gem-INDEPENDENT and authoritative. The exact SCORE additionally requires the
+post-gem visible stat vector stored in ``BaseStats`` by the current DB contract.
 """
 from __future__ import annotations
 
@@ -40,14 +40,14 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from gear_optimizer.core.gem_defs import element_gem_count  # noqa: E402
 from gear_optimizer.data.database_codecs import _unpack_stats_after_load  # noqa: E402
 from gear_optimizer.data.song_io import get_base_calc_song, scan_song_header  # noqa: E402
+from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats  # noqa: E402
 from gear_optimizer.solver.fg_response_scoring.note_graph import (  # noqa: E402
     force_greats_note_graph,
 )
-from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats  # noqa: E402
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope  # noqa: E402
+from tools.verify.game_sim import _synth_offset  # noqa: E402
 
 _DIFF_DIRS = ("Easy", "Normal", "Hard")
 _ORACLE = ROOT / "tools" / "verify" / "webport_oracle" / "oracle.mjs"
@@ -120,21 +120,13 @@ def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, s
     return fd, row["song_name"], int(row["fg_score"]), int(row["score"]), primary, secondary
 
 
-def _final_stats(fd: dict) -> tuple[dict, str]:
-    """Rebuild the FINAL (base+gem) stat vector via the canonical helper. Returns (stats, sel_color)."""
-    base = fd.get("BaseStats")
-    if not isinstance(base, dict) or not base:
-        raise SystemExit("loadout missing BaseStats")
-    gc = fd.get("GemCounts") or {}
+def _visible_stats(fd: dict) -> tuple[dict, str]:
+    """Read the persisted post-gem visible stats exactly once. Returns (stats, selected color)."""
+    stats = read_visible_stats(fd)
+    if not stats:
+        raise SystemExit("loadout missing visible Stats/BaseStats")
     sel = str(fd.get("Selected Element") or fd.get("SelectedElement") or "")
-    ft = int(fd.get("FT", 0) or 0)
-    ff = int(fd.get("FF", 0) or 0)
-    g_pp = int(gc.get("Perfect Points", 0) or 0)
-    g_cm = int(gc.get("Combo Multiplier", 0) or 0)
-    g_fm = int(gc.get("Fever Multiplier", 0) or 0)
-    g_ov = element_gem_count(gc)
-    final = apply_gems_to_base_stats(dict(base), sel, ft, ff, g_pp, g_cm, g_fm, g_ov)
-    return final, sel
+    return stats, sel
 
 
 def _statsdict_for_oracle(final: dict, primary: str, secondary: str = "") -> tuple[dict, list[str]]:
@@ -161,13 +153,15 @@ def _statsdict_for_oracle(final: dict, primary: str, secondary: str = "") -> tup
     return sd, colors
 
 
-def _events_from_note_graph(note_graph: list[dict]) -> list[dict]:
-    """One oracle event per note: physical hit ms + judgement. Great->'great', else 'perfect'."""
+def _events_from_note_graph(note_graph: list[dict], note_types: np.ndarray) -> list[dict]:
+    """One legal physical event per note, including synthesized selector-Great timing."""
     events = []
-    for node in note_graph:
-        delta = node.get("delta_ms")
-        hit_ms = float(node["hit_time_ms"]) + (float(delta) if delta is not None else 0.0)
+    if int(note_types.shape[0]) != len(note_graph):
+        raise ValueError("note_types length must match note_graph")
+    for i, node in enumerate(note_graph):
         result = "great" if node["note_result"] == "Great" else "perfect"
+        delta = _synth_offset(result, int(note_types[i]) == 3, node.get("delta_ms"))
+        hit_ms = float(node["hit_time_ms"]) + float(delta)
         events.append({"eventMs": hit_ms, "result": result, "kind": "note"})
     return events
 
@@ -241,9 +235,9 @@ def main(argv=None) -> int:
         lanes=lanes,
         timing_mode="perfect_window",
     )
-    events = _events_from_note_graph(note_graph)
+    events = _events_from_note_graph(note_graph, nt)
 
-    final, sel_color = _final_stats(fd)
+    final, sel_color = _visible_stats(fd)
     statsdict, colors = _statsdict_for_oracle(final, primary_color, secondary_color)
 
     taps = int((nt == 1).sum())

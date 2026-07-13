@@ -270,8 +270,8 @@ class GameScoreEngine:
         fill = _fever_fill_scales(stats)
         self.feverFillDenom = cfg["hitObjectsCount"] * fill["perfect"]
         self.greatFillDenom = cfg["hitObjectsCount"] * fill["great"]
-        # NB the +1/60 frame term and decayRate/0.15 normaliser (score_bundle.mjs:255).
-        self.feverTimeSec = (cfg["lastNoteTimeSec"] * 0.15 + 1.0 / 60.0) * (_fever_decay_rate(stats) / 0.15)
+        # The engine tick cancels in event-time drain math; it is not extra fever duration.
+        self.feverTimeSec = cfg["lastNoteTimeSec"] * 0.15 * (_fever_decay_rate(stats) / 0.15)
         self.feverMult = _fever_multiplier(stats)
         self.missDrainPct = _fever_miss_drain_pct(stats)
         self.basePoints = {
