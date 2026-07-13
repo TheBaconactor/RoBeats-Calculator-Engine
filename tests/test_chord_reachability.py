@@ -9,6 +9,7 @@ import numpy as np
 
 from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+    activation_schedule_witnesses_weighted_lane_aware,
     activation_hit_is_reachable_weighted_lane_aware,
 )
 
@@ -203,3 +204,111 @@ def test_n_note_graph_activation_cap_can_be_lane_scoped_for_display_witnesses():
     )
     assert same_lane_hit is not None
     assert abs(same_lane_hit - 1.139) < 1.0e-9
+
+
+def test_o_witness_returns_the_exact_cross_lane_prefix_that_fills_first():
+    witnesses = activation_schedule_witnesses_weighted_lane_aware(
+        activation_index=0,
+        activation_hit_timestamp=0.100,
+        low_hit_timestamps=np.array([0.000, 0.000], dtype=np.float32),
+        high_hit_timestamps=np.array([0.100, 0.050], dtype=np.float32),
+        lanes=np.array([1, 2], dtype=np.int32),
+        fill_units=np.array([1.0, 0.5], dtype=np.float32),
+        fever_fill_denom=1.5,
+        section_start=0,
+        section_end=2,
+    )
+    assert len(witnesses) == 1
+    witness = witnesses[0]
+    assert witness.preactivation_order == (1,)
+    assert witness.preactivation_fill_half_units == 1
+    assert witness.preactivation_event_count == 1
+    assert witness.preactivation_great_count == 1
+
+
+def test_p_forced_later_note_forces_the_complete_other_lane_prefix():
+    # Note 1 closes before the activation, but the matcher cannot consume it without first consuming
+    # note 0 in the same lane. Their combined 1.5 fill crosses a one-unit bar before note 2, so the
+    # claimed Great activation is impossible. The retired optional-prefix lattice counted note 1 as
+    # forced while still allowing the zero-length prefix for note 0.
+    kwargs = dict(
+        activation_index=2,
+        activation_hit_timestamp=0.100,
+        low_hit_timestamps=np.array([0.000, 0.000, 0.000], dtype=np.float32),
+        high_hit_timestamps=np.array([0.200, 0.050, 0.100], dtype=np.float32),
+        lanes=np.array([1, 1, 2], dtype=np.int32),
+        fill_units=np.array([1.0, 0.5, 0.5], dtype=np.float32),
+        fever_fill_denom=1.0,
+        section_start=0,
+        section_end=3,
+    )
+    assert activation_schedule_witnesses_weighted_lane_aware(**kwargs) == ()
+    assert activation_hit_is_reachable_weighted_lane_aware(**kwargs) is False
+
+
+def test_q_witness_keeps_both_score_relevant_event_count_extremes():
+    # The exact pre-fill is one Perfect unit. It can be supplied by one Perfect on lane 1 or two
+    # Greats on lane 2. Both event-count extremes matter to the response surface: one activates a
+    # note earlier in combo order, while the other moves two Great penalties outside fever.
+    witnesses = activation_schedule_witnesses_weighted_lane_aware(
+        activation_index=3,
+        activation_hit_timestamp=0.100,
+        low_hit_timestamps=np.zeros(4, dtype=np.float32),
+        high_hit_timestamps=np.full(4, 0.200, dtype=np.float32),
+        lanes=np.array([1, 2, 2, 3], dtype=np.int32),
+        fill_units=np.array([1.0, 0.5, 0.5, 0.5], dtype=np.float32),
+        fever_fill_denom=1.5,
+        section_start=0,
+        section_end=4,
+    )
+    assert [row.preactivation_fill_half_units for row in witnesses] == [2, 2]
+    assert [row.preactivation_event_count for row in witnesses] == [1, 2]
+    assert [row.preactivation_great_count for row in witnesses] == [0, 2]
+    assert [row.preactivation_order for row in witnesses] == [(0,), (1, 2)]
+
+
+def test_r_exact_surface_signature_prefers_the_scored_chart_order():
+    witnesses = activation_schedule_witnesses_weighted_lane_aware(
+        activation_index=2,
+        activation_hit_timestamp=0.100,
+        low_hit_timestamps=np.zeros(5, dtype=np.float32),
+        high_hit_timestamps=np.full(5, 0.200, dtype=np.float32),
+        lanes=np.array([1, 1, 3, 2, 2], dtype=np.int32),
+        fill_units=np.array([1.0, 1.0, 0.5, 1.0, 1.0], dtype=np.float32),
+        fever_fill_denom=2.5,
+        section_start=0,
+        section_end=5,
+        required_preactivation_fill_half_units=4,
+        required_preactivation_event_count=2,
+    )
+    assert len(witnesses) == 1
+    assert witnesses[0].preactivation_order == (0, 1)
+    assert tuple(row.note_indices for row in witnesses[0].lane_prefixes) == ((0, 1), (), ())
+
+
+def test_s_exact_surface_signature_preserves_head_identity_before_state_compression():
+    # Note 104 closes before activation 103 and must be consumed first. The equal-count schedule
+    # must therefore omit one BODY note (100..102), never one of the position-scored head notes.
+    # If (fill, count) states are compressed before head identity is enforced, the lexicographic
+    # representative omits head note 0 and hides the valid body-only swap.
+    n = 105
+    high = np.full(n, 0.200, dtype=np.float32)
+    high[104] = np.float32(0.050)
+    witnesses = activation_schedule_witnesses_weighted_lane_aware(
+        activation_index=103,
+        activation_hit_timestamp=0.100,
+        low_hit_timestamps=np.zeros(n, dtype=np.float32),
+        high_hit_timestamps=high,
+        lanes=np.arange(n, dtype=np.int32),
+        fill_units=np.ones(n, dtype=np.float32),
+        fever_fill_denom=103.5,
+        section_start=0,
+        section_end=n,
+        required_preactivation_fill_half_units=206,
+        required_preactivation_event_count=103,
+    )
+    assert len(witnesses) == 1
+    selected = set(witnesses[0].preactivation_order)
+    assert set(range(100)) <= selected
+    assert 104 in selected
+    assert len(selected & {100, 101, 102}) == 2

@@ -21,6 +21,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import FgTraceEdgeOptionsCache
 
 from .planner import FgResponseFrontierPreparedPlan
+from .physical_replay import validate_force_greats_physical_replay
 
 
 @dataclass(slots=True)
@@ -162,6 +163,21 @@ def materialize_force_payload_from_response_frontier(
     # chart-wide guard for every loadout with the same semantic trace adds no independent check.
     if not trace_is_validated:
         _assert_trace_hit_time_reachable(base_trace, song_inputs, raw_fever_fill=float(result.raw_fever_fill))
+        song_data = calc_song.get("song_data")
+        if not isinstance(song_data, dict):
+            raise ValueError("FG response materialization requires canonical song_data")
+        note_types = song_data.get("note_types")
+        if note_types is None:
+            raise ValueError("FG response materialization requires chart note_types")
+        validate_force_greats_physical_replay(
+            frontier_trace=base_trace,
+            surface=surface,
+            timestamps=song_inputs.timestamps,
+            note_types=note_types,
+            lanes=song_lanes,
+            raw_fever_fill=float(result.raw_fever_fill),
+            real_fever_time=float(result.real_fever_time),
+        )
         if trace_cache is not None:
             trace_cache.traces[trace_key] = base_trace
     # On the cache path, hand each payload fresh per-row dicts (the cached base_trace is never

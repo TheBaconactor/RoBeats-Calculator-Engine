@@ -48,6 +48,7 @@ so there is no candidate-dependent re-solve and no bulky per-note persistence.
 
 from __future__ import annotations
 
+import heapq
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -233,7 +234,11 @@ def _activation_materialized_delta_ms(
             chart_timestamps=chart_timestamps_ms,
             label_high_timestamps=label_high_ms,
             section_end=n,
-            lanes=lane_arr,
+            lanes=(
+                None
+                if int(sec.get("activation_schedule_schema_version", 0) or 0) == 1
+                else lane_arr
+            ),
             epsilon=0.001,
         )
     else:
@@ -300,6 +305,30 @@ def _delta_at_or_after_ms(note_types: np.ndarray, j: int, result: str, min_delta
     )
 
 
+def _delta_at_or_before_ms(note_types: np.ndarray, j: int, result: str, max_delta_ms: float) -> float:
+    max_delta = float(max_delta_ms)
+    if result == "Perfect":
+        lo, hi = _perfect_bounds_ms_at(note_types, j)
+        chosen = min(float(hi), float(max_delta))
+        if chosen >= float(lo):
+            return float(chosen)
+    elif result == "Great":
+        early_lo, early_hi = _early_great_bounds_ms_at(note_types, j)
+        late_lo, late_hi = _late_great_bounds_ms_at(note_types, j)
+        chosen = min(float(late_hi), float(max_delta))
+        if chosen >= float(late_lo):
+            return float(chosen)
+        chosen = min(float(early_hi), float(max_delta))
+        if chosen >= float(early_lo):
+            return float(chosen)
+    else:
+        raise ValueError(f"note_graph: cannot advance unsupported result {result!r} at note {j}")
+    raise ValueError(
+        "note_graph: persisted preactivation order cannot be made input-order legal "
+        f"without changing note {j}'s {result} judgment"
+    )
+
+
 def _center_safe_delta(*, low_ms: float, high_ms: float) -> float:
     return 0.5 * (float(low_ms) + float(high_ms))
 
@@ -323,6 +352,7 @@ def _perfect_note_graph(total_notes: int, timestamps: Sequence[float] | np.ndarr
             "hit_time_ms": _hit_time_ms(ts, i),
             "note_result": "Perfect",
             "delta_ms": 0.0,
+            "input_order": int(i),
             "fever": False,
             "is_activation_witness": False,
             "is_fever_end_witness": False,
@@ -432,7 +462,8 @@ def _mark_activation_preemptor_order_deltas(
     total_notes: int,
     note_types: Sequence[int] | np.ndarray | None,
     lanes: Sequence[int] | np.ndarray | None = None,
-) -> None:
+    require_exact_schedule: bool = False,
+) -> list[tuple[int, int]]:
     """Delay following notes that would otherwise preempt a delayed activation witness.
 
     A response surface can legally activate on a late-Great witness only if nearby following notes
@@ -441,25 +472,137 @@ def _mark_activation_preemptor_order_deltas(
     """
     n = min(int(total_notes), len(notes))
     if n <= 1:
-        return
+        return []
+    input_order_constraints: list[tuple[int, int]] = []
+    if require_exact_schedule and (note_types is None or lanes is None):
+        raise ValueError(
+            "note_graph: note_types and lanes are required for exact activation schedule replay"
+        )
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
     lane_arr = None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1)
-    if lane_arr is not None:
+    if require_exact_schedule and (
+        nt is None
+        or lane_arr is None
+        or int(nt.shape[0]) != n
+        or int(lane_arr.shape[0]) != n
+    ):
+        raise ValueError("note_graph: note_types and lanes must match total_notes")
+    if lane_arr is not None and not require_exact_schedule:
         n = min(n, int(lane_arr.shape[0]))
 
     for sec in frontier_trace:
         a = int(sec.get("activation_index", -1))
         if not (0 <= a < n):
+            if require_exact_schedule:
+                raise ValueError("note_graph: activation schedule has an invalid activation index")
             continue
         activation_delta = notes[a].get("delta_ms")
         if activation_delta is None:
+            if require_exact_schedule:
+                raise ValueError("note_graph: activation schedule requires a concrete activation hit")
             continue
 
         activation_press = float(notes[a]["hit_time_ms"]) + float(activation_delta)
         activation_lane = None if lane_arr is None else int(lane_arr[a])
+        selected_preactivation: set[int] = set()
+        if require_exact_schedule:
+            schedule_version = sec.get("activation_schedule_schema_version")
+            exact_order_raw = sec.get("preactivation_order")
+            if schedule_version != 1 or not isinstance(exact_order_raw, (list, tuple)):
+                raise ValueError("note_graph: exact activation schedule schema v1 is required")
+            exact_order = tuple(int(index) for index in exact_order_raw)
+            if len(exact_order) != int(sec.get("preactivation_event_count", -1)):
+                raise ValueError("note_graph: preactivation order length does not match its signature")
+            if len(set(exact_order)) != len(exact_order) or any(
+                index < 0 or index >= n or index == a for index in exact_order
+            ):
+                raise ValueError("note_graph: preactivation order contains an invalid note identity")
+            section_start = int(sec.get("forced_start_index", -1))
+            if not (0 <= int(section_start) <= int(a) < n):
+                raise ValueError("note_graph: activation schedule has invalid section bounds")
+            great_count = sum(
+                1
+                for index in exact_order
+                if str(notes[int(index)].get("note_result", "Perfect")) == "Great"
+            )
+            if great_count != int(sec.get("preactivation_great_count", -1)) or (
+                2 * len(exact_order) - int(great_count)
+                != int(sec.get("preactivation_fill_half_units", -1))
+            ):
+                raise ValueError("note_graph: preactivation fill signature does not match note labels")
+            lane_prefixes_raw = sec.get("preactivation_lane_prefixes")
+            if not isinstance(lane_prefixes_raw, (list, tuple)):
+                raise ValueError("note_graph: per-lane prefixes are required by activation schedule v1")
+            lane_notes: dict[int, list[int]] = {}
+            lane_order: list[int] = []
+            for index in range(int(section_start), n):
+                lane_id = int(lane_arr[int(index)])
+                if lane_id not in lane_notes:
+                    lane_notes[lane_id] = []
+                    lane_order.append(lane_id)
+                lane_notes[lane_id].append(int(index))
+            if any(not isinstance(row, Mapping) for row in lane_prefixes_raw):
+                raise ValueError("note_graph: per-lane prefix rows must be mappings")
+            persisted_lane_counts = tuple(
+                (int(row["lane"]), int(row["count"])) for row in lane_prefixes_raw
+            )
+            if tuple(lane for lane, _count in persisted_lane_counts) != tuple(lane_order):
+                raise ValueError("note_graph: persisted per-lane prefix identities are not canonical")
+            selected_rows: list[int] = []
+            for lane_id, prefix_count in persisted_lane_counts:
+                rows = lane_notes[int(lane_id)]
+                if not (0 <= int(prefix_count) <= len(rows)):
+                    raise ValueError("note_graph: persisted per-lane prefix count is out of range")
+                if int(lane_id) == int(activation_lane):
+                    activation_position = rows.index(int(a))
+                    if int(prefix_count) != int(activation_position):
+                        raise ValueError(
+                            "note_graph: activation-lane prefix must end immediately before activation"
+                        )
+                selected_rows.extend(rows[: int(prefix_count)])
+            selected_preactivation = set(int(index) for index in selected_rows)
+            if set(exact_order) != selected_preactivation:
+                raise ValueError("note_graph: preactivation order does not match its per-lane prefixes")
+            for lane_id, prefix_count in persisted_lane_counts:
+                expected_lane_order = tuple(lane_notes[int(lane_id)][: int(prefix_count)])
+                actual_lane_order = tuple(
+                    index for index in exact_order if int(lane_arr[int(index)]) == int(lane_id)
+                )
+                if actual_lane_order != expected_lane_order:
+                    raise ValueError("note_graph: preactivation order violates lane-local matcher order")
+            required_prefix_press = float(activation_press)
+            for note_index in reversed(exact_order):
+                note = notes[int(note_index)]
+                result = str(note.get("note_result", "Perfect"))
+                raw_delta = note.get("delta_ms")
+                current_delta = (
+                    _selector_default_delta_ms(nt, int(note_index), result, raw_delta)
+                    if raw_delta is None
+                    else float(raw_delta)
+                )
+                current_press = float(note["hit_time_ms"]) + float(current_delta)
+                if current_press > required_prefix_press:
+                    current_delta = _delta_at_or_before_ms(
+                        nt,
+                        int(note_index),
+                        result,
+                        required_prefix_press - float(note["hit_time_ms"]),
+                    )
+                    note["delta_ms"] = float(current_delta)
+                    current_press = float(note["hit_time_ms"]) + float(current_delta)
+                required_prefix_press = float(current_press)
+            exact_sequence = (*exact_order, int(a))
+            input_order_constraints.extend(
+                (int(before), int(after))
+                for before, after in zip(exact_sequence, exact_sequence[1:])
+            )
         required_press = activation_press
+        previous_order_index = int(a)
 
-        for j in range(a + 1, n):
+        scan_start = int(sec.get("forced_start_index", a + 1)) if require_exact_schedule else a + 1
+        for j in range(int(scan_start), n):
+            if int(j) == int(a) or int(j) in selected_preactivation:
+                continue
             note = notes[j]
             chart_j = float(note["hit_time_ms"])
             # Chart times are monotone and every legal Perfect/Great press lies within 200ms of
@@ -469,9 +612,13 @@ def _mark_activation_preemptor_order_deltas(
             # delayed -- a forced-Great bundle sibling at the activation's own late edge satisfies
             # the requirement while still-on-time chord partners behind it would preempt the
             # activation's fill (the Aurora 47,502,676 witness shape).
-            if chart_j - 200.0 > required_press:
+            if int(j) > int(a) and chart_j - 200.0 > required_press:
                 break
-            if activation_lane is not None and int(lane_arr[j]) != activation_lane:
+            if (
+                not require_exact_schedule
+                and activation_lane is not None
+                and int(lane_arr[j]) != activation_lane
+            ):
                 continue
             result = str(note.get("note_result", "Perfect"))
             raw_delta = note.get("delta_ms")
@@ -490,6 +637,8 @@ def _mark_activation_preemptor_order_deltas(
                 # so later window notes cannot be scheduled before it (per-lane earliest-
                 # hittable-first matching requires chart-order presses within the window).
                 required_press = current_press
+                input_order_constraints.append((int(previous_order_index), int(j)))
+                previous_order_index = int(j)
                 continue
 
             needed_delta = required_press - chart_j
@@ -500,6 +649,137 @@ def _mark_activation_preemptor_order_deltas(
                 )
             note["delta_ms"] = _delta_at_or_after_ms(nt, j, result, needed_delta)
             required_press = chart_j + float(note["delta_ms"])
+            input_order_constraints.append((int(previous_order_index), int(j)))
+            previous_order_index = int(j)
+
+    return input_order_constraints
+
+
+def _materialize_remaining_selector_deltas(
+    notes: list[dict[str, Any]],
+    *,
+    note_types: Sequence[int] | np.ndarray,
+) -> None:
+    """Give every remaining Perfect-window selector one canonical physical hit.
+
+    Schedule-sensitive selectors were already moved by the exact order passes. The rows left with
+    no delta are order-neutral Great selectors; materialize the first legal late-Great millisecond
+    here so every consumer receives the same event stream instead of inventing a frontend default.
+    """
+    nt = np.asarray(note_types).reshape(-1)
+    if int(nt.shape[0]) != len(notes):
+        raise ValueError("note_graph: note_types must match the graph before selector materialization")
+    for index, note in enumerate(notes):
+        if note.get("delta_ms") is not None:
+            continue
+        result = str(note.get("note_result", "Perfect"))
+        if result != "Great":
+            raise ValueError(
+                f"note_graph: only a Great selector may omit its timing witness (note {index})"
+            )
+        note["delta_ms"] = float(_selector_default_delta_ms(nt, index, result, None))
+
+
+def _assign_exact_input_order(
+    notes: list[dict[str, Any]],
+    constraints: Sequence[tuple[int, int]],
+) -> None:
+    """Topologically order equal-time inputs while keeping physical time authoritative."""
+    n = len(notes)
+    event_times: list[float] = []
+    for index, note in enumerate(notes):
+        delta = note.get("delta_ms")
+        if delta is None:
+            raise ValueError(f"note_graph: note {index} lacks a canonical input timing")
+        event_time = float(note["hit_time_ms"]) + float(delta)
+        if not np.isfinite(event_time):
+            raise ValueError(f"note_graph: note {index} has a non-finite input timing")
+        event_times.append(float(event_time))
+
+    successors: list[set[int]] = [set() for _ in range(n)]
+    indegree = [0] * n
+    for before_raw, after_raw in constraints:
+        before = int(before_raw)
+        after = int(after_raw)
+        if not (0 <= before < n and 0 <= after < n) or before == after:
+            raise ValueError("note_graph: exact input-order constraint has an invalid endpoint")
+        if event_times[before] > event_times[after]:
+            raise ValueError(
+                "note_graph: exact input-order constraint moves backward in physical time "
+                f"({before} -> {after})"
+            )
+        if after not in successors[before]:
+            successors[before].add(after)
+            indegree[after] += 1
+
+    ready = [
+        (float(event_times[index]), int(index))
+        for index in range(n)
+        if int(indegree[index]) == 0
+    ]
+    heapq.heapify(ready)
+    ordered: list[int] = []
+    while ready:
+        _event_time, index = heapq.heappop(ready)
+        ordered.append(int(index))
+        for after in successors[int(index)]:
+            indegree[int(after)] -= 1
+            if int(indegree[int(after)]) == 0:
+                heapq.heappush(ready, (float(event_times[int(after)]), int(after)))
+    if len(ordered) != n:
+        raise ValueError("note_graph: exact input-order constraints contain a cycle")
+    if any(
+        event_times[int(after)] < event_times[int(before)]
+        for before, after in zip(ordered, ordered[1:])
+    ):
+        raise ValueError("note_graph: exact input order is not monotone in physical event time")
+    for input_order, note_index in enumerate(ordered):
+        notes[int(note_index)]["input_order"] = int(input_order)
+
+
+def _apply_exact_schedule_fever(
+    notes: list[dict[str, Any]],
+    *,
+    frontier_trace: Sequence[Mapping[str, Any]],
+) -> None:
+    """Materialize fever membership from exact event order and trace-owned durations."""
+    activation_rows: list[tuple[int, float]] = []
+    seen_activations: set[int] = set()
+    for sec in frontier_trace:
+        if int(sec.get("activation_schedule_schema_version", 0) or 0) != 1:
+            raise ValueError("note_graph: exact schedule fever requires trace schema v1")
+        activation = int(sec.get("activation_index", -1))
+        if not (0 <= activation < len(notes)) or activation in seen_activations:
+            raise ValueError("note_graph: exact schedule fever has an invalid activation identity")
+        seen_activations.add(int(activation))
+        duration_ms = float(sec.get("fever_duration_ms", float("nan")))
+        if not np.isfinite(duration_ms) or duration_ms <= 0.0:
+            raise ValueError("note_graph: exact schedule fever duration is missing or invalid")
+        activation_rows.append((int(activation), float(duration_ms)))
+
+    ordered_indices = tuple(
+        int(index) for index in sorted(range(len(notes)), key=lambda index: int(notes[index]["input_order"]))
+    )
+    activation_cursor = 0
+    active_until_ms: float | None = None
+    for note_index in ordered_indices:
+        note = notes[int(note_index)]
+        event_ms = float(note["hit_time_ms"]) + float(note["delta_ms"])
+        if active_until_ms is not None and event_ms >= float(active_until_ms):
+            active_until_ms = None
+        is_next_activation = bool(
+            int(activation_cursor) < len(activation_rows)
+            and int(activation_rows[int(activation_cursor)][0]) == int(note_index)
+        )
+        if is_next_activation:
+            if active_until_ms is not None:
+                raise ValueError("note_graph: a persisted activation occurs while fever is still active")
+            duration_ms = float(activation_rows[int(activation_cursor)][1])
+            active_until_ms = float(event_ms) + float(duration_ms)
+            activation_cursor += 1
+        note["fever"] = bool(active_until_ms is not None)
+    if int(activation_cursor) != len(activation_rows):
+        raise ValueError("note_graph: exact input order did not consume every persisted activation")
 
 
 def _mark_endpoint_early_hits(
@@ -943,7 +1223,6 @@ def timeline_frontier_note_graph(
         )
 
     return notes
-    return notes
 
 
 def base_note_graph(
@@ -1012,6 +1291,15 @@ def force_greats_note_graph(
     """
     n = int(total_notes)
     apply_guidance = _normalize_timing_mode(timing_mode) == "perfect_window"
+    if apply_guidance:
+        if note_types is None or lanes is None:
+            raise ValueError(
+                "note_graph: perfect-window FG replay requires chart note_types and lanes"
+            )
+        if int(np.asarray(note_types).reshape(-1).shape[0]) != n or int(
+            np.asarray(lanes).reshape(-1).shape[0]
+        ) != n:
+            raise ValueError("note_graph: note_types and lanes must match total_notes")
     notes = _perfect_note_graph(n, timestamps)
 
     for sec in frontier_trace:
@@ -1130,13 +1418,17 @@ def force_greats_note_graph(
             total_notes=n,
             note_types=note_types,
         )
-        _mark_activation_preemptor_order_deltas(
+        input_order_constraints = _mark_activation_preemptor_order_deltas(
             notes,
             frontier_trace=frontier_trace,
             total_notes=n,
             note_types=note_types,
             lanes=lanes,
+            require_exact_schedule=True,
         )
+        _materialize_remaining_selector_deltas(notes, note_types=note_types)
+        _assign_exact_input_order(notes, input_order_constraints)
+        _apply_exact_schedule_fever(notes, frontier_trace=frontier_trace)
 
     return notes
 

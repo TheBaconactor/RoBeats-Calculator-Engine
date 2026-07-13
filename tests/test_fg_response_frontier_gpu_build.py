@@ -2097,7 +2097,10 @@ def test_fg_response_interval_successor_prepass_matches_retired_nested_scan() ->
         assert int(actual_width) == int(expected_width), case_idx
 
 
-def test_fg_response_reachability_prefix_reduction_matches_full_scan() -> None:
+def test_fg_response_exact_schedule_query_matches_python_witness() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+        activation_schedule_witnesses_weighted_lane_aware,
+    )
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _numba_activation_reachable_contiguous_run,
         _numba_region2_k_scan_stop,
@@ -2108,6 +2111,7 @@ def test_fg_response_reachability_prefix_reduction_matches_full_scan() -> None:
         *,
         activation_index: int,
         activation_hit_timestamp: float,
+        timestamps: np.ndarray,
         perfect_floor_timestamps: np.ndarray,
         perfect_candidate_timestamps: np.ndarray,
         great_floor_timestamps: np.ndarray,
@@ -2129,36 +2133,33 @@ def test_fg_response_reachability_prefix_reduction_matches_full_scan() -> None:
         g1 = min(end, int(great_start) + int(great_count))
         if g1 < g0:
             g1 = g0
-        h_a = np.float32(float(activation_hit_timestamp))
-        lane_a = int(lanes[a])
         activation_is_great = int(activation_great_i) != 0 or (g0 <= a < g1)
-        lo_a = great_floor_timestamps[a] if activation_is_great else perfect_floor_timestamps[a]
-        unit_a = 0.5 if activation_is_great else 1.0
-        forced_units = 0.0
-        optional_units = 0.0
-        for j in range(start, end):
-            if j == a:
-                continue
-            is_great = g0 <= j < g1
-            lo_j = great_floor_timestamps[j] if is_great else perfect_floor_timestamps[j]
-            hi_j = great_candidate_timestamps[j] if is_great else perfect_candidate_timestamps[j]
-            unit_j = 0.5 if is_great else 1.0
-            same_lane = int(lanes[j]) == lane_a
-            if same_lane and j > a and hi_j < h_a and lo_a <= hi_j:
-                return False
-            forced_any_lane = hi_j < h_a
-            forced_same_lane_older = same_lane and j < a and lo_j <= h_a
-            if forced_any_lane or forced_same_lane_older:
-                forced_units += float(unit_j)
-                if forced_units >= float(fever_fill_denom):
-                    return False
-                continue
-            if lo_j <= h_a:
-                if same_lane and j > a:
-                    continue
-                optional_units += float(unit_j)
-        needed_before_activation = max(0.0, float(fever_fill_denom) - float(unit_a))
-        return bool(forced_units < float(fever_fill_denom) and forced_units + optional_units >= needed_before_activation)
+        is_great = np.zeros(int(timestamps.shape[0]), dtype=np.bool_)
+        is_great[g0:g1] = True
+        if activation_is_great:
+            is_great[a] = True
+        lows = np.where(is_great, great_floor_timestamps, perfect_floor_timestamps)
+        highs = np.where(is_great, great_candidate_timestamps, perfect_candidate_timestamps)
+        fill_units = np.where(is_great, 0.5, 1.0).astype(np.float32)
+        preactivation_count = int(a) - int(start)
+        preactivation_great_count = int(np.count_nonzero(is_great[start:a]))
+        return bool(
+            activation_schedule_witnesses_weighted_lane_aware(
+                activation_index=a,
+                activation_hit_timestamp=float(activation_hit_timestamp),
+                low_hit_timestamps=lows,
+                high_hit_timestamps=highs,
+                lanes=lanes,
+                fill_units=fill_units,
+                fever_fill_denom=float(fever_fill_denom),
+                section_start=start,
+                section_end=end,
+                required_preactivation_fill_half_units=(
+                    2 * int(preactivation_count) - int(preactivation_great_count)
+                ),
+                required_preactivation_event_count=int(preactivation_count),
+            )
+        )
 
     rng = np.random.default_rng(20260706)
     gaps = rng.uniform(0.04, 0.31, size=48).astype(np.float64)
@@ -2169,10 +2170,6 @@ def test_fg_response_reachability_prefix_reduction_matches_full_scan() -> None:
     perfect_candidates = (timestamps.astype(np.float64) + rng.uniform(0.035, 0.045, size=48)).astype(np.float32)
     great_candidates = (timestamps.astype(np.float64) + rng.uniform(0.18, 0.19, size=48)).astype(np.float32)
     lanes = rng.integers(0, 4, size=48, dtype=np.int32)
-    high_delta = float(
-        np.float32(max(0.0, float(np.max(np.maximum(perfect_candidates, great_candidates) - timestamps))) + 1.0e-6)
-    )
-
     for _ in range(300):
         section_start = int(rng.integers(0, 47))
         section_end = int(rng.integers(section_start + 1, 49))
@@ -2190,7 +2187,6 @@ def test_fg_response_reachability_prefix_reduction_matches_full_scan() -> None:
             _numba_activation_reachable_contiguous_run(
                 activation,
                 float(hit),
-                high_delta,
                 timestamps,
                 perfect_floor,
                 perfect_candidates,
@@ -2207,6 +2203,7 @@ def test_fg_response_reachability_prefix_reduction_matches_full_scan() -> None:
         ) is full_scan(
             activation_index=activation,
             activation_hit_timestamp=float(hit),
+            timestamps=timestamps,
             perfect_floor_timestamps=perfect_floor,
             perfect_candidate_timestamps=perfect_candidates,
             great_floor_timestamps=great_floor,

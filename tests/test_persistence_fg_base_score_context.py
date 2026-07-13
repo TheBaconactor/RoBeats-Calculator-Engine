@@ -89,6 +89,11 @@ def test_authoritative_fg_preserves_source_paired_base_score(monkeypatch):
     )
     monkeypatch.setattr(
         authority,
+        "score_stats_fixed_timing_exact",
+        lambda *_args, **_kwargs: 160,
+    )
+    monkeypatch.setattr(
+        authority,
         "score_force_greats_response_surface_exact",
         lambda *_args, **_kwargs: 150,
     )
@@ -107,7 +112,11 @@ def test_authoritative_fg_preserves_source_paired_base_score(monkeypatch):
         },
     }
 
-    out = authority.canonicalize_authoritative_fg_entry(entry, calc_song={}, ref_arrays={})
+    out = authority.canonicalize_authoritative_fg_entry(
+        entry,
+        calc_song={"metadata": {"TimingEnvelopeMode": "zero_ms"}},
+        ref_arrays={},
+    )
 
     assert out["score"] == 160
     assert out["fg_base_score"] == 100

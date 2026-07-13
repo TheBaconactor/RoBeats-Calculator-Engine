@@ -9,6 +9,7 @@ import numpy as np
 from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_for_contiguous_great_run
 
 from .fill_crossing import (
+    activation_schedule_witnesses_weighted_lane_aware,
     late_great_activation_prefix,
     perfect_crossing_is_region3,
     perfect_fill_crossing_offset,
@@ -93,8 +94,6 @@ class _ActivationReachabilityContext:
     great_candidate_timestamps: np.ndarray
     lanes: np.ndarray
     fever_fill_denom: float
-    candidate_high_delta_max: float
-    workspace: tuple[np.ndarray, ...]
 
 
 def _build_activation_reachability_context(
@@ -125,11 +124,6 @@ def _build_activation_reachability_context(
         for values in (perfect_floor, perfect_candidates, great_floor, great_candidates, lane_arr)
     ):
         raise ValueError("FG activation reachability arrays must match timestamps")
-    candidate_high_delta_max = float(
-        np.float32(
-            max(0.0, float(np.max(np.maximum(perfect_candidates, great_candidates) - ts))) + 1.0e-6
-        )
-    )
     return _ActivationReachabilityContext(
         timestamps=ts,
         perfect_floor_timestamps=perfect_floor,
@@ -138,11 +132,6 @@ def _build_activation_reachability_context(
         great_candidate_timestamps=great_candidates,
         lanes=lane_arr,
         fever_fill_denom=float(fever_fill_denom),
-        candidate_high_delta_max=float(candidate_high_delta_max),
-        workspace=_rb_numba._numba_build_activation_reachability_workspace(
-            lane_arr,
-            float(fever_fill_denom),
-        ),
     )
 
 
@@ -501,10 +490,9 @@ def _activation_reachable(
     if not (int(section_start) <= int(great_start) <= int(n)) or int(great_count) < 0:
         raise ValueError("FG activation reachability received an invalid Great run")
     return bool(
-        _rb_numba._numba_activation_reachable_contiguous_run_with_scratch(
+        _rb_numba._numba_activation_reachable_contiguous_run(
             int(a),
             float(hit),
-            float(context.candidate_high_delta_max),
             context.timestamps,
             context.perfect_floor_timestamps,
             context.perfect_candidate_timestamps,
@@ -517,7 +505,6 @@ def _activation_reachable(
             int(great_start),
             int(great_count),
             int(bool(activation_great)),
-            *context.workspace,
         )
     )
 
@@ -1145,6 +1132,7 @@ def _edge_surface_options(
 def _option_with_witness(
     option: dict[str, Any],
     *,
+    reachability_context: _ActivationReachabilityContext,
     timestamps: np.ndarray,
     n: int,
     real_fever_time: float,
@@ -1163,6 +1151,51 @@ def _option_with_witness(
         float(real_fever_time), int(w["target_end"]),
         perfect_floor_timestamps,
     )
+    activation_idx = int(option["activation_index"])
+    section_start = int(option["forced_start_index"])
+    run_start = int(option["forced_run_start_index"])
+    run_end = min(int(n), int(run_start) + int(option["forced_run_count"]))
+    is_great = np.zeros(int(n), dtype=np.bool_)
+    is_great[max(0, int(run_start)) : max(0, int(run_end))] = True
+    if str(option["activation_judgment"]) == "late_great":
+        is_great[int(activation_idx)] = True
+    low = np.where(
+        is_great,
+        reachability_context.great_floor_timestamps,
+        reachability_context.perfect_floor_timestamps,
+    )
+    high = np.where(
+        is_great,
+        reachability_context.great_candidate_timestamps,
+        reachability_context.perfect_candidate_timestamps,
+    )
+    fill_units = np.where(is_great, 0.5, 1.0).astype(np.float32)
+    preactivation_event_count = int(activation_idx) - int(section_start)
+    preactivation_great_count = max(
+        0,
+        min(int(activation_idx), int(run_end)) - max(int(section_start), int(run_start)),
+    )
+    preactivation_fill_half = (
+        2 * int(preactivation_event_count) - int(preactivation_great_count)
+    )
+    schedule_rows = activation_schedule_witnesses_weighted_lane_aware(
+        activation_index=int(activation_idx),
+        activation_hit_timestamp=float(centered_start_time),
+        low_hit_timestamps=low,
+        high_hit_timestamps=high,
+        lanes=reachability_context.lanes,
+        fill_units=fill_units,
+        fever_fill_denom=float(reachability_context.fever_fill_denom),
+        section_start=int(section_start),
+        section_end=int(n),
+        required_preactivation_fill_half_units=int(preactivation_fill_half),
+        required_preactivation_event_count=int(preactivation_event_count),
+    )
+    if len(schedule_rows) != 1:
+        raise ValueError(
+            "FG accepted edge has no unique exact lane-prefix witness for its scored surface"
+        )
+    schedule = schedule_rows[0]
     return {
         "k": option["k"],
         "next_state": option["next_state"],
@@ -1181,6 +1214,7 @@ def _option_with_witness(
         "forced_run_count": option["forced_run_count"],
         "fever_end_index": option["fever_end_index"],
         "fever_end_ms": option["fever_end_ms"],
+        "fever_duration_ms": float(real_fever_time) * 1000.0,
         # Largest-cushion fever cutoff: the LATEST legal activation hit (`hit_hi`) plus the
         # fever duration -- this is the boundary `_edge_end` actually used to compute
         # `fever_end_index`, and it matches the base trace's `fever_window_end_ms`. It must NOT
@@ -1200,6 +1234,15 @@ def _option_with_witness(
         # hit offsets are stamped by the note-graph layer (like #42's endpoint-early Perfect hits).
         "early_great_start": int(option.get("early_great_start", -1)),
         "early_great_end": int(option.get("early_great_end", -1)),
+        "activation_schedule_schema_version": 1,
+        "preactivation_order": [int(index) for index in schedule.preactivation_order],
+        "preactivation_lane_prefixes": [
+            {"lane": int(row.lane), "count": len(row.note_indices)}
+            for row in schedule.lane_prefixes
+        ],
+        "preactivation_fill_half_units": int(schedule.preactivation_fill_half_units),
+        "preactivation_event_count": int(schedule.preactivation_event_count),
+        "preactivation_great_count": int(schedule.preactivation_great_count),
         "surface": option["surface"],
     }
 
@@ -1241,6 +1284,7 @@ def _edge_surface_option_details(
     return [
         _option_with_witness(
             option,
+            reachability_context=reachability_context,
             timestamps=timestamps,
             n=int(n),
             real_fever_time=float(real_fever_time),
@@ -1340,9 +1384,9 @@ def reconstruct_force_greats_response_trace(
     great_floor_ts = np.ascontiguousarray(np.asarray(great_floor_timestamps, dtype=np.float32).reshape(-1))
     if int(great_floor_ts.shape[0]) != n:
         raise ValueError("great_floor_timestamps length must match timestamps")
-    lane_arr = np.arange(n, dtype=np.int32) if lanes is None else np.ascontiguousarray(
-        np.asarray(lanes, dtype=np.int32).reshape(-1)
-    )
+    if lanes is None:
+        raise ValueError("lanes are required for input-engine-aware FG response reconstruction")
+    lane_arr = np.ascontiguousarray(np.asarray(lanes, dtype=np.int32).reshape(-1))
     if int(lane_arr.shape[0]) != n:
         raise ValueError("lanes length must match timestamps")
     reachability_context: _ActivationReachabilityContext | None = None
@@ -1453,6 +1497,7 @@ def reconstruct_force_greats_response_trace(
         section = dict(
             _option_with_witness(
                 option,
+                reachability_context=_reachability_context(),
                 timestamps=ts,
                 n=int(n),
                 real_fever_time=float(real_fever_time),

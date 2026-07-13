@@ -110,6 +110,7 @@ def _replay_response_result_through_input_engine(*, calc_song, final_stats, sele
         total_notes=total_notes,
         timestamps=ts,
         note_types=note_types,
+        lanes=lanes,
         timing_mode="perfect_window",
     )
     surface = tuple(map(int, result.surface))

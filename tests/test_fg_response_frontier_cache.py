@@ -606,7 +606,11 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache.reset_fg_response_frontier_payload_cache()
     keys = ((0, 0), (1, 0))
-    current_version = response_cache._FG_RESPONSE_CACHE_VERSION
+    # Exercise the explicitly ratified V30 lineage independently of the current semantic
+    # version. Issue #149 deliberately starts V31 with no compatible predecessor because V30
+    # bundles do not contain the exact cross-lane activation schedule witness.
+    current_version = "fg-response-frontier-visible-first-v30+logic-6126c01d035d"
+    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", current_version)
     compatible_versions = response_cache_store.fg_response_compatible_cache_versions()
     assert compatible_versions[0] == current_version
     assert compatible_versions[1:] == (
@@ -653,6 +657,14 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     assert response_cache_store.resolve_fg_response_bundle_path(scoring.cache_key) == legacy_path
     assert response_cache_store.purge_stale_version_cache_files() == 0
     assert legacy_path.exists()
+
+
+def test_issue149_v31_rejects_every_predecessor_cache_version() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
+
+    current_version = response_cache._FG_RESPONSE_CACHE_VERSION
+    assert current_version.startswith("fg-response-frontier-visible-first-v31+logic-")
+    assert response_cache_store.fg_response_compatible_cache_versions() == (current_version,)
 
 
 def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path, monkeypatch) -> None:
