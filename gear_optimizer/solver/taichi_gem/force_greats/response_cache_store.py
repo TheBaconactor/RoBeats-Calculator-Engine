@@ -79,6 +79,15 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Exact-schedule note-graph reconstruction now chains postactivation presses per lane instead
+    # of imposing a foreign global chart-order chain across independent lanes, and a hold-head
+    # activation may use the trace's legal upper edge when an endpoint requires it. The cached V31
+    # producer, bundle metadata, and both compact sidecars are untouched; the conservative
+    # game-engine fingerprint still moves because note_graph.py changed. Ratify only the exact
+    # production V31 pool built immediately before these reconstruction fixes.
+    "fg-response-frontier-visible-first-v31+logic-cce609775b15": (
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
     # The exact FG scorer again reads the immutable PP/CM/FM tables directly instead of
     # materializing three per-lane copies. Cached frontier production and ordered V30 bytes are
     # untouched. List every ratified predecessor directly: resolution is deliberately
