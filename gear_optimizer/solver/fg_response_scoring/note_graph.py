@@ -78,7 +78,6 @@ _FEVER_END_SAME_CHART_TIME_MS = 0.01
 _TIMING_MODES = frozenset({"perfect_window", "zero_ms"})
 _EARLY_GREAT_LOWER_EXTRA_MS = -75.0
 _EARLY_GREAT_FLOOR_MS = float(_PERFECT_LOWER_MS) + float(_EARLY_GREAT_LOWER_EXTRA_MS)  # -95
-_ENDPOINT_CUTOFF_SAFETY_MS = 1.0
 _EARLY_GREAT_ONLY_UPPER_GAP_MS = 1.0
 
 
@@ -87,6 +86,17 @@ def _normalize_timing_mode(timing_mode: str) -> str:
     if mode not in _TIMING_MODES:
         raise ValueError(f"note_graph: unknown timing_mode {timing_mode!r}")
     return mode
+
+
+def _strictly_before_cutoff_ms(cutoff_ms: float) -> float:
+    """Return the greatest float64 event time that remains strictly before a finite cutoff."""
+    cutoff = np.float64(cutoff_ms)
+    if not np.isfinite(cutoff):
+        raise ValueError("note_graph: fever cutoff must be finite")
+    upper = np.nextafter(cutoff, np.float64(-np.inf))
+    if not np.isfinite(upper) or not upper < cutoff:
+        raise ValueError("note_graph: fever cutoff has no finite strict predecessor")
+    return float(upper)
 
 
 def _perfect_bounds_ms_at(note_types: np.ndarray, j: int) -> tuple[float, float]:
@@ -807,7 +817,7 @@ def _mark_endpoint_early_hits(
 
       * ``legal_low_hit = hit + legal_low``        earliest legal Perfect hit (held-tail-aware
         lower bound: -19 normal, -39 held tail -- the exclusive edge + 1ms, BUG-1)
-      * ``upper_hit = cutoff - 1ms``               latest hit still inside the fever cutoff
+      * ``upper_hit = nextafter(cutoff, -inf)``    latest float64 hit strictly inside the cutoff
       * ``lo_hit = max(legal_low_hit, prev_hit)``  also >= the previous shown hit (monotonic order)
       * if ``lo_hit >= upper_hit`` (degenerate / no in-fever room): ``shown_hit = lo_hit`` -- the
         legal + monotonic floor; for a valid trace ``lo_hit < cutoff``, so the note still lands in
@@ -818,7 +828,7 @@ def _mark_endpoint_early_hits(
     offset shown, never the fever/great set or any score (the note graph is not on the scoring
     path; ``reconcile_*`` checks fever/great positions + counts, not deltas). The shown hit stays
     LEGAL (``delta >= legal_low``), IN-FEVER (``shown_hit < cutoff``; the center case is
-    ``<= cutoff - 1``), and MONOTONIC (``>= prev shown hit``, including the degenerate clamp).
+    ``< cutoff``), and MONOTONIC (``>= prev shown hit``, including the degenerate clamp).
 
     Monotonicity is tracked across ALL notes of the section left-to-right: each note's shown hit is
     ``hit_time_ms + delta_ms`` (treating ``None``/unset delta as 0; the activation witness
@@ -834,7 +844,7 @@ def _mark_endpoint_early_hits(
     if fever_window_end_ms is None:
         return
     cutoff = float(fever_window_end_ms)
-    upper_hit = cutoff - _ENDPOINT_CUTOFF_SAFETY_MS  # latest hit still inside the fever cutoff
+    upper_hit = _strictly_before_cutoff_ms(cutoff)
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
     prev_hit = -np.inf  # running largest shown hit across the section (monotonic order)
     for j in range(max(0, int(activation_index)), min(int(fever_end_index), int(total_notes))):
@@ -896,6 +906,7 @@ def _mark_endpoint_early_great_hits(
         )
 
     cutoff = float(fever_window_end_ms)
+    strict_cutoff = _strictly_before_cutoff_ms(cutoff)
     nt = np.asarray(note_types).reshape(-1)
     prev_hit = -np.inf
 
@@ -915,7 +926,7 @@ def _mark_endpoint_early_great_hits(
             continue
 
         great_low, great_high = _early_great_bounds_ms_at(nt, j)
-        fever_high = cutoff - hit - _ENDPOINT_CUTOFF_SAFETY_MS
+        fever_high = strict_cutoff - hit
         safe_low = float(great_low)
         safe_high = min(float(great_high), float(fever_high))
         if safe_low > safe_high:
@@ -982,7 +993,7 @@ def _mark_fever_end_cluster_safe_delta(
     For each same-chart-time fever cluster at the section tail:
 
       * ``judgment_safe = [perfect_lower, perfect_upper]`` (held-tail-aware)
-      * ``fever_safe_upper = cutoff - hit - 1ms``
+      * ``fever_safe_upper = nextafter(cutoff, -inf) - hit``
       * ``safe = judgment_safe ∩ (-inf, fever_safe_upper]``
       * ``cluster_safe = intersection of every cluster note's safe interval``
 
@@ -1009,7 +1020,8 @@ def _mark_fever_end_cluster_safe_delta(
     hit = float(witness["hit_time_ms"])
     if hit >= cutoff:
         return
-    fever_upper_witness = cutoff - hit - 1.0
+    strict_cutoff = _strictly_before_cutoff_ms(cutoff)
+    fever_upper_witness = strict_cutoff - hit
     if fever_upper_witness >= _PERFECT_UPPER_MS:
         return
     witness_result = str(witness.get("note_result", "Perfect"))
@@ -1051,7 +1063,7 @@ def _mark_fever_end_cluster_safe_delta(
     for j in cluster:
         j_lo, j_hi = _perfect_bounds_ms_at(nt, j)
         min_judgment_hi = min(min_judgment_hi, j_hi)
-        fever_upper_delta = cutoff - float(notes[j]["hit_time_ms"]) - 1.0
+        fever_upper_delta = strict_cutoff - float(notes[j]["hit_time_ms"])
         safe_hi = min(j_hi, fever_upper_delta)
         safe_lo = j_lo
         if safe_lo > safe_hi:
