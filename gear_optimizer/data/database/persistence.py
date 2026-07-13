@@ -4,11 +4,12 @@ Loadout persistence: batch writes into the tiered base/FG leaderboards.
 `save_loadouts_batch` is the public single-transaction entry; it delegates to
 `save_team_buff_loadouts_batch`, which owns the tier-partitioned write surface.
 """
+import os
 import sqlite3
 import time
 import warnings
 import logging
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 from ...core.fallback_monitor import warn_fallback
 from ...core.gem_defs import fg_score_from_force
 from ...core.parsing import env_flag
@@ -50,6 +51,7 @@ from ..loadout_equivalence import (
 from ..mini_ascension import MINI_ASCENSION_CACHE_VERSION, materialize_minis_for_song
 from gear_optimizer.core.parsing import env_get
 from .connection import get_db_connection, get_evolution_db_path, get_db_connection_cached
+from .songs import get_song_counters, _update_song_counters_in_transaction
 from .loadout_io import _compact_gear_for_db, _compact_minis_for_db
 from .force_normalize import (
     _get_overflow_from_details,
@@ -66,28 +68,51 @@ from .force_normalize import (
 logger = logging.getLogger(__name__)
 
 
-def save_loadouts_batch(
-    song_name: str,
-    entries: List[PersistenceEntry],
-    *,
-    db_path: Optional[str] = None,
-    team_buff: str = "T5",
-    preserve_attempt_meta: bool = False,
-) -> None:
-    """
-    Batch insert/update loadouts for a song in a single transaction.
-    Persists base results into TeamBuff tier tables for the provided baseline tier.
-    Args:
-        song_name: Name of the song
-        entries: List of persistence dicts with keys: score, fg_score, gear, minis, details, force
-        team_buff: Baseline TeamBuff tier for this run (default: T5)
-    """
-    if not entries:
-        return
-    song_name = str(song_name or "").strip()
-    if not song_name:
-        return
-    team_buff = normalize_team_buff(team_buff, default="T5")
+def _is_lock_error(err: sqlite3.Error) -> bool:
+    msg = str(err or "").lower()
+    return (
+        ("database is locked" in msg)
+        or ("database is busy" in msg)
+        or ("database table is locked" in msg)
+    )
+
+
+def _run_write_transaction(conn: sqlite3.Connection, operation: Callable[[], None]) -> None:
+    """Run one exact write transaction with the established SQLite lock retry policy."""
+    max_attempts = 6
+    base_sleep_sec = 0.05
+    for attempt in range(max_attempts):
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            operation()
+            conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            if _is_lock_error(exc) and attempt < (max_attempts - 1):
+                sleep_sec = min(2.0, float(base_sleep_sec) * (2**attempt))
+                time.sleep(max(0.0, sleep_sec))
+                continue
+            raise
+        except BaseException:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
+
+
+def configure_persistent_writer_connection(conn: sqlite3.Connection) -> None:
+    """Apply the established write PRAGMA once, before any writer transaction starts."""
+    if conn.in_transaction:
+        raise RuntimeError("Cannot configure SQLite writer connection during a transaction")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+
+
+def _loadout_score_maxima(entries: Sequence[Mapping[str, Any]]) -> tuple[int | None, int | None]:
     best_score_max = None
     best_fg_max = None
     for entry in entries:
@@ -121,65 +146,191 @@ def save_loadouts_batch(
             and (best_fg_max is None or fg_score > best_fg_max)
         ):
             best_fg_max = fg_score
+    return best_score_max, best_fg_max
+
+
+def _save_loadouts_batch_in_transaction(
+    conn: sqlite3.Connection,
+    song_name: str,
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    db_path: str,
+    team_buff: str,
+    preserve_attempt_meta: bool,
+) -> None:
+    best_score_max, best_fg_max = _loadout_score_maxima(entries)
+    save_team_buff_loadouts_batch(
+        song_name,
+        team_buff,
+        entries,
+        conn=conn,
+        commit=False,
+        db_path=db_path,
+        preserve_attempt_meta=bool(preserve_attempt_meta),
+    )
+    if best_score_max is not None:
+        conn.execute(
+            """
+            INSERT INTO songs (name, best_score) VALUES (?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                best_score = MAX(best_score, excluded.best_score),
+                last_updated = strftime('%s', 'now')
+            """,
+            (song_name, best_score_max),
+        )
+    if best_fg_max:
+        conn.execute(
+            """
+            INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
+                last_updated = strftime('%s', 'now')
+            """,
+            (song_name, best_fg_max),
+        )
+
+
+def save_loadouts_batch(
+    song_name: str,
+    entries: List[PersistenceEntry],
+    *,
+    db_path: Optional[str] = None,
+    team_buff: str = "T5",
+    preserve_attempt_meta: bool = False,
+) -> None:
+    """Batch insert/update loadouts for one song in one transaction."""
+    if not entries:
+        return
+    song_name = str(song_name or "").strip()
+    if not song_name:
+        return
+    team_buff = normalize_team_buff(team_buff, default="T5")
     resolved_db_path = str(db_path or get_evolution_db_path())
     conn = get_db_connection(resolved_db_path)
     try:
-        def _is_lock_error(err: sqlite3.Error) -> bool:
-            msg = str(err or "").lower()
-            return ("database is locked" in msg) or ("database is busy" in msg) or ("database table is locked" in msg)
-        max_attempts = 6
-        base_sleep_sec = 0.05
-        for attempt in range(max_attempts):
-            try:
-                save_team_buff_loadouts_batch(
-                    song_name,
-                    team_buff,
-                    entries,
-                    conn=conn,
-                    commit=False,
-                    db_path=resolved_db_path,
-                    preserve_attempt_meta=bool(preserve_attempt_meta),
-                )
-                if best_score_max is not None:
-                    conn.execute(
-                        """
-                        INSERT INTO songs (name, best_score) VALUES (?, ?)
-                        ON CONFLICT(name) DO UPDATE SET
-                            best_score = MAX(best_score, excluded.best_score),
-                            last_updated = strftime('%s', 'now')
-                        """,
-                        (song_name, best_score_max),
-                    )
-                if best_fg_max:
-                    conn.execute(
-                        """
-                        INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
-                        ON CONFLICT(name) DO UPDATE SET
-                            best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
-                            last_updated = strftime('%s', 'now')
-                        """,
-                        (song_name, best_fg_max),
-                    )
-                conn.commit()
-                return
-            except sqlite3.OperationalError as e:
-                try:
-                    conn.rollback()
-                except sqlite3.Error:
-                    pass
-                if _is_lock_error(e) and attempt < (max_attempts - 1):
-                    sleep_sec = min(2.0, float(base_sleep_sec) * (2**attempt))
-                    time.sleep(max(0.0, sleep_sec))
-                    continue
-                raise
-            except sqlite3.Error:
-                try:
-                    conn.rollback()
-                except sqlite3.Error:
-                    pass
-                raise
+        configure_persistent_writer_connection(conn)
+        _run_write_transaction(
+            conn,
+            lambda: _save_loadouts_batch_in_transaction(
+                conn,
+                song_name,
+                entries,
+                db_path=resolved_db_path,
+                team_buff=team_buff,
+                preserve_attempt_meta=bool(preserve_attempt_meta),
+            ),
+        )
     finally:
         conn.close()
+
+
+def _normalize_db_path(db_path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(str(db_path))))
+
+
+def _resolve_connection_db_path(conn: sqlite3.Connection, db_path: Optional[str]) -> str:
+    rows = conn.execute("PRAGMA database_list").fetchall()
+    connection_path = ""
+    for row in rows:
+        name = row[1] if not isinstance(row, sqlite3.Row) else row["name"]
+        if str(name) != "main":
+            continue
+        connection_path = str(row[2] if not isinstance(row, sqlite3.Row) else row["file"] or "")
+        break
+    if not connection_path:
+        raise ValueError("Optimizer persistence requires a file-backed SQLite connection")
+    resolved_connection_path = _normalize_db_path(connection_path)
+    if db_path is not None and _normalize_db_path(str(db_path)) != resolved_connection_path:
+        raise ValueError("Optimizer persistence db_path does not match the supplied SQLite connection")
+    return resolved_connection_path
+
+
+def _validate_optimizer_entry_integers(entries: Sequence[Mapping[str, Any]]) -> None:
+    """Fail loudly on malformed optimizer-owned score fields before persistence."""
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, Mapping):
+            raise TypeError(f"Optimizer persistence entry {index} must be a mapping")
+        for field in ("score", "fg_score", "fg_base_score"):
+            if field not in entry:
+                continue
+            try:
+                int(entry.get(field) or 0)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"Optimizer persistence entry {index} has invalid {field}") from exc
+
+
+def save_optimizer_song_result(
+    song_name: str,
+    entries: List[PersistenceEntry],
+    *,
+    processed_run: bool,
+    conn: Optional[sqlite3.Connection] = None,
+    db_path: Optional[str] = None,
+    team_buff: str = "T5",
+) -> None:
+    """Atomically persist one optimizer result, including its attempt counters."""
+    song_name = str(song_name or "").strip()
+    if not song_name:
+        raise ValueError("Optimizer persistence requires a non-empty song key")
+    entries = entries or []
+    _validate_optimizer_entry_integers(entries)
+    team_buff = normalize_team_buff(team_buff, default="T5")
+    own_conn = conn is None
+    if conn is None:
+        resolved_db_path = str(db_path or get_evolution_db_path())
+        conn = get_db_connection(resolved_db_path)
+        try:
+            configure_persistent_writer_connection(conn)
+        except BaseException:
+            conn.close()
+            raise
+    else:
+        resolved_db_path = _resolve_connection_db_path(conn, db_path)
+
+    def _save_attempt() -> None:
+        prev_life, prev_attempts, prev_best_score, prev_best_fg = get_song_counters(song_name, conn=conn)
+        run_score, run_best_fg = _loadout_score_maxima(entries)
+        record_improved = (int(run_score or 0) > int(prev_best_score or 0)) or (
+            int(run_best_fg or 0) > int(prev_best_fg or 0)
+        )
+
+        if processed_run:
+            attempt_lifetime = int(prev_life or 0) + 1
+            attempts_first = (
+                1 if record_improved else (int(prev_attempts or 0) + 1 if int(prev_attempts or 0) else 1)
+            )
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                details = entry.get("details") or {}
+                if not isinstance(details, dict):
+                    details = {}
+                details = dict(details)
+                details["attempt_lifetime"] = attempt_lifetime
+                details["attempts_first"] = attempts_first
+                entry["details"] = details
+
+        if entries:
+            _save_loadouts_batch_in_transaction(
+                conn,
+                song_name,
+                entries,
+                db_path=resolved_db_path,
+                team_buff=team_buff,
+                preserve_attempt_meta=False,
+            )
+        _update_song_counters_in_transaction(
+            conn,
+            song_name,
+            processed_run=processed_run,
+            record_improved=record_improved,
+        )
+
+    try:
+        _run_write_transaction(conn, _save_attempt)
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def save_team_buff_loadouts_batch(
@@ -566,10 +717,11 @@ def save_team_buff_loadouts_batch(
     else:
         resolved_db_path = str(db_path or get_evolution_db_path())
     try:
-        try:
-            conn.execute("PRAGMA synchronous=NORMAL;")
-        except Exception as e:
-            logger.warning(f"database:_recompute_stats_in_details_for_persistence: {e}")
+        if not conn.in_transaction:
+            try:
+                conn.execute("PRAGMA synchronous=NORMAL;")
+            except Exception as e:
+                logger.warning(f"database:_recompute_stats_in_details_for_persistence: {e}")
         _t_params0 = time.perf_counter()
         loadouts_params = []
         deferred_fg_loadouts_params = []

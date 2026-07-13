@@ -595,7 +595,7 @@ def test_fg_response_frontier_bundle_version_change_invalidates_legacy_disk_bund
     assert len(list(tmp_path.glob("*.npz"))) == 2
 
 
-@pytest.mark.parametrize("predecessor_index", (1, 2))
+@pytest.mark.parametrize("predecessor_index", (1, 2, 3))
 def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     tmp_path: Path,
     monkeypatch,
@@ -610,6 +610,7 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     compatible_versions = response_cache_store.fg_response_compatible_cache_versions()
     assert compatible_versions[0] == current_version
     assert compatible_versions[1:] == (
+        "fg-response-frontier-visible-first-v30+logic-87b79fd8a257",
         "fg-response-frontier-visible-first-v30+logic-584d8e8c6077",
         "fg-response-frontier-visible-first-v30+logic-a6d09c0280bd",
     )
@@ -695,8 +696,9 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
     _plant("stale_b", "fg-response-frontier-legacy-v2")
     _plant("stale_c", "fg-response-frontier-legacy-v1", sidecars=False)  # sidecars already evicted
     _plant("current", _FG_RESPONSE_CACHE_VERSION)
-    compatible_predecessor = store.fg_response_compatible_cache_versions()[1]
-    _plant("compatible", compatible_predecessor)
+    compatible_predecessors = store.fg_response_compatible_cache_versions()[1:]
+    for index, compatible_predecessor in enumerate(compatible_predecessors):
+        _plant(f"compatible_{index}", compatible_predecessor)
     _plant("noversion", None)  # missing version field: must be kept, never guessed stale
 
     removed = store.purge_stale_version_cache_files()
@@ -705,18 +707,24 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
     # sidecars are not failures, so the marker is still written below (purge_complete-flag guard).
     assert removed == 7
     # The current entry AND the version-less entry survive (never guess-delete), plus the marker.
-    assert {p.name for p in tmp_path.iterdir()} == {
+    expected_names = {
         "current.npz",
         f"current{store._SURFACE_ROW_SIDECAR_SUFFIX}",
         f"current{store._SURFACE_PATTERN_SIDECAR_SUFFIX}",
-        "compatible.npz",
-        f"compatible{store._SURFACE_ROW_SIDECAR_SUFFIX}",
-        f"compatible{store._SURFACE_PATTERN_SIDECAR_SUFFIX}",
         "noversion.npz",
         f"noversion{store._SURFACE_ROW_SIDECAR_SUFFIX}",
         f"noversion{store._SURFACE_PATTERN_SIDECAR_SUFFIX}",
         store._PURGED_VERSION_MARKER,
     }
+    for index in range(len(compatible_predecessors)):
+        expected_names.update(
+            {
+                f"compatible_{index}.npz",
+                f"compatible_{index}{store._SURFACE_ROW_SIDECAR_SUFFIX}",
+                f"compatible_{index}{store._SURFACE_PATTERN_SIDECAR_SUFFIX}",
+            }
+        )
+    assert {p.name for p in tmp_path.iterdir()} == expected_names
     assert (
         (tmp_path / store._PURGED_VERSION_MARKER).read_text(encoding="utf-8").strip()
         == store._purged_version_marker_value()

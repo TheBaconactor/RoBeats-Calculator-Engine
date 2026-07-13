@@ -19,6 +19,7 @@ from gear_optimizer.core.cpu_affinity import (
 )
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
+from gear_optimizer.core.recycling_process_pool import BoundedRecyclingProcessPool
 from gear_optimizer.solver.frontier_cache_manifest import (
     apply_manifest_results as _shared_apply_manifest_results,
     build_manifest_plan as _shared_build_manifest_plan,
@@ -77,6 +78,7 @@ def maintain_provisioned_fg_response_frontier_cache() -> None:
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
 _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
+_FG_PREBUILD_MAX_TASKS_PER_WORKER = 16
 
 # Memory-weighted admission model for the cold FG build. Per-song peak worker COMMIT spans ~4x
 # (median ~1k-note chart vs ~7k-note EXTENDED CUT giants), so concurrency is admitted per song by
@@ -674,7 +676,7 @@ def _run_missing_fg_prebuild(
     in_flight: dict[concurrent.futures.Future, tuple[str, float]] = {}
     admitted_weight_gb = 0.0
 
-    def _admit_ready(executor: concurrent.futures.ProcessPoolExecutor) -> None:
+    def _admit_ready(executor: BoundedRecyclingProcessPool) -> None:
         # First-fit over the heaviest-first queue: the head giant is admitted the moment it fits;
         # when it does not, lighter charts backfill the remaining budget instead of idling cores.
         nonlocal admitted_weight_gb
@@ -743,17 +745,17 @@ def _run_missing_fg_prebuild(
 
     ram_guard = _start_fg_prebuild_ram_guard()
     try:
-        # max_tasks_per_child: pool workers permanently retain their allocator high-water
+        # Bounded worker lifetimes release allocator high-water
         # (~1.76 GB measured idle after a giant; the 2026-07-09 overnight run pinned ~26 GB of
         # retained commit across the pool and thrashed the RAM guard for hours). Recycling a
-        # worker after a bounded number of builds releases ALL its commit; the respawn cost is a
-        # warm numba cache load (~seconds), amortized over 16 songs and overlapped with the
-        # other workers.
-        with concurrent.futures.ProcessPoolExecutor(
+        # whole pool after a bounded aggregate generation releases ALL retained commit; the
+        # respawn cost is a warm numba cache load (~seconds), amortized over
+        # max_workers * 16 songs.
+        with BoundedRecyclingProcessPool(
             max_workers=max_workers,
             initializer=_init_prebuild_worker,
             initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), 1, int(max_workers)),
-            max_tasks_per_child=16,
+            max_tasks_per_worker=_FG_PREBUILD_MAX_TASKS_PER_WORKER,
         ) as executor:
             _admit_ready(executor)
             while in_flight:

@@ -16,6 +16,7 @@ from gear_optimizer.core.config import (
     compute_memory_guard_limit,
     load_config,
     load_paths_cache,
+    resolve_inflight_songs,
 )
 from gear_optimizer.data.database import (
     init_db,
@@ -39,7 +40,6 @@ from gear_optimizer.data.csv_parser import (
     read_table,
 )
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
-from gear_optimizer.core.utils import safe_int
 from gear_optimizer.solver.scoring import FG_CACHE
 from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
 from gear_optimizer.app_async_db import AsyncDbSaver
@@ -155,14 +155,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     def _get_inflight_songs_requested(self, cfg) -> int:
         runtime_settings = self._current_runtime_settings(cfg)
-        inflight_songs = int(runtime_settings.inflight.songs)
-        try:
-            inflight_songs_env = safe_int(env_get("IN_FLIGHT_SONGS", 0), 0)
-            if inflight_songs_env > 0:
-                inflight_songs = inflight_songs_env
-        except Exception as e:
-            logger.debug(f"app:_get_inflight_songs_requested: {e}")
-        return int(inflight_songs)
+        return resolve_inflight_songs(int(runtime_settings.inflight.songs))
 
     def _maybe_autoset_gpu_song_slots(self, cfg) -> None:
         raw = env_get("GPU_SONG_SLOTS")

@@ -135,40 +135,60 @@ def update_song_counters(
     if conn is None:
         conn = get_db_connection(db_path or get_evolution_db_path())
         close_conn = True
-    pr = 1 if processed_run else 0
-    ri = 1 if record_improved else 0
     try:
-        with conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO songs (name, best_score, best_fg_score, last_updated, attempt_lifetime, attempts_first)
-                VALUES (?, 0, 0, 0, 0, 0)
-                """,
-                (song_name,),
-            )
-            conn.execute(
-                """
-                UPDATE songs
-                SET
-                    attempt_lifetime = CASE
-                        WHEN ? THEN COALESCE(attempt_lifetime, 0) + 1
-                        ELSE COALESCE(attempt_lifetime, 0)
-                    END,
-                    attempts_first = CASE
-                        WHEN ? THEN 1
-                        WHEN ? THEN COALESCE(attempts_first, 0) + 1
-                        ELSE COALESCE(attempts_first, 0)
-                    END,
-                    last_updated = strftime('%s', 'now')
-                WHERE name = ?
-                """,
-                (pr, ri, pr, song_name),
-            )
-    except sqlite3.Error:
-        return
+        _update_song_counters_in_transaction(
+            conn,
+            song_name,
+            processed_run=processed_run,
+            record_improved=record_improved,
+        )
+        conn.commit()
+    except BaseException:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
     finally:
         if close_conn:
             try:
                 conn.close()
             except Exception as e:
                 logger.warning(f"database:update_song_counters: {e}")
+
+
+def _update_song_counters_in_transaction(
+    conn: sqlite3.Connection,
+    song_name: str,
+    *,
+    processed_run: bool,
+    record_improved: bool,
+) -> None:
+    """Update counters on the caller-owned transaction without committing it."""
+    pr = 1 if processed_run else 0
+    ri = 1 if record_improved else 0
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO songs (name, best_score, best_fg_score, last_updated, attempt_lifetime, attempts_first)
+        VALUES (?, 0, 0, 0, 0, 0)
+        """,
+        (song_name,),
+    )
+    conn.execute(
+        """
+        UPDATE songs
+        SET
+            attempt_lifetime = CASE
+                WHEN ? THEN COALESCE(attempt_lifetime, 0) + 1
+                ELSE COALESCE(attempt_lifetime, 0)
+            END,
+            attempts_first = CASE
+                WHEN ? THEN 1
+                WHEN ? THEN COALESCE(attempts_first, 0) + 1
+                ELSE COALESCE(attempts_first, 0)
+            END,
+            last_updated = strftime('%s', 'now')
+        WHERE name = ?
+        """,
+        (pr, ri, pr, song_name),
+    )

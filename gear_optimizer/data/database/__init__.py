@@ -125,7 +125,12 @@ from .force_normalize import (
 )
 
 # --- Persistence + leaderboards ---
-from .persistence import save_loadouts_batch, save_team_buff_loadouts_batch
+from .persistence import (
+    configure_persistent_writer_connection,
+    save_loadouts_batch,
+    save_optimizer_song_result,
+    save_team_buff_loadouts_batch,
+)
 from .leaderboards import get_best_loadouts
 
 __all__ = [
@@ -203,7 +208,9 @@ __all__ = [
     "_normalize_force_base_score_for_persistence",
     "_assert_force_score_pairing",
     # persistence + leaderboards
+    "configure_persistent_writer_connection",
     "save_loadouts_batch",
+    "save_optimizer_song_result",
     "save_team_buff_loadouts_batch",
     "get_best_loadouts",
 ]

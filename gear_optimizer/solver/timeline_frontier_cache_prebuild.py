@@ -14,6 +14,7 @@ import numpy as np
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.constants import DIFFICULTIES, PATHS
 from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.core.recycling_process_pool import BoundedRecyclingProcessPool
 from gear_optimizer.solver.frontier_cache_manifest import (
     apply_manifest_results as _shared_apply_manifest_results,
     build_manifest_plan as _shared_build_manifest_plan,
@@ -50,7 +51,7 @@ class TimelineFrontierCachePrebuildSummary:
 
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _MANIFEST_FILE_NAME = "manifest_v1.json"
-_TIMELINE_PREBUILD_MAX_TASKS_PER_CHILD = 64
+_TIMELINE_PREBUILD_MAX_TASKS_PER_WORKER = 64
 
 
 def _init_prebuild_worker(ref_arrays: dict, pair_build_threads: int, total_workers: int) -> None:
@@ -247,14 +248,14 @@ def _run_missing_timeline_prebuild(paths: list[str], ref_arrays: dict) -> tuple[
         )
     worker_count = timeline_prebuild_worker_count()
     pair_build_threads = frontier_prebuild_intra_worker_threads(worker_count)
-    with concurrent.futures.ProcessPoolExecutor(
+    with BoundedRecyclingProcessPool(
         max_workers=worker_count,
         initializer=_init_prebuild_worker,
         initargs=(dict(ref_arrays or {}), int(pair_build_threads), int(worker_count)),
         # Release native/NumPy allocator high-water before a full-pool worker reaches the heavy
         # chart tail. Persistent workers exhausted commit after ~2,216 successes and then failed
         # allocations as small as 1 MiB on the production 2,249-song pool.
-        max_tasks_per_child=_TIMELINE_PREBUILD_MAX_TASKS_PER_CHILD,
+        max_tasks_per_worker=_TIMELINE_PREBUILD_MAX_TASKS_PER_WORKER,
     ) as executor:
         futures = {executor.submit(_build_timeline_frontier_cache_for_path_shared, path): path for path in paths}
         for future in concurrent.futures.as_completed(futures):

@@ -8,7 +8,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
-from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
+from gear_optimizer.core.constants import PATHS, FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
@@ -115,7 +115,7 @@ def _fg_response_disk_cache_dir() -> Path:
     override = str(env_get("FG_RESPONSE_FRONTIER_CACHE_DIR", "") or "").strip()
     if override:
         return Path(override)
-    return Path(__file__).resolve().parents[4] / "bin" / "fg_response_frontier_cache"
+    return Path(PATHS.bin_path("fg_response_frontier_cache"))
 
 
 def _fg_response_disk_cache_path(cache_key: tuple) -> Path:

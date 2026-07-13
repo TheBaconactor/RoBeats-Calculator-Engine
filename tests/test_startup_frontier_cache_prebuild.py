@@ -208,7 +208,7 @@ def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path:
         def __init__(self, *_args, **_kwargs):
             raise AssertionError("single missing path must not spawn a process pool")
 
-    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", _UnexpectedExecutor)
+    monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _UnexpectedExecutor)
     monkeypatch.setattr(
         prebuild,
         "build_timeline_frontier_cache_for_path",
@@ -255,13 +255,52 @@ def test_timeline_multi_prebuild_recycles_worker_allocator_high_water(monkeypatc
 
     monkeypatch.setattr(prebuild, "timeline_prebuild_worker_count", lambda: 2)
     monkeypatch.setattr(prebuild, "frontier_prebuild_intra_worker_threads", lambda _workers: 1)
-    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _FakeExecutor)
 
     summary, results = prebuild._run_missing_timeline_prebuild(["a.txt", "b.txt"], {})
 
     assert summary.completed == 2
     assert len(results) == 2
-    assert captured_kwargs["max_tasks_per_child"] == prebuild._TIMELINE_PREBUILD_MAX_TASKS_PER_CHILD
+    assert captured_kwargs["max_tasks_per_worker"] == prebuild._TIMELINE_PREBUILD_MAX_TASKS_PER_WORKER
+
+
+def test_timeline_multi_prebuild_counts_broken_worker_future_per_path(monkeypatch) -> None:
+    from concurrent.futures.process import BrokenProcessPool
+
+    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
+
+    class _FakeExecutor:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, _fn, path):
+            future = prebuild.concurrent.futures.Future()
+            if path == "broken.txt":
+                future.set_exception(BrokenProcessPool("native worker exited"))
+            else:
+                future.set_result(
+                    prebuild.TimelineFrontierCacheBuildResult(
+                        path=str(path), source="disk", build_ms=0.0, cache_file=f"{path}.npz"
+                    )
+                )
+            return future
+
+    monkeypatch.setattr(prebuild, "timeline_prebuild_worker_count", lambda: 2)
+    monkeypatch.setattr(prebuild, "frontier_prebuild_intra_worker_threads", lambda _workers: 1)
+    monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _FakeExecutor)
+
+    summary, results = prebuild._run_missing_timeline_prebuild(["broken.txt", "ready.txt"], {})
+
+    assert summary.total == 2
+    assert summary.completed == 1
+    assert summary.failures == 1
+    assert [result.path for result in results] == ["ready.txt"]
 
 
 def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:
@@ -280,7 +319,7 @@ def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path)
         "_dedupe_paths_by_response_bundle_key",
         lambda paths, _ref_arrays: ([(str(path), 0) for path in paths], {}),
     )
-    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", lambda **_kwargs: _UnexpectedExecutor())
+    monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", lambda **_kwargs: _UnexpectedExecutor())
     monkeypatch.setattr(
         prebuild,
         "build_fg_response_frontier_cache_for_path",
@@ -332,9 +371,11 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
         def result(self):
             return self._result
 
+    captured_kwargs = {}
+
     class _FakeExecutor:
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
 
         def __enter__(self):
             return self
@@ -353,7 +394,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
         ledger_peaks.append(sum(weight for _path, weight in (futures[f] for f in ordered)))
         return {ordered[0]}, set(ordered[1:])
 
-    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _FakeExecutor)
     monkeypatch.setattr(prebuild.concurrent.futures, "wait", _fake_wait)
 
     summary, results = prebuild._run_missing_fg_prebuild(
@@ -365,6 +406,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     assert sorted(result.path for result in results) == sorted(path for path, _notes in items)
     assert ledger_peaks, "admission loop never drained"
     assert max(ledger_peaks) <= budget_gb + 1e-9
+    assert captured_kwargs["max_tasks_per_worker"] == prebuild._FG_PREBUILD_MAX_TASKS_PER_WORKER
 
 
 def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch) -> None:
@@ -405,7 +447,7 @@ def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch)
             submitted_widths.append(int(reducer_threads))
             return _FakeFuture(str(path))
 
-    monkeypatch.setattr(prebuild.concurrent.futures, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", _FakeExecutor)
     monkeypatch.setattr(
         prebuild.concurrent.futures,
         "wait",

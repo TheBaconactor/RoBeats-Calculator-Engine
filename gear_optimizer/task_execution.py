@@ -6,6 +6,7 @@ import os
 import time
 
 from gear_optimizer.core.constants import BIN_DIR
+from gear_optimizer.core.config import resolve_inflight_songs
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.parsing import env_get, truthy
 from gear_optimizer.core.utils import safe_int
@@ -27,14 +28,15 @@ class TaskExecutionMixin:
             """Execute tasks with automatic parallelism."""
             if self._stop_requested_now():
                 return
-            inflight_songs = 0
+            configured_inflight_songs = 0
             try:
                 cfg_dict0 = task_cfg_dict(tasks[0]) if tasks else {}
                 ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
                 if isinstance(ie, dict):
-                    inflight_songs = safe_int(ie.get("inflightsongs", 0), 0)
+                    configured_inflight_songs = safe_int(ie.get("inflightsongs", 0), 0)
             except (TypeError, ValueError):
-                inflight_songs = 0
+                configured_inflight_songs = 0
+            inflight_songs = resolve_inflight_songs(configured_inflight_songs, song_count=len(tasks))
 
             logical_cpus = os.cpu_count() or 1
             available_cpus = logical_cpus
@@ -92,28 +94,15 @@ class TaskExecutionMixin:
             cfg_dict0 = task_cfg_dict(tasks[0]) if tasks else {}
             song_task_count = max(0, int(len(tasks)))
             total_tasks = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
-            inflight_songs = 0
+            configured_inflight_songs = 0
             try:
                 ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
                 raw = ie.get("inflightsongs", 0) if isinstance(ie, dict) else 0
-                inflight_songs = safe_int(raw, 0)
+                configured_inflight_songs = safe_int(raw, 0)
             except (TypeError, ValueError):
-                inflight_songs = 0
+                configured_inflight_songs = 0
 
-            if inflight_songs <= 0:
-                inflight_songs = min(12, max(1, song_task_count))
-                try:
-                    logger.debug(f"[InFlight] Defaulting native InFlightSongs={int(inflight_songs)}.")
-                except Exception as e:
-                    logger.debug(f"task_execution:_run_sequential: {e}")
-            elif song_task_count > 1 and int(inflight_songs) < 2:
-                inflight_songs = min(12, max(2, song_task_count))
-                try:
-                    logger.debug(f"[InFlight] Raising native InFlightSongs to {int(inflight_songs)} for multi-song queue.")
-                except Exception as e:
-                    logger.debug(f"task_execution:_run_sequential: {e}")
-
-            inflight_songs = max(1, min(int(inflight_songs), int(song_task_count)))
+            inflight_songs = resolve_inflight_songs(configured_inflight_songs, song_count=song_task_count)
 
             post_queue = None
             post_proc = None

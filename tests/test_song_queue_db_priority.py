@@ -2,7 +2,7 @@ import configparser
 import json
 
 from gear_optimizer.app import GearOptimizerApp
-from gear_optimizer.core.memory import build_memory_guard_resume_context
+from gear_optimizer.core.memory import MemoryGuardResumeTracker, build_memory_guard_resume_context
 from gear_optimizer.song_queue import finalize_song_queue, merge_discovered_with_resume, queue_path_key
 from gear_optimizer.data.database import (
     get_db_connection,
@@ -65,6 +65,20 @@ def _setup_resume_queue_env(monkeypatch, tmp_path, db_name: str):
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     monkeypatch.setenv("METAFINDER_BIN_DIR", str(tmp_path / "bin"))
     return db_path
+
+
+def _install_completed_resume_crash_window(monkeypatch, tmp_path, queue):
+    resume_file = tmp_path / "memory_guard_resume.json"
+    resume_context = build_memory_guard_resume_context("hard", "", True, set(), True, set())
+    monkeypatch.setattr("gear_optimizer.core.memory.MEMORY_GUARD_RESUME_FILE", str(resume_file))
+    tracker = MemoryGuardResumeTracker(str(resume_file))
+    tracker.prime(queue, resume_context)
+    monkeypatch.setattr(tracker, "_remove_state_locked", lambda: None)
+    for song_path, song_name, _difficulty in queue:
+        tracker.mark_completed(song_path=song_path, song_name=song_name)
+    assert resume_file.exists()
+    assert (tmp_path / "memory_guard_resume.json.completed.jsonl").exists()
+    return resume_file
 
 
 def test_get_song_names_present_in_db_returns_only_existing_rows():
@@ -357,3 +371,42 @@ def test_build_song_queue_legacy_resume_does_not_prepend_completed_paths(monkeyp
     queue = app._build_song_queue(_make_hard_queue_cfg(), {"Hard": str(hard_dir)})
 
     assert [item[1] for item in queue] == [song_resume]
+
+
+def test_build_song_queue_completed_journal_crash_window_does_not_requeue_known_paths(monkeypatch, tmp_path):
+    hard_dir = tmp_path / "Hard"
+    hard_dir.mkdir(parents=True, exist_ok=True)
+    completed_name = "Completed Before State Removal (Hard)"
+    completed_path = hard_dir / "completed.txt"
+    _write_song_stub(completed_path, completed_name)
+    _setup_resume_queue_env(monkeypatch, tmp_path, "completed_crash_window.db")
+    _install_completed_resume_crash_window(
+        monkeypatch,
+        tmp_path,
+        [(str(completed_path), completed_name, "Hard")],
+    )
+
+    queue = GearOptimizerApp()._build_song_queue(_make_hard_queue_cfg(), {"Hard": str(hard_dir)})
+
+    assert queue == []
+
+
+def test_build_song_queue_completed_journal_crash_window_admits_new_path(monkeypatch, tmp_path):
+    hard_dir = tmp_path / "Hard"
+    hard_dir.mkdir(parents=True, exist_ok=True)
+    completed_name = "Completed Before Import (Hard)"
+    new_name = "Imported After Snapshot (Hard)"
+    completed_path = hard_dir / "completed.txt"
+    new_path = hard_dir / "new.txt"
+    _write_song_stub(completed_path, completed_name)
+    _setup_resume_queue_env(monkeypatch, tmp_path, "completed_with_import.db")
+    _install_completed_resume_crash_window(
+        monkeypatch,
+        tmp_path,
+        [(str(completed_path), completed_name, "Hard")],
+    )
+    _write_song_stub(new_path, new_name)
+
+    queue = GearOptimizerApp()._build_song_queue(_make_hard_queue_cfg(), {"Hard": str(hard_dir)})
+
+    assert [item[1] for item in queue] == [new_name]

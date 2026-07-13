@@ -643,10 +643,13 @@ def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
     assert int(out[0]["fg_score"]) == 101
 
 
-def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
+def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace_cache(monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.solver.fg_response_scoring.reducer import materialize_force_payload_from_response_frontier
+    from gear_optimizer.solver.fg_response_scoring.reducer import (
+        FgTraceMaterializationCache,
+        materialize_force_payload_from_response_frontier,
+    )
     import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
@@ -672,7 +675,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
         raw_fever_fill=1.0,
         real_fever_time=2.0,
     )
-    seen = {}
+    seen = {"reconstruct_calls": 0, "validate_calls": 0}
 
     monkeypatch.setattr(
         reducer_mod,
@@ -689,21 +692,41 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
     )
 
     def _fake_reconstruct_trace(**kwargs):
+        seen["reconstruct_calls"] += 1
         seen["non_fever_base"] = kwargs["non_fever_base"]
         return (_trace_row(1), _trace_row(0), _trace_row(1))
 
     monkeypatch.setattr(reducer_mod, "reconstruct_force_greats_response_trace", _fake_reconstruct_trace)
+    monkeypatch.setattr(
+        reducer_mod,
+        "_assert_trace_hit_time_reachable",
+        lambda *_args, **_kwargs: seen.__setitem__("validate_calls", seen["validate_calls"] + 1),
+    )
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
+    trace_cache = FgTraceMaterializationCache()
+    calc_song = {"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}}
     payload = materialize_force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
         paired_base_score=1000,
         selected_element="Rush",
         result=result,
-        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
+        calc_song=calc_song,
         ref_arrays={},
         reconstruction_frontier=full_frontier,
+        trace_cache=trace_cache,
+    )
+    second_payload = materialize_force_payload_from_response_frontier(
+        eval_data={"Selected Element": "Rush"},
+        base_stats={"Perfect Points": 1},
+        paired_base_score=1000,
+        selected_element="Rush",
+        result=result,
+        calc_song=calc_song,
+        ref_arrays={},
+        reconstruction_frontier=full_frontier,
+        trace_cache=trace_cache,
     )
 
     # The supplied reconstruction_frontier (non_fever_base=11) is honored over the scoring
@@ -716,6 +739,43 @@ def test_force_payload_uses_supplied_reconstruction_frontier(monkeypatch):
     assert payload["ForceGreats"]["final_score"] == 1230
     assert payload["ForceGreats"]["frontier_states"] == 9
     assert payload["ForceGreats"]["non_fever_base"] == 11
+    assert second_payload["ForceGreats"]["frontier_trace"] == payload["ForceGreats"]["frontier_trace"]
+    assert seen["reconstruct_calls"] == 1
+    assert seen["validate_calls"] == 1
+    with pytest.raises(ValueError, match="cannot be reused across calc-song owners"):
+        materialize_force_payload_from_response_frontier(
+            eval_data={"Selected Element": "Rush"},
+            base_stats={"Perfect Points": 1},
+            paired_base_score=1000,
+            selected_element="Rush",
+            result=result,
+            calc_song=dict(calc_song),
+            ref_arrays={},
+            reconstruction_frontier=full_frontier,
+            trace_cache=trace_cache,
+        )
+
+    # Missing lanes is a supported chart-ingest boundary that materializes a fresh fallback tuple
+    # on every extraction. Cache ownership is the strong calc-song object, not that transient tuple.
+    missing_lanes_song = {"metadata": {}, "song_data": {"timestamps": [1.0]}}
+    missing_lanes_cache = FgTraceMaterializationCache()
+    missing_lane_payloads = [
+        materialize_force_payload_from_response_frontier(
+            eval_data={"Selected Element": "Rush"},
+            base_stats={"Perfect Points": 1},
+            paired_base_score=1000,
+            selected_element="Rush",
+            result=result,
+            calc_song=missing_lanes_song,
+            ref_arrays={},
+            reconstruction_frontier=full_frontier,
+            trace_cache=missing_lanes_cache,
+        )
+        for _ in range(2)
+    ]
+    assert missing_lane_payloads[0]["ForceGreats"]["frontier_trace"] == missing_lane_payloads[1]["ForceGreats"][
+        "frontier_trace"
+    ]
 
 
 def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
