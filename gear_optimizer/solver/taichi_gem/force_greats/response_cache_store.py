@@ -81,11 +81,12 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     # Exact-schedule note-graph reconstruction now chains postactivation presses per lane instead
     # of imposing a foreign global chart-order chain across independent lanes, and a hold-head
-    # activation may use the trace's legal upper edge when an endpoint requires it. The cached V31
-    # producer, bundle metadata, and both compact sidecars are untouched; the conservative
-    # game-engine fingerprint still moves because note_graph.py changed. Ratify only the exact
-    # production V31 pool built immediately before these reconstruction fixes.
-    "fg-response-frontier-visible-first-v31+logic-cce609775b15": (
+    # activation may use the trace's legal upper edge when an endpoint requires it. Endpoint timing
+    # also uses the exact strict cutoff rather than inventing a full 1ms gap. The cached V31 producer,
+    # bundle metadata, and both compact sidecars are untouched; the conservative game-engine
+    # fingerprint still moves because note_graph.py changed. Ratify only the exact production V31
+    # pool built immediately before these reconstruction fixes.
+    "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3": (
         "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
     ),
     # The exact FG scorer again reads the immutable PP/CM/FM tables directly instead of

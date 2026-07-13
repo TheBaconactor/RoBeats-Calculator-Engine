@@ -651,9 +651,11 @@ def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
         # note 7 @ chart 1245ms is past the 1240ms cutoff -> in fever ONLY via an early hit.
         assert g[7]["fever"] is True
         assert g[7]["is_fever_end_witness"] is True
-        # Largest cushion = center of [legal_low_hit, upper_hit] = [1245-19, 1240-1] = [1226, 1239]
-        # -> shown_hit 1232.5 -> delta -12.5. (BUG-1: legal Perfect low is -19, not -20.)
-        assert g[7]["delta_ms"] == pytest.approx(-12.5, abs=1e-3)
+        # Largest cushion = center of [legal_low_hit, strict cutoff predecessor].
+        # (BUG-1: legal Perfect low is -19, not -20.)
+        strict_cutoff = float(np.nextafter(np.float64(1240.0), np.float64(-np.inf)))
+        expected = 0.5 * (-19.0 + strict_cutoff - float(g[7]["hit_time_ms"]))
+        assert g[7]["delta_ms"] == pytest.approx(expected, abs=1e-3)
         assert g[7]["delta_ms"] >= -19.0                               # still legal (>= lower bound, BUG-1)
         # its event lands inside the window -> displayed per-note timing is self-consistent.
         assert g[7]["hit_time_ms"] + g[7]["delta_ms"] < 1240.0
@@ -666,7 +668,7 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
     """Issue #42 reconstruction legality: the displayed endpoint-early `delta_ms` (now the
     largest-cushion center of the legal in-fever range) is never below the note's own Perfect lower
     bound (-20, or -40 for a held tail). In the tight-margin edge where the legal-early hit already
-    sits at/after `cutoff - 1` (no in-fever room), the degenerate branch preserves the old
+    sits at/after the strict cutoff predecessor (no in-fever room), the degenerate branch preserves the old
     clamp-to-bound. Needs `note_types` for the held-tail bound."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import (
         base_note_graph,
@@ -688,7 +690,7 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
     }]
     mask = np.zeros(n, bool)
 
-    # Normal note (BUG-1 legal low -19): legal_low_hit = 1019.5-19 = 1000.5 >= upper_hit (1000-1 = 999)
+    # Normal note (BUG-1 legal low -19): legal_low_hit = 1019.5-19 = 1000.5 >= upper_hit (<1000)
     # -> NO in-fever room -> degenerate branch clamps shown_hit to legal_low_hit, delta = exactly -19
     # (the legal bound; the note is now genuinely unreachable in-fever, shown at its earliest legal hit).
     nt_normal = [1, 1, 1, 1, 1]
@@ -699,15 +701,17 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
         assert g[3]["delta_ms"] >= -19.0                  # never below the Perfect lower bound (BUG-1)
         assert g[3]["delta_ms"] == pytest.approx(-19.0)   # tight edge -> clamped to the bound
 
-    # Held tail (note_type 3, window [-39,+80] BUG-1): legal_low_hit = 1019.5-39 = 980.5 < upper_hit (999)
-    # -> there IS room -> largest-cushion center 0.5*(980.5+999) = 989.75 -> delta -29.75 (>= -39).
+    # Held tail (note_type 3, window [-39,+80] BUG-1): legal_low_hit = 1019.5-39 = 980.5 < cutoff.
+    # There is room, so the largest-cushion center uses the strict cutoff predecessor.
     nt = [1, 1, 1, 3, 1]
     for g in (
         _exact_force_greats_note_graph(frontier_trace=fg_trace, total_notes=n, timestamps=ts, note_types=nt),
         base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=base_trace, note_types=nt),
     ):
         assert g[3]["delta_ms"] >= -39.0                   # never below the held-tail lower bound (BUG-1)
-        assert g[3]["delta_ms"] == pytest.approx(-29.75)   # largest-cushion center of [-39, -20.5]
+        strict_cutoff = float(np.nextafter(np.float64(1000.0), np.float64(-np.inf)))
+        expected = 0.5 * (-39.0 + strict_cutoff - float(g[3]["hit_time_ms"]))
+        assert g[3]["delta_ms"] == pytest.approx(expected)
 
     # FAIL LOUD: a clawed-in note with NO note_types must raise -- never guess a (possibly false)
     # bound. (A graph with no clawed-in note does not need note_types -- not asserted here.)
@@ -717,8 +721,8 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
 
 def test_endpoint_early_delta_is_largest_cushion_center():
     """Issue #42 display convention: a clawed-in held-tail note's shown `delta_ms` is the
-    LARGEST-CUSHION timing -- the center of its legal in-fever range [legal_low, cutoff-hit-1] --
-    not the old cliff-edge (`cutoff - hit - 1`). The shown hit is LEGAL (delta >= legal_low),
+    LARGEST-CUSHION timing -- the center of its legal in-fever range bounded by the strict cutoff
+    predecessor -- not an arbitrary fixed-gap cliff. The shown hit is LEGAL (delta >= legal_low),
     IN-FEVER (hit <= cutoff), and MONOTONIC (>= the previous note's shown hit). Both frontiers."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import (
         base_note_graph,
@@ -726,7 +730,7 @@ def test_endpoint_early_delta_is_largest_cushion_center():
     )
 
     # idx5 held tail @ chart 1410ms is clawed in past the 1400ms cutoff; legal_low = -40.
-    # legal_low_hit = 1370 < upper_hit = 1399 -> real in-fever room -> center fires (not the clamp).
+    # legal_low_hit < cutoff -> real in-fever room -> center fires (not the clamp).
     # Preceding fever notes sit well before 1370 so monotonicity does NOT bind here.
     n = 7
     ts = np.asarray([0.0, 0.1, 0.2, 0.3, 1.0, 1.410, 1.6], dtype=np.float32)
@@ -749,8 +753,9 @@ def test_endpoint_early_delta_is_largest_cushion_center():
     ):
         hit = g[5]["hit_time_ms"]
         shown = hit + g[5]["delta_ms"]
-        # shown delta == center of [legal_low, cutoff - hit - 1] (largest cushion).
-        expected = 0.5 * (legal_low + (cutoff - hit - 1.0))
+        # shown delta == center of [legal_low, nextafter(cutoff, -inf) - hit].
+        strict_cutoff = float(np.nextafter(np.float64(cutoff), np.float64(-np.inf)))
+        expected = 0.5 * (legal_low + strict_cutoff - hit)
         assert g[5]["delta_ms"] == pytest.approx(expected, abs=1e-4)
         assert g[5]["delta_ms"] >= legal_low                     # LEGAL: never below the lower bound
         assert hit >= cutoff                                     # genuinely clawed in (chart >= cutoff)
@@ -777,11 +782,13 @@ def test_endpoint_early_delta_is_largest_cushion_center():
     shown6 = g[6]["hit_time_ms"] + g[6]["delta_ms"]
     for i in (5, 6):
         assert g[i]["delta_ms"] >= -19.0                         # both stay legal (BUG-1)
-        assert g[i]["hit_time_ms"] + g[i]["delta_ms"] <= 1399.0  # both stay in-fever (<= cutoff - 1)
+        assert g[i]["hit_time_ms"] + g[i]["delta_ms"] < 1400.0   # both stay strictly in-fever
     assert shown6 >= shown5                                      # monotonic shown order preserved
-    # idx5 center 0.5*(1405-19 + 1399) = 1392.5; idx6's floor is that prev hit (>1389) -> center 1395.75.
-    assert shown5 == pytest.approx(1392.5, abs=1e-3)
-    assert shown6 == pytest.approx(1395.75, abs=1e-3)
+    strict_cutoff = float(np.nextafter(np.float64(1400.0), np.float64(-np.inf)))
+    expected5 = 0.5 * (float(g[5]["hit_time_ms"]) - 19.0 + strict_cutoff)
+    expected6 = 0.5 * (expected5 + strict_cutoff)
+    assert shown5 == pytest.approx(expected5, abs=1e-3)
+    assert shown6 == pytest.approx(expected6, abs=1e-3)
 
 
 def test_endpoint_early_degenerate_clamp_is_monotonic():
@@ -914,8 +921,8 @@ def test_endpoint_early_frontier_includes_reattributed_activation_witness():
     # The clawed endpoint's displayed hit must never precede the activating hit.
     endpoint_shown = g[4]["hit_time_ms"] + g[4]["delta_ms"]
     assert endpoint_shown >= witness_shown
-    # lo_hit = max(600-40, witness 580) = 580, upper = 599 -> center 589.5.
-    assert endpoint_shown == pytest.approx(589.5)
+    # lo_hit = max(600-40, witness 580) = 580, upper is the strict predecessor of 600.
+    assert endpoint_shown == pytest.approx(590.0)
     assert g[4]["delta_ms"] >= -40.0                       # legal for the held tail
     assert endpoint_shown < 600.0                          # still inside the cutoff
     # Every displayed fever hit chosen by the guidance stays at/after the witness hit.
@@ -1026,7 +1033,7 @@ def test_fever_end_cluster_rejects_impossible_plus_560_ms():
 
 
 def test_fever_end_cluster_barely_inside_decoy_delta():
-    """Tight cutoff: safe upper is fever-bound -> center ~ -9.93 ms."""
+    """Tight cutoff: safe upper is the strict fever boundary."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     cutoff = 61340.14382457733
@@ -1041,7 +1048,9 @@ def test_fever_end_cluster_barely_inside_decoy_delta():
     nt = np.ones(n, dtype=np.int16)
     g = _exact_force_greats_note_graph(frontier_trace=trace, total_notes=n, timestamps=ts, note_types=nt)
 
-    assert g[2]["delta_ms"] == pytest.approx(-9.43, abs=0.02)  # BUG-1: perfect-low -20->-19 shifts the range center +0.5ms
+    strict_cutoff = float(np.nextafter(np.float64(cutoff), np.float64(-np.inf)))
+    expected = 0.5 * (-19.0 + strict_cutoff - float(g[2]["hit_time_ms"]))
+    assert g[2]["delta_ms"] == pytest.approx(expected)
     assert g[3]["delta_ms"] == pytest.approx(g[2]["delta_ms"])
     for i in (2, 3):
         assert g[i]["delta_ms"] >= -19.0  # BUG-1: earliest legal Perfect is -19, not -20
@@ -1082,6 +1091,35 @@ def test_note_graph_displays_early_great_fever_end_tail():
     assert g[1]["delta_ms"] >= -94.0          # BUG-1: earliest legal early-Great is -94, not -95
     assert g[1]["hit_time_ms"] + g[1]["delta_ms"] < cutoff
     assert g[1]["delta_ms"] != pytest.approx(-20.0)
+
+
+def test_early_great_tail_accepts_submillisecond_strict_cutoff_interval():
+    cutoff = 906.5
+    timestamps = np.asarray([0.0, 1.0], dtype=np.float32)
+    trace = [{
+        "section": 1,
+        "activation_index": 0,
+        "fever_end_index": 2,
+        "forced_start_index": 0,
+        "forced_prefix_count": 0,
+        "activation_judgment": "perfect",
+        "activation_hit_offset_ms": 0.0,
+        "fever_window_end_ms": cutoff,
+        "early_great_start": 1,
+        "early_great_end": 2,
+    }]
+
+    graph = _exact_force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=2,
+        timestamps=timestamps,
+        note_types=np.ones(2, dtype=np.int16),
+    )
+
+    delta = float(graph[1]["delta_ms"])
+    assert graph[1]["note_result"] == "Great"
+    assert -94.0 <= delta < -93.5
+    assert float(graph[1]["hit_time_ms"]) + delta < cutoff
 
 
 def test_note_graph_displays_early_great_fever_end_tail_held_tail():
@@ -1218,7 +1256,9 @@ def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
         note_types=nt,
         timing_mode="perfect_window",
     )
-    assert pw_graph[2]["delta_ms"] == pytest.approx(-9.43, abs=0.02)  # BUG-1: perfect-low -20->-19
+    strict_cutoff = float(np.nextafter(np.float64(cutoff), np.float64(-np.inf)))
+    expected = 0.5 * (-19.0 + strict_cutoff - float(pw_graph[2]["hit_time_ms"]))
+    assert pw_graph[2]["delta_ms"] == pytest.approx(expected)
 
     base_graph = base_note_graph(
         total_notes=n,
