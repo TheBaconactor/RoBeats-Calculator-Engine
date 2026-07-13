@@ -49,6 +49,44 @@ def test_list_official_songs_reads_headers(data_root):
     assert songs["Feeding [Hard]"]["difficulty"] == "Hard"
 
 
+def test_provisioned_catalog_cache_still_runs_destination_maintenance(monkeypatch):
+    calls: list[str] = []
+
+    class _Server:
+        daemon_threads = False
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def serve_forever(self):
+            pass
+
+    class _Thread:
+        def __init__(self, *, target, **_kwargs):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setenv("ROBEATSMETA_SKIP_CATALOG_PREBUILD", "1")
+    monkeypatch.setattr(service, "ThreadingHTTPServer", _Server)
+    monkeypatch.setattr(service.threading, "Thread", _Thread)
+    monkeypatch.setattr(
+        service,
+        "_maintain_provisioned_fg_frontier_cache",
+        lambda: calls.append("maintain"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_prebuild_catalog_frontier_caches",
+        lambda: calls.append("prebuild"),
+    )
+
+    assert service.main(["--host", "127.0.0.1", "--port", "0"]) == 0
+
+    assert calls == ["maintain"]
+
+
 def test_find_official_chart_exact_match(data_root):
     _write_chart(data_root, "Normal", "Canon in D [Normal]")
     chart = service.find_official_chart("Canon in D [Normal]")
