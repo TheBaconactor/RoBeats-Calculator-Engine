@@ -663,9 +663,10 @@ def test_issue149_v31_accepts_only_ratified_reconstruction_predecessor() -> None
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
-    assert current_version == "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf"
+    assert current_version == "fg-response-frontier-visible-first-v31+logic-76d9f97718b6"
     assert response_cache_store.fg_response_compatible_cache_versions() == (
         current_version,
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
         "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
         "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
         "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",

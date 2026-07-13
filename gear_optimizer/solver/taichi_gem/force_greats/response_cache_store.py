@@ -79,6 +79,18 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Exact schedule reconstruction now materializes each later section's persisted prefix between
+    # both producer-owned bounds: after the prior wasted note and before activation. This only
+    # corrects the physical witness chosen for an already-selected surface; the V31 producer,
+    # bundle metadata, and compact sidecars are unchanged. List the complete ratified lineage
+    # directly because compatibility is deliberately non-transitive.
+    "fg-response-frontier-visible-first-v31+logic-76d9f97718b6": (
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
     # Raw per-note judgment intervals are now reconstructed separately from the monotone prefix-max
     # fever-end envelopes. This corrects witness validation only; the frontier producer and V31 bytes
     # are unchanged. Compatibility remains explicit and deliberately non-transitive.

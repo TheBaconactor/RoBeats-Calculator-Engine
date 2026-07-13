@@ -607,8 +607,50 @@ def _mark_activation_preemptor_order_deltas(
             if int(section_start) > 0:
                 # The prior fever's first non-fever note is consumed with an empty bar. The next
                 # section cannot accumulate any of its prefix before that wasted boundary event.
+                boundary_index = int(section_start) - 1
+                boundary_note = notes[boundary_index]
+                boundary_result = str(boundary_note.get("note_result", "Perfect"))
+                boundary_raw_delta = boundary_note.get("delta_ms")
+                boundary_delta = (
+                    _selector_default_delta_ms(
+                        nt,
+                        boundary_index,
+                        boundary_result,
+                        boundary_raw_delta,
+                    )
+                    if boundary_raw_delta is None
+                    else float(boundary_raw_delta)
+                )
+                required_prefix_press = (
+                    float(boundary_note["hit_time_ms"]) + float(boundary_delta)
+                )
+                for note_index in exact_order:
+                    note = notes[int(note_index)]
+                    result = str(note.get("note_result", "Perfect"))
+                    raw_delta = note.get("delta_ms")
+                    current_delta = (
+                        _selector_default_delta_ms(nt, int(note_index), result, raw_delta)
+                        if raw_delta is None
+                        else float(raw_delta)
+                    )
+                    current_press = float(note["hit_time_ms"]) + float(current_delta)
+                    if current_press < required_prefix_press:
+                        current_delta = _delta_at_or_after_ms(
+                            nt,
+                            int(note_index),
+                            result,
+                            required_prefix_press - float(note["hit_time_ms"]),
+                        )
+                        note["delta_ms"] = float(current_delta)
+                        current_press = float(note["hit_time_ms"]) + float(current_delta)
+                    required_prefix_press = float(current_press)
+                if required_prefix_press > activation_press:
+                    raise ValueError(
+                        "note_graph: exact activation schedule cannot fit between the prior "
+                        "wasted boundary and activation"
+                    )
                 input_order_constraints.append(
-                    (int(section_start) - 1, int(exact_sequence[0]))
+                    (boundary_index, int(exact_sequence[0]))
                 )
             input_order_constraints.extend(
                 (int(before), int(after))

@@ -1746,6 +1746,52 @@ def test_persisted_activation_schedule_orders_cross_lane_followers_after_activat
     assert float(notes[1]["delta_ms"]) == pytest.approx(30.0)
 
 
+def test_persisted_activation_schedule_holds_next_prefix_after_wasted_boundary():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        _assign_exact_input_order,
+        _mark_activation_preemptor_order_deltas,
+    )
+
+    nt = np.asarray([1, 1, 1], dtype=np.int16)
+    notes = [
+        {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Perfect", "delta_ms": 40.0},
+        {"note_index": 1, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": -94.0},
+        {"note_index": 2, "hit_time_ms": 1100.0, "note_result": "Perfect", "delta_ms": 40.0},
+    ]
+    trace = [{
+        "activation_index": 2,
+        "forced_start_index": 1,
+        "activation_schedule_schema_version": 1,
+        "preactivation_order": [1],
+        "preactivation_lane_prefixes": [
+            {"lane": 1, "count": 1},
+            {"lane": 2, "count": 0},
+        ],
+        "preactivation_fill_half_units": 1,
+        "preactivation_event_count": 1,
+        "preactivation_great_count": 1,
+    }]
+
+    constraints = _mark_activation_preemptor_order_deltas(
+        notes,
+        frontier_trace=trace,
+        total_notes=3,
+        note_types=nt,
+        lanes=np.asarray([0, 1, 2], dtype=np.int32),
+        require_exact_schedule=True,
+    )
+
+    assert constraints == [(0, 1), (1, 2)]
+    assert float(notes[1]["delta_ms"]) == 41.0
+    assert float(notes[0]["hit_time_ms"]) + float(notes[0]["delta_ms"]) <= (
+        float(notes[1]["hit_time_ms"]) + float(notes[1]["delta_ms"])
+    )
+    assert float(notes[1]["hit_time_ms"]) + float(notes[1]["delta_ms"]) <= (
+        float(notes[2]["hit_time_ms"]) + float(notes[2]["delta_ms"])
+    )
+    _assign_exact_input_order(notes, constraints)
+
+
 def test_persisted_activation_schedule_chains_postactivation_notes_per_lane():
     from gear_optimizer.solver.fg_response_scoring.note_graph import (
         _assign_exact_input_order,
