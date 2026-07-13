@@ -59,6 +59,7 @@ import threading
 
 import numpy as np
 
+from ..core.singleflight import SingleFlight
 from ..data.loadout_equivalence import effective_mini_signature
 from .item_registry import MINI_SLOT_INDICES, ItemRegistry
 
@@ -381,6 +382,9 @@ def select_top_base_fg_candidates_reference(
 
 _CONTEXT_TABLES_LOCK = threading.Lock()
 _CONTEXT_TABLES_CACHE: dict[tuple[int, str, str, str], tuple[np.ndarray, np.ndarray]] = {}
+_CONTEXT_TABLES_SINGLEFLIGHT: SingleFlight[
+    tuple[int, str, str, str], tuple[np.ndarray, np.ndarray]
+] = SingleFlight()
 # The cache key is id(registry); registries are LRU-evicted from the 32-entry _REGISTRY_GPU_CACHE
 # and rebuilt with fresh ids, so without a bound every rebuild leaks a permanent
 # (gear_name_rank, sig_id) ndarray pair for a now-dead registry. The live working set is the
@@ -412,19 +416,27 @@ def effective_tables_for_context(
         cached = _CONTEXT_TABLES_CACHE.get(key)
     if cached is not None:
         return cached
-    gear_rank = build_gear_name_rank(registry)
-    sig_tables = build_mini_sig_id(
-        registry,
-        primary_color=str(primary_color or ""),
-        secondary_color=str(secondary_color or ""),
-        selected_color=str(selected_color or ""),
-    )
-    tables = (gear_rank, sig_tables.sig_id)
-    with _CONTEXT_TABLES_LOCK:
-        if len(_CONTEXT_TABLES_CACHE) >= _CONTEXT_TABLES_CACHE_MAX:
-            _CONTEXT_TABLES_CACHE.clear()
-        _CONTEXT_TABLES_CACHE[key] = tables
-    return tables
+
+    def _build_and_cache() -> tuple[np.ndarray, np.ndarray]:
+        with _CONTEXT_TABLES_LOCK:
+            existing = _CONTEXT_TABLES_CACHE.get(key)
+        if existing is not None:
+            return existing
+        gear_rank = build_gear_name_rank(registry)
+        sig_tables = build_mini_sig_id(
+            registry,
+            primary_color=str(primary_color or ""),
+            secondary_color=str(secondary_color or ""),
+            selected_color=str(selected_color or ""),
+        )
+        tables = (gear_rank, sig_tables.sig_id)
+        with _CONTEXT_TABLES_LOCK:
+            if len(_CONTEXT_TABLES_CACHE) >= _CONTEXT_TABLES_CACHE_MAX:
+                _CONTEXT_TABLES_CACHE.clear()
+            _CONTEXT_TABLES_CACHE[key] = tables
+        return tables
+
+    return _CONTEXT_TABLES_SINGLEFLIGHT.run(key, _build_and_cache)
 
 
 def dump_candidate_pool_jsonl(

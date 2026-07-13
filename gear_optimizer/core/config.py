@@ -20,7 +20,7 @@ from .constants import (
     SCRIPT_DIR,
     PATHS,
 )
-from .parsing import env_str
+from .parsing import env_get, env_str
 from .utils import safe_float, safe_int
 _EXTENDS_KEY = "_extends"
 def get_config_path(default: str = "config.ini") -> str:
@@ -323,16 +323,27 @@ class GASettings:
             search_depth=int(search_depth),
             multi_start=int(multi_start),
         )
+DEFAULT_INFLIGHT_SONGS = 12
+def resolve_inflight_songs(configured_songs: int = 0, *, song_count: int | None = None) -> int:
+    """Resolve the one canonical in-flight width, optionally capped by queue size."""
+    requested = safe_int(env_get("IN_FLIGHT_SONGS", 0), 0)
+    if requested <= 0:
+        requested = safe_int(configured_songs, 0)
+    if requested <= 0:
+        requested = DEFAULT_INFLIGHT_SONGS
+    if song_count is None:
+        return int(requested)
+    return min(int(requested), max(0, int(song_count)))
 @dataclass(frozen=True, slots=True)
 class InflightSettings:
-    songs: int = 0
+    songs: int = DEFAULT_INFLIGHT_SONGS
     song_file_cache_max: int = 0
     team_buff_calc_cache_max: int = 0
     @classmethod
     def from_config(cls, cfg: Any) -> "InflightSettings":
         if cfg is None:
             return cls()
-        songs = cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 0, clamp_min=0)
+        songs = resolve_inflight_songs(cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 0, clamp_min=0))
         song_file_cache_max = cfg_get_int(cfg, "IterationEngine", "InFlight_SongFileCacheMax", 0, clamp_min=0)
         team_buff_calc_cache_max = cfg_get_int(
             cfg,

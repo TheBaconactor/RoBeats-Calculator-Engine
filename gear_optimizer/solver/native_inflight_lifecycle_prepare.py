@@ -13,6 +13,7 @@ from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.config import GASettings as GARuntimeSettings
 from gear_optimizer.core.gem_defs import UserGemsSettings
 from gear_optimizer.core.parsing import env_get
+from gear_optimizer.core.singleflight import SingleFlight
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_view
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
@@ -38,6 +39,7 @@ _PREP_CACHE_LOCK = threading.Lock()
 _POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...], tuple], tuple[list, list]]" = OrderedDict()
 _REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...], tuple], tuple[ItemRegistry, dict]]" = OrderedDict()
 _INIT_HEURISTIC_TOPK_CACHE: "OrderedDict[tuple[tuple[str, str, tuple[str, ...], tuple], int], np.ndarray]" = OrderedDict()
+_PREP_CACHE_SINGLEFLIGHT: SingleFlight[tuple[str, tuple], object] = SingleFlight()
 _CACHE_STATS = {
     "pools_hit": 0,
     "pools_miss": 0,
@@ -51,31 +53,50 @@ _CACHE_STATS_LAST_EMIT = 0.0
 
 
 def _lru_get(cache: OrderedDict, key: tuple):
-    try:
-        value = cache.get(key)
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_lru_get: {e}")
-        return None
+    value = cache.get(key)
     if value is not None:
-        try:
-            cache.move_to_end(key)
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:_lru_get: {e}")
+        cache.move_to_end(key)
     return value
 
 
 def _lru_put(cache: OrderedDict, key: tuple, value, *, maxsize: int) -> None:
-    try:
-        cache[key] = value
-        cache.move_to_end(key)
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_lru_put: {e}")
-        return
-    try:
-        while len(cache) > int(maxsize):
-            cache.popitem(last=False)
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_lru_put: {e}")
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > int(maxsize):
+        cache.popitem(last=False)
+
+
+def _prep_cache_get_or_build(
+    cache: OrderedDict,
+    key: tuple,
+    builder,
+    *,
+    cache_name: str,
+    maxsize: int,
+):
+    with _PREP_CACHE_LOCK:
+        cached = _lru_get(cache, key)
+    if cached is not None:
+        _cache_stats_inc(f"{cache_name}_hit")
+        return cached
+
+    _cache_stats_inc(f"{cache_name}_miss")
+
+    def _build_and_cache():
+        # The prior owner may finish between the initial lookup and this caller
+        # becoming owner. Recheck so that race cannot trigger a duplicate build.
+        with _PREP_CACHE_LOCK:
+            existing = _lru_get(cache, key)
+        if existing is not None:
+            return existing
+        value = builder()
+        if value is None:
+            raise RuntimeError(f"{cache_name} cache builder returned None")
+        with _PREP_CACHE_LOCK:
+            _lru_put(cache, key, value, maxsize=maxsize)
+        return value
+
+    return _PREP_CACHE_SINGLEFLIGHT.run((str(cache_name), key), _build_and_cache)
 
 
 def _cache_stats_enabled() -> bool:
@@ -196,10 +217,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     selected_color = p_color
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     pool_key = (str(p_color), str(s_color), tuple(slots), tuple(mini_ascension_context.cache_key))
-    with _PREP_CACHE_LOCK:
-        cached_pools = _lru_get(_POOL_CACHE, pool_key)
-    if cached_pools is None:
-        _cache_stats_inc("pools_miss")
+    def _build_pools():
         pools = initialize_pools(all_gears, all_minis, p_color, slots, s_color=s_color)
         if pools is None:
             raise RuntimeError("initialize_pools returned None")
@@ -209,22 +227,28 @@ def prepare_native_song(task: tuple) -> NativeSong:
             gear_pool, mini_pool, _total_before, _total_after, _whitelisted_minis = pools
         if gear_pool is None:
             raise RuntimeError("initialize_pools failed (gear_pool is None)")
-        with _PREP_CACHE_LOCK:
-            _lru_put(_POOL_CACHE, pool_key, (gear_pool, mini_pool), maxsize=_POOL_CACHE_MAX)
-    else:
-        _cache_stats_inc("pools_hit")
-        gear_pool, mini_pool = cached_pools
-    with _PREP_CACHE_LOCK:
-        cached_registry = _lru_get(_REGISTRY_GPU_CACHE, pool_key)
-    if cached_registry is None:
-        _cache_stats_inc("registry_miss")
+        return gear_pool, mini_pool
+
+    gear_pool, mini_pool = _prep_cache_get_or_build(
+        _POOL_CACHE,
+        pool_key,
+        _build_pools,
+        cache_name="pools",
+        maxsize=_POOL_CACHE_MAX,
+    )
+
+    def _build_registry_gpu():
         registry = ItemRegistry(gear_pool, mini_pool, slots)
         gpu_data = registry.to_gpu_arrays()
-        with _PREP_CACHE_LOCK:
-            _lru_put(_REGISTRY_GPU_CACHE, pool_key, (registry, gpu_data), maxsize=_REGISTRY_CACHE_MAX)
-    else:
-        _cache_stats_inc("registry_hit")
-        registry, gpu_data = cached_registry
+        return registry, gpu_data
+
+    registry, gpu_data = _prep_cache_get_or_build(
+        _REGISTRY_GPU_CACHE,
+        pool_key,
+        _build_registry_gpu,
+        cache_name="registry",
+        maxsize=_REGISTRY_CACHE_MAX,
+    )
     _cache_stats_maybe_emit()
     ga_runtime_settings = GARuntimeSettings.from_config(cfg)
     user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
@@ -256,19 +280,13 @@ def prepare_native_song(task: tuple) -> NativeSong:
     init_heuristic_topk: Optional[np.ndarray] = None
     init_heuristic_k = 64  # heuristic-seeded initial genomes (was GPU_GA_INIT_HEURISTIC_K)
     init_heuristic_copies = 25
-    try:
-        from gear_optimizer.solver.genetic_pipeline import build_ga_init_heuristic_topk
+    from gear_optimizer.solver.genetic_pipeline import build_ga_init_heuristic_topk
 
-        if init_heuristic_k > 0:
-            cache_key = (pool_key, int(init_heuristic_k))
-            with _PREP_CACHE_LOCK:
-                init_heuristic_topk = _lru_get(_INIT_HEURISTIC_TOPK_CACHE, cache_key)
-            if init_heuristic_topk is None:
-                _cache_stats_inc("heur_miss")
-            else:
-                _cache_stats_inc("heur_hit")
-            if init_heuristic_topk is None:
-                init_heuristic_topk = build_ga_init_heuristic_topk(
+    if init_heuristic_k > 0:
+        cache_key = (pool_key, int(init_heuristic_k))
+
+        def _build_init_heuristic_topk():
+            built = build_ga_init_heuristic_topk(
                     item_stats=gpu_data["item_stats"],
                     slot_start=gpu_data["slot_start"],
                     slot_count=gpu_data["slot_count"],
@@ -277,17 +295,17 @@ def prepare_native_song(task: tuple) -> NativeSong:
                     heuristic_k=int(init_heuristic_k),
                     n_slots=9,
                 )
-                if init_heuristic_topk is not None:
-                    with _PREP_CACHE_LOCK:
-                        _lru_put(
-                            _INIT_HEURISTIC_TOPK_CACHE,
-                            cache_key,
-                            np.asarray(init_heuristic_topk, dtype=np.int32),
-                            maxsize=_INIT_HEURISTIC_CACHE_MAX,
-                        )
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:prepare_native_song: {e}")
-        init_heuristic_topk = None
+            if built is None:
+                raise RuntimeError("GA initial heuristic builder returned None for an enabled heuristic")
+            return np.asarray(built, dtype=np.int32)
+
+        init_heuristic_topk = _prep_cache_get_or_build(
+            _INIT_HEURISTIC_TOPK_CACHE,
+            cache_key,
+            _build_init_heuristic_topk,
+            cache_name="heur",
+            maxsize=_INIT_HEURISTIC_CACHE_MAX,
+        )
     if init_heuristic_topk is None or init_heuristic_k <= 0:
         init_heuristic_topk = None
         init_heuristic_k = 0

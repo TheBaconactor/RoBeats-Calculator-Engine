@@ -79,6 +79,15 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # The exact FG scorer again reads the immutable PP/CM/FM tables directly instead of
+    # materializing three per-lane copies. Cached frontier production and ordered V30 bytes are
+    # untouched. List every ratified predecessor directly: resolution is deliberately
+    # non-transitive, so a future fingerprint cannot inherit compatibility by accident.
+    "fg-response-frontier-visible-first-v30+logic-6126c01d035d": (
+        "fg-response-frontier-visible-first-v30+logic-87b79fd8a257",
+        "fg-response-frontier-visible-first-v30+logic-584d8e8c6077",
+        "fg-response-frontier-visible-first-v30+logic-a6d09c0280bd",
+    ),
     # Trace reconstruction now consumes the existing packed Numba reachability owner and the
     # breakpoint reader preserves caller dtypes instead of copying them to float64. Neither module
     # is called by the production cache producer; the changed response-builder CPU oracle remains

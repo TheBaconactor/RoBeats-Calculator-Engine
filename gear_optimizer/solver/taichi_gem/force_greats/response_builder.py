@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import ceil
 from typing import Any
 
@@ -16,6 +16,72 @@ from .fill_crossing import (
 )
 from . import response_build_gpu_numba as _rb_numba
 from .response_types import FgResponseFrontierResult, FgResponseSurface, _EMPTY_SURFACE
+
+
+_TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS = 8192
+_TRACE_EDGE_OPTIONS_CACHE_MAX_STATES = 256
+
+
+@dataclass(slots=True)
+class FgTraceEdgeOptionsCache:
+    """One-song ordered edge cache with enforced owner identity and bounded option count."""
+
+    _entries: dict[Any, tuple[dict[str, Any], ...]] = field(default_factory=dict)
+    _owner_inputs: tuple[Any, ...] | None = None
+    _owner_note_count: int = -1
+    _explicit_owner: bool = False
+    _option_count: int = 0
+
+    def bind_owner(self, owner: Any, *, note_count: int) -> None:
+        if self._owner_inputs is None:
+            self._owner_inputs = (owner,)
+            self._owner_note_count = int(note_count)
+            self._explicit_owner = True
+        elif (
+            not self._explicit_owner
+            or self._owner_note_count != int(note_count)
+            or self._owner_inputs[0] is not owner
+        ):
+            raise ValueError("FG trace edge cache cannot be reused across song timing owners")
+
+    def bind_inputs(self, *, owner_inputs: tuple[Any, ...], note_count: int) -> None:
+        if self._explicit_owner:
+            if self._owner_note_count != int(note_count):
+                raise ValueError("FG trace edge cache note count changed for its bound song owner")
+            return
+        if self._owner_inputs is None:
+            self._owner_inputs = tuple(owner_inputs)
+            self._owner_note_count = int(note_count)
+        elif self._owner_note_count != int(note_count) or any(
+            current is not stored for current, stored in zip(owner_inputs, self._owner_inputs, strict=True)
+        ):
+            raise ValueError("FG trace edge cache cannot be reused across song timing owners")
+
+    def get(self, key: tuple[Any, ...]) -> tuple[dict[str, Any], ...] | None:
+        return self._entries.get(key)
+
+    def put(self, key: tuple[Any, ...], options: tuple[dict[str, Any], ...]) -> None:
+        if key in self._entries:
+            raise RuntimeError("FG trace edge cache key was published twice")
+        option_count = len(options)
+        if option_count > _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS:
+            return
+        while self._entries and (
+            len(self._entries) >= _TRACE_EDGE_OPTIONS_CACHE_MAX_STATES
+            or self._option_count + option_count > _TRACE_EDGE_OPTIONS_CACHE_MAX_OPTIONS
+        ):
+            oldest_key = next(iter(self._entries))
+            old_options = self._entries.pop(oldest_key)
+            self._option_count -= len(old_options)
+        self._entries[key] = options
+        self._option_count += option_count
+
+    @property
+    def option_count(self) -> int:
+        return int(self._option_count)
+
+    def __len__(self) -> int:
+        return len(self._entries)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1248,6 +1314,7 @@ def reconstruct_force_greats_response_trace(
     real_fever_time: float,
     lanes: Any | None = None,
     use_forced_great_timing: bool = True,
+    edge_options_cache: FgTraceEdgeOptionsCache | None = None,
 ) -> tuple[dict[str, Any], ...]:
     ts = np.ascontiguousarray(np.asarray(timestamps, dtype=np.float32).reshape(-1))
     n = int(ts.shape[0])
@@ -1278,15 +1345,21 @@ def reconstruct_force_greats_response_trace(
     )
     if int(lane_arr.shape[0]) != n:
         raise ValueError("lanes length must match timestamps")
-    reachability_context = _build_activation_reachability_context(
-        timestamps=ts,
-        perfect_floor_timestamps=floor_ts,
-        perfect_candidate_timestamps=perfect_ts,
-        great_floor_timestamps=great_floor_ts,
-        great_candidate_timestamps=great_ts,
-        lanes=lane_arr,
-        fever_fill_denom=float(raw_fever_fill),
-    )
+    reachability_context: _ActivationReachabilityContext | None = None
+
+    def _reachability_context() -> _ActivationReachabilityContext:
+        nonlocal reachability_context
+        if reachability_context is None:
+            reachability_context = _build_activation_reachability_context(
+                timestamps=ts,
+                perfect_floor_timestamps=floor_ts,
+                perfect_candidate_timestamps=perfect_ts,
+                great_floor_timestamps=great_floor_ts,
+                great_candidate_timestamps=great_ts,
+                lanes=lane_arr,
+                fever_fill_denom=float(raw_fever_fill),
+            )
+        return reachability_context
 
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=float(raw_fever_fill),
@@ -1306,6 +1379,27 @@ def reconstruct_force_greats_response_trace(
         int(target_surface.body_fever),
         int(target_surface.body_great),
         int(target_surface.body_fever_great),
+    )
+    # The ordered edge list is independent of the target surface. A materialization batch can
+    # therefore reuse it across the up-to-51 exact surfaces for one song/stat geometry. Keep the
+    # cache song-local and bounded: eviction only regenerates an identical ordered tuple.
+    shared_edge_options = edge_options_cache if edge_options_cache is not None else FgTraceEdgeOptionsCache()
+    shared_edge_options.bind_inputs(
+        owner_inputs=(
+            timestamps,
+            perfect_candidate_timestamps,
+            great_candidate_timestamps,
+            perfect_floor_timestamps,
+            great_floor_timestamps,
+            lanes,
+        ),
+        note_count=n,
+    )
+    edge_cache_prefix = (
+        int(non_fever_base),
+        float(raw_fever_fill),
+        float(real_fever_time),
+        bool(use_forced_great_timing),
     )
 
     def _empty(words: tuple[int, ...]) -> bool:
@@ -1397,27 +1491,35 @@ def reconstruct_force_greats_response_trace(
                 return True
             return False
 
-        _edge_surface_options(
-            reachability_context=reachability_context,
-            i=int(state),
-            first=bool(first),
-            n=int(n),
-            actions=actions,
-            later_fill=later_fill,
-            first_fill=first_fill,
-            later_forced=later_forced,
-            first_forced=first_forced,
-            real_fever_time=float(real_fever_time),
-            use_forced_great_timing=bool(use_forced_great_timing),
-            timestamps=ts,
-            perfect_candidate_timestamps=perfect_ts,
-            great_candidate_timestamps=great_ts,
-            perfect_floor_timestamps=floor_ts,
-            great_floor_timestamps=great_floor_ts,
-            lanes=lane_arr,
-            raw_fever_fill=float(raw_fever_fill),
-            visitor=_visit,
-        )
+        edge_cache_key = (*edge_cache_prefix, int(state), bool(first))
+        options = shared_edge_options.get(edge_cache_key)
+        if options is None:
+            options = tuple(
+                _edge_surface_options(
+                    reachability_context=_reachability_context(),
+                    i=int(state),
+                    first=bool(first),
+                    n=int(n),
+                    actions=actions,
+                    later_fill=later_fill,
+                    first_fill=first_fill,
+                    later_forced=later_forced,
+                    first_forced=first_forced,
+                    real_fever_time=float(real_fever_time),
+                    use_forced_great_timing=bool(use_forced_great_timing),
+                    timestamps=ts,
+                    perfect_candidate_timestamps=perfect_ts,
+                    great_candidate_timestamps=great_ts,
+                    perfect_floor_timestamps=floor_ts,
+                    great_floor_timestamps=great_floor_ts,
+                    lanes=lane_arr,
+                    raw_fever_fill=float(raw_fever_fill),
+                )
+            )
+            shared_edge_options.put(edge_cache_key, options)
+        for option in options:
+            if _visit(option):
+                break
         if found is not None:
             return found
         memo.add(key)

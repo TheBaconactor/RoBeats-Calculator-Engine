@@ -1,6 +1,8 @@
 from __future__ import annotations
 import logging
+import os
 import queue
+import sqlite3
 import threading
 import time
 from typing import Optional
@@ -9,10 +11,10 @@ from gear_optimizer.core.constants import PATHS
 from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from gear_optimizer.data.database import (
+    configure_persistent_writer_connection,
+    get_db_connection,
     get_evolution_db_path,
-    get_song_counters,
-    save_loadouts_batch,
-    update_song_counters,
+    save_optimizer_song_result,
 )
 
 
@@ -86,7 +88,9 @@ class AsyncDbSaver:
     def __init__(self):
         self._queue: queue.Queue = queue.Queue()
         self._thread: Optional[threading.Thread] = None
-        self._running = False
+        self._state = "new"
+        self._stop_enqueued = False
+        self._terminated_event = threading.Event()
         self._lock = threading.Lock()
         self._error_lock = threading.Lock()
         self._last_error: BaseException | None = None
@@ -95,18 +99,27 @@ class AsyncDbSaver:
         self._last_error_song: str = ""
         self._last_error_ts: float = 0.0
         self._failures_total = 0
+        self._writer_connection: sqlite3.Connection | None = None
+        self._writer_db_path = ""
 
     def start(self) -> None:
         with self._lock:
-            if self._running:
-                return
-            self._running = True
-            self._thread = threading.Thread(
-                target=self._loop,
-                name="AsyncDbSaver",
-                daemon=True,
-            )
-            self._thread.start()
+            self._start_locked()
+
+    def _start_locked(self) -> None:
+        if self._state == "running":
+            return
+        if self._state != "new":
+            raise RuntimeError(f"AsyncDbSaver cannot start after shutdown; state={self._state}")
+        self._state = "running"
+        self._stop_enqueued = False
+        self._terminated_event.clear()
+        self._thread = threading.Thread(
+            target=self._loop,
+            name="AsyncDbSaver",
+            daemon=True,
+        )
+        self._thread.start()
 
     def submit(self, song_name: str, entries: list[dict], *, meta: dict | None = None) -> None:
         self.raise_if_failed()
@@ -115,13 +128,17 @@ class AsyncDbSaver:
         # advance even when we intentionally skip persistence (e.g., score=0).
         if not entries and not meta.get("_processed_run"):
             return
-        if not self._running:
-            self.start()
-        self._queue.put(("save", song_name, entries or [], meta))
+        with self._lock:
+            if self._state == "new":
+                self._start_locked()
+            if self._state != "running":
+                raise RuntimeError(f"AsyncDbSaver is not accepting submissions; state={self._state}")
+            self._queue.put(("save", song_name, entries or [], meta))
 
     def flush(self, timeout: float = 30.0) -> None:
-        if not self._running:
-            return
+        with self._lock:
+            if self._state in {"new", "terminated"}:
+                return
         deadline = time.monotonic() + max(0.0, float(timeout))
         while getattr(self._queue, "unfinished_tasks", 0) > 0:
             remaining = deadline - time.monotonic()
@@ -149,8 +166,16 @@ class AsyncDbSaver:
         self.raise_if_failed()
 
     def shutdown(self, timeout: float = 30.0) -> None:
-        if not self._running:
-            return
+        with self._lock:
+            if self._state == "new":
+                self._state = "terminated"
+                self._terminated_event.set()
+                return
+            if self._state == "terminated":
+                return
+            if self._state == "running":
+                self._state = "stopping"
+            thread = self._thread
 
         flush_exc: BaseException | None = None
         try:
@@ -160,22 +185,21 @@ class AsyncDbSaver:
             # Still shut down the thread to avoid leaving it running across a "failed" shutdown.
             flush_exc = exc
 
-        try:
-            self._queue.put(None)
-        except Exception as e:
-            logger.warning(f"app_async_db:shutdown: {e}")
-
-        try:
-            if self._thread is not None:
-                self._thread.join(timeout=timeout)
-        except Exception as e:
-            logger.warning(f"app_async_db:shutdown: {e}")
-
         with self._lock:
-            self._running = False
-            self._thread = None
+            if not self._stop_enqueued:
+                self._queue.put(None)
+                self._stop_enqueued = True
+
+        if thread is not None:
+            thread.join(timeout=max(0.0, float(timeout)))
+        termination_exc: BaseException | None = None
+        if thread is not None and thread.is_alive():
+            termination_exc = RuntimeError("[DB] Async writer shutdown timed out before termination")
+
         if flush_exc is not None:
             raise flush_exc
+        if termination_exc is not None:
+            raise termination_exc
         self.raise_if_failed()
 
     def last_error(self) -> dict | None:
@@ -216,121 +240,84 @@ class AsyncDbSaver:
             self._last_error_ts = float(now)
             self._failures_total = int(self._failures_total) + 1
 
+    def _get_writer_connection(self, db_path: str) -> sqlite3.Connection:
+        resolved_path = os.path.normcase(os.path.realpath(os.path.abspath(str(db_path))))
+        if self._writer_connection is not None and resolved_path == self._writer_db_path:
+            return self._writer_connection
+        self._close_writer_connection()
+        conn = get_db_connection(resolved_path)
+        try:
+            configure_persistent_writer_connection(conn)
+        except BaseException:
+            conn.close()
+            raise
+        self._writer_connection = conn
+        self._writer_db_path = resolved_path
+        return conn
+
+    def _close_writer_connection(self) -> None:
+        conn = self._writer_connection
+        self._writer_connection = None
+        self._writer_db_path = ""
+        if conn is not None:
+            conn.close()
+
     def _loop(self) -> None:
-        while True:
-            item = self._queue.get()
-            try:
-                if item is None:
-                    return
-                if not isinstance(item, tuple) or not item:
-                    continue
-
-                kind = item[0]
-                if kind != "save":
-                    continue
-
+        try:
+            while True:
+                item = self._queue.get()
                 try:
-                    _, song_name, entries, meta = item
-                except Exception as e:
-                    logger.warning(f"app_async_db:_loop: {e}")
-                    continue
-                if not isinstance(meta, dict):
-                    meta = {}
+                    if item is None:
+                        return
+                    if not isinstance(item, tuple) or not item:
+                        continue
+                    if item[0] != "save":
+                        continue
 
-                try:
-                    db_key = meta.get("db_key") or song_name
-                    processed_run = bool(meta.get("_processed_run", True))
-                    cfg_dict = meta.get("cfg_dict") or {}
-                    canonical_db_path = str(get_evolution_db_path() or "").strip()
+                    try:
+                        _, song_name, entries, meta = item
+                    except Exception as e:
+                        logger.warning(f"app_async_db:_loop: {e}")
+                        continue
+                    if not isinstance(meta, dict):
+                        meta = {}
 
-                    prev_life, prev_attempts, prev_best_score, prev_best_fg = get_song_counters(
-                        db_key,
-                        db_path=canonical_db_path or None,
-                    )
-
-                    # Fail loud on malformed internal entries: a non-int score here is a
-                    # producer bug, and silently coercing it to 0 would mis-compute
-                    # record_improved and under-record the DB. A raise lands in the
-                    # outer handler below, which records + reports the failed song save
-                    # without killing the writer thread. (The former per-field handlers
-                    # also shadowed the loop variable `e` with the exception, so any
-                    # trigger crashed the save anyway — they were dead protection.)
-                    run_score = 0
-                    run_best_fg = 0
-                    for e in entries or []:
-                        if not isinstance(e, dict):
-                            continue
-                        s = int(e.get("score", 0) or 0)
-                        fg = int(e.get("fg_score", 0) or 0)
-                        force_obj = e.get("force")
-                        if fg <= 0 and isinstance(force_obj, dict):
-                            fg = max(fg, int(force_obj.get("score", 0) or 0))
-                            det = force_obj.get("details") or {}
-                            if isinstance(det, dict):
-                                fg_meta = det.get("ForceGreats") or {}
-                                if isinstance(fg_meta, dict):
-                                    fg = max(fg, int(fg_meta.get("final_score", 0) or 0))
-                        if s > run_score:
-                            run_score = s
-                        if force_obj is not None and fg > s and fg > run_best_fg:
-                            run_best_fg = fg
-
-                    record_improved = (run_score > int(prev_best_score or 0)) or (run_best_fg > int(prev_best_fg or 0))
-
-                    # Apply attempt metadata to persisted details (per-song semantics).
-                    if processed_run:
-                        attempt_lifetime = int(prev_life or 0) + 1
-                        attempts_first = (
-                            1 if record_improved else (int(prev_attempts or 0) + 1 if int(prev_attempts or 0) else 1)
-                        )
-                        for e in entries or []:
-                            if not isinstance(e, dict):
-                                continue
-                            details = e.get("details") or {}
-                            if not isinstance(details, dict):
-                                details = {}
-                            details = dict(details)
-                            details["attempt_lifetime"] = attempt_lifetime
-                            details["attempts_first"] = attempts_first
-                            e["details"] = details
-
-                    # Timing-envelope runs are deterministic and no longer persist
-                    # sampled hit contexts or sampled offset-delta backfills.
-
-                    if entries and canonical_db_path:
-                        base_team_buff = _resolve_base_team_buff_for_persistence(cfg_dict or {})
-                        save_loadouts_batch(
+                    try:
+                        db_key = meta.get("db_key") or song_name
+                        processed_run = bool(meta.get("_processed_run", True))
+                        cfg_dict = meta.get("cfg_dict") or {}
+                        canonical_db_path = str(get_evolution_db_path() or "").strip()
+                        conn = self._get_writer_connection(canonical_db_path)
+                        save_optimizer_song_result(
                             db_key,
                             entries,
+                            processed_run=processed_run,
+                            conn=conn,
                             db_path=canonical_db_path,
-                            team_buff=base_team_buff,
-                            preserve_attempt_meta=False,
+                            team_buff=_resolve_base_team_buff_for_persistence(cfg_dict),
                         )
-
-                    # Update per-song counters (even if there were no entries to persist).
-                    # NOTE: For deferred FG-only updates, `processed_run=False` is still meaningful:
-                    # we do not increment attempt counters, but we may reset `attempts_first` when
-                    # the best FG score improves.
-                    update_song_counters(
-                        db_key,
-                        processed_run=processed_run,
-                        record_improved=record_improved,
-                        db_path=canonical_db_path or None,
-                    )
-                    # Derived TeamBuff tiers are computed on demand (never persisted).
-                except Exception as exc:
-                    self._record_error("save", exc, song_name=str(song_name))
-                    msg = f"[DB] Async save failed for {song_name}: {type(exc).__name__}: {exc}"
+                    except Exception as exc:
+                        self._record_error("save", exc, song_name=str(song_name))
+                        msg = f"[DB] Async save failed for {song_name}: {type(exc).__name__}: {exc}"
+                        try:
+                            print(msg)
+                        except Exception as e:
+                            logger.warning(f"app_async_db:_loop: {e}")
+                        try:
+                            logging.error(msg)
+                        except Exception as e:
+                            logger.warning(f"app_async_db:_loop: {e}")
+                finally:
                     try:
-                        print(msg)
+                        self._queue.task_done()
                     except Exception as e:
                         logger.warning(f"app_async_db:_loop: {e}")
-                    try:
-                        logging.error(msg)
-                    except Exception as e:
-                        logger.warning(f"app_async_db:_loop: {e}")
+        finally:
+            try:
+                self._close_writer_connection()
             finally:
-                try:
-                    self._queue.task_done()
-                except Exception as e:
-                    logger.warning(f"app_async_db:_loop: {e}")
+                with self._lock:
+                    if self._thread is threading.current_thread():
+                        self._thread = None
+                        self._state = "terminated"
+                        self._terminated_event.set()

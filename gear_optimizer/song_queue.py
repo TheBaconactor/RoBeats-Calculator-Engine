@@ -105,11 +105,12 @@ def finalize_song_queue(
         discovered = prioritize_missing_first(discovered, present)
 
     resume = list(resume_queue or ())
+    resume_active = resume_known_path_keys is not None or bool(resume)
     if resume and present:
         resume = prioritize_missing_first(resume, present)
 
     limit = max(0, int(song_queue_limit or 0))
-    if resume:
+    if resume_active:
         merged, prepended_count = merge_discovered_with_resume(
             discovered_queue=discovered,
             resume_queue=resume,

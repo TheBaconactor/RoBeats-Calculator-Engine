@@ -15,7 +15,7 @@ import logging
 import numpy as np
 import taichi as ti
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.env_config import ENV as _ENV
 from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
@@ -316,7 +316,7 @@ def _frontier_disk_cache_dir() -> Path:
     override = str(env_get("TIMELINE_FRONTIER_CACHE_DIR", "") or "").strip()
     if override:
         return Path(override)
-    return Path(__file__).resolve().parents[4] / "bin" / "timeline_frontier_cache"
+    return Path(PATHS.bin_path("timeline_frontier_cache"))
 
 
 def _frontier_disk_cache_path(cache_key: tuple) -> Path:

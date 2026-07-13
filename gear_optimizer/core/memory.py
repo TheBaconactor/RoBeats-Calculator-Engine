@@ -20,6 +20,8 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
+from collections import deque
 from dataclasses import dataclass
 
 from gear_optimizer.song_queue import normalize_queue_item, queue_path_key
@@ -54,6 +56,15 @@ MEMORY_GUARD_RESUME_FILE = PATHS.bin_path("memory_guard_resume.json")
 class MemoryGuardResumeState:
     pending: list[tuple[str, str, str]]
     known_path_keys: set[str] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _MemoryGuardResumeDiskState:
+    payload: dict
+    pending_entries: list[dict[str, str]]
+    snapshot_pending_count: int
+    journal_completion_count: int
+    journal_tail_valid: bool
 
 
 def _bytes_to_gb(value):
@@ -324,6 +335,116 @@ def build_memory_guard_resume_context(
     }
 
 
+def _memory_guard_resume_journal_path(path: str) -> str:
+    return f"{path}.completed.jsonl"
+
+
+def _normalize_memory_guard_resume_entry(entry) -> dict[str, str] | None:
+    if not isinstance(entry, dict):
+        return None
+    fp = str(entry.get("path") or "")
+    song_name = str(entry.get("song") or "")
+    if not fp.strip() or not song_name.strip():
+        return None
+    return {
+        "path": os.path.abspath(fp),
+        "song": song_name,
+        "diff": str(entry.get("diff") or "Unknown"),
+    }
+
+
+def _load_memory_guard_resume_disk_state(
+    path: str,
+    expected_context=None,
+) -> _MemoryGuardResumeDiskState | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        logging.warning(f"[MemoryGuard] Failed to load resume queue: {exc}")
+        return None
+    if not isinstance(payload, dict):
+        logging.warning("[MemoryGuard] Failed to load resume queue: root must be an object")
+        return None
+
+    stored_context = payload.get("context") or {}
+    if expected_context and stored_context != expected_context:
+        return None
+
+    raw_pending = payload.get("pending", [])
+    if not isinstance(raw_pending, list):
+        logging.warning("[MemoryGuard] Failed to load resume queue: pending must be a list")
+        return None
+    snapshot_pending = []
+    for entry in raw_pending:
+        normalized = _normalize_memory_guard_resume_entry(entry)
+        if normalized is not None:
+            snapshot_pending.append(normalized)
+
+    generation = str(payload.get("generation") or "").strip()
+    completed_path_keys: set[str] = set()
+    journal_tail_valid = True
+    if generation:
+        journal_path = _memory_guard_resume_journal_path(path)
+        try:
+            with open(journal_path, "r", encoding="utf-8") as fh:
+                for line_number, raw_line in enumerate(fh, start=1):
+                    if not raw_line.endswith("\n"):
+                        logging.warning(
+                            f"[MemoryGuard] Ignoring torn resume journal tail at line {line_number}: "
+                            "missing record terminator"
+                        )
+                        journal_tail_valid = False
+                        break
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        logging.warning(
+                            f"[MemoryGuard] Ignoring torn resume journal tail at line {line_number}: {exc}"
+                        )
+                        journal_tail_valid = False
+                        break
+                    if not isinstance(record, dict):
+                        logging.warning(
+                            f"[MemoryGuard] Ignoring malformed resume journal tail at line {line_number}"
+                        )
+                        journal_tail_valid = False
+                        break
+                    if str(record.get("generation") or "") != generation:
+                        continue
+                    completed_path = str(record.get("path") or "")
+                    if not completed_path.strip():
+                        logging.warning(
+                            f"[MemoryGuard] Ignoring malformed resume journal tail at line {line_number}"
+                        )
+                        journal_tail_valid = False
+                        break
+                    completed_path_keys.add(queue_path_key((completed_path, "", "")))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logging.warning(f"[MemoryGuard] Failed to load resume completion journal: {exc}")
+            journal_tail_valid = False
+
+    pending_entries = [
+        entry
+        for entry in snapshot_pending
+        if queue_path_key((entry["path"], "", "")) not in completed_path_keys
+    ]
+    return _MemoryGuardResumeDiskState(
+        payload=payload,
+        pending_entries=pending_entries,
+        snapshot_pending_count=len(snapshot_pending),
+        journal_completion_count=len(completed_path_keys),
+        journal_tail_valid=journal_tail_valid,
+    )
+
+
 def load_memory_guard_resume_state(expected_context=None) -> MemoryGuardResumeState:
     """
     Load pending song queue plus original queue membership from the memory guard resume file.
@@ -334,21 +455,12 @@ def load_memory_guard_resume_state(expected_context=None) -> MemoryGuardResumeSt
     Returns:
         MemoryGuardResumeState with pending queue and optional known path keys
     """
-    if not os.path.exists(MEMORY_GUARD_RESUME_FILE):
-        return MemoryGuardResumeState(pending=[], known_path_keys=None)
-    try:
-        with open(MEMORY_GUARD_RESUME_FILE, "r", encoding="utf-8") as fh:
-            payload = json.load(fh)
-    except (json.JSONDecodeError, OSError, ValueError) as exc:
-        logging.warning(f"[MemoryGuard] Failed to load resume queue: {exc}")
-        return MemoryGuardResumeState(pending=[], known_path_keys=None)
-
-    stored_context = payload.get("context") or {}
-    if expected_context and stored_context != expected_context:
+    disk_state = _load_memory_guard_resume_disk_state(MEMORY_GUARD_RESUME_FILE, expected_context)
+    if disk_state is None:
         return MemoryGuardResumeState(pending=[], known_path_keys=None)
 
     known_path_keys = None
-    raw_known_paths = payload.get("known_paths")
+    raw_known_paths = disk_state.payload.get("known_paths")
     if isinstance(raw_known_paths, list):
         known_path_keys = {
             queue_path_key((str(path or ""), "", ""))
@@ -357,15 +469,11 @@ def load_memory_guard_resume_state(expected_context=None) -> MemoryGuardResumeSt
         }
 
     pending = []
-    for entry in payload.get("pending", []):
-        fp = entry.get("path")
-        song_name = entry.get("song")
-        diff = entry.get("diff", "Unknown")
-        if not fp or not song_name:
-            continue
+    for entry in disk_state.pending_entries:
+        fp = entry["path"]
         if not os.path.exists(fp):
             continue
-        pending.append(normalize_queue_item((fp, song_name, diff)))
+        pending.append(normalize_queue_item((fp, entry["song"], entry["diff"])))
     return MemoryGuardResumeState(pending=pending, known_path_keys=known_path_keys)
 
 
@@ -377,33 +485,121 @@ class MemoryGuardResumeTracker:
     batch processing can resume from where it left off.
     """
 
+    _MIN_COMPACTION_COMPLETIONS = 64
+
     def __init__(self, path):
         self.path = path
         self.lock = threading.Lock()
-        self.pending = []
+        self._pending_by_path: dict[str, dict[str, str]] = {}
+        self._pending_paths_by_name: dict[str, deque[str]] = {}
         self.known_paths = []
         self.context = {}
-        self._since_write = 0
-        self._last_write_t = time.monotonic()
-        self._write_every_n = 1
-        self._write_every_sec = 0.0
+        self._generation = ""
+        self._snapshot_pending_count = 0
+        self._journal_completion_count = 0
+        self._journal_compacted = False
+        self._snapshot_persisted = False
+        self._durability_dirty = False
+
+    @property
+    def pending(self) -> list[dict[str, str]]:
+        with self.lock:
+            return list(self._pending_by_path.values())
+
+    def _set_pending_locked(self, entries: list[dict[str, str]]) -> None:
+        pending_by_path: dict[str, dict[str, str]] = {}
+        pending_paths_by_name: dict[str, deque[str]] = {}
+        for entry in entries:
+            path_key = queue_path_key((entry["path"], "", ""))
+            if path_key in pending_by_path:
+                raise ValueError(f"Duplicate path in memory guard resume queue: {entry['path']}")
+            pending_by_path[path_key] = entry
+            name_key = entry["song"].strip().lower()
+            pending_paths_by_name.setdefault(name_key, deque()).append(path_key)
+        self._pending_by_path = pending_by_path
+        self._pending_paths_by_name = pending_paths_by_name
+
+    @staticmethod
+    def _merge_known_paths(existing_paths, queue_paths) -> list[str]:
+        merged = []
+        seen = set()
+        stored_paths = existing_paths if isinstance(existing_paths, list) else []
+        for raw_path in [*stored_paths, *queue_paths]:
+            normalized_path = os.path.abspath(str(raw_path or ""))
+            path_key = queue_path_key((normalized_path, "", ""))
+            if not str(raw_path or "").strip() or path_key in seen:
+                continue
+            seen.add(path_key)
+            merged.append(normalized_path)
+        return merged
 
     def prime(self, queue, context):
-        """Initialize tracker with full queue and context."""
-        with self.lock:
-            self.context = context or {}
-            self.known_paths = [os.path.abspath(item[0]) for item in queue]
-            self.pending = [
+        """Initialize tracker with full queue and context, reusing compatible durable state."""
+        if context is not None and not isinstance(context, dict):
+            raise TypeError("Memory guard resume context must be a dictionary")
+        entries = []
+        for item in queue:
+            normalized_item = normalize_queue_item(item)
+            entries.append(
                 {
-                    "path": os.path.abspath(item[0]),
-                    "song": item[1],
-                    "diff": item[2],
+                    "path": normalized_item[0],
+                    "song": normalized_item[1],
+                    "diff": normalized_item[2],
                 }
-                for item in queue
-            ]
-            self._write_locked()
-            self._since_write = 0
-            self._last_write_t = time.monotonic()
+            )
+        requested_context = context or {}
+        with self.lock:
+            if not entries:
+                self.context = {}
+                self.known_paths = []
+                self._set_pending_locked([])
+                self._remove_state_locked()
+                self._generation = ""
+                self._snapshot_pending_count = 0
+                self._journal_completion_count = 0
+                self._journal_compacted = False
+                self._durability_dirty = False
+                return
+            disk_state = _load_memory_guard_resume_disk_state(self.path, requested_context)
+            stored_generation = "" if disk_state is None else str(disk_state.payload.get("generation") or "")
+            if (
+                disk_state is not None
+                and stored_generation
+                and disk_state.journal_tail_valid
+                and disk_state.pending_entries == entries
+            ):
+                self.context = requested_context
+                self.known_paths = self._merge_known_paths(
+                    disk_state.payload.get("known_paths"),
+                    (entry["path"] for entry in entries),
+                )
+                self._set_pending_locked(entries)
+                self._generation = stored_generation
+                self._snapshot_pending_count = disk_state.snapshot_pending_count
+                self._journal_completion_count = disk_state.journal_completion_count
+                self._journal_compacted = bool(disk_state.payload.get("journal_compacted"))
+                self._snapshot_persisted = True
+                self._durability_dirty = False
+                return
+
+            existing_known_paths = [] if disk_state is None else disk_state.payload.get("known_paths")
+            self.context = requested_context
+            self.known_paths = self._merge_known_paths(
+                existing_known_paths,
+                (entry["path"] for entry in entries),
+            )
+            self._set_pending_locked(entries)
+            self._generation = uuid.uuid4().hex
+            self._snapshot_pending_count = len(entries)
+            self._journal_completion_count = 0
+            self._journal_compacted = False
+            self._snapshot_persisted = self._write_snapshot_locked(
+                generation=self._generation,
+                journal_compacted=False,
+            )
+            self._durability_dirty = not self._snapshot_persisted
+            if self._snapshot_persisted:
+                self._remove_journal_locked()
 
     def mark_completed(self, *, song_path: str | None = None, song_name: str | None = None):
         """Remove completed chart from pending queue (path-keyed; name is legacy fallback)."""
@@ -412,54 +608,80 @@ class MemoryGuardResumeTracker:
         if not path_key and not norm_name:
             return
         with self.lock:
-            for idx, entry in enumerate(self.pending):
-                entry_path = queue_path_key((str(entry.get("path", "")), "", ""))
-                if path_key:
-                    matched = entry_path == path_key
-                elif norm_name:
-                    matched = entry.get("song", "").strip().lower() == norm_name
-                else:
-                    matched = False
-                if not matched:
-                    continue
-                self.pending.pop(idx)
-                self._since_write += 1
-                should_write = self._write_every_n <= 1 and self._write_every_sec <= 0.0
-                if not should_write:
-                    if self._since_write >= int(self._write_every_n):
-                        should_write = True
-                    elif self._write_every_sec > 0.0 and (time.monotonic() - self._last_write_t) >= float(
-                        self._write_every_sec
-                    ):
-                        should_write = True
+            matched_path_key = path_key if path_key in self._pending_by_path else ""
+            if not path_key and norm_name:
+                candidates = self._pending_paths_by_name.get(norm_name)
+                while candidates and candidates[0] not in self._pending_by_path:
+                    candidates.popleft()
+                if candidates:
+                    matched_path_key = candidates.popleft()
+            if not matched_path_key:
+                return
 
-                if should_write:
-                    self._write_locked()
-                    self._since_write = 0
-                    self._last_write_t = time.monotonic()
-                break
+            entry = self._pending_by_path[matched_path_key]
+            journaled = self._append_completion_locked(entry["path"])
+            self._pending_by_path.pop(matched_path_key)
+            if journaled:
+                self._journal_completion_count += 1
+            else:
+                self._durability_dirty = True
+
+            if not self._pending_by_path:
+                self._remove_state_locked()
+                self._durability_dirty = False
+                return
+            if not journaled:
+                self._compact_locked(journal_compacted=True)
+                return
+
+            compaction_threshold = max(
+                int(self._MIN_COMPACTION_COMPLETIONS),
+                (self._snapshot_pending_count + 1) // 2,
+            )
+            if not self._journal_compacted and self._journal_completion_count >= compaction_threshold:
+                self._compact_locked(journal_compacted=True)
 
     def pending_count(self) -> int:
         with self.lock:
-            return len(self.pending)
+            return len(self._pending_by_path)
 
-    def _write_locked(self):
-        """Write resume queue to disk (must be called with lock held)."""
-        if not self.pending:
-            try:
-                os.remove(self.path)
-            except FileNotFoundError:
-                pass
-            except Exception as exc:
-                logging.warning(f"[MemoryGuard] Failed to remove resume queue: {exc}")
-            return
-
-        payload = {"pending": self.pending, "known_paths": self.known_paths, "context": self.context}
+    def _append_completion_locked(self, completed_path: str) -> bool:
+        if not self._snapshot_persisted:
+            return False
+        journal_path = _memory_guard_resume_journal_path(self.path)
+        directory = os.path.dirname(journal_path)
         try:
-            os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        except Exception as exc:
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            record = json.dumps(
+                {"generation": self._generation, "path": completed_path},
+                separators=(",", ":"),
+            )
+            with open(journal_path, "a", encoding="utf-8", newline="") as fh:
+                fh.write(record + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            return True
+        except (OSError, TypeError, ValueError) as exc:
+            logging.warning(f"[MemoryGuard] Failed to append resume completion journal: {exc}")
+            return False
+
+    def _write_snapshot_locked(self, *, generation: str, journal_compacted: bool) -> bool:
+        payload = {
+            "version": 2,
+            "generation": generation,
+            "journal_compacted": bool(journal_compacted),
+            "pending": list(self._pending_by_path.values()),
+            "known_paths": self.known_paths,
+            "context": self.context,
+        }
+        directory = os.path.dirname(self.path)
+        try:
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+        except OSError as exc:
             logging.warning(f"[MemoryGuard] Failed to create resume queue directory: {exc}")
-            return
+            return False
 
         tmp_path = None
         tmp_fd = None
@@ -469,6 +691,8 @@ class MemoryGuardResumeTracker:
             tmp_fd, tmp_path = tempfile.mkstemp(prefix=tmp_prefix, suffix=".tmp", dir=tmp_dir, text=True)
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
             tmp_fd = None
         except (OSError, TypeError, ValueError) as exc:
             logging.warning(f"[MemoryGuard] Failed to write resume queue tmp file: {exc}")
@@ -482,7 +706,7 @@ class MemoryGuardResumeTracker:
                     os.remove(tmp_path)
                 except OSError:
                     pass
-            return
+            return False
 
         # Windows can intermittently raise PermissionError on atomic replace if an external
         # process (e.g., AV/scanner/indexer) briefly holds either file open.
@@ -505,20 +729,59 @@ class MemoryGuardResumeTracker:
                 os.remove(tmp_path)
             except OSError:
                 pass
-            return
+            return False
+        return True
+
+    def _compact_locked(self, *, journal_compacted: bool) -> bool:
+        new_generation = uuid.uuid4().hex
+        if not self._write_snapshot_locked(
+            generation=new_generation,
+            journal_compacted=journal_compacted,
+        ):
+            return False
+        self._generation = new_generation
+        self._snapshot_pending_count = len(self._pending_by_path)
+        self._journal_completion_count = 0
+        self._journal_compacted = bool(journal_compacted)
+        self._snapshot_persisted = True
+        self._durability_dirty = False
+        self._remove_journal_locked()
+        return True
+
+    def _remove_journal_locked(self) -> None:
+        try:
+            os.remove(_memory_guard_resume_journal_path(self.path))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logging.warning(f"[MemoryGuard] Failed to remove resume completion journal: {exc}")
+
+    def _remove_state_locked(self) -> None:
+        snapshot_removed = False
+        try:
+            os.remove(self.path)
+            snapshot_removed = True
+        except FileNotFoundError:
+            snapshot_removed = True
+        except OSError as exc:
+            logging.warning(f"[MemoryGuard] Failed to remove resume queue: {exc}")
+        if snapshot_removed:
+            self._remove_journal_locked()
+            self._snapshot_persisted = False
 
     def finalize(self, preserve_pending):
         """Finalize tracker, optionally preserving pending queue."""
         with self.lock:
-            if preserve_pending and self.pending:
-                self._write_locked()
+            if preserve_pending and self._pending_by_path:
+                if self._durability_dirty:
+                    self._compact_locked(journal_compacted=True)
             else:
-                self.pending = []
+                self._pending_by_path = {}
+                self._pending_paths_by_name = {}
                 self.known_paths = []
                 self.context = {}
-                self._write_locked()
-            self._since_write = 0
-            self._last_write_t = time.monotonic()
+                self._remove_state_locked()
+                self._durability_dirty = False
 
 
 def restart_process_for_memory_guard():

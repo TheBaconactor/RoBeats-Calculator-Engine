@@ -149,3 +149,35 @@ def test_fg_response_cpu_f64_matches_gpu_f64_nonzero_budget(allow_pp):
     np.testing.assert_array_equal(out_cpu, out_gpu)
     # Sanity: a real winner was selected with a nonzero gem allocation searched.
     assert out_cpu[0, 0] > 0
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="MoltenVK/Metal has no shaderFloat64; exact f64 tie parity is Vulkan-only.",
+)
+@pytest.mark.parametrize("allow_pp", [False, True])
+def test_fg_response_cpu_gpu_preserve_all_output_columns_and_first_surface_tie(allow_pp):
+    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _precompute_surface_head_coeffs
+
+    b = _build_controlled_batch(allow_pp)
+    b["surface_pattern_words"] = np.ascontiguousarray(
+        np.repeat(b["surface_pattern_words"][0:1], 3, axis=0),
+        dtype=np.uint32,
+    )
+    b["surface_counts"] = np.ascontiguousarray(
+        np.repeat(b["surface_counts"][0:1], 3, axis=0),
+        dtype=np.int32,
+    )
+    b["surface_pattern_ids"] = np.arange(3, dtype=np.int32)
+    b["surface_pattern_head_coeffs"] = _precompute_surface_head_coeffs(
+        b["surface_pattern_words"],
+        head_len=int(b["row_meta"][0, 6]),
+    )
+
+    out_cpu = _run_cpu_f64(b, allow_pp)
+    out_gpu = _run_gpu(b, allow_pp)
+
+    assert out_cpu.shape == out_gpu.shape == (1, 11)
+    np.testing.assert_array_equal(out_gpu, out_cpu)
+    assert out_gpu[0, 1] == 0

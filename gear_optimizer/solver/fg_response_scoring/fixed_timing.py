@@ -148,7 +148,7 @@ def build_fixed_timing_fg_replays(
         score_stats_exact_batch,
         score_stats_fixed_timing_exact_batch,
     )
-    from .reducer import materialize_force_payload_from_response_frontier
+    from .reducer import FgTraceMaterializationCache, materialize_force_payload_from_response_frontier
 
     # Paired-base scorer follows the timing mode: zero_ms -> fixed-0ms chart timeline;
     # perfect_window -> the Perfect-window timing frontier. The FG surface solve + score above are
@@ -177,7 +177,7 @@ def build_fixed_timing_fg_replays(
     # fill inputs, and the reconstruct DFS is the dominant materialize cost (same memo the
     # fused owner path uses; key completeness incl. raw_fever_fill/non_fever_base lives in
     # the reducer).
-    trace_cache: dict[Any, Any] = {}
+    trace_cache = FgTraceMaterializationCache()
     for result, base_stats, paired_base in zip(results, paired_base_rows, paired_base_scores, strict=True):
         force = materialize_force_payload_from_response_frontier(
             eval_data={},

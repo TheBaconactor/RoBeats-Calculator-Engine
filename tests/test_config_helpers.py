@@ -6,11 +6,13 @@ import pytest
 from gear_optimizer.core.config import (
     AppRuntimeSettings,
     CalculateSongSettings,
+    DEFAULT_INFLIGHT_SONGS,
     GASettings,
     GPUExecutionSettings,
     InflightSettings,
     load_config,
     read_iteration_engine_settings,
+    resolve_inflight_songs,
 )
 
 
@@ -69,7 +71,7 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert ga.search_depth == 1
     assert ga.multi_start == 1
 
-    assert inflight.songs == 0
+    assert inflight.songs == DEFAULT_INFLIGHT_SONGS
     assert inflight.song_file_cache_max == 0
     assert inflight.team_buff_calc_cache_max == 5
 
@@ -86,6 +88,28 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     assert runtime.loop_restart_wait_sec == 60.0
 
     assert ie.force_greats_debug is False
+
+
+@pytest.mark.parametrize(
+    ("configured", "song_count", "expected"),
+    [
+        (0, None, DEFAULT_INFLIGHT_SONGS),
+        (7, None, 7),
+        (0, 3, 3),
+        (7, 3, 3),
+        (1, 8, 1),
+        (0, 0, 0),
+    ],
+)
+def test_resolve_inflight_songs_default_explicit_and_short_queue(
+    monkeypatch,
+    configured,
+    song_count,
+    expected,
+):
+    monkeypatch.delenv("IN_FLIGHT_SONGS", raising=False)
+
+    assert resolve_inflight_songs(configured, song_count=song_count) == expected
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -17,8 +18,24 @@ from gear_optimizer.solver.taichi_gem.force_greats import (
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
     activation_hit_is_reachable_weighted_lane_aware,
 )
+from gear_optimizer.solver.taichi_gem.force_greats.response_builder import FgTraceEdgeOptionsCache
 
 from .planner import FgResponseFrontierPreparedPlan
+
+
+@dataclass(slots=True)
+class FgTraceMaterializationCache:
+    """Validated trace/edge cache bound to one exact calc-song owner."""
+
+    traces: dict[Any, tuple[dict[str, Any], ...]] = field(default_factory=dict)
+    edge_options: FgTraceEdgeOptionsCache = field(default_factory=FgTraceEdgeOptionsCache)
+    _calc_song_owner: dict[str, Any] | None = None
+
+    def bind(self, calc_song: dict[str, Any]) -> None:
+        if self._calc_song_owner is None:
+            self._calc_song_owner = calc_song
+        elif self._calc_song_owner is not calc_song:
+            raise ValueError("FG trace materialization cache cannot be reused across calc-song owners")
 
 
 def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_fill: float) -> None:
@@ -87,10 +104,14 @@ def materialize_force_payload_from_response_frontier(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
     reconstruction_frontier=None,
-    trace_cache: dict[Any, Any] | None = None,
+    trace_cache: FgTraceMaterializationCache | None = None,
 ) -> dict[str, Any]:
+    if trace_cache is not None:
+        trace_cache.bind(calc_song)
     frontier = reconstruction_frontier or result.frontier
     song_inputs = extract_fg_song_inputs(calc_song)
+    if trace_cache is not None:
+        trace_cache.edge_options.bind_owner(calc_song, note_count=len(song_inputs.timestamps))
     song_lanes = getattr(song_inputs, "lanes", None)
     if song_lanes is None:
         raise ValueError("FG response materialization requires song input lanes")
@@ -106,6 +127,7 @@ def materialize_force_payload_from_response_frontier(
     # zero added work: no key, no lookup, no copy.
     base_trace = None
     trace_key = None
+    trace_is_validated = False
     if trace_cache is not None:
         trace_key = (
             non_fever_base,
@@ -118,7 +140,8 @@ def materialize_force_payload_from_response_frontier(
             float(result.real_fever_time),
             bool(song_inputs.use_forced_great_timing),
         )
-        base_trace = trace_cache.get(trace_key)
+        base_trace = trace_cache.traces.get(trace_key)
+        trace_is_validated = base_trace is not None
     if base_trace is None:
         base_trace = reconstruct_force_greats_response_trace(
             non_fever_base=non_fever_base,
@@ -132,15 +155,19 @@ def materialize_force_payload_from_response_frontier(
             raw_fever_fill=float(result.raw_fever_fill),
             real_fever_time=float(result.real_fever_time),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
+            edge_options_cache=None if trace_cache is None else trace_cache.edge_options,
         )
+    # Validate before publishing into the song-local cache. A cache hit therefore proves this
+    # exact immutable trace already crossed the persist-time reachability barrier; repeating the
+    # chart-wide guard for every loadout with the same semantic trace adds no independent check.
+    if not trace_is_validated:
+        _assert_trace_hit_time_reachable(base_trace, song_inputs, raw_fever_fill=float(result.raw_fever_fill))
         if trace_cache is not None:
-            trace_cache[trace_key] = base_trace
+            trace_cache.traces[trace_key] = base_trace
     # On the cache path, hand each payload fresh per-row dicts (the cached base_trace is never
     # handed out directly, so it can't be mutated downstream); with no cache, return as-is,
     # exactly like before.
     frontier_trace = base_trace if trace_cache is None else tuple(dict(row) for row in base_trace)
-    # Persist-time fail-loud reachability guard: no phantom late-Great activation may reach the DB.
-    _assert_trace_hit_time_reachable(frontier_trace, song_inputs, raw_fever_fill=float(result.raw_fever_fill))
     trace_counts = tuple(int(row["forced_count"]) for row in frontier_trace)
     if result.forced_counts:
         forced_counts = tuple(int(v) for v in result.forced_counts)
@@ -259,7 +286,7 @@ class FgResultReducer:
             )[: int(LOADOUTS_PER_SONG_LIMIT)]
         )
 
-        trace_cache: dict[Any, Any] = {}
+        trace_cache = FgTraceMaterializationCache()
         for item in pending_jobs:
             result = item["result"]
             payload = materialize_force_payload_from_response_frontier(

@@ -1,11 +1,14 @@
 import configparser
+import os
 import sys
 import types
 
 import pytest
 
 from gear_optimizer.app import GearOptimizerApp
+from gear_optimizer.core.config import DEFAULT_INFLIGHT_SONGS
 from gear_optimizer.engine.native import NativeOptimizationEngine
+from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT
 from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
 
 
@@ -88,6 +91,43 @@ def test_full_task_prefix_uses_native_inflight_pipeline(monkeypatch):
     expected_tasks = [NativeOptimizationEngine._canonical_task_tuple(task) for task in tasks]
     assert len(native_calls) == 1
     assert native_calls[0]["args"][0] == expected_tasks
+
+
+@pytest.mark.parametrize(
+    ("configured", "count", "expected"),
+    [(0, 2, 2), (1, 2, 1), (20, 2, 2)],
+)
+def test_native_execution_uses_canonical_inflight_resolution(monkeypatch, configured, count, expected):
+    app = _make_minimal_app()
+    tasks = _build_tasks(inflight_songs=configured, count=count)
+    calls: list[dict] = []
+    monkeypatch.delenv("IN_FLIGHT_SONGS", raising=False)
+
+    def _record_run(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setitem(
+        sys.modules,
+        "gear_optimizer.solver.native_inflight_orchestrator",
+        types.SimpleNamespace(run_native_inflight_song_pipeline=_record_run),
+    )
+
+    app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
+
+    assert calls[0]["kwargs"]["in_flight_songs"] == expected
+
+
+def test_gpu_slot_auto_sizing_uses_canonical_inflight_default(monkeypatch):
+    app = object.__new__(GearOptimizerApp)
+    cfg = configparser.ConfigParser()
+    monkeypatch.delenv("IN_FLIGHT_SONGS", raising=False)
+    monkeypatch.delenv("GPU_SONG_SLOTS", raising=False)
+    monkeypatch.delitem(sys.modules, "gear_optimizer.solver.taichi_gem.fields", raising=False)
+
+    app._maybe_autoset_gpu_song_slots(cfg)
+
+    expected = max(24, DEFAULT_INFLIGHT_SONGS * CANONICAL_GA_QUEUE_MULT + 2)
+    assert int(os.environ["GPU_SONG_SLOTS"]) == expected
 
 
 def test_inflight_failure_raises_instead_of_falling_back(monkeypatch):

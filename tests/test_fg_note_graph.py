@@ -48,6 +48,7 @@ def _build_options(n, non_fever_base, real_fever_time):
 
 def test_fg_note_graph_reconciles_with_surface_head_and_body():
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        FgTraceEdgeOptionsCache,
         reconstruct_force_greats_response_trace,
     )
     from gear_optimizer.solver.fg_response_scoring.note_graph import (
@@ -65,6 +66,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
     saw_body_fever = False
     saw_witness = False
     note_types = np.ones(n, dtype=np.int16)
+    edge_options_cache = FgTraceEdgeOptionsCache()
     for opt in options:
         surface = opt["surface"]
         try:
@@ -79,6 +81,7 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
                 raw_fever_fill=1.0,
                 real_fever_time=real_fever_time,
                 use_forced_great_timing=True,
+                edge_options_cache=edge_options_cache,
             )
         except ValueError:
             continue  # not all standalone edge surfaces are independently reconstructable
@@ -111,6 +114,8 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
             assert isinstance(wit["delta_ms"], float)
 
     assert validated > 0, "no edge surface reconstructed+reconciled"
+    assert edge_options_cache
+    assert edge_options_cache.option_count <= 8192
     # body-count + witness reconciliation is proven directly below (standalone single-surface
     # frontiers only reconstruct head-reaching edges; body coverage is the synthetic test).
     _ = (saw_body_fever, saw_witness)
@@ -142,10 +147,64 @@ def test_reconstruct_force_greats_response_trace_is_stats_free():
         "raw_fever_fill",
         "real_fever_time",
         "use_forced_great_timing",
+        "edge_options_cache",
     }
     # no stat vector, base_value, perfect-points, element color, or frontier/DP object
     for stat_like in ("stats", "base_value", "perfect_points", "frontier", "tier", "team_buff"):
         assert stat_like not in params
+
+
+def test_trace_edge_cache_rejects_cross_song_geometry_reuse():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        FgTraceEdgeOptionsCache,
+        reconstruct_force_greats_response_trace,
+    )
+
+    timestamps, great_candidates, _actions, options = _build_options(110, 96, 1.5)
+    cache = FgTraceEdgeOptionsCache()
+    kwargs = {
+        "non_fever_base": 96,
+        "target_surface": options[0]["surface"],
+        "timestamps": timestamps,
+        "great_candidate_timestamps": great_candidates,
+        "perfect_floor_timestamps": timestamps,
+        "great_floor_timestamps": timestamps,
+        "lanes": np.arange(110, dtype=np.int32),
+        "raw_fever_fill": 1.0,
+        "real_fever_time": 1.5,
+        "use_forced_great_timing": True,
+        "edge_options_cache": cache,
+    }
+    reconstruct_force_greats_response_trace(**kwargs)
+
+    with pytest.raises(ValueError, match="cannot be reused across song timing owners"):
+        reconstruct_force_greats_response_trace(**{**kwargs, "timestamps": timestamps.copy()})
+
+
+def test_trace_edge_cache_bounds_retained_options_and_skips_oversized_states():
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import FgTraceEdgeOptionsCache
+
+    cache = FgTraceEdgeOptionsCache()
+    owner = object()
+    cache.bind_owner(owner, note_count=1)
+    option = {"surface": "sentinel"}
+    cache.put(("first",), (option,) * 5000)
+    cache.put(("second",), (option,) * 4000)
+
+    assert cache.get(("first",)) is None
+    assert len(cache.get(("second",)) or ()) == 4000
+    assert cache.option_count == 4000
+
+    cache.put(("oversized",), (option,) * 8193)
+    assert cache.get(("oversized",)) is None
+    assert cache.option_count == 4000
+
+    empty_cache = FgTraceEdgeOptionsCache()
+    empty_cache.bind_owner(owner, note_count=1)
+    for index in range(300):
+        empty_cache.put(("empty", index), ())
+    assert len(empty_cache) == 256
+    assert empty_cache.option_count == 0
 
 
 def _words_from_indices(indices):
