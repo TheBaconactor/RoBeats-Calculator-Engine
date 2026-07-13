@@ -221,6 +221,25 @@ def _prebuild_catalog_frontier_caches() -> None:
         )
 
 
+def _maintain_provisioned_fg_frontier_cache() -> None:
+    """Apply destination-native maintenance to an externally copied FG pool without building."""
+    try:
+        from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
+            maintain_provisioned_fg_response_frontier_cache,
+        )
+
+        maintain_provisioned_fg_response_frontier_cache()
+    except Exception:
+        logger.exception("provisioned FG frontier cache maintenance failed")
+
+
+def _run_catalog_frontier_cache_startup() -> None:
+    if env_flag("ROBEATSMETA_SKIP_CATALOG_PREBUILD"):
+        _maintain_provisioned_fg_frontier_cache()
+    else:
+        _prebuild_catalog_frontier_caches()
+
+
 class RequestError(ValueError):
     """A bad request from the caller -> HTTP 400 (an internal failure -> 500)."""
 
@@ -600,17 +619,17 @@ def main(argv: list[str] | None = None) -> int:
     if env_flag("ROBEATSMETA_SKIP_CATALOG_PREBUILD"):
         print(
             "[robeatsmeta-service] catalog frontier cache prebuild SKIPPED "
-            "(ROBEATSMETA_SKIP_CATALOG_PREBUILD): cache provisioned externally; missing entries build on demand.",
+            "(ROBEATSMETA_SKIP_CATALOG_PREBUILD): maintaining the provisioned FG pool; "
+            "missing entries build on demand.",
             flush=True,
         )
         logger.info("catalog frontier cache prebuild skipped (ROBEATSMETA_SKIP_CATALOG_PREBUILD)")
-    else:
-        prebuild = threading.Thread(
-            target=_prebuild_catalog_frontier_caches,
-            name="catalog-frontier-cache-prebuild",
-            daemon=True,
-        )
-        prebuild.start()
+    prebuild = threading.Thread(
+        target=_run_catalog_frontier_cache_startup,
+        name="catalog-frontier-cache-startup",
+        daemon=True,
+    )
+    prebuild.start()
     print(
         f"[robeatsmeta-service] listening on http://{args.host}:{args.port}"
         f" (pool={_SOLVE_POOL_SIZE}, timeline_cache={_TIMELINE_FRONTIER_CACHE_DIR},"

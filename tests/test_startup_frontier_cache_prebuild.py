@@ -28,6 +28,44 @@ def test_standalone_and_website_share_the_startup_cache_owner() -> None:
     assert 'str(REPO_ROOT / "main.py"), "run"' in service_source
 
 
+def test_provisioned_fg_cache_maintenance_uses_build_lock(monkeypatch, tmp_path: Path) -> None:
+    from contextlib import contextmanager
+
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+
+    calls: list[str] = []
+
+    @contextmanager
+    def _lock(cache_dir, *, label):
+        assert cache_dir == tmp_path
+        assert label == "fg_response"
+        calls.append("lock_enter")
+        yield
+        calls.append("lock_exit")
+
+    monkeypatch.setattr(prebuild, "FrontierBuildLock", _lock)
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache._fg_response_disk_cache_dir",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
+        lambda: calls.append("cleanup") or 0,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
+        lambda: calls.append("purge") or 0,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.compress_cache_dir_sidecars",
+        lambda: calls.append("compress"),
+    )
+
+    prebuild.maintain_provisioned_fg_response_frontier_cache()
+
+    assert calls == ["lock_enter", "cleanup", "purge", "compress", "lock_exit"]
+
+
 def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary

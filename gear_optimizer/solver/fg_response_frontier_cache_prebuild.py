@@ -49,6 +49,32 @@ class FgResponseFrontierCachePrebuildSummary:
     elapsed_ms: float = 0.0
 
 
+def _maintain_fg_response_frontier_cache_under_lock() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+        cleanup_fg_response_frontier_cache_temp_files,
+        compress_cache_dir_sidecars,
+        purge_stale_version_cache_files,
+    )
+
+    removed_tmp = cleanup_fg_response_frontier_cache_temp_files()
+    if int(removed_tmp) > 0:
+        logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
+
+    removed_stale = purge_stale_version_cache_files()
+    if int(removed_stale) > 0:
+        logger.info("[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale))
+
+    compress_cache_dir_sidecars()
+
+
+def maintain_provisioned_fg_response_frontier_cache() -> None:
+    """Maintain a copied FG pool without building any missing cache entries."""
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import _fg_response_disk_cache_dir
+
+    with FrontierBuildLock(_fg_response_disk_cache_dir(), label="fg_response"):
+        _maintain_fg_response_frontier_cache_under_lock()
+
+
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
 _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
@@ -827,9 +853,7 @@ def run_fg_response_frontier_cache_prebuild(
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         _fg_response_disk_cache_dir,
         cache_dir_sidecars_need_compression,
-        cleanup_fg_response_frontier_cache_temp_files,
         compress_cache_dir_sidecars,
-        purge_stale_version_cache_files,
     )
 
     started = time.perf_counter()
@@ -869,21 +893,11 @@ def run_fg_response_frontier_cache_prebuild(
                 int(manifest_plan.total_paths),
             )
 
-        removed_tmp = cleanup_fg_response_frontier_cache_temp_files()
-        if int(removed_tmp) > 0:
-            logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
-
-        removed_stale = purge_stale_version_cache_files()
-        if int(removed_stale) > 0:
-            logger.info(
-                "[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale)
-            )
-
         # A copied/restored pool and complete bundles left by an interrupted prebuild can have lost
         # their WOF backing even though every manifest entry validates. Run maintenance before the
         # complete-pool return so those exact cache hits regain lossless XPRESS16K compression. The
         # builder lock prevents this filesystem pass from overlapping a live bundle writer.
-        compress_cache_dir_sidecars()
+        _maintain_fg_response_frontier_cache_under_lock()
 
         if not manifest_plan.missing_paths:
             return FgResponseFrontierCachePrebuildSummary(
