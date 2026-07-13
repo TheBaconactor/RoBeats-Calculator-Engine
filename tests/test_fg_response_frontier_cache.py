@@ -659,12 +659,64 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     assert legacy_path.exists()
 
 
-def test_issue149_v31_rejects_every_predecessor_cache_version() -> None:
+def test_issue149_v31_accepts_only_ratified_reconstruction_predecessor() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
-    assert current_version.startswith("fg-response-frontier-visible-first-v31+logic-")
-    assert response_cache_store.fg_response_compatible_cache_versions() == (current_version,)
+    assert current_version == "fg-response-frontier-visible-first-v31+logic-cce609775b15"
+    assert response_cache_store.fg_response_compatible_cache_versions() == (
+        current_version,
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    )
+
+
+def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    response_cache.reset_fg_response_frontier_payload_cache()
+    keys = ((0, 0), (1, 0))
+    current_version = response_cache._FG_RESPONSE_CACHE_VERSION
+    predecessor = response_cache_store.fg_response_compatible_cache_versions()[1]
+
+    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", predecessor)
+    legacy = response_cache.build_or_load_response_frontier_payload(
+        _calc_song(),
+        _varying_ref_arrays(),
+        stat_keys=keys,
+    )
+    legacy_path = Path(legacy.disk_path)
+
+    response_cache.reset_fg_response_frontier_payload_cache()
+    monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", current_version)
+
+    def _build_must_not_run(*_args, **_kwargs):
+        raise AssertionError("ratified V31 reconstruction predecessor must not rebuild")
+
+    monkeypatch.setattr(
+        response_cache,
+        "build_force_greats_response_first_frontiers_gpu_batch",
+        _build_must_not_run,
+    )
+    reused = response_cache.build_or_load_response_frontier_payload(
+        _calc_song(),
+        _varying_ref_arrays(),
+        stat_keys=keys,
+    )
+    scoring = response_cache.load_response_frontier_scoring_bundle(
+        _calc_song(),
+        _varying_ref_arrays(),
+        stat_keys=keys,
+    )
+
+    assert reused.cache_source == "disk"
+    assert Path(reused.disk_path) == legacy_path
+    assert response_cache_store.resolve_fg_response_bundle_path(scoring.cache_key) == legacy_path
+    assert response_cache_store.purge_stale_version_cache_files() == 0
+    assert legacy_path.exists()
 
 
 def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path, monkeypatch) -> None:

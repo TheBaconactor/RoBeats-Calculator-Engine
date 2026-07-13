@@ -72,7 +72,6 @@ __all__ = [
 _PERFECT_LOWER_MS = -20
 _PERFECT_UPPER_MS = 40
 _GREAT_UPPER_MS = 190
-_HELD_HEAD_TYPE = 2
 _HELD_TAIL_TYPE = 3
 _HELD_TAIL_TIME_MULT = 2
 _FEVER_END_SAME_CHART_TIME_MS = 0.01
@@ -167,7 +166,6 @@ def _activation_materialized_delta_ms(
     else:
         return float(center)
 
-    is_hold_head = int(nt[a]) == _HELD_HEAD_TYPE
     has_hit_window = any(
         sec.get(key) is not None
         for key in (
@@ -198,9 +196,6 @@ def _activation_materialized_delta_ms(
 
     lo = max(float(judge_lo), _offset_field("lower", center))
     hi = min(float(judge_hi), _offset_field("upper", center))
-    if is_hold_head:
-        hi = min(float(hi), float(center))
-        lo = min(float(lo), float(hi))
     if lo > hi:
         raise ValueError(
             f"note_graph: activation witness interval is empty at note {a} "
@@ -596,8 +591,9 @@ def _mark_activation_preemptor_order_deltas(
                 (int(before), int(after))
                 for before, after in zip(exact_sequence, exact_sequence[1:])
             )
-        required_press = activation_press
-        previous_order_index = int(a)
+        required_press_by_lane: dict[int, float] = {}
+        previous_order_index_by_lane: dict[int, int] = {}
+        global_required_press = float(activation_press)
 
         scan_start = int(sec.get("forced_start_index", a + 1)) if require_exact_schedule else a + 1
         for j in range(int(scan_start), n):
@@ -605,14 +601,17 @@ def _mark_activation_preemptor_order_deltas(
                 continue
             note = notes[j]
             chart_j = float(note["hit_time_ms"])
+            lane_key = -1 if lane_arr is None else int(lane_arr[j])
+            required_press = float(required_press_by_lane.get(lane_key, activation_press))
+            previous_order_index = int(previous_order_index_by_lane.get(lane_key, a))
             # Chart times are monotone and every legal Perfect/Great press lies within 200ms of
-            # chart, so once chart_j - 200 clears the chained requirement nothing later can press
-            # before it. Do NOT stop at the first note whose press already satisfies the
+            # chart, so once chart_j - 200 clears every lane-local requirement nothing later can
+            # press before it. Do NOT stop at the first note whose press already satisfies the
             # requirement: press times are not monotone over chart order once a witness is
             # delayed -- a forced-Great bundle sibling at the activation's own late edge satisfies
             # the requirement while still-on-time chord partners behind it would preempt the
             # activation's fill (the Aurora 47,502,676 witness shape).
-            if int(j) > int(a) and chart_j - 200.0 > required_press:
+            if int(j) > int(a) and chart_j - 200.0 > global_required_press:
                 break
             if (
                 not require_exact_schedule
@@ -633,12 +632,12 @@ def _mark_activation_preemptor_order_deltas(
                 current_delta = _selector_default_delta_ms(nt, j, result, raw_delta)
             current_press = chart_j + float(current_delta)
             if current_press >= required_press:
-                # Already after everything chained before it; it becomes the new ordering floor
-                # so later window notes cannot be scheduled before it (per-lane earliest-
-                # hittable-first matching requires chart-order presses within the window).
-                required_press = current_press
+                # Already after the activation and the prior note in this lane. It becomes only
+                # this lane's ordering floor: cross-lane notes may be pressed in either order.
+                required_press_by_lane[lane_key] = float(current_press)
+                previous_order_index_by_lane[lane_key] = int(j)
+                global_required_press = max(float(global_required_press), float(current_press))
                 input_order_constraints.append((int(previous_order_index), int(j)))
-                previous_order_index = int(j)
                 continue
 
             needed_delta = required_press - chart_j
@@ -648,9 +647,13 @@ def _mark_activation_preemptor_order_deltas(
                     "delayed activation ordering at judgment bounds -- it is never guessed"
                 )
             note["delta_ms"] = _delta_at_or_after_ms(nt, j, result, needed_delta)
-            required_press = chart_j + float(note["delta_ms"])
+            required_press_by_lane[lane_key] = chart_j + float(note["delta_ms"])
+            previous_order_index_by_lane[lane_key] = int(j)
+            global_required_press = max(
+                float(global_required_press),
+                float(required_press_by_lane[lane_key]),
+            )
             input_order_constraints.append((int(previous_order_index), int(j)))
-            previous_order_index = int(j)
 
     return input_order_constraints
 

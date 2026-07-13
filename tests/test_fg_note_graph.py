@@ -496,6 +496,38 @@ def test_fg_note_graph_uses_activation_upper_edge_for_priced_fever_cutoff():
     assert next_press >= activation_press
 
 
+def test_fg_note_graph_hold_head_activation_uses_upper_edge_for_early_great_tail():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    timestamps = np.asarray([0.0, 1.0], dtype=np.float32)
+    trace = [{
+        "section": 1,
+        "activation_index": 0,
+        "fever_end_index": 2,
+        "forced_start_index": 0,
+        "forced_prefix_count": 0,
+        "activation_judgment": "perfect",
+        "activation_hit_offset_ms": 20.0,
+        "activation_hit_offset_lower_ms": 0.0,
+        "activation_hit_offset_upper_ms": 40.0,
+        "fever_window_end_ms": 920.0,
+        "early_great_start": 1,
+        "early_great_end": 2,
+    }]
+
+    graph = _exact_force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=2,
+        timestamps=timestamps,
+        note_types=np.asarray([2, 1], dtype=np.int16),
+    )
+
+    assert graph[0]["delta_ms"] == pytest.approx(40.0)
+    assert graph[1]["note_result"] == "Great"
+    assert -94.0 <= float(graph[1]["delta_ms"]) < -20.0
+    assert float(graph[1]["hit_time_ms"]) + float(graph[1]["delta_ms"]) < 920.0
+
+
 def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
@@ -1514,6 +1546,48 @@ def test_persisted_activation_schedule_orders_cross_lane_followers_after_activat
         require_exact_schedule=True,
     )
     assert float(notes[1]["delta_ms"]) == pytest.approx(30.0)
+
+
+def test_persisted_activation_schedule_chains_postactivation_notes_per_lane():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        _assign_exact_input_order,
+        _mark_activation_preemptor_order_deltas,
+    )
+
+    nt = np.asarray([1, 1, 1], dtype=np.int16)
+    notes = [
+        {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": 100.0},
+        {"note_index": 1, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": 190.0},
+        {"note_index": 2, "hit_time_ms": 1137.0, "note_result": "Perfect", "delta_ms": 0.0},
+    ]
+    trace = [{
+        "activation_index": 0,
+        "forced_start_index": 0,
+        "activation_schedule_schema_version": 1,
+        "preactivation_order": [],
+        "preactivation_lane_prefixes": [
+            {"lane": 1, "count": 0},
+            {"lane": 2, "count": 0},
+            {"lane": 3, "count": 0},
+        ],
+        "preactivation_fill_half_units": 0,
+        "preactivation_event_count": 0,
+        "preactivation_great_count": 0,
+    }]
+
+    constraints = _mark_activation_preemptor_order_deltas(
+        notes,
+        frontier_trace=trace,
+        total_notes=3,
+        note_types=nt,
+        lanes=np.asarray([1, 2, 3], dtype=np.int32),
+        require_exact_schedule=True,
+    )
+
+    assert constraints == [(0, 1), (0, 2)]
+    assert float(notes[2]["delta_ms"]) == 0.0
+    _assign_exact_input_order(notes, constraints)
+    assert [int(note["input_order"]) for note in notes] == [0, 2, 1]
 
 
 def test_physical_replay_validates_exact_surface_and_event_time_fever() -> None:
