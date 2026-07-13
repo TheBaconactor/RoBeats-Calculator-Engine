@@ -287,50 +287,55 @@ def _materialized_fever_window_end_ms(
     return float(chart_ms) + float(activation_delta_ms) + float(duration_ms)
 
 
-def _delta_at_or_after_ms(note_types: np.ndarray, j: int, result: str, min_delta_ms: float) -> float:
-    min_delta = float(min_delta_ms)
+def _bounded_judgment_delta_ms(
+    note_types: np.ndarray,
+    j: int,
+    result: str,
+    *,
+    preferred_delta_ms: float,
+    min_delta_ms: float = -np.inf,
+    max_delta_ms: float = np.inf,
+) -> float:
     if result == "Perfect":
-        lo, hi = _perfect_bounds_ms_at(note_types, j)
-        chosen = max(float(lo), float(min_delta))
-        if chosen <= float(hi):
-            return float(chosen)
+        intervals = (_perfect_bounds_ms_at(note_types, j),)
     elif result == "Great":
         early_lo, early_hi = _early_great_bounds_ms_at(note_types, j)
         late_lo, late_hi = _late_great_bounds_ms_at(note_types, j)
-        if float(min_delta) <= float(early_hi):
-            return float(max(float(early_lo), float(min_delta)))
-        chosen = max(float(late_lo), float(min_delta))
-        if chosen <= float(late_hi):
-            return float(chosen)
+        intervals = ((early_lo, early_hi), (late_lo, late_hi))
     else:
-        raise ValueError(f"note_graph: cannot delay unsupported result {result!r} at note {j}")
-    raise ValueError(
-        "note_graph: delayed activation witness cannot be made input-order legal "
-        f"without changing note {j}'s {result} judgment"
+        raise ValueError(f"note_graph: unsupported result {result!r} at note {j}")
+
+    candidates: list[float] = []
+    for lo, hi in intervals:
+        feasible_lo = max(float(lo), float(min_delta_ms))
+        feasible_hi = min(float(hi), float(max_delta_ms))
+        if feasible_lo <= feasible_hi:
+            candidates.append(min(max(float(preferred_delta_ms), feasible_lo), feasible_hi))
+    if not candidates:
+        raise ValueError(
+            "note_graph: exact input order has no legal bounded hit "
+            f"for note {j}'s {result} judgment"
+        )
+    return min(candidates, key=lambda delta: (abs(delta - float(preferred_delta_ms)), delta))
+
+
+def _delta_at_or_after_ms(note_types: np.ndarray, j: int, result: str, min_delta_ms: float) -> float:
+    return _bounded_judgment_delta_ms(
+        note_types,
+        j,
+        result,
+        preferred_delta_ms=float(min_delta_ms),
+        min_delta_ms=float(min_delta_ms),
     )
 
 
 def _delta_at_or_before_ms(note_types: np.ndarray, j: int, result: str, max_delta_ms: float) -> float:
-    max_delta = float(max_delta_ms)
-    if result == "Perfect":
-        lo, hi = _perfect_bounds_ms_at(note_types, j)
-        chosen = min(float(hi), float(max_delta))
-        if chosen >= float(lo):
-            return float(chosen)
-    elif result == "Great":
-        early_lo, early_hi = _early_great_bounds_ms_at(note_types, j)
-        late_lo, late_hi = _late_great_bounds_ms_at(note_types, j)
-        chosen = min(float(late_hi), float(max_delta))
-        if chosen >= float(late_lo):
-            return float(chosen)
-        chosen = min(float(early_hi), float(max_delta))
-        if chosen >= float(early_lo):
-            return float(chosen)
-    else:
-        raise ValueError(f"note_graph: cannot advance unsupported result {result!r} at note {j}")
-    raise ValueError(
-        "note_graph: persisted preactivation order cannot be made input-order legal "
-        f"without changing note {j}'s {result} judgment"
+    return _bounded_judgment_delta_ms(
+        note_types,
+        j,
+        result,
+        preferred_delta_ms=float(max_delta_ms),
+        max_delta_ms=float(max_delta_ms),
     )
 
 
@@ -467,6 +472,79 @@ def _mark_same_time_selector_order_deltas(
             previous_delta = fixed_delta
 
 
+def _materialize_preactivation_schedule(
+    notes: list[dict[str, Any]],
+    *,
+    note_types: np.ndarray,
+    exact_order: Sequence[int],
+    activation_index: int,
+    boundary_index: int | None,
+) -> None:
+    """Project preferred witness times into one exact monotone interval schedule."""
+    activation = notes[int(activation_index)]
+    activation_press = float(activation["hit_time_ms"]) + float(activation["delta_ms"])
+
+    latest_presses = [0.0] * len(exact_order)
+    latest_press = float(activation_press)
+    for position in range(len(exact_order) - 1, -1, -1):
+        index = int(exact_order[position])
+        note = notes[index]
+        result = str(note.get("note_result", "Perfect"))
+        latest_delta = _delta_at_or_before_ms(
+            note_types,
+            index,
+            result,
+            latest_press - float(note["hit_time_ms"]),
+        )
+        latest_press = float(note["hit_time_ms"]) + float(latest_delta)
+        latest_presses[position] = float(latest_press)
+
+    required_press = -np.inf
+    if boundary_index is not None:
+        boundary = notes[int(boundary_index)]
+        result = str(boundary.get("note_result", "Perfect"))
+        boundary_upper = (
+            latest_presses[0]
+            if exact_order
+            else float(activation_press)
+        )
+        boundary_delta = _bounded_judgment_delta_ms(
+            note_types,
+            int(boundary_index),
+            result,
+            preferred_delta_ms=_selector_default_delta_ms(
+                note_types,
+                int(boundary_index),
+                result,
+                boundary.get("delta_ms"),
+            ),
+            min_delta_ms=-np.inf,
+            max_delta_ms=float(boundary_upper) - float(boundary["hit_time_ms"]),
+        )
+        boundary["delta_ms"] = float(boundary_delta)
+        required_press = float(boundary["hit_time_ms"]) + float(boundary_delta)
+
+    for note_index, latest_note_press in zip(exact_order, latest_presses, strict=True):
+        index = int(note_index)
+        note = notes[index]
+        result = str(note.get("note_result", "Perfect"))
+        chosen_delta = _bounded_judgment_delta_ms(
+            note_types,
+            index,
+            result,
+            preferred_delta_ms=_selector_default_delta_ms(
+                note_types,
+                index,
+                result,
+                note.get("delta_ms"),
+            ),
+            min_delta_ms=float(required_press) - float(note["hit_time_ms"]),
+            max_delta_ms=float(latest_note_press) - float(note["hit_time_ms"]),
+        )
+        note["delta_ms"] = float(chosen_delta)
+        required_press = float(note["hit_time_ms"]) + float(chosen_delta)
+
+
 def _mark_activation_preemptor_order_deltas(
     notes: list[dict[str, Any]],
     *,
@@ -582,73 +660,16 @@ def _mark_activation_preemptor_order_deltas(
                 )
                 if actual_lane_order != expected_lane_order:
                     raise ValueError("note_graph: preactivation order violates lane-local matcher order")
-            required_prefix_press = float(activation_press)
-            for note_index in reversed(exact_order):
-                note = notes[int(note_index)]
-                result = str(note.get("note_result", "Perfect"))
-                raw_delta = note.get("delta_ms")
-                current_delta = (
-                    _selector_default_delta_ms(nt, int(note_index), result, raw_delta)
-                    if raw_delta is None
-                    else float(raw_delta)
-                )
-                current_press = float(note["hit_time_ms"]) + float(current_delta)
-                if current_press > required_prefix_press:
-                    current_delta = _delta_at_or_before_ms(
-                        nt,
-                        int(note_index),
-                        result,
-                        required_prefix_press - float(note["hit_time_ms"]),
-                    )
-                    note["delta_ms"] = float(current_delta)
-                    current_press = float(note["hit_time_ms"]) + float(current_delta)
-                required_prefix_press = float(current_press)
             exact_sequence = (*exact_order, int(a))
-            if int(section_start) > 0:
-                # The prior fever's first non-fever note is consumed with an empty bar. The next
-                # section cannot accumulate any of its prefix before that wasted boundary event.
-                boundary_index = int(section_start) - 1
-                boundary_note = notes[boundary_index]
-                boundary_result = str(boundary_note.get("note_result", "Perfect"))
-                boundary_raw_delta = boundary_note.get("delta_ms")
-                boundary_delta = (
-                    _selector_default_delta_ms(
-                        nt,
-                        boundary_index,
-                        boundary_result,
-                        boundary_raw_delta,
-                    )
-                    if boundary_raw_delta is None
-                    else float(boundary_raw_delta)
-                )
-                required_prefix_press = (
-                    float(boundary_note["hit_time_ms"]) + float(boundary_delta)
-                )
-                for note_index in exact_order:
-                    note = notes[int(note_index)]
-                    result = str(note.get("note_result", "Perfect"))
-                    raw_delta = note.get("delta_ms")
-                    current_delta = (
-                        _selector_default_delta_ms(nt, int(note_index), result, raw_delta)
-                        if raw_delta is None
-                        else float(raw_delta)
-                    )
-                    current_press = float(note["hit_time_ms"]) + float(current_delta)
-                    if current_press < required_prefix_press:
-                        current_delta = _delta_at_or_after_ms(
-                            nt,
-                            int(note_index),
-                            result,
-                            required_prefix_press - float(note["hit_time_ms"]),
-                        )
-                        note["delta_ms"] = float(current_delta)
-                        current_press = float(note["hit_time_ms"]) + float(current_delta)
-                    required_prefix_press = float(current_press)
-                if required_prefix_press > activation_press:
-                    raise ValueError(
-                        "note_graph: exact activation schedule cannot fit between the prior "
-                        "wasted boundary and activation"
-                    )
+            boundary_index = int(section_start) - 1 if int(section_start) > 0 else None
+            _materialize_preactivation_schedule(
+                notes,
+                note_types=nt,
+                exact_order=exact_order,
+                activation_index=int(a),
+                boundary_index=boundary_index,
+            )
+            if boundary_index is not None:
                 input_order_constraints.append(
                     (boundary_index, int(exact_sequence[0]))
                 )

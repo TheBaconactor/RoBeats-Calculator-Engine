@@ -587,6 +587,62 @@ def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
     assert replay.event_order.index(141) < replay.event_order.index(143) < replay.event_order.index(142)
 
 
+def test_alice_same_time_boundary_reconstructs_exact_judgments_and_order():
+    from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+        validate_force_greats_physical_replay,
+    )
+    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
+    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        reconstruct_force_greats_response_trace,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+
+    root = Path(__file__).resolve().parents[1]
+    calc_song = build_prepared_calc_song(
+        fp=str(root / "Data" / "Hard" / "Alice in Misanthrope (Hard) by LeaF (7eaF).txt"),
+        cfg_dict={},
+    ).calc_song
+    song_inputs = extract_fg_song_inputs(calc_song)
+    surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 1597, 1, 0)
+    raw_fever_fill = 195.50747138670087
+    real_fever_time = 55.122186673736564
+    trace = reconstruct_force_greats_response_trace(
+        non_fever_base=196,
+        target_surface=surface,
+        timestamps=song_inputs.timestamps,
+        perfect_candidate_timestamps=song_inputs.perfect_candidates,
+        great_candidate_timestamps=song_inputs.great_candidates,
+        perfect_floor_timestamps=song_inputs.perfect_floor,
+        great_floor_timestamps=song_inputs.great_floor,
+        lanes=song_inputs.lanes,
+        raw_fever_fill=raw_fever_fill,
+        real_fever_time=real_fever_time,
+        use_forced_great_timing=song_inputs.use_forced_great_timing,
+    )
+
+    replay = validate_force_greats_physical_replay(
+        frontier_trace=trace,
+        surface=surface,
+        timestamps=song_inputs.timestamps,
+        note_types=calc_song["song_data"]["note_types"],
+        lanes=song_inputs.lanes,
+        raw_fever_fill=raw_fever_fill,
+        real_fever_time=real_fever_time,
+    )
+
+    cluster = (951, 952, 953, 954, 955)
+    assert [replay.event_order.index(index) for index in cluster] == list(cluster)
+    assert [replay.judgments[index] for index in cluster] == [
+        "Perfect",
+        "Perfect",
+        "Great",
+        "Perfect",
+        "Perfect",
+    ]
+    assert [replay.fever_mask[index] for index in cluster] == [True, False, False, False, False]
+
+
 def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_order():
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
@@ -1746,49 +1802,49 @@ def test_persisted_activation_schedule_orders_cross_lane_followers_after_activat
     assert float(notes[1]["delta_ms"]) == pytest.approx(30.0)
 
 
-def test_persisted_activation_schedule_holds_next_prefix_after_wasted_boundary():
+def test_persisted_activation_schedule_jointly_fits_same_time_boundary_and_prefix():
     from gear_optimizer.solver.fg_response_scoring.note_graph import (
         _assign_exact_input_order,
         _mark_activation_preemptor_order_deltas,
     )
 
-    nt = np.asarray([1, 1, 1], dtype=np.int16)
+    nt = np.asarray([3, 1, 2, 1], dtype=np.int16)
     notes = [
-        {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Perfect", "delta_ms": 40.0},
-        {"note_index": 1, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": -94.0},
-        {"note_index": 2, "hit_time_ms": 1100.0, "note_result": "Perfect", "delta_ms": 40.0},
+        {"note_index": 0, "hit_time_ms": 1000.0, "note_result": "Perfect", "delta_ms": 0.0},
+        {"note_index": 1, "hit_time_ms": 1000.0, "note_result": "Great", "delta_ms": None},
+        {"note_index": 2, "hit_time_ms": 1000.0, "note_result": "Perfect", "delta_ms": 0.0},
+        {"note_index": 3, "hit_time_ms": 1100.0, "note_result": "Perfect", "delta_ms": 0.0},
     ]
     trace = [{
-        "activation_index": 2,
+        "activation_index": 3,
         "forced_start_index": 1,
         "activation_schedule_schema_version": 1,
-        "preactivation_order": [1],
+        "preactivation_order": [1, 2],
         "preactivation_lane_prefixes": [
             {"lane": 1, "count": 1},
-            {"lane": 2, "count": 0},
+            {"lane": 2, "count": 1},
+            {"lane": 3, "count": 0},
         ],
-        "preactivation_fill_half_units": 1,
-        "preactivation_event_count": 1,
+        "preactivation_fill_half_units": 3,
+        "preactivation_event_count": 2,
         "preactivation_great_count": 1,
     }]
 
     constraints = _mark_activation_preemptor_order_deltas(
         notes,
         frontier_trace=trace,
-        total_notes=3,
+        total_notes=4,
         note_types=nt,
-        lanes=np.asarray([0, 1, 2], dtype=np.int32),
+        lanes=np.asarray([0, 1, 2, 3], dtype=np.int32),
         require_exact_schedule=True,
     )
 
-    assert constraints == [(0, 1), (1, 2)]
-    assert float(notes[1]["delta_ms"]) == 41.0
-    assert float(notes[0]["hit_time_ms"]) + float(notes[0]["delta_ms"]) <= (
-        float(notes[1]["hit_time_ms"]) + float(notes[1]["delta_ms"])
-    )
-    assert float(notes[1]["hit_time_ms"]) + float(notes[1]["delta_ms"]) <= (
-        float(notes[2]["hit_time_ms"]) + float(notes[2]["delta_ms"])
-    )
+    assert constraints == [(0, 1), (1, 2), (2, 3)]
+    event_times = [float(note["hit_time_ms"]) + float(note["delta_ms"]) for note in notes]
+    assert event_times == sorted(event_times)
+    assert float(notes[0]["delta_ms"]) == -20.0
+    assert float(notes[1]["delta_ms"]) == -20.0
+    assert float(notes[2]["delta_ms"]) == 0.0
     _assign_exact_input_order(notes, constraints)
 
 
