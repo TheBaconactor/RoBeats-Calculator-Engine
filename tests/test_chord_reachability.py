@@ -11,6 +11,7 @@ from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
     activation_schedule_witnesses_weighted_lane_aware,
     activation_hit_is_reachable_weighted_lane_aware,
+    exact_label_hit_intervals,
 )
 
 
@@ -312,3 +313,87 @@ def test_s_exact_surface_signature_preserves_head_identity_before_state_compress
     assert set(range(100)) <= selected
     assert 104 in selected
     assert len(selected & {100, 101, 102}) == 2
+
+
+def test_t_body_witness_reorders_cross_lane_great_after_wasted_boundary():
+    """A later section may reorder score-neutral body siblings, but none may precede its wasted note.
+
+    The forced Great has no legal timestamp between the held-tail Perfect boundary and the following
+    tap Perfect: it must use its late band. The exact merge is therefore Perfect 102, Great 101,
+    rather than the foreign body chart order 101, 102.
+    """
+    n = 104
+    primary_low = np.zeros(n, dtype=np.float32)
+    primary_high = np.ones(n, dtype=np.float32)
+    secondary_low = np.full(n, np.float32(np.inf), dtype=np.float32)
+    secondary_high = np.full(n, np.float32(-np.inf), dtype=np.float32)
+
+    primary_low[101], primary_high[101] = np.float32(-0.189), np.float32(-0.040)
+    secondary_low[101], secondary_high[101] = np.float32(0.081), np.float32(0.200)
+    primary_low[102], primary_high[102] = np.float32(-0.019), np.float32(0.040)
+    primary_low[103] = primary_high[103] = np.float32(1.000)
+
+    witnesses = activation_schedule_witnesses_weighted_lane_aware(
+        activation_index=103,
+        activation_hit_timestamp=1.000,
+        low_hit_timestamps=primary_low,
+        high_hit_timestamps=primary_high,
+        secondary_low_hit_timestamps=secondary_low,
+        secondary_high_hit_timestamps=secondary_high,
+        predecessor_hit_timestamp=-0.039,
+        lanes=np.array([0] * 101 + [3, 2, 1], dtype=np.int32),
+        fill_units=np.array([1.0] * 101 + [0.5, 1.0, 1.0], dtype=np.float32),
+        fever_fill_denom=2.0,
+        section_start=101,
+        section_end=n,
+        required_preactivation_fill_half_units=3,
+        required_preactivation_event_count=2,
+    )
+
+    assert len(witnesses) == 1
+    assert witnesses[0].preactivation_order == (102, 101)
+    assert tuple(row.note_indices for row in witnesses[0].lane_prefixes) == ((101,), (102,), ())
+
+
+def test_u_held_tail_great_gap_uses_raw_window_not_prefix_max_floor():
+    from gear_optimizer.solver.timing_envelope import (
+        build_great_candidate_envelope_sec,
+        build_great_floor_envelope_sec,
+        build_perfect_candidate_envelope_sec,
+        build_perfect_floor_envelope_sec,
+    )
+
+    timestamps = np.array([1.000, 1.000], dtype=np.float32)
+    note_types = np.array([1, 3], dtype=np.int16)
+    primary_low, primary_high, secondary_low, secondary_high = exact_label_hit_intervals(
+        is_great=np.array([False, True]),
+        timestamps=timestamps,
+        # The global search floor is raised by the preceding normal note. It is not the held tail's
+        # raw Perfect boundary and therefore cannot define the early-Great upper edge.
+        perfect_floor_timestamps=build_perfect_floor_envelope_sec(timestamps, note_types),
+        perfect_candidate_timestamps=build_perfect_candidate_envelope_sec(timestamps, note_types),
+        great_floor_timestamps=build_great_floor_envelope_sec(timestamps, note_types),
+        great_candidate_timestamps=build_great_candidate_envelope_sec(timestamps, note_types),
+    )
+
+    assert primary_low[1] == np.float32(811) * np.float32(0.001)
+    assert primary_high[1] == np.float32(960) * np.float32(0.001)
+    assert secondary_low[1] == np.float32(1081) * np.float32(0.001)
+    assert secondary_high[1] == np.float32(1200) * np.float32(0.001)
+
+
+def test_v_fixed_timing_keeps_great_on_the_single_semantic_hit_timeline():
+    timestamps = np.array([1.0, 2.0], dtype=np.float32)
+    primary_low, primary_high, secondary_low, secondary_high = exact_label_hit_intervals(
+        is_great=np.array([True, False]),
+        timestamps=timestamps,
+        perfect_floor_timestamps=timestamps,
+        perfect_candidate_timestamps=timestamps,
+        great_floor_timestamps=timestamps,
+        great_candidate_timestamps=timestamps,
+    )
+
+    assert np.array_equal(primary_low, timestamps)
+    assert np.array_equal(primary_high, timestamps)
+    assert np.all(np.isposinf(secondary_low))
+    assert np.all(np.isneginf(secondary_high))

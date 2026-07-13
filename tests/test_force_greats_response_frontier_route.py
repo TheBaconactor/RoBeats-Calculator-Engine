@@ -6,6 +6,24 @@ import numpy as np
 from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 
 
+def _engine_envelopes(timestamps):
+    from gear_optimizer.solver.timing_envelope import (
+        build_great_candidate_envelope_sec,
+        build_great_floor_envelope_sec,
+        build_perfect_candidate_envelope_sec,
+        build_perfect_floor_envelope_sec,
+    )
+
+    ts = np.asarray(timestamps, dtype=np.float32)
+    note_types = np.ones(int(ts.shape[0]), dtype=np.int16)
+    return (
+        build_perfect_candidate_envelope_sec(ts, note_types),
+        build_great_candidate_envelope_sec(ts, note_types),
+        build_perfect_floor_envelope_sec(ts, note_types),
+        build_great_floor_envelope_sec(ts, note_types),
+    )
+
+
 def _trace_row(forced_count: int) -> dict[str, object]:
     return {
         "forced_count": int(forced_count),
@@ -850,6 +868,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         "validate_force_greats_physical_replay",
         lambda **_kwargs: None,
     )
+    monkeypatch.setattr(reducer_mod, "_assert_trace_hit_time_reachable", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
     payload = materialize_force_payload_from_response_frontier(
@@ -885,7 +904,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     )
 
     timestamps = np.asarray([0.0, 0.18, 0.41, 0.64, 0.95, 1.21, 1.5], dtype=np.float32)
-    great_candidates = timestamps + np.float32(0.19)
+    perfect_candidates, great_candidates, perfect_floor, great_floor = _engine_envelopes(timestamps)
     raw_fever_fill = 2.25
     non_fever_base = 7
     real_fever_time = 0.55
@@ -906,11 +925,12 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
             later_forced=later_forced,
             first_forced=first_forced,
             real_fever_time=real_fever_time,
-            use_forced_great_timing=True,
-            timestamps=timestamps,
-            great_candidate_timestamps=great_candidates,
-            perfect_floor_timestamps=timestamps,
-            great_floor_timestamps=timestamps,
+        use_forced_great_timing=True,
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=great_candidates,
+        perfect_floor_timestamps=perfect_floor,
+        great_floor_timestamps=great_floor,
             lanes=np.arange(int(timestamps.shape[0]), dtype=np.int32),
             raw_fever_fill=raw_fever_fill,
         )
@@ -953,8 +973,9 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         "song_data": {
             "timestamps": timestamps,
             "fg_timestamps": timestamps,
-            "fg_perfect_floor_timestamps": timestamps,
-            "fg_great_floor_timestamps": timestamps,
+            "fg_perfect_candidate_timestamps": perfect_candidates,
+            "fg_perfect_floor_timestamps": perfect_floor,
+            "fg_great_floor_timestamps": great_floor,
             "fg_great_candidate_timestamps": great_candidates,
             "lanes": np.arange(int(timestamps.shape[0]), dtype=np.int32),
             "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
@@ -1369,6 +1390,7 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 150)
     monkeypatch.setattr(reducer_mod, "validate_force_greats_physical_replay", lambda **_kwargs: None)
+    monkeypatch.setattr(reducer_mod, "_assert_trace_hit_time_reachable", lambda *_args, **_kwargs: None)
 
     monkeypatch.setattr(
         GpuScoreEngine,
@@ -1576,6 +1598,7 @@ def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
         lambda stats, *_args, **_kwargs: int(stats["Rush"]) + 189,
     )
     monkeypatch.setattr(reducer_mod, "validate_force_greats_physical_replay", lambda **_kwargs: None)
+    monkeypatch.setattr(reducer_mod, "_assert_trace_hit_time_reachable", lambda *_args, **_kwargs: None)
 
     monkeypatch.setattr(
         GpuScoreEngine,

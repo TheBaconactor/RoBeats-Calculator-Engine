@@ -663,9 +663,12 @@ def test_issue149_v31_accepts_only_ratified_reconstruction_predecessor() -> None
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
-    assert current_version == "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3"
+    assert current_version == "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf"
     assert response_cache_store.fg_response_compatible_cache_versions() == (
         current_version,
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
         "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
     )
 
@@ -765,7 +768,11 @@ def test_purge_stale_version_cache_files_removes_only_superseded(tmp_path: Path,
         _plant(f"compatible_{index}", compatible_predecessor)
     _plant("noversion", None)  # missing version field: must be kept, never guessed stale
 
-    removed = store.purge_stale_version_cache_files()
+    with pytest.raises(RuntimeError, match="destructive cache rotation was not explicitly authorized"):
+        store.purge_stale_version_cache_files()
+    assert (tmp_path / "stale_a.npz").exists()
+
+    removed = store.purge_stale_version_cache_files(authorize_rotation=True)
 
     # stale_a + stale_b delete 3 files each; stale_c deletes only its .npz. Its already-absent
     # sidecars are not failures, so the marker is still written below (purge_complete-flag guard).

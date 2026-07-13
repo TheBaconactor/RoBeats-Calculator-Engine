@@ -7,6 +7,8 @@ Perfect/Great/Fever labels reconcile EXACTLY with the chosen response surface
 timeline to all-Perfect notes + fever windows. CPU-only, deterministic.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -94,13 +96,23 @@ def _exact_force_greats_note_graph(
 
 
 def _build_options(n, non_fever_base, real_fever_time):
+    from gear_optimizer.solver.timing_envelope import (
+        build_great_candidate_envelope_sec,
+        build_great_floor_envelope_sec,
+        build_perfect_candidate_envelope_sec,
+        build_perfect_floor_envelope_sec,
+    )
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _action_table,
         _edge_surface_option_details,
     )
 
     timestamps = (np.arange(n) * 0.1).astype(np.float32)
-    great_candidates = timestamps.copy()
+    note_types = np.ones(n, dtype=np.int16)
+    perfect_candidates = build_perfect_candidate_envelope_sec(timestamps, note_types)
+    great_candidates = build_great_candidate_envelope_sec(timestamps, note_types)
+    perfect_floor = build_perfect_floor_envelope_sec(timestamps, note_types)
+    great_floor = build_great_floor_envelope_sec(timestamps, note_types)
     raw_fever_fill = 1.0
     actions, later_fill, first_fill, later_forced, first_forced = _action_table(
         raw_fever_fill=raw_fever_fill,
@@ -119,13 +131,22 @@ def _build_options(n, non_fever_base, real_fever_time):
         real_fever_time=real_fever_time,
         use_forced_great_timing=True,
         timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
-        perfect_floor_timestamps=timestamps,
-        great_floor_timestamps=timestamps,
+        perfect_floor_timestamps=perfect_floor,
+        great_floor_timestamps=great_floor,
         lanes=np.arange(int(timestamps.shape[0]), dtype=np.int32),
         raw_fever_fill=raw_fever_fill,
     )
-    return timestamps, great_candidates, actions, options
+    return (
+        timestamps,
+        perfect_candidates,
+        great_candidates,
+        perfect_floor,
+        great_floor,
+        actions,
+        options,
+    )
 
 
 def test_fg_note_graph_reconciles_with_surface_head_and_body():
@@ -141,7 +162,15 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
     n = 110  # >100 so the fever window can extend into the body
     non_fever_base = 96
     real_fever_time = 1.5  # ~15 notes of fever at 0.1s spacing -> reaches past index 100
-    timestamps, great_candidates, actions, options = _build_options(n, non_fever_base, real_fever_time)
+    (
+        timestamps,
+        perfect_candidates,
+        great_candidates,
+        perfect_floor,
+        great_floor,
+        actions,
+        options,
+    ) = _build_options(n, non_fever_base, real_fever_time)
     assert options, "expected at least one edge option"
 
     validated = 0
@@ -156,9 +185,10 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
                 non_fever_base=non_fever_base,
                 target_surface=surface,
                 timestamps=timestamps,
+                perfect_candidate_timestamps=perfect_candidates,
                 great_candidate_timestamps=great_candidates,
-                perfect_floor_timestamps=timestamps,
-                great_floor_timestamps=timestamps,
+                perfect_floor_timestamps=perfect_floor,
+                great_floor_timestamps=great_floor,
                 lanes=np.arange(n, dtype=np.int32),
                 raw_fever_fill=1.0,
                 real_fever_time=real_fever_time,
@@ -193,7 +223,11 @@ def test_fg_note_graph_reconciles_with_surface_head_and_body():
         if any(g["is_activation_witness"] for g in graph):
             saw_witness = True
             wit = next(g for g in graph if g["is_activation_witness"])
-            assert wit["note_result"] == "Great"
+            trace_row = next(row for row in trace if int(row["activation_index"]) == int(wit["note_index"]))
+            expected_result = (
+                "Great" if str(trace_row["activation_judgment"]) == "late_great" else "Perfect"
+            )
+            assert wit["note_result"] == expected_result
             assert isinstance(wit["delta_ms"], float)
 
     assert validated > 0, "no edge surface reconstructed+reconciled"
@@ -243,15 +277,24 @@ def test_trace_edge_cache_rejects_cross_song_geometry_reuse():
         reconstruct_force_greats_response_trace,
     )
 
-    timestamps, great_candidates, _actions, options = _build_options(110, 96, 1.5)
+    (
+        timestamps,
+        perfect_candidates,
+        great_candidates,
+        perfect_floor,
+        great_floor,
+        _actions,
+        options,
+    ) = _build_options(110, 96, 1.5)
     cache = FgTraceEdgeOptionsCache()
     kwargs = {
         "non_fever_base": 96,
         "target_surface": options[0]["surface"],
         "timestamps": timestamps,
+        "perfect_candidate_timestamps": perfect_candidates,
         "great_candidate_timestamps": great_candidates,
-        "perfect_floor_timestamps": timestamps,
-        "great_floor_timestamps": timestamps,
+        "perfect_floor_timestamps": perfect_floor,
+        "great_floor_timestamps": great_floor,
         "lanes": np.arange(110, dtype=np.int32),
         "raw_fever_fill": 1.0,
         "real_fever_time": 1.5,
@@ -427,6 +470,121 @@ def test_fg_note_graph_same_time_head_great_selector_preserves_ramp_order():
     assert graph[2]["delta_ms"] < -20.0
     assert graph[3]["delta_ms"] == 0.0
     assert graph[2]["hit_time_ms"] + graph[2]["delta_ms"] < graph[3]["hit_time_ms"] + graph[3]["delta_ms"]
+
+
+def test_same_time_body_selector_uses_physical_order_not_head_chart_order():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        _assign_exact_input_order,
+        _mark_same_time_selector_order_deltas,
+        _materialize_remaining_selector_deltas,
+        _perfect_note_graph,
+    )
+
+    n = 144
+    timestamps = np.arange(n, dtype=np.float64)
+    timestamps[141:] = timestamps[141]
+    note_types = np.ones(n, dtype=np.int16)
+    note_types[142] = 3  # held tail: canonical late-Great selector is +81 ms
+    notes = _perfect_note_graph(n, timestamps)
+    notes[142]["note_result"] = "Great"
+    notes[142]["delta_ms"] = None
+
+    _mark_same_time_selector_order_deltas(
+        notes,
+        total_notes=n,
+        note_types=note_types,
+    )
+    assert notes[142]["delta_ms"] is None
+
+    _materialize_remaining_selector_deltas(notes, note_types=note_types)
+    _assign_exact_input_order(notes, ())
+
+    assert notes[142]["delta_ms"] == 81.0
+    assert notes[141]["input_order"] < notes[143]["input_order"] < notes[142]["input_order"]
+
+
+def test_same_time_selector_cluster_crossing_head_boundary_keeps_chart_order():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        _mark_same_time_selector_order_deltas,
+        _perfect_note_graph,
+    )
+
+    n = 101
+    timestamps = np.arange(n, dtype=np.float64)
+    timestamps[100] = timestamps[99]
+    note_types = np.ones(n, dtype=np.int16)
+    notes = _perfect_note_graph(n, timestamps)
+    notes[99]["note_result"] = "Great"
+    notes[99]["delta_ms"] = None
+
+    _mark_same_time_selector_order_deltas(
+        notes,
+        total_notes=n,
+        note_types=note_types,
+    )
+
+    assert notes[99]["delta_ms"] < -20.0
+    assert notes[99]["delta_ms"] < notes[100]["delta_ms"]
+
+
+def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
+    from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+        validate_force_greats_physical_replay,
+    )
+    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
+    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        reconstruct_force_greats_response_trace,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+
+    root = Path(__file__).resolve().parents[1]
+    calc_song = build_prepared_calc_song(
+        fp=str(root / "Data" / "Easy" / "Mopemope (Easy) by LeaF (7eaF).txt"),
+        cfg_dict={},
+    ).calc_song
+    song_inputs = extract_fg_song_inputs(calc_song)
+    surface = FgResponseSurface(
+        4278190080,
+        4294967295,
+        4294967295,
+        15,
+        0,
+        0,
+        0,
+        0,
+        172,
+        1,
+        0,
+    )
+    raw_fever_fill = 24.53966249004006
+    real_fever_time = 43.218920541501035
+    trace = reconstruct_force_greats_response_trace(
+        non_fever_base=25,
+        target_surface=surface,
+        timestamps=song_inputs.timestamps,
+        perfect_candidate_timestamps=song_inputs.perfect_candidates,
+        great_candidate_timestamps=song_inputs.great_candidates,
+        perfect_floor_timestamps=song_inputs.perfect_floor,
+        great_floor_timestamps=song_inputs.great_floor,
+        lanes=song_inputs.lanes,
+        raw_fever_fill=raw_fever_fill,
+        real_fever_time=real_fever_time,
+        use_forced_great_timing=song_inputs.use_forced_great_timing,
+    )
+
+    replay = validate_force_greats_physical_replay(
+        frontier_trace=trace,
+        surface=surface,
+        timestamps=song_inputs.timestamps,
+        note_types=calc_song["song_data"]["note_types"],
+        lanes=song_inputs.lanes,
+        raw_fever_fill=raw_fever_fill,
+        real_fever_time=real_fever_time,
+    )
+
+    assert trace[1]["preactivation_order"][:3] == [143, 142, 146]
+    assert replay.event_order.index(141) < replay.event_order.index(143) < replay.event_order.index(142)
 
 
 def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_order():

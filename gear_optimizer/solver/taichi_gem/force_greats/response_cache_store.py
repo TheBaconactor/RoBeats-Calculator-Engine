@@ -79,6 +79,24 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Raw per-note judgment intervals are now reconstructed separately from the monotone prefix-max
+    # fever-end envelopes. This corrects witness validation only; the frontier producer and V31 bytes
+    # are unchanged. Compatibility remains explicit and deliberately non-transitive.
+    "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf": (
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
+    # Canonical replay now schedules score-neutral body events by exact physical cross-lane order,
+    # keeps score-bearing head rows in chart order, models Great's disjoint early/late bands, and
+    # chains later sections after the prior wasted note. These modules reconstruct and validate an
+    # already-selected surface; the Numba frontier producer and persisted V31 bytes are unchanged.
+    # List both ratified V31 predecessors directly because compatibility is deliberately non-transitive.
+    "fg-response-frontier-visible-first-v31+logic-cb063da1d695": (
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
     # Exact-schedule note-graph reconstruction now chains postactivation presses per lane instead
     # of imposing a foreign global chart-order chain across independent lanes, and a hold-head
     # activation may use the trace's legal upper edge when an endpoint requires it. Endpoint timing
@@ -377,15 +395,17 @@ def compress_cache_dir_sidecars() -> None:
 _PURGED_VERSION_MARKER = ".purged_version"
 
 
-def purge_stale_version_cache_files() -> int:
+def purge_stale_version_cache_files(*, authorize_rotation: bool = False) -> int:
     """Delete bundles outside the current exact compatibility lineage.
 
-    Versions outside the explicit compatible set are dead weight because every reader rejects them;
-    left alone they accumulate roughly one full pool per version bump. This sweeps them exactly once
-    per compatibility-lineage change, guarded by a `.purged_version` marker so routine startup stays
-    O(1). Returns the number of files removed. External filesystem boundary: unreadable/corrupt
-    bundles are left in place rather than guessed at, and if any unlink fails (e.g. a locked file)
-    the marker remains unwritten so the next prebuild retries instead of stranding the file.
+    Versions outside the explicit compatible set are dead weight because every reader rejects them,
+    but deleting a provisioned full pool is an explicit production rotation, never routine startup
+    maintenance. Without ``authorize_rotation`` this function detects any incompatible bundle and
+    fails loudly before unlinking a byte. An authorized prebuild sweeps once per compatibility-lineage
+    change, guarded by a `.purged_version` marker so later startup stays O(1). Returns the number of
+    files removed. External filesystem boundary: unreadable/corrupt bundles are left in place rather
+    than guessed at, and if any unlink fails (e.g. a locked file) the marker remains unwritten so the
+    next authorized prebuild retries instead of stranding the file.
     """
     directory = _fg_response_disk_cache_dir()
     if not directory.exists():
@@ -398,8 +418,7 @@ def purge_stale_version_cache_files() -> int:
             return 0
     except OSError:
         pass
-    removed = 0
-    purge_complete = True
+    stale_bundles: list[Path] = []
     for npz in directory.glob("*.npz"):
         try:
             with np.load(npz, allow_pickle=False) as bundle:
@@ -410,6 +429,17 @@ def purge_stale_version_cache_files() -> int:
             version = None
         if version is None or version in compatible:
             continue
+        stale_bundles.append(npz)
+    if stale_bundles and not bool(authorize_rotation):
+        raise RuntimeError(
+            "FG response frontier cache contains "
+            f"{len(stale_bundles)} incompatible bundle(s); preserved them because destructive "
+            "cache rotation was not explicitly authorized"
+        )
+
+    removed = 0
+    purge_complete = True
+    for npz in stale_bundles:
         for stale in (npz, *_stale_surface_sidecar_paths(npz)):
             try:
                 stale.unlink()

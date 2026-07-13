@@ -49,7 +49,9 @@ class FgResponseFrontierCachePrebuildSummary:
     elapsed_ms: float = 0.0
 
 
-def _maintain_fg_response_frontier_cache_under_lock() -> None:
+def _maintain_fg_response_frontier_cache_under_lock(
+    *, authorize_destructive_rotation: bool = False
+) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         cleanup_fg_response_frontier_cache_temp_files,
         compress_cache_dir_sidecars,
@@ -60,7 +62,9 @@ def _maintain_fg_response_frontier_cache_under_lock() -> None:
     if int(removed_tmp) > 0:
         logger.info("[FGResponseCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
 
-    removed_stale = purge_stale_version_cache_files()
+    removed_stale = purge_stale_version_cache_files(
+        authorize_rotation=bool(authorize_destructive_rotation)
+    )
     if int(removed_stale) > 0:
         logger.info("[FGResponseCache] Purged %s file(s) from superseded cache versions.", int(removed_stale))
 
@@ -848,6 +852,7 @@ def run_fg_response_frontier_cache_prebuild(
     song_queue: Iterable[tuple],
     ref_arrays: dict,
     data_root: str | os.PathLike[str] | None = None,
+    authorize_destructive_rotation: bool = False,
 ) -> FgResponseFrontierCachePrebuildSummary:
     del cfg
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
@@ -897,7 +902,9 @@ def run_fg_response_frontier_cache_prebuild(
         # their WOF backing even though every manifest entry validates. Run maintenance before the
         # complete-pool return so those exact cache hits regain lossless XPRESS16K compression. The
         # builder lock prevents this filesystem pass from overlapping a live bundle writer.
-        _maintain_fg_response_frontier_cache_under_lock()
+        _maintain_fg_response_frontier_cache_under_lock(
+            authorize_destructive_rotation=bool(authorize_destructive_rotation)
+        )
 
         if not manifest_plan.missing_paths:
             return FgResponseFrontierCachePrebuildSummary(

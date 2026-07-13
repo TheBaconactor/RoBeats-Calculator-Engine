@@ -17,6 +17,7 @@ from gear_optimizer.solver.taichi_gem.force_greats import (
 )
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
     activation_hit_is_reachable_weighted_lane_aware,
+    exact_label_hit_intervals,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import FgTraceEdgeOptionsCache
 
@@ -64,17 +65,20 @@ def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_f
         forced_start = max(0, int(row.get("forced_run_start_index", section_start)))
         forced_count = max(0, int(row.get("forced_run_count", row.get("forced_prefix_count", 0))))
         forced_end = min(n, forced_start + forced_count)
-        lo = pf.copy()
-        hi = pc.copy()
-        units = np.ones((n,), dtype=np.float32)
+        is_great = np.zeros((n,), dtype=np.bool_)
         if forced_end > forced_start:
-            lo[forced_start:forced_end] = gf[forced_start:forced_end]
-            hi[forced_start:forced_end] = gc[forced_start:forced_end]
-            units[forced_start:forced_end] = np.float32(0.5)
+            is_great[forced_start:forced_end] = True
         if str(row.get("activation_judgment")) == "late_great":
-            lo[a] = gf[a]
-            hi[a] = gc[a]
-            units[a] = np.float32(0.5)
+            is_great[a] = True
+        lo, hi, secondary_lo, secondary_hi = exact_label_hit_intervals(
+            is_great=is_great,
+            timestamps=ts,
+            perfect_floor_timestamps=pf,
+            perfect_candidate_timestamps=pc,
+            great_floor_timestamps=gf,
+            great_candidate_timestamps=gc,
+        )
+        units = np.where(is_great, np.float32(0.5), np.float32(1.0)).astype(np.float32)
         h_a = float(row.get("activation_hit_window_upper_ms", float(hi[a]) * 1000.0)) / 1000.0
         if not activation_hit_is_reachable_weighted_lane_aware(
             activation_index=a,
@@ -86,6 +90,11 @@ def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_f
             fever_fill_denom=float(raw_fever_fill),
             section_start=section_start,
             section_end=n,
+            secondary_low_hit_timestamps=secondary_lo,
+            secondary_high_hit_timestamps=secondary_hi,
+            predecessor_hit_timestamp=(
+                None if int(section_start) == 0 else float(pf[int(section_start) - 1])
+            ),
         ):
             raise ValueError(
                 f"FG persist guard: activation @{a} (section {row.get('section')}, "

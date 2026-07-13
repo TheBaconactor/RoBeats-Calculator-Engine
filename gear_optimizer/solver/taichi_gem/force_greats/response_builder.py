@@ -10,6 +10,7 @@ from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit
 
 from .fill_crossing import (
     activation_schedule_witnesses_weighted_lane_aware,
+    exact_label_hit_intervals,
     late_great_activation_prefix,
     perfect_crossing_is_region3,
     perfect_fill_crossing_offset,
@@ -1159,15 +1160,13 @@ def _option_with_witness(
     is_great[max(0, int(run_start)) : max(0, int(run_end))] = True
     if str(option["activation_judgment"]) == "late_great":
         is_great[int(activation_idx)] = True
-    low = np.where(
-        is_great,
-        reachability_context.great_floor_timestamps,
-        reachability_context.perfect_floor_timestamps,
-    )
-    high = np.where(
-        is_great,
-        reachability_context.great_candidate_timestamps,
-        reachability_context.perfect_candidate_timestamps,
+    low, high, secondary_low, secondary_high = exact_label_hit_intervals(
+        is_great=is_great,
+        timestamps=reachability_context.timestamps,
+        perfect_floor_timestamps=reachability_context.perfect_floor_timestamps,
+        perfect_candidate_timestamps=reachability_context.perfect_candidate_timestamps,
+        great_floor_timestamps=reachability_context.great_floor_timestamps,
+        great_candidate_timestamps=reachability_context.great_candidate_timestamps,
     )
     fill_units = np.where(is_great, 0.5, 1.0).astype(np.float32)
     preactivation_event_count = int(activation_idx) - int(section_start)
@@ -1190,6 +1189,13 @@ def _option_with_witness(
         section_end=int(n),
         required_preactivation_fill_half_units=int(preactivation_fill_half),
         required_preactivation_event_count=int(preactivation_event_count),
+        secondary_low_hit_timestamps=secondary_low,
+        secondary_high_hit_timestamps=secondary_high,
+        predecessor_hit_timestamp=(
+            None
+            if int(section_start) == 0
+            else float(reachability_context.perfect_floor_timestamps[int(section_start) - 1])
+        ),
     )
     if len(schedule_rows) != 1:
         raise ValueError(

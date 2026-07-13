@@ -54,7 +54,7 @@ def test_provisioned_fg_cache_maintenance_uses_build_lock(monkeypatch, tmp_path:
     )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
-        lambda: calls.append("purge") or 0,
+        lambda **kwargs: calls.append(f"purge:{kwargs['authorize_rotation']}") or 0,
     )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.compress_cache_dir_sidecars",
@@ -63,7 +63,7 @@ def test_provisioned_fg_cache_maintenance_uses_build_lock(monkeypatch, tmp_path:
 
     prebuild.maintain_provisioned_fg_response_frontier_cache()
 
-    assert calls == ["lock_enter", "cleanup", "purge", "compress", "lock_exit"]
+    assert calls == ["lock_enter", "cleanup", "purge:False", "compress", "lock_exit"]
 
 
 def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None:
@@ -578,7 +578,7 @@ def test_complete_manifest_enters_locked_maintenance_when_sidecars_need_compress
     )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
-        lambda: 0,
+        lambda **_kwargs: 0,
     )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.compress_cache_dir_sidecars",
@@ -640,7 +640,7 @@ def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch
     )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
-        lambda: 0,
+        lambda **_kwargs: 0,
     )
     compression_calls = 0
 

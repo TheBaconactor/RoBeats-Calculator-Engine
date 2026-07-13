@@ -383,9 +383,16 @@ def _mark_same_time_selector_order_deltas(
     uses the late-Great band. If a mixed cluster cannot be ordered without changing a judgment,
     fail loudly: that surface is not a legal witness for the scored ramp.
     """
-    n = min(int(total_notes), len(notes))
-    if n <= 1:
+    graph_n = min(int(total_notes), len(notes))
+    if graph_n <= 1:
         return
+
+    # Chart-index ordering is score-bearing only while the combo multiplier ramps. Include the
+    # complete same-time cluster crossing the head/body boundary, but leave body-only clusters to
+    # their physical event times and the exact activation constraints below.
+    n = min(graph_n, 100)
+    while n < graph_n and _same_chart_time_ms(notes[n - 1]["hit_time_ms"], notes[n]["hit_time_ms"]):
+        n += 1
 
     clusters: list[list[int]] = []
     current: list[int] = [0]
@@ -597,6 +604,12 @@ def _mark_activation_preemptor_order_deltas(
                     current_press = float(note["hit_time_ms"]) + float(current_delta)
                 required_prefix_press = float(current_press)
             exact_sequence = (*exact_order, int(a))
+            if int(section_start) > 0:
+                # The prior fever's first non-fever note is consumed with an empty bar. The next
+                # section cannot accumulate any of its prefix before that wasted boundary event.
+                input_order_constraints.append(
+                    (int(section_start) - 1, int(exact_sequence[0]))
+                )
             input_order_constraints.extend(
                 (int(before), int(after))
                 for before, after in zip(exact_sequence, exact_sequence[1:])
