@@ -273,7 +273,7 @@ class _Case:
                         "total_notes": _NOTE_COUNT,
                         "pair_mod_bound": 3,
                         "workspace_allocations": int(self.configured_reducer_threads or 0),
-                        "workspace_bytes": int(self.configured_reducer_threads or 0) * 404,
+                        "workspace_bytes": int(self.configured_reducer_threads or 0) * 484,
                         "geometries_canonical": 10,
                     },
                 }
@@ -394,7 +394,7 @@ class _Case:
                 "action_table_count": 2,
                 "early_great_gap_bound": 1,
                 "pair_mod_bound": 3,
-                "workspace_bytes_per_thread": 404,
+                "workspace_bytes_per_thread": 484,
             },
             sampler_factory=lambda psutil, reader: _FakeSampler(),
             validate_bench_root=lambda value: self.base.resolve()
@@ -475,7 +475,7 @@ def test_issue116_corpus_runner_accepts_producer_planned_wide_width_without_manu
     assert case.run() == 0
     report = json.loads(case.completed.read_text(encoding="utf-8"))
     assert report["configuration"]["producer_workspace_plan"]["pair_mod_bound"] == 3
-    assert report["memory"]["required_headroom_bytes"] == 13_000_000_404
+    assert report["memory"]["required_headroom_bytes"] == 13_000_000_484
 
 
 def test_issue116_corpus_runner_accepts_memory_reserved_wide_width(case: _Case) -> None:
@@ -487,17 +487,17 @@ def test_issue116_corpus_runner_accepts_memory_reserved_wide_width(case: _Case) 
     report = json.loads(case.completed.read_text(encoding="utf-8"))
     assert report["configuration"]["experimental_wide_threads"] is True
     reservation = report["memory"]["thread_width_reservation"]
-    assert reservation["workspace_bytes_per_thread"] == 404
+    assert reservation["workspace_bytes_per_thread"] == 484
     assert reservation["extra_threads"] == 1
-    assert reservation["extra_workspace_bytes"] == 404
-    assert reservation["required_headroom_bytes"] == 13_000_000_404
+    assert reservation["extra_workspace_bytes"] == 484
+    assert reservation["required_headroom_bytes"] == 13_000_000_484
     assert report["profile_events"]["frontier_build"] == {
         "frontier_build_ms": 1.0,
         "geometries_canonical": 10,
         "pair_mod_bound": 3,
         "workspace_allocations": 5,
-        "workspace_bytes": 2020,
-        "workspace_bytes_per_thread": 404,
+        "workspace_bytes": 2420,
+        "workspace_bytes_per_thread": 484,
     }
 
 
@@ -509,7 +509,7 @@ def test_issue116_corpus_runner_rejects_wide_width_when_exact_reservation_does_n
     case.args.extend(("--expected-pair-mod-bound", "3"))
     case.dependencies = replace(
         case.dependencies,
-        read_capacity=lambda: _capacity(available=13_000_000_403),
+        read_capacity=lambda: _capacity(available=13_000_000_483),
     )
 
     assert case.run() == 1
@@ -519,7 +519,7 @@ def test_issue116_corpus_runner_rejects_wide_width_when_exact_reservation_does_n
 
 
 def test_workspace_bytes_per_thread_matches_production_array_shape() -> None:
-    assert corpus._workspace_bytes_per_thread(note_count=6843, pair_mod_bound=163) == 22_368_816
+    assert corpus._workspace_bytes_per_thread(note_count=6843, pair_mod_bound=163) == 22_478_320
 
 
 def test_producer_workspace_plan_uses_distinct_action_inputs_and_producer_bound() -> None:
@@ -590,7 +590,7 @@ def test_producer_workspace_plan_uses_distinct_action_inputs_and_producer_bound(
         "early_great_gap_bound": 2,
         "note_count": 4,
         "pair_mod_bound": 5,
-        "workspace_bytes_per_thread": 636,
+        "workspace_bytes_per_thread": 716,
     }
 
 

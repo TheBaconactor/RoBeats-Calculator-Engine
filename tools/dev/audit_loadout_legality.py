@@ -31,6 +31,7 @@ from gear_optimizer.data.database_codecs import _unpack_stats_after_load
 from gear_optimizer.solver.score_math import lookup_reference_py
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+    activation_schedule_witnesses_weighted_lane_aware,
     activation_hit_is_reachable_weighted_lane_aware, server_fill_crossing, server_fever_end)
 from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
 
@@ -97,7 +98,13 @@ def audit_fg_loadout(fg: dict, calc_song: dict, ref: dict) -> list[str]:
             lo[cross] = gfloor[cross]
             hi[cross] = gcand[cross]
             units[cross] = np.float32(0.5)
-        hit = float(gcand[cross]) if is_g else float(pcand[cross])
+        uncapped_hit = float(gcand[cross]) if is_g else float(pcand[cross])
+        hit = float(
+            e.get(
+                "activation_hit_window_upper_ms",
+                e.get("activation_hit_ms", float(uncapped_hit) * 1000.0),
+            )
+        ) / 1000.0
         base_e = server_fever_end(floor, hit, rft, cross, n=n)
         great_e = server_fever_end(gfloor, hit, rft, cross, n=n)
         kind = "late_great" if is_g else "perfect"
@@ -112,11 +119,36 @@ def audit_fg_loadout(fg: dict, calc_song: dict, ref: dict) -> list[str]:
             section_start=int(start),
             section_end=n,
         )
+        trace_hit = float(e.get("activation_hit_ms", float(hit) * 1000.0)) / 1000.0
+        preactivation_count = int(ra) - int(start)
+        preactivation_great_count = max(
+            0,
+            min(int(ra), int(run_end)) - max(int(start), int(run_start)),
+        )
+        required_half = 2 * int(preactivation_count) - int(preactivation_great_count)
+        exact_surface_witness = activation_schedule_witnesses_weighted_lane_aware(
+            activation_index=int(ra),
+            activation_hit_timestamp=float(trace_hit),
+            low_hit_timestamps=lo,
+            high_hit_timestamps=hi,
+            lanes=lanes,
+            fill_units=units,
+            fever_fill_denom=float(raw),
+            section_start=int(start),
+            section_end=n,
+            required_preactivation_fill_half_units=int(required_half),
+            required_preactivation_event_count=int(preactivation_count),
+        )
         if cross != ra or kind != j:
             viol.append(f"sec{sec}: reported {j}@{ra} but canonical crossing is {kind}@{cross} (PHANTOM activation)")
         elif not reachable:
             viol.append(f"sec{sec}: {kind}@{ra} is index-legal but input-engine unreachable under "
                         f"weighted lane-aware fill (PHANTOM activation)")
+        elif not exact_surface_witness:
+            viol.append(
+                f"sec{sec}: {kind}@{ra} has no exact lane-prefix witness for cached surface "
+                f"signature fill_half={required_half}, events={preactivation_count}"
+            )
         elif not (base_e <= re <= great_e):
             viol.append(f"sec{sec}: fever_end {re} outside reachable drain [{base_e},{great_e}] (PHANTOM drain)")
         state = re

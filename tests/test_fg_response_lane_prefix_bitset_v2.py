@@ -3,12 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
+    activation_schedule_witnesses_weighted_lane_aware,
+)
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
-    _LANE_PREFIX_EPOCH_RESET_LIMIT,
     _numba_activation_reachable_contiguous_run,
-    _numba_activation_reachable_contiguous_run_with_scratch,
-    _numba_build_activation_reachability_workspace,
-    _numba_exact_lane_classes,
 )
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
     _activation_reachable,
@@ -33,7 +32,7 @@ def _retired_boolean_prefix_reachable(
     great_count: int,
     activation_great_i: int,
 ) -> bool:
-    """Retired allocation-heavy Boolean lattice, retained only as a differential oracle."""
+    """Allocation-heavy exact lane-prefix owner retained only as a differential oracle."""
     a = int(activation_index)
     start = int(section_start)
     end = int(section_end)
@@ -46,85 +45,35 @@ def _retired_boolean_prefix_reachable(
     if end > total:
         return False
 
+    del candidate_high_delta_max, timestamps
     g0 = max(start, int(great_start), 0)
-    g1 = min(end, int(great_start) + int(great_count))
-    if g1 < g0:
-        g1 = g0
-    h_a = np.float32(float(activation_hit_timestamp))
-    activation_lane = int(lanes[a])
-    activation_is_great = bool(int(activation_great_i) != 0 or g0 <= a < g1)
-    lo_a = great_floor_timestamps[a] if activation_is_great else perfect_floor_timestamps[a]
-    unit_a = 0.5 if activation_is_great else 1.0
-    forced_units = 0.0
-    optional_lanes: list[int] = []
-    optional_half: list[int] = []
-
-    guaranteed_forced_end = int(
-        np.searchsorted(
-            timestamps,
-            np.float32(float(h_a) - float(candidate_high_delta_max)),
-            side="left",
+    g1 = max(g0, min(end, int(great_start) + int(great_count)))
+    is_great = np.zeros(total, dtype=np.bool_)
+    is_great[g0:g1] = True
+    if int(activation_great_i) != 0:
+        is_great[a] = True
+    low = np.where(is_great, great_floor_timestamps, perfect_floor_timestamps)
+    high = np.where(is_great, great_candidate_timestamps, perfect_candidate_timestamps)
+    fill_units = np.where(is_great, 0.5, 1.0).astype(np.float32)
+    preactivation_count = int(a) - int(start)
+    preactivation_great_count = int(np.count_nonzero(is_great[start:a]))
+    return bool(
+        activation_schedule_witnesses_weighted_lane_aware(
+            activation_index=a,
+            activation_hit_timestamp=float(activation_hit_timestamp),
+            low_hit_timestamps=low,
+            high_hit_timestamps=high,
+            lanes=lanes,
+            fill_units=fill_units,
+            fever_fill_denom=denom,
+            section_start=start,
+            section_end=end,
+            required_preactivation_fill_half_units=(
+                2 * int(preactivation_count) - int(preactivation_great_count)
+            ),
+            required_preactivation_event_count=int(preactivation_count),
         )
     )
-    guaranteed_forced_end = min(guaranteed_forced_end, a, end)
-    if guaranteed_forced_end > start:
-        overlap_lo = max(start, g0)
-        overlap_hi = min(guaranteed_forced_end, g1)
-        great_notes = max(0, overlap_hi - overlap_lo)
-        forced_units += float(guaranteed_forced_end - start) - 0.5 * float(great_notes)
-        if forced_units >= denom:
-            return False
-    scan_start = max(start, guaranteed_forced_end)
-
-    for j in range(scan_start, end):
-        if j == a:
-            continue
-        if j > a and great_floor_timestamps[j] > h_a:
-            break
-        is_great = g0 <= j < g1
-        lo_j = great_floor_timestamps[j] if is_great else perfect_floor_timestamps[j]
-        hi_j = great_candidate_timestamps[j] if is_great else perfect_candidate_timestamps[j]
-        unit_j = 0.5 if is_great else 1.0
-        same_lane = int(lanes[j]) == activation_lane
-        if same_lane and j > a and hi_j < h_a and lo_a <= hi_j:
-            return False
-        if hi_j < h_a or (same_lane and j < a and lo_j <= h_a):
-            forced_units += unit_j
-            if forced_units >= denom:
-                return False
-            continue
-        if lo_j <= h_a and not (same_lane and j > a):
-            optional_lanes.append(int(lanes[j]))
-            optional_half.append(1 if unit_j == 0.5 else 2)
-
-    if forced_units >= denom:
-        return False
-    lo_needed = max(0.0, denom - unit_a - forced_units)
-    hi_open = denom - forced_units
-    cap = int(np.ceil(2.0 * hi_open)) + 2
-    achievable = np.zeros(cap + 1, dtype=np.bool_)
-    achievable[0] = True
-    lane_order: list[int] = []
-    for lane_id in optional_lanes:
-        if all(int(existing) != int(lane_id) for existing in lane_order):
-            lane_order.append(int(lane_id))
-    for lane_id in lane_order:
-        merged = achievable.copy()
-        running = 0
-        for note_lane, half_units in zip(optional_lanes, optional_half):
-            if note_lane != lane_id:
-                continue
-            running += int(half_units)
-            if running > cap:
-                break
-            merged[running:] |= achievable[: achievable.shape[0] - running]
-        achievable = merged
-    for s_half in range(cap + 1):
-        if achievable[s_half]:
-            s_opt = 0.5 * float(s_half)
-            if s_opt >= lo_needed and s_opt < hi_open:
-                return True
-    return False
 
 
 def _dense_inputs(n: int = 96) -> tuple[np.ndarray, ...]:
@@ -142,8 +91,30 @@ def _dense_inputs(n: int = 96) -> tuple[np.ndarray, ...]:
     return timestamps, perfect_floor, perfect_candidates, great_floor, great_candidates, lanes
 
 
+def _exact_surface_query(*args) -> bool:
+    """Call the canonical query from the retired oracle's wider historical signature."""
+    return bool(
+        _numba_activation_reachable_contiguous_run(
+            args[0],
+            args[1],
+            args[3],
+            args[4],
+            args[5],
+            args[6],
+            args[7],
+            args[8],
+            args[9],
+            args[10],
+            args[11],
+            args[12],
+            args[13],
+            args[14],
+        )
+    )
+
+
 @pytest.mark.parametrize("denom", [30.5, 31.0, 31.5, 32.0, 32.5, 63.5, 64.0])
-def test_lane_prefix_bitset_matches_boolean_oracle_across_word_boundaries(denom: float) -> None:
+def test_exact_surface_query_matches_schedule_oracle_across_fill_boundaries(denom: float) -> None:
     timestamps, perfect_floor, perfect_candidates, great_floor, great_candidates, lanes = _dense_inputs()
     args = (
         95,
@@ -162,13 +133,53 @@ def test_lane_prefix_bitset_matches_boolean_oracle_across_word_boundaries(denom:
         55,
         0,
     )
-    assert bool(_numba_activation_reachable_contiguous_run(*args)) is _retired_boolean_prefix_reachable(*args)
+    assert _exact_surface_query(*args) is _retired_boolean_prefix_reachable(*args)
 
 
-def test_lane_prefix_bitset_reused_scratch_matches_boolean_oracle() -> None:
+def test_exact_surface_query_preserves_legal_body_cross_lane_prefix_swap() -> None:
+    n = 104
+    timestamps = np.zeros(n, dtype=np.float32)
+    timestamps[100:] = np.asarray([0.0, 0.1, 0.2, 0.3], dtype=np.float32)
+    perfect_floor = np.zeros(n, dtype=np.float32)
+    perfect_candidates = np.ones(n, dtype=np.float32)
+    perfect_candidates[103] = np.float32(0.4)
+    great_floor = np.zeros(n, dtype=np.float32)
+    great_candidates = perfect_candidates.copy()
+    lanes = np.arange(n, dtype=np.int32)
+    lanes[100:] = np.asarray([0, 1, 2, 1], dtype=np.int32)
+    args = (
+        102,
+        0.5,
+        1.0,
+        timestamps,
+        perfect_floor,
+        perfect_candidates,
+        great_floor,
+        great_candidates,
+        lanes,
+        2.5,
+        100,
+        104,
+        104,
+        0,
+        0,
+    )
+
+    # Body note 103 must occur before activation, but its lane requires note 101 first. Delaying
+    # optional note 100 preserves the exact two-Perfect body signature via order (101, 103).
+    assert _retired_boolean_prefix_reachable(*args) is True
+    assert _exact_surface_query(*args) is True
+
+    forced_note_zero_high = perfect_candidates.copy()
+    forced_note_zero_high[100] = np.float32(0.4)
+    impossible_args = (*args[:5], forced_note_zero_high, *args[6:])
+    assert _retired_boolean_prefix_reachable(*impossible_args) is False
+    assert _exact_surface_query(*impossible_args) is False
+
+
+def test_exact_surface_query_matches_randomized_schedule_oracle() -> None:
     timestamps, perfect_floor, perfect_candidates, great_floor, great_candidates, lanes = _dense_inputs()
     denom = 37.25
-    workspace = _numba_build_activation_reachability_workspace(lanes, denom)
     rng = np.random.default_rng(20260712)
     for _case_idx in range(240):
         start = int(rng.integers(0, 72))
@@ -201,11 +212,62 @@ def test_lane_prefix_bitset_reused_scratch_matches_boolean_oracle() -> None:
             great_count,
             activation_great,
         )
-        actual = _numba_activation_reachable_contiguous_run_with_scratch(*args, *workspace)
+        actual = _exact_surface_query(*args)
         assert bool(actual) is _retired_boolean_prefix_reachable(*args), _case_idx
 
 
-def test_trace_reachability_context_reuses_exact_numba_workspace() -> None:
+def test_exact_surface_query_matches_randomized_cross_lane_swaps() -> None:
+    rng = np.random.default_rng(149)
+    n = 18
+    timestamps = np.zeros(n, dtype=np.float32)
+    perfect_floor = np.zeros(n, dtype=np.float32)
+    great_floor = np.zeros(n, dtype=np.float32)
+    lanes = rng.integers(-2, 3, size=n, dtype=np.int32)
+    for case_idx in range(240):
+        activation = int(rng.integers(1, n - 1))
+        great_start = int(rng.integers(0, n))
+        great_count = int(rng.integers(0, n - great_start + 1))
+        activation_great = int(rng.integers(0, 2))
+        perfect_candidates = rng.choice(
+            np.asarray([0.4, 1.0], dtype=np.float32), size=n
+        ).astype(np.float32)
+        great_candidates = rng.choice(
+            np.asarray([0.4, 1.0], dtype=np.float32), size=n
+        ).astype(np.float32)
+        perfect_candidates[activation] = np.float32(1.0)
+        great_candidates[activation] = np.float32(1.0)
+        activation_is_great = bool(
+            activation_great
+            or int(great_start) <= int(activation) < int(great_start) + int(great_count)
+        )
+        great_before = max(
+            0,
+            min(int(activation), int(great_start) + int(great_count))
+            - max(0, int(great_start)),
+        )
+        fill_before = float(activation) - 0.5 * float(great_before)
+        denom = fill_before + (0.25 if activation_is_great else 0.5)
+        args = (
+            activation,
+            0.5,
+            1.0,
+            timestamps,
+            perfect_floor,
+            perfect_candidates,
+            great_floor,
+            great_candidates,
+            lanes,
+            denom,
+            0,
+            n,
+            great_start,
+            great_count,
+            activation_great,
+        )
+        assert _exact_surface_query(*args) is _retired_boolean_prefix_reachable(*args), case_idx
+
+
+def test_trace_reachability_context_uses_exact_surface_query() -> None:
     timestamps, perfect_floor, perfect_candidates, great_floor, great_candidates, lanes = _dense_inputs()
     denom = 37.25
     context = _build_activation_reachability_context(
@@ -217,7 +279,6 @@ def test_trace_reachability_context_reuses_exact_numba_workspace() -> None:
         lanes=lanes,
         fever_fill_denom=denom,
     )
-    workspace_ids = tuple(id(array) for array in context.workspace)
     rng = np.random.default_rng(20260713)
     for case_idx in range(240):
         start = int(rng.integers(0, 72))
@@ -230,7 +291,7 @@ def test_trace_reachability_context_reuses_exact_numba_workspace() -> None:
         args = (
             activation,
             float(hit),
-            float(context.candidate_high_delta_max),
+            0.200001,
             timestamps,
             perfect_floor,
             perfect_candidates,
@@ -255,7 +316,6 @@ def test_trace_reachability_context_reuses_exact_numba_workspace() -> None:
             n=end,
         )
         assert actual is _retired_boolean_prefix_reachable(*args), case_idx
-    assert tuple(id(array) for array in context.workspace) == workspace_ids
     with pytest.raises(ValueError, match="invalid Great run"):
         _activation_reachable(
             context=context,
@@ -269,64 +329,13 @@ def test_trace_reachability_context_reuses_exact_numba_workspace() -> None:
         )
 
 
-def test_lane_classification_uses_full_signed_integer_equality() -> None:
-    lanes = np.asarray(
-        [
-            np.iinfo(np.int32).min,
-            7,
-            np.iinfo(np.int32).max,
-            -19,
-            7,
-            np.iinfo(np.int32).min,
-        ],
-        dtype=np.int32,
-    )
-    classes, class_count = _numba_exact_lane_classes(lanes)
-    assert int(class_count) == 4
-    for left in range(len(lanes)):
-        for right in range(len(lanes)):
-            assert (int(classes[left]) == int(classes[right])) is (int(lanes[left]) == int(lanes[right]))
-
-
-def test_lane_prefix_bitset_epoch_rollover_clears_stale_lane_state() -> None:
-    timestamps, perfect_floor, perfect_candidates, great_floor, great_candidates, lanes = _dense_inputs()
-    denom = 31.5
-    workspace = _numba_build_activation_reachability_workspace(lanes, denom)
-    workspace[1][:] = np.int32(77)
-    workspace[2][:] = np.int32(88)
-    workspace[3][:] = np.int32(_LANE_PREFIX_EPOCH_RESET_LIMIT)
-    workspace[9][0] = np.int32(_LANE_PREFIX_EPOCH_RESET_LIMIT)
-    args = (
-        95,
-        float(timestamps[95]),
-        0.200001,
-        timestamps,
-        perfect_floor,
-        perfect_candidates,
-        great_floor,
-        great_candidates,
-        lanes,
-        denom,
-        0,
-        96,
-        7,
-        61,
-        0,
-    )
-    actual = _numba_activation_reachable_contiguous_run_with_scratch(*args, *workspace)
-    assert bool(actual) is _retired_boolean_prefix_reachable(*args)
-    assert int(workspace[9][0]) == 1
-
-
 @pytest.mark.parametrize("denom", [float("inf"), float("nan")])
-def test_lane_prefix_scratch_rejects_nonfinite_denominator(denom: float) -> None:
+def test_exact_surface_query_rejects_nonfinite_denominator(denom: float) -> None:
     timestamps, perfect_floor, perfect_candidates, great_floor, great_candidates, lanes = _dense_inputs()
-    workspace = _numba_build_activation_reachability_workspace(lanes, 10.0)
     with pytest.raises(ValueError, match="finite"):
-        _numba_activation_reachable_contiguous_run_with_scratch(
+        _numba_activation_reachable_contiguous_run(
             40,
             float(timestamps[40]),
-            0.200001,
             timestamps,
             perfect_floor,
             perfect_candidates,
@@ -339,7 +348,6 @@ def test_lane_prefix_scratch_rejects_nonfinite_denominator(denom: float) -> None
             5,
             30,
             0,
-            *workspace,
         )
 
 
@@ -471,7 +479,7 @@ def _retired_boolean_region_core_for_offset(
     )
 
 
-def test_region_core_table_reused_bitset_workspace_preserves_exact_stream() -> None:
+def test_region_core_table_preserves_exact_schedule_stream() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import (
         response_build_gpu_numba as rb,
         response_build_gpu_precompute,

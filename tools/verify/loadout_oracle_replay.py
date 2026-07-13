@@ -46,7 +46,16 @@ from gear_optimizer.helpers.song_helpers.force_greats.result_application import 
 from gear_optimizer.solver.fg_response_scoring.note_graph import (  # noqa: E402
     force_greats_note_graph,
 )
+from gear_optimizer.solver.fg_response_scoring.physical_replay import (  # noqa: E402
+    validate_force_greats_physical_replay,
+)
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope  # noqa: E402
+from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (  # noqa: E402
+    reconstruct_force_greats_response_trace,
+)
+from gear_optimizer.solver.taichi_gem.force_greats.response_types import (  # noqa: E402
+    FgResponseSurface,
+)
 from tools.verify.game_sim import _synth_offset  # noqa: E402
 
 _DIFF_DIRS = ("Easy", "Normal", "Hard")
@@ -212,6 +221,11 @@ def main(argv=None) -> int:
     ap.add_argument("--song", required=True, help="song name or unique prefix")
     ap.add_argument("--rank", type=int, default=0, help="0 = top by fg_score (default)")
     ap.add_argument("--dump-input", default=None, help="write the oracle input JSON here (debug)")
+    ap.add_argument(
+        "--reconstruct-current-trace",
+        action="store_true",
+        help="rebuild the persisted surface's trace with the current canonical witness owner",
+    )
     args = ap.parse_args(argv)
 
     fd, song_name, surface_fg, surface_base, primary_color, secondary_color = _load_loadout(
@@ -227,6 +241,35 @@ def main(argv=None) -> int:
     lanes = np.asarray(sd["lanes"])
     n = int(len(ts))
 
+    if args.reconstruct_current_trace:
+        force = fd["ForceGreats"]
+        surface_values = tuple(int(value) for value in fd["response_surface"])
+        if len(surface_values) != 11:
+            raise ValueError("persisted response_surface must contain exactly 11 fields")
+        force["frontier_trace"] = list(
+            reconstruct_force_greats_response_trace(
+                non_fever_base=int(force["non_fever_base"]),
+                target_surface=FgResponseSurface(*surface_values),
+                timestamps=np.asarray(sd["fg_timestamps"], dtype=np.float32),
+                perfect_candidate_timestamps=np.asarray(
+                    sd["fg_perfect_candidate_timestamps"], dtype=np.float32
+                ),
+                great_candidate_timestamps=np.asarray(
+                    sd["fg_great_candidate_timestamps"], dtype=np.float32
+                ),
+                perfect_floor_timestamps=np.asarray(
+                    sd["fg_perfect_floor_timestamps"], dtype=np.float32
+                ),
+                great_floor_timestamps=np.asarray(
+                    sd["fg_great_floor_timestamps"], dtype=np.float32
+                ),
+                raw_fever_fill=float(force["raw_fever_fill"]),
+                real_fever_time=float(force["real_fever_time"]),
+                lanes=lanes,
+                use_forced_great_timing=True,
+            )
+        )
+
     note_graph = force_greats_note_graph(
         frontier_trace=fd["ForceGreats"]["frontier_trace"],
         total_notes=n,
@@ -234,6 +277,15 @@ def main(argv=None) -> int:
         note_types=nt,
         lanes=lanes,
         timing_mode="perfect_window",
+    )
+    physical_replay = validate_force_greats_physical_replay(
+        frontier_trace=fd["ForceGreats"]["frontier_trace"],
+        surface=FgResponseSurface(*[int(value) for value in fd["response_surface"]]),
+        timestamps=ts,
+        note_types=nt,
+        lanes=lanes,
+        raw_fever_fill=float(fd["ForceGreats"]["raw_fever_fill"]),
+        real_fever_time=float(fd["ForceGreats"]["real_fever_time"]),
     )
     events = _events_from_note_graph(note_graph, nt)
 
@@ -289,6 +341,10 @@ def main(argv=None) -> int:
     lines.append(f"SONG      : {song_name}   (chart: {chart_name})")
     lines.append(f"DB        : {args.db}   rank {args.rank}")
     lines.append(f"CONFIG    : hitObjectsCount={hit_objects_count} lastNoteTimeSec={last_note_time_sec:.6f} n={n}")
+    lines.append(
+        "PHYSICAL  : canonical event-order + judgment + fever replay passed "
+        f"({len(physical_replay.event_order)} events)"
+    )
     lines.append(f"SELECTED  : element={sel_color} colors={colors}")
     lines.append(f"STATSDICT : {json.dumps(statsdict)}")
     lines.append("")

@@ -26,7 +26,12 @@ def _minimal_fg_calc_song(note_count: int = 4) -> dict:
             "Long Notes": 0,
             "Last Note Time": float(timestamps[-1]) if int(timestamps.shape[0]) else 0.0,
         },
-        "song_data": {"timestamps": timestamps, "fg_timestamps": timestamps, "lanes": list(range(len(timestamps)))},
+        "song_data": {
+            "timestamps": timestamps,
+            "fg_timestamps": timestamps,
+            "lanes": list(range(len(timestamps))),
+            "note_types": np.ones(len(timestamps), dtype=np.int16),
+        },
     }
 
 
@@ -535,15 +540,15 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
         stages.prepare_fg_job_sync(song, gpu_client=None)
 
 
-def test_prepare_fg_static_sync_warms_jit_and_loads_canonical_scoring_bundle(monkeypatch):
+def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundle(monkeypatch):
     import configparser
 
     from types import SimpleNamespace
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
-    from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
 
-    seen: dict[str, object] = {"sidecar_warm": 0}
+    seen: dict[str, object] = {"session_prune": 0}
     canonical_keys = ((0, 0), (1, 1))
     bundle = SimpleNamespace(cache_key=("bundle-key",))
 
@@ -553,11 +558,14 @@ def test_prepare_fg_static_sync_warms_jit_and_loads_canonical_scoring_bundle(mon
 
     monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _fake_load_bundle)
     monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: canonical_keys)
-    monkeypatch.setattr(
-        response_cache_store,
-        "warm_surface_sidecar_page_cache",
-        lambda _key: seen.__setitem__("sidecar_warm", 1),
-    )
+
+    def _fake_session_prune(loaded_bundle, ref_arrays):
+        assert loaded_bundle is bundle
+        assert ref_arrays
+        seen["session_prune"] = 1
+        return loaded_bundle
+
+    monkeypatch.setattr(response_cache, "session_prune_scoring_bundle", _fake_session_prune)
 
     cfg = configparser.ConfigParser()
     song = make_native_song(
@@ -578,7 +586,7 @@ def test_prepare_fg_static_sync_warms_jit_and_loads_canonical_scoring_bundle(mon
 
     assert song.runtime.fg.fg_response_scoring_bundle is bundle
     assert song.runtime.fg.fg_static_prep_done is True
-    assert seen == {"sidecar_warm": 1, "stat_keys": canonical_keys}
+    assert seen == {"session_prune": 1, "stat_keys": canonical_keys}
 
 
 def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
@@ -702,10 +710,18 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
         "_assert_trace_hit_time_reachable",
         lambda *_args, **_kwargs: seen.__setitem__("validate_calls", seen["validate_calls"] + 1),
     )
+    monkeypatch.setattr(
+        reducer_mod,
+        "validate_force_greats_physical_replay",
+        lambda **_kwargs: seen.__setitem__("physical_calls", seen.get("physical_calls", 0) + 1),
+    )
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
     trace_cache = FgTraceMaterializationCache()
-    calc_song = {"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}}
+    calc_song = {
+        "metadata": {},
+        "song_data": {"timestamps": [1.0], "lanes": [0], "note_types": [1]},
+    }
     payload = materialize_force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
@@ -742,6 +758,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
     assert second_payload["ForceGreats"]["frontier_trace"] == payload["ForceGreats"]["frontier_trace"]
     assert seen["reconstruct_calls"] == 1
     assert seen["validate_calls"] == 1
+    assert seen["physical_calls"] == 1
     with pytest.raises(ValueError, match="cannot be reused across calc-song owners"):
         materialize_force_payload_from_response_frontier(
             eval_data={"Selected Element": "Rush"},
@@ -757,7 +774,10 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
 
     # Missing lanes is a supported chart-ingest boundary that materializes a fresh fallback tuple
     # on every extraction. Cache ownership is the strong calc-song object, not that transient tuple.
-    missing_lanes_song = {"metadata": {}, "song_data": {"timestamps": [1.0]}}
+    missing_lanes_song = {
+        "metadata": {},
+        "song_data": {"timestamps": [1.0], "note_types": [1]},
+    }
     missing_lanes_cache = FgTraceMaterializationCache()
     missing_lane_payloads = [
         materialize_force_payload_from_response_frontier(
@@ -825,6 +845,11 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         "reconstruct_force_greats_response_trace",
         lambda **_kwargs: (_trace_row(1), _trace_row(0), _trace_row(1)),
     )
+    monkeypatch.setattr(
+        reducer_mod,
+        "validate_force_greats_physical_replay",
+        lambda **_kwargs: None,
+    )
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
     payload = materialize_force_payload_from_response_frontier(
@@ -833,7 +858,10 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         paired_base_score=1000,
         selected_element="Rush",
         result=result,
-        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
+        calc_song={
+            "metadata": {},
+            "song_data": {"timestamps": [1.0], "lanes": [0], "note_types": [1]},
+        },
         ref_arrays={},
     )
 
@@ -857,7 +885,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     )
 
     timestamps = np.asarray([0.0, 0.18, 0.41, 0.64, 0.95, 1.21, 1.5], dtype=np.float32)
-    great_candidates = timestamps + np.asarray([0.0, 0.05, 0.0, 0.03, 0.0, 0.04, 0.0], dtype=np.float32)
+    great_candidates = timestamps + np.float32(0.19)
     raw_fever_fill = 2.25
     non_fever_base = 7
     real_fever_time = 0.55
@@ -928,6 +956,8 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
             "fg_perfect_floor_timestamps": timestamps,
             "fg_great_floor_timestamps": timestamps,
             "fg_great_candidate_timestamps": great_candidates,
+            "lanes": np.arange(int(timestamps.shape[0]), dtype=np.int32),
+            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
         },
     }
 
@@ -1338,6 +1368,7 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
         lambda **_kwargs: (_trace_row(5), _trace_row(0)),
     )
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 150)
+    monkeypatch.setattr(reducer_mod, "validate_force_greats_physical_replay", lambda **_kwargs: None)
 
     monkeypatch.setattr(
         GpuScoreEngine,
@@ -1544,6 +1575,7 @@ def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
         "score_force_greats_response_surface_exact",
         lambda stats, *_args, **_kwargs: int(stats["Rush"]) + 189,
     )
+    monkeypatch.setattr(reducer_mod, "validate_force_greats_physical_replay", lambda **_kwargs: None)
 
     monkeypatch.setattr(
         GpuScoreEngine,

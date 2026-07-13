@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 
 def _make_entry(*, gear: list[str], minis: list[str], score: int, fg_score: int = 0, tag: str = "") -> dict:
     details = {"tag": tag} if tag else {}
@@ -334,7 +336,7 @@ def _expected_00_hard_surface_fg_score(calc_song: dict, ref_arrays: dict) -> int
     )
 
 
-def test_authoritative_fg_canonicalization_replays_00_hard_force_payload_directly():
+def test_authoritative_fg_canonicalization_rejects_legacy_trace_without_schedule():
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.helpers.song_helpers.persistence_authority import canonicalize_authoritative_fg_entries
@@ -344,24 +346,15 @@ def test_authoritative_fg_canonicalization_replays_00_hard_force_payload_directl
     assert ref_arrays
     _prebuild_timeline_frontier(calc_song, ref_arrays)
 
-    out = canonicalize_authoritative_fg_entries(
-        [_stale_00_hard_fg_entry()],
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-    )
-
-    row = out[0]
-    force = row["force"]
-    expected_fg = _expected_00_hard_surface_fg_score(calc_song, ref_arrays)
-    assert row["score"] == 32367815
-    assert row["fg_base_score"] == 32518595
-    assert row["fg_score"] == expected_fg
-    assert force["BaseScore"] == 32518595
-    assert force["Score"] == expected_fg
-    assert force["ForceGreats"]["final_score"] == expected_fg
+    with pytest.raises(ValueError, match="non-empty exact frontier_trace"):
+        canonicalize_authoritative_fg_entries(
+            [_stale_00_hard_fg_entry()],
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+        )
 
 
-def test_db_equal_fg_upsert_preserves_source_00_hard_paired_base_score(tmp_path, monkeypatch):
+def test_db_stale_fg_row_is_rejected_before_authoritative_upsert(tmp_path, monkeypatch):
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
     from gear_optimizer.data.song_io import get_base_calc_song
@@ -379,27 +372,16 @@ def test_db_equal_fg_upsert_preserves_source_00_hard_paired_base_score(tmp_path,
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert ref_arrays
     _prebuild_timeline_frontier(calc_song, ref_arrays)
-    expected_fg = _expected_00_hard_surface_fg_score(calc_song, ref_arrays)
-    canonical = canonicalize_authoritative_fg_entries([stale], calc_song=calc_song, ref_arrays=ref_arrays)
-    save_loadouts_batch(song, canonical)
-    # Equal-fg upsert: a second canonical save must keep the SOURCE paired base.
-    canonical_again = canonicalize_authoritative_fg_entries(
-        [_stale_00_hard_fg_entry()], calc_song=calc_song, ref_arrays=ref_arrays
-    )
-    save_loadouts_batch(song, canonical_again)
+    with pytest.raises(ValueError, match="non-empty exact frontier_trace"):
+        canonicalize_authoritative_fg_entries(
+            [stale], calc_song=calc_song, ref_arrays=ref_arrays
+        )
 
     with get_db_connection(str(db_path)) as conn:
         row = conn.execute(
-            "SELECT score, fg_score, details_json, force_details_json "
-            "FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            "SELECT score, fg_score FROM team_buff_fg_loadouts "
+            "WHERE song_name=? AND team_buff='T5'",
             (song,),
         ).fetchone()
-
     assert row is not None
-    assert int(row["score"]) == 32518595
-    assert int(row["fg_score"]) == expected_fg
-    details = json.loads(row["details_json"])
-    force = json.loads(row["force_details_json"])
-    assert int(details["BaseScore"]) == 32518595
-    assert int(force["BaseScore"]) == 32518595
-    assert int(force["Score"]) == expected_fg
+    assert int(row["fg_score"]) == int(stale["fg_score"])

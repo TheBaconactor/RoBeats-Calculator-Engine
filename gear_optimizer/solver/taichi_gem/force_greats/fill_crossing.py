@@ -91,6 +91,7 @@ end-index table. There is **no per-candidate ``O(n)``** (no prefix rebuild in th
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import ceil
 from typing import Sequence
 
@@ -107,6 +108,320 @@ FEVER_ACTIVATE_AT = 1.0
 # once the crossing note is itself a Great, e.g. AmongUs sec-1).
 _PERFECT_UNIT = 1.0
 _GREAT_UNIT = 0.5
+
+
+@dataclass(frozen=True, slots=True)
+class ActivationLanePrefix:
+    """One lane's exact before-activation prefix in immutable chart ordinals."""
+
+    lane: int
+    note_indices: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ActivationScheduleWitness:
+    """Exact full-combo event partition chosen for one activation.
+
+    ``lane_prefixes`` is sufficient for the input matcher: on every lane, exactly the listed
+    chart-order prefix is consumed before the activation. ``preactivation_order`` is the concrete
+    cross-lane merge used by replay (ties are intentional input order, not a downstream guess).
+    The half-unit/count fields are the response-surface signature used by the producer.
+    """
+
+    activation_index: int
+    activation_hit_timestamp: float
+    section_start: int
+    section_end: int
+    lane_prefixes: tuple[ActivationLanePrefix, ...]
+    preactivation_order: tuple[int, ...]
+    preactivation_fill_half_units: int
+    preactivation_event_count: int
+    preactivation_great_count: int
+
+
+def _exact_fill_half_units(fill_units: np.ndarray, *, start: int, end: int) -> np.ndarray:
+    half = np.empty(int(end) - int(start), dtype=np.int8)
+    for offset, value in enumerate(fill_units[int(start) : int(end)]):
+        numeric = float(value)
+        if numeric == _GREAT_UNIT:
+            half[int(offset)] = np.int8(1)
+        elif numeric == _PERFECT_UNIT:
+            half[int(offset)] = np.int8(2)
+        else:
+            raise ValueError("fill_units must contain only exact Perfect (1.0) or Great (0.5) units")
+    return half
+
+
+def activation_schedule_witnesses_weighted_lane_aware(
+    *,
+    activation_index: int,
+    activation_hit_timestamp: float,
+    low_hit_timestamps: Sequence[float] | np.ndarray,
+    high_hit_timestamps: Sequence[float] | np.ndarray,
+    lanes: Sequence[int] | np.ndarray,
+    fill_units: Sequence[float] | np.ndarray,
+    fever_fill_denom: float,
+    section_start: int,
+    section_end: int,
+    required_preactivation_fill_half_units: int | None = None,
+    required_preactivation_event_count: int | None = None,
+) -> tuple[ActivationScheduleWitness, ...]:
+    """Return the score-relevant extreme exact lane-prefix witnesses.
+
+    On every non-activation lane, events before ``h_a`` must be a chart-order prefix. A legal
+    prefix contains every note whose label window closes before ``h_a`` and contains no note whose
+    window opens after it. The activation lane has the one fixed prefix ending immediately before
+    ``activation_index``. The cross-lane product is folded on the exact Perfect/Great half-unit
+    lattice.
+
+    For a fixed pre-activation fill, body response scoring is affine in the number of events before
+    activation (the Great count is ``2*event_count - fill_half_units``). Therefore only the minimum
+    and maximum reachable event counts can win for any loadout; intermediate counts lie on the
+    segment between them. Both extremes are returned, with deterministic full-equality witnesses.
+    Head-order variants are owned separately by the response-surface producer.  When both
+    ``required_preactivation_*`` fields are supplied, return the deterministic witness for that
+    exact cached-surface signature instead of the unconstrained score-relevant extrema.
+    """
+    a = int(activation_index)
+    start = int(section_start)
+    end = int(section_end)
+    denom = float(fever_fill_denom)
+    if not np.isfinite(denom) or denom <= 0.0:
+        raise ValueError("fever_fill_denom must be finite and > 0")
+    if start < 0 or end < start:
+        raise ValueError("invalid section bounds")
+    if (required_preactivation_fill_half_units is None) != (
+        required_preactivation_event_count is None
+    ):
+        raise ValueError("the exact preactivation fill and event-count signature must be supplied together")
+
+    lo = np.asarray(low_hit_timestamps, dtype=np.float32).reshape(-1)
+    hi = np.asarray(high_hit_timestamps, dtype=np.float32).reshape(-1)
+    lane_values = np.asarray(lanes, dtype=np.int32).reshape(-1)
+    units = np.asarray(fill_units, dtype=np.float32).reshape(-1)
+    total = int(lo.shape[0])
+    if any(int(values.shape[0]) != total for values in (hi, lane_values, units)):
+        raise ValueError("hit timestamps, lanes, and fill_units must have the same length")
+    if not (start <= a < end <= total):
+        raise ValueError("activation_index must be inside [section_start, section_end)")
+    if np.any(~np.isfinite(lo[start:end])) or np.any(~np.isfinite(hi[start:end])):
+        raise ValueError("activation hit intervals must be finite")
+    if np.any(lo[start:end] > hi[start:end]):
+        raise ValueError("activation hit intervals must be non-empty")
+    half_units = _exact_fill_half_units(units, start=start, end=end)
+
+    h_a = np.float32(activation_hit_timestamp)
+    if not np.isfinite(h_a) or h_a < lo[a] or h_a > hi[a]:
+        return ()
+
+    lane_order: list[int] = []
+    lane_notes: dict[int, list[int]] = {}
+    for note_idx in range(start, end):
+        lane_id = int(lane_values[int(note_idx)])
+        notes = lane_notes.get(lane_id)
+        if notes is None:
+            lane_order.append(int(lane_id))
+            notes = []
+            lane_notes[int(lane_id)] = notes
+        notes.append(int(note_idx))
+
+    activation_lane = int(lane_values[a])
+    lane_options: list[tuple[int, tuple[tuple[int, int], ...]]] = []
+    chart_prefix_counts: list[int] = []
+    for lane_id in lane_order:
+        notes = lane_notes[int(lane_id)]
+        chart_prefix_counts.append(sum(1 for note_idx in notes if int(note_idx) < int(a)))
+        head_note_count = sum(1 for note_idx in notes if int(note_idx) < 100)
+        target_head_count = sum(
+            1 for note_idx in notes if int(note_idx) < 100 and int(note_idx) < int(a)
+        )
+        # Fail loudly if an internally supplied label envelope cannot realize full combo even in
+        # its own lane order. This is producer state, not an optional external-boundary recovery.
+        lane_clock = -np.inf
+        for note_idx in notes:
+            lane_clock = max(float(lane_clock), float(lo[int(note_idx)]))
+            if lane_clock > float(hi[int(note_idx)]):
+                raise ValueError("lane label windows cannot realize chart-order full combo")
+
+        prefix_half = [0]
+        for note_idx in notes:
+            prefix_half.append(
+                int(prefix_half[-1]) + int(half_units[int(note_idx) - int(start)])
+            )
+
+        if int(lane_id) == int(activation_lane):
+            activation_positions = [pos for pos, note_idx in enumerate(notes) if int(note_idx) == a]
+            if len(activation_positions) != 1:
+                raise ValueError("activation note must occur exactly once in its lane")
+            prefix_count = int(activation_positions[0])
+            if any(lo[int(note_idx)] > h_a for note_idx in notes[:prefix_count]):
+                return ()
+            if any(hi[int(note_idx)] < h_a for note_idx in notes[prefix_count + 1 :]):
+                return ()
+            options = ((int(prefix_half[prefix_count]), int(prefix_count)),)
+            if required_preactivation_event_count is not None:
+                options = tuple(
+                    option
+                    for option in options
+                    if (
+                        int(option[1]) == int(target_head_count)
+                        if int(target_head_count) < int(head_note_count)
+                        else int(option[1]) >= int(target_head_count)
+                    )
+                )
+            if not options:
+                return ()
+            lane_options.append((int(lane_id), options))
+            continue
+
+        minimum_count = 0
+        maximum_count = len(notes)
+        for pos, note_idx in enumerate(notes):
+            if hi[int(note_idx)] < h_a:
+                minimum_count = int(pos) + 1
+            if lo[int(note_idx)] > h_a and int(maximum_count) == len(notes):
+                maximum_count = int(pos)
+        if int(minimum_count) > int(maximum_count):
+            return ()
+        options = tuple(
+            (int(prefix_half[count]), int(count))
+            for count in range(int(minimum_count), int(maximum_count) + 1)
+        )
+        if required_preactivation_event_count is not None:
+            options = tuple(
+                option
+                for option in options
+                if (
+                    int(option[1]) == int(target_head_count)
+                    if int(target_head_count) < int(head_note_count)
+                    else int(option[1]) >= int(target_head_count)
+                )
+            )
+        if not options:
+            return ()
+        lane_options.append((int(lane_id), options))
+
+    # (fill half-units, event count) -> per-lane prefix counts. Full tuple equality decides ties.
+    states: dict[tuple[int, int], tuple[int, ...]] = {(0, 0): ()}
+    fill_limit = float(2.0 * denom)
+    for _lane_id, options in lane_options:
+        merged: dict[tuple[int, int], tuple[int, ...]] = {}
+        for (prior_fill, prior_count), prior_prefixes in states.items():
+            for lane_fill, lane_count in options:
+                new_fill = int(prior_fill) + int(lane_fill)
+                if float(new_fill) >= fill_limit:
+                    continue
+                new_count = int(prior_count) + int(lane_count)
+                key = (int(new_fill), int(new_count))
+                prefixes = (*prior_prefixes, int(lane_count))
+                previous = merged.get(key)
+                if previous is None or prefixes < previous:
+                    merged[key] = prefixes
+        states = merged
+        if not states:
+            return ()
+
+    activation_half = int(half_units[a - start])
+    feasible: dict[int, list[tuple[int, tuple[int, ...]]]] = {}
+    for (fill_half, event_count), prefixes in states.items():
+        if 0.5 * float(fill_half) < denom <= 0.5 * float(fill_half + activation_half):
+            feasible.setdefault(int(fill_half), []).append((int(event_count), prefixes))
+    if not feasible:
+        return ()
+
+    witnesses: list[ActivationScheduleWitness] = []
+    seen_signatures: set[tuple[int, int]] = set()
+    for fill_half in sorted(feasible):
+        rows = sorted(feasible[int(fill_half)], key=lambda row: (int(row[0]), row[1]))
+        if required_preactivation_fill_half_units is not None:
+            if int(fill_half) != int(required_preactivation_fill_half_units):
+                continue
+            selected_rows = tuple(
+                row
+                for row in rows
+                if int(row[0]) == int(required_preactivation_event_count)
+            )
+            preferred = tuple(int(count) for count in chart_prefix_counts)
+            preferred_fill = 0
+            preferred_is_legal = True
+            for (_lane_id, options), prefix_count in zip(
+                lane_options,
+                preferred,
+                strict=True,
+            ):
+                matching = tuple(
+                    int(option_fill)
+                    for option_fill, option_count in options
+                    if int(option_count) == int(prefix_count)
+                )
+                if len(matching) != 1:
+                    preferred_is_legal = False
+                    break
+                preferred_fill += int(matching[0])
+            if (
+                preferred_is_legal
+                and sum(preferred) == int(required_preactivation_event_count)
+                and int(preferred_fill) == int(required_preactivation_fill_half_units)
+            ):
+                selected_rows = ((int(required_preactivation_event_count), preferred),)
+        else:
+            selected_rows = (rows[0], rows[-1])
+        for event_count, prefixes in selected_rows:
+            signature = (int(fill_half), int(event_count))
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            prefix_rows: list[ActivationLanePrefix] = []
+            ordered_events: list[tuple[float, int, int, int]] = []
+            for lane_rank, ((lane_id, _options), prefix_count) in enumerate(
+                zip(lane_options, prefixes, strict=True)
+            ):
+                notes = lane_notes[int(lane_id)]
+                selected = tuple(int(note_idx) for note_idx in notes[: int(prefix_count)])
+                prefix_rows.append(ActivationLanePrefix(lane=int(lane_id), note_indices=selected))
+                lane_clock = -np.inf
+                for lane_pos, note_idx in enumerate(selected):
+                    lane_clock = max(float(lane_clock), float(lo[int(note_idx)]))
+                    if lane_clock > min(float(hi[int(note_idx)]), float(h_a)):
+                        raise ValueError("selected lane prefix cannot be scheduled before activation")
+                    ordered_events.append(
+                        (float(lane_clock), int(lane_rank), int(lane_pos), int(note_idx))
+                    )
+            if prefixes == tuple(chart_prefix_counts):
+                preactivation_order = tuple(range(int(start), int(a)))
+            else:
+                ordered_events.sort(key=lambda row: (float(row[0]), int(row[1]), int(row[2])))
+                preactivation_order = tuple(int(row[3]) for row in ordered_events)
+            if len(preactivation_order) != int(event_count):
+                raise ValueError("activation witness event count does not match its lane prefixes")
+            if required_preactivation_event_count is not None:
+                expected_head = {
+                    int(note_idx)
+                    for note_idx in range(int(start), int(a))
+                    if int(note_idx) < 100
+                }
+                selected_head = {
+                    int(note_idx) for note_idx in preactivation_order if int(note_idx) < 100
+                }
+                if selected_head != expected_head:
+                    continue
+            great_count = 2 * int(event_count) - int(fill_half)
+            if great_count < 0 or great_count > int(event_count):
+                raise ValueError("activation witness Great count escaped its exact fill identity")
+            witnesses.append(
+                ActivationScheduleWitness(
+                    activation_index=int(a),
+                    activation_hit_timestamp=float(h_a),
+                    section_start=int(start),
+                    section_end=int(end),
+                    lane_prefixes=tuple(prefix_rows),
+                    preactivation_order=preactivation_order,
+                    preactivation_fill_half_units=int(fill_half),
+                    preactivation_event_count=int(event_count),
+                    preactivation_great_count=int(great_count),
+                )
+            )
+    return tuple(witnesses)
 
 
 def late_great_prefix_is_legal(fill: int, prefix: int, fever_fill_denom: float, first: bool) -> bool:
@@ -237,90 +552,19 @@ def activation_hit_is_reachable_weighted_lane_aware(
     preempt. Later same-lane notes cannot supply pre-activation fill while ``a`` is still unhit,
     because earliest-hittable-first would consume ``a`` first.
     """
-    a = int(activation_index)
-    start = int(section_start)
-    end = int(section_end)
-    denom = float(fever_fill_denom)
-    if denom <= 0.0:
-        raise ValueError("fever_fill_denom must be > 0")
-    if start < 0 or end < start:
-        raise ValueError("invalid section bounds")
-
-    lo = np.asarray(low_hit_timestamps, dtype=np.float32).reshape(-1)
-    hi = np.asarray(high_hit_timestamps, dtype=np.float32).reshape(-1)
-    lane = np.asarray(lanes, dtype=np.int32).reshape(-1)
-    units = np.asarray(fill_units, dtype=np.float32).reshape(-1)
-    total = int(lo.shape[0])
-    if int(hi.shape[0]) != total or int(lane.shape[0]) != total or int(units.shape[0]) != total:
-        raise ValueError("hit timestamps, lanes, and fill_units must have the same length")
-    if not (start <= a < end <= total):
-        raise ValueError("activation_index must be inside [section_start, section_end)")
-    unit_a = float(units[a])
-    if unit_a <= 0.0:
-        return False
-
-    h_a = np.float32(activation_hit_timestamp)
-    activation_lane = int(lane[a])
-    forced_units = 0.0
-    optional_lane_ids: list[int] = []
-    optional_half_units: list[int] = []  # per optional note, in chart order: 1 = Great, 2 = Perfect
-    for j in range(start, end):
-        if int(j) == a:
-            continue
-        same_lane = bool(int(lane[j]) == activation_lane)
-        if same_lane and int(j) > a and hi[j] < h_a and lo[a] <= hi[j]:
-            return False
-        forced_any_lane = bool(hi[j] < h_a)
-        forced_same_lane_older = bool(same_lane and int(j) < a and lo[j] <= h_a)
-        if forced_any_lane or forced_same_lane_older:
-            forced_units += float(units[j])
-            if forced_units >= denom:
-                return False
-            continue
-        if lo[j] <= h_a:
-            if same_lane and int(j) > a:
-                continue
-            optional_lane_ids.append(int(lane[j]))
-            optional_half_units.append(1 if float(units[j]) == 0.5 else 2)
-
-    # There must exist a schedule whose pre-activation fill S = forced + S_opt satisfies
-    #   S < denom <= S + unit_a.
-    # S_opt is NOT a free subset sum: earliest-hittable-first consumes each lane in chart order,
-    # so hitting a later same-lane optional note before h_a requires hitting every earlier
-    # same-lane optional note first (their fill lands pre-activation too). The achievable S_opt
-    # set is therefore the Minkowski sum over lanes of each lane's optional PREFIX sums --
-    # computed exactly below on the half-unit integer grid (external review, record 16.36; the
-    # free-grid form over-accepted when the only half-unit sat behind a same-lane Perfect).
-    if forced_units >= denom:
-        return False
-    lo_needed = max(0.0, denom - unit_a - forced_units)
-    hi_open = denom - forced_units  # feasible S_opt window: [lo_needed, hi_open)
-    cap = int(np.ceil(2.0 * hi_open)) + 2
-    achievable = np.zeros(int(cap) + 1, dtype=np.bool_)
-    achievable[0] = True
-    for lane_id in sorted(set(optional_lane_ids)):
-        prefix_sums = [0]
-        running = 0
-        for note_lane, half_units in zip(optional_lane_ids, optional_half_units):
-            if int(note_lane) != int(lane_id):
-                continue
-            running += int(half_units)
-            if running > int(cap):
-                break
-            prefix_sums.append(int(running))
-        if len(prefix_sums) == 1:
-            continue
-        merged = np.zeros_like(achievable)
-        for p in prefix_sums:
-            merged[p:] |= achievable[: achievable.shape[0] - p] if p else achievable
-        achievable = merged
-    for s_half in range(int(cap) + 1):
-        if not achievable[int(s_half)]:
-            continue
-        s_opt = 0.5 * float(s_half)
-        if s_opt >= lo_needed and s_opt < hi_open:
-            return True
-    return False
+    return bool(
+        activation_schedule_witnesses_weighted_lane_aware(
+            activation_index=int(activation_index),
+            activation_hit_timestamp=float(activation_hit_timestamp),
+            low_hit_timestamps=low_hit_timestamps,
+            high_hit_timestamps=high_hit_timestamps,
+            lanes=lanes,
+            fill_units=fill_units,
+            fever_fill_denom=float(fever_fill_denom),
+            section_start=int(section_start),
+            section_end=int(section_end),
+        )
+    )
 
 
 def server_fill_crossing(

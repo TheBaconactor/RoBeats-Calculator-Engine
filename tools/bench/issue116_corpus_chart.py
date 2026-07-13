@@ -635,8 +635,12 @@ def _workspace_bytes_per_thread(*, note_count: int, pair_mod_bound: int) -> int:
     pair_capacity = (n + 1) * bound
     bit_capacity = bound + 1
     branch_a_capacity = (bound + 1) * (n + 2)
+    successor_capacity = n + 1
     return _INT32_BYTES * (
-        3 * int(pair_capacity) + 2 * int(bit_capacity) + 2 * int(branch_a_capacity)
+        3 * int(pair_capacity)
+        + 2 * int(bit_capacity)
+        + 2 * int(branch_a_capacity)
+        + 4 * int(successor_capacity)
     )
 
 

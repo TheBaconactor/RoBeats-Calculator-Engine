@@ -47,11 +47,10 @@ _HEAD_BASIS_D_HI = 12
 # construction, so table rows store compact deterministic IDs rather than repeated timestamps.
 _REGION_HIT_CHART = 0
 _REGION_HIT_PERFECT = 1
+_EXACT_LANE_SIGNATURE_MAX_WORD_CELLS = 16_777_216
 _REGION_HIT_GREAT = 2
 _REGION_HIT_PERFECT_CAPPED = 3
 _REGION_HIT_GREAT_CAPPED = 4
-_LANE_PREFIX_EPOCH_RESET_LIMIT = 1 << 30
-_INT32_INDEX_MAX = 2_147_483_647
 
 @njit(cache=True, nogil=True)
 def _numba_mask_segment(start: int, end: int, offset: int) -> np.uint64:
@@ -495,86 +494,179 @@ def _numba_region2_k_scan_stop(action_count: int, fever_fill_denom: float) -> in
 
 
 @njit(cache=True, nogil=True)
-def _numba_exact_lane_classes(lanes):
-    """Return collision-free dense classes for arbitrary integer lane IDs.
+def _numba_exact_surface_signature_lane_prefix_reachable(
+    activation_index: int,
+    activation_hit_timestamp: float,
+    perfect_floor_timestamps,
+    perfect_candidate_timestamps,
+    great_floor_timestamps,
+    great_candidate_timestamps,
+    lanes,
+    section_start: int,
+    section_end: int,
+    great_start: int,
+    great_end: int,
+    activation_is_great: int,
+    target_event_count: int,
+    target_great_count: int,
+) -> bool:
+    """Exact exceptional-path test for one score-bearing prefix signature.
 
-    Sorting and full integer equality decide every class. No hash participates in identity. The
-    classes preserve exactly the only lane property consumed by reachability: equality.
+    The common producer witness is the global chart prefix and is certified without allocation by
+    the caller.  When timing windows force a cross-lane swap, each lane still contributes one
+    chart-order prefix.  This packed DP decides the exact pair ``(event count, Great count)``;
+    full lane-ID equality owns identity and hashes are not involved.
     """
-    total = int(lanes.shape[0])
-    ordered = np.empty(max(1, int(total)), dtype=np.int64)
-    for idx in range(int(total)):
-        ordered[int(idx)] = np.int64(lanes[int(idx)])
-    if int(total) > 1:
-        ordered[: int(total)].sort()
+    a = int(activation_index)
+    start = int(section_start)
+    end = int(section_end)
+    target_count = int(target_event_count)
+    target_great = int(target_great_count)
+    section_length = int(end) - int(start)
+    if (
+        target_count < 0
+        or target_count > int(section_length) - 1
+        or target_great < 0
+        or target_great > int(target_count)
+    ):
+        return False
+    if int(lanes.shape[0]) < int(end):
+        raise ValueError("FG lane-prefix signature lanes are not aligned")
 
+    word_count = (int(target_great) + 64) // 64
+    word_cells = (int(target_count) + 1) * int(word_count)
+    if int(word_cells) <= 0 or int(word_cells) > int(_EXACT_LANE_SIGNATURE_MAX_WORD_CELLS):
+        raise MemoryError("FG exact lane-prefix signature DP exceeds its fail-loud capacity")
+    reachable = np.zeros((int(target_count) + 1, int(word_count)), dtype=np.uint64)
+    merged = np.zeros_like(reachable)
+    reachable[0, 0] = np.uint64(1)
+
+    unique_lanes = np.empty(max(1, int(section_length)), dtype=np.int64)
     unique_count = 0
-    for idx in range(int(total)):
-        value = ordered[int(idx)]
-        if int(unique_count) == 0 or value != ordered[int(unique_count) - 1]:
-            ordered[int(unique_count)] = value
+    for note_idx in range(int(start), int(end)):
+        lane_id = np.int64(lanes[int(note_idx)])
+        found = False
+        for lane_idx in range(int(unique_count)):
+            if unique_lanes[int(lane_idx)] == lane_id:
+                found = True
+                break
+        if not found:
+            unique_lanes[int(unique_count)] = lane_id
             unique_count += 1
 
-    classes = np.empty(max(1, int(total)), dtype=np.int32)
-    for idx in range(int(total)):
-        value = np.int64(lanes[int(idx)])
-        lo = 0
-        hi = int(unique_count)
-        while int(lo) < int(hi):
-            mid = (int(lo) + int(hi)) // 2
-            if ordered[int(mid)] < value:
-                lo = int(mid) + 1
-            else:
-                hi = int(mid)
-        if int(lo) >= int(unique_count) or ordered[int(lo)] != value:
-            raise ValueError("FG lane classification lost an exact lane ID")
-        classes[int(idx)] = np.int32(lo)
-    return classes, int(unique_count)
+    activation_lane = np.int64(lanes[int(a)])
+    prefix_greats = np.empty(int(section_length) + 1, dtype=np.int32)
+    h_a = np.float32(float(activation_hit_timestamp))
+    g0 = int(great_start)
+    g1 = int(great_end)
+    for lane_idx in range(int(unique_count)):
+        lane_id = unique_lanes[int(lane_idx)]
+        note_count = 0
+        minimum_count = 0
+        maximum_count = -1
+        activation_position = -1
+        head_note_count = 0
+        target_head_count = 0
+        lane_clock = -np.inf
+        prefix_greats[0] = np.int32(0)
+        for note_idx in range(int(start), int(end)):
+            if np.int64(lanes[int(note_idx)]) != lane_id:
+                continue
+            is_great = bool(
+                (int(g0) <= int(note_idx) and int(note_idx) < int(g1))
+                or (int(note_idx) == int(a) and int(activation_is_great) != 0)
+            )
+            low = (
+                great_floor_timestamps[int(note_idx)]
+                if is_great
+                else perfect_floor_timestamps[int(note_idx)]
+            )
+            high = (
+                great_candidate_timestamps[int(note_idx)]
+                if is_great
+                else perfect_candidate_timestamps[int(note_idx)]
+            )
+            lane_clock = max(float(lane_clock), float(low))
+            if lane_clock > float(high):
+                raise ValueError("FG lane label windows cannot realize chart-order full combo")
+            if high < h_a:
+                minimum_count = int(note_count) + 1
+            if low > h_a and int(maximum_count) < 0:
+                maximum_count = int(note_count)
+            if int(note_idx) == int(a):
+                activation_position = int(note_count)
+            if int(note_idx) < 100:
+                head_note_count += 1
+                if int(note_idx) < int(a):
+                    target_head_count += 1
+            prefix_greats[int(note_count) + 1] = np.int32(
+                int(prefix_greats[int(note_count)]) + int(is_great)
+            )
+            note_count += 1
+        if int(maximum_count) < 0:
+            maximum_count = int(note_count)
+        if int(minimum_count) > int(maximum_count):
+            return False
 
+        option_start = int(minimum_count)
+        option_end = int(maximum_count)
+        if lane_id == activation_lane:
+            if int(activation_position) < 0:
+                raise ValueError("FG activation note is absent from its exact lane")
+            if not (
+                int(minimum_count) <= int(activation_position) <= int(maximum_count)
+            ):
+                return False
+            option_start = int(activation_position)
+            option_end = int(activation_position)
+        if int(target_head_count) < int(head_note_count):
+            option_start = max(int(option_start), int(target_head_count))
+            option_end = min(int(option_end), int(target_head_count))
+        else:
+            option_start = max(int(option_start), int(target_head_count))
+        if int(option_start) > int(option_end):
+            return False
 
-@njit(cache=True, nogil=True)
-def _numba_build_activation_reachability_workspace(lanes, fever_fill_denom: float):
-    """Allocate one exact packed-prefix workspace for a region-table producer.
+        for count_idx in range(int(target_count) + 1):
+            for word_idx in range(int(word_count)):
+                merged[int(count_idx), int(word_idx)] = np.uint64(0)
+        for option_count in range(int(option_start), int(option_end) + 1):
+            option_great = int(prefix_greats[int(option_count)])
+            if int(option_count) > int(target_count) or int(option_great) > int(target_great):
+                continue
+            word_shift = int(option_great) // 64
+            bit_shift = int(option_great) % 64
+            for prior_count in range(int(target_count) - int(option_count) + 1):
+                output_count = int(prior_count) + int(option_count)
+                for source_word in range(int(word_count)):
+                    bits = reachable[int(prior_count), int(source_word)]
+                    if bits == np.uint64(0):
+                        continue
+                    output_word = int(source_word) + int(word_shift)
+                    if int(output_word) < int(word_count):
+                        merged[int(output_count), int(output_word)] |= np.uint64(
+                            bits << np.uint64(bit_shift)
+                        )
+                    if int(bit_shift) != 0 and int(output_word) + 1 < int(word_count):
+                        merged[int(output_count), int(output_word) + 1] |= np.uint64(
+                            bits >> np.uint64(64 - int(bit_shift))
+                        )
+        temporary = reachable
+        reachable = merged
+        merged = temporary
 
-    A feasible activation can consume at most one fill unit per chart row, so a denominator above
-    the chart length is answered false before the lattice fold. This bounds the packed lattice by
-    ``2*n + 3`` bits and prevents speculative dense allocation.
-    """
-    denom = float(fever_fill_denom)
-    if denom <= 0.0 or not np.isfinite(denom):
-        raise ValueError("fever_fill_denom must be finite and > 0")
-    total = int(lanes.shape[0])
-    if int(total) > int(_INT32_INDEX_MAX) - 3:
-        raise OverflowError("FG lane-prefix workspace exceeds int32 index capacity")
-    lane_classes, lane_count = _numba_exact_lane_classes(lanes)
-    bounded_denom = min(float(denom), float(total))
-    max_cap = int(np.ceil(2.0 * float(bounded_denom))) + 2
-    if int(max_cap) < 0 or int(max_cap) > 2 * int(total) + 2:
-        raise ValueError("FG lane-prefix lattice cap escaped its exact chart bound")
-    word_capacity = (int(max_cap) + 64) // 64
-    if int(word_capacity) < 1:
-        raise ValueError("FG lane-prefix workspace requires at least one packed word")
-    lane_capacity = max(1, int(lane_count))
-    note_capacity = max(1, int(total))
-    return (
-        lane_classes,
-        np.empty(int(lane_capacity), dtype=np.int32),
-        np.empty(int(lane_capacity), dtype=np.int32),
-        np.zeros(int(lane_capacity), dtype=np.int32),
-        np.empty(int(lane_capacity), dtype=np.int32),
-        np.empty(int(note_capacity), dtype=np.int32),
-        np.empty(int(note_capacity), dtype=np.int8),
-        np.empty(int(word_capacity), dtype=np.uint64),
-        np.empty(int(word_capacity), dtype=np.uint64),
-        np.zeros(1, dtype=np.int32),
+    target_word = int(target_great) // 64
+    target_bit = int(target_great) % 64
+    return bool(
+        reachable[int(target_count), int(target_word)]
+        & (np.uint64(1) << np.uint64(target_bit))
     )
 
 
 @njit(cache=True, nogil=True)
-def _numba_activation_reachable_contiguous_run_with_scratch(
+def _numba_activation_reachable_contiguous_run(
     activation_index: int,
     activation_hit_timestamp: float,
-    candidate_high_delta_max: float,
     timestamps,
     perfect_floor_timestamps,
     perfect_candidate_timestamps,
@@ -587,16 +679,6 @@ def _numba_activation_reachable_contiguous_run_with_scratch(
     great_start: int,
     great_count: int,
     activation_great_i: int,
-    lane_classes,
-    lane_head,
-    lane_tail,
-    lane_stamps,
-    touched_lanes,
-    optional_next,
-    optional_half,
-    achievable_words,
-    merged_words,
-    lane_epoch,
 ) -> bool:
     a = int(activation_index)
     start = int(section_start)
@@ -610,21 +692,14 @@ def _numba_activation_reachable_contiguous_run_with_scratch(
     if int(end) > int(total):
         return False
     if (
-        int(lanes.shape[0]) < int(total)
-        or int(lane_classes.shape[0]) < int(total)
-        or int(lane_head.shape[0]) <= 0
-        or int(lane_tail.shape[0]) < int(lane_head.shape[0])
-        or int(lane_stamps.shape[0]) < int(lane_head.shape[0])
-        or int(touched_lanes.shape[0]) < int(lane_head.shape[0])
-        or int(optional_next.shape[0]) < max(1, int(end) - int(start))
-        or int(optional_half.shape[0]) < max(1, int(end) - int(start))
-        or int(achievable_words.shape[0]) <= 0
-        or int(merged_words.shape[0]) < int(achievable_words.shape[0])
-        or int(lane_epoch.shape[0]) < 1
+        int(timestamps.shape[0]) < int(total)
+        or int(perfect_floor_timestamps.shape[0]) < int(total)
+        or int(great_floor_timestamps.shape[0]) < int(total)
+        or int(great_candidate_timestamps.shape[0]) < int(total)
+        or int(lanes.shape[0]) < int(total)
     ):
-        raise ValueError("FG lane-prefix reachability workspace is undersized")
-    # Every row contributes at most one fill unit, including the activation. A larger denominator
-    # cannot cross inside this section and must not trigger a denominator-sized allocation.
+        raise ValueError("FG activation reachability timing arrays are not aligned")
+    # Every row contributes at most one fill unit, including the activation.
     if float(denom) > float(int(end) - int(start)):
         return False
 
@@ -640,192 +715,85 @@ def _numba_activation_reachable_contiguous_run_with_scratch(
         g1 = g0
 
     h_a = np.float32(float(activation_hit_timestamp))
-    activation_lane = int(lanes[a])
     activation_is_great = int(activation_great_i) != 0 or (int(g0) <= int(a) and int(a) < int(g1))
-    lo_a = great_floor_timestamps[a] if activation_is_great else perfect_floor_timestamps[a]
-    unit_a = 0.5 if activation_is_great else 1.0
-    forced_units = 0.0
-    opt_count = 0
-    touched_lane_count = 0
-    epoch = int(lane_epoch[0]) + 1
-    if int(epoch) > int(_LANE_PREFIX_EPOCH_RESET_LIMIT):
-        for lane_idx in range(int(lane_stamps.shape[0])):
-            lane_stamps[int(lane_idx)] = 0
-        epoch = 1
-    lane_epoch[0] = np.int32(epoch)
-    scan_start = int(start)
-    guaranteed_forced_end = _numba_lower_bound_from(
-        timestamps,
-        float(h_a) - float(candidate_high_delta_max),
+    activation_low = (
+        great_floor_timestamps[int(a)]
+        if activation_is_great
+        else perfect_floor_timestamps[int(a)]
     )
-    if int(guaranteed_forced_end) > int(a):
-        guaranteed_forced_end = int(a)
-    if int(guaranteed_forced_end) > int(end):
-        guaranteed_forced_end = int(end)
-    if int(guaranteed_forced_end) > int(start):
-        forced_units += _numba_fill_units_for_contiguous_run_range(
-            int(start),
-            int(guaranteed_forced_end),
-            int(g0),
-            int(g1) - int(g0),
-        )
-        if forced_units >= denom:
-            return False
-        scan_start = int(guaranteed_forced_end)
-    for j in range(int(scan_start), end):
-        if int(j) == int(a):
-            continue
-        if int(j) > int(a) and great_floor_timestamps[int(j)] > h_a:
+    activation_high = (
+        great_candidate_timestamps[int(a)]
+        if activation_is_great
+        else perfect_candidate_timestamps[int(a)]
+    )
+    if h_a < activation_low or h_a > activation_high:
+        return False
+
+    # The producer's common witness consumes [section_start, activation) before activation. That
+    # exact chart prefix is an O(1) certificate for the score-bearing signature. If its timing is
+    # illegal, the exceptional DP below may replace body identities only; head identities remain
+    # position-exact and body event/Great counts remain identical to the cached surface.
+    preactivation_count = int(a) - int(start)
+    great_before = max(
+        0,
+        min(int(a), int(g1)) - max(int(start), int(g0)),
+    )
+    preactivation_half = 2 * int(preactivation_count) - int(great_before)
+    activation_half = 1 if activation_is_great else 2
+    fill_before = 0.5 * float(preactivation_half)
+    if not (fill_before < denom and denom <= fill_before + 0.5 * float(activation_half)):
+        return False
+
+    # Both floor streams are monotone prefix maxima.  Check the last row of each constant-label
+    # segment: that is necessary and sufficient for every chart-prefix event to have a legal hit no
+    # later than h_a.
+    chart_prefix_legal = True
+    perfect_before_end = min(int(a), int(g0))
+    if int(perfect_before_end) > int(start) and perfect_floor_timestamps[int(perfect_before_end) - 1] > h_a:
+        chart_prefix_legal = False
+    great_before_start = max(int(start), int(g0))
+    great_before_end = min(int(a), int(g1))
+    if int(great_before_end) > int(great_before_start) and great_floor_timestamps[int(great_before_end) - 1] > h_a:
+        chart_prefix_legal = False
+    perfect_after_run_start = max(int(start), int(g1))
+    if int(a) > int(perfect_after_run_start) and perfect_floor_timestamps[int(a) - 1] > h_a:
+        chart_prefix_legal = False
+
+    # Every remaining chart-order event must stay at/after the activation.  Candidate highs are
+    # per-note (held-tail aware), so inspect only later notes whose chart timestamp is still before
+    # h_a; once chart >= h_a, the canonical judgment windows guarantee high >= chart >= h_a.
+    for j in range(int(a) + 1, int(end)):
+        if timestamps[int(j)] >= h_a:
             break
         is_great = int(g0) <= int(j) and int(j) < int(g1)
-        lo_j = great_floor_timestamps[j] if is_great else perfect_floor_timestamps[j]
-        hi_j = great_candidate_timestamps[j] if is_great else perfect_candidate_timestamps[j]
-        unit_j = 0.5 if is_great else 1.0
-        same_lane = int(lanes[j]) == int(activation_lane)
-        if same_lane and int(j) > int(a) and hi_j < h_a and lo_a <= hi_j:
-            return False
-        forced_any_lane = hi_j < h_a
-        forced_same_lane_older = same_lane and int(j) < int(a) and lo_j <= h_a
-        if forced_any_lane or forced_same_lane_older:
-            forced_units += float(unit_j)
-            if forced_units >= denom:
-                return False
-            continue
-        if lo_j <= h_a:
-            if same_lane and int(j) > int(a):
-                continue
-            lane_idx = int(lane_classes[int(j)])
-            if int(lane_idx) < 0 or int(lane_idx) >= int(lane_head.shape[0]):
-                raise ValueError("FG exact lane class escaped its workspace")
-            optional_next[int(opt_count)] = -1
-            optional_half[int(opt_count)] = np.int8(1) if float(unit_j) == 0.5 else np.int8(2)
-            if int(lane_stamps[int(lane_idx)]) != int(epoch):
-                lane_stamps[int(lane_idx)] = np.int32(epoch)
-                lane_head[int(lane_idx)] = int(opt_count)
-                lane_tail[int(lane_idx)] = int(opt_count)
-                touched_lanes[int(touched_lane_count)] = int(lane_idx)
-                touched_lane_count += 1
-            else:
-                previous = int(lane_tail[int(lane_idx)])
-                optional_next[int(previous)] = int(opt_count)
-                lane_tail[int(lane_idx)] = int(opt_count)
-            opt_count += 1
+        label_high = (
+            great_candidate_timestamps[int(j)]
+            if is_great
+            else perfect_candidate_timestamps[int(j)]
+        )
+        if label_high < h_a:
+            chart_prefix_legal = False
+            break
+    if bool(chart_prefix_legal):
+        return True
 
-    # Discrete PREFIX-CLOSED feasibility (twin of activation_hit_is_reachable_weighted_lane_aware):
-    # earliest-hittable-first consumes each lane in chart order, so the achievable optional fill is
-    # the Minkowski sum over lanes of per-lane optional PREFIX sums, not a free subset grid
-    # (record 16.36: the only half-unit behind a same-lane Perfect is NOT selectable alone).
-    if forced_units >= denom:
-        return False
-    lo_needed = max(0.0, denom - float(unit_a) - forced_units)
-    hi_open = denom - forced_units
-    cap = int(np.ceil(2.0 * hi_open)) + 2
-    if int(cap) < 0 or int(cap) > 2 * (int(end) - int(start)) + 2:
-        raise ValueError("FG lane-prefix query cap escaped its exact section bound")
-    word_count = (int(cap) + 64) // 64
-    if int(word_count) < 1 or int(word_count) > int(achievable_words.shape[0]):
-        raise ValueError("FG lane-prefix query escaped its packed-word capacity")
-    for word_idx in range(int(word_count)):
-        achievable_words[int(word_idx)] = np.uint64(0)
-        merged_words[int(word_idx)] = np.uint64(0)
-    achievable_words[0] = np.uint64(1)
-    last_word_bits = int(cap) + 1 - 64 * (int(word_count) - 1)
-    if int(last_word_bits) < 1 or int(last_word_bits) > 64:
-        raise ValueError("FG lane-prefix final packed word has an invalid width")
-    last_word_mask = np.uint64(0xFFFFFFFFFFFFFFFF)
-    if int(last_word_bits) < 64:
-        last_word_mask = (np.uint64(1) << np.uint64(last_word_bits)) - np.uint64(1)
-
-    # Exact Boolean convolution on the half-unit lattice. For one lane every shift reads the
-    # pre-lane `achievable_words`, never `merged_words`, so selecting two prefixes from the same
-    # lane is impossible. Per-lane linked lists preserve chart order and therefore exact prefixes.
-    for touched_idx in range(int(touched_lane_count)):
-        lane_idx = int(touched_lanes[int(touched_idx)])
-        for word_idx in range(int(word_count)):
-            merged_words[int(word_idx)] = achievable_words[int(word_idx)]
-        running = 0
-        pos = int(lane_head[int(lane_idx)])
-        while int(pos) >= 0:
-            running += int(optional_half[int(pos)])
-            if int(running) > int(cap):
-                break
-            word_shift = int(running) // 64
-            bit_shift = int(running) - 64 * int(word_shift)
-            for source_word in range(int(word_count)):
-                value = achievable_words[int(source_word)]
-                if value == np.uint64(0):
-                    continue
-                target_word = int(source_word) + int(word_shift)
-                if int(target_word) >= int(word_count):
-                    break
-                merged_words[int(target_word)] |= value << np.uint64(bit_shift)
-                if int(bit_shift) != 0 and int(target_word) + 1 < int(word_count):
-                    merged_words[int(target_word) + 1] |= value >> np.uint64(64 - int(bit_shift))
-            pos = int(optional_next[int(pos)])
-        merged_words[int(word_count) - 1] &= last_word_mask
-        for word_idx in range(int(word_count)):
-            achievable_words[int(word_idx)] = merged_words[int(word_idx)]
-
-    for s_half in range(int(cap) + 1):
-        word_idx = int(s_half) // 64
-        bit_idx = int(s_half) - 64 * int(word_idx)
-        if (
-            achievable_words[int(word_idx)]
-            & (np.uint64(1) << np.uint64(bit_idx))
-        ) != np.uint64(0):
-            s_opt = 0.5 * float(s_half)
-            if s_opt >= lo_needed and s_opt < hi_open:
-                return True
-    return False
-
-
-@njit(cache=True, nogil=True)
-def _numba_activation_reachable_contiguous_run(
-    activation_index: int,
-    activation_hit_timestamp: float,
-    candidate_high_delta_max: float,
-    timestamps,
-    perfect_floor_timestamps,
-    perfect_candidate_timestamps,
-    great_floor_timestamps,
-    great_candidate_timestamps,
-    lanes,
-    fever_fill_denom: float,
-    section_start: int,
-    section_end: int,
-    great_start: int,
-    great_count: int,
-    activation_great_i: int,
-) -> bool:
-    """Standalone exact owner; production region-table builds reuse the same implementation's
-    scratch across every query instead of allocating it here."""
-    workspace = _numba_build_activation_reachability_workspace(lanes, float(fever_fill_denom))
-    return _numba_activation_reachable_contiguous_run_with_scratch(
-        int(activation_index),
-        float(activation_hit_timestamp),
-        float(candidate_high_delta_max),
-        timestamps,
-        perfect_floor_timestamps,
-        perfect_candidate_timestamps,
-        great_floor_timestamps,
-        great_candidate_timestamps,
-        lanes,
-        float(fever_fill_denom),
-        int(section_start),
-        int(section_end),
-        int(great_start),
-        int(great_count),
-        int(activation_great_i),
-        workspace[0],
-        workspace[1],
-        workspace[2],
-        workspace[3],
-        workspace[4],
-        workspace[5],
-        workspace[6],
-        workspace[7],
-        workspace[8],
-        workspace[9],
+    return bool(
+        _numba_exact_surface_signature_lane_prefix_reachable(
+            int(a),
+            float(h_a),
+            perfect_floor_timestamps,
+            perfect_candidate_timestamps,
+            great_floor_timestamps,
+            great_candidate_timestamps,
+            lanes,
+            int(start),
+            int(end),
+            int(g0),
+            int(g1),
+            int(activation_is_great),
+            int(preactivation_count),
+            int(great_before),
+        )
     )
 
 
@@ -836,23 +804,12 @@ def _numba_minimal_reachable_region_great_end(
     run_start: int,
     raw_fever_fill: float,
     timestamps,
-    candidate_high_delta_max,
     perfect_floor_timestamps,
     perfect_candidate_timestamps,
     great_floor_timestamps,
     great_candidate_timestamps,
     lanes,
     n: int,
-    lane_classes,
-    lane_head,
-    lane_tail,
-    lane_stamps,
-    touched_lanes,
-    optional_next,
-    optional_half,
-    achievable_words,
-    merged_words,
-    lane_epoch,
 ):
     a = int(activation)
     hit_hi = great_candidate_timestamps[a]
@@ -871,10 +828,9 @@ def _numba_minimal_reachable_region_great_end(
         )
         if int(valid) == 0:
             continue
-        if _numba_activation_reachable_contiguous_run_with_scratch(
+        if _numba_activation_reachable_contiguous_run(
             int(a),
             float(hit),
-            candidate_high_delta_max,
             timestamps,
             perfect_floor_timestamps,
             perfect_candidate_timestamps,
@@ -887,16 +843,6 @@ def _numba_minimal_reachable_region_great_end(
             int(run_start),
             int(great_end) - int(run_start),
             1,
-            lane_classes,
-            lane_head,
-            lane_tail,
-            lane_stamps,
-            touched_lanes,
-            optional_next,
-            optional_half,
-            achievable_words,
-            merged_words,
-            lane_epoch,
         ):
             return int(great_end), int(hit_token)
     return -1, -1
@@ -953,29 +899,18 @@ def _numba_region_core_candidate_capacity(
 
 
 @njit(cache=True, nogil=True, inline="always")
-def _numba_region_run_core_for_offset_with_scratch(
+def _numba_region_run_core_for_offset(
     n: int,
     section_start: int,
     offset: int,
     k: int,
     raw_fever_fill: float,
     timestamps,
-    candidate_high_delta_max,
     perfect_floor_timestamps,
     perfect_candidate_timestamps,
     great_floor_timestamps,
     great_candidate_timestamps,
     lanes,
-    lane_classes,
-    lane_head,
-    lane_tail,
-    lane_stamps,
-    touched_lanes,
-    optional_next,
-    optional_half,
-    achievable_words,
-    merged_words,
-    lane_epoch,
 ):
     """The rt-independent core of a region-run candidate: fill crossing, minimal reachable region
     Great end, capped activation/perfect hits, and the weighted lane-aware reachability check.
@@ -999,23 +934,12 @@ def _numba_region_run_core_for_offset_with_scratch(
             int(run_start),
             float(raw_fever_fill),
             timestamps,
-            candidate_high_delta_max,
             perfect_floor_timestamps,
             perfect_candidate_timestamps,
             great_floor_timestamps,
             great_candidate_timestamps,
             lanes,
             int(n),
-            lane_classes,
-            lane_head,
-            lane_tail,
-            lane_stamps,
-            touched_lanes,
-            optional_next,
-            optional_half,
-            achievable_words,
-            merged_words,
-            lane_epoch,
         )
         if int(great_end) < 0:
             return -1, -1, 0, 0, -1, -1, 0
@@ -1054,10 +978,9 @@ def _numba_region_run_core_for_offset_with_scratch(
     )
     if int(perfect_valid) == 0:
         return -1, -1, 0, 0, -1, -1, 0
-    if not _numba_activation_reachable_contiguous_run_with_scratch(
+    if not _numba_activation_reachable_contiguous_run(
         int(activation),
         float(perfect_hit),
-        candidate_high_delta_max,
         timestamps,
         perfect_floor_timestamps,
         perfect_candidate_timestamps,
@@ -1070,16 +993,6 @@ def _numba_region_run_core_for_offset_with_scratch(
         int(run_start),
         int(great_end) - int(run_start),
         0,
-        lane_classes,
-        lane_head,
-        lane_tail,
-        lane_stamps,
-        touched_lanes,
-        optional_next,
-        optional_half,
-        achievable_words,
-        merged_words,
-        lane_epoch,
     ):
         return -1, -1, 0, 0, -1, -1, 0
     return (
@@ -1090,53 +1003,6 @@ def _numba_region_run_core_for_offset_with_scratch(
         -1,
         int(perfect_hit_token),
         1,
-    )
-
-
-@njit(cache=True, nogil=True)
-def _numba_region_run_core_for_offset(
-    n: int,
-    section_start: int,
-    offset: int,
-    k: int,
-    raw_fever_fill: float,
-    timestamps,
-    candidate_high_delta_max,
-    perfect_floor_timestamps,
-    perfect_candidate_timestamps,
-    great_floor_timestamps,
-    great_candidate_timestamps,
-    lanes,
-):
-    """Standalone exact region-core owner.
-
-    The region-table producer calls the same implementation with one table-owned workspace; direct
-    verification and the near-end packet boundary allocate a call-local workspace here.
-    """
-    workspace = _numba_build_activation_reachability_workspace(lanes, float(raw_fever_fill))
-    return _numba_region_run_core_for_offset_with_scratch(
-        int(n),
-        int(section_start),
-        int(offset),
-        int(k),
-        float(raw_fever_fill),
-        timestamps,
-        candidate_high_delta_max,
-        perfect_floor_timestamps,
-        perfect_candidate_timestamps,
-        great_floor_timestamps,
-        great_candidate_timestamps,
-        lanes,
-        workspace[0],
-        workspace[1],
-        workspace[2],
-        workspace[3],
-        workspace[4],
-        workspace[5],
-        workspace[6],
-        workspace[7],
-        workspace[8],
-        workspace[9],
     )
 
 
@@ -1255,7 +1121,6 @@ def _numba_region_run_edge_for_offset(
             int(k),
             float(raw_fever_fill),
             timestamps,
-            candidate_high_delta_max,
             perfect_floor_timestamps,
             perfect_candidate_timestamps,
             great_floor_timestamps,
@@ -1358,18 +1223,6 @@ def _numba_build_region_core_table(
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
         )
-    (
-        lane_classes,
-        lane_head,
-        lane_tail,
-        lane_stamps,
-        touched_lanes,
-        optional_next,
-        optional_half,
-        achievable_words,
-        merged_words,
-        lane_epoch,
-    ) = _numba_build_activation_reachability_workspace(lanes, float(raw_fever_fill))
     cap = _numba_region_core_candidate_capacity(
         int(n), int(region_action_count), action_k, float(raw_fever_fill)
     )
@@ -1413,29 +1266,18 @@ def _numba_build_region_core_table(
                     perfect_hit_token,
                     valid,
                 ) = (
-                    _numba_region_run_core_for_offset_with_scratch(
+                    _numba_region_run_core_for_offset(
                         int(n),
                         int(section_start),
                         int(offset),
                         int(k),
                         float(raw_fever_fill),
                         timestamps,
-                        candidate_high_delta_max,
                         perfect_floor_timestamps,
                         perfect_candidate_timestamps,
                         great_floor_timestamps,
                         great_candidate_timestamps,
                         lanes,
-                        lane_classes,
-                        lane_head,
-                        lane_tail,
-                        lane_stamps,
-                        touched_lanes,
-                        optional_next,
-                        optional_half,
-                        achievable_words,
-                        merged_words,
-                        lane_epoch,
                     )
                 )
                 if int(valid) == 0:

@@ -10,6 +10,10 @@ from ...solver.scoring.exact_rescore import (
     score_stats_exact_with_timeline_trace,
     score_stats_fixed_timing_exact,
 )
+from ...solver.scoring.fg_policy import extract_fg_song_inputs
+from ...solver.fg_response_scoring.physical_replay import (
+    validate_force_greats_physical_replay,
+)
 from .fg_config import extract_fg_config, has_valid_fg_config, require_response_surface
 from .persistence_payload import normalize_force_payload
 
@@ -138,6 +142,28 @@ def _replay_force_payload(
     counts: list[int],
 ) -> dict[str, Any]:
     surface = require_response_surface(force_obj)
+    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, Mapping) else {}
+    timing_mode = str((metadata or {}).get("TimingEnvelopeMode", "") or "").strip().lower()
+    if timing_mode != "zero_ms":
+        force_meta = force_obj.get("ForceGreats")
+        if not isinstance(force_meta, Mapping):
+            raise ValueError("Authoritative FG persistence requires ForceGreats replay metadata.")
+        frontier_trace = force_meta.get("frontier_trace")
+        if not isinstance(frontier_trace, (list, tuple)) or not frontier_trace:
+            raise ValueError("Authoritative FG persistence requires a non-empty exact frontier_trace.")
+        song_inputs = extract_fg_song_inputs(dict(calc_song))
+        song_data = calc_song.get("song_data")
+        if not isinstance(song_data, Mapping) or song_data.get("note_types") is None:
+            raise ValueError("Authoritative FG persistence requires chart note_types.")
+        validate_force_greats_physical_replay(
+            frontier_trace=frontier_trace,
+            surface=surface,
+            timestamps=song_inputs.timestamps,
+            note_types=song_data["note_types"],
+            lanes=song_inputs.lanes,
+            raw_fever_fill=float(force_meta["raw_fever_fill"]),
+            real_fever_time=float(force_meta["real_fever_time"]),
+        )
     final_score = score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, surface)
     if final_score is None:
         raise ValueError("Authoritative FG response surface replay failed.")

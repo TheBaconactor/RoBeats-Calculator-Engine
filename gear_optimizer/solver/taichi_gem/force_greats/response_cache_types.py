@@ -99,7 +99,12 @@ from .response_types import FgResponseFrontierResult
 # sidecars now persist (pattern_id + body counts) rows and exact mask/coefficient patterns instead
 # of repeating eight mask words plus four coefficients for every body-count variant. The reader
 # expands to v29-identical logical rows; the physical format change requires one deliberate rebuild.
-_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v30"
+# v30->v31: issue #149 exact cross-lane activation schedules. Region reachability now proves the
+# exact score-bearing signature that the cached surface consumes: head-note identities remain
+# position-exact while the body permits any legal cross-lane order preserving its event/Great
+# counts. Reconstructed traces persist that exact order for canonical physical replay. V30 can
+# retain surfaces whose missing schedule cannot replay.
+_FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v31"
 _HERE = Path(__file__).resolve().parent
 _SOLVER_DIR = _HERE.parents[1]
 _CORE_DIR = _SOLVER_DIR.parent / "core"
