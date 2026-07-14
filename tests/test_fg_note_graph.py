@@ -915,11 +915,12 @@ def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
     activation_press = graph[0]["hit_time_ms"] + graph[0]["delta_ms"]
     next_press = graph[1]["hit_time_ms"] + graph[1]["delta_ms"]
 
-    assert graph[0]["delta_ms"] == pytest.approx(169.999, abs=1e-3)
+    assert graph[0]["delta_ms"] == pytest.approx(170.0, abs=1e-3)
     assert graph[1]["note_result"] == "Perfect"
-    assert graph[1]["delta_ms"] == pytest.approx(39.999, abs=1e-3)
-    assert next_press >= activation_press
-    assert graph[2]["fever_end_ms"] == pytest.approx(11169.999, abs=1e-3)
+    assert graph[1]["delta_ms"] == pytest.approx(40.0, abs=1e-3)
+    assert next_press == pytest.approx(activation_press, abs=1e-9)
+    assert graph[0]["input_order"] < graph[1]["input_order"]
+    assert graph[2]["fever_end_ms"] == pytest.approx(11170.0, abs=1e-3)
 
 
 def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
@@ -949,6 +950,51 @@ def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
             timestamps=ts,
             note_types=np.ones(n, dtype=np.int16),
         )
+
+
+def test_fg_note_graph_exact_order_uses_inclusive_float32_label_boundary():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 2,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 165.00091552734375,
+            "activation_hit_offset_lower_ms": 164.9932861328125,
+            "activation_hit_offset_upper_ms": 165.00091552734375,
+            "activation_hit_window_lower_ms": 104109.99298095703,
+            "activation_hit_window_upper_ms": 104110.00061035156,
+            "fever_window_end_ms": 115110.0,
+            "fever_duration_ms": 11000.0,
+            "activation_schedule_schema_version": 1,
+            "preactivation_order": [],
+            "preactivation_lane_prefixes": [
+                {"lane": 3, "count": 0},
+                {"lane": 1, "count": 0},
+            ],
+            "preactivation_fill_half_units": 0,
+            "preactivation_event_count": 0,
+            "preactivation_great_count": 0,
+        }
+    ]
+
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=2,
+        timestamps=np.asarray([103.945, 104.07], dtype=np.float32),
+        note_types=np.asarray([1, 2], dtype=np.int16),
+        lanes=np.asarray([3, 1], dtype=np.int32),
+    )
+
+    event_times = [float(note["hit_time_ms"]) + float(note["delta_ms"]) for note in graph]
+    assert graph[0]["note_result"] == "Great"
+    assert graph[1]["note_result"] == "Perfect"
+    assert event_times[0] == pytest.approx(event_times[1], abs=1e-9)
+    assert graph[0]["input_order"] < graph[1]["input_order"]
 
 
 def test_fg_note_graph_uses_exact_later_preactivation_witness_before_activation():

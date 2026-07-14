@@ -254,7 +254,9 @@ def _activation_materialized_delta_ms(
                     continue
                 if float(chart_timestamps_ms[j]) >= float(hit_ms):
                     break
-                hit_ms = min(float(hit_ms), float(label_high_ms[j]) - 0.001)
+                # The exact schedule adds activation -> follower to canonical input_order below.
+                # Equal event times are therefore legal and need no synthetic separation.
+                hit_ms = min(float(hit_ms), float(label_high_ms[j]))
                 if float(hit_ms) < float(hit_lo_ms):
                     hit_ms = None
                     break
