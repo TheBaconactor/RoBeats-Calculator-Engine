@@ -131,7 +131,13 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
             "Long Notes": 0,
             "Last Note Time": float(timestamps[-1]),
         },
-        "song_data": {"timestamps": timestamps},
+        "song_data": {
+            "timestamps": timestamps,
+            # The production physical-replay contract owns chart note types and lanes even
+            # though fixed chart-time timeline scoring itself does not consume either array.
+            "note_types": np.ones(timestamps.shape[0], dtype=np.int16),
+            "lanes": np.arange(timestamps.shape[0], dtype=np.int32) % 4,
+        },
     }
     # Persisted surface is head-only valid for a <100-note song; under zero_ms it is REBUILT,
     # so its exact value is irrelevant -- it only has to pass the require_response_surface guard.

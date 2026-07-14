@@ -589,17 +589,24 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
     # timestamp/type sets match but whose legal fever surfaces differ.
     ts_arr = np.asarray(timestamps, dtype=np.float32).reshape(-1)
     n_notes = int(ts_arr.shape[0])
-    nt_raw = song_data.get("note_types")
-    if nt_raw is None or len(nt_raw) != n_notes:
-        raise ValueError("timeline frontier requires one chart note type per note")
-    nt_arr = np.asarray(nt_raw, dtype=np.int16).reshape(-1)
-    lanes_raw = song_data.get("lanes")
-    if lanes_raw is None or len(lanes_raw) != n_notes:
-        raise ValueError("timeline frontier requires one chart lane per note")
-    lane_arr = np.asarray(lanes_raw, dtype=np.int32).reshape(-1)
     ts_sig = array_sig16(np.ascontiguousarray(ts_arr))
-    nt_sig = array_sig16(np.ascontiguousarray(nt_arr))
-    lane_sig = array_sig16(np.ascontiguousarray(lane_arr))
+    if _timeline_calc_song_is_zero_ms(calc_song):
+        # Fixed chart-time fever membership depends on timestamps, long-note count, and the
+        # FT/FF axes only. Note type, lane, and Perfect-window geometry are not inputs to the
+        # zero_ms singleton and must not become accidental requirements of that cheaper model.
+        nt_sig = b"zero_ms"
+        lane_sig = b"zero_ms"
+    else:
+        nt_raw = song_data.get("note_types")
+        if nt_raw is None or len(nt_raw) != n_notes:
+            raise ValueError("timeline frontier requires one chart note type per note")
+        nt_arr = np.asarray(nt_raw, dtype=np.int16).reshape(-1)
+        lanes_raw = song_data.get("lanes")
+        if lanes_raw is None or len(lanes_raw) != n_notes:
+            raise ValueError("timeline frontier requires one chart lane per note")
+        lane_arr = np.asarray(lanes_raw, dtype=np.int32).reshape(-1)
+        nt_sig = array_sig16(np.ascontiguousarray(nt_arr))
+        lane_sig = array_sig16(np.ascontiguousarray(lane_arr))
     key = (
         str(meta.get("Song Name", "")),
         str(meta.get("Difficulty", "")),
@@ -700,12 +707,22 @@ def _timeline_payload_lookup_context(calc_song: dict, ref_arrays: dict, *, ref_s
     perfect_candidates = song_data.get("fg_perfect_candidate_timestamps")
     perfect_floor = song_data.get("fg_perfect_floor_timestamps")
     lanes = song_data.get("lanes")
-    if perfect_candidates is None or len(perfect_candidates) != total_notes:
-        raise ValueError("timeline frontier requires the canonical Perfect candidate envelope")
-    if perfect_floor is None or len(perfect_floor) != total_notes:
-        raise ValueError("timeline frontier requires the canonical Perfect floor envelope")
-    if lanes is None or len(lanes) != total_notes:
-        raise ValueError("timeline frontier requires one chart lane per note")
+    if _timeline_calc_song_is_zero_ms(calc_song):
+        # The zero_ms payload is a deterministic singleton built from fixed hit timestamps.
+        # These physical Perfect-window inputs are intentionally absent and never consumed.
+        perfect_candidates_arr = np.empty(0, dtype=np.float32)
+        perfect_floor_arr = np.empty(0, dtype=np.float32)
+        lanes_arr = np.empty(0, dtype=np.int32)
+    else:
+        if perfect_candidates is None or len(perfect_candidates) != total_notes:
+            raise ValueError("timeline frontier requires the canonical Perfect candidate envelope")
+        if perfect_floor is None or len(perfect_floor) != total_notes:
+            raise ValueError("timeline frontier requires the canonical Perfect floor envelope")
+        if lanes is None or len(lanes) != total_notes:
+            raise ValueError("timeline frontier requires one chart lane per note")
+        perfect_candidates_arr = np.asarray(perfect_candidates, dtype=np.float32)
+        perfect_floor_arr = np.asarray(perfect_floor, dtype=np.float32)
+        lanes_arr = np.asarray(lanes, dtype=np.int32)
     return {
         "base_song_key": base_song_key,
         "song_key": song_key,
@@ -717,9 +734,9 @@ def _timeline_payload_lookup_context(calc_song: dict, ref_arrays: dict, *, ref_s
         "ref_ft": ref_ft,
         "ref_ff": ref_ff,
         "note_types": song_data.get("note_types", None),
-        "perfect_candidates": np.asarray(perfect_candidates, dtype=np.float32),
-        "perfect_floor": np.asarray(perfect_floor, dtype=np.float32),
-        "lanes": np.asarray(lanes, dtype=np.int32),
+        "perfect_candidates": perfect_candidates_arr,
+        "perfect_floor": perfect_floor_arr,
+        "lanes": lanes_arr,
     }
 
 

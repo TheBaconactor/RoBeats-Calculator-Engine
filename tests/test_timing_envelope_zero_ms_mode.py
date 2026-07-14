@@ -105,6 +105,22 @@ def test_perfect_window_mode_attaches_envelope_streams():
     assert "fg_great_candidate_timestamps" in cs["song_data"]
 
 
+def test_perfect_window_timeline_still_requires_canonical_envelope():
+    import pytest
+
+    from gear_optimizer.solver.taichi_gem.api import timeline
+
+    cs = _calc_song()
+    note_count = len(cs["song_data"]["timestamps"])
+    cs["song_data"]["note_types"] = np.ones(note_count, dtype=np.int16)
+    cs["song_data"]["lanes"] = np.arange(note_count, dtype=np.int32) % 4
+    apply_timing_envelope(cs, mode="perfect_window")
+    del cs["song_data"]["fg_perfect_candidate_timestamps"]
+
+    with pytest.raises(ValueError, match="canonical Perfect candidate envelope"):
+        timeline.load_timeline_frontier_payload(cs, _ref_arrays())
+
+
 def test_zero_ms_and_perfect_window_signatures_are_disjoint():
     stats = _stats()
     cs_zero = _calc_song()
@@ -217,3 +233,17 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_without_disk_cach
     assert score_stats_exact_batch(stats_rows, cs, ref) == score_stats_fixed_timing_exact_batch(
         stats_rows, cs, ref
     )
+
+    uploads: list[tuple[int, int]] = []
+    monkeypatch.setattr(timeline, "ensure_ready", lambda *_args, **_kwargs: b"")
+    monkeypatch.setattr(timeline, "_maybe_sync", lambda **_kwargs: None)
+    monkeypatch.setattr(timeline, "_emit_timeline_phase", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        timeline,
+        "_upload_timeline_frontier_payload_slot",
+        lambda _payload, song_slot, *, source_slot_i: uploads.append((song_slot, source_slot_i)) or 0,
+    )
+
+    timeline.precompute_timeline_gpu(cs, ref, song_slot=0, prebuilt_frontier=loaded)
+
+    assert uploads == [(0, 0)]
