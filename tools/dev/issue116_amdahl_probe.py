@@ -11,9 +11,8 @@ build call splits between:
 This is measurement-only research tooling: it never opens a frontier cache, never
 writes production state, and reuses the production prep functions so kernel inputs
 are byte-identical to what the reducer feeds `_first_frontier_from_precomputed_
-end_indices_numba`. The split kernel below copies ONLY the driver's fast-path +
-fast path and then calls the production prepass and body-DP semantic owners directly,
-so the body work measured IS the production implementation.
+end_indices_numba`. The split kernel calls the production prepass and body-DP
+semantic owners directly, so the body work measured IS the production implementation.
 
 Usage:
     python tools/dev/issue116_amdahl_probe.py --song "M1LLI0N PP (Full Version)" --diff Hard
@@ -123,55 +122,11 @@ def _probe_prepass_body(
     pair_epoch_in: int,
     bit_epoch_in: int,
 ):
-    """Production fast-path + canonical reachability prepass, then a direct call of the
-    production `_numba_packet_body_tails_from_precomputed_end_indices` when mode==1.
+    """Canonical reachability prepass, then a direct call of the production
+    `_numba_packet_body_tails_from_precomputed_end_indices` when mode==1.
 
-    Returns (fast_path, states_evaluated, generated_surfaces, retained_total,
-    max_state_frontier, reachable_count, pair_mod, pair_epoch, bit_epoch)."""
-    # --- fast path (verbatim) ---
-    if int(use_forced_great_timing_i) == 0 and int(action_count) > 0 and int(first_fill[0]) >= 100:
-        zero_body_fever = _rb._numba_zero_forced_body_fever_precomputed(
-            int(n),
-            later_fill,
-            later_forced,
-            first_fill,
-            first_forced,
-            later_activation_forced,
-            first_activation_forced,
-            int(use_forced_great_timing_i),
-            timestamps,
-            perfect_candidate_timestamps,
-            great_candidate_timestamps,
-            timestamp_end_idx,
-            perfect_end_idx,
-            great_end_idx,
-            int(real_time_idx),
-        )
-        if int(zero_body_fever) >= 0:
-            if int(zero_body_fever) >= max(0, int(n) - 100):
-                return (1, 0, 0, 0, 0, 0, 0, int(pair_epoch_in), int(bit_epoch_in))
-            max_body_fever = _rb._numba_max_body_fever_precomputed(
-                int(n),
-                int(action_count),
-                later_fill,
-                first_fill,
-                later_forced,
-                first_forced,
-                later_activation_forced,
-                first_activation_forced,
-                int(use_forced_great_timing_i),
-                timestamps,
-                perfect_candidate_timestamps,
-                great_candidate_timestamps,
-                timestamp_end_idx,
-                perfect_end_idx,
-                great_end_idx,
-                great_floor_end_idx,
-                int(real_time_idx),
-            )
-            if int(zero_body_fever) == int(max_body_fever):
-                return (1, 0, 0, 0, 0, 0, 0, int(pair_epoch_in), int(bit_epoch_in))
-
+    Returns (states_evaluated, generated_surfaces, retained_total, max_state_frontier,
+    reachable_count, pair_mod, pair_epoch, bit_epoch)."""
     reachable, max_eg_width = _rb._numba_first_frontier_reachability_prepass(
         int(n),
         int(action_count),
@@ -233,7 +188,7 @@ def _probe_prepass_body(
             reachable_count += 1
 
     if int(mode) == 0:
-        return (0, 0, 0, 0, 0, int(reachable_count), int(pair_mod), int(pair_epoch_in), int(bit_epoch_in))
+        return (0, 0, 0, 0, int(reachable_count), int(pair_mod), int(pair_epoch_in), int(bit_epoch_in))
 
     best_fever_by_pair = ws_pair_values[: int(pair_size)]
     pair_stamp = ws_pair_stamps[: int(pair_size)]
@@ -304,7 +259,6 @@ def _probe_prepass_body(
         int(bit_epoch_in),
     )
     return (
-        0,
         int(states_evaluated),
         int(generated_surfaces),
         int(retained_total),
@@ -717,8 +671,8 @@ def main() -> int:
             int(ws.bit_epoch),
         )
         elapsed = time.perf_counter() - t0
-        ws.pair_epoch = int(out[7])
-        ws.bit_epoch = int(out[8])
+        ws.pair_epoch = int(out[6])
+        ws.bit_epoch = int(out[7])
         return elapsed, out
 
     # JIT warmup on the first geometry (uncounted).
@@ -733,7 +687,6 @@ def main() -> int:
     sum_states = sum_generated = sum_retained = 0
     sum_head_generated = sum_head_retained = sum_first_rows = 0
     max_frontier = 0
-    fast_paths = 0
     per_geom = []
     for gi, item in enumerate(prepared):
         rt_idx = int(real_time_index[gi])
@@ -752,8 +705,7 @@ def main() -> int:
             (run_probe(_MODE_BODY, item, rt_idx, region_table) for _ in range(args.reps)),
             key=lambda x: x[0],
         )
-        fast, se, gs, rt_count, msf, reach, pair_mod, _pe, _be = out
-        fast_paths += int(fast)
+        se, gs, rt_count, msf, reach, pair_mod, _pe, _be = out
         total_full += t_full
         total_body += t_body
         total_prepass += t_pre
@@ -796,7 +748,6 @@ def main() -> int:
         f"  head stage+rest : {head_s:8.3f} s  ({100.0 * head_s / max(total_full, 1e-12):5.1f}%)"
     )
     print(f"  region tables   : {region_build_s:8.3f} s (build, cached per key; NOT in full-kernel time)")
-    print(f"  fast-path geoms : {fast_paths}")
     if sum_states:
         print("\n=== body-DP shape (wave-design inputs) ===")
         print(f"  states evaluated (sum)      : {sum_states:,}")

@@ -51,6 +51,9 @@ def _assert_selected_base_timeline_frontier(details: Any) -> None:
 
 
 def _prebuild_timeline_frontier(calc_song: dict[str, Any], ref_arrays: dict[str, Any]) -> None:
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    apply_timing_envelope(calc_song, mode="perfect_window")
     build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
 
 
@@ -86,6 +89,10 @@ def _calc_song_with_truncated_timeline(calc_song: dict[str, Any]) -> dict[str, A
     if note_types is not None:
         nt = np.asarray(note_types, dtype=np.int16)
         song_data["note_types"] = np.asarray(nt[: ts_bad.shape[0]], dtype=np.int16)
+    lanes = song_data_src.get("lanes")
+    if lanes is not None:
+        lane_arr = np.asarray(lanes, dtype=np.int32)
+        song_data["lanes"] = np.asarray(lane_arr[: ts_bad.shape[0]], dtype=np.int32)
 
     if ts_bad.size:
         meta["Last Note Time"] = float(ts_bad[-1])

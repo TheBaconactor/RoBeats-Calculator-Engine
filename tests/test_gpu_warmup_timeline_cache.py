@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import numpy as np
+
 
 def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypatch) -> None:
     """Warmup must ensure-ready, build, then upload the BUILT payload by value.
@@ -17,20 +19,45 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
     def _ensure(*_args, **_kwargs):
         calls.append("ensure")
 
-    def _build(calc_song, ref_arrays):
-        calls.append("build")
+    def _lookup(calc_song, ref_arrays, ref_sig=None):
+        del ref_sig
+        calls.append("lookup")
         assert calc_song["metadata"]["Song Name"] == "warmup"
         assert ref_arrays["Fever Time"] == [1.0]
+        return {
+            "song_key": ("warmup",),
+            "song_profile_key": "warmup",
+            "total_notes": 1,
+            "long_notes": 0,
+            "last_note_time": 0.0,
+            "timestamps": np.array([0.0], dtype=np.float32),
+            "perfect_candidates": np.array([0.0], dtype=np.float32),
+            "perfect_floor": np.array([0.0], dtype=np.float32),
+            "lanes": np.array([0], dtype=np.int32),
+            "ref_ft": np.array([1.0], dtype=np.float32),
+            "ref_ff": np.array([1.0], dtype=np.float32),
+        }
+
+    def _build(**kwargs):
+        calls.append("build")
+        assert kwargs["total_notes"] == 1
         return sentinel
 
     def _upload(calc_song, ref_arrays, *, song_slot=0, prebuilt_frontier=None):
         calls.append(f"upload:{song_slot}")
         # The fix: the warmup hands the built payload straight to the upload, so the upload
         # never re-reads the clearable in-memory frontier cache.
-        assert prebuilt_frontier is sentinel
+        assert prebuilt_frontier.payload is sentinel
+        assert prebuilt_frontier.cache_source == "warmup_disposable"
 
     monkeypatch.setattr(timeline, "ensure_ready", _ensure)
-    monkeypatch.setattr(timeline, "build_or_load_timeline_frontier_payload", _build)
+    monkeypatch.setattr(timeline, "_timeline_payload_lookup_context", _lookup)
+    monkeypatch.setattr(timeline, "build_timeline_frontier_grid_payload", _build)
+    monkeypatch.setattr(
+        timeline,
+        "_save_frontier_payload_to_disk",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("warmup must not persist")),
+    )
     monkeypatch.setattr(timeline, "precompute_timeline_gpu", _upload)
 
     timeline.precompute_timeline_gpu_for_warmup(
@@ -39,7 +66,7 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
         song_slot=3,
     )
 
-    assert calls == ["ensure", "build", "upload:3"]
+    assert calls == ["ensure", "lookup", "build", "upload:3"]
 
 
 def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypatch) -> None:
@@ -93,3 +120,17 @@ def test_synthetic_gpu_warmups_use_warmup_timeline_wrapper() -> None:
     assert "precompute_timeline_gpu_for_warmup" in skyline_source
     assert "precompute_timeline_gpu(_warmup_calc_song()" not in ga_source
     assert "precompute_timeline_gpu(_warmup_calc_song()" not in skyline_source
+
+
+def test_synthetic_gpu_warmup_charts_own_canonical_timeline_inputs() -> None:
+    from gear_optimizer.solver.taichi_gem.api import ga_operations, skyline_operations, timeline
+
+    for build_song in (ga_operations._warmup_calc_song, skyline_operations._warmup_calc_song):
+        calc_song = build_song()
+        song_data = calc_song["song_data"]
+        timestamps = np.asarray(song_data["chart_timestamps"], dtype=np.float32)
+        assert np.asarray(song_data["note_types"]).shape == timestamps.shape
+        assert np.asarray(song_data["lanes"]).shape == timestamps.shape
+        np.testing.assert_array_equal(song_data["fg_perfect_candidate_timestamps"], timestamps)
+        np.testing.assert_array_equal(song_data["fg_perfect_floor_timestamps"], timestamps)
+        timeline._song_timing_cache_key(calc_song)

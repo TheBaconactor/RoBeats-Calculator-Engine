@@ -517,11 +517,11 @@ def test_head_generation_promotion_then_bounded_insert_preserves_best_score():
         _NUMBA_SURFACE_TYPE,
         _numba_head_basis_corner_scores_row,
         _numba_head_envelope_filter,
-        _numba_head_envelope_insert_with_scores,
         _numba_head_surface_basis,
         _numba_maybe_promote_head_generated_with_scores,
         _numba_reduce,
     )
+    from tests.retired_fg_frontier_semantics import retired_head_envelope_insert_with_scores
 
     head_len = 32
     rng = random.Random(20260619)
@@ -552,7 +552,7 @@ def test_head_generation_promotion_then_bounded_insert_preserves_best_score():
         else:
             candidate_basis = _numba_head_surface_basis(surface, 0, head_len)
             _numba_head_basis_corner_scores_row(candidate_basis, cand_scores)
-            stream, stream_scores = _numba_head_envelope_insert_with_scores(
+            stream, stream_scores = retired_head_envelope_insert_with_scores(
                 stream, stream_scores, surface, cand_scores
             )
 

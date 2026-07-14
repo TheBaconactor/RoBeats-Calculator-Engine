@@ -8,7 +8,12 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..taichi_gem.force_greats.response_types import FgResponseSurface
-from .note_graph import force_greats_note_graph, reconcile_force_greats_note_graph
+from .note_graph import (
+    force_greats_note_graph,
+    reconcile_base_note_graph,
+    reconcile_force_greats_note_graph,
+    timeline_frontier_note_graph,
+)
 
 _TAP_EDGES = (430.0, 190.0, 40.0, -20.0, -95.0, -235.0)
 _HELD_TAIL_TYPE = 3
@@ -19,6 +24,12 @@ class FgPhysicalReplay:
     event_order: tuple[int, ...]
     fever_mask: tuple[bool, ...]
     judgments: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BasePhysicalReplay:
+    event_order: tuple[int, ...]
+    fever_mask: tuple[bool, ...]
 
 
 def _judgment_at(delta_ms: float, *, held_tail: bool) -> str:
@@ -91,6 +102,128 @@ def _event_time_fever_mask(
         fever[int(index)] = bool(active)
         previous_event_ms = event_ms
     return tuple(bool(value) for value in fever)
+
+
+def _base_graph_physical_replay(
+    *,
+    frontier_trace: Sequence[Mapping[str, object]],
+    response_surface: Sequence[int] | None,
+    timestamps: Sequence[float] | np.ndarray,
+    note_types: Sequence[int] | np.ndarray,
+    lanes: Sequence[int] | np.ndarray,
+    fill_count: int,
+    fever_duration_ms: float,
+) -> tuple[list[dict[str, object]], BasePhysicalReplay]:
+    """Build and replay one Base graph through the engine's physical input order."""
+    ts = np.asarray(timestamps, dtype=np.float64).reshape(-1)
+    nt = np.asarray(note_types, dtype=np.int32).reshape(-1)
+    lane_arr = np.asarray(lanes, dtype=np.int32).reshape(-1)
+    n = int(ts.shape[0])
+    if n <= 0 or int(nt.shape[0]) != n or int(lane_arr.shape[0]) != n:
+        raise ValueError("Base physical replay chart arrays must be non-empty and exactly aligned")
+    if int(fill_count) <= 0 or not np.isfinite(float(fever_duration_ms)) or float(fever_duration_ms) <= 0.0:
+        raise ValueError("Base physical replay requires positive fill count and fever duration")
+
+    graph = timeline_frontier_note_graph(
+        frontier_trace=frontier_trace,
+        total_notes=n,
+        timestamps=ts,
+        note_types=nt,
+        lanes=lane_arr,
+        timing_mode="perfect_window",
+    )
+    if response_surface is not None:
+        reconcile_base_note_graph(graph, total_notes=n, response_surface=response_surface)
+
+    event_times_ms = np.empty(n, dtype=np.float64)
+    input_orders: list[int] = []
+    for index, note in enumerate(graph):
+        delta = note.get("delta_ms")
+        if delta is None:
+            raise ValueError(f"Base physical replay note {index} has no canonical timing witness")
+        actual = _judgment_at(float(delta), held_tail=int(nt[index]) == _HELD_TAIL_TYPE)
+        if actual != "Perfect":
+            raise ValueError(
+                f"Base physical replay note {index} judges {actual} at {float(delta):.6f}ms"
+            )
+        event_times_ms[index] = float(note["hit_time_ms"]) + float(delta)
+        input_orders.append(int(note.get("input_order", -1)))
+    if tuple(sorted(input_orders)) != tuple(range(n)):
+        raise ValueError("Base physical replay graph does not contain one exact input order")
+
+    event_order = tuple(
+        sorted(
+            range(n),
+            key=lambda index: (
+                float(event_times_ms[index]),
+                int(nt[index]) == _HELD_TAIL_TYPE,
+                int(input_orders[index]),
+            ),
+        )
+    )
+    expected_by_lane: dict[int, list[int]] = {}
+    for index, lane_value in enumerate(lane_arr):
+        expected_by_lane.setdefault(int(lane_value), []).append(int(index))
+    lane_cursors = {lane: 0 for lane in expected_by_lane}
+    for index in event_order:
+        lane = int(lane_arr[index])
+        cursor = int(lane_cursors[lane])
+        expected_index = int(expected_by_lane[lane][cursor])
+        if int(index) != expected_index:
+            raise ValueError(
+                f"Base physical replay lane {lane} matched note {expected_index}, not intended note {index}"
+            )
+        lane_cursors[lane] = cursor + 1
+
+    replay_fever = _event_time_fever_mask(
+        event_order=event_order,
+        event_times_ms=event_times_ms,
+        judgments=("Perfect",) * n,
+        fever_fill_denom=float(fill_count),
+        fever_time_seconds=float(fever_duration_ms) / 1000.0,
+    )
+    if response_surface is not None:
+        replay_graph = [
+            dict(note, fever=bool(replay_fever[index])) for index, note in enumerate(graph)
+        ]
+        reconcile_base_note_graph(replay_graph, total_notes=n, response_surface=response_surface)
+    return graph, BasePhysicalReplay(event_order=event_order, fever_mask=replay_fever)
+
+
+def validate_base_physical_replay(
+    *,
+    frontier_trace: Sequence[Mapping[str, object]],
+    response_surface: Sequence[int],
+    timestamps: Sequence[float] | np.ndarray,
+    note_types: Sequence[int] | np.ndarray,
+    lanes: Sequence[int] | np.ndarray,
+    fill_count: int,
+    fever_duration_ms: float,
+) -> BasePhysicalReplay:
+    """Fail loudly unless a persisted Base witness is already canonical and score-exact."""
+    graph, replay = _base_graph_physical_replay(
+        frontier_trace=frontier_trace,
+        response_surface=response_surface,
+        timestamps=timestamps,
+        note_types=note_types,
+        lanes=lanes,
+        fill_count=fill_count,
+        fever_duration_ms=fever_duration_ms,
+    )
+    expected_fever = tuple(bool(note["fever"]) for note in graph)
+    if replay.fever_mask != expected_fever:
+        mismatch = next(
+            index
+            for index, (actual, expected) in enumerate(
+                zip(replay.fever_mask, expected_fever, strict=True)
+            )
+            if actual != expected
+        )
+        raise ValueError(
+            "Base physical replay fever membership disagrees with its canonical trace at note "
+            f"{mismatch}: replay={replay.fever_mask[mismatch]}, trace={expected_fever[mismatch]}"
+        )
+    return replay
 
 
 def validate_force_greats_physical_replay(

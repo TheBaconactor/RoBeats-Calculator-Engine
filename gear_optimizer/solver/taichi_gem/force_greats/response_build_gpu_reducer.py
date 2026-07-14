@@ -143,9 +143,8 @@ def _early_great_extension_gap_bound(
 
     - prefix Perfect / late-Great edges read the ``capped_eg_*`` vs ``capped_*_edge_e`` table
       pair, both built by ``_precompute_end_indices`` from the SAME cutoff array;
-    - region-run entries compute both ends live via ``_numba_edge_end_idx_at_hit`` /
-      ``_numba_great_floor_extended_end_at_hit`` at the same core hit
-      (``_numba_region_run_edge_from_core`` + ``_numba_mark_early_great_reachable_from_hit``).
+    - region-run entries read the perfect-floor and Great-floor endpoint tables at the same
+      canonical core-hit ID (``_numba_region_run_edge_from_core`` plus the early-Great marker).
 
     ``clamp`` is monotone and 1-Lipschitz, so each width is at most
     ``lb(great_floor, c) - lb(perfect_floor, c) = #{i: great_floor[i] < c <= perfect_floor[i]}``.

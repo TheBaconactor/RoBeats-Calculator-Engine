@@ -26,6 +26,9 @@ from gear_optimizer.solver.timeline_exact_frontier import (
     _head_mask_coefficients_py,
     build_timeline_frontier_grid_payload,
 )
+from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
+    _FG_SHARED_FRONTIER_PRODUCER_SOURCES,
+)
 from ..fields import (
     MAX_SONG_SLOTS,
 )
@@ -57,14 +60,6 @@ _TIMELINE_FRONTIER_CACHE_ARRAY_NAMES = frozenset(
         "grid_frontier_head_coeffs_pool",
         "grid_gap",
         "grid_fever_activations",
-        "group_n",
-        "group_count",
-        "group_starts",
-        "group_ends",
-        "group_base_t_ms",
-        "group_low_ms",
-        "group_high_ms",
-        "note_group_idx",
     )
 )
 
@@ -221,9 +216,6 @@ def _upload_timeline_frontier_payload_slot(
 # ============================================================================
 
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
-_FRONTIER_GROUP_PAYLOAD_CACHE_MAX = 32
-_frontier_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
-_frontier_group_payload_last_access: dict[tuple, float] = {}
 # Sized to cover the native in-flight prep window (prep_limit tops out around 36):
 # prep workers hydrate a song's payload ahead of its GA turn, and the entry must
 # survive in this LRU until the owner uploads it. Payloads run ~1-2MB typical.
@@ -265,20 +257,35 @@ _frontier_payload_cache_lock = threading.RLock()
 # already shifts automatically; this backstop bump records the behaviour change.
 # v10->v11: BUG-1 judgment-edge inclusivity fix. The base drain searches the Perfect FLOOR envelope
 # (build_perfect_floor_envelope_sec), whose early edge shifted +1ms to the engine's exclusive-early
-# boundary (-20/-40 -> -19/-39). timing_envelope.py is NOT in _TIMELINE_DP_SOURCE, so this explicit
-# bump is what invalidates the stale (1ms-over-generous) base fever-membership floor. Re-solve to
-# re-persist best_score.
-# NOTE (2026-07-07, input-engine workstream): lane identity is deliberately NOT part of this key
-# and the base DP stays lane-blind. That is CORRECT for the all-Perfect base family: follower
-# reachability binds only through label-window uppers regardless of lane (physically validated via
-# game_sim), and prefix carry anchors are always achievable because the engine permits pressing a
-# later same-lane note while an earlier hold is held (NoteSystem.pressLane skips Holding notes) and
-# same-window taps cannot inflate the carry. See INPUT_ENGINE_AWARE_FEVER_REACHABILITY.md 16.25.
-_FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v11"
-_TIMELINE_DP_SOURCE = Path(__file__).resolve().parents[2] / "timeline_exact_frontier.py"
-_FRONTIER_DISK_CACHE_VERSION = (
-    f"{_FRONTIER_DISK_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint([_TIMELINE_DP_SOURCE])}"
+# boundary (-20/-40 -> -19/-39). The historical single-source fingerprint did not include
+# timing_envelope.py, so this explicit bump invalidated the stale (1ms-over-generous) membership
+# floor. Re-solve to re-persist best_score.
+# v11->v12: Base no longer has a body-only large-fill shortcut. Every Base geometry runs through
+# the shared lane-aware recurrence with Perfect-only actions. The old shortcut used an activation's
+# raw latest Perfect edge instead of the capped input-engine owner and could retain phantom fever
+# notes. Base cache identity now fingerprints the complete shared producer, not only this wrapper,
+# so a future shared recurrence change cannot silently reuse stale Base payloads.
+_FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v12"
+_TIMELINE_DP_SOURCES = (
+    Path(__file__).resolve().parents[2] / "timeline_exact_frontier.py",
+    *_FG_SHARED_FRONTIER_PRODUCER_SOURCES,
 )
+_FRONTIER_DISK_CACHE_VERSION = (
+    f"{_FRONTIER_DISK_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint(_TIMELINE_DP_SOURCES)}"
+)
+# Exact cache compatibility is deliberately explicit and non-transitive. This cleanup removed
+# only unreachable or test-only definitions from the shared producer modules; the Perfect-only
+# recurrence and every persisted Base payload member are unchanged.
+_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    "exact-frontier-v12+logic-4c69b48f08bb": (
+        "exact-frontier-v12+logic-9dfe907e66fb",
+    ),
+}
+
+
+def timeline_frontier_compatible_cache_versions() -> tuple[str, ...]:
+    current = str(_FRONTIER_DISK_CACHE_VERSION)
+    return (current, *_EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS.get(current, ()))
 
 
 @dataclass(frozen=True)
@@ -326,136 +333,14 @@ def _frontier_disk_cache_path(cache_key: tuple) -> Path:
 
 def _live_frontier_disk_cache_path(cache_key: tuple) -> Path | None:
     path = _frontier_disk_cache_path(cache_key)
-    return path if path.exists() else None
-
-
-def _group_payload_from_cache_arrays(
-    *,
-    group_starts: np.ndarray,
-    group_ends: np.ndarray,
-    group_base_t_ms: np.ndarray,
-    group_low_ms: np.ndarray,
-    group_high_ms: np.ndarray,
-    note_group_idx: np.ndarray,
-    group_n: int,
-    group_count: int,
-    expected_n: int | None = None,
-) -> dict | None:
-    try:
-        n = int(group_n)
-        gcount = int(group_count)
-    except Exception as e:
-        logger.debug(f"timeline:_group_payload_from_cache_arrays: {e}")
-        return None
-    if n < 0 or gcount < 0:
-        return None
-    if expected_n is not None and int(expected_n) != int(n):
-        return None
-    starts = np.ascontiguousarray(np.asarray(group_starts, dtype=np.int32).reshape(-1))
-    ends = np.ascontiguousarray(np.asarray(group_ends, dtype=np.int32).reshape(-1))
-    base_t = np.ascontiguousarray(np.asarray(group_base_t_ms, dtype=np.int32).reshape(-1))
-    low = np.ascontiguousarray(np.asarray(group_low_ms, dtype=np.int32).reshape(-1))
-    high = np.ascontiguousarray(np.asarray(group_high_ms, dtype=np.int32).reshape(-1))
-    idx = np.ascontiguousarray(np.asarray(note_group_idx, dtype=np.int32).reshape(-1))
-    if int(idx.shape[0]) != int(n):
-        return None
-    if int(starts.shape[0]) != int(gcount):
-        return None
-    if int(ends.shape[0]) != int(gcount):
-        return None
-    if int(base_t.shape[0]) != int(gcount):
-        return None
-    if int(low.shape[0]) != int(gcount):
-        return None
-    if int(high.shape[0]) != int(gcount):
-        return None
-    if int(n) > 0 and int(gcount) <= 0:
-        return None
-    return {
-        "n": int(n),
-        "group_count": int(gcount),
-        "note_group_idx": idx,
-        "group_starts": starts,
-        "group_ends": ends,
-        "group_base_t_ms": base_t,
-        "group_low_ms": low,
-        "group_high_ms": high,
-    }
-
-
-def _group_payload_from_npz(data: object, *, expected_n: int | None = None) -> dict | None:
-    keys = (
-        "group_starts",
-        "group_ends",
-        "group_base_t_ms",
-        "group_low_ms",
-        "group_high_ms",
-        "note_group_idx",
-        "group_n",
-        "group_count",
-    )
-    try:
-        if not all(k in data for k in keys):
-            return None
-        return _group_payload_from_cache_arrays(
-            group_starts=np.asarray(data["group_starts"], dtype=np.int32),
-            group_ends=np.asarray(data["group_ends"], dtype=np.int32),
-            group_base_t_ms=np.asarray(data["group_base_t_ms"], dtype=np.int32),
-            group_low_ms=np.asarray(data["group_low_ms"], dtype=np.int32),
-            group_high_ms=np.asarray(data["group_high_ms"], dtype=np.int32),
-            note_group_idx=np.asarray(data["note_group_idx"], dtype=np.int32),
-            group_n=int(np.asarray(data["group_n"]).item()),
-            group_count=int(np.asarray(data["group_count"]).item()),
-            expected_n=expected_n,
-        )
-    except Exception as e:
-        logger.debug(f"timeline:_group_payload_from_npz: {e}")
-        return None
-
-
-def _group_cache_get(base_song_key: tuple, *, expected_n: int) -> dict | None:
-    moment = time.monotonic()
-    with _frontier_payload_cache_lock:
-        cached = _frontier_group_payload_cache.get(base_song_key)
-        if not isinstance(cached, dict):
-            return None
-        try:
-            if int(cached.get("n", -1) or -1) != int(expected_n):
-                return None
-            if int(cached.get("group_count", 0) or 0) <= 0 and int(expected_n) > 0:
-                return None
-        except Exception as e:
-            logger.debug(f"timeline:_group_cache_get: {e}")
-            return None
-        _frontier_group_payload_cache.move_to_end(base_song_key)
-        _frontier_group_payload_last_access[base_song_key] = moment
-        return cached
-
-
-def _group_cache_put(base_song_key: tuple, payload: dict) -> None:
-    moment = time.monotonic()
-    with _frontier_payload_cache_lock:
-        _frontier_group_payload_cache[base_song_key] = payload
-        _frontier_group_payload_cache.move_to_end(base_song_key)
-        _frontier_group_payload_last_access[base_song_key] = moment
-        while len(_frontier_group_payload_cache) > int(_FRONTIER_GROUP_PAYLOAD_CACHE_MAX):
-            stale_key, _stale_value = _frontier_group_payload_cache.popitem(last=False)
-            _frontier_group_payload_last_access.pop(stale_key, None)
-
-
-def _load_group_payload_from_frontier_disk(cache_key: tuple, *, expected_n: int) -> dict | None:
-    path = _live_frontier_disk_cache_path(cache_key)
-    if path is None:
-        return None
-    try:
-        with np.load(path, allow_pickle=False) as data:
-            version = str(data["version"].item())
-            if version != _FRONTIER_DISK_CACHE_VERSION:
-                return None
-            return _group_payload_from_npz(data, expected_n=expected_n)
-    except Exception as e:
-        logger.debug(f"timeline:_load_group_payload_from_frontier_disk: {e}")
-        return None
+    if path.exists():
+        return path
+    if cache_key and str(cache_key[0]) == str(_FRONTIER_DISK_CACHE_VERSION):
+        for predecessor in timeline_frontier_compatible_cache_versions()[1:]:
+            predecessor_path = _frontier_disk_cache_path((predecessor, *cache_key[1:]))
+            if predecessor_path.exists():
+                return predecessor_path
+    return None
 
 
 def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPayload | None:
@@ -465,7 +350,7 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPa
     try:
         with np.load(path, allow_pickle=False) as data:
             version = str(data["version"].item())
-            if version != _FRONTIER_DISK_CACHE_VERSION:
+            if version not in timeline_frontier_compatible_cache_versions():
                 return None
             grid_count_body_fever = np.asarray(data["grid_count_body_fever"], dtype=np.int32)
             grid_count_body_normal = np.asarray(data["grid_count_body_normal"], dtype=np.int32)
@@ -544,7 +429,7 @@ def timeline_frontier_cache_file_is_complete(cache_file: str | Path) -> bool:
             if files != _TIMELINE_FRONTIER_CACHE_ARRAY_NAMES:
                 return False
             version = str(data["version"].item())
-            if version != _FRONTIER_DISK_CACHE_VERSION:
+            if version not in timeline_frontier_compatible_cache_versions():
                 return False
             pool_used = int(np.asarray(data["frontier_pool_used"]).item())
             if pool_used < 0:
@@ -575,8 +460,6 @@ def timeline_frontier_cache_file_is_complete(cache_file: str | Path) -> bool:
             if bool(np.any(frontier_count < 0)) or bool(np.any(frontier_offset < 0)):
                 return False
             if bool(np.any(frontier_offset + frontier_count > pool_used)):
-                return False
-            if _group_payload_from_npz(data, expected_n=None) is None:
                 return False
     except Exception:
         return False
@@ -615,8 +498,6 @@ def _get_cached_frontier_payload_with_source(
 def _save_frontier_payload_to_disk(
     cache_key: tuple,
     payload: TimelineFrontierGridPayload,
-    *,
-    group_payload: dict | None = None,
 ) -> None:
     path = _frontier_disk_cache_path(cache_key)
     tmp: Path | None = None
@@ -625,32 +506,6 @@ def _save_frontier_payload_to_disk(
         tmp = path.with_name(f"{path.stem}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp.npz")
         source_slot_i = 0
         pool_used = max(0, int(payload.frontier_pool_used))
-        save_kwargs: dict[str, object] = {}
-        if isinstance(group_payload, dict):
-            persisted_group = _group_payload_from_cache_arrays(
-                group_starts=np.asarray(group_payload.get("group_starts", ()), dtype=np.int32),
-                group_ends=np.asarray(group_payload.get("group_ends", ()), dtype=np.int32),
-                group_base_t_ms=np.asarray(group_payload.get("group_base_t_ms", ()), dtype=np.int32),
-                group_low_ms=np.asarray(group_payload.get("group_low_ms", ()), dtype=np.int32),
-                group_high_ms=np.asarray(group_payload.get("group_high_ms", ()), dtype=np.int32),
-                note_group_idx=np.asarray(group_payload.get("note_group_idx", ()), dtype=np.int32),
-                group_n=int(group_payload.get("n", 0) or 0),
-                group_count=int(group_payload.get("group_count", 0) or 0),
-                expected_n=None,
-            )
-            if isinstance(persisted_group, dict):
-                save_kwargs.update(
-                    {
-                        "group_n": np.asarray(int(persisted_group["n"]), dtype=np.int32),
-                        "group_count": np.asarray(int(persisted_group["group_count"]), dtype=np.int32),
-                        "group_starts": np.asarray(persisted_group["group_starts"], dtype=np.int32),
-                        "group_ends": np.asarray(persisted_group["group_ends"], dtype=np.int32),
-                        "group_base_t_ms": np.asarray(persisted_group["group_base_t_ms"], dtype=np.int32),
-                        "group_low_ms": np.asarray(persisted_group["group_low_ms"], dtype=np.int32),
-                        "group_high_ms": np.asarray(persisted_group["group_high_ms"], dtype=np.int32),
-                        "note_group_idx": np.asarray(persisted_group["note_group_idx"], dtype=np.int32),
-                    }
-                )
         np.savez_compressed(
             tmp,
             version=np.asarray(_FRONTIER_DISK_CACHE_VERSION),
@@ -675,7 +530,6 @@ def _save_frontier_payload_to_disk(
             ),
             grid_gap=np.asarray(payload.grid_gap[source_slot_i], dtype=np.int32),
             grid_fever_activations=np.asarray(payload.grid_fever_activations[source_slot_i], dtype=np.int32),
-            **save_kwargs,
         )
         tmp.replace(path)
     except Exception as e:
@@ -726,28 +580,26 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
     cached = calc_song.get("_gpu_timing_cache_key_frontier", None)
-    if isinstance(cached, tuple) and len(cached) == 11:
+    if isinstance(cached, tuple) and len(cached) == 12:
         return cached
     chart_ts = song_data.get("chart_timestamps", None)
     timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
-    # Order-invariant content signature. The timeline/FG frontier is a pure function of the
-    # (timestamp, note-type) note SET, not the HitObjects array order: a re-export of the same
-    # chart that differs only in note array order (e.g. held-note tail placement) builds a
-    # bit-identical frontier payload and identical base/FG scores. Verified empirically on real
-    # reorder-only charts (base score + full frontier-payload parity) -- see
-    # docs/Implementation Records/FRONTIER_ORDER_INVARIANT_KEY.md. So those charts MUST share a
-    # cache key; canonicalize by sorting the (timestamp, type) pairs before hashing rather than
-    # trusting the load-order signature, which over-invalidated the cache and forced wasted rebuilds.
+    # The physical input engine consumes chart order and lane-local matcher order. Hash the exact
+    # aligned arrays in producer order; sorting or omitting lanes can alias charts whose abstract
+    # timestamp/type sets match but whose legal fever surfaces differ.
     ts_arr = np.asarray(timestamps, dtype=np.float32).reshape(-1)
     n_notes = int(ts_arr.shape[0])
     nt_raw = song_data.get("note_types")
-    if nt_raw is not None and len(nt_raw) == n_notes:
-        nt_arr = np.asarray(nt_raw, dtype=np.int16).reshape(-1)
-    else:
-        nt_arr = np.ones(n_notes, dtype=np.int16)
-    canonical = np.lexsort((nt_arr, ts_arr))  # primary: timestamp, secondary: note type
-    ts_sig = array_sig16(np.ascontiguousarray(ts_arr[canonical]))
-    nt_sig = array_sig16(np.ascontiguousarray(nt_arr[canonical]))
+    if nt_raw is None or len(nt_raw) != n_notes:
+        raise ValueError("timeline frontier requires one chart note type per note")
+    nt_arr = np.asarray(nt_raw, dtype=np.int16).reshape(-1)
+    lanes_raw = song_data.get("lanes")
+    if lanes_raw is None or len(lanes_raw) != n_notes:
+        raise ValueError("timeline frontier requires one chart lane per note")
+    lane_arr = np.asarray(lanes_raw, dtype=np.int32).reshape(-1)
+    ts_sig = array_sig16(np.ascontiguousarray(ts_arr))
+    nt_sig = array_sig16(np.ascontiguousarray(nt_arr))
+    lane_sig = array_sig16(np.ascontiguousarray(lane_arr))
     key = (
         str(meta.get("Song Name", "")),
         str(meta.get("Difficulty", "")),
@@ -756,105 +608,12 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
         int(meta.get("Long Notes", 0) or 0),
         bytes(ts_sig),
         bytes(nt_sig),
+        bytes(lane_sig),
     ) + timing_envelope_timing_context(calc_song)
     # Cache on the calc_song dict to avoid repeated full-array hashing when the
     # same song is revisited and precompute_timeline_gpu() hits the slot cache.
     calc_song["_gpu_timing_cache_key_frontier"] = key
     return key
-
-
-def _get_or_build_frontier_group_payload(
-    base_song_key: tuple,
-    *,
-    timestamps: np.ndarray,
-    note_types: object,
-) -> dict:
-    """
-    Prepare and cache chord-group payloads used by the exact timeline frontier.
-
-    This CPU preprocessing is a pure function of chart timestamps + note types (and the
-    fixed Perfect window constants). Caching avoids recomputing grouping + dense note->group
-    maps when the same song is revisited across slots or after timeline cache resets.
-    """
-    n = int(getattr(timestamps, "shape", (0,))[0] or 0)
-    cached = _group_cache_get(base_song_key, expected_n=n)
-    if isinstance(cached, dict):
-        return cached
-
-    from gear_optimizer.solver.timing_envelope import prepare_perfect_timing_envelope
-
-    prepared = prepare_perfect_timing_envelope(
-        timestamps,
-        note_types,
-        perfect_lower_ms=-20,
-        perfect_upper_ms=40,
-        held_tail_type=3,
-        held_tail_time_multiplier=2,
-        quantize_ms=True,
-    )
-    group_starts = np.asarray(prepared.get("group_starts", ()), dtype=np.int32)
-    group_ends = np.asarray(prepared.get("group_ends", ()), dtype=np.int32)
-    group_base_t_ms = np.asarray(prepared.get("group_base_t", ()), dtype=np.int32)
-    group_low_ms = np.asarray(prepared.get("group_low", ()), dtype=np.int32)
-    group_high_ms = np.asarray(prepared.get("group_high", ()), dtype=np.int32)
-    group_count = int(group_starts.shape[0])
-    if int(prepared.get("n", n) or 0) != int(n):
-        raise ValueError("prepare_perfect_timing_envelope produced mismatched note count")
-    if n > 0 and group_count <= 0:
-        raise ValueError("prepare_perfect_timing_envelope produced no chord groups")
-
-    if n <= 0:
-        note_group_idx = np.zeros((0,), dtype=np.int32)
-    else:
-        # Fast-path: grouping produces a contiguous partition of note indices, so
-        # note->group can be constructed via repeat() instead of a Python loop.
-        is_partition = False
-        try:
-            if int(group_starts[0]) == 0 and int(group_ends[-1]) == int(n):
-                if group_count == 1 or bool(np.all(group_starts[1:] == group_ends[:-1])):
-                    is_partition = True
-        except Exception as e:
-            logger.debug(f"timeline:_get_or_build_frontier_group_payload: {e}")
-            is_partition = False
-
-        if is_partition:
-            lengths = (group_ends - group_starts).astype(np.int32, copy=False)
-            note_group_idx = np.repeat(np.arange(int(group_count), dtype=np.int32), lengths)
-        else:
-            note_group_idx = np.full(int(n), -1, dtype=np.int32)
-            for g in range(group_count):
-                s = int(group_starts[g])
-                e = int(group_ends[g])
-                if e > s:
-                    note_group_idx[s:e] = int(g)
-            if int(np.any(note_group_idx < 0)):
-                raise ValueError("prepare_perfect_timing_envelope produced uncovered note indices")
-
-    payload = {
-        "n": int(n),
-        "group_count": int(group_count),
-        "note_group_idx": np.ascontiguousarray(note_group_idx),
-        "group_starts": np.ascontiguousarray(group_starts),
-        "group_ends": np.ascontiguousarray(group_ends),
-        "group_base_t_ms": np.ascontiguousarray(group_base_t_ms),
-        "group_low_ms": np.ascontiguousarray(group_low_ms),
-        "group_high_ms": np.ascontiguousarray(group_high_ms),
-    }
-    validated = _group_payload_from_cache_arrays(
-        group_starts=np.asarray(payload["group_starts"], dtype=np.int32),
-        group_ends=np.asarray(payload["group_ends"], dtype=np.int32),
-        group_base_t_ms=np.asarray(payload["group_base_t_ms"], dtype=np.int32),
-        group_low_ms=np.asarray(payload["group_low_ms"], dtype=np.int32),
-        group_high_ms=np.asarray(payload["group_high_ms"], dtype=np.int32),
-        note_group_idx=np.asarray(payload["note_group_idx"], dtype=np.int32),
-        group_n=int(payload["n"]),
-        group_count=int(payload["group_count"]),
-        expected_n=n,
-    )
-    if isinstance(validated, dict):
-        _group_cache_put(base_song_key, validated)
-        return validated
-    return payload
 
 
 def _get_or_build_frontier_payload_with_source(
@@ -865,7 +624,10 @@ def _get_or_build_frontier_payload_with_source(
     long_notes: int,
     last_note_time: float,
     song_profile_key: str | None = None,
-    group_payload: dict,
+    timestamps: np.ndarray,
+    perfect_candidate_timestamps: np.ndarray,
+    perfect_floor_timestamps: np.ndarray,
+    lanes: np.ndarray,
     ref_ft: np.ndarray,
     ref_ff: np.ndarray,
 ) -> tuple[TimelineFrontierGridPayload, str]:
@@ -887,17 +649,15 @@ def _get_or_build_frontier_payload_with_source(
         long_notes=int(long_notes),
         last_note_time=float(last_note_time),
         song_key=song_profile_key,
-        group_starts=np.asarray(group_payload.get("group_starts", ()), dtype=np.int32),
-        group_ends=np.asarray(group_payload.get("group_ends", ()), dtype=np.int32),
-        group_base_t_ms=np.asarray(group_payload.get("group_base_t_ms", ()), dtype=np.int32),
-        group_low_ms=np.asarray(group_payload.get("group_low_ms", ()), dtype=np.int32),
-        group_high_ms=np.asarray(group_payload.get("group_high_ms", ()), dtype=np.int32),
-        note_group_idx=np.asarray(group_payload.get("note_group_idx", ()), dtype=np.int32),
+        timestamps=np.asarray(timestamps, dtype=np.float32),
+        perfect_candidate_timestamps=np.asarray(perfect_candidate_timestamps, dtype=np.float32),
+        perfect_floor_timestamps=np.asarray(perfect_floor_timestamps, dtype=np.float32),
+        lanes=np.asarray(lanes, dtype=np.int32),
         ref_ft=np.asarray(ref_ft, dtype=np.float32),
         ref_ff=np.asarray(ref_ff, dtype=np.float32),
     )
 
-    _save_frontier_payload_to_disk(cache_key, payload, group_payload=group_payload)
+    _save_frontier_payload_to_disk(cache_key, payload)
     moment = time.monotonic()
     with _frontier_payload_cache_lock:
         cached = _frontier_payload_cache.get(cache_key)
@@ -937,6 +697,15 @@ def _timeline_payload_lookup_context(calc_song: dict, ref_arrays: dict, *, ref_s
 
     ref_ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
     ref_ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
+    perfect_candidates = song_data.get("fg_perfect_candidate_timestamps")
+    perfect_floor = song_data.get("fg_perfect_floor_timestamps")
+    lanes = song_data.get("lanes")
+    if perfect_candidates is None or len(perfect_candidates) != total_notes:
+        raise ValueError("timeline frontier requires the canonical Perfect candidate envelope")
+    if perfect_floor is None or len(perfect_floor) != total_notes:
+        raise ValueError("timeline frontier requires the canonical Perfect floor envelope")
+    if lanes is None or len(lanes) != total_notes:
+        raise ValueError("timeline frontier requires one chart lane per note")
     return {
         "base_song_key": base_song_key,
         "song_key": song_key,
@@ -948,47 +717,10 @@ def _timeline_payload_lookup_context(calc_song: dict, ref_arrays: dict, *, ref_s
         "ref_ft": ref_ft,
         "ref_ff": ref_ff,
         "note_types": song_data.get("note_types", None),
+        "perfect_candidates": np.asarray(perfect_candidates, dtype=np.float32),
+        "perfect_floor": np.asarray(perfect_floor, dtype=np.float32),
+        "lanes": np.asarray(lanes, dtype=np.int32),
     }
-
-
-def _timeline_payload_context(
-    calc_song: dict,
-    ref_arrays: dict,
-    *,
-    ref_sig: bytes | None = None,
-    lookup_ctx: dict | None = None,
-    require_cached_group_payload: bool = False,
-) -> dict:
-    lookup = dict(lookup_ctx or _timeline_payload_lookup_context(calc_song, ref_arrays, ref_sig=ref_sig))
-    base_song_key = lookup["base_song_key"]
-    total_notes = int(lookup["total_notes"])
-    cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
-
-    group_payload = _group_cache_get(base_song_key[:-1], expected_n=int(total_notes))
-    if group_payload is None:
-        disk_group_payload = _load_group_payload_from_frontier_disk(cache_key, expected_n=int(total_notes))
-        if isinstance(disk_group_payload, dict):
-            _group_cache_put(base_song_key[:-1], disk_group_payload)
-            group_payload = disk_group_payload
-        else:
-            if bool(require_cached_group_payload):
-                raise ValueError(
-                    "Timeline frontier group payload is missing. Startup cache prebuild must build the "
-                    "candidate-independent all-FT/FF timeline frontier before runtime scoring."
-                )
-            group_payload = _get_or_build_frontier_group_payload(
-                base_song_key[:-1],
-                timestamps=np.asarray(lookup["timestamps"], dtype=np.float32),
-                note_types=lookup.get("note_types", None),
-            )
-    payload_n = int(group_payload.get("n", 0) or 0)
-    if int(payload_n) != int(total_notes):
-        raise ValueError("prepare_perfect_timing_envelope produced mismatched note count")
-    if total_notes > 0 and int(group_payload.get("group_count", 0) or 0) <= 0:
-        raise ValueError("prepare_perfect_timing_envelope produced no chord groups")
-
-    lookup["group_payload"] = group_payload
-    return lookup
 
 
 def timeline_frontier_payload_cache_info(calc_song: dict, ref_arrays: dict) -> TimelineFrontierCacheInfo:
@@ -1190,7 +922,7 @@ def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -
         ref_ff=lookup["ref_ff"],
     )
     if payload is None:
-        ctx = _timeline_payload_context(calc_song, ref_arrays, lookup_ctx=lookup)
+        ctx = lookup
         payload, cache_source = _get_or_build_frontier_payload_with_source(
             ctx["song_key"],
             song_slot=0,
@@ -1198,7 +930,10 @@ def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -
             long_notes=int(ctx["long_notes"]),
             last_note_time=float(ctx["last_note_time"]),
             song_profile_key=ctx["song_profile_key"],
-            group_payload=ctx["group_payload"],
+            timestamps=ctx["timestamps"],
+            perfect_candidate_timestamps=ctx["perfect_candidates"],
+            perfect_floor_timestamps=ctx["perfect_floor"],
+            lanes=ctx["lanes"],
             ref_ft=ctx["ref_ft"],
             ref_ff=ctx["ref_ff"],
         )
@@ -1376,7 +1111,32 @@ def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_s
     lose the cache artifact between build and upload.
     """
     ensure_ready(ref_arrays)
-    frontier_result = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    started = time.perf_counter()
+    lookup = _timeline_payload_lookup_context(calc_song, ref_arrays)
+    cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
+    payload = build_timeline_frontier_grid_payload(
+        song_slot=0,
+        total_notes=int(lookup["total_notes"]),
+        long_notes=int(lookup["long_notes"]),
+        last_note_time=float(lookup["last_note_time"]),
+        song_key=lookup["song_profile_key"],
+        timestamps=np.asarray(lookup["timestamps"], dtype=np.float32),
+        perfect_candidate_timestamps=np.asarray(lookup["perfect_candidates"], dtype=np.float32),
+        perfect_floor_timestamps=np.asarray(lookup["perfect_floor"], dtype=np.float32),
+        lanes=np.asarray(lookup["lanes"], dtype=np.int32),
+        ref_ft=np.asarray(lookup["ref_ft"], dtype=np.float32),
+        ref_ff=np.asarray(lookup["ref_ff"], dtype=np.float32),
+    )
+    frontier_result = TimelineFrontierPrewarmResult(
+        payload=payload,
+        cache_key=cache_key,
+        disk_path=_frontier_disk_cache_path(cache_key),
+        cache_source="warmup_disposable",
+        elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+        song_profile_key=lookup["song_profile_key"],
+        total_notes=int(lookup["total_notes"]),
+        long_notes=int(lookup["long_notes"]),
+    )
     precompute_timeline_gpu(
         calc_song,
         ref_arrays,
@@ -1388,10 +1148,8 @@ def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_s
 def reset_timeline_state() -> None:
     """Reset module-level timeline upload caches after `ti.reset()`."""
     global _gpu_timeline_song_id_by_slot
-    global _frontier_group_payload_cache, _frontier_payload_cache
+    global _frontier_payload_cache
     _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS
     with _frontier_payload_cache_lock:
-        _frontier_group_payload_cache.clear()
-        _frontier_group_payload_last_access.clear()
         _frontier_payload_cache.clear()
         _frontier_payload_last_access.clear()

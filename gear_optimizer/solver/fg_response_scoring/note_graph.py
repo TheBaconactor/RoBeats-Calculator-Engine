@@ -61,6 +61,7 @@ __all__ = [
     "base_note_graph",
     "timeline_frontier_note_graph",
     "force_greats_note_graph",
+    "reconcile_base_note_graph",
     "reconcile_force_greats_note_graph",
 ]
 
@@ -590,28 +591,45 @@ def _materialize_preactivation_schedule(
 
     latest_presses = [0.0] * len(exact_order)
     latest_press = float(activation_press)
+    successor_index = int(activation_index)
     for position in range(len(exact_order) - 1, -1, -1):
         index = int(exact_order[position])
         note = notes[index]
         result = str(note.get("note_result", "Perfect"))
+        # The input engine processes presses before releases at the same timestamp. A release that
+        # must precede a later press therefore needs a strictly earlier event time; equality would
+        # reverse the selected fill order even though both judgments remain legal.
+        ordered_latest_press = float(latest_press)
+        if (
+            int(note_types[index]) == _HELD_TAIL_TYPE
+            and int(note_types[successor_index]) != _HELD_TAIL_TYPE
+        ):
+            ordered_latest_press = float(
+                np.nextafter(np.float64(latest_press), np.float64(-np.inf))
+            )
         latest_delta = _delta_at_or_before_ms(
             note_types,
             index,
             result,
-            latest_press - float(note["hit_time_ms"]),
+            ordered_latest_press - float(note["hit_time_ms"]),
         )
         latest_press = float(note["hit_time_ms"]) + float(latest_delta)
         latest_presses[position] = float(latest_press)
+        successor_index = int(index)
 
     required_press = -np.inf
     if boundary_index is not None:
         boundary = notes[int(boundary_index)]
         result = str(boundary.get("note_result", "Perfect"))
-        boundary_upper = (
-            latest_presses[0]
-            if exact_order
-            else float(activation_press)
-        )
+        successor = int(exact_order[0]) if exact_order else int(activation_index)
+        boundary_upper = latest_presses[0] if exact_order else float(activation_press)
+        if (
+            int(note_types[int(boundary_index)]) == _HELD_TAIL_TYPE
+            and int(note_types[successor]) != _HELD_TAIL_TYPE
+        ):
+            boundary_upper = float(
+                np.nextafter(np.float64(boundary_upper), np.float64(-np.inf))
+            )
         boundary_delta = _bounded_judgment_delta_ms(
             note_types,
             int(boundary_index),
@@ -846,6 +864,53 @@ def _mark_activation_preemptor_order_deltas(
             input_order_constraints.append((int(previous_order_index), int(j)))
 
     return input_order_constraints
+
+
+def _materialize_base_preactivation_schedules(
+    notes: list[dict[str, Any]],
+    *,
+    frontier_trace: Sequence[Mapping[str, Any]],
+    total_notes: int,
+    note_types: Sequence[int] | np.ndarray | None,
+) -> list[tuple[int, int]]:
+    """Materialize the chart-order fill events that precede each Base activation."""
+    n = min(int(total_notes), len(notes))
+    if not frontier_trace:
+        return []
+    if note_types is None:
+        raise ValueError(
+            "note_graph: note_types are required for exact Base preactivation replay"
+        )
+    nt = np.asarray(note_types).reshape(-1)
+    if int(nt.shape[0]) != n:
+        raise ValueError("note_graph: note_types must match the Base graph")
+
+    constraints: list[tuple[int, int]] = []
+    previous_exit: int | None = None
+    for sec in frontier_trace:
+        activation_index = int(sec["activation_index"])
+        if not (0 <= activation_index < n):
+            raise ValueError("note_graph: Base trace has an invalid activation index")
+        start = 0 if previous_exit is None else int(previous_exit) + 1
+        if start > activation_index:
+            raise ValueError("note_graph: Base trace sections overlap or move backward")
+        exact_order = tuple(range(int(start), int(activation_index)))
+        _materialize_preactivation_schedule(
+            notes,
+            note_types=nt,
+            exact_order=exact_order,
+            activation_index=int(activation_index),
+            boundary_index=previous_exit,
+        )
+        sequence = (*exact_order, int(activation_index))
+        if previous_exit is not None and sequence:
+            constraints.append((int(previous_exit), int(sequence[0])))
+        constraints.extend(
+            (int(before), int(after))
+            for before, after in zip(sequence, sequence[1:])
+        )
+        previous_exit = int(sec["fever_end_index"])
+    return constraints
 
 
 def _materialize_remaining_selector_deltas(
@@ -1337,6 +1402,7 @@ def timeline_frontier_note_graph(
     total_notes: int,
     timestamps: Sequence[float] | np.ndarray,
     note_types: Sequence[int] | np.ndarray | None = None,
+    lanes: Sequence[int] | np.ndarray | None = None,
     timing_mode: str = "perfect_window",
 ) -> list[dict[str, Any]]:
     """BASE note-graph from the selected timeline-frontier witness trace.
@@ -1348,27 +1414,27 @@ def timeline_frontier_note_graph(
 
     n = int(total_notes)
     apply_guidance = _normalize_timing_mode(timing_mode) == "perfect_window"
+    has_exact_schedule = bool(
+        frontier_trace
+        and all(int(section.get("activation_schedule_schema_version", 0) or 0) == 1 for section in frontier_trace)
+    )
+    if apply_guidance and has_exact_schedule and lanes is None:
+        raise ValueError("note_graph: canonical Base producer trace requires chart lanes")
     notes = _perfect_note_graph(n, timestamps)
     for sec in frontier_trace:
         section = int(sec.get("section", 0))
         a = int(sec["activation_index"])
         e = int(sec["fever_end_index"])
         w = int(sec["fever_start_note_index"])
+        if int(w) != int(a):
+            raise ValueError(
+                "note_graph: base frontier activation witness differs from its score-bearing "
+                f"boundary ({w} != {a})"
+            )
         for j in range(max(0, a), min(e, n)):
             notes[j]["fever"] = True
             if notes[j]["section"] == 0:
                 notes[j]["section"] = section
-        if w != a and 0 <= w < n:
-            # The activating hit is physically delivered by an earlier
-            # wider-window note (chorded held tail): fever starts at ITS hit, so
-            # the count-boundary note (hit before the activation clock) is outside
-            # fever and the witness note is inside. Same fever count -> the scored
-            # surface is unchanged; the graph stays replay-consistent per note.
-            notes[w]["fever"] = True
-            if notes[w]["section"] == 0:
-                notes[w]["section"] = section
-            if 0 <= a < n:
-                notes[a]["fever"] = False
         if apply_guidance and 0 <= w < n:
             notes[w]["delta_ms"] = float(sec["activation_hit_offset_ms"])
             notes[w]["is_activation_witness"] = True
@@ -1383,11 +1449,7 @@ def timeline_frontier_note_graph(
             fever_window_end_ms=fever_end_ms, section=section,
         )
         if apply_guidance:
-            # Endpoint guidance must see the PHYSICAL fever start: when the
-            # witness precedes the count boundary (chorded held tail), the
-            # monotonic display frontier starts at the witness so no clawed-in
-            # endpoint hit is ever shown before the activating hit.
-            guidance_start = min(a, w)
+            guidance_start = int(a)
             _mark_endpoint_early_hits(
                 notes, activation_index=guidance_start, fever_end_index=e, total_notes=n,
                 fever_window_end_ms=fever_end_ms, note_types=note_types,
@@ -1410,12 +1472,19 @@ def timeline_frontier_note_graph(
         # the activation clock. Without this pass, a same-time chord sibling left at 0ms can fill
         # the bar first in game even though the frontier scored the activation witness at +40ms.
         # FG has always applied this same canonical materialization below.
-        _mark_activation_preemptor_order_deltas(
+        input_order_constraints = _materialize_base_preactivation_schedules(
             notes,
             frontier_trace=frontier_trace,
             total_notes=n,
             note_types=note_types,
         )
+        input_order_constraints.extend(_mark_activation_preemptor_order_deltas(
+            notes,
+            frontier_trace=frontier_trace,
+            total_notes=n,
+            note_types=note_types,
+        ))
+        _assign_exact_input_order(notes, input_order_constraints)
 
     return notes
 
@@ -1427,13 +1496,14 @@ def base_note_graph(
     is_fever_mask: Sequence[bool] | np.ndarray,
     frontier_trace: Sequence[Mapping[str, Any]] | None = None,
     note_types: Sequence[int] | np.ndarray | None = None,
+    lanes: Sequence[int] | np.ndarray | None = None,
     timing_mode: str = "perfect_window",
 ) -> list[dict[str, Any]]:
     """BASE note-graph (timeline frontier): every note Perfect, with fever windows.
 
-    The mask path (no ``frontier_trace``) needs no ``note_types`` (no endpoint-early offsets); the
-    trace path delegates to ``timeline_frontier_note_graph``, which REQUIRES ``note_types`` and
-    fails loud if it is absent -- the held-tail-aware lower bound is never guessed.
+    The mask path (no ``frontier_trace``) needs no chart geometry. The canonical trace path
+    delegates to ``timeline_frontier_note_graph`` and requires both ``note_types`` and ``lanes``;
+    held-tail judgment bounds and lane-local matcher order are never guessed.
 
     `is_fever_mask` is the full per-note fever mask produced deterministically by
     `gear_optimizer.solver.fever_timeline.calculate_fever_timeline_indices` from the
@@ -1446,6 +1516,7 @@ def base_note_graph(
             total_notes=int(total_notes),
             timestamps=timestamps,
             note_types=note_types,
+            lanes=lanes,
             timing_mode=timing_mode,
         )
     n = int(total_notes)
@@ -1646,6 +1717,36 @@ def _head_set_from_words(words: Sequence[int], head_limit: int) -> set[int]:
         if (int(w[i // 32]) >> (i % 32)) & 1:
             idxs.add(i)
     return idxs
+
+
+def reconcile_base_note_graph(
+    note_graph: Sequence[Mapping[str, Any]],
+    *,
+    total_notes: int,
+    response_surface: Sequence[int],
+) -> None:
+    """Fail loudly unless a Base graph exactly matches its selected score surface."""
+    n = int(total_notes)
+    surface = tuple(int(value) for value in response_surface)
+    if len(surface) != 6:
+        raise ValueError("Base response surface must contain four head words and two body counts")
+    head_limit = min(n, 100)
+    graph_fever = {int(note["note_index"]) for note in note_graph if bool(note["fever"])}
+    graph_head = {index for index in graph_fever if index < head_limit}
+    surface_head = _head_set_from_words(surface[:4], head_limit)
+    if graph_head != surface_head:
+        raise ValueError(
+            "Base note-graph head fever positions differ from the selected response surface: "
+            f"{graph_head ^ surface_head}"
+        )
+    graph_body_fever = sum(1 for index in graph_fever if index >= 100)
+    body_total = max(0, n - 100)
+    if graph_body_fever != int(surface[4]) or body_total - graph_body_fever != int(surface[5]):
+        raise ValueError(
+            "Base note-graph body counts differ from the selected response surface: "
+            f"graph=({graph_body_fever}, {body_total - graph_body_fever}) "
+            f"surface=({surface[4]}, {surface[5]})"
+        )
 
 
 def reconcile_force_greats_note_graph(

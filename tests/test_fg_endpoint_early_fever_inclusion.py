@@ -7,7 +7,7 @@ clock to that time, recomputes is_fever, then scores -- so a note just past the
 fever end can be pulled INTO fever by a legal EARLY hit, subject to monotonic hit
 order. The base frontier models this (carry-aware offset-band exit enumeration).
 
-The FG fever-extent model does NOT: `response_builder._edge_end` -- mirrored
+The FG fever-extent model does NOT: the response endpoint oracle -- mirrored
 bit-for-bit by the production GPU builder (`response_build_gpu_precompute` /
 `response_build_gpu_numba`, confirmed) -- decides the boundary with a single
 `searchsorted(chart_timestamps, perfect_candidate[a] + real_fever_time)`, i.e. the
@@ -35,7 +35,7 @@ import itertools
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _edge_end
+from tests.fg_response_frontier_oracles import edge_end_oracle
 from gear_optimizer.solver.timing_envelope import (
     build_perfect_candidate_envelope_sec,
     build_perfect_floor_envelope_sec,
@@ -125,13 +125,13 @@ def _fg_fixed_fever_extent(chart_ms, a, rft_ms, lo=PERFECT_LO_MS, hi=PERFECT_HI_
 
 
 def _fg_edge_fever_extent(chart_ms, a, rft_ms, perfect_floor_sec=None):
-    """The production FG model's fever-run length via `_edge_end` (the GPU builder mirrors
-    it). `_edge_end` REQUIRES `perfect_floor_timestamps` (no chart fallback); this fixture
+    """The production FG model's fever-run length via the endpoint oracle (the GPU builder mirrors
+    it). The oracle REQUIRES `perfect_floor_timestamps` (no chart fallback); this fixture
     chooses the baseline EXPLICITLY -- `perfect_floor_sec=None` passes chart (pre-fix /
     degenerate behaviour), a real envelope exercises the endpoint-early fix."""
     chart_sec = np.asarray(chart_ms, dtype=np.float32) / np.float32(1000.0)
     perfect_cand_sec = (np.asarray(chart_ms, dtype=np.float32) + np.float32(PERFECT_HI_MS)) / np.float32(1000.0)
-    e, _start, _carry = _edge_end(
+    e, _start, _carry = edge_end_oracle(
         n=len(chart_ms),
         a=int(a),
         activation_great=False,
@@ -239,7 +239,7 @@ def test_fix_is_optimal_and_never_regresses():
 
 
 def test_fg_edge_end_models_endpoint_early_inclusion():
-    """GATE (issue #42, now LANDED): the production FG fever extent — `_edge_end` searching
+    """GATE (issue #42, now LANDED): the production FG fever extent — the oracle searching
     the production earliest-Perfect floor envelope — equals the server-legal max over hit
     offsets. The same floor feeds the GPU precompute and the forced-counts replay in
     lockstep, so all three FG fever-extent paths model endpoint-early inclusion exactly."""
@@ -365,7 +365,7 @@ def test_chord_tied_held_tail_greedy_matches_brute_force():
 
 
 def test_production_envelope_models_chord_tied_held_tail_exactly():
-    """GATE: the PRODUCTION FG fever extent (`_edge_end` over the production per-note candidate +
+    """GATE: the PRODUCTION FG fever extent (the oracle over the production per-note candidate +
     floor envelopes built WITH held-tail note_types) equals the legal max over hit offsets for
     chord-tied held tails, and STRICTLY exceeds the pre-fix chord-collapsed extent (proving the
     case is non-vacuous)."""
@@ -377,7 +377,7 @@ def test_production_envelope_models_chord_tied_held_tail_exactly():
         nt = np.asarray(types, np.int16)
         cand = build_perfect_candidate_envelope_sec(chart_sec, nt)
         floor = build_perfect_floor_envelope_sec(chart_sec, nt)
-        e, _s, _c = _edge_end(
+        e, _s, _c = edge_end_oracle(
             n=len(chart), a=int(a), activation_great=False,
             real_fever_time=float(rft) / 1000.0, use_forced_great_timing=False,
             timestamps=chart_sec, perfect_candidate_timestamps=cand,
@@ -387,7 +387,7 @@ def test_production_envelope_models_chord_tied_held_tail_exactly():
         assert prod_extent == gt, ("production != legal max", chart, types, a, prod_extent, gt)
         # The OLD chord-collapsed envelopes under-counted by `under` notes on this case.
         old_cand, old_floor = _grouped_floor_candidate_sec(chart_sec, nt)
-        oe, _os, _oc = _edge_end(
+        oe, _os, _oc = edge_end_oracle(
             n=len(chart), a=int(a), activation_great=False,
             real_fever_time=float(rft) / 1000.0, use_forced_great_timing=False,
             timestamps=chart_sec, perfect_candidate_timestamps=old_cand,

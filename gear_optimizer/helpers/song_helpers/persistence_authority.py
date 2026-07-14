@@ -12,6 +12,7 @@ from ...solver.scoring.exact_rescore import (
 )
 from ...solver.scoring.fg_policy import extract_fg_song_inputs
 from ...solver.fg_response_scoring.physical_replay import (
+    validate_base_physical_replay,
     validate_force_greats_physical_replay,
 )
 from .fg_config import extract_fg_config, has_valid_fg_config, require_response_surface
@@ -84,9 +85,23 @@ def _canonicalize_base_score(
         return
     replay = score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays)
     out["score"] = int(replay.get("score", 0) or 0)
+    timeline = replay.get("TimelineFrontier")
+    if not isinstance(timeline, Mapping):
+        raise ValueError("Authoritative Base persistence requires a selected TimelineFrontier")
+    song_data = calc_song.get("song_data")
+    if not isinstance(song_data, Mapping):
+        raise ValueError("Authoritative Base persistence requires complete chart geometry")
+    validate_base_physical_replay(
+        frontier_trace=timeline.get("frontier_trace") or (),
+        response_surface=timeline.get("response_surface") or (),
+        timestamps=song_data.get("timestamps", ()),
+        note_types=song_data.get("note_types", ()),
+        lanes=song_data.get("lanes", ()),
+        fill_count=int(timeline.get("fill_count", 0) or 0),
+        fever_duration_ms=float(timeline.get("fever_duration_ms", 0.0) or 0.0),
+    )
     details = out.get("details")
     if isinstance(details, dict):
-        timeline = replay.get("TimelineFrontier")
         if isinstance(timeline, dict):
             details_out = dict(details)
             details_out["TimelineFrontier"] = dict(timeline)

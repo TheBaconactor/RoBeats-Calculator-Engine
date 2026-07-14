@@ -319,8 +319,8 @@ def _precompute_end_indices(
     # reachable Perfect / late-Great hit the kernel would otherwise re-derive with a live binary
     # search per (state, action). The four capped_* tables below memoize those searches per unique
     # real_fever_time, CLAMPED to (activation, n] exactly like `_numba_clamped_end_idx`, so a kernel
-    # lookup `capped_*[rt_idx, a]` is bit-identical to
-    # `_numba_edge_end_idx_at_hit` / `_numba_great_floor_extended_end_at_hit` at the prefix hit.
+    # lookup `capped_*[rt_idx, a]` is bit-identical to the canonical float32 lower-bound search
+    # with `_numba_clamped_end_idx` at the prefix hit.
     prefix_perfect64 = np.ascontiguousarray(np.asarray(prefix_perfect_hit, dtype=np.float64).reshape(-1))
     prefix_late64 = np.ascontiguousarray(np.asarray(prefix_late_hit, dtype=np.float64).reshape(-1))
     if int(prefix_perfect64.shape[0]) != int(ts.shape[0]) or int(prefix_late64.shape[0]) != int(ts.shape[0]):

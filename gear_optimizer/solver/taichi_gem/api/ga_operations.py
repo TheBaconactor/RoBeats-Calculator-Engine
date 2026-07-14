@@ -58,6 +58,7 @@ def _warmup_ref_arrays() -> dict[str, np.ndarray]:
 def _warmup_calc_song() -> dict:
     timestamps = np.linspace(0.0, 18.0, 48, dtype=np.float32)
     note_types = np.zeros((timestamps.shape[0],), dtype=np.int32)
+    lanes = np.arange(timestamps.shape[0], dtype=np.int32) % 4
     metadata = {
         "Song Name": "__ga_live_request_warmup__",
         "Difficulty": "Warmup",
@@ -70,6 +71,9 @@ def _warmup_calc_song() -> dict:
             "timestamps": timestamps,
             "chart_timestamps": timestamps,
             "note_types": note_types,
+            "lanes": lanes,
+            "fg_perfect_candidate_timestamps": timestamps,
+            "fg_perfect_floor_timestamps": timestamps,
         },
     }
 

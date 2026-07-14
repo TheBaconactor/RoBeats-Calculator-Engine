@@ -33,7 +33,7 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
 
     with _GPU_LOCK:
         ensure_ready(ref_arrays)
-        out = ti.field(dtype=ti.i32, shape=(2,))
+        out = ti.field(dtype=ti.i32, shape=())
 
         @ti.kernel
         def _run():
@@ -45,34 +45,6 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
             fields.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i8)
             for word in ti.static(range(4)):
                 fields.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, word] = ti.u32(0)
-
-            # Primary/proxy timeline: all body notes are normal.
-            fields.grid_count_body_fever[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i16)
-            fields.grid_count_body_normal[song_slot, ft_idx, ff_idx] = ti.cast(10, ti.i16)
-            fields.grid_frontier_count[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i32)
-            fields.grid_frontier_offset[song_slot, ft_idx, ff_idx] = ti.cast(0, ti.i32)
-            fallback = optimize_core_device_exact_bound(
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                10,
-                song_slot,
-                ft_idx,
-                ff_idx,
-            )
 
             # Frontier exposes five packed surfaces with an offset. The best
             # surface lives in the 5th packed slot, proving the consumer no
@@ -106,18 +78,15 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
                 0,
                 0,
                 0,
-                0,
-                10,
                 song_slot,
                 ft_idx,
                 ff_idx,
             )
 
-            out[0] = fallback[0]
-            out[1] = frontier[0]
+            out[None] = frontier[0]
 
         _run()
-        got = out.to_numpy()
+        got = int(out[None])
 
         @ti.kernel
         def _disable_frontier():
@@ -128,5 +97,4 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
 
         expected_frontier = int((4 * 100_000) + (6 * 20_000))
 
-    assert int(got[1]) > int(got[0])
-    assert int(got[1]) == expected_frontier
+    assert got == expected_frontier

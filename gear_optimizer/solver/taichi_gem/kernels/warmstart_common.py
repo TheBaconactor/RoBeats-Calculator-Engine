@@ -6,7 +6,7 @@ from . import kernels_helpers
 from .kernels_scoring import (
     optimize_core_device_exact_bound,
     response_score_upper_bound_relaxed,
-    score_solution_from_gems_preloaded,
+    score_solution_from_gems_frontier,
 )
 
 MAX_STAT = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
@@ -75,8 +75,10 @@ def solve_combo_warmstart_preloaded(
         # both GA and Skyline -- see docs/Implementation Records).
         pruned: ti.i32 = 0
         if pruned == 0:
-            count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-            count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
+            body_total: ti.i32 = (
+                kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
+                + kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
+            )
             head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
             budget: ti.i32 = combo_budget - ft - ff
             p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
@@ -99,8 +101,7 @@ def solve_combo_warmstart_preloaded(
                     is_p_ov,
                     is_s_ov,
                     head_len,
-                    count_fever,
-                    count_normal,
+                    body_total,
                 )
                 if ub_score < ti.cast(score_cull_threshold, ti.f32):
                     pruned = 1
@@ -122,14 +123,12 @@ def solve_combo_warmstart_preloaded(
                     is_p_ov,
                     is_s_ov,
                     head_len,
-                    count_fever,
-                    count_normal,
                     song_slot,
                     ft_idx,
                     ff_idx,
                 )
                 if res_vec[0] >= 0:
-                    score = score_solution_from_gems_preloaded(
+                    score = score_solution_from_gems_frontier(
                         ft,
                         ff,
                         res_vec[1],
@@ -160,8 +159,6 @@ def solve_combo_warmstart_preloaded(
                         ft_idx,
                         ff_idx,
                         head_len,
-                        count_fever,
-                        count_normal,
                     )
                     out_res = ti.Vector([score, res_vec[1], res_vec[2], res_vec[3], res_vec[4]])
     return out_res

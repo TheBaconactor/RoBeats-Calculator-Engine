@@ -29,7 +29,6 @@ from .response_cache import (
     load_first_surface_scoring_patterns,
     load_response_frontier_scoring_bundle,
 )
-from .response_ftff_prune import element_ftff_delta
 from .response_inner_host import _score_response_group_meta_cpu, _score_response_group_meta_gpu  # noqa: F401
 from .response_types import (
     FgResponseFrontierResult,
@@ -185,30 +184,6 @@ class FgFusedOwnerScoreRow:
     ff_stat: int
     inner_row: tuple[int, ...]
     surface: tuple[int, ...]
-
-
-def _stats_after_ftff_for_inner(
-    base_stats: dict[str, Any],
-    *,
-    ft: int,
-    ff: int,
-    primary_color: str,
-    secondary_color: str,
-) -> dict[str, int]:
-    primary = str(primary_color or "")
-    secondary = str(secondary_color or "")
-    out = {
-        "Perfect Points": int(base_stats.get("Perfect Points", 0) or 0),
-        "Combo Multiplier": int(base_stats.get("Combo Multiplier", 0) or 0),
-        "Fever Multiplier": int(base_stats.get("Fever Multiplier", 0) or 0),
-        "Fever Time": int(base_stats.get("Fever Time", 0) or 0) + int(ft) * GEM_SCALE_FEVER,
-        "Fever Fill Rate": int(base_stats.get("Fever Fill Rate", 0) or 0) + int(ff) * GEM_SCALE_FEVER,
-    }
-    if primary:
-        out[primary] = int(base_stats.get(primary, 0) or 0) + element_ftff_delta(primary, int(ft), int(ff))
-    if secondary:
-        out[secondary] = int(base_stats.get(secondary, 0) or 0) + element_ftff_delta(secondary, int(ft), int(ff))
-    return out
 
 
 def _surface_from_packed_arrays(

@@ -155,27 +155,6 @@ def _response_inner_combo_count_jit(residual_budget, cur_pp, cur_cm, cur_fm, all
     return int(count)
 
 
-def _response_inner_combo_count(
-    *,
-    residual_budget: int,
-    cur_pp: int,
-    cur_cm: int,
-    cur_fm: int,
-    allow_pp: bool,
-) -> int:
-    # Exact count of feasible (g_cm, g_fm, g_pp) tuples under:
-    # g_cm + g_fm + g_pp <= residual and each gem stat cap.
-    return int(
-        _response_inner_combo_count_jit(
-            int(residual_budget),
-            int(cur_pp),
-            int(cur_cm),
-            int(cur_fm),
-            bool(allow_pp),
-        )
-    )
-
-
 @jit(nopython=True, cache=True)
 def _response_inner_combo_counts_jit(group_meta_arr, allow_pp):
     row_count = int(group_meta_arr.shape[0])

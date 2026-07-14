@@ -119,12 +119,16 @@ _FG_GAME_ENGINE_SOURCES = (
     _SOLVER_DIR / "scoring" / "fg_policy.py",
     _SOLVER_DIR / "fg_response_scoring" / "note_graph.py",
 )
-# Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
-# build/search/pack path, add it here (the base version stays the human backstop).
-_FG_DP_SOURCES = (
-    *_FG_GAME_ENGINE_SOURCES,
+# Shared exact frontier producer used by both Base (Perfect-only actions) and FG. Base cache
+# identity imports this tuple directly so a producer edit can never leave one product surface on
+# stale bytes while the other rotates correctly.
+_FG_SHARED_FRONTIER_PRODUCER_SOURCES = (
+    _CORE_DIR / "constants.py",
+    _CORE_DIR / "time_quantize.py",
+    _SOLVER_DIR / "input_engine_breakpoints.py",
+    _SOLVER_DIR / "timing_envelope.py",
+    _SOLVER_DIR / "scoring" / "fg_policy.py",
     _HERE / "fill_crossing.py",
-    _HERE / "response_cache_keys.py",
     _HERE / "response_builder.py",
     _HERE / "response_types.py",
     _HERE / "response_build_gpu_batch.py",
@@ -133,6 +137,13 @@ _FG_DP_SOURCES = (
     _HERE / "response_build_gpu_reducer.py",
     _HERE / "response_build_gpu_numba.py",
     _HERE / "response_build_gpu_surfaces.py",
+)
+# Modules whose logic co-determines the cached frontier bundle output. If a NEW module joins the FG
+# build/search/pack path, add it here (the base version stays the human backstop).
+_FG_DP_SOURCES = (
+    *_FG_SHARED_FRONTIER_PRODUCER_SOURCES,
+    _SOLVER_DIR / "fg_response_scoring" / "note_graph.py",
+    _HERE / "response_cache_keys.py",
     _HERE / "response_cache_patterns.py",
     _HERE / "response_cache_serde.py",
     _HERE / "response_inner_host.py",

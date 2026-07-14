@@ -10,7 +10,7 @@ import taichi as ti
 
 from ... import fields as gpu_fields
 from .. import kernels_helpers
-from ..kernels_scoring import score_solution_from_gems_preloaded
+from ..kernels_scoring import score_solution_from_gems_frontier
 from ..write_results_common import solve_best_combo_uncached
 
 # Small populations are faster with a serial scan than a fully contended atomic reduction.
@@ -57,11 +57,9 @@ def _score_cached_combo_from_gems(
     ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
     ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
-    count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-    count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
     head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
 
-    return score_solution_from_gems_preloaded(
+    return score_solution_from_gems_frontier(
         ft,
         ff,
         pp_gems,
@@ -92,8 +90,6 @@ def _score_cached_combo_from_gems(
         ft_idx,
         ff_idx,
         head_len,
-        count_fever,
-        count_normal,
     )
 
 

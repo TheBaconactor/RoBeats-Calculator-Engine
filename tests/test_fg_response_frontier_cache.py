@@ -659,13 +659,17 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     assert legacy_path.exists()
 
 
-def test_issue149_v31_accepts_only_ratified_reconstruction_predecessor() -> None:
+def test_issue149_v31_accepts_only_ratified_predecessors() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
-    assert current_version == "fg-response-frontier-visible-first-v31+logic-eed4d4700100"
+    assert current_version == "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf"
     assert response_cache_store.fg_response_compatible_cache_versions() == (
         current_version,
+        "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
+        "fg-response-frontier-visible-first-v31+logic-76140458b749",
+        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
+        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
         "fg-response-frontier-visible-first-v31+logic-f67224918652",
         "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
         "fg-response-frontier-visible-first-v31+logic-60b24504b797",

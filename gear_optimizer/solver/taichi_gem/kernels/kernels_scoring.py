@@ -61,7 +61,42 @@ def calc_score_cached_device(
 
 
 @ti.func
-def score_solution_from_gems_preloaded(
+def score_timeline_frontier_cached_device(
+    base_value: ti.f32,
+    combo_mul: ti.f32,
+    fever_mul: ti.f32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+    head_len: ti.i32,
+) -> ti.i32:
+    """Score every retained physical Base surface and return the exact maximum."""
+    frontier_count = ti.cast(kernels_helpers.grid_frontier_count[song_slot, ft_idx, ff_idx], ti.i32)
+    best_score = ti.i32(-1)
+    variant_idx = ti.i32(0)
+    while variant_idx < frontier_count:
+        frontier = kernels_helpers.read_timeline_frontier_variant(
+            song_slot, ft_idx, ff_idx, variant_idx
+        )
+        score = calc_score_cached_device(
+            base_value,
+            combo_mul,
+            fever_mul,
+            head_len,
+            frontier.body_fever,
+            frontier.body_normal,
+            frontier.m0,
+            frontier.m1,
+            frontier.m2,
+            frontier.m3,
+        )
+        best_score = ti.max(best_score, score)
+        variant_idx += 1
+    return best_score
+
+
+@ti.func
+def score_solution_from_gems_frontier(
     ft: ti.i32,
     ff: ti.i32,
     pp_gems: ti.i32,
@@ -92,8 +127,6 @@ def score_solution_from_gems_preloaded(
     ft_idx: ti.i32,
     ff_idx: ti.i32,
     head_len: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
 ) -> ti.i32:
     GEM_SCALE_NORMAL: ti.i32 = 2
     GEM_SCALE_FEVER: ti.i32 = 3
@@ -129,22 +162,14 @@ def score_solution_from_gems_preloaded(
     fever_mul = kernels_helpers.lookup_ref_fm(fm_stat)
     base_value = ti.cast((p_val * 2) + s_val, ti.f32) + pp_factor
 
-    m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
-    m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
-    m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
-    m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
-
-    return calc_score_cached_device(
+    return score_timeline_frontier_cached_device(
         base_value,
         combo_mul,
         fever_mul,
+        song_slot,
+        ft_idx,
+        ff_idx,
         head_len,
-        count_fever,
-        count_normal,
-        m0,
-        m1,
-        m2,
-        m3,
     )
 
 
@@ -186,8 +211,7 @@ def response_score_upper_bound_relaxed(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     head_len: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
+    body_total: ti.i32,
 ) -> ti.f32:
     GEM_SCALE_NORMAL: ti.i32 = 2
     GEM_SCALE_FEVER: ti.i32 = 3
@@ -221,13 +245,13 @@ def response_score_upper_bound_relaxed(
 
     head_len_c: ti.i32 = ti.max(0, ti.min(head_len, 100))
     sigma_hf: ti.i32 = (head_len_c * (head_len_c + 1)) // 2
-    body_total: ti.i32 = ti.max(0, count_fever + count_normal)
+    body_total_c: ti.i32 = ti.max(0, body_total)
 
     return _semi_exact_upper_bound(
         base_value,
         combo_mul,
         fever_mul,
-        body_total,
+        body_total_c,
         0,
         0,
         head_len_c,
@@ -780,8 +804,6 @@ def optimize_core_device_exact_bound(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     head_len: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
     song_slot: ti.i32,
     ft_idx: ti.i32,
     ff_idx: ti.i32,

@@ -592,21 +592,21 @@ def test_response_inner_combo_estimator_matches_duplicate_group_meta_rows():
     combo_counts = response_inner._response_inner_combo_counts(group_meta, allow_pp=True)
     expected = np.asarray(
         [
-            response_inner._response_inner_combo_count(
+            response_inner._response_inner_combo_count_jit(
                 residual_budget=5,
                 cur_pp=10,
                 cur_cm=20,
                 cur_fm=30,
                 allow_pp=True,
             ),
-            response_inner._response_inner_combo_count(
+            response_inner._response_inner_combo_count_jit(
                 residual_budget=5,
                 cur_pp=10,
                 cur_cm=20,
                 cur_fm=30,
                 allow_pp=True,
             ),
-            response_inner._response_inner_combo_count(
+            response_inner._response_inner_combo_count_jit(
                 residual_budget=6,
                 cur_pp=10,
                 cur_cm=20,
@@ -677,7 +677,7 @@ def test_response_inner_combo_count_matches_bruteforce():
             cur_fm=cur_fm,
             allow_pp=allow_pp,
         )
-        got = response_inner._response_inner_combo_count(
+        got = response_inner._response_inner_combo_count_jit(
             residual_budget=residual,
             cur_pp=cur_pp,
             cur_cm=cur_cm,

@@ -893,10 +893,8 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
 def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     from gear_optimizer.solver.fg_response_scoring.reducer import materialize_force_payload_from_response_frontier
     import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
-        _action_table,
-        _edge_surface_option_details,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
+    from tests.fg_response_frontier_oracles import edge_surface_option_details
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
         FgResponseFrontierSolveResult,
@@ -915,7 +913,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     )
     target_option = next(
         row
-        for row in _edge_surface_option_details(
+        for row in edge_surface_option_details(
             i=0,
             first=True,
             n=int(timestamps.shape[0]),

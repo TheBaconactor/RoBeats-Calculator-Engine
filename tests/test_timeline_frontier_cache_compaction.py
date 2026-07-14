@@ -11,27 +11,32 @@ from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontie
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
 
 
+def test_timeline_cache_fingerprint_covers_shared_frontier_producer() -> None:
+    sources = {path.name for path in timeline_api._TIMELINE_DP_SOURCES}
+
+    assert {
+        "timeline_exact_frontier.py",
+        "timing_envelope.py",
+        "response_builder.py",
+        "response_build_gpu_batch.py",
+        "response_build_gpu_numba.py",
+    }.issubset(sources)
+
+
 def _build_small_payload():
-    group_starts = np.array([0, 2, 4], dtype=np.int32)
-    group_ends = np.array([2, 4, 6], dtype=np.int32)
-    group_base_t_ms = np.array([0, 100, 220], dtype=np.int32)
-    group_low_ms = np.array([0, -10, -5], dtype=np.int32)
-    group_high_ms = np.array([20, 30, 25], dtype=np.int32)
-    note_group_idx = np.array([0, 0, 1, 1, 2, 2], dtype=np.int32)
     ref_ft = np.linspace(0.0, 1.6, 161, dtype=np.float32)
     ref_ff = np.linspace(0.0, 1.6, 161, dtype=np.float32)
+    timestamps = np.array([0.0, 0.0, 0.1, 0.1, 0.22, 0.22], dtype=np.float32)
     payload = build_timeline_frontier_grid_payload(
         song_slot=7,
         total_notes=6,
         long_notes=0,
         last_note_time=1.8,
         song_key="unit-test-song",
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
+        timestamps=timestamps,
+        perfect_candidate_timestamps=timestamps + np.float32(0.04),
+        perfect_floor_timestamps=timestamps - np.float32(0.019),
+        lanes=np.arange(6, dtype=np.int32),
         ref_ft=ref_ft,
         ref_ff=ref_ff,
     )
@@ -43,6 +48,14 @@ def _ref_arrays() -> dict[str, np.ndarray]:
         "Fever Time": np.linspace(0.0, 1.6, 161, dtype=np.float32),
         "Fever Fill Rate": np.linspace(0.0, 1.6, 161, dtype=np.float32),
     }
+
+
+def _apply_physical_timing(calc_song: dict) -> None:
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    note_count = len(calc_song["song_data"]["timestamps"])
+    calc_song["song_data"]["lanes"] = np.arange(note_count, dtype=np.int32)
+    apply_timing_envelope(calc_song, mode="perfect_window")
 
 
 def test_frontier_payload_build_is_single_slot_compact() -> None:
@@ -81,67 +94,41 @@ def test_frontier_disk_cache_write_is_compact_and_leak_free(tmp_path: Path, monk
     assert int(loaded.grid_frontier_body_fever_pool.shape[1]) == int(payload.frontier_pool_used)
     assert int(loaded.grid_frontier_body_normal_pool.shape[1]) == int(payload.frontier_pool_used)
     assert int(loaded.grid_frontier_masks_bits_pool.shape[1]) == int(payload.frontier_pool_used)
+    with np.load(saved, allow_pickle=False) as data:
+        assert set(data.files) == set(timeline_api._TIMELINE_FRONTIER_CACHE_ARRAY_NAMES)
+        assert not any(name.startswith("group_") for name in data.files)
 
 
-def test_frontier_disk_cache_persists_group_payload_and_reuses_it(tmp_path: Path, monkeypatch) -> None:
+def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     payload = _build_small_payload()
-    key = ("unit", "group-payload", 3)
+    current_version = timeline_api._FRONTIER_DISK_CACHE_VERSION
+    assert current_version == "exact-frontier-v12+logic-4c69b48f08bb"
+    predecessor = timeline_api.timeline_frontier_compatible_cache_versions()[1]
+    current_key = (current_version, "unit", "cleanup-compatible")
+    predecessor_key = (predecessor, *current_key[1:])
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
-    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
 
-    group_payload = {
-        "n": 6,
-        "group_count": 3,
-        "group_starts": np.array([0, 2, 4], dtype=np.int32),
-        "group_ends": np.array([2, 4, 6], dtype=np.int32),
-        "group_base_t_ms": np.array([0, 100, 220], dtype=np.int32),
-        "group_low_ms": np.array([0, -10, -5], dtype=np.int32),
-        "group_high_ms": np.array([20, 30, 25], dtype=np.int32),
-        "note_group_idx": np.array([0, 0, 1, 1, 2, 2], dtype=np.int32),
-    }
-    timeline_api._save_frontier_payload_to_disk(key, payload, group_payload=group_payload)
+    with monkeypatch.context() as predecessor_context:
+        predecessor_context.setattr(
+            timeline_api,
+            "_FRONTIER_DISK_CACHE_VERSION",
+            predecessor,
+        )
+        timeline_api._save_frontier_payload_to_disk(predecessor_key, payload)
 
-    loaded_group = timeline_api._load_group_payload_from_frontier_disk(key, expected_n=6)
-    assert loaded_group is not None
-    assert int(loaded_group["n"]) == 6
-    assert int(loaded_group["group_count"]) == 3
-    assert np.array_equal(loaded_group["group_ends"], group_payload["group_ends"])
-    assert np.array_equal(loaded_group["note_group_idx"], group_payload["note_group_idx"])
-
-    timeline_api.reset_timeline_state()
-    calc_song = {
-        "metadata": {
-            "Song Name": "Unit Disk Group",
-            "Difficulty": "Easy",
-            "Long Notes": 0,
-            "Last Note Time": 0.6,
-        },
-        "song_data": {
-            "timestamps": np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0], dtype=np.float32),
-            "note_types": np.array([1, 1, 1, 1, 1, 1], dtype=np.int16),
-        },
-    }
-    ref_arrays = {
-        "Fever Time": np.linspace(0.0, 1.6, 161, dtype=np.float32),
-        "Fever Fill Rate": np.linspace(0.0, 1.6, 161, dtype=np.float32),
-    }
-    song_key = timeline_api._song_timing_cache_key(calc_song)
-    cache_key = timeline_api._frontier_payload_cache_key(song_key, ref_arrays["Fever Time"], ref_arrays["Fever Fill Rate"])
-    saved_path = timeline_api._frontier_disk_cache_path(cache_key)
-    timeline_api._frontier_disk_cache_path(key).replace(saved_path)
-
-    def _raise_group_build(*_args, **_kwargs):
-        raise AssertionError("group payload should come from disk cache")
-
-    monkeypatch.setattr(timeline_api, "_get_or_build_frontier_group_payload", _raise_group_build)
-    context = timeline_api._timeline_payload_context(calc_song, ref_arrays, ref_sig=None)
-    loaded = context["group_payload"]
-    assert int(loaded["n"]) == 6
-    assert int(loaded["group_count"]) == 3
-    assert np.array_equal(loaded["group_ends"], group_payload["group_ends"])
+    predecessor_path = timeline_api._frontier_disk_cache_path(predecessor_key)
+    assert predecessor_path.exists()
+    assert timeline_api.timeline_frontier_cache_file_is_complete(predecessor_path)
+    assert timeline_api._live_frontier_disk_cache_path(current_key) == predecessor_path
+    loaded = timeline_api._load_frontier_payload_from_disk(current_key)
+    assert loaded is not None
+    assert loaded.frontier_pool_used == payload.frontier_pool_used
 
 
-def test_build_or_load_timeline_frontier_payload_disk_hit_skips_redundant_group_disk_probe(
+def test_build_or_load_timeline_frontier_payload_disk_hit_reuses_compact_payload(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
@@ -159,17 +146,13 @@ def test_build_or_load_timeline_frontier_payload_disk_hit_skips_redundant_group_
             "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
         },
     }
+    _apply_physical_timing(calc_song)
     ref_arrays = _ref_arrays()
 
     first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
     assert first.cache_source == "built"
 
     timeline_api.reset_timeline_state()
-    monkeypatch.setattr(
-        timeline_api,
-        "_load_group_payload_from_frontier_disk",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("group payload disk probe should be skipped")),
-    )
     second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
     assert second.cache_source == "disk"
     assert int(second.total_notes) == 4
@@ -192,6 +175,7 @@ def test_build_or_load_timeline_frontier_payload_reuses_old_disk_cache_without_t
             "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
         },
     }
+    _apply_physical_timing(calc_song)
 
     first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
     assert first.cache_source == "built"
@@ -221,6 +205,7 @@ def test_load_timeline_frontier_payload_builds_and_persists_live_cache_miss(tmp_
             "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
         },
     }
+    _apply_physical_timing(calc_song)
 
     built = timeline_api.load_timeline_frontier_payload(calc_song, _ref_arrays())
     assert built.cache_source == "built"
@@ -260,6 +245,7 @@ def test_frontier_cache_key_ignores_unrelated_ref_arrays() -> None:
             "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
         },
     }
+    _apply_physical_timing(calc_song)
     ref_ft = np.linspace(0.0, 1.6, 161, dtype=np.float32)
     ref_ff = np.linspace(0.0, 1.6, 161, dtype=np.float32)
     ref_base = {

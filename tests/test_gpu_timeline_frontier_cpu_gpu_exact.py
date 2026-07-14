@@ -14,44 +14,24 @@ pytestmark = pytest.mark.gpu
 
 
 def _cpu_frontier_payload(calc_song: dict, ref_arrays: dict):
-    from gear_optimizer.solver.timing_envelope import prepare_perfect_timing_envelope
     from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
 
     ts = np.asarray(calc_song["song_data"]["chart_timestamps"], dtype=np.float32).reshape(-1)
-    nt = np.asarray(calc_song["song_data"]["note_types"], dtype=np.int16).reshape(-1)
     n = int(ts.shape[0])
-    prepared = prepare_perfect_timing_envelope(
-        ts,
-        nt,
-        perfect_lower_ms=-20,
-        perfect_upper_ms=40,
-        held_tail_type=3,
-        held_tail_time_multiplier=2,
-        quantize_ms=True,
-    )
-    group_starts = np.asarray(prepared.get("group_starts", ()), dtype=np.int32).reshape(-1)
-    group_ends = np.asarray(prepared.get("group_ends", ()), dtype=np.int32).reshape(-1)
-    group_base = np.asarray(prepared.get("group_base_t", ()), dtype=np.int32).reshape(-1)
-    group_low = np.asarray(prepared.get("group_low", ()), dtype=np.int32).reshape(-1)
-    group_high = np.asarray(prepared.get("group_high", ()), dtype=np.int32).reshape(-1)
-    note_group_idx = np.full(n, -1, dtype=np.int32)
-    for g in range(int(group_starts.shape[0])):
-        s = int(group_starts[g])
-        e = int(group_ends[g])
-        if e > s:
-            note_group_idx[s:e] = int(g)
 
     return build_timeline_frontier_grid_payload(
         song_slot=0,
         total_notes=int(calc_song["metadata"].get("Total Notes", n) or n),
         long_notes=int(calc_song["metadata"].get("Long Notes", 0) or 0),
         last_note_time=float(calc_song["metadata"].get("Last Note Time", 0.0) or 0.0),
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base,
-        group_low_ms=group_low,
-        group_high_ms=group_high,
-        note_group_idx=note_group_idx,
+        timestamps=ts,
+        perfect_candidate_timestamps=np.asarray(
+            calc_song["song_data"]["fg_perfect_candidate_timestamps"], dtype=np.float32
+        ),
+        perfect_floor_timestamps=np.asarray(
+            calc_song["song_data"]["fg_perfect_floor_timestamps"], dtype=np.float32
+        ),
+        lanes=np.asarray(calc_song["song_data"]["lanes"], dtype=np.int32),
         ref_ft=np.asarray(ref_arrays["Fever Time"], dtype=np.float32),
         ref_ff=np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32),
     )
@@ -95,8 +75,12 @@ def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
             "timestamps": timestamps,
             "chart_timestamps": timestamps,
             "note_types": note_types,
+            "lanes": np.arange(n_notes, dtype=np.int32),
         },
     }
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    apply_timing_envelope(calc_song, mode="perfect_window")
 
     rows = int(TOTAL_ROWS) + 1
     ref_arrays = {
@@ -188,8 +172,12 @@ def test_gpu_timeline_frontier_repeated_upload_matches_baseline() -> None:
             "timestamps": timestamps,
             "chart_timestamps": timestamps,
             "note_types": note_types,
+            "lanes": np.arange(n_notes, dtype=np.int32),
         },
     }
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    apply_timing_envelope(calc_song, mode="perfect_window")
 
     rows = int(TOTAL_ROWS) + 1
     ref_arrays = {

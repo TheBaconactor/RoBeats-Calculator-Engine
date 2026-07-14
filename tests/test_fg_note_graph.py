@@ -102,10 +102,8 @@ def _build_options(n, non_fever_base, real_fever_time):
         build_perfect_candidate_envelope_sec,
         build_perfect_floor_envelope_sec,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
-        _action_table,
-        _edge_surface_option_details,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
+    from tests.fg_response_frontier_oracles import edge_surface_option_details
 
     timestamps = (np.arange(n) * 0.1).astype(np.float32)
     note_types = np.ones(n, dtype=np.int16)
@@ -119,7 +117,7 @@ def _build_options(n, non_fever_base, real_fever_time):
         non_fever_base=non_fever_base,
         use_forced_great_timing=True,
     )
-    options = _edge_surface_option_details(
+    options = edge_surface_option_details(
         i=0,
         first=True,
         n=n,
@@ -1409,7 +1407,13 @@ def test_base_note_graph_uses_timeline_frontier_trace_witness():
         }
     ]
 
-    graph = base_note_graph(total_notes=n, timestamps=ts, is_fever_mask=mask, frontier_trace=trace)
+    graph = base_note_graph(
+        total_notes=n,
+        timestamps=ts,
+        is_fever_mask=mask,
+        frontier_trace=trace,
+        note_types=np.ones(n, dtype=np.int16),
+    )
 
     assert all(g["note_result"] == "Perfect" for g in graph)
     assert [g["fever"] for g in graph] == [False, False, True, True, True, False]
@@ -1450,10 +1454,8 @@ def test_base_note_graph_marks_fever_end_witness_with_cushion_cutoff():
     assert all("contributes_to_max_score" not in g for g in graph)
 
 
-def test_endpoint_early_frontier_includes_reattributed_activation_witness():
-    """Chorded-tail witness (w < a) + tight endpoint: the endpoint-early monotonic
-    frontier must start at the PHYSICAL activating hit, so no clawed-in fever note is
-    displayed before it."""
+def test_base_note_graph_rejects_reattributed_activation_witness():
+    """A base trace may not repair an impossible surface by changing activation identity."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import base_note_graph
 
     n = 6
@@ -1468,26 +1470,14 @@ def test_endpoint_early_frontier_includes_reattributed_activation_witness():
         "fever_end_index": 5, "fever_window_end_ms": 600.0,
     }]
 
-    g = base_note_graph(
-        total_notes=n, timestamps=ts, is_fever_mask=np.zeros(n, bool),
-        frontier_trace=trace, note_types=nt,
-    )
-
-    assert g[1]["is_activation_witness"] is True and g[1]["delta_ms"] == pytest.approx(80.0)
-    assert g[1]["fever"] is True
-    assert g[2]["fever"] is False
-    witness_shown = g[1]["hit_time_ms"] + g[1]["delta_ms"]  # 580
-    # The clawed endpoint's displayed hit must never precede the activating hit.
-    endpoint_shown = g[4]["hit_time_ms"] + g[4]["delta_ms"]
-    assert endpoint_shown >= witness_shown
-    # lo_hit = max(600-40, witness 580) = 580, upper is the strict predecessor of 600.
-    assert endpoint_shown == pytest.approx(590.0)
-    assert g[4]["delta_ms"] >= -40.0                       # legal for the held tail
-    assert endpoint_shown < 600.0                          # still inside the cutoff
-    # Every displayed fever hit chosen by the guidance stays at/after the witness hit.
-    for note in g:
-        if note["fever"] and note["delta_ms"] not in (None, 0.0):
-            assert note["hit_time_ms"] + note["delta_ms"] >= witness_shown
+    with pytest.raises(ValueError, match="activation witness differs"):
+        base_note_graph(
+            total_notes=n,
+            timestamps=ts,
+            is_fever_mask=np.zeros(n, bool),
+            frontier_trace=trace,
+            note_types=nt,
+        )
 
 
 def test_base_delayed_activation_materializes_physical_chord_order():
@@ -2187,7 +2177,8 @@ def test_persisted_activation_schedule_jointly_fits_same_time_boundary_and_prefi
     assert constraints == [(0, 1), (1, 2), (2, 3)]
     event_times = [float(note["hit_time_ms"]) + float(note["delta_ms"]) for note in notes]
     assert event_times == sorted(event_times)
-    assert float(notes[0]["delta_ms"]) == -20.0
+    assert float(notes[0]["delta_ms"]) == pytest.approx(-20.0)
+    assert event_times[0] < event_times[1]
     assert float(notes[1]["delta_ms"]) == -20.0
     assert float(notes[2]["delta_ms"]) == 0.0
     _assign_exact_input_order(notes, constraints)

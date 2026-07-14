@@ -15,9 +15,82 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 
 import numpy as np
+from numba import njit
+from numba.typed import List
+
+from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+    _NUMBA_HEAD_SCORES_TYPE,
+    _NUMBA_SURFACE_TYPE,
+    _numba_head_cached_scores_dominate,
+)
 
 BodyRow = tuple[int, int, int]
 SurfaceRow = tuple[int, int, int, int, int, int, int]
+
+
+def clamped_end_idx_at_hit(
+    n: int,
+    activation_idx: int,
+    hit: float,
+    real_fever_time: float,
+    floor_timestamps,
+) -> int:
+    """Plain-Python retired endpoint search with the production float32 cutoff semantics."""
+    raw_end = int(
+        np.searchsorted(
+            floor_timestamps,
+            np.float32(float(hit) + float(real_fever_time)),
+            side="left",
+        )
+    )
+    return min(int(n), max(int(activation_idx) + 1, int(raw_end)))
+
+
+@njit(cache=True, nogil=True)
+def retired_head_envelope_insert_with_scores(
+    frontier,
+    frontier_scores,
+    candidate,
+    candidate_scores,
+):
+    """Retired sequential cached-score inserter used only as a differential oracle."""
+    if len(frontier) <= 0:
+        out = List.empty_list(_NUMBA_SURFACE_TYPE)
+        out_scores = List.empty_list(_NUMBA_HEAD_SCORES_TYPE)
+        out.append(candidate)
+        out_scores.append(candidate_scores.copy())
+        return out, out_scores
+    for idx in range(len(frontier)):
+        if _numba_head_cached_scores_dominate(
+            frontier_scores[idx], candidate_scores, frontier[idx], candidate
+        ):
+            return frontier, frontier_scores
+    dominated_idx = -1
+    for idx in range(len(frontier)):
+        if _numba_head_cached_scores_dominate(
+            candidate_scores, frontier_scores[idx], candidate, frontier[idx]
+        ):
+            dominated_idx = idx
+            break
+    if dominated_idx < 0:
+        frontier.append(candidate)
+        frontier_scores.append(candidate_scores.copy())
+        return frontier, frontier_scores
+    write = int(dominated_idx)
+    for idx in range(int(dominated_idx) + 1, len(frontier)):
+        kept_scores = frontier_scores[idx]
+        if not _numba_head_cached_scores_dominate(
+            candidate_scores, kept_scores, candidate, frontier[idx]
+        ):
+            frontier[int(write)] = frontier[idx]
+            frontier_scores[int(write)] = kept_scores
+            write += 1
+    while len(frontier) > int(write):
+        frontier.pop()
+        frontier_scores.pop()
+    frontier.append(candidate)
+    frontier_scores.append(candidate_scores.copy())
+    return frontier, frontier_scores
 
 
 def retired_nested_action_reachability_prepass(
@@ -52,7 +125,6 @@ def retired_nested_action_reachability_prepass(
 ):
     """Retired O(reachable states * actions) activation scan from main ``c3d13ac3``."""
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
-        _numba_edge_end_idx_at_hit,
         _numba_great_floor_extended_end_at_hit,
         _numba_late_edge_extends,
         _numba_mark_early_great_reachable_from_hit,
@@ -117,7 +189,7 @@ def retired_nested_action_reachability_prepass(
                 perfect_eg_e = -1
                 if int(region_perfect_valids[int(idx)]) != 0:
                     perfect_e = int(
-                        _numba_edge_end_idx_at_hit(
+                        clamped_end_idx_at_hit(
                             int(n),
                             int(activation),
                             float(region_perfect_hits[int(idx)]),
@@ -136,7 +208,7 @@ def retired_nested_action_reachability_prepass(
                     )
                 activation_hit = float(region_act_hits[int(idx)])
                 edge_e = int(
-                    _numba_edge_end_idx_at_hit(
+                    clamped_end_idx_at_hit(
                         int(n),
                         int(activation),
                         float(activation_hit),
@@ -163,7 +235,7 @@ def retired_nested_action_reachability_prepass(
             else:
                 activation_hit = float(region_perfect_hits[int(idx)])
                 edge_e = int(
-                    _numba_edge_end_idx_at_hit(
+                    clamped_end_idx_at_hit(
                         int(n),
                         int(activation),
                         float(activation_hit),

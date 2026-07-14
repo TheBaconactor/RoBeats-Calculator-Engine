@@ -13,7 +13,11 @@ def _mock_song(*, name: str, n_notes: int = 96, duration: float = 120.0) -> dict
             "Last Note Time": float(timestamps[-1]),
             "Total Notes": int(timestamps.shape[0]),
         },
-        "song_data": {"timestamps": timestamps},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": np.ones(int(n_notes), dtype=np.int16),
+            "lanes": np.arange(int(n_notes), dtype=np.int32) % np.int32(4),
+        },
     }
 
 
@@ -44,7 +48,9 @@ def _boundary_drift_stats() -> dict[str, int]:
 
 def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
+    apply_timing_envelope(calc_song, mode="perfect_window")
     build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
 
 
@@ -96,7 +102,11 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
             "Last Note Time": float(timestamps[-1]),
             "Total Notes": int(timestamps.shape[0]),
         },
-        "song_data": {"timestamps": timestamps},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
+            "lanes": np.arange(int(timestamps.shape[0]), dtype=np.int32) % np.int32(4),
+        },
     }
     ref_arrays = {
         "Perfect Points": np.ones(TOTAL_ROWS + 1, dtype=np.float64),

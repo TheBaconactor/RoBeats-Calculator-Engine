@@ -79,6 +79,93 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Production behavior is unchanged: unreachable/test-only helpers moved out of fingerprinted
+    # modules, and two zero-reference Numba helpers were deleted. The optimized producer, ordered
+    # surfaces, stat-key mapping, and compact sidecars are identical, so preserve the complete
+    # already-ratified V31 lineage explicitly.
+    "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf": (
+        "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
+        "fg-response-frontier-visible-first-v31+logic-76140458b749",
+        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
+        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
+        "fg-response-frontier-visible-first-v31+logic-f67224918652",
+        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
+        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
+        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
+        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
+        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
+        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
+        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
+    # Base now reaches the shared producer exclusively through Perfect-only actions. The deleted
+    # body-only shortcut was guarded by use_forced_great_timing == 0, so the V31 forced-Great
+    # producer cannot execute any removed statement. Its ordered surfaces and compact sidecars are
+    # unchanged; keep the complete ratified lineage explicit and non-transitive.
+    "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729": (
+        "fg-response-frontier-visible-first-v31+logic-76140458b749",
+        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
+        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
+        "fg-response-frontier-visible-first-v31+logic-f67224918652",
+        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
+        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
+        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
+        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
+        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
+        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
+        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
+    # Trace reconstruction now derives fever_window_end_ms from the same centered activation hit
+    # it serializes. The previous trace mixed that hit with the later legal interval edge. A complete
+    # 25,921-key V31 bundle comparison matched every non-version NPZ member and both compact
+    # sidecars byte-for-byte, so the correction changes only the reconstructed physical witness.
+    "fg-response-frontier-visible-first-v31+logic-76140458b749": (
+        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
+        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
+        "fg-response-frontier-visible-first-v31+logic-f67224918652",
+        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
+        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
+        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
+        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
+        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
+        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
+        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
+    # Issue #154 replaces Base timeline production and tightens Base/FG note-graph reconstruction.
+    # The only conservative FG fingerprint input changed here is note_graph.py, which is not
+    # imported by the cached V31 producer. The persisted response surfaces, stat-key mapping, and
+    # compact sidecars are therefore unchanged. Keep every ratified V31 lineage explicit because
+    # compatibility resolution is deliberately non-transitive.
+    "fg-response-frontier-visible-first-v31+logic-822b279e81da": (
+        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
+        "fg-response-frontier-visible-first-v31+logic-f67224918652",
+        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
+        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
+        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
+        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
+        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
+        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
+        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
     # Reconstruction now centers the final score-parity activation interval instead of replacing
     # the producer's centered witness with its latest edge. Early-Great endpoint constraints are
     # intersected before centering. This changes note-graph timing guidance only; V31 producer

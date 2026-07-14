@@ -50,7 +50,7 @@ def _bruteforce_pg_contiguous_run_first_frontier(
         activation_hit_is_reachable_weighted_lane_aware,
         server_fill_crossing_run,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+    from tests.fg_response_frontier_oracles import (
         _combine_surfaces,
         _reduce_surfaces,
     )
@@ -437,7 +437,6 @@ def test_fg_region_hit_universe_resolves_exact_producer_values() -> None:
         response_build_gpu_numba,
         response_build_gpu_precompute,
     )
-
     timestamps = np.asarray([0.0, 0.3, 0.3, 0.8, 1.1, 1.6, 2.0, 2.0], dtype=np.float32)
     perfect_hi = timestamps + np.asarray(
         [0.04, -0.01, 0.07, 0.0, 0.05, 0.03, 0.08, 0.02], dtype=np.float32
@@ -490,6 +489,7 @@ def test_fg_region_hit_endpoint_tables_match_scalar_production_search() -> None:
         response_build_gpu_numba,
         response_build_gpu_precompute,
     )
+    from tests.retired_fg_frontier_semantics import clamped_end_idx_at_hit
 
     timestamps = np.asarray([0.0, 0.2, 0.55, 0.9, 1.4, 1.4, 2.1], dtype=np.float32)
     perfect_hi = timestamps + np.float32(0.04)
@@ -517,7 +517,7 @@ def test_fg_region_hit_endpoint_tables_match_scalar_production_search() -> None:
         great_end = great_end_table[int(real_time_idx)]
         for activation in range(n):
             for hit_id, hit in enumerate(hit_values):
-                expected_perfect = response_build_gpu_numba._numba_edge_end_idx_at_hit(
+                expected_perfect = clamped_end_idx_at_hit(
                     n,
                     activation,
                     float(hit),
@@ -1187,6 +1187,9 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
     assert trace[0]["activation_hit_offset_lower_ms"] == pytest.approx(0.0)
     assert trace[0]["activation_hit_offset_upper_ms"] == pytest.approx(40.000200271606445)
     assert trace[0]["activation_hit_window_width_ms"] == pytest.approx(40.000200271606445)
+    assert trace[0]["fever_window_end_ms"] == pytest.approx(
+        trace[0]["activation_hit_ms"] + trace[0]["fever_duration_ms"]
+    )
 
 
 def test_body_pair_radix_round_trips_high_fever_great_counts() -> None:
@@ -1438,14 +1441,14 @@ def test_fg_response_first_frontier_emits_activation_great_body_overlap() -> Non
 
 
 def test_fg_response_edge_end_does_not_let_prefix_great_carry_perfect_activation() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _edge_end
+    from tests.fg_response_frontier_oracles import edge_end_oracle
 
     timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
     great_candidates = timestamps.copy()
     great_candidates[0] = np.float32(2.4)
     great_candidates[1] = np.float32(1.1)
 
-    edge_end, start_time, carry_idx = _edge_end(
+    edge_end, start_time, carry_idx = edge_end_oracle(
         n=int(timestamps.shape[0]),
         a=2,
         activation_great=False,
@@ -1461,40 +1464,11 @@ def test_fg_response_edge_end_does_not_let_prefix_great_carry_perfect_activation
     assert carry_idx == -1
 
 
-def test_fg_response_numba_edge_end_does_not_let_prefix_great_carry_perfect_activation() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
-        _numba_edge_end_idx_from_tables,
-    )
-
-    timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
-    great_candidates = timestamps.copy()
-    great_candidates[0] = np.float32(2.4)
-    great_candidates[1] = np.float32(1.1)
-    timestamp_end_idx = np.searchsorted(timestamps, timestamps + np.float32(1.0), side="left").astype(np.int32)
-    perfect_end_idx = timestamp_end_idx.copy()
-    great_end_idx = np.searchsorted(timestamps, great_candidates + np.float32(1.0), side="left").astype(np.int32)
-    # A later Great end at the activation index that a PERFECT activation must NOT carry.
-    great_end_idx[2] = 4
-
-    edge_end = _numba_edge_end_idx_from_tables(
-        int(timestamps.shape[0]),
-        2,
-        0,
-        1,
-        timestamp_end_idx.reshape(1, -1),
-        perfect_end_idx.reshape(1, -1),
-        great_end_idx.reshape(1, -1),
-        0,
-    )
-
-    assert edge_end == 3
-
-
 def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_boundaries() -> None:
     from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
     from gear_optimizer.data.csv_parser import read_table
     from gear_optimizer.solver.song_preparation import build_prepared_calc_song
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _edge_end
+    from tests.fg_response_frontier_oracles import edge_end_oracle
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import _precompute_end_indices
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import _response_axes
 
@@ -1545,7 +1519,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
     reachable_pc = song_inputs.perfect_candidates
 
     for note_idx in range(int(song_inputs.timestamps.shape[0])):
-        timestamp_e, _timestamp_start, _timestamp_carry = _edge_end(
+        timestamp_e, _timestamp_start, _timestamp_carry = edge_end_oracle(
             n=int(song_inputs.timestamps.shape[0]),
             a=note_idx,
             activation_great=False,
@@ -1554,7 +1528,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
             timestamps=song_inputs.timestamps,
             perfect_floor_timestamps=song_inputs.perfect_floor,
         )
-        perfect_e, _perfect_start, _perfect_carry = _edge_end(
+        perfect_e, _perfect_start, _perfect_carry = edge_end_oracle(
             n=int(song_inputs.timestamps.shape[0]),
             a=note_idx,
             activation_great=False,
@@ -1565,7 +1539,7 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
             great_candidate_timestamps=song_inputs.great_candidates,
             perfect_floor_timestamps=song_inputs.perfect_floor,
         )
-        great_e, _great_start, _great_carry = _edge_end(
+        great_e, _great_start, _great_carry = edge_end_oracle(
             n=int(song_inputs.timestamps.shape[0]),
             a=note_idx,
             activation_great=True,
@@ -1758,10 +1732,8 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
 
 
 def test_fg_response_frontier_caps_activation_at_following_label_breakpoint() -> None:
-    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
-        _action_table,
-        _edge_surface_option_details,
-    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import _action_table
+    from tests.fg_response_frontier_oracles import edge_surface_option_details
 
     timestamps = np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32)
     perfect_candidates, great_candidates, perfect_floor, great_floor = _engine_envelopes(timestamps)
@@ -1771,7 +1743,7 @@ def test_fg_response_frontier_caps_activation_at_following_label_breakpoint() ->
         non_fever_base=6,
         use_forced_great_timing=True,
     )
-    options = _edge_surface_option_details(
+    options = edge_surface_option_details(
         i=0,
         first=True,
         n=int(timestamps.shape[0]),
@@ -1836,9 +1808,9 @@ def test_fg_response_numba_frontier_emits_capped_activation_breakpoints() -> Non
 
 def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
-        _input_engine_rebuild_first_frontier,
         build_force_greats_response_first_frontiers_gpu_batch,
     )
+    from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
 
     timestamps = np.asarray([0.0, 0.5, 1.0, 1.13, 2.10, 2.22, 2.50, 3.0], dtype=np.float32)
     perfect_candidates = timestamps + np.float32(0.04)
@@ -1847,7 +1819,7 @@ def test_fg_response_numba_frontier_matches_shifted_head_region_offsets() -> Non
     great_floor = timestamps - np.float32(0.094)
     lanes = _lanes_for(timestamps)
 
-    oracle = _input_engine_rebuild_first_frontier(
+    oracle = input_engine_rebuild_first_frontier(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
         great_candidate_timestamps=great_candidates,
@@ -2307,6 +2279,127 @@ def test_fg_response_frontier_dominates_bruteforce_pg_contiguous_run_oracle(
         f"production frontier missed {len(missing)} legal P/G oracle surfaces "
         f"(production={len(production.first_frontier)}, oracle={len(oracle_surfaces)}): {missing[:8]}"
     )
+
+
+@pytest.mark.parametrize(
+    ("timestamps", "lanes", "raw_fever_fill", "non_fever_base", "real_fever_time"),
+    [
+        (
+            np.asarray([0.0, 0.16, 0.31, 0.31, 0.46, 0.62, 0.79], dtype=np.float32),
+            np.asarray([0, 1, 0, 2, 1, 3, 0], dtype=np.int32),
+            3.25,
+            0,
+            0.38,
+        ),
+        (
+            np.asarray([0.0, 0.24, 0.48, 0.72, 0.96, 1.10, 1.10, 1.32], dtype=np.float32),
+            np.asarray([0, 1, 2, 3, 0, 1, 2, 1], dtype=np.int32),
+            4.25,
+            0,
+            0.55,
+        ),
+    ],
+)
+def test_base_response_frontier_preserves_bruteforce_all_perfect_optima(
+    timestamps: np.ndarray,
+    lanes: np.ndarray,
+    raw_fever_fill: float,
+    non_fever_base: int,
+    real_fever_time: float,
+) -> None:
+    """Base mode may prune only surfaces that cannot win under any legal stat allocation."""
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+        build_force_greats_response_first_frontiers_gpu_batch,
+    )
+
+    perfect_candidates = timestamps + np.float32(0.04)
+    perfect_floor = timestamps - np.float32(0.019)
+    oracle = _bruteforce_pg_contiguous_run_first_frontier(
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=timestamps + np.float32(0.19),
+        perfect_floor_timestamps=perfect_floor,
+        great_floor_timestamps=timestamps - np.float32(0.094),
+        lanes=lanes,
+        raw_fever_fill=raw_fever_fill,
+        non_fever_base=non_fever_base,
+        real_fever_time=real_fever_time,
+    )
+    all_perfect_oracle = tuple(
+        surface
+        for surface in oracle
+        if int(surface.great0 | surface.great1 | surface.great2 | surface.great3) == 0
+        and int(surface.body_great) == 0
+        and int(surface.body_fever_great) == 0
+    )
+    production = build_force_greats_response_first_frontiers_gpu_batch(
+        timestamps=timestamps,
+        perfect_candidate_timestamps=perfect_candidates,
+        great_candidate_timestamps=perfect_candidates,
+        perfect_floor_timestamps=perfect_floor,
+        great_floor_timestamps=perfect_floor,
+        lanes=lanes,
+        geometries=((raw_fever_fill, non_fever_base, real_fever_time),),
+        use_forced_great_timing=False,
+    )[0].first_frontier
+
+    assert all_perfect_oracle
+    assert all(
+        int(surface.great0 | surface.great1 | surface.great2 | surface.great3) == 0
+        and int(surface.body_great) == 0
+        and int(surface.body_fever_great) == 0
+        for surface in production
+    )
+    missing = _missing_pg_oracle_surfaces(production, all_perfect_oracle)
+    assert not missing, (
+        f"Base producer discarded {len(missing)} legal all-Perfect oracle surfaces "
+        f"(production={len(production)}, oracle={len(all_perfect_oracle)}): {missing[:8]}"
+    )
+
+
+def test_base_large_fill_uses_shared_input_engine_recurrence() -> None:
+    """A body-only Base chart must not bypass capped activation ownership."""
+    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
+        build_force_greats_response_first_frontiers_gpu_batch,
+    )
+    from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
+
+    chart_path = ROOT / "Data" / "Normal" / "Sweat Around The World (Intense Mix) by Just Sweat [Just Dance].txt"
+    calc_song = clone_calc_song(get_base_calc_song(str(chart_path), {}))
+    apply_timing_envelope(calc_song)
+    song_inputs = extract_fg_song_inputs(calc_song)
+    fill_count = 112.0
+    real_fever_time = 33.10281210926771
+
+    oracle = input_engine_rebuild_first_frontier(
+        timestamps=song_inputs.timestamps,
+        perfect_candidate_timestamps=song_inputs.perfect_candidates,
+        great_candidate_timestamps=song_inputs.perfect_candidates,
+        perfect_floor_timestamps=song_inputs.perfect_floor,
+        great_floor_timestamps=song_inputs.perfect_floor,
+        lanes=song_inputs.lanes,
+        raw_fever_fill=fill_count,
+        non_fever_base=0,
+        real_fever_time=real_fever_time,
+        use_forced_great_timing=False,
+    )
+    production = build_force_greats_response_first_frontiers_gpu_batch(
+        timestamps=[song_inputs.timestamps],
+        perfect_candidate_timestamps=[song_inputs.perfect_candidates],
+        great_candidate_timestamps=[song_inputs.perfect_candidates],
+        perfect_floor_timestamps=[song_inputs.perfect_floor],
+        great_floor_timestamps=[song_inputs.perfect_floor],
+        lanes=[song_inputs.lanes],
+        geometries=[(fill_count, 0, real_fever_time)],
+        use_forced_great_timing=False,
+    )[0]
+
+    expected = ((0, 0, 0, 0, 0, 0, 0, 0, 640, 0, 0),)
+    assert tuple(tuple(map(int, row)) for row in oracle.first_frontier) == expected
+    assert tuple(tuple(map(int, row)) for row in production.first_frontier) == expected
 
 
 def test_fg_response_reducer_prunes_body_dominated_same_head_overlap() -> None:
@@ -3264,10 +3357,10 @@ def test_fg_response_bounded_exact_duplicate_skip_matches_every_retired_prefix()
         _NUMBA_SURFACE_TYPE,
         _numba_head_basis_corner_scores_row,
         _numba_head_envelope_insert_blocked_with_scores,
-        _numba_head_envelope_insert_with_scores,
         _numba_head_surface_basis,
         _numba_mark_head_surface_first_seen,
     )
+    from tests.retired_fg_frontier_semantics import retired_head_envelope_insert_with_scores
 
     weak = (0, 0, 0, 0, 25, 50, 25)
     strong = (0, 0, 0, 0, 60, 50, 25)
@@ -3298,7 +3391,7 @@ def test_fg_response_bounded_exact_duplicate_skip_matches_every_retired_prefix()
         _numba_head_basis_corner_scores_row(
             _numba_head_surface_basis(row, 0, 100), scores
         )
-        retired, retired_scores = _numba_head_envelope_insert_with_scores(
+        retired, retired_scores = retired_head_envelope_insert_with_scores(
             retired, retired_scores, row, scores
         )
         if _numba_mark_head_surface_first_seen(seen, row):

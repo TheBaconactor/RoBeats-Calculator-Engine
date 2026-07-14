@@ -129,7 +129,11 @@ def _calc_song(*, n_notes: int = 400) -> dict:
             "TimingEnvelopeMode": "perfect",
             "TimingEnvelopeFGCarry": "full",
         },
-        "song_data": {"timestamps": timestamps},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": np.ones(int(n_notes), dtype=np.int16),
+            "lanes": np.arange(int(n_notes), dtype=np.int32) % np.int32(4),
+        },
     }
 
 
@@ -285,6 +289,9 @@ def eval_device_state():
     base_fixed_stats_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32)
 
     calc_song = _calc_song()
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    apply_timing_envelope(calc_song, mode="perfect_window")
     ref_arrays = _ref_arrays()
     flags = normalize_color_flags(build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR)).as_tuple()
 

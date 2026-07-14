@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from ...core.constants import FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
+from ...core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
 from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from ...core.utils import safe_float, safe_int
 from ..fever_timeline import calculate_fever_timeline_indices, calculate_force_greats_timeline_indices
@@ -46,7 +46,7 @@ _TIMELINE_TRACE_MEMO_MAX = 4096
 
 def _copy_timeline_trace_meta(meta: dict[str, Any]) -> dict[str, Any]:
     out = dict(meta)
-    out["frontier_trace"] = [dict(row) for row in meta["frontier_trace"]]
+    out["frontier_trace"] = [dict(source) for source in meta["frontier_trace"]]
     out["response_surface"] = list(meta["response_surface"])
     return out
 
@@ -245,7 +245,10 @@ def score_stats_exact_with_timeline_trace(
         ft_idx,
         ff_idx,
     ) = _score_stat_inputs(stats, frontier_refs, song_meta.primary_color, song_meta.secondary_color)
-    score, pool_idx = _score_timeline_frontier_payload_vectorized_result(
+    ft_i = max(0, min(int(ft_idx), TOTAL_ROWS))
+    ff_i = max(0, min(int(ff_idx), TOTAL_ROWS))
+
+    best_score, pool_idx = _score_timeline_frontier_payload_vectorized_result(
         payload=payload,
         total_notes=int(total_notes),
         primary_val=int(primary_val),
@@ -256,8 +259,6 @@ def score_stats_exact_with_timeline_trace(
         ft_idx=int(ft_idx),
         ff_idx=int(ff_idx),
     )
-    ft_i = max(0, min(int(ft_idx), TOTAL_ROWS))
-    ff_i = max(0, min(int(ff_idx), TOTAL_ROWS))
     memo_key = (frontier_result.cache_key, ft_i, ff_i, int(pool_idx))
     frontier_meta = _TIMELINE_TRACE_MEMO.get(memo_key)
     if frontier_meta is None:
@@ -273,7 +274,7 @@ def score_stats_exact_with_timeline_trace(
         while len(_TIMELINE_TRACE_MEMO) >= _TIMELINE_TRACE_MEMO_MAX:
             _TIMELINE_TRACE_MEMO.pop(next(iter(_TIMELINE_TRACE_MEMO)))
         _TIMELINE_TRACE_MEMO[memo_key] = frontier_meta
-    return {"score": int(score), "TimelineFrontier": _copy_timeline_trace_meta(frontier_meta)}
+    return {"score": int(best_score), "TimelineFrontier": _copy_timeline_trace_meta(frontier_meta)}
 
 
 def score_stats_exact_batch(
@@ -664,62 +665,71 @@ def _timeline_trace_for_payload_surface(
     calc_song: dict[str, Any],
     ref_arrays: Mapping[str, Any],
 ) -> dict[str, Any]:
-    from ..taichi_gem.api.timeline import _timeline_payload_context
-    from ..timeline_exact_frontier import TimelineExactSignature, reconstruct_timeline_frontier_trace
+    from ..fg_response_scoring.physical_replay import validate_base_physical_replay
+    from ..timeline_exact_frontier import reconstruct_timeline_physical_trace
 
     pool_idx_i = int(pool_idx)
     if pool_idx_i < 0 or pool_idx_i >= int(payload.frontier_pool_used):
         raise ValueError("Timeline frontier winner points outside the cached surface pool")
 
-    head_len = min(max(0, int(total_notes)), 100)
     body_fever = int(payload.grid_frontier_body_fever_pool[0, pool_idx_i])
     body_normal = int(payload.grid_frontier_body_normal_pool[0, pool_idx_i])
     words = tuple(int(payload.grid_frontier_masks_bits_pool[0, pool_idx_i, word]) for word in range(4))
-    surface = TimelineExactSignature(
-        head_len=int(head_len),
-        head_bits=(int(words[0]), int(words[1]), int(words[2]), int(words[3])),
-        body_fever=int(body_fever),
-        body_normal=int(body_normal),
-        fever_activations=0,
-        gap=0,
-    )
-
-    ctx = _timeline_payload_context(calc_song, dict(ref_arrays), require_cached_group_payload=True)
-    group_payload = ctx["group_payload"]
+    song_inputs = extract_fg_song_inputs(calc_song)
     ref_ft = np.asarray(ref_arrays["Fever Time"], dtype=np.float32).reshape(-1)
     ref_ff = np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32).reshape(-1)
     ft_i = max(0, min(int(ft_idx), TOTAL_ROWS))
     ff_i = max(0, min(int(ff_idx), TOTAL_ROWS))
 
-    total_notes_i = int(ctx["total_notes"])
-    long_notes_i = int(ctx["long_notes"])
-    non_fever_cas = float(max(0, total_notes_i - long_notes_i)) * 0.333
-    fever_time_cas = float(ctx["last_note_time"]) * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
-    fill_count = int(np.ceil(np.float32(non_fever_cas) * np.float32(ref_ff[ff_i])))
+    total_notes_i = int(song_inputs.total_notes)
+    long_notes_i = int(song_inputs.long_notes)
+    non_fever_cas = float(max(0, total_notes_i - long_notes_i)) * float(FEVER_FILL_BASE_RATE)
+    fever_time_cas = float(song_inputs.last_note_time) * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
+    raw_fever_fill = float(non_fever_cas) * float(ref_ff[ff_i])
+    fill_count = int(np.ceil(raw_fever_fill))
     fill_count = max(1, int(fill_count))
-    d_ms = int(np.ceil(np.float32(fever_time_cas) * np.float32(ref_ft[ft_i]) * np.float32(1000.0)))
-    d_ms = max(0, int(d_ms))
+    real_fever_time = max(0.0, float(fever_time_cas) * float(ref_ft[ft_i]))
 
-    trace = reconstruct_timeline_frontier_trace(
-        total_notes=int(total_notes_i),
-        group_starts=np.asarray(group_payload["group_starts"], dtype=np.int32),
-        group_ends=np.asarray(group_payload["group_ends"], dtype=np.int32),
-        group_base_t_ms=np.asarray(group_payload["group_base_t_ms"], dtype=np.int32),
-        group_low_ms=np.asarray(group_payload["group_low_ms"], dtype=np.int32),
-        group_high_ms=np.asarray(group_payload["group_high_ms"], dtype=np.int32),
-        note_group_idx=np.asarray(group_payload["note_group_idx"], dtype=np.int32),
+    trace = reconstruct_timeline_physical_trace(
+        head_bits=(int(words[0]), int(words[1]), int(words[2]), int(words[3])),
+        body_fever=int(body_fever),
+        timestamps=song_inputs.timestamps,
+        perfect_candidate_timestamps=song_inputs.perfect_candidates,
+        great_candidate_timestamps=song_inputs.great_candidates,
+        perfect_floor_timestamps=song_inputs.perfect_floor,
+        great_floor_timestamps=song_inputs.great_floor,
+        lanes=song_inputs.lanes,
+        raw_fever_fill=float(raw_fever_fill),
+        real_fever_time=float(real_fever_time),
+    )
+    song_data = calc_song.get("song_data")
+    if not isinstance(song_data, Mapping):
+        raise ValueError("Timeline frontier trace requires complete chart geometry")
+    response_surface = [
+        int(words[0]),
+        int(words[1]),
+        int(words[2]),
+        int(words[3]),
+        int(body_fever),
+        int(body_normal),
+    ]
+    validate_base_physical_replay(
+        frontier_trace=trace,
+        response_surface=response_surface,
+        timestamps=song_data.get("timestamps", ()),
+        note_types=song_data.get("note_types", ()),
+        lanes=song_data.get("lanes", ()),
         fill_count=int(fill_count),
-        d_ms=int(d_ms),
-        target_surface=surface,
+        fever_duration_ms=float(real_fever_time) * 1000.0,
     )
     return {
-        "frontier_trace": list(trace),
-        "response_surface": [int(words[0]), int(words[1]), int(words[2]), int(words[3]), body_fever, body_normal],
+        "frontier_trace": [dict(section) for section in trace],
+        "response_surface": response_surface,
         "frontier_pool_index": int(pool_idx_i),
         "frontier_first_surfaces": int(payload.grid_frontier_count[0, ft_i, ff_i]),
         "activation_judgment": "perfect",
         "fill_count": int(fill_count),
-        "fever_duration_ms": int(d_ms),
+        "fever_duration_ms": float(real_fever_time) * 1000.0,
     }
 
 

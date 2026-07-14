@@ -1,446 +1,181 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
-from gear_optimizer.solver.timeline_exact_frontier import (
-    TimelineExactSignature,
-    _build_grouped_timeline_context,
-    _build_exact_timeline_frontier_from_context,
-    _enumerate_first_exit_boundary_intervals_from_activation_band,
-    _enumerate_first_exit_boundary_intervals_from_context,
-    _exit_trace_certifies_d_ms,
-    _reachable_act_hi,
-    _timeline_pair_build_tasks,
-    reconstruct_timeline_frontier_trace,
-    reduce_timeline_frontier,
-)
+
+def _load_case(chart_path: Path):
+    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import (
+        get_exact_replay_ref_arrays_cached,
+    )
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+    calc_song = clone_calc_song(get_base_calc_song(str(chart_path), {}))
+    apply_timing_envelope(calc_song, mode="perfect_window")
+    return calc_song, get_exact_replay_ref_arrays_cached()
 
 
-def _fever_count_5(base_ms, high_ms, note_types, fill_count, d_ms):
-    """Build the canonical base surface for a 5-note single-group-per-note chart and return the
-    replayable fever-note set (via the note graph, which applies the hit-time witness semantics)."""
-    gs = np.array([0, 1, 2, 3, 4], np.int32)
-    ge = np.array([1, 2, 3, 4, 5], np.int32)
-    gb = np.array(base_ms, np.int32)
-    gl = np.array([-20 if h == 40 else -40 for h in high_ms], np.int32)
-    gh = np.array(high_ms, np.int32)
-    ng = np.array([0, 1, 2, 3, 4], np.int32)
-    ctx = _build_grouped_timeline_context(5, group_starts=gs, group_ends=ge, group_base_t_ms=gb,
-                                          group_low_ms=gl, group_high_ms=gh, note_group_idx=ng)
-    pack = _build_exact_timeline_frontier_from_context(ctx, fill_count=fill_count, d_ms=d_ms)
-    trace = reconstruct_timeline_frontier_trace(
-        total_notes=5, group_starts=gs, group_ends=ge, group_base_t_ms=gb, group_low_ms=gl,
-        group_high_ms=gh, note_group_idx=ng, fill_count=fill_count, d_ms=d_ms, target_surface=pack.canonical)
+def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) -> None:
+    """Issue #154: physical engine semantics must own the surface before Pareto reduction."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import timeline_frontier_note_graph
-    notes = timeline_frontier_note_graph(frontier_trace=trace, total_notes=5,
-                                         timestamps=[x / 1000 for x in base_ms], note_types=note_types)
-    return {i for i in range(5) if notes[i]["fever"]}, float(trace[0]["activation_hit_ms"])
-
-
-def test_base_chord_reachability_phantom_late_tail_is_capped() -> None:
-    # A held tail (idx1, +80) chorded at 500ms with a NARROWER normal (idx2, +40) indexed after it,
-    # activation landing on the tail (fill_count=2). The tail's +80 clock (580ms) is UNREACHABLE:
-    # the normal sibling is hit at +40 (540ms) FIRST and completes the bar. The over-extended +80
-    # window sweeps note3@720 (earliest hit 700) into fever, which no live play reaches.
-    fever, clock = _fever_count_5([0, 500, 500, 720, 5000], [40, 80, 40, 40, 40], [1, 3, 1, 1, 1],
-                                  fill_count=2, d_ms=150)
-    assert clock == 540.0, clock                 # clock capped from the phantom 580 to the reachable 540
-    assert fever == {1, 2}, fever                 # note3@720 dropped (was {1,2,3} pre-fix)
-
-
-def test_base_chord_reachability_score_neutral_when_count_coincides() -> None:
-    # Same chord, but note3@560 (earliest hit 540) is fevered under BOTH the phantom and reachable
-    # windows -> capping the clock is score-neutral (count preserved), only the reported clock moves.
-    fever, clock = _fever_count_5([0, 500, 500, 560, 900], [40, 80, 40, 40, 40], [1, 3, 1, 1, 1],
-                                  fill_count=2, d_ms=150)
-    assert clock == 540.0, clock
-    assert fever == {1, 2, 3}, fever
-
-
-def test_base_chord_reachability_does_not_downgrade_reachable_wide_tail() -> None:
-    # Wide held tail is the LAST note of its chord (idx2, +80) with no later-indexed preempting
-    # sibling -> the cap must NOT fire and a genuinely reachable late activation stays.
-    class _Ctx:
-        group_base_t_ms = np.array([0, 200, 200], np.int32)
-        group_high_ms = np.array([40, 40, 80], np.int32)
-        gcount = 3
-    assert _reachable_act_hi(_Ctx(), 2, 80) == 80          # no later sibling -> unchanged
-
-
-def test_base_chord_reachability_noop_on_distinct_timestamps() -> None:
-    # Distinct timestamps (no overlap): the forward scan breaks immediately, so the clock is
-    # returned unchanged -> distinct-timestamp charts are bit-identical.
-    class _Ctx:
-        group_base_t_ms = np.array([0, 500, 560, 720, 5000], np.int32)
-        group_high_ms = np.array([40, 80, 40, 40, 40], np.int32)
-        gcount = 5
-    for g in range(5):
-        assert _reachable_act_hi(_Ctx(), g, int(_Ctx.group_high_ms[g])) == int(_Ctx.group_high_ms[g])
-
-
-def _score(surface: TimelineExactSignature, *, head_len: int, normal: int, fever: int) -> int:
-    fever_head = 0
-    for note_idx in range(head_len):
-        word = note_idx // 32
-        bit = note_idx % 32
-        fever_head += (surface.head_bits[word] >> bit) & 1
-    normal_head = head_len - fever_head
-    return fever * (fever_head + surface.body_fever) + normal * (normal_head + surface.body_normal)
-
-
-def _assert_witness_consistent(row: dict, *, d_ms: float) -> None:
-    """Invariants every largest-cushion trace section must satisfy (issue #41)."""
-    assert row["activation_judgment"] == "perfect"
-    assert row["activation_hit_offset_kind"] == "largest_cushion"
-    assert row["activation_hit_offset_ms"] == row["activation_hit_offset_upper_ms"]
-    assert row["activation_hit_offset_lower_ms"] <= row["activation_hit_offset_upper_ms"]
-    assert row["activation_hit_ms"] == row["activation_ms"] + row["activation_hit_offset_ms"]
-    assert row["fever_window_end_ms"] == row["activation_hit_ms"] + float(d_ms)
-
-
-def test_timeline_surface_dominance_reduction_is_lossless_for_positive_score_weights() -> None:
-    surfaces = (
-        TimelineExactSignature(4, (0b0001, 0, 0, 0), 3, 7, 1, 4),
-        TimelineExactSignature(4, (0b0001, 0, 0, 0), 3, 7, 1, 4),  # exact duplicate
-        TimelineExactSignature(4, (0b0011, 0, 0, 0), 4, 6, 1, 3),  # dominates the first two
-        TimelineExactSignature(4, (0b0101, 0, 0, 0), 4, 6, 1, 3),  # incomparable head mask
-        TimelineExactSignature(4, (0b0111, 0, 0, 0), 5, 6, 1, 2),  # dominates both incomparable children
+    from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+        validate_base_physical_replay,
     )
-    retained = reduce_timeline_frontier(surfaces)
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
+    from gear_optimizer.solver.taichi_gem.api.timeline import reset_timeline_state
+    from tools.verify.game_sim import IntendedNote, NoteChart, presses_from_intended, simulate
 
-    assert retained == (TimelineExactSignature(4, (0b0111, 0, 0, 0), 5, 6, 1, 2),)
-
-    for normal in range(1, 14):
-        for fever in range(normal, normal * 8 + 1):
-            before = max(_score(surface, head_len=4, normal=normal, fever=fever) for surface in surfaces)
-            after = max(_score(surface, head_len=4, normal=normal, fever=fever) for surface in retained)
-            assert after == before
-
-
-def test_exact_frontier_builder_is_deterministic_and_canonical() -> None:
-    group_starts = np.array([0, 2, 4], dtype=np.int32)
-    group_ends = np.array([2, 4, 6], dtype=np.int32)
-    group_base_t_ms = np.array([0, 100, 200], dtype=np.int32)
-    group_low_ms = np.array([0, 0, 0], dtype=np.int32)
-    group_high_ms = np.array([10, 10, 10], dtype=np.int32)
-    note_group_idx = np.array([0, 0, 1, 1, 2, 2], dtype=np.int32)
-
-    ctx = _build_grouped_timeline_context(
-        6,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
+    reset_timeline_state()
+    chart_path = Path(__file__).resolve().parents[1] / "Data" / "Hard" / "Epilogue (Hard) by Creo.txt"
+    calc_song, ref_arrays = _load_case(chart_path)
+    replay = score_stats_exact_with_timeline_trace(
+        {
+            "Perfect Points": 85,
+            "Combo Multiplier": 76,
+            "Fever Multiplier": 74,
+            "Fever Fill Rate": 78,
+            "Fever Time": 17,
+            "Chill": 122,
+            "Flow": 0,
+            "Rush": 240,
+            "Beat": 37,
+            "Vibe": 772,
+        },
+        calc_song,
+        ref_arrays,
     )
-    pack_a = _build_exact_timeline_frontier_from_context(ctx, fill_count=1, d_ms=0)
-    pack_b = _build_exact_timeline_frontier_from_context(ctx, fill_count=1, d_ms=0)
-
-    assert pack_a == pack_b
-    assert len(pack_a.surfaces) >= 1
-    assert pack_a.canonical in pack_a.surfaces
-    assert pack_a.head_len == 6
-    assert pack_a.body_fever + pack_a.body_normal == 0
-
-
-def test_timeline_pair_build_tasks_split_single_fill_count_across_d_ms_threads() -> None:
-    tasks = _timeline_pair_build_tasks([7], [100, 200, 300, 400, 500], thread_count=3)
-
-    assert [fill_count for fill_count, _ in tasks] == [7, 7, 7]
-    assert [d_ms for _, chunk in tasks for d_ms in chunk] == [100, 200, 300, 400, 500]
-    assert [chunk for _, chunk in tasks] == [[100], [200, 300], [400, 500]]
-
-
-def test_timeline_frontier_trace_reconstructs_selected_surface() -> None:
-    group_starts = np.array([0, 1, 3, 4, 6, 7], dtype=np.int32)
-    group_ends = np.array([1, 3, 4, 6, 7, 9], dtype=np.int32)
-    group_base_t_ms = np.array([0, 85, 170, 260, 390, 520], dtype=np.int32)
-    group_low_ms = np.array([-20, -20, -20, -20, -20, -20], dtype=np.int32)
-    group_high_ms = np.array([40, 40, 40, 40, 40, 40], dtype=np.int32)
-    note_group_idx = np.array([0, 1, 1, 2, 3, 3, 4, 5, 5], dtype=np.int32)
-    ctx = _build_grouped_timeline_context(
-        9,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
-    )
-    pack = _build_exact_timeline_frontier_from_context(ctx, fill_count=2, d_ms=110)
-    target = pack.surfaces[0]
-
-    trace = reconstruct_timeline_frontier_trace(
-        total_notes=9,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
-        fill_count=2,
-        d_ms=110,
-        target_surface=target,
+    timeline = replay["TimelineFrontier"]
+    assert int(replay["score"]) == 23_944_097
+    assert timeline["response_surface"] == [0, 0, 0xFFFFFFF8, 15, 725, 137]
+    assert [
+        (int(section["activation_index"]), int(section["fever_end_index"]))
+        for section in timeline["frontier_trace"]
+    ] == [(67, 297), (365, 675), (743, 961)]
+    assert all(
+        int(section["activation_schedule_schema_version"]) == 1
+        and "physical_fever_runs" not in section
+        for section in timeline["frontier_trace"]
     )
 
-    fever_bits = [0, 0, 0, 0]
-    body_fever = 0
-    for row in trace:
-        _assert_witness_consistent(row, d_ms=110.0)
-        assert -20 <= row["activation_hit_offset_ms"] <= 40
-        for note_idx in range(int(row["activation_index"]), min(int(row["fever_end_index"]), target.head_len)):
-            fever_bits[note_idx // 32] |= 1 << (note_idx % 32)
-        body_fever += int(row["body_fever"])
-
-    assert tuple(fever_bits) == target.head_bits
-    assert body_fever == target.body_fever
-
-
-def test_timeline_frontier_trace_logs_largest_cushion_offset_when_zero_changes_surface() -> None:
-    group_starts = np.array([0, 1, 2], dtype=np.int32)
-    group_ends = np.array([1, 2, 3], dtype=np.int32)
-    group_base_t_ms = np.array([0, 1000, 2000], dtype=np.int32)
-    group_low_ms = np.array([0, 0, 0], dtype=np.int32)
-    group_high_ms = np.array([500, 500, 500], dtype=np.int32)
-    note_group_idx = np.array([0, 1, 2], dtype=np.int32)
-    target = TimelineExactSignature(3, (0b110, 0, 0, 0), 0, 0, 1, 0)
-
-    trace = reconstruct_timeline_frontier_trace(
-        total_notes=3,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
-        fill_count=2,
-        d_ms=1000,
-        target_surface=target,
+    song_data = calc_song["song_data"]
+    metadata = calc_song["metadata"]
+    timestamps = np.asarray(song_data["timestamps"], dtype=np.float64)
+    note_types = np.asarray(song_data["note_types"], dtype=np.int32)
+    lanes = np.asarray(song_data["lanes"], dtype=np.int32)
+    physical = validate_base_physical_replay(
+        frontier_trace=timeline["frontier_trace"],
+        response_surface=timeline["response_surface"],
+        timestamps=timestamps,
+        note_types=note_types,
+        lanes=lanes,
+        fill_count=int(timeline["fill_count"]),
+        fever_duration_ms=float(timeline["fever_duration_ms"]),
     )
+    assert sum(physical.fever_mask) == 758
 
-    # The feasible activation band for this terminal exit is [1, 500]; on-chart (0)
-    # would not reach note #2. The witness reports the largest-cushion end (500),
-    # not the smallest-positive offset, and pins the window end to hit + d_ms.
-    assert len(trace) == 1
-    _assert_witness_consistent(trace[0], d_ms=1000.0)
-    assert trace[0]["fever_end_index"] == 3
-    assert trace[0]["activation_hit_offset_ms"] == 500.0
-    assert trace[0]["activation_hit_offset_lower_ms"] == 1.0
-    assert trace[0]["activation_hit_ms"] == 1500.0
-
-
-def test_timeline_frontier_trace_witness_reproduces_carry_dependent_exit() -> None:
-    # Regression for issue #41: a route whose feasible activation band includes
-    # offsets that do NOT reproduce the fever extent under game-style
-    # activation-only timing. The old closest-to-zero choice returned +18ms, which
-    # under activation-only timing exits one note early (misleading witness). The
-    # largest-cushion witness (+40ms) reproduces the exact fever extent.
-    group_base_t_ms = np.array([0, 347, 603, 675], dtype=np.int32)
-    n = 4
-    group_starts = np.arange(n, dtype=np.int32)
-    group_ends = np.arange(1, n + 1, dtype=np.int32)
-    group_low_ms = np.full(n, -20, dtype=np.int32)
-    group_high_ms = np.full(n, 40, dtype=np.int32)
-    note_group_idx = np.arange(n, dtype=np.int32)
-
-    ctx = _build_grouped_timeline_context(
-        n,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
+    graph = timeline_frontier_note_graph(
+        frontier_trace=timeline["frontier_trace"],
+        total_notes=int(timestamps.shape[0]),
+        timestamps=timestamps,
+        note_types=note_types,
+        lanes=lanes,
+        timing_mode="perfect_window",
     )
-    d_ms = 219
-    pack = _build_exact_timeline_frontier_from_context(ctx, fill_count=2, d_ms=d_ms)
-
-    trace = reconstruct_timeline_frontier_trace(
-        total_notes=n,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
-        fill_count=2,
-        d_ms=d_ms,
-        target_surface=pack.canonical,
+    chart = NoteChart(
+        timestamps_ms=[float(value) * 1000.0 for value in timestamps],
+        lanes=[int(value) for value in lanes],
+        note_types=[int(value) for value in note_types],
     )
-
-    assert len(trace) == 1
-    row = trace[0]
-    _assert_witness_consistent(row, d_ms=float(d_ms))
-    a = int(row["activation_index"])
-    fe = int(row["fever_end_index"])
-    assert (a, fe) == (1, 3)
-    # Largest cushion = +40ms, not the misleading closest-to-zero (+18ms).
-    assert row["activation_hit_offset_ms"] == 40.0
-    # The reported offset reproduces the fever extent under activation-only timing.
-    chart = group_base_t_ms.astype(np.int64)
-    threshold = int(chart[a]) + int(row["activation_hit_offset_ms"]) + d_ms
-    activation_only_exit = int(np.searchsorted(chart, threshold, side="left"))
-    assert activation_only_exit == fe
-    # On-chart activation (0ms) would exit one note early -> not a valid witness.
-    assert int(np.searchsorted(chart, int(chart[a]) + 0 + d_ms, side="left")) < fe
-    # Window is internally consistent: duration is exactly d_ms.
-    assert row["fever_window_end_ms"] == row["activation_hit_ms"] + float(d_ms)
-
-
-def test_timeline_frontier_trace_witness_is_legal_for_chorded_held_tail_cluster() -> None:
-    # Regression: a held tail chorded with a narrower note lands in its OWN
-    # (timestamp, window) group, and its wider [-40,+80] window pushes the carry
-    # CLOCK band's upper edge past the following normal note's own Perfect window
-    # [-20,+40]. The old witness reported that clock edge (+80) as the normal
-    # note's own hit offset -- a normal note hit at +80 is a Great in the
-    # decompiled judgement, contradicting activation_judgment="perfect". The
-    # witness must keep activation_index as the count/mask boundary while
-    # attributing the physical +80 hit to the held tail (fever_start_note_index).
-    group_starts = np.array([0, 1, 2, 3, 4], dtype=np.int32)
-    group_ends = np.array([1, 2, 3, 4, 5], dtype=np.int32)
-    group_base_t_ms = np.array([0, 500, 500, 560, 900], dtype=np.int32)
-    group_low_ms = np.array([-20, -40, -20, -20, -20], dtype=np.int32)
-    group_high_ms = np.array([40, 80, 40, 40, 40], dtype=np.int32)
-    note_group_idx = np.array([0, 1, 2, 3, 4], dtype=np.int32)
-    n = 5
-    ctx = _build_grouped_timeline_context(
-        n,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
-    )
-    d_ms = 150
-    # fill_count=3 puts the first-section count boundary on note #2, the normal
-    # note sharing 500ms with the held tail (note #1).
-    pack = _build_exact_timeline_frontier_from_context(ctx, fill_count=3, d_ms=d_ms)
-
-    def _reconstruct(target: TimelineExactSignature):
-        return reconstruct_timeline_frontier_trace(
-            total_notes=n,
-            group_starts=group_starts,
-            group_ends=group_ends,
-            group_base_t_ms=group_base_t_ms,
-            group_low_ms=group_low_ms,
-            group_high_ms=group_high_ms,
-            note_group_idx=note_group_idx,
-            fill_count=3,
-            d_ms=d_ms,
-            target_surface=target,
+    intended = [
+        IntendedNote(
+            note_index=index,
+            hit_time_ms=float(note["hit_time_ms"]),
+            result=str(note["note_result"]).lower(),
+            note_type=int(note_types[index]),
+            lane=int(lanes[index]),
+            delta_ms=float(note["delta_ms"]),
         )
-
-    for target in pack.surfaces:
-        for row in _reconstruct(target):
-            _assert_witness_consistent(row, d_ms=float(d_ms))
-            a = int(row["activation_index"])
-            w = int(row["fever_start_note_index"])
-            assert 0 <= w <= a
-            own_low = int(group_low_ms[note_group_idx[w]])
-            own_high = int(group_high_ms[note_group_idx[w]])
-            # The witness note must be able to hit Perfect at every reported offset.
-            assert row["activation_ms"] == float(group_base_t_ms[note_group_idx[w]])
-            assert own_low <= row["activation_hit_offset_lower_ms"]
-            assert row["activation_hit_offset_upper_ms"] <= own_high
-            assert own_low <= row["activation_hit_offset_ms"] <= own_high
-
-    trace = _reconstruct(pack.canonical)
-    assert len(trace) == 1
-    row = trace[0]
-    # Count/mask boundary stays the normal note; the physical +80 activating hit
-    # is the held tail's (its own window reaches +80, largest cushion preserved).
-    assert int(row["activation_index"]) == 2
-    assert int(row["fever_start_note_index"]) == 1
-    assert row["activation_ms"] == 500.0
-    assert row["activation_hit_offset_ms"] == 80.0
-    assert row["activation_hit_ms"] == 580.0
-    assert row["activation_judgment"] == "perfect"
-
-    # The note graph follows the physical hit: the tail is the fever-starting
-    # witness (delta +80), the count-boundary normal note was hit before the
-    # activation clock so it is outside fever (same fever count, replayable).
-    from gear_optimizer.solver.fg_response_scoring.note_graph import timeline_frontier_note_graph
-
-    notes = timeline_frontier_note_graph(
-        frontier_trace=trace,
-        total_notes=n,
-        timestamps=[0.0, 0.5, 0.5, 0.56, 0.9],
-        note_types=[1, 3, 1, 1, 1],
+        for index, note in enumerate(graph)
+    ]
+    last_note_time = float(metadata["Last Note Time"])
+    last_note_time_ms = last_note_time if last_note_time >= 1000.0 else last_note_time * 1000.0
+    result = simulate(
+        chart,
+        {
+            "PerfectPoints": 85,
+            "ComboMultiplier": 76,
+            "FeverMultiplier": 74,
+            "FeverFillRate": 78,
+            "FeverTime": 17,
+            "ColorGreen": 772,
+            "ColorRed": 240,
+        },
+        ["ColorGreen", "ColorRed"],
+        presses_from_intended(chart, intended),
+        {
+            "hitCount": int(timestamps.shape[0]),
+            "hitObjectsCount": int(np.count_nonzero(note_types != 3)),
+            "lastNoteTimeSec": (last_note_time_ms + 1000.0) / 1000.0,
+        },
     )
-    assert notes[1]["is_activation_witness"] is True
-    assert notes[1]["delta_ms"] == 80.0
-    assert notes[1]["fever"] is True
-    assert notes[2]["fever"] is False
-    assert notes[2]["is_activation_witness"] is False
-    assert notes[3]["fever"] is True
-    assert notes[4]["fever"] is False
+    assert result.score == int(replay["score"])
+    assert result.tally == {"perfect": 962, "great": 0, "okay": 0, "miss": 0}
+    assert result.fever_hits == 758
+    reset_timeline_state()
 
 
-def test_vectorized_exit_enumerator_matches_scalar_reference() -> None:
-    group_starts = np.array([0, 1, 3, 4, 6, 7], dtype=np.int32)
-    group_ends = np.array([1, 3, 4, 6, 7, 9], dtype=np.int32)
-    group_base_t_ms = np.array([0, 85, 170, 260, 390, 520], dtype=np.int32)
-    group_low_ms = np.array([-10, -20, -5, 0, -15, 5], dtype=np.int32)
-    group_high_ms = np.array([30, 40, 20, 50, 35, 60], dtype=np.int32)
-    note_group_idx = np.array([0, 1, 1, 2, 3, 3, 4, 5, 5], dtype=np.int32)
-    ctx = _build_grouped_timeline_context(
-        9,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
+def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatch, tmp_path) -> None:
+    """A physically exact producer retains the true combo-scaled head mask."""
+    from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+        validate_base_physical_replay,
     )
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
+    from gear_optimizer.solver.taichi_gem.api.timeline import reset_timeline_state
 
-    for activation_group in range(0, 5):
-        for act_lo, act_hi in ((-20, 40), (-5, 20), (10, 60)):
-            for d_ms in (0, 50, 130, 260, 600):
-                scalar = _enumerate_first_exit_boundary_intervals_from_activation_band(
-                    total_notes=9,
-                    group_starts=group_starts,
-                    group_base_t_ms=group_base_t_ms,
-                    group_low_ms=group_low_ms,
-                    group_high_ms=group_high_ms,
-                    activation_group=activation_group,
-                    act_lo=act_lo,
-                    act_hi=act_hi,
-                    d_ms=d_ms,
-                )
-                vectorized = _enumerate_first_exit_boundary_intervals_from_context(
-                    ctx,
-                    activation_group=activation_group,
-                    act_lo=act_lo,
-                    act_hi=act_hi,
-                    d_ms=d_ms,
-                )
-                assert vectorized == scalar
-
-
-def test_exit_trace_certificate_reuse_matches_direct_exact_solve() -> None:
-    group_starts = np.array([0, 1, 3, 4, 6, 7], dtype=np.int32)
-    group_ends = np.array([1, 3, 4, 6, 7, 9], dtype=np.int32)
-    group_base_t_ms = np.array([0, 85, 170, 260, 390, 520], dtype=np.int32)
-    group_low_ms = np.array([-10, -20, -5, 0, -15, 5], dtype=np.int32)
-    group_high_ms = np.array([30, 40, 20, 50, 35, 60], dtype=np.int32)
-    note_group_idx = np.array([0, 1, 1, 2, 3, 3, 4, 5, 5], dtype=np.int32)
-    ctx = _build_grouped_timeline_context(
-        9,
-        group_starts=group_starts,
-        group_ends=group_ends,
-        group_base_t_ms=group_base_t_ms,
-        group_low_ms=group_low_ms,
-        group_high_ms=group_high_ms,
-        note_group_idx=note_group_idx,
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
+    reset_timeline_state()
+    chart_path = (
+        Path(__file__).resolve().parents[1]
+        / "Data"
+        / "Easy"
+        / "Alive (Easy) by Rutra X KepoWorld.txt"
     )
+    calc_song, ref_arrays = _load_case(chart_path)
+    replay = score_stats_exact_with_timeline_trace(
+        {
+            "Perfect Points": 85,
+            "Combo Multiplier": 69,
+            "Fever Multiplier": 72,
+            "Fever Fill Rate": 73,
+            "Fever Time": 15,
+            "Chill": 58,
+            "Flow": 779,
+            "Rush": 0,
+            "Beat": 26,
+            "Vibe": 12,
+        },
+        calc_song,
+        ref_arrays,
+    )
+    timeline = replay["TimelineFrontier"]
+    assert int(replay["score"]) == 6_641_958
+    assert timeline["response_surface"] == [0xFFF80000, 0xFFFFFFFF, 0x7FFF, 0x8, 126, 20]
+    assert [
+        (int(section["activation_index"]), int(section["fever_end_index"]))
+        for section in timeline["frontier_trace"]
+    ] == [(19, 79), (99, 159), (179, 246)]
 
-    trace = []
-    representative = _build_exact_timeline_frontier_from_context(ctx, fill_count=2, d_ms=80, exit_trace=trace)
-    assert trace
-
-    for d_ms in (70, 75, 80, 85, 90, 120):
-        if _exit_trace_certifies_d_ms(ctx, trace, d_ms):
-            direct = _build_exact_timeline_frontier_from_context(ctx, fill_count=2, d_ms=d_ms)
-            assert direct == representative
+    song_data = calc_song["song_data"]
+    validate_base_physical_replay(
+        frontier_trace=timeline["frontier_trace"],
+        response_surface=timeline["response_surface"],
+        timestamps=song_data["timestamps"],
+        note_types=song_data["note_types"],
+        lanes=song_data["lanes"],
+        fill_count=int(timeline["fill_count"]),
+        fever_duration_ms=float(timeline["fever_duration_ms"]),
+    )
+    reset_timeline_state()

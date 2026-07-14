@@ -319,7 +319,9 @@ def _stale_00_hard_fg_entry() -> dict:
 
 def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
+    apply_timing_envelope(calc_song, mode="perfect_window")
     build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
 
 

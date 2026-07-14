@@ -36,6 +36,7 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
         build_or_load_timeline_frontier_payload,
         precompute_timeline_gpu,
     )
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
@@ -65,8 +66,10 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
             "timestamps": timestamps,
             "chart_timestamps": timestamps,
             "note_types": note_types,
+            "lanes": np.arange(n_notes, dtype=np.int32) % np.int32(4),
         },
     }
+    apply_timing_envelope(calc_song, mode="perfect_window")
 
     rows = int(TOTAL_ROWS) + 1
     ref_arrays = {

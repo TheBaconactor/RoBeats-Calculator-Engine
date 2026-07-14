@@ -166,39 +166,6 @@ def _lower_bound_from(timestamps: np.ndarray, value: float) -> int:
     return int(np.searchsorted(timestamps, np.float32(value), side="left", sorter=None))
 
 
-def _edge_end(
-    *,
-    n: int,
-    a: int,
-    activation_great: bool,
-    real_fever_time: float,
-    use_forced_great_timing: bool,
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray | None = None,
-    great_candidate_timestamps: np.ndarray | None = None,
-    perfect_floor_timestamps: np.ndarray,
-) -> tuple[int, float, int]:
-    perfect_ts = timestamps if perfect_candidate_timestamps is None else perfect_candidate_timestamps
-    great_ts = timestamps if great_candidate_timestamps is None else great_candidate_timestamps
-    # Endpoint-early fever inclusion (issue #42): the boundary searches the earliest-Perfect
-    # floor envelope, not chart, so a boundary note within early-hit reach of the cutoff is
-    # counted in fever. The cutoff VALUE (start_time = latest Perfect / late Great) is unchanged.
-    floor_ts = perfect_floor_timestamps
-    start_time = float(perfect_ts[int(a)])
-    carry_idx = -1
-    if bool(use_forced_great_timing) and bool(activation_great) and int(a) < int(n):
-        activation_t = float(great_ts[int(a)])
-        if activation_t > start_time:
-            start_time = activation_t
-            carry_idx = int(a)
-    e = _lower_bound_from(floor_ts, start_time + float(real_fever_time))
-    if e <= int(a):
-        e = int(a) + 1
-    if e > int(n):
-        e = int(n)
-    return int(e), float(start_time), int(carry_idx)
-
-
 def _edge_end_at_hit(
     *,
     n: int,
@@ -1221,13 +1188,10 @@ def _option_with_witness(
         "fever_end_index": option["fever_end_index"],
         "fever_end_ms": option["fever_end_ms"],
         "fever_duration_ms": float(real_fever_time) * 1000.0,
-        # Largest-cushion fever cutoff: the LATEST legal activation hit (`hit_hi`) plus the
-        # fever duration -- this is the boundary `_edge_end` actually used to compute
-        # `fever_end_index`, and it matches the base trace's `fever_window_end_ms`. It must NOT
-        # use the centered display hit (which is earlier), or `_mark_endpoint_early_hits` would
-        # flag notes reachable at delta 0 by hitting the activation late. Stats-free /
-        # tier-invariant (start time + FT-derived duration).
-        "fever_window_end_ms": (float(hit_hi) + float(real_fever_time)) * 1000.0,
+        # The cutoff belongs to the materialized activation witness, not another legal point in
+        # its interval. Endpoint guidance may move boundary notes earlier to realize the selected
+        # surface, but activation and cutoff must describe one physical play.
+        "fever_window_end_ms": (float(centered_start_time) + float(real_fever_time)) * 1000.0,
         **_trace_timing_fields(
             carry_idx=int(w["carry_idx"]),
             start_time=float(centered_start_time),
@@ -1251,72 +1215,6 @@ def _option_with_witness(
         "preactivation_great_count": int(schedule.preactivation_great_count),
         "surface": option["surface"],
     }
-
-
-def _edge_surface_option_details(
-    *,
-    i: int,
-    first: bool,
-    n: int,
-    actions: list[int],
-    later_fill: list[int],
-    first_fill: list[int],
-    later_forced: list[int],
-    first_forced: list[int],
-    real_fever_time: float,
-    use_forced_great_timing: bool,
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray | None = None,
-    great_candidate_timestamps: np.ndarray | None = None,
-    perfect_floor_timestamps: np.ndarray,
-    great_floor_timestamps: np.ndarray,
-    raw_fever_fill: float,
-    lanes: np.ndarray | None = None,
-) -> list[dict[str, Any]]:
-    """Full option details (surface edge + witness fields) for every option."""
-    if lanes is None:
-        raise ValueError("lanes are required for input-engine-aware FG response reconstruction")
-    reachability_context = _build_activation_reachability_context(
-        timestamps=timestamps,
-        perfect_floor_timestamps=perfect_floor_timestamps,
-        perfect_candidate_timestamps=(
-            timestamps if perfect_candidate_timestamps is None else perfect_candidate_timestamps
-        ),
-        great_floor_timestamps=great_floor_timestamps,
-        great_candidate_timestamps=timestamps if great_candidate_timestamps is None else great_candidate_timestamps,
-        lanes=lanes,
-        fever_fill_denom=float(raw_fever_fill),
-    )
-    return [
-        _option_with_witness(
-            option,
-            reachability_context=reachability_context,
-            timestamps=timestamps,
-            n=int(n),
-            real_fever_time=float(real_fever_time),
-            perfect_floor_timestamps=perfect_floor_timestamps,
-        )
-        for option in _edge_surface_options(
-            reachability_context=reachability_context,
-            i=int(i),
-            first=bool(first),
-            n=int(n),
-            actions=actions,
-            later_fill=later_fill,
-            first_fill=first_fill,
-            later_forced=later_forced,
-            first_forced=first_forced,
-            real_fever_time=float(real_fever_time),
-            use_forced_great_timing=bool(use_forced_great_timing),
-            timestamps=timestamps,
-            perfect_candidate_timestamps=perfect_candidate_timestamps,
-            great_candidate_timestamps=great_candidate_timestamps,
-            perfect_floor_timestamps=perfect_floor_timestamps,
-            great_floor_timestamps=great_floor_timestamps,
-            lanes=lanes,
-            raw_fever_fill=float(raw_fever_fill),
-        )
-    ]
 
 
 def reconstruct_force_greats_response_counts(

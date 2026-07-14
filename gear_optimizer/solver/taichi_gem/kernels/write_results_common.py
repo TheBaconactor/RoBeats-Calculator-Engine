@@ -3,7 +3,7 @@
 import taichi as ti
 
 from . import kernels_helpers
-from .kernels_scoring import optimize_core_device_exact_bound, score_solution_from_gems_preloaded
+from .kernels_scoring import optimize_core_device_exact_bound, score_solution_from_gems_frontier
 
 
 @ti.func
@@ -43,8 +43,6 @@ def solve_best_combo_uncached(
     ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
     ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
     ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-    count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-    count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
     head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
     p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
     s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
@@ -65,8 +63,6 @@ def solve_best_combo_uncached(
         is_p_ov,
         is_s_ov,
         head_len,
-        count_fever,
-        count_normal,
         song_slot,
         ft_idx,
         ff_idx,
@@ -75,7 +71,7 @@ def solve_best_combo_uncached(
     if ti.static(rescore_result):
         score = -1
         if res_vec[0] >= 0:
-            score = score_solution_from_gems_preloaded(
+            score = score_solution_from_gems_frontier(
                 ft,
                 ff,
                 res_vec[1],
@@ -106,7 +102,5 @@ def solve_best_combo_uncached(
                 ft_idx,
                 ff_idx,
                 head_len,
-                count_fever,
-                count_normal,
             )
     return ti.Vector([score, res_vec[1], res_vec[2], res_vec[3], res_vec[4]])

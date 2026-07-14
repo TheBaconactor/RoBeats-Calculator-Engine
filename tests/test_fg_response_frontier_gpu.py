@@ -162,46 +162,6 @@ def _replay_response_result_through_input_engine(*, calc_song, final_stats, sele
     return simulate(chart, statsdict, ["ColorBlue"], presses, config, frame_dt_ms=1000.0 / 60.0)
 
 
-def test_ftff_projection_matches_canonical_stats_for_consumed_fields():
-    from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
-    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import _stats_after_ftff_for_inner
-
-    def _score_elements(stats: dict, primary: str, secondary: str) -> tuple[int, int]:
-        return (
-            int(stats.get(primary, 0) or 0),
-            int(stats.get(secondary, 0) or 0),
-        )
-
-    base_stats = {
-        "Perfect Points": 11,
-        "Combo Multiplier": 22,
-        "Fever Multiplier": 33,
-        "Fever Fill Rate": 44,
-        "Fever Time": 55,
-        "Chill": 1,
-        "Flow": 2,
-        "Rush": 3,
-        "Beat": 4,
-        "Vibe": 5,
-    }
-    colors = ("Chill", "Flow", "Rush", "Beat", "Vibe")
-
-    for primary in colors:
-        for secondary in colors:
-            projected = _stats_after_ftff_for_inner(
-                base_stats,
-                ft=7,
-                ff=9,
-                primary_color=primary,
-                secondary_color=secondary,
-            )
-            canonical = apply_gems_to_base_stats(base_stats, "Chill", 7, 9, 0, 0, 0, 0)
-
-            for key in ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate"):
-                assert projected[key] == canonical[key]
-            assert _score_elements(projected, primary, secondary) == _score_elements(canonical, primary, secondary)
-
-
 def test_response_frontier_gpu_inner_matches_reference_inner_with_overlap():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
     from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu

@@ -56,7 +56,11 @@ def _create_mock_song(*, n_notes: int = 750):
             "TimingEnvelopeMode": "perfect",
             "TimingEnvelopeFGCarry": "full",
         },
-        "song_data": {"timestamps": timestamps},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": np.ones(int(n_notes), dtype=np.int16),
+            "lanes": np.arange(int(n_notes), dtype=np.int32) % np.int32(4),
+        },
     }
 
 
@@ -66,9 +70,11 @@ def test_gpu_timeline_matches_cpu_gap_and_activations(monkeypatch, tmp_path):
         precompute_timeline_gpu,
     )
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline_frontier_cache"))
     calc_song = _create_mock_song()
+    apply_timing_envelope(calc_song, mode="perfect_window")
     ref_arrays = _create_mock_ref_arrays()
 
     prebuilt_frontier = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
