@@ -171,7 +171,6 @@ def _activation_materialized_delta_ms(
     raw_center = float(sec["activation_hit_offset_ms"])
     if nt is None:
         return float(raw_center)
-    raw_center = _snap_engine_time_ms(float(raw_center))
     if judgment == "late_great":
         judge_lo, judge_hi = _late_great_bounds_ms_at(nt, a)
     elif judgment == "perfect":
@@ -185,41 +184,45 @@ def _activation_materialized_delta_ms(
         chart_ms = float(sec.get("activation_ms", 0.0) or 0.0)
     absolute_center = sec.get("activation_hit_ms")
     center = (
-        _snap_engine_time_ms(float(absolute_center) - float(chart_ms))
+        float(absolute_center) - float(chart_ms)
         if absolute_center is not None
         else float(raw_center)
     )
-
-    has_hit_window = any(
-        sec.get(key) is not None
-        for key in (
-            "activation_hit_offset_lower_ms",
-            "activation_hit_offset_upper_ms",
-            "activation_hit_window_lower_ms",
-            "activation_hit_window_upper_ms",
-        )
-    )
-    if not has_hit_window:
-        return float(center)
 
     def _offset_field(name: str, fallback: float) -> float:
         window_key = f"activation_hit_window_{name}_ms"
         value = sec.get(window_key)
         if value is not None:
-            return _snap_engine_time_ms(float(value) - float(chart_ms))
+            return float(value) - float(chart_ms)
         offset_key = f"activation_hit_offset_{name}_ms"
         value = sec.get(offset_key)
         if value is not None:
-            return _snap_engine_time_ms(float(value))
+            return float(value)
         return float(fallback)
 
-    lo = max(float(judge_lo), _offset_field("lower", center))
-    hi = min(float(judge_hi), _offset_field("upper", center))
-    if lo > hi:
+    window_lo = _offset_field("lower", center)
+    window_hi = _offset_field("upper", center)
+    if window_lo > window_hi:
         raise ValueError(
-            f"note_graph: activation witness interval is empty at note {a} "
-            f"({lo:.3f}ms > {hi:.3f}ms)"
+            f"note_graph: activation witness window is reversed at note {a} "
+            f"({window_lo:.3f}ms > {window_hi:.3f}ms)"
         )
+    lo = max(float(judge_lo), float(window_lo))
+    hi = min(float(judge_hi), float(window_hi))
+    if lo > hi:
+        if float(window_lo) > float(judge_hi) and _snap_engine_time_ms(window_lo) == float(
+            judge_hi
+        ):
+            lo = hi = float(judge_hi)
+        elif float(window_hi) < float(judge_lo) and _snap_engine_time_ms(window_hi) == float(
+            judge_lo
+        ):
+            lo = hi = float(judge_lo)
+        else:
+            raise ValueError(
+                f"note_graph: activation witness interval is empty at note {a} "
+                f"({lo:.3f}ms > {hi:.3f}ms)"
+            )
 
     label_high_ms: np.ndarray | None = None
     if notes is not None and total_notes is not None:
@@ -307,7 +310,7 @@ def _materialized_fever_window_end_ms(
     if priced_hit_ms is None:
         priced_delta = sec.get("activation_hit_offset_upper_ms", sec.get("activation_hit_offset_ms"))
         if priced_delta is not None:
-            priced_hit_ms = float(chart_ms) + _snap_engine_time_ms(float(priced_delta))
+            priced_hit_ms = float(chart_ms) + float(priced_delta)
     if priced_hit_ms is None:
         return float(fever_end)
     duration_ms = float(fever_end) - float(priced_hit_ms)
@@ -381,7 +384,7 @@ def _same_chart_time_ms(a: float, b: float) -> bool:
 
 
 def _snap_engine_time_ms(value: float) -> float:
-    return float(snap_near_int_ms(np.asarray(float(value), dtype=np.float32)))
+    return float(snap_near_int_ms(np.asarray(float(value), dtype=np.float64)))
 
 
 def _hit_time_ms(timestamps: np.ndarray, idx: int) -> float:

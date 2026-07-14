@@ -997,6 +997,52 @@ def test_fg_note_graph_exact_order_uses_inclusive_float32_label_boundary():
     assert graph[0]["input_order"] < graph[1]["input_order"]
 
 
+def test_fg_note_graph_preserves_fractional_window_near_integer_boundary():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 2,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 166.96929931640625,
+            "activation_hit_offset_lower_ms": 166.93878173828125,
+            "activation_hit_offset_upper_ms": 166.9921875,
+            "activation_hit_window_lower_ms": 76980.94177246094,
+            "activation_hit_window_upper_ms": 76980.99517822266,
+            "fever_window_end_ms": 87980.99517822266,
+            "fever_duration_ms": 11000.0,
+            "activation_schedule_schema_version": 1,
+            "preactivation_order": [],
+            "preactivation_lane_prefixes": [
+                {"lane": 3, "count": 0},
+                {"lane": 2, "count": 0},
+            ],
+            "preactivation_fill_half_units": 0,
+            "preactivation_event_count": 0,
+            "preactivation_great_count": 0,
+        }
+    ]
+
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=2,
+        timestamps=np.asarray([76.814003, 76.941002], dtype=np.float32),
+        note_types=np.ones(2, dtype=np.int16),
+        lanes=np.asarray([3, 2], dtype=np.int32),
+    )
+
+    activation_event = float(graph[0]["hit_time_ms"]) + float(graph[0]["delta_ms"])
+    follower_event = float(graph[1]["hit_time_ms"]) + float(graph[1]["delta_ms"])
+    assert graph[0]["delta_ms"] == pytest.approx(166.9921875, abs=1e-9)
+    assert graph[0]["delta_ms"] != 167.0
+    assert follower_event >= activation_event
+    assert graph[0]["input_order"] < graph[1]["input_order"]
+
+
 def test_fg_note_graph_uses_exact_later_preactivation_witness_before_activation():
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
@@ -1551,7 +1597,7 @@ def test_fever_end_cluster_barely_inside_decoy_delta():
     trace = [{
         "section": 1, "activation_index": 0, "fever_end_index": 4,
         "forced_start_index": 0, "forced_prefix_count": 0,
-        "activation_judgment": "perfect", "activation_hit_offset_ms": 179.43191528320312,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
         "fever_window_end_ms": cutoff,
     }]
     nt = np.ones(n, dtype=np.int16)
@@ -1743,7 +1789,7 @@ def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
     trace_with_tight_fever_end = [{
         "section": 1, "activation_index": 0, "fever_start_note_index": 0, "fever_end_index": 4,
         "forced_start_index": 0, "forced_prefix_count": 0,
-        "activation_judgment": "perfect", "activation_hit_offset_ms": 179.43191528320312,
+        "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
         "fever_window_end_ms": cutoff,
     }]
     nt = np.ones(n, dtype=np.int16)
