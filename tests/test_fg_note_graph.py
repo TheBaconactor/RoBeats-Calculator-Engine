@@ -527,6 +527,65 @@ def test_same_time_selector_cluster_crossing_head_boundary_keeps_chart_order():
     assert notes[99]["delta_ms"] < notes[100]["delta_ms"]
 
 
+def test_same_time_selector_cluster_shares_late_great_boundary_in_chart_order():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        _assign_exact_input_order,
+        _mark_same_time_selector_order_deltas,
+        _perfect_note_graph,
+    )
+
+    n = 86
+    timestamps = np.arange(n, dtype=np.float64)
+    timestamps[82:] = timestamps[82]
+    note_types = np.ones(n, dtype=np.int16)
+    note_types[82:84] = 3
+    notes = _perfect_note_graph(n, timestamps)
+    activation_delta_ms = 189.99862670898438
+    for index in range(82, 86):
+        notes[index]["note_result"] = "Great"
+        notes[index]["delta_ms"] = None
+    notes[82]["delta_ms"] = activation_delta_ms
+
+    _mark_same_time_selector_order_deltas(
+        notes,
+        total_notes=n,
+        note_types=note_types,
+    )
+    _assign_exact_input_order(notes, ())
+
+    assert [notes[index]["delta_ms"] for index in range(82, 86)] == [
+        activation_delta_ms,
+        activation_delta_ms,
+        activation_delta_ms,
+        activation_delta_ms,
+    ]
+    assert [notes[index]["input_order"] for index in range(82, 86)] == [82, 83, 84, 85]
+
+
+def test_same_time_selector_cluster_projects_before_fixed_early_great():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import (
+        _mark_same_time_selector_order_deltas,
+        _perfect_note_graph,
+    )
+
+    timestamps = np.zeros(2, dtype=np.float64)
+    note_types = np.ones(2, dtype=np.int16)
+    notes = _perfect_note_graph(2, timestamps)
+    notes[0]["note_result"] = "Great"
+    notes[0]["delta_ms"] = None
+    notes[1]["note_result"] = "Great"
+    notes[1]["delta_ms"] = -80.0
+
+    _mark_same_time_selector_order_deltas(
+        notes,
+        total_notes=2,
+        note_types=note_types,
+    )
+
+    assert notes[0]["delta_ms"] == -80.0
+    assert notes[1]["delta_ms"] == -80.0
+
+
 def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
     from gear_optimizer.solver.fg_response_scoring.physical_replay import (
         validate_force_greats_physical_replay,
@@ -641,6 +700,56 @@ def test_alice_same_time_boundary_reconstructs_exact_judgments_and_order():
         "Perfect",
     ]
     assert [replay.fever_mask[index] for index in cluster] == [True, False, False, False, False]
+
+
+def test_light_it_up_late_great_cluster_reconstructs_exact_judgments_and_order():
+    from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+        validate_force_greats_physical_replay,
+    )
+    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
+    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
+        reconstruct_force_greats_response_trace,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
+
+    root = Path(__file__).resolve().parents[1]
+    calc_song = build_prepared_calc_song(
+        fp=str(root / "Data" / "Normal" / "Light it up by Camellia.txt"),
+        cfg_dict={},
+    ).calc_song
+    song_inputs = extract_fg_song_inputs(calc_song)
+    surface = FgResponseSurface(0, 0, 4294705152, 15, 0, 0, 4063232, 0, 740, 0, 0)
+    raw_fever_fill = 81.71601202940941
+    real_fever_time = 59.28149701967239
+    trace = reconstruct_force_greats_response_trace(
+        non_fever_base=82,
+        target_surface=surface,
+        timestamps=song_inputs.timestamps,
+        perfect_candidate_timestamps=song_inputs.perfect_candidates,
+        great_candidate_timestamps=song_inputs.great_candidates,
+        perfect_floor_timestamps=song_inputs.perfect_floor,
+        great_floor_timestamps=song_inputs.great_floor,
+        lanes=song_inputs.lanes,
+        raw_fever_fill=raw_fever_fill,
+        real_fever_time=real_fever_time,
+        use_forced_great_timing=song_inputs.use_forced_great_timing,
+    )
+
+    replay = validate_force_greats_physical_replay(
+        frontier_trace=trace,
+        surface=surface,
+        timestamps=song_inputs.timestamps,
+        note_types=calc_song["song_data"]["note_types"],
+        lanes=song_inputs.lanes,
+        raw_fever_fill=raw_fever_fill,
+        real_fever_time=real_fever_time,
+    )
+
+    cluster = (82, 83, 84, 85)
+    assert [replay.event_order.index(index) for index in cluster] == list(cluster)
+    assert [replay.judgments[index] for index in cluster] == ["Great"] * len(cluster)
+    assert [replay.fever_mask[index] for index in cluster] == [True] * len(cluster)
 
 
 def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_order():

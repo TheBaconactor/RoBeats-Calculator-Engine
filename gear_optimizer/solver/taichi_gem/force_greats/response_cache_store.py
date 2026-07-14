@@ -79,6 +79,19 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Same-time head-ramp reconstruction now projects the entire chart-order cluster through its
+    # exact judgment intervals. Equal event timestamps remain ordered by canonical input_order;
+    # no artificial 1ms separation is introduced at the inclusive late-Great edge. This changes
+    # only the physical witness selected for an existing surface, not the V31 producer or bytes.
+    "fg-response-frontier-visible-first-v31+logic-cbd1843e029f": (
+        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
+        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
     # Exact schedule reconstruction projects preferred note timings into the persisted order's
     # judgment intervals, bounded by the preceding note and activation. This only corrects the
     # physical witness chosen for an already-selected surface; the V31 producer, bundle metadata,

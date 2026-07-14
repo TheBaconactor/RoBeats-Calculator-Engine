@@ -316,6 +316,10 @@ def _bounded_judgment_delta_ms(
             "note_graph: exact input order has no legal bounded hit "
             f"for note {j}'s {result} judgment"
         )
+    if np.isposinf(preferred_delta_ms):
+        return max(candidates)
+    if np.isneginf(preferred_delta_ms):
+        return min(candidates)
     return min(candidates, key=lambda delta: (abs(delta - float(preferred_delta_ms)), delta))
 
 
@@ -429,40 +433,51 @@ def _mark_same_time_selector_order_deltas(
                 )
             nt = np.asarray(note_types).reshape(-1)
 
-        previous_delta = -np.inf
-        for j in cluster:
+        latest_deltas = [np.inf] * len(cluster)
+        latest_delta = np.inf
+        for position in range(len(cluster) - 1, -1, -1):
+            j = int(cluster[position])
             note = notes[j]
             result = str(note.get("note_result", "Perfect"))
             delta = note.get("delta_ms")
             if result == "Great" and delta is None:
-                early_lo, early_hi = _early_great_bounds_ms_at(nt, j)
-                late_lo, late_hi = _late_great_bounds_ms_at(nt, j)
-                if previous_delta <= early_hi:
-                    chosen = max(
-                        _center_safe_delta(low_ms=early_lo, high_ms=early_hi),
-                        float(early_lo),
-                        float(previous_delta) + 1.0,
-                    )
-                    if chosen > early_hi:
-                        chosen = float(previous_delta) if float(previous_delta) >= float(early_lo) else float(early_hi)
-                elif previous_delta <= late_hi:
-                    chosen = max(float(late_lo), float(previous_delta) + 1.0)
-                    if chosen > late_hi:
-                        chosen = float(previous_delta) if float(previous_delta) >= float(late_lo) else float(late_hi)
-                else:
-                    raise ValueError(
-                        "note_graph: same-time forced-Great selector cluster cannot preserve "
-                        f"chart-index score order at note {j}"
-                    )
-                note["delta_ms"] = float(chosen)
-                previous_delta = float(chosen)
+                latest_delta = _delta_at_or_before_ms(nt, j, result, float(latest_delta))
+                latest_deltas[position] = float(latest_delta)
                 continue
-
             if delta is None:
                 # Only Great selectors are allowed to omit a timing witness.
                 raise ValueError(
                     f"note_graph: same-time cluster note {j} has no timing witness for result {result!r}"
                 )
+            fixed_delta = float(delta)
+            if fixed_delta > latest_delta:
+                next_index = int(cluster[position + 1])
+                raise ValueError(
+                    "note_graph: same-time cluster witness order contradicts chart-index score order "
+                    f"at note {j} ({fixed_delta}ms > note {next_index}'s latest {latest_delta}ms)"
+                )
+            latest_delta = fixed_delta
+            latest_deltas[position] = fixed_delta
+
+        previous_delta = -np.inf
+        for position, j in enumerate(cluster):
+            note = notes[j]
+            result = str(note.get("note_result", "Perfect"))
+            delta = note.get("delta_ms")
+            if result == "Great" and delta is None:
+                early_lo, early_hi = _early_great_bounds_ms_at(nt, j)
+                chosen = _bounded_judgment_delta_ms(
+                    nt,
+                    j,
+                    result,
+                    preferred_delta_ms=_center_safe_delta(low_ms=early_lo, high_ms=early_hi),
+                    min_delta_ms=float(previous_delta),
+                    max_delta_ms=float(latest_deltas[position]),
+                )
+                note["delta_ms"] = float(chosen)
+                previous_delta = float(chosen)
+                continue
+
             fixed_delta = float(delta)
             if fixed_delta < previous_delta:
                 raise ValueError(
