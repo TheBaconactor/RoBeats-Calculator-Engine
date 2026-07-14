@@ -26,6 +26,7 @@ def _write_chart(root: Path, difficulty: str, song_name: str, filename: str = "s
 
 @pytest.fixture
 def data_root(tmp_path, monkeypatch):
+    monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", raising=False)
     monkeypatch.setattr(service, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(service, "DATA_ROOT", tmp_path / "Data")
     monkeypatch.setattr(service, "GEAR_DIR", tmp_path / "Data" / "Gear")
@@ -47,6 +48,40 @@ def test_list_official_songs_reads_headers(data_root):
     assert songs["Canon in D [Normal]"]["difficulty"] == "Normal"
     assert songs["Canon in D [Normal]"]["primaryElement"] == "Beat"
     assert songs["Feeding [Hard]"]["difficulty"] == "Hard"
+
+
+def test_api_catalog_uses_configured_webport_song_library(data_root, monkeypatch):
+    _write_chart(data_root, "Hard", "Private MetaFinder Chart")
+    webport_data = data_root / "[REDACTED PRIVATE REPOSITORY]" / "Data"
+    for difficulty in ("Easy", "Normal", "Hard"):
+        (webport_data / f"{difficulty} Songs").mkdir(parents=True)
+    external_chart = webport_data / "Hard Songs" / "canonical.txt"
+    external_chart.write_text(
+        "Song Name\tCanonical Replay Chart\n"
+        "Difficulty\t24\n"
+        "Primary Color\tBeat\n"
+        "Secondary Color\tVibe\n"
+        "Song Data\n"
+        "1000\t0\t0\t1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(webport_data))
+
+    songs = service.list_official_songs()
+
+    assert [song["songId"] for song in songs] == ["Canonical Replay Chart"]
+    assert service.find_official_chart("Canonical Replay Chart") == external_chart
+    with pytest.raises(service.RequestError):
+        service.find_official_chart("Private MetaFinder Chart")
+
+
+def test_configured_webport_library_requires_all_difficulty_directories(data_root, monkeypatch):
+    webport_data = data_root / "[REDACTED PRIVATE REPOSITORY]" / "Data"
+    (webport_data / "Hard Songs").mkdir(parents=True)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(webport_data))
+
+    with pytest.raises(RuntimeError, match="Easy Songs.*Normal Songs"):
+        service.list_official_songs()
 
 
 def test_provisioned_catalog_cache_still_runs_destination_maintenance(monkeypatch):

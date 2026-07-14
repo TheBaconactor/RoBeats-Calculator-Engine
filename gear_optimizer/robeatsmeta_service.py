@@ -75,7 +75,7 @@ class _OfficialSongCatalog:
 
 
 _OFFICIAL_CATALOG_LOCK = threading.Lock()
-_OFFICIAL_CATALOG_CACHE_KEY: tuple[Path, tuple[str, ...]] | None = None
+_OFFICIAL_CATALOG_CACHE_KEY: tuple[tuple[str, Path], ...] | None = None
 _OFFICIAL_CATALOG_CACHE: _OfficialSongCatalog | None = None
 
 
@@ -209,9 +209,14 @@ def _prebuild_catalog_frontier_caches() -> None:
         paths = load_paths_cache()
         stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
         ref_arrays = build_ref_arrays_from_stats(stats_table, dtype=np.float32)
+        song_paths = tuple(
+            str(chart)
+            for _difficulty, folder in _official_song_directories()
+            for chart in sorted(folder.glob("*.txt"))
+        )
         run_startup_cpu_work(
             cfg=cfg,
-            song_queue=(),
+            song_queue=song_paths,
             ref_arrays=ref_arrays,
             data_root=DATA_ROOT,
         )
@@ -267,8 +272,35 @@ def _read_full_header(path: Path) -> dict[str, str]:
     return header
 
 
-def _official_catalog_cache_key() -> tuple[Path, tuple[str, ...]]:
-    return (DATA_ROOT, tuple(DIFFICULTIES))
+def _official_song_directories() -> tuple[tuple[str, Path], ...]:
+    """Return the exact chart directories backing the API's official-song catalog.
+
+    Direct MetaFinder runs retain the native ``Data/{difficulty}`` layout. The website service
+    may instead select WebPort's canonical replay library at the deployment boundary; once that
+    root is explicitly configured, every expected difficulty directory is required.
+    """
+    configured = env_str("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", "").strip()
+    if not configured:
+        return tuple((difficulty, DATA_ROOT / difficulty) for difficulty in DIFFICULTIES)
+
+    root = Path(configured).expanduser()
+    if not root.is_absolute():
+        root = REPO_ROOT / root
+    root = root.resolve()
+    directories = tuple(
+        (difficulty, root / f"{difficulty} Songs") for difficulty in DIFFICULTIES
+    )
+    missing = [str(folder) for _difficulty, folder in directories if not folder.is_dir()]
+    if missing:
+        raise RuntimeError(
+            "ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR must contain WebPort's "
+            f"Easy Songs, Normal Songs, and Hard Songs directories; missing: {', '.join(missing)}"
+        )
+    return directories
+
+
+def _official_catalog_cache_key() -> tuple[tuple[str, Path], ...]:
+    return _official_song_directories()
 
 
 def clear_official_song_catalog_cache() -> None:
@@ -282,8 +314,7 @@ def clear_official_song_catalog_cache() -> None:
 def _build_official_song_catalog() -> _OfficialSongCatalog:
     songs: list[dict[str, str]] = []
     paths_by_song_id: dict[str, Path] = {}
-    for difficulty in DIFFICULTIES:
-        diff_dir = DATA_ROOT / difficulty
+    for difficulty, diff_dir in _official_song_directories():
         if not diff_dir.is_dir():
             continue
         for chart in sorted(diff_dir.glob("*.txt")):
