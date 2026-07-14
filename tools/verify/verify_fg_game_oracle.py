@@ -376,16 +376,13 @@ def score_from_game_source(
     fever_mul = gear_curve(1, 1.25, 3, 4.75, 5.25, int(stats["Fever Multiplier"]))
     primary_val = int(stats.get(primary_color, 0))
     secondary_val = int(stats.get(secondary_color, 0)) if secondary_color else 0
-    single_color = bool(primary_color) and primary_color == secondary_color
-
-    if single_color:
-        perfect_base = int(pp_points + math.floor(3 * primary_val))
-        great_points = math.floor(gear_curve(35, 75, 150, 225, 300, HIDDEN_GREAT_POINTS_STAT))
-        great_base = int(great_points + math.floor(2 * primary_val))
-    else:
-        perfect_base = int(pp_points + math.floor(2 * primary_val) + math.floor(secondary_val))
-        great_points = math.floor(gear_curve(35, 75, 150, 225, 300, HIDDEN_GREAT_POINTS_STAT))
-        great_base = int(great_points + math.floor((4.0 / 3.0) * primary_val) + math.floor((2.0 / 3.0) * secondary_val))
+    perfect_base = int(pp_points + math.floor(2 * primary_val) + math.floor(secondary_val))
+    great_points = math.floor(gear_curve(35, 75, 150, 225, 300, HIDDEN_GREAT_POINTS_STAT))
+    great_base = int(
+        great_points
+        + math.floor((4.0 / 3.0) * primary_val)
+        + math.floor((2.0 / 3.0) * secondary_val)
+    )
 
     score = 0
     total_notes = int(fever_mask.shape[0])

@@ -40,7 +40,7 @@ def test_decode_genome_raises_on_unknown_item_id():
 
 def test_build_fg_persist_entries_refuses_identityless_winner(monkeypatch):
     from gear_optimizer.solver import native_inflight_fg_payload as payload_mod
-    from gear_optimizer.solver.native_inflight_config import make_native_song
+    from tests.native_song_factory import make_native_song
 
     monkeypatch.setattr(
         payload_mod,

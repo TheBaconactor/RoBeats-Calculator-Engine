@@ -121,7 +121,7 @@ def test_mini_skyline_rejects_nonzero_mini_perfect_points_until_state_tracks_pp(
 
 
 def test_combined_skyline_keeps_fixed_stat_different_ff_timing_cells() -> None:
-    from gear_optimizer.solver.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
+    from tests.parity.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
 
     gear_points = np.asarray(
         [

@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_ROWS
-from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import (
+from tests.parity.response_ftff_prune import (
     prune_best_positions_by_frontier,
     prune_dominated_ftff_response_positions,
 )

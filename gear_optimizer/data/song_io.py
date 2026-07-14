@@ -206,14 +206,6 @@ def _flush_song_header_cache() -> None:
             _SONG_HEADER_CACHE_DIRTY = True
 
 
-def _reset_song_header_cache_for_tests() -> None:
-    global _SONG_HEADER_CACHE_LOADED, _SONG_HEADER_CACHE_DIRTY
-    with _SONG_HEADER_CACHE_LOCK:
-        _SONG_HEADER_CACHE.clear()
-        _SONG_HEADER_CACHE_LOADED = False
-        _SONG_HEADER_CACHE_DIRTY = False
-
-
 atexit.register(_flush_song_header_cache)
 
 

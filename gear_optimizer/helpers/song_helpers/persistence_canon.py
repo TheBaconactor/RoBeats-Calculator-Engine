@@ -379,23 +379,3 @@ def build_persistence_entries(
         replay_ctx=replay_ctx,
     )
 
-
-def assemble_without_replay(
-    *,
-    db_payload: dict,
-    ga_candidates: list[dict] | None,
-    loadout_entries: dict | None,
-    build_details_fn: Callable[[dict], dict],
-) -> list[dict]:
-    """
-    Compatibility path for tooling/tests that do not provide replay context.
-
-    This preserves legacy non-authoritative behavior: collect + dedup without replay.
-    """
-    raw_entries = _collect_raw_entries(
-        db_payload=db_payload if isinstance(db_payload, dict) else {},
-        ga_candidates=ga_candidates,
-        loadout_entries=loadout_entries,
-        build_details_fn=build_details_fn,
-    )
-    return _dedupe_entries(raw_entries)

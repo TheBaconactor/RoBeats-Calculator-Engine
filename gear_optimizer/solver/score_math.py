@@ -28,20 +28,6 @@ def lookup_reference_py(value, ref_array, total_rows=TOTAL_ROWS):
 
 
 @jit(nopython=True, cache=True)
-def lookup_reference_jit(value, ref_array, total_rows):
-    """
-    JIT-compiled reference lookup for performance.
-    Used in hot paths where speed is critical.
-    """
-    idx = int(value)
-    if idx > total_rows:
-        idx = total_rows
-    elif idx < 0:
-        idx = 0
-    return ref_array[idx]
-
-
-@jit(nopython=True, cache=True)
 def fast_calculate_score(
     base_value,
     combo_mul,

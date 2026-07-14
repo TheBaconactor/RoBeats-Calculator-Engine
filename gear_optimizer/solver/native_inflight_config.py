@@ -7,11 +7,14 @@ into a frozen dataclass so the orchestrator body stays focused on runtime logic.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import configparser
 import os
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+import numpy as np
 
 from gear_optimizer.core.config import GASettings as GARuntimeSettings
 from gear_optimizer.core.parsing import env_get
@@ -305,15 +308,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         fg_submit_debug=fg_submit_debug,
     )
 
-# ---- merged from native_inflight_config.py ----
-
-
-import concurrent.futures
-from dataclasses import dataclass, field, fields
-from typing import Optional
-
-import numpy as np
-
 from gear_optimizer.core.types import CalcSong, JsonDict, RefArrays
 from gear_optimizer.solver.item_registry import ItemRegistry
 
@@ -454,24 +448,6 @@ class NativeSongRuntimeState:
     post: NativeSongPostState = field(default_factory=NativeSongPostState)
 
 
-def _field_names(cls: type) -> tuple[str, ...]:
-    return tuple(field.name for field in fields(cls))
-
-
-_FIELD_PATH_BY_NAME = {
-    **{field_name: ("config",) for field_name in _field_names(NativeSongConfig)},
-    **{field_name: ("gpu_inputs",) for field_name in _field_names(NativeSongGPUInputs)},
-    "song_slot": ("runtime",),
-    **{field_name: ("runtime", "prep") for field_name in _field_names(NativeSongPrepState)},
-    **{field_name: ("runtime", "ga") for field_name in _field_names(NativeSongGAState)},
-    **{field_name: ("runtime", "decode") for field_name in _field_names(NativeSongDecodeState)},
-    **{field_name: ("runtime", "fg") for field_name in _field_names(NativeSongFGState)},
-    **{field_name: ("runtime", "db") for field_name in _field_names(NativeSongDBState)},
-    **{field_name: ("runtime", "bundle") for field_name in _field_names(NativeSongBundleState)},
-    **{field_name: ("runtime", "post") for field_name in _field_names(NativeSongPostState)},
-}
-
-
 # eq=False (identity equality/hash): conveyor deques remove songs by identity,
 # and the auto-generated value __eq__ would recurse into NativeSongGPUInputs'
 # numpy fields (ambiguous-truth crash) and, on a not-found miss, into the deep
@@ -485,15 +461,6 @@ class NativeSong:
     runtime: NativeSongRuntimeState
 
 
-def _resolve_owner(root: object | None, path: tuple[str, ...]) -> object | None:
-    current = root
-    for segment in path:
-        if current is None:
-            return None
-        current = getattr(current, str(segment), None)
-    return current
-
-
 def native_song_label(song: object, *, fallback_id: bool = False) -> str:
     try:
         config = getattr(song, "config", None)
@@ -504,38 +471,3 @@ def native_song_label(song: object, *, fallback_id: bool = False) -> str:
         pass
     return str(id(song)) if bool(fallback_id) else ""
 
-
-def make_native_song(**kwargs) -> NativeSong:
-    """Build a NativeSong from flat keyword args, distributing to the correct sub-struct."""
-    config = NativeSongConfig()
-    gpu_inputs = NativeSongGPUInputs()
-    runtime = NativeSongRuntimeState()
-    roots = {
-        "config": config,
-        "gpu_inputs": gpu_inputs,
-        "runtime": runtime,
-    }
-    pending_assignments: list[tuple[object, str, Any]] = []
-    unknown_fields: list[str] = []
-    for k, v in kwargs.items():
-        key = str(k)
-        if hasattr(config, key):
-            pending_assignments.append((config, key, v))
-            continue
-        if hasattr(gpu_inputs, key):
-            pending_assignments.append((gpu_inputs, key, v))
-            continue
-        path = _FIELD_PATH_BY_NAME.get(key)
-        if path:
-            owner = _resolve_owner(roots.get(path[0]), path[1:])
-            if owner is not None:
-                pending_assignments.append((owner, key, v))
-                continue
-        unknown_fields.append(key)
-    if unknown_fields:
-        raise TypeError(
-            "Unexpected native song field(s): " + ", ".join(sorted(dict.fromkeys(unknown_fields)))
-        )
-    for owner, key, value in pending_assignments:
-        setattr(owner, key, value)
-    return NativeSong(config=config, gpu_inputs=gpu_inputs, runtime=runtime)

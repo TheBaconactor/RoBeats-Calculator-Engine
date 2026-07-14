@@ -76,7 +76,6 @@ def _fg_response_score_device(
     pp_factor: FP,
     combo_mul: FP,
     fever_mul: FP,
-    is_single_color: ti.i32,
 ) -> ti.i32:
     base_value: FP = ti.cast((primary_val * 2) + secondary_val, FP) + pp_factor
     combo_val: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
@@ -129,15 +128,11 @@ def _fg_response_score_device(
 
     great_bits: ti.u32 = great0 | great1 | great2 | great3
     if body_great > 0 or great_bits != ti.u32(0):
-        great_head_base: ti.i32 = 0
-        if is_single_color != 0:
-            great_head_base = (primary_val * 2) + 150
-        else:
-            great_head_base = (
-                ti.cast(ti.floor(ti.cast(primary_val, FP) * FP(4.0 / 3.0)), ti.i32)
-                + ti.cast(ti.floor(ti.cast(secondary_val, FP) * FP(2.0 / 3.0)), ti.i32)
-                + 150
-            )
+        great_head_base: ti.i32 = (
+            ti.cast(ti.floor(ti.cast(primary_val, FP) * FP(4.0 / 3.0)), ti.i32)
+            + ti.cast(ti.floor(ti.cast(secondary_val, FP) * FP(2.0 / 3.0)), ti.i32)
+            + 150
+        )
         great_base: FP = ti.cast(great_head_base, FP)
         great_combo_val: ti.i32 = ti.cast(ti.floor(great_base * combo_mul), ti.i32)
         great_fever_val: ti.i32 = ti.cast(ti.floor(great_base * combo_mul * fever_mul), ti.i32)
@@ -304,7 +299,6 @@ def _fg_response_inner_batch_kernel(
         is_s_fm: ti.i32 = color_flags[5]
         is_p_ov: ti.i32 = color_flags[6]
         is_s_ov: ti.i32 = color_flags[7]
-        is_single_color: ti.i32 = color_flags[8]
 
         pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
         pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
@@ -461,7 +455,6 @@ def _fg_response_inner_batch_kernel(
                                 _fg_response_lookup_ref(ref_pp, cur_pp),
                                 cm_mul,
                                 fm_mul,
-                                is_single_color,
                             )
                             if score > best_score or (
                                 score == best_score
@@ -525,7 +518,6 @@ def _fg_response_inner_batch_kernel(
                                         _fg_response_lookup_ref(ref_pp, pp_stat),
                                         cm_mul,
                                         fm_mul,
-                                        is_single_color,
                                     )
                                     if score > best_score or (
                                         score == best_score
@@ -568,7 +560,6 @@ def _fg_response_inner_batch_kernel(
                             pp_ref_base,
                             cm_mul,
                             fm_mul,
-                            is_single_color,
                         )
                         if score > best_score or (
                             score == best_score
@@ -636,7 +627,6 @@ def _fg_response_inner_group_kernel(
         is_s_fm: ti.i32 = color_flags[5]
         is_p_ov: ti.i32 = color_flags[6]
         is_s_ov: ti.i32 = color_flags[7]
-        is_single_color: ti.i32 = color_flags[8]
 
         pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
         pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
@@ -810,7 +800,6 @@ def _fg_response_inner_group_kernel(
                                     _fg_response_lookup_ref(ref_pp, cur_pp),
                                     cm_mul,
                                     fm_mul,
-                                    is_single_color,
                                 )
                                 if score > best_score or (
                                     score == best_score
@@ -874,7 +863,6 @@ def _fg_response_inner_group_kernel(
                                             _fg_response_lookup_ref(ref_pp, pp_stat),
                                             cm_mul,
                                             fm_mul,
-                                            is_single_color,
                                         )
                                         if score > best_score or (
                                             score == best_score
@@ -917,7 +905,6 @@ def _fg_response_inner_group_kernel(
                                 pp_ref_base,
                                 cm_mul,
                                 fm_mul,
-                                is_single_color,
                             )
                             if score > best_score or (
                                 score == best_score

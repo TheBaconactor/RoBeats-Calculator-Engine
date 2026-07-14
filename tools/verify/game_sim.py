@@ -914,8 +914,7 @@ def _build_aurora_intended():
             continue
         wp = color_to_wp[col]
         statsdict[wp] = int(final.get(col, 0) or 0)
-        if wp not in colors:
-            colors.append(wp)
+        colors.append(wp)
 
     taps = int((nt == 1).sum())
     heads = int((nt == 2).sum())

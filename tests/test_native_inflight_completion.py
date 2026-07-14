@@ -9,7 +9,7 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     mark_song_completed,
     run_native_inflight_song_pipeline,
 )
-from gear_optimizer.solver.native_inflight_config import make_native_song
+from tests.native_song_factory import make_native_song
 
 
 def test_completion_tracker_registers_and_waits_for_future_completion():

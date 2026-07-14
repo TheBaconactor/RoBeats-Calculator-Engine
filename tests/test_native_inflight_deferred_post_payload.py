@@ -1,7 +1,7 @@
 from concurrent.futures import Future
 from types import SimpleNamespace
 
-from gear_optimizer.solver.native_inflight_config import make_native_song
+from tests.native_song_factory import make_native_song
 from gear_optimizer.solver.native_inflight_fg_payload import build_fg_update_payload
 from gear_optimizer.solver.native_inflight_orchestrator import (
     build_native_song_error_payload,

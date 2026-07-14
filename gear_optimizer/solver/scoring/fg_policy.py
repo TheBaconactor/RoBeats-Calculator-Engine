@@ -13,7 +13,6 @@ __all__ = [
     "SongMeta",
     "StatFactors",
     "extract_song_meta",
-    "is_single_color_song",
     "resolve_stat_factors",
 ]
 
@@ -131,16 +130,8 @@ def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
     )
 
 
-def is_single_color_song(primary_color: str | None, secondary_color: str | None) -> bool:
-    primary = str(primary_color or "")
-    secondary = str(secondary_color or "")
-    return bool(primary) and bool(secondary) and primary == secondary
-
-
-def compute_great_penalty_base(primary_val: int, secondary_val: int, *, single_color: bool) -> int:
+def compute_great_penalty_base(primary_val: int, secondary_val: int) -> int:
     primary_i = int(primary_val)
-    if bool(single_color):
-        return (primary_i * 2) + GREAT_RESULT_POINTS
     secondary_i = int(secondary_val)
     return int(
         floor(float(primary_i) * (4.0 / 3.0))
@@ -155,7 +146,6 @@ def build_penalty_table_and_body(
     combo_mul: float,
     primary_val: int,
     secondary_val: int,
-    single_color: bool,
     head_limit: int = 100,
 ) -> tuple[list[int], int, int]:
     combo_value = int(floor(float(base_value) * float(combo_mul)))
@@ -164,16 +154,12 @@ def build_penalty_table_and_body(
     great_penalty_base_head = compute_great_penalty_base(
         primary_i,
         secondary_i,
-        single_color=bool(single_color),
     )
-    if bool(single_color):
-        great_penalty_base_raw = float(great_penalty_base_head)
-    else:
-        great_penalty_base_raw = (
-            (float(primary_i) * (4.0 / 3.0))
-            + (float(secondary_i) * (2.0 / 3.0))
-            + float(GREAT_RESULT_POINTS)
-        )
+    great_penalty_base_raw = (
+        (float(primary_i) * (4.0 / 3.0))
+        + (float(secondary_i) * (2.0 / 3.0))
+        + float(GREAT_RESULT_POINTS)
+    )
     great_combo_value = int(floor(float(great_penalty_base_raw) * float(combo_mul)))
     body_penalty = max(0, int(combo_value - great_combo_value))
 

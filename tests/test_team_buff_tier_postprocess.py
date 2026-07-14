@@ -22,6 +22,15 @@ def _expected_fg_surface_score(stats: dict, calc_song: dict, ref_arrays: dict) -
     )
 
 
+def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
+    from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
+
+    if not isinstance(force_obj, dict) or not force_obj:
+        return fallback_stats if isinstance(fallback_stats, dict) else {}
+    stats = read_visible_stats(force_obj, mutate_payload=False)
+    return stats if isinstance(stats, dict) and stats else (fallback_stats if isinstance(fallback_stats, dict) else {})
+
+
 # GPU exact-replay tests need the timeline frontier prebuilt (same as production startup).
 # Isolated GPU unit tests do not run the full app prebuild; call this before real scoring.
 def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
@@ -97,7 +106,7 @@ def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, ref_arrays:
     primary_color = str(meta0.get("Primary Color", "") or "").strip()
     secondary_color = str(meta0.get("Secondary Color", "") or "").strip()
 
-    real_force_payload_stats = tbt._force_payload_stats
+    real_force_payload_stats = _force_payload_stats
     real_ensure_base = tbt._ensure_stats_include_base_effect
 
     # Captured by the loadout-items hook so the synthetic re-solve can recover the per-loadout

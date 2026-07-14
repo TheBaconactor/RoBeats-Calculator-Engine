@@ -7,7 +7,7 @@ import numpy as np
 
 import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
 import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
-from gear_optimizer.solver import skyline_force_greats as sfg
+from tests.parity import skyline_force_greats as sfg
 from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
 from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from gear_optimizer.solver.fixed_timing_skyline import reduce_fixed_timing_prefix_skyline
+from tests.parity.fixed_timing_skyline import reduce_fixed_timing_prefix_skyline
 
 
 def _brute_fixed_timing_rows(points: np.ndarray) -> set[tuple[int, ...]]:

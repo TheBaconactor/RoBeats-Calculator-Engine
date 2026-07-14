@@ -68,7 +68,7 @@ def _measure_song(song_fp, cfg_dict, all_gears, all_minis, *, budget, ga_eff, wi
     from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
     from gear_optimizer.solver.solver_common import GEAR_SLOTS, make_pack
     from gear_optimizer.solver.mini_skyline import mini_combo_skyline
-    from gear_optimizer.solver.combined_skyline_sparse import (
+    from tests.parity.combined_skyline_sparse import (
         combined_global_skyline_pairs_6d_sparse,
         get_last_combined_skyline_stats,
     )
@@ -117,7 +117,7 @@ def _measure_song(song_fp, cfg_dict, all_gears, all_minis, *, budget, ga_eff, wi
             return row
 
         if with_gear_skyline:
-            from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
+            from tests.parity.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
 
             _pin, gear_points, _gc, gear_sky_sec = global_gear_skyline_points_6d_gpu_from_arrays(dp_points, dp_codes)
             row["gear_sky_sec"] = round(float(gear_sky_sec), 4)

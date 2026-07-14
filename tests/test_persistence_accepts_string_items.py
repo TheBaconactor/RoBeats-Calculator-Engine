@@ -198,7 +198,7 @@ def test_make_build_details_fn_uses_base_stats_as_post_gem_visible_row():
 
 
 def test_build_persistence_entries_materializes_lazy_ga_entry_names():
-    from gear_optimizer.helpers.song_helpers.persistence_canon import assemble_without_replay
+    from tests.persistence_test_support import assemble_without_replay
 
     class _FakeRegistry:
         @staticmethod

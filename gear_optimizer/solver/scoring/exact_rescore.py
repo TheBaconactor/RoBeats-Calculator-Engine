@@ -27,7 +27,6 @@ from .fg_policy import (
     compute_great_penalty_base,
     extract_fg_song_inputs,
     extract_song_meta,
-    is_single_color_song,
     resolve_stat_factors,
 )
 
@@ -842,14 +841,13 @@ def score_force_greats_response_surface_exact(
     primary_val = safe_int(stats.get(song_inputs.primary_color, 0), 0)
     secondary_val = safe_int(stats.get(song_inputs.secondary_color, 0), 0)
     factors = resolve_stat_factors(stats, ref_arrays)
-    single_color = is_single_color_song(song_inputs.primary_color, song_inputs.secondary_color)
     base_value = float((primary_val * 2) + secondary_val) + float(factors.pp_factor)
     combo_f = float(factors.combo_mul)
     fever_f = float(factors.fever_mul)
     combo_val = floor(base_value * combo_f)
     fever_val = floor(base_value * combo_f * fever_f)
 
-    great_head_base = compute_great_penalty_base(primary_val, secondary_val, single_color=bool(single_color))
+    great_head_base = compute_great_penalty_base(primary_val, secondary_val)
 
     body_normal_great = int(body_great - body_fever_great)
     body_normal = int(body_total - body_fever)
@@ -917,14 +915,12 @@ def evaluate_force_greats_exact(
     primary_val = safe_int(stats.get(song_inputs.primary_color, 0), 0)
     secondary_val = safe_int(stats.get(song_inputs.secondary_color, 0), 0)
     factors = resolve_stat_factors(stats, ref_arrays)
-    single_color = is_single_color_song(song_inputs.primary_color, song_inputs.secondary_color)
     base_value = float((primary_val * 2) + secondary_val) + float(factors.pp_factor)
     penalty_table, body_penalty, combo_value = build_penalty_table_and_body(
         base_value=float(base_value),
         combo_mul=float(factors.combo_mul),
         primary_val=int(primary_val),
         secondary_val=int(secondary_val),
-        single_color=bool(single_color),
     )
 
     force_counts = list(forced_counts or [])

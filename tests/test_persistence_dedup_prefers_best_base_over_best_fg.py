@@ -1,5 +1,5 @@
 from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
-from gear_optimizer.helpers.song_helpers.persistence_canon import assemble_without_replay
+from tests.persistence_test_support import assemble_without_replay
 
 
 def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_best_fg_payload():

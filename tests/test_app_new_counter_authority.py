@@ -1,7 +1,7 @@
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.helpers.song_helpers.persistence_records import RECORD_UPDATE_SCORE_EPSILON
 from gear_optimizer.solver.native_inflight_lifecycle import ProgressTracker, evaluate_fg_progress_record_update
-from gear_optimizer.solver.native_inflight_config import make_native_song
+from tests.native_song_factory import make_native_song
 
 
 def _make_minimal_app() -> GearOptimizerApp:

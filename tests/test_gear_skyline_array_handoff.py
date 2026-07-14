@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.solver.gear_skyline_gpu import _flatten_points, _flatten_states
+from tests.parity.gear_skyline_gpu import _flatten_points, _flatten_states
 
 
 def test_array_handoff_matches_legacy_state_flattening():

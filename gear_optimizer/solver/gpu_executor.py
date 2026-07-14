@@ -357,9 +357,7 @@ class GpuExecutor:
             # the owner thread so no prep/FG worker thread ever performs the first
             # dispatch (single-GPU-ownership rule; prep threads stay Taichi-free).
             from .taichi_gem.force_greats.response_frontier import warmup_response_frontier_group_builder
-            from .taichi_gem.force_greats.response_ftff_prune import warmup_response_ftff_prune
 
-            warmup_response_ftff_prune()
             warmup_response_frontier_group_builder()
         except Exception as e:
             self._taichi_ready = False

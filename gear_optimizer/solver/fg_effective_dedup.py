@@ -376,7 +376,7 @@ def select_top_base_fg_candidates_reference(
 
 
 # ---------------------------------------------------------------------------
-# Slice 1 tie-evidence capture (gated DEBUG instrumentation; OFF by default)
+# Cached production effective-equivalence tables
 # ---------------------------------------------------------------------------
 
 
@@ -437,78 +437,3 @@ def effective_tables_for_context(
         return tables
 
     return _CONTEXT_TABLES_SINGLEFLIGHT.run(key, _build_and_cache)
-
-
-def dump_candidate_pool_jsonl(
-    path: str,
-    *,
-    registry: ItemRegistry,
-    candidates: list[dict],
-    primary_color: str,
-    secondary_color: str,
-    selected_color: str,
-    limit: int,
-) -> None:
-    """Append one analyzer-shaped pool line to ``path`` (JSONL).
-
-    This is the *only* permanent capture site for Slice 1 tie evidence. It is
-    gated by a non-empty ``FG_SELECT_TIE_DUMP`` path (read via the parsing.py
-    env helper at the call site) and is OFF in production by default. It writes
-    exactly the schema ``tools/dev/analyze_fg_select_tie_boundaries.py`` consumes:
-    ``{limit, gear_name_rank, mini_sig_id, candidates:[{score,gear_ids,mini_ids}]}``.
-
-    The two equivalence tables are built for THIS song's color context (the
-    mini table is color-context dependent, so it is rebuilt per call - this is
-    debug-only, not the hot path). Candidates are the raw GA-decode pool BEFORE
-    the host select, so the captured pool matches what the GPU select kernel
-    scans (the funnel input, not the funnel output).
-
-    Fails loudly on a malformed pool entry (missing GenomeIDs) - debug capture
-    must not silently drop rows and skew the tie statistics.
-    """
-    import json
-
-    gear_name_rank = build_gear_name_rank(registry)
-    mini_tab = build_mini_sig_id(
-        registry,
-        primary_color=primary_color,
-        secondary_color=secondary_color,
-        selected_color=selected_color,
-    )
-
-    rows: list[dict[str, Any]] = []
-    for cand in candidates:
-        if not isinstance(cand, dict):
-            continue
-        genome_ids = cand.get("GenomeIDs")
-        if genome_ids is None:
-            raise ValueError(
-                "fg_effective_dedup.dump_candidate_pool_jsonl: candidate missing GenomeIDs"
-            )
-        ids = [int(x) for x in list(genome_ids)[:9]]
-        if len(ids) < 9:
-            raise ValueError(
-                "fg_effective_dedup.dump_candidate_pool_jsonl: candidate has <9 GenomeIDs"
-            )
-        score = cand.get("BaseScore")
-        if score is None:
-            score = cand.get("Score", 0)
-        rows.append(
-            {
-                "score": int(score or 0),
-                "gear_ids": ids[:6],
-                "mini_ids": sorted(ids[6:9]),
-            }
-        )
-
-    pool = {
-        "limit": int(limit),
-        "primary_color": str(primary_color or ""),
-        "secondary_color": str(secondary_color or ""),
-        "selected_color": str(mini_tab.selected_color or ""),
-        "gear_name_rank": [int(x) for x in gear_name_rank.tolist()],
-        "mini_sig_id": [int(x) for x in mini_tab.sig_id.tolist()],
-        "candidates": rows,
-    }
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(pool) + "\n")

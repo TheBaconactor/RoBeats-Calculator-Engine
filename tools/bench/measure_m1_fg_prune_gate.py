@@ -79,7 +79,7 @@ def _score_candidates(idxs, *, ctx, calc_song, ref_arrays, gear_codes, pair_g, p
 def _measure_one(fp, cfg, ref_arrays, *, sample, topk, max_stat):
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.solver.solver_common import prepare_solver_context, build_solver_override_cfg
-    from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
+    from tests.parity.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
     from tests.parity.exact_skyline import (
         _dp_gear_ff_base_frontier_with_codes,
         _combined_global_skyline_pairs_6d_lane_base_with_indices,  # GPU-dense-first

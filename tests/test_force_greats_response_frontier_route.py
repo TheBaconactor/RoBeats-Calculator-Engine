@@ -1,4 +1,4 @@
-from gear_optimizer.solver.native_inflight_config import make_native_song
+from tests.native_song_factory import make_native_song
 
 import pytest
 import numpy as np
@@ -89,7 +89,7 @@ def _fake_fg_prepared_batch(base_stats_list, selected_color: str = "Rush"):
 
 
 def test_ftff_response_position_prune_matches_pair_prune_with_canonical_frontier_keys():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import (
+    from tests.parity.response_ftff_prune import (
         prune_dominated_ftff_response_pairs,
         prune_dominated_ftff_response_positions,
     )
@@ -142,7 +142,7 @@ def test_ftff_response_position_prune_matches_pair_prune_with_canonical_frontier
 
 
 def test_ftff_response_position_prune_matches_bruteforce_randomized():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import (
+    from tests.parity.response_ftff_prune import (
         prune_dominated_ftff_response_positions,
     )
 
@@ -1114,7 +1114,7 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
 
 
 def test_response_frontier_prunes_duplicate_constant_ftff_frontiers_by_best_residual():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import prune_best_positions_by_frontier
+    from tests.parity.response_ftff_prune import prune_best_positions_by_frontier
 
     positions = np.asarray([0, 1, 2, 3], dtype=np.int32)
     frontier_ids = np.asarray([5, 5, 7, 5], dtype=np.int32)
@@ -1130,7 +1130,7 @@ def test_response_frontier_prunes_duplicate_constant_ftff_frontiers_by_best_resi
 
 
 def test_response_frontier_best_position_prune_matches_sort_reference_randomized():
-    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import prune_best_positions_by_frontier
+    from tests.parity.response_ftff_prune import prune_best_positions_by_frontier
 
     rng = np.random.default_rng(20260531)
     for row_count in (1, 2, 8, 64, 512):
@@ -1209,7 +1209,7 @@ def test_response_frontier_ftff_antichain_prunes_only_same_pack_dominance():
         FgResponseFrontierResult,
         FgResponseSurface,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import (
+    from tests.parity.response_ftff_prune import (
         prune_dominated_ftff_response_pairs,
     )
 
@@ -1251,7 +1251,7 @@ def test_response_frontier_ftff_antichain_matches_naive_dominance():
         FgResponseFrontierResult,
         FgResponseSurface,
     )
-    from gear_optimizer.solver.taichi_gem.force_greats.response_ftff_prune import (
+    from tests.parity.response_ftff_prune import (
         prune_dominated_ftff_response_pairs,
         response_pair_dominates,
     )

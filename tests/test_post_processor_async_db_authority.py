@@ -2,7 +2,7 @@ import json
 import queue
 import threading
 
-from gear_optimizer.solver.native_inflight_config import make_native_song
+from tests.native_song_factory import make_native_song
 
 
 def _ref_arrays() -> dict:

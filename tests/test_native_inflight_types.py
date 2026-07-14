@@ -14,10 +14,9 @@ from gear_optimizer.solver.native_inflight_config import (
     NativeSongPrepState,
     NativeSongPostState,
     NativeSongRuntimeState,
-    _FIELD_PATH_BY_NAME,
-    make_native_song,
     native_song_label,
 )
+from tests.native_song_factory import _FIELD_PATH_BY_NAME, make_native_song
 
 
 def test_native_song_groups_keep_pipeline_fields_explicit():

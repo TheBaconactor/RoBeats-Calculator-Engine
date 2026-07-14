@@ -3,7 +3,6 @@ import queue
 from gear_optimizer.solver.gpu_executor import clear_gpu_worker_mode, is_gpu_worker_mode, set_gpu_worker_mode
 from gear_optimizer.solver.gpu_executor_lifecycle import (
     WorkerModeState,
-    default_song_slot_for_worker,
     register_executor_worker,
     unregister_executor_worker,
     worker_mode_state,
@@ -82,13 +81,3 @@ def test_unregister_executor_worker_removes_existing_worker_only():
     assert unregister_executor_worker(worker_id=2, response_queues=response_queues) is True
     assert response_queues == {}
     assert unregister_executor_worker(worker_id=2, response_queues=response_queues) is False
-
-
-def test_default_song_slot_for_worker_is_stable_nonzero():
-    slot_a = default_song_slot_for_worker(0)
-    slot_b = default_song_slot_for_worker(0)
-    slot_c = default_song_slot_for_worker(5)
-
-    assert slot_a == slot_b
-    assert slot_a >= 1
-    assert slot_c >= 1

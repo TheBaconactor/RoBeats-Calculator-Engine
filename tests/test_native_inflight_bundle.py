@@ -2,7 +2,7 @@ from collections import deque
 
 from gear_optimizer.domain.jobs import task_file_path
 from gear_optimizer.solver.native_inflight_lifecycle import InflightBundleTracker
-from gear_optimizer.solver.native_inflight_config import make_native_song
+from tests.native_song_factory import make_native_song
 
 
 def _bundle_task():

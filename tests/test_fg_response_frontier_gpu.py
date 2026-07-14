@@ -159,7 +159,16 @@ def _replay_response_result_through_input_engine(*, calc_song, final_stats, sele
         "lastNoteTimeSec": (last_note_time_ms + 1000.0) / 1000.0,
     }
     presses = presses_from_intended(chart, intended)
-    return simulate(chart, statsdict, ["ColorBlue"], presses, config, frame_dt_ms=1000.0 / 60.0)
+    assert song_inputs.primary_color == selected_color
+    assert song_inputs.secondary_color == selected_color
+    return simulate(
+        chart,
+        statsdict,
+        ["ColorBlue", "ColorBlue"],
+        presses,
+        config,
+        frame_dt_ms=1000.0 / 60.0,
+    )
 
 
 def test_response_frontier_gpu_inner_matches_reference_inner_with_overlap():
@@ -203,7 +212,7 @@ def test_response_frontier_gpu_inner_matches_reference_inner_with_overlap():
     ) == (17593, 0, 0, 0, 0, 3, 10, 20, 30, 58, 50)
 
 
-def test_response_frontier_gpu_inner_scores_same_color_greats_as_single_color():
+def test_response_frontier_gpu_inner_preserves_same_color_component_floors():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
     from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu
 
@@ -225,7 +234,7 @@ def test_response_frontier_gpu_inner_scores_same_color_greats_as_single_color():
 
     gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
 
-    assert gpu.best_score == 4 * 1774
+    assert gpu.best_score == 4 * 1773
     assert (
         gpu.surface_index,
         gpu.g_pp,
@@ -781,7 +790,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     """Aurora (Hard) by Creo, served #1 loadout cell (FT=55, FF=58) -- the motivating over-report.
 
     The served DB row carried 47,476,966, which the input engine cannot play (chord-activation
-    phantom). The input-engine-aware producer instead finds the HIGHER legal 47,502,676: a
+    phantom). The input-engine-aware producer instead finds the HIGHER legal 47,502,604: a
     12-Great prefix run, a late-Great activation centered within its complete score-parity window,
     the same-time sibling bundled Great, and the cross-lane chord partners delayed within their
     Perfect windows so the activation's own fill crosses the fever bar. The materialized witness must
@@ -835,7 +844,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
         include_forced_counts=True,
     )[0]
 
-    assert int(result.best_score) == 47_502_676  # legal max; > the unreachable served 47,476,966
+    assert int(result.best_score) == 47_502_604  # legal max; > the unreachable served 47,476,966
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 4095, 0, 0, 0, 1361, 5, 5)
     assert tuple(result.forced_counts) == (13, 2)
 
@@ -846,6 +855,6 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
         result=result,
     )
 
-    assert int(replay.score) == 47_502_676  # physical == exact, full combo, no okays/misses
+    assert int(replay.score) == 47_502_604  # physical == exact, full combo, no okays/misses
     assert replay.tally == {"perfect": 1692, "great": 17, "okay": 0, "miss": 0}
     assert int(replay.max_combo) == 1709

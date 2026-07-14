@@ -1,6 +1,6 @@
 import json
 
-from gear_optimizer.solver.native_inflight_config import make_native_song
+from tests.native_song_factory import make_native_song
 
 
 def _stats(perfect_points: int) -> dict:

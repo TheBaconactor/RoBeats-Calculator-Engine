@@ -23,7 +23,7 @@ from ..core.constants import (
     SKIP_ITEM_KEYS,
 )
 from ..core.gem_defs import build_gem_counts, build_gem_details
-from ..core.parsing import env_flag, env_str
+from ..core.parsing import env_flag
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
 from .base_stats import (
     COLOR_TO_STAT_INDEX,
@@ -312,23 +312,6 @@ def decode_gpu_native_ga_runs_payload(
                 "Data": data_obj,
             }
             unique_evaluated.append(cand_data)
-
-        # Gated DEBUG instrumentation (OFF by default): capture the raw GA->FG
-        # candidate pool (the funnel INPUT) for Slice 1 tie analysis. Enabled only
-        # when FG_SELECT_TIE_DUMP names a JSONL path.
-        _tie_dump_path = env_str("FG_SELECT_TIE_DUMP", "")
-        if _tie_dump_path:
-            from .fg_effective_dedup import dump_candidate_pool_jsonl
-
-            dump_candidate_pool_jsonl(
-                _tie_dump_path,
-                registry=registry,
-                candidates=unique_evaluated,
-                primary_color=str(cfg_data.get("primary_color", "") or ""),
-                secondary_color=str(cfg_data.get("secondary_color", "") or ""),
-                selected_color=str(sel_color or ""),
-                limit=int(eff_limit),
-            )
 
         # No host select here: decode returns the raw GPU-deduped candidate pool.
         # The single canonical color-folded select lives at the FG-prep funnel layer

@@ -3,6 +3,13 @@ import os
 from gear_optimizer.data import song_io
 
 
+def _reset_song_header_cache() -> None:
+    with song_io._SONG_HEADER_CACHE_LOCK:
+        song_io._SONG_HEADER_CACHE.clear()
+        song_io._SONG_HEADER_CACHE_LOADED = False
+        song_io._SONG_HEADER_CACHE_DIRTY = False
+
+
 def test_scan_song_header_reuses_persisted_cache(monkeypatch, tmp_path):
     cache_path = tmp_path / "song_header_cache.json"
     song_path = tmp_path / "song.txt"
@@ -20,7 +27,7 @@ def test_scan_song_header_reuses_persisted_cache(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    song_io._reset_song_header_cache_for_tests()
+    _reset_song_header_cache()
     monkeypatch.setattr(song_io, "_SONG_HEADER_CACHE_PATH", str(cache_path))
 
     open_calls = {"song": 0}
@@ -36,7 +43,7 @@ def test_scan_song_header_reuses_persisted_cache(monkeypatch, tmp_path):
 
     first = song_io.scan_song_header(str(song_path))
     song_io._flush_song_header_cache()
-    song_io._reset_song_header_cache_for_tests()
+    _reset_song_header_cache()
 
     second = song_io.scan_song_header(str(song_path))
 

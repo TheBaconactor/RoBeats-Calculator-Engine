@@ -15,11 +15,11 @@ from gear_optimizer.core.constants import (
     TOTAL_GEM_BUDGET,
 )
 from gear_optimizer.core.parsing import env_get
-from gear_optimizer.solver.combined_skyline_sparse import (
+from tests.parity.combined_skyline_sparse import (
     combined_global_skyline_pairs_6d_sparse,
     get_last_combined_skyline_stats,
 )
-from gear_optimizer.solver.fixed_timing_skyline import reduce_fixed_timing_prefix_skyline
+from tests.parity.fixed_timing_skyline import reduce_fixed_timing_prefix_skyline
 from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
 )
@@ -39,7 +39,7 @@ from gear_optimizer.solver.solver_common import (
     make_pack as _make_pack_common,
     prepare_solver_context,
 )
-from gear_optimizer.solver.timing_response_antichain import (
+from tests.parity.timing_response_antichain import (
     TimingResponseAntichainStats,
     TimingResponseAntichainTable,
     build_timing_response_antichain_table,
@@ -518,7 +518,7 @@ def _global_gear_skyline_points_6d_lane_base_with_codes(
     gear_points: np.ndarray,
     gear_codes: np.ndarray,
 ) -> tuple[LaneAwareGlobalSkylineStats, np.ndarray, np.ndarray]:
-    from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
+    from tests.parity.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
 
     points_in, points, codes, seconds = global_gear_skyline_points_6d_gpu_from_arrays(gear_points, gear_codes)
     stats = LaneAwareGlobalSkylineStats(
@@ -715,7 +715,7 @@ def _combined_global_skyline_pairs_6d_lane_base_with_indices(
     gpu_mode = _read_combined_dense_gpu_mode()
     if gpu_mode in {"auto", "gpu"}:
         try:
-            from gear_optimizer.solver.combined_skyline_dense_gpu import combined_global_skyline_pairs_6d_dense_gpu
+            from tests.parity.combined_skyline_dense_gpu import combined_global_skyline_pairs_6d_dense_gpu
 
             pair_g, pair_m, _seconds = combined_global_skyline_pairs_6d_dense_gpu(gear_points, mini_points)
             return pair_g, pair_m
@@ -1280,7 +1280,7 @@ def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, lis
     phase_counts["candidate_payloads"] = int(len(candidate_records))
 
     phase_started = time.perf_counter()
-    from gear_optimizer.solver.skyline_force_greats import score_retained_skyline_force_greats
+    from tests.parity.skyline_force_greats import score_retained_skyline_force_greats
 
     native_fg_summary, _native_fg_best_record = score_retained_skyline_force_greats(
         candidate_records,

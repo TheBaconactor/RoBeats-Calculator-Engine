@@ -77,7 +77,7 @@ def _exact_sample_base(ctx, *, sample, total_budget, gem_scale, p_color, s_color
     from gear_optimizer.core.color_flags import build_color_flags
     from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
     from gear_optimizer.solver.solver_common import gear_ids_from_codes, mini_ids_from_codes
-    from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
+    from tests.parity.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api import skyline_operations
     from tests.parity.exact_skyline import (

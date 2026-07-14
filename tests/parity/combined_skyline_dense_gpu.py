@@ -4,7 +4,7 @@ import numpy as np
 
 from gear_optimizer.core.constants import MAX_STAT_INDEX
 from gear_optimizer.core.parsing import env_get
-from gear_optimizer.solver.skyline_grid_gpu import OWNER_SENTINEL, fill_i32, layer_offsets, suffix_max_cm_fm_gpu
+from tests.parity.skyline_grid_gpu import OWNER_SENTINEL, fill_i32, layer_offsets, suffix_max_cm_fm_gpu
 from gear_optimizer.solver.taichi_gem.runtime import init_taichi, ti
 
 

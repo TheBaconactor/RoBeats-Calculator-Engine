@@ -141,10 +141,10 @@ def _visible_stats(fd: dict) -> tuple[dict, str]:
 def _statsdict_for_oracle(final: dict, primary: str, secondary: str = "") -> tuple[dict, list[str]]:
     """Map FINAL optimizer stats -> WebPort raw-point statsdict + color-stat key list.
 
-    Feeds BOTH chart colors ([primary, secondary]) so the oracle's colorPointBonus matches the
-    game's two-color scoring (primary 2x, secondary 1x). A single-color loadout has secondary ==
-    primary and collapses to one entry. Feeding only the Selected Element (the old bug) manufactured
-    a spurious ~30% delta on two-color songs.
+    Feeds BOTH chart color slots ([primary, secondary]) so the oracle's colorPointBonus matches the
+    production chart contract (primary 2x, secondary 1x). Equal color values remain two slots;
+    deduplicating them changes the game's per-component floor order for Great hits. Feeding only the
+    Selected Element (the old bug) manufactured a spurious ~30% delta on two-color songs.
     """
     sd: dict[str, int] = {}
     for opt_key, wp_key in _STAT_TO_WEBPORT.items():
@@ -157,8 +157,7 @@ def _statsdict_for_oracle(final: dict, primary: str, secondary: str = "") -> tup
         if wp_color is None:
             raise SystemExit(f"no WebPort color-stat mapping for color {col!r}")
         sd[wp_color] = int(final.get(col, 0) or 0)
-        if wp_color not in colors:
-            colors.append(wp_color)  # [primary, secondary]; dedupe single-color (secondary==primary)
+        colors.append(wp_color)
     return sd, colors
 
 

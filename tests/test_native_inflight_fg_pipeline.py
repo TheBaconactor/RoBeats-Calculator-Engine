@@ -14,7 +14,7 @@ from gear_optimizer.solver.native_inflight_pipeline import (
     run_fg_job_sync,
     read_native_fg_pipeline_settings,
 )
-from gear_optimizer.solver.native_inflight_config import make_native_song
+from tests.native_song_factory import make_native_song
 
 
 def test_read_native_fg_pipeline_settings_uses_canonical_sizing():

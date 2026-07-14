@@ -3,7 +3,7 @@ from gear_optimizer.solver.native_inflight_lifecycle import (
     ProgressTracker,
     evaluate_fg_progress_record_update,
 )
-from gear_optimizer.solver.native_inflight_config import make_native_song
+from tests.native_song_factory import make_native_song
 
 
 def test_progress_tracker_emit_progress_is_best_effort():

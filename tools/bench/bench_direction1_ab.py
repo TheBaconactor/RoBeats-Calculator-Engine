@@ -58,7 +58,7 @@ def main() -> int:
     from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
     from gear_optimizer.solver.solver_common import prepare_solver_context, gear_ids_from_code, mini_ids_from_code
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-    from gear_optimizer.solver.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
+    from tests.parity.gear_skyline_gpu import global_gear_skyline_points_6d_gpu_from_arrays
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import build_fg_response_frontier_cache_for_path
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api import skyline_operations

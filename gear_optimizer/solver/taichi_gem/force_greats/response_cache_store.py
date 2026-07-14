@@ -79,6 +79,30 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Same-color Great scoring now preserves the production chart's two color slots and their
+    # separate floor operations. This changes only surface scoring: the V31 producer, ordered
+    # surfaces, stat-key mapping, and compact sidecars are unchanged. Preserve the complete
+    # already-ratified lineage explicitly so the corrected scorer reuses the finished pool.
+    "fg-response-frontier-visible-first-v31+logic-52861c6156f1": (
+        "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
+        "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
+        "fg-response-frontier-visible-first-v31+logic-76140458b749",
+        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
+        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
+        "fg-response-frontier-visible-first-v31+logic-f67224918652",
+        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
+        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
+        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
+        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
+        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
+        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
+        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
     # Production behavior is unchanged: unreachable/test-only helpers moved out of fingerprinted
     # modules, and two zero-reference Numba helpers were deleted. The optimized producer, ordered
     # surfaces, stat-key mapping, and compact sidecars are identical, so preserve the complete
@@ -445,22 +469,6 @@ def _stale_surface_sidecar_paths(bundle_path: Path) -> tuple[Path, ...]:
 
 def _surface_sidecar_paths_for_key(cache_key: tuple) -> tuple[Path, Path]:
     return _surface_sidecar_paths(resolve_fg_response_bundle_path(cache_key))
-
-
-def warm_surface_sidecar_page_cache(cache_key: tuple) -> None:
-    """Sequentially read both surface sidecars to warm the OS page cache.
-
-    Runs on prep workers so the fused turn's owner-thread sidecar gather reads from
-    memory instead of cold (WOF-compressed) disk. Best-effort readahead only -- a
-    missing/unreadable sidecar fails loud later at the gather that actually needs it.
-    """
-    for path in _surface_sidecar_paths_for_key(cache_key):
-        try:
-            with open(path, "rb") as fh:
-                while fh.read(8 * 1024 * 1024):
-                    pass
-        except OSError:
-            return
 
 
 def _remove_fg_response_bundle_files(bundle_path: Path) -> int:

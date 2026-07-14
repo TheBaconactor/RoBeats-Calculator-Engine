@@ -31,13 +31,13 @@ def _build_controlled_batch(allow_pp: bool):
     ref_cm = (1.0 + idx * 0.011)
     ref_fm = (1.0 + idx * 0.017)
 
-    # color_flags: [p_pp, s_pp, p_cm, s_cm, p_fm, s_fm, p_ov, s_ov, single]
+    # color_flags: [p_pp, s_pp, p_cm, s_cm, p_fm, s_fm, p_ov, s_ov]
     if allow_pp:
-        # primary Chill (PP gems enabled), single-color, primary == selected (overflow)
-        color_flags = np.array([1, 0, 0, 0, 0, 0, 1, 0, 1], dtype=np.int32)
+        # primary Chill (PP gems enabled), equal chart colors, primary == selected (overflow)
+        color_flags = np.array([1, 0, 0, 0, 0, 0, 1, 0], dtype=np.int32)
     else:
         # primary Flow (CM gems), secondary present, two-color
-        color_flags = np.array([0, 0, 1, 0, 0, 0, 1, 0, 0], dtype=np.int32)
+        color_flags = np.array([0, 0, 1, 0, 0, 0, 1, 0], dtype=np.int32)
 
     # row_meta: [residual_budget, cur_pp, cur_cm, cur_fm, cur_primary, cur_secondary, head_len, body_total]
     row_meta = np.array([[residual_budget, 12, 22, 16, 55, 33, head_len, body_total]], dtype=np.int32)

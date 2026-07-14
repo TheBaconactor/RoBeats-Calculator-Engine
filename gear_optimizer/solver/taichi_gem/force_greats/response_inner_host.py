@@ -19,7 +19,6 @@ from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
 from gear_optimizer.helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from gear_optimizer.solver.taichi_gem import api as gem_api
-from gear_optimizer.solver.scoring.fg_policy import is_single_color_song
 
 from .response_inner_kernels import (
     SOLVER_NP_FP,
@@ -69,7 +68,6 @@ def _color_flags(primary_color: str, secondary_color: str, selected_color: str) 
         int(secondary == "Rush"),
         int(primary == selected and bool(selected)),
         int(secondary == selected and bool(selected)),
-        int(is_single_color_song(primary, secondary)),
     )
 
 
@@ -846,7 +844,6 @@ def _fg_response_surface_score_native_f64(
     pp_factor,
     combo_mul,
     fever_mul,
-    is_single_color,
 ):
     """f64 CPU port of ``_fg_response_score_device``: exact score of one surface for a fixed
     (gem-allocated) stat line. Same op order / per-term ``floor`` / i32 accumulation as the
@@ -877,14 +874,11 @@ def _fg_response_surface_score_native_f64(
         | int(surface_words[sr, 7])
     )
     if body_great > 0 or great_or != 0:
-        if is_single_color != 0:
-            great_head_base = (primary_val * 2) + 150
-        else:
-            great_head_base = (
-                int(np.floor(float(primary_val) * (4.0 / 3.0)))
-                + int(np.floor(float(secondary_val) * (2.0 / 3.0)))
-                + 150
-            )
+        great_head_base = (
+            int(np.floor(float(primary_val) * (4.0 / 3.0)))
+            + int(np.floor(float(secondary_val) * (2.0 / 3.0)))
+            + 150
+        )
         great_base = float(great_head_base)
         great_combo_val = int(np.floor(great_base * combo_mul))
         great_fever_val = int(np.floor(great_base * combo_mul * fever_mul))
@@ -959,7 +953,6 @@ def _score_fg_response_groups_native_f64(
     is_s_fm = int(color_flags[5])
     is_p_ov = int(color_flags[6])
     is_s_ov = int(color_flags[7])
-    is_single_color = int(color_flags[8])
 
     pp_p_delta = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
     pp_s_delta = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
@@ -1133,7 +1126,6 @@ def _score_fg_response_groups_native_f64(
                                         pp_ref_cache[g_pp],
                                         cm_mul,
                                         fm_mul,
-                                        is_single_color,
                                     )
                                     if score > best_score or (
                                         score == best_score
@@ -1171,7 +1163,6 @@ def _score_fg_response_groups_native_f64(
                                 pp_factor,
                                 cm_mul,
                                 fm_mul,
-                                is_single_color,
                             )
                             if score > best_score or (
                                 score == best_score

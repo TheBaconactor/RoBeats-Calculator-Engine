@@ -252,7 +252,7 @@ def test_build_persistence_entries_keeps_all_improving_fg_variants_from_payload(
         db_best_fg_score=0,
     )
 
-    from gear_optimizer.helpers.song_helpers.persistence_canon import assemble_without_replay
+    from tests.persistence_test_support import assemble_without_replay
 
     persist_entries = assemble_without_replay(
         db_payload=payload,

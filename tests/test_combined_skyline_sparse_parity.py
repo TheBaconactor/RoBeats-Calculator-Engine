@@ -15,7 +15,7 @@ pytestmark = [pytest.mark.gpu]
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_sparse_matches_cpu_reference_with_duplicates():
-    from gear_optimizer.solver.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
+    from tests.parity.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
     from tests.parity.exact_skyline import (
         _combined_global_skyline_pairs_6d_lane_base_with_indices_cpu_reference,
     )
@@ -68,7 +68,7 @@ def test_sparse_matches_cpu_reference_with_duplicates():
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_sparse_keeps_different_ff_timing_cells():
-    from gear_optimizer.solver.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
+    from tests.parity.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
 
     gear_points = np.asarray(
         [
@@ -89,7 +89,7 @@ def test_sparse_keeps_different_ff_timing_cells():
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_sparse_empty_inputs():
-    from gear_optimizer.solver.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
+    from tests.parity.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
 
     g, m = combined_global_skyline_pairs_6d_sparse(np.zeros((0, 6), dtype=np.int32), np.zeros((0, 5), dtype=np.int32))
     assert g.size == 0

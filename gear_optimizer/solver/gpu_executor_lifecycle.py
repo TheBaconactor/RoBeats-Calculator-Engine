@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 import importlib
 import json
@@ -909,16 +909,6 @@ worker_response_router = WorkerResponseRouter(
     pending_max=2048,
 )
 
-# ---- merged from gpu_executor_worker_state.py ----
-from collections.abc import MutableMapping
-from dataclasses import dataclass
-import logging
-
-from gear_optimizer.core.parsing import env_get
-
-logger = logging.getLogger(__name__)
-
-
 @dataclass(frozen=True)
 class RegisteredWorker:
     worker_id: int
@@ -988,20 +978,3 @@ def unregister_executor_worker(
 ) -> bool:
     return response_queues.pop(int(worker_id), None) is not None
 
-
-def default_song_slot_for_worker(worker_id: int) -> int:
-    """Map a worker id to a stable non-zero song slot for timeline reuse."""
-    try:
-        from .taichi_gem import fields as gem_fields
-
-        max_slots = int(getattr(gem_fields, "MAX_SONG_SLOTS", 1) or 1)
-    except Exception as e:
-        logger.debug(f"gpu_executor_worker_state:default_song_slot_for_worker: {e}")
-        try:
-            max_slots = int(env_get("GPU_SONG_SLOTS", "24") or "24")
-        except (ValueError, TypeError):
-            max_slots = 24
-    max_slots = max(1, int(max_slots))
-    if max_slots <= 1:
-        return 0
-    return 1 + (abs(int(worker_id)) % max(1, int(max_slots) - 1))

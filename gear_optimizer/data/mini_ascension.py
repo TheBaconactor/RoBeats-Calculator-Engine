@@ -117,10 +117,6 @@ def mini_song_target_active(mini: Mapping[str, Any], song_name: str) -> bool:
     return False
 
 
-def ranked_mini_colors(mini: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
-    return _ranked_color_values(mini, use_ascension_base_stats=False)
-
-
 def ranked_mini_ascension_colors(mini: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
     return _ranked_color_values(mini, use_ascension_base_stats=True)
 

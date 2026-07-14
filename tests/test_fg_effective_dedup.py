@@ -1,6 +1,6 @@
 """CPU-only equivalence tests for the GA->FG effective-dedup groundwork (Slice 1).
 
-These prove the reference selector in ``gear_optimizer.solver.fg_effective_dedup``
+These prove the test reference selector
 reproduces the host ``select_top_base_ga_candidates`` SELECTED SET exactly, and
 that the equivalence tables collapse exactly the loadouts the host folds.
 

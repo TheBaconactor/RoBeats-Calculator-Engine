@@ -14,7 +14,7 @@ from gear_optimizer.core.constants import (
     MAX_STAT_INDEX,
     TOTAL_ROWS,
 )
-from gear_optimizer.solver.scoring.fg_policy import compute_great_penalty_base, is_single_color_song
+from gear_optimizer.solver.scoring.fg_policy import compute_great_penalty_base
 from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _score_response_group_meta_gpu
 
 
@@ -101,7 +101,6 @@ def _score_surface_atom(
     pp_factor: float,
     combo_mul: float,
     fever_mul: float,
-    single_color: bool,
 ) -> int:
     fever_words = tuple(int(v) for v in np.asarray(words[:4], dtype=np.uint32))
     great_words = tuple(int(v) for v in np.asarray(words[4:8], dtype=np.uint32))
@@ -117,7 +116,7 @@ def _score_surface_atom(
     fever_val = _score_floor(base_value * combo_f * fever_f)
     score = int(body_fever) * int(fever_val) + int(body_normal) * int(combo_val)
 
-    great_head_base = compute_great_penalty_base(primary_val, secondary_val, single_color=bool(single_color))
+    great_head_base = compute_great_penalty_base(primary_val, secondary_val)
     great_base = float(great_head_base)
 
     if int(body_great) > 0:
@@ -242,7 +241,6 @@ def _score_atom_for_group(
         pp_factor=_lookup_ref(np.asarray(ref_arrays["Perfect Points"], dtype=np.float64), int(final_pp)),
         combo_mul=_lookup_ref(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float64), int(final_cm)),
         fever_mul=_lookup_ref(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float64), int(final_fm)),
-        single_color=is_single_color_song(primary_color, secondary_color),
     )
     return np.asarray(
         [
