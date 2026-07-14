@@ -26,7 +26,7 @@ Two graphs per loadout, matching the intended software behavior:
         all notes Perfect; selected activation witnesses carry exact `delta_ms`
         when a compact timeline trace is available. The last note of each fever
         run is also a witness (`is_fever_end_witness`) carrying `fever_end_ms`,
-        the largest-cushion fever cutoff time -- symmetric to the activation
+        the materialized score-parity fever cutoff time -- symmetric to the centered activation
         witness that anchors where fever starts.
   * FG   = fg frontier + timeline       -> force_greats_note_graph(..., timing_mode=...)
         per-note Perfect/Great + fever; optimized activation hits are timing
@@ -164,7 +164,7 @@ def _activation_materialized_delta_ms(
     note_index: int,
     judgment: str,
 ) -> float:
-    """Return the latest activation hit that preserves the scored input order."""
+    """Return the max-margin activation hit that preserves the scored input order."""
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
     lane_arr = None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1)
     a = int(note_index)
@@ -222,6 +222,37 @@ def _activation_materialized_delta_ms(
             raise ValueError(
                 f"note_graph: activation witness interval is empty at note {a} "
                 f"({lo:.3f}ms > {hi:.3f}ms)"
+            )
+
+    # Early-Great endpoint rows are part of the selected score surface but sit before the ordinary
+    # Perfect-floor exit. The producer's basic exit band therefore does not include their strict
+    # ``event < fever_end`` constraint. Raise the activation lower bound just enough that every
+    # selected early-Great endpoint still has at least one legal hit inside fever.
+    duration_ms = _trace_fever_duration_ms(sec, activation_chart_ms=float(chart_ms))
+    early_great_start = int(sec.get("early_great_start", -1))
+    early_great_end = int(sec.get("early_great_end", -1))
+    if (
+        duration_ms is not None
+        and notes is not None
+        and total_notes is not None
+        and early_great_start >= 0
+        and early_great_end > early_great_start
+    ):
+        graph_end = min(int(total_notes), len(notes), int(nt.shape[0]))
+        for j in range(max(0, int(early_great_start)), min(int(early_great_end), graph_end)):
+            early_lo, _early_hi = _early_great_bounds_ms_at(nt, j)
+            earliest_hit_ms = float(notes[j]["hit_time_ms"]) + float(early_lo)
+            strict_activation_hit_lo = float(
+                np.nextafter(
+                    np.float64(earliest_hit_ms - float(duration_ms)),
+                    np.float64(np.inf),
+                )
+            )
+            lo = max(float(lo), strict_activation_hit_lo - float(chart_ms))
+        if lo > hi:
+            raise ValueError(
+                "note_graph: activation witness has no score-parity room for an early-Great "
+                f"fever-end note at activation {a} ({lo:.3f}ms > {hi:.3f}ms)"
             )
 
     label_high_ms: np.ndarray | None = None
@@ -283,13 +314,42 @@ def _activation_materialized_delta_ms(
             f"changing note {a}'s {judgment} judgment"
         )
 
-    delta = min(float(hi), float(hit_ms) - float(chart_ms))
-    if delta < lo:
+    feasible_hi = min(float(hi), float(hit_ms) - float(chart_ms))
+    if feasible_hi < lo:
         raise ValueError(
             "note_graph: activation witness cannot preserve following note order without "
             f"changing note {a}'s {judgment} judgment"
         )
-    return float(delta)
+    # The producer-owned interval contains exactly the activation hits that preserve the selected
+    # response surface. Following-note caps can only narrow its upper edge. The midpoint maximizes
+    # the minimum distance to either remaining boundary, i.e. the most input error in both
+    # directions without changing the score-bearing judgment, order, or fever extent.
+    return float(_center_safe_delta(low_ms=float(lo), high_ms=float(feasible_hi)))
+
+
+def _trace_fever_duration_ms(
+    sec: Mapping[str, Any],
+    *,
+    activation_chart_ms: float,
+) -> float | None:
+    explicit_duration = sec.get("fever_duration_ms")
+    if explicit_duration is not None:
+        duration_ms = float(explicit_duration)
+        if np.isfinite(duration_ms) and duration_ms > 0.0:
+            return float(duration_ms)
+
+    fever_end = sec.get("fever_window_end_ms")
+    if fever_end is None:
+        return None
+    priced_hit_ms = sec.get("activation_hit_window_upper_ms")
+    if priced_hit_ms is None:
+        priced_delta = sec.get("activation_hit_offset_upper_ms", sec.get("activation_hit_offset_ms"))
+        if priced_delta is not None:
+            priced_hit_ms = float(activation_chart_ms) + float(priced_delta)
+    if priced_hit_ms is None:
+        return None
+    duration_ms = float(fever_end) - float(priced_hit_ms)
+    return float(duration_ms) if np.isfinite(duration_ms) and duration_ms > 0.0 else None
 
 
 def _materialized_fever_window_end_ms(
@@ -306,15 +366,8 @@ def _materialized_fever_window_end_ms(
         if activation_chart_ms is not None
         else float(sec.get("activation_ms", 0.0) or 0.0)
     )
-    priced_hit_ms = sec.get("activation_hit_window_upper_ms")
-    if priced_hit_ms is None:
-        priced_delta = sec.get("activation_hit_offset_upper_ms", sec.get("activation_hit_offset_ms"))
-        if priced_delta is not None:
-            priced_hit_ms = float(chart_ms) + float(priced_delta)
-    if priced_hit_ms is None:
-        return float(fever_end)
-    duration_ms = float(fever_end) - float(priced_hit_ms)
-    if duration_ms <= 0.0:
+    duration_ms = _trace_fever_duration_ms(sec, activation_chart_ms=float(chart_ms))
+    if duration_ms is None:
         return float(fever_end)
     return float(chart_ms) + float(activation_delta_ms) + float(duration_ms)
 
@@ -1089,9 +1142,9 @@ def _mark_fever_end_witness(
 ) -> None:
     """Mark the last note of the fever run as the fever-end witness.
 
-    Anchors where fever ends with the largest-cushion cutoff (``fever_window_end_ms``) -- the
-    same latest-legal convention the activation witness uses for where fever starts. Shared by
-    the base and FG note graphs so the two stay symmetric. ``last_fever`` is ``min(e, n) - 1``,
+    Anchors where fever ends with the materialized score-parity cutoff
+    (``fever_window_end_ms``). Shared by the base and FG note graphs so the two stay symmetric.
+    ``last_fever`` is ``min(e, n) - 1``,
     always ``< n``, so only the lower bound is checked.
     """
     last_fever = min(int(fever_end_index), int(total_notes)) - 1
@@ -1473,7 +1526,7 @@ def force_greats_note_graph(
         a = int(sec["activation_index"])
         e = int(sec["fever_end_index"])
 
-        # Fever-end witness: last note of the fever run, carrying the largest-cushion
+        # Fever-end witness: last note of the fever run, carrying the centered score-parity
         # cutoff (`fever_window_end_ms`). Symmetric to the base note-graph.
         fever_end_ms = sec.get("fever_window_end_ms")
         materialized_activation_delta_ms: float | None = None

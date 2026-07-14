@@ -785,7 +785,7 @@ def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_orde
     assert graph[4]["delta_ms"] == 0.0
 
 
-def test_fg_note_graph_uses_activation_upper_edge_for_priced_fever_cutoff():
+def test_fg_note_graph_centers_score_parity_activation_window():
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     n = 4
@@ -798,7 +798,8 @@ def test_fg_note_graph_uses_activation_upper_edge_for_priced_fever_cutoff():
             "forced_start_index": 0,
             "forced_prefix_count": 0,
             "activation_judgment": "late_great",
-            "activation_hit_offset_ms": 50.0,
+            "activation_hit_offset_ms": 135.0,
+            "activation_hit_offset_lower_ms": 80.0,
             "activation_hit_offset_upper_ms": 190.0,
             "fever_window_end_ms": 12000.0,
         }
@@ -813,9 +814,10 @@ def test_fg_note_graph_uses_activation_upper_edge_for_priced_fever_cutoff():
     activation_press = graph[0]["hit_time_ms"] + graph[0]["delta_ms"]
     next_press = graph[1]["hit_time_ms"] + graph[1]["delta_ms"]
 
-    assert graph[0]["delta_ms"] == pytest.approx(190.0)
+    assert graph[0]["delta_ms"] == pytest.approx(135.0)
+    assert graph[0]["delta_ms"] - 80.0 == pytest.approx(190.0 - graph[0]["delta_ms"])
     assert graph[1]["note_result"] == "Perfect"
-    assert graph[1]["delta_ms"] == pytest.approx(30.0, abs=1e-3)
+    assert graph[1]["delta_ms"] == pytest.approx(0.0, abs=1e-3)
     assert next_press >= activation_press
 
 
@@ -854,7 +856,7 @@ def test_fg_note_graph_decodes_float32_window_on_engine_ms_lattice():
     assert graph[0]["note_result"] == "Perfect"
 
 
-def test_fg_note_graph_hold_head_activation_uses_upper_edge_for_early_great_tail():
+def test_fg_note_graph_centers_hold_head_activation_with_early_great_tail():
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
     timestamps = np.asarray([0.0, 1.0], dtype=np.float32)
@@ -868,7 +870,7 @@ def test_fg_note_graph_hold_head_activation_uses_upper_edge_for_early_great_tail
         "activation_hit_offset_ms": 20.0,
         "activation_hit_offset_lower_ms": 0.0,
         "activation_hit_offset_upper_ms": 40.0,
-        "fever_window_end_ms": 920.0,
+        "fever_window_end_ms": 940.0,
         "early_great_start": 1,
         "early_great_end": 2,
     }]
@@ -880,10 +882,10 @@ def test_fg_note_graph_hold_head_activation_uses_upper_edge_for_early_great_tail
         note_types=np.asarray([2, 1], dtype=np.int16),
     )
 
-    assert graph[0]["delta_ms"] == pytest.approx(40.0)
+    assert graph[0]["delta_ms"] == pytest.approx(20.0)
     assert graph[1]["note_result"] == "Great"
     assert -94.0 <= float(graph[1]["delta_ms"]) < -20.0
-    assert float(graph[1]["hit_time_ms"]) + float(graph[1]["delta_ms"]) < 920.0
+    assert float(graph[1]["hit_time_ms"]) + float(graph[1]["delta_ms"]) < 940.0
 
 
 def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
@@ -915,12 +917,12 @@ def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
     activation_press = graph[0]["hit_time_ms"] + graph[0]["delta_ms"]
     next_press = graph[1]["hit_time_ms"] + graph[1]["delta_ms"]
 
-    assert graph[0]["delta_ms"] == pytest.approx(170.0, abs=1e-3)
+    assert graph[0]["delta_ms"] == pytest.approx(125.0, abs=1e-3)
     assert graph[1]["note_result"] == "Perfect"
-    assert graph[1]["delta_ms"] == pytest.approx(40.0, abs=1e-3)
-    assert next_press == pytest.approx(activation_press, abs=1e-9)
+    assert graph[1]["delta_ms"] == pytest.approx(0.0, abs=1e-3)
+    assert next_press > activation_press
     assert graph[0]["input_order"] < graph[1]["input_order"]
-    assert graph[2]["fever_end_ms"] == pytest.approx(11170.0, abs=1e-3)
+    assert graph[2]["fever_end_ms"] == pytest.approx(11195.0, abs=1e-3)
 
 
 def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
@@ -1037,7 +1039,9 @@ def test_fg_note_graph_preserves_fractional_window_near_integer_boundary():
 
     activation_event = float(graph[0]["hit_time_ms"]) + float(graph[0]["delta_ms"])
     follower_event = float(graph[1]["hit_time_ms"]) + float(graph[1]["delta_ms"])
-    assert graph[0]["delta_ms"] == pytest.approx(166.9921875, abs=1e-9)
+    assert graph[0]["delta_ms"] == pytest.approx(
+        0.5 * (166.93878173828125 + 166.9921875), abs=1e-9
+    )
     assert graph[0]["delta_ms"] != 167.0
     assert follower_event >= activation_event
     assert graph[0]["input_order"] < graph[1]["input_order"]

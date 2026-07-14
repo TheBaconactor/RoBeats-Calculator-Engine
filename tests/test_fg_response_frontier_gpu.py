@@ -822,9 +822,9 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
 
     The served DB row carried 47,476,966, which the input engine cannot play (chord-activation
     phantom). The input-engine-aware producer instead finds the HIGHER legal 47,502,676: a
-    12-Great prefix run, a late-Great activation at its capped upper edge, the same-time sibling
-    bundled Great, and the cross-lane chord partners at +163ms delayed within their Perfect
-    windows so the activation's own fill crosses the fever bar. The materialized witness must
+    12-Great prefix run, a late-Great activation centered within its complete score-parity window,
+    the same-time sibling bundled Great, and the cross-lane chord partners delayed within their
+    Perfect windows so the activation's own fill crosses the fever bar. The materialized witness must
     replay BIT-EXACT through the faithful input-engine simulator (earliest-hittable-first
     matching, +200ms despawn, frame-granular fever) -- exact == physical is the definitive gate
     for every surface this producer emits.
