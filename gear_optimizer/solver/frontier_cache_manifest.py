@@ -22,6 +22,7 @@ class FrontierCacheManifestPlan:
     hit_paths: tuple[str, ...]
     missing_paths: tuple[str, ...]
     key_by_norm_path: dict[str, str]
+    validated_entry_count: int = 0
 
     @property
     def hit_count(self) -> int:
@@ -223,6 +224,7 @@ def build_manifest_plan(
         hit_paths=tuple(hits),
         missing_paths=tuple(misses),
         key_by_norm_path=key_by_norm,
+        validated_entry_count=int(updated_entries),
     )
 
 

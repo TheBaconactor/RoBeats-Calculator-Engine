@@ -869,15 +869,20 @@ def run_fg_response_frontier_cache_prebuild(
         return FgResponseFrontierCachePrebuildSummary(total=0)
 
     if _manifest_records_current_cache_version():
-        # Complete current-manifest hits are readers, not builders. Probe without mutating the
-        # manifest so they never wait behind an unrelated deployment prebuild that owns the lock.
+        # Fully recorded current-manifest hits are readers, not builders. Probe without mutating
+        # the manifest so they never wait behind an unrelated deployment prebuild that owns the
+        # lock. Complete derived hits absent from the manifest enter the lock once below.
         optimistic_plan = _build_manifest_plan(
             paths,
             ref_arrays,
             stat_keys=stat_keys,
             persist_validated_entries=False,
         )
-        if not optimistic_plan.missing_paths and not cache_dir_sidecars_need_compression():
+        if (
+            not optimistic_plan.missing_paths
+            and int(optimistic_plan.validated_entry_count) == 0
+            and not cache_dir_sidecars_need_compression()
+        ):
             return FgResponseFrontierCachePrebuildSummary(
                 total=int(optimistic_plan.total_paths),
                 completed=int(optimistic_plan.hit_count),

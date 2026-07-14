@@ -78,6 +78,7 @@ def test_manifestless_derived_cache_hit_needs_no_builder_manifest_write(tmp_path
 
     assert plan.hit_paths == (str(song_path),)
     assert plan.missing_paths == ()
+    assert plan.validated_entry_count == 1
     assert not manifest_path.exists()
 
 
@@ -109,6 +110,7 @@ def test_manifest_fast_path_survives_mtime_touch(tmp_path: Path) -> None:
 
     assert plan.hit_paths == (str(song_path),)
     assert plan.missing_paths == ()
+    assert plan.validated_entry_count == 0
     assert calls["n"] == 0, "mtime-only touch must hit the fast-path without re-validation"
 
 

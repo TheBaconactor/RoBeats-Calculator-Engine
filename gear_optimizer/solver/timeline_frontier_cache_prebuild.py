@@ -319,10 +319,11 @@ def run_timeline_frontier_cache_prebuild(
     if not paths:
         return TimelineFrontierCachePrebuildSummary(total=0)
 
-    # Complete cache hits are readers, not builders. Probe without mutating the manifest so they
-    # never wait behind an unrelated deployment prebuild that owns the single-builder lock.
+    # Fully recorded cache hits are readers, not builders. Probe without mutating the manifest so
+    # they never wait behind an unrelated deployment prebuild that owns the single-builder lock.
+    # Complete derived hits absent from the manifest enter the lock once below to persist metadata.
     optimistic_plan = _build_manifest_plan(paths, ref_arrays, persist_validated_entries=False)
-    if not optimistic_plan.missing_paths:
+    if not optimistic_plan.missing_paths and int(optimistic_plan.validated_entry_count) == 0:
         return TimelineFrontierCachePrebuildSummary(
             total=int(optimistic_plan.total_paths),
             completed=int(optimistic_plan.hit_count),
@@ -345,6 +346,14 @@ def run_timeline_frontier_cache_prebuild(
         removed_tmp = cleanup_timeline_frontier_cache_temp_files()
         if int(removed_tmp) > 0:
             logger.info("[TimelineCache] Removed %s stale temporary cache file(s).", int(removed_tmp))
+
+        if not manifest_plan.missing_paths:
+            return TimelineFrontierCachePrebuildSummary(
+                total=int(manifest_plan.total_paths),
+                completed=int(manifest_hits),
+                disk=int(manifest_hits),
+                elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+            )
 
         run_summary, results = _run_missing_timeline_prebuild(list(manifest_plan.missing_paths), ref_arrays)
         _apply_manifest_results(plan=manifest_plan, results=results)

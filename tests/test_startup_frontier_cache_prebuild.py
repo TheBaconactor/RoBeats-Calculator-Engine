@@ -476,6 +476,7 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
         hit_paths = (str(song_a), str(song_b))
         missing_paths = ()
         key_by_norm_path = {}
+        validated_entry_count = 0
 
         @property
         def hit_count(self) -> int:
@@ -546,6 +547,7 @@ def test_complete_manifest_enters_locked_maintenance_when_sidecars_need_compress
         hit_paths = (str(song_path),)
         missing_paths = ()
         key_by_norm_path = {}
+        validated_entry_count = 0
 
         @property
         def hit_count(self) -> int:
@@ -619,6 +621,7 @@ def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch
         hit_paths = (str(song_path),)
         missing_paths = ()
         key_by_norm_path = {}
+        validated_entry_count = 0
 
         @property
         def hit_count(self) -> int:
@@ -672,6 +675,71 @@ def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch
     assert compression_calls == 1
 
 
+def test_fg_current_manifest_persists_complete_unrecorded_hits_under_lock(monkeypatch, tmp_path: Path) -> None:
+    from contextlib import nullcontext
+
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+
+    song_path = tmp_path / "Song.txt"
+    song_path.write_text("fake", encoding="utf-8")
+
+    class _Plan:
+        total_paths = 1
+        hit_paths = (str(song_path),)
+        missing_paths = ()
+        key_by_norm_path = {}
+
+        def __init__(self, validated_entry_count: int) -> None:
+            self.validated_entry_count = validated_entry_count
+
+        @property
+        def hit_count(self) -> int:
+            return 1
+
+    persist_calls: list[bool] = []
+
+    def _plan(*_args, **kwargs):
+        persist = bool(kwargs.get("persist_validated_entries", True))
+        persist_calls.append(persist)
+        return _Plan(0 if persist else 1)
+
+    monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
+    monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
+    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
+    monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cache_dir_sidecars_need_compression",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
+        lambda: 0,
+    )
+    monkeypatch.setattr(
+        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.purge_stale_version_cache_files",
+        lambda **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        prebuild,
+        "_run_missing_fg_prebuild",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("complete derived hits must repair metadata without starting workers")
+        ),
+    )
+
+    summary = prebuild.run_fg_response_frontier_cache_prebuild(
+        cfg=object(),
+        song_queue=[(str(song_path),)],
+        ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        data_root=tmp_path,
+    )
+
+    assert persist_calls == [False, True]
+    assert summary.completed == 1
+    assert summary.disk == 1
+    assert summary.built == 0
+
+
 def test_timeline_prebuild_manifest_hits_do_not_acquire_build_lock(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
 
@@ -683,6 +751,7 @@ def test_timeline_prebuild_manifest_hits_do_not_acquire_build_lock(monkeypatch, 
         hit_paths = (str(song_path),)
         missing_paths = ()
         key_by_norm_path = {}
+        validated_entry_count = 0
 
         @property
         def hit_count(self) -> int:
@@ -709,6 +778,57 @@ def test_timeline_prebuild_manifest_hits_do_not_acquire_build_lock(monkeypatch, 
     assert summary.total == 1
     assert summary.completed == 1
     assert summary.disk == 1
+
+
+def test_timeline_prebuild_persists_complete_unrecorded_hits_under_lock(monkeypatch, tmp_path: Path) -> None:
+    from contextlib import nullcontext
+
+    from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
+
+    song_path = tmp_path / "Song.txt"
+    song_path.write_text("fake", encoding="utf-8")
+
+    class _Plan:
+        total_paths = 1
+        hit_paths = (str(song_path),)
+        missing_paths = ()
+        key_by_norm_path = {}
+
+        def __init__(self, validated_entry_count: int) -> None:
+            self.validated_entry_count = validated_entry_count
+
+        @property
+        def hit_count(self) -> int:
+            return 1
+
+    persist_calls: list[bool] = []
+
+    def _plan(*_args, **kwargs):
+        persist = bool(kwargs.get("persist_validated_entries", True))
+        persist_calls.append(persist)
+        return _Plan(0 if persist else 1)
+
+    monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
+    monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(
+        prebuild,
+        "_run_missing_timeline_prebuild",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("complete derived hits must repair metadata without starting workers")
+        ),
+    )
+
+    summary = prebuild.run_timeline_frontier_cache_prebuild(
+        cfg=object(),
+        song_queue=[(str(song_path),)],
+        ref_arrays={},
+        data_root=tmp_path,
+    )
+
+    assert persist_calls == [False, True]
+    assert summary.completed == 1
+    assert summary.disk == 1
+    assert summary.built == 0
 
 
 def test_startup_frontier_cache_prebuild_has_no_scope_or_disable_flags() -> None:
