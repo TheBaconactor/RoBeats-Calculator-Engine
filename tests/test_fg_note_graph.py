@@ -951,6 +951,49 @@ def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
         )
 
 
+def test_fg_note_graph_uses_exact_later_preactivation_witness_before_activation():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 2,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 120.0,
+            "activation_hit_offset_lower_ms": 80.0,
+            "activation_hit_offset_upper_ms": 190.0,
+            "fever_window_end_ms": 11190.0,
+            "fever_duration_ms": 11000.0,
+            "activation_schedule_schema_version": 1,
+            "preactivation_order": [1],
+            "preactivation_lane_prefixes": [
+                {"lane": 1, "count": 0},
+                {"lane": 2, "count": 1},
+            ],
+            "preactivation_fill_half_units": 2,
+            "preactivation_event_count": 1,
+            "preactivation_great_count": 0,
+        }
+    ]
+
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=2,
+        timestamps=np.asarray([10.0, 10.0], dtype=np.float32),
+        note_types=np.ones(2, dtype=np.int16),
+        lanes=np.asarray([1, 2], dtype=np.int32),
+    )
+
+    assert graph[1]["input_order"] < graph[0]["input_order"]
+    assert graph[1]["note_result"] == "Perfect"
+    assert graph[1]["fever"] is False
+    assert graph[0]["note_result"] == "Great"
+    assert graph[0]["fever"] is True
+
+
 def test_fg_note_graph_marks_fever_end_witness():
     """FG note-graph tags the last note of each fever run with the cutoff ms, like base."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph

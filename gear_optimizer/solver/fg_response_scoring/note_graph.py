@@ -241,20 +241,34 @@ def _activation_materialized_delta_ms(
             else:
                 raise ValueError(f"note_graph: cannot order unsupported result {result!r} at note {j}")
             label_high_ms[j] = float(note["hit_time_ms"]) + float(label_hi)
-        hit_ms = latest_activation_hit_from_label_highs(
-            activation_index=a,
-            hit_lo=float(chart_ms) + float(lo),
-            hit_hi=float(chart_ms) + float(hi),
-            chart_timestamps=chart_timestamps_ms,
-            label_high_timestamps=label_high_ms,
-            section_end=n,
-            lanes=(
-                None
-                if int(sec.get("activation_schedule_schema_version", 0) or 0) == 1
-                else lane_arr
-            ),
-            epsilon=0.001,
-        )
+        schedule_version = int(sec.get("activation_schedule_schema_version", 0) or 0)
+        if schedule_version == 1:
+            exact_order_raw = sec.get("preactivation_order")
+            if not isinstance(exact_order_raw, (list, tuple)):
+                raise ValueError("note_graph: exact activation schedule requires preactivation order")
+            selected_preactivation = frozenset(int(index) for index in exact_order_raw)
+            hit_ms = float(chart_ms) + float(hi)
+            hit_lo_ms = float(chart_ms) + float(lo)
+            for j in range(a + 1, n):
+                if int(j) in selected_preactivation:
+                    continue
+                if float(chart_timestamps_ms[j]) >= float(hit_ms):
+                    break
+                hit_ms = min(float(hit_ms), float(label_high_ms[j]) - 0.001)
+                if float(hit_ms) < float(hit_lo_ms):
+                    hit_ms = None
+                    break
+        else:
+            hit_ms = latest_activation_hit_from_label_highs(
+                activation_index=a,
+                hit_lo=float(chart_ms) + float(lo),
+                hit_hi=float(chart_ms) + float(hi),
+                chart_timestamps=chart_timestamps_ms,
+                label_high_timestamps=label_high_ms,
+                section_end=n,
+                lanes=lane_arr,
+                epsilon=0.001,
+            )
     else:
         hit_ms = float(chart_ms) + float(hi)
 
