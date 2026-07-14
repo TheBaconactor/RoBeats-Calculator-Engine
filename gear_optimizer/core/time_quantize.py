@@ -10,6 +10,17 @@ from __future__ import annotations
 import numpy as np
 
 
+def snap_near_int_ms(milliseconds: np.ndarray, *, snap_tol_ms: float = 0.1) -> np.ndarray:
+    """Snap float32 representation drift around an integer-ms engine time.
+
+    Values outside the tolerance remain fractional. This is the non-flooring half of
+    :func:`quantize_to_int_ms`, used when an event-time witness may legitimately be sub-ms.
+    """
+    ms = np.asarray(milliseconds, dtype=np.float32)
+    rounded = np.rint(ms)
+    return np.where(np.abs(ms - rounded) <= np.float32(snap_tol_ms), rounded, ms)
+
+
 def quantize_to_int_ms(timestamps_sec: np.ndarray, *, snap_tol_ms: float = 0.1) -> np.ndarray:
     """
     Quantize seconds timestamps to integer milliseconds.
@@ -32,10 +43,5 @@ def quantize_to_int_ms(timestamps_sec: np.ndarray, *, snap_tol_ms: float = 0.1) 
     ts = np.asarray(timestamps_sec, dtype=np.float32)
     ms = ts * np.float32(1000.0)
 
-    rounded = np.rint(ms)
-    diff = np.abs(ms - rounded)
-    tol = np.float32(snap_tol_ms)
-
-    snapped = np.where(diff <= tol, rounded, np.floor(ms))
-    return snapped.astype(np.int32, copy=False)
-
+    snapped = snap_near_int_ms(ms, snap_tol_ms=float(snap_tol_ms))
+    return np.floor(snapped).astype(np.int32, copy=False)

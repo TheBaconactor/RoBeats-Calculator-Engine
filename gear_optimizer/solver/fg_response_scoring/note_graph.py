@@ -53,6 +53,8 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from gear_optimizer.core.time_quantize import snap_near_int_ms
+
 from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_from_label_highs
 
 __all__ = [
@@ -166,15 +168,27 @@ def _activation_materialized_delta_ms(
     nt = None if note_types is None else np.asarray(note_types).reshape(-1)
     lane_arr = None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1)
     a = int(note_index)
-    center = float(sec["activation_hit_offset_ms"])
+    raw_center = float(sec["activation_hit_offset_ms"])
     if nt is None:
-        return float(center)
+        return float(raw_center)
+    raw_center = _snap_engine_time_ms(float(raw_center))
     if judgment == "late_great":
         judge_lo, judge_hi = _late_great_bounds_ms_at(nt, a)
     elif judgment == "perfect":
         judge_lo, judge_hi = _perfect_bounds_ms_at(nt, a)
     else:
-        return float(center)
+        return float(raw_center)
+
+    if notes is not None and 0 <= a < len(notes):
+        chart_ms = float(notes[a]["hit_time_ms"])
+    else:
+        chart_ms = float(sec.get("activation_ms", 0.0) or 0.0)
+    absolute_center = sec.get("activation_hit_ms")
+    center = (
+        _snap_engine_time_ms(float(absolute_center) - float(chart_ms))
+        if absolute_center is not None
+        else float(raw_center)
+    )
 
     has_hit_window = any(
         sec.get(key) is not None
@@ -188,20 +202,15 @@ def _activation_materialized_delta_ms(
     if not has_hit_window:
         return float(center)
 
-    if notes is not None and 0 <= a < len(notes):
-        chart_ms = float(notes[a]["hit_time_ms"])
-    else:
-        chart_ms = float(sec.get("activation_ms", 0.0) or 0.0)
-
     def _offset_field(name: str, fallback: float) -> float:
+        window_key = f"activation_hit_window_{name}_ms"
+        value = sec.get(window_key)
+        if value is not None:
+            return _snap_engine_time_ms(float(value) - float(chart_ms))
         offset_key = f"activation_hit_offset_{name}_ms"
         value = sec.get(offset_key)
         if value is not None:
-            return float(value)
-        window_key = f"activation_hit_window_{name}_ms"
-        value = sec.get(window_key)
-        if value is not None and chart_ms:
-            return float(value) - float(chart_ms)
+            return _snap_engine_time_ms(float(value))
         return float(fallback)
 
     lo = max(float(judge_lo), _offset_field("lower", center))
@@ -278,10 +287,14 @@ def _materialized_fever_window_end_ms(
         if activation_chart_ms is not None
         else float(sec.get("activation_ms", 0.0) or 0.0)
     )
-    priced_delta = sec.get("activation_hit_offset_upper_ms", sec.get("activation_hit_offset_ms"))
-    if priced_delta is None:
+    priced_hit_ms = sec.get("activation_hit_window_upper_ms")
+    if priced_hit_ms is None:
+        priced_delta = sec.get("activation_hit_offset_upper_ms", sec.get("activation_hit_offset_ms"))
+        if priced_delta is not None:
+            priced_hit_ms = float(chart_ms) + _snap_engine_time_ms(float(priced_delta))
+    if priced_hit_ms is None:
         return float(fever_end)
-    duration_ms = float(fever_end) - (float(chart_ms) + float(priced_delta))
+    duration_ms = float(fever_end) - float(priced_hit_ms)
     if duration_ms <= 0.0:
         return float(fever_end)
     return float(chart_ms) + float(activation_delta_ms) + float(duration_ms)
@@ -349,6 +362,10 @@ def _center_safe_delta(*, low_ms: float, high_ms: float) -> float:
 
 def _same_chart_time_ms(a: float, b: float) -> bool:
     return abs(float(a) - float(b)) <= _FEVER_END_SAME_CHART_TIME_MS
+
+
+def _snap_engine_time_ms(value: float) -> float:
+    return float(snap_near_int_ms(np.asarray(float(value), dtype=np.float32)))
 
 
 def _hit_time_ms(timestamps: np.ndarray, idx: int) -> float:

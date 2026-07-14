@@ -819,6 +819,41 @@ def test_fg_note_graph_uses_activation_upper_edge_for_priced_fever_cutoff():
     assert next_press >= activation_press
 
 
+def test_fg_note_graph_decodes_float32_window_on_engine_ms_lattice():
+    timestamp = np.float32(104.36299896240234)
+    absolute_hit_ms = float(np.float32(104.403)) * 1000.0
+    raw_offset_ms = (float(np.float32(104.403)) - float(timestamp)) * 1000.0
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 1,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "perfect",
+            "activation_ms": float(timestamp) * 1000.0,
+            "activation_hit_ms": absolute_hit_ms,
+            "activation_hit_offset_ms": raw_offset_ms,
+            "activation_hit_window_lower_ms": absolute_hit_ms,
+            "activation_hit_window_upper_ms": absolute_hit_ms,
+            "activation_hit_offset_lower_ms": raw_offset_ms,
+            "activation_hit_offset_upper_ms": raw_offset_ms,
+        }
+    ]
+
+    graph = _exact_force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=1,
+        timestamps=np.asarray([timestamp], dtype=np.float32),
+        note_types=np.ones(1, dtype=np.int16),
+    )
+
+    assert raw_offset_ms > 40.0
+    assert graph[0]["hit_time_ms"] == pytest.approx(float(timestamp) * 1000.0)
+    assert graph[0]["delta_ms"] == 40.0
+    assert graph[0]["note_result"] == "Perfect"
+
+
 def test_fg_note_graph_hold_head_activation_uses_upper_edge_for_early_great_tail():
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
 
