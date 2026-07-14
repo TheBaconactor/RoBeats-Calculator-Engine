@@ -994,6 +994,68 @@ def test_fg_note_graph_uses_exact_later_preactivation_witness_before_activation(
     assert graph[0]["fever"] is True
 
 
+def test_fg_note_graph_materializes_all_section_labels_before_activation_caps():
+    from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
+
+    trace = [
+        {
+            "section": 1,
+            "activation_index": 0,
+            "fever_end_index": 2,
+            "forced_start_index": 0,
+            "forced_prefix_count": 0,
+            "activation_judgment": "late_great",
+            "activation_hit_offset_ms": 120.0,
+            "activation_hit_offset_lower_ms": 80.0,
+            "activation_hit_offset_upper_ms": 190.0,
+            "fever_window_end_ms": 15000.0,
+            "fever_duration_ms": 5000.0,
+            "activation_schedule_schema_version": 1,
+            "preactivation_order": [],
+            "preactivation_lane_prefixes": [
+                {"lane": 1, "count": 0},
+                {"lane": 2, "count": 0},
+                {"lane": 3, "count": 0},
+            ],
+            "preactivation_fill_half_units": 0,
+            "preactivation_event_count": 0,
+            "preactivation_great_count": 0,
+        },
+        {
+            "section": 2,
+            "activation_index": 2,
+            "fever_end_index": 3,
+            "forced_start_index": 1,
+            "forced_prefix_count": 1,
+            "activation_judgment": "perfect",
+            "activation_hit_offset_ms": 0.0,
+            "fever_window_end_ms": 31000.0,
+            "fever_duration_ms": 11000.0,
+            "activation_schedule_schema_version": 1,
+            "preactivation_order": [1],
+            "preactivation_lane_prefixes": [
+                {"lane": 2, "count": 1},
+                {"lane": 3, "count": 0},
+            ],
+            "preactivation_fill_half_units": 1,
+            "preactivation_event_count": 1,
+            "preactivation_great_count": 1,
+        },
+    ]
+
+    graph = force_greats_note_graph(
+        frontier_trace=trace,
+        total_notes=3,
+        timestamps=np.asarray([10.0, 10.0, 20.0], dtype=np.float32),
+        note_types=np.ones(3, dtype=np.int16),
+        lanes=np.asarray([1, 2, 3], dtype=np.int32),
+    )
+
+    assert [note["note_result"] for note in graph] == ["Great", "Great", "Perfect"]
+    assert graph[0]["input_order"] < graph[1]["input_order"] < graph[2]["input_order"]
+    assert float(graph[1]["delta_ms"]) >= float(graph[0]["delta_ms"])
+
+
 def test_fg_note_graph_marks_fever_end_witness():
     """FG note-graph tags the last note of each fever run with the cutoff ms, like base."""
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph

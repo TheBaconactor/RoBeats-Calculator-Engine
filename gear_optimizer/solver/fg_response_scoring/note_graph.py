@@ -1439,6 +1439,9 @@ def force_greats_note_graph(
             raise ValueError("note_graph: note_types and lanes must match total_notes")
     notes = _perfect_note_graph(n, timestamps)
 
+    # Score-bearing labels are global inputs to every activation cap. Materialize the complete map
+    # before selecting any timing witness; otherwise an earlier section can misread a Great owned
+    # by a later section as Perfect and reject the producer's exact schedule.
     for sec in frontier_trace:
         section = int(sec.get("section", 0))
         a = int(sec["activation_index"])
@@ -1457,6 +1460,14 @@ def force_greats_note_graph(
             if notes[j]["section"] == 0:
                 notes[j]["section"] = section
 
+        if str(sec.get("activation_judgment", "")) == "late_great" and 0 <= a < n:
+            notes[a]["note_result"] = "Great"
+
+    for sec in frontier_trace:
+        section = int(sec.get("section", 0))
+        a = int(sec["activation_index"])
+        e = int(sec["fever_end_index"])
+
         # Fever-end witness: last note of the fever run, carrying the largest-cushion
         # cutoff (`fever_window_end_ms`). Symmetric to the base note-graph.
         fever_end_ms = sec.get("fever_window_end_ms")
@@ -1465,7 +1476,6 @@ def force_greats_note_graph(
         if apply_guidance:
             activation_judgment = str(sec.get("activation_judgment", ""))
             if activation_judgment == "late_great" and 0 <= a < n:
-                notes[a]["note_result"] = "Great"             # activation Late Great = the WITNESS
                 materialized_activation_delta_ms = _activation_materialized_delta_ms(
                     sec,
                     notes=notes,
