@@ -119,9 +119,9 @@ The cold song-context build was rewritten vectorized with byte-identical output 
 all 37 context arrays equal): `_timing_bound_programs` is one numpy pass instead of the
 row/combo/pool Python triple loop, the antichain keep-mask runs as one batched call over all
 25,921 cells via composite row/pack segment keys, and the song-invariant joint multiplier tables
-are memoized on reference bytes. Cold builds dropped from 8.6-29.0 s to 3.8-8.5 s per song
-(2.2-3.5x). These producer changes bump the context cache version
-(`exact-base-song-context-v1+logic-63bc27f3145c`); the previously provisioned context pool is
+are memoized on reference bytes. Cold builds dropped from 8.6-29.0 s to 3.4-6.1 s per song
+(2.3-4.8x; round 2 packed the bound-program sort keys into two int64 words). These producer changes bump the context cache version
+(`exact-base-song-context-v1+logic-e9ba68d2ed52`); the previously provisioned context pool is
 stale and must be rebuilt, and the cache still lacks a purge mechanism for prior versions.
 
 The `frontier_bound` stage (51-58% of a hot request) was restructured to remove redundant loads

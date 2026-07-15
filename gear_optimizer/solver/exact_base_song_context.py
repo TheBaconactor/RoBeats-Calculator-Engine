@@ -490,15 +490,18 @@ def _build_all_cell_response_table(
     cells = np.arange(_GRID * _GRID, dtype=np.int32)
     offsets = np.zeros(int(cells.shape[0]) + 1, dtype=np.int32)
     lengths = np.zeros(cells.shape[0], dtype=np.int32)
+    ft_weight = _lane_weight(flags, "ft", int(GEM_SCALE_FEVER))
+    ff_weight = _lane_weight(flags, "ff", int(GEM_SCALE_FEVER))
+    overflow_weight = _lane_weight(flags, "ov", 6)
+
+    # NOTE: this function spans ALL 25,921 cells (tens of millions of combos);
+    # a single batched keep-mask lexsort measured 5x SLOWER than the per-cell
+    # loop here, so unlike the antichain builder this loop stays per-cell.
     flat_ft_parts: list[np.ndarray] = []
     flat_ff_parts: list[np.ndarray] = []
     legal_total = 0
     kept_total = 0
     max_len = 0
-    ft_weight = _lane_weight(flags, "ft", int(GEM_SCALE_FEVER))
-    ff_weight = _lane_weight(flags, "ff", int(GEM_SCALE_FEVER))
-    overflow_weight = _lane_weight(flags, "ov", 6)
-
     for row, cell in enumerate(cells.tolist()):
         start_ft = int(cell) // _GRID
         start_ff = int(cell) % _GRID
@@ -583,6 +586,10 @@ def _timing_program_classes(
     class_by_row = np.empty(int(response_table.cells.shape[0]), dtype=np.int32)
     signature_to_class: dict[bytes, int] = {}
 
+    # NOTE: stays per-row on purpose - a single global lexsort over every
+    # row's combos measured SLOWER than the per-row sorts at monster-chart
+    # scale (tens of millions of combos), same lesson as the all-cell
+    # response-table loop above.
     for row, cell in enumerate(np.asarray(response_table.cells, dtype=np.int32).tolist()):
         offset = int(response_table.offsets_by_row[row])
         length = int(response_table.lengths_by_row[row])
@@ -773,41 +780,39 @@ def _timing_bound_programs(
             f"row={int(combo_row[pool_combo[idx]])} pool={int(pool_idx[idx])}"
         )
 
-    # Per-row sorted(set(...)) over the 8-tuples, vectorized: one lexsort with
-    # the row as the most-significant key and the tuple columns in order, then
-    # adjacent-duplicate elimination.
-    entry_row = combo_row[pool_combo]
-    entries = np.empty((total_pool, 8), dtype=np.int32)
-    entries[:, 0] = budget[pool_combo]
-    entries[:, 1] = direct[pool_combo]
-    entries[:, 2] = b_fever
-    entries[:, 3] = b_normal
-    entries[:, 4] = n_hn
-    entries[:, 5] = n_hf
-    entries[:, 6] = sigma_hn
-    entries[:, 7] = sigma_hf
-    order = np.lexsort(
-        (
-            entries[:, 7],
-            entries[:, 6],
-            entries[:, 5],
-            entries[:, 4],
-            entries[:, 3],
-            entries[:, 2],
-            entries[:, 1],
-            entries[:, 0],
-            entry_row,
-        )
-    )
-    sorted_rows = entry_row[order]
-    sorted_entries = entries[order]
+    # Per-row sorted(set(...)) over the 8-tuples, vectorized. The nine sort
+    # keys are packed most-significant-first into two int64 words, which is
+    # order-preserving iff every field is non-negative and fits its fixed
+    # width - enforced fail-loud below - so lexsort((lo, hi)) orders exactly
+    # like the 9-key lexsort while sorting 4.5x fewer key arrays.
+    entry_row = combo_row[pool_combo].astype(np.int64)
+    col_budget = budget[pool_combo]
+    col_direct = direct[pool_combo]
+    # Packed-width guards. Every per-element bound is already enforced
+    # fail-loud above (coefficients nonnegative; n_hn/n_hf <= head <=
+    # _MAX_TIMELINE_HEAD < 2^7; sigma <= head^2 < 2^14 via the infeasible-sum
+    # check; b_fever/b_normal <= expected_total_notes via the note-count
+    # identity; 0 <= budget <= TOTAL_GEM_BUDGET < 2^7), so only the two
+    # scalar bounds need checking here.
+    if row_count >= (1 << 15):
+        raise OverflowError("Timing-bound program row count exceeds packed sort width")
+    if expected_total_notes >= (1 << 17):
+        raise OverflowError("Timing-bound program note count exceeds packed sort width")
+    max_weight = max(int(ft_weight), int(ff_weight))
+    if max_weight * int(TOTAL_GEM_BUDGET) * 2 >= (1 << 11):
+        raise OverflowError("Timing-bound program direct lane exceeds packed sort width")
+    if int(TOTAL_GEM_BUDGET) >= (1 << 7) or int(_MAX_TIMELINE_HEAD) >= (1 << 7):
+        raise OverflowError("Timing-bound program budget/head cap exceeds packed sort width")
+    hi = (((entry_row << 7) | col_budget) << 11 | col_direct) << 17 | b_fever
+    lo = ((((b_normal << 7) | n_hn) << 7 | n_hf) << 14 | sigma_hn) << 14 | sigma_hf
+    order = np.lexsort((lo, hi))
+    s_hi = hi[order]
+    s_lo = lo[order]
     unique = np.empty(total_pool, dtype=np.bool_)
     unique[0] = True
-    unique[1:] = (sorted_rows[1:] != sorted_rows[:-1]) | np.any(
-        sorted_entries[1:] != sorted_entries[:-1], axis=1
-    )
-    kept_rows = sorted_rows[unique]
-    kept_entries = sorted_entries[unique]
+    unique[1:] = (s_hi[1:] != s_hi[:-1]) | (s_lo[1:] != s_lo[:-1])
+    keep_idx = order[unique]
+    kept_rows = entry_row[keep_idx]
     per_row = np.bincount(kept_rows, minlength=row_count)
     if np.any(per_row <= 0):
         row = int(np.argmax(per_row <= 0))
@@ -817,14 +822,14 @@ def _timing_bound_programs(
 
     return TimingBoundPrograms(
         surface_offsets=surface_offsets,
-        surface_budget=kept_entries[:, 0].astype(np.int16),
-        surface_direct=kept_entries[:, 1].astype(np.int32),
-        surface_body_fever=kept_entries[:, 2].astype(np.int32),
-        surface_body_normal=kept_entries[:, 3].astype(np.int32),
-        surface_head_normal=kept_entries[:, 4].astype(np.int32),
-        surface_head_fever=kept_entries[:, 5].astype(np.int32),
-        surface_sigma_normal=kept_entries[:, 6].astype(np.int32),
-        surface_sigma_fever=kept_entries[:, 7].astype(np.int32),
+        surface_budget=col_budget[keep_idx].astype(np.int16),
+        surface_direct=col_direct[keep_idx].astype(np.int32),
+        surface_body_fever=b_fever[keep_idx].astype(np.int32),
+        surface_body_normal=b_normal[keep_idx].astype(np.int32),
+        surface_head_normal=n_hn[keep_idx].astype(np.int32),
+        surface_head_fever=n_hf[keep_idx].astype(np.int32),
+        surface_sigma_normal=sigma_hn[keep_idx].astype(np.int32),
+        surface_sigma_fever=sigma_hf[keep_idx].astype(np.int32),
     )
 
 
