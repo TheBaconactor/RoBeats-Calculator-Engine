@@ -34,6 +34,24 @@ def exact_base_fill_i32_kernel(
 
 
 @ti.kernel
+def exact_base_u64_atomic_probe_kernel(
+    dst: ti.types.ndarray(dtype=ti.u64, ndim=1),
+    n: ti.i32,
+    out_ok: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    # Probes with the SAME atomic op the join scatters use. A Vulkan
+    # allocation can land where 64-bit atomic writes are silently dropped
+    # (plain stores and host round-trips still succeed), so the caller must
+    # see both flags nonzero before trusting the buffer. Single-threaded so
+    # the read-after-atomic below is sequenced within one invocation.
+    for _ in range(1):
+        ti.atomic_max(dst[0], ti.u64(0xA70B_E000_0000_0001))
+        ti.atomic_max(dst[n - 1], ti.u64(0xA70B_E000_0000_0001))
+        out_ok[0] = 1 if dst[0] == ti.u64(0xA70B_E000_0000_0001) else 0
+        out_ok[1] = 1 if dst[n - 1] == ti.u64(0xA70B_E000_0000_0001) else 0
+
+
+@ti.kernel
 def exact_base_suffix_cm_u64_kernel(
     grid: ti.types.ndarray(dtype=ti.u64, ndim=1),
     cm_size: ti.i32,
@@ -127,23 +145,58 @@ def exact_base_score_frontier_bounds_kernel(
         cm = key // final_fm_size
         start = program_offsets[program]
         end = program_offsets[program + 1]
+        row_q = state_q[row]
+        # The four multiplier-table loads depend only on (cm, fm, bin_hi) and
+        # bin_hi equals the untruncated bin top for every bin strictly below
+        # the entry budget, so fetch those once per row instead of once per
+        # (entry, bin). Truncated boundary bins reload inline below with the
+        # identical indices the original loop used - the loaded values and all
+        # arithmetic are bit-identical, only redundant fetches are removed.
+        cm_max_full = ti.Vector.zero(ti.f64, _BOUND_BIN_COUNT)
+        fm_max_full = ti.Vector.zero(ti.f64, _BOUND_BIN_COUNT)
+        cm_fm_full = ti.Vector.zero(ti.f64, _BOUND_BIN_COUNT)
+        cm_span_full = ti.Vector.zero(ti.f64, _BOUND_BIN_COUNT)
+        for bin_index in ti.static(range(_BOUND_BIN_COUNT)):
+            # Clamp to the budget axis: the last bin's untruncated top exceeds
+            # TOTAL_GEM_BUDGET, and an unclamped index would read past the
+            # (cm, fm) block. A clamped-slot value is never consumed (that bin
+            # always takes the truncated reload below), but the read must stay
+            # in bounds.
+            bin_hi_full = ti.min(
+                _BUDGET_SIZE - 1,
+                bin_index * _BOUND_BIN_WIDTH + _BOUND_BIN_WIDTH - 1,
+            )
+            cm_max_full[bin_index] = ref_cm[ti.min(_MAX_STAT_INDEX, cm + 2 * bin_hi_full)]
+            fm_max_full[bin_index] = ref_fm[ti.min(_MAX_STAT_INDEX, fm + 3 * bin_hi_full)]
+            joint_idx_full = (cm * _GRID_SIZE + fm) * _BUDGET_SIZE + bin_hi_full
+            cm_fm_full[bin_index] = joint_cm_fm[joint_idx_full]
+            cm_span_full[bin_index] = joint_cm_span_fm[joint_idx_full]
         best_upper = ti.i64(-1)
         for entry in range(start, end):
             budget = program_budget[entry]
-            base_anchor = state_q[row] + program_direct[entry]
+            base_anchor = row_q + program_direct[entry]
+            body_fever_count = program_body_fever[entry]
+            body_normal_count = program_body_normal[entry]
+            head_normal = program_head_normal[entry]
+            head_fever = program_head_fever[entry]
+            sigma_normal = program_sigma_normal[entry]
+            sigma_fever = program_sigma_fever[entry]
             for bin_index in ti.static(range(_BOUND_BIN_COUNT)):
                 bin_lo = bin_index * _BOUND_BIN_WIDTH
                 if bin_lo <= budget:
                     bin_hi = ti.min(budget, bin_lo + _BOUND_BIN_WIDTH - 1)
                     response_idx = budget * _BOUND_BIN_COUNT + bin_index
                     base_upper = base_anchor + response_cm_fm_bound[response_idx]
-                    cm_idx = ti.min(_MAX_STAT_INDEX, cm + 2 * bin_hi)
-                    fm_idx = ti.min(_MAX_STAT_INDEX, fm + 3 * bin_hi)
-                    joint_idx = (cm * _GRID_SIZE + fm) * _BUDGET_SIZE + bin_hi
-                    cm_max = ref_cm[cm_idx]
-                    fm_max = ref_fm[fm_idx]
-                    cm_fm_max = joint_cm_fm[joint_idx]
-                    cm_span_fm_max = joint_cm_span_fm[joint_idx]
+                    cm_max = cm_max_full[bin_index]
+                    fm_max = fm_max_full[bin_index]
+                    cm_fm_max = cm_fm_full[bin_index]
+                    cm_span_fm_max = cm_span_full[bin_index]
+                    if bin_hi != bin_lo + _BOUND_BIN_WIDTH - 1:
+                        cm_max = ref_cm[ti.min(_MAX_STAT_INDEX, cm + 2 * bin_hi)]
+                        fm_max = ref_fm[ti.min(_MAX_STAT_INDEX, fm + 3 * bin_hi)]
+                        joint_idx = (cm * _GRID_SIZE + fm) * _BUDGET_SIZE + bin_hi
+                        cm_fm_max = joint_cm_fm[joint_idx]
+                        cm_span_fm_max = joint_cm_span_fm[joint_idx]
                     base_f64 = ti.cast(base_upper, ti.f64)
                     body_normal_unit = ti.cast(
                         ti.ceil(base_f64 * cm_max * normal_rounding), ti.i64
@@ -151,13 +204,11 @@ def exact_base_score_frontier_bounds_kernel(
                     body_fever_unit = ti.cast(
                         ti.ceil(base_f64 * cm_fm_max * fever_rounding), ti.i64
                     ) + 1
-                    head_normal = program_head_normal[entry]
-                    head_fever = program_head_fever[entry]
                     head_normal_ideal = base_f64 * (
                         ti.cast(head_normal, ti.f64)
                         + (
                             (cm_max - 1.0)
-                            * ti.cast(program_sigma_normal[entry], ti.f64)
+                            * ti.cast(sigma_normal, ti.f64)
                             / 100.0
                         )
                     )
@@ -165,13 +216,13 @@ def exact_base_score_frontier_bounds_kernel(
                         fm_max * ti.cast(head_fever, ti.f64)
                         + (
                             cm_span_fm_max
-                            * ti.cast(program_sigma_fever[entry], ti.f64)
+                            * ti.cast(sigma_fever, ti.f64)
                             / 100.0
                         )
                     )
                     upper = (
-                        ti.cast(program_body_normal[entry], ti.i64) * body_normal_unit
-                        + ti.cast(program_body_fever[entry], ti.i64) * body_fever_unit
+                        ti.cast(body_normal_count, ti.i64) * body_normal_unit
+                        + ti.cast(body_fever_count, ti.i64) * body_fever_unit
                         + ti.cast(ti.ceil(head_normal_ideal * normal_rounding), ti.i64)
                         + ti.cast(head_normal, ti.i64)
                         + ti.cast(ti.ceil(head_fever_ideal * fever_rounding), ti.i64)

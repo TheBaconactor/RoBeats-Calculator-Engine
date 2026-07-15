@@ -119,6 +119,15 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     except Exception as e:
         logger.debug(f"initialization:hard_reset_taichi: {e}")
 
+    try:
+        from gear_optimizer.solver.exact_base_search import (
+            reset_exact_base_device_scratch as _reset_exact_base_scratch,
+        )
+
+        _reset_exact_base_scratch()
+    except Exception as e:
+        logger.debug(f"initialization:hard_reset_taichi: {e}")
+
     # Clear API-level caches that assume device state exists
     _ref_loaded = False
     _last_ref_arrays_sig = None

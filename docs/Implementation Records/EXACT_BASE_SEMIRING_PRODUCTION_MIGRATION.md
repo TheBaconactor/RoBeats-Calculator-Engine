@@ -99,3 +99,35 @@ Required release checks are:
 - a full CPU/reference suite and repository quality check;
 - all-song startup context prebuild using copied timeline/FG caches; and
 - an actual `main.py` production run from the isolated migration worktree.
+
+## 2026-07-15 addendum: dead-atomics grid fix and cold-build vectorization
+
+Corpus sweeping exposed a production-fatal Taichi/Vulkan defect: a u64 grid ndarray can land in a
+device-allocation layout where the join scatters' `ti.atomic_max` writes are silently dropped
+(plain stores and host round-trips still succeed), tripping the fail-loud
+`gear compaction violated capacity: count=0` guard on layout-dependent songs (4 of 11 GPU-tested;
+deterministic per song via the song-sized timeline/bound uploads that precede the grid
+allocation). The join grids now come from grow-only, module-level `_VerifiedU64Scratch` buffers in
+`exact_base_search.py`: every (re)allocation is probe-verified with the same atomic op the joins
+use, dead allocations are held during retry so the allocator cannot return the same region, and
+verification failure after three attempts raises. Verified buffers are reused across requests and
+components, so the production owner no longer re-rolls the allocator layout per song. Join kernels
+only touch the `[0, elems)` prefix they are launched with, so serving from a larger verified
+buffer is exact.
+
+The cold song-context build was rewritten vectorized with byte-identical output (8-song oracle,
+all 37 context arrays equal): `_timing_bound_programs` is one numpy pass instead of the
+row/combo/pool Python triple loop, the antichain keep-mask runs as one batched call over all
+25,921 cells via composite row/pack segment keys, and the song-invariant joint multiplier tables
+are memoized on reference bytes. Cold builds dropped from 8.6-29.0 s to 3.8-8.5 s per song
+(2.2-3.5x). These producer changes bump the context cache version
+(`exact-base-song-context-v1+logic-63bc27f3145c`); the previously provisioned context pool is
+stale and must be rebuilt, and the cache still lacks a purge mechanism for prior versions.
+
+The `frontier_bound` stage (51-58% of a hot request) was restructured to remove redundant loads
+(bit-identical bound values) but is f64-ALU-bound on RDNA3, so its cost is intrinsic to the exact
+bound formula; materially reducing it requires a semantic change to bound evaluation that would
+alter witness-pool composition and needs an explicit owner decision. Witness-pool tails may swap
+score-tied rows across kernel-recompile or allocation-layout changes because compaction
+materializes rows with `ti.atomic_add`; the certified top-1, winner IDs, and the ranked 51-row
+surface are layout-independent and were verified byte-identical across all changes above.

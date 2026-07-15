@@ -7,6 +7,8 @@ uploads, GPU kernels, and pipeline ownership live elsewhere.
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -671,103 +673,158 @@ def _timing_bound_programs(
 
     ft_weight = _lane_weight(flags, "ft", int(GEM_SCALE_FEVER))
     ff_weight = _lane_weight(flags, "ff", int(GEM_SCALE_FEVER))
-    surface_offsets = np.zeros(int(response_table.cells.shape[0]) + 1, dtype=np.int32)
-    columns: tuple[list[int], ...] = tuple([] for _ in range(8))
 
-    for row, cell in enumerate(np.asarray(response_table.cells, dtype=np.int32).tolist()):
-        combo_offset = int(response_table.offsets_by_row[row])
-        combo_length = int(response_table.lengths_by_row[row])
-        combo_end = combo_offset + combo_length
-        if combo_length <= 0 or combo_offset < 0:
-            raise ValueError(f"Timing-response row {row} has no score-bound entries")
-        if combo_end > int(response_table.flat_ft.shape[0]):
-            raise ValueError(f"Timing-response row {row} points outside the FT combo table")
-        if combo_end > int(response_table.flat_ff.shape[0]):
-            raise ValueError(f"Timing-response row {row} points outside the FF combo table")
+    # Fully vectorized rebuild of the historical (row -> combo -> pool-entry)
+    # loop. Every guard below checks the same invariant as the historical
+    # per-item loop; when several DIFFERENT invariants are violated at once
+    # the first reported row may differ (each guard scans all rows), which is
+    # acceptable for impossible-state guards.
+    cells = np.asarray(response_table.cells, dtype=np.int64)
+    row_count = int(cells.shape[0])
+    combo_offsets = np.asarray(response_table.offsets_by_row, dtype=np.int64)[:row_count]
+    combo_lengths = np.asarray(response_table.lengths_by_row, dtype=np.int64)
+    combo_ends = combo_offsets + combo_lengths
 
-        start_ft = int(cell) // _GRID
-        start_ff = int(cell) % _GRID
-        physical_entries: set[tuple[int, int, int, int, int, int, int, int]] = set()
-        for combo_idx in range(combo_offset, combo_end):
-            ft_gems = int(response_table.flat_ft[combo_idx])
-            ff_gems = int(response_table.flat_ff[combo_idx])
-            budget = int(TOTAL_GEM_BUDGET) - ft_gems - ff_gems
-            if ft_gems < 0 or ff_gems < 0 or budget < 0:
-                raise ValueError(f"Timing-response row {row} has an invalid gem allocation")
-            final_ft = min(
-                int(MAX_STAT_INDEX),
-                start_ft + int(GEM_SCALE_FEVER) * ft_gems,
-            )
-            final_ff = min(
-                int(MAX_STAT_INDEX),
-                start_ff + int(GEM_SCALE_FEVER) * ff_gems,
-            )
-            surface_count = int(timeline.counts[final_ft, final_ff])
-            surface_offset = int(timeline.pool_offsets[final_ft, final_ff])
-            surface_end = surface_offset + surface_count
-            if surface_count <= 0 or surface_offset < 0 or surface_end > timeline.pool_used:
-                raise ValueError(
-                    f"Timing-response row {row} reaches invalid surface range "
-                    f"[{surface_offset}, {surface_end})"
-                )
-            head_len = int(timeline.head_lengths[final_ft, final_ff])
-            if head_len < 0 or head_len > _MAX_TIMELINE_HEAD:
-                raise ValueError(f"Timeline frontier has invalid head length {head_len}")
-            direct = (int(ft_weight) * ft_gems) + (int(ff_weight) * ff_gems)
-            for pool_idx in range(surface_offset, surface_end):
-                n_hn = int(timeline.head_coeffs[pool_idx, 0])
-                n_hf = int(timeline.head_coeffs[pool_idx, 1])
-                sigma_hn = int(timeline.head_coeffs[pool_idx, 2])
-                sigma_hf = int(timeline.head_coeffs[pool_idx, 3])
-                b_fever = int(timeline.body_fever[pool_idx])
-                b_normal = int(timeline.body_normal[pool_idx])
-                coefficients = (n_hn, n_hf, sigma_hn, sigma_hf, b_fever, b_normal)
-                if min(coefficients) < 0:
-                    raise ValueError("Timeline frontier contains negative note coefficients")
-                if n_hn + n_hf != head_len:
-                    raise ValueError("Timeline frontier contains inconsistent head-note counts")
-                if sigma_hn + sigma_hf != (head_len * (head_len + 1)) // 2:
-                    raise ValueError("Timeline frontier sigma lanes do not partition the head")
-                for count, sigma in ((n_hn, sigma_hn), (n_hf, sigma_hf)):
-                    sigma_min = (count * (count + 1)) // 2
-                    sigma_max = (count * ((2 * head_len) - count + 1)) // 2
-                    if sigma < sigma_min or sigma > sigma_max:
-                        raise ValueError("Timeline frontier has an infeasible head-position sum")
-                if n_hn + n_hf + b_fever + b_normal != expected_total_notes:
-                    raise ValueError(
-                        "Timeline surface note count does not match song metadata: "
-                        f"row={row} pool={pool_idx}"
-                    )
-                physical_entries.add(
-                    (
-                        budget,
-                        direct,
-                        b_fever,
-                        b_normal,
-                        n_hn,
-                        n_hf,
-                        sigma_hn,
-                        sigma_hf,
-                    )
-                )
+    bad = (combo_lengths <= 0) | (combo_offsets < 0)
+    if np.any(bad):
+        row = int(np.argmax(bad))
+        raise ValueError(f"Timing-response row {row} has no score-bound entries")
+    bad = combo_ends > int(np.asarray(response_table.flat_ft).shape[0])
+    if np.any(bad):
+        row = int(np.argmax(bad))
+        raise ValueError(f"Timing-response row {row} points outside the FT combo table")
+    bad = combo_ends > int(np.asarray(response_table.flat_ff).shape[0])
+    if np.any(bad):
+        row = int(np.argmax(bad))
+        raise ValueError(f"Timing-response row {row} points outside the FF combo table")
 
-        if not physical_entries:
-            raise RuntimeError(f"Timing-response row {row} produced no physical score program")
-        for entry in sorted(physical_entries):
-            for column, value in zip(columns, entry, strict=True):
-                column.append(int(value))
-        surface_offsets[row + 1] = len(columns[0])
+    total_combos = int(combo_lengths.sum())
+    combo_row = np.repeat(np.arange(row_count, dtype=np.int32), combo_lengths)
+    combo_starts = np.cumsum(combo_lengths) - combo_lengths
+    combo_index = np.repeat(combo_offsets, combo_lengths) + (
+        np.arange(total_combos, dtype=np.int64) - np.repeat(combo_starts, combo_lengths)
+    )
+    ft_gems = np.asarray(response_table.flat_ft, dtype=np.int64)[combo_index]
+    ff_gems = np.asarray(response_table.flat_ff, dtype=np.int64)[combo_index]
+    budget = int(TOTAL_GEM_BUDGET) - ft_gems - ff_gems
+    bad = (ft_gems < 0) | (ff_gems < 0) | (budget < 0)
+    if np.any(bad):
+        row = int(combo_row[int(np.argmax(bad))])
+        raise ValueError(f"Timing-response row {row} has an invalid gem allocation")
+
+    start_ft = cells // _GRID
+    start_ff = cells % _GRID
+    final_ft = np.minimum(
+        int(MAX_STAT_INDEX), start_ft[combo_row] + int(GEM_SCALE_FEVER) * ft_gems
+    )
+    final_ff = np.minimum(
+        int(MAX_STAT_INDEX), start_ff[combo_row] + int(GEM_SCALE_FEVER) * ff_gems
+    )
+    surface_counts = np.asarray(timeline.counts, dtype=np.int64)[final_ft, final_ff]
+    surface_starts = np.asarray(timeline.pool_offsets, dtype=np.int64)[final_ft, final_ff]
+    surface_ends = surface_starts + surface_counts
+    bad = (surface_counts <= 0) | (surface_starts < 0) | (surface_ends > int(timeline.pool_used))
+    if np.any(bad):
+        idx = int(np.argmax(bad))
+        raise ValueError(
+            f"Timing-response row {int(combo_row[idx])} reaches invalid surface range "
+            f"[{int(surface_starts[idx])}, {int(surface_ends[idx])})"
+        )
+    head_len = np.asarray(timeline.head_lengths, dtype=np.int64)[final_ft, final_ff]
+    bad = (head_len < 0) | (head_len > _MAX_TIMELINE_HEAD)
+    if np.any(bad):
+        idx = int(np.argmax(bad))
+        raise ValueError(f"Timeline frontier has invalid head length {int(head_len[idx])}")
+    direct = (int(ft_weight) * ft_gems) + (int(ff_weight) * ff_gems)
+
+    total_pool = int(surface_counts.sum())
+    pool_combo = np.repeat(np.arange(total_combos, dtype=np.int64), surface_counts)
+    pool_starts = np.cumsum(surface_counts) - surface_counts
+    pool_idx = np.repeat(surface_starts, surface_counts) + (
+        np.arange(total_pool, dtype=np.int64) - np.repeat(pool_starts, surface_counts)
+    )
+    head_coeffs = np.asarray(timeline.head_coeffs, dtype=np.int64)
+    n_hn = head_coeffs[pool_idx, 0]
+    n_hf = head_coeffs[pool_idx, 1]
+    sigma_hn = head_coeffs[pool_idx, 2]
+    sigma_hf = head_coeffs[pool_idx, 3]
+    b_fever = np.asarray(timeline.body_fever, dtype=np.int64)[pool_idx]
+    b_normal = np.asarray(timeline.body_normal, dtype=np.int64)[pool_idx]
+    head_per_pool = head_len[pool_combo]
+
+    if np.any(
+        (n_hn < 0) | (n_hf < 0) | (sigma_hn < 0) | (sigma_hf < 0) | (b_fever < 0) | (b_normal < 0)
+    ):
+        raise ValueError("Timeline frontier contains negative note coefficients")
+    if np.any(n_hn + n_hf != head_per_pool):
+        raise ValueError("Timeline frontier contains inconsistent head-note counts")
+    if np.any(sigma_hn + sigma_hf != (head_per_pool * (head_per_pool + 1)) // 2):
+        raise ValueError("Timeline frontier sigma lanes do not partition the head")
+    for count, sigma in ((n_hn, sigma_hn), (n_hf, sigma_hf)):
+        sigma_min = (count * (count + 1)) // 2
+        sigma_max = (count * ((2 * head_per_pool) - count + 1)) // 2
+        if np.any(sigma < sigma_min) or np.any(sigma > sigma_max):
+            raise ValueError("Timeline frontier has an infeasible head-position sum")
+    bad = (n_hn + n_hf + b_fever + b_normal) != expected_total_notes
+    if np.any(bad):
+        idx = int(np.argmax(bad))
+        raise ValueError(
+            "Timeline surface note count does not match song metadata: "
+            f"row={int(combo_row[pool_combo[idx]])} pool={int(pool_idx[idx])}"
+        )
+
+    # Per-row sorted(set(...)) over the 8-tuples, vectorized: one lexsort with
+    # the row as the most-significant key and the tuple columns in order, then
+    # adjacent-duplicate elimination.
+    entry_row = combo_row[pool_combo]
+    entries = np.empty((total_pool, 8), dtype=np.int32)
+    entries[:, 0] = budget[pool_combo]
+    entries[:, 1] = direct[pool_combo]
+    entries[:, 2] = b_fever
+    entries[:, 3] = b_normal
+    entries[:, 4] = n_hn
+    entries[:, 5] = n_hf
+    entries[:, 6] = sigma_hn
+    entries[:, 7] = sigma_hf
+    order = np.lexsort(
+        (
+            entries[:, 7],
+            entries[:, 6],
+            entries[:, 5],
+            entries[:, 4],
+            entries[:, 3],
+            entries[:, 2],
+            entries[:, 1],
+            entries[:, 0],
+            entry_row,
+        )
+    )
+    sorted_rows = entry_row[order]
+    sorted_entries = entries[order]
+    unique = np.empty(total_pool, dtype=np.bool_)
+    unique[0] = True
+    unique[1:] = (sorted_rows[1:] != sorted_rows[:-1]) | np.any(
+        sorted_entries[1:] != sorted_entries[:-1], axis=1
+    )
+    kept_rows = sorted_rows[unique]
+    kept_entries = sorted_entries[unique]
+    per_row = np.bincount(kept_rows, minlength=row_count)
+    if np.any(per_row <= 0):
+        row = int(np.argmax(per_row <= 0))
+        raise RuntimeError(f"Timing-response row {row} produced no physical score program")
+    surface_offsets = np.zeros(row_count + 1, dtype=np.int32)
+    surface_offsets[1:] = np.cumsum(per_row).astype(np.int32)
 
     return TimingBoundPrograms(
         surface_offsets=surface_offsets,
-        surface_budget=np.asarray(columns[0], dtype=np.int16),
-        surface_direct=np.asarray(columns[1], dtype=np.int32),
-        surface_body_fever=np.asarray(columns[2], dtype=np.int32),
-        surface_body_normal=np.asarray(columns[3], dtype=np.int32),
-        surface_head_normal=np.asarray(columns[4], dtype=np.int32),
-        surface_head_fever=np.asarray(columns[5], dtype=np.int32),
-        surface_sigma_normal=np.asarray(columns[6], dtype=np.int32),
-        surface_sigma_fever=np.asarray(columns[7], dtype=np.int32),
+        surface_budget=kept_entries[:, 0].astype(np.int16),
+        surface_direct=kept_entries[:, 1].astype(np.int32),
+        surface_body_fever=kept_entries[:, 2].astype(np.int32),
+        surface_body_normal=kept_entries[:, 3].astype(np.int32),
+        surface_head_normal=kept_entries[:, 4].astype(np.int32),
+        surface_head_fever=kept_entries[:, 5].astype(np.int32),
+        surface_sigma_normal=kept_entries[:, 6].astype(np.int32),
+        surface_sigma_fever=kept_entries[:, 7].astype(np.int32),
     )
 
 
@@ -889,9 +946,25 @@ def _build_cm_span_fm_joint_multiplier_bound(
     return table
 
 
+_JOINT_MULTIPLIER_MEMO_MAX = 4
+_JOINT_MULTIPLIER_MEMO: "OrderedDict[tuple[bytes, bytes], JointMultiplierBounds]" = OrderedDict()
+_JOINT_MULTIPLIER_MEMO_LOCK = threading.Lock()
+
+
+def _clear_joint_multiplier_memo() -> None:
+    """Test-isolation hook mirroring the sibling multiplier-cache resets."""
+    with _JOINT_MULTIPLIER_MEMO_LOCK:
+        _JOINT_MULTIPLIER_MEMO.clear()
+
+
 def _joint_multiplier_bounds(ref_arrays: dict[str, Any]) -> JointMultiplierBounds:
-    ref_cm = np.asarray(ref_arrays.get("Combo Multiplier"), dtype=np.float64)
-    ref_fm = np.asarray(ref_arrays.get("Fever Multiplier"), dtype=np.float64)
+    # The joint tables are a pure function of the CM/FM reference arrays and
+    # are identical for every song solved against the same references, so the
+    # ~217M-op numba rebuild is memoized on the reference bytes. Cached arrays
+    # are decoupled copies of the caller's references and frozen read-only.
+    # The lock makes concurrent same-reference callers share one build.
+    ref_cm = np.array(ref_arrays.get("Combo Multiplier"), dtype=np.float64, copy=True)
+    ref_fm = np.array(ref_arrays.get("Fever Multiplier"), dtype=np.float64, copy=True)
     for name, references in (("CM", ref_cm), ("FM", ref_fm)):
         if references.shape != (_GRID,):
             raise ValueError(f"{name} references do not match the exact stat grid")
@@ -899,22 +972,35 @@ def _joint_multiplier_bounds(ref_arrays: dict[str, Any]) -> JointMultiplierBound
             raise ValueError(f"{name} references must be finite and at least one")
         if np.any(np.diff(references) < 0.0):
             raise ValueError(f"{name} references must be nondecreasing")
-    joint_cm_fm = _build_cm_fm_joint_multiplier_bound(
-        ref_cm,
-        ref_fm,
-        int(TOTAL_GEM_BUDGET),
-    )
-    joint_cm_span_fm = _build_cm_span_fm_joint_multiplier_bound(
-        ref_cm,
-        ref_fm,
-        int(TOTAL_GEM_BUDGET),
-    )
-    return JointMultiplierBounds(
-        ref_cm=ref_cm,
-        ref_fm=ref_fm,
-        joint_cm_fm=joint_cm_fm,
-        joint_cm_span_fm=joint_cm_span_fm,
-    )
+    key = (ref_cm.tobytes(), ref_fm.tobytes())
+    with _JOINT_MULTIPLIER_MEMO_LOCK:
+        cached = _JOINT_MULTIPLIER_MEMO.get(key)
+        if cached is not None:
+            _JOINT_MULTIPLIER_MEMO.move_to_end(key)
+            return cached
+        joint_cm_fm = _build_cm_fm_joint_multiplier_bound(
+            ref_cm,
+            ref_fm,
+            int(TOTAL_GEM_BUDGET),
+        )
+        joint_cm_span_fm = _build_cm_span_fm_joint_multiplier_bound(
+            ref_cm,
+            ref_fm,
+            int(TOTAL_GEM_BUDGET),
+        )
+        for array in (ref_cm, ref_fm, joint_cm_fm, joint_cm_span_fm):
+            array.setflags(write=False)
+        result = JointMultiplierBounds(
+            ref_cm=ref_cm,
+            ref_fm=ref_fm,
+            joint_cm_fm=joint_cm_fm,
+            joint_cm_span_fm=joint_cm_span_fm,
+        )
+        _JOINT_MULTIPLIER_MEMO[key] = result
+        _JOINT_MULTIPLIER_MEMO.move_to_end(key)
+        while len(_JOINT_MULTIPLIER_MEMO) > int(_JOINT_MULTIPLIER_MEMO_MAX):
+            _JOINT_MULTIPLIER_MEMO.popitem(last=False)
+        return result
 
 
 def build_exact_base_song_context(

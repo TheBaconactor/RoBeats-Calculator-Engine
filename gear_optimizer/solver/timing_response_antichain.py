@@ -14,6 +14,7 @@ from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 logger = logging.getLogger(__name__)
 
 _GRID = int(MAX_STAT_INDEX) + 1
+_INT32_MIN = int(np.iinfo(np.int32).min)
 _ANTICHAIN_TABLE_CACHE_MAX = 4
 _ANTICHAIN_TABLE_CACHE: "OrderedDict[tuple[Any, ...], TimingResponseAntichainTable]" = OrderedDict()
 
@@ -104,57 +105,83 @@ def build_timing_response_antichain_table(
             flat_combo_count=int(cached.kept_combo_count),
         )
 
-    offsets = np.zeros(int(cells.shape[0]) + 1, dtype=np.int32)
-    lengths = np.zeros(int(cells.shape[0]), dtype=np.int32)
-    flat_ft_parts: list[np.ndarray] = []
-    flat_ff_parts: list[np.ndarray] = []
-    legal_total = 0
-    kept_total = 0
-    max_len = 0
+    row_count = int(cells.shape[0])
+    offsets = np.zeros(row_count + 1, dtype=np.int32)
+    lengths = np.zeros(row_count, dtype=np.int32)
 
-    for row, cell in enumerate(cells.tolist()):
-        start_ft = int(cell) // int(_GRID)
-        start_ff = int(cell) % int(_GRID)
-        cap_ft = max(0, (int(MAX_STAT_INDEX) - start_ft) // int(gem_scale_fever))
-        cap_ff = max(0, (int(MAX_STAT_INDEX) - start_ff) // int(gem_scale_fever))
-        ft, ff, rem = ftff_combo_arrays(
-            int(total_budget),
-            max_ft_gems=int(cap_ft),
-            max_ff_gems=int(cap_ff),
-        )
-        if ft.size == 0:
-            ft = np.asarray([0], dtype=np.int32)
-            ff = np.asarray([0], dtype=np.int32)
-            rem = np.asarray([int(total_budget)], dtype=np.int32)
-        final_ft = np.minimum(int(MAX_STAT_INDEX), start_ft + ft.astype(np.int32, copy=False) * int(gem_scale_fever))
-        final_ff = np.minimum(int(MAX_STAT_INDEX), start_ff + ff.astype(np.int32, copy=False) * int(gem_scale_fever))
-        packs = cell_pack[final_ft, final_ff].astype(np.int32, copy=False)
-        lam = (
-            int(w_ft) * ft.astype(np.int32, copy=False)
-            + int(w_ff) * ff.astype(np.int32, copy=False)
-            + int(w_ov) * rem.astype(np.int32, copy=False)
-        )
-        keep = timing_response_antichain_keep_mask(
-            packs=packs,
-            remaining=rem.astype(np.int32, copy=False),
-            lane_value=lam.astype(np.int32, copy=False),
-        )
-        kept_ft = np.ascontiguousarray(ft[keep], dtype=np.int32)
-        kept_ff = np.ascontiguousarray(ff[keep], dtype=np.int32)
-        flat_ft_parts.append(kept_ft)
-        flat_ff_parts.append(kept_ff)
-        legal_total += int(ft.shape[0])
-        kept = int(kept_ft.shape[0])
-        kept_total += kept
-        lengths[row] = kept
-        max_len = max(int(max_len), int(kept))
-        offsets[row + 1] = int(kept_total)
+    # One batched keep-mask pass over every cell: each cell's combos keep
+    # their historical per-cell order, and composite (row, pack) keys give
+    # each cell disjoint segments, so the keep decisions are identical to the
+    # historical one-call-per-cell loop.
+    start_ft_by_row = (cells.astype(np.int64) // int(_GRID))
+    start_ff_by_row = (cells.astype(np.int64) % int(_GRID))
+    cap_ft_by_row = np.maximum(0, (int(MAX_STAT_INDEX) - start_ft_by_row) // int(gem_scale_fever))
+    cap_ff_by_row = np.maximum(0, (int(MAX_STAT_INDEX) - start_ff_by_row) // int(gem_scale_fever))
+    combos_by_caps: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    ft_parts: list[np.ndarray] = []
+    ff_parts: list[np.ndarray] = []
+    rem_parts: list[np.ndarray] = []
+    combo_lengths = np.zeros(row_count, dtype=np.int64)
+    for row in range(row_count):
+        caps = (int(cap_ft_by_row[row]), int(cap_ff_by_row[row]))
+        group = combos_by_caps.get(caps)
+        if group is None:
+            ft, ff, rem = ftff_combo_arrays(
+                int(total_budget),
+                max_ft_gems=caps[0],
+                max_ff_gems=caps[1],
+            )
+            if ft.size == 0:
+                ft = np.asarray([0], dtype=np.int32)
+                ff = np.asarray([0], dtype=np.int32)
+                rem = np.asarray([int(total_budget)], dtype=np.int32)
+            group = (
+                ft.astype(np.int32, copy=False),
+                ff.astype(np.int32, copy=False),
+                rem.astype(np.int32, copy=False),
+            )
+            combos_by_caps[caps] = group
+        ft_parts.append(group[0])
+        ff_parts.append(group[1])
+        rem_parts.append(group[2])
+        combo_lengths[row] = int(group[0].shape[0])
+
+    all_ft = np.concatenate(ft_parts)
+    all_ff = np.concatenate(ff_parts)
+    all_rem = np.concatenate(rem_parts)
+    combo_row = np.repeat(np.arange(row_count, dtype=np.int64), combo_lengths)
+    final_ft = np.minimum(
+        int(MAX_STAT_INDEX),
+        start_ft_by_row[combo_row] + all_ft.astype(np.int64) * int(gem_scale_fever),
+    )
+    final_ff = np.minimum(
+        int(MAX_STAT_INDEX),
+        start_ff_by_row[combo_row] + all_ff.astype(np.int64) * int(gem_scale_fever),
+    )
+    packs_all = cell_pack[final_ft, final_ff].astype(np.int64)
+    composite_packs = combo_row * np.int64(pack_count) + packs_all
+    lam_all = (
+        int(w_ft) * all_ft.astype(np.int32, copy=False)
+        + int(w_ff) * all_ff.astype(np.int32, copy=False)
+        + int(w_ov) * all_rem.astype(np.int32, copy=False)
+    )
+    keep = timing_response_antichain_keep_mask(
+        packs=composite_packs,
+        remaining=all_rem,
+        lane_value=lam_all,
+    )
+    kept_lengths = np.bincount(combo_row[keep], minlength=row_count)
+    legal_total = int(all_ft.shape[0])
+    kept_total = int(np.count_nonzero(keep))
+    max_len = int(kept_lengths.max()) if row_count else 0
+    lengths[:] = kept_lengths.astype(np.int32)
+    offsets[1:] = np.cumsum(kept_lengths).astype(np.int32)
 
     if kept_total <= 0:
-        return None, _stats(False, "empty_antichain", int(cells.shape[0]), int(legal_total))
+        return None, _stats(False, "empty_antichain", row_count, int(legal_total))
 
-    flat_ft = np.concatenate(flat_ft_parts).astype(np.int32, copy=False)
-    flat_ff = np.concatenate(flat_ff_parts).astype(np.int32, copy=False)
+    flat_ft = np.ascontiguousarray(all_ft[keep], dtype=np.int32)
+    flat_ff = np.ascontiguousarray(all_ff[keep], dtype=np.int32)
     cell_to_row = np.full(int(_GRID) * int(_GRID), -1, dtype=np.int32)
     cell_to_row[cells] = np.arange(int(cells.shape[0]), dtype=np.int32)
     for arr in (cells, cell_to_row, offsets, lengths, flat_ft, flat_ff):
@@ -197,7 +224,13 @@ def timing_response_antichain_keep_mask(
     remaining: np.ndarray,
     lane_value: np.ndarray,
 ) -> np.ndarray:
-    pack_arr = np.asarray(packs, dtype=np.int32).reshape(-1)
+    # ``packs`` is widened to int64 so one batched call can carry composite
+    # (row, pack) segment keys; remaining/lane keep their int32 contract.
+    # The keep decision per segment is identical to the historical per-segment
+    # loop: sort by (pack asc, remaining desc, lane desc, index asc) and keep
+    # each element that strictly beats the running lane maximum of everything
+    # before it in its segment (segment head compares against INT32_MIN).
+    pack_arr = np.asarray(packs, dtype=np.int64).reshape(-1)
     rem_arr = np.asarray(remaining, dtype=np.int32).reshape(-1)
     lane_arr = np.asarray(lane_value, dtype=np.int32).reshape(-1)
     if not (pack_arr.shape == rem_arr.shape == lane_arr.shape):
@@ -207,23 +240,38 @@ def timing_response_antichain_keep_mask(
     if n == 0:
         return keep
 
-    row_idx = np.arange(n, dtype=np.int32)
+    row_idx = np.arange(n, dtype=np.int64)
     order = np.lexsort((row_idx, -lane_arr, -rem_arr, pack_arr))
     sorted_pack = pack_arr[order]
-    sorted_lane = lane_arr[order]
-    segment_starts = np.flatnonzero(np.r_[True, sorted_pack[1:] != sorted_pack[:-1]])
-    segment_ends = np.r_[segment_starts[1:], n]
+    sorted_lane = lane_arr[order].astype(np.int64)
+    seg_start = np.empty(n, dtype=np.bool_)
+    seg_start[0] = True
+    np.not_equal(sorted_pack[1:], sorted_pack[:-1], out=seg_start[1:])
+    seg_id = np.cumsum(seg_start, dtype=np.int64) - 1
 
-    keep_sorted = np.zeros(n, dtype=np.bool_)
-    for start, end in zip(segment_starts.tolist(), segment_ends.tolist(), strict=True):
-        lanes = sorted_lane[start:end]
-        if lanes.size == 0:
-            continue
-        prev_best = np.empty(lanes.shape[0], dtype=np.int32)
-        prev_best[0] = np.iinfo(np.int32).min
-        if lanes.shape[0] > 1:
-            prev_best[1:] = np.maximum.accumulate(lanes[:-1])
-        keep_sorted[start:end] = lanes > prev_best
+    # Exclusive within-segment running max without a Python segment loop:
+    # shift each segment's lane values into a disjoint band, take one global
+    # cumulative max, and map back. Older-segment contributions land strictly
+    # below the current band, so the mapped-back value is exactly the
+    # within-segment prefix max.
+    lane_base = int(sorted_lane.min())
+    span = int(sorted_lane.max()) - lane_base + 2
+    max_seg_id = int(seg_id[-1])
+    if max_seg_id > (np.iinfo(np.int64).max - span) // span:
+        raise OverflowError(
+            "Timing-response keep-mask banded segment offsets exceed int64 "
+            f"(segments={max_seg_id + 1:,}, lane span={span:,})"
+        )
+    banded = (sorted_lane - lane_base + 1) + seg_id * span
+    running = np.maximum.accumulate(banded)
+    prev = np.empty_like(running)
+    prev[0] = 0
+    prev[1:] = running[:-1]
+    prev_in_seg = prev - seg_id * span
+    # Segment heads compare against INT32_MIN exactly like the historical
+    # prev_best[0] sentinel (mapped into the banded value space).
+    np.copyto(prev_in_seg, np.int64(_INT32_MIN) - lane_base + 1, where=seg_start)
+    keep_sorted = (sorted_lane - lane_base + 1) > prev_in_seg
     keep[order] = keep_sorted
     return keep
 

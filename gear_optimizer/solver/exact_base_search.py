@@ -131,6 +131,83 @@ def _sync_phase(phases: dict[str, float], name: str, started: float) -> None:
     phases[str(name)] = float(time.perf_counter() - started)
 
 
+class _VerifiedU64Scratch:
+    """Grow-only device u64 scratch with fail-loud 64-bit-atomic verification.
+
+    A Taichi/Vulkan ndarray allocation can land in a memory region where the
+    join kernels' ``ti.atomic_max`` writes are silently dropped while plain
+    stores and host round-trips still succeed (observed on RX 7900 XTX,
+    taichi 1.7.4; deterministic per allocation layout, dependent on the
+    preceding song-sized uploads).  Every (re)allocation is therefore probed
+    with the same atomic op before use, and the verified buffer is reused for
+    every later request so the production owner never re-rolls the allocator
+    layout per song.  Join kernels only touch the ``[0, elems)`` prefix they
+    are launched with, so serving a request from a larger verified buffer is
+    exact.
+    """
+
+    def __init__(self, label: str) -> None:
+        self._label = str(label)
+        self._buffer: Any = None
+        self._elems = 0
+
+    def acquire(self, elems: int) -> Any:
+        from gear_optimizer.solver.taichi_gem.kernels.exact_base_semiring import (
+            exact_base_fill_i32_kernel,
+            exact_base_fill_u64_kernel,
+            exact_base_u64_atomic_probe_kernel,
+        )
+
+        needed = int(elems)
+        if needed <= 0:
+            raise ValueError(f"Exact Base {self._label} scratch needs a positive size")
+        if self._buffer is not None and needed <= self._elems:
+            return self._buffer
+        dead: list[Any] = []
+        for _ in range(3):
+            buffer = ti.ndarray(dtype=ti.u64, shape=(needed,))
+            probe_ok = ti.ndarray(dtype=ti.i32, shape=(2,))
+            # A plain-store clear works even where 64-bit atomics are dead,
+            # so zero the probe cells first, then probe with atomic_max.
+            exact_base_fill_u64_kernel(buffer, needed)
+            exact_base_fill_i32_kernel(probe_ok, 2, 0)
+            exact_base_u64_atomic_probe_kernel(buffer, needed, probe_ok)
+            ti.sync()
+            flags = probe_ok.to_numpy()
+            if int(flags[0]) == 1 and int(flags[1]) == 1:
+                self._buffer = buffer
+                self._elems = needed
+                return buffer
+            # Keep the dead allocation referenced so the retry cannot be
+            # handed back the same region; released once we leave this scope.
+            dead.append(buffer)
+        raise RuntimeError(
+            f"Exact Base {self._label} scratch failed 64-bit-atomic verification "
+            f"for {needed:,} cells after 3 allocations; refusing to search on a "
+            "buffer that silently drops join writes"
+        )
+
+
+    def release(self) -> None:
+        """Drop the device buffer (required after a Taichi runtime reset)."""
+        self._buffer = None
+        self._elems = 0
+
+
+_GEAR_GRID_SCRATCH = _VerifiedU64Scratch("gear-grid")
+_FINAL_GRID_SCRATCH = _VerifiedU64Scratch("combined-grid")
+
+
+def reset_exact_base_device_scratch() -> None:
+    """Invalidate the verified join-grid scratch after ``ti.reset()``.
+
+    Device ndarrays are invalid once the Taichi runtime resets; the next
+    request re-allocates and re-probes. Wired into ``hard_reset_taichi``.
+    """
+    _GEAR_GRID_SCRATCH.release()
+    _FINAL_GRID_SCRATCH.release()
+
+
 def _upload_bound_programs(context: ExactBaseSongContext) -> _DeviceBoundPrograms:
     programs = context.class_programs
     multipliers = context.multiplier_bounds
@@ -464,7 +541,7 @@ def _run_exact_base_component(
     _sync_phase(phases, "request_input_upload", started)
 
     started = time.perf_counter()
-    gear_grid = ti.ndarray(dtype=ti.u64, shape=(gear_grid_elems,))
+    gear_grid = _GEAR_GRID_SCRATCH.acquire(gear_grid_elems)
     dummy_output = ti.ndarray(dtype=ti.i32, shape=(1,))
     gear_count_dev = ti.ndarray(dtype=ti.i32, shape=(1,))
     exact_base_fill_u64_kernel(gear_grid, gear_grid_elems)
@@ -570,7 +647,7 @@ def _run_exact_base_component(
         raise OverflowError("Exact Base combined semiring exceeds i32 owner/key capacity")
 
     started = time.perf_counter()
-    final_grid = ti.ndarray(dtype=ti.u64, shape=(final_grid_elems,))
+    final_grid = _FINAL_GRID_SCRATCH.acquire(final_grid_elems)
     final_count_dev = ti.ndarray(dtype=ti.i32, shape=(1,))
     exact_base_fill_u64_kernel(final_grid, final_grid_elems)
     exact_base_fill_i32_kernel(final_count_dev, 1, 0)
