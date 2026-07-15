@@ -105,9 +105,7 @@ def test_perfect_window_mode_attaches_envelope_streams():
     assert "fg_great_candidate_timestamps" in cs["song_data"]
 
 
-def test_perfect_window_timeline_still_requires_canonical_envelope():
-    import pytest
-
+def test_perfect_window_timeline_repairs_incomplete_canonical_envelope():
     from gear_optimizer.solver.taichi_gem.api import timeline
 
     cs = _calc_song()
@@ -117,8 +115,10 @@ def test_perfect_window_timeline_still_requires_canonical_envelope():
     apply_timing_envelope(cs, mode="perfect_window")
     del cs["song_data"]["fg_perfect_candidate_timestamps"]
 
-    with pytest.raises(ValueError, match="canonical Perfect candidate envelope"):
-        timeline.load_timeline_frontier_payload(cs, _ref_arrays())
+    loaded = timeline.load_timeline_frontier_payload(cs, _ref_arrays())
+
+    assert loaded.total_notes == note_count
+    assert len(cs["song_data"]["fg_perfect_candidate_timestamps"]) == note_count
 
 
 def test_zero_ms_and_perfect_window_signatures_are_disjoint():

@@ -26,6 +26,7 @@ from gear_optimizer.solver.timeline_exact_frontier import (
     _head_mask_coefficients_py,
     build_timeline_frontier_grid_payload,
 )
+from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
     _FG_SHARED_FRONTIER_PRODUCER_SOURCES,
 )
@@ -266,9 +267,16 @@ _frontier_payload_cache_lock = threading.RLock()
 # notes. Base cache identity now fingerprints the complete shared producer, not only this wrapper,
 # so a future shared recurrence change cannot silently reuse stale Base payloads.
 _FRONTIER_DISK_CACHE_BASE_VERSION = "exact-frontier-v12"
+_FG_SCORING_POLICY_SOURCE = Path(__file__).resolve().parents[2] / "scoring" / "fg_policy.py"
+# Base persists timing geometry and Perfect-only recurrence output, never Great score valuation.
+# Excluding the FG scoring policy keeps a Force-Greats-only score correction from rotating every
+# Base frontier cache key. The remaining shared sources are the exact recurrence/geometry producer.
+_BASE_SHARED_FRONTIER_PRODUCER_SOURCES = tuple(
+    source for source in _FG_SHARED_FRONTIER_PRODUCER_SOURCES if source != _FG_SCORING_POLICY_SOURCE
+)
 _TIMELINE_DP_SOURCES = (
     Path(__file__).resolve().parents[2] / "timeline_exact_frontier.py",
-    *_FG_SHARED_FRONTIER_PRODUCER_SOURCES,
+    *_BASE_SHARED_FRONTIER_PRODUCER_SOURCES,
 )
 _FRONTIER_DISK_CACHE_VERSION = (
     f"{_FRONTIER_DISK_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint(_TIMELINE_DP_SOURCES)}"
@@ -277,16 +285,12 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only unreachable or test-only definitions from the shared producer modules; the Perfect-only
 # recurrence and every persisted Base payload member are unchanged.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # The equal-color Great scoring correction changed only fg_policy.py. That module is kept in
-    # the conservative shared-producer fingerprint, but Base's Perfect-only recurrence and every
-    # persisted timeline payload member are independent of Great score valuation. Preserve the
-    # already-ratified Base lineage explicitly; FG response bundles have their own narrower
-    # compatibility table and version gate.
-    "exact-frontier-v12+logic-1f182e5b89af": (
+    # v12 payload bytes are unchanged: this version only narrows the Base fingerprint by removing
+    # FG score valuation. Ratify the existing exact Base lineage once; future FG policy edits no
+    # longer move this version, while any recurrence/geometry edit still fails closed on a new key.
+    "exact-frontier-v12+logic-e0b0e8ef6411": (
+        "exact-frontier-v12+logic-1f182e5b89af",
         "exact-frontier-v12+logic-4c69b48f08bb",
-        "exact-frontier-v12+logic-9dfe907e66fb",
-    ),
-    "exact-frontier-v12+logic-4c69b48f08bb": (
         "exact-frontier-v12+logic-9dfe907e66fb",
     ),
 }
@@ -749,7 +753,45 @@ def _timeline_payload_lookup_context(calc_song: dict, ref_arrays: dict, *, ref_s
     }
 
 
-def timeline_frontier_payload_cache_info(calc_song: dict, ref_arrays: dict) -> TimelineFrontierCacheInfo:
+def _prepare_timeline_frontier_calc_song(calc_song: dict, *, timing_mode: str | None = None) -> str:
+    """Make the frontier input canonical before any key, cache, or scorer can consume it."""
+
+    if not isinstance(calc_song, dict):
+        raise TypeError("calc_song must be a dict")
+    metadata = calc_song.get("metadata") if isinstance(calc_song.get("metadata"), dict) else {}
+    normalized = str(
+        timing_mode
+        if timing_mode is not None
+        else metadata.get("TimingEnvelopeMode") or metadata.get("Timing Mode") or "perfect_window"
+    ).strip().lower()
+    if normalized not in {"perfect_window", "zero_ms"}:
+        raise ValueError(f"unknown timeline frontier timing mode {timing_mode!r}")
+
+    existing_mode = str(metadata.get("TimingEnvelopeMode") or "").strip().lower()
+
+    # A custom fixed-timing input may carry a nonzero baseline that cannot be reconstructed from
+    # its hash. Preserve an already-canonical zero-ms object; raw zero-ms inputs are materialized.
+    if (
+        normalized == "zero_ms"
+        and metadata.get("TimingEnvelopeApplied") is True
+        and existing_mode == "zero_ms"
+    ):
+        return normalized
+
+    if existing_mode != normalized:
+        calc_song.pop("_gpu_timing_cache_key_frontier", None)
+    prepared = apply_timing_envelope(calc_song, mode=normalized)
+    if prepared is None:
+        raise ValueError("timeline frontier requires chart timestamps")
+    return normalized
+
+
+def timeline_frontier_payload_cache_info(
+    calc_song: dict,
+    ref_arrays: dict,
+    *,
+    timing_mode: str | None = None,
+) -> TimelineFrontierCacheInfo:
     """
     Return exact-frontier cache status without building group payloads or loading `.npz`.
 
@@ -761,6 +803,8 @@ def timeline_frontier_payload_cache_info(calc_song: dict, ref_arrays: dict) -> T
         raise TypeError("calc_song must be a dict")
     if not isinstance(ref_arrays, dict):
         raise TypeError("ref_arrays must be a dict")
+
+    _prepare_timeline_frontier_calc_song(calc_song, timing_mode=timing_mode)
 
     base_song_key = _song_timing_cache_key(calc_song)
     song_key = base_song_key
@@ -928,14 +972,20 @@ def _zero_ms_timeline_result(calc_song: dict, ref_arrays: dict) -> TimelineFront
     )
 
 
-def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> TimelineFrontierPrewarmResult:
+def build_or_load_timeline_frontier_payload(
+    calc_song: dict,
+    ref_arrays: dict,
+    *,
+    timing_mode: str | None = None,
+) -> TimelineFrontierPrewarmResult:
     """
     Build or load the reusable exact frontier payload without touching Taichi fields.
 
     This is the shared host-side entrypoint for background lookahead and offline
     disk-cache prebuilding, so cache signatures stay identical to runtime scoring.
     """
-    if _timeline_calc_song_is_zero_ms(calc_song):
+    resolved_timing_mode = _prepare_timeline_frontier_calc_song(calc_song, timing_mode=timing_mode)
+    if resolved_timing_mode == "zero_ms":
         # zero_ms is fixed timing: serve the cheap chart-time singleton (the "partial" build) and
         # never touch the perfect_window candidate-frontier build or its disk cache.
         return _zero_ms_timeline_result(calc_song, ref_arrays)
@@ -975,9 +1025,15 @@ def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -
     )
 
 
-def load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> TimelineFrontierPrewarmResult:
+def load_timeline_frontier_payload(
+    calc_song: dict,
+    ref_arrays: dict,
+    *,
+    timing_mode: str | None = None,
+) -> TimelineFrontierPrewarmResult:
     """Load the timeline frontier, building and persisting a live cache miss."""
-    if _timeline_calc_song_is_zero_ms(calc_song):
+    resolved_timing_mode = _prepare_timeline_frontier_calc_song(calc_song, timing_mode=timing_mode)
+    if resolved_timing_mode == "zero_ms":
         # zero_ms serves the cheap chart-time singleton on demand -- it is never persisted to the
         # perfect_window disk cache, so probing it here would be a miss anyway; build directly.
         return _zero_ms_timeline_result(calc_song, ref_arrays)

@@ -21,6 +21,7 @@ def test_timeline_cache_fingerprint_covers_shared_frontier_producer() -> None:
         "response_build_gpu_batch.py",
         "response_build_gpu_numba.py",
     }.issubset(sources)
+    assert "fg_policy.py" not in sources
 
 
 def _build_small_payload():
@@ -105,9 +106,10 @@ def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
 ) -> None:
     payload = _build_small_payload()
     current_version = timeline_api._FRONTIER_DISK_CACHE_VERSION
-    assert current_version == "exact-frontier-v12+logic-1f182e5b89af"
+    assert current_version == "exact-frontier-v12+logic-e0b0e8ef6411"
     assert timeline_api.timeline_frontier_compatible_cache_versions() == (
         current_version,
+        "exact-frontier-v12+logic-1f182e5b89af",
         "exact-frontier-v12+logic-4c69b48f08bb",
         "exact-frontier-v12+logic-9dfe907e66fb",
     )
@@ -131,6 +133,43 @@ def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
     loaded = timeline_api._load_frontier_payload_from_disk(current_key)
     assert loaded is not None
     assert loaded.frontier_pool_used == payload.frontier_pool_used
+
+
+def test_frontier_entrypoint_canonicalizes_raw_precise_input_before_cache_lookup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    timeline_api.reset_timeline_state()
+    stale_key = tuple(["stale"] * 12)
+    calc_song = {
+        "metadata": {
+            "Song Name": "Raw Precise Timeline",
+            "Difficulty": "Hard",
+            "Long Notes": 0,
+            "Last Note Time": 0.6,
+        },
+        "song_data": {
+            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
+            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
+            "lanes": np.array([0, 1, 2, 3], dtype=np.int32),
+        },
+        "_gpu_timing_cache_key_frontier": stale_key,
+    }
+
+    result = timeline_api.build_or_load_timeline_frontier_payload(
+        calc_song,
+        _ref_arrays(),
+        timing_mode="perfect_window",
+    )
+
+    song_data = calc_song["song_data"]
+    assert calc_song["metadata"]["TimingEnvelopeMode"] == "perfect_window"
+    assert len(song_data["fg_perfect_candidate_timestamps"]) == 4
+    assert len(song_data["fg_perfect_floor_timestamps"]) == 4
+    assert calc_song["_gpu_timing_cache_key_frontier"] != stale_key
+    assert result.cache_source == "built"
 
 
 def test_build_or_load_timeline_frontier_payload_disk_hit_reuses_compact_payload(
