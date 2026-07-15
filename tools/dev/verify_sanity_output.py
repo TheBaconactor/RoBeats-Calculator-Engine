@@ -9,17 +9,10 @@ Strict contract checks:
 - leaderboard rows re-sort when tier/team-buff replay changes ranking
 - loadout rows keep the correct score semantics for tier + team color
 
-Optional live run:
-- chains `tools/dev/verify_run_consistency_no_db.py` so a real optimizer run can
-  confirm that pre-persistence optimizer output still recomputes cleanly
-
 Recommended usage
 -----------------
-Fast strict contract only:
+Strict contract:
   python tools/dev/verify_sanity_output.py
-
-Strict contract + one live song run:
-  python tools/dev/verify_sanity_output.py --with-live-run --live-limit 1 --live-song-filter "Song Name"
 """
 
 from __future__ import annotations
@@ -77,33 +70,8 @@ def _strict_pytest_cmd() -> list[str]:
     return [sys.executable, "-m", "pytest", "-q", *STRICT_SANITY_NODEIDS, "--tb=short"]
 
 
-def _live_consistency_cmd(args: argparse.Namespace) -> list[str]:
-    cmd = [
-        sys.executable,
-        str(PROJECT_ROOT / "tools" / "dev" / "verify_run_consistency_no_db.py"),
-        "--limit",
-        str(max(1, int(args.live_limit))),
-        "--ga-depth",
-        str(max(1, int(args.live_ga_depth))),
-        "--ga-multistart",
-        str(max(1, int(args.live_ga_multistart))),
-        "--score-tolerance",
-        str(max(0, int(args.live_score_tolerance))),
-    ]
-    if str(args.live_song_filter or "").strip():
-        cmd.extend(["--song-filter", str(args.live_song_filter).strip()])
-    if bool(args.live_respect_user_gems):
-        cmd.append("--respect-user-gems")
-    if bool(args.live_debug):
-        cmd.append("--debug")
-    return cmd
-
-
 def _build_steps(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
-    steps: list[tuple[str, list[str]]] = [("strict-sanity-contract", _strict_pytest_cmd())]
-    if bool(args.with_live_run):
-        steps.append(("live-pre-persistence-consistency", _live_consistency_cmd(args)))
-    return steps
+    return [("strict-sanity-contract", _strict_pytest_cmd())]
 
 
 def _write_report(steps: list[dict[str, Any]]) -> None:
@@ -120,11 +88,6 @@ def _write_report(steps: list[dict[str, Any]]) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the unified sanity-output verification contract.")
     parser.add_argument(
-        "--with-live-run",
-        action="store_true",
-        help="Also run the live pre-persistence consistency verifier after the strict sanity contract.",
-    )
-    parser.add_argument(
         "--plan",
         action="store_true",
         help="Print the steps/commands without executing them.",
@@ -133,41 +96,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--continue-on-failure",
         action="store_true",
         help="Run all requested steps even if an earlier step fails.",
-    )
-    parser.add_argument("--live-limit", type=int, default=1, help="Song count for the optional live verifier.")
-    parser.add_argument(
-        "--live-ga-depth",
-        type=int,
-        default=60,
-        help="GA_SearchDepth override passed to the optional live verifier.",
-    )
-    parser.add_argument(
-        "--live-ga-multistart",
-        type=int,
-        default=3,
-        help="GA_MultiStart override passed to the optional live verifier.",
-    )
-    parser.add_argument(
-        "--live-song-filter",
-        type=str,
-        default="",
-        help="Optional song filter forwarded to the live verifier.",
-    )
-    parser.add_argument(
-        "--live-score-tolerance",
-        type=int,
-        default=2,
-        help="Score tolerance forwarded to the live verifier.",
-    )
-    parser.add_argument(
-        "--live-respect-user-gems",
-        action="store_true",
-        help="Preserve user gems in the optional live verifier.",
-    )
-    parser.add_argument(
-        "--live-debug",
-        action="store_true",
-        help="Enable extra mismatch debugging in the optional live verifier.",
     )
     return parser
 

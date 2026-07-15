@@ -55,26 +55,33 @@ def test_persist_guard_raises_on_phantom_and_passes_reachable():
     import pytest
 
     from gear_optimizer.solver.fg_response_scoring.reducer import _assert_trace_hit_time_reachable
+    from gear_optimizer.solver.timing_envelope import (
+        build_great_candidate_envelope_sec,
+        build_great_floor_envelope_sec,
+        build_perfect_candidate_envelope_sec,
+        build_perfect_floor_envelope_sec,
+    )
 
-    def _si(ts, pc, gc):
+    def _si(ts, note_types):
         ts_arr = np.asarray(ts, np.float32)
+        note_types_arr = np.asarray(note_types, np.int16)
         return types.SimpleNamespace(
             timestamps=ts_arr,
-            perfect_candidates=np.asarray(pc, np.float32),
-            great_candidates=np.asarray(gc, np.float32),
-            perfect_floor=np.maximum.accumulate(ts_arr - np.float32(0.020)).astype(np.float32),
-            great_floor=np.maximum.accumulate(ts_arr - np.float32(0.095)).astype(np.float32),
+            perfect_candidates=build_perfect_candidate_envelope_sec(ts_arr, note_types_arr),
+            great_candidates=build_great_candidate_envelope_sec(ts_arr, note_types_arr),
+            perfect_floor=build_perfect_floor_envelope_sec(ts_arr, note_types_arr),
+            great_floor=build_great_floor_envelope_sec(ts_arr, note_types_arr),
             lanes=np.arange(int(ts_arr.shape[0]), dtype=np.int32),
         )
 
-    phantom = _si([0.0, 0.0, 0.0], [0.080, 0.040, 0.040], [0.198, 0.190, 0.190])
+    phantom = _si([0.0, 0.0, 0.0], [3, 1, 1])
     with pytest.raises(ValueError, match="weighted, lane-aware"):
         _assert_trace_hit_time_reachable(
             [{"section": 1, "activation_index": 0, "activation_judgment": "late_great"}],
             phantom,
             raw_fever_fill=1.5,
         )
-    reachable = _si([0.0, 1.0, 2.0], [0.040, 1.040, 2.040], [0.190, 1.190, 2.190])
+    reachable = _si([0.0, 1.0, 2.0], [1, 1, 1])
     _assert_trace_hit_time_reachable(
         [{"section": 1, "activation_index": 1, "activation_judgment": "late_great"}],
         reachable,

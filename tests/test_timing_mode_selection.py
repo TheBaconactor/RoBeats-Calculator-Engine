@@ -32,10 +32,10 @@ def test_song_preparation_uses_chart_timing_metadata(monkeypatch):
     assert captured["mode"] is None
 
 
-def test_startup_prepares_both_frontier_cache_families(monkeypatch):
+def test_startup_prepares_timeline_base_context_and_fg_cache_families(monkeypatch):
     from gear_optimizer.solver import cpu_work_manager
 
-    calls = {"timeline": 0, "fg": 0}
+    calls = {"timeline": 0, "base_context": 0, "fg": 0}
 
     class Summary:
         total = completed = failures = built = disk = memory = 0
@@ -48,7 +48,16 @@ def test_startup_prepares_both_frontier_cache_families(monkeypatch):
         calls["fg"] += 1
         return Summary()
 
+    def fake_base_context(**_kwargs):
+        calls["base_context"] += 1
+        return Summary()
+
     monkeypatch.setattr(cpu_work_manager, "run_timeline_frontier_cache_prebuild", fake_timeline)
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "run_exact_base_song_context_cache_prebuild",
+        fake_base_context,
+    )
     monkeypatch.setattr(cpu_work_manager, "run_fg_response_frontier_cache_prebuild", fake_fg)
     cpu_work_manager.run_startup_cpu_work(
         cfg=None,
@@ -57,7 +66,7 @@ def test_startup_prepares_both_frontier_cache_families(monkeypatch):
         data_root=".",
         announce_stream=io.StringIO(),
     )
-    assert calls == {"timeline": 1, "fg": 1}
+    assert calls == {"timeline": 1, "base_context": 1, "fg": 1}
 
 
 def test_team_buff_unknown_mode_fails_loud():
@@ -74,7 +83,6 @@ def test_team_buff_unknown_mode_fails_loud():
 
 
 def test_gpu_warmup_songs_do_not_select_a_request_mode():
-    from gear_optimizer.solver.taichi_gem.api import ga_operations, skyline_operations
+    from gear_optimizer.solver.taichi_gem.api import skyline_operations
 
-    assert "TimingEnvelopeMode" not in ga_operations._warmup_calc_song()["metadata"]
     assert "TimingEnvelopeMode" not in skyline_operations._warmup_calc_song()["metadata"]

@@ -42,15 +42,11 @@ def _write_smoke_config(*, out_path: Path, base_config_path: Path, song: str, di
     cfg.set("CalculateSong", "TargetPrimary", "All")
     cfg.set("CalculateSong", "TargetSecondary", "All")
 
-    # Make it fast.
-    cfg.set("IterationEngine", "LoopForever", "false")
+    # Bound the exact production run to one song.
+    cfg.set("CalculateSong", "LoopForever", "false")
     cfg.set("IterationEngine", "SongRepeats", "1")
     cfg.set("IterationEngine", "SongQueueLimit", "1")
     cfg.set("IterationEngine", "InFlightSongs", "1")
-    cfg.set("IterationEngine", "GA_SearchDepth", "5")
-    cfg.set("IterationEngine", "GA_MultiStart", "1")
-    cfg.set("IterationEngine", "FG_CandidateLimit", "10")
-    cfg.set("IterationEngine", "FG_SearchRadius", "3")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
@@ -83,8 +79,6 @@ def main() -> None:
     env = os.environ.copy()
     env["EVOLUTION_DB_PATH"] = str(smoke_db)
     env["METAFINDER_CONFIG_PATH"] = str(smoke_cfg)
-    env["GA_SEED"] = "1337"
-
     print(f"Running optimizer -> DB: {smoke_db}")
     print(f"Config: {smoke_cfg}")
 

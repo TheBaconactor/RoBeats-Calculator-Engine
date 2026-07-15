@@ -17,13 +17,13 @@ MetaFinder searches gear, Minis, gems, fever timing, and Force Great strategies,
 </div>
 
 > [!IMPORTANT]
-> MetaFinder preserves exact integer scoring, floor operations, ordering, ties, witnesses, timing-frontier semantics, and modeled input-engine reachability. The **outer gear/Mini search is a multi-start GPU genetic search**, so a result is the best solution found under the configured search budget—not a mathematical proof that no better loadout exists.
+> MetaFinder's production Base search is exact: it reduces the request-local gear and Mini catalog, runs Vulkan semiring joins over the reachable Perfect-Points response components, and certifies the globally best loadout. It preserves integer scoring, floor operations, ordering, ties, witnesses, timing-frontier semantics, and modeled input-engine reachability.
 
 ## What MetaFinder does
 
 | Area | Current production behavior |
 |---|---|
-| **Loadout search** | GPU-native multi-start search over six gear slots and three Mini slots, with deterministic persistence and warm starts from prior results. |
+| **Loadout search** | Exact request-local search over six gear slots and three distinct Mini slots; no catalog frontier prebuild or stochastic search budget. |
 | **Base timing** | Builds and caches the exact non-dominated fever-timing frontier instead of selecting from a small set of guessed timelines. |
 | **Force Greats** | Uses one canonical exact response-frontier scorer; obsolete manual and alternate FG modes are rejected. |
 | **Physical reachability** | Accounts for lane identity, chart order, legal Perfect/Great timing, half-fill Greats, section placement, and ordered witnesses when constructing reachable FG surfaces. |
@@ -34,7 +34,7 @@ MetaFinder searches gear, Minis, gems, fever timing, and Force Great strategies,
 
 ### Accuracy boundary
 
-MetaFinder is designed around the canonical **full-combo** optimization surface. Exact scoring does not turn the outer genetic search into an exhaustive loadout proof, and deliberate Okay/Miss/combo-break strategies are not silently treated as supported search actions.
+MetaFinder is designed around the canonical **full-combo** optimization surface. The outer search certifies the Base top-1 within that modeled surface; deliberate Okay/Miss/combo-break strategies are not silently treated as supported search actions. The downstream surface contains up to 51 effective loadouts from the exact-scored witness pool, not a global Base top-51 certificate; native FG is exact for each retained candidate. Nonuniform Mini Perfect-Points totals and PP-gem-optimal allocations are handled by exact request-local response-profile components. One-component requests keep the hot path measured on the default-catalog `00 (Hard)` benchmark; every request pays only for the components it can reach, with no catalog prebuild.
 
 The project also has no CPU production fallback. CPU implementations and the faithful game simulator exist for reference, differential testing, and oracle verification; production optimization is GPU-first.
 
@@ -42,22 +42,22 @@ The project also has no CPU production fallback. CPU implementations and the fai
 
 ```mermaid
 flowchart LR
-    A[Chart data] --> B[Song-aware gear and Mini preparation]
-    B --> C[Load or build exact timeline frontier]
-    B --> D[Load or build exact FG response frontier]
-    C --> E[GPU-native multi-start loadout search]
-    D --> E
-    E --> F[Canonical gem allocation and exact rescore]
+    A[Chart and request-local catalog] --> B[Exact catalog-domain reduction]
+    A --> C[Load or build exact song context]
+    B --> D[Reachable PP-response components and Vulkan joins]
+    C --> D
+    D --> E[Bounded exact scan and global certificate]
+    E --> F[Refill up to 51 effective Base witnesses]
     F --> G[Base leaderboard]
-    F --> H[Force Great leaderboard]
+    F --> H[Native exact Force Great scoring]
     G --> I[(evolution.db)]
     H --> I
 ```
 
 1. The app discovers the chart, gear, Mini, and Stats data.
 2. Song-specific state is materialized, including Mini Ascension effects.
-3. Exact timeline and Force Great frontier payloads are loaded from compatible caches or built once.
-4. The Taichi/Vulkan engine searches candidate loadouts while CPU preparation, decode, post-processing, and database work overlap through the native in-flight scheduler.
+3. Exact timeline, Base song-context, and native Force Great payloads are loaded from compatible caches or built once.
+4. The Taichi/Vulkan engine certifies the Base optimum, refills up to 51 effective witnesses (or exhausts the joined states), and scores every retained candidate through native FG while CPU preparation, typed decode, post-processing, and database work overlap through the native in-flight scheduler.
 5. Canonical results are written to `evolution.db` with Base and Force Great leaderboards kept separate.
 
 ## Quick start
@@ -123,7 +123,7 @@ LoopForever = false
 - Set `LoopForever = true` only when continuous queue processing is intended.
 - Override the config path with `METAFINDER_CONFIG_PATH=/path/to/config.ini`.
 
-Production scoring modes are not user-selectable compatibility switches. The exact timeline frontier and exact FG response frontier are the canonical paths.
+Production scoring modes are not user-selectable compatibility switches. Exact Base, the exact timeline frontier, and the native exact FG response frontier are the canonical paths.
 
 ### Run
 
@@ -161,12 +161,13 @@ Important generated paths:
 |---|---|
 | `evolution.db` | Canonical Base and Force Great leaderboards. |
 | `bin/timeline_frontier_cache/` | Persistent exact fever-timeline frontier payloads. |
+| `bin/exact_base_song_context_cache/` | Persistent catalog-independent Base timing-response and bound programs. |
 | `bin/fg_response_frontier_cache/` | Persistent exact Force Great response-frontier payloads. |
 | `bin/paths_cache.json` | Auto-discovered data paths. |
 | `bin/error.log` | Durable runtime diagnostics. |
 | `artifacts/` | Generated analysis and export output. |
 
-Cache fingerprints include semantic inputs. When scoring logic, timing inputs, lane data, or cache formats change, incompatible entries are rejected and rebuilt rather than relabeled as valid.
+Cache fingerprints include semantic inputs. When scoring logic, timing inputs, lane data, custom-chart content, or cache formats change, incompatible entries are rejected and rebuilt rather than relabeled as valid. Catalog-derived in-memory caches also fingerprint gear and Mini content, so mutating a reused custom catalog object invalidates dependent pool, registry, and equivalence data.
 
 ## Commands
 
@@ -218,7 +219,7 @@ It binds to loopback by default. Set `ROBEATSMETA_OPTIMIZER_API_TOKEN` before ex
 |---|---|
 | Application | [`gear_optimizer/app.py`](gear_optimizer/app.py), CLI startup, graceful shutdown, queue ownership |
 | Scheduling | [`gear_optimizer/solver/native_inflight_orchestrator.py`](gear_optimizer/solver/native_inflight_orchestrator.py), overlapping CPU/GPU stages |
-| Search | [`gear_optimizer/solver/genetic.py`](gear_optimizer/solver/genetic.py), GPU-native multi-start candidate search |
+| Search | [`gear_optimizer/solver/exact_base_search.py`](gear_optimizer/solver/exact_base_search.py), response-component semiring joins, certified Base winner, and up-to-51 effective candidate surface |
 | Exact timing | [`gear_optimizer/solver/timeline_exact_frontier.py`](gear_optimizer/solver/timeline_exact_frontier.py), packed non-dominated fever surfaces |
 | Force Greats | [`gear_optimizer/solver/taichi_gem/force_greats/`](gear_optimizer/solver/taichi_gem/force_greats/), exact response-frontier construction and scoring |
 | Score verification | [`gear_optimizer/solver/scoring/`](gear_optimizer/solver/scoring/), integer exact rescoring and parity paths |
@@ -270,7 +271,7 @@ The production optimizer intentionally does not fall back to CPU scoring.
 <details>
 <summary><strong>The first run appears much slower</strong></summary>
 
-A cold run may compile Numba/Taichi code and build missing exact timeline or FG frontier caches. Compatible later runs reuse the persisted artifacts. Do not delete `bin/numba_cache/`, `bin/timeline_frontier_cache/`, or `bin/fg_response_frontier_cache/` unless troubleshooting or intentionally forcing a rebuild.
+A cold run may compile Numba/Taichi code and build missing exact timeline, Base song-context, or FG response-frontier caches. Compatible later runs reuse the persisted artifacts. Do not delete `bin/numba_cache/`, `bin/timeline_frontier_cache/`, `bin/exact_base_song_context_cache/`, or `bin/fg_response_frontier_cache/` unless troubleshooting or intentionally forcing a rebuild.
 
 </details>
 

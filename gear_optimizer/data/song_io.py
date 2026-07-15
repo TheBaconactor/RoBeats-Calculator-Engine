@@ -8,6 +8,7 @@ import os
 import threading
 from collections import OrderedDict
 from io import StringIO
+from pathlib import Path
 
 import numpy as np
 from cachetools import LRUCache
@@ -18,31 +19,16 @@ from gear_optimizer.data.models import WarnOnce
 logger = logging.getLogger(__name__)
 WARN_ONCE = WarnOnce()
 
-_CFG_HASH_CACHE: dict[int, tuple[int, str]] = {}
-_CFG_HASH_CACHE_LOCK = threading.Lock()
-
-
 def _stable_cfg_hash(cfg_dict: dict | None) -> str:
     if not isinstance(cfg_dict, dict) or not cfg_dict:
         return "cfg0"
-    cfg_id = int(id(cfg_dict))
-    cfg_len = int(len(cfg_dict))
-    with _CFG_HASH_CACHE_LOCK:
-        cached = _CFG_HASH_CACHE.get(cfg_id)
-        if cached is not None and int(cached[0]) == cfg_len:
-            return str(cached[1])
     try:
         payload = json.dumps(cfg_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     except Exception as e:
         logger.warning(f"song_io:_stable_cfg_hash: {e}")
         payload = repr(sorted(cfg_dict.items(), key=lambda kv: str(kv[0])))
     h = hashlib.sha1(payload.encode("utf-8", errors="replace")).hexdigest()
-    out = h[:16]
-    with _CFG_HASH_CACHE_LOCK:
-        _CFG_HASH_CACHE[cfg_id] = (cfg_len, out)
-        if len(_CFG_HASH_CACHE) > 32:
-            _CFG_HASH_CACHE.clear()
-    return out
+    return h[:16]
 
 
 _BASE_CALC_SONG_CACHE_MAX = 64
@@ -55,6 +41,59 @@ _SONG_HEADER_CACHE_LOCK = threading.Lock()
 _SONG_HEADER_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
 _SONG_HEADER_CACHE_LOADED = False
 _SONG_HEADER_CACHE_DIRTY = False
+
+
+class SongFileResolver:
+    """Request-local song-name resolver backed by the canonical header reader."""
+
+    __slots__ = ("data_root", "_header_index")
+
+    def __init__(self, data_root: str | os.PathLike[str] | None = None) -> None:
+        self.data_root = Path(data_root or PATHS.data_dir).resolve()
+        self._header_index: dict[str, Path] | None = None
+
+    @staticmethod
+    def _difficulty_order(song_name: str) -> tuple[str, ...]:
+        for difficulty in ("Easy", "Normal", "Hard"):
+            if f" ({difficulty}) " in song_name:
+                return (difficulty, *(value for value in ("Easy", "Normal", "Hard") if value != difficulty))
+        return ("Normal", "Easy", "Hard")
+
+    def _build_header_index(self) -> dict[str, Path]:
+        index: dict[str, Path] = {}
+        if not self.data_root.is_dir():
+            return index
+        for root, dirs, files in os.walk(self.data_root):
+            dirs.sort()
+            for filename in sorted(files):
+                if not filename.lower().endswith(".txt"):
+                    continue
+                path = Path(root, filename).resolve()
+                meta = scan_song_header(str(path))
+                if not isinstance(meta, dict):
+                    continue
+                song_name = str(meta.get("Song Name") or "").strip()
+                if not song_name:
+                    continue
+                previous = index.get(song_name)
+                if previous is not None and previous != path:
+                    raise RuntimeError(
+                        f"Multiple song files declare Song Name {song_name!r}: {previous} and {path}"
+                    )
+                index[song_name] = path
+        return index
+
+    def resolve(self, song_name: str) -> Path | None:
+        name = str(song_name or "").strip()
+        if not name:
+            return None
+        for difficulty in self._difficulty_order(name):
+            direct = (self.data_root / difficulty / f"{name}.txt").resolve()
+            if direct.is_file():
+                return direct
+        if self._header_index is None:
+            self._header_index = self._build_header_index()
+        return self._header_index.get(name)
 
 
 def clone_calc_song(calc_song: dict) -> dict:

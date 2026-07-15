@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from tests.parity.timing_response_antichain import timing_response_antichain_keep_mask
+from gear_optimizer.solver.timing_response_antichain import timing_response_antichain_keep_mask
 
 
 def test_timing_response_antichain_drops_only_same_pack_covered_spends() -> None:

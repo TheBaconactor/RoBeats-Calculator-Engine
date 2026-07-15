@@ -579,7 +579,7 @@ def main() -> int:
         from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
         from gear_optimizer.core.constants import PATHS
 
-        _ga_settings, fixed_stats, _cur_gear_stats, _cur_gear_list, _cur_mini_stats, _cur_mini_list = setup_song_config(
+        fixed_stats, _cur_gear_stats, _cur_gear_list, _cur_mini_stats, _cur_mini_list = setup_song_config(
             cfg,
             clone_calc_song(active_calc_song),
             PATHS,

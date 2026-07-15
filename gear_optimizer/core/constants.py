@@ -44,27 +44,8 @@ FEVER_TIME_SCALE = 0.15
 # this path; keep only the +1000ms approximate-length term.
 FEVER_TIME_OFFSET = 0.15
 
-# --- GA (GENETIC ALGORITHM) CONSTANTS ---
-# These will be overwritten by config.ini if present
-#
-# EXPLORATION vs EXPLOITATION TUNING:
-# - Higher mutation_rate = more exploration (random changes)
-# - More multi_runs = more fresh starts (escape local optima)
-# - Elitism = exploitation (preserving best solutions)
-GA_POPULATION_SIZE = 705  # 1.5x of 470; keep moderate for diversity + speed
-GA_MUTATION_RATE = 0.35  # INCREASED: 0.275 → 0.35 (more exploration)
-GA_ELITISM = 1  # Keep 1 elite (exploitation anchor)
-GA_MULTI_RUNS_DEFAULT = 3
-
 # Local search constants
 PP_TIE_LOOKAHEAD_MAX = 8  # Max lookahead iterations for PP tie-breaking in gem optimization
-
-# --- GPU GA ISLAND MODEL ---
-# Real-song benchmarks showed island migration amplifying exact-clone pressure
-# without improving score quality consistently; the migration dispatch path was
-# deleted (2026-07-03, dead at a single island). n_islands still parameterizes
-# the next-generation kernel's elitism layout.
-GPU_GA_NUM_ISLANDS = 1
 
 # --- DATABASE CONFIGURATION ---
 DB_FILE = "evolution.db"

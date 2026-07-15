@@ -12,11 +12,8 @@ import logging
 import configparser
 import os
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-import numpy as np
-
-from gear_optimizer.core.config import GASettings as GARuntimeSettings
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.domain.jobs import task_cfg_dict
@@ -24,7 +21,14 @@ from gear_optimizer.solver.inflight_utils import _truthy
 
 logger = logging.getLogger(__name__)
 
-CANONICAL_GA_QUEUE_MULT = 2
+if TYPE_CHECKING:
+    from gear_optimizer.solver.exact_base_domains import ExactBaseDomains
+    from gear_optimizer.solver.exact_base_song_context import ExactBaseSongContext
+    from gear_optimizer.solver.solver_common import SolverContext
+    from gear_optimizer.solver.taichi_gem.api.timeline import TimelineFrontierPrewarmResult
+
+
+CANONICAL_BASE_QUEUE_MULT = 2
 CANONICAL_PREP_BUFFER_MULT = 4
 
 
@@ -65,10 +69,7 @@ def read_inflight_worker_count(
     *,
     inflight_limit: int,
     kind: str,
-    ga_seed: str = "",
 ) -> int:
-    if str(ga_seed or "").strip() and str(kind or "").strip().lower() == "prep":
-        return 1
     workers = default_worker_threads(inflight_limit=int(inflight_limit), kind=str(kind))
     return max(1, int(workers))
 
@@ -80,24 +81,12 @@ def read_db_prefetch_workers(
     return max(1, min(int(fg_prep_workers), 4))
 
 
-def read_ga_multi_start(cfg0: Any) -> int:
-    try:
-        settings = GARuntimeSettings.from_config(cfg0) if cfg0 is not None else GARuntimeSettings()
-        return max(1, int(settings.multi_start))
-    except Exception as e:
-        logger.debug(f"native_inflight_config:read_ga_multi_start: {e}")
-        return 1
-
-
 @dataclass(frozen=True)
 class InflightConfig:
-    pool_cache_max: int
-    registry_cache_max: int
-    init_heur_cache_max: int
     inflight_limit: int
     max_song_slots: int
     song_slot_limit: int
-    ga_queue_limit: int
+    base_queue_limit: int
     prep_buffer_mult: int
     prep_limit: int
     prep_workers: int
@@ -176,12 +165,6 @@ def read_inflight_loop_observer_settings(
 
 
 def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> InflightConfig:
-    cfg0 = first_task_config(tasks)
-
-    pool_cache_max = 0
-    registry_cache_max = 0
-    init_heur_cache_max = 0
-
     requested_inflight = max(1, int(in_flight_songs))
     inflight_limit = min(int(requested_inflight), len(tasks))
 
@@ -224,20 +207,16 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
     scheduler_policy = _scheduler_policy()
 
-    # The owner must never be request-starved while prepared GA work exists: keep
-    # the GA queue as deep as the slot pool allows. Slots release at GA completion
-    # (the fused GA turn is the only device consumer), so every usable slot can sit
-    # in the GA conveyor.
-    ga_queue_limit = max(1, int(inflight_limit) * int(CANONICAL_GA_QUEUE_MULT))
-    ga_queue_limit = min(int(ga_queue_limit), int(song_slot_limit))
+    # Keep the exact Base owner queue as deep as the slot pool allows. A slot is
+    # released as soon as the fused Base+FG owner request completes.
+    base_queue_limit = max(1, int(inflight_limit) * int(CANONICAL_BASE_QUEUE_MULT))
+    base_queue_limit = min(int(base_queue_limit), int(song_slot_limit))
 
     prep_buffer_mult = int(CANONICAL_PREP_BUFFER_MULT)
     prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
-    ga_seed = str(env_get("GA_SEED") or "").strip()
     prep_workers = read_inflight_worker_count(
         inflight_limit=int(inflight_limit),
         kind="prep",
-        ga_seed=ga_seed,
     )
     decode_workers = read_inflight_worker_count(
         inflight_limit=int(inflight_limit),
@@ -248,19 +227,10 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
     try:
         logger.debug(
-            f"[InFlight][FG] scheduler={fg_scheduler_norm} (GA_QueueLimit={int(ga_queue_limit)})"
+            f"[InFlight][FG] scheduler={fg_scheduler_norm} (BaseQueueLimit={int(base_queue_limit)})"
         )
     except (ValueError, TypeError):
         pass
-
-    try:
-        from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-        from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
-
-        ga_runs = read_ga_multi_start(cfg0)
-        gpu_fields.configure_ga_run_buffers(max_runs=ga_runs, max_genomes=GA_POPULATION_SIZE)
-    except Exception as e:
-        logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
 
     try:
         if os.name == "nt" and env_get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE") is None:
@@ -289,13 +259,10 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     loop_observer = read_inflight_loop_observer_settings()
 
     return InflightConfig(
-        pool_cache_max=pool_cache_max,
-        registry_cache_max=registry_cache_max,
-        init_heur_cache_max=init_heur_cache_max,
         inflight_limit=inflight_limit,
         max_song_slots=max_song_slots,
         song_slot_limit=song_slot_limit,
-        ga_queue_limit=ga_queue_limit,
+        base_queue_limit=base_queue_limit,
         prep_buffer_mult=prep_buffer_mult,
         prep_limit=prep_limit,
         prep_workers=prep_workers,
@@ -317,13 +284,11 @@ class NativeSongConfig:
     fp: str = ""
     song_name: str = ""
     task_key: str = ""
-    ga_seed: int | None = None
     db_key: str = ""
     effective_difficulty: str = ""
     cfg_dict: JsonDict = field(default_factory=dict)
     cfg: configparser.ConfigParser | None = None
     paths: dict[str, Any] | None = None
-    ga_depth: int = 0
     fg_debug: bool = False
 
 
@@ -343,24 +308,10 @@ class NativeSongGPUInputs:
     registry: ItemRegistry | None = None
     cfg_data: JsonDict = field(default_factory=dict)
     color_flags: dict[str, Any] = field(default_factory=dict)
-    gens_per_run: int = 0
-    num_runs: int = 0
-    n_genomes: int = 0
-    item_stats: np.ndarray | None = None
-    slot_start: np.ndarray | None = None
-    slot_count: np.ndarray | None = None
-    base_fixed_stats_arr: np.ndarray | None = None
-    elite_count: int = 0
-    mutation_rate: float = 0.0
-    immigrant_rate: float = 0.0
-    tournament_k: int = 0
-    init_heuristic_topk: Optional[np.ndarray] = None
-    init_heuristic_k: int = 0
-    init_heuristic_copies: int = 25
-    # GA->FG effective-dedup equivalence tables for this song's color context
-    # (Slice 1). Built at prep, uploaded by the GA run before candidate select.
-    fg_gear_name_rank: Optional[np.ndarray] = None
-    fg_mini_sig_id: Optional[np.ndarray] = None
+    solver_context: "SolverContext | None" = None
+    exact_base_domains: "ExactBaseDomains | None" = None
+    exact_base_song_context: "ExactBaseSongContext | None" = None
+    timeline_frontier: "TimelineFrontierPrewarmResult | None" = None
 
 
 @dataclass
@@ -370,17 +321,16 @@ class NativeSongPrepState:
 
 
 @dataclass
-class NativeSongGAState:
-    ga_future: Optional[concurrent.futures.Future] = None
-    ga_submit_t0: float | None = None
-    ga_initial_populations: Optional[list[Any]] = None
+class NativeSongBaseState:
+    base_future: Optional[concurrent.futures.Future] = None
+    base_submit_t0: float | None = None
 
 
 @dataclass
 class NativeSongDecodeState:
     decode_future: Optional[concurrent.futures.Future] = None
     decode_submit_t0: float | None = None
-    ga_candidates: Optional[list[JsonDict]] = None
+    base_candidates: Optional[list[JsonDict]] = None
     fg_surface_prepared: bool = False
     best_data: Optional[JsonDict] = None
     best_gear: Optional[list[Any]] = None
@@ -399,10 +349,10 @@ class NativeSongFGState:
     fg_prep_submit_t0: float | None = None
     fg_response_scoring_bundle: Any | None = None
     fg_response_frontier_plan: Any | None = None
-    # Slice 3 fused GA->FG handoff: the owner-scored per-base_components FG result map
-    # ({base_components_7tuple -> FgFusedOwnerScoreRow}) returned by the GA run on the
+    # Native fused Base->FG handoff: the owner-scored per-base_components FG result map
+    # ({base_components_7tuple -> FgFusedOwnerScoreRow}) returned by the exact Base run on the
     # owner thread. The FG worker materializes from this instead of submitting
-    # BUILD+SCORE owner requests. Set by decode_ga_payload_sync from the GA response.
+    # BUILD+SCORE owner requests. Set while decoding the fused exact Base response.
     fg_owner_score_map: Any | None = None
     cpu_fg_prep_s: float = 0.0
     fg_prep_wall_s: float = 0.0
@@ -427,20 +377,18 @@ class NativeSongBundleState:
     bundle_task_key: str = ""
     bundle_repeat_index: int = 0
     bundle_repeat_total: int = 0
-    bundle_wait_for_fg: bool = False
 
 
 @dataclass
 class NativeSongPostState:
     deferred_post_emitted: bool = False
-    await_fg_completion_progress: bool = False
 
 
 @dataclass
 class NativeSongRuntimeState:
     song_slot: int = 0
     prep: NativeSongPrepState = field(default_factory=NativeSongPrepState)
-    ga: NativeSongGAState = field(default_factory=NativeSongGAState)
+    base: NativeSongBaseState = field(default_factory=NativeSongBaseState)
     decode: NativeSongDecodeState = field(default_factory=NativeSongDecodeState)
     fg: NativeSongFGState = field(default_factory=NativeSongFGState)
     db: NativeSongDBState = field(default_factory=NativeSongDBState)
@@ -470,4 +418,3 @@ def native_song_label(song: object, *, fallback_id: bool = False) -> str:
     except Exception:
         pass
     return str(id(song)) if bool(fallback_id) else ""
-

@@ -123,7 +123,7 @@ def retired_nested_action_reachability_prepass(
     perfect_floor_timestamps,
     great_floor_timestamps,
 ):
-    """Retired O(reachable states * actions) activation scan from main ``c3d13ac3``."""
+    """Retired O(reachable states * actions) traversal with current closure semantics."""
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
         _numba_great_floor_extended_end_at_hit,
         _numba_late_edge_extends,
@@ -135,6 +135,25 @@ def retired_nested_action_reachability_prepass(
             return 0
         edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
         if int(edge_e) < 0:
+            return 0
+        if int(use_forced_great_timing_i) == 0:
+            band_lo = int(
+                np.searchsorted(
+                    perfect_floor_timestamps,
+                    float(perfect_floor_timestamps[int(activation)])
+                    + float(real_fever_time),
+                    side="left",
+                )
+            )
+            band_lo = min(int(n), max(int(activation) + 1, int(band_lo)))
+            for end_e in range(int(band_lo), int(edge_e) + 1):
+                if (
+                    int(end_e) == int(band_lo)
+                    or int(end_e) >= int(n)
+                    or float(perfect_floor_timestamps[int(end_e) - 1])
+                    < float(perfect_floor_timestamps[int(end_e)])
+                ):
+                    reachable[int(end_e)] = True
             return 0
         reachable[int(edge_e)] = True
         return int(

@@ -5,7 +5,6 @@ This module provides configuration operations:
 - setup_song_config: Setup configuration, load current stats
 """
 
-from ...data.models import GAEvolutionSettings
 from ...data.csv_parser import get_fixed_stats, get_config_gear_stats, get_config_mini_stats
 from ...core.config import read_iteration_engine_settings
 from ...core.team_buff import resolve_baseline_team_buff_from_cfg, team_buff_effect
@@ -55,12 +54,10 @@ def setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name):
         minis_by_name: Dictionary of minis by name
 
     Returns:
-        tuple: (ga_settings, fixed_stats, current_gear_stats, current_gear_list,
+        tuple: (fixed_stats, current_gear_stats, current_gear_list,
                 current_mini_stats, current_mini_list)
     """
     read_iteration_engine_settings(cfg)
-    ga_settings = GAEvolutionSettings.from_cfg(cfg)
-
     team_buff, team_color = apply_baseline_team_buff_config(cfg, calc_song)
     # Keep auto-buff selection silent so the UI stays clean.
 
@@ -76,7 +73,6 @@ def setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name):
     current_mini_stats, current_mini_list = get_config_mini_stats(cfg, paths, minis_by_name)
 
     return (
-        ga_settings,
         fixed_stats,
         current_gear_stats,
         current_gear_list,

@@ -37,11 +37,10 @@ def _parse_gpu_executor_profile(log_text: str) -> dict | None:
     return None
 
 
-def _run_main(*, config_path: Path, out_log: Path, db_path: Path, seed: int) -> dict:
+def _run_main(*, config_path: Path, out_log: Path, db_path: Path) -> dict:
     env = os.environ.copy()
     env["METAFINDER_CONFIG_PATH"] = str(config_path)
     env["EVOLUTION_DB_PATH"] = str(db_path)
-    env["GA_SEED"] = str(int(seed))
     env["METAFINDER_IGNORE_RESUME_QUEUE"] = "1"
     env["GPU_EXECUTOR_PROFILE"] = "1"
 
@@ -73,7 +72,6 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(Path("configs") / "profile" / "config_profile_inflight_queue24_fast.ini"))
     ap.add_argument("--runs", type=int, default=10)
-    ap.add_argument("--seed-base", type=int, default=1000)
     ap.add_argument("--outdir", default=str(Path("artifacts") / "bench" / "queue24_runs"))
     args = ap.parse_args()
 
@@ -95,11 +93,9 @@ def main() -> int:
             _rm_if_exists(Path(str(db_out) + suffix))
 
         log_out = run_dir / "run.log"
-        seed = int(args.seed_base) + i
-        meta = _run_main(config_path=config_path, out_log=log_out, db_path=db_out, seed=seed)
+        meta = _run_main(config_path=config_path, out_log=log_out, db_path=db_out)
         run = {
             "run": i,
-            "seed": seed,
             "config": str(config_path),
             "db": str(db_out),
             "log": str(log_out),
@@ -118,7 +114,6 @@ def main() -> int:
         "runs": runs,
         "config": str(config_path),
         "runs_count": int(args.runs),
-        "seed_base": int(args.seed_base),
     }
     summary_path = outdir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")

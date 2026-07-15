@@ -4,12 +4,14 @@ from gear_optimizer.core.constants import GEM_SCALE_NORMAL
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact, score_stats_exact_batch
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
+from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
 
 def _prebuild_timeline_cache(calc_song, ref_arrays, tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     timeline_api.reset_timeline_state()
+    apply_timing_envelope(calc_song)
     timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
     timeline_api.reset_timeline_state()
 
@@ -46,7 +48,7 @@ def test_hydrate_fg_candidate_stats_uses_base_fixed_to_avoid_double_counting_use
         "BaseScore": 123,
         "Gear": [],
         "Minis": [],
-        "Genome": [],
+        "Loadout": [],
         "Data": {
             "FT": 0,
             "FF": 0,
@@ -61,13 +63,13 @@ def test_hydrate_fg_candidate_stats_uses_base_fixed_to_avoid_double_counting_use
     assert stats["Perfect Points"] == user_pp * GEM_SCALE_NORMAL
 
 
-def test_hydrate_fg_candidate_stats_prefers_base_stats_over_rebuilding_from_genome():
+def test_hydrate_fg_candidate_stats_prefers_base_stats_over_rebuilding_from_loadout():
     cand = {
         "Score": 321,
         "BaseScore": 321,
         "Gear": [{"Name": "HugePP", "Perfect Points": 999}],
         "Minis": [],
-        "Genome": [{"Name": "HugePP", "Perfect Points": 999}],
+        "Loadout": [{"Name": "HugePP", "Perfect Points": 999}],
         "Data": {
             "BaseStats": {
                 "Perfect Points": 10,
@@ -95,7 +97,7 @@ def test_hydrate_fg_candidate_stats_prefers_base_stats_over_rebuilding_from_geno
     assert stats["Perfect Points"] == 10 + GEM_SCALE_NORMAL
 
 
-def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_ga_search_score(
+def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_base_search_score(
     tmp_path, monkeypatch
 ):
     calc_song = {
@@ -105,7 +107,7 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_g
             "Long Notes": 0,
             "Last Note Time": 0.0,
         },
-        "song_data": {"timestamps": [0.0], "note_types": [1]},
+        "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
     }
     ref_arrays = {
         "Perfect Points": [1.0] * 161,
@@ -147,8 +149,8 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_g
         ref_arrays=ref_arrays,
     )
 
-    assert cand["RawGASearchScore"] == 999
-    assert cand["Data"]["RawGASearchScore"] == 999
+    assert cand["RawBaseSearchScore"] == 999
+    assert cand["Data"]["RawBaseSearchScore"] == 999
     assert cand["BaseScore"] == 26
     assert cand["Score"] == 26
     assert cand["Data"]["BaseScore"] == 26
@@ -163,7 +165,11 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload(tmp_pat
             "Long Notes": 0,
             "Last Note Time": float(timestamps[-1]),
         },
-        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
+            "lanes": np.zeros(int(timestamps.shape[0]), dtype=np.int16),
+        },
     }
     ref_arrays = {
         "Perfect Points": [1.0] * 161,
@@ -204,9 +210,10 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload(tmp_pat
         ref_arrays=ref_arrays,
     )
 
-    assert cand["RawGASearchScore"] == 999
-    assert cand["BaseScore"] == 80336
-    assert cand["Data"]["BaseScore"] == 80336
+    assert cand["RawBaseSearchScore"] == 999
+    expected_score = score_stats_exact(stats, calc_song, ref_arrays)
+    assert cand["BaseScore"] == expected_score
+    assert cand["Data"]["BaseScore"] == expected_score
 
 
 def test_score_stats_exact_batch_matches_scalar_timeline_frontier_authority(tmp_path, monkeypatch):
@@ -218,7 +225,11 @@ def test_score_stats_exact_batch_matches_scalar_timeline_frontier_authority(tmp_
             "Long Notes": 4,
             "Last Note Time": float(timestamps[-1]),
         },
-        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
+            "lanes": np.zeros(int(timestamps.shape[0]), dtype=np.int16),
+        },
     }
     ref_arrays = {
         "Perfect Points": [float(1 + (i % 7) / 10.0) for i in range(161)],

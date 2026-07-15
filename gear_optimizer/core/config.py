@@ -13,9 +13,6 @@ from typing import Any
 from .fallback_monitor import FallbackAwareConfigParser, warn_fallback
 from .constants import (
     DEFAULT_MEMORY_GUARD_PERCENT,
-    GA_ELITISM,
-    GA_MUTATION_RATE,
-    GA_MULTI_RUNS_DEFAULT,
     STRICT_PLATFORM_MEMORY_GUARD_PERCENT,
     SCRIPT_DIR,
     PATHS,
@@ -261,68 +258,6 @@ class GPUExecutionSettings:
         return cls(
             gpu_song_slots=int(gpu_song_slots),
         )
-@dataclass(frozen=True, slots=True)
-class GASettings:
-    tournament_k: int = 3
-    mutation_rate: float = GA_MUTATION_RATE
-    immigrant_rate: float = 0.0
-    elite_count: int = GA_ELITISM
-    novelty_repair_attempts: int = 2
-    search_depth: int = 125
-    multi_start: int = GA_MULTI_RUNS_DEFAULT
-    @classmethod
-    def from_config(cls, cfg: Any) -> "GASettings":
-        if cfg is None:
-            return cls()
-        tournament_k = cfg_get_int(cfg, "IterationEngine", "GPU_GA_TournamentK", 3, clamp_min=1, clamp_max=8)
-        mutation_rate = cfg_get_float(
-            cfg,
-            "IterationEngine",
-            "GPU_GA_MutationRate",
-            GA_MUTATION_RATE,
-            clamp_min=0.0,
-            clamp_max=1.0,
-        )
-        immigrant_rate = cfg_get_float(
-            cfg,
-            "IterationEngine",
-            "GPU_GA_ImmigrantRate",
-            0.0,
-            clamp_min=0.0,
-            clamp_max=1.0,
-        )
-        elite_count = cfg_get_int(cfg, "IterationEngine", "GPU_GA_EliteCount", GA_ELITISM, clamp_min=0)
-        novelty_repair_attempts = cfg_get_int(
-            cfg,
-            "IterationEngine",
-            "GPU_GA_NoveltyRepairAttempts",
-            2,
-            clamp_min=0,
-            clamp_max=4,
-        )
-        search_depth = cfg_get_int(
-            cfg,
-            "IterationEngine",
-            "GA_SearchDepth",
-            125,
-            clamp_min=1,
-        )
-        multi_start = cfg_get_int(
-            cfg,
-            "IterationEngine",
-            "GA_MultiStart",
-            GA_MULTI_RUNS_DEFAULT,
-            clamp_min=1,
-        )
-        return cls(
-            tournament_k=int(tournament_k),
-            mutation_rate=float(mutation_rate),
-            immigrant_rate=float(immigrant_rate),
-            elite_count=int(elite_count),
-            novelty_repair_attempts=int(novelty_repair_attempts),
-            search_depth=int(search_depth),
-            multi_start=int(multi_start),
-        )
 DEFAULT_INFLIGHT_SONGS = 12
 def resolve_inflight_songs(configured_songs: int = 0, *, song_count: int | None = None) -> int:
     """Resolve the one canonical in-flight width, optionally capped by queue size."""
@@ -385,7 +320,6 @@ class AppRuntimeSettings:
     iteration_engine: IterationEngineSettings
     calculate_song: CalculateSongSettings
     gpu: GPUExecutionSettings
-    ga: GASettings
     inflight: InflightSettings
     loop_forever: bool = False
     eval_cpu_cores: int = 0
@@ -400,13 +334,11 @@ class AppRuntimeSettings:
                 iteration_engine=read_iteration_engine_settings(None),
                 calculate_song=CalculateSongSettings(),
                 gpu=GPUExecutionSettings(),
-                ga=GASettings(),
                 inflight=InflightSettings(),
             )
         iteration_engine = read_iteration_engine_settings(cfg)
         calculate_song = CalculateSongSettings.from_config(cfg)
         gpu = GPUExecutionSettings.from_config(cfg)
-        ga = GASettings.from_config(cfg)
         inflight = InflightSettings.from_config(cfg)
         loop_forever = bool(calculate_song.loop_forever)
         eval_cpu_cores = cfg_get_int(cfg, "IterationEngine", "EvalCPUCores", 0, clamp_min=0)
@@ -425,7 +357,6 @@ class AppRuntimeSettings:
             iteration_engine=iteration_engine,
             calculate_song=calculate_song,
             gpu=gpu,
-            ga=ga,
             inflight=inflight,
             loop_forever=bool(loop_forever),
             eval_cpu_cores=int(eval_cpu_cores),

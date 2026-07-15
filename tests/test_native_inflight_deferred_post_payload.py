@@ -2,7 +2,6 @@ from concurrent.futures import Future
 from types import SimpleNamespace
 
 from tests.native_song_factory import make_native_song
-from gear_optimizer.solver.native_inflight_fg_payload import build_fg_update_payload
 from gear_optimizer.solver.native_inflight_orchestrator import (
     build_native_song_error_payload,
     build_native_task_error_payload,
@@ -26,6 +25,11 @@ def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
+    calc_song.setdefault("metadata", {}).setdefault("Song Name", "pytest native song")
+    song_data = calc_song.setdefault("song_data", {})
+    note_count = len(song_data.get("timestamps") or [])
+    song_data.setdefault("note_types", [1] * note_count)
+    song_data.setdefault("lanes", [0] * note_count)
     apply_timing_envelope(calc_song)
     build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
 
@@ -79,30 +83,6 @@ def test_native_task_error_payload_defaults_queue_label_and_can_suppress_progres
     assert payload["_suppress_progress"] is True
 
 
-def test_fg_update_payload_uses_shared_result_event_shape():
-    cfg_dict = {"IterationEngine": {}}
-    entries = [{"score": 101, "fg_score": 111}]
-    song = make_native_song(
-        song_name="FG Song",
-        task_key="fg-song",
-        db_key="fg-db",
-        fp="Data/Hard/fg_song.txt",
-        cfg_dict=cfg_dict,
-    )
-
-    payload = build_fg_update_payload(song, persist_entries=entries)
-
-    assert payload == {
-        "_fg_update": True,
-        "song": "FG Song",
-        "db_key": "fg-db",
-        "persist_entries": entries,
-        "file_path": "Data/Hard/fg_song.txt",
-        "cfg_dict": cfg_dict,
-    }
-    assert payload["persist_entries"] is not entries
-
-
 def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debug_disabled(monkeypatch):
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
 
@@ -112,13 +92,18 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
     }
     ref_arrays = _ref_arrays()
     _prebuild_timeline_frontier(calc_song, ref_arrays)
-    ga_candidates = [
+    base_candidates = [
         {
             "Score": 111,
             "BaseScore": 111,
             "Gear": ["G1"],
             "Minis": ["M1"],
-            "Data": {"Stats": {"Perfect Points": 1}, "Selected Element": "Rush"},
+            "Data": {
+                "Score": 111,
+                "BaseScore": 111,
+                "Stats": {"Perfect Points": 1},
+                "Selected Element": "Rush",
+            },
             "_fg_priority": 7,
             "loadout_hash": "hash-1",
         }
@@ -136,7 +121,6 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
     song = make_native_song(
         song_name="pytest_native_deferred_post",
         task_key="pytest_native_deferred_post",
-        ga_seed=123,
         db_key="pytest_native_deferred_post",
         fp="Data/Hard/pytest_native_deferred_post.txt",
         effective_difficulty="Hard",
@@ -144,7 +128,7 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
         fg_debug=False,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        ga_candidates=ga_candidates,
+        base_candidates=base_candidates,
         best_data={"Score": 111, "BaseScore": 111, "Stats": {"Perfect Points": 1}},
         best_gear=["G1"],
         best_minis=["M1"],
@@ -156,30 +140,29 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
         attempt_lifetime=9,
         prev_attempts_first=2,
         db_best_fg_score=105,
+        fg_variants=[],
     )
 
     payload = result_events.build_deferred_post_payload(song)
 
     assert payload["_deferred_post"] is True
-    assert payload["_pending_fg_job"] is True
     assert payload["fg_debug"] is False
     assert payload["calc_song"] is calc_song
     assert payload["ref_arrays"] is ref_arrays
     assert payload["best_data"]["BaseScore"] == 111
-    assert len(payload["ga_candidates"]) == 1
-    candidate = payload["ga_candidates"][0]
+    assert len(payload["base_candidates"]) == 1
+    candidate = payload["base_candidates"][0]
     assert candidate["Gear"] == ["G1"]
     assert candidate["Minis"] == ["M1"]
     assert candidate["_fg_priority"] == 7
     assert candidate["loadout_hash"] == "hash-1"
     assert candidate["Data"]["Stats"] == {"Perfect Points": 1}
     assert candidate["Data"]["Selected Element"] == "Rush"
-    assert candidate["Data"]["RawGASearchScore"] == 111
     assert candidate["Score"] == candidate["BaseScore"] == candidate["Data"]["BaseScore"]
     assert candidate["Data"]["Score"] == candidate["Data"]["BaseScore"]
 
 
-def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
+def test_deferred_post_reuses_prepared_base_candidate_surface(monkeypatch):
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
     from gear_optimizer.solver import native_inflight_pipeline as stages
 
@@ -194,13 +177,18 @@ def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
         task_key="pytest_native_deferred_post_reuse",
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        ga_candidates=[
+        base_candidates=[
             {
                 "Score": 200,
                 "BaseScore": 200,
                 "Gear": ["G1"],
                 "Minis": ["M1"],
-                "Data": {"Stats": {"Perfect Points": 2}, "Selected Element": "Rush"},
+                "Data": {
+                    "Score": 200,
+                    "BaseScore": 200,
+                    "Stats": {"Perfect Points": 2},
+                    "Selected Element": "Rush",
+                },
                 "loadout_hash": "hash-1",
             }
         ],
@@ -209,19 +197,13 @@ def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
         meta_secondary_color="Flow",
         cfg_data={"selected_color": "Rush"},
         fixed_stats={},
+        fg_variants=[],
     )
 
-    stages.prepare_ga_candidate_surface_for_fg(song, fg_candidate_limit=51)
-    monkeypatch.setattr(
-        stages,
-        "select_top_base_ga_candidates",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("selected twice")),
-    )
-
+    stages.prepare_base_candidate_surface_for_fg(song, fg_candidate_limit=51)
     payload = result_events.build_deferred_post_payload(song)
 
-    candidate = payload["ga_candidates"][0]
-    assert candidate["Data"]["RawGASearchScore"] == 200
+    candidate = payload["base_candidates"][0]
     assert candidate["Score"] == candidate["BaseScore"] == candidate["Data"]["BaseScore"]
     assert candidate["Data"]["Stats"]["Perfect Points"] == 2
 
@@ -247,7 +229,6 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
     song = make_native_song(
         song_name="pytest_native_deferred_post_inline_fg",
         task_key="pytest_native_deferred_post_inline_fg",
-        ga_seed=321,
         db_key="pytest_native_deferred_post_inline_fg",
         fp="Data/Hard/pytest_native_deferred_post_inline_fg.txt",
         effective_difficulty="Hard",
@@ -255,7 +236,7 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         fg_debug=False,
         calc_song=inline_calc_song,
         ref_arrays=inline_ref_arrays,
-        ga_candidates=[
+        base_candidates=[
             {
                 "Score": 111,
                 "BaseScore": 111,
@@ -287,12 +268,11 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
 
     payload = result_events.build_deferred_post_payload(song)
 
-    assert payload["_pending_fg_job"] is False
     assert int(payload["fg_variants"][0]["fg_score"]) == 130
 
 
 def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
-    # Fused GA->FG handoff (Slice 3): run_fg_job_sync materializes from the owner FG
+    # Fused Base-to-FG handoff: run_fg_job_sync materializes from the owner FG
     # score map (no client SCORE submission). Records the FG progress info as before.
     import numpy as np
 
@@ -391,6 +371,7 @@ def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
 
 def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay_authority(monkeypatch):
     from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
+    from gear_optimizer.helpers.song_helpers import team_buff_tiers
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
@@ -416,6 +397,18 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
     _prebuild_timeline_frontier(calc_song, ref_arrays)
     raw_exact_score = int(score_stats_exact(stats, calc_song, ref_arrays))
     inflated_score = raw_exact_score + 12345
+    gear_names = [f"G{index}" for index in range(1, 7)]
+    mini_names = [f"M{index}" for index in range(1, 4)]
+    monkeypatch.setattr(
+        team_buff_tiers,
+        "get_gears_by_name_cached",
+        lambda: {name: {"Name": name} for name in gear_names},
+    )
+    monkeypatch.setattr(
+        team_buff_tiers,
+        "get_minis_by_name_cached",
+        lambda: {name: {"Name": name} for name in mini_names},
+    )
 
     monkeypatch.setattr(
         result_events,
@@ -429,7 +422,6 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
     song = make_native_song(
         song_name="pytest_native_deferred_post_exact_authority",
         task_key="pytest_native_deferred_post_exact_authority",
-        ga_seed=456,
         db_key="pytest_native_deferred_post_exact_authority",
         fp="Data/Hard/pytest_native_deferred_post_exact_authority.txt",
         effective_difficulty="Hard",
@@ -437,15 +429,28 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         fg_debug=False,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        ga_candidates=[],
+        base_candidates=[
+            {
+                "Score": inflated_score,
+                "BaseScore": inflated_score,
+                "Gear": gear_names,
+                "Minis": mini_names,
+                "Data": {
+                    "Score": inflated_score,
+                    "BaseScore": inflated_score,
+                    "Stats": dict(stats),
+                    "Selected Element": "Rush",
+                },
+            }
+        ],
         best_data={
             "Score": inflated_score,
             "BaseScore": inflated_score,
             "Stats": dict(stats),
             "Selected Element": "Rush",
         },
-        best_gear=["G1"],
-        best_minis=["M1"],
+        best_gear=gear_names,
+        best_minis=mini_names,
         current_gear_list=[],
         current_mini_list=[],
         meta_primary_color="Rush",
@@ -454,6 +459,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         attempt_lifetime=0,
         prev_attempts_first=0,
         db_best_fg_score=0,
+        fg_variants=[],
     )
 
     payload = result_events.build_deferred_post_payload(song)
@@ -466,7 +472,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
             "details": {"Stats": dict(stats), "Selected Element": "Rush"},
             "force": None,
         },
-        payload["ga_candidates"],
+        payload["base_candidates"],
         None,
         lambda data: dict(data),
         calc_song=payload["calc_song"],
@@ -478,8 +484,8 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
     persisted = persist_entries[0]
     persisted_stats = dict((persisted.get("details") or {}).get("Stats") or {})
 
-    assert persisted["gear"] == ["G1"]
-    assert persisted["minis"] == ["M1"]
+    assert persisted["gear"] == gear_names
+    assert persisted["minis"] == mini_names
     assert persisted["fg_score"] == 0
     assert persisted["force"] is None
     assert persisted["score"] != inflated_score

@@ -16,7 +16,7 @@ Usage:
 
 Scope: the frozen ENV snapshot below holds IMPORT-TIME configuration only.
 Per-call DEBUG/PROFILING/TELEMETRY flags (DB_TIMING, POST_TIMING,
-INFLIGHT_STAGE_PROFILE*, GA_LOOP_PROFILE*, GPU_EXECUTOR_LIVE/HEARTBEAT*, the
+INFLIGHT_STAGE_PROFILE*, GPU_EXECUTOR_LIVE/HEARTBEAT*, the
 INFLIGHT_*_DEBUG family, etc.) are intentionally read at call time via the
 parsing.py helpers (env_flag/env_int/env_float/env_str) so dev tooling and
 tests can toggle them at runtime. They are gated OFF by default and the full
@@ -92,7 +92,7 @@ class EnvConfig:
             # GPU Performance & Timing
             gpu_sync_for_timing=debug_profile and env_flag("GPU_SYNC_FOR_TIMING"),
             gpu_force_sync=debug_profile and env_flag("GPU_FORCE_SYNC"),
-            gpu_executor_warmup_fg=True,  # always pre-warm FG kernels (one-time, matches warmup_ga)
+            gpu_executor_warmup_fg=True,  # always pre-warm FG kernels once at executor startup
             gpu_service_profile=debug_profile and env_flag("GPU_SERVICE_PROFILE"),
             gpu_service_profile_print=debug_profile and env_flag("GPU_SERVICE_PROFILE_PRINT"),
             # Debug / profiling master gate

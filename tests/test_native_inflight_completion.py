@@ -1,10 +1,11 @@
 from concurrent.futures import Future
 import inspect
 
+import pytest
+
 from gear_optimizer.solver.native_inflight_orchestrator import (
     CompletionTracker,
     emit_deferred_post_payload,
-    finish_deferred_fg_completion,
     has_waitable_work,
     mark_song_completed,
     run_native_inflight_song_pipeline,
@@ -42,7 +43,7 @@ def test_completion_tracker_unregister_discards_future_id():
 
 def test_has_waitable_work_detects_active_runtime_queues():
     assert has_waitable_work([], (), pending_fg=[]) is False
-    assert has_waitable_work(["ga-song"], (), pending_fg=[]) is True
+    assert has_waitable_work(["base-song"], (), pending_fg=[]) is True
 
 
 class _MemoryResumeTracker:
@@ -96,7 +97,12 @@ class _ProgressTracker:
 
 
 def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_completed():
-    song = make_native_song(song_name="Song C", task_key="song-c", fg_variants=[])
+    song = make_native_song(
+        song_name="Song C",
+        task_key="song-c",
+        fg_variants=[],
+        base_candidates=[{"Score": 1, "BaseScore": 1, "Data": {}}],
+    )
     completed = set()
     memory = _MemoryResumeTracker()
     progress = _ProgressTracker()
@@ -135,94 +141,44 @@ def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_complete
     assert progress.done == [("progress-cb", "song-c")]
 
 
-def test_emit_deferred_post_payload_defers_completion_when_fg_is_pending():
-    song = make_native_song(song_name="Song FG", task_key="song-fg", fg_variants=None)
+def test_emit_deferred_post_payload_rejects_missing_fg_results():
+    song = make_native_song(
+        song_name="Song FG",
+        task_key="song-fg",
+        fg_variants=None,
+        base_candidates=[{"Score": 1, "BaseScore": 1, "Data": {}}],
+    )
     completed = set()
     posted = []
 
-    emitted = emit_deferred_post_payload(
-        song,
-        post=posted.append,
-        completed_songs=completed,
-        advance_bundle=lambda *_args, **_kwargs: None,
-    )
-
-    assert emitted is True
-    assert len(posted) == 1
-    assert posted[0]["_pending_fg_job"] is True
-    assert song.runtime.post.await_fg_completion_progress is True
-    assert completed == set()
-
-
-def test_finish_deferred_fg_completion_advances_waiting_bundle():
-    parent = object()
-    song = make_native_song(song_name="Song Bundle FG", task_key="song-bundle-fg")
-    song.runtime.bundle.bundle_parent_task = parent
-    song.runtime.bundle.bundle_wait_for_fg = True
-    song.runtime.db.record_info = {"improved": True}
-    advanced = []
-
-    finished = finish_deferred_fg_completion(
-        song,
-        completed_songs=set(),
-        advance_bundle=lambda *args, **kwargs: advanced.append((args, kwargs)),
-    )
-
-    assert finished is True
-    assert song.runtime.bundle.bundle_wait_for_fg is False
-    assert advanced == [
-        (
-            (parent,),
-            {
-                "song_name": "Song Bundle FG",
-                "record_info": {"improved": True},
-                "failed": False,
-            },
+    with pytest.raises(RuntimeError, match="requires completed native FG results"):
+        emit_deferred_post_payload(
+            song,
+            post=posted.append,
+            completed_songs=completed,
+            advance_bundle=lambda *_args, **_kwargs: None,
         )
-    ]
 
-
-def test_finish_deferred_fg_completion_marks_drain_at_end_song_done():
-    song = make_native_song(song_name="Song Drain FG", task_key="song-drain-fg")
-    song.runtime.post.await_fg_completion_progress = True
-    completed = set()
-    memory = _MemoryResumeTracker()
-    progress = _ProgressTracker()
-
-    finished = finish_deferred_fg_completion(
-        song,
-        completed_songs=completed,
-        memory_resume_tracker=memory,
-        bundle_completed_cb=None,
-        advance_bundle=lambda *_args, **_kwargs: None,
-        progress_tracker=progress,
-        progress_cb="progress-cb",
-    )
-
-    assert finished is True
-    assert song.runtime.post.await_fg_completion_progress is False
-    assert completed == {"song-drain-fg"}
-    assert memory.completed == [("", "Song Drain FG")]
-    assert progress.done == [("progress-cb", "song-drain-fg")]
-
-
-def test_finish_deferred_fg_completion_noops_when_no_completion_is_pending():
-    song = make_native_song(song_name="Song Idle", task_key="song-idle")
-
-    finished = finish_deferred_fg_completion(
-        song,
-        completed_songs=set(),
-        advance_bundle=lambda *_args, **_kwargs: None,
-    )
-
-    assert finished is False
+    assert posted == []
+    assert song.runtime.post.deferred_post_emitted is False
+    assert completed == set()
 
 
 def test_native_inflight_fg_worker_failure_fails_loudly_instead_of_persisting_zero_fg():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 
     assert "raise RuntimeError(f\"FG worker failed for {fg_song.config.task_key}\") from exc" in src
-    assert "post_sender.send(build_failed_fg_update_payload(fg_song))" not in src
+
+
+def test_native_inflight_deferred_payload_failure_routes_through_song_error_completion():
+    src = inspect.getsource(run_native_inflight_song_pipeline)
+    emit_idx = src.index("_emit_deferred_post_payload(fg_song)")
+    failure_block = src[emit_idx : src.index("fg_oldest_wait_s", emit_idx)]
+
+    assert "build_native_song_error_payload(" in failure_block
+    assert "trace=traceback.format_exc()" in failure_block
+    assert "failed=True" in failure_block
+    assert "mark_song_completed(" in failure_block
 
 
 def test_decode_handoff_starts_fg_prep_before_fg_worker_submission():
@@ -246,16 +202,16 @@ def test_fg_prep_failure_uses_bundle_aware_error_and_resolves_owner():
     assert "build_native_task_error_payload(" not in prep_error_block
     assert "_advance_bundle(bundle_parent" in prep_error_block
     assert "mark_song_completed(" in prep_error_block
-    # The slot was already released at GA completion; FG-stage errors must not
+    # The slot was already released at Base completion; FG-stage errors must not
     # touch the slot pool.
     assert "release_slot" not in prep_error_block
 
 
-def test_song_prep_runway_fill_is_not_gated_by_ga_admission():
+def test_song_prep_runway_fill_is_not_gated_by_base_admission():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 
     first_fill_idx = src.index("if _fill_song_prep_runway():")
-    backlog_gate_idx = src.index("if ga_should_pause_for_fg_backlog(")
+    backlog_gate_idx = src.index("if base_should_pause_for_fg_backlog(")
     inner_fill_idx = src.index("if _fill_song_prep_runway():", backlog_gate_idx)
 
     assert first_fill_idx < backlog_gate_idx < inner_fill_idx
@@ -304,12 +260,12 @@ def test_song_prep_failures_do_not_treat_seed_context_as_repeat_bundle():
     assert "if repeat_ctx is not None:" not in prep_error_block
 
 
-def test_ga_admission_reserves_slot_fail_loud_before_payload_submit():
+def test_base_admission_reserves_slot_fail_loud_before_payload_submit():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 
-    can_submit_idx = src.index("if can_submit_ga:")
-    reserve_idx = src.index("ga_pipeline.reserve_slot(song, slot_pool)", can_submit_idx)
-    payload_idx = src.index("payload = ga_pipeline.build_payload(song)", can_submit_idx)
+    can_submit_idx = src.index("if can_submit_base:")
+    reserve_idx = src.index("base_pipeline.reserve_slot(song, slot_pool)", can_submit_idx)
+    payload_idx = src.index("payload = base_pipeline.build_payload(song)", can_submit_idx)
 
     # Admission implies a free slot (queue limit <= usable slots): the reserve is
     # unguarded so NoFreeSongSlotError raises loudly, and there is no slot-warm
@@ -319,14 +275,14 @@ def test_ga_admission_reserves_slot_fail_loud_before_payload_submit():
     assert "try:" not in src[can_submit_idx:reserve_idx]
 
 
-def test_ga_completion_releases_slot_before_decode_handoff():
+def test_base_completion_releases_slot_before_decode_handoff():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 
-    ga_done_idx = src.index("song.runtime.ga.ga_future = None")
-    release_idx = src.index("ga_pipeline.release_slot(song, slot_pool)", ga_done_idx)
-    decode_idx = src.index("decode_queue.submit(", ga_done_idx)
+    base_done_idx = src.index("song.runtime.base.base_future = None")
+    release_idx = src.index("base_pipeline.release_slot(song, slot_pool)", base_done_idx)
+    decode_idx = src.index("decode_queue.submit(", base_done_idx)
 
-    # The GA request (GA loop + fused FG owner score + payload download) is the
+    # The exact Base request (search + fused FG owner score) is the
     # only device consumer of the slot; it returns to the conveyor before any
     # host-side stage starts.
     assert release_idx < decode_idx

@@ -1,7 +1,7 @@
 [project]
 name = "robeats-metafinder"
 version = "2.0.0"
-description = "High-performance genetic algorithm solver for optimizing gear and mini loadouts"
+description = "Exact GPU optimizer for RoBeats gear and mini loadouts"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

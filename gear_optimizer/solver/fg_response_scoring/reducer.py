@@ -7,7 +7,7 @@ import numpy as np
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
-from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
+from gear_optimizer.helpers.song_helpers.loadout_entry_utils import materialize_entry_names
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
@@ -272,8 +272,6 @@ class FgResultReducer:
     def materialize(
         plan: FgResponseFrontierPreparedPlan,
         prepared_results: list[list[FgResponseFrontierSolveResult]],
-        *,
-        skyline: bool = False,
     ) -> list[dict[str, Any]]:
         calc_song = plan.calc_song
         ref_arrays = plan.ref_arrays
@@ -297,19 +295,15 @@ class FgResultReducer:
                     "gear": gear_names,
                     "minis": mini_names,
                     "fg_score": int(result.best_score),
-                    "_is_ga": str(entry.get("_source") or "") == "ga",
+                    "_is_current_base": str(entry.get("_source") or "") == "exact-base",
                 }
             )
 
-        pending_jobs = (
-            pending_variants
-            if skyline
-            else sorted(
-                pending_variants,
-                key=lambda variant: int(variant["fg_score"]),
-                reverse=True,
-            )[: int(LOADOUTS_PER_SONG_LIMIT)]
-        )
+        pending_jobs = sorted(
+            pending_variants,
+            key=lambda variant: int(variant["fg_score"]),
+            reverse=True,
+        )[: int(LOADOUTS_PER_SONG_LIMIT)]
 
         trace_cache = FgTraceMaterializationCache()
         for item in pending_jobs:
@@ -328,22 +322,6 @@ class FgResultReducer:
             entry = item["entry"]
             exact_fg_score = safe_int(payload.get("Score", 0), 0)
             exact_base_score = safe_int(payload.get("BaseScore", 0), 0)
-            if skyline:
-                variants.append(
-                    {
-                        "record": entry.get("_candidate_ref"),
-                        "data": payload,
-                        "force": payload,
-                        "base_stats": dict(item["base_stats"]),
-                        "selected": item["selected"],
-                        "base_score": int(exact_base_score),
-                        "fg_score": int(exact_fg_score),
-                        "fg_delta": int(exact_fg_score) - int(exact_base_score),
-                        "_entry_ref": entry,
-                        "_is_skyline": True,
-                    }
-                )
-                continue
             if exact_fg_score <= exact_base_score:
                 continue
             if exact_fg_score > safe_int(entry.get("fg_score", 0), 0):
@@ -359,11 +337,9 @@ class FgResultReducer:
                     "base_score": exact_base_score,
                     "fg_score": exact_fg_score,
                     "_entry_ref": entry,
-                    "_is_ga": bool(item["_is_ga"]),
+                    "_is_current_base": bool(item["_is_current_base"]),
                 }
             )
 
-        if skyline:
-            return variants
         variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
         return variants[: int(LOADOUTS_PER_SONG_LIMIT)]

@@ -29,7 +29,7 @@ def _write_song(path):
 def test_native_calc_song_uses_shared_base_song_io_and_clones_before_timing_envelope(tmp_path):
     song_path = tmp_path / "shared_io_song.txt"
     _write_song(song_path)
-    cfg_dict = {"IterationEngine": {"GA_SearchDepth": "125"}}
+    cfg_dict = {"IterationEngine": {"InFlightSongs": "12"}}
 
     base_calc_song = get_base_calc_song(str(song_path), cfg_dict)
     native_calc_song = build_prepared_calc_song(fp=str(song_path), cfg_dict=cfg_dict).calc_song

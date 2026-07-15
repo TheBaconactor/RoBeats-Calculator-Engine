@@ -91,7 +91,7 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
         score_stats_fixed_timing_exact,
     )
 
-    timestamps = np.linspace(0.0, 2.0, 101, dtype=np.float32)
+    timestamps = np.linspace(0.0, 15.0, 101, dtype=np.float32)
     calc_song = {
         "metadata": {
             "Song Name": "pytest_timing_frontier_authority",
@@ -130,15 +130,59 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
     # legal Perfect-window timing frontier. stats -> base_value 251.0 (Rush 100*2 + Flow 50 +
     # PP factor 1.0), combo 2.0, fever 4.0, FT/FF idx 0 -- exactly the fixed-chart inputs.
     fixed_chart = score_stats_fixed_timing_exact(stats, calc_song, ref_arrays)
-    assert int(fixed_chart) == 79312
+    assert int(fixed_chart) == 78348
     # The legal Perfect-window timing frontier scores strictly higher than the fixed chart replay.
-    assert int(fixed_chart) < int(score_stats_exact(stats, calc_song, ref_arrays)) == 80080
+    assert int(fixed_chart) < int(score_stats_exact(stats, calc_song, ref_arrays)) == 81104
     replay = score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays)
-    assert int(replay["score"]) == 80080
+    assert int(replay["score"]) == 81104
     trace = replay["TimelineFrontier"]["frontier_trace"]
     assert trace
     assert all(row["activation_judgment"] == "perfect" for row in trace)
     assert any(float(row["activation_hit_offset_ms"]) != 0.0 for row in trace)
+
+
+def test_legal_timing_frontier_keeps_earlier_exit_for_future_fills():
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.scoring.exact_rescore import (
+        score_stats_exact_with_timeline_trace,
+        score_stats_fixed_timing_exact,
+    )
+
+    calc_song = _mock_song(
+        name="pytest_timing_frontier_cross_section_exit",
+        n_notes=101,
+        duration=2.0,
+    )
+    ref_arrays = {
+        "Perfect Points": np.ones(TOTAL_ROWS + 1, dtype=np.float64),
+        "Combo Multiplier": np.ones(TOTAL_ROWS + 1, dtype=np.float64) * 2.0,
+        "Fever Multiplier": np.ones(TOTAL_ROWS + 1, dtype=np.float64) * 4.0,
+        "Fever Fill Rate": np.ones(TOTAL_ROWS + 1, dtype=np.float64),
+        "Fever Time": np.ones(TOTAL_ROWS + 1, dtype=np.float64),
+    }
+    stats = {
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 100,
+        "Flow": 50,
+    }
+
+    _prebuild_timeline_frontier(calc_song, ref_arrays)
+    fixed_chart = int(score_stats_fixed_timing_exact(stats, calc_song, ref_arrays))
+    legal_replay = score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays)
+
+    # 79,312 came from stale cached fever-timeline machine code. The source-current fixed
+    # replay is 79,568, and a legal Perfect-window frontier must never score below this legal
+    # all-Perfect chart-time schedule merely because a longer first fever delays its next fill.
+    assert fixed_chart == 79568
+    assert int(legal_replay["score"]) >= fixed_chart
+    trace = legal_replay["TimelineFrontier"]["frontier_trace"]
+    assert trace
+    assert all(row["activation_judgment"] == "perfect" for row in trace)
+    assert any(float(row["activation_hit_offset_ms"]) < 0.0 for row in trace)
 
 
 def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(monkeypatch):

@@ -160,7 +160,7 @@ class PostSender:
 class BubbleTracker:
     total_idle_s: float = 0.0
     peak_kpi: float = 0.0
-    peak_ready_ga: int = 0
+    peak_ready_base: int = 0
     peak_ready_fg: int = 0
     peak_backlog: int = 0
     peak_oldest_fg_wait_s: float = 0.0
@@ -170,7 +170,7 @@ class BubbleTracker:
         self,
         *,
         now_mono: float,
-        ready_ga_count: int,
+        ready_base_count: int,
         ready_fg_count: int,
         backlog_count: int,
         active_song_lanes: int,
@@ -181,7 +181,7 @@ class BubbleTracker:
         idle_sec = max(0.0, float(now_mono) - float(last_progress)) if gpu_idle else 0.0
         bubble_kpi = closed_loop_bubble_kpi(
             idle_sec=float(idle_sec),
-            ready_ga_count=int(ready_ga_count),
+            ready_base_count=int(ready_base_count),
             ready_fg_count=int(ready_fg_count),
             backlog_count=int(backlog_count),
             oldest_fg_wait_s=float(oldest_fg_wait_s),
@@ -189,7 +189,7 @@ class BubbleTracker:
         return {
             "idle_sec": float(idle_sec),
             "bubble_kpi": float(bubble_kpi),
-            "ready_ga_count": int(ready_ga_count),
+            "ready_base_count": int(ready_base_count),
             "ready_fg_count": int(ready_fg_count),
             "active_song_lanes": int(active_song_lanes),
             "backlog_count": int(backlog_count),
@@ -208,7 +208,7 @@ class BubbleTracker:
         decode_inflight_count: int,
         pending_fg_count: int,
         fg_prep_inflight_count: int,
-        ga_inflight_count: int,
+        base_inflight_count: int,
         fg_futures_count: int,
         last_progress: float,
         oldest_fg_wait_s: float = 0.0,
@@ -224,10 +224,10 @@ class BubbleTracker:
         # FG futures are host-only materialization jobs. Counting them as owner work hides the
         # exact underfeed condition this tracker exists to report: a drained GPU queue waiting on
         # long-running FG trace reconstruction.
-        gpu_idle = int(ga_inflight_count) <= 0
+        gpu_idle = int(base_inflight_count) <= 0
         return self.snapshot(
             now_mono=float(now_mono),
-            ready_ga_count=int(prepared_count),
+            ready_base_count=int(prepared_count),
             ready_fg_count=int(ready_fg_count),
             backlog_count=int(backlog_count),
             active_song_lanes=int(active_song_lanes),
@@ -243,7 +243,7 @@ class BubbleTracker:
                 self.active_started = float(now_mono)
             if bubble_kpi >= float(self.peak_kpi):
                 self.peak_kpi = float(bubble_kpi)
-                self.peak_ready_ga = int(snapshot.get("ready_ga_count", 0) or 0)
+                self.peak_ready_base = int(snapshot.get("ready_base_count", 0) or 0)
                 self.peak_ready_fg = int(snapshot.get("ready_fg_count", 0) or 0)
                 self.peak_backlog = int(snapshot.get("backlog_count", 0) or 0)
                 self.peak_oldest_fg_wait_s = max(0.0, float(oldest_fg_wait_s))
@@ -262,7 +262,7 @@ class BubbleTracker:
         return {
             "bubble_total_idle_sec": float(self.total_idle_s),
             "bubble_peak_kpi": float(self.peak_kpi),
-            "bubble_peak_ready_ga": int(self.peak_ready_ga),
+            "bubble_peak_ready_base": int(self.peak_ready_base),
             "bubble_peak_ready_fg": int(self.peak_ready_fg),
             "bubble_peak_backlog": int(self.peak_backlog),
             "bubble_peak_oldest_fg_wait_sec": float(self.peak_oldest_fg_wait_s),

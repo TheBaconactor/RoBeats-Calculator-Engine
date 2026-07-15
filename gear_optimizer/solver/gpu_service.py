@@ -264,11 +264,10 @@ class GpuServiceClient:
             },
         )
 
-    def submit_gpu_native_ga_run(self, payload: dict[str, Any]) -> GpuJobHandle:
-        # The GA run carries the fused GA->FG owner continuation (Slice 3): the owner
-        # scores FG in the GA turn and returns {runs_payload, fg_owner_score}. There is
-        # no separate FORCE_GREATS_RESPONSE_FRONTIER_BATCH submit anymore.
-        return self.submit(GpuRequestType.GPU_NATIVE_GA_RUN, dict(payload or {}))
+    def submit_exact_base_search(self, payload: dict[str, Any]) -> GpuJobHandle:
+        """Submit one exact Base + native FG GPU-owner turn."""
+
+        return self.submit(GpuRequestType.EXACT_BASE_SEARCH, dict(payload or {}))
 
     def _rx_loop(self) -> None:
         while self._running:
@@ -332,7 +331,7 @@ class GpuServiceClient:
         if not self._request_timeout_default_enabled:
             return 0.0
 
-        if request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
+        if request_type == GpuRequestType.EXACT_BASE_SEARCH:
             return 240.0
         return 120.0
 

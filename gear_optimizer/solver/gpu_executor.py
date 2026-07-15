@@ -29,10 +29,8 @@ from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.solver.gpu_executor_batching import (
     COALESCABLE_REQUEST_TYPES,
-    is_ga_recovery_request as _is_ga_recovery_request,
     ResponseDeliveryTracker,
     execute_request_from_dispatch as _execute_request_from_dispatch,
-    plan_execution_units as _plan_execution_units,
 )
 from gear_optimizer.solver.gpu_executor_types import (
     GpuRequest,
@@ -41,8 +39,6 @@ from gear_optimizer.solver.gpu_executor_types import (
 )
 from gear_optimizer.solver.gpu_executor_batching import (
     extend_inprocess_after_first_deadline as _extend_inprocess_after_first_deadline,
-    ga_recovery_lookahead_limit as _ga_recovery_lookahead_limit,
-    ga_recovery_streak_cap as _ga_recovery_streak_cap,
     load_inprocess_coalesce_settings as _load_inprocess_coalesce_settings,
     load_loop_batch_settings as _load_loop_batch_settings,
     plan_loop_batch as _plan_loop_batch,
@@ -53,9 +49,7 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     ExecutorHeartbeatWriter,
     LiveReporter,
     pop_staged_request as _pop_staged_request,
-    prefetch_ga_recovery_requests as _prefetch_ga_recovery_requests,
     stage_request as _stage_request,
-    staged_ga_recovery_index as _staged_ga_recovery_index,
     stamp_request_dequeue as _stamp_request_dequeue,
     build_taichi_init_failure_report as _build_taichi_init_failure_report,
     build_warmup_sentinel_payload as _build_warmup_sentinel_payload,
@@ -88,11 +82,7 @@ from gear_optimizer.solver.gpu_executor_refs import (
     ref_arrays_sig as _ref_arrays_sig,
 )
 from gear_optimizer.solver.gpu_executor_batching import (
-    execute_gpu_native_ga_run_batch as _execute_gpu_native_ga_run_batch,
-    execute_gpu_native_ga_run_chunk as _execute_gpu_native_ga_run_chunk,
-)
-from gear_optimizer.solver.gpu_executor_batching import (
-    execute_gpu_native_ga_run as _execute_gpu_native_ga_run_request,
+    execute_exact_base_search as _execute_exact_base_search_request,
 )
 from gear_optimizer.solver.gpu_executor_lifecycle import (
     get_with_short_wait_spin as _get_with_short_wait_spin,
@@ -104,31 +94,16 @@ from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
 
-def _request_work_units(request: GpuRequest) -> float:
-    payload = request.payload if isinstance(request.payload, dict) else {}
-    if request.request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
-        try:
-            num_runs = int(payload.get("num_runs", 0) or 0)
-            n_genomes = int(payload.get("n_genomes", 0) or 0)
-            n_generations = int(payload.get("n_generations", 0) or 0)
-        except (TypeError, ValueError):
-            return 1.0
-        if num_runs > 0 and n_genomes > 0:
-            return float(max(1, num_runs) * max(1, n_genomes) * max(1, n_generations))
-    for key in ("tasks", "payloads", "genomes", "population"):
-        value = payload.get(key)
-        if value is not None:
-            try:
-                return float(len(value))
-            except TypeError:
-                return 1.0
-    return 1.0
-
-
 def _warmup_fg_response_frontier_runtime() -> None:
     from .taichi_gem.force_greats import fields as fg_fields
 
     fg_fields.ensure_ready_with_warmup()
+
+
+def _warmup_exact_base_runtime() -> None:
+    from .taichi_gem.api import skyline_operations
+
+    skyline_operations.warmup_skyline_kernels_light()
 
 
 def is_gpu_worker_mode() -> bool:
@@ -173,7 +148,6 @@ class GpuExecutor:
         self._abort_state = ExecutorAbortState()
         self._in_process_queues = False
         self._staged_requests: deque[GpuRequest] = deque()
-        self._ga_owner_turn_streak = 0
         self._last_ref_arrays_sig: bytes | None = None
         self._requests_processed = 0
         self._response_delivery = ResponseDeliveryTracker()
@@ -185,7 +159,7 @@ class GpuExecutor:
         self._short_wait_spin_yield_rounds = short_wait_settings.short_wait_spin_yield_rounds
         self._dispatch = {
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
-            GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
+            GpuRequestType.EXACT_BASE_SEARCH: self._execute_exact_base_search,
         }
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
         """Dispatch a single request to the appropriate executor handler."""
@@ -248,7 +222,6 @@ class GpuExecutor:
         self._taichi_ready = False
         self._last_init_error = None
         self._staged_requests.clear()
-        self._ga_owner_turn_streak = 0
         self._ready_event.clear()
         self.clear_abort()
         self._last_ref_arrays_sig = None
@@ -367,110 +340,65 @@ class GpuExecutor:
             self._write_heartbeat(phase="warmup_failed", note=self._last_init_error, force=True)
             return
         warmup_fg = bool(getattr(ENV, "gpu_executor_warmup_fg", False))
-        warmup_ga = True
-        if warmup_fg or warmup_ga:
-            try:
-                from .taichi_gem import runtime as ti_runtime
-                lock_cm = ti_runtime.offline_cache_lock(timeout_sec=None)
-            except Exception as e:
-                logger.debug(f"gpu_executor:_executor_loop: {e}")
-                lock_cm = nullcontext("")
-            self._write_heartbeat(phase="warmup_wait", force=True)
-            try:
-                with lock_cm as cache_dir:
-                    sentinel_path = _warmup_sentinel_path(cache_dir)
-                    warmup_cached = bool(
-                        sentinel_path is not None
-                        and sentinel_path.exists()
-                        and _warmup_sentinel_is_fresh(
-                            sentinel_path=sentinel_path,
-                            warmup_fg=bool(warmup_fg),
-                            warmup_ga=bool(warmup_ga),
-                        )
+        warmup_exact = True
+        try:
+            from .taichi_gem import runtime as ti_runtime
+
+            lock_cm = ti_runtime.offline_cache_lock(timeout_sec=None)
+        except Exception as e:
+            logger.debug("[GpuExecutor] offline cache lock unavailable: %s", e)
+            lock_cm = nullcontext("")
+        self._write_heartbeat(phase="warmup_wait", force=True)
+        try:
+            with lock_cm as cache_dir:
+                sentinel_path = _warmup_sentinel_path(cache_dir)
+                warmup_cached = bool(
+                    sentinel_path is not None
+                    and sentinel_path.exists()
+                    and _warmup_sentinel_is_fresh(
+                        sentinel_path=sentinel_path,
+                        warmup_fg=warmup_fg,
+                        warmup_exact=warmup_exact,
                     )
-                    if warmup_cached:
-                        self._write_heartbeat(phase="warmup_cached", force=True)
-                        try:
-                            if warmup_fg:
-                                self._write_heartbeat(phase="warmup_fg_cached", force=True)
-                                _warmup_fg_response_frontier_runtime()
-                            if warmup_ga:
-                                self._write_heartbeat(phase="warmup_ga_cached", force=True)
-                                from .taichi_gem.api import ga_operations as ga_ops
-                                ga_ops.warmup_ga_kernels_light()
-                        except Exception as e:
-                            self._taichi_ready = False
-                            self._last_init_error = f"GPU executor warmup failed: {type(e).__name__}: {e}"
-                            self._running = False
-                            self._ready_event.set()
-                            self._write_heartbeat(phase="warmup_failed", note=self._last_init_error, force=True)
-                            return
-                    else:
-                        sentinel_error = ""
-                        try:
-                            if warmup_fg:
-                                try:
-                                    self._write_heartbeat(phase="warmup_fg", force=True)
-                                except Exception as e:
-                                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-                                t0 = perf_counter()
-                                _warmup_fg_response_frontier_runtime()
-                                dt_ms = (perf_counter() - t0) * 1000.0
-                                if ENV.perf_timing:
-                                    logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
-                            if warmup_ga:
-                                try:
-                                    self._write_heartbeat(phase="warmup_ga", force=True)
-                                except Exception as e:
-                                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-                                t0 = perf_counter()
-                                from .taichi_gem.api import ga_operations as ga_ops
-                                ga_ops.warmup_ga_kernels_light()
-                                dt_ms = (perf_counter() - t0) * 1000.0
-                                if ENV.perf_timing:
-                                    logger.debug("[GpuExecutor] Warmed GA kernels in %.1fms", dt_ms)
-                        except Exception as e:
-                            sentinel_error = f"{type(e).__name__}: {e}"
-                            try:
-                                logger.debug("[GpuExecutor] Warmup failed: %s", sentinel_error)
-                            except Exception as e:
-                                logger.debug(f"gpu_executor:_executor_loop: {e}")
-                        finally:
-                            if sentinel_path is not None:
-                                payload = _build_warmup_sentinel_payload(
-                                    ok=not bool(sentinel_error),
-                                    error=str(sentinel_error or ""),
-                                    pid=int(os.getpid()),
-                                    warmed_at_ms=int(time.time() * 1000.0),
-                                    warmup_fg=bool(warmup_fg),
-                                    warmup_ga=bool(warmup_ga),
-                                )
-                                _write_warmup_sentinel_payload(sentinel_path=sentinel_path, payload=payload)
-                            if sentinel_error:
-                                self._taichi_ready = False
-                                self._last_init_error = f"GPU executor warmup failed: {sentinel_error}"
-                                self._running = False
-                                self._ready_event.set()
-                                self._write_heartbeat(phase="warmup_failed", note=self._last_init_error, force=True)
-                                return
-            except Exception as e:
-                warmup_error = f"{type(e).__name__}: {e}"
-                logger.debug(f"gpu_executor:_executor_loop: {e}")
-                try:
-                    if warmup_fg:
-                        _warmup_fg_response_frontier_runtime()
-                    if warmup_ga:
-                        from .taichi_gem.api import ga_operations as ga_ops
-                        ga_ops.warmup_ga_kernels_light()
-                except Exception as e:
-                    warmup_error = f"{warmup_error}; fallback warmup failed: {type(e).__name__}: {e}"
-                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-                    self._taichi_ready = False
-                    self._last_init_error = f"GPU executor warmup failed: {warmup_error}"
-                    self._running = False
-                    self._ready_event.set()
-                    self._write_heartbeat(phase="warmup_failed", note=self._last_init_error, force=True)
-                    return
+                )
+                suffix = "_cached" if warmup_cached else ""
+                if warmup_cached:
+                    self._write_heartbeat(phase="warmup_cached", force=True)
+                if warmup_fg:
+                    self._write_heartbeat(phase=f"warmup_fg{suffix}", force=True)
+                    _warmup_fg_response_frontier_runtime()
+                self._write_heartbeat(phase=f"warmup_exact{suffix}", force=True)
+                started = perf_counter()
+                _warmup_exact_base_runtime()
+                if ENV.perf_timing:
+                    logger.debug(
+                        "[GpuExecutor] Warmed exact Base kernels in %.1fms",
+                        (perf_counter() - started) * 1000.0,
+                    )
+                if sentinel_path is not None:
+                    payload = _build_warmup_sentinel_payload(
+                        ok=True,
+                        error="",
+                        pid=int(os.getpid()),
+                        warmed_at_ms=int(time.time() * 1000.0),
+                        warmup_fg=warmup_fg,
+                        warmup_exact=warmup_exact,
+                    )
+                    _write_warmup_sentinel_payload(
+                        sentinel_path=sentinel_path,
+                        payload=payload,
+                    )
+        except Exception as e:
+            self._taichi_ready = False
+            self._last_init_error = f"GPU executor warmup failed: {type(e).__name__}: {e}"
+            self._running = False
+            self._ready_event.set()
+            self._write_heartbeat(
+                phase="warmup_failed",
+                note=self._last_init_error,
+                force=True,
+            )
+            return
         self._taichi_ready = True
         self._ready_event.set()
         self._write_heartbeat(phase="ready", force=True)
@@ -516,41 +444,13 @@ class GpuExecutor:
                     # offline kernel cache dumps synchronously while the Vulkan runtime
                     # is fully alive. Leaving finalization to interpreter atexit races
                     # daemon-thread teardown and truncates the dump (observed: 1-9 of
-                    # ~40 .tic entries persisted per run), so the expensive fused GA/FG
+                    # ~40 .tic entries persisted per run), so the exact Base/FG
                     # kernels never enter the cache and every process pays the full
                     # warmup recompile with the GPU idle.
                     self._finalize_taichi_on_owner_thread()
                     self._running = False
                     break
                 self._write_heartbeat(phase="running", batch=batch)
-                grouped_handlers = {
-                    GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run_batch,
-                }
-                def _deliver_group_responses(
-                    request_type: GpuRequestType,
-                    requests: list[GpuRequest],
-                    responses: list[GpuResponse],
-                    dt_exec: float,
-                ) -> None:
-                    response_count = int(len(responses))
-                    for idx, req in enumerate(requests):
-                        resp = responses[idx] if idx < response_count else None
-                        if resp is None:
-                            resp = GpuResponse(
-                                request_id=req.request_id,
-                                success=False,
-                                error=f"GpuExecutor {request_type.value} batch returned no response (internal error)",
-                            )
-                        if _try_put_response(req, resp):
-                            responded_ids.add(int(req.request_id))
-                        self._requests_processed += 1
-                    if live_enabled:
-                        self._live.record_exec(request_type, exec_sec=float(dt_exec), count=len(requests))
-                        self._maybe_live_report()
-                    if request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
-                        self._ga_owner_turn_streak = min(1024, int(self._ga_owner_turn_streak) + 1)
-                    else:
-                        self._ga_owner_turn_streak = 0
                 def _execute_single_request(req: GpuRequest) -> None:
                     exec_started = perf_counter()
                     response = self._execute_request(req)
@@ -567,39 +467,8 @@ class GpuExecutor:
                     if live_enabled:
                         self._live.record_exec(req.request_type, exec_sec=float(dt_exec), count=1)
                         self._maybe_live_report()
-                    self._ga_owner_turn_streak = 0
-                def _execute_grouped_requests(
-                    request_type: GpuRequestType, requests: list[GpuRequest], handler
-                ) -> None:
-                    if not requests:
-                        return
-                    if request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
-                        # Each GA run carries its own fused GA->FG owner continuation
-                        # (Slice 3): the owner scores FG in the GA turn and returns it
-                        # with the payload. There is no separate FG batch request to
-                        # interleave between GA runs anymore.
-                        for req in requests:
-                            exec_started = perf_counter()
-                            responses = list(handler([req]) or [])
-                            _deliver_group_responses(request_type, [req], responses, perf_counter() - exec_started)
-                        return
-                    exec_started = perf_counter()
-                    responses = list(handler(requests) or [])
-                    _deliver_group_responses(request_type, requests, responses, perf_counter() - exec_started)
-                execution_units = _plan_execution_units(
-                    batch,
-                    grouped_request_types=set(grouped_handlers),
-                )
-                for unit in execution_units:
-                    request_type = unit.request_type
-                    if unit.grouped:
-                        _execute_grouped_requests(
-                            request_type,
-                            list(unit.requests),
-                            handler=grouped_handlers[request_type],
-                        )
-                        continue
-                    req = unit.requests[0]
+
+                for req in batch:
                     _execute_single_request(req)
                 work_end_ts = perf_counter()
                 self._last_work_end_ts = float(work_end_ts)
@@ -618,11 +487,11 @@ class GpuExecutor:
                 try:
                     logger.debug("[GpuExecutor] Error: %s", e)
                 except Exception as e:
-                    logger.debug(f"gpu_executor:_execute_grouped_requests: {e}")
+                    logger.debug(f"gpu_executor:_executor_loop: {e}")
                 try:
                     traceback.print_exc()
                 except Exception as e:
-                    logger.debug(f"gpu_executor:_execute_grouped_requests: {e}")
+                    logger.debug(f"gpu_executor:_executor_loop: {e}")
                 self._write_heartbeat(phase="error", batch=batch, note=str(err), force=True)
         self._write_heartbeat(phase="stopped", note=self._last_init_error or "", force=True)
     def _queue_get(self, timeout: float):
@@ -636,36 +505,9 @@ class GpuExecutor:
     def _pop_queue_request(self, timeout: float) -> "GpuRequest":
         request = self._queue_get(timeout)
         return _stamp_request_dequeue(request)
-    def _prefetch_ga_recovery_requests(self, *, deadline: float, batch_max_size: int) -> None:
-        _prefetch_ga_recovery_requests(
-            in_process_queues=bool(self._in_process_queues),
-            ga_owner_turn_streak=int(self._ga_owner_turn_streak),
-            staged_requests=self._staged_requests,
-            deadline=float(deadline),
-            batch_max_size=int(batch_max_size),
-            streak_cap=int(_ga_recovery_streak_cap(env_get=env_get)),
-            lookahead_limit=int(_ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size), env_get=env_get)),
-            pop_queue_request=self._pop_queue_request,
-            perf_counter_fn=perf_counter,
-            is_ga_recovery_request=_is_ga_recovery_request,
-            empty_exception=queue.Empty,
-        )
-    def _pop_seed_request(self, *, timeout: float, deadline: float, batch_max_size: int) -> "GpuRequest":
+    def _pop_seed_request(self, *, timeout: float) -> "GpuRequest":
         if not self._staged_requests:
             _stage_request(self._staged_requests, self._pop_queue_request(timeout))
-        self._prefetch_ga_recovery_requests(deadline=deadline, batch_max_size=int(batch_max_size))
-        if (
-            self._in_process_queues
-            and int(self._ga_owner_turn_streak) >= int(_ga_recovery_streak_cap(env_get=env_get))
-            and self._staged_requests
-            and self._staged_requests[0].request_type == GpuRequestType.GPU_NATIVE_GA_RUN
-        ):
-            recovery_idx = _staged_ga_recovery_index(
-                list(self._staged_requests),
-                is_ga_recovery_request=_is_ga_recovery_request,
-            )
-            if recovery_idx is not None:
-                return _pop_staged_request(self._staged_requests, index=int(recovery_idx))
         return _pop_staged_request(self._staged_requests, index=0)
     def _pop_followup_request(self, timeout: float) -> "GpuRequest":
         if self._staged_requests:
@@ -711,11 +553,7 @@ class GpuExecutor:
                 else:
                     timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
                 if len(batch) == 0:
-                    request = self._pop_seed_request(
-                        timeout=float(timeout),
-                        deadline=float(deadline),
-                        batch_max_size=int(max_batch_size),
-                    )
+                    request = self._pop_seed_request(timeout=float(timeout))
                 elif (
                     self._in_process_queues
                     and inproc_coalesce_enabled
@@ -759,29 +597,9 @@ class GpuExecutor:
                 break  # No more pending requests
         return batch
 
-    def _execute_gpu_native_ga_run_batch(self, requests: list[GpuRequest]) -> list[GpuResponse]:
-        """Execute multiple GPU_NATIVE_GA_RUN requests on the owner thread."""
-        return _execute_gpu_native_ga_run_batch(
-            requests,
-            abort_requested=self.abort_requested,
-            aborted_response=self._aborted_response,
-            execute_single=self._execute_gpu_native_ga_run,
-            execute_chunk=self._execute_gpu_native_ga_run_chunk,
-            env_get_fn=env_get,
-            estimate_work_units_fn=_request_work_units,
-        )
-
-    def _execute_gpu_native_ga_run_chunk(self, requests: list[GpuRequest]) -> list[GpuResponse]:
-        return _execute_gpu_native_ga_run_chunk(
-            requests,
-            abort_requested=self.abort_requested,
-            aborted_response=self._aborted_response,
-            execute_single=self._execute_gpu_native_ga_run,
-        )
-
-    def _execute_gpu_native_ga_run(self, request: GpuRequest) -> GpuResponse:
-        """Execute a full GPU-native GA run on the GPU-owner thread."""
-        return _execute_gpu_native_ga_run_request(
+    def _execute_exact_base_search(self, request: GpuRequest) -> GpuResponse:
+        """Run exact Base then native FG on the GPU-owner thread."""
+        return _execute_exact_base_search_request(
             request,
             in_process_queues=bool(self._in_process_queues),
             abort_requested=self.abort_requested,
@@ -813,8 +631,6 @@ class GpuExecutor:
         return self._abort_state.requested()
     def _raise_if_abort_requested(self) -> None:
         self._abort_state.raise_if_requested()
-    def _aborted_response(self, request: GpuRequest) -> GpuResponse:
-        return self._abort_state.response(request)
     def wait_until_ready(self, timeout: float | None = None) -> bool:
         if not self._running:
             return False

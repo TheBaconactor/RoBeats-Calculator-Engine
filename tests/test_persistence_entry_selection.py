@@ -256,7 +256,7 @@ def test_build_persistence_entries_keeps_all_improving_fg_variants_from_payload(
 
     persist_entries = assemble_without_replay(
         db_payload=payload,
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries=None,
         build_details_fn=build_details,
     )

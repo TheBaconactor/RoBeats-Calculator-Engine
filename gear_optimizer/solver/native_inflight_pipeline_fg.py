@@ -13,7 +13,7 @@ from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import NativeSong, read_db_prefetch_workers
 
 if TYPE_CHECKING:
-    from gear_optimizer.solver.native_inflight_lifecycle import PostSender, ProgressTracker
+    from gear_optimizer.solver.native_inflight_lifecycle import ProgressTracker
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def read_native_fg_pipeline_settings(
     default_worker_threads: Callable[..., int],
 ) -> NativeFGPipelineSettings:
     inflight_limit_i = max(1, int(inflight_limit))
-    # FG jobs are host-only materialization since the fused GA->FG handoff (the GA
+    # FG jobs are host-only materialization since the fused exact Base->FG handoff (the Base
     # turn already carries the owner score map). Two workers keep materialization
     # off the orchestrator loop while bounding GIL pressure on the GPU owner.
     fg_workers = 2 if int(inflight_limit_i) > 1 else 1
@@ -92,7 +92,7 @@ class NativeFGPipeline:
     """
     Host-side ForceGreats pipeline for native in-flight mode.
     The pipeline owns FG queueing, FG prep workers, and FG worker submissions.
-    FG jobs never touch the GPU owner: the fused GA turn already scored FG, so
+    FG jobs never touch the GPU owner: the fused Base turn already scored FG, so
     workers only materialize plans against the owner score map.
     """
 
@@ -211,19 +211,28 @@ class NativeFGPipeline:
         for song in list(self.prep_inflight):
             future = getattr(song.runtime.fg, "fg_prep_future", None)
             if future is None:
-                self.prep_inflight.remove(song)
+                _remove_song_by_identity(self.prep_inflight, song)
+                _remove_song_by_identity(self.pending, song)
+                submit_t0 = getattr(song.runtime.fg, "fg_prep_submit_t0", None)
+                cpu_seconds = getattr(song.runtime.fg, "cpu_fg_prep_s", None)
+                song.runtime.fg.fg_prep_submit_t0 = None
+                error = RuntimeError(
+                    "FG prep conveyor lost its future for "
+                    f"{getattr(song.config, 'task_key', '') or getattr(song.config, 'song_name', '')}"
+                )
                 completions.append(
                     NativeFGPrepCompletion(
                         song=song,
-                        submit_t0=None,
-                        cpu_seconds=None,
+                        submit_t0=submit_t0,
+                        cpu_seconds=cpu_seconds,
+                        error=error,
                         future_missing=True,
                     )
                 )
                 continue
             if not future.done():
                 continue
-            self.prep_inflight.remove(song)
+            _remove_song_by_identity(self.prep_inflight, song)
             submit_t0 = getattr(song.runtime.fg, "fg_prep_submit_t0", None)
             cpu_seconds = getattr(song.runtime.fg, "cpu_fg_prep_s", None)
             error: Exception | None = None
@@ -239,6 +248,7 @@ class NativeFGPipeline:
             except Exception as exc:
                 error = exc
                 trace = traceback.format_exc()
+                _remove_song_by_identity(self.pending, song)
             finally:
                 song.runtime.fg.fg_prep_future = None
             completions.append(
@@ -291,7 +301,7 @@ class NativeFGPipeline:
         """
         Pick a song for FG submission.
         Normally, only pop songs whose FG prep is complete. During the final FG
-        drain (no GA work left), allow a not-yet-ready song so the FG worker can
+        drain (no Base work left), allow a not-yet-ready song so the FG worker can
         wait on prep instead of serializing behind the scheduler loop.
         """
         for candidate in list(self.pending):
@@ -429,7 +439,7 @@ def _release_fg_song_surfaces(song: NativeSong) -> None:
     """Release a song's ~0.5-1.5 GB FG response surfaces once its FG scoring is complete.
 
     After this job's `materialize_from_owner_score_map`, nothing else reads the per-song scoring
-    bundle, prepared plan, or owner score map -- the fused GA turn and the FG planner are the only
+    bundle, prepared plan, or owner score map -- the fused Base turn and the FG planner are the only
     other readers and both run earlier. Left alone, each song's surface pool stays resident, pinned
     by BOTH the per-song bundle handle and the process-global response-frontier caches, until the
     song object is garbage-collected and the entry-count LRU evicts it. A standalone optimizer run
@@ -460,7 +470,6 @@ def run_fg_job_sync(
     song: NativeSong,
     *,
     gpu_client: GpuServiceClient,
-    post_sender: PostSender | None = None,
     progress_cb=None,
     progress_tracker: ProgressTracker | None = None,
 ) -> None:
@@ -468,7 +477,6 @@ def run_fg_job_sync(
         _run_fg_job_sync_impl(
             song,
             gpu_client=gpu_client,
-            post_sender=post_sender,
             progress_cb=progress_cb,
             progress_tracker=progress_tracker,
         )
@@ -483,15 +491,10 @@ def _run_fg_job_sync_impl(
     song: NativeSong,
     *,
     gpu_client: GpuServiceClient,
-    post_sender: PostSender | None = None,
     progress_cb=None,
     progress_tracker: ProgressTracker | None = None,
 ) -> None:
     from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
-    from gear_optimizer.solver.native_inflight_fg_payload import (
-        build_fg_persist_entries,
-        build_fg_update_payload,
-    )
     from gear_optimizer.solver.native_inflight_lifecycle import evaluate_fg_progress_record_update
     from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_job_sync, thread_cpu_time_s
 
@@ -504,7 +507,7 @@ def _run_fg_job_sync_impl(
             song_key=song_key,
             metrics={
                 "had_prep_future": int(getattr(song.runtime.fg, "fg_prep_future", None) is not None),
-                "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
+                "base_candidates": int(len(getattr(song.runtime.decode, "base_candidates", None) or [])),
             },
         )
     except Exception as e:
@@ -550,7 +553,7 @@ def _run_fg_job_sync_impl(
             event="prep_ready",
             song_key=song_key,
             metrics={
-                "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
+                "base_candidates": int(len(getattr(song.runtime.decode, "base_candidates", None) or [])),
             },
         )
     except Exception as e:
@@ -561,7 +564,7 @@ def _run_fg_job_sync_impl(
             event="pre_dispatch",
             song_key=song_key,
             metrics={
-                "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
+                "base_candidates": int(len(getattr(song.runtime.decode, "base_candidates", None) or [])),
             },
         )
     except Exception as e:
@@ -581,11 +584,11 @@ def _run_fg_job_sync_impl(
     owner_score_map = getattr(song.runtime.fg, "fg_owner_score_map", None)
     if owner_score_map is None:
         raise RuntimeError(
-            "FG response frontier run requires the fused owner FG score map from the GA "
+            "FG response frontier run requires the fused owner FG score map from the exact Base "
             f"turn for {song_key} (Slice 3 fused handoff)"
         )
     run_wall_t0 = time.perf_counter()
-    # Fused GA->FG handoff (Slice 3): the GPU owner already scored FG in the GA turn.
+    # Fused exact Base->FG handoff: the GPU owner already scored FG in the Base turn.
     # Here, off the owner's critical path, materialize the plan against the owner score
     # map (host-only: paired-base + winner gate + exact rescore). No owner round-trip.
     fg_variants = FgResponseScoringService.materialize_from_owner_score_map(
@@ -625,5 +628,3 @@ def _run_fg_job_sync_impl(
         fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
         if isinstance(fg_record_info, dict):
             song.runtime.db.record_info = fg_record_info
-    if post_sender is not None:
-        post_sender.send(build_fg_update_payload(song, persist_entries=build_fg_persist_entries(song)))

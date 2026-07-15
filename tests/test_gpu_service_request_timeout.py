@@ -28,9 +28,9 @@ def test_gpu_service_times_out_stuck_request(monkeypatch):
     client.start(start_executor=False, in_process_queues=True)
 
     try:
-        job = client.submit(GpuRequestType.GPU_NATIVE_GA_RUN, {"song": "stuck"})
+        job = client.submit(GpuRequestType.EXACT_BASE_SEARCH, {"song": "stuck"})
         req = executor._request_q.get(timeout=1.0)
-        assert req.request_type == GpuRequestType.GPU_NATIVE_GA_RUN
+        assert req.request_type == GpuRequestType.EXACT_BASE_SEARCH
 
         with pytest.raises(GpuServiceTimeoutError, match="timed out"):
             job.future.result(timeout=1.0)
@@ -47,4 +47,4 @@ def test_gpu_service_enables_default_timeouts_for_service_mode_on_windows(monkey
 
     assert client._request_timeout_default_enabled is True
     assert client._timeout_fatal is True
-    assert client._request_timeout_sec_for(GpuRequestType.GPU_NATIVE_GA_RUN) == pytest.approx(240.0)
+    assert client._request_timeout_sec_for(GpuRequestType.EXACT_BASE_SEARCH) == pytest.approx(240.0)

@@ -58,7 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Prebuild exact symbolic timeline frontier disk-cache files for the song pool. "
-            "The cache is consumed by runtime GA/FG timeline upload, so live optimization "
+            "The cache is consumed by exact Base/FG timeline upload, so live optimization "
             "can load the payload instead of rebuilding it in the hot path."
         )
     )

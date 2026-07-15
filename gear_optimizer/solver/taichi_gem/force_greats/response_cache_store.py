@@ -79,6 +79,24 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Base timing (forced-Great timing disabled) now emits every distinct legal Perfect fever-exit
+    # breakpoint instead of only the latest exit. The native FG branch, its trace witnesses, V31
+    # ordered surfaces, and compact sidecars are unchanged. Ratify only the two pools available to
+    # this migration directly; resolution is non-transitive and no intermediate fingerprint is
+    # inherited implicitly.
+    "fg-response-frontier-visible-first-v31+logic-a230de3917e0": (
+        "fg-response-frontier-visible-first-v31+logic-8f06577b631d",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+    ),
+    # Retiring the former outer search deleted only its unused constant assignments from
+    # core/constants.py. That whole module is conservatively fingerprinted, so the cleanup moved
+    # this logic hash even
+    # though none of the deleted names is read by the FG producer and the bundle schema, ordered
+    # surfaces, and compact sidecars are unchanged. Ratify only the provisioned main pool; keep
+    # compatibility explicit and non-transitive so no other predecessor is inherited by accident.
+    "fg-response-frontier-visible-first-v31+logic-8f06577b631d": (
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+    ),
     # Same-color Great scoring now preserves the production chart's two color slots and their
     # separate floor operations. This changes only surface scoring: the V31 producer, ordered
     # surfaces, stat-key mapping, and compact sidecars are unchanged. Preserve the complete
@@ -537,7 +555,14 @@ def cache_dir_sidecars_need_compression() -> bool:
 def _compress_cache_dir_sidecars_windows(directory: Path) -> None:
     try:
         result = subprocess.run(
-            ["compact", "/c", "/exe:XPRESS16K", "/s:" + str(directory)],
+            [
+                "compact",
+                "/c",
+                "/exe:XPRESS16K",
+                "/i",
+                "/q",
+                str(directory / "*.npy"),
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=3600,
@@ -593,11 +618,12 @@ def _compress_cache_dir_sidecars_macos(directory: Path) -> None:
 def compress_cache_dir_sidecars() -> None:
     """Losslessly compress exact sidecars while preserving the mmap-visible file bytes.
 
-    Windows uses one NTFS WOF XPRESS16K pass. macOS copies uncompressed sidecars in bounded batches
-    through ``ditto --hfsCompression`` and atomically replaces each original; APFS/HFS+ then
-    decompresses pages transparently for ``np.load(mmap_mode="r")``. Unsupported platforms are a
-    no-op because no general filesystem-transparent compressor exists there. This is an external
-    filesystem boundary and never changes cache semantics or the logic fingerprint.
+    Windows targets only the top-level ``.npy`` sidecars in one NTFS WOF XPRESS16K pass; this avoids
+    the live builder-lock file and unrelated bundle metadata. macOS copies uncompressed sidecars in
+    bounded batches through ``ditto --hfsCompression`` and atomically replaces each original;
+    APFS/HFS+ then decompresses pages transparently for ``np.load(mmap_mode="r")``. Unsupported
+    platforms are a no-op because no general filesystem-transparent compressor exists there. This
+    is an external filesystem boundary and never changes cache semantics or the logic fingerprint.
     """
     directory = _fg_response_disk_cache_dir()
     if not directory.exists():

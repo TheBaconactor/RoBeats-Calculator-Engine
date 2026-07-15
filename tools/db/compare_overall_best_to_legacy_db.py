@@ -31,22 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from gear_optimizer.core.team_buff import normalize_team_buff
 from gear_optimizer.data.migrations import _table_exists
-
-
-def _infer_difficulty_from_song_name(song_name: str) -> str:
-    s = str(song_name or "")
-    for diff in ("Easy", "Normal", "Hard"):
-        if f" ({diff}) " in s:
-            return diff
-    return "Normal"
-
-
-def _song_file_from_name(project_root: Path, song_name: str) -> Path | None:
-    diff = _infer_difficulty_from_song_name(song_name)
-    fp = project_root / "Data" / diff / f"{song_name}.txt"
-    if fp.exists():
-        return fp
-    return None
+from gear_optimizer.data.song_io import SongFileResolver
 
 
 @dataclass(frozen=True)
@@ -108,13 +93,13 @@ def _best_base_rescored_legacy(
     *,
     song: str,
     team_buff: str,
-    project_root: Path,
+    song_resolver: SongFileResolver,
     cfg_dict: dict,
     ref_arrays: dict,
     calc_song_cache: dict[str, dict],
 ):
     """
-    Recompute legacy best base score using GPU fixed scoring on persisted Stats.
+    Recompute legacy best Base score using the current exact replay scorer on persisted Stats.
 
     NOTE: This is a "staleness correction" pass for legacy DBs whose `score` column
     may have been produced under older scorers / chart data.
@@ -128,16 +113,9 @@ def _best_base_rescored_legacy(
 
     calc_song = calc_song_cache.get(song)
     if calc_song is None:
-        fp = _song_file_from_name(project_root, song)
+        fp = song_resolver.resolve(song)
         if fp is None:
-            # Fall back to the slower index scan used by EvolutionDbManager.
-            from gear_optimizer.data.db_manager import _build_song_index_for_difficulty
-
-            diff = _infer_difficulty_from_song_name(song)
-            idx = _build_song_index_for_difficulty(diff)
-            fp = Path(str(idx.get(song) or ""))
-            if not fp.exists():
-                return {"best": 0, "hash": ""}
+            return {"best": 0, "hash": ""}
         calc_song = get_base_calc_song(str(fp), cfg_dict)
         calc_song_cache[song] = calc_song
 
@@ -242,7 +220,7 @@ def _best_fg_rescored_legacy(
     *,
     song: str,
     team_buff: str,
-    project_root: Path,
+    song_resolver: SongFileResolver,
     cfg_dict: dict,
     ref_arrays: dict,
     calc_song_cache: dict[str, dict],
@@ -275,15 +253,9 @@ def _best_fg_rescored_legacy(
 
     calc_song = calc_song_cache.get(song)
     if calc_song is None:
-        fp = _song_file_from_name(project_root, song)
+        fp = song_resolver.resolve(song)
         if fp is None:
-            from gear_optimizer.data.db_manager import _build_song_index_for_difficulty
-
-            diff = _infer_difficulty_from_song_name(song)
-            idx = _build_song_index_for_difficulty(diff)
-            fp = Path(str(idx.get(song) or ""))
-            if not fp.exists():
-                return {"best": 0, "hash": ""}
+            return {"best": 0, "hash": ""}
         calc_song = get_base_calc_song(str(fp), cfg_dict)
         calc_song_cache[song] = calc_song
 
@@ -331,7 +303,7 @@ def _best_base_replayed(
     *,
     song: str,
     team_buff: str,
-    project_root: Path,
+    song_resolver: SongFileResolver,
     cfg_dict: dict,
     ref_arrays: dict,
     calc_song_cache: dict[str, dict],
@@ -340,7 +312,7 @@ def _best_base_replayed(
         conn,
         song=song,
         team_buff=team_buff,
-        project_root=project_root,
+        song_resolver=song_resolver,
         cfg_dict=cfg_dict,
         ref_arrays=ref_arrays,
         calc_song_cache=calc_song_cache,
@@ -352,7 +324,7 @@ def _best_fg_replayed(
     *,
     song: str,
     team_buff: str,
-    project_root: Path,
+    song_resolver: SongFileResolver,
     cfg_dict: dict,
     ref_arrays: dict,
     calc_song_cache: dict[str, dict],
@@ -361,7 +333,7 @@ def _best_fg_replayed(
         conn,
         song=song,
         team_buff=team_buff,
-        project_root=project_root,
+        song_resolver=song_resolver,
         cfg_dict=cfg_dict,
         ref_arrays=ref_arrays,
         calc_song_cache=calc_song_cache,
@@ -383,7 +355,7 @@ def _resolve_side_snapshot(
     team_buff: str,
     replay_base: bool,
     replay_fg: bool,
-    project_root: Path,
+    song_resolver: SongFileResolver,
     cfg_dict: dict,
     ref_arrays: dict,
     calc_song_cache: dict[str, dict],
@@ -393,7 +365,7 @@ def _resolve_side_snapshot(
             conn,
             song=song,
             team_buff=team_buff,
-            project_root=project_root,
+            song_resolver=song_resolver,
             cfg_dict=cfg_dict,
             ref_arrays=ref_arrays,
             calc_song_cache=calc_song_cache,
@@ -406,7 +378,7 @@ def _resolve_side_snapshot(
             conn,
             song=song,
             team_buff=team_buff,
-            project_root=project_root,
+            song_resolver=song_resolver,
             cfg_dict=cfg_dict,
             ref_arrays=ref_arrays,
             calc_song_cache=calc_song_cache,
@@ -499,25 +471,25 @@ def main() -> int:
         "--replay-current-base",
         "--rescore-current-base",
         action="store_true",
-        help="Replay current-side best base rows with the current GPU fixed scorer.",
+        help="Replay current-side best Base rows with the current exact scorer.",
     )
     p.add_argument(
         "--replay-current-fg",
         "--rescore-current-fg",
         action="store_true",
-        help="Replay current-side FG rows with the current GPU exact-inner solver.",
+        help="Replay current-side FG rows with the current exact FG replay scorer.",
     )
     p.add_argument(
         "--replay-legacy-base",
         "--rescore-legacy-base",
         action="store_true",
-        help="Replay legacy/reference-side best base rows with the current GPU fixed scorer.",
+        help="Replay legacy/reference-side best Base rows with the current exact scorer.",
     )
     p.add_argument(
         "--replay-legacy-fg",
         "--rescore-legacy-fg",
         action="store_true",
-        help="Replay legacy/reference-side FG rows with the current GPU exact-inner solver.",
+        help="Replay legacy/reference-side FG rows with the current exact FG replay scorer.",
     )
     args = p.parse_args()
 
@@ -545,6 +517,7 @@ def main() -> int:
         ref_arrays: dict = {}
         cur_calc_song_cache: dict[str, dict] = {}
         leg_calc_song_cache: dict[str, dict] = {}
+        song_resolver = SongFileResolver(PROJECT_ROOT / "Data")
         if replay_current_base or replay_current_fg or replay_legacy_base or replay_legacy_fg:
             from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
             from gear_optimizer.core.config import load_config
@@ -571,7 +544,7 @@ def main() -> int:
                 team_buff=team_buff,
                 replay_base=replay_current_base,
                 replay_fg=replay_current_fg,
-                project_root=PROJECT_ROOT,
+                song_resolver=song_resolver,
                 cfg_dict=cfg_dict,
                 ref_arrays=ref_arrays,
                 calc_song_cache=cur_calc_song_cache,
@@ -582,7 +555,7 @@ def main() -> int:
                 team_buff=team_buff,
                 replay_base=replay_legacy_base,
                 replay_fg=replay_legacy_fg,
-                project_root=PROJECT_ROOT,
+                song_resolver=song_resolver,
                 cfg_dict=cfg_dict,
                 ref_arrays=ref_arrays,
                 calc_song_cache=leg_calc_song_cache,

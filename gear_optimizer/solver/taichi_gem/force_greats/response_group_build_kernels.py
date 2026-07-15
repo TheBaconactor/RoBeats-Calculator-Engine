@@ -59,7 +59,7 @@ _km = None  # keep_mask (_MAX_CAND, _MAX_PAIRS)
 _kc = None  # keep_counts (_MAX_CAND,)
 _wb = None  # write_base (_MAX_CAND,)
 _err = None  # (1,)
-_BUILT_AGAINST = None  # gpu_fields.ga_fg_candidates_packed handle the FieldsBuilder was finalized against
+_BUILT_AGAINST = None  # Core field handle the FieldsBuilder was finalized against.
 
 
 def _ensure_fields() -> None:
@@ -68,7 +68,7 @@ def _ensure_fields() -> None:
     `hard_reset_taichi` (Vulkan recovery / periodic reset / pytest module isolation)
     re-initializes the runtime and frees ALL SNode trees, including this independent
     FieldsBuilder tree, leaving the cached field handles dangling (a hard crash on next
-    access). We detect a reset by keying on a core GA field handle that the main
+    access). We detect a reset by keying on a core exact-evaluator field handle that the main
     allocation re-creates on every (re)init: if it changed, our tree was freed too and
     we rebuild.
     """
@@ -76,7 +76,7 @@ def _ensure_fields() -> None:
     gem_api.ensure_ready()
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
-    sentinel = gpu_fields.ga_fg_candidates_packed
+    sentinel = gpu_fields.skyline_scores
     if _FB is not None and _BUILT_AGAINST is sentinel:
         return
     sf = ti.field(ti.i32)

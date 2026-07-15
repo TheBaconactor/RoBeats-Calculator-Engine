@@ -10,11 +10,10 @@ from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.data.song_io import clone_calc_song
-from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
-from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
-from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
+from gear_optimizer.solver.exact_base_pipeline_decode import decode_exact_base_pipeline_result
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.inflight_utils import _truthy
+from gear_optimizer.solver.native_fg_owner import ExactBaseOwnerResult
 from gear_optimizer.solver.native_inflight_config import NativeSong
 from gear_optimizer.solver.native_inflight_pipeline_fg import (
     NativeFGJobCompletion,
@@ -24,11 +23,11 @@ from gear_optimizer.solver.native_inflight_pipeline_fg import (
     read_native_fg_pipeline_settings,
     run_fg_job_sync,
 )
-from gear_optimizer.solver.native_inflight_pipeline_ga import (
-    GADecodeCompletion,
-    GADecodeQueue,
-    GARunCompletion,
-    InflightGAPipeline,
+from gear_optimizer.solver.native_inflight_pipeline_base import (
+    BaseDecodeCompletion,
+    BaseDecodeQueue,
+    BaseSearchCompletion,
+    InflightBasePipeline,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,17 +35,18 @@ logger = logging.getLogger(__name__)
 _FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
 
 __all__ = [
-    "GADecodeCompletion",
-    "GADecodeQueue",
-    "GARunCompletion",
-    "InflightGAPipeline",
+    "BaseDecodeCompletion",
+    "BaseDecodeQueue",
+    "BaseSearchCompletion",
+    "InflightBasePipeline",
     "InFlightStageProfiler",
     "NativeFGJobCompletion",
     "NativeFGPipeline",
     "NativeFGPipelineSettings",
     "NativeFGPrepCompletion",
     "_sync_fg_runtime_calc_song_keys",
-    "decode_ga_payload_sync",
+    "decode_base_result_sync",
+    "prepare_base_candidate_surface_for_fg",
     "prepare_fg_job_sync",
     "prepare_fg_static_sync",
     "read_native_fg_pipeline_settings",
@@ -254,20 +254,23 @@ class InFlightStageProfiler:
             pass
 
 
-def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list, list, list[dict]]:
+def decode_base_result_sync(
+    song: NativeSong,
+    owner_result: ExactBaseOwnerResult,
+) -> tuple[dict, list, list, list[dict]]:
     cpu_t0 = thread_cpu_time_s()
-    gpu_inputs = getattr(song, "gpu_inputs", song)
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
-    # The fused GA->FG owner continuation (Slice 3) returns
-    # {runs_payload, fg_owner_score}: the GA payload plus the owner-scored FG result
-    # map. Unpack the map onto the song for the FG worker; decode consumes the payload.
-    if not isinstance(ga_result, dict) or "runs_payload" not in ga_result:
-        raise RuntimeError(f"GPU-native GA result must be a fused {{runs_payload, fg_owner_score}} dict for {song_key}")
-    runs_payload = ga_result["runs_payload"]
-    try:
-        song.runtime.fg.fg_owner_score_map = ga_result.get("fg_owner_score")
-    except AttributeError:
-        pass
+    if not isinstance(owner_result, ExactBaseOwnerResult):
+        raise TypeError(
+            f"Exact Base owner returned {type(owner_result).__name__} for {song_key}; "
+            "expected ExactBaseOwnerResult"
+        )
+    context = song.gpu_inputs.solver_context
+    if context is None:
+        raise RuntimeError(f"Exact Base decode is missing SolverContext for {song_key}")
+    if not isinstance(owner_result.fg_owner_score, dict) or not owner_result.fg_owner_score:
+        raise RuntimeError(f"Exact Base owner returned no native FG scores for {song_key}")
+    song.runtime.fg.fg_owner_score_map = owner_result.fg_owner_score
     try:
         emit_profile_event(
             component="inflight_decode",
@@ -276,16 +279,12 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
             metrics={"song_slot": int(getattr(song.runtime, "song_slot", 0) or 0)},
         )
     except Exception as e:
-        logger.debug(f"native_inflight_pipeline:decode_ga_payload_sync: {e}")
-    decode_cfg_data = dict(getattr(song.gpu_inputs, "cfg_data", {}) or {})
-    best_data, best_gear, best_minis, ga_candidates = decode_gpu_native_ga_runs_payload(
-        runs_payload=runs_payload,
-        registry=gpu_inputs.registry,
-        cfg_data=decode_cfg_data,
-        base_stats_fixed=gpu_inputs.fixed_stats,
-        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        logger.debug(f"native_inflight_pipeline:decode_base_result_sync: {e}")
+    best_data, best_gear, best_minis, base_candidates = decode_exact_base_pipeline_result(
+        result=owner_result.base_result,
+        context=context,
     )
-    out = (best_data, best_gear, best_minis, ga_candidates)
+    out = (best_data, best_gear, best_minis, base_candidates)
     try:
         cpu_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
         song.runtime.decode.cpu_decode_s = cpu_s
@@ -298,63 +297,42 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
             song_key=song_key,
             metrics={
                 "song_slot": int(getattr(song.runtime, "song_slot", 0) or 0),
-                "ga_candidates": int(len(ga_candidates or [])),
+                "base_candidates": int(len(base_candidates or [])),
                 "cpu_s": float(cpu_s or 0.0),
             },
         )
     except Exception as e:
-        logger.debug(f"native_inflight_pipeline:decode_ga_payload_sync: {e}")
+        logger.debug(f"native_inflight_pipeline:decode_base_result_sync: {e}")
     return out
 
 
 def prepare_fg_static_sync(song: NativeSong) -> None:
     """
-    Prepare the GA-invariant part of FG while GA is still running.
-    Response-frontier FG consumes GA candidates directly. The late FG prep still owns
-    candidate selection and any work that depends on GA output.
+    Prepare the candidate-independent native FG bundle before exact Base runs.
     """
     from gear_optimizer.solver.fg_response_scoring.store import ResponseFrontierStore
 
     ResponseFrontierStore.ensure_song_bundle(song)
 
 
-def prepare_ga_candidate_surface_for_fg(
+def prepare_base_candidate_surface_for_fg(
     song: NativeSong,
     *,
     fg_candidate_limit: int,
-) -> tuple[list[dict], int, bool]:
+) -> tuple[list[dict], int]:
     runtime = getattr(song, "runtime", song)
-    gpu_inputs = getattr(song, "gpu_inputs", song)
-    # ``ga_candidates`` carries the raw GPU-deduped candidate pool from decode (no
-    # decode-side select anymore). This is the single canonical color-folded select
-    # over that raw pool -- the FG funnel + persistence authority. It runs exactly
-    # once per song (prepare_fg_job_sync, or build_deferred_post_payload when FG is
-    # skipped), then overwrites ga_candidates with the selected surface below.
-    source_candidates = runtime.decode.ga_candidates
-    preselect_count = len(source_candidates or [])
-    selected = select_top_base_ga_candidates(
-        list(source_candidates or []),
-        limit=int(fg_candidate_limit),
-        registry=getattr(gpu_inputs, "registry", None),
-        minis_by_name=getattr(gpu_inputs, "minis_by_name", None),
-        primary_color=str(gpu_inputs.meta_primary_color or ""),
-        secondary_color=str(gpu_inputs.meta_secondary_color or ""),
-        selected_color=str((getattr(gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
-    )
-    hydrated = False
-    if selected:
-        hydrated = True
-        hydrate_fg_candidate_stats(
-            selected,
-            base_stats_fixed=gpu_inputs.fixed_stats,
-            selected_color=str((getattr(gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
-            cfg_data=getattr(gpu_inputs, "cfg_data", None),
-            calc_song=resolve_active_fg_calc_song(song),
-            ref_arrays=getattr(song.gpu_inputs, "ref_arrays", None),
+    selected = list(runtime.decode.base_candidates or [])
+    if not selected:
+        raise RuntimeError("Exact Base did not provide a candidate surface for native FG")
+    if len(selected) > int(fg_candidate_limit):
+        raise RuntimeError(
+            f"Exact Base candidate surface exceeds the FG contract: {len(selected)} > {fg_candidate_limit}"
         )
-    runtime.decode.ga_candidates = selected
+    scores = [int(candidate.get("BaseScore") or candidate.get("Score") or 0) for candidate in selected]
+    if any(score <= 0 for score in scores) or any(a < b for a, b in zip(scores, scores[1:], strict=False)):
+        raise RuntimeError("Exact Base candidate surface is not positive Base-score descending")
     runtime.decode.fg_surface_prepared = True
-    return selected, int(preselect_count), bool(hydrated)
+    return selected, int(len(selected))
 
 
 def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient] = None) -> None:
@@ -370,7 +348,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT)
     resolve_active_fg_calc_song(song)
     t_candidate_select0 = time.perf_counter()
-    ga_candidates, preselect_ga_candidates, hydrated_fg_stats = prepare_ga_candidate_surface_for_fg(
+    base_candidates, candidate_count = prepare_base_candidate_surface_for_fg(
         song,
         fg_candidate_limit=int(fg_candidate_limit),
     )
@@ -382,12 +360,12 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     plan_t0 = time.perf_counter()
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 
-    # Fused GA->FG handoff (Slice 3): the GPU owner scores FG in the GA turn from the
+    # Fused exact Base->FG handoff: the GPU owner scores FG in the Base turn from the
     # device base_stats7, so FG prep only builds the plan (candidate select + per-batch
     # base_components, paired-base + cache_key dedup). The plan's base_components key the
     # lookup into the owner score map at materialize time; no BUILD/SCORE owner round-trip
     # is prefetched here anymore (the former prefetch_group_builds + finalize step is gone).
-    runtime.fg.fg_response_frontier_plan = FgPlanner.plan_prepared_ga_candidates(song, ga_candidates)
+    runtime.fg.fg_response_frontier_plan = FgPlanner.plan_prepared_base_candidates(song, base_candidates)
     if runtime.fg.fg_response_frontier_plan is None:
         raise RuntimeError(
             "FG dynamic prep did not materialize the exact response frontier plan "
@@ -409,7 +387,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     if perf:
         logger.debug(
             "[PERF][FGPrep] "
-            f"limit={fg_candidate_limit} ga_in={preselect_ga_candidates} ga={len(ga_candidates)} "
+            f"limit={fg_candidate_limit} base_in={candidate_count} base={len(base_candidates)} "
             f"select={select_ms:.1f}ms "
             f"candidate_select={candidate_select_ms:.1f}ms hydrate={hydrate_stats_ms:.1f}ms "
             f"plan={plan_ms:.1f}ms total={total_ms:.1f}ms"
@@ -430,9 +408,8 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
                 "hydrate_stats_ms": float(hydrate_stats_ms),
                 "plan_ms": float(plan_ms),
                 "total_ms": float(total_ms),
-                "preselect_ga_candidates": int(preselect_ga_candidates),
-                "ga_candidates": int(len(ga_candidates or [])),
-                "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
+                "base_candidates_in": int(candidate_count),
+                "base_candidates": int(len(base_candidates or [])),
                 "prepared_batches": int(len(prepared_batches)),
                 "prepared_bundle_ms": float(prepared_bundle_ms),
             },

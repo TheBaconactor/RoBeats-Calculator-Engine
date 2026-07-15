@@ -18,12 +18,9 @@ def _task() -> tuple:
         [],
         {},
         {},
-        True,
         1,
-        None,
-        0,
         False,
-        {"repeat_index": 1, "repeat_total": 2, "ga_seed": 123},
+        {"repeat_index": 1, "repeat_total": 2},
     )
 
 
@@ -72,6 +69,6 @@ def test_native_optimization_engine_rejects_invalid_task_tuple():
             NativeOptimizationRequest(tasks=[("too", "short")], in_flight_songs=1, completed_songs=set())
         )
     except ValueError as exc:
-        assert "legacy song task" in str(exc)
+        assert "fixed-field production prefix" in str(exc)
     else:
         raise AssertionError("expected invalid native task tuple to fail at engine boundary")

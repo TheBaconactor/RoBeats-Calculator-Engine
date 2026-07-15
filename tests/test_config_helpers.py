@@ -7,7 +7,6 @@ from gear_optimizer.core.config import (
     AppRuntimeSettings,
     CalculateSongSettings,
     DEFAULT_INFLIGHT_SONGS,
-    GASettings,
     GPUExecutionSettings,
     InflightSettings,
     load_config,
@@ -23,13 +22,6 @@ def _build_config() -> configparser.ConfigParser:
             "IterationEngine": {
                 "ForceGreatsDebug": "false",
                 "GPU_SongSlots": "4",
-                "GPU_GA_TournamentK": "9",
-                "GPU_GA_MutationRate": "1.5",
-                "GPU_GA_ImmigrantRate": "-1",
-                "GPU_GA_EliteCount": "-2",
-                "GPU_GA_NoveltyRepairAttempts": "9",
-                "GA_SearchDepth": "0",
-                "GA_MultiStart": "0",
                 "InFlightSongs": "-3",
                 "InFlight_SongFileCacheMax": "-1",
                 "TeamBuff_BaseCalcSongCacheMax": "5",
@@ -55,21 +47,12 @@ def test_config_parsing_helpers_preserve_clamps_and_defaults():
     cfg = _build_config()
 
     gpu = GPUExecutionSettings.from_config(cfg)
-    ga = GASettings.from_config(cfg)
     inflight = InflightSettings.from_config(cfg)
     calc = CalculateSongSettings.from_config(cfg)
     runtime = AppRuntimeSettings.from_config(cfg)
     ie = read_iteration_engine_settings(cfg)
 
     assert gpu.gpu_song_slots == 4
-
-    assert ga.tournament_k == 8
-    assert ga.mutation_rate == 1.0
-    assert ga.immigrant_rate == 0.0
-    assert ga.elite_count == 0
-    assert ga.novelty_repair_attempts == 4
-    assert ga.search_depth == 1
-    assert ga.multi_start == 1
 
     assert inflight.songs == DEFAULT_INFLIGHT_SONGS
     assert inflight.song_file_cache_max == 0
@@ -161,7 +144,7 @@ class TestExtendsChain:
             "LoopForever = true\n"
             "[IterationEngine]\n"
             "SongQueueLimit = 10\n"
-            "GA_SearchDepth = 500\n",
+            "InFlightSongs = 7\n",
             encoding="utf-8",
         )
         child = tmp_path / "child.ini"
@@ -174,7 +157,7 @@ class TestExtendsChain:
         cfg = load_config(str(child))
         assert cfg.getboolean("CalculateSong", "LoopForever") is True
         assert cfg.getint("IterationEngine", "SongQueueLimit") == 3
-        assert cfg.getint("IterationEngine", "GA_SearchDepth") == 500
+        assert cfg.getint("IterationEngine", "InFlightSongs") == 7
 
     def test_extends_grandparent_layered(self, tmp_path):
         grandparent = tmp_path / "root.ini"
@@ -182,7 +165,7 @@ class TestExtendsChain:
             "[CalculateSong]\n"
             "LoopForever = true\n"
             "[IterationEngine]\n"
-            "GA_SearchDepth = 100\n"
+            "InFlightSongs = 4\n"
             "SongQueueLimit = 50\n",
             encoding="utf-8",
         )
@@ -190,7 +173,7 @@ class TestExtendsChain:
         parent.write_text(
             "[IterationEngine]\n"
             "_extends = root.ini\n"
-            "GA_SearchDepth = 200\n",
+            "InFlightSongs = 8\n",
             encoding="utf-8",
         )
         child = tmp_path / "leaf.ini"
@@ -201,7 +184,7 @@ class TestExtendsChain:
             encoding="utf-8",
         )
         cfg = load_config(str(child))
-        assert cfg.getint("IterationEngine", "GA_SearchDepth") == 200
+        assert cfg.getint("IterationEngine", "InFlightSongs") == 8
         assert cfg.getint("IterationEngine", "SongQueueLimit") == 5
         assert cfg.getboolean("CalculateSong", "LoopForever") is True
 

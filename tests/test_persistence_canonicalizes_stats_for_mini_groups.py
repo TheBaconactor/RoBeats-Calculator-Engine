@@ -7,7 +7,7 @@ def test_persistence_canonicalizes_stats_for_mini_equivalence_groups(monkeypatch
     """
     Regression: When minis are grouped by song-context equivalence, persisted Stats must be
     canonicalized to the representative mini names (legacy DB behavior), not whichever
-    variant happened to be in the GA genome.
+    equivalent variant happened to be in the retained Base witness.
 
     This also catches "score correct but stats wrong" drift where off-element stats differ.
     """

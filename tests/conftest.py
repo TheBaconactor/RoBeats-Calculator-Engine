@@ -172,7 +172,6 @@ def _taichi_module_isolation(request):
                 "test_gpu_",
                 "test_fg_",
                 "test_cpu_gpu_",
-                "test_ga_",
                 "test_taichi_",
                 "test_parity_",
             )

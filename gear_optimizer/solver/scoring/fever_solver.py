@@ -162,17 +162,17 @@ def solve_best_fever_combination(
         logger.debug(f"fever_solver:solve_best_fever_combination: {e}")
         song_slot = 0
 
-    # Single-genome registry payload:
+    # Single-loadout registry payload:
     # - Keep this path on the same registry/native dispatch used by batch evaluators.
     # - Use empty per-slot item pools and encode all fixed stats in base_fixed_stats.
-    population_indices = np.zeros((1, 9), dtype=np.int32)
+    loadout_indices = np.zeros((1, 9), dtype=np.int32)
     item_stats = np.zeros((1, 10), dtype=np.int32)
     slot_start = np.zeros((9,), dtype=np.int32)
     slot_count = np.zeros((9,), dtype=np.int32)
     base_fixed_stats = build_stats_array(base_stats)
 
     request = RegistrySolveRequest(
-        population_indices=population_indices,
+        loadout_indices=loadout_indices,
         item_stats=item_stats,
         slot_start=slot_start,
         slot_count=slot_count,
@@ -245,7 +245,7 @@ def solve_best_fever_combination(
 
 
 def solve_best_fever_combination_batch(cfg, stats_list, calc_song, ref_arrays, override_cfg):
-    """Batched GPU base gem re-solve: N loadouts in ONE skyline dispatch (n_genomes=N).
+    """Batched GPU base gem re-solve: N loadouts in one skyline dispatch.
 
     The whole base solve (timeline reuse + skyline + scoring) then runs once for all loadouts, and
     the batch warmstart keeps each loadout's combo sweep independent. ``stats_list`` is N pre-gem
@@ -291,16 +291,16 @@ def solve_best_fever_combination_batch(cfg, stats_list, calc_song, ref_arrays, o
     n = len(rows)
     # Encode each loadout's pre-gem stats as ONE item in the skyline item pool. The
     # aggregator skips item_id == 0 (empty sentinel), so put loadout g at item g+1 and have
-    # population_indices select only that item (slots 1-8 stay 0/empty). base_fixed_stats is 0, so
+    # loadout_indices select only that item (slots 1-8 stay 0/empty). base_fixed_stats is 0, so
     # the aggregator yields exactly each loadout's pre-gem stats.
     item_stats = np.zeros((n + 1, 10), dtype=np.int32)
-    population_indices = np.zeros((n, 9), dtype=np.int32)
+    loadout_indices = np.zeros((n, 9), dtype=np.int32)
     normalized: list[dict] = []
     for g, s in enumerate(rows):
         nb, _sel = build_base_fixed_stats_dict(s, gem_settings, fallback_selected_color=selected_color)
         normalized.append(nb)
         item_stats[g + 1, :] = np.asarray(build_stats_array(nb), dtype=np.int32)[:10]
-        population_indices[g, 0] = g + 1
+        loadout_indices[g, 0] = g + 1
 
     try:
         song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
@@ -309,7 +309,7 @@ def solve_best_fever_combination_batch(cfg, stats_list, calc_song, ref_arrays, o
         song_slot = 0
 
     request = RegistrySolveRequest(
-        population_indices=population_indices,
+        loadout_indices=loadout_indices,
         item_stats=item_stats,
         slot_start=np.zeros((9,), dtype=np.int32),
         slot_count=np.zeros((9,), dtype=np.int32),
@@ -337,7 +337,7 @@ def solve_best_fever_combination_batch(cfg, stats_list, calc_song, ref_arrays, o
     gpu_results = dispatch_registry_solve(request)
     if not gpu_results or len(gpu_results) != n:
         raise RuntimeError(
-            f"batched base re-solve returned {len(gpu_results) if gpu_results else 0} results for {n} genomes"
+            f"batched base re-solve returned {len(gpu_results) if gpu_results else 0} results for {n} loadouts"
         )
 
     out: list[dict] = []

@@ -659,37 +659,33 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     assert legacy_path.exists()
 
 
-def test_issue149_v31_accepts_only_ratified_predecessors() -> None:
+def test_base_perfect_exit_expansion_accepts_only_provisioned_fg_pools() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
-    assert current_version == "fg-response-frontier-visible-first-v31+logic-52861c6156f1"
+    assert current_version == "fg-response-frontier-visible-first-v31+logic-a230de3917e0"
     assert response_cache_store.fg_response_compatible_cache_versions() == (
         current_version,
-        "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
-        "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
-        "fg-response-frontier-visible-first-v31+logic-76140458b749",
-        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
-        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
-        "fg-response-frontier-visible-first-v31+logic-f67224918652",
-        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
-        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
-        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
-        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
-        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
-        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
-        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-8f06577b631d",
         "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
-        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
-        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
-        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
-        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    )
+    assert response_cache_store._fg_response_cache_version_is_compatible(current_version)
+    assert response_cache_store._fg_response_cache_version_is_compatible(
+        "fg-response-frontier-visible-first-v31+logic-8f06577b631d"
+    )
+    assert response_cache_store._fg_response_cache_version_is_compatible(
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf"
+    )
+    assert not response_cache_store._fg_response_cache_version_is_compatible(
+        "fg-response-frontier-visible-first-v31+logic-eeda1eb018b7"
     )
 
 
-def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(
+@pytest.mark.parametrize("predecessor_index", (1, 2))
+def test_base_perfect_exit_expansion_predecessors_reuse_bundle_without_build(
     tmp_path: Path,
     monkeypatch,
+    predecessor_index: int,
 ) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
@@ -697,7 +693,9 @@ def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(
     response_cache.reset_fg_response_frontier_payload_cache()
     keys = ((0, 0), (1, 0))
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
-    predecessor = response_cache_store.fg_response_compatible_cache_versions()[1]
+    predecessor = response_cache_store.fg_response_compatible_cache_versions()[
+        int(predecessor_index)
+    ]
 
     monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", predecessor)
     legacy = response_cache.build_or_load_response_frontier_payload(
@@ -851,6 +849,36 @@ def test_compress_cache_dir_sidecars_preserves_memmap_bytes(tmp_path: Path, monk
     low = get_compressed(str(sidecar), ctypes.byref(high))
     on_disk = (high.value << 32) | low
     assert on_disk <= logical
+
+
+def test_windows_sidecar_compression_excludes_live_builder_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+
+    calls: list[list[str]] = []
+
+    def _fake_compact(args, **_kwargs):
+        calls.append([str(value) for value in args])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(store.sys, "platform", "win32")
+    monkeypatch.setattr(store.subprocess, "run", _fake_compact)
+
+    store.compress_cache_dir_sidecars()
+
+    assert calls == [
+        [
+            "compact",
+            "/c",
+            "/exe:XPRESS16K",
+            "/i",
+            "/q",
+            str(tmp_path / "*.npy"),
+        ]
+    ]
 
 
 def test_macos_sidecar_compression_copies_in_bounded_batches_and_preserves_bytes(

@@ -10,8 +10,8 @@ from gear_optimizer.data import database as db
 from gear_optimizer.data.database import persistence
 
 
-def _entry(*, score: int, fg_score: int = 0, force: dict | None = None, deferred: bool = False) -> dict:
-    out = {
+def _entry(*, score: int, fg_score: int = 0, force: dict | None = None) -> dict:
+    return {
         "score": score,
         "fg_score": fg_score,
         "gear": ["G1", "G2"],
@@ -19,9 +19,6 @@ def _entry(*, score: int, fg_score: int = 0, force: dict | None = None, deferred
         "details": {"test": "base" if force is None else "fg_variant"},
         "force": force,
     }
-    if deferred:
-        out["_deferred_fg_update"] = True
-    return out
 
 
 def _force_payload(fg_score: int, *, base_score: int) -> dict:
@@ -188,7 +185,7 @@ def test_update_song_counters_propagates_sqlite_errors(tmp_path):
         )
 
 
-def test_optimizer_result_preserves_meta_only_and_deferred_fg_semantics(tmp_path):
+def test_optimizer_result_preserves_meta_only_and_full_base_fg_semantics(tmp_path):
     db_path = tmp_path / "semantics.db"
     conn = db.get_db_connection(str(db_path))
     db.configure_persistent_writer_connection(conn)
@@ -204,7 +201,7 @@ def test_optimizer_result_preserves_meta_only_and_deferred_fg_semantics(tmp_path
 
     base_entry = _entry(score=100)
     db.save_optimizer_song_result(
-        "Deferred Song",
+        "Full Result Song",
         [base_entry],
         processed_run=True,
         conn=conn,
@@ -215,7 +212,7 @@ def test_optimizer_result_preserves_meta_only_and_deferred_fg_semantics(tmp_path
 
     second_entry = _entry(score=100)
     db.save_optimizer_song_result(
-        "Deferred Song",
+        "Full Result Song",
         [second_entry],
         processed_run=True,
         conn=conn,
@@ -224,28 +221,27 @@ def test_optimizer_result_preserves_meta_only_and_deferred_fg_semantics(tmp_path
     assert second_entry["details"]["attempt_lifetime"] == 2
     assert second_entry["details"]["attempts_first"] == 2
 
-    deferred_entry = _entry(
+    fg_entry = _entry(
         score=100,
         fg_score=150,
         force=_force_payload(150, base_score=100),
-        deferred=True,
     )
     db.save_optimizer_song_result(
-        "Deferred Song",
-        [deferred_entry],
-        processed_run=False,
+        "Full Result Song",
+        [fg_entry],
+        processed_run=True,
         conn=conn,
         db_path=str(db_path),
     )
-    assert db.get_song_counters("Deferred Song", conn=conn) == (2, 1, 100, 150)
+    assert db.get_song_counters("Full Result Song", conn=conn) == (3, 1, 100, 150)
 
     base_row = conn.execute(
         "SELECT score, details_json FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5'",
-        ("Deferred Song",),
+        ("Full Result Song",),
     ).fetchone()
     fg_row = conn.execute(
         "SELECT score, fg_score FROM team_buff_fg_loadouts WHERE song_name = ? AND team_buff = 'T5'",
-        ("Deferred Song",),
+        ("Full Result Song",),
     ).fetchone()
     assert base_row["score"] == 100
     assert json.loads(base_row["details_json"])["test"] == "base"
@@ -274,22 +270,21 @@ def test_record_improvement_uses_persisted_fg_pairing_not_entry_score(tmp_path):
     )
     assert db.get_song_counters("FG Pairing", conn=conn) == (2, 2, 100, 0)
 
-    deferred_entry = _entry(
+    fg_entry = _entry(
         score=100,
         fg_score=95,
         force=_force_payload(95, base_score=90),
-        deferred=True,
     )
-    deferred_entry["fg_base_score"] = 90
+    fg_entry["fg_base_score"] = 90
     db.save_optimizer_song_result(
         "FG Pairing",
-        [deferred_entry],
-        processed_run=False,
+        [fg_entry],
+        processed_run=True,
         conn=conn,
         db_path=str(db_path),
     )
 
-    assert db.get_song_counters("FG Pairing", conn=conn) == (2, 1, 100, 95)
+    assert db.get_song_counters("FG Pairing", conn=conn) == (3, 1, 100, 95)
     conn.close()
 
 

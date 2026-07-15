@@ -10,13 +10,13 @@ def test_build_abort_queue_snapshot_uses_native_queue_labels():
         pending_tasks=1,
         prepared=2,
         prep_inflight=3,
-        ga_inflight=4,
+        base_inflight=4,
         decode_inflight=5,
         pending_fg=6,
         fg_prep=7,
         fg_futures=8,
     ) == (
-        "pending=1 prepared=2 prep_inflight=3 ga_inflight=4 decode_inflight=5 "
+        "pending=1 prepared=2 prep_inflight=3 base_inflight=4 decode_inflight=5 "
         "pending_fg=6 fg_prep=7 fg_futures=8"
     )
 
@@ -47,7 +47,7 @@ def test_log_native_abort_builds_snapshot_and_writes_log(tmp_path):
         pending_tasks=1,
         prepared=2,
         prep_inflight=3,
-        ga_inflight=4,
+        base_inflight=4,
         decode_inflight=5,
         pending_fg=6,
         fg_prep=7,
@@ -60,6 +60,6 @@ def test_log_native_abort_builds_snapshot_and_writes_log(tmp_path):
     assert written is True
     text = path.read_text(encoding="utf-8")
     assert "[2026-05-12 12:00:00] RuntimeError: boom" in text
-    assert "pending=1 prepared=2 prep_inflight=3 ga_inflight=4 decode_inflight=5" in text
+    assert "pending=1 prepared=2 prep_inflight=3 base_inflight=4 decode_inflight=5" in text
     assert "pending_fg=6 fg_prep=7 fg_futures=8" in text
     assert "TRACE" in text

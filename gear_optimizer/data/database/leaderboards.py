@@ -1,5 +1,5 @@
 """
-Leaderboard reads: top base + FG loadouts for a song, used to seed the GA.
+Leaderboard reads for persisted Base and FG loadouts.
 """
 import os
 import json
@@ -39,7 +39,7 @@ def get_best_loadouts(
     db_path: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Retrieve the top N loadouts for a song to seed the GA.
+    Retrieve the top N persisted loadouts for a song.
     Storage format:
     - gear_ids_blob: varint-packed list of encoding-table IDs (decoded via `gear_name_encoding`)
     - minis_ids_blob: varint-packed groups of IDs with 0 separators (decoded via `mini_name_encoding`)

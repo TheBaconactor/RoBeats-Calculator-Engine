@@ -5,13 +5,13 @@ from tests.persistence_test_support import assemble_without_replay
 def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_best_fg_payload():
     """
     Regression: when the same loadout hash is emitted multiple times (e.g. best_fg fallback +
-    GA candidates fallback), persistence must keep the best *base* score/details while also
+    retained Base candidates), persistence must keep the best *base* score/details while also
     keeping the best FG score/force payload.
     """
     loadout_gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
     loadout_minis = ["M1", "M2", "M3"]
 
-    # Top1 can be unrelated; we only care about the duplicated best_fg vs GA candidate.
+    # Top1 can be unrelated; we only care about the duplicated best_fg vs Base candidate.
     db_payload = {
         "score": 999,
         "gear": ["TOP_GEAR"],
@@ -31,7 +31,7 @@ def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_b
         },
     }
 
-    ga_candidates = [
+    base_candidates = [
         {
             # Higher base score for the same loadout hash should replace the FG fallback's base context/details.
             "BaseScore": 80,
@@ -45,7 +45,7 @@ def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_b
 
     out = assemble_without_replay(
         db_payload=db_payload,
-        ga_candidates=ga_candidates,
+        base_candidates=base_candidates,
         loadout_entries=None,
         build_details_fn=build_details_fn,
     )
@@ -61,7 +61,7 @@ def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_b
     assert isinstance(entry.get("force"), dict)
 
 
-def test_build_persistence_entries_ga_fallback_preserves_effective_hash():
+def test_build_persistence_entries_base_candidate_preserves_effective_hash():
     out = assemble_without_replay(
         db_payload={
             "score": 999,
@@ -71,23 +71,23 @@ def test_build_persistence_entries_ga_fallback_preserves_effective_hash():
             "fg_score": 0,
             "force": None,
         },
-        ga_candidates=[
+        base_candidates=[
             {
-                "loadout_hash": "effective-ga-hash",
+                "loadout_hash": "effective-base-hash",
                 "BaseScore": 123,
                 "Gear": ["G1"],
                 "Minis": ["RepresentativeMini"],
-                "Data": {"marker": "ga"},
+                "Data": {"marker": "base"},
             }
         ],
         loadout_entries=None,
         build_details_fn=lambda data: {"marker": (data or {}).get("marker")},
     )
 
-    matches = [entry for entry in out if entry.get("loadout_hash") == "effective-ga-hash"]
+    matches = [entry for entry in out if entry.get("loadout_hash") == "effective-base-hash"]
     assert len(matches) == 1
     assert int(matches[0].get("score", 0) or 0) == 123
-    assert (matches[0].get("details") or {}).get("marker") == "ga"
+    assert (matches[0].get("details") or {}).get("marker") == "base"
 
 
 def test_build_persistence_entries_retained_fg_without_force_drops_fg_score():
@@ -106,7 +106,7 @@ def test_build_persistence_entries_retained_fg_without_force_drops_fg_score():
             "fg_score": 0,
             "force": None,
         },
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries={
             "retained_hash": {
                 "score": 120,
@@ -144,7 +144,7 @@ def test_build_persistence_entries_top1_fg_without_force_drops_fg_score():
             "fg_score": 200,
             "force": None,
         },
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries=None,
         build_details_fn=lambda data: dict(data or {}),
     )
@@ -184,7 +184,6 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
             "details": {"marker": "stale", "Stats": {"Rush": 2}},
             "fg_score": 0,
             "force": None,
-            "_deferred_fg_update": True,
         }
     }
 
@@ -230,7 +229,7 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
 
     out = build_persistence_entries(
         db_payload,
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries=loadout_entries,
         build_details_fn=lambda data: dict(data or {}),
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},
@@ -319,7 +318,7 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
 
     out = build_persistence_entries(
         db_payload,
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries=loadout_entries,
         build_details_fn=lambda data: dict(data or {}),
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},

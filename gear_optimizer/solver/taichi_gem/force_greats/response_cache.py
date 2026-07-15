@@ -184,7 +184,7 @@ def session_head_dominance_box(ref_arrays: dict[str, Any]) -> tuple[float, float
     measured LUT ranges (the same arrays `_assert_head_dominance_box_covers` validates), value and
     great corners kept at the global box (v1: their per-note derivation is color-coupled; the
     global corners stay a sound cover). Fails loud without the LUTs -- the session prune is a
-    GA-solve feature and the solve path always carries full reference arrays."""
+    search feature and the solve path always carries full reference arrays."""
     cm_lut = ref_arrays.get("Combo Multiplier")
     fm_lut = ref_arrays.get("Fever Multiplier")
     if cm_lut is None or fm_lut is None:
@@ -215,7 +215,7 @@ def session_prune_scoring_bundle(
     bundle: FgResponseFrontierScoringBundle,
     ref_arrays: dict[str, Any],
 ) -> FgResponseFrontierScoringBundle:
-    """Session-box cone prune of a scoring bundle for ONE solve run (GA path only; persist/audit
+    """Session-box cone prune of a scoring bundle for one exact Base solve; persist/audit
     consumers load the full bundle). Re-runs the 16-corner dominance filter with corners at the
     session's realizable stat box: every dropped row is dominated at every cell this inventory can
     evaluate, so scoring winners are identical while the GPU score loop, uploads, and VRAM shrink

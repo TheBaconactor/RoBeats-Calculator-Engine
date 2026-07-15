@@ -32,6 +32,7 @@ from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached  # noqa
 from gear_optimizer.core.config import load_config  # noqa: E402
 from gear_optimizer.core.team_buff import normalize_team_buff  # noqa: E402
 from gear_optimizer.core.utils import cfg_to_dict  # noqa: E402
+from gear_optimizer.data.song_io import SongFileResolver  # noqa: E402
 from tools.db.compare_overall_best_to_legacy_db import (  # noqa: E402
     _best_base,
     _best_fg,
@@ -122,6 +123,7 @@ def _manual_verify_song(
     cfg_dict: dict[str, Any],
     ref_arrays: dict[str, Any],
     calc_song_cache: dict[str, dict[str, Any]],
+    song_resolver: SongFileResolver,
 ) -> dict[str, Any]:
     persisted_base = _best_base(conn, song=song, team_buff=team_buff)
     persisted_fg = _best_fg(conn, song=song, team_buff=team_buff)
@@ -131,7 +133,7 @@ def _manual_verify_song(
         team_buff=team_buff,
         replay_base=True,
         replay_fg=True,
-        project_root=PROJECT_ROOT,
+        song_resolver=song_resolver,
         cfg_dict=cfg_dict,
         ref_arrays=ref_arrays,
         calc_song_cache=calc_song_cache,
@@ -176,6 +178,7 @@ def main() -> int:
 
         current_calc_song_cache: dict[str, dict[str, Any]] = {}
         reference_calc_song_cache: dict[str, dict[str, Any]] = {}
+        song_resolver = SongFileResolver(PROJECT_ROOT / "Data")
 
         overall_counts = Counter()
         current_win_sources = Counter()
@@ -195,6 +198,7 @@ def main() -> int:
                 cfg_dict=cfg_dict,
                 ref_arrays=ref_arrays,
                 calc_song_cache=current_calc_song_cache,
+                song_resolver=song_resolver,
             )
             reference_song = _manual_verify_song(
                 reference_conn,
@@ -203,6 +207,7 @@ def main() -> int:
                 cfg_dict=cfg_dict,
                 ref_arrays=ref_arrays,
                 calc_song_cache=reference_calc_song_cache,
+                song_resolver=song_resolver,
             )
 
             current_replayed = current_song["replayed"]

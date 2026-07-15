@@ -1,11 +1,9 @@
-import configparser
-
 from gear_optimizer.solver.native_inflight_orchestrator import (
+    base_admission_fg_backlog_limit,
+    base_should_pause_for_fg_backlog,
     continuous_fg_allow_not_ready,
     continuous_fg_prep_start_budget,
     continuous_fg_submit_budget,
-    ga_admission_fg_backlog_limit,
-    ga_should_pause_for_fg_backlog,
 )
 from gear_optimizer.solver.native_inflight_lifecycle import BubbleTracker
 from gear_optimizer.solver.native_inflight_scheduler_policy import (
@@ -19,7 +17,6 @@ from gear_optimizer.solver.native_inflight_config import (
     inflight_shutdown_debug_enabled,
     inflight_stall_debug_enabled,
     read_db_prefetch_workers,
-    read_ga_multi_start,
     read_inflight_worker_count,
     read_inflight_loop_observer_settings,
     read_inflight_runtime_settings,
@@ -33,20 +30,14 @@ from gear_optimizer.solver.inflight_wait import (
 from tests.native_song_factory import make_native_song
 
 
-def _cfg_with_iteration_engine(**pairs: str) -> configparser.ConfigParser:
-    cfg = configparser.ConfigParser()
-    cfg["IterationEngine"] = {k: str(v) for k, v in pairs.items()}
-    return cfg
-
-
-def test_count_active_song_lanes_deduplicates_ga_decode_and_fg_keys():
-    ga_song = make_native_song(task_key="song-a", song_name="Song A")
+def test_count_active_song_lanes_deduplicates_base_decode_and_fg_keys():
+    base_song = make_native_song(task_key="song-a", song_name="Song A")
     decode_song = make_native_song(task_key="song-a", song_name="Song A")
     other_decode = make_native_song(task_key="", song_name="Song B")
 
     assert (
         count_active_song_lanes(
-            ga_inflight=[ga_song],
+            base_inflight=[base_song],
             decode_inflight=[decode_song, other_decode],
             fg_active_keys={"Song B", "song-c", ""},
         )
@@ -58,24 +49,18 @@ def test_read_fg_scheduler_mode_defaults_to_continuous():
     assert read_fg_scheduler_mode() == "continuous"
 
 
-def test_read_ga_multi_start_uses_runtime_ga_settings():
-    cfg = _cfg_with_iteration_engine(GA_MultiStart="4")
-
-    assert read_ga_multi_start(cfg) == 4
-
-
-def test_ga_admission_fg_backlog_limit_sizes_to_fg_stage_steady_state():
+def test_base_admission_fg_backlog_limit_sizes_to_fg_stage_steady_state():
     # Steady state is every FG worker busy plus a full prep runway; the bound
     # must sit above that so it only binds when FG genuinely falls behind.
-    assert ga_admission_fg_backlog_limit(fg_workers=2, fg_prep_workers=2) == 6
-    assert ga_admission_fg_backlog_limit(fg_workers=2, fg_prep_workers=4) == 8
+    assert base_admission_fg_backlog_limit(fg_workers=2, fg_prep_workers=2) == 6
+    assert base_admission_fg_backlog_limit(fg_workers=2, fg_prep_workers=4) == 8
     # Tiny pools still keep a usable allowance.
-    assert ga_admission_fg_backlog_limit(fg_workers=1, fg_prep_workers=1) == 5
+    assert base_admission_fg_backlog_limit(fg_workers=1, fg_prep_workers=1) == 5
 
 
-def test_ga_pauses_only_when_fg_debt_exceeds_the_bound():
+def test_base_pauses_only_when_fg_debt_exceeds_the_bound():
     assert (
-        ga_should_pause_for_fg_backlog(
+        base_should_pause_for_fg_backlog(
             pending_fg_count=4,
             fg_inflight_count=2,
             backlog_limit=6,
@@ -83,7 +68,7 @@ def test_ga_pauses_only_when_fg_debt_exceeds_the_bound():
         is False
     )
     assert (
-        ga_should_pause_for_fg_backlog(
+        base_should_pause_for_fg_backlog(
             pending_fg_count=5,
             fg_inflight_count=2,
             backlog_limit=6,
@@ -91,7 +76,7 @@ def test_ga_pauses_only_when_fg_debt_exceeds_the_bound():
         is True
     )
     assert (
-        ga_should_pause_for_fg_backlog(
+        base_should_pause_for_fg_backlog(
             pending_fg_count=0,
             fg_inflight_count=0,
             backlog_limit=6,
@@ -101,8 +86,8 @@ def test_ga_pauses_only_when_fg_debt_exceeds_the_bound():
 
 
 def test_continuous_fg_allows_unready_jobs_only_for_final_drain():
-    assert continuous_fg_allow_not_ready(no_ga_remaining=True) is True
-    assert continuous_fg_allow_not_ready(no_ga_remaining=False) is False
+    assert continuous_fg_allow_not_ready(no_base_remaining=True) is True
+    assert continuous_fg_allow_not_ready(no_base_remaining=False) is False
 
 
 def test_continuous_fg_submit_budget_fills_free_workers_with_ready_songs():
@@ -113,7 +98,7 @@ def test_continuous_fg_submit_budget_fills_free_workers_with_ready_songs():
             fg_inflight_count=0,
             fg_workers=4,
             fg_batch_max=4,
-            no_ga_remaining=False,
+            no_base_remaining=False,
         )
         == 4
     )
@@ -124,7 +109,7 @@ def test_continuous_fg_submit_budget_fills_free_workers_with_ready_songs():
             fg_inflight_count=2,
             fg_workers=4,
             fg_batch_max=4,
-            no_ga_remaining=False,
+            no_base_remaining=False,
         )
         == 2
     )
@@ -132,7 +117,7 @@ def test_continuous_fg_submit_budget_fills_free_workers_with_ready_songs():
 
 def test_continuous_fg_submit_budget_mid_run_is_capped_by_ready_songs():
     # A worker handed a not-yet-ready song would block on its prep future while
-    # GA still feeds the owner; mid-run budget never exceeds the ready count.
+    # Base still feeds the owner; mid-run budget never exceeds the ready count.
     assert (
         continuous_fg_submit_budget(
             pending_fg_count=8,
@@ -140,7 +125,7 @@ def test_continuous_fg_submit_budget_mid_run_is_capped_by_ready_songs():
             fg_inflight_count=0,
             fg_workers=4,
             fg_batch_max=4,
-            no_ga_remaining=False,
+            no_base_remaining=False,
         )
         == 0
     )
@@ -154,7 +139,7 @@ def test_continuous_fg_submit_budget_honors_end_of_run_drain():
             fg_inflight_count=0,
             fg_workers=4,
             fg_batch_max=4,
-            no_ga_remaining=True,
+            no_base_remaining=True,
         )
         == 4
     )
@@ -169,7 +154,7 @@ def test_first_task_config_extracts_legacy_task_config():
     assert first_task_config([]) is None
 
 
-def test_read_inflight_worker_count_uses_canonical_cpu_sizing_and_ga_seed():
+def test_read_inflight_worker_count_uses_canonical_cpu_sizing():
     assert (
         read_inflight_worker_count(
             inflight_limit=8,
@@ -185,16 +170,6 @@ def test_read_inflight_worker_count_uses_canonical_cpu_sizing_and_ga_seed():
         )
         == default_worker_threads(inflight_limit=8, kind="decode")
     )
-
-    assert (
-        read_inflight_worker_count(
-            inflight_limit=8,
-            kind="prep",
-            ga_seed="fixed",
-        )
-        == 1
-    )
-
 
 def test_read_db_prefetch_workers_defaults_from_fg_prep():
     assert read_db_prefetch_workers(fg_prep_workers=2) == 2
@@ -344,14 +319,14 @@ def test_wait_for_completion_event_long_timeout_uses_direct_wait():
 def test_closed_loop_bubble_kpi_increases_with_ready_work_and_fg_wait():
     quiet = closed_loop_bubble_kpi(
         idle_sec=0.5,
-        ready_ga_count=1,
+        ready_base_count=1,
         ready_fg_count=0,
         backlog_count=2,
         oldest_fg_wait_s=0.0,
     )
     pressured = closed_loop_bubble_kpi(
         idle_sec=0.5,
-        ready_ga_count=2,
+        ready_base_count=2,
         ready_fg_count=1,
         backlog_count=6,
         oldest_fg_wait_s=2.0,
@@ -372,7 +347,7 @@ def test_bubble_snapshot_reports_zero_idle_while_gpu_work_is_inflight():
         decode_inflight_count=0,
         pending_fg_count=2,
         fg_prep_inflight_count=0,
-        ga_inflight_count=1,
+        base_inflight_count=1,
         fg_futures_count=1,
         last_progress=10.0,
         oldest_fg_wait_s=2.0,
@@ -394,7 +369,7 @@ def test_bubble_snapshot_reports_idle_during_host_only_fg_materialization():
         decode_inflight_count=0,
         pending_fg_count=2,
         fg_prep_inflight_count=0,
-        ga_inflight_count=0,
+        base_inflight_count=0,
         fg_futures_count=2,
         last_progress=10.0,
         oldest_fg_wait_s=2.0,

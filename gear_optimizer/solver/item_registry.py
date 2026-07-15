@@ -1,9 +1,9 @@
 """
-Item Registry - GPU-optimized item encoding for GPU-native GA.
+Item Registry - GPU-optimized item encoding for exact loadout search.
 
 This module provides the ItemRegistry class which:
 1. Assigns contiguous integer IDs to items per slot
-2. Encodes/decodes genomes between dict-based and ID-based representations
+2. Encodes/decodes loadouts between dict-based and ID-based representations
 3. Provides GPU-friendly arrays for item stats and slot pools
 """
 
@@ -12,6 +12,7 @@ from typing import Optional
 import json
 import logging
 
+from gear_optimizer.core.catalog_fingerprint import catalog_sequence_fingerprint
 
 
 logger = logging.getLogger(__name__)
@@ -33,40 +34,49 @@ MINI_SLOT_INDICES = [6, 7, 8]  # Minis occupy slots 6, 7, 8
 
 # Cache gear-side registry state (song-invariant). Mini pools are still rebuilt per song.
 _GEAR_REGISTRY_CACHE: dict[
-    tuple[tuple[str, ...], tuple[str, ...], tuple[tuple[str, int], ...], tuple[str, ...]],
-    tuple[dict[int, dict], dict[tuple[int, str], int], list[dict[str, int]], list[int], list[int], int],
+    tuple[tuple[str, ...], bytes, tuple[tuple[str, bytes], ...], int],
+    tuple[
+        object,
+        dict[int, dict],
+        dict[tuple[int, str], int],
+        list[dict[str, int]],
+        list[int],
+        list[int],
+        int,
+    ],
 ] = {}
 
 
-def _fixed_gear_key(slots: list[str], fixed_gear: Optional[list[dict]]) -> tuple[str, ...]:
+def _fixed_gear_fingerprint(slots: list[str], fixed_gear: Optional[list[dict]]) -> bytes:
     if not fixed_gear:
-        return ()
-    out: list[str] = []
+        return catalog_sequence_fingerprint(())
+    aligned: list[object] = []
     for i, _slot_name in enumerate(slots):
         item = fixed_gear[i] if i < len(fixed_gear) else None
-        if isinstance(item, dict):
-            out.append(str(item.get("Name", "") or ""))
-        elif item:
-            out.append(str(item))
-        else:
-            out.append("")
-    return tuple(out)
+        aligned.append(item)
+    return catalog_sequence_fingerprint(aligned)
 
 
-def _gear_pool_signature(gear_pool: dict[str, list[dict]], slots: list[str]) -> tuple[tuple[str, int], ...]:
-    return tuple((str(slot_name), int(len(gear_pool.get(slot_name, []) or []))) for slot_name in slots)
+def _gear_pool_signature(
+    gear_pool: dict[str, list[dict]],
+    slots: list[str],
+) -> tuple[tuple[str, bytes], ...]:
+    return tuple(
+        (
+            str(slot_name),
+            catalog_sequence_fingerprint(gear_pool.get(slot_name, []) or []),
+        )
+        for slot_name in slots
+    )
 
 
 def _stable_item_sort_key(item: object) -> tuple:
     """
     Deterministic ordering for gear/mini pools.
 
-    GPU-native GA is deterministic in *ID-space* (it mutates/samples integer IDs from per-slot pools).
-    That determinism only holds end-to-end if the (slot, item) -> item_id mapping is stable across
-    processes. Upstream pool construction may iterate dicts/sets; if so, item order can vary with
-    PYTHONHASHSEED and make GA results look "lucky" even when GA_SEED is fixed.
-
-    Canonicalizing the pool order fixes that: same pool contents => same IDs => same GA trajectory.
+    Exact witness reconstruction is deterministic in ID-space only when the
+    ``(slot, item) -> item_id`` mapping is stable across processes. Canonical
+    pool ordering makes equal pool contents produce equal IDs.
     """
 
     if not isinstance(item, dict):
@@ -95,8 +105,8 @@ class ItemRegistry:
       - Gear slots 0-5: each has its own ID range
       - Mini slots 6-8: share the same pool (minis are interchangeable)
 
-    This allows GPU mutation to sample from slot pools using simple
-    modular arithmetic: new_id = slot_start[slot] + (rand % slot_count[slot])
+    Contiguous slot ranges let GPU kernels validate and reconstruct candidate
+    IDs without dictionary lookups.
     """
 
     def __init__(
@@ -134,11 +144,13 @@ class ItemRegistry:
         slots_key = tuple(str(s) for s in slots)
         cache_key = (
             slots_key,
-            _fixed_gear_key(slots, fixed_gear),
+            _fixed_gear_fingerprint(slots, fixed_gear),
             _gear_pool_signature(gear_pool, slots),
-            (str(id(gear_pool)),),
+            int(id(gear_pool)),
         )
         cached = _GEAR_REGISTRY_CACHE.get(cache_key)
+        if cached is not None and cached[0] is not gear_pool:
+            cached = None
 
         if cached is None:
             id_to_item_base: dict[int, dict] = {0: {}}
@@ -172,6 +184,7 @@ class ItemRegistry:
                     slot_name_to_id_base[slot_idx][str(name)] = item_id
 
             cached = (
+                gear_pool,
                 id_to_item_base,
                 item_to_id_base,
                 slot_name_to_id_base,
@@ -185,6 +198,7 @@ class ItemRegistry:
                 _GEAR_REGISTRY_CACHE[cache_key] = cached
 
         (
+            _gear_pool_source,
             id_to_item_base,
             item_to_id_base,
             slot_name_to_id_base,
@@ -258,12 +272,12 @@ class ItemRegistry:
         self._id_to_item_list = items
         self._id_to_name_list = [d.get("Name", "None") if d else "None" for d in items]
 
-    def encode_genome(self, genome: list[dict]) -> np.ndarray:
+    def encode_loadout(self, loadout: list[dict]) -> np.ndarray:
         """
-        Convert a genome (list of item dicts) to an array of item IDs.
+        Convert a loadout (list of item dicts) to an array of item IDs.
 
         Args:
-            genome: List of 9 item dicts (6 gear + 3 mini)
+            loadout: List of 9 item dicts (6 gear + 3 mini)
 
         Returns:
             np.ndarray: (9,) int32 array of item IDs
@@ -271,7 +285,7 @@ class ItemRegistry:
         ids = np.zeros(9, dtype=np.int32)
         slot_name_to_id = self._slot_name_to_id
 
-        for slot_idx, item in enumerate(genome[:9]):
+        for slot_idx, item in enumerate(loadout[:9]):
             if not item:
                 continue
 
@@ -284,9 +298,9 @@ class ItemRegistry:
 
         return ids
 
-    def decode_genome(self, ids: np.ndarray) -> list[dict]:
+    def decode_loadout(self, ids: np.ndarray) -> list[dict]:
         """
-        Convert an array of item IDs back to a genome (list of item dicts).
+        Convert an array of item IDs back to a loadout (list of item dicts).
 
         Args:
             ids: (9,) array of item IDs
@@ -306,7 +320,7 @@ class ItemRegistry:
                     out_append({})
                     continue
                 if idx < 0 or idx >= n:
-                    raise ValueError(f"genome references unknown item id {idx} (registry has {n} ids)")
+                    raise ValueError(f"loadout references unknown item id {idx} (registry has {n} ids)")
                 out_append(id_list[idx])
             return out
         id_to_item = self.id_to_item
@@ -318,7 +332,7 @@ class ItemRegistry:
                 continue
             item = id_to_item.get(idx)
             if item is None:
-                raise ValueError(f"genome references unknown item id {idx}")
+                raise ValueError(f"loadout references unknown item id {idx}")
             out_dicts.append(item)
         return out_dicts
 
@@ -339,7 +353,7 @@ class ItemRegistry:
                     out_append("None")
                     continue
                 if idx < 0 or idx >= n:
-                    raise ValueError(f"genome references unknown item id {idx} (registry has {n} ids)")
+                    raise ValueError(f"loadout references unknown item id {idx} (registry has {n} ids)")
                 out_append(name_list[idx])
             return out
         # Dict-lookup route preserves the same semantics when decode lists are absent.
@@ -352,7 +366,7 @@ class ItemRegistry:
                 continue
             item = id_to_item.get(idx)
             if item is None:
-                raise ValueError(f"genome references unknown item id {idx}")
+                raise ValueError(f"loadout references unknown item id {idx}")
             out2.append(item.get("Name", "None") if item else "None")
         return out2
 
@@ -393,25 +407,25 @@ class ItemRegistry:
         self._gpu_arrays_cache = out
         return out
 
-    def encode_population(self, population: list[list[dict]]) -> np.ndarray:
+    def encode_loadouts(self, loadouts: list[list[dict]]) -> np.ndarray:
         """
-        Encode an entire population of genomes.
+        Encode multiple loadouts.
 
         Args:
-            population: List of genomes (each genome is list of 9 item dicts)
+            loadouts: List of loadouts (each loadout is list of 9 item dicts)
 
         Returns:
-            np.ndarray: (n_genomes, 9) int32 array of item IDs
+            np.ndarray: (n_loadouts, 9) int32 array of item IDs
         """
-        n_genomes = len(population)
-        ids = np.zeros((n_genomes, 9), dtype=np.int32)
+        n_loadouts = len(loadouts)
+        ids = np.zeros((n_loadouts, 9), dtype=np.int32)
         slot_name_to_id = self._slot_name_to_id
 
-        for i, genome in enumerate(population):
+        for i, loadout in enumerate(loadouts):
             row = ids[i]
-            limit = min(9, len(genome))
+            limit = min(9, len(loadout))
             for slot_idx in range(limit):
-                item = genome[slot_idx]
+                item = loadout[slot_idx]
                 if not item:
                     continue
 

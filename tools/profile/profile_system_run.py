@@ -8,7 +8,7 @@ Captures:
 
 This is intended to answer questions like:
   - Is the GPU actually busy, or is the GPU-owner thread busy doing CPU work?
-  - Are there long GPU-idle gaps (stalls) during GA/FG phases?
+  - Are there long GPU-idle gaps during exact Base/native FG work?
   - Are stalls correlated with CPU spikes, memory pressure, or DB/persistence?
 """
 
@@ -33,6 +33,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import psutil
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _safe_int
 from tools.profile.system_run_common import (
     RunPaths,
@@ -1063,359 +1068,6 @@ def _series_stats(series: list[float] | list[int]) -> dict[str, Any]:
     }
 
 
-_PERF_GA_DECODE_RE = re.compile(
-    r"^\[PERF\]\[GADecode\]\s+"
-    r"runs=(?P<runs>\d+)\s+"
-    r"pop=(?P<pop>\d+)\s+"
-    r"uniq=(?P<uniq>\d+)\s+"
-    r"scan=(?P<scan_ms>[\d.]+)ms\s+"
-    r"select=(?P<select_ms>[\d.]+)ms\s+"
-    r"stats=(?P<stats_ms>[\d.]+)ms\s+"
-    r"total=(?P<total_ms>[\d.]+)ms\s+"
-    r"selected=(?P<selected>\d+)\s*$"
-)
-
-_PERF_GA_DECODE_DETAILS_RE = re.compile(
-    r"^\[PERF\]\[GADecodeDetails\]\s+"
-    r"runs=(?P<runs>\d+)\s+"
-    r"pop=(?P<pop>\d+)\s+"
-    r"uniq=(?P<uniq>\d+)\s+"
-    r"arrays=(?P<arrays_ms>[\d.]+)ms\s+"
-    r"proxy=(?P<proxy_ms>[\d.]+)ms\s*$"
-)
-
-_PERF_GA_DECODE_SELECT_DETAILS_RE = re.compile(
-    r"^\[PERF\]\[GADecodeSelectDetails\]\s+"
-    r"runs=(?P<runs>\d+)\s+"
-    r"pop=(?P<pop>\d+)\s+"
-    r"uniq=(?P<uniq>\d+)\s+"
-    r"proxy_vec=(?P<proxy_vec_ms>[\d.]+)ms\s+"
-    r"order=(?P<order_ms>[\d.]+)ms\s+"
-    r"uniq=(?P<uniq_ms>[\d.]+)ms\s+"
-    r"fill=(?P<fill_ms>[\d.]+)ms\s*$"
-)
-
-_PERF_GA_GPU_PHASE_RE = re.compile(
-    r"^\[PERF\]\[GAGPUPhase\]\s+"
-    r"phase=(?P<phase>[A-Za-z0-9_]+)\s+"
-    r"runs=(?P<runs>\d+)\s+"
-    r"pop=(?P<pop>\d+)\s+"
-    r"gen=(?P<gen>-?\d+)\s+"
-    r"use_hints=(?P<use_hints>-?\d+)\s+"
-    r"combos=(?P<combos>\d+)\s+"
-    r"ms=(?P<ms>[\d.]+)\s*$"
-)
-
-_PERF_FG_GPU_ACC_RE = re.compile(
-    r"^\[PERF\]\s+FG GPU \(ACCUMULATE\):\s+"
-    r"upload=(?P<upload_ms>[\d.]+)ms\s+"
-    r"kernel=(?P<kernel_ms>[\d.]+)ms\s+"
-    r"total=(?P<total_ms>[\d.]+)ms\s+"
-    r"\(genomes=(?P<genomes>\d+),\s+"
-    r"cfgs=(?P<cfgs>\d+),\s+"
-    r"ftff=(?P<ftff>\d+),\s+"
-    r"chunks=(?P<chunks>\d+)\)\s*$"
-)
-
-_PERF_FG_TASK_START_RE = re.compile(
-    r"^\[PERF\]\[FGTask\]\s+"
-    r"call=(?P<call>\d+)\s+"
-    r"idx=(?P<idx>\d+)\s+"
-    r"kind=start\s+"
-    r"wall_ts=(?P<wall_ts>[\d.]+)\s+"
-    r"cfgs=(?P<cfgs>\d+)\s+"
-    r"ftff=(?P<ftff>\d+)\s+"
-    r"base_cfg_offset=(?P<base_cfg_offset>\d+)\s+"
-    r"upload_genome_stats=(?P<upload_genome_stats>\d+)\s+"
-    r"gap_since_prev_end_ms=(?P<gap_ms>[\d.]+)\s*$"
-)
-
-_PERF_FG_TASK_END_RE = re.compile(
-    r"^\[PERF\]\[FGTask\]\s+"
-    r"call=(?P<call>\d+)\s+"
-    r"idx=(?P<idx>\d+)\s+"
-    r"kind=end\s+"
-    r"wall_ts=(?P<wall_ts>[\d.]+)\s+"
-    r"duration_ms=(?P<duration_ms>[\d.]+)\s*$"
-)
-
-
-def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
-    """
-    Parse structured `[PERF]` lines from the child process stdout log.
-
-    This is best-effort and intentionally limited to stable, explicit formats.
-    """
-    if not stdout_log.exists():
-        return {"ok": False, "error": "missing_stdout_log"}
-
-    ga_decode_rows: list[dict[str, Any]] = []
-    ga_decode_detail_rows: list[dict[str, Any]] = []
-    ga_decode_select_rows: list[dict[str, Any]] = []
-    ga_gpu_phase_rows: list[dict[str, Any]] = []
-    fg_acc_rows: list[dict[str, Any]] = []
-    fg_task_start_rows: list[dict[str, Any]] = []
-    fg_task_end_rows: list[dict[str, Any]] = []
-
-    try:
-        with stdout_log.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = (line or "").strip()
-                if not line:
-                    continue
-
-                m = _PERF_GA_DECODE_RE.match(line)
-                if m is not None:
-                    g = m.groupdict()
-                    ga_decode_rows.append(
-                        {
-                            "runs": int(g["runs"]),
-                            "pop": int(g["pop"]),
-                            "uniq": int(g["uniq"]),
-                            "selected": int(g["selected"]),
-                            "scan_ms": float(g["scan_ms"]),
-                            "select_ms": float(g["select_ms"]),
-                            "stats_ms": float(g["stats_ms"]),
-                            "total_ms": float(g["total_ms"]),
-                        }
-                    )
-                    continue
-
-                m = _PERF_GA_DECODE_DETAILS_RE.match(line)
-                if m is not None:
-                    g = m.groupdict()
-                    ga_decode_detail_rows.append(
-                        {
-                            "runs": int(g["runs"]),
-                            "pop": int(g["pop"]),
-                            "uniq": int(g["uniq"]),
-                            "arrays_ms": float(g["arrays_ms"]),
-                            "proxy_ms": float(g["proxy_ms"]),
-                        }
-                    )
-                    continue
-
-                m = _PERF_GA_DECODE_SELECT_DETAILS_RE.match(line)
-                if m is not None:
-                    g = m.groupdict()
-                    ga_decode_select_rows.append(
-                        {
-                            "runs": int(g["runs"]),
-                            "pop": int(g["pop"]),
-                            "uniq": int(g["uniq"]),
-                            "proxy_vec_ms": float(g["proxy_vec_ms"]),
-                            "order_ms": float(g["order_ms"]),
-                            "uniq_ms": float(g["uniq_ms"]),
-                            "fill_ms": float(g["fill_ms"]),
-                        }
-                    )
-                    continue
-
-                m = _PERF_GA_GPU_PHASE_RE.match(line)
-                if m is not None:
-                    g = m.groupdict()
-                    ga_gpu_phase_rows.append(
-                        {
-                            "phase": str(g["phase"]),
-                            "runs": int(g["runs"]),
-                            "pop": int(g["pop"]),
-                            "gen": int(g["gen"]),
-                            "use_hints": int(g["use_hints"]),
-                            "combos": int(g["combos"]),
-                            "ms": float(g["ms"]),
-                        }
-                    )
-                    continue
-
-                m = _PERF_FG_GPU_ACC_RE.match(line)
-                if m is not None:
-                    g = m.groupdict()
-                    fg_acc_rows.append(
-                        {
-                            "upload_ms": float(g["upload_ms"]),
-                            "kernel_ms": float(g["kernel_ms"]),
-                            "total_ms": float(g["total_ms"]),
-                            "genomes": int(g["genomes"]),
-                            "cfgs": int(g["cfgs"]),
-                            "ftff": int(g["ftff"]),
-                            "chunks": int(g["chunks"]),
-                        }
-                    )
-                    continue
-
-                m = _PERF_FG_TASK_START_RE.match(line)
-                if m is not None:
-                    g = m.groupdict()
-                    fg_task_start_rows.append(
-                        {
-                            "call": int(g["call"]),
-                            "idx": int(g["idx"]),
-                            "wall_ts": float(g["wall_ts"]),
-                            "cfgs": int(g["cfgs"]),
-                            "ftff": int(g["ftff"]),
-                            "base_cfg_offset": int(g["base_cfg_offset"]),
-                            "upload_genome_stats": int(g["upload_genome_stats"]),
-                            "gap_since_prev_end_ms": float(g["gap_ms"]),
-                        }
-                    )
-                    continue
-
-                m = _PERF_FG_TASK_END_RE.match(line)
-                if m is not None:
-                    g = m.groupdict()
-                    fg_task_end_rows.append(
-                        {
-                            "call": int(g["call"]),
-                            "idx": int(g["idx"]),
-                            "wall_ts": float(g["wall_ts"]),
-                            "duration_ms": float(g["duration_ms"]),
-                        }
-                    )
-                    continue
-    except Exception as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-
-    out: dict[str, Any] = {"ok": True}
-
-    if ga_gpu_phase_rows:
-        phases: dict[str, list[float]] = {}
-        for r in ga_gpu_phase_rows:
-            phases.setdefault(str(r.get("phase", "unknown")), []).append(float(r.get("ms", 0.0)))
-        out["ga_gpu_phases"] = {
-            "count": int(len(ga_gpu_phase_rows)),
-            "by_phase_ms": {k: _series_stats(v) for k, v in sorted(phases.items(), key=lambda kv: kv[0])},
-            "top_slowest": sorted(ga_gpu_phase_rows, key=lambda r: float(r.get("ms", 0.0)), reverse=True)[:20],
-        }
-    else:
-        out["ga_gpu_phases"] = {"count": 0}
-
-    if ga_decode_rows:
-        scan = [r["scan_ms"] for r in ga_decode_rows]
-        sel = [r["select_ms"] for r in ga_decode_rows]
-        stats = [r["stats_ms"] for r in ga_decode_rows]
-        total = [r["total_ms"] for r in ga_decode_rows]
-        ga_decode_rows_sorted = sorted(ga_decode_rows, key=lambda r: r.get("total_ms", 0.0), reverse=True)
-        out["ga_decode"] = {
-            "count": int(len(ga_decode_rows)),
-            "scan_ms": _series_stats(scan),
-            "select_ms": _series_stats(sel),
-            "stats_ms": _series_stats(stats),
-            "total_ms": _series_stats(total),
-            "top_slowest": ga_decode_rows_sorted[:10],
-        }
-    else:
-        out["ga_decode"] = {"count": 0}
-
-    if ga_decode_detail_rows:
-        arrays_ms = [r["arrays_ms"] for r in ga_decode_detail_rows]
-        proxy_ms = [r["proxy_ms"] for r in ga_decode_detail_rows]
-        total_ms = [r["arrays_ms"] + r["proxy_ms"] for r in ga_decode_detail_rows]
-        rows_sorted = sorted(ga_decode_detail_rows, key=lambda r: (r.get("arrays_ms", 0.0) + r.get("proxy_ms", 0.0)))
-        rows_sorted.reverse()
-        out["ga_decode_details"] = {
-            "count": int(len(ga_decode_detail_rows)),
-            "arrays_ms": _series_stats(arrays_ms),
-            "proxy_ms": _series_stats(proxy_ms),
-            "total_ms": _series_stats(total_ms),
-            "top_slowest": rows_sorted[:10],
-        }
-    else:
-        out["ga_decode_details"] = {"count": 0}
-
-    if ga_decode_select_rows:
-        proxy_vec_ms = [r["proxy_vec_ms"] for r in ga_decode_select_rows]
-        order_ms = [r["order_ms"] for r in ga_decode_select_rows]
-        uniq_ms = [r["uniq_ms"] for r in ga_decode_select_rows]
-        fill_ms = [r["fill_ms"] for r in ga_decode_select_rows]
-        total_ms = [r["proxy_vec_ms"] + r["order_ms"] + r["uniq_ms"] + r["fill_ms"] for r in ga_decode_select_rows]
-        rows_sorted = sorted(
-            ga_decode_select_rows,
-            key=lambda r: (
-                r.get("proxy_vec_ms", 0.0) + r.get("order_ms", 0.0) + r.get("uniq_ms", 0.0) + r.get("fill_ms", 0.0)
-            ),
-            reverse=True,
-        )
-        out["ga_decode_select_details"] = {
-            "count": int(len(ga_decode_select_rows)),
-            "proxy_vec_ms": _series_stats(proxy_vec_ms),
-            "order_ms": _series_stats(order_ms),
-            "uniq_ms": _series_stats(uniq_ms),
-            "fill_ms": _series_stats(fill_ms),
-            "total_ms": _series_stats(total_ms),
-            "top_slowest": rows_sorted[:10],
-        }
-    else:
-        out["ga_decode_select_details"] = {"count": 0}
-
-    if fg_acc_rows:
-        up = [r["upload_ms"] for r in fg_acc_rows]
-        ker = [r["kernel_ms"] for r in fg_acc_rows]
-        tot = [r["total_ms"] for r in fg_acc_rows]
-        fg_acc_rows_sorted = sorted(fg_acc_rows, key=lambda r: r.get("total_ms", 0.0), reverse=True)
-        out["fg_gpu_accumulate"] = {
-            "count": int(len(fg_acc_rows)),
-            "upload_ms": _series_stats(up),
-            "kernel_ms": _series_stats(ker),
-            "total_ms": _series_stats(tot),
-            "top_slowest": fg_acc_rows_sorted[:10],
-        }
-    else:
-        out["fg_gpu_accumulate"] = {"count": 0}
-
-    if fg_task_start_rows or fg_task_end_rows:
-        # Index by task idx to build start/end pairs.
-        starts = {(int(r["call"]), int(r["idx"])): r for r in fg_task_start_rows}
-        ends = {(int(r["call"]), int(r["idx"])): r for r in fg_task_end_rows}
-
-        paired: list[dict[str, Any]] = []
-        gaps_ms: list[float] = []
-        durations_ms: list[float] = []
-        wall_durations_ms: list[float] = []
-
-        for call_idx in sorted(set(starts.keys()) | set(ends.keys())):
-            call, idx = int(call_idx[0]), int(call_idx[1])
-            st = starts.get((call, idx))
-            en = ends.get((call, idx))
-            row: dict[str, Any] = {"call": int(call), "idx": int(idx)}
-            if st:
-                row.update(
-                    {
-                        "start_wall_ts": float(st["wall_ts"]),
-                        "cfgs": int(st["cfgs"]),
-                        "ftff": int(st["ftff"]),
-                        "base_cfg_offset": int(st["base_cfg_offset"]),
-                        "upload_genome_stats": int(st["upload_genome_stats"]),
-                        "gap_since_prev_end_ms": float(st["gap_since_prev_end_ms"]),
-                    }
-                )
-                gaps_ms.append(float(st["gap_since_prev_end_ms"]))
-            if en:
-                row.update(
-                    {
-                        "end_wall_ts": float(en["wall_ts"]),
-                        "duration_ms": float(en["duration_ms"]),
-                    }
-                )
-                durations_ms.append(float(en["duration_ms"]))
-            if st and en:
-                wall_durations_ms.append(max(0.0, (float(en["wall_ts"]) - float(st["wall_ts"])) * 1000.0))
-            paired.append(row)
-
-        out["fg_task_trace"] = {
-            "count_start": int(len(fg_task_start_rows)),
-            "count_end": int(len(fg_task_end_rows)),
-            "count_paired": int(sum(1 for r in paired if "start_wall_ts" in r and "end_wall_ts" in r)),
-            "gap_since_prev_end_ms": _series_stats(gaps_ms) if gaps_ms else {"count": 0},
-            "duration_ms": _series_stats(durations_ms) if durations_ms else {"count": 0},
-            "wall_duration_ms": _series_stats(wall_durations_ms) if wall_durations_ms else {"count": 0},
-            "rows": paired[:2000],
-        }
-    else:
-        out["fg_task_trace"] = {"count_start": 0, "count_end": 0, "count_paired": 0}
-
-    return out
-
-
 def _parse_cpu_jsonl(cpu_path: Path) -> dict[str, Any]:
     if not cpu_path.exists():
         return {"ok": False, "error": "missing_cpu_jsonl"}
@@ -1501,29 +1153,33 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
         cfg_error = f"{type(exc).__name__}: {exc}"
 
     iteration = {
-        "GA_SearchDepth": _cfg_get_int(cfg, "IterationEngine", "GA_SearchDepth", 125),
-        "GA_MultiStart": _cfg_get_int(cfg, "IterationEngine", "GA_MultiStart", 3),
         "SongRepeats": _cfg_get_int(cfg, "IterationEngine", "SongRepeats", 1),
-        "InFlightSongs": _cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 1),
-        "FG_CandidateLimit": _cfg_get_int(cfg, "IterationEngine", "FG_CandidateLimit", 51),
-        "FG_SearchRadius": _cfg_get_int(cfg, "IterationEngine", "FG_SearchRadius", 1),
+        "InFlightSongs": _cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 0),
+        "EvalCPUCores": _cfg_get_int(cfg, "IterationEngine", "EvalCPUCores", 0),
+        "GPU_SongSlots": _cfg_get_int(cfg, "IterationEngine", "GPU_SongSlots", 0),
+    }
+    calculate_song = {
+        "Song_Name": _cfg_get_text(cfg, "CalculateSong", "Song_Name", ""),
+        "Difficulty": _cfg_get_text(cfg, "CalculateSong", "Difficulty", "All"),
+        "TargetPrimary": _cfg_get_text(cfg, "CalculateSong", "TargetPrimary", "All"),
+        "TargetSecondary": _cfg_get_text(cfg, "CalculateSong", "TargetSecondary", "All"),
+        "LoopForever": _cfg_get_bool(cfg, "CalculateSong", "LoopForever", False),
     }
     tracked_env = (
         "METAFINDER_CONFIG_PATH",
         "EVOLUTION_DB_PATH",
-        "GA_SEED",
         "SONG_REPEATS",
-        "FG_SEARCH_RADIUS",
+        "IN_FLIGHT_SONGS",
         "SONG_QUEUE_LIMIT",
+        "EXACT_BASE_SONG_CONTEXT_CACHE_DIR",
+        "TIMELINE_FRONTIER_CACHE_DIR",
+        "FG_RESPONSE_FRONTIER_CACHE_DIR",
         "DEBUG_PROFILE",
         "METAFINDER_DEBUG_PROFILE",
         "PERF_TIMING",
         "GPU_EXECUTOR_PROFILE",
-        "FG_TASK_TRACE",
         "INFLIGHT_STAGE_PROFILE",
         "INFLIGHT_STAGE_PROFILE_PATH",
-        "GPU_NATIVE_GA_PHASE_TIMING",
-        "GPU_NATIVE_GA_PHASE_EVENTS",
         "METAFINDER_PROFILE_EVENTS",
         "METAFINDER_PROFILE_EVENTS_PATH",
         "METAFINDER_PROFILE_RUN_ID",
@@ -1541,6 +1197,7 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
         "config_loaded": bool(cfg_loaded),
         "config_error": str(cfg_error),
         "IterationEngine": iteration,
+        "CalculateSong": calculate_song,
         "env_overrides": env_overrides,
     }
 
@@ -1669,7 +1326,10 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
     last_ts_wall = None
     pending_fg_points: list[tuple[float, float]] = []
     backlog_points: list[tuple[float, float]] = []
-    ga_phase_rows: list[dict[str, Any]] = []
+    exact_base_latency_sec: list[float] = []
+    fg_owner_phase_ms: dict[str, list[float]] = defaultdict(list)
+    fg_batch_gpu_score_ms: list[float] = []
+    fg_batch_result_ms: list[float] = []
 
     try:
         with profile_events_path.open("r", encoding="utf-8") as f:
@@ -1703,32 +1363,31 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
                 if not isinstance(metrics, dict):
                     continue
 
-                if event in {"ga_gpu_phase", "ga_gpu_phase_window"} and component in {"gpu_executor", "ga_native"}:
+                if component == "gpu_service" and event == "latency_sample":
+                    request_key = str(metrics.get("key", "") or "").strip()
+                    if request_key == "exact_base_search":
+                        latency_sec = _safe_float(metrics.get("latency_sec", 0.0), 0.0)
+                        if latency_sec >= 0.0:
+                            exact_base_latency_sec.append(float(latency_sec))
+
+                if component == "fg_fused" and event == "fg_owner_phase":
                     phase = str(metrics.get("phase", "") or "").strip() or "unknown"
-                    sample_count = _safe_int(metrics.get("samples", metrics.get("count", 1)), 1)
-                    if sample_count <= 0:
-                        sample_count = 1
-                    total_ms = _safe_float(metrics.get("total_ms", metrics.get("ms", 0.0)), 0.0)
-                    mean_ms = _safe_float(
-                        metrics.get("mean_ms", (total_ms / float(sample_count)) if sample_count > 0 else 0.0),
-                        0.0,
-                    )
-                    p95_ms = _safe_float(metrics.get("p95_ms", mean_ms), mean_ms)
-                    max_ms = _safe_float(metrics.get("max_ms", mean_ms), mean_ms)
-                    ga_phase_rows.append(
-                        {
-                            "phase": str(phase),
-                            "samples": int(sample_count),
-                            "total_ms": float(total_ms),
-                            "mean_ms": float(mean_ms),
-                            "p95_ms": float(p95_ms),
-                            "max_ms": float(max_ms),
-                            "runs": _safe_int(metrics.get("runs", metrics.get("batch_runs", 0)), 0),
-                            "pop": _safe_int(metrics.get("pop", 0), 0),
-                            "n_generations": _safe_int(metrics.get("n_generations", 0), 0),
-                            "batch_run_start": _safe_int(metrics.get("batch_run_start", 0), 0),
-                        }
-                    )
+                    phase_ms = _safe_float(metrics.get("total_ms", -1.0), -1.0)
+                    if phase_ms < 0.0 and phase == "score_loop":
+                        phase_ms = sum(
+                            _safe_float(metrics.get(name, 0.0), 0.0)
+                            for name in ("plan_ms", "enqueue_ms", "sync_ms", "reduce_ms")
+                        )
+                    if phase_ms >= 0.0:
+                        fg_owner_phase_ms[phase].append(float(phase_ms))
+
+                if component == "fg_response_frontier" and event == "score_prepared_batch":
+                    gpu_score_ms = _safe_float(metrics.get("gpu_score_ms", -1.0), -1.0)
+                    result_ms = _safe_float(metrics.get("result_ms", -1.0), -1.0)
+                    if gpu_score_ms >= 0.0:
+                        fg_batch_gpu_score_ms.append(float(gpu_score_ms))
+                    if result_ms >= 0.0:
+                        fg_batch_result_ms.append(float(result_ms))
 
                 pending_fg = _safe_int(metrics.get("pending_fg", -1), -1)
                 fg_futures = max(0, _safe_int(metrics.get("fg_futures", 0), 0))
@@ -1767,43 +1426,6 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
             backlog_positive_ratio = float(sum(1 for d in deltas if d > 0.0) / len(deltas))
 
     top_events = sorted(event_counts.items(), key=lambda kv: kv[1], reverse=True)[:20]
-    ga_phase_summary: dict[str, Any] = {"count": 0}
-    if ga_phase_rows:
-        phase_totals: dict[str, dict[str, float]] = {}
-        for row in ga_phase_rows:
-            phase = str(row.get("phase", "unknown") or "unknown")
-            entry = phase_totals.setdefault(
-                phase,
-                {
-                    "windows": 0.0,
-                    "samples": 0.0,
-                    "total_ms": 0.0,
-                    "max_ms": 0.0,
-                },
-            )
-            entry["windows"] += 1.0
-            entry["samples"] += float(row.get("samples", 0) or 0.0)
-            entry["total_ms"] += float(row.get("total_ms", 0.0) or 0.0)
-            entry["max_ms"] = max(float(entry.get("max_ms", 0.0) or 0.0), float(row.get("max_ms", 0.0) or 0.0))
-
-        by_phase_ms: dict[str, Any] = {}
-        for phase, entry in sorted(phase_totals.items(), key=lambda kv: kv[0]):
-            samples = int(round(float(entry.get("samples", 0.0) or 0.0)))
-            total_ms = float(entry.get("total_ms", 0.0) or 0.0)
-            by_phase_ms[str(phase)] = {
-                "windows": int(round(float(entry.get("windows", 0.0) or 0.0))),
-                "samples": int(samples),
-                "total_ms": float(total_ms),
-                "mean_ms": float(total_ms / float(samples)) if samples > 0 else 0.0,
-                "max_ms": float(entry.get("max_ms", 0.0) or 0.0),
-            }
-
-        ga_phase_summary = {
-            "count": int(len(ga_phase_rows)),
-            "by_phase_ms": by_phase_ms,
-            "top_slowest": sorted(ga_phase_rows, key=lambda r: float(r.get("max_ms", 0.0) or 0.0), reverse=True)[:20],
-        }
-
     return {
         "ok": True,
         "path": str(profile_events_path),
@@ -1812,7 +1434,15 @@ def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
         "last_ts_wall": float(last_ts_wall) if last_ts_wall is not None else None,
         "component_counts": {k: int(v) for k, v in sorted(component_counts.items(), key=lambda kv: kv[0])},
         "event_counts_top": [{"event": str(k), "count": int(v)} for k, v in top_events],
-        "ga_gpu_phases": ga_phase_summary,
+        "exact_base_search_latency_sec": _series_stats(exact_base_latency_sec),
+        "native_fg_owner_phase_ms": {
+            phase: _series_stats(values)
+            for phase, values in sorted(fg_owner_phase_ms.items(), key=lambda item: item[0])
+        },
+        "native_fg_batch": {
+            "gpu_score_ms": _series_stats(fg_batch_gpu_score_ms),
+            "result_ms": _series_stats(fg_batch_result_ms),
+        },
         "pending_fg": {
             "count": int(len(pending_fg_vals)),
             "stats": _series_stats(pending_fg_vals) if pending_fg_vals else {"count": 0},
@@ -1851,7 +1481,6 @@ def _build_summary_v2(
     effective_settings: dict[str, Any],
     analyzer_result: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    perf = summary.get("perf_stdout_summary") or {}
     stage = summary.get("inflight_stage_profile") or {}
     events = summary.get("profile_events_summary") or {}
     gpu_summary = summary.get("gpu_summary") or {}
@@ -1873,19 +1502,22 @@ def _build_summary_v2(
         "kpis": {
             "elapsed_sec": _safe_float(summary.get("elapsed_sec", 0.0), 0.0),
             "gpu_target_util_mean_pct": float(gpu_target_util_mean),
-            "fg_task_pairs": _safe_int((perf.get("fg_task_trace") or {}).get("count_paired", 0), 0),
+            "exact_base_requests": _safe_int(
+                (events.get("exact_base_search_latency_sec") or {}).get("count", 0),
+                0,
+            ),
         },
         "resource": {
             "cpu_summary": summary.get("cpu_summary") or {},
             "gpu_summary": gpu_summary,
         },
         "pipeline": {
-            "perf_stdout_summary": perf,
             "inflight_stage_profile": stage,
             "profile_events_summary": events,
         },
         "fg": {
-            "fg_task_trace": (perf.get("fg_task_trace") or {}),
+            "owner_phase_ms": events.get("native_fg_owner_phase_ms") or {},
+            "batch": events.get("native_fg_batch") or {},
         },
         "anomalies": {
             "count": int(len(anomalies)),
@@ -2007,7 +1639,6 @@ def main(argv: list[str] | None = None) -> int:
         child_env.setdefault("GPU_EXECUTOR_PROFILE", "1")
         child_env.setdefault("INFLIGHT_STAGE_PROFILE", "1")
         child_env.setdefault("INFLIGHT_STAGE_PROFILE_PATH", str(paths.stage_profile_json))
-        child_env.setdefault("FG_TASK_TRACE", "1")
     if ns.deep:
         child_env.setdefault("METAFINDER_PROFILE_EVENTS", "1")
         child_env.setdefault("METAFINDER_PROFILE_EVENTS_PATH", str(paths.profile_events_jsonl))
@@ -2153,12 +1784,6 @@ def main(argv: list[str] | None = None) -> int:
         },
         "effective_settings": _collect_effective_settings(child_env),
     }
-
-    # Optional: structured `[PERF]` timing lines from stdout.
-    try:
-        summary["perf_stdout_summary"] = _parse_perf_stdout_log(paths.stdout_log)
-    except Exception as exc:
-        summary["perf_stdout_summary"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     # Optional: in-flight stage profiling JSON emitted by the run.
     try:

@@ -17,15 +17,9 @@ from gear_optimizer.pipeline.post_processor_persist import (
     build_post_persist_context,
     build_post_persist_db_payload,
     build_post_persist_entries,
-    build_post_persist_print_payload,
     build_post_persist_result_payload,
 )
-from gear_optimizer.pipeline.post_processor_fg_updates import (
-    build_fg_update_state,
-    canonicalize_fg_update_entries as _canonicalize_fg_update_entries,
-)
 from gear_optimizer.persistence.entries import filter_valid_persistence_entries
-from gear_optimizer.solver.frontier_cache_errors import MissingFrontierCacheError
 
 from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
@@ -76,7 +70,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     failed = 0
     total = int(total_tasks or 0)
     timing = env_flag("POST_TIMING")
-    sync_output = True  # FG-coalesced print ordering is an output-coherence invariant (always on)
     timing_threshold_ms = 50.0
     try:
         timing_threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
@@ -92,72 +85,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             return
         prefix = f"[POST][TIMING] {song} " if song else "[POST][TIMING] "
         print(f"{prefix}{label}={ms:.1f}ms")
-
-    # In the native in-flight pipeline, the GA result is posted immediately while ForceGreats (FG)
-    # runs later in the main process; printing the final block immediately can make subsequent FG
-    # logs appear "after" the final output. To keep output coherent, we can delay printing per-song
-    # final output until we see the corresponding FG update message.
-    pending_final_print: dict[str, dict] = {}
-    pending_fg_summary: dict[str, dict] = {}
-
-    def _print_pending_final(song: str) -> None:
-        payload = pending_final_print.get(song)
-        if not payload:
-            return
-
-        fg_state = pending_fg_summary.get(song) or {}
-        fg_variants = fg_state.get("fg_variants") or []
-        saw_fg_update = bool(fg_state.get("saw_fg_update"))
-        try:
-            saved = int(fg_state.get("saved_count") or 0)
-        except Exception as e:
-            logger.warning(f"post_processor:_print_pending_final: {e}")
-            saved = 0
-        try:
-            best_fg = int(fg_state.get("best_fg") or 0)
-        except Exception as e:
-            logger.warning(f"post_processor:_print_pending_final: {e}")
-            best_fg = 0
-
-        # If FG work was deferred and no update arrived, `best_fg` will be 0.
-        # Still show a meaningful FG number if the DB already has a best FG record.
-        db_best_fg_floor = 0
-        try:
-            db_best_fg_floor = int(payload.get("db_best_fg_score") or 0)
-        except Exception as e:
-            logger.warning(f"post_processor:_print_pending_final: {e}")
-            db_best_fg_floor = 0
-
-        if best_fg > db_best_fg_floor:
-            db_best_fg_floor = best_fg
-
-        try:
-            _t_print0 = time.perf_counter()
-            print_results(
-                payload.get("song", song),
-                payload.get("best_data") or {},
-                payload.get("best_gear") or [],
-                payload.get("best_minis") or [],
-                payload.get("current_gear") or [],
-                payload.get("current_minis") or [],
-                fg_variants,
-                payload.get("_emit") or (lambda _msg: None),
-                fg_debug=bool(payload.get("fg_debug")),
-                ref_arrays=payload.get("ref_arrays"),
-                calc_song=payload.get("calc_song"),
-                cfg=payload.get("cfg"),
-                db_best_fg_score=db_best_fg_floor,
-                prev_record=payload.get("prev_record"),
-            )
-            _log_timing("print_results", time.perf_counter() - _t_print0, song=song)
-        except Exception as e:
-            logger.warning(f"post_processor:_print_pending_final: {e}")
-
-        if saw_fg_update and saved > 0:
-            logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song, best_fg)
-
-        pending_final_print.pop(song, None)
-        pending_fg_summary.pop(song, None)
 
     while True:
         try:
@@ -177,103 +104,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
         if item is None:
             break
-
-        # Deferred ForceGreats updates (do not affect completed/total counts).
-        if isinstance(item, dict) and item.get("_fg_update"):
-            try:
-                song_name = item.get("song", "Unknown")
-                db_key = item.get("db_key") or song_name
-                valid_entries: list[dict] = []
-
-                persisted = item.get("persist_entries") or []
-                persisted = _canonicalize_fg_update_entries(
-                    persisted,
-                    file_path=str(item.get("file_path") or ""),
-                    cfg_dict=item.get("cfg_dict") or {},
-                    ref_arrays=item.get("ref_arrays"),
-                    song_name=str(song_name),
-                )
-                valid_entries = filter_valid_persistence_entries(persisted, require_base_score=True)
-                if valid_entries:
-                    if timing:
-                        logger.debug(
-                            "[POST][FG] Saving %s FG variant(s) for %s...",
-                            len(valid_entries),
-                            song_name,
-                        )
-                    _t_db0 = time.perf_counter()
-
-                    # Offload SQLite work + counter updates so the post-process loop
-                    # keeps draining `result_queue` (prevents GPU starvation via backpressure).
-                    async_db.submit(
-                        song_name,
-                        valid_entries,
-                        meta={
-                            "db_key": db_key,
-                            "_processed_run": False,  # FG-only update: do NOT increment attempts
-                            "cfg_dict": item.get("cfg_dict") or {},
-                        },
-                    )
-                    _log_timing("fg_save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
-                else:
-                    if persisted:
-                        logger.debug("[DB] Skipped FG update for %s: no valid entries", song_name)
-
-                fg_state = build_fg_update_state(pending_fg_summary.get(song_name), valid_entries)
-                pending_fg_summary[song_name] = fg_state
-
-                if sync_output and song_name in pending_final_print:
-                    _print_pending_final(song_name)
-                elif not sync_output:
-                    try:
-                        saved = int(fg_state.get("saved_count") or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        saved = 0
-                    try:
-                        best_fg = int(fg_state.get("best_fg") or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        best_fg = 0
-                    if saved > 0:
-                        logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song_name, best_fg)
-                else:
-                    # If there's no pending final output, keep a small status line so users still
-                    # see that FG persistence happened.
-                    try:
-                        saved = int(fg_state.get("saved_count") or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        saved = 0
-                    try:
-                        best_fg = int(fg_state.get("best_fg") or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        best_fg = 0
-                    if saved > 0:
-                        logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song_name, best_fg)
-            except MissingFrontierCacheError as exc:
-                # Fail loudly: a required prebuilt frontier cache was missing, so the FG
-                # score could not be canonicalized. Count it and surface it rather than
-                # silently completing the song with only its base score.
-                failed += 1
-                msg = (
-                    f"[POST][FG] FAILED: {item.get('song', 'Unknown')} - required frontier "
-                    f"cache missing; FG score not saved: {exc}"
-                )
-                print(msg, file=sys.stderr)
-                try:
-                    logging.error(msg + "\n" + traceback.format_exc())
-                except Exception as e:
-                    logger.warning(f"post_processor:_print_pending_final: {e}")
-            except Exception as exc:
-                msg = f"[POST][FG] Error: {type(exc).__name__}: {exc}"
-                print(msg, file=sys.stderr)
-                try:
-                    logging.error(msg + "\n" + traceback.format_exc())
-                except Exception as e:
-                    logger.warning(f"post_processor:_print_pending_final: {e}")
-            continue
 
         # Propagate compute failures
         if isinstance(item, dict) and "_error" in item:
@@ -316,38 +146,27 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 def _emit(_msg: str) -> None:
                     return
 
-                if sync_output and item.get("_pending_fg_job"):
-                    song_name_for_print = item.get("song", "Unknown")
-                    pending_final_print[song_name_for_print] = build_post_persist_print_payload(
-                        item,
-                        context=post_context,
-                        emit=_emit,
+                try:
+                    _t_print0 = time.perf_counter()
+                    print_results(
+                        item.get("song", "Unknown"),
+                        post_context.best_data,
+                        post_context.best_gear,
+                        post_context.best_minis,
+                        item.get("current_gear") or [],
+                        item.get("current_minis") or [],
+                        post_context.fg_variants,
+                        _emit,
+                        fg_debug=bool(item.get("fg_debug")),
+                        ref_arrays=item.get("ref_arrays"),
+                        calc_song=item.get("calc_song"),
+                        cfg=post_context.cfg,
+                        db_best_fg_score=post_context.db_best_fg_score,
+                        prev_record=post_context.prev_record,
                     )
-                    # If the FG update arrived first (unlikely but possible), print immediately.
-                    if pending_fg_summary.get(song_name_for_print, {}).get("saw_fg_update"):
-                        _print_pending_final(song_name_for_print)
-                else:
-                    try:
-                        _t_print0 = time.perf_counter()
-                        print_results(
-                            item.get("song", "Unknown"),
-                            post_context.best_data,
-                            post_context.best_gear,
-                            post_context.best_minis,
-                            item.get("current_gear") or [],
-                            item.get("current_minis") or [],
-                            post_context.fg_variants,
-                            _emit,
-                            fg_debug=bool(item.get("fg_debug")),
-                            ref_arrays=item.get("ref_arrays"),
-                            calc_song=item.get("calc_song"),
-                            cfg=post_context.cfg,
-                            db_best_fg_score=post_context.db_best_fg_score,
-                            prev_record=post_context.prev_record,
-                        )
-                        _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
-                    except Exception as e:
-                        logger.warning(f"post_processor:_emit: {e}")
+                    _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
+                except Exception as e:
+                    logger.warning(f"post_processor:_emit: {e}")
 
                 res = build_post_persist_result_payload(
                     item,
@@ -410,10 +229,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     async_db.shutdown(timeout=30.0)
 
     try:
-        if pending_final_print:
-            for song_name in list(pending_final_print.keys()):
-                _print_pending_final(song_name)
-
         if failed > 0:
             print(f"[POST][SUMMARY] {failed}/{max(1, total)} task(s) failed.")
     except Exception as e:

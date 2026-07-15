@@ -10,7 +10,7 @@ def test_live_reporter_records_and_reports_after_interval(caplog):
     reporter.configure(enabled=True, interval_sec=1.0)
 
     reporter.record_wait(0.25)
-    reporter.record_exec(GpuRequestType.GPU_NATIVE_GA_RUN, exec_sec=0.75, count=2)
+    reporter.record_exec(GpuRequestType.EXACT_BASE_SEARCH, exec_sec=0.75, count=2)
 
     with caplog.at_level(logging.DEBUG, logger="gear_optimizer.solver.gpu_executor_lifecycle"):
         assert reporter.maybe_report() is False
@@ -18,7 +18,7 @@ def test_live_reporter_records_and_reports_after_interval(caplog):
         assert reporter.maybe_report() is True
 
     assert "[GpuExecutor][LIVE] busy=75.0%" in caplog.text
-    assert "gpu_native_ga_run:2" in caplog.text
+    assert "exact_base_search:2" in caplog.text
     assert reporter.wait_sec == 0.0
     assert reporter.exec_sec == 0.0
     assert dict(reporter.type_counts) == {}

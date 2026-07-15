@@ -7,7 +7,7 @@ from ...core.constants import LOADOUTS_PER_SONG_LIMIT
 from ...core.utils import safe_int
 from ...data.database import get_loadout_hash
 from .fg_config import has_valid_fg_config
-from .ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
+from .loadout_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
 from .persistence_records import entry_base_score
 from .retention import select_retained_hashes
 
@@ -73,16 +73,16 @@ def add_fg_entries(fg_entries: list[dict] | None, loadout_entries: dict | None, 
         add_best_fg_entry(fg_entry, loadout_entries, append_entry)
 
 
-def add_ga_candidate_entries(
-    ga_candidates: list[dict] | None,
+def add_base_candidate_entries(
+    base_candidates: list[dict] | None,
     loadout_entries: dict | None,
     build_details_fn: Callable[[dict], dict],
     append_entry: AppendEntryFn,
 ) -> None:
-    if not ga_candidates or loadout_entries is not None:
+    if not base_candidates or loadout_entries is not None:
         return
 
-    for eval_result in ga_candidates:
+    for eval_result in base_candidates:
         eval_data = eval_result.get("Data") or {}
         eval_score = eval_result.get("BaseScore") or eval_result.get("Score", 0)
         eval_gear, eval_minis = materialize_candidate_names(eval_result, mutate=True)

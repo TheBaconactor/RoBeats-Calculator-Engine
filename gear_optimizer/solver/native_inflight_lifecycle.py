@@ -12,11 +12,7 @@ from typing import Any
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import inflight_shutdown_debug_enabled
-from gear_optimizer.solver.native_inflight_lifecycle_prepare import (
-    _lru_get,
-    _lru_put,
-    prepare_native_song,
-)
+from gear_optimizer.solver.native_inflight_lifecycle_prepare import prepare_native_song
 from gear_optimizer.solver.native_inflight_lifecycle_progress import (
     ActiveRuntimeProgressReporter,
     ProgressTracker,
@@ -133,7 +129,7 @@ def build_abort_queue_snapshot(
     pending_tasks: int,
     prepared: int,
     prep_inflight: int,
-    ga_inflight: int,
+    base_inflight: int,
     decode_inflight: int,
     pending_fg: int,
     fg_prep: int,
@@ -141,7 +137,7 @@ def build_abort_queue_snapshot(
 ) -> str:
     return (
         f"pending={int(pending_tasks)} prepared={int(prepared)} prep_inflight={int(prep_inflight)} "
-        f"ga_inflight={int(ga_inflight)} decode_inflight={int(decode_inflight)} "
+        f"base_inflight={int(base_inflight)} decode_inflight={int(decode_inflight)} "
         f"pending_fg={int(pending_fg)} fg_prep={int(fg_prep)} fg_futures={int(fg_futures)}"
     )
 
@@ -185,7 +181,7 @@ def log_native_abort(
     pending_tasks: int,
     prepared: int,
     prep_inflight: int,
-    ga_inflight: int,
+    base_inflight: int,
     decode_inflight: int,
     pending_fg: int,
     fg_prep: int,
@@ -199,7 +195,7 @@ def log_native_abort(
             pending_tasks=pending_tasks,
             prepared=prepared,
             prep_inflight=prep_inflight,
-            ga_inflight=ga_inflight,
+            base_inflight=base_inflight,
             decode_inflight=decode_inflight,
             pending_fg=pending_fg,
             fg_prep=fg_prep,
@@ -295,8 +291,6 @@ __all__ = [
     "ProgressTracker",
     "SongPrepCompletion",
     "SongPrepQueue",
-    "_lru_get",
-    "_lru_put",
     "append_native_abort_log",
     "build_abort_queue_snapshot",
     "build_native_task_error_payload",

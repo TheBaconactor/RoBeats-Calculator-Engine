@@ -99,14 +99,15 @@ def test_frontier_disk_cache_write_is_compact_and_leak_free(tmp_path: Path, monk
         assert not any(name.startswith("group_") for name in data.files)
 
 
-def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
+def test_frontier_disk_cache_reuses_exact_compatible_interpreter_predecessor(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     payload = _build_small_payload()
     current_version = timeline_api._FRONTIER_DISK_CACHE_VERSION
-    assert current_version == "exact-frontier-v12+logic-4c69b48f08bb"
+    assert current_version == "exact-frontier-v12+logic-1f182e5b89af"
     predecessor = timeline_api.timeline_frontier_compatible_cache_versions()[1]
+    assert predecessor == "exact-frontier-v12+logic-4c69b48f08bb"
     current_key = (current_version, "unit", "cleanup-compatible")
     predecessor_key = (predecessor, *current_key[1:])
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))

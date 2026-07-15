@@ -7,11 +7,9 @@ _ROOT = Path(__file__).resolve().parents[1]
 _REFERENCE_ONLY_PRODUCTION_PATHS = (
     "gear_optimizer/solver/combined_skyline_dense_gpu.py",
     "gear_optimizer/solver/combined_skyline_sparse.py",
-    "gear_optimizer/solver/fixed_timing_skyline.py",
     "gear_optimizer/solver/gear_skyline_gpu.py",
     "gear_optimizer/solver/skyline_force_greats.py",
     "gear_optimizer/solver/skyline_grid_gpu.py",
-    "gear_optimizer/solver/timing_response_antichain.py",
     "gear_optimizer/solver/taichi_gem/force_greats/response_ftff_prune.py",
 )
 

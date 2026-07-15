@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.solver.native_inflight_pipeline import (
-    InflightGAPipeline,
+    InflightBasePipeline,
     NativeFGPipeline,
     NativeFGPipelineSettings,
     run_fg_job_sync,
@@ -76,13 +76,13 @@ def test_read_native_fg_pipeline_settings_uses_canonical_db_prefetch():
     assert settings.db_prefetch_workers == 3
 
 
-def test_inflight_ga_pipeline_inflight_counts_done_unprocessed_futures():
-    # GA admission gates on SLOT HOLDERS: a song whose future completed but
+def test_inflight_base_pipeline_inflight_counts_done_unprocessed_futures():
+    # Base admission gates on SLOT HOLDERS: a song whose future completed but
     # whose completion has not been processed still holds its slot, so it must
     # stay in (and be counted by) the inflight conveyor until popped.
-    pipeline = InflightGAPipeline()
-    active_song = make_native_song(task_key="ga-active", song_name="GA Active")
-    done_song = make_native_song(task_key="ga-done", song_name="GA Done")
+    pipeline = InflightBasePipeline()
+    active_song = make_native_song(task_key="base-active", song_name="Base Active")
+    done_song = make_native_song(task_key="base-done", song_name="Base Done")
     active_future = Future()
     done_future = Future()
     done_future.set_result({"ok": True})
@@ -92,7 +92,7 @@ def test_inflight_ga_pipeline_inflight_counts_done_unprocessed_futures():
 
     assert len(pipeline.inflight) == 2
 
-    completions = pipeline.pop_completed_runs()
+    completions = pipeline.pop_completed_searches()
     assert [c.song for c in completions] == [done_song]
     assert len(pipeline.inflight) == 1
 
@@ -277,6 +277,7 @@ def test_native_fg_pipeline_finish_completed_prep_owns_future_drain_state():
         )
 
         missing = make_native_song(task_key="prep-missing", song_name="Prep Missing")
+        pipeline.pending.extend([success, failed, missing])
         pipeline.prep_inflight.extend([success, failed, missing])
 
         completions = pipeline.finish_completed_prep()
@@ -305,8 +306,10 @@ def test_native_fg_pipeline_finish_completed_prep_owns_future_drain_state():
         assert failed.runtime.fg.fg_prep_submit_t0 is None
 
         assert missing_completion.future_missing is True
-        assert missing_completion.error is None
+        assert isinstance(missing_completion.error, RuntimeError)
+        assert "lost its future" in str(missing_completion.error)
         assert len(pipeline.prep_inflight) == 0
+        assert list(pipeline.pending) == [success]
     finally:
         pipeline.shutdown_fg(wait=True, cancel_futures=True)
         pipeline.shutdown_prep(wait=True, cancel_futures=True)

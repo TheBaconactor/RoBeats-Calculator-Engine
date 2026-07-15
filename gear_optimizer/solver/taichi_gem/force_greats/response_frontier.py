@@ -157,7 +157,7 @@ class FgResponseFrontierOwnerResult:
 class FgFusedOwnerScoreRow:
     """The owner-computable FG solve result for ONE base_components 7-vector.
 
-    The fused GA->FG handoff (Slice 3) scores on the GPU owner straight from the
+    The fused Base-to-FG handoff scores on the GPU owner straight from the
     device ``base_stats7`` (== base_components), but cannot materialize the final
     ``FgResponseFrontierSolveResult``: materialization needs the full 10-key
     BaseStats dict (``apply_gems_to_base_stats`` over all stats) which lives only
@@ -495,13 +495,13 @@ def prepare_force_greats_response_frontier_scoring_batch(
     started: float | None = None,
     scoring_bundle: FgResponseFrontierScoringBundle | None = None,
 ) -> FgResponseFrontierPackedScoringBatch:
-    """Prepare the GA->FG candidate inputs (host, prep thread). The group rows + scoring
+    """Prepare exact Base-to-FG candidate inputs (host, prep thread). The group rows + scoring
     surfaces are built later on the GPU owner thread by
     `score_prepared_force_greats_response_frontier_batch_on_gpu_owner`.
 
     ``base_stats7_list`` (when given) carries each candidate's authoritative base
-    components by origin: the GPU-native GA pack kernel's device-computed
-    ``base_stats7`` for GA candidates, ``None`` for dict-sourced (DB-best/skyline)
+    components by origin: the exact Base surface's device-computed
+    ``base_stats7`` for current candidates, ``None`` for persisted/reference rows
     candidates. It must align 1:1 with ``base_stats_list``. The single canonical
     per-candidate rule lives in ``response_frontier_base_components_row``; the full
     ``BaseStats`` dicts are still retained as ``stats_inputs`` for result
@@ -962,7 +962,7 @@ def resolve_fused_owner_score_rows_from_batch(
     batch: FgResponseFrontierPackedScoringBatch,
     inner_rows: np.ndarray,
 ) -> list[FgFusedOwnerScoreRow]:
-    """Resolve the per-candidate owner FG score rows for the fused GA->FG handoff.
+    """Resolve per-candidate owner FG score rows for the fused Base-to-FG handoff.
 
     This mirrors the winning-row + surface resolution inside
     ``materialize_prepared_force_greats_response_frontier_batch_results`` but stops
@@ -1031,8 +1031,8 @@ def score_fused_owner_base_components_on_gpu_owner(
 ) -> dict[tuple[int, ...], FgFusedOwnerScoreRow]:
     """Score FG response frontier for a candidate set on the GPU owner, fused.
 
-    The fused GA->FG handoff calls this on the owner thread immediately after the
-    GA pack/select, with ``base_components`` sliced from the selected payload rows'
+    The fused Base-to-FG handoff calls this on the owner thread immediately after
+    exact surface ranking, with ``base_components`` taken from the selected rows'
     device ``base_stats7`` (Slice 2). It builds the group rows + packs scoring
     surfaces + runs the inner solve, all on the owner (Taichi only), and returns a
     map ``base_components_7tuple -> FgFusedOwnerScoreRow``.
@@ -1046,7 +1046,7 @@ def score_fused_owner_base_components_on_gpu_owner(
     Slice 3 fused-path GPU test).
 
     ``selected_color`` is the song-level selected element (one batch). All other
-    FG inputs are song-level (prepared pre-GA via the scoring bundle).
+    FG inputs are song-level (prepared before exact Base scoring via the scoring bundle).
     """
     base_components = np.ascontiguousarray(np.asarray(base_components, dtype=np.int32))
     if int(base_components.ndim) != 2 or int(base_components.shape[1]) != 7:
@@ -1125,7 +1125,7 @@ def build_fused_owner_solve_result_from_score_row(
 ) -> FgResponseFrontierSolveResult:
     """Materialize the final FG solve result for one candidate from the owner row.
 
-    Driver-side (full-dict-dependent) half of the fused GA->FG handoff: the GPU
+    Driver-side (full-dict-dependent) half of the fused Base-to-FG handoff: the GPU
     owner already produced the scored ``score_row`` (inner result + winning surface)
     for this candidate's base_components; here we recombine it with the candidate's
     full ``base_stats`` dict (decode output, all 10 keys) to produce the same

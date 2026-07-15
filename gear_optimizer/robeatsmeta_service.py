@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 #
 # The service is a concurrent pool: ThreadingHTTPServer handles requests in parallel, and a bounded
 # semaphore caps concurrent solves (default 10). Each solve spawns main.py as a subprocess; the
-# subprocesses share MetaFinder's canonical timeline and FG frontier caches. A valid uploaded or
+# subprocesses share MetaFinder's canonical timeline, exact Base context, and FG frontier caches. A valid uploaded or
 # previously-built entry is reused forever; a cache miss is built by the canonical runtime owner and
 # persisted for every later solve.
 
@@ -50,7 +50,7 @@ GEAR_DIR = DATA_ROOT / "Gear"
 DIFFICULTIES = ("Easy", "Normal", "Hard")
 
 # Global solve pool: caps concurrent optimizer subprocesses. The GPU is the bottleneck (one song
-# at a time on the Vulkan device), but the CPU-side frontier build + chart parse + DB write
+# at a time on the Vulkan device), but exact song-context preparation + chart parse + DB write
 # overlaps with the GPU work of the previous song, so a small pool keeps both fed.
 _SOLVE_POOL_SIZE = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_POOL", 10))
 _SOLVE_SEMAPHORE = threading.Semaphore(_SOLVE_POOL_SIZE)
@@ -104,8 +104,10 @@ def _release_solve_slot() -> None:
 # MetaFinder runs and deployment prebuilds; a website-specific cache creates split authority and
 # makes an uploaded production cache invisible to live requests.
 _TIMELINE_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "timeline_frontier_cache"
+_EXACT_BASE_SONG_CONTEXT_CACHE_DIR = REPO_ROOT / "bin" / "exact_base_song_context_cache"
 _FG_RESPONSE_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "fg_response_frontier_cache"
 _TIMELINE_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_EXACT_BASE_SONG_CONTEXT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _FG_RESPONSE_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Concurrent writes to the shared frontier cache are safe: both writers (timeline frontier grid and
@@ -121,36 +123,6 @@ _MAX_BODY_BYTES = max(1024, env_int("ROBEATSMETA_OPTIMIZER_MAX_BODY_BYTES", 32 *
 # Hard wall-clock cap on a single solve subprocess: on timeout the whole process group is killed
 # (so main.py's GPU/worker children don't linger) and the request fails. Must exceed a real solve.
 _SOLVE_TIMEOUT_S = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_TIMEOUT_S", 30 * 60))
-
-# Reasoning effort: the website lets a user spend extra credits to make the optimizer search harder.
-# The chosen level scales the GA search knobs that most directly raise the odds of reaching the true
-# optimum -- how deep the GA evolves (GA_SearchDepth) and how many independent starting populations
-# it searches in parallel (GA_MultiStart, ~free since it runs concurrently on the GPU). Scaling is
-# linear in the multiplier; "default" reproduces the stock config defaults exactly (nothing is
-# written, so config.py's own fallbacks apply). This levels/multipliers table is a cross-repo
-# contract mirrored by the website (optimizer_job_contract.py).
-_REASONING_MULTIPLIERS: dict[str, float] = {"default": 1.0, "strong": 2.0, "max": 4.0}
-# Bases mirror the canonical config defaults: GA_SearchDepth fallback (gear_optimizer/core/config.py)
-# and GA_MULTI_RUNS_DEFAULT (gear_optimizer/core/constants.py). "default" reasoning => these exact
-# values, i.e. no behavior change from before this knob existed.
-_REASONING_BASE_SEARCH_DEPTH = 125
-_REASONING_BASE_MULTI_START = 3
-
-
-def _normalize_reasoning(value: Any) -> str:
-    level = str(value or "").strip().lower()
-    return level if level in _REASONING_MULTIPLIERS else "default"
-
-
-def _reasoning_search_knobs(reasoning: str) -> tuple[int, int]:
-    """(GA_SearchDepth, GA_MultiStart) for a reasoning level -- ceil(base x multiplier), linear."""
-    import math
-
-    mult = _REASONING_MULTIPLIERS[_normalize_reasoning(reasoning)]
-    depth = int(math.ceil(_REASONING_BASE_SEARCH_DEPTH * mult))
-    multi_start = int(math.ceil(_REASONING_BASE_MULTI_START * mult))
-    return depth, multi_start
-
 
 @dataclass
 class _InFlightSolve:
@@ -466,7 +438,6 @@ def _solve_isolated(
     chart_text: str,
     result_song_name: str,
     repeats: int,
-    reasoning: str = "default",
     timing_mode: str = "perfect_window",
 ) -> list[dict[str, Any]]:
     """Run the canonical optimizer pipeline once in a throwaway per-job workspace."""
@@ -479,13 +450,6 @@ def _solve_isolated(
         _normalize_chart(chart_text, result_song_name, _normalize_timing_mode(timing_mode)),
         encoding="utf-8",
     )
-    # Reasoning effort scales the GA search knobs. Only write them above "default" so the default
-    # path stays byte-identical to before this knob existed (config.py's own fallbacks apply).
-    level = _normalize_reasoning(reasoning)
-    reasoning_lines = ""
-    if level != "default":
-        depth, multi_start = _reasoning_search_knobs(level)
-        reasoning_lines = f"GA_SearchDepth = {depth}\nGA_MultiStart = {multi_start}\n"
     # The isolated Data dir holds exactly this one chart, so "process discovered charts once"
     # (empty Song_Name + LoopForever off) solves it; a fresh bin means no resume/candidate queue.
     (work / "config.ini").write_text(
@@ -494,8 +458,7 @@ def _solve_isolated(
         "[IterationEngine]\n"
         "IgnoreResumeQueue = true\n"
         f"SongRepeats = {repeats}\n"
-        "SongQueueLimit = 1\n"
-        f"{reasoning_lines}",
+        "SongQueueLimit = 1\n",
         encoding="utf-8",
     )
     db_path = work / "result.db"
@@ -506,6 +469,7 @@ def _solve_isolated(
         "ROBEATSMETA_OPTIMIZER_DATA_DIR": str(data_dir),
         "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(work / "bin"),
         "TIMELINE_FRONTIER_CACHE_DIR": str(_TIMELINE_FRONTIER_CACHE_DIR),
+        "EXACT_BASE_SONG_CONTEXT_CACHE_DIR": str(_EXACT_BASE_SONG_CONTEXT_CACHE_DIR),
         "FG_RESPONSE_FRONTIER_CACHE_DIR": str(_FG_RESPONSE_FRONTIER_CACHE_DIR),
     }
     with _SOLVE_SEMAPHORE:
@@ -554,14 +518,13 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     job = _job_slug(request.get("jobId") or request.get("resultKey"))
     chart_text, result_song_name = chart_text_and_result_song_name_for_request(request, fallback_name=job)
     repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
-    reasoning = _normalize_reasoning(request.get("reasoning"))
     timing_mode = _normalize_timing_mode(request.get("timingMode"))
     state, owner = _claim_job_solve(job)
     if not owner:
         logger.info("joining in-flight optimizer solve for job %s", job)
         return state.wait()
     try:
-        state.result = _solve_isolated(job, chart_text, result_song_name, repeats, reasoning, timing_mode)
+        state.result = _solve_isolated(job, chart_text, result_song_name, repeats, timing_mode)
         return state.result
     except BaseException as exc:
         state.error = exc
@@ -664,6 +627,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"[robeatsmeta-service] listening on http://{args.host}:{args.port}"
         f" (pool={_SOLVE_POOL_SIZE}, timeline_cache={_TIMELINE_FRONTIER_CACHE_DIR},"
+        f" exact_base_context_cache={_EXACT_BASE_SONG_CONTEXT_CACHE_DIR},"
         f" fg_cache={_FG_RESPONSE_FRONTIER_CACHE_DIR})",
         flush=True,
     )

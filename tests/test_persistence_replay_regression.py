@@ -74,7 +74,7 @@ def test_build_persistence_entries_routes_retained_surface_through_shared_canoni
 
     out = build_persistence_entries(
         db_payload,
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries=loadout_entries,
         build_details_fn=lambda _data: {"tag": "top1"},
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},

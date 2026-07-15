@@ -17,10 +17,6 @@ def _bundle_task():
         None,
         None,
         None,
-        False,
-        False,
-        1,
-        None,
         1,
         False,
     )
@@ -28,8 +24,8 @@ def _bundle_task():
         "repeat_bundle": True,
         "repeat_total": 2,
         "runs": [
-            {"repeat_index": 1, "repeat_total": 2, "ga_seed": 101},
-            {"repeat_index": 2, "repeat_total": 2, "ga_seed": 202},
+            {"repeat_index": 1, "repeat_total": 2},
+            {"repeat_index": 2, "repeat_total": 2},
         ],
     }
     return prefix + (bundle,)
@@ -58,8 +54,8 @@ def test_bundle_tracker_materializes_and_binds_repeat_context():
 
     tracker.bind_song(song, parent, repeat_ctx)
 
-    assert logical_task[:16] == parent[:16]
-    assert logical_task[16] == {"repeat_index": 1, "repeat_total": 2, "ga_seed": 101}
+    assert logical_task[:12] == parent[:12]
+    assert logical_task[12] == {"repeat_index": 1, "repeat_total": 2}
     assert song.runtime.bundle.bundle_parent_task is parent
     assert song.runtime.bundle.bundle_task_key == "Bundle Song"
     assert song.runtime.bundle.bundle_repeat_index == 1

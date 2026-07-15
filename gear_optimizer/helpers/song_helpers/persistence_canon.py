@@ -12,7 +12,7 @@ from .item_utils import names_list
 from .persistence_entry_merge import merge_persist_entry, resolve_loadout_hash
 from .persistence_entry_selection import (
     add_db_payload_priority_entries,
-    add_ga_candidate_entries,
+    add_base_candidate_entries,
     build_retained_loadout_entries,
 )
 from .persistence_authority import canonicalize_authoritative_fg_entries
@@ -35,6 +35,8 @@ class ReplayContext:
     calc_song: dict
     ref_arrays: dict
     cfg_dict: dict
+    gears_by_name: dict[str, dict] | None = None
+    minis_by_name: dict[str, dict] | None = None
 
 
 def _details_have_stats(details_obj: Any) -> bool:
@@ -94,7 +96,7 @@ def _normalize_entry_shape(
 def _collect_raw_entries(
     *,
     db_payload: dict,
-    ga_candidates: list[dict] | None,
+    base_candidates: list[dict] | None,
     loadout_entries: dict | None,
     build_details_fn: Callable[[dict], dict],
 ) -> list[dict[str, Any]]:
@@ -127,7 +129,7 @@ def _collect_raw_entries(
         )
 
     add_db_payload_priority_entries(db_payload, loadout_entries, _append_entry)
-    add_ga_candidate_entries(ga_candidates, loadout_entries, build_details_fn, _append_entry)
+    add_base_candidate_entries(base_candidates, loadout_entries, build_details_fn, _append_entry)
 
     retained_entries = build_retained_loadout_entries(loadout_entries, build_details_fn)
     for retained in retained_entries:
@@ -215,6 +217,8 @@ def _replay_batch(
         calc_song=replay_ctx.calc_song,
         ref_arrays=dict(replay_ctx.ref_arrays),
         cfg_dict=dict(replay_ctx.cfg_dict),
+        gears_by_name=replay_ctx.gears_by_name,
+        minis_by_name=replay_ctx.minis_by_name,
         limit=max(1, int(len(entries))),
         tiers=(str(baseline_team_buff),),
         timing_mode=timing_mode,
@@ -319,7 +323,7 @@ def _dedupe_entries(entries: list[dict[str, Any]]) -> list[dict]:
 def canonicalize_and_assemble(
     *,
     db_payload: dict,
-    ga_candidates: list[dict] | None,
+    base_candidates: list[dict] | None,
     loadout_entries: dict | None,
     build_details_fn: Callable[[dict], dict],
     replay_ctx: ReplayContext,
@@ -339,7 +343,7 @@ def canonicalize_and_assemble(
 
     raw_entries = _collect_raw_entries(
         db_payload=db_payload if isinstance(db_payload, dict) else {},
-        ga_candidates=ga_candidates,
+        base_candidates=base_candidates,
         loadout_entries=loadout_entries,
         build_details_fn=build_details_fn,
     )
@@ -355,13 +359,15 @@ def canonicalize_and_assemble(
 
 def build_persistence_entries(
     db_payload,
-    ga_candidates,
+    base_candidates,
     loadout_entries,
     build_details_fn,
     *,
     calc_song: dict | None = None,
     ref_arrays: dict | None = None,
     cfg_dict: dict | None = None,
+    gears_by_name: dict[str, dict] | None = None,
+    minis_by_name: dict[str, dict] | None = None,
 ):
     if not (isinstance(calc_song, dict) and calc_song and isinstance(ref_arrays, dict) and ref_arrays):
         raise ValueError("build_persistence_entries requires calc_song and ref_arrays for authoritative replay.")
@@ -370,12 +376,13 @@ def build_persistence_entries(
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         cfg_dict=dict(cfg_dict) if isinstance(cfg_dict, dict) else {},
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
     )
     return canonicalize_and_assemble(
         db_payload=db_payload if isinstance(db_payload, dict) else {},
-        ga_candidates=ga_candidates,
+        base_candidates=base_candidates,
         loadout_entries=loadout_entries,
         build_details_fn=build_details_fn,
         replay_ctx=replay_ctx,
     )
-

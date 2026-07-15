@@ -2,7 +2,7 @@
 
 Owns the queue/task half of a run iteration: config-driven chart discovery and
 filtering, memory-guard resume merge, queue finalization, and per-song task
-tuples (including per-repeat GA seed assignment). App state reaches this class
+tuples. App state reaches this class
 only through two injected callables, so the logic is unit-testable without a
 GPU, a DB write path, or a constructed GearOptimizerApp:
 
@@ -15,9 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-import secrets
 import typing
-import zlib
 
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR
 from gear_optimizer.core.memory import (
@@ -216,7 +214,6 @@ class QueueTaskCoordinator:
         all_minis,
         gears_by_name,
         minis_by_name,
-        ga_depth,
         fg_debug,
     ):
         cfg_dict = cfg_to_dict(cfg)
@@ -230,7 +227,6 @@ class QueueTaskCoordinator:
             all_minis=all_minis,
             gears_by_name=gears_by_name,
             minis_by_name=minis_by_name,
-            ga_depth=int(ga_depth),
             parallel_workers=int(parallel_workers),
             fg_debug=bool(fg_debug),
         )
@@ -241,40 +237,25 @@ class QueueTaskCoordinator:
             task_diff: str,
             *,
             repeat_ctx: dict | None = None,
-            repeat_bundle: dict | None = None,
         ) -> None:
             repeat_index = 0
             repeat_total = 0
-            ga_seed = None
             extras: list[typing.Any] = []
             if repeat_ctx is not None:
                 repeat_index = int(repeat_ctx.get("repeat_index") or 0)
                 repeat_total = int(repeat_ctx.get("repeat_total") or 0)
-                seed_raw = repeat_ctx.get("ga_seed")
-                ga_seed = int(seed_raw) if seed_raw is not None else None
                 extras.append(repeat_ctx)
-            if repeat_bundle is not None:
-                repeat_total = int(repeat_bundle.get("repeat_total") or repeat_total or 0)
-                extras.append(repeat_bundle)
             job = SongJob(
                 file_path=fp,
                 song_name=str(found_song_name or ""),
                 difficulty=str(task_diff or ""),
                 repeat_index=max(0, int(repeat_index)),
                 repeat_total=max(0, int(repeat_total)),
-                ga_seed=ga_seed,
-                repeat_bundle=repeat_bundle is not None,
+                repeat_bundle=False,
                 queue_source="app_prepare_tasks",
             )
             tasks.append(task_tuple_from_job_context(job, run_context, *extras))
 
-        ga_seed_base: int | None = None
-        raw_ga_seed = env_get("GA_SEED")
-        if raw_ga_seed is not None and str(raw_ga_seed).strip() != "":
-            try:
-                ga_seed_base = int(str(raw_ga_seed).strip()) & 0xFFFFFFFF
-            except (ValueError, TypeError) as exc:
-                raise ValueError("GA_SEED must be an integer debug seed when set") from exc
         runtime_settings = self._runtime_settings(cfg)
         song_repeats = int(runtime_settings.song_repeats)
         try:
@@ -284,43 +265,17 @@ class QueueTaskCoordinator:
         except (ValueError, TypeError):
             pass
         song_repeats = max(1, min(int(song_repeats), 100))
-        used_ga_seeds: set[int] = set()
-
-        def _stable_ga_seed_for_song_repeat(song_name: str, repeat_index: int) -> int:
-            base = int(ga_seed_base or 0) & 0xFFFFFFFF
-            name_crc = int(zlib.crc32(str(song_name).encode("utf-8", errors="replace")) & 0xFFFFFFFF)
-            idx = int(repeat_index) & 0xFFFFFFFF
-            seed = (base + name_crc + (idx * 0x9E3779B1)) & 0xFFFFFFFF
-            return int(seed)
-
-        def _build_repeat_ctx(song_name: str, *, repeat_index: int, repeat_total: int) -> dict:
-            if ga_seed_base is not None:
-                ga_seed = _stable_ga_seed_for_song_repeat(str(song_name), int(repeat_index))
-                while ga_seed in used_ga_seeds:
-                    ga_seed = int((ga_seed + 1) & 0xFFFFFFFF)
-            else:
-                ga_seed = int(secrets.randbits(32))
-                while ga_seed in used_ga_seeds:
-                    ga_seed = int(secrets.randbits(32))
-            used_ga_seeds.add(int(ga_seed))
-            return {
-                "repeat_index": int(repeat_index),
-                "repeat_total": int(repeat_total),
-                "ga_seed": int(ga_seed),
-            }
 
         for fp, found_song_name, task_diff in song_queue:
             if song_repeats <= 1:
                 logger.info(f"[QUEUE] {found_song_name}")
-                repeat_ctx = _build_repeat_ctx(str(found_song_name), repeat_index=1, repeat_total=1)
-                _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
+                _append_song_task(fp, found_song_name, task_diff)
                 continue
             for repeat_index in range(1, song_repeats + 1):
-                repeat_ctx = _build_repeat_ctx(
-                    str(found_song_name),
-                    repeat_index=int(repeat_index),
-                    repeat_total=int(song_repeats),
-                )
+                repeat_ctx = {
+                    "repeat_index": int(repeat_index),
+                    "repeat_total": int(song_repeats),
+                }
                 logger.info(f"[QUEUE] {found_song_name} (Run {repeat_index}/{song_repeats})")
                 _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
         return tasks

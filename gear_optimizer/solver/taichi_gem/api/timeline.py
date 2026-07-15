@@ -21,6 +21,7 @@ from gear_optimizer.core.env_config import ENV as _ENV
 from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import timing_envelope_timing_context
+from gear_optimizer.solver.frontier_cache_errors import MissingFrontierCacheError
 from gear_optimizer.solver.timeline_exact_frontier import (
     TimelineFrontierGridPayload,
     _head_mask_coefficients_py,
@@ -217,7 +218,7 @@ def _upload_timeline_frontier_payload_slot(
 
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
 # Sized to cover the native in-flight prep window (prep_limit tops out around 36):
-# prep workers hydrate a song's payload ahead of its GA turn, and the entry must
+# prep workers hydrate a song's payload ahead of its exact Base turn, and the entry must
 # survive in this LRU until the owner uploads it. Payloads run ~1-2MB typical.
 _FRONTIER_PAYLOAD_CACHE_MAX = 40
 _frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
@@ -277,6 +278,14 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only unreachable or test-only definitions from the shared producer modules; the Perfect-only
 # recurrence and every persisted Base payload member are unchanged.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Python 3.11 and newer interpreters emit different ``ast.dump`` shapes for
+    # the same producer source.  The cleanup record proves the source behind
+    # 4c69b48f08bb is output-identical, and a current-vs-cached real-song payload
+    # comparison covers every persisted array.  Keep this interpreter-only
+    # fingerprint rotation explicit so the production cache remains reusable.
+    "exact-frontier-v12+logic-1f182e5b89af": (
+        "exact-frontier-v12+logic-4c69b48f08bb",
+    ),
     "exact-frontier-v12+logic-4c69b48f08bb": (
         "exact-frontier-v12+logic-9dfe907e66fb",
     ),
@@ -949,6 +958,44 @@ def build_or_load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -
     )
 
 
+def load_prebuilt_timeline_frontier_payload(
+    calc_song: dict,
+    ref_arrays: dict,
+) -> TimelineFrontierPrewarmResult:
+    """Load the startup-provisioned timeline payload without building a cache miss."""
+
+    if _timeline_calc_song_is_zero_ms(calc_song):
+        # Fixed chart timing has one deterministic surface and intentionally has no disk artifact.
+        return _zero_ms_timeline_result(calc_song, ref_arrays)
+    t0 = time.perf_counter()
+    lookup = _timeline_payload_lookup_context(calc_song, ref_arrays)
+    cache_key = _frontier_payload_cache_key(
+        lookup["song_key"],
+        lookup["ref_ft"],
+        lookup["ref_ff"],
+    )
+    payload, cache_source = _get_cached_frontier_payload_with_source(
+        lookup["song_key"],
+        ref_ft=lookup["ref_ft"],
+        ref_ff=lookup["ref_ff"],
+    )
+    if payload is None:
+        raise MissingFrontierCacheError(
+            "Timeline frontier payload is missing. Startup cache prebuild must provision "
+            f"the exact timeline artifact before scoring: {_frontier_disk_cache_path(cache_key)}"
+        )
+    return TimelineFrontierPrewarmResult(
+        payload=payload,
+        cache_key=cache_key,
+        disk_path=_frontier_disk_cache_path(cache_key),
+        cache_source=cache_source,
+        elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
+        song_profile_key=lookup["song_profile_key"],
+        total_notes=int(lookup["total_notes"]),
+        long_notes=int(lookup["long_notes"]),
+    )
+
+
 def load_timeline_frontier_payload(calc_song: dict, ref_arrays: dict) -> TimelineFrontierPrewarmResult:
     """Load the timeline frontier, building and persisting a live cache miss."""
     if _timeline_calc_song_is_zero_ms(calc_song):
@@ -989,7 +1036,7 @@ def precompute_timeline_gpu(
 
     Runtime is cache-consumer only: the candidate-independent startup cache owns
     group-envelope construction and frontier building. The live GPU path uploads
-    only the per-slot fields read by GA scoring kernels.
+    only the per-slot fields read by exact scoring kernels.
 
     Args:
         calc_song: Song calculation context with timestamps/metadata

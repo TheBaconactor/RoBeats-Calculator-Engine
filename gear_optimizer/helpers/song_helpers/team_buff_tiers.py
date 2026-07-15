@@ -221,7 +221,13 @@ def _apply_stat_delta(stats: dict, delta: dict[str, int]) -> dict:
     return out
 
 
-def _entry_loadout_items(entry: dict, calc_song: dict | None = None) -> list[dict]:
+def _entry_loadout_items(
+    entry: dict,
+    calc_song: dict | None = None,
+    *,
+    gears_by_name: dict[str, dict] | None = None,
+    minis_by_name: dict[str, dict] | None = None,
+) -> list[dict]:
     """The 6 gear + 3 mini stat dicts before any gem allocation is applied.
 
     Two callers feed entries here. The on-demand serving path passes entries
@@ -241,20 +247,35 @@ def _entry_loadout_items(entry: dict, calc_song: dict | None = None) -> list[dic
     minis = [dict(item) for item in raw_minis[:3] if isinstance(item, dict)]
     if len(gear) != 6 or len(minis) != 3:
         # Persistence entries carry item NAME STRINGS -> expand to the canonical
-        # pre-gem stat-dicts. Minis are variant-grouped, so resolve their
-        # representative names exactly as the per-entry "minis" field does above.
-        gears_by_name = get_gears_by_name_cached()
-        minis_by_name = get_minis_by_name_cached()
+        # pre-gem stat-dicts. Native requests thread their compact request-local
+        # catalogs here so website-only items resolve against the catalog that was
+        # actually optimized. The CSV catalogs remain only for legacy/on-demand
+        # callers that do not own a request catalog.
+        request_catalog_supplied = gears_by_name is not None or minis_by_name is not None
+        if request_catalog_supplied and (gears_by_name is None or minis_by_name is None):
+            raise ValueError("tier re-solve requires both request-local gear and mini catalogs")
+        gear_catalog = gears_by_name if gears_by_name is not None else get_gears_by_name_cached()
+        mini_catalog = minis_by_name if minis_by_name is not None else get_minis_by_name_cached()
         if calc_song is not None:
-            _all_minis, minis_by_name, _mini_ascension_context = materialize_minis_for_song(
-                minis_by_name=minis_by_name,
+            _all_minis, mini_catalog, _mini_ascension_context = materialize_minis_for_song(
+                minis_by_name=mini_catalog,
                 calc_song=calc_song,
             )
-        gear = [dict(gears_by_name[name]) for name in _flat_item_names(raw_gear) if name in gears_by_name]
+        gear_names = _flat_item_names(raw_gear)
+        mini_names = _representative_mini_names_from_any(raw_minis)
+        missing_gear = [name for name in gear_names if name not in gear_catalog]
+        missing_minis = [name for name in mini_names if name not in mini_catalog]
+        if missing_gear or missing_minis:
+            catalog_kind = "request-local" if request_catalog_supplied else "CSV"
+            raise ValueError(
+                f"tier re-solve could not resolve loadout identities from {catalog_kind} catalogs: "
+                f"gear={missing_gear}, minis={missing_minis} "
+                f"(loadout {entry.get('loadout_hash')!r})"
+            )
+        gear = [dict(gear_catalog[name]) for name in gear_names]
         minis = [
-            dict(minis_by_name[name])
-            for name in _representative_mini_names_from_any(raw_minis)
-            if name in minis_by_name
+            dict(mini_catalog[name])
+            for name in mini_names
         ]
     elif calc_song is not None:
         minis, _minis_by_name, _mini_ascension_context = materialize_minis_for_song(
@@ -432,9 +453,8 @@ def resolve_tier_base(
         base_stats_fixed=dict(fixed_song_stats or {}),
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        genome=list(loadout_items or []),
+        loadout=list(loadout_items or []),
         override_cfg=override_cfg,
-        gpu_client=None,
     )
     resolved_stats = dict(resolved.get("Stats") or {})
     if not resolved_stats:
@@ -457,8 +477,8 @@ def resolve_tier_base_batch(
 ) -> list:
     """Batched lossless BASE re-solve: all N loadouts of a (tier·color·timing) in ONE GPU dispatch.
 
-    The per-song serving path -- a full leaderboard re-solves in one skyline dispatch
-    (``n_genomes=N``) instead of N sequential solves. ``fixed_song_stats`` is the shared
+    The per-song serving path re-solves a full leaderboard in one skyline dispatch.
+    ``fixed_song_stats`` is the shared
     tier-adjusted song fixed-stats row; ``loadouts`` is the list of N loadout item-stat rows. The
     final exact rescore follows ``timing_mode`` (zero_ms -> fixed-0ms; perfect_window -> the timing
     frontier). Returns N ``(resolved_payload, score)`` in order. Each loadout's gem search is
@@ -466,7 +486,7 @@ def resolve_tier_base_batch(
     path) -> served == native (delta=0)."""
     from ...solver.scoring.fever_solver import solve_best_fever_combination_batch
     from ...solver.solver_common import (
-        _add_genome_item_stats,
+        _add_loadout_item_stats,
         build_solver_cfg_data,
         build_solver_override_cfg,
     )
@@ -480,7 +500,7 @@ def resolve_tier_base_batch(
     )
     override_cfg = build_solver_override_cfg(cfg_data, p_color=p_color, selected_color=str(selected_color or ""))
     override_cfg["use_gpu"] = True
-    pre_gem_rows = [_add_genome_item_stats(dict(fixed_song_stats or {}), list(items or [])) for items in rows]
+    pre_gem_rows = [_add_loadout_item_stats(dict(fixed_song_stats or {}), list(items or [])) for items in rows]
     results = solve_best_fever_combination_batch(cfg, pre_gem_rows, calc_song, ref_arrays, override_cfg)
     if len(results) != len(rows):
         raise ValueError(f"batched tier base re-solve returned {len(results)} != {len(rows)} results")
@@ -547,6 +567,8 @@ def compute_team_buff_tier_leaderboards(
     replay_surfaces: tuple[str, ...] = ("meta", "fg"),
     timing_mode: str = "perfect_window",
     baseline_offset: object = None,
+    gears_by_name: dict[str, dict] | None = None,
+    minis_by_name: dict[str, dict] | None = None,
 ) -> dict:
     """
     Re-solve each persisted entry's loadout under TeamBuff tiers and return per-tier
@@ -697,7 +719,15 @@ def compute_team_buff_tier_leaderboards(
         # stats + loadout item stats via the canonical GPU base exhaustive search + CPU-f64 exact
         # rescore at the mode's timing. Both zero_ms and perfect_window re-solve per tier -- the
         # persisted gems are a T5 allocation that is NOT the per-tier optimum at either timing.
-        base_loadouts = [_entry_loadout_items(e.get("_entry") or {}, calc_song) for e in per_entry]
+        base_loadouts = [
+            _entry_loadout_items(
+                e.get("_entry") or {},
+                calc_song,
+                gears_by_name=gears_by_name,
+                minis_by_name=minis_by_name,
+            )
+            for e in per_entry
+        ]
         for tier in tier_list:
             delta_map = _team_buff_delta_map(
                 base_team_buff=base_team_buff,
@@ -706,8 +736,8 @@ def compute_team_buff_tier_leaderboards(
                 target_team_color=target_team_color,
             )
             tier_fixed_stats = _apply_stat_delta(tier_song_fixed_stats, delta_map)
-            # Batched: ALL loadouts of this tier re-solve in ONE GPU dispatch (n_genomes=N is the
-            # low-level solver batch dimension). Per-loadout result is identical to the
+            # Batched: all loadouts of this tier re-solve in one GPU dispatch. Each result is
+            # identical to the
             # single-loadout path (independent gem searches) -> delta=0.
             batch = resolve_tier_base_batch(
                 cfg=tier_resolve_cfg,
@@ -743,7 +773,15 @@ def compute_team_buff_tier_leaderboards(
         # f32/f64) + CPU-f64 exact rescore -> served == native optimum. Both modes re-solve per tier:
         # the persisted FG surface + gems are a T5 allocation, NOT the per-tier optimum at either
         # timing (the tier shifts stats -> the optimal great placement + gems shift too).
-        fg_loadouts = [_entry_loadout_items(per_entry[idx].get("_entry") or {}, calc_song) for idx in fg_indices]
+        fg_loadouts = [
+            _entry_loadout_items(
+                per_entry[idx].get("_entry") or {},
+                calc_song,
+                gears_by_name=gears_by_name,
+                minis_by_name=minis_by_name,
+            )
+            for idx in fg_indices
+        ]
         for tier in tier_list:
             out_list = fg_scores_by_tier[str(tier)]
             witness_for_tier = resolved_fg_force_by_tier_hash.setdefault(str(tier), {})
@@ -916,6 +954,8 @@ def build_team_buff_tier_db_batches(
     replay_surface: str = "both",
     timing_mode: str = "perfect_window",
     baseline_offset: object = None,
+    gears_by_name: dict[str, dict] | None = None,
+    minis_by_name: dict[str, dict] | None = None,
 ) -> dict[str, list[dict]]:
     """
     Return DB-ready entry batches per tier.
@@ -963,6 +1003,8 @@ def build_team_buff_tier_db_batches(
         replay_surfaces=replay_surfaces,
         timing_mode=timing_mode,
         baseline_offset=baseline_offset,
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
     )
     resolved_fg_force_by_tier_hash = payload.get("resolved_fg_force_by_tier_hash") or {}
     resolved_base_by_tier_hash = payload.get("resolved_base_by_tier_hash") or {}

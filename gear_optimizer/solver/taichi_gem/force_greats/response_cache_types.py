@@ -155,7 +155,7 @@ _FG_RESPONSE_CACHE_VERSION = (
 _MEMORY_CACHE_MAX = 4096
 _PAYLOAD_CACHE_MAX = 8
 # Sized to cover the native in-flight prep window (prep_limit tops out around 36): a
-# bundle's slim metadata arrays are hydrated at prep and re-read at the fused GA turn
+# bundle's slim metadata arrays are hydrated at prep and re-read at the fused Base turn
 # 10-30 songs later; a 2-entry LRU thrashed and forced an owner-thread npz re-open per
 # song. Entries are ~0.2-1MB (metadata members only, never the surface pools).
 _BUNDLE_ARRAY_CACHE_MAX = 40

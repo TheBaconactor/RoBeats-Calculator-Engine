@@ -1,4 +1,4 @@
-"""Progress tracking and GA queue limit helpers for native in-flight orchestration."""
+"""Progress tracking for native exact Base + FG orchestration."""
 from __future__ import annotations
 
 import logging
@@ -199,12 +199,12 @@ class ActiveRuntimeProgressReporter:
     @staticmethod
     def active_song_label(
         *,
-        ga_inflight,
+        base_inflight,
         decode_inflight,
         fg_futures,
     ) -> str:
         for source_name, source in (
-            ("ga", ga_inflight),
+            ("base", base_inflight),
             ("decode", decode_inflight),
         ):
             try:
@@ -222,13 +222,13 @@ class ActiveRuntimeProgressReporter:
     def emit(
         self,
         *,
-        ga_inflight,
+        base_inflight,
         decode_inflight,
         fg_futures,
         force: bool = False,
     ) -> None:
         song_label = self.active_song_label(
-            ga_inflight=ga_inflight,
+            base_inflight=base_inflight,
             decode_inflight=decode_inflight,
             fg_futures=fg_futures,
         )

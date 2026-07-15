@@ -54,12 +54,10 @@ def test_build_prepared_calc_song_clones_cached_base_song(monkeypatch):
 
 
 def test_build_prepared_song_config_names_setup_tuple_fields(monkeypatch):
-    ga_settings = object()
     monkeypatch.setattr(
         song_preparation,
         "_setup_song_config",
         lambda *args, **kwargs: (
-            ga_settings,
             {"Perfect Points": 1},
             {"gear": 2},
             [{"Name": "G"}],
@@ -76,7 +74,6 @@ def test_build_prepared_song_config_names_setup_tuple_fields(monkeypatch):
         minis_by_name={},
     )
 
-    assert prepared.ga_settings is ga_settings
     assert prepared.fixed_stats == {"Perfect Points": 1}
     assert prepared.current_gear_stats == {"gear": 2}
     assert prepared.current_gear_list == [{"Name": "G"}]
@@ -93,7 +90,6 @@ def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
         timing_envelope_info=None,
     )
     prepared_config = song_preparation.PreparedSongConfig(
-        ga_settings=object(),
         fixed_stats={},
         current_gear_stats={},
         current_gear_list=[],

@@ -1,4 +1,4 @@
-"""Clean DB for Take Your Time and insert inferior record to test GA discovery."""
+"""Clean DB for Take Your Time and insert an inferior record to test exact discovery."""
 
 import os, sys
 

@@ -197,7 +197,7 @@ def test_make_build_details_fn_uses_base_stats_as_post_gem_visible_row():
     assert stats == base_stats
 
 
-def test_build_persistence_entries_materializes_lazy_ga_entry_names():
+def test_build_persistence_entries_materializes_lazy_exact_base_entry_names():
     from tests.persistence_test_support import assemble_without_replay
 
     class _FakeRegistry:
@@ -214,9 +214,9 @@ def test_build_persistence_entries_materializes_lazy_ga_entry_names():
             "details": {"Stats": {}, "ForceGreats": {}},
             "fg_score": 0,
         },
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries={
-            "ga:1,2,3,4,5,6,7,8,9": {
+            "ids:1,2,3,4,5,6,7,8,9": {
                 "score": 999,
                 "base_score": 999,
                 "fg_score": 0,
@@ -225,9 +225,9 @@ def test_build_persistence_entries_materializes_lazy_ga_entry_names():
                 "details": {"Stats": {}, "ForceGreats": {}},
                 "force": None,
                 "eval_data": {"Selected Element": "Rush"},
-                "_source": "ga",
-                "ga_genome_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9],
-                "_ga_registry": _FakeRegistry(),
+                "_source": "exact-base",
+                "loadout_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+                "_item_registry": _FakeRegistry(),
             }
         },
         build_details_fn=build_details,

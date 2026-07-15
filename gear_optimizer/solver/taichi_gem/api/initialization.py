@@ -89,11 +89,7 @@ def _build_exact_pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
 # ============================================================================
 
 
-# Cache for genome_base_stats uploads to avoid redundant from_numpy calls
-# Stores (n_genomes, hash_bytes) of last uploaded stats
-_GENOME_STATS_CACHE = None
 _FTFF_COMBO_CACHE = {"key": None, "n_combos": 0}
-_TIMING_RESPONSE_COMBO_CACHE = {"key": None, "n_combos": 0}
 
 
 def hard_reset_taichi(*, reason: str | None = None) -> None:
@@ -103,7 +99,7 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     Intended as a recovery path for Vulkan backend failures (e.g. semaphore
     allocation errors) and long-running sessions.
     """
-    global _ref_loaded, _last_ref_arrays_sig, _GENOME_STATS_CACHE, _FTFF_COMBO_CACHE, _TIMING_RESPONSE_COMBO_CACHE
+    global _ref_loaded, _last_ref_arrays_sig, _FTFF_COMBO_CACHE
 
     # Reset runtime first (frees Vulkan resources)
     _reset_taichi_runtime(reason=reason)
@@ -126,9 +122,7 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     # Clear API-level caches that assume device state exists
     _ref_loaded = False
     _last_ref_arrays_sig = None
-    _GENOME_STATS_CACHE = None
     _FTFF_COMBO_CACHE = {"key": None, "n_combos": 0}
-    _TIMING_RESPONSE_COMBO_CACHE = {"key": None, "n_combos": 0}
 
     try:
         from .timeline import reset_timeline_state as _reset_timeline_state
@@ -144,19 +138,13 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     except Exception as e:
         logger.debug(f"initialization:hard_reset_taichi: {e}")
 
-    try:
-        from .ga_operations import reset_ga_upload_caches as _reset_ga_caches
+    from .skyline_operations import reset_skyline_upload_caches
 
-        _reset_ga_caches()
-    except Exception as e:
-        logger.debug(f"initialization:hard_reset_taichi: {e}")
+    reset_skyline_upload_caches()
 
 
 def _ensure_ftff_combo_tables(
     total_budget: int,
-    *,
-    max_ft_gems: int | None = None,
-    max_ff_gems: int | None = None,
 ) -> int:
     """
     Ensure the FT/FF combo lookup tables are resident on GPU.
@@ -164,10 +152,6 @@ def _ensure_ftff_combo_tables(
     The tables enumerate all (ft, ff) integer pairs such that:
       0 <= ft <= total_budget
       0 <= ff <= total_budget - ft
-
-    Optional global caps can further prune impossible combos:
-      ft <= max_ft_gems
-      ff <= max_ff_gems
 
     Returns:
         n_combos: Number of valid combos for this budget/cap pair.
@@ -180,23 +164,14 @@ def _ensure_ftff_combo_tables(
     if total_budget > fields.MAX_TOTAL_BUDGET:
         raise ValueError(f"total_budget={total_budget} exceeds fields.MAX_TOTAL_BUDGET={fields.MAX_TOTAL_BUDGET}")
 
-    cap_ft = int(total_budget) if max_ft_gems is None else int(max_ft_gems)
-    cap_ff = int(total_budget) if max_ff_gems is None else int(max_ff_gems)
-    cap_ft = max(0, min(int(total_budget), int(cap_ft)))
-    cap_ff = max(0, min(int(total_budget), int(cap_ff)))
-
-    cache_key = (int(total_budget), int(cap_ft), int(cap_ff))
+    cache_key = int(total_budget)
     if _FTFF_COMBO_CACHE.get("key") == cache_key:
         return int(_FTFF_COMBO_CACHE.get("n_combos") or 0)
 
     ft = np.zeros((fields.MAX_FTFF_COMBOS,), dtype=np.int32)
     ff = np.zeros((fields.MAX_FTFF_COMBOS,), dtype=np.int32)
 
-    ft_vals, ff_vals, _budget_left = ftff_combo_arrays(
-        int(total_budget),
-        max_ft_gems=int(cap_ft),
-        max_ff_gems=int(cap_ff),
-    )
+    ft_vals, ff_vals, _budget_left = ftff_combo_arrays(int(total_budget))
 
     n_combos = int(ft_vals.shape[0])
     ft[:n_combos] = ft_vals
@@ -207,65 +182,6 @@ def _ensure_ftff_combo_tables(
     _FTFF_COMBO_CACHE["key"] = cache_key
     _FTFF_COMBO_CACHE["n_combos"] = n_combos
     return n_combos
-
-
-def _ensure_timing_response_combo_tables(
-    *,
-    combo_ft: np.ndarray,
-    combo_ff: np.ndarray,
-    cache_key: object,
-) -> int:
-    ensure_ready()
-    ft_vals = np.asarray(combo_ft, dtype=np.int32).reshape(-1)
-    ff_vals = np.asarray(combo_ff, dtype=np.int32).reshape(-1)
-    if ft_vals.shape != ff_vals.shape:
-        raise ValueError("timing response FT/FF combo arrays must have the same shape")
-    n_combos = int(ft_vals.shape[0])
-    if n_combos <= 0:
-        raise ValueError("timing response combo table is empty")
-    if n_combos > int(fields.MAX_TIMING_RESPONSE_COMBOS):
-        raise ValueError(
-            "timing response combo table exceeds GPU capacity: "
-            f"{n_combos} > {int(fields.MAX_TIMING_RESPONSE_COMBOS)}"
-        )
-
-    table_key = ("timing-response", cache_key, int(n_combos))
-    if _TIMING_RESPONSE_COMBO_CACHE.get("key") == table_key:
-        return int(_TIMING_RESPONSE_COMBO_CACHE.get("n_combos") or 0)
-
-    ft = np.zeros((int(fields.MAX_TIMING_RESPONSE_COMBOS),), dtype=np.int32)
-    ff = np.zeros((int(fields.MAX_TIMING_RESPONSE_COMBOS),), dtype=np.int32)
-    ft[:n_combos] = ft_vals
-    ff[:n_combos] = ff_vals
-
-    fields.timing_response_combo_ft.from_numpy(ft)
-    fields.timing_response_combo_ff.from_numpy(ff)
-    _TIMING_RESPONSE_COMBO_CACHE["key"] = table_key
-    _TIMING_RESPONSE_COMBO_CACHE["n_combos"] = n_combos
-    return n_combos
-
-
-def _upload_timing_response_genome_rows(
-    *,
-    genome_offsets: np.ndarray,
-    genome_lengths: np.ndarray,
-    n_genomes: int,
-) -> None:
-    ensure_ready()
-    n = int(n_genomes)
-    if n < 0 or n > int(fields.MAX_GENOMES):
-        raise ValueError(f"n_genomes={n} outside supported range 0..{int(fields.MAX_GENOMES)}")
-    offsets_in = np.asarray(genome_offsets, dtype=np.int32).reshape(-1)
-    lengths_in = np.asarray(genome_lengths, dtype=np.int32).reshape(-1)
-    if offsets_in.shape[0] < n or lengths_in.shape[0] < n:
-        raise ValueError("timing response genome offset/length arrays are shorter than n_genomes")
-
-    offsets = np.zeros((int(fields.MAX_GENOMES),), dtype=np.int32)
-    lengths = np.zeros((int(fields.MAX_GENOMES),), dtype=np.int32)
-    offsets[:n] = offsets_in[:n]
-    lengths[:n] = lengths_in[:n]
-    fields.timing_response_genome_offset.from_numpy(offsets)
-    fields.timing_response_genome_length.from_numpy(lengths)
 
 
 # ============================================================================
@@ -354,7 +270,7 @@ def load_ref_arrays(ref_arrays: dict):
     """
     Upload reference arrays to GPU fields.
 
-    Must be called once before using solve_genomes_*() or GA/FG kernels that depend on
+    Must be called once before using exact Base/FG kernels that depend on
     the lookup tables (unless you call `ensure_ready(ref_arrays=...)`, which will
     upload them automatically).
     Typically called when switching songs or on first use.

@@ -26,8 +26,8 @@ STAT_KEYS = (
     "Chill",
 )
 
-# Key under which the GPU-native GA decode carries each candidate's device-computed
-# base_stats7 vector (see solver/genetic_pipeline_decode.decode_gpu_native_ga_runs_payload).
+# Key under which exact Base decode carries each candidate's device-computed
+# base_stats7 vector (see solver/exact_base_pipeline_decode.py).
 # Cols: [pp, cm, fm, p_val (primary-color stat), s_val (secondary-color stat), ft, ff].
 # This is the SAME 7-vector the host derives from a candidate's BaseStats dict
 # (proven bit-exact on real device data in tests/test_gpu_base_stats7_equivalence.py),
@@ -48,15 +48,15 @@ def response_frontier_base_components_row(
 
     There are exactly two legitimate, canonical input origins (NOT a fallback):
 
-    * GPU-native GA candidates carry ``base_stats7`` computed on-device by the pack
-      kernel; this is the authoritative scoring input for the fused GA->FG handoff.
+    * Exact Base candidates carry ``base_stats7`` computed on-device by the pack
+      kernel; this is the authoritative scoring input for the fused Base-to-FG handoff.
     * DB-best / skyline / previous-record candidates have no payload row, so their
       canonical source is their ``BaseStats`` dict, extracted with the same
       semantics (primary/secondary select the song's elemental color stats).
 
     Both produce the identical vector for the same loadout; they differ only by which
     representation the candidate's origin makes available. Pass ``base_stats7=None``
-    for dict-sourced candidates; pass the device vector for GA candidates.
+    for dict-sourced candidates; pass the device vector for exact Base candidates.
     """
     if base_stats7 is not None:
         seq = tuple(int(v) for v in base_stats7)

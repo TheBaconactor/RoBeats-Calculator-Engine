@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
 
@@ -117,16 +116,6 @@ def plan_loop_batch(
         queue_depth_hint=int(queue_depth_hint),
         pressure_hint=float(max(0.0, pressure_hint)),
     )
-
-
-def ga_recovery_streak_cap(*, env_get: Callable[..., Any]) -> int:
-    # Hardwired to the most FG-protective value (was GPU_EXECUTOR_GA_RECOVERY_STREAK_MAX=1).
-    return 1
-
-
-def ga_recovery_lookahead_limit(*, batch_max_size: int, env_get: Callable[..., Any]) -> int:
-    # Hardwired to the batch-size-derived default (was GPU_EXECUTOR_GA_RECOVERY_LOOKAHEAD_MAX_REQS).
-    return max(8, min(max(1, int(batch_max_size)) * 4, 64))
 
 
 def load_inprocess_coalesce_settings(
@@ -245,36 +234,7 @@ from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuResponse
 logger = logging.getLogger(__name__)
 
 
-GA_RECOVERY_REQUEST_TYPES = frozenset()
-
-COALESCABLE_REQUEST_TYPES = frozenset({GpuRequestType.GPU_NATIVE_GA_RUN})
-
-GA_RECOVERY_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in GA_RECOVERY_REQUEST_TYPES})
-
-
-def request_type_in(request_type: Any, request_types: frozenset[GpuRequestType], request_type_values: frozenset[str]) -> bool:
-    if request_type in request_types:
-        return True
-    try:
-        value = str(getattr(request_type, "value", request_type))
-    except (AttributeError, TypeError):
-        value = ""
-    return value in request_type_values
-
-
-def is_ga_recovery_request_type(request_type: Any) -> bool:
-    return request_type_in(request_type, GA_RECOVERY_REQUEST_TYPES, GA_RECOVERY_REQUEST_TYPE_VALUES)
-
-
-def is_ga_recovery_request(request: Any) -> bool:
-    return is_ga_recovery_request_type(getattr(request, "request_type", None))
-
-
-@dataclass(frozen=True)
-class GpuExecutionUnit:
-    request_type: GpuRequestType
-    requests: tuple[GpuRequest, ...]
-    grouped: bool
+COALESCABLE_REQUEST_TYPES = frozenset({GpuRequestType.EXACT_BASE_SEARCH})
 
 
 def execute_request_from_dispatch(
@@ -303,45 +263,6 @@ def execute_request_from_dispatch(
             success=False,
             error=f"GpuExecutor error: {type(exc).__name__}: {exc}",
         )
-
-
-def plan_execution_units(
-    batch: list[GpuRequest],
-    *,
-    grouped_request_types: set[GpuRequestType],
-) -> list[GpuExecutionUnit]:
-    execution_units: list[GpuExecutionUnit] = []
-    for req in batch:
-        request_type = req.request_type
-        if request_type in grouped_request_types:
-            if (
-                execution_units
-                and execution_units[-1].grouped
-                and execution_units[-1].request_type == request_type
-            ):
-                prev = execution_units[-1]
-                execution_units[-1] = GpuExecutionUnit(
-                    request_type=prev.request_type,
-                    requests=(*prev.requests, req),
-                    grouped=True,
-                )
-            else:
-                execution_units.append(
-                    GpuExecutionUnit(
-                        request_type=request_type,
-                        requests=(req,),
-                        grouped=True,
-                    )
-                )
-        else:
-            execution_units.append(
-                GpuExecutionUnit(
-                    request_type=request_type,
-                    requests=(req,),
-                    grouped=False,
-                )
-            )
-    return execution_units
 
 
 class ResponseDeliveryTracker:
@@ -398,24 +319,21 @@ class ResponseDeliveryTracker:
         except Exception as e:
             logger.debug(f"gpu_executor_dispatch:_record_failure: {e}")
 
-# ---- merged from gpu_executor_native_ga.py ----
-"""GPU executor handler for native GA requests."""
-
-
-def execute_gpu_native_ga_run(
+# ---- exact Base + native FG owner turn ----
+def execute_exact_base_search(
     request: GpuRequest,
     *,
     in_process_queues: bool,
     abort_requested: Callable[[], bool],
     raise_if_abort_requested: Callable[[], None],
-    run_payload_fn: Callable[..., Any] | None = None,
-    fused_fg_fn: Callable[..., Any] | None = None,
+    run_pipeline_fn: Callable[..., Any] | None = None,
+    score_fg_fn: Callable[..., Any] | None = None,
 ) -> GpuResponse:
     if not bool(in_process_queues):
         return GpuResponse(
             request_id=request.request_id,
             success=False,
-            error="GPU_NATIVE_GA_RUN requires in-process queues (avoid IPC pickling)",
+            error="EXACT_BASE_SEARCH requires in-process queues (typed payload is not IPC-safe)",
         )
 
     try:
@@ -427,116 +345,74 @@ def execute_gpu_native_ga_run(
             error=str(e),
         )
 
-    payload = request.payload or {}
-    calc_song = payload.get("calc_song")
-    ref_arrays = payload.get("ref_arrays")
-    item_stats = payload.get("item_stats")
-    slot_start = payload.get("slot_start")
-    slot_count = payload.get("slot_count")
-    base_fixed_stats_arr = payload.get("base_fixed_stats_arr")
-    initial_populations = payload.get("initial_populations")
-    num_runs = payload.get("num_runs")
-    n_genomes = payload.get("n_genomes")
-    init_heuristic_topk = payload.get("init_heuristic_topk")
-    init_heuristic_k = payload.get("init_heuristic_k", 0)
-    init_heuristic_copies = payload.get("init_heuristic_copies", 25)
-    song_slot = int(payload.get("song_slot", 0) or 0)
-    n_generations = int(payload.get("n_generations", 1) or 1)
-    elite_count = int(payload.get("elite_count", 2) or 2)
-    mutation_rate = float(payload.get("mutation_rate", 0.02) or 0.02)
-    immigrant_rate = float(payload.get("immigrant_rate", 0.0) or 0.0)
-    tournament_k = int(payload.get("tournament_k", 3) or 3)
-    color_flags = payload.get("color_flags") or {}
-    cfg_data = payload.get("cfg_data") or {}
-    ga_seed = payload.get("ga_seed")
-    fg_gear_name_rank = payload.get("fg_gear_name_rank")
-    fg_mini_sig_id = payload.get("fg_mini_sig_id")
+    payload = request.payload if isinstance(request.payload, dict) else {}
+    context = payload.get("context")
+    domains = payload.get("domains")
+    song_context = payload.get("song_context")
+    timeline_frontier = payload.get("timeline_frontier")
+    candidate_limit = payload.get("candidate_limit")
     fg_scoring_bundle = payload.get("fg_scoring_bundle")
     fg_calc_song = payload.get("fg_calc_song")
 
-    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+    from gear_optimizer.solver.exact_base_domains import ExactBaseDomains
+    from gear_optimizer.solver.exact_base_song_context import ExactBaseSongContext
+    from gear_optimizer.solver.solver_common import SolverContext
+    from gear_optimizer.solver.taichi_gem.api.timeline import TimelineFrontierPrewarmResult
+
+    invalid = []
+    if not isinstance(context, SolverContext):
+        invalid.append("context")
+    if not isinstance(domains, ExactBaseDomains):
+        invalid.append("domains")
+    if not isinstance(song_context, ExactBaseSongContext):
+        invalid.append("song_context")
+    if not isinstance(timeline_frontier, TimelineFrontierPrewarmResult):
+        invalid.append("timeline_frontier")
+    if fg_scoring_bundle is None:
+        invalid.append("fg_scoring_bundle")
+    if not isinstance(fg_calc_song, dict):
+        invalid.append("fg_calc_song")
+    try:
+        candidate_limit_i = int(candidate_limit)
+    except (TypeError, ValueError):
+        candidate_limit_i = 0
+    if candidate_limit_i <= 0:
+        invalid.append("candidate_limit")
+    if invalid:
         return GpuResponse(
             request_id=request.request_id,
             success=False,
-            error="Invalid payload for GPU_NATIVE_GA_RUN (expected calc_song/ref_arrays dicts)",
+            error=f"Invalid payload for EXACT_BASE_SEARCH: {', '.join(invalid)}",
         )
 
     try:
-        if run_payload_fn is None:
-            from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payload_prebuilt as run_payload_fn
+        if run_pipeline_fn is None:
+            from gear_optimizer.solver.exact_base_search import (
+                run_exact_base_pipeline as run_pipeline_fn,
+            )
+        if score_fg_fn is None:
+            from gear_optimizer.solver.native_fg_owner import (
+                score_native_fg_candidate_surface as score_fg_fn,
+            )
 
-        kwargs = dict(
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
-            song_slot=song_slot,
-            item_stats=item_stats,
-            slot_start=slot_start,
-            slot_count=slot_count,
-            base_fixed_stats_arr=base_fixed_stats_arr,
-            n_generations=n_generations,
-            initial_populations=initial_populations,
-            num_runs=int(num_runs) if num_runs is not None else None,
-            init_heuristic_topk=init_heuristic_topk,
-            init_heuristic_k=int(init_heuristic_k or 0),
-            init_heuristic_copies=int(init_heuristic_copies or 0),
-            elite_count=elite_count,
-            mutation_rate=mutation_rate,
-            immigrant_rate=immigrant_rate,
-            tournament_k=tournament_k,
-            color_flags=dict(color_flags),
-            cfg_data=dict(cfg_data),
-            ga_seed=int(ga_seed) if ga_seed is not None else None,
-            fg_gear_name_rank=fg_gear_name_rank,
-            fg_mini_sig_id=fg_mini_sig_id,
+        base = run_pipeline_fn(
+            context,
+            domains=domains,
+            song_context=song_context,
+            timeline_frontier=timeline_frontier,
+            candidate_limit=candidate_limit_i,
             abort_requested=abort_requested,
         )
-        if n_genomes is not None:
-            kwargs["n_genomes"] = int(n_genomes)
-
-        # Gated owner-thread phase profiling for the fused GA->FG continuation
-        # (docs/research/GPU_FUSED_FG_OWNER_GAP_REVIEW_REQUEST_20260613.md). OFF
-        # unless METAFINDER_PROFILE_EVENTS_PATH is set; pure measurement, no behavior change.
-        _prof = profile_events_active()
-        _prof_song_key = ""
-        if _prof and isinstance(calc_song, dict):
-            _prof_song_key = f"{calc_song.get('Song_Name', '')}|{calc_song.get('Difficulty', '')}"
-
-        _t_ga = time.perf_counter() if _prof else 0.0
-        runs_payload = run_payload_fn(**kwargs)
-        if _prof:
-            emit_profile_event(
-                component="fg_fused",
-                event="fg_owner_phase",
-                song_key=_prof_song_key,
-                metrics={"phase": "ga_run_total", "total_ms": (time.perf_counter() - _t_ga) * 1000.0},
-            )
-
-        # FUSED GA->FG owner continuation (Slice 3): immediately after the GA
-        # pack/select, on the SAME owner thread, score FG straight from the selected
-        # payload's device base_stats7 and hand a compact per-base_components result
-        # map back with the payload. The driver materializes it off the owner's
-        # critical path. This replaces the per-song decode->FG-prep->BUILD->SCORE
-        # driver round-trip (the fg_owner_queue) with one fused owner turn.
-        if fused_fg_fn is None:
-            from gear_optimizer.solver.genetic_pipeline import (
-                score_fused_fg_from_selected_payload as fused_fg_fn,
-            )
-
-        _t_fg = time.perf_counter() if _prof else 0.0
-        fg_owner_score = fused_fg_fn(
-            runs_payload=runs_payload,
-            fg_scoring_bundle=fg_scoring_bundle,
-            fg_calc_song=fg_calc_song,
-            ref_arrays=ref_arrays,
-            cfg_data=dict(cfg_data),
+        raise_if_abort_requested()
+        fg_owner_score = score_fg_fn(
+            base_stats7=base.candidate_surface.base_stats7,
+            context=context,
+            scoring_bundle=fg_scoring_bundle,
+            calc_song=fg_calc_song,
         )
-        if _prof:
-            emit_profile_event(
-                component="fg_fused",
-                event="fg_owner_phase",
-                song_key=_prof_song_key,
-                metrics={"phase": "fg_block_total", "total_ms": (time.perf_counter() - _t_fg) * 1000.0},
-            )
+        from gear_optimizer.solver.native_fg_owner import ExactBaseOwnerResult
+
+        result = ExactBaseOwnerResult(base_result=base, fg_owner_score=fg_owner_score)
     except Exception as e:
         return GpuResponse(
             request_id=request.request_id,
@@ -547,107 +423,5 @@ def execute_gpu_native_ga_run(
     return GpuResponse(
         request_id=request.request_id,
         success=True,
-        result={"runs_payload": runs_payload, "fg_owner_score": fg_owner_score},
+        result=result,
     )
-
-
-# ---- merged from gpu_executor_native_ga_batch.py ----
-from dataclasses import dataclass
-
-from gear_optimizer.core.parsing import env_get
-
-
-@dataclass(frozen=True)
-class NativeGaBatchLimits:
-    max_reqs: int
-    max_work_units: float
-
-
-def load_native_ga_batch_limits(
-    *,
-    env_get_fn: Callable[[str, Any], Any] = env_get,
-) -> NativeGaBatchLimits:
-    # Hardwired (was GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS=2 / _MAX_WORK_UNITS=240000).
-    # The per-dispatch work-unit cap is a GPU TDR / oversized-submit safety bound -- baked
-    # and always active (the former 0=unbounded override is removed).
-    return NativeGaBatchLimits(max_reqs=2, max_work_units=240000.0)
-
-
-def plan_native_ga_batch_chunks(
-    requests: list[GpuRequest],
-    *,
-    limits: NativeGaBatchLimits,
-    estimate_work_units_fn: Callable[[GpuRequest], float],
-) -> list[list[GpuRequest]]:
-    chunks: list[list[GpuRequest]] = []
-    chunk: list[GpuRequest] = []
-    chunk_units = 0.0
-
-    for req in requests:
-        req_units = max(1.0, float(estimate_work_units_fn(req)))
-        if chunk and (
-            len(chunk) >= int(limits.max_reqs)
-            or (float(chunk_units) + float(req_units)) > float(limits.max_work_units)
-        ):
-            chunks.append(chunk)
-            chunk = []
-            chunk_units = 0.0
-        chunk.append(req)
-        chunk_units += float(req_units)
-
-    if chunk:
-        chunks.append(chunk)
-    return chunks
-
-
-def execute_gpu_native_ga_run_chunk(
-    requests: list[GpuRequest],
-    *,
-    abort_requested: Callable[[], bool],
-    aborted_response: Callable[[GpuRequest], GpuResponse],
-    execute_single: Callable[[GpuRequest], GpuResponse],
-) -> list[GpuResponse]:
-    if not requests:
-        return []
-    out: list[GpuResponse] = []
-    for idx, req in enumerate(requests):
-        if abort_requested():
-            out.extend(aborted_response(pending_req) for pending_req in requests[idx:])
-            break
-        out.append(execute_single(req))
-    return out
-
-
-def execute_gpu_native_ga_run_batch(
-    requests: list[GpuRequest],
-    *,
-    abort_requested: Callable[[], bool],
-    aborted_response: Callable[[GpuRequest], GpuResponse],
-    execute_single: Callable[[GpuRequest], GpuResponse],
-    execute_chunk: Callable[[list[GpuRequest]], list[GpuResponse]],
-    env_get_fn: Callable[[str, Any], Any] = env_get,
-    estimate_work_units_fn: Callable[[GpuRequest], float],
-) -> list[GpuResponse]:
-    if not requests:
-        return []
-    if len(requests) == 1:
-        return [execute_single(requests[0])]
-
-    out: list[GpuResponse] = []
-    chunks = plan_native_ga_batch_chunks(
-        requests,
-        limits=load_native_ga_batch_limits(env_get_fn=env_get_fn),
-        estimate_work_units_fn=estimate_work_units_fn,
-    )
-    for chunk_idx, chunk in enumerate(chunks):
-        if abort_requested():
-            pending = [pending_req for pending_chunk in chunks[chunk_idx:] for pending_req in pending_chunk]
-            out.extend(aborted_response(pending_req) for pending_req in pending)
-            return out
-        out.extend(execute_chunk(chunk))
-        if abort_requested():
-            pending = [pending_req for pending_chunk in chunks[chunk_idx + 1 :] for pending_req in pending_chunk]
-            out.extend(aborted_response(pending_req) for pending_req in pending)
-            return out
-
-    return out

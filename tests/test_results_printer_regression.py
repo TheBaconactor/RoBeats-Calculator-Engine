@@ -231,7 +231,7 @@ def test_results_printer_prefers_nonzero_fg_config_over_zero_config(capsys):
 def test_results_printer_includes_db_cached_fg_variants_for_loadout_printing(capsys):
     """
     Regression test:
-    When the best FG variant comes from a DB-cached entry (i.e. `_is_ga` is False),
+    When the best FG variant comes from a DB-cached entry (i.e. `_is_current_base` is False),
     the console output should still print the ForceGreats loadout + config.
     """
     from gear_optimizer.helpers.song_helpers.results_printer import print_results
@@ -251,7 +251,7 @@ def test_results_printer_includes_db_cached_fg_variants_for_loadout_printing(cap
         "minis": ["M1"],
         "score": 44590483,
         "fg_score": 44612857,
-        "_is_ga": False,
+        "_is_current_base": False,
     }
 
     print_results(
@@ -334,7 +334,7 @@ def test_results_printer_best_fg_score_uses_variants_only(capsys):
         },
         "gear": [{"Name": "G2", "type": "Hat"}],
         "minis": [{"Name": "M2"}],
-        "_is_ga": True,
+        "_is_current_base": True,
         "score": 100,
         "fg_score": 90,
     }

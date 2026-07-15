@@ -6,7 +6,6 @@ __all__ = [
     "FgResponseFrontierPreparedPlan",
     "FgResponseScoringService",
     "FgResultReducer",
-    "GpuScoreEngine",
     "ResponseFrontierStore",
     "materialize_force_payload_from_response_frontier",
 ]
@@ -17,7 +16,6 @@ _EXPORT_MODULES = {
     "FgResponseFrontierPreparedPlan": "gear_optimizer.solver.fg_response_scoring.planner",
     "FgResponseScoringService": "gear_optimizer.solver.fg_response_scoring.service",
     "FgResultReducer": "gear_optimizer.solver.fg_response_scoring.reducer",
-    "GpuScoreEngine": "gear_optimizer.solver.fg_response_scoring.gpu_engine",
     "ResponseFrontierStore": "gear_optimizer.solver.fg_response_scoring.store",
     "materialize_force_payload_from_response_frontier": "gear_optimizer.solver.fg_response_scoring.reducer",
 }

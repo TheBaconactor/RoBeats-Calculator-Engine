@@ -313,7 +313,7 @@ def test_build_warmup_sentinel_payload_uses_lifecycle_schema():
         pid=123,
         warmed_at_ms=456,
         warmup_fg=True,
-        warmup_ga=True,
+        warmup_exact=True,
     )
 
     assert payload == {
@@ -323,7 +323,7 @@ def test_build_warmup_sentinel_payload_uses_lifecycle_schema():
         "pid": 123,
         "warmed_at": 456,
         "warmup_fg": True,
-        "warmup_ga": True,
+        "warmup_exact": True,
     }
 
 
@@ -358,7 +358,7 @@ def test_write_warmup_sentinel_payload_reports_invalid_payload_as_false(tmp_path
     )
 
 
-def test_warmup_sentinel_requires_ga_warmup_match(tmp_path):
+def test_warmup_sentinel_requires_exact_warmup_match(tmp_path):
     sentinel = tmp_path / "metafinder_warmup_done.json"
     sentinel.write_text(
         json.dumps(
@@ -369,7 +369,7 @@ def test_warmup_sentinel_requires_ga_warmup_match(tmp_path):
                 "pid": 123,
                 "warmed_at": 456,
                 "warmup_fg": True,
-                "warmup_ga": False,
+                "warmup_exact": False,
             }
         ),
         encoding="utf-8",
@@ -378,7 +378,7 @@ def test_warmup_sentinel_requires_ga_warmup_match(tmp_path):
     assert not warmup_sentinel_is_fresh(
         sentinel_path=sentinel,
         warmup_fg=True,
-        warmup_ga=True,
+        warmup_exact=True,
     )
 
 

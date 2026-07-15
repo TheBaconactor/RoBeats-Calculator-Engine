@@ -112,8 +112,8 @@ def prepare_team_buff_tier_replay(
     (cfg_dict, Stats ref_arrays, canonicalized seed entries, calc_song, team-color override).
 
     Read-only seed preparation over persisted loadouts; all scoring stays on the existing
-    GPU/Taichi replay path (`build_team_buff_tier_db_batches`). This is the canonical
-    replacement for the removed `EvolutionDbManager._prepare_team_buff_tier_replay`.
+    GPU/Taichi replay path (`build_team_buff_tier_db_batches`). This function is the
+    canonical shared replay-context owner.
     """
     from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
     from gear_optimizer.core.config import load_config

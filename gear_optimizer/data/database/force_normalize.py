@@ -183,7 +183,7 @@ def _compact_force_details_for_storage(force_data: Any) -> Any:
     Storage contract: on disk, `BaseStats` IS the post-gem visible stats row — the
     solved gem allocation is already baked into it. The reader
     (`read_visible_stats`) returns it verbatim and NEVER re-applies gems.
-    Some producers (the GA/response-frontier reducer) emit a PRE-gem `BaseStats`
+    Some producers (the exact Base/response-frontier reducers) emit a PRE-gem `BaseStats`
     alongside the authoritative post-gem `Stats`; before dropping the redundant
     `Stats`, we PROMOTE it to `BaseStats` so the stored `BaseStats` is unambiguously
     the post-gem row. Re-applying gems on read would double-count (the 2026-07-11

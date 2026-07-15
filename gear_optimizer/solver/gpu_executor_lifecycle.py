@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 import importlib
 import json
@@ -25,7 +25,7 @@ from gear_optimizer.solver.windows_timer import (
 
 
 logger = logging.getLogger(__name__)
-WARMUP_SENTINEL_SCHEMA = 4
+WARMUP_SENTINEL_SCHEMA = 5
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class ExecutorStopProfilerSettings:
     # a file, executor stop ALSO writes a structured per-kernel GPU-time aggregation there
     # (name -> launch count, total/avg ms) computed from the live Taichi kernel-profiler
     # records before runtime teardown. The C++ print_kernel_profiler_info() stdout is lost
-    # at interpreter/atexit teardown; this file dump is the reliable capture for GA
+    # at interpreter/atexit teardown; this file dump is the reliable capture for optimizer
     # work-density attribution. Requires TAICHI_KERNEL_PROFILER=1 at init.
     kernel_profiler_dump_path: str = ""
 
@@ -231,7 +231,7 @@ def build_warmup_sentinel_payload(
     pid: int,
     warmed_at_ms: int,
     warmup_fg: bool,
-    warmup_ga: bool,
+    warmup_exact: bool,
 ) -> dict[str, Any]:
     return {
         "schema": int(WARMUP_SENTINEL_SCHEMA),
@@ -240,7 +240,7 @@ def build_warmup_sentinel_payload(
         "pid": int(pid),
         "warmed_at": int(warmed_at_ms),
         "warmup_fg": bool(warmup_fg),
-        "warmup_ga": bool(warmup_ga),
+        "warmup_exact": bool(warmup_exact),
     }
 
 
@@ -274,7 +274,7 @@ def warmup_sentinel_is_fresh(
     *,
     sentinel_path: Path,
     warmup_fg: bool,
-    warmup_ga: bool,
+    warmup_exact: bool,
 ) -> bool:
     try:
         payload = json.loads(sentinel_path.read_text(encoding="utf-8", errors="replace"))
@@ -294,7 +294,7 @@ def warmup_sentinel_is_fresh(
         return False
     if bool(payload.get("warmup_fg", False)) != bool(warmup_fg):
         return False
-    if bool(payload.get("warmup_ga", False)) != bool(warmup_ga):
+    if bool(payload.get("warmup_exact", False)) != bool(warmup_exact):
         return False
     return True
 
@@ -305,7 +305,7 @@ def _dump_kernel_profiler_records(ti: Any, dump_path: str) -> bool:
     Gated DEBUG instrumentation (OFF unless TAICHI_KERNEL_PROFILER_PATH is set). Reads the
     live Taichi kernel-profiler traced records (one per kernel launch, device exec time in
     ms) and aggregates by kernel name into launch count + total/avg/min/max ms, plus the
-    overall device total. Written as JSON so GA work-density attribution survives the loss
+    overall device total. Written as JSON so optimizer work-density attribution survives the loss
     of the C++ print_kernel_profiler_info() stdout at teardown.
     """
     prog = ti.lang.impl.get_runtime().prog
@@ -466,79 +466,6 @@ def pop_staged_request(staged_requests: deque, *, index: int = 0) -> Any:
         return staged_requests.popleft()
     finally:
         staged_requests.rotate(rotate_by)
-
-
-def staged_ga_recovery_index(
-    staged_requests: Sequence[Any],
-    *,
-    is_ga_recovery_request: Callable[[Any], bool],
-) -> int | None:
-    if not staged_requests:
-        return None
-    first_request = staged_requests[0]
-    if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
-        return None
-
-    for idx, staged in enumerate(staged_requests):
-        if idx == 0:
-            continue
-        request_type = getattr(staged, "request_type", None)
-        if request_type == GpuRequestType.SHUTDOWN:
-            return int(idx)
-        if is_ga_recovery_request(staged):
-            return int(idx)
-    return None
-
-
-def prefetch_ga_recovery_requests(
-    *,
-    in_process_queues: bool,
-    ga_owner_turn_streak: int,
-    staged_requests: Any,
-    deadline: float,
-    batch_max_size: int,
-    streak_cap: int,
-    lookahead_limit: int,
-    pop_queue_request: Callable[[float], Any],
-    perf_counter_fn: Callable[[], float],
-    is_ga_recovery_request: Callable[[Any], bool],
-    empty_exception: type[BaseException],
-) -> None:
-    if not bool(in_process_queues):
-        return
-    if int(ga_owner_turn_streak) < int(streak_cap):
-        return
-    if not staged_requests:
-        return
-    try:
-        first_request = staged_requests[0]
-    except (IndexError, AttributeError):
-        return
-    if getattr(first_request, "request_type", None) != GpuRequestType.GPU_NATIVE_GA_RUN:
-        return
-    if staged_ga_recovery_index(
-        list(staged_requests),
-        is_ga_recovery_request=is_ga_recovery_request,
-    ) is not None:
-        return
-
-    target = max(0, int(lookahead_limit))
-    if target <= 0:
-        return
-
-    while len(staged_requests) < int(target):
-        remaining = float(deadline - perf_counter_fn())
-        if remaining <= 0.0:
-            break
-        try:
-            request = pop_queue_request(remaining)
-        except empty_exception:
-            break
-        staged_requests.append(request)
-        if request.request_type == GpuRequestType.SHUTDOWN:
-            break
-        if is_ga_recovery_request(request):
-            break
 
 
 class ExecutorHeartbeatWriter:
@@ -977,4 +904,3 @@ def unregister_executor_worker(
     response_queues: MutableMapping[int, Any],
 ) -> bool:
     return response_queues.pop(int(worker_id), None) is not None
-

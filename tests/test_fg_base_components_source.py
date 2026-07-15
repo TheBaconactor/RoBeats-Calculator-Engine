@@ -1,8 +1,8 @@
-"""Slice 2: FG response-frontier base_components source-of-truth (CPU, GPU-free).
+"""FG response-frontier base_components source-of-truth (CPU, GPU-free).
 
 Proves the FG scoring input switch at the planner boundary:
 
-* GPU-native GA candidates score from their device ``_base_stats7`` (the pack
+* Exact Base candidates score from their device ``_base_stats7`` (the pack
   kernel's output, carried through decode), NOT a host re-derivation of the
   BaseStats dict.
 * DB-best / previous-record candidates (no payload row, hence no ``_base_stats7``)
@@ -70,7 +70,7 @@ def _dict_7vec(base_stats: dict) -> tuple[int, ...]:
     )
 
 
-def test_ga_candidate_base_components_come_from_device_base_stats7(monkeypatch) -> None:
+def test_exact_base_candidate_components_come_from_device_base_stats7(monkeypatch) -> None:
     _patch_lightweight_prepare(monkeypatch)
 
     base_stats = {
@@ -99,7 +99,7 @@ def test_ga_candidate_base_components_come_from_device_base_stats7(monkeypatch) 
         },
     }
 
-    plan = FgPlanner.plan_many(
+    plan = FgPlanner.plan_base_candidates(
         [candidate],
         {"song_data": {}},
         {"ref": object()},
@@ -110,7 +110,7 @@ def test_ga_candidate_base_components_come_from_device_base_stats7(monkeypatch) 
     components = np.asarray(plan.prepared_batches[0].batch.base_components, dtype=np.int64)
     assert components.shape == (1, 7)
     assert tuple(int(v) for v in components[0]) == device_vec, (
-        "GA candidate must score from device base_stats7, not the host BaseStats dict"
+        "Exact Base candidate must score from device base_stats7, not the host BaseStats dict"
     )
 
 
@@ -126,15 +126,15 @@ def test_db_only_candidate_base_components_derive_from_dict(monkeypatch) -> None
         _PRIMARY: 10,
         _SECONDARY: 3,
     }
-    # DB-best candidate: GenomeIDs + BaseStats, NO device base_stats7.
+    # DB-best candidate: LoadoutIDs + BaseStats, no device base_stats7.
     candidate = {
         "Score": 100,
         "BaseScore": 100,
-        "GenomeIDs": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "LoadoutIDs": [1, 2, 3, 4, 5, 6, 7, 8, 9],
         "Data": {"BaseStats": dict(base_stats), "Selected Element": _PRIMARY},
     }
 
-    plan = FgPlanner.plan_many(
+    plan = FgPlanner.plan_base_candidates(
         [candidate],
         {"song_data": {}},
         {"ref": object()},
@@ -164,4 +164,4 @@ def test_malformed_device_base_stats7_fails_loudly(monkeypatch) -> None:
     }
 
     with pytest.raises(ValueError, match="7 components"):
-        FgPlanner.plan_many([candidate], {"song_data": {}}, {"ref": object()}, _PRIMARY)
+        FgPlanner.plan_base_candidates([candidate], {"song_data": {}}, {"ref": object()}, _PRIMARY)

@@ -1,4 +1,4 @@
-"""Continuous GA/FG scheduler policy and config readers for native in-flight."""
+"""Continuous exact Base/FG scheduler policy for native in-flight."""
 from __future__ import annotations
 
 import logging
@@ -16,12 +16,12 @@ def _song_lane_key(song: Any) -> str:
         return ""
 def count_active_song_lanes(
     *,
-    ga_inflight,
+    base_inflight,
     decode_inflight,
     fg_active_keys,
 ) -> int:
     keys: set[str] = set()
-    for song in ga_inflight:
+    for song in base_inflight:
         key = _song_lane_key(song)
         if key:
             keys.add(key)
@@ -38,32 +38,32 @@ def read_fg_scheduler_mode() -> str:
     deterministic and easier to reason about.
     """
     return "continuous"
-def ga_admission_fg_backlog_limit(*, fg_workers: int, fg_prep_workers: int) -> int:
+def base_admission_fg_backlog_limit(*, fg_workers: int, fg_prep_workers: int) -> int:
     """
-    Canonical bound on host-side FG debt before GA admission pauses.
+    Canonical bound on host-side FG debt before exact Base admission pauses.
 
-    FG never visits the GPU owner anymore (the fused GA turn already scored it),
-    so the only GA<->FG coupling left is a resource bound: each FG song past the
+    FG never revisits the GPU owner (the fused Base turn already scored it),
+    so the only Base/FG coupling left is a resource bound: each FG song past the
     workers holds its decoded payload, prepared plan, and owner score map in host
     memory. Size the allowance to steady state (every FG worker busy, the prep
     runway full, plus a small completion-batch margin) so it only binds when FG
-    genuinely falls behind GA.
+    genuinely falls behind Base search.
     """
     workers = max(1, int(fg_workers))
     prep_workers = max(1, int(fg_prep_workers))
     return max(4, 2 * int(workers)) + int(prep_workers)
-def ga_should_pause_for_fg_backlog(
+def base_should_pause_for_fg_backlog(
     *,
     pending_fg_count: int,
     fg_inflight_count: int,
     backlog_limit: int,
 ) -> bool:
     """
-    Pause GA admission while the FG stage owes more work than its bound.
+    Pause exact Base admission while the FG stage owes more work than its bound.
 
     This replaces the round-trip-era credit/lane-fill/yield policies with the one
-    invariant they actually protected: GA throughput must not mint unbounded FG
-    debt ("GA and FG are one product surface"). GA resumes as soon as FG workers
+    invariant they protect: Base throughput must not mint unbounded FG debt.
+    Base resumes as soon as FG workers
     drain back under the bound.
     """
     backlog = max(0, int(pending_fg_count)) + max(0, int(fg_inflight_count))
@@ -91,15 +91,15 @@ def continuous_fg_prep_start_budget(
 
 def continuous_fg_allow_not_ready(
     *,
-    no_ga_remaining: bool,
+    no_base_remaining: bool,
 ) -> bool:
     """
     Decide whether a pending FG song may be handed to a worker before prep is done.
-    During the final FG drain there is no GA work left to feed; handing the worker a
+    During the final FG drain there is no Base work left to feed; handing the worker a
     not-yet-ready song lets it wait on the prep future instead of serializing the
     last prep/submit window behind the scheduler loop.
     """
-    return bool(no_ga_remaining)
+    return bool(no_base_remaining)
 def continuous_fg_submit_budget(
     *,
     pending_fg_count: int,
@@ -107,7 +107,7 @@ def continuous_fg_submit_budget(
     fg_inflight_count: int,
     fg_workers: int,
     fg_batch_max: int,
-    no_ga_remaining: bool,
+    no_base_remaining: bool,
 ) -> int:
     """
     FG submissions are bounded by worker availability alone.
@@ -115,16 +115,16 @@ def continuous_fg_submit_budget(
     FG jobs are host-only materialization (fused handoff): a free worker is the
     only resource they consume, so hand every free worker a prep-ready song. Songs
     still in prep are not eligible until the final drain (a worker blocked on a
-    prep future serves nobody while GA still feeds the owner).
+    prep future serves nobody while Base still feeds the owner).
     """
     available_pending = max(0, int(pending_fg_count))
-    if not bool(no_ga_remaining):
+    if not bool(no_base_remaining):
         available_pending = min(int(available_pending), max(0, int(ready_fg_count)))
     return max(0, min(int(fg_workers) - int(fg_inflight_count), int(fg_batch_max), int(available_pending)))
 def closed_loop_bubble_kpi(
     *,
     idle_sec: float,
-    ready_ga_count: int,
+    ready_base_count: int,
     ready_fg_count: int,
     backlog_count: int,
     oldest_fg_wait_s: float,
@@ -132,7 +132,7 @@ def closed_loop_bubble_kpi(
     idle = max(0.0, float(idle_sec))
     if idle <= 0.0:
         return 0.0
-    ready_depth = max(0, int(ready_ga_count)) + max(0, int(ready_fg_count))
+    ready_depth = max(0, int(ready_base_count)) + max(0, int(ready_fg_count))
     backlog_depth = max(0, int(backlog_count))
     fg_wait = max(0.0, float(oldest_fg_wait_s))
     if ready_depth <= 0 and backlog_depth <= 0 and fg_wait <= 0.0:

@@ -6,7 +6,7 @@ def test_bubble_tracker_snapshot_owns_kpi_shape():
 
     snapshot = tracker.snapshot(
         now_mono=13.0,
-        ready_ga_count=2,
+        ready_base_count=2,
         ready_fg_count=1,
         backlog_count=8,
         active_song_lanes=3,
@@ -17,7 +17,7 @@ def test_bubble_tracker_snapshot_owns_kpi_shape():
 
     assert snapshot["idle_sec"] == 3.0
     assert snapshot["bubble_kpi"] == 22.5
-    assert snapshot["ready_ga_count"] == 2
+    assert snapshot["ready_base_count"] == 2
     assert snapshot["ready_fg_count"] == 1
     assert snapshot["active_song_lanes"] == 3
     assert snapshot["backlog_count"] == 8
@@ -30,7 +30,7 @@ def test_bubble_tracker_note_tracks_peak_and_closes_active_window():
     tracker.note(
         {
             "bubble_kpi": 4.0,
-            "ready_ga_count": 1,
+            "ready_base_count": 1,
             "ready_fg_count": 2,
             "backlog_count": 3,
         },
@@ -40,7 +40,7 @@ def test_bubble_tracker_note_tracks_peak_and_closes_active_window():
     tracker.note(
         {
             "bubble_kpi": 6.0,
-            "ready_ga_count": 4,
+            "ready_base_count": 4,
             "ready_fg_count": 5,
             "backlog_count": 6,
         },
@@ -52,7 +52,7 @@ def test_bubble_tracker_note_tracks_peak_and_closes_active_window():
     assert tracker.total_idle_s == 4.0
     assert tracker.active_started is None
     assert tracker.peak_kpi == 6.0
-    assert tracker.peak_ready_ga == 4
+    assert tracker.peak_ready_base == 4
     assert tracker.peak_ready_fg == 5
     assert tracker.peak_backlog == 6
     assert tracker.peak_oldest_fg_wait_s == 1.25
@@ -71,13 +71,13 @@ def test_bubble_tracker_snapshot_from_pipeline_counts_owns_backlog_and_idle_shap
         decode_inflight_count=8,
         pending_fg_count=9,
         fg_prep_inflight_count=10,
-        ga_inflight_count=0,
+        base_inflight_count=0,
         fg_futures_count=0,
         last_progress=12.0,
         oldest_fg_wait_s=2.0,
     )
 
-    assert snapshot["ready_ga_count"] == 2
+    assert snapshot["ready_base_count"] == 2
     assert snapshot["ready_fg_count"] == 3
     assert snapshot["active_song_lanes"] == 4
     assert snapshot["backlog_count"] == 40

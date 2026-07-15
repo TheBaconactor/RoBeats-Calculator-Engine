@@ -66,8 +66,11 @@ def test_provisioned_fg_cache_maintenance_uses_build_lock(monkeypatch, tmp_path:
     assert calls == ["lock_enter", "cleanup", "purge:False", "compress", "lock_exit"]
 
 
-def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None:
+def test_cpu_work_manager_runs_timeline_base_context_and_fg_cache_phases(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.solver.exact_base_song_context_cache_prebuild import (
+        ExactBaseSongContextCachePrebuildSummary,
+    )
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
     from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
 
@@ -84,7 +87,17 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
         calls.append("fg_end")
         return FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=1)
 
+    def _context(**_kwargs):
+        calls.append("context_start")
+        calls.append("context_end")
+        return ExactBaseSongContextCachePrebuildSummary(total=1, completed=1, disk=1)
+
     monkeypatch.setattr(cpu_work_manager, "run_timeline_frontier_cache_prebuild", _timeline)
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "run_exact_base_song_context_cache_prebuild",
+        _context,
+    )
     monkeypatch.setattr(cpu_work_manager, "run_fg_response_frontier_cache_prebuild", _fg)
 
     cpu_work_manager.run_startup_cpu_work(
@@ -94,11 +107,21 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
         data_root="Data",
     )
 
-    assert calls == ["timeline_start", "timeline_end", "fg_start", "fg_end"]
+    assert calls == [
+        "timeline_start",
+        "timeline_end",
+        "context_start",
+        "context_end",
+        "fg_start",
+        "fg_end",
+    ]
 
 
 def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.solver.exact_base_song_context_cache_prebuild import (
+        ExactBaseSongContextCachePrebuildSummary,
+    )
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
     from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
 
@@ -109,6 +132,13 @@ def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(mo
     )
     monkeypatch.setattr(
         cpu_work_manager,
+        "run_exact_base_song_context_cache_prebuild",
+        lambda **_kwargs: ExactBaseSongContextCachePrebuildSummary(
+            total=1, completed=1, built=0, disk=1, memory=0
+        ),
+    )
+    monkeypatch.setattr(
+        cpu_work_manager,
         "run_fg_response_frontier_cache_prebuild",
         lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
     )
@@ -123,12 +153,15 @@ def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(mo
     )
 
     output = stream.getvalue()
-    assert "Verifying exact timeline + FG response frontier caches" in output
-    assert "Building and caching exact timeline + FG response frontiers" not in output
+    assert "Verifying exact timeline + Base song context + native FG" in output
+    assert "Building exact timeline + Base song context + native FG" not in output
 
 
 def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.solver.exact_base_song_context_cache_prebuild import (
+        ExactBaseSongContextCachePrebuildSummary,
+    )
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
     from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
 
@@ -139,6 +172,13 @@ def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeyp
     )
     monkeypatch.setattr(
         cpu_work_manager,
+        "run_exact_base_song_context_cache_prebuild",
+        lambda **_kwargs: ExactBaseSongContextCachePrebuildSummary(
+            total=1, completed=1, built=0, disk=1, memory=0
+        ),
+    )
+    monkeypatch.setattr(
+        cpu_work_manager,
         "run_fg_response_frontier_cache_prebuild",
         lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=0, disk=1, memory=0),
     )
@@ -153,19 +193,29 @@ def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeyp
     )
 
     output = stream.getvalue()
-    assert "Verifying exact timeline + FG response frontier caches" in output
-    assert "Building and caching exact timeline + FG response frontiers" in output
+    assert "Verifying exact timeline + Base song context + native FG" in output
+    assert "Building exact timeline + Base song context + native FG" in output
 
 
 def test_cpu_work_manager_reports_individual_phase_elapsed(monkeypatch) -> None:
     from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.solver.exact_base_song_context_cache_prebuild import (
+        ExactBaseSongContextCachePrebuildSummary,
+    )
     from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
     from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
 
     events: list[tuple[str, dict]] = []
-    perf_values = iter((100.0, 100.25, 200.0, 200.75))
+    perf_values = iter((100.0, 100.25, 200.0, 200.75, 300.0, 301.25))
 
     monkeypatch.setattr(cpu_work_manager.time, "perf_counter", lambda: next(perf_values))
+    monkeypatch.setattr(
+        cpu_work_manager,
+        "run_exact_base_song_context_cache_prebuild",
+        lambda **_kwargs: ExactBaseSongContextCachePrebuildSummary(
+            total=1, completed=1, built=1
+        ),
+    )
     monkeypatch.setattr(
         cpu_work_manager,
         "emit_profile_event",
@@ -193,7 +243,8 @@ def test_cpu_work_manager_reports_individual_phase_elapsed(monkeypatch) -> None:
     elapsed_by_phase = {str(metrics["phase"]): float(metrics["elapsed_ms"]) for metrics in done_metrics}
     assert elapsed_by_phase == {
         "timeline_frontier_cache": 250.0,
-        "fg_response_frontier_cache": 750.0,
+        "exact_base_song_context_cache": 750.0,
+        "fg_response_frontier_cache": 1250.0,
     }
 
 

@@ -1,27 +1,14 @@
-"""GA->FG effective-dedup equivalence tables + CPU reference selector (Slice 1).
+"""Base-to-FG effective-dedup equivalence tables and CPU reference selector.
 
-This module is the CPU-side specification for "Slice 1 - GPU effective-dedup"
-of the fused GA->FG handoff (docs/research/GA_FG_FUSED_HANDOFF_DESIGN_20260612.md).
-
-The production host selector ``select_top_base_ga_candidates``
-(``gear_optimizer/helpers/song_helpers/fg_candidate_selector.py``) dedups GA
-candidates by an *effective loadout hash* that folds:
+The production exact Base funnel deduplicates candidates by an effective
+loadout hash that folds:
 
 - gear NAME equivalence (two distinct item ids with the same ``Name`` collapse),
 - mini song-context signature equivalence (two distinct mini ids whose element
   stats fold to the same effective signature collapse).
 
-The GPU select kernel
-(``ga_select_top_base_fg_candidate_coords_kernel``,
-``solver/taichi_gem/kernels/ga_eval/payload.py:467``) currently dedups by *raw
-item-id* keys, so id-distinct-but-effective-duplicate genomes survive and can
-displace loadouts the host would have kept -> ``best_fg_score`` would not be
-bit-exact after fusing.
-
-This module builds the two id->effective-rank lookup tables the future GPU
-kernel needs, and a pure-numpy reference selector that reproduces the host
-selection set exactly. The reference selector is the bit-exact spec the GPU
-kernel must match.
+This module builds the two id-to-effective-rank lookup tables and provides the
+pure NumPy selector used by the exact Base candidate surface.
 
 Equivalence semantics replicated (file:line of the host source matched):
 
@@ -59,6 +46,7 @@ import threading
 
 import numpy as np
 
+from ..core.catalog_fingerprint import stable_json_fingerprint
 from ..core.singleflight import SingleFlight
 from ..data.loadout_equivalence import effective_mini_signature
 from .item_registry import MINI_SLOT_INDICES, ItemRegistry
@@ -161,7 +149,7 @@ class MiniSigTables:
 def _resolve_selected_color(
     primary_color: str, secondary_color: str, selected_color: str
 ) -> str:
-    """Mirror candidate_loadout_hash's selected-color defaulting (ga_entry_utils.py:138)."""
+    """Mirror candidate_loadout_hash's selected-color defaulting."""
     selected = str(selected_color or "")
     if not selected:
         selected = str(primary_color or "") or str(secondary_color or "")
@@ -185,7 +173,7 @@ def build_mini_sig_id(
     The signature depends on the song's primary/secondary/selected colors, so
     this MUST be rebuilt per color combination and keyed accordingly. The
     selected color defaults to ``primary or secondary`` when empty, exactly as
-    ``candidate_loadout_hash`` does (ga_entry_utils.py:138).
+    ``candidate_loadout_hash`` does.
 
     Fails loudly on malformed registry entries (missing/empty ``Name``).
     """
@@ -263,6 +251,41 @@ def _effective_key(
     return (gear_ranks, mini_sigs)
 
 
+def extend_effective_loadout_keys(
+    keys: set[tuple[tuple[int, ...], tuple[int, ...]]],
+    *,
+    candidate_ids: np.ndarray,
+    gear_name_rank: np.ndarray,
+    mini_sig_id: np.ndarray,
+    limit: int,
+) -> int:
+    """Extend ``keys`` in scan order, stopping once ``limit`` unique keys exist."""
+
+    target = int(limit)
+    if target <= 0 or len(keys) >= target:
+        return int(len(keys))
+    ids = np.asarray(candidate_ids)
+    if ids.ndim != 2 or ids.shape[1] != 9:
+        raise ValueError(f"candidate_ids must have shape (N,9); got {ids.shape}")
+    if ids.shape[0] <= 0:
+        return int(len(keys))
+    if not np.issubdtype(ids.dtype, np.integer) or np.any(ids <= 0):
+        raise ValueError("effective-loadout candidates require positive integer IDs")
+    gear_rank = np.asarray(gear_name_rank, dtype=np.int32).reshape(-1)
+    mini_sig = np.asarray(mini_sig_id, dtype=np.int32).reshape(-1)
+    max_id = int(np.max(ids))
+    if gear_rank.shape[0] <= max_id or mini_sig.shape[0] <= max_id:
+        raise ValueError("effective-equivalence tables do not cover every candidate ID")
+    if np.any(gear_rank[ids[:, :6]] <= 0) or np.any(mini_sig[ids[:, 6:]] <= 0):
+        raise ValueError("effective-equivalence tables contain an unbound candidate ID")
+
+    for row in ids:
+        keys.add(_effective_key(row[:6], row[6:], gear_rank, mini_sig))
+        if len(keys) >= target:
+            break
+    return int(len(keys))
+
+
 def select_top_base_fg_candidates_reference(
     *,
     base_scores: np.ndarray,
@@ -272,18 +295,15 @@ def select_top_base_fg_candidates_reference(
     mini_sig_id: np.ndarray,
     limit: int,
 ) -> np.ndarray:
-    """Pure-numpy reference for the GPU GA->FG select kernel (the bit-exact spec).
+    """Pure-NumPy effective-dedup selector for the Base-to-FG funnel.
 
-    Consumes the same per-candidate inputs the GPU select kernel sees
-    conceptually (payload.py:512-531): a base score int, 6 gear ids, and 3
-    sorted mini ids per candidate; plus the two effective-equivalence tables.
+    Consumes a base score, six gear IDs, and three mini IDs per candidate, plus
+    the two effective-equivalence tables.
     Returns the indices (into the input arrays) of the selected candidates, in
     canonical output order.
 
     Args:
-        base_scores: (N,) int candidate base scores. Rows with score <= 0 are
-            skipped (matches the GPU kernel's ``if score <= 0: continue`` at
-            payload.py:513 and the host's positive BaseScore rows).
+        base_scores: (N,) int candidate base scores. Rows with score <= 0 are skipped.
         gear_ids: (N, 6) int gear item ids.
         mini_ids: (N, 3) int mini item ids (the kernel sorts them; we sort here
             too so callers may pass unsorted).
@@ -291,35 +311,19 @@ def select_top_base_fg_candidates_reference(
         mini_sig_id: per-color mini signature table from ``build_mini_sig_id``.
         limit: top-N cap on the deduped survivors.
 
-    Dedup rule (matches host fg_candidate_selector.py:49-54 AND GPU
-    payload.py:587-592): for each effective key keep the occurrence with the
+    Dedup rule: for each effective key keep the occurrence with the
     MAXIMUM base score; ties broken by EARLIEST scan order (a later row with an
-    equal score does NOT displace the earlier one - the host keeps
-    ``rank = (base_score, -order)`` max which is strictly-better-or-earlier, and
-    the GPU updates only on ``score > prev_score``). The kept candidate's
-    original input index is preserved.
+    equal score does not displace the earlier one). The kept candidate's original
+    input index is preserved.
 
-    Output order / final tie-break -- THE single canonical rule (matches the GPU
-    ``_better_base``, payload.py:429-452): survivors are ordered by
+    Survivors use one canonical ordering:
 
         (base_score DESC, canonical_ids DESC, scan_order ASC)
 
-    where ``canonical_ids`` is the kept occurrence's 9-int genome
+    where ``canonical_ids`` is the kept occurrence's 9-int loadout
     ``(g0..g5, m0, m1, m2)`` with the three mini ids sorted ascending, compared
     left-to-right with the LARGER id winning. ``scan_order`` is the kept
-    occurrence's input index (earliest wins) and mirrors the GPU's "lower stub
-    index wins" final stable tie-breaker. The top ``limit`` survivors are then
-    returned.
-
-    Canonical tie-break choice and rationale (Slice 1 STEP A decision): the GPU
-    kernel's ``_better_base`` rule (canonical-IDs descending) is adopted as THE
-    single documented rule on BOTH this host reference and the GPU select kernel.
-    It is GPU-portable (no MD5, pure integer comparison) and STEP A proved it
-    set-identical to the host's former MD5-hash-descending rule on all 96 real
-    captured pools (the 51-cap never binds and no base-score tie ever sits on the
-    selection boundary). Base scores are large distinct ints in production, so
-    the secondary id/scan tie-breaks are exercised only by synthetic pools; the
-    A/B changed==0 gate catches any residue on real data.
+    occurrence's input index (earliest wins). The top ``limit`` survivors are returned.
     """
     base_scores = np.asarray(base_scores)
     gear_ids = np.asarray(gear_ids)
@@ -336,11 +340,7 @@ def select_top_base_fg_candidates_reference(
         return np.empty(0, dtype=np.int64)
 
     # 1) Dedup by effective key: keep max base score, earliest scan order on ties.
-    #    Track the kept occurrence's canonical genome ids (6 gear + 3 sorted mini)
-    #    for the canonical-IDs tie-break, matching the GPU stub_ids (set at the
-    #    kept row; the effective key is constant across a key's occurrences but the
-    #    raw ids are not -- we compare the kept occurrence's raw ids, exactly as
-    #    the GPU ``_better_base`` compares ``ga_fg_select_stub_ids``).
+    #    Track the kept occurrence's canonical loadout IDs (6 gear + 3 sorted minis).
     best_idx_by_key: dict[tuple, int] = {}
     best_score_by_key: dict[tuple, int] = {}
     best_ids_by_key: dict[tuple, tuple[int, ...]] = {}
@@ -361,11 +361,10 @@ def select_top_base_fg_candidates_reference(
             mini_row = tuple(sorted(int(m) for m in mini_ids[order]))
             best_ids_by_key[key] = gear_row + mini_row
 
-    # 2) Final order -- THE canonical rule: (base_score DESC, canonical_ids DESC,
+    # 2) Final order: (base_score DESC, canonical_ids DESC,
     #    scan_order ASC), then top-N. Sorting the negated id tuple ascending gives
     #    descending id order (larger id wins left-to-right), and the positive
-    #    scan-order index breaks the final tie with the earliest occurrence, which
-    #    mirrors the GPU "lower stub index wins".
+    #    scan-order index breaks the final tie with the earliest occurrence.
     survivors = []
     for key, idx in best_idx_by_key.items():
         neg_ids = tuple(-int(v) for v in best_ids_by_key[key])
@@ -381,15 +380,28 @@ def select_top_base_fg_candidates_reference(
 
 
 _CONTEXT_TABLES_LOCK = threading.Lock()
-_CONTEXT_TABLES_CACHE: dict[tuple[int, str, str, str], tuple[np.ndarray, np.ndarray]] = {}
+_ContextTableKey = tuple[int, bytes, str, str, str]
+_ContextTableEntry = tuple[ItemRegistry, np.ndarray, np.ndarray]
+
+_CONTEXT_TABLES_CACHE: dict[_ContextTableKey, _ContextTableEntry] = {}
 _CONTEXT_TABLES_SINGLEFLIGHT: SingleFlight[
-    tuple[int, str, str, str], tuple[np.ndarray, np.ndarray]
+    _ContextTableKey, tuple[np.ndarray, np.ndarray]
 ] = SingleFlight()
-# The cache key is id(registry); registries are LRU-evicted from the 32-entry _REGISTRY_GPU_CACHE
-# and rebuilt with fresh ids, so without a bound every rebuild leaks a permanent
-# (gear_name_rank, sig_id) ndarray pair for a now-dead registry. The live working set is the
-# <=32 registries x their colour contexts, so a generous cap clears rarely and only sheds orphans.
 _CONTEXT_TABLES_CACHE_MAX = 256
+
+
+def _registry_content_fingerprint(registry: ItemRegistry) -> bytes:
+    id_to_item = _registry_id_to_item(registry)
+    payload = {
+        "n_items": int(registry.n_items),
+        "slot_start": [int(value) for value in registry.slot_start],
+        "slot_count": [int(value) for value in registry.slot_count],
+        "items": [
+            (int(item_id), item)
+            for item_id, item in sorted(id_to_item.items(), key=lambda pair: int(pair[0]))
+        ],
+    }
+    return stable_json_fingerprint(payload)
 
 
 def effective_tables_for_context(
@@ -408,20 +420,21 @@ def effective_tables_for_context(
     """
     key = (
         id(registry),
+        _registry_content_fingerprint(registry),
         str(primary_color or ""),
         str(secondary_color or ""),
         str(selected_color or ""),
     )
     with _CONTEXT_TABLES_LOCK:
         cached = _CONTEXT_TABLES_CACHE.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] is registry:
+        return cached[1], cached[2]
 
     def _build_and_cache() -> tuple[np.ndarray, np.ndarray]:
         with _CONTEXT_TABLES_LOCK:
             existing = _CONTEXT_TABLES_CACHE.get(key)
-        if existing is not None:
-            return existing
+        if existing is not None and existing[0] is registry:
+            return existing[1], existing[2]
         gear_rank = build_gear_name_rank(registry)
         sig_tables = build_mini_sig_id(
             registry,
@@ -433,7 +446,9 @@ def effective_tables_for_context(
         with _CONTEXT_TABLES_LOCK:
             if len(_CONTEXT_TABLES_CACHE) >= _CONTEXT_TABLES_CACHE_MAX:
                 _CONTEXT_TABLES_CACHE.clear()
-            _CONTEXT_TABLES_CACHE[key] = tables
+            # Retain the registry to defeat object-id reuse. The key's content
+            # digest invalidates same-object item/name/stat/slot mutations.
+            _CONTEXT_TABLES_CACHE[key] = (registry, gear_rank, sig_tables.sig_id)
         return tables
 
     return _CONTEXT_TABLES_SINGLEFLIGHT.run(key, _build_and_cache)

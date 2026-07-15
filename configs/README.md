@@ -1,6 +1,11 @@
 # Config Directory Structure
 
-Config `.ini` files control the gear optimizer's runtime behavior.
+Config `.ini` files control song selection, request-local gear/Mini inputs, user
+stats, and runtime resource limits. They do not select an outer search algorithm
+or an accuracy budget: production always uses exact Base search, ranks up to 51
+effective Base loadouts (or all of them when the joined states exhaust first),
+and sends that surface to native Force Greats.
+
 They are loaded by `gear_optimizer.core.config.load_config()` which supports
 the `_extends` inheritance mechanism described below.
 
@@ -25,6 +30,7 @@ configs/
     config_profile_inflight.ini               Inflight profiling (standalone, lowercase keys)
     config_profile_inflight_queue24_fast.ini   4-lane/24-song    (extends profile_fast_common)
     config_profile_inflight_queue24_fast_inflight24.ini  24-lane/24-song (extends profile_fast_common)
+    config_profile_inflight_queue24_fast_inflight8.ini   8-lane/24-song  (standalone)
     config_profile_inflight_queue6_fast_inflight8.ini    8-lane/6-song  (extends profile_fast_common)
     config_profile_queue160.ini               160-song full-queue profile (standalone)
   smoke/
@@ -62,5 +68,17 @@ declare only its overrides; shared settings live in `configs/common/`.
 
 Configs that are intentionally standalone (e.g., `config.ini`,
 `config.profile.ini`, `config_profile_baseline.ini`,
-`config_profile_queue160.ini`, `config_smoke_queue1_fast.ini`,
+`config_profile_inflight.ini`,
+`config_profile_inflight_queue24_fast_inflight8.ini`,
+`config_profile_queue160.ini`, and `config_smoke_queue1_fast.ini`)
 do not use `_extends`.
+
+## Search Semantics
+
+- Gear and Mini sections describe fixed selections within the current request catalog.
+- `SongQueueLimit`, `SongRepeats`, `InFlightSongs`, and memory/worker settings
+  control orchestration and resource use, not solution quality.
+- Search quality has no configurable effort, randomization, or repeated-start
+  budget.
+- Exact timeline, Base song-context, and native FG response-frontier caches are
+  performance artifacts. Cache hits and misses must not change the result.

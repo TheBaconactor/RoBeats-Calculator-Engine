@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from gear_optimizer.core.utils import safe_int
-from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
-    candidate_genome_ids,
+from gear_optimizer.helpers.song_helpers.loadout_entry_utils import (
+    candidate_loadout_ids,
+    candidate_id_key,
     entry_loadout_hash,
-    ga_candidate_key,
 )
 from gear_optimizer.helpers.song_helpers.force_greats.entry_utils import eval_data_from_entry, expected_selected_element
 from gear_optimizer.solver.force_greats_common import FG_BASE_STATS7_KEY, extract_base_stats
@@ -33,19 +33,23 @@ class FgResponseFrontierPreparedPlan:
 
 class FgPlanner:
     @staticmethod
-    def _entry_items_from_ga_candidates(ga_candidates, *, ga_registry=None) -> list[tuple[str, dict[str, Any]]]:
+    def _entry_items_from_base_candidates(
+        base_candidates,
+        *,
+        registry=None,
+    ) -> list[tuple[str, dict[str, Any]]]:
         items: list[tuple[str, dict[str, Any]]] = []
-        for idx, candidate in enumerate(ga_candidates or []):
+        for idx, candidate in enumerate(base_candidates or []):
             if not isinstance(candidate, dict):
-                raise ValueError(f"ForceGreats GA candidate {idx} is not a dict.")
+                raise ValueError(f"ForceGreats Base candidate {idx} is not a dict.")
             eval_data = candidate.get("Data")
             if not isinstance(eval_data, dict) or not eval_data:
-                raise ValueError(f"ForceGreats GA candidate {idx} is missing Data.")
-            genome_ids = candidate_genome_ids(candidate)
-            registry_obj = ga_registry if ga_registry is not None else candidate.get("_ga_registry")
+                raise ValueError(f"ForceGreats Base candidate {idx} is missing Data.")
+            loadout_ids = candidate_loadout_ids(candidate)
+            registry_obj = registry if registry is not None else candidate.get("_item_registry")
             score = int(candidate.get("BaseScore") or candidate.get("Score", 0) or 0)
             if score <= 0:
-                raise ValueError(f"ForceGreats GA candidate {idx} is missing a positive BaseScore.")
+                raise ValueError(f"ForceGreats Base candidate {idx} is missing a positive BaseScore.")
             entry = {
                 "gear": list(candidate.get("Gear") or []),
                 "minis": list(candidate.get("Minis") or []),
@@ -55,60 +59,24 @@ class FgPlanner:
                 "fg_score": int(candidate.get("fg_score", 0) or 0),
                 "force": candidate.get("force"),
                 "eval_data": eval_data,
-                "_source": "ga",
+                "_source": "exact-base",
                 "_candidate_ref": candidate,
             }
             selected = str(eval_data.get("Selected Element", "") or "")
             if selected:
                 entry["selected_element"] = selected
-            if genome_ids is not None:
-                entry["ga_genome_ids"] = list(genome_ids)
+            if loadout_ids is not None:
+                entry["loadout_ids"] = list(loadout_ids)
             if registry_obj is not None:
-                entry["_ga_registry"] = registry_obj
+                entry["_item_registry"] = registry_obj
 
             key = str(candidate.get("loadout_hash") or "").strip()
             if not key and (entry.get("gear") or entry.get("minis")):
                 key = str(entry_loadout_hash(entry) or "")
-            if not key and genome_ids is not None:
-                key = ga_candidate_key(genome_ids)
+            if not key and loadout_ids is not None:
+                key = candidate_id_key(loadout_ids)
             if not key:
-                key = f"ga-candidate:{int(idx)}"
-            entry["loadout_hash"] = str(key)
-            items.append((str(key), entry))
-        return items
-
-    @staticmethod
-    def _entry_items_from_skyline_candidate_records(
-        candidate_records,
-        *,
-        default_selected_color: str,
-    ) -> list[tuple[str, dict[str, Any]]]:
-        items: list[tuple[str, dict[str, Any]]] = []
-        for idx, record in enumerate(candidate_records or []):
-            if not isinstance(record, dict):
-                raise ValueError(f"Skyline ForceGreats candidate {idx} is not a dict.")
-            eval_data = record.get("data")
-            if not isinstance(eval_data, dict) or not eval_data:
-                raise ValueError(f"Skyline ForceGreats candidate {idx} is missing data.")
-            score = safe_int(record.get("base_score", eval_data.get("BaseScore", eval_data.get("Score", 0))), 0)
-            if score <= 0:
-                raise ValueError(f"Skyline ForceGreats candidate {idx} is missing a positive base_score.")
-            selected = str(eval_data.get("Selected Element", "") or default_selected_color or "")
-            entry = {
-                "gear": list(record.get("gear") or []),
-                "minis": list(record.get("minis") or []),
-                "score": int(score),
-                "base_score": int(score),
-                "details": {},
-                "fg_score": safe_int(record.get("fg_score", 0), 0),
-                "force": record.get("force"),
-                "eval_data": eval_data,
-                "selected_element": selected,
-                "_source": "skyline",
-                "_candidate_ref": record,
-                "_skyline_index": int(idx),
-            }
-            key = str(record.get("loadout_hash") or "").strip() or f"skyline-candidate:{int(idx)}"
+                key = f"base-candidate:{int(idx)}"
             entry["loadout_hash"] = str(key)
             items.append((str(key), entry))
         return items
@@ -143,14 +111,14 @@ class FgPlanner:
     def _device_base_stats7_for_entry(entry: dict[str, Any], eval_data: dict[str, Any]) -> Any:
         """Device base_stats7 for the FG scoring input when the candidate carries one.
 
-        GPU-native GA candidates carry the on-device base_stats7 (decode attaches it to
+        Exact Base candidates carry the on-device base_stats7 (decode attaches it to
         ``eval_data``); that vector is the authoritative scoring input for the fused
         handoff. DB-best / skyline / previous-record candidates have no payload row, so
         this returns ``None`` and the canonical constructor derives the 7-vector from
         their ``BaseStats`` dict (see response_frontier_base_components_row). Both are
         canonical sources, distinguished by candidate origin, not a fallback. The
-        production GA path additionally asserts presence in
-        ``plan_prepared_ga_candidates`` (the only payload-sourced caller)."""
+        production exact Base path additionally asserts presence in
+        ``plan_prepared_base_candidates`` (the only payload-sourced caller)."""
         del entry  # origin is enforced by the production caller, not inferred here
         raw = eval_data.get(FG_BASE_STATS7_KEY)
         if raw is None:
@@ -194,12 +162,9 @@ class FgPlanner:
         pending_jobs: list[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], int, tuple[Any, ...]]] = []
         pending_by_selected: dict[str, list[tuple[tuple[Any, ...], dict[str, Any]]]] = {}
         # Per-representative device base_stats7 (or None for dict-sourced candidates),
-        # aligned 1:1 with each pending_by_selected[selected] list. This is the Slice 2
-        # FG scoring input source: the GPU-native pack kernel's on-device base_stats7,
-        # carried through decode on each candidate's eval_data. The full BaseStats dict
-        # still drives cache_key dedup + persistence; only the scored 7-vector switches
-        # source. base_stats7 is bit-exact equal to the dict-derived 7-vector
-        # (tests/test_gpu_base_stats7_equivalence.py).
+        # aligned 1:1 with each pending_by_selected[selected] list. Exact Base decode
+        # carries this authoritative vector on each candidate's eval_data. The full
+        # BaseStats dict still drives cache-key dedup and persistence.
         base_stats7_by_selected: dict[str, list[Any]] = {}
         pending_keys: set[tuple[Any, ...]] = set()
         for _key, entry in entry_items:
@@ -247,17 +212,17 @@ class FgPlanner:
         )
 
     @staticmethod
-    def plan_many(
-        ga_candidates,
+    def plan_base_candidates(
+        base_candidates,
         calc_song,
         ref_arrays,
         meta_primary_color,
         *,
-        ga_registry=None,
+        registry=None,
         scoring_bundle=None,
     ) -> FgResponseFrontierPreparedPlan:
         return FgPlanner._plan_from_items(
-            FgPlanner._entry_items_from_ga_candidates(ga_candidates, ga_registry=ga_registry),
+            FgPlanner._entry_items_from_base_candidates(base_candidates, registry=registry),
             calc_song,
             ref_arrays,
             meta_primary_color,
@@ -265,27 +230,7 @@ class FgPlanner:
         )
 
     @staticmethod
-    def plan_skyline_candidate_records(
-        candidate_records,
-        calc_song,
-        ref_arrays,
-        default_selected_color,
-        *,
-        scoring_bundle=None,
-    ) -> FgResponseFrontierPreparedPlan:
-        return FgPlanner._plan_from_items(
-            FgPlanner._entry_items_from_skyline_candidate_records(
-                candidate_records,
-                default_selected_color=str(default_selected_color or ""),
-            ),
-            calc_song,
-            ref_arrays,
-            default_selected_color,
-            scoring_bundle=scoring_bundle,
-        )
-
-    @staticmethod
-    def plan_prepared_ga_candidates(song, ga_candidates) -> FgResponseFrontierPreparedPlan:
+    def plan_prepared_base_candidates(song, base_candidates) -> FgResponseFrontierPreparedPlan:
         from gear_optimizer.solver.native_inflight_pipeline import resolve_active_fg_calc_song
 
         calc_song = resolve_active_fg_calc_song(song)
@@ -294,11 +239,11 @@ class FgPlanner:
         ref_arrays = getattr(getattr(song, "gpu_inputs", None), "ref_arrays", None)
         if not isinstance(ref_arrays, dict):
             raise RuntimeError("FG dynamic prep requires reference arrays")
-        return FgPlanner.plan_many(
-            ga_candidates,
+        return FgPlanner.plan_base_candidates(
+            base_candidates,
             calc_song,
             ref_arrays,
             getattr(song.gpu_inputs, "meta_primary_color", ""),
-            ga_registry=getattr(song.gpu_inputs, "registry", None),
+            registry=getattr(song.gpu_inputs, "registry", None),
             scoring_bundle=getattr(song.runtime.fg, "fg_response_scoring_bundle", None),
         )

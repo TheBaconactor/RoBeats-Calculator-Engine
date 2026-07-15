@@ -454,8 +454,8 @@ def test_fg_loadouts_compare_against_paired_base_score_not_best_base_score(db_pa
         song,
         [
             {
-                # Deferred/native FG saves can carry the current best base score
-                # while the force payload owns the lower paired base allocation.
+                # A full result can carry the current best base score while the force
+                # payload owns the lower paired base allocation.
                 "score": 10_000,
                 "fg_score": 5_500,
                 "fg_base_score": 5_000,
@@ -463,7 +463,6 @@ def test_fg_loadouts_compare_against_paired_base_score_not_best_base_score(db_pa
                 "minis": ["M1"],
                 "details": {"tag": "fg_different_base"},
                 "force": _force_payload(5_500, base_score=5_000),
-                "_deferred_fg_update": True,
             }
         ],
     )
@@ -771,6 +770,11 @@ def test_fg_loadouts_details_match_paired_base_score_not_fg_reallocation(db_path
     fg_base_stats = dict(base_stats)
     fg_base_stats["Fever Multiplier"] = 21
     fg_base_stats["Rush"] = 70
+    fg_visible_stats = dict(fg_base_stats)
+    fg_visible_stats["Fever Multiplier"] = 30
+    fg_visible_stats["Fever Time"] = 93
+    fg_visible_stats["Rush"] = 505
+    fg_visible_stats["Beat"] = 68
 
     save_loadouts_batch(
         song,
@@ -797,6 +801,7 @@ def test_fg_loadouts_details_match_paired_base_score_not_fg_reallocation(db_path
                     "FF": 0,
                     "GemCounts": {"Fever Multiplier": 3, "Element": 71},
                     "BaseStats": fg_base_stats,
+                    "Stats": fg_visible_stats,
                     "Selected Element": "Rush",
                     "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 2000},
                 },
@@ -825,7 +830,8 @@ def test_fg_loadouts_details_match_paired_base_score_not_fg_reallocation(db_path
 
         force = json.loads(row["force_details_json"])
         assert force["FT"] == 16
-        assert force["BaseStats"]["Fever Time"] == 45
+        assert force["BaseStats"] == fg_visible_stats
+        assert "Stats" not in force
         assert force["ForceGreats"]["final_score"] == 2000
     finally:
         conn.close()

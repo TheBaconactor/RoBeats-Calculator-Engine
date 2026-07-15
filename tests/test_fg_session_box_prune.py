@@ -1,4 +1,4 @@
-"""Session-box serve-time frontier prune (record 16.37): the GA-path bundle prune must keep the
+"""Session-box serve-time frontier prune (record 16.37): the native FG bundle prune must keep the
 exact per-cell winners for every stat cell inside the SESSION box while dropping rows only a
 wider (global-box) audience could need.
 

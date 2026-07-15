@@ -12,16 +12,22 @@ Code: `gear_optimizer/core/config.py` (`get_config_path()`, `load_config()`).
 
 ### Debug-profile gating (profiling knobs)
 `main.py` gates certain overhead-heavy env toggles behind DebugProfile:
-- If DebugProfile is **off**, it will clear env vars like `PERF_TIMING`, `GPU_EXECUTOR_PROFILE`, `GPU_PROFILER`, etc.
+- If DebugProfile is **off**, it clears profiling flags such as `PERF_TIMING`,
+  `GPU_SERVICE_PROFILE`, and `TAICHI_KERNEL_PROFILER`.
 - If DebugProfile is **on**, it sets `METAFINDER_DEBUG_PROFILE=1`.
 
 `gear_optimizer/core/env_config.py` reads `DEBUG_PROFILE` / `METAFINDER_DEBUG_PROFILE` once and exposes a typed `ENV` singleton.
 
-### ForceGreats radius defaults
-- FG search radius is hard-coded to `-1`, meaning full FT/FF allocation search.
-- `FG_SEARCH_RADIUS` and `IterationEngine.FG_SearchRadius` are no longer production tuning knobs.
+### Search semantics are not tuning knobs
 
-Code: `gear_optimizer/core/constants.py` (`FG_SEARCH_RADIUS`), `gear_optimizer/core/config.py` (`read_fg_search_radius()`).
+- Production always runs the exact request-local Base search and native exact FG scorer.
+- The exact Base result is certified independently of queue depth, worker count, and cache state.
+- The Base-to-FG funnel refills and retains up to 51 highest-ranked effective loadouts from the
+  exact-scored witness pool, stopping early only when the joined states are exhausted.
+- There are no production search-effort, randomization, FG radius, or alternate-scorer knobs.
+
+Code: `gear_optimizer/solver/exact_base_search.py`,
+`gear_optimizer/solver/native_fg_owner.py`.
 
 ## Key runtime data shapes (boundary contracts)
 
@@ -45,13 +51,17 @@ Batch inserts are built from lists of dict entries:
 - `score`, `fg_score`, `gear`, `minis`, `details`, `force`
 
 Type reference: `gear_optimizer/core/types.py` (`PersistenceEntry`).
-Write path: `gear_optimizer/data/database.py` (`save_loadouts_batch()`).
+Write path: `gear_optimizer/data/database/persistence.py` (`save_loadouts_batch()`).
 
 ### GPU IPC request payloads
 GPU executor request payloads are dicts keyed by request type.
 Type reference:
-- `gear_optimizer/solver/gpu_executor_types.py` (`GpuRequestType`: `LOAD_REF_ARRAYS`, `GPU_NATIVE_GA_RUN`, `SHUTDOWN`)
+- `gear_optimizer/solver/gpu_executor_types.py` (`GpuRequestType`: `LOAD_REF_ARRAYS`, `EXACT_BASE_SEARCH`, `SHUTDOWN`)
 - payload bodies are `JsonDict` values on `GpuRequest.payload`
+
+`EXACT_BASE_SEARCH` owns one fused exact Base plus native FG turn and returns an
+`ExactBaseOwnerResult`. Its Base surface and FG score map must cover the same
+typed seven-component candidate keys.
 
 Executor: `gear_optimizer/solver/gpu_executor.py`.
 
@@ -61,27 +71,25 @@ Executor: `gear_optimizer/solver/gpu_executor.py`.
 - Ensure DebugProfile is enabled (via config or env) so `main.py` doesn’t clear profiling env vars.
 
 ### 2) Executor-level utilization (queue + Python overhead)
-- Enable executor profiling:
-  - `GPU_EXECUTOR_PROFILE=1`
-- Optional live periodic report:
-  - Look for `[GpuExecutor][LIVE] ...` prints during runtime.
+- Enable the live executor report:
+  - `GPU_EXECUTOR_LIVE=1`
+  - Optional cadence: `GPU_EXECUTOR_LIVE_INTERVAL_SEC=1.0`
 
 Interpreting output:
 - `wait=` is time spent blocked waiting for work.
 - `exec=` is time spent executing requests on the GPU owner thread (includes some host-side overhead).
-- `pack=` is time spent preparing/coalescing batches inside the executor (helps spot CPU packing bottlenecks).
+- `pack=` is time spent preparing/coalescing request batches inside the executor.
 
-### 3) Kernel-level + transfer-level timing (GPU profiler)
+### 3) End-to-end request latency
 - Enable:
-  - `GPU_PROFILER=1` (or `PERF_TIMING=1` when DebugProfile is on)
+  - `GPU_SERVICE_PROFILE=1`
+  - `GPU_SERVICE_PROFILE_PRINT=1`
 
 This reports:
-- kernel seconds
-- upload/download seconds and bytes
-- genomes evaluated
-- estimated GPU utilization vs wall time
+- submit-to-response count, total, mean, percentiles, and maximum by request type;
+- the fused `EXACT_BASE_SEARCH` latency, which includes exact Base plus native FG owner work.
 
-Code: `gear_optimizer/solver/gpu_profiler.py`.
+Code: `gear_optimizer/solver/gpu_service.py`.
 
 ### 4) Taichi kernel profiler (deep kernel breakdown)
 - Enable (DebugProfile recommended):
@@ -90,58 +98,74 @@ Code: `gear_optimizer/solver/gpu_profiler.py`.
 
 Note: this can add overhead; use for targeted investigations.
 
-### 5) In-flight stage profiling (CPU prep/decode/FG overlap)
+### 5) In-flight stage profiling (CPU prep/Base/decode/FG overlap)
 - Enable:
   - `INFLIGHT_STAGE_PROFILE=1`
-  - Optional periodic emit: `INFLIGHT_STAGE_PROFILE_EMIT_SEC=...`
+  - Optional output: `INFLIGHT_STAGE_PROFILE_PATH=...`
 
 Stages are aggregated in:
-- `gear_optimizer/solver/native_inflight_stages.py` (`_InFlightStageProfiler`)
+- `gear_optimizer/solver/native_inflight_pipeline.py` (`InFlightStageProfiler`)
 
-## Production FG path (Bellman)
+## Production Exact Base and Native FG Path
 
-Force Greats optimization in live runs uses the fixed-stats Bellman GPU route:
+Per-song CPU preparation builds request-local item domains, loads the exact
+timeline and Base song-context artifacts, and loads the candidate-independent
+native FG scoring bundle. The single GPU owner then:
 
-- `process_force_greats(...)` → `process_force_greats_bellman_fixed_gpu(...)`
-- `solve_force_greats_bellman_fixed_stats_gpu(...)` in `taichi_gem/force_greats/bellman_fixed.py`
+1. partitions the request into only its reachable Mini-PP/PP-response components;
+2. performs the two Base semiring joins for each component;
+3. certifies Base top-1 with admissible song-specific bounds;
+4. refills, materializes, and ranks up to 51 effective Base loadouts, or exhausts the joined states;
+   and
+5. scores every retained loadout through the native response-frontier FG implementation.
 
-Legacy finder Stage-1 env knobs (`FG_SMALL_WORK_*`, `FG_TARGET_THREADS_PER_KERNEL`, FG executor
-coalescing) were removed with the finder GPU teardown.
+One-component requests keep the hot path exercised by the default-catalog `00 (Hard)` benchmark.
+Nonuniform Mini PP totals and allocations where a PP gem beats overflow are exact; every official
+or custom request adds only its reachable components and does not require a catalog frontier build.
 
-## Repeatable occupancy sweeps
-Use the maintained sweep harness for archived apples-to-apples **GA** knob comparisons:
+Primary owners:
 
-- GA example:
-  - `python tools/bench/bench_gpu_occupancy_matrix.py --mode ga --ga-taichi-block-dims 128,256 --ga-reduce-block-dims 128,256 --ga-batch-runs 0,1 --ga-materialize-modes none,update_global,results --ga-genomes 705 --ga-iters 6 --ga-kernel-profiler`
+- Base domains/context/search: `gear_optimizer/solver/exact_base_*.py`
+- Semiring kernels: `gear_optimizer/solver/taichi_gem/kernels/exact_base_semiring.py`
+- Native FG owner handoff: `gear_optimizer/solver/native_fg_owner.py`
+- FG response-frontier runtime: `gear_optimizer/solver/taichi_gem/force_greats/response_frontier.py`
+- Fused scheduling: `gear_optimizer/solver/native_inflight_orchestrator.py`
 
-For real-song FG wall-time / queue behavior, use:
+Do not benchmark a Base-only substitute when assessing production throughput;
+native FG completion is part of the owner-turn contract.
 
-- `python tools/bench/bench_fg_bundle_real_song.py --jobs 100 --workers 12`
+The Base-context startup prebuilder owns bounded spawn generations outside the submit loop. Each
+generation handles at most eight tasks per worker, keeps at most two pending tasks per worker,
+drains all futures, and exits its executor before the next generation begins. Do not move pool
+recycling into submission: that caused a Windows queue-manager deadlock. Do not replace the bounded
+generations with a never-ending pool either; native/NumPy allocator commit ratchets upward while
+those workers remain alive.
 
-Underlying GA bench also supports machine-readable output directly:
+## Repeatable Performance Measurements
 
-- `python tools/bench/bench_gpu_native_ga_eval.py --materialize-mode update_global --kernel-profiler --json`
-- `python tools/bench/bench_gpu_native_ga_eval.py --materialize-mode results_update_runs --kernel-profiler --json`
+Measure the canonical exact Base search on a real catalog and song with:
 
-When `--kernel-profiler` is enabled, the bench JSON now includes per-kernel
-entries in `kernel_profiler_kernels` plus accounting fields
-`kernel_profiler_accounted_total_sec`, `kernel_profiler_unaccounted_total_sec`,
-and `kernel_profiler_accounted_pct`. Use those fields to distinguish
-"GPU time is genuinely concentrated in these kernels" from "we are still
-missing profiler attribution."
+```powershell
+python tools/bench/bench_exact_base_production.py --song 00 --difficulty Hard --warmups 1 --runs 3
+```
 
-For the live steady-state GA path, prefer `--materialize-mode results_update_runs`.
-That mode mirrors the shipped orchestration more closely by timing:
+The tool reports cold timeline, catalog-domain, and song-context preparation
+separately from warm exact Base wall time. Use warm measurements for per-song
+search latency, and retain the reported domain/candidate cardinalities when
+comparing changes.
 
-- `ga_evaluate_population(..., materialize_mode="none")`
-- `ga_write_best_results_and_update_runs_best(...)`
+Exercise the full exact Base-to-native-FG production pipeline with the bounded
+smoke profile:
 
-## In-flight GA+FG throughput architecture (integrated)
+```powershell
+$env:METAFINDER_CONFIG_PATH = "configs/smoke/config_smoke_queue1_fast.ini"
+python main.py
+```
 
-For the GA+FG integrated scheduler updates (continuous GA burst control, FG slot partitioning,
-adaptive FG submit burst, fused FG request policy, and reproducible A/B protocol), see:
-
-- `docs/INFLIGHT_GA_FG_THROUGHPUT.md`
+For multi-song throughput work, use a fixed song queue and compare end-to-end
+completion time plus in-flight stage profiles. Queue depth and host worker count
+may change utilization, but they must not change the certified Base result or
+native FG result.
 
 ## Recent modularization points (where to edit)
 - **Env access**: `gear_optimizer/core/env_config.py` (single source of truth for env knobs)
@@ -149,7 +173,10 @@ adaptive FG submit burst, fused FG request policy, and reproducible A/B protocol
 - **App helpers**:
   - `gear_optimizer/app_async_db.py` (async DB saves off the critical path)
   - `gear_optimizer/app_stop_control.py` (stop/signal control)
-- **In-flight stages**: `gear_optimizer/solver/native_inflight_stages.py` (decode + FG prep + stage profiling)
+- **In-flight orchestration**: `gear_optimizer/solver/native_inflight_orchestrator.py`
+- **Exact Base queue/decode**: `gear_optimizer/solver/native_inflight_pipeline_base.py`,
+  `gear_optimizer/solver/exact_base_pipeline_decode.py`
+- **Native FG preparation/materialization**: `gear_optimizer/solver/native_inflight_pipeline_fg.py`
 
 ## Repo guardrails (avoid removed-path regressions)
 

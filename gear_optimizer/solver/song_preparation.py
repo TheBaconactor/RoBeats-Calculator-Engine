@@ -25,7 +25,6 @@ class PreparedCalcSong:
 
 @dataclass(frozen=True, slots=True)
 class PreparedSongConfig:
-    ga_settings: Any
     fixed_stats: dict[str, Any]
     current_gear_stats: dict[str, Any]
     current_gear_list: list[dict]
@@ -70,7 +69,6 @@ def build_prepared_song_config(
     minis_by_name: dict,
 ) -> PreparedSongConfig:
     (
-        ga_settings,
         fixed_stats,
         current_gear_stats,
         current_gear_list,
@@ -79,7 +77,6 @@ def build_prepared_song_config(
     ) = _setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name)
 
     return PreparedSongConfig(
-        ga_settings=ga_settings,
         fixed_stats=fixed_stats if isinstance(fixed_stats, dict) else {},
         current_gear_stats=current_gear_stats if isinstance(current_gear_stats, dict) else {},
         current_gear_list=current_gear_list if isinstance(current_gear_list, list) else [],

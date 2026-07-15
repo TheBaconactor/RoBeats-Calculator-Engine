@@ -218,12 +218,12 @@ def main() -> int:
                 real_times=np.asarray([rft], dtype=np.float64),
             )
             d = pe_f[0].astype(np.int64) - pe_c[0].astype(np.int64)
-            ga = np.nonzero(d > 0)[0]
-            if ga.size > 0:
+            gained_indices = np.nonzero(d > 0)[0]
+            if gained_indices.size > 0:
                 real_fever_time = rft
                 pef = pe_f[0].astype(np.int64)
                 pec = pe_c[0].astype(np.int64)
-                gained_acts = ga
+                gained_acts = gained_indices
                 found = True
                 print(f"  found gained inclusion at real_fever_time={rft}s")
                 break

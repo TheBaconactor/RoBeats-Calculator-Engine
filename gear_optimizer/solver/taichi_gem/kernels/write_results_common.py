@@ -1,4 +1,4 @@
-"""Shared Taichi helpers for GA and skyline result materialization."""
+"""Shared Taichi helpers for exact candidate result materialization."""
 
 import taichi as ti
 
@@ -8,7 +8,7 @@ from .kernels_scoring import optimize_core_device_exact_bound, score_solution_fr
 
 @ti.func
 def solve_best_combo_uncached(
-    genome_idx: ti.i32,
+    loadout_idx: ti.i32,
     ft: ti.i32,
     ff: ti.i32,
     total_budget: ti.i32,
@@ -26,12 +26,11 @@ def solve_best_combo_uncached(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_exact_inner_solver: ti.template(),
     rescore_result: ti.template(),
 ) -> ti.types.vector(5, ti.i32):
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
-    stats = kernels_helpers.genome_base_stats[genome_idx]
+    stats = kernels_helpers.loadout_base_stats[loadout_idx]
     base_pp: ti.i32 = stats[0]
     base_cm: ti.i32 = stats[1]
     base_fm: ti.i32 = stats[2]

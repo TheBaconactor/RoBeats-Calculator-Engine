@@ -7,7 +7,8 @@ import sys
 import threading
 import time
 import numpy as np
-from gear_optimizer.core.constants import PATHS, BIN_DIR, GA_POPULATION_SIZE
+from gear_optimizer.core.constants import PATHS, BIN_DIR
+from gear_optimizer.core.catalog_validation import build_validated_catalog_name_maps
 from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.parsing import config_bool, env_flag, truthy
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
@@ -183,18 +184,18 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 return
         except Exception as e:
             logger.debug(f"app:_maybe_autoset_gpu_song_slots: {e}")
-        from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT
+        from gear_optimizer.solver.native_inflight_config import CANONICAL_BASE_QUEUE_MULT
 
-        ga_queue_mult = int(CANONICAL_GA_QUEUE_MULT)
-        required = int(inflight_songs) * int(ga_queue_mult) + 2
+        base_queue_mult = int(CANONICAL_BASE_QUEUE_MULT)
+        required = int(inflight_songs) * int(base_queue_mult) + 2
         slots = min(max(24, int(required)), 256)
         os.environ["GPU_SONG_SLOTS"] = str(slots)
         try:
             logger.debug(
-                "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, canonical_ga_queue_mult={}). Set GPU_SONG_SLOTS to override.".format(
+                "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, canonical_base_queue_mult={}). Set GPU_SONG_SLOTS to override.".format(
                     int(slots),
                     int(inflight_songs),
-                    int(ga_queue_mult),
+                    int(base_queue_mult),
                 )
             )
         except Exception as e:
@@ -247,19 +248,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     def _configure_execution_and_prewarm(self, cfg) -> None:
         runtime_settings = self._current_runtime_settings(cfg)
-        ga_multistart = max(1, int(runtime_settings.ga.multi_start))
-        try:
-            from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-
-            gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
-        except Exception as e:
-            logger.warning(f"app:_configure_execution_and_prewarm: {e}")
         # macOS-only required dispatch-safety boundary: on darwin `ti.vulkan` lowers through
         # MoltenVK and Taichi acquires a GLFW/Cocoa context during materialize_runtime, which
         # traps off the OS main thread. Pin that one-time materialization to the main thread
-        # before any GPU executor thread spawns. Placed AFTER configure_ga_run_buffers (which
-        # MUST precede the first ensure_fields_allocated) and BEFORE the executor start below /
-        # the lazy executor start on the single-song (inflight<=1) task path. On Linux/Windows
+        # before any GPU executor thread spawns and before the lazy executor start on the
+        # single-song (inflight<=1) task path. On Linux/Windows
         # there is no main-thread requirement, so we leave their startup path exactly as before
         # (lazy init on the executor thread) and do not introduce an eager startup GPU dependency.
         if sys.platform == "darwin":
@@ -396,7 +389,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             fg_debug = bool(runtime_settings.iteration_engine.force_greats_debug)
             fg_status = "ResponseFrontier"
             logger.info(f" >> [ForceGreats] {fg_status}")
-            ga_depth = int(runtime_settings.ga.search_depth)
             loop_forever = bool(runtime_settings.loop_forever)
             if self._profiling_mode_enabled(cfg):
                 if loop_forever:
@@ -415,8 +407,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             ref_arrays = self._preload_ref_arrays(stats_table)
             all_gears = load_all_gears_list(paths)
             all_minis = load_all_minis_list(paths)
-            gears_by_name = {g["Name"]: g for g in all_gears}
-            minis_by_name = {m["Name"]: m for m in all_minis}
+            gears_by_name, minis_by_name = build_validated_catalog_name_maps(all_gears, all_minis)
             song_queue = self._build_song_queue(cfg, paths)
             queued_songs = len(song_queue)
             try:
@@ -447,7 +438,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 all_minis,
                 gears_by_name,
                 minis_by_name,
-                ga_depth,
                 fg_debug,
             )
             queued_tasks = self._effective_total_tasks(tasks)
@@ -481,6 +471,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 raise
         except Exception as e:
             logger.error(f"Error: {e}")
+            raise
         finally:
             self._stop_progress()
             self._cleanup_resources()
@@ -603,7 +594,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         all_minis,
         gears_by_name,
         minis_by_name,
-        ga_depth,
         fg_debug,
     ):
         return self._queue_task_coordinator().prepare_tasks(
@@ -615,7 +605,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             all_minis,
             gears_by_name,
             minis_by_name,
-            ga_depth,
             fg_debug,
         )
 

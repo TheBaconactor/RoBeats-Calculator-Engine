@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from gear_optimizer.data.migrations import ensure_schema
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "db" / "check_db_consistency.py"
@@ -22,52 +24,7 @@ def _seed_db(
 ) -> None:
     conn = sqlite3.connect(str(db_path))
     try:
-        conn.executescript(
-            """
-            CREATE TABLE songs (
-                name TEXT PRIMARY KEY,
-                best_score INTEGER DEFAULT 0,
-                best_fg_score INTEGER DEFAULT 0,
-                last_updated REAL
-            );
-
-            CREATE TABLE team_buff_loadouts (
-                song_name TEXT,
-                team_buff TEXT,
-                loadout_hash TEXT,
-                score INTEGER,
-                fg_score INTEGER DEFAULT 0,
-                gear_ids_blob BLOB,
-                minis_ids_blob BLOB,
-                details_json TEXT,
-                force_details_json TEXT,
-                timestamp REAL
-            );
-
-            CREATE TABLE team_buff_fg_loadouts (
-                song_name TEXT,
-                team_buff TEXT,
-                loadout_hash TEXT,
-                score INTEGER,
-                fg_score INTEGER,
-                gear_ids_blob BLOB,
-                minis_ids_blob BLOB,
-                details_json TEXT,
-                force_details_json TEXT,
-                timestamp REAL
-            );
-
-            CREATE TABLE gear_name_encoding (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE
-            );
-
-            CREATE TABLE mini_name_encoding (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE
-            );
-            """
-        )
+        ensure_schema(conn)
 
         conn.execute(
             "INSERT INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, ?, ?, ?)",

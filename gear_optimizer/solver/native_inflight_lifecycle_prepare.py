@@ -1,25 +1,16 @@
-"""LRU prep caches and native song preparation for in-flight orchestration."""
+"""Native song preparation for the exact Base + native FG pipeline."""
+
 from __future__ import annotations
 
-import logging
-import threading
 import time
-from collections import OrderedDict
-from typing import Optional
 
-import numpy as np
-
-from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.config import GASettings as GARuntimeSettings
-from gear_optimizer.core.gem_defs import UserGemsSettings
-from gear_optimizer.core.parsing import env_get
-from gear_optimizer.core.singleflight import SingleFlight
 from gear_optimizer.core.utils import cfg_from_dict
-from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_view
-from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
-from gear_optimizer.solver.inflight_utils import _truthy
-from gear_optimizer.solver.item_registry import ItemRegistry
-from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
+from gear_optimizer.domain.jobs import task_queue_label, task_tuple_to_view
+from gear_optimizer.solver.exact_base_domains import build_exact_base_domains
+from gear_optimizer.solver.exact_base_song_context import ExactBaseSongContextInputs
+from gear_optimizer.solver.exact_base_song_context_cache import (
+    load_prebuilt_exact_base_song_context,
+)
 from gear_optimizer.solver.native_inflight_config import (
     NativeSong,
     NativeSongConfig,
@@ -28,361 +19,99 @@ from gear_optimizer.solver.native_inflight_config import (
     NativeSongRuntimeState,
 )
 from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_static_sync, thread_cpu_time_s
+from gear_optimizer.solver.solver_common import prepare_solver_context
 from gear_optimizer.solver.song_preparation import build_prepared_song_core
-
-logger = logging.getLogger(__name__)
-
-_POOL_CACHE_MAX = 32
-_REGISTRY_CACHE_MAX = 32
-_INIT_HEURISTIC_CACHE_MAX = 64
-_PREP_CACHE_LOCK = threading.Lock()
-_POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...], tuple], tuple[list, list]]" = OrderedDict()
-_REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...], tuple], tuple[ItemRegistry, dict]]" = OrderedDict()
-_INIT_HEURISTIC_TOPK_CACHE: "OrderedDict[tuple[tuple[str, str, tuple[str, ...], tuple], int], np.ndarray]" = OrderedDict()
-_PREP_CACHE_SINGLEFLIGHT: SingleFlight[tuple[str, tuple], object] = SingleFlight()
-_CACHE_STATS = {
-    "pools_hit": 0,
-    "pools_miss": 0,
-    "registry_hit": 0,
-    "registry_miss": 0,
-    "heur_hit": 0,
-    "heur_miss": 0,
-}
-_CACHE_STATS_LOCK = threading.Lock()
-_CACHE_STATS_LAST_EMIT = 0.0
-
-
-def _lru_get(cache: OrderedDict, key: tuple):
-    value = cache.get(key)
-    if value is not None:
-        cache.move_to_end(key)
-    return value
-
-
-def _lru_put(cache: OrderedDict, key: tuple, value, *, maxsize: int) -> None:
-    cache[key] = value
-    cache.move_to_end(key)
-    while len(cache) > int(maxsize):
-        cache.popitem(last=False)
-
-
-def _prep_cache_get_or_build(
-    cache: OrderedDict,
-    key: tuple,
-    builder,
-    *,
-    cache_name: str,
-    maxsize: int,
-):
-    with _PREP_CACHE_LOCK:
-        cached = _lru_get(cache, key)
-    if cached is not None:
-        _cache_stats_inc(f"{cache_name}_hit")
-        return cached
-
-    _cache_stats_inc(f"{cache_name}_miss")
-
-    def _build_and_cache():
-        # The prior owner may finish between the initial lookup and this caller
-        # becoming owner. Recheck so that race cannot trigger a duplicate build.
-        with _PREP_CACHE_LOCK:
-            existing = _lru_get(cache, key)
-        if existing is not None:
-            return existing
-        value = builder()
-        if value is None:
-            raise RuntimeError(f"{cache_name} cache builder returned None")
-        with _PREP_CACHE_LOCK:
-            _lru_put(cache, key, value, maxsize=maxsize)
-        return value
-
-    return _PREP_CACHE_SINGLEFLIGHT.run((str(cache_name), key), _build_and_cache)
-
-
-def _cache_stats_enabled() -> bool:
-    return _truthy(env_get("INFLIGHT_CACHE_STATS", "0"))
-
-
-def _cache_stats_emit_interval_s() -> float:
-    try:
-        return float(env_get("INFLIGHT_CACHE_STATS_EMIT_SEC", "30") or "30")
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_cache_stats_emit_interval_s: {e}")
-        return 30.0
-
-
-def _cache_stats_inc(key: str) -> None:
-    try:
-        with _CACHE_STATS_LOCK:
-            _CACHE_STATS[key] = int(_CACHE_STATS.get(key, 0) or 0) + 1
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_cache_stats_inc: {e}")
-        return
-
-
-def _cache_stats_maybe_emit() -> None:
-    if not _cache_stats_enabled():
-        return
-    interval = float(_cache_stats_emit_interval_s())
-    if interval <= 0:
-        return
-    now = time.monotonic()
-    global _CACHE_STATS_LAST_EMIT
-    try:
-        with _CACHE_STATS_LOCK:
-            if (now - float(_CACHE_STATS_LAST_EMIT)) < interval:
-                return
-            _CACHE_STATS_LAST_EMIT = now
-            snap = dict(_CACHE_STATS)
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_cache_stats_maybe_emit: {e}")
-        return
-    try:
-        pools_h = int(snap.get("pools_hit", 0) or 0)
-        pools_m = int(snap.get("pools_miss", 0) or 0)
-        reg_h = int(snap.get("registry_hit", 0) or 0)
-        reg_m = int(snap.get("registry_miss", 0) or 0)
-        heur_h = int(snap.get("heur_hit", 0) or 0)
-        heur_m = int(snap.get("heur_miss", 0) or 0)
-        logger.debug(
-            "[InFlight][CacheStats] pools hit=%s miss=%s | registry hit=%s miss=%s | heur_topk hit=%s miss=%s",
-            pools_h,
-            pools_m,
-            reg_h,
-            reg_m,
-            heur_h,
-            heur_m,
-        )
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_cache_stats_maybe_emit: {e}")
+from gear_optimizer.solver.taichi_gem.api.timeline import load_prebuilt_timeline_frontier_payload
 
 
 def prepare_native_song(task: tuple) -> NativeSong:
+    """Build every host-side object required before an exact Base owner request."""
+
     wall_t0 = time.perf_counter()
     cpu_t0 = thread_cpu_time_s()
-    from gear_optimizer.core.constants import GA_POPULATION_SIZE
-    from gear_optimizer.helpers.ga_helpers import initialize_pools
-
     task_view = task_tuple_to_view(task)
     job = task_view.job
-    seed_plan = seed_plan_from_song_job(job)
-    task_key = seed_plan.queue_label
-    ga_seed = seed_plan.ga_seed
     run_context = task_view.context
-    fp = job.file_path
-    found_song_name = job.song_name
-    effective_difficulty = job.difficulty
-    cfg_dict = run_context.cfg_dict
-    paths = run_context.paths
-    ref_arrays = run_context.ref_arrays
-    all_gears = run_context.all_gears
-    all_minis = run_context.all_minis
-    gears_by_name = run_context.gears_by_name
-    minis_by_name = run_context.minis_by_name
-    ga_depth = run_context.ga_depth
-    fg_debug = run_context.fg_debug
+    cfg_dict = dict(run_context.cfg_dict or {})
     cfg = cfg_from_dict(cfg_dict)
     prepared_core = build_prepared_song_core(
-        fp=fp,
-        found_song_name=found_song_name,
+        fp=job.file_path,
+        found_song_name=job.song_name,
         cfg_dict=cfg_dict,
-        paths=paths,
-        gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
-        all_minis=all_minis,
+        paths=run_context.paths,
+        gears_by_name=run_context.gears_by_name,
+        minis_by_name=run_context.minis_by_name,
+        all_minis=run_context.all_minis,
         cfg=cfg,
         cache_db_context=True,
     )
-    calc_song = prepared_core.calc_song
-    all_minis = prepared_core.all_minis
-    minis_by_name = prepared_core.minis_by_name
-    mini_ascension_context = prepared_core.mini_ascension_context
-    meta_primary_color = prepared_core.meta_primary_color
-    meta_secondary_color = prepared_core.meta_secondary_color
     prepared_config = prepared_core.prepared_config
-    ga_settings = prepared_config.ga_settings
-    fixed_stats = prepared_config.fixed_stats
-    current_gear_list = prepared_config.current_gear_list
-    current_mini_list = prepared_config.current_mini_list
+    solver_context = prepare_solver_context(
+        cfg,
+        prepared_config.fixed_stats,
+        prepared_core.calc_song,
+        run_context.ref_arrays,
+        run_context.all_gears,
+        prepared_core.all_minis,
+        song_slot=0,
+    )
+
+    exact_base_domains = build_exact_base_domains(solver_context)
+    timeline_frontier = load_prebuilt_timeline_frontier_payload(
+        solver_context.calc_song,
+        solver_context.ref_arrays,
+    )
+    exact_base_song_context_result = load_prebuilt_exact_base_song_context(
+        ExactBaseSongContextInputs.from_solver_context(solver_context),
+        timeline_frontier.payload,
+    )
+    exact_base_song_context = exact_base_song_context_result.context
+
     db_context = prepared_core.db_context
-    db_key = db_context.db_key
-    prev_record = db_context.prev_record
-    db_best_score = db_context.db_best_score
-    db_best_fg_score = db_context.db_best_fg_score
-    attempt_lifetime = db_context.attempt_lifetime
-    prev_attempts_first = db_context.prev_attempts_first
-    db_baseline_valid = db_context.db_baseline_valid
-    p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
-    s_color = calc_song.get("metadata", {}).get("Secondary Color", "")
-    selected_color = p_color
-    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
-    pool_key = (str(p_color), str(s_color), tuple(slots), tuple(mini_ascension_context.cache_key))
-    def _build_pools():
-        pools = initialize_pools(all_gears, all_minis, p_color, slots, s_color=s_color)
-        if pools is None:
-            raise RuntimeError("initialize_pools returned None")
-        if len(pools) == 4:
-            gear_pool, mini_pool, _total_before, _total_after = pools
-        else:
-            gear_pool, mini_pool, _total_before, _total_after, _whitelisted_minis = pools
-        if gear_pool is None:
-            raise RuntimeError("initialize_pools failed (gear_pool is None)")
-        return gear_pool, mini_pool
-
-    gear_pool, mini_pool = _prep_cache_get_or_build(
-        _POOL_CACHE,
-        pool_key,
-        _build_pools,
-        cache_name="pools",
-        maxsize=_POOL_CACHE_MAX,
-    )
-
-    def _build_registry_gpu():
-        registry = ItemRegistry(gear_pool, mini_pool, slots)
-        gpu_data = registry.to_gpu_arrays()
-        return registry, gpu_data
-
-    registry, gpu_data = _prep_cache_get_or_build(
-        _REGISTRY_GPU_CACHE,
-        pool_key,
-        _build_registry_gpu,
-        cache_name="registry",
-        maxsize=_REGISTRY_CACHE_MAX,
-    )
-    _cache_stats_maybe_emit()
-    ga_runtime_settings = GARuntimeSettings.from_config(cfg)
-    user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
-    cfg_data = {
-        "selected_color": selected_color,
-        "primary_color": str(p_color or ""),
-        "secondary_color": str(s_color or ""),
-        "user_ft": int(user_gems.fever_time),
-        "user_ff": int(user_gems.fever_fill),
-        "user_pp": int(user_gems.perfect_points),
-        "user_cm": int(user_gems.combo_multiplier),
-        "user_fm": int(user_gems.fever_multiplier),
-        "static_elem_input": int(user_gems.static_element),
-    }
-    cfg_data["ga_novelty_repair_attempts"] = int(ga_runtime_settings.novelty_repair_attempts)
-    cfg_data["fg_require_stats"] = True
-    base_fixed_stats_arr, _ = build_base_fixed_stats_array(fixed_stats, cfg_data)
-    tournament_k = int(ga_runtime_settings.tournament_k)
-    mutation_rate = float(ga_runtime_settings.mutation_rate)
-    immigrant_rate = float(ga_runtime_settings.immigrant_rate)
-    num_runs = int(getattr(ga_settings, "multi_start", 1) or 1)
-    if num_runs <= 0:
-        num_runs = 1
-    ga_depth = int(ga_depth or 0)
-    if ga_depth <= 0:
-        ga_depth = 1
-    gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
-    n_genomes = int(GA_POPULATION_SIZE)
-    init_heuristic_topk: Optional[np.ndarray] = None
-    init_heuristic_k = 64  # heuristic-seeded initial genomes (was GPU_GA_INIT_HEURISTIC_K)
-    init_heuristic_copies = 25
-    from gear_optimizer.solver.genetic_pipeline import build_ga_init_heuristic_topk
-
-    if init_heuristic_k > 0:
-        cache_key = (pool_key, int(init_heuristic_k))
-
-        def _build_init_heuristic_topk():
-            built = build_ga_init_heuristic_topk(
-                    item_stats=gpu_data["item_stats"],
-                    slot_start=gpu_data["slot_start"],
-                    slot_count=gpu_data["slot_count"],
-                    primary_color=str(p_color or ""),
-                    secondary_color=str(s_color or ""),
-                    heuristic_k=int(init_heuristic_k),
-                    n_slots=9,
-                )
-            if built is None:
-                raise RuntimeError("GA initial heuristic builder returned None for an enabled heuristic")
-            return np.asarray(built, dtype=np.int32)
-
-        init_heuristic_topk = _prep_cache_get_or_build(
-            _INIT_HEURISTIC_TOPK_CACHE,
-            cache_key,
-            _build_init_heuristic_topk,
-            cache_name="heur",
-            maxsize=_INIT_HEURISTIC_CACHE_MAX,
-        )
-    if init_heuristic_topk is None or init_heuristic_k <= 0:
-        init_heuristic_topk = None
-        init_heuristic_k = 0
-        init_heuristic_copies = 0
-    color_flags = build_color_flags(p_color, s_color, selected_color)
-    fg_gear_name_rank, fg_mini_sig_id = effective_tables_for_context(
-        registry,
-        primary_color=str(p_color or ""),
-        secondary_color=str(s_color or ""),
-        selected_color=str(selected_color or ""),
-    )
-    elite_count = max(0, int(ga_runtime_settings.elite_count))
     song = NativeSong(
         config=NativeSongConfig(
-            fp=str(fp),
-            song_name=str(found_song_name),
-            task_key=str(task_key),
-            ga_seed=int(ga_seed) if ga_seed is not None else None,
-            db_key=str(db_key),
-            effective_difficulty=str(effective_difficulty),
+            fp=str(job.file_path),
+            song_name=str(job.song_name),
+            task_key=str(task_queue_label(task)),
+            db_key=str(db_context.db_key),
+            effective_difficulty=str(job.difficulty),
             cfg_dict=cfg_dict,
             cfg=cfg,
-            paths=paths,
-            ga_depth=int(ga_depth),
-            fg_debug=bool(fg_debug),
+            paths=run_context.paths,
+            fg_debug=bool(run_context.fg_debug),
         ),
         gpu_inputs=NativeSongGPUInputs(
-            ref_arrays=ref_arrays,
-            all_gears=all_gears,
-            all_minis=all_minis,
-            gears_by_name=gears_by_name,
-            minis_by_name=minis_by_name,
-            calc_song=calc_song,
-            meta_primary_color=meta_primary_color,
-            meta_secondary_color=meta_secondary_color,
-            fixed_stats=fixed_stats,
-            current_gear_list=current_gear_list,
-            current_mini_list=current_mini_list,
-            registry=registry,
-            cfg_data=cfg_data,
-            color_flags=color_flags,
-            gens_per_run=int(gens_per_run),
-            num_runs=int(num_runs),
-            n_genomes=int(n_genomes),
-            item_stats=gpu_data["item_stats"],
-            slot_start=gpu_data["slot_start"],
-            slot_count=gpu_data["slot_count"],
-            base_fixed_stats_arr=np.asarray(base_fixed_stats_arr, dtype=np.int32),
-            elite_count=int(elite_count),
-            mutation_rate=float(mutation_rate),
-            immigrant_rate=float(immigrant_rate),
-            tournament_k=int(tournament_k),
-            init_heuristic_topk=init_heuristic_topk,
-            init_heuristic_k=int(init_heuristic_k),
-            init_heuristic_copies=int(init_heuristic_copies),
-            fg_gear_name_rank=fg_gear_name_rank,
-            fg_mini_sig_id=fg_mini_sig_id,
+            ref_arrays=solver_context.ref_arrays,
+            all_gears=list(run_context.all_gears or []),
+            all_minis=list(prepared_core.all_minis or []),
+            gears_by_name=dict(run_context.gears_by_name or {}),
+            minis_by_name=dict(prepared_core.minis_by_name or {}),
+            calc_song=solver_context.calc_song,
+            meta_primary_color=str(solver_context.p_color),
+            meta_secondary_color=str(solver_context.s_color),
+            fixed_stats=dict(solver_context.base_stats_fixed),
+            current_gear_list=list(prepared_config.current_gear_list or []),
+            current_mini_list=list(prepared_config.current_mini_list or []),
+            registry=solver_context.registry,
+            cfg_data=dict(solver_context.cfg_data),
+            color_flags=dict(solver_context.color_flags),
+            solver_context=solver_context,
+            exact_base_domains=exact_base_domains,
+            exact_base_song_context=exact_base_song_context,
+            timeline_frontier=timeline_frontier,
         ),
         runtime=NativeSongRuntimeState(
             db=NativeSongDBState(
-                prev_record=prev_record,
-                db_best_score=int(db_best_score),
-                attempt_lifetime=int(attempt_lifetime),
-                prev_attempts_first=int(prev_attempts_first),
-                db_best_fg_score=int(db_best_fg_score),
-                db_baseline_valid=bool(db_baseline_valid),
+                prev_record=db_context.prev_record,
+                db_best_score=int(db_context.db_best_score),
+                attempt_lifetime=int(db_context.attempt_lifetime),
+                prev_attempts_first=int(db_context.prev_attempts_first),
+                db_best_fg_score=int(db_context.db_best_fg_score),
+                db_baseline_valid=bool(db_context.db_baseline_valid),
             ),
         ),
     )
     prepare_fg_static_sync(song)
-    # Hydrate the in-memory timeline-frontier payload cache from this prep worker so
-    # the owner thread's upload at the GA turn hits the "memory" branch instead of
-    # decompressing the .npz at the song boundary (load-only entrypoint: no Taichi,
-    # fails loud here -- earlier and off the owner -- if the startup cache is missing).
-    from gear_optimizer.solver.taichi_gem.api.timeline import load_timeline_frontier_payload
-
-    load_timeline_frontier_payload(song.gpu_inputs.calc_song, song.gpu_inputs.ref_arrays)
-    song.runtime.prep.wall_prep_s = max(0.0, time.perf_counter() - float(wall_t0))
-    song.runtime.prep.cpu_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
+    song.runtime.prep.wall_prep_s = max(0.0, time.perf_counter() - wall_t0)
+    song.runtime.prep.cpu_prep_s = max(0.0, thread_cpu_time_s() - cpu_t0)
     return song

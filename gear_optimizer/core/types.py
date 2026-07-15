@@ -76,7 +76,7 @@ class StageTiming(TypedDict, total=False):
     cpu_db_load_sec: float
     cpu_prep_sec: float
     gpu_timeline_precompute_sec: float
-    cpu_ga_wall_sec: float
+    cpu_base_wall_sec: float
     cpu_fg_wall_sec: float
     cpu_post_sec: float
 
@@ -87,7 +87,7 @@ class GpuTiming(TypedDict, total=False):
     kernel_sec: float
     upload_sec: float
     download_sec: float
-    genome_evaluations: int
+    candidate_evaluations: int
     total_sec: float
 
 
@@ -105,7 +105,6 @@ class SongResultPayload(TypedDict, total=False):
     _queue_label: str
     _repeat_index: int
     _repeat_total: int
-    _ga_seed: int | None
 
     # Inputs
     file_path: str
@@ -134,5 +133,4 @@ class SongResultPayload(TypedDict, total=False):
 # ----------------------------- GPU IPC payloads -----------------------------
 
 BoolFlags = tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]
-
 

@@ -86,7 +86,7 @@ def test_reader_mutate_payload_writes_post_gem_row_not_doubled():
 
 
 def test_storage_promotes_post_gem_stats_to_base_stats_then_reader_is_correct():
-    # The GA/reducer producer emits a PRE-gem BaseStats + post-gem Stats. Compaction
+    # The native FG reducer emits a PRE-gem BaseStats + post-gem Stats. Compaction
     # must promote the post-gem row to BaseStats before dropping Stats, so the stored,
     # Stats-less block reads back to the post-gem row (not the halved pre-gem one).
     pre_gem = {k: (v // 2 if v else v) for k, v in _POST_GEM.items()}

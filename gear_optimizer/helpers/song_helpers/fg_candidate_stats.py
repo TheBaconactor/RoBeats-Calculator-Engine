@@ -15,10 +15,10 @@ from ...solver.scoring.stats_ops import apply_gems_to_base_stats
 
 
 logger = logging.getLogger(__name__)
-def _as_genome(candidate: dict) -> list[dict]:
-    genome = candidate.get("Genome")
-    if isinstance(genome, list) and genome:
-        out = list(genome[:9])
+def _as_loadout(candidate: dict) -> list[dict]:
+    loadout = candidate.get("Loadout")
+    if isinstance(loadout, list) and loadout:
+        out = list(loadout[:9])
         while len(out) < 9:
             out.append({})
         return out
@@ -31,23 +31,23 @@ def _as_genome(candidate: dict) -> list[dict]:
     return gear + minis
 
 
-def _candidate_genome(candidate: dict) -> list[dict]:
-    genome = candidate.get("Genome")
-    if isinstance(genome, list) and genome:
-        return _as_genome(candidate)
+def _candidate_loadout(candidate: dict) -> list[dict]:
+    loadout = candidate.get("Loadout")
+    if isinstance(loadout, list) and loadout:
+        return _as_loadout(candidate)
 
-    registry = candidate.get("_ga_registry")
-    genome_ids = candidate.get("GenomeIDs")
-    if registry is not None and genome_ids is not None:
+    registry = candidate.get("_item_registry")
+    loadout_ids = candidate.get("LoadoutIDs")
+    if registry is not None and loadout_ids is not None:
         try:
-            genome = registry.decode_genome(np.asarray(genome_ids, dtype=np.int32))
-            if isinstance(genome, list) and genome:
-                candidate["Genome"] = genome
-                return _as_genome(candidate)
+            loadout = registry.decode_loadout(np.asarray(loadout_ids, dtype=np.int32))
+            if isinstance(loadout, list) and loadout:
+                candidate["Loadout"] = loadout
+                return _as_loadout(candidate)
         except Exception as e:
-            logger.debug(f"fg_candidate_stats:_candidate_genome: {e}")
+            logger.debug(f"fg_candidate_stats:_candidate_loadout: {e}")
 
-    return _as_genome(candidate)
+    return _as_loadout(candidate)
 
 
 def _candidate_gem_config(cand: dict, data: dict) -> tuple[int, int, dict, int, int, int, int]:
@@ -94,7 +94,7 @@ def _resolve_candidate_stats(
     """Resolve the candidate's gem-applied Stats (and effective element).
 
     Precedence: existing Data.Stats verbatim -> gems re-applied over carried
-    BaseStats -> genome-accumulated stats over the song's fixed base. Mutates
+    BaseStats -> loadout-accumulated stats over the song's fixed base. Mutates
     only data["BaseStats"] (the pre-gem row downstream FG code reads).
     """
     stats_existing = data.get("Stats")
@@ -126,11 +126,11 @@ def _resolve_candidate_stats(
         )
         return stats, sel
 
-    genome = _candidate_genome(cand)
+    loadout = _candidate_loadout(cand)
     stats = dict(base_fixed_stats())
     if not sel:
         sel = selected_color
-    for item in genome[:9]:
+    for item in loadout[:9]:
         if not isinstance(item, dict) or not item:
             continue
         for k, v in item.items():
@@ -169,9 +169,9 @@ def hydrate_fg_candidate_stats(
     """
     Ensure FG candidates carry `Data["Stats"]` before finder/exact-DP work.
 
-    Some GA/decode paths intentionally keep candidates lightweight and omit fully
-    materialized `Data` payloads. This helper hydrates only the retained subset so
-    downstream FG code can read a stable shape without rebuilding stats ad hoc.
+    Exact Base decode keeps retained candidates lightweight and may omit fully
+    materialized `Data` payloads. This helper hydrates only that retained subset so
+    downstream FG code reads a stable shape without rebuilding stats ad hoc.
     """
     if not candidates:
         return
@@ -221,15 +221,15 @@ def hydrate_fg_candidate_stats(
             base_fixed_stats=_base_fixed_stats,
         )
 
-        raw_ga_search_score = safe_int(
-            cand.get("RawGASearchScore", cand.get("BaseScore", cand.get("Score", 0) or 0)),
+        raw_base_search_score = safe_int(
+            cand.get("RawBaseSearchScore", cand.get("BaseScore", cand.get("Score", 0) or 0)),
             0,
         )
-        base_score = int(raw_ga_search_score)
-        cand["RawGASearchScore"] = int(raw_ga_search_score)
+        base_score = int(raw_base_search_score)
+        cand["RawBaseSearchScore"] = int(raw_base_search_score)
         cand["Score"] = int(base_score)
         cand["BaseScore"] = int(base_score)
-        data["RawGASearchScore"] = int(raw_ga_search_score)
+        data["RawBaseSearchScore"] = int(raw_base_search_score)
         data["Score"] = int(base_score)
         data["BaseScore"] = int(base_score)
         data["FT"] = int(ft)

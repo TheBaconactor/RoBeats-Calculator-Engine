@@ -135,39 +135,17 @@ def build_post_persist_entries(
 ) -> list[dict[str, Any]]:
     return canonicalize_and_assemble(
         db_payload=db_payload,
-        ga_candidates=item.get("ga_candidates") or [],
+        base_candidates=item.get("base_candidates") or [],
         loadout_entries=item.get("loadout_entries"),
         build_details_fn=context.build_details,
         replay_ctx=ReplayContext(
             calc_song=item.get("calc_song"),
             ref_arrays=item.get("ref_arrays"),
             cfg_dict=item.get("cfg_dict") or {},
+            gears_by_name=item.get("gears_by_name"),
+            minis_by_name=item.get("minis_by_name"),
         ),
     )
-
-
-def build_post_persist_print_payload(
-    item: dict[str, Any],
-    *,
-    context: PostPersistContext,
-    emit: Callable[[str], None],
-) -> dict[str, Any]:
-    song_name = item.get("song", "Unknown")
-    return {
-        "song": song_name,
-        "best_data": context.best_data,
-        "best_gear": context.best_gear,
-        "best_minis": context.best_minis,
-        "prev_record": item.get("prev_record"),
-        "current_gear": item.get("current_gear") or [],
-        "current_minis": item.get("current_minis") or [],
-        "fg_debug": bool(item.get("fg_debug")),
-        "ref_arrays": item.get("ref_arrays"),
-        "calc_song": item.get("calc_song"),
-        "cfg": context.cfg,
-        "db_best_fg_score": int(item.get("db_best_fg_score", 0) or 0),
-        "_emit": emit,
-    }
 
 
 def build_post_persist_result_payload(

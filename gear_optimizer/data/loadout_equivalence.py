@@ -13,6 +13,7 @@ import os
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
+from ..core.catalog_fingerprint import stable_json_fingerprint
 from ..core.constants import PATHS
 from ..core.fallback_monitor import warn_fallback
 from ..core.utils import get_selected_element, safe_int
@@ -21,7 +22,11 @@ from .csv_parser import load_csv_db
 
 _MINIS_BY_NAME_CACHE: Optional[Dict[str, dict]] = None
 _GEARS_BY_NAME_CACHE: Optional[Dict[str, dict]] = None
-_MINI_SIG_TO_NAMES_CACHE: dict[tuple[int, str, str, str], dict[tuple[Any, ...], list[str]]] = {}
+_MINI_SIG_TO_NAMES_CACHE: dict[
+    tuple[int, bytes, str, str, str],
+    tuple[object, dict[tuple[Any, ...], list[str]]],
+] = {}
+_MINI_SIG_TO_NAMES_CACHE_MAX = 256
 
 
 def get_minis_by_name_cached() -> Dict[str, dict]:
@@ -285,16 +290,25 @@ def minis_signature_to_names_map(
     Build (and cache) a signature->all-names map for a given song-context.
 
     This lets persistence populate mini variant groups deterministically from Minis.csv
-    (instead of relying on the GA to have explored both names).
+    (instead of relying on candidate enumeration to retain both names).
     """
-    key = (int(id(minis_by_name)), str(primary_color), str(secondary_color), str(selected_color))
+    catalog_fingerprint = stable_json_fingerprint(minis_by_name)
+    key = (
+        int(id(minis_by_name)),
+        catalog_fingerprint,
+        str(primary_color),
+        str(secondary_color),
+        str(selected_color),
+    )
     cached = _MINI_SIG_TO_NAMES_CACHE.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] is minis_by_name:
+        return cached[1]
 
     sig_to_names: dict[tuple[Any, ...], list[str]] = {}
     if not minis_by_name:
-        _MINI_SIG_TO_NAMES_CACHE[key] = sig_to_names
+        if len(_MINI_SIG_TO_NAMES_CACHE) >= _MINI_SIG_TO_NAMES_CACHE_MAX:
+            _MINI_SIG_TO_NAMES_CACHE.clear()
+        _MINI_SIG_TO_NAMES_CACHE[key] = (minis_by_name, sig_to_names)
         return sig_to_names
 
     for name, stats in minis_by_name.items():
@@ -307,7 +321,11 @@ def minis_signature_to_names_map(
     for sig, names in list(sig_to_names.items()):
         sig_to_names[sig] = sorted(set(names))
 
-    _MINI_SIG_TO_NAMES_CACHE[key] = sig_to_names
+    # Keep the source alive to prevent object-id reuse; the digest invalidates
+    # same-object name/stat edits in custom request catalogs.
+    if len(_MINI_SIG_TO_NAMES_CACHE) >= _MINI_SIG_TO_NAMES_CACHE_MAX:
+        _MINI_SIG_TO_NAMES_CACHE.clear()
+    _MINI_SIG_TO_NAMES_CACHE[key] = (minis_by_name, sig_to_names)
     return sig_to_names
 
 
@@ -385,5 +403,3 @@ def effective_loadout_hash_from_names(
     )
 
     return _impl(gear_names, mini_sigs)
-
-

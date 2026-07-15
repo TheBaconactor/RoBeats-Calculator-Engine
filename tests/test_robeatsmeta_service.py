@@ -300,37 +300,18 @@ def _capture_solve_config(data_root, monkeypatch, request: dict) -> str:
     return captured["config"]
 
 
-def test_solve_default_reasoning_omits_search_knobs(data_root, monkeypatch):
-    # "default" (and absent) must reproduce stock behavior: no GA search knobs are written, so
-    # config.py's own fallbacks apply exactly as before this feature existed.
-    config = _capture_solve_config(data_root, monkeypatch, {"jobId": "job_def", "targetSongId": "Feeding [Hard]"})
-    assert "GA_SearchDepth" not in config
-    assert "GA_MultiStart" not in config
-
-
-def test_solve_strong_reasoning_scales_search_knobs(data_root, monkeypatch):
+@pytest.mark.parametrize("reasoning", [None, "default", "strong", "MAX", "ultra"])
+def test_solve_reasoning_does_not_change_the_exact_search(data_root, monkeypatch, reasoning):
+    request = {"jobId": f"job_{reasoning}", "targetSongId": "Feeding [Hard]"}
+    if reasoning is not None:
+        request["reasoning"] = reasoning
     config = _capture_solve_config(
-        data_root, monkeypatch, {"jobId": "job_str", "targetSongId": "Feeding [Hard]", "reasoning": "strong"}
+        data_root,
+        monkeypatch,
+        request,
     )
-    # 2x of the stock bases (125, 3).
-    assert "GA_SearchDepth = 250" in config
-    assert "GA_MultiStart = 6" in config
-
-
-def test_solve_max_reasoning_scales_search_knobs(data_root, monkeypatch):
-    config = _capture_solve_config(
-        data_root, monkeypatch, {"jobId": "job_max", "targetSongId": "Feeding [Hard]", "reasoning": "MAX"}
-    )
-    # 4x of the stock bases (125, 3). Case-insensitive; unknown values fall back to default.
-    assert "GA_SearchDepth = 500" in config
-    assert "GA_MultiStart = 12" in config
-
-
-def test_solve_unknown_reasoning_falls_back_to_default(data_root, monkeypatch):
-    config = _capture_solve_config(
-        data_root, monkeypatch, {"jobId": "job_unk", "targetSongId": "Feeding [Hard]", "reasoning": "ultra"}
-    )
-    assert "GA_SearchDepth" not in config
+    assert "SearchDepth" not in config
+    assert "MultiStart" not in config
 
 
 def test_solve_joins_duplicate_live_job_instead_of_spawning_again(data_root, monkeypatch):

@@ -283,7 +283,7 @@ def _row_stat_value(row, key):
 
 def _relevant_row_projection(row, primary_color, secondary_color=""):
     """
-    Project a row onto the exact score-relevant axes for the current single-song GA pool build.
+    Project a row onto the exact score-relevant axes for request-local domain construction.
 
     The current runtime fixes `selected_color = primary_color` before `initialize_pools(...)`
     is used, so only the song's primary/secondary elemental lanes remain score-relevant here.
@@ -326,7 +326,7 @@ def _timing_neutral_relevant_dominates(candidate, other, primary_color, secondar
 
 def prune_gear_pool_lossless_for_song(gear_list, primary_color, secondary_color=""):
     """
-    Exact-safe pre-GA gear pruning for the current single-song pool initialization path.
+    Exact-safe gear pruning for request-local exact domain initialization.
 
     Steps:
     1. Collapse same-slot rows with identical relevant projections (keep the first witness).
@@ -361,7 +361,7 @@ def prune_gear_pool_lossless_for_song(gear_list, primary_color, secondary_color=
 
 def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=""):
     """
-    Exact-safe pre-GA mini pruning for the current single-song shared distinct-3 pool.
+    Exact-safe Mini pruning for the request-local shared distinct-three domain.
 
     Safe reductions:
     - cap exact relevant-signature multiplicity at 3 (any legal triple can use at most 3 rows),

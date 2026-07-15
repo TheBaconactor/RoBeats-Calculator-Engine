@@ -10,13 +10,12 @@ from gear_optimizer.core.types import JsonDict
 class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted.
 
-    The native GA run carries the fused GA->FG owner continuation (Slice 3): the GPU
-    owner scores FG in the GA turn and returns {runs_payload, fg_owner_score}. There is
-    no separate FG response-frontier batch request type anymore.
+    Exact Base search and native FG scoring share one owner turn.  There is no
+    separate FG request because both solvers consume the same resident song state.
     """
 
     LOAD_REF_ARRAYS = "load_ref_arrays"
-    GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
+    EXACT_BASE_SEARCH = "exact_base_search"
     SHUTDOWN = "shutdown"
 
 

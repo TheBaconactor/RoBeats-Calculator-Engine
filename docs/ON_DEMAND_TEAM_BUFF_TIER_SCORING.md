@@ -12,17 +12,17 @@ Tier note:
 
 When you need tiered leaderboards, compute them **on demand** from the persisted baseline candidates.
 
-On-demand recompute uses **CPU exact replay** via `gear_optimizer/helpers/song_helpers/team_buff_tiers.py`:
+On-demand recompute is owned by `gear_optimizer/helpers/song_helpers/team_buff_tiers.py`:
 
-- Base score: `solver.scoring.exact_rescore.score_fixed_value_exact(...)`
+- Base: re-solve the retained loadout's gems with the canonical GPU loadout evaluator, then exact-rescore the resolved
+  Stats with `solver.scoring.exact_rescore.score_stats_exact_batch(...)` (or the fixed-timing equivalent for zero-ms).
 - FG score: `solver.scoring.exact_rescore.score_force_greats_response_surface_exact(...)` over the
   persisted `response_surface` (the canonical exact FG representation). FG rows without a persisted
   surface fail loudly. Tier deltas never shift FT/FF, so the fever/great timeline is tier-invariant
   and the baseline-tier replay is bit-exact to the persisted `fg_score`. See
   `docs/Implementation Records/FG_TIER_REPLAY_RESPONSE_SURFACE_AUTHORITY.md`.
 
-Production FG optimization itself remains GPU Bellman-only; tier recompute does not call the removed
-finder GPU API.
+Production FG optimization itself remains GPU-first; tier recompute uses the persisted exact response surface.
 
 ## What Is Stored (Default DB)
 
@@ -36,38 +36,7 @@ Derived tier rows (`NONE/T1/T10/T20/T50/T51`) are never persisted. They are reco
 
 ## How To Recompute Tier Leaderboards
 
-### CLI (recommended)
-
-This utility loads the persisted baseline candidates for a song, recomputes tiered base/FG scores, and prints Top1
-results per tier.
-
-```bash
-python tools/db/compute_team_buff_tiers_on_demand.py `
-  --song "Rainshower (Easy) by Silentroom" `
-  --file "Data/Normal/Rainshower.txt" `
-  --tiers "NONE,T1,T5,T10,T20,T50,T51" `
-  --limit 51 `
-  --element selected
-```
-
-Element / TeamColor overrides:
-
-- `--element selected` (default): use the run's resolved TeamColor (auto mode follows the song's Primary Color).
-- `--element primary`: score as if TeamColor were the song's Primary Color.
-- `--element secondary`: score as if TeamColor were the song's Secondary Color (falls back to Primary if missing).
-- `--team-color Rush`: force a specific TeamColor (overrides `--element`).
-
-DB selection:
-
-- Default: uses `evolution.db`.
-- Override: pass `--db path/to/dbfile.db` (sets `EVOLUTION_DB_PATH` for the process).
-
-Config selection:
-
-- Default: uses repo `config.ini` resolution.
-- Override: pass `--config path/to/config.ini` (sets `METAFINDER_CONFIG_PATH` for the process).
-
-### Python API
+The maintained interface is the Python API:
 
 If you want to integrate this into an exporter/backend:
 
@@ -114,6 +83,7 @@ The result shape is:
 ## Note
 
 This repo intentionally avoids persisting derived tiers to keep DB size and per-song CPU cost low.
+There is no separate tier-recompute CLI; operators and website code use the same Python owner shown above.
 
 ## Timing Replay
 

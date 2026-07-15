@@ -6,11 +6,9 @@ from enum import IntEnum
 from typing import Any, Mapping, Sequence
 
 
-# NOTE: This "task tuple" shape is a fixed-field ABI used across the runtime
-# pipeline (app -> execution -> engine). The code originally named it "legacy"
-# when refactoring toward typed `SongJob`/`SharedRunContext` while keeping the
-# tuple as the durable interchange format.
-TASK_FIXED_FIELD_COUNT = 13
+# This fixed-field tuple is the runtime interchange format between task
+# discovery and the native in-flight engine.
+TASK_FIXED_FIELD_COUNT = 12
 
 
 class TaskIndex(IntEnum):
@@ -24,9 +22,8 @@ class TaskIndex(IntEnum):
     ALL_MINIS = 7
     GEARS_BY_NAME = 8
     MINIS_BY_NAME = 9
-    GA_DEPTH = 10
-    PARALLEL_WORKERS = 11
-    FG_DEBUG = 12
+    PARALLEL_WORKERS = 10
+    FG_DEBUG = 11
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,17 +33,8 @@ class SongJob:
     difficulty: str
     repeat_index: int = 0
     repeat_total: int = 0
-    ga_seed: int | None = None
     repeat_bundle: bool = False
-    queue_source: str = "legacy_task_tuple"
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedSongSeedPlan:
-    queue_label: str
-    repeat_index: int
-    repeat_total: int
-    ga_seed: int | None
+    queue_source: str = "task_tuple"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +46,6 @@ class SharedRunContext:
     all_minis: Any
     gears_by_name: Mapping[str, Any] | None
     minis_by_name: Mapping[str, Any] | None
-    ga_depth: int
     parallel_workers: int
     fg_debug: bool
 
@@ -75,7 +62,7 @@ def _is_task_sequence(task: Any) -> bool:
 
 
 def is_repeat_context(extra: Any) -> bool:
-    return isinstance(extra, dict) and "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra
+    return isinstance(extra, dict) and "repeat_index" in extra and "repeat_total" in extra
 
 
 def extract_repeat_context(task: Sequence[Any] | Any) -> dict | None:
@@ -158,32 +145,6 @@ def task_queue_label(task: Sequence[Any] | Any) -> str:
     return base
 
 
-def task_ga_seed(task: Sequence[Any] | Any) -> int | None:
-    repeat_ctx = extract_repeat_context(task)
-    if not repeat_ctx:
-        return None
-    try:
-        seed = repeat_ctx.get("ga_seed")
-        return int(seed) if seed is not None else None
-    except (ValueError, TypeError):
-        return None
-
-
-def seed_plan_from_song_job(job: SongJob) -> PreparedSongSeedPlan:
-    repeat_index = max(0, int(job.repeat_index or 0))
-    repeat_total = max(0, int(job.repeat_total or 0))
-    base = str(job.song_name or "")
-    queue_label = base or "Unknown"
-    if repeat_index > 0 and repeat_total > 1 and base:
-        queue_label = f"{base} (Run {repeat_index}/{repeat_total})"
-    return PreparedSongSeedPlan(
-        queue_label=queue_label,
-        repeat_index=repeat_index,
-        repeat_total=repeat_total,
-        ga_seed=job.ga_seed,
-    )
-
-
 def effective_task_count(tasks: list[Any]) -> int:
     if not isinstance(tasks, list) or not tasks:
         return 0
@@ -204,7 +165,7 @@ def effective_task_count(tasks: list[Any]) -> int:
     return max(0, int(total))
 
 
-def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_task_tuple") -> SongJob:
+def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "task_tuple") -> SongJob:
     if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
         raise ValueError(f"song task must contain the {TASK_FIXED_FIELD_COUNT}-field production prefix")
 
@@ -212,7 +173,6 @@ def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_t
     repeat_bundle = extract_repeat_bundle(task)
     repeat_index = 0
     repeat_total = 0
-    ga_seed = None
     if repeat_ctx:
         try:
             repeat_index = int(repeat_ctx.get("repeat_index") or 0)
@@ -222,7 +182,6 @@ def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_t
             repeat_total = int(repeat_ctx.get("repeat_total") or 0)
         except (ValueError, TypeError):
             repeat_total = 0
-        ga_seed = task_ga_seed(task)
     elif repeat_bundle is not None:
         try:
             repeat_total = int(repeat_bundle.get("repeat_total") or 0)
@@ -238,9 +197,8 @@ def task_tuple_to_song_job(task: Sequence[Any], *, queue_source: str = "legacy_t
         difficulty=str(task[int(TaskIndex.DIFFICULTY)] or ""),
         repeat_index=max(0, int(repeat_index)),
         repeat_total=max(0, int(repeat_total)),
-        ga_seed=ga_seed,
         repeat_bundle=repeat_bundle is not None,
-        queue_source=str(queue_source or "legacy_task_tuple"),
+        queue_source=str(queue_source or "task_tuple"),
     )
 
 
@@ -248,10 +206,6 @@ def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
     if not _is_task_sequence(task) or len(task) < TASK_FIXED_FIELD_COUNT:
         raise ValueError(f"song task must contain the {TASK_FIXED_FIELD_COUNT}-field production prefix")
 
-    try:
-        ga_depth = int(task[int(TaskIndex.GA_DEPTH)] or 0)
-    except (ValueError, TypeError):
-        ga_depth = 0
     try:
         parallel_workers = int(task[int(TaskIndex.PARALLEL_WORKERS)] or 0)
     except (ValueError, TypeError):
@@ -265,7 +219,6 @@ def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
         all_minis=task[int(TaskIndex.ALL_MINIS)],
         gears_by_name=task[int(TaskIndex.GEARS_BY_NAME)],
         minis_by_name=task[int(TaskIndex.MINIS_BY_NAME)],
-        ga_depth=ga_depth,
         parallel_workers=parallel_workers,
         fg_debug=bool(task[int(TaskIndex.FG_DEBUG)]),
     )
@@ -296,7 +249,6 @@ def task_tuple_from_job_context(
         context.all_minis,
         context.gears_by_name,
         context.minis_by_name,
-        context.ga_depth,
         context.parallel_workers,
         context.fg_debug,
         *extras,

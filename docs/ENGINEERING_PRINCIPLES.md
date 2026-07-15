@@ -66,8 +66,8 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
 - Preserve public behavior unless the change is intentionally behavior-affecting and documented.
 - Remove stale names, duplicate wrappers, and obsolete compatibility layers when the real owner is known.
 - Centralize contracts, not just helper functions. Shared logic should live with the layer that owns the contract.
-- Treat optimization by deletion/trimming as high risk when a payload crosses stage boundaries. Before shrinking GA/FG/persistence candidate state, name every downstream consumer and prove both the execution funnel and the retained DB frontier still satisfy their separate contracts.
-- When selecting bounded GA/FG/persistence frontiers, dedupe by the relevant canonical identity before applying top-K cutoffs. A wider host download cannot recover unique candidates discarded by an earlier raw-row cutoff.
+- Treat optimization by deletion/trimming as high risk when a payload crosses stage boundaries. Before shrinking the exact Base-to-FG or persistence candidate state, name every downstream consumer and prove both the 51-loadout execution funnel and the retained DB frontier still satisfy their separate contracts.
+- When selecting bounded Base-to-FG or persistence surfaces, dedupe by the relevant canonical identity before applying top-K cutoffs. A wider host download cannot recover unique candidates discarded by an earlier raw-row cutoff.
 - Keep docs, tests, and implementation records aligned with meaningful behavior or policy changes.
 
 ## Definition of done for behavior work
@@ -83,6 +83,6 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
 
 - Is this change at the owning layer?
 - Did it remove duplication instead of spreading it?
-- Does it preserve the GPU-only policy and the GA+FG product contract?
+- Does it preserve the GPU-only exact Base -> up-to-51 effective candidates -> native FG product contract?
 - Is there a targeted regression test, verifier, or replay?
 - If a mitigation remains temporary, is that called out explicitly and tracked?

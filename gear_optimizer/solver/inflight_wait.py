@@ -13,7 +13,7 @@ def read_inflight_event_wait_timeout_s() -> float:
     Base scheduler wait timeout when waiting for in-flight futures to complete.
 
     Keep this modest to avoid long producer wake-up delays that can starve the
-    GPU owner thread between GA/FG stage transitions.
+    GPU owner thread between Base/FG stage transitions.
     """
     return 0.05
 
@@ -22,7 +22,7 @@ def read_inflight_event_wait_gpu_cap_s() -> float:
     """
     Optional tighter cap for completion-event waits while GPU work is active.
 
-    A small cap reduces GA->FG handoff latency jitter under Windows scheduler/timer noise.
+    A small cap reduces Base-to-FG handoff latency jitter under Windows scheduler/timer noise.
     Set to 0 to disable this cap.
     """
     return 0.01

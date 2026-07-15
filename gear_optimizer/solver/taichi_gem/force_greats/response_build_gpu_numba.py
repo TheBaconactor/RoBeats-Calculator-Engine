@@ -1355,14 +1355,49 @@ def _numba_successor_remove(
 
 
 @njit(cache=True, nogil=True, inline="always")
+def _numba_base_perfect_end_is_reachable(
+    n: int,
+    band_lo: int,
+    end_e: int,
+    perfect_floor_timestamps,
+) -> bool:
+    """Whether ``end_e`` is a distinct left-search exit inside a Perfect-hit band."""
+    if int(end_e) == int(band_lo) or int(end_e) >= int(n):
+        return True
+    return float(perfect_floor_timestamps[int(end_e) - 1]) < float(
+        perfect_floor_timestamps[int(end_e)]
+    )
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _numba_base_perfect_end_band_lo(
+    n: int,
+    activation: int,
+    real_fever_time: float,
+    perfect_floor_timestamps,
+) -> int:
+    end_e = _numba_lower_bound_from(
+        perfect_floor_timestamps,
+        float(perfect_floor_timestamps[int(activation)]) + float(real_fever_time),
+    )
+    if int(end_e) <= int(activation):
+        end_e = int(activation) + 1
+    if int(end_e) > int(n):
+        end_e = int(n)
+    return int(end_e)
+
+
+@njit(cache=True, nogil=True, inline="always")
 def _numba_mark_perfect_activation_closure(
     reachable,
     n: int,
     activation: int,
     real_time_idx: int,
+    use_forced_great_timing_i: int,
     prefix_perfect_hit,
     prefix_perfect_valid,
     capped_perfect_edge_e,
+    perfect_floor_timestamps,
     great_floor_timestamps,
     real_fever_time: float,
 ) -> int:
@@ -1370,6 +1405,19 @@ def _numba_mark_perfect_activation_closure(
         return 0
     edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
     if int(edge_e) < 0:
+        return 0
+    if int(use_forced_great_timing_i) == 0:
+        band_lo = _numba_base_perfect_end_band_lo(
+            int(n),
+            int(activation),
+            float(real_fever_time),
+            perfect_floor_timestamps,
+        )
+        for end_e in range(int(band_lo), int(edge_e) + 1):
+            if _numba_base_perfect_end_is_reachable(
+                int(n), int(band_lo), int(end_e), perfect_floor_timestamps
+            ):
+                reachable[int(end_e)] = True
         return 0
     reachable[int(edge_e)] = True
     return _numba_mark_early_great_reachable_from_hit(
@@ -1532,9 +1580,11 @@ def _numba_first_frontier_reachability_prepass(
                 int(n),
                 int(fill),
                 int(real_time_idx),
+                int(use_forced_great_timing_i),
                 prefix_perfect_hit,
                 prefix_perfect_valid,
                 capped_perfect_edge_e,
+                perfect_floor_timestamps,
                 great_floor_timestamps,
                 float(real_fever_time),
             )
@@ -1627,9 +1677,11 @@ def _numba_first_frontier_reachability_prepass(
                     int(n),
                     int(activation),
                     int(real_time_idx),
+                    int(use_forced_great_timing_i),
                     prefix_perfect_hit,
                     prefix_perfect_valid,
                     capped_perfect_edge_e,
+                    perfect_floor_timestamps,
                     great_floor_timestamps,
                     float(real_fever_time),
                 )
@@ -4210,6 +4262,62 @@ def _numba_packet_queue_push_activation(
     if int(prefix_perfect_valid[int(activation)]) == 0:
         return
     perfect_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
+    if int(mode) == 0 and int(use_forced_great_timing_i) == 0:
+        band_lo = _numba_base_perfect_end_band_lo(
+            int(n),
+            int(activation),
+            float(real_fever_time),
+            perfect_floor_timestamps,
+        )
+        total_points = 0
+        for end_e in range(int(band_lo), int(perfect_e) + 1):
+            if _numba_base_perfect_end_is_reachable(
+                int(n), int(band_lo), int(end_e), perfect_floor_timestamps
+            ):
+                total_points += int(body_counts[int(end_e)])
+        if int(total_points) <= 0:
+            return
+        pk_cursor = int(back_pk_off[int(seg_base) + int(back_len[int(family_idx)])])
+        pk_buf = _numba_packet_arena_ensure(
+            back_pk_arenas, int(family_idx), int(pk_cursor), int(total_points)
+        )
+        write = int(pk_cursor)
+        for end_e in range(int(band_lo), int(perfect_e) + 1):
+            if not _numba_base_perfect_end_is_reachable(
+                int(n), int(band_lo), int(end_e), perfect_floor_timestamps
+            ):
+                continue
+            tail_count = int(body_counts[int(end_e)])
+            tail_start = int(body_starts[int(end_e)])
+            fever_len = int(end_e) - int(activation)
+            for tail_idx in range(int(tail_count)):
+                value_idx = int(tail_start) + int(tail_idx)
+                tail_fever = body_values[int(value_idx), 0]
+                tail_great = body_values[int(value_idx), 1]
+                tail_fever_great = body_values[int(value_idx), 2]
+                tail_normal_great = int(tail_great) - int(tail_fever_great)
+                pk_buf[int(write), 0] = np.int64(int(tail_fever) + int(fever_len))
+                pk_buf[int(write), 1] = np.int64(
+                    int(tail_normal_great) + (2 * int(activation)) + int(defect)
+                )
+                pk_buf[int(write), 2] = np.int64(int(tail_fever_great))
+                write += 1
+        _numba_packet_queue_push_back(
+            int(activation),
+            int(pk_cursor),
+            int(write),
+            int(family_idx),
+            int(seg_base),
+            int(seg_limit),
+            back_alpha,
+            back_pk_off,
+            back_ag_start,
+            back_ag_end,
+            back_len,
+            back_pk_arenas,
+            back_ag_arenas,
+        )
+        return
     edge_e = int(perfect_e)
     edge_eg_e = int(capped_eg_perfect_e[int(real_time_idx), int(activation)])
     fever_great_delta = 0
@@ -5241,7 +5349,50 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 edge_e = -1
             else:
                 edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(activation)])
-            if (
+            if int(edge_e) >= 0 and int(use_forced_great_timing_i) == 0:
+                band_lo = _numba_base_perfect_end_band_lo(
+                    int(n),
+                    int(activation),
+                    float(real_fever_time),
+                    perfect_floor_timestamps,
+                )
+                for perfect_end in range(int(band_lo), int(edge_e) + 1):
+                    if not _numba_base_perfect_end_is_reachable(
+                        int(n), int(band_lo), int(perfect_end), perfect_floor_timestamps
+                    ):
+                        continue
+                    edge = _numba_pack_edge(
+                        int(n),
+                        int(activation),
+                        int(perfect_end),
+                        int(forced_start),
+                        min(int(n), int(forced_start) + int(forced_count)),
+                        -1,
+                    )
+                    generated, generated_scores, added, bounded_mode = (
+                        _numba_append_head_generated_candidate(
+                            generated,
+                            generated_scores,
+                            generated_seen,
+                            generated_score_matrix_holder,
+                            generated_score_matrix_count,
+                            edge,
+                            int(perfect_end),
+                            body_values,
+                            body_starts,
+                            body_counts,
+                            head_pool,
+                            head_state_start,
+                            head_state_count,
+                            int(head_limit),
+                            int(state_i),
+                            int(head_limit),
+                            int(head_filter_min),
+                            int(bounded_mode),
+                        )
+                    )
+                    generated_count += int(added)
+            elif (
                 int(edge_e) >= 0
                 and (
                     int(fill) != int(prev_fill)
@@ -5474,7 +5625,11 @@ def _first_frontier_from_precomputed_end_indices_numba(
     # Branch-A workspace epoch: consumed only by the first-fill>=100 branch below; unchanged
     # (and its stamp array untouched) when that branch is not taken.
     branch_a_epoch_out = int(branch_a_epoch_in)
-    if int(action_count) > 0 and int(first_fill[0]) >= 100:
+    if (
+        int(use_forced_great_timing_i) != 0
+        and int(action_count) > 0
+        and int(first_fill[0]) >= 100
+    ):
         first_edge_e_by_action = np.empty(int(action_count), dtype=np.int32)
         first_normal_head_by_action = np.empty(int(action_count), dtype=np.int32)
         first_activation_e_by_action = np.empty(int(action_count), dtype=np.int32)
@@ -5761,7 +5916,50 @@ def _first_frontier_from_precomputed_end_indices_numba(
                 edge_e = -1
             else:
                 edge_e = int(capped_perfect_edge_e[int(real_time_idx), int(fill)])
-            if (
+            if int(edge_e) >= 0 and int(use_forced_great_timing_i) == 0:
+                band_lo = _numba_base_perfect_end_band_lo(
+                    int(n),
+                    int(fill),
+                    float(real_fever_time),
+                    perfect_floor_timestamps,
+                )
+                for perfect_end in range(int(band_lo), int(edge_e) + 1):
+                    if not _numba_base_perfect_end_is_reachable(
+                        int(n), int(band_lo), int(perfect_end), perfect_floor_timestamps
+                    ):
+                        continue
+                    edge = _numba_pack_edge(
+                        int(n),
+                        int(fill),
+                        int(perfect_end),
+                        0,
+                        min(int(n), int(forced_count)),
+                        -1,
+                    )
+                    first_generated, first_generated_scores, added, first_bounded_mode = (
+                        _numba_append_head_generated_candidate(
+                            first_generated,
+                            first_generated_scores,
+                            first_generated_seen,
+                            first_generated_score_matrix_holder,
+                            first_generated_score_matrix_count,
+                            edge,
+                            int(perfect_end),
+                            body_values,
+                            body_starts,
+                            body_counts,
+                            head_pool,
+                            head_state_start,
+                            head_state_count,
+                            int(head_limit),
+                            0,
+                            int(head_limit),
+                            int(head_filter_min),
+                            int(first_bounded_mode),
+                        )
+                    )
+                    first_generated_count += int(added)
+            elif (
                 int(edge_e) >= 0
                 and (
                     int(fill) != int(prev_fill)

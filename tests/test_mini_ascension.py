@@ -6,7 +6,7 @@ from gear_optimizer.data.mini_ascension import (
     materialize_minis_for_song,
     mini_ascension_match_quality,
 )
-from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
+from gear_optimizer.helpers.pool_initialization import initialize_pools
 
 
 TARGET_SONG = "Ascension Target by Artist"
@@ -232,44 +232,6 @@ def test_targeted_nonmatching_mini_survives_initial_pool_filter():
     assert [mini["Name"] for mini in mini_pool] == ["Targeted Chill Mini"]
 
 
-def test_fixed_mini_constraints_resolve_materialized_song_aware_minis():
-    from gear_optimizer.solver.solver_common import _apply_fixed_pool_constraints
-
-    raw_mini = {
-        "Name": "Fixed Target Mini",
-        "type": "Mini",
-        "Rush": 50,
-        "Perfect Points": 1,
-        "Song Target": [TARGET_SONG],
-        "Mini Ascension Enabled": True,
-        "Mini Ascension Level": 10,
-    }
-    materialized_minis, _by_name, _context = materialize_minis_for_song(
-        [raw_mini],
-        song_name=TARGET_SONG,
-        primary_color="Rush",
-        secondary_color="Flow",
-    )
-
-    _gear_pool, fixed_pool = _apply_fixed_pool_constraints(
-        {},
-        materialized_minis,
-        optimize_gear=True,
-        optimize_minis=False,
-        fixed_gear=None,
-        fixed_minis=[raw_mini],
-        materialized_mini_catalog=materialized_minis,
-    )
-
-    assert fixed_pool == materialized_minis
-    # Rush (perfect match) on Rush/Flow: pool 250 -> Rush 166 / Flow 83; + same-position extra Rush +250
-    # -> bonus Rush 416 / Flow 83; +50 base Rush -> Rush 466.
-    assert fixed_pool[0]["Perfect Points"] == 21
-    assert fixed_pool[0]["Rush"] == 466
-    assert fixed_pool[0]["Flow"] == 83
-    assert fixed_pool[0]["Mini Ascension Materialized"] is True
-
-
 def test_real_export_8_bit_alien_flagged_song_gets_base_pp_and_elemental_bonus():
     from gear_optimizer.data.csv_parser import parse_mini_rows
 
@@ -337,42 +299,6 @@ def test_real_export_8_bit_alien_non_flagged_song_gets_base_pp_only():
     assert materialized["Mini Ascension Song Target Applied"] is False
     assert materialized["Chill"] == 35
     assert materialized["Rush"] == 60
-
-
-def test_fixed_mini_constraints_resolve_materialized_minis_pruned_from_pool():
-    from gear_optimizer.solver.solver_common import _apply_fixed_pool_constraints
-
-    raw_mini = {
-        "Name": "Pruned Fixed Mini",
-        "type": "Mini",
-        "Chill": 50,
-        "Perfect Points": 2,
-        "Song Target": ["Other Song by Artist"],
-        "Mini Ascension Enabled": True,
-        "Mini Ascension Level": 10,
-    }
-    materialized_minis, _by_name, _context = materialize_minis_for_song(
-        [raw_mini],
-        song_name=TARGET_SONG,
-        primary_color="Rush",
-        secondary_color="Flow",
-    )
-
-    _gear_pool, fixed_pool = _apply_fixed_pool_constraints(
-        {},
-        [],
-        optimize_gear=True,
-        optimize_minis=False,
-        fixed_gear=None,
-        fixed_minis=[raw_mini],
-        materialized_mini_catalog=materialized_minis,
-    )
-
-    assert fixed_pool == materialized_minis
-    assert fixed_pool[0]["Perfect Points"] == 22
-    assert fixed_pool[0]["Chill"] == 50
-    assert fixed_pool[0]["Mini Ascension Materialized"] is True
-    assert fixed_pool[0]["Mini Ascension Song Target Applied"] is False
 
 
 def test_issue_127_zara_canon_a10_two_component_bonus_matches_ingame_125_vibe():

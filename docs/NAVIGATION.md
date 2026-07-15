@@ -3,7 +3,7 @@
 ## Documentation Map
 
 - Human-friendly index: `docs/README.md`
-- Current code map: this file
+- Current architecture: `docs/ARCHITECTURE.md`
 - Historical implementation records: `docs/Implementation Records/README.md`
 - Research bundles: `docs/research/README.md`
 - Legacy archive: `docs/archive/README.md`
@@ -12,60 +12,75 @@
 
 - Optimizer: `main.py` -> `gear_optimizer/app.py` (`GearOptimizerApp.run`)
 - GeneralMeta: `general_meta_main.py` -> `general_meta/` (`run_general_meta`)
+- Service: `gear_optimizer/robeatsmeta_service.py`
 
-## Typical Optimizer Flow
+## Production Optimizer Flow
 
-- Config load (`config.ini` or `METAFINDER_CONFIG_PATH`) -> path discovery (`bin/paths_cache.json`) -> song queue -> native in-flight engine -> post processor -> DB write
-- Production in-flight engine: `gear_optimizer/solver/native_inflight_orchestrator.py`
+- Config and paths: `gear_optimizer/core/config.py`, `gear_optimizer/core/constants.py`
+- Song/task queue: `gear_optimizer/pipeline/queue_task_coordinator.py`
+- Startup cache ownership: `gear_optimizer/solver/cpu_work_manager.py`
+  - Timeline frontier prebuild: `gear_optimizer/solver/timeline_frontier_cache_prebuild.py`
+  - Exact Base song-context prebuild: `gear_optimizer/solver/exact_base_song_context_cache_prebuild.py`
+  - Native FG frontier prebuild: `gear_optimizer/solver/fg_response_frontier_cache_prebuild.py`
+- Native in-flight orchestration: `gear_optimizer/solver/native_inflight_orchestrator.py`
+- Per-song preparation: `gear_optimizer/solver/native_inflight_lifecycle_prepare.py`
+- Exact Base queue and slot ownership: `gear_optimizer/solver/native_inflight_pipeline_base.py`
+- Exact result decode: `gear_optimizer/solver/exact_base_pipeline_decode.py`
 - Post-processing: `gear_optimizer/pipeline/post_processor.py`
-- Calculate-only legacy processor: `gear_optimizer/legacy/song_processor.py`
-- GA loop: `gear_optimizer/solver/genetic.py`
-- In-flight support modules: `gear_optimizer/solver/native_inflight_*`
-- Scoring (CPU/GPU dispatch): `gear_optimizer/solver/scoring/`
-- Database/persistence: `gear_optimizer/data/database.py`
-- Config + paths: `gear_optimizer/core/config.py`, `gear_optimizer/core/constants.py`
+- Database/persistence: `gear_optimizer/data/database/`
+
+## Exact Base Search
+
+- Request-local domain construction: `gear_optimizer/solver/exact_base_domains.py`
+  - Mini-PP and PP-gem/overflow response-component decomposition lives in the same owner.
+- Request-local catalog content fingerprints: `gear_optimizer/core/catalog_fingerprint.py`
+- Song timing-response context: `gear_optimizer/solver/exact_base_song_context.py`
+- Song-context cache: `gear_optimizer/solver/exact_base_song_context_cache.py`
+- GPU-owner search and certificate: `gear_optimizer/solver/exact_base_search.py`
+- Effective refill and up-to-51 candidate surface:
+  `gear_optimizer/solver/exact_base_search.py`,
+  `gear_optimizer/solver/exact_base_candidate_surface.py`
+- Fixed-timing prefix reduction: `gear_optimizer/solver/fixed_timing_skyline.py`
+- Timing-response antichains: `gear_optimizer/solver/timing_response_antichain.py`
+
+## Native Force Greats
+
+- Base-to-FG owner handoff: `gear_optimizer/solver/native_fg_owner.py`
+- FG planning/materialization: `gear_optimizer/solver/fg_response_scoring/`
+- Response-frontier construction and scoring: `gear_optimizer/solver/taichi_gem/force_greats/`
+- FG cache prebuild/store ownership: `gear_optimizer/solver/fg_response_frontier_cache_prebuild.py`,
+  `gear_optimizer/solver/fg_response_scoring/store.py`
 
 ## GPU / Taichi
 
-- GPU executor/IPC: `gear_optimizer/solver/gpu_executor.py`
+- GPU executor/IPC: `gear_optimizer/solver/gpu_executor.py`,
+  `gear_optimizer/solver/gpu_service.py`
+- Typed request/result contract: `gear_optimizer/solver/gpu_executor_types.py`
 - Taichi solver API: `gear_optimizer/solver/taichi_gem/api/`
-- Taichi kernels (core): `gear_optimizer/solver/taichi_gem/kernels/`
-  - GA ops (selection/crossover/mutation/elitism): `gear_optimizer/solver/taichi_gem/kernels/kernels_ga.py`
-  - Scoring + gem optimization: `gear_optimizer/solver/taichi_gem/kernels/kernels_scoring.py`
-  - Timeline grid computation: `gear_optimizer/solver/taichi_gem/kernels/kernels_timeline.py`
-  - GA evaluation/reduction (split): `gear_optimizer/solver/taichi_gem/kernels/ga_eval/`
-    - Reductions + packed-key helpers: `gear_optimizer/solver/taichi_gem/kernels/ga_eval/reduction.py`
-    - FT/FF combo search: `gear_optimizer/solver/taichi_gem/kernels/ga_eval/combo_search.py`
-    - Materialize best results: `gear_optimizer/solver/taichi_gem/kernels/ga_eval/write_results.py`
-    - Global-best tracking: `gear_optimizer/solver/taichi_gem/kernels/ga_eval/global_best.py`
-    - Payload packing (CPU download): `gear_optimizer/solver/taichi_gem/kernels/ga_eval/payload.py`
-    - Island elitism + migration: `gear_optimizer/solver/taichi_gem/kernels/ga_eval/islands.py`, `gear_optimizer/solver/taichi_gem/kernels/ga_eval/migration.py`
-    - Warm-start evaluation: `gear_optimizer/solver/taichi_gem/kernels/ga_eval/warmstart.py`
+- Taichi fields/runtime: `gear_optimizer/solver/taichi_gem/fields.py`,
+  `gear_optimizer/solver/taichi_gem/runtime.py`
+- Exact Base semiring kernels: `gear_optimizer/solver/taichi_gem/kernels/exact_base_semiring.py`
+- Exact inner scorer/materialization kernels:
+  `gear_optimizer/solver/taichi_gem/kernels/skyline_eval/`
+- Shared scoring and timeline kernels:
+  `gear_optimizer/solver/taichi_gem/kernels/kernels_scoring.py`,
+  `gear_optimizer/solver/taichi_gem/kernels/kernels_timeline.py`
 
 ## Supporting Folders
 
-- `scripts/`: ad-hoc utilities, organized by category (`scripts/profile/`, `scripts/db/`, `scripts/fg/`, `scripts/query/`, `scripts/data/`, `scripts/debug/`, `scripts/regression/`)
-- `tools/`: maintained utilities and benchmarks, organized by category (`tools/bench/`, `tools/profile/`, `tools/db/`, `tools/verify/`, `tools/data/`, `tools/dev/`, `tools/ml/`)
+- `scripts/`: ad-hoc utilities organized by category
+- `tools/`: maintained benchmarks, profiles, verifiers, database tools and development checks
 - Unified script discovery: `python -m tools list` (`--all` includes private/scratch scripts)
 - Unified inventory audit: `python -m tools audit`
 - Unified script execution: `python -m tools run <id> -- <args>`
-- GeneralMeta: `python general_meta_main.py`
 
 ## Reference Docs
 
-- Engineering doctrine and harness layout: `docs/ENGINEERING_PRINCIPLES.md`
+- Engineering doctrine: `docs/ENGINEERING_PRINCIPLES.md`
 - Architecture overview: `docs/ARCHITECTURE.md`
 - Database schema: `docs/DATABASE_SCHEMA.md`
-- Frontend DB readiness note: `docs/integration/DB_READY_FOR_FRONTEND.md`
+- Frontend DB readiness: `docs/integration/DB_READY_FOR_FRONTEND.md`
 - Fever timeline math: `docs/FEVER_TIMELINE_MATH.md`
 - Timing envelope details: `docs/Implementation Records/TIMING_ENVELOPE_EXACT_FRONTIER.md`
-- Stats verifier: `docs/STATS_VERIFIER.md`
-
-## Refactoring and Maintenance Notes
-
-- Duplication reduction map: `docs/DUPLICATION_REDUCTION.md`
-- Runtime/GPU maintenance playbook: `docs/MAINTENANCE_PLAYBOOK.md`
-- In-flight integrated throughput architecture and A/B protocol: `docs/INFLIGHT_GA_FG_THROUGHPUT.md`
-- Same-slot GPU-resident GA->FG handoff and legacy-path cleanup: `docs/GPU_RESIDENT_GA_FG_PLAN.md`
-- Historical steady-state/unique-eval GA proposal: `docs/STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md`
-- Historical implementation records index: `docs/Implementation Records/README.md`
+- Runtime/GPU maintenance: `docs/MAINTENANCE_PLAYBOOK.md`
+- Historical decisions: `docs/Implementation Records/README.md`

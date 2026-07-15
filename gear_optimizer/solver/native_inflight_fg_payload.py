@@ -1,51 +1,106 @@
 """FG deferred-post and persistence payload builders for native in-flight."""
 from __future__ import annotations
 
-import logging
+from collections.abc import Mapping
 from typing import Any
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.core.utils import safe_int
-from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
-from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
-from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_candidate_names, materialize_entry_names
+from gear_optimizer.helpers.song_helpers.loadout_entry_utils import materialize_candidate_names
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
-from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
 from gear_optimizer.solver.inflight_utils import _compact_items, _compact_prev_record
 from gear_optimizer.solver.native_inflight_config import NativeSong
-from gear_optimizer.solver.native_inflight_pipeline import prepare_ga_candidate_surface_for_fg
+from gear_optimizer.solver.native_inflight_pipeline import prepare_base_candidate_surface_for_fg
 
-logger = logging.getLogger(__name__)
 
-def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) -> dict[str, Any]:
-    return {
-        "_fg_update": True,
-        "song": song.config.song_name,
-        "db_key": song.config.db_key,
-        "persist_entries": list(persist_entries or []),
-        "file_path": song.config.fp,
-        "cfg_dict": song.config.cfg_dict,
-    }
+def _compact_replay_catalog(
+    catalog: Mapping[str, Any],
+    referenced_names: set[str],
+    *,
+    item_kind: str,
+) -> dict[str, dict[str, Any]]:
+    missing = sorted(name for name in referenced_names if name not in catalog)
+    if missing:
+        raise ValueError(
+            f"Deferred persistence cannot resolve request-local {item_kind} identities: {missing}"
+        )
+    out: dict[str, dict[str, Any]] = {}
+    for name in sorted(referenced_names):
+        item = catalog[name]
+        if not isinstance(item, Mapping):
+            raise TypeError(
+                f"Deferred persistence request-local {item_kind} {name!r} must be a stats mapping"
+            )
+        out[name] = dict(item)
+    return out
+
+
+def _request_replay_catalogs(
+    song: NativeSong,
+    *,
+    best_gear: list[str],
+    best_minis: list[str],
+    base_candidates: list[dict[str, Any]],
+    fg_variants: list[dict[str, Any]],
+    prev_record: dict[str, Any] | None,
+) -> tuple[dict[str, dict[str, Any]] | None, dict[str, dict[str, Any]] | None]:
+    gear_catalog = song.gpu_inputs.gears_by_name
+    mini_catalog = song.gpu_inputs.minis_by_name
+    if not gear_catalog and not mini_catalog:
+        # Some unit-level/native payload callers do not own request catalogs. Their
+        # replay context deliberately stays absent, preserving the external CSV
+        # boundary. Real prepared native songs own both maps.
+        return None, None
+    if not isinstance(gear_catalog, Mapping) or not isinstance(mini_catalog, Mapping):
+        raise TypeError("Deferred persistence requires request-local gear and mini catalog mappings")
+    if not gear_catalog or not mini_catalog:
+        raise ValueError("Deferred persistence requires both request-local gear and mini catalogs")
+
+    gear_names = {str(name) for name in best_gear if str(name)}
+    mini_names = {str(name) for name in best_minis if str(name)}
+    for candidate in base_candidates:
+        gear_names.update(str(name) for name in candidate.get("Gear", []) if str(name))
+        mini_names.update(str(name) for name in candidate.get("Minis", []) if str(name))
+    for variant in fg_variants:
+        gear_names.update(str(name) for name in variant.get("gear", []) if str(name))
+        mini_names.update(str(name) for name in variant.get("minis", []) if str(name))
+
+    if isinstance(prev_record, dict):
+        prev_gear = [str(name) for name in prev_record.get("gear", []) if str(name)]
+        prev_minis = [str(name) for name in prev_record.get("minis", []) if str(name)]
+        if not prev_gear and not prev_minis:
+            previous_loadout = [str(name) for name in prev_record.get("loadout", []) if str(name)]
+            prev_gear = previous_loadout[:6]
+            prev_minis = previous_loadout[6:9]
+        gear_names.update(prev_gear)
+        mini_names.update(prev_minis)
+
+    return (
+        _compact_replay_catalog(gear_catalog, gear_names, item_kind="gear"),
+        _compact_replay_catalog(mini_catalog, mini_names, item_kind="mini"),
+    )
+
+
 def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
     best_data_for_post = song.runtime.decode.best_data or {}
     best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
-    pending_fg_job = getattr(song.runtime.fg, "fg_variants", None) is None
-    fg_variants_post = (
-        compact_fg_variants(list(getattr(song.runtime.fg, "fg_variants", None) or []))
-        if not pending_fg_job
-        else []
-    )
+    fg_variants = getattr(song.runtime.fg, "fg_variants", None)
+    if fg_variants is None:
+        raise RuntimeError(
+            "Deferred post payload requires completed native FG results for "
+            f"{song.config.task_key or song.config.song_name}"
+        )
+    fg_variants_post = compact_fg_variants(list(fg_variants))
     selected_candidates = (
-        getattr(song.runtime.decode, "ga_candidates", None)
+        getattr(song.runtime.decode, "base_candidates", None)
         if getattr(song.runtime.decode, "fg_surface_prepared", False)
         else None
     )
     if not isinstance(selected_candidates, list):
-        selected_candidates, _preselect_count, _hydrated = prepare_ga_candidate_surface_for_fg(
+        selected_candidates, _candidate_count = prepare_base_candidate_surface_for_fg(
             song,
             fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
         )
-    ga_candidates_post: list[dict[str, Any]] = []
+    base_candidates_post: list[dict[str, Any]] = []
     for cand in selected_candidates or []:
         if not isinstance(cand, dict):
             continue
@@ -56,7 +111,7 @@ def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
             registry=song.gpu_inputs.registry,
             mutate=False,
         )
-        ga_candidates_post.append(
+        base_candidates_post.append(
             {
                 "Score": cand.get("Score", 0),
                 "BaseScore": cand.get("BaseScore", cand.get("Score", 0)),
@@ -67,26 +122,37 @@ def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
                 "loadout_hash": cand.get("loadout_hash"),
             }
         )
+    best_gear_post = _compact_items(song.runtime.decode.best_gear)
+    best_minis_post = _compact_items(song.runtime.decode.best_minis)
+    prev_record_post = _compact_prev_record(song.runtime.db.prev_record)
+    replay_gears_by_name, replay_minis_by_name = _request_replay_catalogs(
+        song,
+        best_gear=best_gear_post,
+        best_minis=best_minis_post,
+        base_candidates=base_candidates_post,
+        fg_variants=fg_variants_post,
+        prev_record=prev_record_post,
+    )
     return {
         "_deferred_post": True,
-        "_pending_fg_job": bool(pending_fg_job),
         "song": song.config.song_name,
         "_queue_key": song.config.task_key,
         "_queue_label": song.config.task_key,
-        "_ga_seed": song.config.ga_seed,
         "db_key": song.config.db_key,
         "difficulty": song.config.effective_difficulty,
         "cfg_dict": song.config.cfg_dict,
         "ref_arrays": song.gpu_inputs.ref_arrays,
         "calc_song": song.gpu_inputs.calc_song,
         "best_data": best_data_post,
-        "best_gear": _compact_items(song.runtime.decode.best_gear),
-        "best_minis": _compact_items(song.runtime.decode.best_minis),
+        "best_gear": best_gear_post,
+        "best_minis": best_minis_post,
         "current_gear": _compact_items(song.gpu_inputs.current_gear_list),
         "current_minis": _compact_items(song.gpu_inputs.current_mini_list),
         "fg_variants": fg_variants_post,
-        "ga_candidates": ga_candidates_post,
-        "prev_record": _compact_prev_record(song.runtime.db.prev_record),
+        "base_candidates": base_candidates_post,
+        "prev_record": prev_record_post,
+        "gears_by_name": replay_gears_by_name,
+        "minis_by_name": replay_minis_by_name,
         "attempt_lifetime": int(song.runtime.db.attempt_lifetime or 0),
         "prev_attempts_first": int(song.runtime.db.prev_attempts_first or 0),
         "db_best_fg_score": int(song.runtime.db.db_best_fg_score or 0),
@@ -94,62 +160,3 @@ def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
         "meta_secondary_color": song.gpu_inputs.meta_secondary_color,
         "fg_debug": bool(song.config.fg_debug),
     }
-
-
-def build_fg_persist_entries(song: NativeSong) -> list[dict]:
-    entries: list[dict] = []
-    build_details = make_build_details_fn(
-        getattr(song.gpu_inputs, "meta_primary_color", ""),
-        getattr(song.gpu_inputs, "meta_secondary_color", ""),
-        getattr(song.config, "effective_difficulty", ""),
-    )
-    for v in song.runtime.fg.fg_variants or []:
-        if not isinstance(v, dict):
-            continue
-        is_ga = bool(v.get("_is_ga"))
-        base_score = safe_int(v.get("base_score", v.get("score", 0)), 0)
-        fg_score = safe_int(v.get("fg_score", 0), 0)
-        gear_names = _compact_items(v.get("gear") or [])
-        mini_names = _compact_items(v.get("minis") or [])
-        data = v.get("data")
-        if not (isinstance(data, dict) and has_valid_fg_config(data)):
-            data = v.get("force")
-        if not (isinstance(data, dict) and has_valid_fg_config(data)) and isinstance(v.get("_entry_ref"), dict):
-            data = v["_entry_ref"].get("force")
-        if not isinstance(data, dict):
-            data = {}
-        if (not gear_names and not mini_names) and isinstance(v.get("_entry_ref"), dict):
-            gear_names, mini_names = materialize_entry_names(v.get("_entry_ref"), mutate=True)
-        details = build_details(data) if callable(build_details) else {}
-        if not isinstance(details, dict):
-            details = {}
-        details = dict(details)
-        details["ForceGreats"] = (data.get("ForceGreats", {}) if isinstance(data, dict) else {}) or {}
-        force_obj = None
-        try:
-            if isinstance(data, dict) and has_valid_fg_config(data):
-                force_obj = dict(data)
-                read_visible_stats(force_obj, mutate_payload=True)
-        except Exception as e:
-            logger.debug(f"native_inflight_fg_payload:build_fg_persist_entries: {e}")
-            force_obj = None
-        if force_obj is None:
-            continue
-        if not gear_names and not mini_names:
-            raise RuntimeError(
-                f"FG persist entry for {song.config.song_name!r} has no resolvable gear/mini names; "
-                "refusing to persist a loadout without an identity"
-            )
-        entries.append(
-            {
-                "score": int(base_score),
-                "fg_score": int(fg_score),
-                "gear": gear_names,
-                "minis": mini_names,
-                "details": details,
-                "force": force_obj,
-                "_is_ga": bool(is_ga),
-                "_deferred_fg_update": True,
-            }
-        )
-    return entries

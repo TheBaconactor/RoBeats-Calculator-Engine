@@ -37,7 +37,7 @@ def test_setup_song_config_applies_t5_to_song_primary(monkeypatch):
 
     calc_song = {"metadata": {"Primary Color": "Vibe"}}
 
-    (_ga_settings, fixed_stats, *_rest) = song_config.setup_song_config(
+    (fixed_stats, *_rest) = song_config.setup_song_config(
         cfg, calc_song, paths={}, gears_by_name={}, minis_by_name={}
     )
 

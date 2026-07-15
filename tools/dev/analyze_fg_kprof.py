@@ -65,7 +65,11 @@ def main(kprof_path: str, fg_path: str) -> int:
         print(f"  -> inner kernel is {100.0 * inner_gpu / score_wall:.0f}% of score-loop wall (GPU-exec bound if high)")
     if rows > 0:
         print(f"  -> GPU {1000.0 * inner_gpu / (rows / 1e6):.1f} ns/row over {rows / 1e6:.1f}M surface rows")
-    print(f"\n  device_total GPU = {dev_total / 1000.0:.1f}s   fg_block wall = {phase.get('fg_block_total', 0.0) / 1000.0:.1f}s   ga_run wall = {phase.get('ga_run_total', 0.0) / 1000.0:.1f}s")
+    owner_wall_ms = sum(phase[name] for name in ("build", "pack", "score_total", "resolve"))
+    print(
+        f"\n  device_total GPU = {dev_total / 1000.0:.1f}s"
+        f"   native FG owner wall = {owner_wall_ms / 1000.0:.1f}s"
+    )
     return 0
 
 

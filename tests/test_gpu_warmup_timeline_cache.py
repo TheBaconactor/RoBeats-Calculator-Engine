@@ -113,24 +113,20 @@ def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypat
 
 def test_synthetic_gpu_warmups_use_warmup_timeline_wrapper() -> None:
     root = Path(__file__).resolve().parents[1]
-    ga_source = (root / "gear_optimizer/solver/taichi_gem/api/ga_operations.py").read_text(encoding="utf-8")
     skyline_source = (root / "gear_optimizer/solver/taichi_gem/api/skyline_operations.py").read_text(encoding="utf-8")
 
-    assert "precompute_timeline_gpu_for_warmup" in ga_source
     assert "precompute_timeline_gpu_for_warmup" in skyline_source
-    assert "precompute_timeline_gpu(_warmup_calc_song()" not in ga_source
     assert "precompute_timeline_gpu(_warmup_calc_song()" not in skyline_source
 
 
 def test_synthetic_gpu_warmup_charts_own_canonical_timeline_inputs() -> None:
-    from gear_optimizer.solver.taichi_gem.api import ga_operations, skyline_operations, timeline
+    from gear_optimizer.solver.taichi_gem.api import skyline_operations, timeline
 
-    for build_song in (ga_operations._warmup_calc_song, skyline_operations._warmup_calc_song):
-        calc_song = build_song()
-        song_data = calc_song["song_data"]
-        timestamps = np.asarray(song_data["chart_timestamps"], dtype=np.float32)
-        assert np.asarray(song_data["note_types"]).shape == timestamps.shape
-        assert np.asarray(song_data["lanes"]).shape == timestamps.shape
-        np.testing.assert_array_equal(song_data["fg_perfect_candidate_timestamps"], timestamps)
-        np.testing.assert_array_equal(song_data["fg_perfect_floor_timestamps"], timestamps)
-        timeline._song_timing_cache_key(calc_song)
+    calc_song = skyline_operations._warmup_calc_song()
+    song_data = calc_song["song_data"]
+    timestamps = np.asarray(song_data["chart_timestamps"], dtype=np.float32)
+    assert np.asarray(song_data["note_types"]).shape == timestamps.shape
+    assert np.asarray(song_data["lanes"]).shape == timestamps.shape
+    np.testing.assert_array_equal(song_data["fg_perfect_candidate_timestamps"], timestamps)
+    np.testing.assert_array_equal(song_data["fg_perfect_floor_timestamps"], timestamps)
+    timeline._song_timing_cache_key(calc_song)

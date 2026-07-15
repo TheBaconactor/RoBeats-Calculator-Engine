@@ -99,14 +99,14 @@ def test_save_loadouts_batch_overwrite(db_connection):
     assert json.loads(row["details_json"])["test"] == "higher"
 
 
-def test_save_loadouts_batch_deferred_fg_update_preserves_base_details(db_connection):
+def test_save_loadouts_batch_full_fg_result_preserves_equal_score_base_details(db_connection):
     """
-    Deferred FG-only persistence updates must not overwrite the base row's details payload.
+    Full Base+FG persistence must not overwrite the base row's details payload on a tie.
 
     This guards against persistence-path bugs where an FG variant payload (FT/FF/GemCounts/Stats)
     is accidentally paired with the base score on an equal-score upsert.
     """
-    song = "Test Song Deferred FG"
+    song = "Test Song Full Base FG"
     gear = ["G1", "G2"]
     minis = ["M1"]
 
@@ -127,7 +127,6 @@ def test_save_loadouts_batch_deferred_fg_update_preserves_base_details(db_connec
         "minis": minis,
         "details": {"test": "fg_variant"},
         "force": _force_payload(1500, base_score=1000),
-        "_deferred_fg_update": True,
     }
     save_loadouts_batch(song, [entry_deferred_fg])
 

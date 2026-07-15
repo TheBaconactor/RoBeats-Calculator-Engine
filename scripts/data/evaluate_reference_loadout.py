@@ -1,5 +1,5 @@
 """
-Evaluate the reference loadout vs GA's loadout to verify scores.
+Evaluate a reference loadout against the optimizer's loadout to verify scores.
 Also check intermediate swaps to understand the fitness landscape.
 """
 
@@ -32,7 +32,7 @@ REFERENCE_LOADOUT = {
     "expected_score": 33480215,
 }
 
-# Your GA's loadout
+# Optimizer loadout
 YOUR_LOADOUT = {
     "gear": [
         "The Games: Hidden Shine",  # Hat
@@ -237,7 +237,7 @@ def main():
     your_score, your_stats = evaluate_loadout(
         YOUR_LOADOUT["gear"], YOUR_LOADOUT["minis"], gears_by_name, minis_by_name, ref_arrays, calc_song, cfg
     )
-    print(f"\nYour GA loadout:")
+    print("\nOptimizer loadout:")
     print(f"  Expected: {YOUR_LOADOUT['expected_score']:,}")
     print(f"  Computed: {your_score:,}")
     print(f"  Match: {'YES ✓' if your_score == YOUR_LOADOUT['expected_score'] else 'NO ✗'}")

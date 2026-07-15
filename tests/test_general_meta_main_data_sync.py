@@ -91,9 +91,6 @@ def _write_song_header(data_dir: Path, folder: str, filename: str, song_name: st
 
 
 def test_run_general_meta_syncs_before_loading_gears(monkeypatch) -> None:
-    import sys
-    import types
-
     sync_calls: list[bool] = []
 
     def _fake_sync(*, force: bool = False):
@@ -102,16 +99,6 @@ def test_run_general_meta_syncs_before_loading_gears(monkeypatch) -> None:
 
     class _StopAfterSync(Exception):
         pass
-
-    fake_db_manager = types.ModuleType("gear_optimizer.data.db_manager")
-
-    class _FakeEvolutionDbManager:
-        @classmethod
-        def from_env(cls):
-            return cls()
-
-    fake_db_manager.EvolutionDbManager = _FakeEvolutionDbManager
-    monkeypatch.setitem(sys.modules, "gear_optimizer.data.db_manager", fake_db_manager)
 
     from general_meta.app import run_general_meta
 

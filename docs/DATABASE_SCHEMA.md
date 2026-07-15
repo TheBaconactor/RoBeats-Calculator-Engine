@@ -9,7 +9,6 @@ Default persistence behavior (`evolution.db`):
 - Persist only the **baseline** TeamBuff tier rows (typically `T5`).
 - Derived tiers (`NONE/T1/T10/T20/T50/T51`) are computed **on demand** (not persisted).
 - On-demand scoring entrypoint: `gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards(...)`
-  (tool helper: `tools/db/compute_team_buff_tiers_on_demand.py`).
 - Guide: `docs/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md`
 - Storage is compact by default:
   - Gear/minis are persisted as compact integer IDs via encoding tables + BLOB columns (not repeated JSON strings).
@@ -42,7 +41,7 @@ CREATE TABLE songs (
 ```
 
 ### 2. `pending_fg_jobs` Table (Explicit Deferred Force Greats Work)
-Stores a compact snapshot of GA candidates only for songs whose Force Greats
+Stores a compact snapshot of ranked Base candidates only for songs whose Force Greats
 evaluation is explicitly made durable for later work.
 
 This table is **not** the retained coverage frontier and should not be populated
@@ -61,7 +60,7 @@ Rules:
 ```sql
 CREATE TABLE pending_fg_jobs (
     song_name TEXT PRIMARY KEY,
-    candidates_json TEXT NOT NULL,  -- JSON array of compact GA candidates
+    candidates_json TEXT NOT NULL,  -- JSON array of compact Base candidates
     created_ts REAL,
     updated_ts REAL
 );
@@ -196,46 +195,26 @@ Some large derived fields are intentionally not persisted (computed on demand), 
 
 ## Developer Guide: How to Query
 
-### Prefer the DB Manager (Recommended)
+### Use the Canonical Database Facade
 
-Most consumers should not query SQLite directly anymore. Use the centralized manager API:
-
-- `EvolutionDbManager.get_song_catalog(...)`: list songs + available ranks for base/FG leaderboards
-- `EvolutionDbManager.get_frontend_song_payload(...)`: get one selected song page with top base/FG lists, difficulty,
-  tier/color metadata, per-section FG config rows, and normalized hitsim delta display fields when available
-- `EvolutionDbManager.get_leaderboard_entry(...)`: view a single (song, tier, leaderboard, rank) entry
-
-Example:
+Persisted leaderboard reads and song counters are owned by `gear_optimizer.data.database`:
 
 ```python
-from gear_optimizer.data.db_manager import EvolutionDbManager
+from gear_optimizer.data.database import get_best_loadouts, get_song_counters
 
-db = EvolutionDbManager.from_env()
-
-catalog = db.get_song_catalog(max_rank=51)
-
-page = db.get_frontend_song_payload(
-    "Rainshower (Easy) by Silentroom",
-    tier="T10",
-    limit=50,
-    element="selected",
-)
-
-row = db.get_leaderboard_entry(
-    "Rainshower (Easy) by Silentroom",
-    leaderboard="fg",   # "base" or "fg"
-    tier="T10",         # NONE/T1/T5/T10/T20/T50/T51 (computed on demand)
-    rank=1,
-    element="selected", # selected|primary|secondary
-)
+song = "Rainshower (Easy) by Silentroom"
+rows = get_best_loadouts(song, limit=51, team_buff="T5")
+attempt_lifetime, attempts_first, best_score, best_fg_score = get_song_counters(song)
 ```
 
-The frontend payload returns decoded `gear`/`minis` names, top base/FG rows, difficulty, resolved colors,
-`force_sections` derived from `ForceGreats.config` for FG rows, and row-level `hitsim_offset_deltas_ms` /
-`base_hitsim_offset_deltas_ms` / `fg_hitsim_offset_deltas_ms` fields when those deltas are present in the replayed row
-payload. The single-entry API returns full decoded row details.
+`get_best_loadouts(...)` decodes compact gear/Mini IDs and returns the stored baseline Base and FG rows. Derived
+TeamBuff tiers are replayed through
+`gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards(...)`; they are not a
+second persisted leaderboard API.
 
-See: `docs/DB_MANAGER.md`.
+Website optimization is a separate boundary owned by `gear_optimizer.robeatsmeta_service`: `GET /songs` lists the
+official chart catalog and `POST /optimize` returns the exact optimizer's T5 loadout surface for an official or custom
+chart. See `docs/integration/DB_READY_FOR_FRONTEND.md`.
 
 ### Raw SQL (Use With Care)
 
@@ -265,6 +244,6 @@ Conceptually this decodes to:
 - `[[\"MiniA\",\"MiniA2\"],[\"MiniB\"],[\"MiniC\"]]`
 
 Variant groups are populated *deterministically* from `Data/Gear/Minis.csv` using the song context
-(primary/secondary/selected element), not based on which mini-name variants happened to appear during GA exploration.
+(primary/secondary/selected element), not based on which mini-name variants happened to appear in a retained candidate surface.
 
 Within a group, all names are considered equivalent for this song context (core stats + only the relevant element stats).

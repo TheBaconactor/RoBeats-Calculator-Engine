@@ -32,7 +32,7 @@ def test_executor_heartbeat_writer_writes_compact_payload(tmp_path):
 
     writer.write(
         phase="running",
-        batch=[_request(GpuRequestType.GPU_NATIVE_GA_RUN, 10)],
+        batch=[_request(GpuRequestType.EXACT_BASE_SEARCH, 10)],
         ready=True,
         running=True,
         requests_processed=12,
@@ -46,7 +46,7 @@ def test_executor_heartbeat_writer_writes_compact_payload(tmp_path):
     assert payload["running"] is True
     assert payload["requests_processed"] == 12
     assert payload["request_count"] == 1
-    assert payload["request_types"] == {"gpu_native_ga_run": 1}
+    assert payload["request_types"] == {"exact_base_search": 1}
     assert payload["response_put_failures_total"] == 3
 
 

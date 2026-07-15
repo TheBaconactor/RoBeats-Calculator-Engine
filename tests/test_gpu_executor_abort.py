@@ -6,7 +6,7 @@ from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
 def _request(request_id: int = 9) -> GpuRequest:
     return GpuRequest(
-        request_type=GpuRequestType.GPU_NATIVE_GA_RUN,
+        request_type=GpuRequestType.EXACT_BASE_SEARCH,
         request_id=int(request_id),
         worker_id=0,
         payload={},

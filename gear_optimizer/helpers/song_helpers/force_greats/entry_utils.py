@@ -13,7 +13,7 @@ def expected_selected_element(entry: dict[str, Any], meta_primary_color: str) ->
     Best-effort "selected element" for cache validation.
 
     Preference order:
-    1) `entry["selected_element"]` (fast path; produced by lean GA candidate plumbing)
+    1) `entry["selected_element"]` (fast path from exact Base candidate plumbing)
     2) `entry["details"]` Selected Element/SelectedElement (DB-cached payloads)
     3) `meta_primary_color` fallback
     """
@@ -39,7 +39,7 @@ def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict
       - Selected Element
       - FT / FF
       - GemCounts
-      - optional BaseStats (when upstream provides it, e.g. GPU-native GA)
+      - optional BaseStats (when upstream exact Base decode provides it)
     """
     try:
         eval_data = entry.get("eval_data")
@@ -51,8 +51,8 @@ def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict
         stats = eval_data.get("Stats")
         if isinstance(stats, dict) and stats:
             return eval_data
-        # GPU-native GA can provide BaseStats without full Stats; that's sufficient for
-        # Response-frontier FG batching uses BaseStats when full Stats are absent.
+        # Exact Base decode can provide BaseStats without full Stats. Response-frontier
+        # FG batching uses BaseStats when full Stats are absent.
         base_stats = eval_data.get("BaseStats")
         if isinstance(base_stats, dict) and base_stats:
             return eval_data

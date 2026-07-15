@@ -3,8 +3,8 @@ import tools.bench._bench_reporting as bench_reporting
 
 def test_normalize_kernel_names_dedupes_and_strips():
     assert bench_reporting.normalize_kernel_names(
-        [" ga_stage ", "", "ga_stage", "fg_stage", "  fg_stage  ", None]
-    ) == ["ga_stage", "fg_stage"]
+        [" base_stage ", "", "base_stage", "fg_stage", "  fg_stage  ", None]
+    ) == ["base_stage", "fg_stage"]
 
 
 def test_add_kernel_profiler_kernel_entries_computes_accounting(monkeypatch):

@@ -56,7 +56,7 @@ def test_save_loadouts_batch_respects_explicit_db_path(tmp_path, monkeypatch):
         assert int(row["score"]) == 1234
 
 
-def test_async_db_saver_mirrors_overlay_db_in_backend_mode(tmp_path, monkeypatch):
+def test_async_db_saver_keeps_canonical_db_in_backend_mode(tmp_path, monkeypatch):
     canonical_db = tmp_path / "canonical.db"
     overlay_db = tmp_path / "overlay.db"
     song_meta_path = tmp_path / "song_meta_index.json"
@@ -78,33 +78,30 @@ def test_async_db_saver_mirrors_overlay_db_in_backend_mode(tmp_path, monkeypatch
         saver.shutdown(timeout=10.0)
 
     with get_db_connection(str(canonical_db)) as conn:
-        base_count = conn.execute(
-            "SELECT COUNT(*) FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5'",
+        row = conn.execute(
+            "SELECT score, details_json FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5'",
             (song_name,),
-        ).fetchone()[0]
+        ).fetchone()
         song_row = conn.execute(
             "SELECT attempt_lifetime, attempts_first, best_score FROM songs WHERE name = ?",
             (song_name,),
         ).fetchone()
-        assert int(base_count) == 0
+        assert row is not None
+        assert int(row["score"]) == 2222
         assert song_row is not None
         assert int(song_row["attempt_lifetime"]) == 1
         assert int(song_row["attempts_first"]) == 1
-        assert int(song_row["best_score"]) == 0
-
-    with get_db_connection(str(overlay_db)) as conn:
-        overlay_row = conn.execute(
-            "SELECT score, details_json FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5'",
-            (song_name,),
-        ).fetchone()
-        overlay_song = conn.execute("SELECT best_score FROM songs WHERE name = ?", (song_name,)).fetchone()
-        assert overlay_row is not None
-        assert int(overlay_row["score"]) == 2222
-        assert overlay_song is not None
-        assert int(overlay_song["best_score"]) == 2222
-        details = json.loads(str(overlay_row["details_json"] or "{}"))
+        assert int(song_row["best_score"]) == 2222
+        details = json.loads(str(row["details_json"] or "{}"))
         assert int(details.get("attempt_lifetime") or 0) == 1
         assert int(details.get("attempts_first") or 0) == 1
+
+    with get_db_connection(str(overlay_db)) as conn:
+        overlay_count = conn.execute(
+            "SELECT COUNT(*) FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5'",
+            (song_name,),
+        ).fetchone()[0]
+        assert int(overlay_count) == 0
 
 
 def test_async_db_saver_keeps_canonical_db_for_local_runs(tmp_path, monkeypatch):

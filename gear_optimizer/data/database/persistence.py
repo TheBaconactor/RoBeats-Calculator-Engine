@@ -317,7 +317,7 @@ def save_optimizer_song_result(
                 entries,
                 db_path=resolved_db_path,
                 team_buff=team_buff,
-                preserve_attempt_meta=False,
+                preserve_attempt_meta=True,
             )
         _update_song_counters_in_transaction(
             conn,
@@ -724,7 +724,6 @@ def save_team_buff_loadouts_batch(
                 logger.warning(f"database:_recompute_stats_in_details_for_persistence: {e}")
         _t_params0 = time.perf_counter()
         loadouts_params = []
-        deferred_fg_loadouts_params = []
         fg_loadouts_params = []
         encoding_maps = _load_piece_name_encoding_maps(conn, db_path=resolved_db_path)
         def _encode_gear_names_to_blob(gear_names: list[str]) -> bytes:
@@ -865,8 +864,6 @@ def save_team_buff_loadouts_batch(
                     None,
                 )
             )
-            if bool(entry.get("_deferred_fg_update")):
-                deferred_fg_loadouts_params.append(loadouts_params.pop())
             if force_data is not None and fg_score > fg_base_score:
                 fg_details = _base_details_from_force_payload(details, force_data)
                 if not fg_details:
@@ -908,27 +905,6 @@ def save_team_buff_loadouts_batch(
                 loadouts_params,
             )
             _log_timing("insert_team_buff_loadouts", time.perf_counter() - _t_ins0)
-        if deferred_fg_loadouts_params:
-            _t_ins0 = time.perf_counter()
-            conn.executemany(
-                """
-                INSERT INTO team_buff_loadouts (
-                    song_name, team_buff, loadout_hash, score, fg_score,
-                    gear_ids_blob, minis_ids_blob, details_json, force_details_json, timestamp
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
-                ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
-                    -- Deferred FG-only update: preserve base leaderboard payload (score/details/gear/minis)
-                    fg_score = MAX(fg_score, excluded.fg_score),
-                    gear_ids_blob = CASE WHEN gear_ids_blob IS NULL THEN excluded.gear_ids_blob ELSE gear_ids_blob END,
-                    minis_ids_blob = CASE WHEN minis_ids_blob IS NULL THEN excluded.minis_ids_blob ELSE minis_ids_blob END,
-                    details_json = CASE WHEN details_json IS NULL THEN excluded.details_json ELSE details_json END,
-                    force_details_json = NULL,
-                    timestamp = strftime('%s', 'now')
-            """,
-                deferred_fg_loadouts_params,
-            )
-            _log_timing("insert_team_buff_loadouts_deferred_fg", time.perf_counter() - _t_ins0)
         if fg_loadouts_params:
             _t_insfg0 = time.perf_counter()
             conn.executemany(

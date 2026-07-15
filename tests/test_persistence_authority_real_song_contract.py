@@ -157,7 +157,7 @@ def test_persistence_authority_contract_real_song_ourovoros_t5():
 
     persist_entries = build_persistence_entries(
         db_payload,
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries=loadout_entries,
         build_details_fn=build_details_fn,
         calc_song=calc_song,
@@ -294,7 +294,7 @@ def test_persistence_authority_contract_real_song_ourovoros_runtime_float32_refs
 
     authoritative_entries = build_persistence_entries(
         db_payload,
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries=loadout_entries,
         build_details_fn=build_details_fn,
         calc_song=calc_song,
@@ -303,7 +303,7 @@ def test_persistence_authority_contract_real_song_ourovoros_runtime_float32_refs
     )
     runtime_entries = build_persistence_entries(
         db_payload,
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries=loadout_entries,
         build_details_fn=build_details_fn,
         calc_song=calc_song,
@@ -395,7 +395,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
 
     persist_entries = build_persistence_entries(
         db_payload,
-        ga_candidates=[],
+        base_candidates=[],
         loadout_entries=None,
         build_details_fn=build_details_fn,
         calc_song=calc_song,

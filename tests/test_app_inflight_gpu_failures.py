@@ -8,7 +8,7 @@ import pytest
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.core.config import DEFAULT_INFLIGHT_SONGS
 from gear_optimizer.engine.native import NativeOptimizationEngine
-from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT
+from gear_optimizer.solver.native_inflight_config import CANONICAL_BASE_QUEUE_MULT
 from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
 
 
@@ -126,7 +126,7 @@ def test_gpu_slot_auto_sizing_uses_canonical_inflight_default(monkeypatch):
 
     app._maybe_autoset_gpu_song_slots(cfg)
 
-    expected = max(24, DEFAULT_INFLIGHT_SONGS * CANONICAL_GA_QUEUE_MULT + 2)
+    expected = max(24, DEFAULT_INFLIGHT_SONGS * CANONICAL_BASE_QUEUE_MULT + 2)
     assert int(os.environ["GPU_SONG_SLOTS"]) == expected
 
 
@@ -154,7 +154,7 @@ def test_service_mode_re_raises_gpu_timeout_instead_of_falling_back(monkeypatch)
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
 
     def _raise_timeout(*_args, **_kwargs):
-        raise GpuServiceTimeoutError("GPU service request gpu_native_ga_run timed out after 240.0s")
+        raise GpuServiceTimeoutError("GPU service request exact_base_search timed out after 240.0s")
 
     monkeypatch.setitem(
         sys.modules,
@@ -164,46 +164,6 @@ def test_service_mode_re_raises_gpu_timeout_instead_of_falling_back(monkeypatch)
 
     with pytest.raises(GpuServiceTimeoutError, match="timed out"):
         app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
-
-
-def test_configure_execution_prewarms_native_ga():
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-
-    app = object.__new__(GearOptimizerApp)
-    gpu_fields._REQUESTED_MAX_GA_RUNS = None
-    cfg = configparser.ConfigParser()
-    cfg.read_dict({"IterationEngine": {"InFlightSongs": "0", "GA_MultiStart": "3"}})
-
-    app._configure_execution_and_prewarm(cfg)
-
-    # GA buffer sizing is recorded in-process now (was the GPU_NATIVE_GA_MAX_RUNS env bridge).
-    assert gpu_fields._REQUESTED_MAX_GA_RUNS == 3
-
-
-def test_ga_buffer_config_restores_defaults_and_clears_request_on_reset():
-    # Contract (docs/Implementation Records/GPU_GA_BUFFER_CONFIG_RESET_RESTORE.md):
-    # reset_fields_state() restores GA buffer sizing to defaults AND clears the requested
-    # record, so a stale session size never silently re-applies after a hard_reset_taichi
-    # (CPU-level mirror of the gpu-marked test_gpu_ga_run_buffer_config_restores_defaults_
-    # after_hard_reset). The GA recovery paths re-call configure_ga_run_buffers() to re-size.
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-
-    gpu_fields.reset_fields_state()
-    try:
-        gpu_fields.configure_ga_run_buffers(max_runs=7, max_genomes=705)
-        assert gpu_fields.MAX_GA_RUNS == 7
-        assert gpu_fields._REQUESTED_MAX_GA_RUNS == 7
-
-        gpu_fields.reset_fields_state()
-        assert gpu_fields.MAX_GA_RUNS == gpu_fields.DEFAULT_MAX_GA_RUNS
-        assert gpu_fields.MAX_GA_RUN_GENOMES == gpu_fields.DEFAULT_MAX_GA_RUN_GENOMES
-        assert gpu_fields._REQUESTED_MAX_GA_RUNS is None
-
-        # A cleared record must NOT re-apply a stale size on the next allocation.
-        gpu_fields._apply_requested_ga_run_buffers()
-        assert gpu_fields.MAX_GA_RUNS == gpu_fields.DEFAULT_MAX_GA_RUNS
-    finally:
-        gpu_fields.reset_fields_state()
 
 
 def test_request_stop_requests_gpu_abort(monkeypatch):

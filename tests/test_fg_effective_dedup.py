@@ -1,7 +1,7 @@
-"""CPU-only equivalence tests for the GA->FG effective-dedup groundwork (Slice 1).
+"""CPU-only equivalence tests for exact Base-to-FG effective deduplication.
 
 These prove the test reference selector
-reproduces the host ``select_top_base_ga_candidates`` SELECTED SET exactly, and
+reproduces the host ``select_top_base_candidates`` SELECTED SET exactly, and
 that the equivalence tables collapse exactly the loadouts the host folds.
 
 No GPU / Taichi: pure numpy + the host selector.
@@ -12,8 +12,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gear_optimizer.helpers.song_helpers.fg_candidate_selector import (
-    select_top_base_ga_candidates,
+from gear_optimizer.helpers.song_helpers.base_candidate_selector import (
+    select_top_base_candidates,
 )
 from gear_optimizer.solver.fg_effective_dedup import (
     MINI_SLOT_INDICES,
@@ -52,8 +52,8 @@ def _name_to_id(registry: ItemRegistry, slot_idx: int, name: str) -> int:
     return registry.item_to_id[(slot_idx, name)]
 
 
-def _genome_ids(registry: ItemRegistry, gear_names: list[str], mini_names: list[str]) -> list[int]:
-    """Build a 9-id genome (6 gear + 3 mini) for the given names."""
+def _loadout_ids(registry: ItemRegistry, gear_names: list[str], mini_names: list[str]) -> list[int]:
+    """Build nine loadout IDs (six gear and three minis) for the given names."""
     ids = [_name_to_id(registry, slot, gear_names[slot]) for slot in range(6)]
     mini_slot = MINI_SLOT_INDICES[0]
     ids += [registry.item_to_id[(mini_slot, n)] for n in mini_names]
@@ -63,16 +63,16 @@ def _genome_ids(registry: ItemRegistry, gear_names: list[str], mini_names: list[
 def _host_candidate(
     registry: ItemRegistry, gear_names: list[str], mini_names: list[str], score: int
 ) -> dict:
-    """A candidate dict the host ``select_top_base_ga_candidates`` accepts.
+    """A candidate dict the host ``select_top_base_candidates`` accepts.
 
-    Mirrors the GA-decode shape (genetic_pipeline.py:464-470): BaseScore +
-    GenomeIDs + _ga_registry. The host resolves names through the registry.
+    Mirrors the exact Base decoded shape: BaseScore +
+    LoadoutIDs + _item_registry. The host resolves names through the registry.
     """
     return {
         "Score": int(score),
         "BaseScore": int(score),
-        "GenomeIDs": _genome_ids(registry, gear_names, mini_names),
-        "_ga_registry": registry,
+        "LoadoutIDs": _loadout_ids(registry, gear_names, mini_names),
+        "_item_registry": registry,
     }
 
 
@@ -220,7 +220,7 @@ def _assert_set_parity(
     selected: str,
 ) -> None:
     host_cands = [_host_candidate(registry, g, m, s) for (g, m, s) in rows]
-    host_selected = select_top_base_ga_candidates(
+    host_selected = select_top_base_candidates(
         host_cands,
         limit=limit,
         registry=registry,
@@ -319,7 +319,7 @@ def test_canonical_ids_tiebreak_orders_descending_on_base_score_tie() -> None:
     registry = _build_registry(gear_pool=gear_pool, mini_pool=minis)
     gear = [f"{s}G" for s in SLOTS]
 
-    # Three candidates share base score 500; their canonical genome ids differ only
+    # Three candidates share base score 500; their canonical loadout IDs differ only
     # in the mini ids (Mini0<Mini1<Mini2 by registry order). Canonical-IDs DESC must
     # order them Mini2-row, Mini1-row, Mini0-row.
     rows = [
@@ -334,14 +334,14 @@ def test_canonical_ids_tiebreak_orders_descending_on_base_score_tie() -> None:
     )
 
     # Full order (limit large): the rows differ only in their distinguishing mini
-    # (Mini0/1/2), which sorts to the LAST genome id; canonical-IDs DESC compares
+    # (Mini0/1/2), which sorts to the last loadout ID; canonical-IDs DESC compares
     # left-to-right and decides on that id, so the order is Mini2, Mini1, Mini0.
     idx_full = select_top_base_fg_candidates_reference(
         gear_name_rank=gear_name_rank, mini_sig_id=mini_tab.sig_id, limit=10, **inputs
     )
     mini_top = [int(inputs["mini_ids"][i].max()) for i in idx_full]
     assert mini_top == sorted(mini_top, reverse=True), (
-        "canonical-IDs tie-break must order equal-score survivors by genome ids descending"
+        "canonical-IDs tie-break must order equal-score survivors by loadout IDs descending"
     )
 
     # Cap binds at the tie: limit=1 keeps the HIGHEST canonical-id row (Mini2-row).
@@ -423,7 +423,7 @@ def test_fuzz_reference_matches_host_selected_set(seed: int) -> None:
         rows.append((gear, m, score))
 
     host_cands = [_host_candidate(registry, g, m, s) for (g, m, s) in rows]
-    host_selected = select_top_base_ga_candidates(
+    host_selected = select_top_base_candidates(
         host_cands,
         limit=15,
         registry=registry,
@@ -469,7 +469,7 @@ def test_fuzz_distinct_scores_order_matches_host(seed: int) -> None:
         rows.append((gear, m, int(scores[i])))
 
     host_cands = [_host_candidate(registry, g, m, s) for (g, m, s) in rows]
-    host_selected = select_top_base_ga_candidates(
+    host_selected = select_top_base_candidates(
         host_cands,
         limit=15,
         registry=registry,

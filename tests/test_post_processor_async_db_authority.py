@@ -29,6 +29,13 @@ def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
 def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, init_db
     from gear_optimizer.data.database import _unpack_stats_after_load
+    from gear_optimizer.data.loadout_equivalence import (
+        get_gears_by_name_cached,
+        get_minis_by_name_cached,
+    )
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
+        _representative_mini_names_from_any,
+    )
     from gear_optimizer.pipeline import post_processor
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
@@ -39,12 +46,13 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
 
     calc_song = {
         "metadata": {
+            "Song Name": "pytest_post_processor_exact_authority",
             "Primary Color": "Rush",
             "Secondary Color": "Flow",
             "Long Notes": 0,
             "Last Note Time": 0.0,
         },
-        "song_data": {"timestamps": [0.0]},
+        "song_data": {"timestamps": [0.0], "lanes": [0], "note_types": [1]},
     }
     ref_arrays = _ref_arrays()
     stats = {
@@ -59,6 +67,16 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
     _prebuild_timeline_frontier(calc_song, ref_arrays)
     raw_exact_score = int(score_stats_exact(stats, calc_song, ref_arrays))
     inflated_score = raw_exact_score + 12345
+    gear_names = list(get_gears_by_name_cached())[:6]
+    mini_names = []
+    minis_by_name = get_minis_by_name_cached()
+    for name in minis_by_name:
+        representative = _representative_mini_names_from_any([name])
+        if len(representative) == 1 and representative[0] in minis_by_name:
+            mini_names.append(name)
+        if len(mini_names) == 3:
+            break
+    assert len(gear_names) == 6 and len(mini_names) == 3
 
     monkeypatch.setattr(
         result_events,
@@ -73,7 +91,6 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
     song = make_native_song(
         song_name="pytest_post_processor_exact_authority",
         task_key="pytest_post_processor_exact_authority",
-        ga_seed=789,
         db_key="pytest_post_processor_exact_authority",
         fp="Data/Hard/pytest_post_processor_exact_authority.txt",
         effective_difficulty="Hard",
@@ -81,15 +98,26 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         fg_debug=False,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        ga_candidates=[],
+        base_candidates=[
+            {
+                "Score": inflated_score,
+                "BaseScore": inflated_score,
+                "Gear": list(gear_names),
+                "Minis": list(mini_names),
+                "Data": {
+                    "Stats": dict(stats),
+                    "Selected Element": "Rush",
+                },
+            }
+        ],
         best_data={
             "Score": inflated_score,
             "BaseScore": inflated_score,
             "Stats": dict(stats),
             "Selected Element": "Rush",
         },
-        best_gear=["G1"],
-        best_minis=["M1"],
+        best_gear=list(gear_names),
+        best_minis=list(mini_names),
         current_gear_list=[],
         current_mini_list=[],
         meta_primary_color="Rush",
@@ -98,6 +126,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         attempt_lifetime=0,
         prev_attempts_first=0,
         db_best_fg_score=0,
+        fg_variants=[],
     )
 
     payload = result_events.build_deferred_post_payload(song)
@@ -131,134 +160,3 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
     assert stored_stats != stats
     assert int(row["score"]) != inflated_score
     assert int(row["score"]) == int(score_stats_exact(stored_stats, calc_song, ref_arrays))
-
-
-def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monkeypatch):
-    from gear_optimizer.data.database import get_db_connection, init_db
-    from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
-    from gear_optimizer.pipeline import post_processor
-
-    db_path = tmp_path / "post_processor_fg_update_authority.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    init_db()
-
-    ref_arrays = _get_team_buff_ref_arrays_cached()
-    assert ref_arrays
-    calc_song = get_base_calc_song(r"Data\Hard\00 (Hard) by garlagan.txt", {})
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
-
-    force_payload = {
-        "Score": 32521173,
-        "FT": 1,
-        "FF": 15,
-        "GemCounts": {
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 13,
-            "Element": 61,
-        },
-        "Selected Element": "Rush",
-        "BaseScore": 32518595,
-        "BaseStats": {
-            "Perfect Points": 40,
-            "Combo Multiplier": 50,
-            "Fever Multiplier": 37,
-            "Fever Time": 28,
-            "Fever Fill Rate": 19,
-            "Beat": 0,
-            "Vibe": 44,
-            "Rush": 321,
-            "Flow": 29,
-            "Chill": 33,
-        },
-        "ForceGreats": {"config": {"NonFever1": 5, "NonFever2": 0}, "final_score": 32521173},
-        "forced_counts": [5, 0],
-        # Canonical FG scoring replays the persisted response surface (head bits 0-99
-        # fever + all 1090 body notes fever on the 1190-note chart).
-        "response_surface": [4294967295, 4294967295, 4294967295, 15, 0, 0, 0, 0, 1090, 0, 0],
-    }
-
-    from gear_optimizer.helpers.song_helpers.fg_config import require_response_surface
-    from gear_optimizer.helpers.song_helpers.persistence_payload import normalize_force_payload
-    from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-
-    force_norm = normalize_force_payload(dict(force_payload))
-    expected_fg = int(
-        score_force_greats_response_surface_exact(
-            force_norm["Stats"], calc_song, ref_arrays, require_response_surface(force_norm)
-        )
-    )
-
-    monkeypatch.setattr(post_processor, "print_results", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        "gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached",
-        lambda: ref_arrays,
-    )
-
-    result_queue: queue.Queue = queue.Queue()
-    worker = threading.Thread(
-        target=post_processor.run_post_processor,
-        args=(result_queue, 1),
-        daemon=True,
-    )
-    worker.start()
-    result_queue.put(
-        {
-            "_fg_update": True,
-            "song": "pytest_post_processor_fg_update_authority",
-            "db_key": "pytest_post_processor_fg_update_authority",
-            "file_path": r"Data\Hard\00 (Hard) by garlagan.txt",
-            "cfg_dict": {"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
-            "ref_arrays": ref_arrays,
-            "persist_entries": [
-                {
-                    "score": 32518595,
-                    "fg_score": 32521173,
-                    "fg_base_score": 32518595,
-                    "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
-                    "minis": ["M1", "M2", "M3"],
-                    "details": {
-                        "Stats": {
-                            "Perfect Points": 40,
-                            "Combo Multiplier": 50,
-                            "Fever Multiplier": 76,
-                            "Fever Time": 31,
-                            "Fever Fill Rate": 64,
-                            "Beat": 3,
-                            "Vibe": 89,
-                            "Rush": 726,
-                            "Flow": 29,
-                            "Chill": 33,
-                        },
-                        "SelectedElement": "Rush",
-                        "PrimaryColor": "Rush",
-                        "SecondaryColor": "Rush",
-                    },
-                    "force": force_payload,
-                    "_deferred_fg_update": True,
-                }
-            ],
-        }
-    )
-    result_queue.put(None)
-    worker.join(timeout=15.0)
-
-    assert not worker.is_alive()
-
-    with get_db_connection(str(db_path)) as conn:
-        row = conn.execute(
-            "SELECT score, fg_score, details_json, force_details_json "
-            "FROM team_buff_fg_loadouts "
-            "WHERE song_name = ? AND team_buff = 'T5'",
-            ("pytest_post_processor_fg_update_authority",),
-        ).fetchone()
-
-    assert row is not None
-    stored_details = json.loads(str(row["details_json"] or "{}"))
-    stored_force = json.loads(str(row["force_details_json"] or "{}"))
-    assert int(row["score"]) == 32518595
-    assert int(row["fg_score"]) == expected_fg
-    assert int(stored_details["BaseScore"]) == 32518595
-    assert int(stored_force["BaseScore"]) == 32518595
-    assert int(stored_force["Score"]) == expected_fg

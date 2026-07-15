@@ -35,8 +35,14 @@ def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
 # Isolated GPU unit tests do not run the full app prebuild; call this before real scoring.
 def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
+    apply_timing_envelope(calc_song)
     build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+
+
+def _test_lanes(n_notes: int) -> np.ndarray:
+    return np.arange(int(n_notes), dtype=np.int16) % np.int16(4)
 
 
 def _mock_song(*, name: str, n_notes: int = 16, duration: float = 60.0) -> dict:
@@ -51,7 +57,11 @@ def _mock_song(*, name: str, n_notes: int = 16, duration: float = 60.0) -> dict:
             "Last Note Time": float(timestamps[-1]),
             "Total Notes": int(timestamps.shape[0]),
         },
-        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
+            "lanes": _test_lanes(int(timestamps.shape[0])),
+        },
     }
 
 
@@ -111,7 +121,14 @@ def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, ref_arrays:
 
     # Captured by the loadout-items hook so the synthetic re-solve can recover the per-loadout
     # base/FG stat rows (the real helper would demand 6 gear + 3 mini stat-dicts).
-    def _fake_entry_loadout_items(entry: dict) -> list[dict]:
+    def _fake_entry_loadout_items(
+        entry: dict,
+        calc_song_arg: dict | None = None,
+        *,
+        gears_by_name: dict[str, dict] | None = None,
+        minis_by_name: dict[str, dict] | None = None,
+    ) -> list[dict]:
+        _ = calc_song_arg, gears_by_name, minis_by_name
         e = entry or {}
         details = e.get("details") if isinstance(e.get("details"), dict) else {}
         stats_base = real_ensure_base(details.get("Stats") or {}, _CURRENT_BASE_EFFECT["effect"])
@@ -264,6 +281,7 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
         "song_data": {
             "timestamps": np.linspace(0.0, 10.0, 12, dtype=np.float32),
             "note_types": np.ones(12, dtype=np.int16),
+            "lanes": _test_lanes(12),
         },
     }
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
@@ -1777,7 +1795,11 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
             "Last Note Time": float(timestamps[-1]),
             "Total Notes": int(timestamps.shape[0]),
         },
-        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
+            "lanes": _test_lanes(int(timestamps.shape[0])),
+        },
     }
 
     stats = {
