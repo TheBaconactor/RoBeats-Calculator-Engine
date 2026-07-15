@@ -81,6 +81,20 @@ def encode_pool_stats(
             (2 * primary) + secondary,
         )
 
+    # The semiring's u64 packed dominance keys and the admissible-bound
+    # monotonicity both require the ELEMENTAL lane sum (and therefore each
+    # item's lane contribution) to be nonnegative. Other columns may go
+    # negative (a real catalog item carries Perfect Points -1); those are
+    # owned by the complete-join clamps and validate_exact_quotient.
+    if np.any(rows[:, 5] < 0):
+        bad_row = int(np.argmax(rows[:, 5] < 0))
+        bad_item = items[bad_row]
+        raise ValueError(
+            "Exact Base domains reject negative elemental color stats: "
+            f"item={bad_item.get('Name', bad_item.get('name', '?'))!r} "
+            f"lane={int(rows[bad_row, 5])} - the semiring's packed dominance "
+            "keys and admissible bounds require nonnegative elemental lanes"
+        )
     return rows
 
 

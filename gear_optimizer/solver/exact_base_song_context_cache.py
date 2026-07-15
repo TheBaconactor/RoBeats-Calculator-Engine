@@ -45,6 +45,25 @@ logger = logging.getLogger(__name__)
 _GRID = int(MAX_STAT_INDEX) + 1
 _FILE_SCHEMA = "exact-base-song-context-npz-v1"
 _MULTIPLIER_FILE_SCHEMA = "exact-base-multiplier-bounds-npz-v1"
+
+
+def _savez_deflate1(path: Path, payload: dict[str, np.ndarray]) -> None:
+    """Write a standard ``np.load``-compatible .npz with zlib level 1.
+
+    ``np.savez_compressed`` hardwires zlib level 6, which costs seconds per
+    song on monster-chart payloads while saving only ~10-15% size over level
+    1. This writes the identical npz container (one .npy member per array)
+    through zipfile with ``compresslevel=1``; the read path is untouched.
+    """
+    import zipfile
+
+    with zipfile.ZipFile(
+        path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True
+    ) as archive:
+        for name, value in payload.items():
+            array = np.asarray(value)
+            with archive.open(f"{name}.npy", mode="w", force_zip64=True) as member:
+                np.lib.format.write_array(member, array, allow_pickle=False)
 _MANIFEST_SCHEMA = "exact-base-song-context-manifest-v1"
 _MANIFEST_FILE_NAME = "exact_base_song_context_manifest_v1.json"
 _CACHE_BASE_VERSION = "exact-base-song-context-v1"
@@ -695,7 +714,7 @@ def _store_multiplier_bounds_unlocked(
         f"{path.stem}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp.npz"
     )
     try:
-        np.savez_compressed(tmp, **payload)
+        _savez_deflate1(tmp, payload)
         os.replace(tmp, path)
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -938,7 +957,7 @@ def _store_context_unlocked(
         f"{path.stem}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp.npz"
     )
     try:
-        np.savez_compressed(tmp, **payload)
+        _savez_deflate1(tmp, payload)
         os.replace(tmp, path)
         _record_manifest_entry_unlocked(root, inputs, path)
     except Exception:
