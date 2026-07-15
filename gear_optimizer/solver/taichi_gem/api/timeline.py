@@ -277,6 +277,15 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only unreachable or test-only definitions from the shared producer modules; the Perfect-only
 # recurrence and every persisted Base payload member are unchanged.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # The equal-color Great scoring correction changed only fg_policy.py. That module is kept in
+    # the conservative shared-producer fingerprint, but Base's Perfect-only recurrence and every
+    # persisted timeline payload member are independent of Great score valuation. Preserve the
+    # already-ratified Base lineage explicitly; FG response bundles have their own narrower
+    # compatibility table and version gate.
+    "exact-frontier-v12+logic-1f182e5b89af": (
+        "exact-frontier-v12+logic-4c69b48f08bb",
+        "exact-frontier-v12+logic-9dfe907e66fb",
+    ),
     "exact-frontier-v12+logic-4c69b48f08bb": (
         "exact-frontier-v12+logic-9dfe907e66fb",
     ),
