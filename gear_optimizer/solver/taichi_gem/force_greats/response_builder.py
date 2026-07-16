@@ -6,8 +6,6 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_for_contiguous_great_run
-
 from .fill_crossing import (
     activation_schedule_witnesses_weighted_lane_aware,
     exact_label_hit_intervals,
@@ -163,7 +161,10 @@ def _action_table(*, raw_fever_fill: float, non_fever_base: int, use_forced_grea
 
 
 def _lower_bound_from(timestamps: np.ndarray, value: float) -> int:
-    return int(np.searchsorted(timestamps, np.float32(value), side="left", sorter=None))
+    # Same left-bisect as np.searchsorted(side="left") over the float32 axis, via the
+    # frontier build's numba twin: identical float32 needle rounding and comparisons,
+    # without the per-call numpy dispatch (this sits under the trace-DFS hot loops).
+    return int(_rb_numba._numba_lower_bound_from(timestamps, float(value)))
 
 
 def _edge_end_at_hit(
@@ -492,17 +493,27 @@ def _latest_activation_hit_for_labels(
 ) -> float | None:
     great_start_i = max(0, min(int(great_start), int(n)))
     great_count_i = max(0, int(great_count))
-    return latest_activation_hit_for_contiguous_great_run(
-        activation_index=int(a),
-        hit_lo=float(hit_lo),
-        hit_hi=float(hit_hi),
-        chart_timestamps=timestamps,
-        perfect_high_timestamps=perfect_ts,
-        great_high_timestamps=great_ts,
-        great_start=int(great_start_i),
-        great_count=int(great_count_i),
-        section_end=int(n),
+    # Numba twin of latest_activation_hit_for_contiguous_great_run for the lanes=None,
+    # epsilon=INPUT_ORDER_EPS_SEC(=1e-6) form this DFS always uses: same walk, same
+    # per-note cap arithmetic, minus ~150k Python/numpy dispatches per heavy song.
+    n_eff = min(
+        int(n), int(timestamps.shape[0]), int(perfect_ts.shape[0]), int(great_ts.shape[0])
     )
+    if not (0 <= int(a) < int(n_eff)):
+        raise ValueError("activation_index must be inside the section")
+    cap, valid, _token = _rb_numba._numba_latest_activation_hit_for_contiguous_great_run(
+        int(a),
+        float(hit_lo),
+        float(hit_hi),
+        timestamps,
+        perfect_ts,
+        great_ts,
+        int(great_start_i),
+        int(great_count_i),
+        int(n_eff),
+        0,
+    )
+    return float(cap) if int(valid) else None
 
 
 def _region_run_offsets(*, section_start: int, k: int, n: int, raw_fever_fill: float) -> tuple[int, ...]:

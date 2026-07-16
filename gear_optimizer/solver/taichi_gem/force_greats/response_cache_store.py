@@ -79,6 +79,34 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Trace-materialization host-path batching: the witness scheduler's per-note scalar reads
+    # were hoisted into vectorized precomputes with identical predicates, two response_builder
+    # helpers now route through their existing numba twins (_numba_lower_bound_from /
+    # _numba_latest_activation_hit_for_contiguous_great_run, same float32 arithmetic), and three
+    # zero-reference interval helpers were deleted. Producer output is byte-identical (132-trace
+    # persisted-loadout oracle over the q24 corpus, every row and witness equal), so preserve the
+    # complete already-ratified V31 lineage explicitly.
+    "fg-response-frontier-visible-first-v31+logic-fbd1455e2199": (
+        "fg-response-frontier-visible-first-v31+logic-52861c6156f1",
+        "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
+        "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
+        "fg-response-frontier-visible-first-v31+logic-76140458b749",
+        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
+        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
+        "fg-response-frontier-visible-first-v31+logic-f67224918652",
+        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
+        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
+        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
+        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
+        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
+        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
+        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
     # Same-color Great scoring now preserves the production chart's two color slots and their
     # separate floor operations. This changes only surface scoring: the V31 producer, ordered
     # surfaces, stat-key mapping, and compact sidecars are unchanged. Preserve the complete

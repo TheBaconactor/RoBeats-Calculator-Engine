@@ -255,81 +255,13 @@ def _interval_contains(
     )
 
 
-def _earliest_interval_hit_at_or_after(
-    index: int,
-    threshold: float,
-    primary_low: np.ndarray,
-    primary_high: np.ndarray,
-    secondary_low: np.ndarray | None,
-    secondary_high: np.ndarray | None,
-) -> float | None:
-    """Earliest exact hit in either ordered judgment interval at/after ``threshold``."""
-    i = int(index)
-    floor = float(threshold)
-    candidates: list[float] = []
-    lo = float(primary_low[i])
-    hi = float(primary_high[i])
-    if lo <= hi and floor <= hi:
-        candidates.append(max(float(floor), float(lo)))
-    if secondary_low is not None and secondary_high is not None:
-        lo = float(secondary_low[i])
-        hi = float(secondary_high[i])
-        if lo <= hi and floor <= hi:
-            candidates.append(max(float(floor), float(lo)))
-    return None if not candidates else float(min(candidates))
-
-
-def _earliest_interval_hit(
-    index: int,
-    primary_low: np.ndarray,
-    primary_high: np.ndarray,
-    secondary_low: np.ndarray | None,
-    secondary_high: np.ndarray | None,
-) -> float:
-    hit = _earliest_interval_hit_at_or_after(
-        int(index),
-        -np.inf,
-        primary_low,
-        primary_high,
-        secondary_low,
-        secondary_high,
-    )
-    if hit is None:
-        raise ValueError("activation label has no legal hit interval")
-    return float(hit)
-
-
-def _latest_interval_hit(
-    index: int,
-    primary_low: np.ndarray,
-    primary_high: np.ndarray,
-    secondary_low: np.ndarray | None,
-    secondary_high: np.ndarray | None,
-) -> float:
-    i = int(index)
-    candidates: list[float] = []
-    if float(primary_low[i]) <= float(primary_high[i]):
-        candidates.append(float(primary_high[i]))
-    if (
-        secondary_low is not None
-        and secondary_high is not None
-        and float(secondary_low[i]) <= float(secondary_high[i])
-    ):
-        candidates.append(float(secondary_high[i]))
-    if not candidates:
-        raise ValueError("activation label has no legal hit interval")
-    return float(max(candidates))
-
-
 def _canonical_preactivation_order(
     *,
     selected_by_lane: Sequence[tuple[int, Sequence[int]]],
     activation_hit_timestamp: float,
     predecessor_hit_timestamp: float | None,
-    primary_low: np.ndarray,
-    primary_high: np.ndarray,
-    secondary_low: np.ndarray | None,
-    secondary_high: np.ndarray | None,
+    hit_at_or_after,
+    note_offset: int,
 ) -> tuple[int, ...] | None:
     """Materialize one exact score-preserving cross-lane merge.
 
@@ -348,17 +280,11 @@ def _canonical_preactivation_order(
         for _lane_id, note_indices in selected_by_lane
         for note_idx in note_indices
     )
+    off = int(note_offset)
     head = tuple(sorted(note_idx for note_idx in selected if int(note_idx) < 100))
     head_clock = float(floor)
     for note_idx in head:
-        hit = _earliest_interval_hit_at_or_after(
-            int(note_idx),
-            float(head_clock),
-            primary_low,
-            primary_high,
-            secondary_low,
-            secondary_high,
-        )
+        hit = hit_at_or_after(int(note_idx) - off, float(head_clock))
         if hit is None or float(hit) > h_a:
             return None
         head_clock = float(hit)
@@ -371,14 +297,7 @@ def _canonical_preactivation_order(
             note_idx = int(note_idx_raw)
             if note_idx < 100:
                 continue
-            hit = _earliest_interval_hit_at_or_after(
-                int(note_idx),
-                float(lane_clock),
-                primary_low,
-                primary_high,
-                secondary_low,
-                secondary_high,
-            )
+            hit = hit_at_or_after(int(note_idx) - off, float(lane_clock))
             if hit is None or float(hit) > h_a:
                 return None
             lane_clock = float(hit)
@@ -459,21 +378,60 @@ def activation_schedule_witnesses_weighted_lane_aware(
         raise ValueError("secondary hit timestamps must match the primary interval length")
     if not (start <= a < end <= total):
         raise ValueError("activation_index must be inside [section_start, section_end)")
-    for note_idx in range(int(start), int(end)):
-        primary_valid = bool(
-            np.isfinite(lo[int(note_idx)])
-            and np.isfinite(hi[int(note_idx)])
-            and lo[int(note_idx)] <= hi[int(note_idx)]
-        )
-        secondary_valid = bool(
-            secondary_lo is not None
-            and secondary_hi is not None
-            and np.isfinite(secondary_lo[int(note_idx)])
-            and np.isfinite(secondary_hi[int(note_idx)])
-            and secondary_lo[int(note_idx)] <= secondary_hi[int(note_idx)]
-        )
-        if not primary_valid and not secondary_valid:
-            raise ValueError("activation label must have at least one finite non-empty hit interval")
+    # Batched per-note interval precompute over [start, end): the exact same per-note
+    # scalar reads the loops below previously issued one numpy scalar at a time, hoisted
+    # into vector ops once per call. float32 values embed exactly in float64, and every
+    # comparison below keeps the original predicate (lo <= hi validity, not isfinite), so
+    # this is a pure batching -- no semantic change.
+    off = int(start)
+    sl = slice(int(start), int(end))
+    p_lo64 = lo[sl].astype(np.float64)
+    p_hi64 = hi[sl].astype(np.float64)
+    p_finite_valid = np.isfinite(p_lo64) & np.isfinite(p_hi64) & (p_lo64 <= p_hi64)
+    if secondary_lo is not None and secondary_hi is not None:
+        s_lo64 = secondary_lo[sl].astype(np.float64)
+        s_hi64 = secondary_hi[sl].astype(np.float64)
+        s_finite_valid = np.isfinite(s_lo64) & np.isfinite(s_hi64) & (s_lo64 <= s_hi64)
+        s_ok_arr = s_lo64 <= s_hi64
+    else:
+        s_lo64 = s_hi64 = None
+        s_finite_valid = np.zeros(p_finite_valid.shape, dtype=np.bool_)
+        s_ok_arr = s_finite_valid
+    if not bool(np.all(p_finite_valid | s_finite_valid)):
+        raise ValueError("activation label must have at least one finite non-empty hit interval")
+    p_ok_arr = p_lo64 <= p_hi64
+    earliest_arr = np.where(p_ok_arr, p_lo64, np.inf)
+    latest_arr = np.where(p_ok_arr, p_hi64, -np.inf)
+    if s_lo64 is not None:
+        earliest_arr = np.minimum(earliest_arr, np.where(s_ok_arr, s_lo64, np.inf))
+        latest_arr = np.maximum(latest_arr, np.where(s_ok_arr, s_hi64, -np.inf))
+    earliest_l = earliest_arr.tolist()
+    latest_l = latest_arr.tolist()
+    plo_l = p_lo64.tolist()
+    phi_l = p_hi64.tolist()
+    p_ok_l = p_ok_arr.tolist()
+    slo_l = None if s_lo64 is None else s_lo64.tolist()
+    shi_l = None if s_hi64 is None else s_hi64.tolist()
+    s_ok_l = None if s_lo64 is None else s_ok_arr.tolist()
+
+    def _hit_at_or_after(rel_idx: int, floor: float) -> float | None:
+        # _earliest_interval_hit_at_or_after on the precomputed section lists: identical
+        # candidate math (max(floor, lo) per valid band with floor <= hi, then min).
+        best: float | None = None
+        if p_ok_l[rel_idx]:
+            hi_v = phi_l[rel_idx]
+            if floor <= hi_v:
+                lo_v = plo_l[rel_idx]
+                best = floor if floor > lo_v else lo_v
+        if slo_l is not None and s_ok_l[rel_idx]:
+            hi_v = shi_l[rel_idx]
+            if floor <= hi_v:
+                lo_v = slo_l[rel_idx]
+                candidate = floor if floor > lo_v else lo_v
+                if best is None or candidate < best:
+                    best = candidate
+        return best
+
     half_units = _exact_fill_half_units(units, start=start, end=end)
 
     h_a = np.float32(activation_hit_timestamp)
@@ -481,6 +439,7 @@ def activation_schedule_witnesses_weighted_lane_aware(
         int(a), float(h_a), lo, hi, secondary_lo, secondary_hi
     ):
         return ()
+    h_a_f = float(h_a)
     if predecessor_hit_timestamp is not None and (
         not np.isfinite(float(predecessor_hit_timestamp))
         or float(predecessor_hit_timestamp) > float(h_a)
@@ -493,15 +452,8 @@ def activation_schedule_witnesses_weighted_lane_aware(
             -np.inf if predecessor_hit_timestamp is None else float(predecessor_hit_timestamp)
         )
         for note_idx in range(int(start), min(int(a), 100)):
-            hit = _earliest_interval_hit_at_or_after(
-                int(note_idx),
-                float(required_head_clock),
-                lo,
-                hi,
-                secondary_lo,
-                secondary_hi,
-            )
-            if hit is None or float(hit) > float(h_a):
+            hit = _hit_at_or_after(int(note_idx) - off, float(required_head_clock))
+            if hit is None or float(hit) > h_a_f:
                 return ()
             required_head_clock = float(hit)
 
@@ -513,15 +465,8 @@ def activation_schedule_witnesses_weighted_lane_aware(
             note_idx = int(note_idx_raw)
             if note_idx < 100:
                 continue
-            hit = _earliest_interval_hit_at_or_after(
-                int(note_idx),
-                float(lane_clock),
-                lo,
-                hi,
-                secondary_lo,
-                secondary_hi,
-            )
-            if hit is None or float(hit) > float(h_a):
+            hit = _hit_at_or_after(int(note_idx) - off, float(lane_clock))
+            if hit is None or float(hit) > h_a_f:
                 return False
             lane_clock = float(hit)
         return True
@@ -553,14 +498,7 @@ def activation_schedule_witnesses_weighted_lane_aware(
             -np.inf if predecessor_hit_timestamp is None else float(predecessor_hit_timestamp)
         )
         for note_idx in notes:
-            hit = _earliest_interval_hit_at_or_after(
-                int(note_idx),
-                float(lane_clock),
-                lo,
-                hi,
-                secondary_lo,
-                secondary_hi,
-            )
+            hit = _hit_at_or_after(int(note_idx) - off, float(lane_clock))
             if hit is None:
                 raise ValueError("lane label windows cannot realize chart-order full combo")
             lane_clock = float(hit)
@@ -577,18 +515,11 @@ def activation_schedule_witnesses_weighted_lane_aware(
                 raise ValueError("activation note must occur exactly once in its lane")
             prefix_count = int(activation_positions[0])
             if any(
-                _earliest_interval_hit(
-                    int(note_idx), lo, hi, secondary_lo, secondary_hi
-                )
-                > h_a
-                for note_idx in notes[:prefix_count]
+                earliest_l[int(note_idx) - off] > h_a_f for note_idx in notes[:prefix_count]
             ):
                 return ()
             if any(
-                _latest_interval_hit(
-                    int(note_idx), lo, hi, secondary_lo, secondary_hi
-                )
-                < h_a
+                latest_l[int(note_idx) - off] < h_a_f
                 for note_idx in notes[prefix_count + 1 :]
             ):
                 return ()
@@ -616,15 +547,10 @@ def activation_schedule_witnesses_weighted_lane_aware(
         minimum_count = 0
         maximum_count = len(notes)
         for pos, note_idx in enumerate(notes):
-            if _latest_interval_hit(
-                int(note_idx), lo, hi, secondary_lo, secondary_hi
-            ) < h_a:
+            if latest_l[int(note_idx) - off] < h_a_f:
                 minimum_count = int(pos) + 1
             if (
-                _earliest_interval_hit(
-                    int(note_idx), lo, hi, secondary_lo, secondary_hi
-                )
-                > h_a
+                earliest_l[int(note_idx) - off] > h_a_f
                 and int(maximum_count) == len(notes)
             ):
                 maximum_count = int(pos)
@@ -737,10 +663,8 @@ def activation_schedule_witnesses_weighted_lane_aware(
                 selected_by_lane=selected_by_lane,
                 activation_hit_timestamp=float(h_a),
                 predecessor_hit_timestamp=predecessor_hit_timestamp,
-                primary_low=lo,
-                primary_high=hi,
-                secondary_low=secondary_lo,
-                secondary_high=secondary_hi,
+                hit_at_or_after=_hit_at_or_after,
+                note_offset=off,
             )
             if preactivation_order is None:
                 continue

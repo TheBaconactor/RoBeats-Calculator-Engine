@@ -314,6 +314,23 @@ class FgResultReducer:
         trace_cache = FgTraceMaterializationCache()
         for item in pending_jobs:
             result = item["result"]
+            if not skyline:
+                # Winner pre-gate: survival is fully determined by the exact surface rescore vs
+                # the paired source base, neither of which needs the trace. The trace DFS, the
+                # persist reachability guard, and the physical replay below exist to build and
+                # validate the PERSISTED payload, so run them only for loadouts that can publish.
+                # Same predicate and same fail-loud checks as the payload path; the payload gate
+                # below stays the publish authority on the survivors' materialized values.
+                paired_base_early = safe_int(item["paired_base_score"], 0)
+                if paired_base_early <= 0:
+                    raise ValueError("ForceGreats response frontier is missing paired source base score.")
+                early_score_obj = score_force_greats_response_surface_exact(
+                    result.stats, calc_song, ref_arrays, result.surface
+                )
+                if early_score_obj is None:
+                    raise ValueError("ForceGreats response frontier exact surface replay failed")
+                if int(early_score_obj) <= int(paired_base_early):
+                    continue
             payload = materialize_force_payload_from_response_frontier(
                 eval_data=item["eval_data"],
                 base_stats=item["base_stats"],
