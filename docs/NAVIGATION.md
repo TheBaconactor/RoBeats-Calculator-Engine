@@ -18,11 +18,11 @@
 - Config load (`config.ini` or `METAFINDER_CONFIG_PATH`) -> path discovery (`bin/paths_cache.json`) -> song queue -> native in-flight engine -> post processor -> DB write
 - Production in-flight engine: `gear_optimizer/solver/native_inflight_orchestrator.py`
 - Post-processing: `gear_optimizer/pipeline/post_processor.py`
-- Calculate-only legacy processor: `gear_optimizer/legacy/song_processor.py`
-- GA loop: `gear_optimizer/solver/genetic.py`
+- Calculate-only / gem-only routing: `gear_optimizer/app.py` (`GearOptimizerApp._run_single_iteration`); native in-flight prep in `gear_optimizer/solver/native_inflight_lifecycle_prepare.py`
+- GA loop: `gear_optimizer/solver/genetic_pipeline.py`, `gear_optimizer/solver/genetic_pipeline_decode.py`
 - In-flight support modules: `gear_optimizer/solver/native_inflight_*`
 - Scoring (CPU/GPU dispatch): `gear_optimizer/solver/scoring/`
-- Database/persistence: `gear_optimizer/data/database.py`
+- Database/persistence: `gear_optimizer/data/database/` package (`connection.py`, `persistence.py`, `leaderboards.py`, `songs.py`, `loadout_io.py`, `force_normalize.py`)
 - Config + paths: `gear_optimizer/core/config.py`, `gear_optimizer/core/constants.py`
 
 ## GPU / Taichi
@@ -34,8 +34,8 @@
   - Scoring + gem optimization: `gear_optimizer/solver/taichi_gem/kernels/kernels_scoring.py`
   - Timeline grid computation: `gear_optimizer/solver/taichi_gem/kernels/kernels_timeline.py`
   - GA evaluation/reduction (split): `gear_optimizer/solver/taichi_gem/kernels/ga_eval/`
-    - Reductions + packed-key helpers: `gear_optimizer/solver/taichi_gem/kernels/ga_eval/reduction.py`
-    - FT/FF combo search: `gear_optimizer/solver/taichi_gem/kernels/ga_eval/combo_search.py`
+    - Reductions + packed-key helpers (folded in): `gear_optimizer/solver/taichi_gem/kernels/ga_eval/write_results.py`, `gear_optimizer/solver/taichi_gem/kernels/ga_eval/payload.py`
+    - FT/FF combo search (folded into warm-start): `gear_optimizer/solver/taichi_gem/kernels/ga_eval/warmstart.py` (`ga_find_best_combo_warmstart_kernel`)
     - Materialize best results: `gear_optimizer/solver/taichi_gem/kernels/ga_eval/write_results.py`
     - Global-best tracking: `gear_optimizer/solver/taichi_gem/kernels/ga_eval/global_best.py`
     - Payload packing (CPU download): `gear_optimizer/solver/taichi_gem/kernels/ga_eval/payload.py`

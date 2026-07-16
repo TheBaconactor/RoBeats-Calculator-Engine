@@ -146,65 +146,6 @@ def parse_float(val, default=0.0):
         return default
 
 
-def _signature_base(stats, calc_song, selected_color):
-    meta = calc_song["metadata"]
-    p_color = meta.get("Primary Color", "")
-    s_color = meta.get("Secondary Color", "")
-
-    gs = stats.get
-
-    # Mirror the same Beat/Vibe mapping the solver uses
-    base_beat = gs("Beat", 0)
-    base_vibe = gs("Vibe", 0)
-
-    def get_val_inline(k):
-        if k == "Beat":
-            return base_beat
-        if k == "Vibe":
-            return base_vibe
-        return gs(k, 0)
-
-    # Only capture elemental values that actually feed into P/S lanes
-    base_p_val = get_val_inline(p_color)
-    base_s_val = get_val_inline(s_color)
-
-    return (
-        meta.get("Song Name", ""),
-        meta.get("Difficulty", ""),
-        selected_color,
-        p_color,
-        s_color,
-        gs("Perfect Points", 0),
-        gs("Combo Multiplier", 0),
-        gs("Fever Multiplier", 0),
-        gs("Fever Fill Rate", 0),
-        gs("Fever Time", 0),
-        base_p_val,
-        base_s_val,
-    )
-
-
-def stats_signature(stats, calc_song, selected_color):
-    """
-    Compute a cache key that captures exactly the inputs influencing the gem
-    solver for a given song context. Two loadouts with the same signature will
-    produce identical gem allocations and scores.
-
-    Key insight: elemental stats only matter if they feed into the song's
-    Primary/Secondary/Selected Element paths. Differences in other elements
-    are irrelevant and should share the same cache entry.
-
-    Args:
-        stats: Stats dictionary
-        calc_song: Song calculation context
-        selected_color: Selected element color
-
-    Returns:
-        tuple: Hashable signature for caching
-    """
-    return _signature_base(stats, calc_song, selected_color) + timing_envelope_timing_context(calc_song)
-
-
 def timing_envelope_timing_context(calc_song):
     """
     Return deterministic timing-envelope settings that affect base timing.
@@ -241,16 +182,6 @@ def timing_envelope_full_context(calc_song):
         str(meta.get("TimingEnvelopeFGCarry", "") or "").strip().lower(),
         meta.get("TimingEnvelopeBaselineHash", "") or 0,
     )
-
-
-def full_pipeline_signature(stats, calc_song, selected_color):
-    """
-    Compute an exact-safe cache key for the full base + FG scoring pipeline.
-
-    This is a sufficient key (not necessarily minimal). Equal signatures imply identical
-    scoring results under the repo's semantics for a fixed calc_song.
-    """
-    return _signature_base(stats, calc_song, selected_color) + timing_envelope_full_context(calc_song)
 
 
 def get_selected_element(data: object, default: str = "") -> str:

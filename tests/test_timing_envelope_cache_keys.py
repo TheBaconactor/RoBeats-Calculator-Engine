@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.core.utils import stats_signature, timing_envelope_timing_context
+from gear_optimizer.core.utils import timing_envelope_timing_context
 from gear_optimizer.solver.scoring.stats_scoring import _song_cache_key
 from gear_optimizer.solver.taichi_gem.api.timeline import _song_timing_cache_key
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
@@ -36,21 +36,11 @@ def test_timing_envelope_context_is_stable_for_identical_chart_inputs() -> None:
 
 
 def test_stats_and_timeline_cache_keys_are_stable_with_timing_envelope() -> None:
-    stats = {
-        "Perfect Points": 100,
-        "Combo Multiplier": 100,
-        "Fever Multiplier": 100,
-        "Fever Fill Rate": 100,
-        "Fever Time": 100,
-        "Beat": 200,
-        "Vibe": 150,
-    }
     calc_song_a = _calc_song()
     calc_song_b = _calc_song()
     apply_timing_envelope(calc_song_a)
     apply_timing_envelope(calc_song_b)
 
-    assert stats_signature(stats, calc_song_a, "Beat") == stats_signature(stats, calc_song_b, "Beat")
     assert _song_cache_key(calc_song_a) == _song_cache_key(calc_song_b)
     assert _song_timing_cache_key(calc_song_a) == _song_timing_cache_key(calc_song_b)
 

@@ -21,6 +21,7 @@ from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
 from gear_optimizer.core.recycling_process_pool import BoundedRecyclingProcessPool
 from gear_optimizer.solver.frontier_cache_manifest import (
+    _ref_axes_signature,
     apply_manifest_results as _shared_apply_manifest_results,
     build_manifest_plan as _shared_build_manifest_plan,
 )
@@ -370,12 +371,6 @@ def _cache_version() -> str:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import _FG_RESPONSE_CACHE_VERSION
 
     return str(_FG_RESPONSE_CACHE_VERSION)
-
-
-def _ref_axes_signature(ref_arrays: dict) -> str:
-    ref_ft = np.asarray((ref_arrays or {}).get("Fever Time", ()), dtype=np.float32).reshape(-1)
-    ref_ff = np.asarray((ref_arrays or {}).get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
-    return bytes(array_sig16(ref_ft) + array_sig16(ref_ff)).hex()
 
 
 def _stat_keys_signature(stat_keys: Iterable[tuple[int, int]]) -> str:

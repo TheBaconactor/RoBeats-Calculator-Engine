@@ -7,37 +7,8 @@ from typing import Any
 __all__ = [
     "FgResponseFrontierPreparedBatch",
     "FgResponseFrontierPreparedPlan",
-    "materialize_force_greats_response_frontier_plan_results",
-    "prepare_force_greats_response_frontier_plan_for_ga_candidates",
     "run_force_greats_response_frontier_for_ga_candidates",
 ]
-
-
-def prepare_force_greats_response_frontier_plan_for_ga_candidates(
-    ga_candidates,
-    calc_song,
-    ref_arrays,
-    meta_primary_color,
-    *,
-    ga_registry=None,
-    scoring_bundle=None,
-):
-    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
-
-    return FgPlanner.plan_many(
-        ga_candidates,
-        calc_song,
-        ref_arrays,
-        meta_primary_color,
-        ga_registry=ga_registry,
-        scoring_bundle=scoring_bundle,
-    )
-
-
-def materialize_force_greats_response_frontier_plan_results(plan, prepared_results):
-    from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
-
-    return FgResultReducer.materialize(plan, prepared_results)
 
 
 def run_force_greats_response_frontier_for_ga_candidates(
