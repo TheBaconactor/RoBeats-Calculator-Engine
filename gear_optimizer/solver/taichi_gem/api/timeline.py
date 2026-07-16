@@ -281,29 +281,22 @@ _TIMELINE_DP_SOURCES = (
 _FRONTIER_DISK_CACHE_VERSION = (
     f"{_FRONTIER_DISK_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint(_TIMELINE_DP_SOURCES)}"
 )
-# Exact cache compatibility is deliberately explicit and non-transitive. This cleanup removed
-# only unreachable or test-only definitions from the shared producer modules; the Perfect-only
-# recurrence and every persisted Base payload member are unchanged.
+# Exact cache compatibility is deliberately explicit and non-transitive. Ratification requires a
+# byte gate: a predecessor may be listed only when its persisted payload bytes are proven identical
+# to the current producer's output (e.g. the 132-trace materialization oracle). Issue #161: the
+# earlier v12 lineage entries (logic-1f182e5b89af / 4c69b48f08bb / 9dfe907e66fb) were ratified
+# without such proof and their payloads demonstrably diverge from fresh builds (stale surfaces fail
+# validate_base_physical_replay; fresh builds reconcile clean), so they were pulled — payloads
+# under those fingerprints must miss and rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     # FG trace-materialization host-path batching in the shared producer sources: identical
     # predicates hoisted into vectorized precomputes (fill_crossing witness scheduler), two
     # response_builder helpers routed through their existing numba twins, three zero-reference
     # interval helpers deleted. The Perfect-only recurrence and every persisted Base payload
-    # member are unchanged (byte-identical 132-trace materialization oracle); ratify the
-    # existing exact Base lineage.
+    # member are unchanged (byte-identical 132-trace materialization oracle); ratify only that
+    # proven predecessor.
     "exact-frontier-v12+logic-12c8db234d06": (
         "exact-frontier-v12+logic-e0b0e8ef6411",
-        "exact-frontier-v12+logic-1f182e5b89af",
-        "exact-frontier-v12+logic-4c69b48f08bb",
-        "exact-frontier-v12+logic-9dfe907e66fb",
-    ),
-    # v12 payload bytes are unchanged: this version only narrows the Base fingerprint by removing
-    # FG score valuation. Ratify the existing exact Base lineage once; future FG policy edits no
-    # longer move this version, while any recurrence/geometry edit still fails closed on a new key.
-    "exact-frontier-v12+logic-e0b0e8ef6411": (
-        "exact-frontier-v12+logic-1f182e5b89af",
-        "exact-frontier-v12+logic-4c69b48f08bb",
-        "exact-frontier-v12+logic-9dfe907e66fb",
     ),
 }
 

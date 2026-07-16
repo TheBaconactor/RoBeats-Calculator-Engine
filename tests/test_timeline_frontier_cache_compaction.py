@@ -110,9 +110,6 @@ def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
     assert timeline_api.timeline_frontier_compatible_cache_versions() == (
         current_version,
         "exact-frontier-v12+logic-e0b0e8ef6411",
-        "exact-frontier-v12+logic-1f182e5b89af",
-        "exact-frontier-v12+logic-4c69b48f08bb",
-        "exact-frontier-v12+logic-9dfe907e66fb",
     )
     predecessor = timeline_api.timeline_frontier_compatible_cache_versions()[1]
     current_key = (current_version, "unit", "cleanup-compatible")
