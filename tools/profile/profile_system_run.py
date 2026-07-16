@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import psutil
+from gear_optimizer.core.config import resolve_inflight_songs
 from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _safe_int
 from tools.profile.system_run_common import (
     RunPaths,
@@ -1504,7 +1505,9 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
         "GA_SearchDepth": _cfg_get_int(cfg, "IterationEngine", "GA_SearchDepth", 125),
         "GA_MultiStart": _cfg_get_int(cfg, "IterationEngine", "GA_MultiStart", 3),
         "SongRepeats": _cfg_get_int(cfg, "IterationEngine", "SongRepeats", 1),
-        "InFlightSongs": _cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 1),
+        "InFlightSongs": resolve_inflight_songs(
+            _cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 0)
+        ),
         "FG_CandidateLimit": _cfg_get_int(cfg, "IterationEngine", "FG_CandidateLimit", 51),
         "FG_SearchRadius": _cfg_get_int(cfg, "IterationEngine", "FG_SearchRadius", 1),
     }

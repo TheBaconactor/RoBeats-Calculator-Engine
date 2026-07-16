@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
+import pickle
 import threading
 import time
 from concurrent.futures import Future
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -14,7 +17,19 @@ from gear_optimizer.solver.native_inflight_pipeline import (
     run_fg_job_sync,
     read_native_fg_pipeline_settings,
 )
+from gear_optimizer.solver.fg_materialization_worker import (
+    build_fg_materialization_request,
+    initialize_fg_materialization_worker,
+)
+from gear_optimizer.solver.fg_response_scoring.planner import (
+    FgResponseFrontierPreparedBatch,
+    FgResponseFrontierPreparedPlan,
+)
 from tests.native_song_factory import make_native_song
+
+
+def _echo_process_value(song_key: str, value: int) -> tuple[str, int]:
+    return song_key, value
 
 
 def test_read_native_fg_pipeline_settings_uses_canonical_sizing():
@@ -118,13 +133,78 @@ def test_native_fg_pipeline_queue_pop_and_submit():
         assert popped is song
         assert len(pipeline.pending) == 0
 
-        future = pipeline.submit_job(lambda queued_song, value: (queued_song.config.task_key, value), song, value=7)
+        future = pipeline.submit_job(_echo_process_value, song, song.config.task_key, value=7)
 
-        assert future.result(timeout=2) == ("song-a", 7)
+        assert future.result(timeout=10) == ("song-a", 7)
         assert len(pipeline.futures) == 1
     finally:
         pipeline.shutdown_fg(wait=True, cancel_futures=True)
         pipeline.shutdown_prep(wait=True, cancel_futures=True)
+
+
+def test_fg_materialization_request_strips_driver_only_object_graphs_and_pickles():
+    unpicklable = lambda: None  # noqa: E731
+    eval_data = {"Stats": {"Vibe": 10}, "BaseScore": 123}
+    base_stats = {"Vibe": 10}
+    cache_key = ("Vibe", (("Vibe", 10),))
+    entry = {
+        "gear": [f"gear-{idx}" for idx in range(6)],
+        "minis": [f"mini-{idx}" for idx in range(3)],
+        "score": 123,
+        "base_score": 123,
+        "fg_score": 0,
+        "eval_data": eval_data,
+        "_source": "ga",
+        "_ga_registry": unpicklable,
+        "_candidate_ref": {"unpicklable": unpicklable},
+    }
+    batch = SimpleNamespace(
+        started=1.0,
+        base_components=np.zeros((1, 7), dtype=np.int32),
+        selected_color="Vibe",
+        calc_song={"song_data": {}},
+        ref_arrays={"Perfect Points": np.zeros((1,), dtype=np.float32)},
+        scoring_bundle=SimpleNamespace(cache_key=("bundle",)),
+    )
+    plan = FgResponseFrontierPreparedPlan(
+        calc_song=batch.calc_song,
+        ref_arrays=batch.ref_arrays,
+        pending_jobs=((entry, eval_data, "Vibe", base_stats, 123, cache_key),),
+        prepared_batches=(
+            FgResponseFrontierPreparedBatch(
+                rows=((cache_key, base_stats),),
+                batch=batch,
+            ),
+        ),
+    )
+    song = make_native_song(task_key="pickle-plan", song_name="Pickle Plan")
+    song.runtime.fg.fg_response_frontier_plan = plan
+    song.runtime.fg.fg_owner_score_map = {}
+
+    request = build_fg_materialization_request(song)
+    compact_entry = request.plan.pending_jobs[0][0]
+
+    assert "_ga_registry" not in compact_entry
+    assert "_candidate_ref" not in compact_entry
+    assert compact_entry["gear"] == entry["gear"]
+    assert compact_entry["minis"] == entry["minis"]
+    assert pickle.loads(pickle.dumps(request)).song_key == "pickle-plan"
+
+
+def test_fg_worker_initializer_disables_shared_parent_profile_sink(monkeypatch):
+    names = (
+        "METAFINDER_PROFILE_EVENTS",
+        "METAFINDER_PROFILE_EVENTS_PATH",
+        "PROFILE_EVENTS",
+        "PROFILE_EVENTS_PATH",
+    )
+    for name in names:
+        monkeypatch.setenv(name, "parent-profile")
+
+    initialize_fg_materialization_worker()
+
+    for name in names:
+        assert name not in os.environ
 
 
 def test_native_fg_pipeline_does_not_pop_unready_outside_final_drain():
@@ -251,8 +331,6 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
         release.set()
         pipeline.shutdown_fg(wait=True, cancel_futures=True)
         pipeline.shutdown_prep(wait=True, cancel_futures=True)
-
-
 def test_native_fg_pipeline_finish_completed_prep_owns_future_drain_state():
     pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=2, batch_max=2, prep_workers=2))
     try:
