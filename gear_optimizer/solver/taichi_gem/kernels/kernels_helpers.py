@@ -100,6 +100,7 @@ ga_exact_eval_hash_sort_keys = None  # (MAX_GENOMES,) i32 - hash keys for parall
 ga_exact_eval_hash_sort_indices = None  # (MAX_GENOMES,) i32 - genome indices permuted with hash_sort_keys
 ga_exact_eval_rep_idx = None  # (MAX_GENOMES,) i32 - representative genome index per row
 ga_exact_eval_unique_count = None  # (1,) i32 - number of unique genome rows
+ga_cull_probe_counters = None  # (4,) i32 DEBUG probe (GA_CULL_PROBE): [examined_p1, solved_p1, examined_p2, solved_p2]
 ga_warmstart_lane_best_key = None  # (MAX_GENOMES, GA_FTFF_REDUCE_BLOCK_DIM) u64
 ga_warmstart_lane_best_results = None  # (MAX_GENOMES, GA_FTFF_REDUCE_BLOCK_DIM, 4) i32 [pp, cm, fm, ov]
 skyline_initial_populations = None

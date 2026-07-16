@@ -8,11 +8,12 @@ This module provides GPU-side GA operators (selection, crossover, mutation, eval
 These functions are called from the GPU executor's native in-flight path.
 """
 from __future__ import annotations
+import json
 import time
 import logging
 from types import SimpleNamespace
 import numpy as np
-from gear_optimizer.core.parsing import env_flag
+from gear_optimizer.core.parsing import env_flag, env_str
 try:
     from .. import fields
     from ..fields import MAX_EVALS_PER_DISPATCH
@@ -507,6 +508,32 @@ def ga_prepare_population_base_stats(
         int(is_s_ov),
         0,  # exact-eval reuse-map removed (per-generation host overhead; was always off)
     )
+def _emit_ga_cull_probe_record(path: str, *, song_slot: int, n_genomes: int, n_combos: int) -> None:
+    """Append one GA_CULL_PROBE JSON record (DEBUG-only, gated by GA_CULL_PROBE).
+
+    Reads the (4,) i32 probe counters populated by the pass-1/pass-2 eval loops and
+    appends a single JSON line. `path` is required by the caller (fail-loud on empty).
+
+    Interpretation:
+      hopeless-solve fraction = (solved_p1 - solved_p2) / solved_p1
+          -> eval work reclaimable by a better incumbent warm-up / combo ordering.
+      solved_p2 / examined_p2 = floor imposed by the current relaxed UB looseness
+          -> whether tightening response_score_upper_bound_relaxed is worth pursuing.
+    """
+    counters = np.asarray(fields.ga_cull_probe_counters.to_numpy(), dtype=np.int64).reshape(-1)
+    record = {
+        "song_slot": int(song_slot),
+        "n_genomes": int(n_genomes),
+        "n_combos": int(n_combos),
+        "examined_p1": int(counters[0]),
+        "solved_p1": int(counters[1]),
+        "examined_p2": int(counters[2]),
+        "solved_p2": int(counters[3]),
+    }
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
 def ga_evaluate_prepared_population(
     n_genomes: int,
     n_slots: int = 9,
@@ -594,41 +621,74 @@ def ga_evaluate_prepared_population(
     )
     if combo_chunk <= 0:
         combo_chunk = int(n_combos)
-    offset = 0
-    while offset < n_combos:
-        chunk_len = int(min(combo_chunk, n_combos - offset))
-        if _GA_COMBO_TAIL_MERGE_MAX > 0:
-            rem = int(n_combos - (offset + chunk_len))
-            if 0 < rem <= int(_GA_COMBO_TAIL_MERGE_MAX):
-                merged = int(chunk_len + rem)
-                if int(n_genomes) * int(merged) <= int(max_evals):
-                    chunk_len = merged
-        kernels.ga_find_best_combo_warmstart_kernel(
-            n_genomes,
-            n_combos,
-            int(offset),
-            int(chunk_len),
-            total_budget_i,
-            gem_scale_fever_i,
-            int(is_p_ft),
-            int(is_s_ft),
-            int(is_p_ff),
-            int(is_s_ff),
-            int(is_p_pp),
-            int(is_s_pp),
-            int(is_p_cm),
-            int(is_s_cm),
-            int(is_p_fm),
-            int(is_s_fm),
-            int(is_p_ov),
-            int(is_s_ov),
-            song_slot_i,
-            use_exact_inner_solver_i,
-        )
-        kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
-        offset += int(chunk_len)
+
+    def _run_eval_chunks(probe_mode: int, *, do_finalize: bool) -> None:
+        offset = 0
+        while offset < n_combos:
+            chunk_len = int(min(combo_chunk, n_combos - offset))
+            if _GA_COMBO_TAIL_MERGE_MAX > 0:
+                rem = int(n_combos - (offset + chunk_len))
+                if 0 < rem <= int(_GA_COMBO_TAIL_MERGE_MAX):
+                    merged = int(chunk_len + rem)
+                    if int(n_genomes) * int(merged) <= int(max_evals):
+                        chunk_len = merged
+            kernels.ga_find_best_combo_warmstart_kernel(
+                n_genomes,
+                n_combos,
+                int(offset),
+                int(chunk_len),
+                total_budget_i,
+                gem_scale_fever_i,
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
+                int(is_p_pp),
+                int(is_s_pp),
+                int(is_p_cm),
+                int(is_s_cm),
+                int(is_p_fm),
+                int(is_s_fm),
+                int(is_p_ov),
+                int(is_s_ov),
+                song_slot_i,
+                use_exact_inner_solver_i,
+                int(probe_mode),
+            )
+            if do_finalize:
+                kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
+            offset += int(chunk_len)
+
+    # DEBUG cull-instrumentation (gated, OFF by default). probe_mode == 0 keeps the
+    # eval kernel byte-identical to production (all probe branches dead-code-eliminated
+    # by ti.static). When GA_CULL_PROBE is on we run the normal loop as the counting
+    # pass (probe_mode=1, identical result writes), then a side-effect-free perfect-
+    # incumbent replay (probe_mode=2) AFTER finalize+scatter so it reads the FINAL
+    # winners from chunk_best_key.
+    probe_on = env_flag("GA_CULL_PROBE")
+    probe_path = ""
+    if probe_on:
+        probe_path = env_str("GA_CULL_PROBE_PATH")
+        if not probe_path:
+            raise RuntimeError(
+                "GA_CULL_PROBE is enabled but GA_CULL_PROBE_PATH is empty; "
+                "set GA_CULL_PROBE_PATH to the probe output file path."
+            )
+        fields.ga_cull_probe_counters.from_numpy(np.zeros(4, dtype=np.int32))
+
+    _run_eval_chunks(1 if probe_on else 0, do_finalize=True)
     # Scatter each duplicate genome's winning key/results from its representative row.
     kernels.ga_scatter_dup_results_kernel(n_genomes)
+
+    if probe_on:
+        # Perfect-incumbent replay: finals are now in chunk_best_key; count only, no writes.
+        _run_eval_chunks(2, do_finalize=False)
+        _emit_ga_cull_probe_record(
+            probe_path,
+            song_slot=song_slot_i,
+            n_genomes=int(n_genomes),
+            n_combos=int(n_combos),
+        )
 def _validate_ga_runs_batch(
     *, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int
 ) -> tuple[int, int, int, int]:

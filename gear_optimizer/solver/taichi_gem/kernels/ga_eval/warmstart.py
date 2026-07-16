@@ -28,6 +28,7 @@ def ga_find_best_combo_warmstart_kernel(
     is_s_ov: ti.i32,
     song_slot: ti.i32,
     use_exact_inner_solver: ti.template(),  # retained ABI flag; production requires exact inner solving
+    probe_mode: ti.template(),  # 0=production (byte-identical); 1=counting pass; 2=perfect-incumbent replay (DEBUG GA_CULL_PROBE)
 ):
     """
     GPU-parallel exact per-(genome, FT/FF) evaluation over COMPACTED unique rows.
@@ -63,6 +64,17 @@ def ga_find_best_combo_warmstart_kernel(
         gem_scale_fever: Gems per fever stat point
         is_*: Color contribution flags (0/1)
         song_slot: Grid slot for batch coalescing
+        probe_mode: DEBUG cull-instrumentation selector, statically specialized so
+            probe_mode == 0 dead-code-eliminates every probe branch and compiles to
+            byte-identical production code (all production call sites pass 0):
+            - 0: production. No counters, all result writes as-is.
+            - 1: counting pass with normal semantics — production result writes are
+              unchanged AND ga_cull_probe_counters[0]/[1] count examined/solved combos
+              against the live (lagging) incumbent.
+            - 2: perfect-incumbent replay — cull_threshold is this genome's FINAL winning
+              score (chunk_best_key high 32 bits minus 1, clamped >= 0), counters[2]/[3]
+              count examined/solved, and ALL result writes (lane reset, lane winner,
+              incumbent atomic_max) are compiled out so it is side-effect-free.
     """
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ft << 1) + is_s_ft)
@@ -76,9 +88,12 @@ def ga_find_best_combo_warmstart_kernel(
             continue
         lane = tid - slot_idx * block_dim
         genome_idx = kernels_helpers.ga_unique_slot_to_genome[slot_idx]
-        kernels_helpers.ga_warmstart_lane_best_key[genome_idx, lane] = ti.u64(0)
-        for i in ti.static(range(4)):
-            kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, i] = 0
+        # Mode 2 (perfect-incumbent replay) is side-effect-free: it must not touch the
+        # lane arrays pass 1 already finalized into chunk_best_key.
+        if ti.static(probe_mode != 2):
+            kernels_helpers.ga_warmstart_lane_best_key[genome_idx, lane] = ti.u64(0)
+            for i in ti.static(range(4)):
+                kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, i] = 0
         stats = kernels_helpers.genome_base_stats[genome_idx]
         base_pp: ti.i32 = stats[0]
         base_cm: ti.i32 = stats[1]
@@ -111,10 +126,21 @@ def ga_find_best_combo_warmstart_kernel(
             # culling only ub < incumbent keeps every potential tie, so the
             # winning combo identity (and its tie-break order) is unchanged.
             # Stale reads of the shared incumbent only reduce culling.
-            cull_threshold: ti.i32 = ti.max(
-                local_best_score,
-                kernels_helpers.ga_eval_incumbent_score[genome_idx],
-            )
+            cull_threshold: ti.i32 = 0
+            if ti.static(probe_mode == 2):
+                # Perfect-incumbent replay: cull against this genome's FINAL winning
+                # score (chunk_best_key packs (score+1) in the high 32 bits), exposing
+                # the cull floor a zero-lag incumbent would leave. Loop-invariant read;
+                # the compiler hoists it.
+                cull_threshold = ti.max(
+                    0,
+                    ti.cast(kernels_helpers.chunk_best_key[genome_idx] >> ti.u64(32), ti.i32) - 1,
+                )
+            else:
+                cull_threshold = ti.max(
+                    local_best_score,
+                    kernels_helpers.ga_eval_incumbent_score[genome_idx],
+                )
             res_vec = solve_combo_warmstart_preloaded(
                 genome_idx,
                 combo_idx,
@@ -149,23 +175,35 @@ def ga_find_best_combo_warmstart_kernel(
                 cull_threshold,
             )
             score = res_vec[0]
-            if score >= 0:
-                key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
-                if key > local_best_key:
-                    local_best_key = key
-                    local_best_score = score
-                    local_best_pp = res_vec[1]
-                    local_best_cm = res_vec[2]
-                    local_best_fm = res_vec[3]
-                    local_best_ov = res_vec[4]
-                    ti.atomic_max(kernels_helpers.ga_eval_incumbent_score[genome_idx], score)
+            # DEBUG cull-instrumentation: examined = every combo the loop reaches;
+            # solved = a non-culled valid solve (culled/invalid combos return score < 0).
+            if ti.static(probe_mode == 1):
+                ti.atomic_add(kernels_helpers.ga_cull_probe_counters[0], 1)
+                if score >= 0:
+                    ti.atomic_add(kernels_helpers.ga_cull_probe_counters[1], 1)
+            if ti.static(probe_mode == 2):
+                ti.atomic_add(kernels_helpers.ga_cull_probe_counters[2], 1)
+                if score >= 0:
+                    ti.atomic_add(kernels_helpers.ga_cull_probe_counters[3], 1)
+            if ti.static(probe_mode != 2):
+                if score >= 0:
+                    key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
+                    if key > local_best_key:
+                        local_best_key = key
+                        local_best_score = score
+                        local_best_pp = res_vec[1]
+                        local_best_cm = res_vec[2]
+                        local_best_fm = res_vec[3]
+                        local_best_ov = res_vec[4]
+                        ti.atomic_max(kernels_helpers.ga_eval_incumbent_score[genome_idx], score)
             local_c += block_dim
-        if local_best_key != ti.u64(0):
-            kernels_helpers.ga_warmstart_lane_best_key[genome_idx, lane] = local_best_key
-            kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 0] = local_best_pp
-            kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 1] = local_best_cm
-            kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 2] = local_best_fm
-            kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 3] = local_best_ov
+        if ti.static(probe_mode != 2):
+            if local_best_key != ti.u64(0):
+                kernels_helpers.ga_warmstart_lane_best_key[genome_idx, lane] = local_best_key
+                kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 0] = local_best_pp
+                kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 1] = local_best_cm
+                kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 2] = local_best_fm
+                kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 3] = local_best_ov
 @ti.kernel
 def ga_finalize_warmstart_lane_best_kernel(n_genomes_launch: ti.i32):
     # Compacted like the eval kernel: only unique rows have freshly-written lane

@@ -94,6 +94,7 @@ ga_exact_eval_hash_sort_indices: ti.Field = None  # (MAX_GENOMES,) i32 genome in
 ga_exact_eval_rep_idx: ti.Field = None  # (MAX_GENOMES,) i32 representative genome index per row
 ga_exact_eval_unique_count: ti.Field = None  # (1,) i32 number of unique genome rows
 ga_unique_slot_to_genome: ti.Field = None  # (MAX_GENOMES,) i32 dense unique-row slot -> genome index (compacted eval)
+ga_cull_probe_counters: ti.Field = None  # (4,) i32 DEBUG probe (GA_CULL_PROBE): [examined_p1, solved_p1, examined_p2, solved_p2]
 ga_warmstart_lane_best_key: ti.Field = None  # (MAX_GENOMES, REDUCE_BLOCK_DIM) u64 chunk-local lane winners
 ga_warmstart_lane_best_results: ti.Field = None  # (MAX_GENOMES, REDUCE_BLOCK_DIM, 4) i32 [pp, cm, fm, ov]
 ga_global_best_score: ti.Field = None  # (1,) i32 - best score across all generations
@@ -301,6 +302,7 @@ def reset_fields_state() -> None:
     global ga_exact_eval_hash_used, ga_exact_eval_hash_keys
     global ga_exact_eval_hash_sort_keys, ga_exact_eval_hash_sort_indices
     global ga_exact_eval_rep_idx, ga_exact_eval_unique_count
+    global ga_cull_probe_counters
     global ga_warmstart_lane_best_key, ga_warmstart_lane_best_results
     global slot_start, slot_count
     global genome_result_stats
@@ -367,6 +369,7 @@ def reset_fields_state() -> None:
     ga_exact_eval_hash_sort_indices = None
     ga_exact_eval_rep_idx = None
     ga_exact_eval_unique_count = None
+    ga_cull_probe_counters = None
     ga_warmstart_lane_best_key = None
     ga_warmstart_lane_best_results = None
     slot_start = None
@@ -502,6 +505,7 @@ def allocate_fields():
     global ga_exact_eval_hash_used, ga_exact_eval_hash_keys
     global ga_exact_eval_hash_sort_keys, ga_exact_eval_hash_sort_indices
     global ga_exact_eval_rep_idx, ga_exact_eval_unique_count
+    global ga_cull_probe_counters
     global ga_warmstart_lane_best_key, ga_warmstart_lane_best_results
     global slot_start, slot_count
     global genome_result_stats
@@ -556,6 +560,7 @@ def allocate_fields():
     ga_exact_eval_hash_sort_indices = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_exact_eval_rep_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_exact_eval_unique_count = ti.field(dtype=ti.i32, shape=1)
+    ga_cull_probe_counters = ti.field(dtype=ti.i32, shape=4)
     ga_warmstart_lane_best_key = ti.field(dtype=ti.u64, shape=(MAX_GENOMES, int(GA_FTFF_REDUCE_BLOCK_DIM)))
     ga_warmstart_lane_best_results = ti.field(
         dtype=ti.i32,
@@ -728,6 +733,7 @@ def bind_fields(kernels_module):
     target.ga_exact_eval_hash_sort_indices = ga_exact_eval_hash_sort_indices
     target.ga_exact_eval_rep_idx = ga_exact_eval_rep_idx
     target.ga_exact_eval_unique_count = ga_exact_eval_unique_count
+    target.ga_cull_probe_counters = ga_cull_probe_counters
     target.ga_warmstart_lane_best_key = ga_warmstart_lane_best_key
     target.ga_warmstart_lane_best_results = ga_warmstart_lane_best_results
     target.slot_start = slot_start
