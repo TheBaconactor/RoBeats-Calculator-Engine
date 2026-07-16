@@ -9,6 +9,7 @@ chart-time fever timeline (independent of any timing frontier payload).
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -247,3 +248,50 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_without_disk_cach
     timeline.precompute_timeline_gpu(cs, ref, song_slot=0, prebuilt_frontier=loaded)
 
     assert uploads == [(0, 0)]
+
+
+def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypatch):
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild
+    from gear_optimizer.solver.fg_response_scoring import fixed_timing
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_frontier
+
+    seen: dict[str, object] = {}
+    bundle = object()
+
+    def _ensure(calc_song, ref_arrays, *, stat_keys):
+        seen["ensure"] = tuple(stat_keys)
+
+    def _load(calc_song, ref_arrays, *, stat_keys):
+        seen["load"] = tuple(stat_keys)
+        return bundle
+
+    def _prepare(**kwargs):
+        seen["prepare_bundle"] = kwargs["scoring_bundle"]
+        return object()
+
+    monkeypatch.setattr(
+        fg_response_frontier_cache_prebuild,
+        "ensure_response_frontier_cache_for_calc_song",
+        _ensure,
+    )
+    monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _load)
+    monkeypatch.setattr(response_frontier, "prepare_force_greats_response_frontier_scoring_batch", _prepare)
+    monkeypatch.setattr(
+        response_frontier,
+        "score_prepared_force_greats_response_frontier_batch_cpu_sync",
+        lambda *_args, **_kwargs: [SimpleNamespace(surface="exact-surface")],
+    )
+
+    surfaces = fixed_timing.build_fixed_timing_response_surfaces(
+        [_stats()],
+        _calc_song(),
+        _ref_arrays(),
+        "Rush",
+    )
+
+    assert surfaces == ["exact-surface"]
+    assert seen == {
+        "ensure": ((70, 90),),
+        "load": ((70, 90),),
+        "prepare_bundle": bundle,
+    }

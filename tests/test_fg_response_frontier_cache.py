@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import multiprocessing
 import os
 import sys
 import threading
@@ -48,6 +49,137 @@ def _varying_ref_arrays() -> dict[str, np.ndarray]:
         "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float32),
         "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float32),
     }
+
+
+def _fake_response_frontiers(geometries) -> tuple:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
+        FgResponseFrontierResult,
+        FgResponseSurface,
+    )
+
+    rows = tuple(geometries or ())
+    return tuple(
+        FgResponseFrontierResult(
+            first_frontier=(
+                FgResponseSurface(
+                    (
+                        int(round(float(_row[0]) * 1_000_000.0))
+                        + int(_row[1]) * 10_000
+                        + int(round(float(_row[2]) * 1_000.0))
+                        + idx
+                    )
+                    % (2**31 - 1),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            ),
+            state_frontiers={},
+            states_evaluated=1,
+            actions=1,
+            transitions_evaluated=1,
+            generated_surfaces=1,
+            retained_surfaces_total=1,
+            max_state_frontier=1,
+            non_fever_base=0,
+            seconds=0.0,
+        )
+        for idx, _row in enumerate(rows, start=1)
+    )
+
+
+def _extend_fg_bundle_worker(cache_dir: str, stat_key: tuple[int, int], start_event, result_queue) -> None:
+    try:
+        os.environ["FG_RESPONSE_FRONTIER_CACHE_DIR"] = str(cache_dir)
+        from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+        response_cache.reset_fg_response_frontier_payload_cache()
+
+        def _delayed_build(*, geometries, **_kwargs):
+            time.sleep(0.2)
+            return _fake_response_frontiers(geometries)
+
+        response_cache.build_force_greats_response_first_frontiers_gpu_batch = _delayed_build
+        if not start_event.wait(timeout=10.0):
+            raise TimeoutError("bundle extension start was not released")
+        response_cache.build_or_load_response_frontier_payload(
+            _calc_song(),
+            _varying_ref_arrays(),
+            stat_keys=(stat_key,),
+        )
+        result_queue.put(("ok", stat_key))
+    except BaseException as exc:
+        result_queue.put(("error", f"{type(exc).__name__}: {exc}"))
+
+
+def _read_fg_bundle_across_publish_worker(cache_dir: str, ready_event, published_event, result_queue) -> None:
+    try:
+        os.environ["FG_RESPONSE_FRONTIER_CACHE_DIR"] = str(cache_dir)
+        from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+        response_cache.reset_fg_response_frontier_payload_cache()
+        scoring = response_cache.load_response_frontier_scoring_bundle(
+            _calc_song(),
+            _varying_ref_arrays(),
+            stat_keys=((0, 0),),
+        )
+        frontier_idx = int(scoring.frontier_idx_by_key[(0, 0)])
+        surface_range = (
+            int(scoring.frontier_offsets[frontier_idx]),
+            int(scoring.frontier_lengths[frontier_idx]),
+        )
+        ready_event.set()
+        if not published_event.wait(timeout=10.0):
+            raise TimeoutError("bundle publication did not finish")
+        rows, _coeffs = response_cache.load_first_surface_scoring_rows(
+            scoring.cache_key,
+            (surface_range,),
+            surface_generation=scoring.surface_generation,
+            bundle_path=scoring.bundle_path,
+        )
+        extended = response_cache.load_response_frontier_scoring_bundle(
+            _calc_song(),
+            _varying_ref_arrays(),
+            stat_keys=((1, 0),),
+        )
+        if (1, 0) not in extended.frontier_idx_by_key:
+            raise AssertionError("reader did not observe the completed bundle extension")
+        result_queue.put(("reader_ok", int(rows.shape[0])))
+    except BaseException as exc:
+        result_queue.put(("reader_error", f"{type(exc).__name__}: {exc}"))
+
+
+def _publish_fg_bundle_worker(cache_dir: str, ready_event, published_event, result_queue) -> None:
+    try:
+        os.environ["FG_RESPONSE_FRONTIER_CACHE_DIR"] = str(cache_dir)
+        from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+        response_cache.reset_fg_response_frontier_payload_cache()
+        response_cache.build_force_greats_response_first_frontiers_gpu_batch = (
+            lambda *, geometries, **_kwargs: _fake_response_frontiers(geometries)
+        )
+        if not ready_event.wait(timeout=10.0):
+            raise TimeoutError("reader did not load the previous generation")
+        response_cache.build_or_load_response_frontier_payload(
+            _calc_song(),
+            _varying_ref_arrays(),
+            stat_keys=((1, 0),),
+        )
+        result_queue.put(("writer_ok", None))
+    except BaseException as exc:
+        result_queue.put(("writer_error", f"{type(exc).__name__}: {exc}"))
+    finally:
+        published_event.set()
+
+
+class _InjectedPublicationStop(BaseException):
+    pass
 
 
 def _write_song(path: Path, *, extra_tail: str = "") -> None:
@@ -124,6 +256,38 @@ def test_fg_response_frontier_payload_roundtrips_disk_cache(tmp_path: Path, monk
     )
 
 
+def test_fg_response_frontier_payload_reads_legacy_fixed_sidecars(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
+        _SURFACE_GENERATION_ARRAY_NAME,
+    )
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    response_cache.reset_fg_response_frontier_payload_cache()
+    first = response_cache.build_or_load_response_frontier_payload(
+        _calc_song(),
+        _ref_arrays(),
+        stat_keys=((0, 0),),
+    )
+    generated_sidecars = store._surface_sidecar_paths(first.disk_path)
+    legacy_sidecars = store._surface_sidecar_paths(first.disk_path, generation=None)
+    for generated, legacy in zip(generated_sidecars, legacy_sidecars, strict=True):
+        os.replace(generated, legacy)
+    _remove_npz_array(first.disk_path, _SURFACE_GENERATION_ARRAY_NAME)
+    assert store.fg_response_cache_file_is_complete(first.disk_path, stat_keys=((0, 0),))
+
+    response_cache.reset_fg_response_frontier_payload_cache()
+    restored = response_cache.build_or_load_response_frontier_payload(
+        _calc_song(),
+        _ref_arrays(),
+        stat_keys=((0, 0),),
+    )
+    assert restored.cache_source == "disk"
+    assert store._surface_sidecar_paths(first.disk_path) == legacy_sidecars
+    assert restored.payload.frontier_for_stats(ft_stat=0, ff_stat=0).first_frontier
+
+
 def test_fg_response_frontier_payload_reuses_old_disk_cache_without_ttl(tmp_path: Path, monkeypatch) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
@@ -168,6 +332,9 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
     assert row_sidecar.exists()
     assert pattern_sidecar.exists()
     with np.load(first.disk_path, allow_pickle=False) as data:
+        surface_generation = str(data["surface_generation"].item())
+        assert surface_generation in row_sidecar.name
+        assert surface_generation in pattern_sidecar.name
         assert data["stat_keys"].dtype == np.dtype("uint8")
         assert data["stat_keys"].flags.f_contiguous
         assert data["frontier_meta"].flags.f_contiguous
@@ -663,9 +830,10 @@ def test_issue149_v31_accepts_only_ratified_predecessors() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
-    assert current_version == "fg-response-frontier-visible-first-v31+logic-52861c6156f1"
+    assert current_version == "fg-response-frontier-visible-first-v31+logic-04e3683c0789"
     assert response_cache_store.fg_response_compatible_cache_versions() == (
         current_version,
+        "fg-response-frontier-visible-first-v31+logic-52861c6156f1",
         "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
         "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
         "fg-response-frontier-visible-first-v31+logic-76140458b749",
@@ -989,6 +1157,138 @@ def test_fg_response_frontier_disk_bundle_reuses_overlapping_stat_keys(tmp_path:
     assert set(second.payload.frontier_by_key) == {(1, 0), (2, 0)}
     assert [len(call) for call in calls] == [2, 1]
     assert len(list(tmp_path.glob("*.npz"))) == 1
+
+
+def test_fg_response_frontier_bundle_extensions_union_across_processes(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        response_cache,
+        "build_force_greats_response_first_frontiers_gpu_batch",
+        lambda *, geometries, **_kwargs: _fake_response_frontiers(geometries),
+    )
+    response_cache.reset_fg_response_frontier_payload_cache()
+    response_cache.build_or_load_response_frontier_payload(
+        _calc_song(),
+        _varying_ref_arrays(),
+        stat_keys=((0, 0),),
+    )
+    response_cache.reset_fg_response_frontier_payload_cache()
+
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    result_queue = context.Queue()
+    workers = (
+        context.Process(target=_extend_fg_bundle_worker, args=(str(tmp_path), (1, 0), start_event, result_queue)),
+        context.Process(target=_extend_fg_bundle_worker, args=(str(tmp_path), (2, 0), start_event, result_queue)),
+    )
+    for worker in workers:
+        worker.start()
+    start_event.set()
+    results = [result_queue.get(timeout=20.0) for _worker in workers]
+    for worker in workers:
+        worker.join(timeout=20.0)
+        assert worker.exitcode == 0
+    assert sorted(results) == [("ok", (1, 0)), ("ok", (2, 0))]
+
+    response_cache.reset_fg_response_frontier_payload_cache()
+    bundle_key = response_cache.fg_response_frontier_bundle_cache_key(_calc_song(), _varying_ref_arrays())
+    bundle = response_cache._load_payload(bundle_key)
+    assert bundle is not None
+    assert set(bundle.frontier_by_key) == {(0, 0), (1, 0), (2, 0)}
+
+
+def test_fg_response_frontier_reader_keeps_one_generation_during_publish(tmp_path: Path, monkeypatch) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        response_cache,
+        "build_force_greats_response_first_frontiers_gpu_batch",
+        lambda *, geometries, **_kwargs: _fake_response_frontiers(geometries),
+    )
+    response_cache.reset_fg_response_frontier_payload_cache()
+    response_cache.build_or_load_response_frontier_payload(
+        _calc_song(),
+        _varying_ref_arrays(),
+        stat_keys=((0, 0),),
+    )
+
+    context = multiprocessing.get_context("spawn")
+    ready_event = context.Event()
+    published_event = context.Event()
+    result_queue = context.Queue()
+    reader = context.Process(
+        target=_read_fg_bundle_across_publish_worker,
+        args=(str(tmp_path), ready_event, published_event, result_queue),
+    )
+    writer = context.Process(
+        target=_publish_fg_bundle_worker,
+        args=(str(tmp_path), ready_event, published_event, result_queue),
+    )
+    reader.start()
+    writer.start()
+    results = [result_queue.get(timeout=20.0) for _process in (reader, writer)]
+    for process in (reader, writer):
+        process.join(timeout=20.0)
+        assert process.exitcode == 0
+    result_kinds = {kind for kind, _value in results}
+    assert result_kinds == {"reader_ok", "writer_ok"}, results
+
+
+@pytest.mark.parametrize("fail_after_sidecar", (1, 2))
+def test_fg_response_frontier_failed_publish_keeps_previous_generation_readable(
+    tmp_path: Path,
+    monkeypatch,
+    fail_after_sidecar: int,
+) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        response_cache,
+        "build_force_greats_response_first_frontiers_gpu_batch",
+        lambda *, geometries, **_kwargs: _fake_response_frontiers(geometries),
+    )
+    response_cache.reset_fg_response_frontier_payload_cache()
+    response_cache.build_or_load_response_frontier_payload(
+        _calc_song(),
+        _varying_ref_arrays(),
+        stat_keys=((0, 0),),
+    )
+    bundle_key = response_cache.fg_response_frontier_bundle_cache_key(_calc_song(), _varying_ref_arrays())
+    bundle_path = response_cache.resolve_fg_response_bundle_path(bundle_key)
+    previous_sidecars = store._surface_sidecar_paths(bundle_path)
+    previous_bundle = store._load_payload(bundle_key)
+    assert previous_bundle is not None
+    update, _source = response_cache._build_response_frontier_cache_payload(
+        _calc_song(),
+        _varying_ref_arrays(),
+        stat_keys=((1, 0),),
+    )
+    merged = response_cache._merge_payloads(previous_bundle, update)
+
+    real_save = store._save_surface_sidecar_atomic
+    writes = 0
+
+    def _stop_after_write(path: Path, array: np.ndarray) -> None:
+        nonlocal writes
+        real_save(path, array)
+        writes += 1
+        if writes == int(fail_after_sidecar):
+            raise _InjectedPublicationStop
+
+    monkeypatch.setattr(store, "_save_surface_sidecar_atomic", _stop_after_write)
+    with pytest.raises(_InjectedPublicationStop):
+        store._save_payload(bundle_key, merged)
+
+    response_cache.reset_fg_response_frontier_payload_cache()
+    assert store._surface_sidecar_paths(bundle_path) == previous_sidecars
+    restored = store._load_payload(bundle_key)
+    assert restored is not None
+    assert set(restored.frontier_by_key) == {(0, 0)}
 
 
 def test_fg_response_frontier_bundle_builds_are_single_owner(tmp_path: Path, monkeypatch) -> None:
@@ -1545,6 +1845,41 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
     assert batch.scoring_surface_pattern_head_coeffs is None
     assert batch.scoring_group_offsets is None
     assert batch.scoring_group_lengths is None
+
+
+def test_required_response_stat_keys_are_the_complete_legal_ftff_projection() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        required_response_stat_keys_for_scoring_batch,
+    )
+
+    rows = (
+        {"Fever Time": -2, "Fever Fill Rate": 158},
+        {"Fever Time": 159, "Fever Fill Rate": 159},
+    )
+    expected = (
+        (0, 158),
+        (0, 160),
+        (1, 158),
+        (1, 160),
+        (4, 158),
+        (159, 159),
+        (159, 160),
+        (160, 159),
+        (160, 160),
+    )
+
+    assert required_response_stat_keys_for_scoring_batch(
+        base_stats_list=rows,
+        total_budget=2,
+    ) == expected
+    assert required_response_stat_keys_for_scoring_batch(
+        base_stats_list=({}, {}),
+        base_stats7_list=(
+            (0, 0, 0, 0, 0, -2, 158),
+            (0, 0, 0, 0, 0, 159, 159),
+        ),
+        total_budget=2,
+    ) == expected
 
 
 def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> None:

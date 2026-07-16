@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import zipfile
 from collections import OrderedDict
 from pathlib import Path
@@ -36,6 +37,8 @@ from .response_cache_types import (
     _MEMORY_CACHE_MAX,
     _PAYLOAD_CACHE_MAX,
     _SCORING_BUNDLE_ARRAY_NAMES,
+    _SURFACE_BUNDLE_PATH_ARRAY_NAME,
+    _SURFACE_GENERATION_ARRAY_NAME,
     FgResponseFrontierCachePayload,
     FgResponseFrontierScoringBundle,
     _normalize_stat_key,
@@ -79,6 +82,30 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Transactional publication adds an immutable sidecar generation to the metadata and carries
+    # that storage snapshot through lazy readers. The producer, stat-key mapping, ordered logical
+    # surfaces, and scores are unchanged, and legacy fixed-sidecar bundles remain directly readable.
+    "fg-response-frontier-visible-first-v31+logic-04e3683c0789": (
+        "fg-response-frontier-visible-first-v31+logic-52861c6156f1",
+        "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
+        "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
+        "fg-response-frontier-visible-first-v31+logic-76140458b749",
+        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
+        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
+        "fg-response-frontier-visible-first-v31+logic-f67224918652",
+        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
+        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
+        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
+        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
+        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
+        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
+        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
     # Same-color Great scoring now preserves the production chart's two color slots and their
     # separate floor operations. This changes only surface scoring: the V31 producer, ordered
     # surfaces, stat-key mapping, and compact sidecars are unchanged. Preserve the complete
@@ -443,37 +470,94 @@ class FgResponseSurfaceSidecarError(RuntimeError):
     miss -- it must surface loudly so the human re-runs the re-pack, never silently rebuild."""
 
 
-def _surface_sidecar_paths(bundle_path: Path) -> tuple[Path, Path]:
-    """Return (row_sidecar, pattern_sidecar) paths for a bundle .npz path.
+_UNSPECIFIED_SURFACE_GENERATION = object()
 
-    Both sidecars share the bundle digest stem so they migrate/evict as one unit.
+
+def _normalize_surface_generation(value: object) -> str | None:
+    if value is None:
+        return None
+    array = np.asarray(value)
+    if int(array.size) != 1:
+        raise FgResponseSurfaceSidecarError("FG response frontier surface generation metadata is invalid")
+    generation = str(array.item())
+    if not generation:
+        return None
+    try:
+        normalized = uuid.UUID(hex=generation).hex
+    except (AttributeError, ValueError) as exc:
+        raise FgResponseSurfaceSidecarError(
+            "FG response frontier surface generation metadata is invalid"
+        ) from exc
+    if normalized != generation:
+        raise FgResponseSurfaceSidecarError("FG response frontier surface generation metadata is invalid")
+    return generation
+
+
+def _surface_generation_from_bundle_data(data) -> str | None:
+    if _SURFACE_GENERATION_ARRAY_NAME not in data.files:
+        return None
+    return _normalize_surface_generation(data[_SURFACE_GENERATION_ARRAY_NAME])
+
+
+def _surface_generation_from_bundle_path(bundle_path: Path) -> str | None:
+    path = Path(bundle_path)
+    if not path.is_file():
+        return None
+    with np.load(path, allow_pickle=False) as data:
+        return _surface_generation_from_bundle_data(data)
+
+
+def _surface_sidecar_paths(
+    bundle_path: Path,
+    *,
+    generation: str | None | object = _UNSPECIFIED_SURFACE_GENERATION,
+) -> tuple[Path, Path]:
+    """Return the immutable sidecars referenced by one bundle metadata generation.
+
+    Existing V30/V31 bundles have no generation member and retain their fixed legacy sidecars.
     """
     base = Path(bundle_path)
     if base.suffix != ".npz":
         raise ValueError(f"FG response frontier bundle path must be a .npz: {base}")
     stem = base.name[: -len(".npz")]
+    if generation is _UNSPECIFIED_SURFACE_GENERATION:
+        normalized_generation = _surface_generation_from_bundle_path(base)
+    else:
+        normalized_generation = _normalize_surface_generation(generation)
+    sidecar_stem = stem if normalized_generation is None else f"{stem}.{normalized_generation}"
     return (
-        base.with_name(f"{stem}{_SURFACE_ROW_SIDECAR_SUFFIX}"),
-        base.with_name(f"{stem}{_SURFACE_PATTERN_SIDECAR_SUFFIX}"),
+        base.with_name(f"{sidecar_stem}{_SURFACE_ROW_SIDECAR_SUFFIX}"),
+        base.with_name(f"{sidecar_stem}{_SURFACE_PATTERN_SIDECAR_SUFFIX}"),
     )
 
 
 def _stale_surface_sidecar_paths(bundle_path: Path) -> tuple[Path, ...]:
     """All known sidecars to delete with a stale bundle; no obsolete format is readable."""
-    current = _surface_sidecar_paths(bundle_path)
     base = Path(bundle_path)
     stem = base.name[: -len(".npz")]
+    current = (
+        base.with_name(f"{stem}{_SURFACE_ROW_SIDECAR_SUFFIX}"),
+        base.with_name(f"{stem}{_SURFACE_PATTERN_SIDECAR_SUFFIX}"),
+        *base.parent.glob(f"{stem}.*{_SURFACE_ROW_SIDECAR_SUFFIX}"),
+        *base.parent.glob(f"{stem}.*{_SURFACE_PATTERN_SIDECAR_SUFFIX}"),
+    )
     obsolete = tuple(base.with_name(f"{stem}{suffix}") for suffix in _OBSOLETE_SURFACE_SIDECAR_SUFFIXES)
-    return (*current, *obsolete)
+    return tuple(dict.fromkeys((*current, *obsolete)))
 
 
-def _surface_sidecar_paths_for_key(cache_key: tuple) -> tuple[Path, Path]:
-    return _surface_sidecar_paths(resolve_fg_response_bundle_path(cache_key))
+def _surface_sidecar_paths_for_key(
+    cache_key: tuple,
+    *,
+    generation: str | None | object = _UNSPECIFIED_SURFACE_GENERATION,
+    bundle_path: str | Path | None = None,
+) -> tuple[Path, Path]:
+    resolved_path = resolve_fg_response_bundle_path(cache_key) if bundle_path is None else Path(bundle_path)
+    return _surface_sidecar_paths(resolved_path, generation=generation)
 
 
 def _remove_fg_response_bundle_files(bundle_path: Path) -> int:
     removed = 0
-    for path in (bundle_path, *_surface_sidecar_paths(bundle_path)):
+    for path in (bundle_path, *_stale_surface_sidecar_paths(bundle_path)):
         if not path.exists():
             continue
         try:
@@ -869,7 +953,8 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
     from .response_inner_host import _precompute_surface_head_coeffs
 
     path = _fg_response_disk_cache_path(cache_key)
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths(path)
+    surface_generation = uuid.uuid4().hex
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths(path, generation=surface_generation)
     tmp: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -898,14 +983,16 @@ def _save_payload(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> 
             first_surface_pattern_coeffs,
         )
         surface_pattern_count = int(first_surface_patterns.shape[0])
-        # Sidecars first (atomic each), then the slim .npz last: a present .npz implies both exact
-        # row/pattern stores are present. The full expanded arrays are never persisted.
+        # Publish immutable generation sidecars first, then atomically replace the sole metadata
+        # pointer. Readers that already opened the old metadata keep resolving the old immutable
+        # files; an interruption before the final replace leaves that generation fully readable.
         _save_surface_sidecar_atomic(row_sidecar, first_surface_rows)
         _save_surface_sidecar_atomic(pattern_sidecar, first_surface_patterns)
         _save_npz_fast_compressed(
             tmp,
             {
                 "version": np.asarray(_fg_response_cache_version()),
+                _SURFACE_GENERATION_ARRAY_NAME: np.asarray(surface_generation),
                 "stat_keys": np.asfortranarray(_as_uint8_exact("FG response stat keys", stat_keys)),
                 "frontier_ids": np.asarray(
                     [frontier_id_by_object[id(frontier)] for _key, frontier in sorted_items],
@@ -957,12 +1044,13 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
     path = _live_fg_response_bundle_path(resolve_fg_response_bundle_path(cache_key))
     if path is None:
         return None
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths(path)
     try:
         with np.load(path, allow_pickle=False) as data:
             version = str(data["version"].item())
             if not _fg_response_cache_version_is_compatible(version):
                 return None
+            surface_generation = _surface_generation_from_bundle_data(data)
+            row_sidecar, pattern_sidecar = _surface_sidecar_paths(path, generation=surface_generation)
             stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
             frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
             frontiers = _unpack_frontiers(
@@ -1005,17 +1093,20 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
     if path is None:
         return None
     required = {"version", *_SCORING_BUNDLE_ARRAY_NAMES}
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths(path)
+    legacy_required = required - {_SURFACE_GENERATION_ARRAY_NAME}
     try:
         with np.load(path, allow_pickle=False) as data:
             files = set(data.files)
             # Slim .npz: exactly the metadata set, no surface chunk members. The surfaces are the two
-            # uncompressed sidecars validated below.
-            if files != required:
+            # uncompressed sidecars validated below. Legacy fixed-sidecar bundles remain readable;
+            # every new write includes one immutable sidecar generation.
+            if files not in (required, legacy_required):
                 return None
             version = str(data["version"].item())
             if not _fg_response_cache_version_is_compatible(version):
                 return None
+            surface_generation = _surface_generation_from_bundle_data(data)
+            row_sidecar, pattern_sidecar = _surface_sidecar_paths(path, generation=surface_generation)
             stat_keys = np.asarray(data["stat_keys"], dtype=np.int32)
             frontier_ids = np.asarray(data["frontier_ids"], dtype=np.int32)
             meta = np.asarray(data["frontier_meta"], dtype=np.int32)
@@ -1094,9 +1185,12 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
     requested = tuple(dict.fromkeys(str(name) for name in names))
     if not requested:
         raise ValueError("FG response frontier bundle array request was empty")
+    snapshot_names = tuple(
+        dict.fromkeys((*requested, _SURFACE_GENERATION_ARRAY_NAME, _SURFACE_BUNDLE_PATH_ARRAY_NAME))
+    )
     with _frontier_cache_lock:
         cached = _memory_cache_get_locked(_bundle_array_cache, _bundle_array_cache_last_access, cache_key)
-        if cached is not None and all(name in cached for name in requested):
+        if cached is not None and all(name in cached for name in snapshot_names):
             return {name: cached[name] for name in requested}
     bundle_path = resolve_fg_response_bundle_path(cache_key)
     path = _live_fg_response_bundle_path(bundle_path)
@@ -1106,13 +1200,31 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
         version = str(data["version"].item())
         if not _fg_response_cache_version_is_compatible(version):
             raise ValueError("FG response frontier bundle cache version is invalid")
-        missing = [name for name in requested if name not in data.files]
+        missing = [
+            name
+            for name in snapshot_names
+            if name not in (_SURFACE_GENERATION_ARRAY_NAME, _SURFACE_BUNDLE_PATH_ARRAY_NAME)
+            and name not in data.files
+        ]
         if missing:
             raise ValueError(f"FG response frontier bundle cache is missing arrays: {missing[:5]!r}")
-        loaded = {name: np.asarray(data[name]) for name in requested}
+        surface_generation = _surface_generation_from_bundle_data(data)
+        loaded = {
+            name: np.asarray(data[name])
+            for name in snapshot_names
+            if name not in (_SURFACE_GENERATION_ARRAY_NAME, _SURFACE_BUNDLE_PATH_ARRAY_NAME)
+        }
+        loaded[_SURFACE_GENERATION_ARRAY_NAME] = np.asarray(surface_generation or "")
+        loaded[_SURFACE_BUNDLE_PATH_ARRAY_NAME] = np.asarray(str(path))
     with _frontier_cache_lock:
         cached = _bundle_array_cache.get(cache_key)
-        if cached is None:
+        cached_generation = None
+        if cached is not None and _SURFACE_GENERATION_ARRAY_NAME in cached:
+            cached_generation = _normalize_surface_generation(cached[_SURFACE_GENERATION_ARRAY_NAME])
+        cached_path = None
+        if cached is not None and _SURFACE_BUNDLE_PATH_ARRAY_NAME in cached:
+            cached_path = str(np.asarray(cached[_SURFACE_BUNDLE_PATH_ARRAY_NAME]).item())
+        if cached is None or cached_generation != surface_generation or cached_path != str(path):
             cached = {}
             _bundle_array_cache[cache_key] = cached
         cached.update(loaded)
@@ -1137,28 +1249,78 @@ def _normalize_surface_ranges(ranges: Iterable[tuple[int, int]]) -> tuple[tuple[
     return tuple(normalized)
 
 
-def _surface_counts_for_key(cache_key: tuple) -> tuple[int, int]:
+def _surface_counts_for_key(cache_key: tuple) -> tuple[int, int, str | None, Path]:
     arrays = _load_bundle_array_members(
         cache_key,
-        names=("first_surface_row_count", "first_surface_pattern_count"),
+        names=(
+            "first_surface_row_count",
+            "first_surface_pattern_count",
+            _SURFACE_GENERATION_ARRAY_NAME,
+            _SURFACE_BUNDLE_PATH_ARRAY_NAME,
+        ),
     )
     row_count = int(np.asarray(arrays["first_surface_row_count"]).item())
     pattern_count = int(np.asarray(arrays["first_surface_pattern_count"]).item())
+    surface_generation = _normalize_surface_generation(arrays[_SURFACE_GENERATION_ARRAY_NAME])
+    bundle_path = Path(str(np.asarray(arrays[_SURFACE_BUNDLE_PATH_ARRAY_NAME]).item()))
     if row_count < 0:
         raise ValueError("FG response frontier bundle has a negative surface row count")
     if pattern_count <= 0:
         raise ValueError("FG response frontier bundle has no surface head patterns")
-    return int(row_count), int(pattern_count)
+    return int(row_count), int(pattern_count), surface_generation, bundle_path
+
+
+def _surface_counts_from_sidecars(row_sidecar: Path, pattern_sidecar: Path) -> tuple[int, int]:
+    row_header = _surface_sidecar_header(row_sidecar)
+    pattern_header = _surface_sidecar_header(pattern_sidecar)
+    if (
+        row_header is None
+        or len(row_header[0]) != 2
+        or int(row_header[0][1]) != SURFACE_ROW_COLUMNS
+        or row_header[1] != np.dtype(np.uint32)
+    ):
+        raise FgResponseSurfaceSidecarError(f"FG response frontier surface sidecar has invalid shape: {row_sidecar}")
+    if (
+        pattern_header is None
+        or len(pattern_header[0]) != 2
+        or int(pattern_header[0][1]) != SURFACE_PATTERN_COLUMNS
+        or pattern_header[1] != np.dtype(np.uint32)
+    ):
+        raise FgResponseSurfaceSidecarError(
+            f"FG response frontier surface sidecar has invalid shape: {pattern_sidecar}"
+        )
+    row_count = int(row_header[0][0])
+    pattern_count = int(pattern_header[0][0])
+    if row_count < 0 or pattern_count <= 0:
+        raise FgResponseSurfaceSidecarError("FG response frontier surface sidecar has invalid row counts")
+    return row_count, pattern_count
 
 
 def load_first_surface_scoring_rows(
     cache_key: tuple,
     ranges: Iterable[tuple[int, int]],
+    *,
+    surface_generation: str | None | object = _UNSPECIFIED_SURFACE_GENERATION,
+    bundle_path: str | Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     started = time.perf_counter()
     normalized = _normalize_surface_ranges(ranges)
-    surface_row_count, surface_pattern_count = _surface_counts_for_key(cache_key)
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths_for_key(cache_key)
+    if surface_generation is _UNSPECIFIED_SURFACE_GENERATION:
+        surface_row_count, surface_pattern_count, resolved_generation, resolved_bundle_path = (
+            _surface_counts_for_key(cache_key)
+        )
+        row_sidecar, pattern_sidecar = _surface_sidecar_paths_for_key(
+            cache_key,
+            generation=resolved_generation,
+            bundle_path=resolved_bundle_path,
+        )
+    else:
+        row_sidecar, pattern_sidecar = _surface_sidecar_paths_for_key(
+            cache_key,
+            generation=surface_generation,
+            bundle_path=bundle_path,
+        )
+        surface_row_count, surface_pattern_count = _surface_counts_from_sidecars(row_sidecar, pattern_sidecar)
     row_count = sum(int(count) for _start, count in normalized)
     row_refs = np.empty((int(row_count), SURFACE_ROW_COLUMNS), dtype=np.uint32)
     load_t0 = time.perf_counter()
@@ -1196,6 +1358,9 @@ def load_first_surface_scoring_rows(
 def load_first_surface_scoring_patterns(
     cache_key: tuple,
     ranges: Iterable[tuple[int, int]],
+    *,
+    surface_generation: str | None | object = _UNSPECIFIED_SURFACE_GENERATION,
+    bundle_path: str | Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load the canonical compact scoring representation for requested frontier ranges.
 
@@ -1205,8 +1370,22 @@ def load_first_surface_scoring_patterns(
     """
     started = time.perf_counter()
     normalized = _normalize_surface_ranges(ranges)
-    surface_row_count, surface_pattern_count = _surface_counts_for_key(cache_key)
-    row_sidecar, pattern_sidecar = _surface_sidecar_paths_for_key(cache_key)
+    if surface_generation is _UNSPECIFIED_SURFACE_GENERATION:
+        surface_row_count, surface_pattern_count, resolved_generation, resolved_bundle_path = (
+            _surface_counts_for_key(cache_key)
+        )
+        row_sidecar, pattern_sidecar = _surface_sidecar_paths_for_key(
+            cache_key,
+            generation=resolved_generation,
+            bundle_path=resolved_bundle_path,
+        )
+    else:
+        row_sidecar, pattern_sidecar = _surface_sidecar_paths_for_key(
+            cache_key,
+            generation=surface_generation,
+            bundle_path=bundle_path,
+        )
+        surface_row_count, surface_pattern_count = _surface_counts_from_sidecars(row_sidecar, pattern_sidecar)
     row_count = sum(int(count) for _start, count in normalized)
     row_refs = np.empty((int(row_count), SURFACE_ROW_COLUMNS), dtype=np.uint32)
     load_t0 = time.perf_counter()

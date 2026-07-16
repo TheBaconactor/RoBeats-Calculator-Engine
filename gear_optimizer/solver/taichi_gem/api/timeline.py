@@ -886,30 +886,35 @@ def _build_zero_ms_timeline_payload(calc_song: dict, ref_arrays: dict) -> Timeli
     body_normal_pool = np.zeros((1, pool_cap), dtype=np.int32)
     masks_pool = np.zeros((1, pool_cap, 4), dtype=np.uint32)
     head_coeffs_pool = np.zeros((1, pool_cap, 4), dtype=np.int16)
-    mask_buffer = np.zeros(total_notes, dtype=np.bool_)
     long_notes = int(metadata.get("Long Notes", 0) or 0)
     last_note_time = float(metadata.get("Last Note Time", float(timestamps[-1]) if total_notes else 0.0) or 0.0)
     pool_by_surface: dict[tuple[int, int, tuple[int, int, int, int], int, int], int] = {}
 
-    from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
+    from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
+
+    last_fever_end = np.zeros((grid_size, grid_size), dtype=np.int32)
+    calculate_fever_timeline_surface_grid(
+        timestamps,
+        total_notes,
+        ref_ft,
+        ref_ff,
+        long_notes,
+        last_note_time,
+        grid_count_body_fever[0],
+        grid_count_body_normal[0],
+        grid_fever_masks_bits[0],
+        grid_fever_activations[0],
+        last_fever_end,
+    )
+    grid_gap[0] = int(total_notes) - last_fever_end
 
     for ft_idx in range(grid_size):
         for ff_idx in range(grid_size):
-            head_mask, body_fever, body_normal, activations, last_end = calculate_fever_timeline_indices(
-                timestamps,
-                total_notes,
-                float(ref_ff[ff_idx]),
-                float(ref_ft[ft_idx]),
-                long_notes,
-                last_note_time,
-                mask_buffer,
-            )
-            words = [0, 0, 0, 0]
-            for note_idx, is_fever in enumerate(head_mask):
-                if bool(is_fever):
-                    words[note_idx // 32] |= 1 << (note_idx % 32)
-            word_tuple = tuple(int(word) for word in words)
-            gap = int(total_notes - int(last_end))
+            body_fever = int(grid_count_body_fever[0, ft_idx, ff_idx])
+            body_normal = int(grid_count_body_normal[0, ft_idx, ff_idx])
+            word_tuple = tuple(int(word) for word in grid_fever_masks_bits[0, ft_idx, ff_idx])
+            activations = int(grid_fever_activations[0, ft_idx, ff_idx])
+            gap = int(grid_gap[0, ft_idx, ff_idx])
             surface = (int(body_fever), int(body_normal), word_tuple, int(activations), gap)
             pool_idx = pool_by_surface.get(surface)
             if pool_idx is None:
@@ -924,12 +929,7 @@ def _build_zero_ms_timeline_payload(calc_song: dict, ref_arrays: dict) -> Timeli
                     _head_mask_coefficients_py(*word_tuple, head_len=min(total_notes, 100)),
                     dtype=np.int16,
                 )
-            grid_count_body_fever[0, ft_idx, ff_idx] = int(body_fever)
-            grid_count_body_normal[0, ft_idx, ff_idx] = int(body_normal)
-            grid_fever_masks_bits[0, ft_idx, ff_idx, :] = np.asarray(word_tuple, dtype=np.uint32)
             grid_frontier_offset[0, ft_idx, ff_idx] = int(pool_idx)
-            grid_gap[0, ft_idx, ff_idx] = gap
-            grid_fever_activations[0, ft_idx, ff_idx] = int(activations)
 
     return TimelineFrontierGridPayload(
         grid_count_body_fever=grid_count_body_fever,
