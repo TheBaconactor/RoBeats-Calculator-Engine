@@ -19,6 +19,16 @@ _FIRST_ONLY_REDUCER_THREADS = max(1, int(os.cpu_count() or 1))
 # depends only on the per-thread call sequence (and bit-exactness never depends on the epoch
 # values themselves, only on their monotone carry).
 _STAMP_EPOCH_RESET_LIMIT = 1 << 30
+_FRONTIER_SYSTEM_RESERVE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def _first_frontier_available_memory_bytes() -> int | None:
+    try:
+        import psutil
+
+        return max(0, int(psutil.virtual_memory().available))
+    except (ImportError, OSError, RuntimeError):
+        return None
 
 
 class _FirstFrontierStampWorkspace:
@@ -248,6 +258,19 @@ class _FirstFrontierWorkspacePlan:
         self.allocations = 0
         self.allocated_bytes = 0
 
+    @property
+    def bytes_per_thread(self) -> int:
+        itemsize = np.dtype(np.int32).itemsize
+        return int(
+            itemsize
+            * (
+                3 * int(self.pair_capacity)
+                + 2 * int(self.bit_capacity)
+                + 2 * int(self.branch_a_capacity)
+                + 4 * (int(self.n) + 1)
+            )
+        )
+
     def thread_workspace(self) -> _FirstFrontierStampWorkspace:
         workspace = getattr(_WORKSPACE_TLS, "workspace", None)
         if (
@@ -268,6 +291,26 @@ class _FirstFrontierWorkspacePlan:
                 self.allocations += 1
                 self.allocated_bytes += int(workspace.total_bytes)
         return workspace
+
+
+def _admit_first_frontier_workspace(plan: _FirstFrontierWorkspacePlan, *, worker_count: int) -> int:
+    """Fail before allocation when exact reducer scratch cannot fit current physical memory."""
+    workers = max(1, int(worker_count))
+    required = int(plan.bytes_per_thread) * workers
+    available = _first_frontier_available_memory_bytes()
+    if available is None:
+        return required
+    # Preserve 25% of currently available memory for region tables, payloads, GPU/runtime state,
+    # and the OS, capped at 2 GiB on large hosts. The workspace component itself is exact.
+    reserve = min(int(_FRONTIER_SYSTEM_RESERVE_MAX_BYTES), int(available) // 4)
+    budget = max(0, int(available) - int(reserve))
+    if required > budget:
+        raise MemoryError(
+            "FG first-frontier workspace rejected before allocation: "
+            f"requires {required} bytes for {workers} worker(s), budget {budget} bytes "
+            f"from {available} currently available bytes"
+        )
+    return required
 
 
 def configure_force_greats_response_first_frontier_threads(max_threads: int) -> int:

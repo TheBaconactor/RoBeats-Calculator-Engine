@@ -100,9 +100,9 @@ def _release_solve_slot() -> None:
         _active_solves = max(0, _active_solves - 1)
         _admission.notify_all()
 
-# Canonical persistent frontier caches. Website solves must use the same artifacts as direct
-# MetaFinder runs and deployment prebuilds; a website-specific cache creates split authority and
-# makes an uploaded production cache invisible to live requests.
+# Canonical persistent frontier caches for official charts. Custom charts override both paths with
+# their disposable per-job workspace; official solves keep the same authority as direct MetaFinder
+# runs and deployment prebuilds.
 _TIMELINE_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "timeline_frontier_cache"
 _FG_RESPONSE_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "fg_response_frontier_cache"
 _TIMELINE_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -113,10 +113,11 @@ _FG_RESPONSE_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # place, so a partial file is never observed and the last writer wins on identical content.
 
 # Body-size cap for /optimize: reject anything absurd with 413 so an oversized body can't be read
-# into memory. Sized to fit the worst-case translated chart the website accepts (up to 200k hit
-# objects, holds doubling rows, JSON-escaped) with margin; the website also caps chartText below
-# this before sending. Belongs behind loopback/private + bearer auth regardless.
+# into memory. Sized above the website's 4k optimizer-event translated-chart limit with JSON-escape
+# margin; the website also caps chartText before sending. Belongs behind loopback/private + bearer
+# auth regardless.
 _MAX_BODY_BYTES = max(1024, env_int("ROBEATSMETA_OPTIMIZER_MAX_BODY_BYTES", 32 * 1024 * 1024))
+_MAX_CUSTOM_CHART_EVENTS = max(1, env_int("ROBEATSMETA_OPTIMIZER_MAX_CUSTOM_EVENTS", 4_000))
 
 # Hard wall-clock cap on a single solve subprocess: on timeout the whole process group is killed
 # (so main.py's GPU/worker children don't linger) and the request fails. Must exceed a real solve.
@@ -433,6 +434,23 @@ def chart_text_for_request(request: dict[str, Any]) -> str:
     )[0]
 
 
+def _validate_custom_chart_event_limit(chart_text: str) -> None:
+    in_song_data = False
+    event_count = 0
+    for raw in chart_text.splitlines():
+        line = raw.strip()
+        if not in_song_data:
+            in_song_data = line == "Song Data"
+            continue
+        if not line:
+            continue
+        event_count += 1
+        if event_count > _MAX_CUSTOM_CHART_EVENTS:
+            raise RequestError(
+                f"custom chart exceeds {_MAX_CUSTOM_CHART_EVENTS} replay events"
+            )
+
+
 def chart_text_and_result_song_name_for_request(request: dict[str, Any], *, fallback_name: str) -> tuple[str, str]:
     """Return the chart text plus the song_name key expected in the result DB."""
     fallback = _job_slug(fallback_name)
@@ -468,6 +486,7 @@ def _solve_isolated(
     repeats: int,
     reasoning: str = "default",
     timing_mode: str = "perfect_window",
+    ephemeral_frontiers: bool = False,
 ) -> list[dict[str, Any]]:
     """Run the canonical optimizer pipeline once in a throwaway per-job workspace."""
     work = _service_run_root() / job
@@ -499,14 +518,16 @@ def _solve_isolated(
         encoding="utf-8",
     )
     db_path = work / "result.db"
+    timeline_cache_dir = work / "bin" / "timeline_frontier_cache" if ephemeral_frontiers else _TIMELINE_FRONTIER_CACHE_DIR
+    fg_cache_dir = work / "bin" / "fg_response_frontier_cache" if ephemeral_frontiers else _FG_RESPONSE_FRONTIER_CACHE_DIR
     env = {
         **os.environ,
         "EVOLUTION_DB_PATH": str(db_path),
         "METAFINDER_CONFIG_PATH": str(work / "config.ini"),
         "ROBEATSMETA_OPTIMIZER_DATA_DIR": str(data_dir),
         "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(work / "bin"),
-        "TIMELINE_FRONTIER_CACHE_DIR": str(_TIMELINE_FRONTIER_CACHE_DIR),
-        "FG_RESPONSE_FRONTIER_CACHE_DIR": str(_FG_RESPONSE_FRONTIER_CACHE_DIR),
+        "TIMELINE_FRONTIER_CACHE_DIR": str(timeline_cache_dir),
+        "FG_RESPONSE_FRONTIER_CACHE_DIR": str(fg_cache_dir),
     }
     with _SOLVE_SEMAPHORE:
         _acquire_solve_slot()  # memory-headroom gate: hold here until it's safe to add a solve
@@ -553,6 +574,8 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     """
     job = _job_slug(request.get("jobId") or request.get("resultKey"))
     chart_text, result_song_name = chart_text_and_result_song_name_for_request(request, fallback_name=job)
+    if str(request.get("chartText") or "").strip():
+        _validate_custom_chart_event_limit(chart_text)
     repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
     reasoning = _normalize_reasoning(request.get("reasoning"))
     timing_mode = _normalize_timing_mode(request.get("timingMode"))
@@ -561,7 +584,15 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         logger.info("joining in-flight optimizer solve for job %s", job)
         return state.wait()
     try:
-        state.result = _solve_isolated(job, chart_text, result_song_name, repeats, reasoning, timing_mode)
+        state.result = _solve_isolated(
+            job,
+            chart_text,
+            result_song_name,
+            repeats,
+            reasoning,
+            timing_mode,
+            ephemeral_frontiers=bool(str(request.get("chartText") or "").strip()),
+        )
         return state.result
     except BaseException as exc:
         state.error = exc

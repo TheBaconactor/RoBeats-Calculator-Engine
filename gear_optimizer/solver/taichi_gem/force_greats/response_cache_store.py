@@ -17,6 +17,7 @@ from numpy.lib import format as np_format
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.solver.frontier_cache_scope import frontier_cache_is_ephemeral
 
 from .response_cache_keys import (
     _fg_response_disk_cache_dir,
@@ -79,6 +80,30 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Custom-cache routing and the exact pre-allocation workspace admission check change neither
+    # an admitted frontier nor its compact bundle bytes. Preserve the prior complete V31 lineage
+    # so official caches remain authoritative while custom requests use disposable storage.
+    "fg-response-frontier-visible-first-v31+logic-2042ea22ebba": (
+        "fg-response-frontier-visible-first-v31+logic-52861c6156f1",
+        "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
+        "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
+        "fg-response-frontier-visible-first-v31+logic-76140458b749",
+        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
+        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
+        "fg-response-frontier-visible-first-v31+logic-f67224918652",
+        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
+        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
+        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
+        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
+        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
+        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
+        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
     # Same-color Great scoring now preserves the production chart's two color slots and their
     # separate floor operations. This changes only surface scoring: the V31 producer, ordered
     # surfaces, stat-key mapping, and compact sidecars are unchanged. Preserve the complete
@@ -776,6 +801,8 @@ def _persisted_packed_frontier_metadata(
 
 
 def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
+    if frontier_cache_is_ephemeral():
+        return None
     with _frontier_cache_lock:
         frontier = _memory_cache_get_locked(_frontier_cache, _frontier_cache_last_access, cache_key)
         return frontier if isinstance(frontier, FgResponseFrontierResult) else None
@@ -788,6 +815,8 @@ def _frontier_is_complete(frontier: FgResponseFrontierResult | None) -> bool:
 def _memory_put(cache_key: tuple, frontier: FgResponseFrontierResult) -> None:
     if not frontier.first_frontier:
         raise ValueError("FG response frontier cache requires first-frontier surfaces")
+    if frontier_cache_is_ephemeral():
+        return
     with _frontier_cache_lock:
         _memory_cache_put_locked(
             _frontier_cache,
@@ -799,12 +828,16 @@ def _memory_put(cache_key: tuple, frontier: FgResponseFrontierResult) -> None:
 
 
 def _payload_memory_get(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
+    if frontier_cache_is_ephemeral():
+        return None
     with _frontier_cache_lock:
         payload = _memory_cache_get_locked(_payload_cache, _payload_cache_last_access, cache_key)
         return payload if isinstance(payload, FgResponseFrontierCachePayload) else None
 
 
 def _payload_memory_put(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
+    if frontier_cache_is_ephemeral():
+        return
     with _frontier_cache_lock:
         _memory_cache_put_locked(
             _payload_cache,
@@ -1094,10 +1127,12 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
     requested = tuple(dict.fromkeys(str(name) for name in names))
     if not requested:
         raise ValueError("FG response frontier bundle array request was empty")
-    with _frontier_cache_lock:
-        cached = _memory_cache_get_locked(_bundle_array_cache, _bundle_array_cache_last_access, cache_key)
-        if cached is not None and all(name in cached for name in requested):
-            return {name: cached[name] for name in requested}
+    ephemeral = frontier_cache_is_ephemeral()
+    if not ephemeral:
+        with _frontier_cache_lock:
+            cached = _memory_cache_get_locked(_bundle_array_cache, _bundle_array_cache_last_access, cache_key)
+            if cached is not None and all(name in cached for name in requested):
+                return {name: cached[name] for name in requested}
     bundle_path = resolve_fg_response_bundle_path(cache_key)
     path = _live_fg_response_bundle_path(bundle_path)
     if path is None:
@@ -1110,6 +1145,8 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
         if missing:
             raise ValueError(f"FG response frontier bundle cache is missing arrays: {missing[:5]!r}")
         loaded = {name: np.asarray(data[name]) for name in requested}
+    if ephemeral:
+        return loaded
     with _frontier_cache_lock:
         cached = _bundle_array_cache.get(cache_key)
         if cached is None:
@@ -1261,12 +1298,16 @@ def _invalidate_bundle_array_views(bundle_key: tuple) -> None:
 
 
 def _scoring_bundle_memory_get(bundle_key: tuple) -> FgResponseFrontierScoringBundle | None:
+    if frontier_cache_is_ephemeral():
+        return None
     with _frontier_cache_lock:
         cached = _memory_cache_get_locked(_scoring_bundle_cache, _scoring_bundle_cache_last_access, bundle_key)
         return cached if isinstance(cached, FgResponseFrontierScoringBundle) else None
 
 
 def _scoring_bundle_memory_put(bundle_key: tuple, scoring_bundle: FgResponseFrontierScoringBundle) -> None:
+    if frontier_cache_is_ephemeral():
+        return
     with _frontier_cache_lock:
         _memory_cache_put_locked(
             _scoring_bundle_cache,

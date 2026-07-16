@@ -14,8 +14,10 @@ from .response_build_gpu_precompute import (
 )
 from . import response_build_gpu_numba as _rb_numba
 from .response_build_gpu_reducer import (
+    _admit_first_frontier_workspace,
     _early_great_extension_gap_bound,
     _FirstFrontierWorkspacePlan,
+    _resolve_first_only_reducer_threads,
     _song_first_frontier_pair_mod_bound,
 )
 from .response_build_gpu_scheduler import (
@@ -307,6 +309,14 @@ def _build_force_greats_response_first_frontiers_gpu_batch(
             eg_gap_bound=_early_great_extension_gap_bound(floor_ts, great_floor_ts),
         ),
     )
+    workspace_workers = max(
+        _resolve_first_only_reducer_threads(len(grouped_items)),
+        max(
+            (_resolve_first_only_reducer_threads(len(group_items)) for group_items in grouped_items.values()),
+            default=1,
+        ),
+    )
+    _admit_first_frontier_workspace(workspace_plan, worker_count=workspace_workers)
 
     empty_region_table: tuple | None = None
     if not bool(use_forced_great_timing):
