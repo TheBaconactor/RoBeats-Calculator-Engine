@@ -3514,12 +3514,10 @@ def _numba_head_envelope_filter(frontier, lo_pos, hi_pos, min_surfaces):
 
 
 @njit(cache=True, nogil=True)
-def _numba_session_surface_basis(
-    fl, fh, gl, gh, bf, bg, bfg, lo_pos: int, hi_pos: int, c_lo: float, c_hi: float
+def _numba_session_pattern_basis(
+    fl, fh, gl, gh, lo_pos: int, hi_pos: int, c_lo: float, c_hi: float
 ):
-    """Session-box twin of `_numba_head_surface_basis`: identical construction with the combo
-    ramp slopes taken from the SESSION box corners instead of the global _HEAD_DOM_C. Serve-side
-    only (the packed uint32 pool format); the build path is untouched."""
+    """Head-only portion of the session basis, shared by every row with this mask pattern."""
     lo = int(lo_pos)
     hi = int(hi_pos)
     hlen = hi - lo
@@ -3558,15 +3556,39 @@ def _numba_session_surface_basis(
         fh,
         gl,
         gh,
-        np.int64(bf),
-        np.int64(bg) - np.int64(bfg),
-        np.int64(bfg),
         b_lo,
         c_lo_arr,
         d_lo,
         b_hi,
         c_hi_arr,
         d_hi,
+    )
+
+
+@njit(cache=True, nogil=True)
+def _numba_session_surface_basis(
+    fl, fh, gl, gh, bf, bg, bfg, lo_pos: int, hi_pos: int, c_lo: float, c_hi: float
+):
+    """Session-box twin of `_numba_head_surface_basis`: identical construction with the combo
+    ramp slopes taken from the SESSION box corners instead of the global _HEAD_DOM_C. Serve-side
+    only (the packed uint32 pool format); the build path is untouched."""
+    pattern_basis = _numba_session_pattern_basis(
+        fl, fh, gl, gh, int(lo_pos), int(hi_pos), float(c_lo), float(c_hi)
+    )
+    return (
+        pattern_basis[0],
+        pattern_basis[1],
+        pattern_basis[2],
+        pattern_basis[3],
+        np.int64(bf),
+        np.int64(bg) - np.int64(bfg),
+        np.int64(bfg),
+        pattern_basis[4],
+        pattern_basis[5],
+        pattern_basis[6],
+        pattern_basis[7],
+        pattern_basis[8],
+        pattern_basis[9],
     )
 
 
@@ -3592,7 +3614,8 @@ def _numba_session_corner_scores_row(
 
 @njit(cache=True, nogil=True)
 def _numba_session_box_keep_mask(
-    words,
+    pattern_ids,
+    pattern_words,
     counts,
     offsets,
     lengths,
@@ -3612,10 +3635,32 @@ def _numba_session_box_keep_mask(
     corners at the SESSION's realizable stat box instead of the global _HEAD_DOM box. A dropped
     row is dominated at every session-reachable cell (multilinear extrema at the covering box's
     corners; the per-pair floor margin is box-independent), so the pruned pool serves the SAME
-    winner for every cell this solve can evaluate. Rows: words (N,8) uint32 mask words, counts
-    (N,3) int32 body counts."""
-    total = int(words.shape[0])
+    winner for every cell this solve can evaluate. Rows stay compact: pattern_ids (N,) selects
+    one pattern_words (P,8) uint32 head mask, while counts (N,3) carries row-local body counts.
+    The head basis is computed once per pattern rather than once per row."""
+    total = int(pattern_ids.shape[0])
     keep = np.zeros(total, dtype=np.bool_)
+    pattern_count = int(pattern_words.shape[0])
+    pattern_masks = np.empty((pattern_count, 4), dtype=np.uint64)
+    pattern_terms = np.empty((pattern_count, 6), dtype=np.float64)
+    for pattern_idx in range(pattern_count):
+        fl = np.uint64(pattern_words[pattern_idx, 0]) | (np.uint64(pattern_words[pattern_idx, 1]) << np.uint64(32))
+        fh = np.uint64(pattern_words[pattern_idx, 2]) | (np.uint64(pattern_words[pattern_idx, 3]) << np.uint64(32))
+        gl = np.uint64(pattern_words[pattern_idx, 4]) | (np.uint64(pattern_words[pattern_idx, 5]) << np.uint64(32))
+        gh = np.uint64(pattern_words[pattern_idx, 6]) | (np.uint64(pattern_words[pattern_idx, 7]) << np.uint64(32))
+        pattern_basis = _numba_session_pattern_basis(
+            fl, fh, gl, gh, int(lo_pos), int(hi_pos), float(c_lo), float(c_hi)
+        )
+        pattern_masks[pattern_idx, 0] = pattern_basis[0]
+        pattern_masks[pattern_idx, 1] = pattern_basis[1]
+        pattern_masks[pattern_idx, 2] = pattern_basis[2]
+        pattern_masks[pattern_idx, 3] = pattern_basis[3]
+        pattern_terms[pattern_idx, 0] = pattern_basis[4]
+        pattern_terms[pattern_idx, 1] = pattern_basis[5]
+        pattern_terms[pattern_idx, 2] = pattern_basis[6]
+        pattern_terms[pattern_idx, 3] = pattern_basis[7]
+        pattern_terms[pattern_idx, 4] = pattern_basis[8]
+        pattern_terms[pattern_idx, 5] = pattern_basis[9]
     frontier_count = int(lengths.shape[0])
     for frontier_idx in range(frontier_count):
         start = int(offsets[int(frontier_idx)])
@@ -3628,14 +3673,21 @@ def _numba_session_box_keep_mask(
         kept_count = 0
         for local_idx in range(length):
             row_idx = start + local_idx
-            fl = np.uint64(words[row_idx, 0]) | (np.uint64(words[row_idx, 1]) << np.uint64(32))
-            fh = np.uint64(words[row_idx, 2]) | (np.uint64(words[row_idx, 3]) << np.uint64(32))
-            gl = np.uint64(words[row_idx, 4]) | (np.uint64(words[row_idx, 5]) << np.uint64(32))
-            gh = np.uint64(words[row_idx, 6]) | (np.uint64(words[row_idx, 7]) << np.uint64(32))
-            basis = _numba_session_surface_basis(
-                fl, fh, gl, gh,
-                np.uint64(counts[row_idx, 0]), np.uint64(counts[row_idx, 1]), np.uint64(counts[row_idx, 2]),
-                int(lo_pos), int(hi_pos), float(c_lo), float(c_hi),
+            pattern_idx = int(pattern_ids[row_idx])
+            basis = (
+                pattern_masks[pattern_idx, 0],
+                pattern_masks[pattern_idx, 1],
+                pattern_masks[pattern_idx, 2],
+                pattern_masks[pattern_idx, 3],
+                np.int64(counts[row_idx, 0]),
+                np.int64(counts[row_idx, 1]) - np.int64(counts[row_idx, 2]),
+                np.int64(counts[row_idx, 2]),
+                pattern_terms[pattern_idx, 0],
+                pattern_terms[pattern_idx, 1],
+                pattern_terms[pattern_idx, 2],
+                pattern_terms[pattern_idx, 3],
+                pattern_terms[pattern_idx, 4],
+                pattern_terms[pattern_idx, 5],
             )
             basis_list.append(basis)
             _numba_session_corner_scores_row(

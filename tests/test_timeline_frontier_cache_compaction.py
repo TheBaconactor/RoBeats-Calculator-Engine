@@ -106,9 +106,10 @@ def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
 ) -> None:
     payload = _build_small_payload()
     current_version = timeline_api._FRONTIER_DISK_CACHE_VERSION
-    assert current_version == "exact-frontier-v12+logic-12c8db234d06"
+    assert current_version == "exact-frontier-v12+logic-61d6f59cade0"
     assert timeline_api.timeline_frontier_compatible_cache_versions() == (
         current_version,
+        "exact-frontier-v12+logic-12c8db234d06",
         "exact-frontier-v12+logic-e0b0e8ef6411",
         "exact-frontier-v12+logic-1f182e5b89af",
         "exact-frontier-v12+logic-4c69b48f08bb",
