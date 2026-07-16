@@ -1122,6 +1122,8 @@ def build_fused_owner_solve_result_from_score_row(
     scoring_bundle: FgResponseFrontierScoringBundle,
     started: float | None = None,
     include_forced_counts: bool = False,
+    song_inputs: Any | None = None,
+    frontier_by_stat_key: dict[tuple[int, int], FgResponseFrontierResult] | None = None,
 ) -> FgResponseFrontierSolveResult:
     """Materialize the final FG solve result for one candidate from the owner row.
 
@@ -1134,16 +1136,30 @@ def build_fused_owner_solve_result_from_score_row(
     The frontier is reconstructed from ``(ft_stat, ff_stat)`` + the song-level
     scoring bundle, exactly as ``materialize_prepared_force_greats_response_frontier
     _batch_results`` does for the SCORE-request path.
+
+    ``song_inputs`` and ``frontier_by_stat_key`` are the song-invariant hoists a
+    caller materializing a whole batch shares across candidates (mirroring the batch
+    materialize sibling): ``song_inputs`` is a pure function of ``calc_song`` and the
+    frontier is a pure function of ``(ft_stat, ff_stat)`` over the same song/ref/
+    scoring bundle, so passing them makes the per-candidate fingerprint + extract a
+    once-per-batch cost. Both default to the standalone per-call computation, keeping
+    single-candidate callers byte-identical.
     """
-    frontier = frontier_result_from_scoring_bundle_for_stats(
-        calc_song,
-        ref_arrays,
-        scoring_bundle,
-        ft_stat=int(score_row.ft_stat),
-        ff_stat=int(score_row.ff_stat),
-    )
+    stat_key = (int(score_row.ft_stat), int(score_row.ff_stat))
+    frontier = None if frontier_by_stat_key is None else frontier_by_stat_key.get(stat_key)
+    if frontier is None:
+        frontier = frontier_result_from_scoring_bundle_for_stats(
+            calc_song,
+            ref_arrays,
+            scoring_bundle,
+            ft_stat=int(score_row.ft_stat),
+            ff_stat=int(score_row.ff_stat),
+        )
+        if frontier_by_stat_key is not None:
+            frontier_by_stat_key[stat_key] = frontier
     surface = FgResponseSurface(*(int(v) for v in score_row.surface))
-    song_inputs = extract_fg_song_inputs(calc_song)
+    if song_inputs is None:
+        song_inputs = extract_fg_song_inputs(calc_song)
     pair: _ResponsePair = (
         int(score_row.ft),
         int(score_row.ff),

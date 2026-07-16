@@ -115,11 +115,16 @@ def materialize_force_payload_from_response_frontier(
     ref_arrays: dict[str, Any],
     reconstruction_frontier=None,
     trace_cache: FgTraceMaterializationCache | None = None,
+    song_inputs: Any | None = None,
 ) -> dict[str, Any]:
     if trace_cache is not None:
         trace_cache.bind(calc_song)
     frontier = reconstruction_frontier or result.frontier
-    song_inputs = extract_fg_song_inputs(calc_song)
+    # ``song_inputs`` is a pure function of ``calc_song``; a batch materializer sharing one
+    # calc-song owner hoists it once and threads it in (mirrors the trace_cache lifetime).
+    # Defaults to the standalone per-call extraction for single-payload callers.
+    if song_inputs is None:
+        song_inputs = extract_fg_song_inputs(calc_song)
     if trace_cache is not None:
         trace_cache.edge_options.bind_owner(calc_song, note_count=len(song_inputs.timestamps))
     song_lanes = getattr(song_inputs, "lanes", None)
@@ -311,6 +316,11 @@ class FgResultReducer:
             )[: int(LOADOUTS_PER_SONG_LIMIT)]
         )
 
+        # calc_song is the single owner across every materialized loadout (the trace_cache
+        # enforces it), so its FG song inputs are invariant here -- extract once (lazily, on
+        # the first surviving loadout so an all-skipped plan does no extra work) and thread
+        # them into every payload instead of rebuilding per surviving loadout.
+        song_inputs: Any | None = None
         trace_cache = FgTraceMaterializationCache()
         for item in pending_jobs:
             result = item["result"]
@@ -331,6 +341,8 @@ class FgResultReducer:
                     raise ValueError("ForceGreats response frontier exact surface replay failed")
                 if int(early_score_obj) <= int(paired_base_early):
                     continue
+            if song_inputs is None:
+                song_inputs = extract_fg_song_inputs(calc_song)
             payload = materialize_force_payload_from_response_frontier(
                 eval_data=item["eval_data"],
                 base_stats=item["base_stats"],
@@ -340,6 +352,7 @@ class FgResultReducer:
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
                 trace_cache=trace_cache,
+                song_inputs=song_inputs,
             )
 
             entry = item["entry"]
