@@ -195,6 +195,143 @@ def _semi_exact_upper_bound(
 
 
 @ti.func
+def _eval_coupled_fm(
+    base0: ti.f32,
+    m_f: ti.f32,
+    cur_fm_f: ti.f32,
+    slope: ti.f32,
+    intercept: ti.f32,
+    inner_fm: ti.f32,
+    s: ti.f32,
+) -> ti.f32:
+    # Folded relaxation Psi = B * F * (C*a2 + a1), with C pinned at C* (inner_fm = C*a2 + a1),
+    # B = base0 - Delta_f * f  (f = (s - cur_fm)/3 folded into m_f = Delta_f/3), F = envelope(s).
+    # Association follows design section 3.3 exactly; do NOT reassociate this folded product.
+    b: ti.f32 = base0 - m_f * (s - cur_fm_f)
+    f: ti.f32 = slope * s + intercept
+    return b * f * inner_fm
+
+
+@ti.func
+def _coupled_ub_fm(
+    base0: ti.f32,
+    inner_fm: ti.f32,
+    delta_f: ti.i32,
+    cur_fm: ti.i32,
+    budget: ti.i32,
+) -> ti.f32:
+    # UB_fm = max over reachable FM stat of the folded relaxation, couples FM <-> base lane.
+    GEM_SCALE_FEVER: ti.i32 = 3
+    MAX_STAT: ti.i32 = 160
+    budget_nn: ti.i32 = ti.max(0, budget)
+    s_lo: ti.f32 = ti.cast(ti.max(0, ti.min(MAX_STAT, cur_fm)), ti.f32)
+    s_hi: ti.f32 = ti.cast(ti.max(0, ti.min(MAX_STAT, cur_fm + budget_nn * GEM_SCALE_FEVER)), ti.f32)
+    cur_fm_f: ti.f32 = ti.cast(cur_fm, ti.f32)
+    m_f: ti.f32 = ti.cast(delta_f, ti.f32) / ti.cast(GEM_SCALE_FEVER, ti.f32)
+    best: ti.f32 = ti.f32(-1.0e30)
+    n_seg: ti.i32 = kernels_helpers.hull_fm_count[0]
+    seg: ti.i32 = 0
+    while seg < n_seg:
+        lo: ti.f32 = kernels_helpers.hull_fm_seg[seg, 0]
+        hi: ti.f32 = kernels_helpers.hull_fm_seg[seg, 1]
+        slope: ti.f32 = kernels_helpers.hull_fm_seg[seg, 2]
+        intercept: ti.f32 = kernels_helpers.hull_fm_seg[seg, 3]
+        a: ti.f32 = ti.max(lo, s_lo)
+        b: ti.f32 = ti.min(hi, s_hi)
+        if a <= b:
+            cand: ti.f32 = ti.max(
+                _eval_coupled_fm(base0, m_f, cur_fm_f, slope, intercept, inner_fm, a),
+                _eval_coupled_fm(base0, m_f, cur_fm_f, slope, intercept, inner_fm, b),
+            )
+            # Concave quadratic q(s) = (base0 + m_f*cur_fm - m_f*s) * (slope*s + intercept).
+            # Interior vertex maximises it; clamp to the segment and evaluate. Leading coeff
+            # -m_f*slope <= 0. Only search the vertex when strictly concave (m_f*slope > 0).
+            lead: ti.f32 = m_f * slope
+            if lead > ti.f32(0.0):
+                bhat: ti.f32 = base0 + m_f * cur_fm_f
+                sv: ti.f32 = (bhat * slope - m_f * intercept) / (ti.f32(2.0) * lead)
+                if sv > a and sv < b:
+                    cand = ti.max(
+                        cand,
+                        _eval_coupled_fm(base0, m_f, cur_fm_f, slope, intercept, inner_fm, sv),
+                    )
+            best = ti.max(best, cand)
+        seg += 1
+    return best
+
+
+@ti.func
+def _eval_coupled_cm(
+    base0: ti.f32,
+    m_c: ti.f32,
+    cur_cm_f: ti.f32,
+    slope: ti.f32,
+    intercept: ti.f32,
+    fstar: ti.f32,
+    a2: ti.f32,
+    a1: ti.f32,
+    s: ti.f32,
+) -> ti.f32:
+    # Folded relaxation Psi = B * F * (C*a2 + a1), with F pinned at F* (fstar), C = envelope(s).
+    # B = base0 - Delta_c * c (c = (s - cur_cm)/2 folded into m_c = Delta_c/2).
+    b: ti.f32 = base0 - m_c * (s - cur_cm_f)
+    cval: ti.f32 = slope * s + intercept
+    inner: ti.f32 = cval * a2 + a1
+    return b * fstar * inner
+
+
+@ti.func
+def _coupled_ub_cm(
+    base0: ti.f32,
+    fstar: ti.f32,
+    a2: ti.f32,
+    a1: ti.f32,
+    delta_c: ti.i32,
+    cur_cm: ti.i32,
+    budget: ti.i32,
+) -> ti.f32:
+    # UB_cm = max over reachable CM stat of the folded relaxation, couples CM <-> base lane.
+    GEM_SCALE_NORMAL: ti.i32 = 2
+    MAX_STAT: ti.i32 = 160
+    budget_nn: ti.i32 = ti.max(0, budget)
+    s_lo: ti.f32 = ti.cast(ti.max(0, ti.min(MAX_STAT, cur_cm)), ti.f32)
+    s_hi: ti.f32 = ti.cast(ti.max(0, ti.min(MAX_STAT, cur_cm + budget_nn * GEM_SCALE_NORMAL)), ti.f32)
+    cur_cm_f: ti.f32 = ti.cast(cur_cm, ti.f32)
+    m_c: ti.f32 = ti.cast(delta_c, ti.f32) / ti.cast(GEM_SCALE_NORMAL, ti.f32)
+    best: ti.f32 = ti.f32(-1.0e30)
+    n_seg: ti.i32 = kernels_helpers.hull_cm_count[0]
+    seg: ti.i32 = 0
+    while seg < n_seg:
+        lo: ti.f32 = kernels_helpers.hull_cm_seg[seg, 0]
+        hi: ti.f32 = kernels_helpers.hull_cm_seg[seg, 1]
+        slope: ti.f32 = kernels_helpers.hull_cm_seg[seg, 2]
+        intercept: ti.f32 = kernels_helpers.hull_cm_seg[seg, 3]
+        a: ti.f32 = ti.max(lo, s_lo)
+        b: ti.f32 = ti.min(hi, s_hi)
+        if a <= b:
+            cand: ti.f32 = ti.max(
+                _eval_coupled_cm(base0, m_c, cur_cm_f, slope, intercept, fstar, a2, a1, a),
+                _eval_coupled_cm(base0, m_c, cur_cm_f, slope, intercept, fstar, a2, a1, b),
+            )
+            # inner(s) = a2*slope*s + (a2*intercept + a1) = amp*s + dee. Concave quadratic
+            # q(s) = (base0 + m_c*cur_cm - m_c*s)*(amp*s + dee); leading coeff -m_c*amp <= 0.
+            amp: ti.f32 = a2 * slope
+            lead: ti.f32 = m_c * amp
+            if lead > ti.f32(0.0):
+                dee: ti.f32 = a2 * intercept + a1
+                bhat: ti.f32 = base0 + m_c * cur_cm_f
+                sv: ti.f32 = (bhat * amp - m_c * dee) / (ti.f32(2.0) * lead)
+                if sv > a and sv < b:
+                    cand = ti.max(
+                        cand,
+                        _eval_coupled_cm(base0, m_c, cur_cm_f, slope, intercept, fstar, a2, a1, sv),
+                    )
+            best = ti.max(best, cand)
+        seg += 1
+    return best
+
+
+@ti.func
 def response_score_upper_bound_relaxed(
     budget: ti.i32,
     cur_pp: ti.i32,
@@ -247,7 +384,7 @@ def response_score_upper_bound_relaxed(
     sigma_hf: ti.i32 = (head_len_c * (head_len_c + 1)) // 2
     body_total_c: ti.i32 = ti.max(0, body_total)
 
-    return _semi_exact_upper_bound(
+    current_ub: ti.f32 = _semi_exact_upper_bound(
         base_value,
         combo_mul,
         fever_mul,
@@ -258,6 +395,26 @@ def response_score_upper_bound_relaxed(
         0,
         sigma_hf,
     )
+
+    # Coupled Lagrangian-exchange sub-bounds (design UB_CULL_BOUND_DESIGN.md, Design 1).
+    # Both fold the exact score to Psi = B*F*(C*a2 + a1) (body/head floors dropped upward),
+    # then couple the base lane against one multiplier axis while pinning the other at its
+    # current-corner value (C* = combo_mul, F* = fever_mul). Each maximises a concave quadratic
+    # over the reachable stat range using the precomputed concave envelopes of refcm/reffm.
+    # UB_gate = min(current, UB_fm, UB_cm) is >= current always, so the cull only ever tightens.
+    UB_EPS: ti.f32 = 1024.0
+    n_f: ti.f32 = ti.cast(body_total_c, ti.f32)
+    l_f: ti.f32 = ti.cast(head_len_c, ti.f32)
+    sigma_f: ti.f32 = ti.cast(sigma_hf, ti.f32)
+    a2: ti.f32 = n_f + sigma_f / ti.f32(100.0)
+    a1: ti.f32 = l_f - sigma_f / ti.f32(100.0)
+    delta_c: ti.i32 = w_max - w_cm
+    delta_f: ti.i32 = w_max - w_fm
+    inner_fm: ti.f32 = combo_mul * a2 + a1
+    ub_fm: ti.f32 = _coupled_ub_fm(base_value, inner_fm, delta_f, cur_fm, budget) + UB_EPS
+    ub_cm: ti.f32 = _coupled_ub_cm(base_value, fever_mul, a2, a1, delta_c, cur_cm, budget) + UB_EPS
+
+    return ti.min(current_ub, ti.min(ub_fm, ub_cm))
 
 
 @ti.func

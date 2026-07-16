@@ -17,6 +17,11 @@ from gear_optimizer.core.array_signature import arrays_sig16
 from gear_optimizer.core.env_config import ENV
 from ..runtime import init_taichi, is_initialized
 from .. import fields
+from ..concave_hull import (
+    MAX_CONCAVE_HULL_SEGMENTS,
+    build_upper_concave_hull_segments,
+    pack_hull_field,
+)
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 from ..runtime import reset_taichi as _reset_taichi_runtime
 from ..fields import (
@@ -350,6 +355,12 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
 # ============================================================================
 
 
+def _upload_concave_hull(seg_field, count_field, segs: np.ndarray) -> None:
+    """Pad a concave-envelope segment table to field capacity and upload it with its count."""
+    seg_field.from_numpy(pack_hull_field(segs, max_segments=MAX_CONCAVE_HULL_SEGMENTS))
+    count_field.from_numpy(np.asarray([int(segs.shape[0])], dtype=np.int32))
+
+
 def load_ref_arrays(ref_arrays: dict):
     """
     Upload reference arrays to GPU fields.
@@ -383,6 +394,26 @@ def load_ref_arrays(ref_arrays: dict):
     fields.ref_pp_field.from_numpy(ref_arrays["Perfect Points"].astype(np.float32))
     fields.ref_cm_field.from_numpy(ref_arrays["Combo Multiplier"].astype(np.float32))
     fields.ref_fm_field.from_numpy(ref_arrays["Fever Multiplier"].astype(np.float32))
+
+    # Concave dominating envelopes of the CM/FM LUTs for the coupled GA combo-cull upper
+    # bound (response_score_upper_bound_relaxed). Genome-invariant game constants -> built
+    # once per ref upload, not per generation. Fails loud if a LUT is not monotone
+    # non-decreasing with endpoint == argmax (the load-bearing soundness fact) or if the
+    # envelope does not dominate the LUT. Treated as required cached data: no fallback path.
+    _upload_concave_hull(
+        fields.hull_cm_seg,
+        fields.hull_cm_count,
+        build_upper_concave_hull_segments(
+            np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float64), "Combo Multiplier"
+        ),
+    )
+    _upload_concave_hull(
+        fields.hull_fm_seg,
+        fields.hull_fm_count,
+        build_upper_concave_hull_segments(
+            np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float64), "Fever Multiplier"
+        ),
+    )
 
     # Precompute a tiny helper table for the bounded exact inner solver:
     # PP-vs-OV prefix argmax for a fixed base PP stat and color-flag combination.

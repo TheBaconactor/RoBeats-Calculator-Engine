@@ -10,6 +10,7 @@ import logging
 import taichi as ti
 from gear_optimizer.core.parsing import env_int
 from .runtime import is_initialized, init_taichi
+from .concave_hull import MAX_CONCAVE_HULL_SEGMENTS
 # Skyline uses this to select the 32-bit-atomic reduction path on macOS.
 # That includes MoltenVK (`ti.vulkan` on Darwin), whose shaders still compile
 # through Metal and therefore cannot use the packed-u64 atomic reduction.
@@ -54,6 +55,12 @@ ref_cm_field: ti.Field = None
 ref_fm_field: ti.Field = None
 ref_ft_field: ti.Field = None  # Fever Time multipliers
 ref_ff_field: ti.Field = None  # Fever Fill Rate multipliers
+# Concave dominating envelopes of refcm/reffm for the coupled GA combo-cull upper bound.
+# Segment table row = [seg_lo, seg_hi, slope, intercept]; count = active segment rows.
+hull_cm_seg: ti.Field = None  # (MAX_CONCAVE_HULL_SEGMENTS, 4) f32
+hull_cm_count: ti.Field = None  # (1,) i32
+hull_fm_seg: ti.Field = None  # (MAX_CONCAVE_HULL_SEGMENTS, 4) f32
+hull_fm_count: ti.Field = None  # (1,) i32
 exact_pp_best_gems_prefix: ti.Field = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16
 grid_count_body_fever: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
 grid_count_body_normal: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
@@ -286,6 +293,7 @@ def reset_fields_state() -> None:
     global _fields_allocated, _grid_fields_allocated
     global MAX_GA_RUNS, MAX_GA_RUN_GENOMES, _REQUESTED_MAX_GA_RUNS, _REQUESTED_MAX_GA_RUN_GENOMES
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
+    global hull_cm_seg, hull_cm_count, hull_fm_seg, hull_fm_count
     global exact_pp_best_gems_prefix
     global grid_count_body_fever, grid_count_body_normal, grid_head_len
     global grid_fever_masks_bits
@@ -332,6 +340,10 @@ def reset_fields_state() -> None:
     ref_fm_field = None
     ref_ft_field = None
     ref_ff_field = None
+    hull_cm_seg = None
+    hull_cm_count = None
+    hull_fm_seg = None
+    hull_fm_count = None
     exact_pp_best_gems_prefix = None
     grid_count_body_fever = None
     grid_count_body_normal = None
@@ -492,6 +504,7 @@ def allocate_fields():
     This allocates the baseline Taichi fields used by the solvers and GPU-native GA.
     """
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
+    global hull_cm_seg, hull_cm_count, hull_fm_seg, hull_fm_count
     global exact_pp_best_gems_prefix
     global genome_base_stats
     global \
@@ -536,6 +549,10 @@ def allocate_fields():
     ref_fm_field = ti.field(dtype=ti.f32, shape=161)
     ref_ft_field = ti.field(dtype=ti.f32, shape=161)
     ref_ff_field = ti.field(dtype=ti.f32, shape=161)
+    hull_cm_seg = ti.field(dtype=ti.f32, shape=(MAX_CONCAVE_HULL_SEGMENTS, 4))
+    hull_cm_count = ti.field(dtype=ti.i32, shape=1)
+    hull_fm_seg = ti.field(dtype=ti.f32, shape=(MAX_CONCAVE_HULL_SEGMENTS, 4))
+    hull_fm_count = ti.field(dtype=ti.i32, shape=1)
     exact_pp_best_gems_prefix = ti.field(dtype=ti.i16, shape=(16, GRID_SIZE, MAX_TOTAL_BUDGET + 1))
     genome_base_stats = ti.Vector.field(n=7, dtype=ti.i16, shape=MAX_GENOMES)
     population_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
@@ -696,6 +713,10 @@ def bind_fields(kernels_module):
     target.ref_fm_field = ref_fm_field
     target.ref_ft_field = ref_ft_field
     target.ref_ff_field = ref_ff_field
+    target.hull_cm_seg = hull_cm_seg
+    target.hull_cm_count = hull_cm_count
+    target.hull_fm_seg = hull_fm_seg
+    target.hull_fm_count = hull_fm_count
     target.exact_pp_best_gems_prefix = exact_pp_best_gems_prefix
     target.grid_count_body_fever = grid_count_body_fever
     target.grid_count_body_normal = grid_count_body_normal

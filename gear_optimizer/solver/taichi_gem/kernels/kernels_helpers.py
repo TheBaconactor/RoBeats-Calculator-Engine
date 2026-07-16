@@ -49,6 +49,12 @@ ref_cm_field = None
 ref_fm_field = None
 ref_ft_field = None
 ref_ff_field = None
+# Concave dominating envelopes of refcm/reffm for the coupled GA combo-cull upper bound.
+# Row = [seg_lo, seg_hi, slope, intercept]; count = number of active segment rows.
+hull_cm_seg = None  # (MAX_CONCAVE_HULL_SEGMENTS, 4) f32
+hull_cm_count = None  # (1,) i32
+hull_fm_seg = None  # (MAX_CONCAVE_HULL_SEGMENTS, 4) f32
+hull_fm_count = None  # (1,) i32
 exact_pp_best_gems_prefix = None  # (16, 161, MAX_TOTAL_BUDGET+1) i16 - PP-vs-OV prefix argmax for exact bound solver
 
 # Grid fields

@@ -174,3 +174,15 @@ Ship only if 1-3 pass, 4 is byte-identical, 6 shows no hard occupancy regression
 | Hull-field precompute (new) | co-locate with ref-table load, `api/initialization.py:383-385` |
 
 All kernel paths under `gear_optimizer/solver/taichi_gem/kernels/`. Implementation touches **only** `kernels_scoring.py:197-260` plus the two new hull fields + their once-per-run build; the exact solver (`:332-787`), head closed form, cull gate, and winner selection are unchanged.
+
+---
+
+## 10. Implementation notes (as-built, 2026-07-16)
+
+Shipped per §1 with two deviations forced by the real data; both preserve the hard contract (`UB ≥ exact`, tighten-only) and are recorded in `docs/CODEX_WORKLOG.md`.
+
+**(a) Envelope segment count.** §3.4/§5 projected "≤4 segments each" assuming a piecewise-linear table. `Data/Gear/Stats.txt` CM/FM are a smooth strictly-concave-ish curve (161 samples); the **exact** Andrew concave majorant has ~111/114 segments. Soundness needs only a *concave dominating* envelope, so `concave_hull.py` builds a tight **bounded-segment** envelope — the lower envelope (pointwise `min`) of a greedily selected subset of the exact hull's segment lines (each dominates the LUT), refined to max relative gap `< 0.2%` or a 16-segment cap (`MAX_CONCAVE_HULL_SEGMENTS`). Real data → 9 (CM) / 13 (FM) segments at ~0.2% gap. A 4-segment envelope would be materially looser (less cull profit) with no perf benefit: the in-kernel sweep is a runtime `while` loop, so its iteration count does not raise VGPR/occupancy, and its ALU cost is negligible vs the ~1e5-op exact solve it gates.
+
+**(b) §4.2 `Ê ≤ C*` is tightness, not soundness.** `UB_cm ≥ exact` needs only `C_a ≤ Ê_cm(c)` (dominance) + `Ψ` monotone in `B,C,F`; the pinned-`F*`/`C*` corner needs only `F_a ≤ F*` / `C_a ≤ C*` from LUT monotonicity+endpoint-argmax, which is asserted at build. A bounded envelope may exceed `C*` on some cells, which only loosens `min()` there — never unsound. Endpoint==argmax (the load-bearing fact) is still asserted (fail-loud) at hull build.
+
+**Files.** New: `solver/taichi_gem/concave_hull.py` (Taichi-free host math); kernel arms `_coupled_ub_fm/_cm` + `_eval_coupled_fm/_cm` and the `min()` in `kernels_scoring.py`; hull upload in `api/initialization.py::load_ref_arrays` + `_upload_concave_hull`; fields `hull_{cm,fm}_{seg,count}` across `fields.py` / `kernels_helpers.py` / `kernels/__init__.py`. Tests: `tests/test_ub_cull_hull_dominance.py` (CPU, runnable), `tests/test_gpu_ub_cull_bound_property.py` (gpu-marked, on-device `exact ≤ UB_gate ≤ old`). Fingerprint ledgers untouched (cull-only, byte-identical scoring).
