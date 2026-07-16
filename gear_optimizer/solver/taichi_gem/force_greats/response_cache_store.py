@@ -18,6 +18,7 @@ from numpy.lib import format as np_format
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.solver.frontier_cache_scope import frontier_cache_is_ephemeral
 
 from .response_cache_keys import (
     _fg_response_disk_cache_dir,
@@ -919,6 +920,8 @@ def _persisted_packed_frontier_metadata(
 
 
 def _memory_get(cache_key: tuple) -> FgResponseFrontierResult | None:
+    if frontier_cache_is_ephemeral():
+        return None
     with _frontier_cache_lock:
         frontier = _memory_cache_get_locked(_frontier_cache, _frontier_cache_last_access, cache_key)
         return frontier if isinstance(frontier, FgResponseFrontierResult) else None
@@ -931,6 +934,8 @@ def _frontier_is_complete(frontier: FgResponseFrontierResult | None) -> bool:
 def _memory_put(cache_key: tuple, frontier: FgResponseFrontierResult) -> None:
     if not frontier.first_frontier:
         raise ValueError("FG response frontier cache requires first-frontier surfaces")
+    if frontier_cache_is_ephemeral():
+        return
     with _frontier_cache_lock:
         _memory_cache_put_locked(
             _frontier_cache,
@@ -942,12 +947,16 @@ def _memory_put(cache_key: tuple, frontier: FgResponseFrontierResult) -> None:
 
 
 def _payload_memory_get(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
+    if frontier_cache_is_ephemeral():
+        return None
     with _frontier_cache_lock:
         payload = _memory_cache_get_locked(_payload_cache, _payload_cache_last_access, cache_key)
         return payload if isinstance(payload, FgResponseFrontierCachePayload) else None
 
 
 def _payload_memory_put(cache_key: tuple, payload: FgResponseFrontierCachePayload) -> None:
+    if frontier_cache_is_ephemeral():
+        return
     with _frontier_cache_lock:
         _memory_cache_put_locked(
             _payload_cache,
@@ -1247,10 +1256,12 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
     snapshot_names = tuple(
         dict.fromkeys((*requested, _SURFACE_GENERATION_ARRAY_NAME, _SURFACE_BUNDLE_PATH_ARRAY_NAME))
     )
-    with _frontier_cache_lock:
-        cached = _memory_cache_get_locked(_bundle_array_cache, _bundle_array_cache_last_access, cache_key)
-        if cached is not None and all(name in cached for name in snapshot_names):
-            return {name: cached[name] for name in requested}
+    ephemeral = frontier_cache_is_ephemeral()
+    if not ephemeral:
+        with _frontier_cache_lock:
+            cached = _memory_cache_get_locked(_bundle_array_cache, _bundle_array_cache_last_access, cache_key)
+            if cached is not None and all(name in cached for name in snapshot_names):
+                return {name: cached[name] for name in requested}
     bundle_path = resolve_fg_response_bundle_path(cache_key)
     path = _live_fg_response_bundle_path(bundle_path)
     if path is None:
@@ -1275,6 +1286,8 @@ def _load_bundle_array_members(cache_key: tuple, *, names: Iterable[str]) -> dic
         }
         loaded[_SURFACE_GENERATION_ARRAY_NAME] = np.asarray(surface_generation or "")
         loaded[_SURFACE_BUNDLE_PATH_ARRAY_NAME] = np.asarray(str(path))
+    if ephemeral:
+        return {name: loaded[name] for name in requested}
     with _frontier_cache_lock:
         cached = _bundle_array_cache.get(cache_key)
         cached_generation = None
@@ -1499,12 +1512,16 @@ def _invalidate_bundle_array_views(bundle_key: tuple) -> None:
 
 
 def _scoring_bundle_memory_get(bundle_key: tuple) -> FgResponseFrontierScoringBundle | None:
+    if frontier_cache_is_ephemeral():
+        return None
     with _frontier_cache_lock:
         cached = _memory_cache_get_locked(_scoring_bundle_cache, _scoring_bundle_cache_last_access, bundle_key)
         return cached if isinstance(cached, FgResponseFrontierScoringBundle) else None
 
 
 def _scoring_bundle_memory_put(bundle_key: tuple, scoring_bundle: FgResponseFrontierScoringBundle) -> None:
+    if frontier_cache_is_ephemeral():
+        return
     with _frontier_cache_lock:
         _memory_cache_put_locked(
             _scoring_bundle_cache,

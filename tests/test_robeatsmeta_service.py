@@ -192,6 +192,14 @@ def test_chart_text_requires_a_source(data_root):
         service.chart_text_for_request({"jobId": "x"})
 
 
+def test_custom_chart_event_limit_rejects_before_solve(data_root, monkeypatch):
+    monkeypatch.setattr(service, "_MAX_CUSTOM_CHART_EVENTS", 2)
+    chart = "Song Name\tCustom\nSong Data\n0.1\t1\t1\t1\n0.2\t2\t2\t1\n0.3\t3\t3\t1\n"
+
+    with pytest.raises(service.RequestError, match="exceeds 2 replay events"):
+        service.solve({"jobId": "too_large", "chartText": chart})
+
+
 def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
     gear = data_root / "Data" / "Gear"
@@ -236,6 +244,35 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     assert Path(env["ROBEATSMETA_OPTIMIZER_BIN_DIR"]) == run_root / "bin"  # isolated run state
     assert Path(env["TIMELINE_FRONTIER_CACHE_DIR"]) == data_root / "bin" / "timeline_frontier_cache"
     assert Path(env["FG_RESPONSE_FRONTIER_CACHE_DIR"]) == data_root / "bin" / "fg_response_frontier_cache"
+
+
+def test_custom_solve_frontier_caches_are_inside_throwaway_workspace(data_root, monkeypatch):
+    gear = data_root / "Data" / "Gear"
+    gear.mkdir(parents=True, exist_ok=True)
+    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(data_root / "runs"))
+    captured: dict[str, str] = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured.update(kwargs["env"])
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(service, "get_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
+
+    service.solve({
+        "jobId": "job_custom",
+        "chartText": "Song Name\tCustom\nSong Data\n0.500\t1\t1\t1\n",
+    })
+
+    run_bin = data_root / "runs" / "job_custom" / "bin"
+    assert Path(captured["TIMELINE_FRONTIER_CACHE_DIR"]) == run_bin / "timeline_frontier_cache"
+    assert Path(captured["FG_RESPONSE_FRONTIER_CACHE_DIR"]) == run_bin / "fg_response_frontier_cache"
+    assert not (data_root / "runs" / "job_custom").exists()
 
 
 def test_solve_stamps_requested_timing_mode_into_isolated_chart(data_root, monkeypatch):

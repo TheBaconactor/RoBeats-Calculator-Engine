@@ -26,6 +26,10 @@ from gear_optimizer.solver.timeline_exact_frontier import (
     _head_mask_coefficients_py,
     build_timeline_frontier_grid_payload,
 )
+from gear_optimizer.solver.frontier_cache_scope import (
+    frontier_cache_is_ephemeral,
+    scoped_frontier_cache_dir,
+)
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
     _FG_SHARED_FRONTIER_PRODUCER_SOURCES,
@@ -348,6 +352,9 @@ def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.
 
 
 def _frontier_disk_cache_dir() -> Path:
+    scoped = scoped_frontier_cache_dir("timeline")
+    if scoped is not None:
+        return scoped
     override = str(env_get("TIMELINE_FRONTIER_CACHE_DIR", "") or "").strip()
     if override:
         return Path(override)
@@ -502,23 +509,26 @@ def _get_cached_frontier_payload_with_source(
 ) -> tuple[TimelineFrontierGridPayload | None, str]:
     cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
     moment = time.monotonic()
-    with _frontier_payload_cache_lock:
-        cached = _frontier_payload_cache.get(cache_key)
-        if isinstance(cached, TimelineFrontierGridPayload):
-            _frontier_payload_cache.move_to_end(cache_key)
-            _frontier_payload_last_access[cache_key] = moment
-            return cached, "memory"
+    ephemeral = frontier_cache_is_ephemeral()
+    if not ephemeral:
+        with _frontier_payload_cache_lock:
+            cached = _frontier_payload_cache.get(cache_key)
+            if isinstance(cached, TimelineFrontierGridPayload):
+                _frontier_payload_cache.move_to_end(cache_key)
+                _frontier_payload_last_access[cache_key] = moment
+                return cached, "memory"
 
     cached = _load_frontier_payload_from_disk(cache_key)
     if isinstance(cached, TimelineFrontierGridPayload):
-        moment = time.monotonic()
-        with _frontier_payload_cache_lock:
-            _frontier_payload_cache[cache_key] = cached
-            _frontier_payload_cache.move_to_end(cache_key)
-            _frontier_payload_last_access[cache_key] = moment
-            while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
-                stale_key, _stale_value = _frontier_payload_cache.popitem(last=False)
-                _frontier_payload_last_access.pop(stale_key, None)
+        if not ephemeral:
+            moment = time.monotonic()
+            with _frontier_payload_cache_lock:
+                _frontier_payload_cache[cache_key] = cached
+                _frontier_payload_cache.move_to_end(cache_key)
+                _frontier_payload_last_access[cache_key] = moment
+                while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
+                    stale_key, _stale_value = _frontier_payload_cache.popitem(last=False)
+                    _frontier_payload_last_access.pop(stale_key, None)
         return cached, "disk"
     return None, "missing"
 
@@ -693,6 +703,8 @@ def _get_or_build_frontier_payload_with_source(
     )
 
     _save_frontier_payload_to_disk(cache_key, payload)
+    if frontier_cache_is_ephemeral():
+        return payload, "built"
     moment = time.monotonic()
     with _frontier_payload_cache_lock:
         cached = _frontier_payload_cache.get(cache_key)
@@ -828,10 +840,11 @@ def timeline_frontier_payload_cache_info(
     cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
 
     cache_source = "missing"
-    with _frontier_payload_cache_lock:
-        cached = _frontier_payload_cache.get(cache_key)
-        if isinstance(cached, TimelineFrontierGridPayload):
-            cache_source = "memory"
+    if not frontier_cache_is_ephemeral():
+        with _frontier_payload_cache_lock:
+            cached = _frontier_payload_cache.get(cache_key)
+            if isinstance(cached, TimelineFrontierGridPayload):
+                cache_source = "memory"
     # Report the file that actually serves this key: the current-version path when it
     # exists, else the ratified predecessor's. Returning the (possibly nonexistent)
     # current-version path here made the prebuild manifest unable to validate/record
