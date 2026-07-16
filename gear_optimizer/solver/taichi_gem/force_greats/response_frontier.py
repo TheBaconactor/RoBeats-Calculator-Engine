@@ -56,6 +56,7 @@ __all__ = [
     "FG_BATCH_MISSING_GROUP_ROWS_MSG",
     "batch_needs_async_group_build_prefetch",
     "assert_batch_has_group_build_prefetch_or_rows",
+    "required_response_stat_keys_for_scoring_batch",
     "prepare_force_greats_response_frontier_scoring_batch",
     "build_prepared_force_greats_response_frontier_group_arrays_on_owner",
     "build_prepared_force_greats_response_frontier_group_rows_on_owner",
@@ -71,6 +72,78 @@ __all__ = [
 ]
 
 _ResponsePair = tuple[int, int, FgResponseFrontierResult, float, float]
+
+
+def _required_response_stat_keys(
+    base_components: np.ndarray,
+    ft_values: np.ndarray,
+    ff_values: np.ndarray,
+) -> tuple[tuple[int, int], ...]:
+    """Return every clipped FT/FF cell reachable by the exact candidate batch."""
+    components = np.asarray(base_components, dtype=np.int32)
+    ft_gems = np.asarray(ft_values, dtype=np.int32).reshape(-1)
+    ff_gems = np.asarray(ff_values, dtype=np.int32).reshape(-1)
+    if components.ndim != 2 or int(components.shape[1]) != 7:
+        raise ValueError("response frontier base_components must have shape (N, 7)")
+    if int(components.shape[0]) <= 0:
+        raise ValueError("response frontier stat-key reachability requires at least one candidate")
+    if ft_gems.shape != ff_gems.shape or int(ft_gems.shape[0]) <= 0:
+        raise ValueError("response frontier FT/FF gem arrays must be aligned and non-empty")
+
+    ft_stats = np.clip(
+        components[:, 5, None] + (ft_gems[None, :] * int(GEM_SCALE_FEVER)),
+        0,
+        int(TOTAL_ROWS),
+    )
+    ff_stats = np.clip(
+        components[:, 6, None] + (ff_gems[None, :] * int(GEM_SCALE_FEVER)),
+        0,
+        int(TOTAL_ROWS),
+    )
+    axis = int(TOTAL_ROWS) + 1
+    encoded = np.asarray((ft_stats * axis) + ff_stats, dtype=np.int32).reshape(-1)
+    unique_encoded = np.unique(encoded)
+    return tuple((int(value // axis), int(value % axis)) for value in unique_encoded)
+
+
+def required_response_stat_keys_for_scoring_batch(
+    *,
+    base_stats_list: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    total_budget: int = TOTAL_GEM_BUDGET,
+    base_stats7_list: list[Any] | tuple[Any, ...] | None = None,
+) -> tuple[tuple[int, int], ...]:
+    """Return the exact response-cache cells addressable by a scoring batch.
+
+    This is a reachability projection of the canonical candidate inputs and the complete
+    ``ftff_combo_arrays`` search space. It removes no candidate and performs no score-based
+    pruning; cells outside this set cannot be indexed by the corresponding exact solve.
+    """
+    stats_inputs = tuple(dict(stats) for stats in (base_stats_list or []))
+    if not stats_inputs:
+        raise ValueError("response frontier stat-key reachability requires at least one candidate")
+    if base_stats7_list is None:
+        base_stats7_inputs: tuple[Any, ...] = (None,) * len(stats_inputs)
+    else:
+        base_stats7_inputs = tuple(base_stats7_list)
+        if len(base_stats7_inputs) != len(stats_inputs):
+            raise ValueError(
+                "response frontier base_stats7_list must align 1:1 with base_stats_list "
+                f"({len(base_stats7_inputs)} != {len(stats_inputs)})"
+            )
+    base_components = np.asarray(
+        [
+            response_frontier_base_components_row(
+                base_stats,
+                base_stats7,
+                primary_color="",
+                secondary_color="",
+            )
+            for base_stats, base_stats7 in zip(stats_inputs, base_stats7_inputs, strict=True)
+        ],
+        dtype=np.int32,
+    )
+    ft_values, ff_values, _remaining = ftff_combo_arrays(int(total_budget))
+    return _required_response_stat_keys(base_components, ft_values, ff_values)
 
 
 class FgBatchStage(Enum):

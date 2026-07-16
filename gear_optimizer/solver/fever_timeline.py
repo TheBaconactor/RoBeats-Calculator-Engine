@@ -155,6 +155,46 @@ def calculate_fever_timeline_indices(
 
 
 @jit(nopython=True, cache=True)
+def calculate_fever_timeline_surface_grid(
+    song_timestamps,
+    total_notes,
+    ft_factors,
+    ff_factors,
+    long_notes_count,
+    last_note_time,
+    body_fever_out,
+    body_normal_out,
+    head_mask_words_out,
+    fever_activations_out,
+    last_fever_end_out,
+):
+    """Batch the canonical fixed-timing surface over every FT/FF axis cell."""
+    mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+    for ft_idx in range(ft_factors.shape[0]):
+        for ff_idx in range(ff_factors.shape[0]):
+            head_mask, body_fever, body_normal, activations, last_end = calculate_fever_timeline_indices(
+                song_timestamps,
+                total_notes,
+                ff_factors[ff_idx],
+                ft_factors[ft_idx],
+                long_notes_count,
+                last_note_time,
+                mask_buffer,
+            )
+            body_fever_out[ft_idx, ff_idx] = body_fever
+            body_normal_out[ft_idx, ff_idx] = body_normal
+            fever_activations_out[ft_idx, ff_idx] = activations
+            last_fever_end_out[ft_idx, ff_idx] = last_end
+            for word_idx in range(head_mask_words_out.shape[2]):
+                head_mask_words_out[ft_idx, ff_idx, word_idx] = np.uint32(0)
+            for note_idx in range(head_mask.shape[0]):
+                if head_mask[note_idx]:
+                    word_idx = note_idx // 32
+                    bit_idx = note_idx % 32
+                    head_mask_words_out[ft_idx, ff_idx, word_idx] |= np.uint32(1) << np.uint32(bit_idx)
+
+
+@jit(nopython=True, cache=True)
 def calculate_non_fever_sections(
     song_timestamps,
     total_notes,

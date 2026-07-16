@@ -49,24 +49,39 @@ def _solve_fixed_timing_response_results(
     from ..fg_response_frontier_cache_prebuild import ensure_response_frontier_cache_for_calc_song
     from ..taichi_gem.force_greats.response_frontier import (
         prepare_force_greats_response_frontier_scoring_batch,
+        required_response_stat_keys_for_scoring_batch,
         score_prepared_force_greats_response_frontier_batch_cpu_sync,
         score_prepared_force_greats_response_frontier_batch_sync,
     )
+    from ..taichi_gem.force_greats.response_cache import load_response_frontier_scoring_bundle
 
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
     calc_song = dict(calc_song)
-    # The candidate-independent all-FT/FF bundle is keyed by the song's timing context,
-    # so the chart-only (zero_ms) bundle is distinct from the perfect_window one and is not
-    # prebuilt at startup. Route through the single canonical prebuild owner to ensure it
-    # exists before scoring (idempotent; cheap at 0ms -- the zero-width envelope collapses
-    # the frontier).
-    ensure_response_frontier_cache_for_calc_song(calc_song, ref_arrays)
+    # The chart-only bundle is distinct from perfect_window and is built on demand. Build only
+    # the FT/FF cells this exact batch can address: base FT/FF plus every legal gem pair, clipped
+    # by the same stat bounds as the canonical group builder. This is complete reachability, not
+    # a score prune, so tier/buff changes still evaluate every legal candidate losslessly.
+    required_stat_keys = required_response_stat_keys_for_scoring_batch(
+        base_stats_list=rows,
+        total_budget=total_budget,
+    )
+    ensure_response_frontier_cache_for_calc_song(
+        calc_song,
+        ref_arrays,
+        stat_keys=required_stat_keys,
+    )
+    scoring_bundle = load_response_frontier_scoring_bundle(
+        calc_song,
+        ref_arrays,
+        stat_keys=required_stat_keys,
+    )
     batch = prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=rows,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         selected_color=str(selected_color or ""),
         total_budget=total_budget,
+        scoring_bundle=scoring_bundle,
     )
     if total_budget > 0:
         # Gem re-solve: the gem search lives on the GPU owner (the CPU scorer is gems-fixed only).

@@ -1547,6 +1547,41 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
     assert batch.scoring_group_lengths is None
 
 
+def test_required_response_stat_keys_are_the_complete_legal_ftff_projection() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
+        required_response_stat_keys_for_scoring_batch,
+    )
+
+    rows = (
+        {"Fever Time": -2, "Fever Fill Rate": 158},
+        {"Fever Time": 159, "Fever Fill Rate": 159},
+    )
+    expected = (
+        (0, 158),
+        (0, 160),
+        (1, 158),
+        (1, 160),
+        (4, 158),
+        (159, 159),
+        (159, 160),
+        (160, 159),
+        (160, 160),
+    )
+
+    assert required_response_stat_keys_for_scoring_batch(
+        base_stats_list=rows,
+        total_budget=2,
+    ) == expected
+    assert required_response_stat_keys_for_scoring_batch(
+        base_stats_list=({}, {}),
+        base_stats7_list=(
+            (0, 0, 0, 0, 0, -2, 158),
+            (0, 0, 0, 0, 0, 159, 159),
+        ),
+        total_budget=2,
+    ) == expected
+
+
 def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> None:
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
