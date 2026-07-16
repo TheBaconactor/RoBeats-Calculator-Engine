@@ -1,8 +1,10 @@
-"""Compare expanded v29 and interned v30 FG cache bundles without production loaders.
+"""Compare expanded v29 and interned v30+ FG cache bundles without production loaders.
 
 The physical sidecars intentionally differ. This oracle validates each format independently,
 expands compact rows in bounded chunks, and requires exact ordered logical rows, coefficients,
-common metadata bytes, and stat-key resolution semantics.
+common metadata bytes, and stat-key resolution semantics. Transactional compact bundles may name
+their immutable sidecars with the UUID generation referenced by NPZ metadata; that generation is
+physical publication identity, not logical frontier output.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import json
 import os
 import sys
 import tempfile
+import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +55,7 @@ COMMON_MEMBERS = frozenset(
     }
 )
 COMPACT_ONLY_MEMBERS = frozenset({"first_surface_pattern_count"})
+TRANSACTIONAL_COMPACT_MEMBERS = frozenset({"surface_generation"})
 INDIRECTION_MEMBERS = frozenset({"frontier_ids", "frontier_meta", "first_offsets", "first_counts"})
 RAW_COMPARE_MEMBERS = COMMON_MEMBERS - {"version", *INDIRECTION_MEMBERS}
 
@@ -129,7 +133,8 @@ def _read_npz(path: Path) -> tuple[dict[str, np.ndarray], dict[str, bytes]]:
         raise OracleFailure("invalid_npz", "bundle is not a readable NPZ archive", path=str(path)) from exc
     compact = "first_surface_pattern_count" in arrays
     expected = COMMON_MEMBERS | (COMPACT_ONLY_MEMBERS if compact else frozenset())
-    if set(arrays) != expected:
+    allowed_sets = (expected, expected | TRANSACTIONAL_COMPACT_MEMBERS) if compact else (expected,)
+    if set(arrays) not in allowed_sets:
         raise OracleFailure(
             "member_set_mismatch",
             "bundle member set does not match its physical format",
@@ -243,8 +248,30 @@ def _load_bundle(path_arg: str | Path, *, expected_version: str) -> Bundle:
         )
         if pattern_count <= 0:
             raise OracleFailure("invalid_pattern_count", "compact bundle has no head patterns")
-        row_path = path.with_name(f"{stem}.surf_rows.npy")
-        pattern_path = path.with_name(f"{stem}.surf_patterns.npy")
+        surface_generation = None
+        if "surface_generation" in arrays:
+            generation_array = arrays["surface_generation"]
+            if generation_array.shape != () or generation_array.dtype.kind != "U":
+                raise OracleFailure(
+                    "invalid_surface_generation",
+                    "compact bundle has invalid surface-generation metadata",
+                )
+            raw_generation = generation_array.item()
+            try:
+                surface_generation = uuid.UUID(hex=str(raw_generation)).hex
+            except (AttributeError, ValueError) as exc:
+                raise OracleFailure(
+                    "invalid_surface_generation",
+                    "compact bundle has invalid surface-generation metadata",
+                ) from exc
+            if surface_generation != str(raw_generation):
+                raise OracleFailure(
+                    "invalid_surface_generation",
+                    "compact bundle has non-canonical surface-generation metadata",
+                )
+        sidecar_stem = stem if surface_generation is None else f"{stem}.{surface_generation}"
+        row_path = path.with_name(f"{sidecar_stem}.surf_rows.npy")
+        pattern_path = path.with_name(f"{sidecar_stem}.surf_patterns.npy")
         rows = _load_sidecar(row_path, dtype=np.uint32, shape=(row_count, 4))
         patterns = _load_sidecar(pattern_path, dtype=np.uint32, shape=(pattern_count, 10))
         if bool(np.any(np.asarray(rows[:, 0], dtype=np.uint64) >= pattern_count)):
@@ -355,7 +382,8 @@ def _file_sha256(path: Path) -> str:
 def _compare_same_version_physical_bytes(baseline: Bundle, candidate: Bundle) -> dict[str, Any] | None:
     if baseline.format != candidate.format or baseline.version != candidate.version:
         return None
-    for name in sorted(baseline.raw_members):
+    compared_members = (set(baseline.raw_members) | set(candidate.raw_members)) - {"surface_generation"}
+    for name in sorted(compared_members):
         if baseline.raw_members[name] != candidate.raw_members[name]:
             raise OracleFailure(
                 "repeated_npz_member_mismatch",

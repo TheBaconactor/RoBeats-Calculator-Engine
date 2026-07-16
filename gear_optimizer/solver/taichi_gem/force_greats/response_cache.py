@@ -9,6 +9,7 @@ import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
 from .response_build_gpu_batch import build_force_greats_response_first_frontiers_gpu_batch
@@ -50,6 +51,8 @@ from .response_cache_store import (
 from .response_cache_types import (
     _FG_RESPONSE_CACHE_VERSION,
     _SCORING_BUNDLE_ARRAY_NAMES,
+    _SURFACE_BUNDLE_PATH_ARRAY_NAME,
+    _SURFACE_GENERATION_ARRAY_NAME,
     FgResponseFrontierCacheInfo,
     FgResponseFrontierCachePayload,
     FgResponseFrontierPrewarmResult,
@@ -97,6 +100,12 @@ def _source_label(counts: Counter[str]) -> str:
     if len(active) == 1:
         return active[0]
     return "mixed" if active else "missing"
+
+
+def _response_bundle_build_lock(bundle_key: tuple) -> FrontierBuildLock:
+    bundle_path = _fg_response_disk_cache_path(bundle_key)
+    lock_dir = bundle_path.parent / ".bundle_locks" / bundle_path.stem
+    return FrontierBuildLock(lock_dir, label=f"fg_response_bundle:{bundle_path.stem}")
 
 
 def _payload_subset(
@@ -230,6 +239,8 @@ def session_prune_scoring_bundle(
     pattern_ids, counts, pattern_words, pattern_coeffs = load_first_surface_scoring_patterns(
         bundle.cache_key,
         ((0, row_count),),
+        surface_generation=bundle.surface_generation,
+        bundle_path=bundle.bundle_path,
     )
     pattern_ids = np.ascontiguousarray(pattern_ids, dtype=np.int32)
     counts = np.ascontiguousarray(counts, dtype=np.int32)
@@ -486,6 +497,14 @@ def _materialize_scoring_bundle_from_arrays(
     surface_pattern_words = np.empty((0, 8), dtype=np.uint32)
     surface_counts = np.empty((0, 3), dtype=np.int32)
     surface_pattern_head_coeffs = np.empty((0, 4), dtype=np.int32)
+    raw_surface_generation = arrays.get(_SURFACE_GENERATION_ARRAY_NAME)
+    surface_generation = None
+    if raw_surface_generation is not None:
+        surface_generation = str(np.asarray(raw_surface_generation).item()) or None
+    raw_bundle_path = arrays.get(_SURFACE_BUNDLE_PATH_ARRAY_NAME)
+    bundle_path = None
+    if raw_bundle_path is not None:
+        bundle_path = Path(str(np.asarray(raw_bundle_path).item()))
     return FgResponseFrontierScoringBundle(
         cache_key=cache_key,
         frontier_idx_by_key=frontier_idx_by_key,
@@ -504,6 +523,8 @@ def _materialize_scoring_bundle_from_arrays(
         total_notes=int(total_notes),
         long_notes=int(np.asarray(arrays["long_notes"]).item()),
         use_forced_great_timing=bool(int(np.asarray(arrays["use_forced_great_timing"]).item())),
+        surface_generation=surface_generation,
+        bundle_path=bundle_path,
     )
 
 
@@ -521,9 +542,15 @@ def load_response_frontier_scoring_bundle(
             key in cached_scoring.frontier_idx_by_key for key in keys
         ):
             return cached_scoring
+        # A partial bundle may have been extended by this or another process. Drop the old metadata
+        # view before retrying so all arrays come from the newly published generation.
+        _invalidate_bundle_array_views(bundle_key)
 
     try:
-        arrays = _load_bundle_array_members(bundle_key, names=_SCORING_BUNDLE_ARRAY_NAMES)
+        arrays = _load_bundle_array_members(
+            bundle_key,
+            names=(*_SCORING_BUNDLE_ARRAY_NAMES, _SURFACE_BUNDLE_PATH_ARRAY_NAME),
+        )
     except ValueError as exc:
         raise ValueError(
             "FG response frontier scoring bundle is missing. Startup cache prebuild must build "
@@ -533,6 +560,19 @@ def load_response_frontier_scoring_bundle(
         _normalize_stat_key((int(row[0]), int(row[1])))
         for row in np.asarray(arrays.get("stat_keys", ()), dtype=np.int32).reshape((-1, 2))
     }
+    if not set(keys).issubset(present):
+        # The array LRU may hold a complete older generation even when its materialized scoring
+        # view was already evicted. Re-open the atomic metadata pointer once before declaring a
+        # genuine coverage miss so another process's completed extension becomes visible.
+        _invalidate_bundle_array_views(bundle_key)
+        arrays = _load_bundle_array_members(
+            bundle_key,
+            names=(*_SCORING_BUNDLE_ARRAY_NAMES, _SURFACE_BUNDLE_PATH_ARRAY_NAME),
+        )
+        present = {
+            _normalize_stat_key((int(row[0]), int(row[1])))
+            for row in np.asarray(arrays.get("stat_keys", ()), dtype=np.int32).reshape((-1, 2))
+        }
     if not set(keys).issubset(present):
         missing = sorted(set(keys) - present)
         raise ValueError(
@@ -568,56 +608,83 @@ def build_or_load_response_frontier_payload(
             frontier_count=int(len(payload.frontiers)),
         )
     source = "disk"
-    payload = _load_payload(cache_key)
-    if _payload_subset(payload, keys) is None:
-        payload = None
+    request_payload = _load_payload(cache_key)
+    if _payload_subset(request_payload, keys) is None:
+        request_payload = None
+    payload = request_payload
     bundle: FgResponseFrontierCachePayload | None = None
     if payload is None:
+        bundle = _payload_memory_get(bundle_key)
+        if bundle is None:
+            bundle = _load_payload(bundle_key)
+        payload = _payload_subset(bundle, keys)
+
+    # A request-specific predecessor payload must be migrated into the canonical bundle, and a
+    # partial canonical miss must be extended. Both mutations use disk as the authoritative base
+    # while one cross-process owner holds the complete read-merge-publish transaction.
+    if payload is None or request_payload is not None:
         slot_wait_t0 = time.perf_counter()
         with _response_bundle_build_slots:
             bundle_slot_wait_ms = float((time.perf_counter() - slot_wait_t0) * 1000.0)
-            bundle = _payload_memory_get(bundle_key)
-            if bundle is None:
+            lock_wait_t0 = time.perf_counter()
+            with _response_bundle_build_lock(bundle_key):
+                bundle_lock_wait_ms = float((time.perf_counter() - lock_wait_t0) * 1000.0)
+                # Never merge against the process-local payload cache here: another process may
+                # have published a newer generation while this process was waiting for the lock.
                 bundle = _load_payload(bundle_key)
-            if bundle is not None:
+                bundle_changed = False
+                if request_payload is not None:
+                    migration_keys = _payload_missing_or_incomplete_keys(
+                        bundle,
+                        request_payload.frontier_by_key,
+                    )
+                    if migration_keys:
+                        migration = _payload_subset(request_payload, migration_keys)
+                        if migration is None:
+                            raise ValueError("FG response frontier request payload was incomplete during migration")
+                        bundle = _merge_payloads(bundle, migration)
+                        bundle_changed = True
                 payload = _payload_subset(bundle, keys)
-            if payload is None:
-                missing_keys = _payload_missing_or_incomplete_keys(bundle, keys)
-                build_t0 = time.perf_counter()
-                payload, source = _build_response_frontier_cache_payload(
-                    calc_song,
-                    ref_arrays,
-                    stat_keys=missing_keys,
-                )
-                build_ms = float((time.perf_counter() - build_t0) * 1000.0)
-                save_t0 = time.perf_counter()
-                bundle = _merge_payloads(bundle, payload)
-                _save_payload(bundle_key, bundle)
-                save_ms = float((time.perf_counter() - save_t0) * 1000.0)
+                missing_keys: tuple[tuple[int, int], ...] = ()
+                build_ms = 0.0
+                if payload is None:
+                    missing_keys = _payload_missing_or_incomplete_keys(bundle, keys)
+                    build_t0 = time.perf_counter()
+                    update, source = _build_response_frontier_cache_payload(
+                        calc_song,
+                        ref_arrays,
+                        stat_keys=missing_keys,
+                    )
+                    build_ms = float((time.perf_counter() - build_t0) * 1000.0)
+                    bundle = _merge_payloads(bundle, update)
+                    bundle_changed = True
+                else:
+                    source = "disk"
+
+                save_ms = 0.0
+                if bundle_changed:
+                    save_t0 = time.perf_counter()
+                    _save_payload(bundle_key, bundle)
+                    save_ms = float((time.perf_counter() - save_t0) * 1000.0)
+                    _invalidate_bundle_array_views(bundle_key)
                 _payload_memory_put(bundle_key, bundle)
-                _invalidate_bundle_array_views(bundle_key)
                 payload = _payload_subset(bundle, keys)
-                emit_profile_event(
-                    component="fg_response_cache",
-                    event="payload_materialize",
-                    metrics={
-                        "requested_stat_keys": int(len(keys)),
-                        "missing_stat_keys": int(len(missing_keys)),
-                        "payload_build_ms": build_ms,
-                        "bundle_save_ms": save_ms,
-                        "bundle_slot_wait_ms": bundle_slot_wait_ms,
-                        "bundle_stat_keys": int(len(bundle.frontier_by_key)),
-                    },
-                )
                 if payload is None:
                     raise ValueError("FG response frontier bundle did not contain requested keys after build")
-            else:
-                source = "disk"
-    else:
-        bundle = _merge_payloads(_load_payload(bundle_key), payload)
-        _save_payload(bundle_key, bundle)
-        _payload_memory_put(bundle_key, bundle)
-        _invalidate_bundle_array_views(bundle_key)
+                if missing_keys:
+                    emit_profile_event(
+                        component="fg_response_cache",
+                        event="payload_materialize",
+                        metrics={
+                            "requested_stat_keys": int(len(keys)),
+                            "missing_stat_keys": int(len(missing_keys)),
+                            "payload_build_ms": build_ms,
+                            "bundle_save_ms": save_ms,
+                            "bundle_slot_wait_ms": bundle_slot_wait_ms,
+                            "bundle_lock_wait_ms": bundle_lock_wait_ms,
+                            "bundle_stat_keys": int(len(bundle.frontier_by_key)),
+                        },
+                    )
     _payload_memory_put(cache_key, payload)
     return FgResponseFrontierPrewarmResult(
         payload=payload,

@@ -181,7 +181,7 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
     pattern_ids = np.ascontiguousarray(pattern_ids, dtype=np.int32)
     pattern_coeffs = rng.integers(0, 100, size=(int(pattern_words.shape[0]), 4)).astype(np.int32)
 
-    def _load_compact(_key, ranges):
+    def _load_compact(_key, ranges, **_kwargs):
         assert tuple(ranges) == ((0, 55),)
         return pattern_ids, counts, pattern_words, pattern_coeffs
 

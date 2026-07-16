@@ -402,7 +402,12 @@ def _pack_scoring_surfaces_for_batch(
             surface_counts,
             surface_pattern_words,
             surface_pattern_head_coeffs,
-        ) = load_first_surface_scoring_patterns(scoring_bundle.cache_key, ranges)
+        ) = load_first_surface_scoring_patterns(
+            scoring_bundle.cache_key,
+            ranges,
+            surface_generation=scoring_bundle.surface_generation,
+            bundle_path=scoring_bundle.bundle_path,
+        )
     compact_ms = float((time.perf_counter() - phase_t0) * 1000.0)
     head_coeff_ms = 0.0
     if (
