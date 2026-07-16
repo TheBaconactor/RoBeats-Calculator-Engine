@@ -82,6 +82,35 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Session-box pruning now consumes compact pattern IDs and trace witness reconstruction skips
+    # the cross-lane DP when its historically preferred chart-prefix witness already matches the
+    # requested signature. Both changes are serve/materialization-only: neither reaches the V31
+    # frontier producer or persisted sidecars. Ratify the complete existing lineage explicitly so
+    # this conservative source-fingerprint rotation reuses every finished V31 bundle.
+    "fg-response-frontier-visible-first-v31+logic-a3b3847d91ea": (
+        "fg-response-frontier-visible-first-v31+logic-be41cf89e6f4",
+        "fg-response-frontier-visible-first-v31+logic-c05582176963",
+        "fg-response-frontier-visible-first-v31+logic-04e3683c0789",
+        "fg-response-frontier-visible-first-v31+logic-52861c6156f1",
+        "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
+        "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
+        "fg-response-frontier-visible-first-v31+logic-76140458b749",
+        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
+        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
+        "fg-response-frontier-visible-first-v31+logic-f67224918652",
+        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
+        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
+        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
+        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
+        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
+        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
+        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
+        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
+        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
+        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
+        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
+        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
+    ),
     # Transactional publication changes only storage ownership, while trace-materialization
     # batching changes only host reconstruction around a byte-identical producer. The combined
     # fingerprint therefore accepts both immediate predecessors plus their already-ratified V31

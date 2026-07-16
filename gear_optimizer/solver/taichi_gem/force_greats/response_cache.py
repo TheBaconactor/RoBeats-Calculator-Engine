@@ -259,13 +259,10 @@ def session_prune_scoring_bundle(
         raise ValueError("session-box prune received an invalid compact surface bundle")
     if bool(np.any(pattern_ids < 0)) or bool(np.any(pattern_ids >= int(pattern_words.shape[0]))):
         raise ValueError("session-box prune received an invalid head-pattern ID")
-    # The canonical keep kernel still consumes row-aligned words. Materialize only that predicate
-    # input; IDs, counts, and coefficients remain compact throughout, and survivors never expand
-    # to 11-word logical rows or pass through a second interning step.
-    words = np.ascontiguousarray(pattern_words[pattern_ids], dtype=np.uint32)
     head_len = min(int(bundle.total_notes), 100)
     keep = _numba_session_box_keep_mask(
-        words,
+        pattern_ids,
+        pattern_words,
         counts,
         np.ascontiguousarray(bundle.frontier_offsets, dtype=np.int32),
         np.ascontiguousarray(bundle.frontier_lengths, dtype=np.int32),

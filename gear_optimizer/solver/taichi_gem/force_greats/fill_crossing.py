@@ -142,16 +142,12 @@ class ActivationScheduleWitness:
 
 
 def _exact_fill_half_units(fill_units: np.ndarray, *, start: int, end: int) -> np.ndarray:
-    half = np.empty(int(end) - int(start), dtype=np.int8)
-    for offset, value in enumerate(fill_units[int(start) : int(end)]):
-        numeric = float(value)
-        if numeric == _GREAT_UNIT:
-            half[int(offset)] = np.int8(1)
-        elif numeric == _PERFECT_UNIT:
-            half[int(offset)] = np.int8(2)
-        else:
-            raise ValueError("fill_units must contain only exact Perfect (1.0) or Great (0.5) units")
-    return half
+    section = np.asarray(fill_units[int(start) : int(end)], dtype=np.float32)
+    is_great = section == np.float32(_GREAT_UNIT)
+    is_perfect = section == np.float32(_PERFECT_UNIT)
+    if not bool(np.all(is_great | is_perfect)):
+        raise ValueError("fill_units must contain only exact Perfect (1.0) or Great (0.5) units")
+    return np.where(is_great, np.int8(1), np.int8(2)).astype(np.int8, copy=False)
 
 
 def exact_label_hit_intervals(
@@ -579,6 +575,96 @@ def activation_schedule_witnesses_weighted_lane_aware(
             return ()
         lane_options.append((int(lane_id), options))
 
+    def _witness_for_prefixes(
+        fill_half: int,
+        event_count: int,
+        prefixes: tuple[int, ...],
+    ) -> ActivationScheduleWitness | None:
+        prefix_rows: list[ActivationLanePrefix] = []
+        selected_by_lane: list[tuple[int, tuple[int, ...]]] = []
+        for (lane_id, _options), prefix_count in zip(lane_options, prefixes, strict=True):
+            notes = lane_notes[int(lane_id)]
+            selected = tuple(int(note_idx) for note_idx in notes[: int(prefix_count)])
+            prefix_rows.append(ActivationLanePrefix(lane=int(lane_id), note_indices=selected))
+            selected_by_lane.append((int(lane_id), selected))
+        preactivation_order = _canonical_preactivation_order(
+            selected_by_lane=selected_by_lane,
+            activation_hit_timestamp=float(h_a),
+            predecessor_hit_timestamp=predecessor_hit_timestamp,
+            hit_at_or_after=_hit_at_or_after,
+            note_offset=off,
+        )
+        if preactivation_order is None:
+            return None
+        if len(preactivation_order) != int(event_count):
+            raise ValueError("activation witness event count does not match its lane prefixes")
+        if required_preactivation_event_count is not None:
+            expected_head = {
+                int(note_idx)
+                for note_idx in range(int(start), int(a))
+                if int(note_idx) < 100
+            }
+            selected_head = {
+                int(note_idx) for note_idx in preactivation_order if int(note_idx) < 100
+            }
+            if selected_head != expected_head:
+                return None
+        great_count = 2 * int(event_count) - int(fill_half)
+        if great_count < 0 or great_count > int(event_count):
+            raise ValueError("activation witness Great count escaped its exact fill identity")
+        return ActivationScheduleWitness(
+            activation_index=int(a),
+            activation_hit_timestamp=float(h_a),
+            section_start=int(start),
+            section_end=int(end),
+            lane_prefixes=tuple(prefix_rows),
+            preactivation_order=preactivation_order,
+            preactivation_fill_half_units=int(fill_half),
+            preactivation_event_count=int(event_count),
+            preactivation_great_count=int(great_count),
+        )
+
+    exact_fill = (
+        None
+        if required_preactivation_fill_half_units is None
+        else int(required_preactivation_fill_half_units)
+    )
+    exact_count = (
+        None
+        if required_preactivation_event_count is None
+        else int(required_preactivation_event_count)
+    )
+    activation_half = int(half_units[a - start])
+    if exact_fill is not None and exact_count is not None:
+        # The historical tie rule explicitly prefers chart-prefix counts when they realize the
+        # requested surface signature. Prove that preference before building the cross-lane DP;
+        # returning it here is the same first selected row, with no combinatorial state expansion.
+        preferred = tuple(int(count) for count in chart_prefix_counts)
+        preferred_fill = 0
+        preferred_is_legal = True
+        for (_lane_id, options), prefix_count in zip(lane_options, preferred, strict=True):
+            matching = tuple(
+                int(option_fill)
+                for option_fill, option_count in options
+                if int(option_count) == int(prefix_count)
+            )
+            if len(matching) != 1:
+                preferred_is_legal = False
+                break
+            preferred_fill += int(matching[0])
+        if (
+            preferred_is_legal
+            and sum(preferred) == int(exact_count)
+            and int(preferred_fill) == int(exact_fill)
+            and 0.5 * float(preferred_fill) < denom
+            and denom <= 0.5 * float(preferred_fill + activation_half)
+        ):
+            preferred_witness = _witness_for_prefixes(
+                int(exact_fill), int(exact_count), preferred
+            )
+            if preferred_witness is not None:
+                return (preferred_witness,)
+
     # (fill half-units, event count) -> per-lane prefix counts. Full tuple equality decides ties.
     states: dict[tuple[int, int], tuple[int, ...]] = {(0, 0): ()}
     fill_limit = float(2.0 * denom)
@@ -590,6 +676,10 @@ def activation_schedule_witnesses_weighted_lane_aware(
                 if float(new_fill) >= fill_limit:
                     continue
                 new_count = int(prior_count) + int(lane_count)
+                if exact_fill is not None and exact_count is not None and (
+                    int(new_fill) > int(exact_fill) or int(new_count) > int(exact_count)
+                ):
+                    continue
                 key = (int(new_fill), int(new_count))
                 prefixes = (*prior_prefixes, int(lane_count))
                 previous = merged.get(key)
@@ -599,7 +689,6 @@ def activation_schedule_witnesses_weighted_lane_aware(
         if not states:
             return ()
 
-    activation_half = int(half_units[a - start])
     feasible: dict[int, list[tuple[int, tuple[int, ...]]]] = {}
     for (fill_half, event_count), prefixes in states.items():
         if 0.5 * float(fill_half) < denom <= 0.5 * float(fill_half + activation_half):
@@ -619,85 +708,17 @@ def activation_schedule_witnesses_weighted_lane_aware(
                 for row in rows
                 if int(row[0]) == int(required_preactivation_event_count)
             )
-            preferred = tuple(int(count) for count in chart_prefix_counts)
-            preferred_fill = 0
-            preferred_is_legal = True
-            for (_lane_id, options), prefix_count in zip(
-                lane_options,
-                preferred,
-                strict=True,
-            ):
-                matching = tuple(
-                    int(option_fill)
-                    for option_fill, option_count in options
-                    if int(option_count) == int(prefix_count)
-                )
-                if len(matching) != 1:
-                    preferred_is_legal = False
-                    break
-                preferred_fill += int(matching[0])
-            if (
-                preferred_is_legal
-                and sum(preferred) == int(required_preactivation_event_count)
-                and int(preferred_fill) == int(required_preactivation_fill_half_units)
-            ):
-                preferred_row = (int(required_preactivation_event_count), preferred)
-                selected_rows = (
-                    preferred_row,
-                    *(row for row in selected_rows if row != preferred_row),
-                )
         else:
             selected_rows = (rows[0], rows[-1])
         for event_count, prefixes in selected_rows:
             signature = (int(fill_half), int(event_count))
             if signature in seen_signatures:
                 continue
-            prefix_rows: list[ActivationLanePrefix] = []
-            selected_by_lane: list[tuple[int, tuple[int, ...]]] = []
-            for (lane_id, _options), prefix_count in zip(lane_options, prefixes, strict=True):
-                notes = lane_notes[int(lane_id)]
-                selected = tuple(int(note_idx) for note_idx in notes[: int(prefix_count)])
-                prefix_rows.append(ActivationLanePrefix(lane=int(lane_id), note_indices=selected))
-                selected_by_lane.append((int(lane_id), selected))
-            preactivation_order = _canonical_preactivation_order(
-                selected_by_lane=selected_by_lane,
-                activation_hit_timestamp=float(h_a),
-                predecessor_hit_timestamp=predecessor_hit_timestamp,
-                hit_at_or_after=_hit_at_or_after,
-                note_offset=off,
-            )
-            if preactivation_order is None:
+            witness = _witness_for_prefixes(int(fill_half), int(event_count), prefixes)
+            if witness is None:
                 continue
-            if len(preactivation_order) != int(event_count):
-                raise ValueError("activation witness event count does not match its lane prefixes")
-            if required_preactivation_event_count is not None:
-                expected_head = {
-                    int(note_idx)
-                    for note_idx in range(int(start), int(a))
-                    if int(note_idx) < 100
-                }
-                selected_head = {
-                    int(note_idx) for note_idx in preactivation_order if int(note_idx) < 100
-                }
-                if selected_head != expected_head:
-                    continue
             seen_signatures.add(signature)
-            great_count = 2 * int(event_count) - int(fill_half)
-            if great_count < 0 or great_count > int(event_count):
-                raise ValueError("activation witness Great count escaped its exact fill identity")
-            witnesses.append(
-                ActivationScheduleWitness(
-                    activation_index=int(a),
-                    activation_hit_timestamp=float(h_a),
-                    section_start=int(start),
-                    section_end=int(end),
-                    lane_prefixes=tuple(prefix_rows),
-                    preactivation_order=preactivation_order,
-                    preactivation_fill_half_units=int(fill_half),
-                    preactivation_event_count=int(event_count),
-                    preactivation_great_count=int(great_count),
-                )
-            )
+            witnesses.append(witness)
     return tuple(witnesses)
 
 

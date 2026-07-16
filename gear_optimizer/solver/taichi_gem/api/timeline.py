@@ -285,6 +285,16 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only unreachable or test-only definitions from the shared producer modules; the Perfect-only
 # recurrence and every persisted Base payload member are unchanged.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Compact session pruning and exact-signature trace witness selection live in shared source
+    # files but run only after a frontier has been loaded. They cannot reach the Perfect-only
+    # recurrence or persisted Base arrays, so retain the complete ratified v12 lineage.
+    "exact-frontier-v12+logic-61d6f59cade0": (
+        "exact-frontier-v12+logic-12c8db234d06",
+        "exact-frontier-v12+logic-e0b0e8ef6411",
+        "exact-frontier-v12+logic-1f182e5b89af",
+        "exact-frontier-v12+logic-4c69b48f08bb",
+        "exact-frontier-v12+logic-9dfe907e66fb",
+    ),
     # FG trace-materialization host-path batching in the shared producer sources: identical
     # predicates hoisted into vectorized precomputes (fill_crossing witness scheduler), two
     # response_builder helpers routed through their existing numba twins, three zero-reference
