@@ -549,6 +549,14 @@ def ga_evaluate_prepared_population(
     ensure_ready()
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
+    # Host-only fail-loud bounds (review P2): the no-readback compaction removed the
+    # downloaded-count validation, which silently accepted an empty population when
+    # this function is called directly (tests/dev tools). Restore the guard without
+    # reintroducing a GPU synchronization.
+    if n_genomes <= 0 or n_genomes > int(fields.MAX_GENOMES):
+        raise ValueError(
+            f"n_genomes out of range: {n_genomes} (MAX_GENOMES={int(fields.MAX_GENOMES)})"
+        )
     use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
     if use_exact_inner_solver_i == 0:
         raise ValueError("GA evaluation requires exact inner GPU solving.")
@@ -569,20 +577,24 @@ def ga_evaluate_prepared_population(
     # and evaluate ONLY unique genome rows; the scatter copies each rep's result back
     # to its duplicates. Bit-exact (genome_base_stats[g] is the sole per-genome eval
     # input). Replaces skip-in-place, which still paid launch slots for duplicates —
-    # converged populations measure ~81% duplicate rows. The per-eval n_unique host
-    # read is measured ~free (+0.32 ms/gen); the sorted-hash rep build alternative was
-    # measured at +18.9 ms/gen and rejected — the O(n_genomes^2) rep kernel stays.
+    # converged populations measure ~81% duplicate rows.
+    #
+    # NO HOST READBACK: the unique count stays on-device (the eval/finalize kernels
+    # gate slots on ga_exact_eval_unique_count[0], written by the slot-table kernel
+    # in the same stream). Reading it back per generation was a full pipeline drain
+    # that serialized the deferred GA generation stream against the host launch loop
+    # (launch-bound owner, GPU idle during every generation's host window). Launch
+    # width and chunk sizing use the host-known population width instead — a
+    # conservative upper bound of the actual on-device work, so the TDR/dispatch
+    # bound is preserved (chunks can only shrink), and results are unchanged (chunk
+    # partitioning is already generation-dynamic and partition-independent — see the
+    # batch-width invariance suite).
     kernels.ga_compute_exact_eval_rep_kernel(n_genomes)
     kernels.ga_build_unique_slot_table_kernel(n_genomes)
-    n_unique = int(fields.ga_exact_eval_unique_count.to_numpy()[0])
-    if n_unique <= 0 or n_unique > int(n_genomes):
-        raise RuntimeError(
-            f"GA exact-eval unique-slot table invalid: n_unique={n_unique} (n_genomes={n_genomes})"
-        )
     eval_budget = int(_ga_eval_budget())
-    max_evals = max(int(eval_budget), int(n_unique))
+    max_evals = max(int(eval_budget), int(n_genomes))
     combo_chunk = compute_ga_combo_chunk(
-        n_genomes=n_unique,
+        n_genomes=n_genomes,
         n_combos=n_combos,
         max_evals=max_evals,
         chunk_min=_GA_COMBO_CHUNK_MIN,
@@ -590,6 +602,7 @@ def ga_evaluate_prepared_population(
     )
     if combo_chunk <= 0:
         combo_chunk = int(n_combos)
+
     offset = 0
     while offset < n_combos:
         chunk_len = int(min(combo_chunk, n_combos - offset))
@@ -597,10 +610,10 @@ def ga_evaluate_prepared_population(
             rem = int(n_combos - (offset + chunk_len))
             if 0 < rem <= int(_GA_COMBO_TAIL_MERGE_MAX):
                 merged = int(chunk_len + rem)
-                if int(n_unique) * int(merged) <= int(max_evals):
+                if int(n_genomes) * int(merged) <= int(max_evals):
                     chunk_len = merged
         kernels.ga_find_best_combo_warmstart_kernel(
-            n_unique,
+            n_genomes,
             n_combos,
             int(offset),
             int(chunk_len),
@@ -621,8 +634,9 @@ def ga_evaluate_prepared_population(
             song_slot_i,
             use_exact_inner_solver_i,
         )
-        kernels.ga_finalize_warmstart_lane_best_kernel(n_unique)
+        kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
         offset += int(chunk_len)
+
     # Scatter each duplicate genome's winning key/results from its representative row.
     kernels.ga_scatter_dup_results_kernel(n_genomes)
 def _validate_ga_runs_batch(

@@ -82,10 +82,13 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # Transactional publication adds an immutable sidecar generation to the metadata and carries
-    # that storage snapshot through lazy readers. The producer, stat-key mapping, ordered logical
-    # surfaces, and scores are unchanged, and legacy fixed-sidecar bundles remain directly readable.
-    "fg-response-frontier-visible-first-v31+logic-04e3683c0789": (
+    # Transactional publication changes only storage ownership, while trace-materialization
+    # batching changes only host reconstruction around a byte-identical producer. The combined
+    # fingerprint therefore accepts both immediate predecessors plus their already-ratified V31
+    # lineage. Legacy fixed-sidecar and transactional-generation bundles are both readable.
+    "fg-response-frontier-visible-first-v31+logic-be41cf89e6f4": (
+        "fg-response-frontier-visible-first-v31+logic-c05582176963",
+        "fg-response-frontier-visible-first-v31+logic-04e3683c0789",
         "fg-response-frontier-visible-first-v31+logic-52861c6156f1",
         "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
         "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",

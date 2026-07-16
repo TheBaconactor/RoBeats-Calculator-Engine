@@ -1080,6 +1080,13 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
         }
 
     monkeypatch.setattr(reducer_mod, "materialize_force_payload_from_response_frontier", _fake_force_payload)
+    # The reducer's winner pre-gate rescoring runs before the (faked) payload builder; fake the
+    # same seam the builder fake used to cover so every top-limit candidate survives the gate.
+    monkeypatch.setattr(
+        reducer_mod,
+        "score_force_greats_response_surface_exact",
+        lambda stats, calc_song, ref_arrays, surface: 100,
+    )
 
     candidates = [
         {
@@ -1487,9 +1494,16 @@ def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(tmp_pa
         ),
     )
     results = [
-        SimpleNamespace(best_score=150, raw_base=200, exact_base=100, exact_fg=150),
-        SimpleNamespace(best_score=150, raw_base=90, exact_base=160, exact_fg=150),
+        SimpleNamespace(best_score=150, raw_base=200, exact_base=100, exact_fg=150, stats={}, surface=None),
+        SimpleNamespace(best_score=150, raw_base=90, exact_base=160, exact_fg=150, stats={}, surface=None),
     ]
+    # The winner pre-gate rescoring runs before the (faked) payload builder; fake the same exact
+    # rescore seam so the gate still decides purely on the authoritative paired base (100 vs 160).
+    monkeypatch.setattr(
+        reducer_mod,
+        "score_force_greats_response_surface_exact",
+        lambda stats, calc_song, ref_arrays, surface: 150,
+    )
 
     out = FgResultReducer.materialize(plan, [results])
 
