@@ -825,8 +825,14 @@ def timeline_frontier_payload_cache_info(
         cached = _frontier_payload_cache.get(cache_key)
         if isinstance(cached, TimelineFrontierGridPayload):
             cache_source = "memory"
-    disk_path = _frontier_disk_cache_path(cache_key)
-    if cache_source == "missing" and _live_frontier_disk_cache_path(cache_key) is not None:
+    # Report the file that actually serves this key: the current-version path when it
+    # exists, else the ratified predecessor's. Returning the (possibly nonexistent)
+    # current-version path here made the prebuild manifest unable to validate/record
+    # predecessor hits, so startup re-verified those songs every run instead of taking
+    # the manifest fast path.
+    live_path = _live_frontier_disk_cache_path(cache_key)
+    disk_path = live_path if live_path is not None else _frontier_disk_cache_path(cache_key)
+    if cache_source == "missing" and live_path is not None:
         cache_source = "disk"
 
     song_data = calc_song.get("song_data", {}) or {}
