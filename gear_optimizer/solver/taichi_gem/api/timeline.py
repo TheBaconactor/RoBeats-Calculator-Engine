@@ -291,7 +291,7 @@ _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     # interval helpers deleted. The Perfect-only recurrence and every persisted Base payload
     # member are unchanged (byte-identical 132-trace materialization oracle); ratify the
     # existing exact Base lineage.
-    "exact-frontier-v12+logic-f5fc403e6113": (
+    "exact-frontier-v12+logic-12c8db234d06": (
         "exact-frontier-v12+logic-e0b0e8ef6411",
         "exact-frontier-v12+logic-1f182e5b89af",
         "exact-frontier-v12+logic-4c69b48f08bb",

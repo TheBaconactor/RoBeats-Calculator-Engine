@@ -5990,3 +5990,211 @@ def _first_frontier_from_precomputed_end_indices_numba(
         int(bit_stamp_value),
         int(branch_a_epoch_out),
     )
+
+
+@njit(cache=True, nogil=True)
+def _numba_trace_edge_action_arrays(
+    actions,
+    fills,
+    forced_values,
+    first_i: int,
+    carry_i: int,
+    n: int,
+    timestamps,
+    perfect_ts,
+    great_ts,
+    perfect_floor_timestamps,
+    great_floor_timestamps,
+    lanes,
+    raw_fever_fill: float,
+    real_fever_time: float,
+):
+    """Per-action precompute for the trace reconstruct's prefix + late-Great families.
+
+    One batched pass over ``_edge_surface_options``'s action loop replacing its per-action
+    scalar dispatches: for every action before the ``a >= n`` break it computes the exact
+    same quantities, in the same order, with the same leaf kernels the scalar wrappers
+    already routed to (`_numba_latest_activation_hit_for_contiguous_great_run`,
+    `_numba_lower_bound_from`, `_numba_activation_reachable_contiguous_run`), plus the
+    region-3 gate and late-Great prefix arithmetic copied expression-for-expression from
+    ``fill_crossing.perfect_crossing_is_region3`` / ``late_great_activation_prefix``.
+    The region-run family and every emit/dedup/dict decision stay with the Python caller.
+
+    ``err`` reproduces the scalar wrapper's fail-loud section-bounds check (1 = invalid
+    section bounds); the caller raises the wrapper's exact ValueError before consuming.
+    """
+    first = int(first_i) != 0
+    section_start = 0 if first else int(carry_i) + 1
+    denom = float(raw_fever_fill)
+    rft = float(real_fever_time)
+    m_total = int(actions.shape[0])
+    limit = 0
+    for idx in range(m_total):
+        fill = int(fills[idx])
+        a = int(fill) if first else int(carry_i) + int(fill)
+        if a >= int(n):
+            break
+        limit += 1
+
+    err = np.zeros(limit, dtype=np.int64)
+    a_out = np.empty(limit, dtype=np.int64)
+    chart_out = np.empty(limit, dtype=np.float64)
+    hit_lo_out = np.empty(limit, dtype=np.float64)
+    perfect_hit_out = np.zeros(limit, dtype=np.float64)
+    perfect_hit_ok = np.zeros(limit, dtype=np.int64)
+    perfect_reachable = np.zeros(limit, dtype=np.int64)
+    e_out = np.empty(limit, dtype=np.int64)
+    start_time_out = np.empty(limit, dtype=np.float64)
+    eg_e_out = np.empty(limit, dtype=np.int64)
+    late_lo_out = np.empty(limit, dtype=np.float64)
+    late_hit_out = np.zeros(limit, dtype=np.float64)
+    lg_prefix_out = np.full(limit, -1, dtype=np.int64)
+    late_e_out = np.full(limit, -1, dtype=np.int64)
+    late_start_out = np.zeros(limit, dtype=np.float64)
+    late_eg_e_out = np.full(limit, -1, dtype=np.int64)
+
+    for idx in range(limit):
+        k = int(actions[idx])
+        fill = int(fills[idx])
+        a = int(fill) if first else int(carry_i) + int(fill)
+        forced_applied = int(forced_values[idx])
+        chart_time = float(timestamps[a])
+        a_out[idx] = a
+        chart_out[idx] = chart_time
+
+        p_at = float(perfect_ts[a])
+        hit_lo = min(chart_time, p_at)
+        hit_hi = max(chart_time, p_at)
+        hit_lo_out[idx] = hit_lo
+        gs = max(0, min(int(section_start), int(n)))
+        gc = max(0, forced_applied)
+        cap, ok, _tok = _numba_latest_activation_hit_for_contiguous_great_run(
+            a, hit_lo, hit_hi, timestamps, perfect_ts, great_ts, gs, gc, int(n), 0
+        )
+        perfect_hit_out[idx] = cap
+        perfect_hit_ok[idx] = 1 if int(ok) != 0 else 0
+
+        # perfect_crossing_is_region3, expression-for-expression.
+        if k <= 0:
+            region3 = True
+        else:
+            slots = fill if first else fill - 1
+            region3 = (k <= slots) and ((float(slots) - 0.5 * float(k)) < denom)
+
+        if region3 and int(ok) != 0:
+            if section_start < 0 or section_start > a:
+                err[idx] = 1
+            elif _numba_activation_reachable_contiguous_run(
+                a,
+                cap,
+                timestamps,
+                perfect_floor_timestamps,
+                perfect_ts,
+                great_floor_timestamps,
+                great_ts,
+                lanes,
+                denom,
+                int(section_start),
+                int(n),
+                int(section_start),
+                forced_applied,
+                0,
+            ):
+                perfect_reachable[idx] = 1
+
+        if int(ok) != 0:
+            e = _numba_lower_bound_from(perfect_floor_timestamps, cap + rft)
+            if e <= a:
+                e = a + 1
+            if e > int(n):
+                e = int(n)
+            st = cap
+        else:
+            e = -1
+            st = chart_time
+        e_out[idx] = e
+        start_time_out[idx] = st
+        eg_e = _numba_lower_bound_from(great_floor_timestamps, st + rft)
+        if eg_e <= a:
+            eg_e = a + 1
+        if eg_e > int(n):
+            eg_e = int(n)
+        eg_e_out[idx] = eg_e
+
+        late_lo = float(perfect_ts[a] + np.float32(0.001))
+        great_hi = float(great_ts[a])
+        late_lo_out[idx] = late_lo
+
+        # late_great_activation_prefix + late_great_prefix_is_legal, expression-for-expression.
+        lp = -1
+        if k > 0:
+            wasted = 0 if first else 1
+            prefix = min(max(0, k - 1), max(0, fill - wasted))
+            perfects_before = fill - wasted - prefix
+            if perfects_before >= 0:
+                bar_before = 0.5 * float(prefix) + float(perfects_before)
+                if bar_before < denom and bar_before + 0.5 >= denom:
+                    lp = prefix
+        if lp >= 0:
+            gs2 = max(0, min(int(section_start), int(n)))
+            gc2 = max(0, lp)
+            cap2, ok2, _tok2 = _numba_latest_activation_hit_for_contiguous_great_run(
+                a, late_lo, great_hi, timestamps, perfect_ts, great_ts, gs2, gc2, int(n), 0
+            )
+            if int(ok2) == 0:
+                lp = -1
+            elif section_start < 0 or section_start > a:
+                err[idx] = 1
+                lp = -1
+            elif not _numba_activation_reachable_contiguous_run(
+                a,
+                cap2,
+                timestamps,
+                perfect_floor_timestamps,
+                perfect_ts,
+                great_floor_timestamps,
+                great_ts,
+                lanes,
+                denom,
+                int(section_start),
+                int(n),
+                int(section_start),
+                lp,
+                1,
+            ):
+                lp = -1
+            else:
+                late_hit_out[idx] = cap2
+                late_start_out[idx] = cap2
+                ae = _numba_lower_bound_from(perfect_floor_timestamps, cap2 + rft)
+                if ae <= a:
+                    ae = a + 1
+                if ae > int(n):
+                    ae = int(n)
+                late_e_out[idx] = ae
+                aee = _numba_lower_bound_from(great_floor_timestamps, cap2 + rft)
+                if aee <= a:
+                    aee = a + 1
+                if aee > int(n):
+                    aee = int(n)
+                late_eg_e_out[idx] = aee
+        lg_prefix_out[idx] = lp
+
+    return (
+        err,
+        a_out,
+        chart_out,
+        hit_lo_out,
+        perfect_hit_out,
+        perfect_hit_ok,
+        perfect_reachable,
+        e_out,
+        start_time_out,
+        eg_e_out,
+        late_lo_out,
+        late_hit_out,
+        lg_prefix_out,
+        late_e_out,
+        late_start_out,
+        late_eg_e_out,
+    )

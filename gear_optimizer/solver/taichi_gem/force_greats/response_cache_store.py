@@ -86,7 +86,7 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     # zero-reference interval helpers were deleted. Producer output is byte-identical (132-trace
     # persisted-loadout oracle over the q24 corpus, every row and witness equal), so preserve the
     # complete already-ratified V31 lineage explicitly.
-    "fg-response-frontier-visible-first-v31+logic-fbd1455e2199": (
+    "fg-response-frontier-visible-first-v31+logic-c05582176963": (
         "fg-response-frontier-visible-first-v31+logic-52861c6156f1",
         "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
         "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
