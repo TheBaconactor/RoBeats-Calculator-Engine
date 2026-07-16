@@ -179,3 +179,74 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
         fever_duration_ms=float(timeline["fever_duration_ms"]),
     )
     reset_timeline_state()
+
+
+def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
+    monkeypatch, tmp_path
+) -> None:
+    """Issue #161: the Base physical replay must reconstruct its event order from the
+    producer's canonical ``input_order`` (identical to the FG sibling), never from an
+    ``(event_time_ms, is_held_tail)`` re-sort. That re-sort inverts a tied same-lane
+    tail/head pair -- a hold tail released at the same event time the next same-lane hold
+    head is pressed sorts AFTER the head under the held-tail key -- which the producer
+    never does, so the lane cursor tripped ("lane 4 matched note 586, not intended note
+    587") on a freshly built, physically achievable surface.
+
+    cheatreal (Hard) at Fever Time=6 / Fever Fill Rate=1 selects that surface (pool 339,
+    score 29,780,345): the activation witness is held tail note 586 (lane 4, released at
+    event time 36918.541 ms, inside its DOUBLED Perfect window), and hold head note 587
+    (same lane, pressed at the same event time) follows it. The canonical input order keeps
+    586 before 587; the score is unchanged because the validator is a pure guard.
+    """
+    from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+        validate_base_physical_replay,
+    )
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
+    from gear_optimizer.solver.taichi_gem.api.timeline import reset_timeline_state
+
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
+    reset_timeline_state()
+    chart_path = (
+        Path(__file__).resolve().parents[1]
+        / "Data"
+        / "Hard"
+        / "cheatreal (Hard) by t+pazolite.txt"
+    )
+    calc_song, ref_arrays = _load_case(chart_path)
+    # A real persisted T5 base loadout with the fever axes swept to the failing cell.
+    replay = score_stats_exact_with_timeline_trace(
+        {
+            "Perfect Points": 85,
+            "Combo Multiplier": 62,
+            "Fever Multiplier": 71,
+            "Fever Fill Rate": 1,
+            "Fever Time": 6,
+            "Chill": 0,
+            "Flow": 153,
+            "Rush": 39,
+            "Beat": 667,
+            "Vibe": 60,
+        },
+        calc_song,
+        ref_arrays,
+    )
+    timeline = replay["TimelineFrontier"]
+    assert int(replay["score"]) == 29_780_345
+    assert [
+        (int(section["activation_index"]), int(section["fever_end_index"]))
+        for section in timeline["frontier_trace"]
+    ] == [(586, 910), (1497, 2047)]
+
+    song_data = calc_song["song_data"]
+    physical = validate_base_physical_replay(
+        frontier_trace=timeline["frontier_trace"],
+        response_surface=timeline["response_surface"],
+        timestamps=song_data["timestamps"],
+        note_types=song_data["note_types"],
+        lanes=song_data["lanes"],
+        fill_count=int(timeline["fill_count"]),
+        fever_duration_ms=float(timeline["fever_duration_ms"]),
+    )
+    # The tied same-lane pair replays in canonical input order: tail 586 before head 587.
+    assert physical.event_order.index(586) < physical.event_order.index(587)
+    reset_timeline_state()

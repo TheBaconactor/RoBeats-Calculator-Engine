@@ -151,16 +151,16 @@ def _base_graph_physical_replay(
     if tuple(sorted(input_orders)) != tuple(range(n)):
         raise ValueError("Base physical replay graph does not contain one exact input order")
 
-    event_order = tuple(
-        sorted(
-            range(n),
-            key=lambda index: (
-                float(event_times_ms[index]),
-                int(nt[index]) == _HELD_TAIL_TYPE,
-                int(input_orders[index]),
-            ),
-        )
-    )
+    # Replay in the producer's canonical input order -- the exact permutation
+    # _assign_exact_input_order emitted (note_graph.py), which _apply_exact_schedule_fever
+    # and the FG sibling replay (:284) both consume. Re-deriving the order from
+    # (event_time_ms, is_held_tail) inverts a tied same-lane tail/head pair (a hold tail
+    # released at the same event time the next hold head is pressed sorts AFTER the head
+    # under the held-tail key), which the producer never does, so the lane cursor and the
+    # event-time fever replay disagreed with the canonical trace. input_order is proven
+    # monotone non-decreasing in event time (note_graph.py:989-993), so the non-decreasing
+    # event-time guard in _event_time_fever_mask still holds.
+    event_order = tuple(int(index) for index in sorted(range(n), key=input_orders.__getitem__))
     expected_by_lane: dict[int, list[int]] = {}
     for index, lane_value in enumerate(lane_arr):
         expected_by_lane.setdefault(int(lane_value), []).append(int(index))
