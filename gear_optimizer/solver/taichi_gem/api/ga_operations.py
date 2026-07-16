@@ -43,6 +43,16 @@ _GA_COMBO_CHUNK_MIN: int = 1024  # exact-combo dispatch chunk floor (TDR-safe)
 _GA_COMBO_CHUNK_MAX: int = 4096  # exact-combo dispatch chunk ceiling (TDR-safe)
 _GA_COMBO_TAIL_MERGE_MAX: int = 256  # merge a trailing remainder up to this size into the last chunk
 _GA_KERNELS_LIGHT_WARMED: bool = False
+# DEBUG cull probe (OFF by default): resolved once at import so the per-generation
+# evaluation path performs no environment lookups. Fail loudly at import when the
+# probe is enabled without an output path -- not silently mid-run.
+_GA_CULL_PROBE: bool = env_flag("GA_CULL_PROBE")
+_GA_CULL_PROBE_PATH: str = env_str("GA_CULL_PROBE_PATH") if _GA_CULL_PROBE else ""
+if _GA_CULL_PROBE and not _GA_CULL_PROBE_PATH:
+    raise RuntimeError(
+        "GA_CULL_PROBE is enabled but GA_CULL_PROBE_PATH is empty; "
+        "set GA_CULL_PROBE_PATH to the probe output file path."
+    )
 
 
 def _warmup_ref_arrays() -> dict[str, np.ndarray]:
@@ -576,6 +586,14 @@ def ga_evaluate_prepared_population(
     ensure_ready()
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
+    # Host-only fail-loud bounds (review P2): the no-readback compaction removed the
+    # downloaded-count validation, which silently accepted an empty population when
+    # this function is called directly (tests/dev tools). Restore the guard without
+    # reintroducing a GPU synchronization.
+    if n_genomes <= 0 or n_genomes > int(fields.MAX_GENOMES):
+        raise ValueError(
+            f"n_genomes out of range: {n_genomes} (MAX_GENOMES={int(fields.MAX_GENOMES)})"
+        )
     use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
     if use_exact_inner_solver_i == 0:
         raise ValueError("GA evaluation requires exact inner GPU solving.")
@@ -659,32 +677,26 @@ def ga_evaluate_prepared_population(
                 kernels.ga_finalize_warmstart_lane_best_kernel(n_genomes)
             offset += int(chunk_len)
 
-    # DEBUG cull-instrumentation (gated, OFF by default). probe_mode == 0 keeps the
-    # eval kernel byte-identical to production (all probe branches dead-code-eliminated
-    # by ti.static). When GA_CULL_PROBE is on we run the normal loop as the counting
+    # DEBUG cull-instrumentation (gated, OFF by default; flag + path resolved ONCE at
+    # module import via _GA_CULL_PROBE/_GA_CULL_PROBE_PATH -- no per-evaluation env
+    # reads in the generation path). probe_mode == 0 keeps the eval kernel
+    # byte-identical to production (all probe branches dead-code-eliminated by
+    # ti.static). When GA_CULL_PROBE is on we run the normal loop as the counting
     # pass (probe_mode=1, identical result writes), then a side-effect-free perfect-
     # incumbent replay (probe_mode=2) AFTER finalize+scatter so it reads the FINAL
     # winners from chunk_best_key.
-    probe_on = env_flag("GA_CULL_PROBE")
-    probe_path = ""
-    if probe_on:
-        probe_path = env_str("GA_CULL_PROBE_PATH")
-        if not probe_path:
-            raise RuntimeError(
-                "GA_CULL_PROBE is enabled but GA_CULL_PROBE_PATH is empty; "
-                "set GA_CULL_PROBE_PATH to the probe output file path."
-            )
+    if _GA_CULL_PROBE:
         fields.ga_cull_probe_counters.from_numpy(np.zeros(4, dtype=np.int32))
 
-    _run_eval_chunks(1 if probe_on else 0, do_finalize=True)
+    _run_eval_chunks(1 if _GA_CULL_PROBE else 0, do_finalize=True)
     # Scatter each duplicate genome's winning key/results from its representative row.
     kernels.ga_scatter_dup_results_kernel(n_genomes)
 
-    if probe_on:
+    if _GA_CULL_PROBE:
         # Perfect-incumbent replay: finals are now in chunk_best_key; count only, no writes.
         _run_eval_chunks(2, do_finalize=False)
         _emit_ga_cull_probe_record(
-            probe_path,
+            _GA_CULL_PROBE_PATH,
             song_slot=song_slot_i,
             n_genomes=int(n_genomes),
             n_combos=int(n_combos),
