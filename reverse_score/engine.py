@@ -1036,6 +1036,309 @@ def _assemble_loadout(
 _STAT_CLAMP_HI = 160  # scorer table span; raw values above collapse per dim
 
 
+def _base_color_weights(oracle: SongOracle, n_colors: int) -> np.ndarray:
+    """The scorer's color mass: base_int = 2*primary + secondary, where on
+    single-color charts the secondary column IS the primary one when the
+    metadata names it so (weight 3) and absent otherwise (weight 2)."""
+    base_w = np.zeros(n_colors, dtype=np.int64)
+    base_w[0] = 2
+    if n_colors == 2:
+        base_w[1] = 1
+    if oracle.secondary_color == oracle.primary_color:
+        base_w[0] += 1
+    return base_w
+
+
+_S_KEYS_MAX_COMBOS = 150_000
+
+
+def _build_s_preimage_keys(
+    oracle: SongOracle,
+    axes: list[Axis],
+    gem_model: "_GemModel",
+    pw: np.ndarray,
+    s_target: int,
+) -> dict | None:
+    """Exact-S derived-key preimage set over the spec's achievable windows.
+
+    The exact score depends on a candidate ONLY through (base_int =
+    base_w . colors, PP/CM/FM curve VALUES, FT cell, FF cell), and at fixed
+    (CM, FM, cell) it is non-decreasing in base_value = base_int + ppf. So
+    for every achievable (cell, cm plateau, fm plateau, pp plateau) combo
+    the exact-S preimage in base_int is ONE integer interval, found here by
+    vectorized integer bisection through the canonical batch scorer
+    (~2*log2(width)+2 batch calls total).
+
+    Every completion the walk can reach lies inside the axis-sum stat
+    windows plus the gem envelope, so its derived key is covered here.
+    Returns a ``_SKeyMemo``: EAGER (full enumeration; an empty set proves
+    NO PREIMAGE over the whole spec domain) when the global combo space is
+    within ``_S_KEYS_MAX_COMBOS``, else LAZY (per-branch boxes bisected on
+    demand and memoized)."""
+    from .game_model import combo_multiplier, fever_multiplier, perfect_points
+
+    dim = len(pw)
+    n_colors = dim - 5
+    lo = np.zeros(dim, dtype=np.int64)
+    hi = np.zeros(dim, dtype=np.int64)
+    for ax in axes:
+        mat = np.array([o.vec for o in ax.options], dtype=np.int64)
+        lo += mat.min(axis=0)
+        hi += mat.max(axis=0)
+    for _attr, main_dim_g, scale_g, color_dim_g, _pu in gem_model.types:
+        lo[main_dim_g] += scale_g * gem_model.floor
+        hi[main_dim_g] += scale_g * gem_model.cap
+        if color_dim_g is not None:
+            lo[color_dim_g] += 3 * gem_model.floor
+            hi[color_dim_g] += 3 * gem_model.cap
+    for _elem, e_dim, _pu in gem_model.elements:
+        hi[e_dim] += 6 * gem_model.elem_cap
+
+    pp_tab = np.array([perfect_points(s) for s in range(_STAT_CLAMP_HI + 1)], dtype=np.float64)
+    cm_tab = np.array([combo_multiplier(s)[2] for s in range(_STAT_CLAMP_HI + 1)], dtype=np.float64)
+    fm_tab = np.array([fever_multiplier(s) for s in range(_STAT_CLAMP_HI + 1)], dtype=np.float64)
+    _pv, pp_first, pp_id_of = np.unique(pp_tab, return_index=True, return_inverse=True)
+    _cv, cm_first, cm_id_of = np.unique(cm_tab, return_index=True, return_inverse=True)
+    _fv, fm_first, fm_id_of = np.unique(fm_tab, return_index=True, return_inverse=True)
+
+    def stat_win(d: int) -> tuple[int, int]:
+        return (
+            int(np.clip(lo[n_colors + d], 0, _STAT_CLAMP_HI)),
+            int(np.clip(hi[n_colors + d], 0, _STAT_CLAMP_HI)),
+        )
+
+    pp_a, pp_b = stat_win(0)
+    cm_a, cm_b = stat_win(1)
+    ff_a, ff_b = stat_win(2)
+    fm_a, fm_b = stat_win(3)
+    ft_a, ft_b = stat_win(4)
+    pp_ids = np.arange(int(pp_id_of[pp_a]), int(pp_id_of[pp_b]) + 1)
+    cm_ids = np.arange(int(cm_id_of[cm_a]), int(cm_id_of[cm_b]) + 1)
+    fm_ids = np.arange(int(fm_id_of[fm_a]), int(fm_id_of[fm_b]) + 1)
+    fts = np.arange(ft_a, ft_b + 1)
+    ffs = np.arange(ff_a, ff_b + 1)
+
+    base_w = _base_color_weights(oracle, n_colors)
+    bi_lo = int(base_w @ lo[:n_colors])
+    bi_hi = int(base_w @ hi[:n_colors])
+    if bi_hi < bi_lo:
+        return None
+
+    memo = _SKeyMemo(
+        oracle=oracle,
+        s_target=int(s_target),
+        base_w=base_w,
+        id_of=(pp_id_of, cm_id_of, fm_id_of),
+        first=(pp_first, cm_first, fm_first),
+        id_windows=(
+            (int(pp_id_of[pp_a]), int(pp_id_of[pp_b])),
+            (int(cm_id_of[cm_a]), int(cm_id_of[cm_b])),
+            (int(fm_id_of[fm_a]), int(fm_id_of[fm_b])),
+            (ft_a, ft_b),
+            (ff_a, ff_b),
+        ),
+        bi_window=(bi_lo, bi_hi),
+    )
+    n_combos = pp_ids.size * cm_ids.size * fm_ids.size * fts.size * ffs.size
+    if 0 < n_combos <= _S_KEYS_MAX_COMBOS:
+        memo.build_eager(fts, ffs, cm_ids, fm_ids, pp_ids)
+    return memo
+
+
+_S_KEYS_BOX_MAX = 4096
+
+
+class _SKeyMemo:
+    """Exact-S derived-key oracle for the walk.
+
+    Answers "can ANY completion inside this derived-envelope box score
+    exactly S?" For each (cell, cm/fm/pp plateau) combo the S-preimage in
+    base_int is one integer interval (score is non-decreasing in base at a
+    fixed combo), computed by vectorized bisection through the canonical
+    batch scorer over the spec's global base window.
+
+    Two modes: EAGER (small global combo space -- full enumeration up
+    front, which also yields the domain-wide NO PREIMAGE proof when no
+    combo has an interval) and LAZY (combos bisected on first touch and
+    memoized; boxes wider than ``_S_KEYS_BOX_MAX`` combos return True --
+    undecided, the corridor still applies -- so cost concentrates on the
+    deep, tight branches where the kill actually lands)."""
+
+    _EMPTY = (1, 0)  # canonical empty interval sentinel
+
+    def __init__(
+        self,
+        *,
+        oracle: SongOracle,
+        s_target: int,
+        base_w: np.ndarray,
+        id_of: tuple[np.ndarray, np.ndarray, np.ndarray],
+        first: tuple[np.ndarray, np.ndarray, np.ndarray],
+        id_windows: tuple[tuple[int, int], ...],
+        bi_window: tuple[int, int],
+    ):
+        self.oracle = oracle
+        self.s_target = int(s_target)
+        self.base_w = base_w
+        self.pp_id_of, self.cm_id_of, self.fm_id_of = id_of
+        self.pp_first, self.cm_first, self.fm_first = first
+        self.win_pp, self.win_cm, self.win_fm, self.win_ft, self.win_ff = id_windows
+        self.bi_lo, self.bi_hi = bi_window
+        self.eager: dict | None = None
+        self.empty = False
+        self._memo: dict[int, tuple[int, int]] = {}
+
+    def _bisect(
+        self,
+        k_ft: np.ndarray,
+        k_ff: np.ndarray,
+        k_cm: np.ndarray,
+        k_fm: np.ndarray,
+        k_pp: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Per-combo exact-S base_int interval over the global base window:
+        (b_lo, b_hi, valid)."""
+        cm_rep = self.cm_first[k_cm].astype(np.int64)
+        fm_rep = self.fm_first[k_fm].astype(np.int64)
+        pp_rep = self.pp_first[k_pp].astype(np.int64)
+
+        def evals(b: np.ndarray) -> np.ndarray:
+            return self.oracle.score_derived_batch(
+                b, pp_rep, cm_rep, fm_rep, k_ft, k_ff
+            )
+
+        s64 = np.int64(self.s_target)
+        lo_b = np.full(k_ft.shape[0], self.bi_lo, dtype=np.int64)
+        hi_b = np.full(k_ft.shape[0], self.bi_hi, dtype=np.int64)
+        while True:
+            active = lo_b < hi_b
+            if not bool(active.any()):
+                break
+            mid = (lo_b + hi_b) // 2
+            low = evals(mid) < s64
+            lo_b = np.where(active & low, mid + 1, lo_b)
+            hi_b = np.where(active & ~low, mid, hi_b)
+        lower = lo_b
+        valid = evals(lower) == s64
+        lo_b2 = lower.copy()
+        hi_b2 = np.full(k_ft.shape[0], self.bi_hi, dtype=np.int64)
+        while True:
+            active = valid & (lo_b2 < hi_b2)
+            if not bool(active.any()):
+                break
+            mid = (lo_b2 + hi_b2 + 1) // 2
+            ok = evals(mid) <= s64
+            lo_b2 = np.where(active & ok, mid, lo_b2)
+            hi_b2 = np.where(active & ~ok, mid - 1, hi_b2)
+        return lower, lo_b2, valid
+
+    def build_eager(
+        self,
+        fts: np.ndarray,
+        ffs: np.ndarray,
+        cm_ids: np.ndarray,
+        fm_ids: np.ndarray,
+        pp_ids: np.ndarray,
+    ) -> None:
+        g = np.meshgrid(fts, ffs, cm_ids, fm_ids, pp_ids, indexing="ij")
+        k_ft = g[0].ravel().astype(np.int64)
+        k_ff = g[1].ravel().astype(np.int64)
+        k_cm = g[2].ravel().astype(np.int64)
+        k_fm = g[3].ravel().astype(np.int64)
+        k_pp = g[4].ravel().astype(np.int64)
+        b_lo, b_hi, valid = self._bisect(k_ft, k_ff, k_cm, k_fm, k_pp)
+        self.eager = {
+            "ft": k_ft[valid],
+            "ff": k_ff[valid],
+            "cm_id": k_cm[valid],
+            "fm_id": k_fm[valid],
+            "pp_id": k_pp[valid],
+            "b_lo": b_lo[valid],
+            "b_hi": b_hi[valid],
+        }
+        self.empty = int(self.eager["ft"].size) == 0
+
+    def _combo_key(self, ft: int, ff: int, cm: int, fm: int, pp: int) -> int:
+        return (((ft * 161 + ff) * 161 + cm) * 161 + fm) * 161 + pp
+
+    def box_may_hit(
+        self,
+        ft_a: int,
+        ft_b: int,
+        ff_a: int,
+        ff_b: int,
+        cm_a: int,
+        cm_b: int,
+        fm_a: int,
+        fm_b: int,
+        pp_a: int,
+        pp_b: int,
+        bi_lo_b: int,
+        bi_hi_b: int,
+    ) -> bool:
+        ft_a, ft_b = max(ft_a, self.win_ft[0]), min(ft_b, self.win_ft[1])
+        ff_a, ff_b = max(ff_a, self.win_ff[0]), min(ff_b, self.win_ff[1])
+        cm_a, cm_b = max(cm_a, self.win_cm[0]), min(cm_b, self.win_cm[1])
+        fm_a, fm_b = max(fm_a, self.win_fm[0]), min(fm_b, self.win_fm[1])
+        pp_a, pp_b = max(pp_a, self.win_pp[0]), min(pp_b, self.win_pp[1])
+        bi_lo_b, bi_hi_b = max(bi_lo_b, self.bi_lo), min(bi_hi_b, self.bi_hi)
+        if (
+            ft_a > ft_b or ff_a > ff_b or cm_a > cm_b or fm_a > fm_b
+            or pp_a > pp_b or bi_lo_b > bi_hi_b
+        ):
+            return False
+        if self.eager is not None:
+            e = self.eager
+            m = (
+                (e["ft"] >= ft_a) & (e["ft"] <= ft_b)
+                & (e["ff"] >= ff_a) & (e["ff"] <= ff_b)
+                & (e["cm_id"] >= cm_a) & (e["cm_id"] <= cm_b)
+                & (e["fm_id"] >= fm_a) & (e["fm_id"] <= fm_b)
+                & (e["pp_id"] >= pp_a) & (e["pp_id"] <= pp_b)
+                & (e["b_hi"] >= bi_lo_b) & (e["b_lo"] <= bi_hi_b)
+            )
+            return bool(m.any())
+        n_box = (
+            (ft_b - ft_a + 1) * (ff_b - ff_a + 1) * (cm_b - cm_a + 1)
+            * (fm_b - fm_a + 1) * (pp_b - pp_a + 1)
+        )
+        if n_box > _S_KEYS_BOX_MAX:
+            return True  # undecided: too wide to test; the corridor still applies
+        g = np.meshgrid(
+            np.arange(ft_a, ft_b + 1),
+            np.arange(ff_a, ff_b + 1),
+            np.arange(cm_a, cm_b + 1),
+            np.arange(fm_a, fm_b + 1),
+            np.arange(pp_a, pp_b + 1),
+            indexing="ij",
+        )
+        k_ft = g[0].ravel().astype(np.int64)
+        k_ff = g[1].ravel().astype(np.int64)
+        k_cm = g[2].ravel().astype(np.int64)
+        k_fm = g[3].ravel().astype(np.int64)
+        k_pp = g[4].ravel().astype(np.int64)
+        memo = self._memo
+        missing_idx = []
+        for j in range(k_ft.shape[0]):
+            ck = self._combo_key(int(k_ft[j]), int(k_ff[j]), int(k_cm[j]), int(k_fm[j]), int(k_pp[j]))
+            iv = memo.get(ck)
+            if iv is None:
+                missing_idx.append(j)
+            elif iv[0] <= iv[1] and iv[1] >= bi_lo_b and iv[0] <= bi_hi_b:
+                return True
+        if missing_idx:
+            mi = np.array(missing_idx, dtype=np.int64)
+            b_lo, b_hi, valid = self._bisect(k_ft[mi], k_ff[mi], k_cm[mi], k_fm[mi], k_pp[mi])
+            hit = False
+            for pos, j in enumerate(missing_idx):
+                iv = (int(b_lo[pos]), int(b_hi[pos])) if bool(valid[pos]) else self._EMPTY
+                memo[self._combo_key(int(k_ft[j]), int(k_ff[j]), int(k_cm[j]), int(k_fm[j]), int(k_pp[j]))] = iv
+                if iv[0] <= iv[1] and iv[1] >= bi_lo_b and iv[0] <= bi_hi_b:
+                    hit = True
+            return hit
+        return False
+
+
 def _fold_lattice_decomp(
     axes: list[Axis],
     p_weights: np.ndarray,
@@ -1046,6 +1349,7 @@ def _fold_lattice_decomp(
     s_target: int | None = None,
     hit_count: int | None = None,
     fever_grids: tuple[np.ndarray, np.ndarray] | None = None,
+    s_keys: dict | None = None,
 ) -> tuple[np.ndarray, int]:
     """v4 candidate generation: exact-P conditioned decomposition join.
 
@@ -1107,15 +1411,23 @@ def _fold_lattice_decomp(
             s_target,
             hit_count,
             fever_grids,
+            s_keys,
         )
         peak = max(peak, case_peak)
         if rows.shape[0]:
             out_chunks.append(rows)
             total_out += rows.shape[0]
             if total_out > max_rows:
-                raise CapExceeded(
-                    f"decomposition join result exceeded max_rows={max_rows:,}"
-                )
+                # Cases can rediscover the same totals from different
+                # negative-row starts; judge the cap on distinct rows.
+                merged = np.unique(np.concatenate(out_chunks, axis=0), axis=0)
+                out_chunks = [merged]
+                total_out = int(merged.shape[0])
+                if total_out > max_rows:
+                    raise CapExceeded(
+                        f"decomposition join result exceeded "
+                        f"max_rows={max_rows:,} (distinct rows)"
+                    )
     if not out_chunks:
         if gem_model is not None:
             return np.zeros((0, dim + 15), dtype=np.int32), peak
@@ -1182,11 +1494,17 @@ def _decomp_case(
     s_target: int | None = None,
     hit_count: int | None = None,
     fever_grids: tuple[np.ndarray, np.ndarray] | None = None,
+    s_keys: dict | None = None,
 ) -> tuple[np.ndarray, int]:
     """One all-non-negative case of the decomposition join."""
     cdim = composites[0].shape[1]
     # Order: small-P-diversity composites first, the two largest row sets
     # last (their pairing happens under the tightest exact windows).
+    # Measured on a real maxed row (2026-07-17): ascending explodes at the
+    # upgrade-subgroup cross (level 4 > 40M distinct states) and descending
+    # is no better (gear x gear alone is a multi-billion raw cross at level
+    # 1) -- no ordering fixes full-cap top-1 rows; the upgrade lattice has
+    # to become analytic (count-vector join), same coin structure as gems.
     composites = sorted(composites, key=lambda c: c.shape[0])
 
     # Per composite: rows grouped by exact P value.
@@ -1353,6 +1671,30 @@ def _decomp_case(
             ft_b = int(np.clip(hi[:, n_colors + 4], 0, _STAT_CLAMP_HI).max())
             ff_a = int(np.clip(lo[:, n_colors + 2], 0, _STAT_CLAMP_HI).min())
             ff_b = int(np.clip(hi[:, n_colors + 2], 0, _STAT_CLAMP_HI).max())
+
+            if s_keys is not None:
+                # Exact-S key targeting: every completion's derived key
+                # (cell, cm/fm/pp plateau, base_int) lies inside the
+                # branch's envelope box; if NO S-preimage key intersects
+                # that box, no completion can score exactly s_target --
+                # the whole branch dies.
+                bw = s_keys.base_w
+                if not s_keys.box_may_hit(
+                    ft_a,
+                    ft_b,
+                    ff_a,
+                    ff_b,
+                    int(s_keys.cm_id_of[int(np.clip(lo[:, n_colors + 1], 0, _STAT_CLAMP_HI).min())]),
+                    int(s_keys.cm_id_of[int(np.clip(hi[:, n_colors + 1], 0, _STAT_CLAMP_HI).max())]),
+                    int(s_keys.fm_id_of[int(np.clip(lo[:, n_colors + 3], 0, _STAT_CLAMP_HI).min())]),
+                    int(s_keys.fm_id_of[int(np.clip(hi[:, n_colors + 3], 0, _STAT_CLAMP_HI).max())]),
+                    int(s_keys.pp_id_of[int(np.clip(lo[:, n_colors], 0, _STAT_CLAMP_HI).min())]),
+                    int(s_keys.pp_id_of[int(np.clip(hi[:, n_colors], 0, _STAT_CLAMP_HI).max())]),
+                    int((lo[:, :n_colors] @ bw).min()),
+                    int((hi[:, :n_colors] @ bw).max()),
+                ):
+                    return np.zeros(rows.shape[0], dtype=bool)
+
             bf_lo = float(bf_min_grid[ft_a : ft_b + 1, ff_a : ff_b + 1].min())
             bf_hi = float(bf_max_grid[ft_a : ft_b + 1, ff_a : ff_b + 1].max())
 
@@ -1376,8 +1718,6 @@ def _decomp_case(
             return keep
 
     peak = 1
-    out: list[np.ndarray] = []
-    out_total = 0
 
     state0 = np.zeros(cdim + 1, dtype=np.int64)  # + over_p column
     state0[:cdim] = start_state
@@ -1386,69 +1726,97 @@ def _decomp_case(
     state0[cdim] = 5 * int((raw0 - eff0).sum())
     state0[mains] = eff0
 
-    # Depth-first over (composite index, exact remaining P, partial states).
-    stack: list[tuple[int, int, np.ndarray]] = [(0, r0, state0[None, :])]
-    while stack:
-        i, r, partial = stack.pop()
-        if i == n:
-            if leaf_ok[r] and partial.shape[0]:
-                keep = np.concatenate(
-                    [partial[:, :dim], partial[:, cdim : cdim + 1]], axis=1
-                )
-                out.append(keep.astype(np.int32))
-                out_total += keep.shape[0]
-                if out_total > max_rows:
-                    raise CapExceeded(
-                        f"decomposition join result exceeded max_rows={max_rows:,}"
-                    )
-            continue
-        for p in p_values[i]:
-            p = int(p)
-            if p > r or not reach[i + 1][r - p]:
-                continue
-            rows = groups[i][p].astype(np.int64)
-            n_opts = rows.shape[0]
-            slice_rows = max(1, _EXPAND_BUDGET_ROWS // max(1, n_opts))
-            branch_chunks: list[np.ndarray] = []
-            for start in range(0, partial.shape[0], slice_rows):
-                part = partial[start : start + slice_rows]
-                combined = np.repeat(part, n_opts, axis=0)
-                deltas = np.tile(rows, (part.shape[0], 1))
-                combined[:, :dim] += deltas[:, :dim]
-                combined[:, dim] += deltas[:, dim]  # upgrade count
-                raw_m = combined[:, mains]
-                eff_m = np.minimum(raw_m, _STAT_CLAMP_HI)
-                combined[:, cdim] += 5 * (raw_m - eff_m).sum(axis=1)
-                combined[:, mains] = eff_m
-                combined = combined[combined[:, dim] <= budget]
-                if combined.shape[0] == 0:
-                    continue
-                combined = np.unique(combined, axis=0)
-                branch_chunks.append(combined)
-            if not branch_chunks:
-                continue
-            branch = (
-                branch_chunks[0]
-                if len(branch_chunks) == 1
-                else np.unique(np.concatenate(branch_chunks, axis=0), axis=0)
-            )
-            if use_s_bound and branch.shape[0]:
-                # Both corridor walls are sound (see s_corridor_keep): a
-                # dropped row has NO completion scoring exactly s_target.
-                branch = branch[s_corridor_keep(branch, i + 1, r - p)]
-                if branch.shape[0] == 0:
-                    continue
-            peak = max(peak, branch.shape[0])
-            if branch.shape[0] > max_rows:
-                raise CapExceeded(
-                    f"decomposition branch exceeded max_rows={max_rows:,} at "
-                    f"composite {i} (P slice {p})"
-                )
-            stack.append((i + 1, r - p, branch))
+    # Level-synchronous traversal over (composite index, exact remaining P):
+    # every partial-state set arriving at one (i, r) node is MERGED AND
+    # DEDUPED before the node expands. The previous depth-first walk
+    # re-expanded a node once per arrival path, so identical states
+    # multiplied through the remaining slices -- path multiplicity, not
+    # real state volume, is what blew the result caps. Clamp folding is
+    # path-independent within a case (non-negative deltas), so per-node
+    # dedup is exact; per-level distinct rows are capped by max_rows, and
+    # pending raw arrivals are consolidated incrementally so peak RAM stays
+    # a small multiple of the cap (no-pagefile box).
+    def consolidate(arr: dict[int, list[np.ndarray]]) -> int:
+        total = 0
+        for r2, chunks in arr.items():
+            if len(chunks) > 1:
+                arr[r2] = [np.unique(np.concatenate(chunks, axis=0), axis=0)]
+            total += int(arr[r2][0].shape[0])
+        return total
 
-    if not out:
+    level: dict[int, np.ndarray] = {r0: state0[None, :].astype(np.int32)}
+    for i in range(n):
+        arrivals: dict[int, list[np.ndarray]] = {}
+        arrivals_rows = 0
+        for r, partial in level.items():
+            for p in p_values[i]:
+                p = int(p)
+                if p > r or not reach[i + 1][r - p]:
+                    continue
+                rows = groups[i][p].astype(np.int32)
+                n_opts = rows.shape[0]
+                slice_rows = max(1, _EXPAND_BUDGET_ROWS // max(1, n_opts))
+                branch_chunks: list[np.ndarray] = []
+                for start in range(0, partial.shape[0], slice_rows):
+                    part = partial[start : start + slice_rows]
+                    combined = np.repeat(part, n_opts, axis=0)
+                    deltas = np.tile(rows, (part.shape[0], 1))
+                    combined[:, :dim] += deltas[:, :dim]
+                    combined[:, dim] += deltas[:, dim]  # upgrade count
+                    raw_m = combined[:, mains]
+                    eff_m = np.minimum(raw_m, _STAT_CLAMP_HI)
+                    combined[:, cdim] += 5 * (raw_m - eff_m).sum(axis=1)
+                    combined[:, mains] = eff_m
+                    combined = combined[combined[:, dim] <= budget]
+                    if combined.shape[0] == 0:
+                        continue
+                    combined = np.unique(combined, axis=0)
+                    branch_chunks.append(combined)
+                if not branch_chunks:
+                    continue
+                branch = (
+                    branch_chunks[0]
+                    if len(branch_chunks) == 1
+                    else np.unique(np.concatenate(branch_chunks, axis=0), axis=0)
+                )
+                if use_s_bound and branch.shape[0]:
+                    # Both corridor walls are sound (see s_corridor_keep): a
+                    # dropped row has NO completion scoring exactly s_target.
+                    branch = branch[s_corridor_keep(branch.astype(np.int64), i + 1, r - p)]
+                    if branch.shape[0] == 0:
+                        continue
+                arrivals.setdefault(r - p, []).append(branch)
+                arrivals_rows += int(branch.shape[0])
+                if arrivals_rows > max_rows:
+                    arrivals_rows = consolidate(arrivals)
+                    if arrivals_rows > max_rows:
+                        raise CapExceeded(
+                            f"decomposition level {i + 1} exceeded "
+                            f"max_rows={max_rows:,} (distinct rows)"
+                        )
+        level_total = consolidate(arrivals)
+        if level_total > max_rows:
+            raise CapExceeded(
+                f"decomposition level {i + 1} exceeded "
+                f"max_rows={max_rows:,} (distinct rows)"
+            )
+        level = {r2: chunks[0] for r2, chunks in arrivals.items()}
+        for merged in level.values():
+            peak = max(peak, int(merged.shape[0]))
+        if not level:
+            return np.zeros((0, dim + 1), dtype=np.int32), peak
+
+    leaf_chunks = [
+        np.concatenate([rows[:, :dim], rows[:, cdim : cdim + 1]], axis=1)
+        for r, rows in level.items()
+        if leaf_ok[r] and rows.shape[0]
+    ]
+    if not leaf_chunks:
         return np.zeros((0, dim + 1), dtype=np.int32), peak
-    return np.unique(np.concatenate(out, axis=0), axis=0), peak
+    # Distinct (stats, over_p) rows: dropping the upgrade-count column can
+    # re-collide rows, so one final dedup.
+    leaves = np.concatenate(leaf_chunks, axis=0).astype(np.int32)
+    return np.unique(leaves, axis=0), peak
 
 
 def _monotone_prune(
@@ -1600,6 +1968,20 @@ def invert(
         # maximum OVERWRITING the on-color +3 mass (max instead of +=),
         # fixed and documented there. The fever-bucket-safe _monotone_prune
         # below remains the completed-row score gate.
+        # Exact-S key targeting: enumerate the S-preimage derived-key set
+        # over the spec's achievable windows FIRST. Empty => proof of NO
+        # PREIMAGE for the whole domain (return without walking); else the
+        # walk kills any branch whose envelope reaches no key.
+        s_keys = _build_s_preimage_keys(
+            oracle, axes, gem_model, p_weights, int(observed.score)
+        )
+        if s_keys is not None and s_keys.empty:
+            return InversionResult(
+                matches=[],
+                candidates_after_p=0,
+                candidates_scored=0,
+                lattice_peak_rows=1,
+            )
         candidates, peak = _fold_lattice_decomp(
             axes,
             p_weights,
@@ -1610,6 +1992,7 @@ def invert(
             s_target=int(observed.score),
             hit_count=oracle.hit_count,
             fever_grids=oracle.fever_body_range_grids(),
+            s_keys=s_keys,
         )
         corner_evals = 0
     else:

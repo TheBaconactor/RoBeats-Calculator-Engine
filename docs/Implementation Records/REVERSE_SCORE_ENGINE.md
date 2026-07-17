@@ -316,6 +316,57 @@ regime is not reachable by walk pruning. The identification product runs
 through multi-row intersection with ladder seeds; the engine-side unlock
 is the architecture below.
 
+### 2026-07-17 (session 3): honest caps, level-synchronous walk, exact-S key targeting -- and the wall pinned to the upgrade cross
+
+Push round following the user's directive (branch published as
+feat/reverse-score-engine). Shipped:
+
+1. **Level-synchronous decomposition walk.** The depth-first walk
+   re-expanded each (composite, remaining-P) node once per arrival path;
+   identical states multiplied through the remaining slices, so the old
+   row caps fired on PATH MULTIPLICITY, not real volume (a tiny CLI-small
+   query could blow the 5M "result" cap on raw appends). The walk is now
+   level-synchronous: all partial-state sets arriving at one (i, r) node
+   merge and dedup BEFORE the node expands (clamp folding is
+   path-independent within a case, so per-node dedup is exact), pending
+   arrivals consolidate incrementally, levels live in int32, and max_rows
+   caps DISTINCT rows per level. Peak RAM stays a small multiple of the
+   cap (a first uncapped draft hit 16.6 GB on the no-pagefile box and was
+   killed; the bounded version holds ~1.4 GB at a 40M cap).
+2. **Exact-S key targeting** (`_SKeyMemo`, `score_derived_batch`): for a
+   fixed (FT/FF cell, CM, FM, PP plateau) the exact score is
+   non-decreasing in base_int, so the S-preimage is ONE integer interval,
+   bisected through the canonical batch scorer (~23 vectorized rounds).
+   EAGER mode (small global windows) enumerates every combo up front and
+   proves domain-wide NO PREIMAGE when empty; LAZY mode bisects
+   per-branch boxes on demand with a per-combo memo. Branch kill: no key
+   intersects the branch's derived-envelope box => no completion can
+   score exactly S.
+3. **Below/above-ceiling naked-fingerprint classification** (user
+   diagnosis): the exact -800 rows are coupled press-timing plays scored
+   on the NAKED fever bar -- below-ceiling mismatches now name that
+   cause; above-ceiling stays wrong-chart/version-drift.
+
+**Single-query yardstick** (production spec, ladder, 5M cap):
+- Gateway top-1: 22.2s FAIL (false raw-append cap) -> 48.8s FAIL (honest:
+  >5M DISTINCT rows at a mid level). Stacked synthetic P=5032: 13.8s ->
+  51.5s FAIL (same). Small-spec single inversion: 55.3s ok (the new
+  per-branch machinery costs ~2x on tiny domains -- overhead, not
+  volume).
+- Volume probes with the honest walk: Gateway rung-0 (gems pinned, band
+  288) exceeds 40M distinct states at LEVEL 4 -- buff x three upgrade
+  subgroups alone, before minis or gear ever join. Reversing the join
+  order (gear first) is no better: gear x gear is a multi-billion-row raw
+  cross at level 1. No composite ordering fixes this.
+
+**Sharpened verdict**: the mixer is the UPGRADE COUNT LATTICE. Upgrade
+types are coin types (count x fixed stat pattern, per-type cap 90, joint
+budget 90) -- structurally identical to gems, which the engine already
+handles analytically. The v3 architecture below therefore applies the
+count-vector treatment to upgrades AND gems: fold only gear x minis x
+buff as materialized states (mixing-poor tables), and hash-join
+upgrade/gem count-vectors on exact P with inline exact-S retention.
+
 ### Designed next architecture (evidence-backed, not yet built)
 
 1. **S-preimage key targeting**: enumerate the exact-S derived-key set

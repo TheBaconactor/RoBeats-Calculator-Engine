@@ -182,6 +182,32 @@ class SongOracle:
             self.ref_arrays,
         )
 
+    def score_derived_batch(
+        self,
+        base_int: np.ndarray,
+        pp_stat: np.ndarray,
+        cm_stat: np.ndarray,
+        fm_stat: np.ndarray,
+        ft_stat: np.ndarray,
+        ff_stat: np.ndarray,
+    ) -> np.ndarray:
+        """Exact scores addressed directly in derived space: ``base_int`` is
+        the scorer's color mass (2*primary + secondary). Realized by passing
+        it as the secondary column with a zero primary -- bit-identical by
+        construction (base = 2*0 + base_int)."""
+        zeros = np.zeros(int(np.asarray(base_int).shape[0]), dtype=np.int64)
+        return score_stat_arrays_exact_batch(
+            zeros,
+            np.asarray(base_int, dtype=np.int64),
+            pp_stat,
+            cm_stat,
+            fm_stat,
+            ft_stat,
+            ff_stat,
+            self.calc_song,
+            self.ref_arrays,
+        )
+
     def fever_body_range_grids(self) -> tuple[np.ndarray, np.ndarray]:
         """(bf_min, bf_max) int64 grids over the (FT, FF) frontier cells: the
         range of body fever-hit counts across each cell's legal fever
