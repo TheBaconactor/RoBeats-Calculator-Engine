@@ -293,37 +293,249 @@ def score_stats_exact_batch(
     if total_notes <= 0:
         return [0 for _stats in stats_rows]
 
+    song_meta = extract_song_meta(song_dict)
+    primary = song_meta.primary_color
+    secondary = song_meta.secondary_color
+    n = len(stats_rows)
+    primary_val = np.zeros(n, dtype=np.int64)
+    secondary_val = np.zeros(n, dtype=np.int64)
+    pp_stat = np.zeros(n, dtype=np.int64)
+    cm_stat = np.zeros(n, dtype=np.int64)
+    fm_stat = np.zeros(n, dtype=np.int64)
+    ft_stat = np.zeros(n, dtype=np.int64)
+    ff_stat = np.zeros(n, dtype=np.int64)
+    for i, stats in enumerate(stats_rows):
+        primary_val[i] = safe_int(stats.get(primary, 0), 0)
+        secondary_val[i] = safe_int(stats.get(secondary, 0), 0)
+        pp_stat[i] = safe_int(stats.get("Perfect Points", 0), 0)
+        cm_stat[i] = safe_int(stats.get("Combo Multiplier", 0), 0)
+        fm_stat[i] = safe_int(stats.get("Fever Multiplier", 0), 0)
+        ft_stat[i] = safe_int(stats.get("Fever Time", 0), 0)
+        ff_stat[i] = safe_int(stats.get("Fever Fill Rate", 0), 0)
+
+    return score_stat_arrays_exact_batch(
+        primary_val,
+        secondary_val,
+        pp_stat,
+        cm_stat,
+        fm_stat,
+        ft_stat,
+        ff_stat,
+        song_dict,
+        ref_arrays,
+    ).tolist()
+
+
+def score_stat_arrays_exact_batch(
+    primary_val: np.ndarray,
+    secondary_val: np.ndarray,
+    pp_stat: np.ndarray,
+    cm_stat: np.ndarray,
+    fm_stat: np.ndarray,
+    ft_stat: np.ndarray,
+    ff_stat: np.ndarray,
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+) -> np.ndarray:
+    """Array-native exact base scores (int64), bit-identical to the per-row
+    frontier replay.
+
+    The exact score is a function of the stat row ONLY through
+    (2*primary + secondary, PP/CM/FM curve values, FT cell, FF cell): rows
+    are first collapsed on that derived key (curve plateaus and color
+    combinations that the scorer cannot distinguish score once), then scored
+    per (FT, FF) frontier cell as one vectorized pool replay. All f64
+    expressions keep the per-element op order of the scalar path (multiply,
+    add, floor per lane); pool reductions are integer arithmetic carried
+    exactly in f64 (magnitudes are guarded against the 2^52 envelope, loud
+    failure) and accumulated in int64, so every row's score -- and therefore
+    every argmax the callers derive from these scores -- is bit-identical."""
+    song_dict = calc_song if isinstance(calc_song, dict) else dict(calc_song)
+    song_data = song_dict.get("song_data", {}) or {}
+    timestamps = song_data.get("chart_timestamps")
+    if timestamps is None:
+        timestamps = song_data.get("timestamps", ())
+    total_notes = int(len(timestamps))
+    n = int(np.asarray(primary_val).shape[0])
+    if n == 0:
+        return np.zeros(0, dtype=np.int64)
+    if total_notes <= 0:
+        return np.zeros(n, dtype=np.int64)
+
     from ..taichi_gem.api.timeline import load_timeline_frontier_payload
 
     frontier_refs = _frontier_replay_refs(ref_arrays)
-
     payload = load_timeline_frontier_payload(song_dict, frontier_refs).payload
-    song_meta = extract_song_meta(song_dict)
-    scores: list[int] = []
-    for stats in stats_rows:
-        (
-            primary_val,
-            secondary_val,
-            pp_factor,
-            combo_mul,
-            fever_mul,
-            ft_idx,
-            ff_idx,
-        ) = _score_stat_inputs(stats, frontier_refs, song_meta.primary_color, song_meta.secondary_color)
-        scores.append(
-            _score_timeline_frontier_payload_vectorized(
-                payload=payload,
-                total_notes=int(total_notes),
-                primary_val=int(primary_val),
-                secondary_val=int(secondary_val),
-                pp_factor=float(pp_factor),
-                combo_mul=float(combo_mul),
-                fever_mul=float(fever_mul),
-                ft_idx=int(ft_idx),
-                ff_idx=int(ff_idx),
-            )
+
+    pv = np.asarray(primary_val, dtype=np.int64)
+    sv = np.asarray(secondary_val, dtype=np.int64)
+    ppi = np.clip(np.asarray(pp_stat, dtype=np.int64), 0, TOTAL_ROWS)
+    cmi = np.clip(np.asarray(cm_stat, dtype=np.int64), 0, TOTAL_ROWS)
+    fmi = np.clip(np.asarray(fm_stat, dtype=np.int64), 0, TOTAL_ROWS)
+    fti = np.clip(np.asarray(ft_stat, dtype=np.int64), 0, TOTAL_ROWS)
+    ffi = np.clip(np.asarray(ff_stat, dtype=np.int64), 0, TOTAL_ROWS)
+
+    pp_table = np.asarray(frontier_refs["Perfect Points"]).reshape(-1)
+    cm_table = np.asarray(frontier_refs["Combo Multiplier"]).reshape(-1)
+    fm_table = np.asarray(frontier_refs["Fever Multiplier"]).reshape(-1)
+
+    # Derived-key collapse: rows are scorer-identical iff they agree on
+    # (2*primary + secondary, table VALUES of PP/CM/FM, FT cell, FF cell).
+    pp_vals, pp_id = np.unique(pp_table[: TOTAL_ROWS + 1], return_inverse=True)
+    cm_vals, cm_id = np.unique(cm_table[: TOTAL_ROWS + 1], return_inverse=True)
+    fm_vals, fm_id = np.unique(fm_table[: TOTAL_ROWS + 1], return_inverse=True)
+    base_int = 2 * pv + sv
+    base_min = int(base_int.min())
+    base_off = base_int - base_min
+    n_base = int(base_off.max()) + 1
+    dims = (n_base, int(pp_vals.size), int(cm_vals.size), int(fm_vals.size),
+            TOTAL_ROWS + 1, TOTAL_ROWS + 1)
+    packed_span = 1
+    for d in dims:
+        packed_span *= int(d)
+    if packed_span >= 2**63:
+        raise ValueError(
+            f"stat rows outside the packable derived-key range (span {packed_span})"
         )
-    return scores
+    key = base_off
+    for id_col, d in (
+        (pp_id[ppi], dims[1]),
+        (cm_id[cmi], dims[2]),
+        (fm_id[fmi], dims[3]),
+        (fti, dims[4]),
+        (ffi, dims[5]),
+    ):
+        key = key * d + id_col
+    uniq_key, first_idx, inverse = np.unique(key, return_index=True, return_inverse=True)
+
+    u_base = base_int[first_idx]
+    u_ppf = pp_table[ppi[first_idx]].astype(np.float64)
+    u_cmf = cm_table[cmi[first_idx]].astype(np.float64)
+    u_fmf = fm_table[fmi[first_idx]].astype(np.float64)
+    u_ft = fti[first_idx]
+    u_ff = ffi[first_idx]
+
+    out_u = np.zeros(uniq_key.size, dtype=np.int64)
+    cell = u_ft * (TOTAL_ROWS + 1) + u_ff
+    for cell_key in np.unique(cell):
+        sel = np.flatnonzero(cell == cell_key)
+        ft_i = int(cell_key) // (TOTAL_ROWS + 1)
+        ff_i = int(cell_key) % (TOTAL_ROWS + 1)
+        out_u[sel] = _score_cell_batch(
+            payload,
+            total_notes,
+            ft_i,
+            ff_i,
+            u_base[sel],
+            u_ppf[sel],
+            u_cmf[sel],
+            u_fmf[sel],
+        )
+    return out_u[inverse]
+
+
+# Batch slab bounds: the head replay holds ~4 K x 100 f64 intermediates and
+# the pool reduction a (pool x K) f64 lane matrix; these caps bound peak RAM
+# to a few hundred MB regardless of batch size or pool width.
+_CELL_SLAB_HEAD_ROWS = 65_536
+_CELL_SLAB_LANE_ELEMS = 16_000_000
+
+
+def _score_cell_batch(
+    payload: Any,
+    total_notes: int,
+    ft_i: int,
+    ff_i: int,
+    base_int: np.ndarray,
+    ppf: np.ndarray,
+    cmf: np.ndarray,
+    fmf: np.ndarray,
+) -> np.ndarray:
+    """Exact scores for one (FT, FF) frontier cell, vectorized over rows.
+
+    Per-element f64 op order matches ``_score_timeline_frontier_payload_
+    vectorized_result`` exactly; only exact-integer reductions are regrouped
+    (int64 sums; the pool bit-matrix product runs in f64, which is exact for
+    the guarded < 2^52 magnitudes)."""
+    frontier_count = int(payload.grid_frontier_count[0, ft_i, ff_i])
+    if frontier_count <= 0:
+        raise ValueError("Timing frontier payload has no replayable surface for the requested FT/FF cell")
+    frontier_offset = int(payload.grid_frontier_offset[0, ft_i, ff_i])
+    frontier_limit = int(frontier_offset + frontier_count)
+    if frontier_offset < 0 or frontier_limit > int(payload.frontier_pool_used):
+        raise ValueError("Timing frontier payload contains an invalid surface range")
+
+    body_total = max(0, int(total_notes) - 100)
+    body_fever = np.asarray(
+        payload.grid_frontier_body_fever_pool[0, frontier_offset:frontier_limit],
+        dtype=np.int64,
+    )
+    body_normal = np.asarray(
+        payload.grid_frontier_body_normal_pool[0, frontier_offset:frontier_limit],
+        dtype=np.int64,
+    )
+    if bool(np.any(body_fever < 0)) or bool(np.any(body_normal < 0)) or bool(
+        np.any((body_fever + body_normal) != int(body_total))
+    ):
+        raise ValueError("Timing surface body counts do not match song body note count")
+
+    head_len = min(max(0, int(total_notes)), 100)
+    pool_n = int(body_fever.shape[0])
+    k_total = int(base_int.shape[0])
+    slab = max(1, min(_CELL_SLAB_HEAD_ROWS, _CELL_SLAB_LANE_ELEMS // max(1, pool_n)))
+    out = np.zeros(k_total, dtype=np.int64)
+    head_bits_f64: np.ndarray | None = None
+
+    for start in range(0, k_total, slab):
+        stop = min(k_total, start + slab)
+        base = base_int[start:stop].astype(np.float64) + ppf[start:stop]
+        combo = cmf[start:stop]
+        fever = fmf[start:stop]
+        bc = base * combo
+        combo_val = np.floor(bc).astype(np.int64)
+        fever_val = np.floor(bc * fever).astype(np.int64)
+        delta_body = fever_val - combo_val
+        scores0 = np.int64(body_total) * combo_val
+
+        head_delta: np.ndarray | None = None
+        if head_len > 0:
+            positions = np.arange(1, head_len + 1, dtype=np.float64)
+            combo_slope = (combo - np.float64(1.0)) / np.float64(100.0)
+            perfect_values = base[:, None] * ((combo_slope[:, None] * positions[None, :]) + np.float64(1.0))
+            normal_scores = np.floor(perfect_values).astype(np.int64)
+            fever_scores = np.floor(perfect_values * fever[:, None]).astype(np.int64)
+            scores0 = scores0 + normal_scores.sum(axis=1)
+            head_delta = fever_scores - normal_scores
+            if not bool(np.any(head_delta)):
+                head_delta = None
+
+        if head_delta is None and not bool(np.any(delta_body)):
+            out[start:stop] = scores0
+            continue
+
+        # Exact-integer f64 envelope guard (loud; magnitudes here are far
+        # below 2^52 for any real chart, but the reduction's exactness
+        # argument depends on it).
+        bound = int(np.abs(delta_body).max()) * max(1, body_total)
+        if head_delta is not None:
+            bound += int(np.abs(head_delta).max()) * head_len
+        if bound >= 2**52:
+            raise ValueError("frontier replay magnitudes exceed the exact f64 envelope")
+
+        lane = body_fever.astype(np.float64)[:, None] * delta_body.astype(np.float64)[None, :]
+        if head_delta is not None:
+            if head_bits_f64 is None:
+                words = np.asarray(
+                    payload.grid_frontier_masks_bits_pool[0, frontier_offset:frontier_limit, :4],
+                    dtype=np.uint64,
+                )
+                note_idx = np.arange(head_len)
+                head_bits_f64 = (
+                    (words[:, note_idx // 32] >> (note_idx % 32).astype(np.uint64)) & np.uint64(1)
+                ).astype(np.float64)
+            lane = lane + head_bits_f64 @ head_delta.T.astype(np.float64)
+        out[start:stop] = scores0 + lane.max(axis=0).astype(np.int64)
+    return out
 
 
 def score_stats_fixed_timing_exact(
