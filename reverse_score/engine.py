@@ -234,7 +234,7 @@ def build_axes(
     if include_gems:
         for attr in ("perfect_points", "combo_multiplier", "fever_multiplier", "fever_time", "fever_fill"):
             options = []
-            for count in range(spec.gem_max_per_type + 1):
+            for count in range(spec.gem_min_per_type, spec.gem_max_per_type + 1):
                 gems = GemAlloc(**{attr: count})
                 options.append(
                     AxisOption(label=("gem", attr, count), vec=_project(gem_stats_delta(gems), keys))
@@ -1085,14 +1085,17 @@ def _build_s_preimage_keys(
         mat = np.array([o.vec for o in ax.options], dtype=np.int64)
         lo += mat.min(axis=0)
         hi += mat.max(axis=0)
-    for _attr, main_dim_g, scale_g, color_dim_g, _pu in gem_model.types:
-        lo[main_dim_g] += scale_g * gem_model.floor
-        hi[main_dim_g] += scale_g * gem_model.cap
-        if color_dim_g is not None:
-            lo[color_dim_g] += 3 * gem_model.floor
-            hi[color_dim_g] += 3 * gem_model.cap
-    for _elem, e_dim, _pu in gem_model.elements:
-        hi[e_dim] += 6 * gem_model.elem_cap
+    if gem_model is not None:
+        # Analytic-gem windows; with gems enumerated as plain axes (the
+        # key-first path) the axis sums above already cover them.
+        for _attr, main_dim_g, scale_g, color_dim_g, _pu in gem_model.types:
+            lo[main_dim_g] += scale_g * gem_model.floor
+            hi[main_dim_g] += scale_g * gem_model.cap
+            if color_dim_g is not None:
+                lo[color_dim_g] += 3 * gem_model.floor
+                hi[color_dim_g] += 3 * gem_model.cap
+        for _elem, e_dim, _pu in gem_model.elements:
+            hi[e_dim] += 6 * gem_model.elem_cap
 
     pp_tab = np.array([perfect_points(s) for s in range(_STAT_CLAMP_HI + 1)], dtype=np.float64)
     cm_tab = np.array([combo_multiplier(s)[2] for s in range(_STAT_CLAMP_HI + 1)], dtype=np.float64)
@@ -1957,21 +1960,22 @@ def invert(
     )
     if prune:
         # Production path: exact-P conditioned decomposition join over the
-        # NON-GEM domain (no intermediate band), gems handled analytically
-        # in effective space (visible increments + saturated P-slack);
-        # score-corner pruning applies on the completed candidates below.
+        # NON-GEM domain (level-synchronous, honest distinct-row caps),
+        # gems handled analytically, S-corridor + lazy exact-S key
+        # targeting inside the walk, fever-bucket-safe box pruning on the
+        # completed candidates below.
+        #
+        # A full KEY-FIRST architecture (enumerate the exact-S derived
+        # preimage by monotone branch-and-bound, then interval-target DFS
+        # per key) was built and MEASURED OUT 2026-07-17: the derived
+        # surface is itself millions of points at production windows
+        # (Gateway: >4M live search boxes; ~1e11 (cell, PP, CM, FM) lines x
+        # even a ~1/17k exact-hit rate leaves ~1e6 keys; the small-spec
+        # low-S surface is fatter still). Every exact architecture
+        # converges to the same object count -- see the implementation
+        # record's session-3 addendum.
         axes = build_axes(oracle, tables, spec, include_gems=False)
         gem_model = _GemModel(oracle, spec, keys)
-        # In-walk S-corridor pruning (s_target/hit_count): both walls carry
-        # explicit soundness arguments in s_corridor_keep. Its predecessor
-        # was removed for a real miss -- root cause was the elemental gem
-        # maximum OVERWRITING the on-color +3 mass (max instead of +=),
-        # fixed and documented there. The fever-bucket-safe _monotone_prune
-        # below remains the completed-row score gate.
-        # Exact-S key targeting: enumerate the S-preimage derived-key set
-        # over the spec's achievable windows FIRST. Empty => proof of NO
-        # PREIMAGE for the whole domain (return without walking); else the
-        # walk kills any branch whose envelope reaches no key.
         s_keys = _build_s_preimage_keys(
             oracle, axes, gem_model, p_weights, int(observed.score)
         )

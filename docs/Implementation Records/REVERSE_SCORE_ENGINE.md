@@ -367,6 +367,41 @@ count-vector treatment to upgrades AND gems: fold only gear x minis x
 buff as materialized states (mixing-poor tables), and hash-join
 upgrade/gem count-vectors on exact P with inline exact-S retention.
 
+### 2026-07-17 (session 3, round 3): KEY-FIRST inversion -- built, measured, and RULED OUT
+
+The plan: enumerate the exact-S derived preimage first (per (FT, FF) cell
+x PP x CM x FM stat value, the score is monotone in each and in base_int,
+so the preimage per line is one bisectable interval), then run one
+interval-target witness DFS per key with P and the upgrade budget as
+plain dimensions (gems/upgrades as ordinary count axes -- no analytic
+machinery at all). Everything was implemented: a monotone
+branch-and-bound surface search (frontier batched through the vectorized
+scorer, base dimension split like the stats -- NOT splitting base
+degenerates to full grid enumeration, measured as a 9.7 GB frontier),
+per-row base-interval bisection, fragment coalescing, per-dim
+reachable-sum filters, and the interval-target DFS.
+
+MEASURED OUT, both regimes:
+- Small spec (S=58,532; low multipliers => tiny score steps): the exact-S
+  level surface blows a 4M-box frontier -- the surface is a large
+  fraction of the ~1551 cells x 51x46x57 stat grid.
+- Gateway top-1 (S=19.88M; ~17k-point score steps): ALSO blows the 4M-box
+  frontier. The line count is what kills it: 25,921 cells x 161^3
+  (pp, cm, fm) ~ 1e11 lines; even a ~1/17k exact-hit rate per line leaves
+  ~1e6+ keys.
+
+CONCLUSION (the deep fact of this problem): the exact-S preimage is a
+~1e6-1e8-object set in EVERY representation measured -- lattice states
+(>40M distinct at the upgrade cross), corridor survivors (>5M), derived
+surface keys (>4M live boxes). Sub-10s full-width single-row inversion is
+not an engineering gap; the answer-adjacent object count is the wall.
+The product routes around it: tight-rung ladders (priors collapse the
+windows), multi-row intersection (amortizes one expensive seed across
+cheap forward filters), and -- if full-width single-row answers are ever
+required -- minutes-scale streaming enumeration that returns answers
+instead of capping. The key-first code was deleted after measurement
+(git history has it; commit with this note).
+
 ### Designed next architecture (evidence-backed, not yet built)
 
 1. **S-preimage key targeting**: enumerate the exact-S derived-key set
