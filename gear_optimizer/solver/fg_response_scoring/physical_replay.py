@@ -152,16 +152,9 @@ def _base_graph_physical_replay(
     if tuple(sorted(input_orders)) != tuple(range(n)):
         raise ValueError("Base physical replay graph does not contain one exact input order")
 
-    event_order = tuple(
-        sorted(
-            range(n),
-            key=lambda index: (
-                float(event_times_ms[index]),
-                int(nt[index]) == _HELD_TAIL_TYPE,
-                int(input_orders[index]),
-            ),
-        )
-    )
+    # Consume the producer's canonical order. Re-sorting tied events by note type can invert a
+    # same-lane tail/head pair that _assign_exact_input_order deliberately ordered tail first.
+    event_order = tuple(int(index) for index in sorted(range(n), key=input_orders.__getitem__))
     expected_by_lane: dict[int, list[int]] = {}
     for index, lane_value in enumerate(lane_arr):
         expected_by_lane.setdefault(int(lane_value), []).append(int(index))
