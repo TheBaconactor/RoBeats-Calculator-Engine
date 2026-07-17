@@ -826,37 +826,12 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     assert legacy_path.exists()
 
 
-def test_issue149_v31_accepts_only_ratified_predecessors() -> None:
+def test_issue161_perfect_edge_rotation_accepts_no_predecessors() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
-    assert current_version == "fg-response-frontier-visible-first-v31+logic-31fb6828e146"
-    assert response_cache_store.fg_response_compatible_cache_versions() == (
-        current_version,
-        "fg-response-frontier-visible-first-v31+logic-a3b3847d91ea",
-        "fg-response-frontier-visible-first-v31+logic-be41cf89e6f4",
-        "fg-response-frontier-visible-first-v31+logic-c05582176963",
-        "fg-response-frontier-visible-first-v31+logic-04e3683c0789",
-        "fg-response-frontier-visible-first-v31+logic-52861c6156f1",
-        "fg-response-frontier-visible-first-v31+logic-8953b1ce23bf",
-        "fg-response-frontier-visible-first-v31+logic-f6b8a98a3729",
-        "fg-response-frontier-visible-first-v31+logic-76140458b749",
-        "fg-response-frontier-visible-first-v31+logic-822b279e81da",
-        "fg-response-frontier-visible-first-v31+logic-eed4d4700100",
-        "fg-response-frontier-visible-first-v31+logic-f67224918652",
-        "fg-response-frontier-visible-first-v31+logic-11055cda9f1e",
-        "fg-response-frontier-visible-first-v31+logic-60b24504b797",
-        "fg-response-frontier-visible-first-v31+logic-9e160ae9539c",
-        "fg-response-frontier-visible-first-v31+logic-d1bb9475bd29",
-        "fg-response-frontier-visible-first-v31+logic-cbd1843e029f",
-        "fg-response-frontier-visible-first-v31+logic-da4da67d45fd",
-        "fg-response-frontier-visible-first-v31+logic-76d9f97718b6",
-        "fg-response-frontier-visible-first-v31+logic-b4ffccc942cf",
-        "fg-response-frontier-visible-first-v31+logic-0d29b422376d",
-        "fg-response-frontier-visible-first-v31+logic-cb063da1d695",
-        "fg-response-frontier-visible-first-v31+logic-e6d65b65c8f3",
-        "fg-response-frontier-visible-first-v31+logic-6c5b5bf6e4de",
-    )
+    assert current_version == "fg-response-frontier-visible-first-v31+logic-3e63488abfec"
+    assert response_cache_store.fg_response_compatible_cache_versions() == (current_version,)
 
 
 def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(
@@ -868,7 +843,8 @@ def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     response_cache.reset_fg_response_frontier_payload_cache()
     keys = ((0, 0), (1, 0))
-    current_version = response_cache._FG_RESPONSE_CACHE_VERSION
+    current_version = "fg-response-frontier-visible-first-v31+logic-31fb6828e146"
+    monkeypatch.setattr(response_cache_store, "_fg_response_cache_version", lambda: current_version)
     predecessor = response_cache_store.fg_response_compatible_cache_versions()[1]
 
     monkeypatch.setattr(response_cache, "_FG_RESPONSE_CACHE_VERSION", predecessor)

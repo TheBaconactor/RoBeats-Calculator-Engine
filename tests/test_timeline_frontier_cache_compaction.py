@@ -100,19 +100,14 @@ def test_frontier_disk_cache_write_is_compact_and_leak_free(tmp_path: Path, monk
         assert not any(name.startswith("group_") for name in data.files)
 
 
-def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
+def test_issue161_perfect_edge_rotation_rejects_all_predecessors(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     payload = _build_small_payload()
     current_version = timeline_api._FRONTIER_DISK_CACHE_VERSION
-    assert current_version == "exact-frontier-v12+logic-73245c017cbd"
-    assert timeline_api.timeline_frontier_compatible_cache_versions() == (
-        current_version,
-        "exact-frontier-v12+logic-61d6f59cade0",
-        "exact-frontier-v12+logic-12c8db234d06",
-        "exact-frontier-v12+logic-e0b0e8ef6411",
-    )
+    assert current_version == "exact-frontier-v12+logic-be26caca62b4"
+    assert timeline_api.timeline_frontier_compatible_cache_versions() == (current_version,)
     unsafe_predecessors = {
         "exact-frontier-v12+logic-1f182e5b89af",
         "exact-frontier-v12+logic-4c69b48f08bb",
@@ -124,8 +119,8 @@ def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
         for version in versions
     }
     assert unsafe_predecessors.isdisjoint(ratified_predecessors)
-    predecessor = timeline_api.timeline_frontier_compatible_cache_versions()[1]
-    current_key = (current_version, "unit", "cleanup-compatible")
+    predecessor = "exact-frontier-v12+logic-73245c017cbd"
+    current_key = (current_version, "unit", "issue161-incompatible")
     predecessor_key = (predecessor, *current_key[1:])
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
 
@@ -139,11 +134,9 @@ def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
 
     predecessor_path = timeline_api._frontier_disk_cache_path(predecessor_key)
     assert predecessor_path.exists()
-    assert timeline_api.timeline_frontier_cache_file_is_complete(predecessor_path)
-    assert timeline_api._live_frontier_disk_cache_path(current_key) == predecessor_path
-    loaded = timeline_api._load_frontier_payload_from_disk(current_key)
-    assert loaded is not None
-    assert loaded.frontier_pool_used == payload.frontier_pool_used
+    assert not timeline_api.timeline_frontier_cache_file_is_complete(predecessor_path)
+    assert timeline_api._live_frontier_disk_cache_path(current_key) is None
+    assert timeline_api._load_frontier_payload_from_disk(current_key) is None
 
 
 def test_frontier_entrypoint_canonicalizes_raw_precise_input_before_cache_lookup(
@@ -221,6 +214,11 @@ def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(
     current-version path made the prebuild manifest unable to validate/record the hit."""
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    monkeypatch.setattr(
+        timeline_api,
+        "_FRONTIER_DISK_CACHE_VERSION",
+        "exact-frontier-v12+logic-73245c017cbd",
+    )
     timeline_api.reset_timeline_state()
     calc_song = {
         "metadata": {
