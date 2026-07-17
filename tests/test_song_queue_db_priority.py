@@ -7,7 +7,6 @@ from gear_optimizer.song_queue import finalize_song_queue, merge_discovered_with
 from gear_optimizer.data.database import (
     get_db_connection,
     get_song_names_present_in_db,
-    get_song_names_with_persisted_loadouts,
 )
 
 
@@ -125,7 +124,7 @@ def test_get_song_names_present_in_db_require_loadouts_ignores_stub_songs_row():
     finally:
         conn.close()
 
-    present = get_song_names_with_persisted_loadouts([song_stub, song_with_loadouts])
+    present = get_song_names_present_in_db([song_stub, song_with_loadouts], require_loadouts=True)
     assert present == {song_with_loadouts}
 
 

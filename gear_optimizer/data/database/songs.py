@@ -67,14 +67,6 @@ def get_song_names_present_in_db(
     return present
 
 
-def get_song_names_with_persisted_loadouts(
-    song_names: Iterable[str],
-    db_path: Optional[str] = None,
-) -> set[str]:
-    """Return song names that already have persisted base or FG loadout rows."""
-    return get_song_names_present_in_db(song_names, db_path, require_loadouts=True)
-
-
 def get_song_counters(
     song_name: str,
     *,

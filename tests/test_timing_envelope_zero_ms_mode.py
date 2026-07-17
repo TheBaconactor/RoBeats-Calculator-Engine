@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
-from gear_optimizer.core.utils import full_pipeline_signature
+from gear_optimizer.solver.scoring.stats_scoring import _song_cache_key_for_fg_timeline
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
 from gear_optimizer.solver.scoring.exact_rescore import (
     calculate_score_exact,
@@ -123,14 +123,13 @@ def test_perfect_window_timeline_repairs_incomplete_canonical_envelope():
 
 
 def test_zero_ms_and_perfect_window_signatures_are_disjoint():
-    stats = _stats()
     cs_zero = _calc_song()
     cs_pw = _calc_song()
     apply_timing_envelope(cs_zero, mode="zero_ms")
     apply_timing_envelope(cs_pw, mode="perfect_window")
 
-    sig_zero = full_pipeline_signature(stats, cs_zero, "Rush")
-    sig_pw = full_pipeline_signature(stats, cs_pw, "Rush")
+    sig_zero = _song_cache_key_for_fg_timeline(cs_zero)
+    sig_pw = _song_cache_key_for_fg_timeline(cs_pw)
     assert sig_zero != sig_pw
 
 

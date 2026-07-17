@@ -97,7 +97,6 @@ _DB_TLS = connection._DB_TLS
 from .songs import (
     get_song_counters,
     get_song_names_present_in_db,
-    get_song_names_with_persisted_loadouts,
     update_song_counters,
 )
 
@@ -188,7 +187,6 @@ __all__ = [
     # songs
     "get_song_counters",
     "get_song_names_present_in_db",
-    "get_song_names_with_persisted_loadouts",
     "update_song_counters",
     # loadout io
     "_compact_gear_for_db",

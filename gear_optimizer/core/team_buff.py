@@ -138,25 +138,6 @@ def resolve_team_color_from_cfg_dict(
     return color
 
 
-def resolve_selected_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
-    """
-    Resolve the optimizer TeamBuff tier for display/read-only views.
-
-    The optimizer baseline is fixed. Stale TeamContributionBuffConstant entries in
-    user config must not affect runtime queries or UI output.
-    """
-    _ = cfg_dict, default
-    return OPTIMIZER_BASELINE_TEAM_BUFF
-
-
-def resolve_selected_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str:
-    """
-    Resolve the optimizer TeamBuff tier for display/read-only views.
-    """
-    _ = cfg, default
-    return OPTIMIZER_BASELINE_TEAM_BUFF
-
-
 def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
     """
     Resolve the native baseline TeamBuff tier for persistence/replay.

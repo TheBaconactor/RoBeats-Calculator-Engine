@@ -285,6 +285,13 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only after a byte gate proves its persisted payload identical to the current producer. Issue #161
 # proved the 1f182e5b89af, 4c69b48f08bb, and 9dfe907e66fb lineages diverge; they must rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Legacy cleanup deleted an orphaned timing-envelope wrapper. The live envelope builders and
+    # persisted Base payload bytes are unchanged; retain only the byte-proven Issue #161 lineage.
+    "exact-frontier-v12+logic-73245c017cbd": (
+        "exact-frontier-v12+logic-61d6f59cade0",
+        "exact-frontier-v12+logic-12c8db234d06",
+        "exact-frontier-v12+logic-e0b0e8ef6411",
+    ),
     # Compact session pruning and exact-signature trace witness selection live in shared source
     # files but run only after a frontier has been loaded. They cannot reach the Perfect-only
     # recurrence or persisted Base arrays, so retain only the byte-proven v12 lineage.
@@ -825,8 +832,14 @@ def timeline_frontier_payload_cache_info(
         cached = _frontier_payload_cache.get(cache_key)
         if isinstance(cached, TimelineFrontierGridPayload):
             cache_source = "memory"
-    disk_path = _frontier_disk_cache_path(cache_key)
-    if cache_source == "missing" and _live_frontier_disk_cache_path(cache_key) is not None:
+    # Report the file that actually serves this key: the current-version path when it
+    # exists, else the ratified predecessor's. Returning the (possibly nonexistent)
+    # current-version path here made the prebuild manifest unable to validate/record
+    # predecessor hits, so startup re-verified those songs every run instead of taking
+    # the manifest fast path.
+    live_path = _live_frontier_disk_cache_path(cache_key)
+    disk_path = live_path if live_path is not None else _frontier_disk_cache_path(cache_key)
+    if cache_source == "missing" and live_path is not None:
         cache_source = "disk"
 
     song_data = calc_song.get("song_data", {}) or {}

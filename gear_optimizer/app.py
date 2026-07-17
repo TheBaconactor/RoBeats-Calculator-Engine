@@ -74,7 +74,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._progress_enabled = _progress_ui_enabled_default(
             configured_enabled=bool(getattr(ENV, "progress_enabled", True)),
             output_enabled=bool(self._output_enabled),
-            progress_env_present=bool("METAFINDER_PROGRESS" in os.environ),
+            progress_env_present=env_get("METAFINDER_PROGRESS") is not None,
             stream_is_tty=bool(self._stdout_is_tty),
         )
         self._banner_enabled = _banner_enabled_default(
