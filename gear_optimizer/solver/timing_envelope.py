@@ -358,7 +358,24 @@ def build_perfect_candidate_envelope_sec(
         held_tail_type=held_tail_type,
         held_tail_time_multiplier=held_tail_time_multiplier,
     )
-    return _emit_pernote_edge_envelope_sec(ts_sec, high, prefix_max=False, quantize_ms=quantize_ms)
+    candidate = _emit_pernote_edge_envelope_sec(
+        ts_sec,
+        high,
+        prefix_max=False,
+        quantize_ms=quantize_ms,
+    )
+    # The integer-ms edge can round upward when encoded as float32 seconds. The judge compares the
+    # decoded hit against the float32 chart timestamp in float64, so that representation drift can
+    # turn +40/+80 ms into one step beyond Perfect (Issue #161). Cap each candidate at the latest
+    # float32 hit that is still inside its hard per-note judgment edge.
+    hard_high = ts_sec.astype(np.float64) + high.astype(np.float64) * 0.001
+    safe_high = hard_high.astype(np.float32)
+    overshot = safe_high.astype(np.float64) > hard_high
+    safe_high[overshot] = np.nextafter(
+        safe_high[overshot],
+        np.float32(-np.inf),
+    )
+    return np.minimum(candidate, safe_high).astype(np.float32, copy=False)
 
 
 def build_perfect_floor_envelope_sec(

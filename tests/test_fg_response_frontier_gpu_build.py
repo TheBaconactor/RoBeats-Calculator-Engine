@@ -1185,8 +1185,8 @@ def test_fg_response_trace_logs_centered_perfect_witness_for_selected_surface() 
     assert trace[0]["fever_end_index"] == 4
     assert trace[0]["activation_hit_offset_ms"] == pytest.approx(19.999980926513672)
     assert trace[0]["activation_hit_offset_lower_ms"] == pytest.approx(0.0)
-    assert trace[0]["activation_hit_offset_upper_ms"] == pytest.approx(40.000200271606445)
-    assert trace[0]["activation_hit_window_width_ms"] == pytest.approx(40.000200271606445)
+    assert trace[0]["activation_hit_offset_upper_ms"] == pytest.approx(39.999961853027344)
+    assert trace[0]["activation_hit_window_width_ms"] == pytest.approx(39.999961853027344)
     assert trace[0]["fever_window_end_ms"] == pytest.approx(
         trace[0]["activation_hit_ms"] + trace[0]["fever_duration_ms"]
     )
