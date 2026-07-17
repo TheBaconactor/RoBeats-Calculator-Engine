@@ -111,10 +111,18 @@ def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
         current_version,
         "exact-frontier-v12+logic-12c8db234d06",
         "exact-frontier-v12+logic-e0b0e8ef6411",
+    )
+    unsafe_predecessors = {
         "exact-frontier-v12+logic-1f182e5b89af",
         "exact-frontier-v12+logic-4c69b48f08bb",
         "exact-frontier-v12+logic-9dfe907e66fb",
-    )
+    }
+    ratified_predecessors = {
+        version
+        for versions in timeline_api._EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS.values()
+        for version in versions
+    }
+    assert unsafe_predecessors.isdisjoint(ratified_predecessors)
     predecessor = timeline_api.timeline_frontier_compatible_cache_versions()[1]
     current_key = (current_version, "unit", "cleanup-compatible")
     predecessor_key = (predecessor, *current_key[1:])
