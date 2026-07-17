@@ -285,6 +285,13 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only after a byte gate proves its persisted payload identical to the current producer. Issue #161
 # proved the 1f182e5b89af, 4c69b48f08bb, and 9dfe907e66fb lineages diverge; they must rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Legacy cleanup deleted an orphaned timing-envelope wrapper. The live envelope builders and
+    # persisted Base payload bytes are unchanged; retain only the byte-proven Issue #161 lineage.
+    "exact-frontier-v12+logic-73245c017cbd": (
+        "exact-frontier-v12+logic-61d6f59cade0",
+        "exact-frontier-v12+logic-12c8db234d06",
+        "exact-frontier-v12+logic-e0b0e8ef6411",
+    ),
     # Compact session pruning and exact-signature trace witness selection live in shared source
     # files but run only after a frontier has been loaded. They cannot reach the Perfect-only
     # recurrence or persisted Base arrays, so retain only the byte-proven v12 lineage.
