@@ -27,7 +27,7 @@ def _song_with_variants(variants: list[dict]):
     )
 
 
-def _force_payload(*, base_score=1000, fg_score=1200, base_stats=None, stats=None, config=None):
+def _force_payload(*, base_score=1000, fg_score=1200, base_stats=None, stats=None, include_surface=True):
     payload = {
         "BaseScore": int(base_score),
         "Score": int(fg_score),
@@ -36,8 +36,10 @@ def _force_payload(*, base_score=1000, fg_score=1200, base_stats=None, stats=Non
         "GemCounts": {"Perfect Points": 1},
         "BaseStats": dict(base_stats or _stats(100)),
         "Selected Element": "Rush",
-        "ForceGreats": {"config": dict({"NonFever1": 1} if config is None else config)},
+        "ForceGreats": {},
     }
+    if include_surface:
+        payload["response_surface"] = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
     if stats is not None:
         payload["Stats"] = dict(stats)
     return payload
@@ -71,7 +73,8 @@ def test_native_inflight_fg_persist_entries_use_direct_variant_payload():
     assert entries[0]["minis"] == ["M1", "M2", "M3"]
     assert entries[0]["details"]["Stats"] == visible
     assert entries[0]["force"]["Stats"] == visible
-    assert (entries[0]["force"].get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
+    assert entries[0]["force"]["response_surface"] == [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+    assert "config" not in (entries[0]["force"].get("ForceGreats") or {})
 
 
 def test_native_inflight_fg_persist_entries_treat_base_stats_as_post_gem_visible_row():
@@ -133,7 +136,7 @@ def test_native_inflight_fg_persist_entries_accept_force_surface_when_data_is_no
     assert len(entries) == 1
     assert entries[0]["fg_score"] == 1200
     assert entries[0]["details"]["Stats"] == visible
-    assert (entries[0]["force"].get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
+    assert entries[0]["force"]["response_surface"] == [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
 
 
 def test_native_inflight_fg_persist_entries_drop_non_force_variants():
@@ -148,7 +151,7 @@ def test_native_inflight_fg_persist_entries_drop_non_force_variants():
                 "fg_score": 1200,
                 "gear": ["G1"],
                 "minis": ["M1"],
-                "data": _force_payload(config={}),
+                "data": _force_payload(include_surface=False),
             }
         ]
     )
@@ -194,4 +197,5 @@ def test_native_inflight_fg_persist_entries_save_direct_fg_row(tmp_path, monkeyp
     assert int(row["score"]) == 1000
     assert int(row["fg_score"]) == 1200
     force = json.loads(row["force_details_json"])
-    assert (force.get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
+    assert force["response_surface"] == [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+    assert "config" not in (force.get("ForceGreats") or {})

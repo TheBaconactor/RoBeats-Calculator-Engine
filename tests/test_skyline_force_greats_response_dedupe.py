@@ -27,7 +27,7 @@ def _base_calc_song() -> dict[str, Any]:
             "Long Notes": 0,
             "Last Note Time": 1.0,
         },
-        "song_data": {"timestamps": [0.0, 1.0], "lanes": [0, 1]},
+        "song_data": {"timestamps": [0.0, 1.0], "note_types": [0, 0], "lanes": [0, 1]},
     }
 
 
@@ -138,9 +138,9 @@ def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[st
         "reconstruct_force_greats_response_trace",
         lambda **_kwargs: (
             {"forced_count": 1, "activation_index": 0, "activation_judgment": "perfect",
-             "forced_start_index": 0, "forced_prefix_count": 0, "activation_hit_window_upper_ms": 0.0},
+             "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0, "activation_hit_window_upper_ms": 0.0},
             {"forced_count": 0, "activation_index": 0, "activation_judgment": "perfect",
-             "forced_start_index": 0, "forced_prefix_count": 0, "activation_hit_window_upper_ms": 0.0},
+             "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0, "activation_hit_window_upper_ms": 0.0},
         ),
     )
     monkeypatch.setattr(
@@ -148,6 +148,9 @@ def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[st
         "score_force_greats_response_surface_exact",
         lambda stats, *_args, **_kwargs: 1_000_200 + int(stats["Perfect Points"]),
     )
+    # Physical replay has its own integration coverage. These service-dedupe tests use
+    # deliberately synthetic two-note surfaces and only exercise batching/materialization.
+    monkeypatch.setattr(reducer_mod, "validate_force_greats_physical_replay", lambda **_kwargs: None)
 
     def _fake_prepare(*, base_stats_list, selected_color, **kwargs):
         rows = [dict(base_stats) for base_stats in base_stats_list]

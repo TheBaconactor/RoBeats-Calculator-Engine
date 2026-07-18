@@ -6,13 +6,9 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_for_contiguous_great_run
-
 from .fill_crossing import (
     activation_schedule_witnesses_weighted_lane_aware,
     exact_label_hit_intervals,
-    late_great_activation_prefix,
-    perfect_crossing_is_region3,
     perfect_fill_crossing_offset,
     server_fill_crossing_run,
 )
@@ -163,7 +159,10 @@ def _action_table(*, raw_fever_fill: float, non_fever_base: int, use_forced_grea
 
 
 def _lower_bound_from(timestamps: np.ndarray, value: float) -> int:
-    return int(np.searchsorted(timestamps, np.float32(value), side="left", sorter=None))
+    # Same left-bisect as np.searchsorted(side="left") over the float32 axis, via the
+    # frontier build's numba twin: identical float32 needle rounding and comparisons,
+    # without the per-call numpy dispatch (this sits under the trace-DFS hot loops).
+    return int(_rb_numba._numba_lower_bound_from(timestamps, float(value)))
 
 
 def _edge_end_at_hit(
@@ -414,7 +413,7 @@ def _hit_window_fields(*, hit: float, lo: float, hi: float, chart_time: float) -
 def _forced_fields(*, section_start: int, great_start: int, great_count: int, n: int) -> dict[str, int]:
     """Forced-Great fields for one response-surface option.
 
-    Two genuinely distinct concepts are recorded, plus one persisted-DB compatibility mirror:
+    Two genuinely distinct concepts are recorded:
 
     * ``forced_run_start_index`` / ``forced_run_count`` -- the canonical Great RUN (start index +
       length). This is the one true encoding every freshly reconstructed reader consumes.
@@ -422,19 +421,11 @@ def _forced_fields(*, section_start: int, great_start: int, great_count: int, n:
       use it distinctly as the reachability section boundary (``reducer._assert_trace_hit_time_
       reachable``, ``tools/dev/audit_loadout_legality.py``). It coincides with the run start only
       when the run is a section-start prefix.
-    * ``forced_prefix_count`` -- a persisted-DB compatibility mirror of ``forced_run_count`` for the
-      section-start-prefix case (0 for an offset run). Never read for its own meaning; required only
-      by the persisted-trace consumers (``audit_loadout_legality`` / oracle replay) and used as the
-      old-row fallback the DB-decode boundary (``fg_response_scoring.note_graph``) translates from.
-      Kept so pre-run-field DB rows keep decoding; it is not a dual-write of the run count for fresh
-      consumers.
     """
     great_start_i = max(0, min(int(great_start), int(n)))
     great_count_i = max(0, min(int(great_count), int(n) - int(great_start_i)))
-    prefix_count = int(great_count_i) if int(great_start_i) == int(section_start) else 0
     return {
         "forced_start_index": int(section_start),
-        "forced_prefix_count": int(prefix_count),
         "forced_run_start_index": int(great_start_i),
         "forced_run_count": int(great_count_i),
     }
@@ -492,17 +483,27 @@ def _latest_activation_hit_for_labels(
 ) -> float | None:
     great_start_i = max(0, min(int(great_start), int(n)))
     great_count_i = max(0, int(great_count))
-    return latest_activation_hit_for_contiguous_great_run(
-        activation_index=int(a),
-        hit_lo=float(hit_lo),
-        hit_hi=float(hit_hi),
-        chart_timestamps=timestamps,
-        perfect_high_timestamps=perfect_ts,
-        great_high_timestamps=great_ts,
-        great_start=int(great_start_i),
-        great_count=int(great_count_i),
-        section_end=int(n),
+    # Numba twin of latest_activation_hit_for_contiguous_great_run for the lanes=None,
+    # epsilon=INPUT_ORDER_EPS_SEC(=1e-6) form this DFS always uses: same walk, same
+    # per-note cap arithmetic, minus ~150k Python/numpy dispatches per heavy song.
+    n_eff = min(
+        int(n), int(timestamps.shape[0]), int(perfect_ts.shape[0]), int(great_ts.shape[0])
     )
+    if not (0 <= int(a) < int(n_eff)):
+        raise ValueError("activation_index must be inside the section")
+    cap, valid, _token = _rb_numba._numba_latest_activation_hit_for_contiguous_great_run(
+        int(a),
+        float(hit_lo),
+        float(hit_hi),
+        timestamps,
+        perfect_ts,
+        great_ts,
+        int(great_start_i),
+        int(great_count_i),
+        int(n_eff),
+        0,
+    )
+    return float(cap) if int(valid) else None
 
 
 def _region_run_offsets(*, section_start: int, k: int, n: int, raw_fever_fill: float) -> tuple[int, ...]:
@@ -687,53 +688,60 @@ def _edge_surface_options(
                 return True
         return False
 
-    for action_idx, k in enumerate(actions):
+    # One batched numba pass over the action loop's per-action scalar precompute (the prefix +
+    # late-Great families): identical leaf kernels, identical order, identical region-3 gate and
+    # late-Great prefix arithmetic (see _numba_trace_edge_action_arrays). Every emit/dedup/dict
+    # decision and the region-run family stay below, driven by these arrays.
+    (
+        _act_err,
+        _act_a,
+        _act_chart,
+        _act_hit_lo,
+        _act_perfect_hit,
+        _act_perfect_hit_ok,
+        _act_perfect_reachable,
+        _act_e,
+        _act_start_time,
+        _act_eg_e,
+        _act_late_lo,
+        _act_late_hit,
+        _act_lg_prefix,
+        _act_late_e,
+        _act_late_start,
+        _act_late_eg_e,
+    ) = _rb_numba._numba_trace_edge_action_arrays(
+        np.asarray(actions, dtype=np.int64),
+        np.asarray(fills, dtype=np.int64),
+        np.asarray(forced_values, dtype=np.int64),
+        int(bool(first)),
+        int(i),
+        int(n),
+        reachability_context.timestamps,
+        reachability_context.perfect_candidate_timestamps,
+        reachability_context.great_candidate_timestamps,
+        reachability_context.perfect_floor_timestamps,
+        reachability_context.great_floor_timestamps,
+        reachability_context.lanes,
+        float(raw_fever_fill),
+        float(real_fever_time),
+    )
+    if bool(np.any(_act_err)):
+        # The scalar wrapper's fail-loud bound check, verbatim (first tripping action wins).
+        raise ValueError("FG activation reachability received invalid section bounds")
+    for action_idx in range(int(_act_a.shape[0])):
+        k = int(actions[action_idx])
         fill = int(fills[action_idx])
-        a = int(fill if first else int(i) + fill)
-        if a >= n:
-            break
+        a = int(_act_a[action_idx])
         section_start = 0 if first else int(i) + 1
         forced_applied = int(forced_values[action_idx])
-        chart_time = float(timestamps[int(a)])
-        perfect_hit = _latest_activation_hit_for_labels(
-            a=int(a),
-            hit_lo=min(float(chart_time), float(perfect_activation_ts[int(a)])),
-            hit_hi=max(float(chart_time), float(perfect_activation_ts[int(a)])),
-            great_start=int(section_start),
-            great_count=int(forced_applied),
-            activation_great=False,
-            n=int(n),
-            timestamps=timestamps,
-            perfect_ts=perfect_ts,
-            great_ts=great_ts,
+        chart_time = float(_act_chart[action_idx])
+        perfect_hit = (
+            float(_act_perfect_hit[action_idx]) if int(_act_perfect_hit_ok[action_idx]) else None
         )
-        # Region-3 gate, single-sourced with the search compaction (perfect_crossing_is_region3):
-        # a forced run that swallows or pre-crosses the Perfect activation has no normal edge in
-        # the prefix family (the contiguous-run placement is the region-run family's).
-        perfect_region3 = perfect_crossing_is_region3(
-            int(fill), int(k), first=bool(first), fever_fill_denom=float(raw_fever_fill)
-        )
-        perfect_reachable = perfect_region3 and perfect_hit is not None and _activation_reachable(
-            context=reachability_context,
-            a=int(a),
-            hit=float(perfect_hit),
-            section_start=int(section_start),
-            great_start=int(section_start),
-            great_count=int(forced_applied),
-            activation_great=False,
-            n=int(n),
-        )
-        if perfect_hit is None:
-            e, start_time, carry_idx = -1, float(chart_time), -1
-        else:
-            e, start_time, carry_idx = _edge_end_at_hit(
-                n=int(n),
-                a=int(a),
-                hit=float(perfect_hit),
-                activation_great=False,
-                real_fever_time=float(real_fever_time),
-                perfect_floor_timestamps=perfect_floor_timestamps,
-            )
+        perfect_reachable = bool(_act_perfect_reachable[action_idx])
+        e = int(_act_e[action_idx])
+        start_time = float(_act_start_time[action_idx])
+        carry_idx = -1
         if perfect_reachable and (fill != prev_fill or (start_time != prev_start_time and e != prev_e)):
             great_end = min(int(n), int(section_start) + int(forced_applied))
             base = {
@@ -760,7 +768,7 @@ def _edge_surface_options(
                 "_witness": {
                     "activation_idx": int(a),
                     "chart_time": float(chart_time),
-                    "lo": min(float(chart_time), float(perfect_activation_ts[int(a)])),
+                    "lo": float(_act_hit_lo[action_idx]),
                     "hi": float(perfect_hit),
                     "target_end": int(e),
                     "carry_idx": int(carry_idx),
@@ -771,76 +779,31 @@ def _edge_surface_options(
                 return out
             # Issue #44: early-Great extension of the Perfect-activation section.
             if _early_great_options(
-                base, int(e), _great_floor_end(float(start_time), int(a), great_floor_timestamps=great_floor_timestamps, real_fever_time=float(real_fever_time), n=int(n)),
+                base, int(e), int(_act_eg_e[action_idx]),
                 a=int(a), great_start=int(section_start), great_end=int(great_end),
                 activation_great_idx=-1,
             ):
                 return out
         # Late-Great activation, single-sourced with the search's `_compact_first_frontier_action_arrays`
-        # via `late_great_activation_prefix`: the forced-Great prefix when the activation Great IS the
-        # server fill-crossing, or None when a Perfect crosses first (a phantom over-report). Same O(1)
-        # owner both paths call, so the placement math lives in exactly one place.
-        lg_prefix = late_great_activation_prefix(int(fill), int(k), first=bool(first), fever_fill_denom=float(raw_fever_fill))
-        # Input-engine reachability: the prefix gate is only the fill arithmetic. The activation also
-        # has to be scheduleable under earliest-hittable-first and lane overlap using the same weighted
-        # Perfect/Great units this surface prices.
-        prefix_late_hit: float | None = None
-        late_lo = float(np.float32(np.float32(perfect_ts[int(a)]) + np.float32(0.001)))
-        great_hi = float(great_ts[int(a)])
-        if lg_prefix is not None:
-            prefix_late_hit = _latest_activation_hit_for_labels(
-                a=int(a),
-                hit_lo=float(late_lo),
-                hit_hi=float(great_hi),
-                great_start=int(section_start),
-                great_count=int(lg_prefix),
-                activation_great=True,
-                n=int(n),
-                timestamps=timestamps,
-                perfect_ts=perfect_ts,
-                great_ts=great_ts,
-            )
-        if lg_prefix is not None and (
-            prefix_late_hit is None
-            or not _activation_reachable(
-                context=reachability_context,
-                a=int(a),
-                hit=float(prefix_late_hit),
-                section_start=int(section_start),
-                great_start=int(section_start),
-                great_count=int(lg_prefix),
-                activation_great=True,
-                n=int(n),
-            )
-        ):
-            lg_prefix = None
+        # via `late_great_activation_prefix` (evaluated in the batched pass above, alongside the
+        # input-engine reachability gate on the same weighted Perfect/Great units): lg_prefix < 0
+        # encodes both "no late-Great placement" and "placement not scheduleable".
+        lg_prefix = int(_act_lg_prefix[action_idx])
+        late_lo = float(_act_late_lo[action_idx])
         if (
             bool(use_forced_great_timing)
             and int(action_idx) > 0
             and int(fills[action_idx - 1]) == int(fill)
-            and lg_prefix is not None
+            and lg_prefix >= 0
         ):
             prefix_forced = int(lg_prefix)
-            if prefix_late_hit is None:
-                continue
-            activation_e, _activation_start_time, activation_carry_idx = _edge_end_at_hit(
-                n=int(n),
-                a=int(a),
-                hit=float(prefix_late_hit),
-                activation_great=True,
-                real_fever_time=float(real_fever_time),
-                perfect_floor_timestamps=perfect_floor_timestamps,
-            )
-            if int(activation_e) > int(e) or _great_floor_end(
-                float(_activation_start_time), int(a),
-                great_floor_timestamps=great_floor_timestamps,
-                real_fever_time=float(real_fever_time), n=int(n),
-            ) > _great_floor_end(
-                float(start_time), int(a),
-                great_floor_timestamps=great_floor_timestamps,
-                real_fever_time=float(real_fever_time), n=int(n),
+            prefix_late_hit = float(_act_late_hit[action_idx])
+            activation_e = int(_act_late_e[action_idx])
+            _activation_start_time = float(_act_late_start[action_idx])
+            activation_carry_idx = int(a)
+            if int(activation_e) > int(e) or int(_act_late_eg_e[action_idx]) > int(
+                _act_eg_e[action_idx]
             ):
-                chart_time = float(timestamps[int(a)])
                 activation_surface = _edge_surface(
                     n=int(n),
                     fever_start=int(a),
@@ -880,8 +843,7 @@ def _edge_surface_options(
                     return out
                 # Issue #44: early-Great extension of the late-Great-activation section.
                 if _early_great_options(
-                    base, int(activation_e),
-                    _great_floor_end(float(_activation_start_time), int(a), great_floor_timestamps=great_floor_timestamps, real_fever_time=float(real_fever_time), n=int(n)),
+                    base, int(activation_e), int(_act_late_eg_e[action_idx]),
                     a=int(a), great_start=int(section_start),
                     great_end=min(int(n), int(section_start) + int(prefix_forced)),
                     activation_great_idx=int(a),
@@ -1182,7 +1144,6 @@ def _option_with_witness(
             chart_time=float(w["chart_time"]),
         ),
         "forced_start_index": option["forced_start_index"],
-        "forced_prefix_count": option["forced_prefix_count"],
         "forced_run_start_index": option["forced_run_start_index"],
         "forced_run_count": option["forced_run_count"],
         "fever_end_index": option["fever_end_index"],

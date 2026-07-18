@@ -197,7 +197,7 @@ def fever_great_masks_from_trace(
         activation_index = int(sec["activation_index"])
         fever_end_index = int(sec["fever_end_index"])
         forced_start = int(sec.get("forced_run_start_index", sec["forced_start_index"]))
-        forced_prefix = int(sec.get("forced_run_count", sec["forced_prefix_count"]))
+        forced_prefix = int(sec["forced_run_count"])
         if activation_index < 0 or fever_end_index < activation_index or fever_end_index > total_notes:
             raise ValueError("FG trace contains an invalid activation/fever interval")
         if forced_start < 0 or forced_start + forced_prefix > total_notes:
@@ -517,7 +517,7 @@ def verify_song(conn: sqlite3.Connection, song_name: str, chart_path: Path) -> d
         "delta": int(optimizer_fg - int(source_score)),
         "status": "LEGAL" if int(optimizer_fg) == int(source_score) else "OVER-SCORED",
         "team_buff": str(row["team_buff"] or ""),
-        "forced_counts": list(force_details.get("forced_counts") or []),
+        "forced_counts": [int(section["forced_count"]) for section in trace],
         "great95_used": bool(int(measured["early_tail_notes"]) > 0),
         "trace_sections": len(trace),
         "early_tail_notes": int(measured["early_tail_notes"]),

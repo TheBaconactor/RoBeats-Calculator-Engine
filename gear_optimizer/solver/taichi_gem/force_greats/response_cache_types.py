@@ -160,8 +160,11 @@ _PAYLOAD_CACHE_MAX = 8
 # song. Entries are ~0.2-1MB (metadata members only, never the surface pools).
 _BUNDLE_ARRAY_CACHE_MAX = 40
 _BUNDLE_KEY_MARKER = "all-stat-keys"
+_SURFACE_GENERATION_ARRAY_NAME = "surface_generation"
+_SURFACE_BUNDLE_PATH_ARRAY_NAME = "_surface_bundle_path"
 _SCORING_BUNDLE_ARRAY_NAMES = frozenset(
     (
+        _SURFACE_GENERATION_ARRAY_NAME,
         "stat_keys",
         "frontier_ids",
         "raw_fill_by_ff",
@@ -259,6 +262,8 @@ class FgResponseFrontierScoringBundle:
     total_notes: int
     long_notes: int
     use_forced_great_timing: bool
+    surface_generation: str | None = None
+    bundle_path: Path | None = None
 
 
 def _normalize_stat_key(stat_key: tuple[int, int] | list[int]) -> tuple[int, int]:

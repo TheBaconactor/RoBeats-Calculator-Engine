@@ -6,7 +6,7 @@ from typing import Any
 from ...core.constants import LOADOUTS_PER_SONG_LIMIT
 from ...core.utils import safe_int
 from ...data.database import get_loadout_hash
-from .fg_config import has_valid_fg_config
+from .fg_payload import has_valid_fg_payload
 from .ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
 from .persistence_records import entry_base_score
 from .retention import select_retained_hashes
@@ -120,7 +120,7 @@ def build_retained_loadout_entries(
 
         fg_score_to_save = entry.get("fg_score", 0)
         force_obj = entry.get("force")
-        if not (isinstance(force_obj, dict) and has_valid_fg_config(force_obj)):
+        if not (isinstance(force_obj, dict) and has_valid_fg_payload(force_obj)):
             fg_score_to_save = 0
             force_obj = None
 
@@ -178,4 +178,4 @@ def _fg_score(entry: dict) -> int:
 
 def _fg_valid(entry: dict) -> bool:
     force_obj = entry.get("force")
-    return force_obj is not None and has_valid_fg_config(force_obj)
+    return force_obj is not None and has_valid_fg_payload(force_obj)

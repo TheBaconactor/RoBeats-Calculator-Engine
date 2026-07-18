@@ -62,6 +62,14 @@ def _random_packed_frontier(rng: np.random.Generator, rows: int, head_len: int) 
     return words, counts
 
 
+def _compact_patterns(words: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    pattern_words, pattern_ids = np.unique(words, axis=0, return_inverse=True)
+    return (
+        np.ascontiguousarray(pattern_ids, dtype=np.int32),
+        np.ascontiguousarray(pattern_words, dtype=np.uint32),
+    )
+
+
 def test_session_box_prune_keeps_every_session_cell_winner():
     rng = np.random.default_rng(20260709)
     head_len = 40
@@ -72,6 +80,7 @@ def test_session_box_prune_keeps_every_session_cell_winner():
     ]
     words = np.ascontiguousarray(np.concatenate([w for w, _ in frontiers]), dtype=np.uint32)
     counts = np.ascontiguousarray(np.concatenate([c for _, c in frontiers]), dtype=np.int32)
+    pattern_ids, pattern_words = _compact_patterns(words)
     lengths = np.asarray([w.shape[0] for w, _ in frontiers], dtype=np.int32)
     offsets = np.asarray([0, *np.cumsum(lengths[:-1])], dtype=np.int32)
 
@@ -82,7 +91,7 @@ def test_session_box_prune_keeps_every_session_cell_winner():
     g_lo, g_hi = 1200.0, 4200.0
     keep = np.asarray(
         _numba_session_box_keep_mask(
-            words, counts, offsets, lengths, 0, head_len,
+            pattern_ids, pattern_words, counts, offsets, lengths, 0, head_len,
             v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi,
         ),
         dtype=bool,
@@ -118,11 +127,12 @@ def test_session_box_prune_is_keep_all_when_box_equals_global():
     rng = np.random.default_rng(7)
     head_len = 24
     words, counts = _random_packed_frontier(rng, 30, head_len)
+    pattern_ids, pattern_words = _compact_patterns(words)
     lengths = np.asarray([30], dtype=np.int32)
     offsets = np.asarray([0], dtype=np.int32)
     keep = np.asarray(
         _numba_session_box_keep_mask(
-            np.ascontiguousarray(words), np.ascontiguousarray(counts), offsets, lengths, 0, head_len,
+            pattern_ids, pattern_words, np.ascontiguousarray(counts), offsets, lengths, 0, head_len,
             float(_HEAD_DOM_V[0]), float(_HEAD_DOM_V[1]),
             float(_HEAD_DOM_C[0]), float(_HEAD_DOM_C[1]),
             float(_HEAD_DOM_F[0]), float(_HEAD_DOM_F[1]),
@@ -142,6 +152,51 @@ def test_session_box_prune_is_keep_all_when_box_equals_global():
         full_best = max(_cell_score(words[i], counts[i], head_len, v, c, f, g) for i in range(30))
         kept_best = max(_cell_score(words[r], counts[r], head_len, v, c, f, g) for r in kept_rows)
         assert kept_best >= full_best - 1e-9
+
+
+def test_compact_pattern_basis_matches_expanded_row_survivor_snapshot():
+    """Repeated patterns must preserve the exact survivor mask from the retired row expansion."""
+    rng = np.random.default_rng(20260716)
+    head_len = 40
+    pattern_words = np.zeros((17, 8), dtype=np.uint32)
+    for pattern_idx in range(int(pattern_words.shape[0])):
+        fever = 0
+        great = 0
+        for pos in range(head_len):
+            if rng.random() < 0.35:
+                fever |= 1 << pos
+            if rng.random() < 0.20:
+                great |= 1 << pos
+        pattern_words[pattern_idx, 0] = fever & 0xFFFFFFFF
+        pattern_words[pattern_idx, 1] = (fever >> 32) & 0xFFFFFFFF
+        pattern_words[pattern_idx, 4] = great & 0xFFFFFFFF
+        pattern_words[pattern_idx, 5] = (great >> 32) & 0xFFFFFFFF
+    pattern_ids = rng.integers(0, int(pattern_words.shape[0]), size=180, dtype=np.int32)
+    counts = np.empty((180, 3), dtype=np.int32)
+    counts[:, 0] = rng.integers(0, 40, size=180)
+    counts[:, 2] = rng.integers(0, 6, size=180)
+    counts[:, 1] = counts[:, 2] + rng.integers(0, 9, size=180)
+    keep = np.asarray(
+        _numba_session_box_keep_mask(
+            pattern_ids,
+            pattern_words,
+            counts,
+            np.asarray([0, 80, 140], dtype=np.int32),
+            np.asarray([80, 60, 40], dtype=np.int32),
+            0,
+            head_len,
+            2000.0,
+            6400.0,
+            2.45,
+            2.72,
+            4.60,
+            5.48,
+            1200.0,
+            4200.0,
+        ),
+        dtype=bool,
+    )
+    assert np.flatnonzero(keep).tolist() == [12, 46, 55, 85, 138, 140, 173, 174]
 
 
 def test_session_head_dominance_box_reads_luts_and_fails_loud():
@@ -181,7 +236,7 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
     pattern_ids = np.ascontiguousarray(pattern_ids, dtype=np.int32)
     pattern_coeffs = rng.integers(0, 100, size=(int(pattern_words.shape[0]), 4)).astype(np.int32)
 
-    def _load_compact(_key, ranges):
+    def _load_compact(_key, ranges, **_kwargs):
         assert tuple(ranges) == ((0, 55),)
         return pattern_ids, counts, pattern_words, pattern_coeffs
 
@@ -218,7 +273,8 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
     original_lengths = np.asarray(bundle.frontier_lengths, dtype=np.int32)
     expected_keep = np.asarray(
         _numba_session_box_keep_mask(
-            words,
+            pattern_ids,
+            pattern_words,
             counts,
             original_offsets,
             original_lengths,

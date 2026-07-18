@@ -96,6 +96,7 @@ def test_build_db_payload_normalizes_force_payload_stats():
         "FT": 1,
         "FF": 2,
         "Selected Element": "Vibe",
+        "response_surface": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
         "ForceGreats": {"config": {"NonFever1": 1}},
     }
 

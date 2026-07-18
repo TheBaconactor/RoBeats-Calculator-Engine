@@ -123,6 +123,9 @@ def _ref_arrays() -> dict[str, np.ndarray]:
 
 def _calc_song(*, n_notes: int = 400) -> dict:
     timestamps = np.linspace(0, 90, int(n_notes), dtype=np.float64)
+    note_types = np.zeros(int(n_notes), dtype=np.int32)
+    note_types[-10:] = 3
+    lanes = np.arange(int(n_notes), dtype=np.int32) % 4
     return {
         "metadata": {
             "Song Name": "GA batch-width invariance song",
@@ -133,10 +136,14 @@ def _calc_song(*, n_notes: int = 400) -> dict:
             "Long Notes": 10,
             "Last Note Time": float(timestamps[-1]),
             "TimingEnvelopeApplied": True,
-            "TimingEnvelopeMode": "perfect",
+            "TimingEnvelopeMode": "perfect_window",
             "TimingEnvelopeFGCarry": "full",
         },
-        "song_data": {"timestamps": timestamps},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": note_types,
+            "lanes": lanes,
+        },
     }
 
 

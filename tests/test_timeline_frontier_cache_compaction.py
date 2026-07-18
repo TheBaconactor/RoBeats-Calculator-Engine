@@ -100,22 +100,28 @@ def test_frontier_disk_cache_write_is_compact_and_leak_free(tmp_path: Path, monk
         assert not any(name.startswith("group_") for name in data.files)
 
 
-def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
+def test_issue161_perfect_edge_rotation_rejects_all_predecessors(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     payload = _build_small_payload()
     current_version = timeline_api._FRONTIER_DISK_CACHE_VERSION
-    assert current_version == "exact-frontier-v12+logic-eb0dbb32b028"
-    assert timeline_api.timeline_frontier_compatible_cache_versions() == (
-        current_version,
-        "exact-frontier-v12+logic-e0b0e8ef6411",
+    predecessor = "exact-frontier-v12+logic-be26caca62b4"
+    assert current_version == "exact-frontier-v12+logic-920bc4af7ee6"
+    assert timeline_api.timeline_frontier_compatible_cache_versions() == (current_version, predecessor)
+    unsafe_predecessors = {
         "exact-frontier-v12+logic-1f182e5b89af",
         "exact-frontier-v12+logic-4c69b48f08bb",
         "exact-frontier-v12+logic-9dfe907e66fb",
-    )
-    predecessor = timeline_api.timeline_frontier_compatible_cache_versions()[1]
-    current_key = (current_version, "unit", "cleanup-compatible")
+    }
+    ratified_predecessors = {
+        version
+        for versions in timeline_api._EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS.values()
+        for version in versions
+    }
+    assert unsafe_predecessors.isdisjoint(ratified_predecessors)
+    predecessor = "exact-frontier-v12+logic-73245c017cbd"
+    current_key = (current_version, "unit", "issue161-incompatible")
     predecessor_key = (predecessor, *current_key[1:])
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
 
@@ -129,11 +135,9 @@ def test_frontier_disk_cache_reuses_exact_compatible_cleanup_predecessor(
 
     predecessor_path = timeline_api._frontier_disk_cache_path(predecessor_key)
     assert predecessor_path.exists()
-    assert timeline_api.timeline_frontier_cache_file_is_complete(predecessor_path)
-    assert timeline_api._live_frontier_disk_cache_path(current_key) == predecessor_path
-    loaded = timeline_api._load_frontier_payload_from_disk(current_key)
-    assert loaded is not None
-    assert loaded.frontier_pool_used == payload.frontier_pool_used
+    assert not timeline_api.timeline_frontier_cache_file_is_complete(predecessor_path)
+    assert timeline_api._live_frontier_disk_cache_path(current_key) is None
+    assert timeline_api._load_frontier_payload_from_disk(current_key) is None
 
 
 def test_frontier_entrypoint_canonicalizes_raw_precise_input_before_cache_lookup(
@@ -201,6 +205,56 @@ def test_build_or_load_timeline_frontier_payload_disk_hit_reuses_compact_payload
     second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
     assert second.cache_source == "disk"
     assert int(second.total_notes) == 4
+
+
+def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Regression (PR #159 review): when only a ratified predecessor-version file exists,
+    cache_info must report THAT file as disk_path — returning the nonexistent
+    current-version path made the prebuild manifest unable to validate/record the hit."""
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    monkeypatch.setattr(
+        timeline_api,
+        "_FRONTIER_DISK_CACHE_VERSION",
+        "exact-frontier-v12+logic-73245c017cbd",
+    )
+    timeline_api.reset_timeline_state()
+    calc_song = {
+        "metadata": {
+            "Song Name": "Predecessor Info Timeline",
+            "Difficulty": "Easy",
+            "Long Notes": 0,
+            "Last Note Time": 0.6,
+        },
+        "song_data": {
+            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
+            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
+        },
+    }
+    _apply_physical_timing(calc_song)
+    ref_arrays = _ref_arrays()
+
+    built = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    assert built.cache_source == "built"
+    current_path = Path(built.disk_path)
+    assert current_path.exists()
+
+    predecessor = timeline_api.timeline_frontier_compatible_cache_versions()[1]
+    predecessor_key = (predecessor, *built.cache_key[1:])
+    with monkeypatch.context() as predecessor_context:
+        predecessor_context.setattr(timeline_api, "_FRONTIER_DISK_CACHE_VERSION", predecessor)
+        timeline_api._save_frontier_payload_to_disk(predecessor_key, built.payload)
+    predecessor_path = timeline_api._frontier_disk_cache_path(predecessor_key)
+    assert predecessor_path.exists()
+    current_path.unlink()
+
+    timeline_api.reset_timeline_state()
+    info = timeline_api.timeline_frontier_payload_cache_info(calc_song, ref_arrays)
+    assert info.cache_source == "disk"
+    assert Path(info.disk_path) == predecessor_path
+    assert Path(info.disk_path).exists()
 
 
 def test_build_or_load_timeline_frontier_payload_reuses_old_disk_cache_without_ttl(tmp_path: Path, monkeypatch) -> None:

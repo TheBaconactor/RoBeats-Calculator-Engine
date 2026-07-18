@@ -47,7 +47,7 @@ from gear_optimizer.solver.native_inflight_scheduler_policy import (
     ga_admission_fg_backlog_limit,
     ga_should_pause_for_fg_backlog,
 )
-from gear_optimizer.solver import native_inflight_pipeline as native_fg_pipeline
+from gear_optimizer.solver import native_inflight_pipeline_fg as native_fg_pipeline
 from gear_optimizer.solver.native_inflight_pipeline import GADecodeQueue, InflightGAPipeline
 from gear_optimizer.solver.native_inflight_lifecycle import (
     BubbleTracker,
@@ -172,13 +172,8 @@ def run_native_inflight_song_pipeline(
                 except Exception as e:
                     logger.debug(f"native_inflight_orchestrator:_submit_fg_jobs: {e}")
             fg_song.runtime.fg.fg_queued_t0 = None
-            fg_pipeline.submit_job(
-                native_fg_pipeline.run_fg_job_sync,
+            fg_pipeline.submit_materialization(
                 fg_song,
-                gpu_client=gpu_client,
-                post_sender=post_sender,
-                progress_cb=progress_cb,
-                progress_tracker=progress_tracker,
                 register_future=completion_tracker.register,
             )
             submitted += 1
@@ -233,8 +228,8 @@ def run_native_inflight_song_pipeline(
             submitted_any = True
         return bool(submitted_any)
 
-    def _emit_deferred_post_payload(song: NativeSong) -> None:
-        emit_deferred_post_payload(
+    def _emit_deferred_post_payload(song: NativeSong) -> bool:
+        return emit_deferred_post_payload(
             song,
             post=_post,
             completed_songs=completed_songs,
@@ -695,7 +690,13 @@ def run_native_inflight_song_pipeline(
                 t_submit = fg_completion.submit_t0
                 did_work = True
                 try:
-                    fut.result()
+                    materialization_result = fut.result()
+                    native_fg_pipeline.apply_fg_materialization_result(
+                        fg_song,
+                        materialization_result,
+                        progress_cb=progress_cb,
+                        progress_tracker=progress_tracker,
+                    )
                 except GpuServiceTimeoutError:
                     raise
                 except Exception as exc:
@@ -723,11 +724,19 @@ def run_native_inflight_song_pipeline(
                         except Exception as e:
                             logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
                         raise RuntimeError(f"FG worker failed for {fg_song.config.task_key}") from exc
-                if not bool(getattr(fg_song.runtime.post, "deferred_post_emitted", False)):
-                    try:
-                        _emit_deferred_post_payload(fg_song)
-                    except Exception as e:
-                        logger.debug(f"native_inflight_orchestrator:_note_bubble_snapshot: {e}")
+                finally:
+                    native_fg_pipeline.release_fg_song_surfaces(fg_song)
+                if bool(getattr(fg_song.runtime.post, "deferred_post_emitted", False)):
+                    raise RuntimeError(
+                        "FG completion found an already-emitted deferred payload for "
+                        f"{fg_song.config.task_key}; native in-flight persistence must emit "
+                        "one combined GA+FG payload"
+                    )
+                if not _emit_deferred_post_payload(fg_song):
+                    raise RuntimeError(
+                        "FG completion failed to emit the combined deferred payload for "
+                        f"{fg_song.config.task_key}"
+                    )
                 fg_elapsed_s = time.perf_counter() - float(t_submit)
                 fg_run_wall_s = float(getattr(fg_song.runtime.fg, "fg_run_wall_s", 0.0) or 0.0)
                 if fg_run_wall_s <= 0.0 or fg_run_wall_s > fg_elapsed_s:

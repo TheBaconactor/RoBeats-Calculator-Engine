@@ -230,10 +230,11 @@ row = db.get_leaderboard_entry(
 )
 ```
 
-The frontend payload returns decoded `gear`/`minis` names, top base/FG rows, difficulty, resolved colors,
-`force_sections` derived from `ForceGreats.config` for FG rows, and row-level `hitsim_offset_deltas_ms` /
-`base_hitsim_offset_deltas_ms` / `fg_hitsim_offset_deltas_ms` fields when those deltas are present in the replayed row
-payload. The single-entry API returns full decoded row details.
+The frontend payload returns decoded `gear`/`minis` names, top base/FG rows, difficulty, resolved colors, and
+row-level `hitsim_offset_deltas_ms` / `base_hitsim_offset_deltas_ms` / `fg_hitsim_offset_deltas_ms` fields when
+those deltas are present in the replayed row payload. FG replay and note-graph data comes from the exact
+`response_surface` and `ForceGreats.frontier_trace`; the retired per-section count configuration is not stored or
+returned. The single-entry API returns full decoded row details.
 
 See: `docs/DB_MANAGER.md`.
 

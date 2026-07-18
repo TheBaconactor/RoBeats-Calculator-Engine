@@ -7,7 +7,7 @@ import logging
 
 from ...core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from ...core.utils import safe_int
-from .fg_config import has_valid_fg_config
+from .fg_payload import has_valid_fg_payload
 from .item_utils import names_list
 from .persistence_entry_merge import merge_persist_entry, resolve_loadout_hash
 from .persistence_entry_selection import (
@@ -65,7 +65,7 @@ def _normalize_entry_shape(
     if isinstance(force_out, dict):
         force_out = normalize_force_payload(force_out)
     fg_score_i = safe_int(fg_score_val, 0)
-    if fg_score_i > 0 and not (isinstance(force_out, dict) and has_valid_fg_config(force_out)):
+    if fg_score_i > 0 and not (isinstance(force_out, dict) and has_valid_fg_payload(force_out)):
         fg_score_i = 0
         force_out = None
 
@@ -183,7 +183,7 @@ def _canonicalize_entry_from_row(entry: dict[str, Any], row: Mapping[str, Any]) 
         merged["details"] = row_details
 
     row_force = row.get("force")
-    if isinstance(row_force, dict) and has_valid_fg_config(row_force):
+    if isinstance(row_force, dict) and has_valid_fg_payload(row_force):
         merged["force"] = row_force
         merged["fg_score"] = safe_int(row.get("fg_score", merged.get("fg_score", 0)), 0)
         if "fg_base_score" in row:
@@ -378,4 +378,3 @@ def build_persistence_entries(
         build_details_fn=build_details_fn,
         replay_ctx=replay_ctx,
     )
-

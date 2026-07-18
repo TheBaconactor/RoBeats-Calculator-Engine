@@ -179,3 +179,59 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
         fever_duration_ms=float(timeline["fever_duration_ms"]),
     )
     reset_timeline_state()
+
+
+def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
+    monkeypatch, tmp_path
+) -> None:
+    """Issue #161: replay must consume the producer's canonical input order."""
+    from gear_optimizer.solver.fg_response_scoring.physical_replay import (
+        validate_base_physical_replay,
+    )
+    from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace
+    from gear_optimizer.solver.taichi_gem.api.timeline import reset_timeline_state
+
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
+    reset_timeline_state()
+    chart_path = (
+        Path(__file__).resolve().parents[1]
+        / "Data"
+        / "Hard"
+        / "cheatreal (Hard) by t+pazolite.txt"
+    )
+    calc_song, ref_arrays = _load_case(chart_path)
+    replay = score_stats_exact_with_timeline_trace(
+        {
+            "Perfect Points": 85,
+            "Combo Multiplier": 62,
+            "Fever Multiplier": 71,
+            "Fever Fill Rate": 1,
+            "Fever Time": 6,
+            "Chill": 0,
+            "Flow": 153,
+            "Rush": 39,
+            "Beat": 667,
+            "Vibe": 60,
+        },
+        calc_song,
+        ref_arrays,
+    )
+    timeline = replay["TimelineFrontier"]
+    assert int(replay["score"]) == 29_780_345
+    assert [
+        (int(section["activation_index"]), int(section["fever_end_index"]))
+        for section in timeline["frontier_trace"]
+    ] == [(586, 910), (1497, 2047)]
+
+    song_data = calc_song["song_data"]
+    physical = validate_base_physical_replay(
+        frontier_trace=timeline["frontier_trace"],
+        response_surface=timeline["response_surface"],
+        timestamps=song_data["timestamps"],
+        note_types=song_data["note_types"],
+        lanes=song_data["lanes"],
+        fill_count=int(timeline["fill_count"]),
+        fever_duration_ms=float(timeline["fever_duration_ms"]),
+    )
+    assert physical.event_order.index(586) < physical.event_order.index(587)
+    reset_timeline_state()

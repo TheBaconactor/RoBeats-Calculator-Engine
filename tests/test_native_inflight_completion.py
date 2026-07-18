@@ -225,6 +225,18 @@ def test_native_inflight_fg_worker_failure_fails_loudly_instead_of_persisting_ze
     assert "post_sender.send(build_failed_fg_update_payload(fg_song))" not in src
 
 
+def test_fg_completion_emits_one_combined_ga_fg_payload():
+    src = inspect.getsource(run_native_inflight_song_pipeline)
+    start = src.index("for fg_completion in fg_pipeline.pop_completed_jobs():")
+    end = src.index("finish_deferred_fg_completion(", start)
+    completion_block = src[start:end]
+
+    assert 'if bool(getattr(fg_song.runtime.post, "deferred_post_emitted", False)):' in completion_block
+    assert "native in-flight persistence must emit" in completion_block
+    assert completion_block.count("_emit_deferred_post_payload(fg_song)") == 1
+    assert "send_fg_update_payload" not in completion_block
+
+
 def test_decode_handoff_starts_fg_prep_before_fg_worker_submission():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 

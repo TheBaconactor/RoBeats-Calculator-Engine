@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import multiprocessing
 import time
 import traceback
 from collections import deque
@@ -9,6 +10,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.solver.fg_materialization_worker import (
+    FgMaterializationResult,
+    build_fg_materialization_request,
+    initialize_fg_materialization_worker,
+    materialize_fg_request,
+)
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import NativeSong, read_db_prefetch_workers
 
@@ -50,8 +57,8 @@ def read_native_fg_pipeline_settings(
 ) -> NativeFGPipelineSettings:
     inflight_limit_i = max(1, int(inflight_limit))
     # FG jobs are host-only materialization since the fused GA->FG handoff (the GA
-    # turn already carries the owner score map). Two workers keep materialization
-    # off the orchestrator loop while bounding GIL pressure on the GPU owner.
+    # turn already carries the owner score map). Two isolated workers overlap this
+    # CPU stage with Vulkan while bounding host-core and resident-memory pressure.
     fg_workers = 2 if int(inflight_limit_i) > 1 else 1
     fg_workers = max(1, min(int(fg_workers), int(inflight_limit_i), 8))
     fg_batch_max = max(1, min(int(fg_workers), 8))
@@ -101,9 +108,14 @@ class NativeFGPipeline:
         self.pending: deque[NativeSong] = deque()
         self.prep_inflight: deque[NativeSong] = deque()
         self.futures: deque[tuple[NativeSong, concurrent.futures.Future, float]] = deque()
-        self.executor = concurrent.futures.ThreadPoolExecutor(
+        # Taichi's synchronous Vulkan calls hold the process GIL while the owner waits
+        # for the device. FG materialization is Python/Numba host work; threads therefore
+        # cannot drain it concurrently and eventually force the bounded GA conveyor to
+        # pause. Spawned workers give this exact host stage independent interpreters.
+        self.executor = concurrent.futures.ProcessPoolExecutor(
             max_workers=max(1, int(settings.workers)),
-            thread_name_prefix="FG",
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=initialize_fg_materialization_worker,
         )
         self.prep_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, int(settings.prep_workers)),
@@ -354,7 +366,7 @@ class NativeFGPipeline:
         self,
         run_fn: Callable[..., Any],
         song: NativeSong,
-        *,
+        *args: Any,
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
         **kwargs: Any,
     ) -> concurrent.futures.Future:
@@ -363,11 +375,72 @@ class NativeFGPipeline:
         except (KeyError, TypeError, ValueError):
             pass
         t_submit = time.perf_counter()
-        future = self.executor.submit(run_fn, song, **kwargs)
+        future = self.executor.submit(run_fn, *args, **kwargs)
         if register_future is not None:
             register_future(future)
         self.futures.append((song, future, t_submit))
         return future
+
+    def submit_materialization(
+        self,
+        song: NativeSong,
+        *,
+        register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
+    ) -> concurrent.futures.Future:
+        runtime = getattr(song, "runtime", song)
+        prep_future = getattr(runtime.fg, "fg_prep_future", None)
+        had_prep_future = prep_future is not None
+        if prep_future is not None:
+            try:
+                prep_future.result()
+                if getattr(runtime.fg, "fg_response_frontier_plan", None) is None:
+                    raise RuntimeError(
+                        "FG dynamic prep completed without the exact response frontier plan "
+                        f"for {self._song_key(song)}"
+                    )
+                runtime.fg.fg_dynamic_prep_done = True
+            except Exception as exc:
+                raise RuntimeError(f"FG dynamic prep failed for {self._song_key(song)}") from exc
+            finally:
+                runtime.fg.fg_prep_future = None
+
+        song_key = self._song_key(song)
+        ga_candidates = int(len(getattr(runtime.decode, "ga_candidates", None) or []))
+        emit_profile_event(
+            component="inflight_fg_worker",
+            event="start",
+            song_key=song_key,
+            metrics={
+                "had_prep_future": int(had_prep_future),
+                "ga_candidates": ga_candidates,
+                "process_isolated": 1,
+            },
+        )
+        emit_profile_event(
+            component="inflight_fg_worker",
+            event="prep_ready",
+            song_key=song_key,
+            metrics={"ga_candidates": ga_candidates},
+        )
+        emit_profile_event(
+            component="inflight_fg_worker",
+            event="pre_dispatch",
+            song_key=song_key,
+            metrics={"ga_candidates": ga_candidates},
+        )
+        request = build_fg_materialization_request(song)
+        emit_profile_event(
+            component="inflight_fg_worker",
+            event="dispatch_start",
+            song_key=song_key,
+            metrics={"process_isolated": 1},
+        )
+        return self.submit_job(
+            materialize_fg_request,
+            song,
+            request,
+            register_future=register_future,
+        )
 
     def replace_futures(self, futures: deque[tuple[NativeSong, concurrent.futures.Future, float]]) -> None:
         self.futures.clear()
@@ -425,7 +498,7 @@ class NativeFGPipeline:
             return ""
 
 
-def _release_fg_song_surfaces(song: NativeSong) -> None:
+def release_fg_song_surfaces(song: NativeSong) -> None:
     """Release a song's ~0.5-1.5 GB FG response surfaces once its FG scoring is complete.
 
     After this job's `materialize_from_owner_score_map`, nothing else reads the per-song scoring
@@ -456,6 +529,47 @@ def _release_fg_song_surfaces(song: NativeSong) -> None:
     fg.fg_owner_score_map = None
 
 
+def apply_fg_materialization_result(
+    song: NativeSong,
+    result: FgMaterializationResult,
+    *,
+    progress_cb=None,
+    progress_tracker: ProgressTracker | None = None,
+) -> None:
+    """Apply a spawned worker's exact variants on the driver/persistence owner."""
+
+    if not isinstance(result, FgMaterializationResult):
+        raise TypeError("FG materialization worker returned an invalid result")
+
+    from gear_optimizer.solver.native_inflight_lifecycle import evaluate_fg_progress_record_update
+
+    runtime = getattr(song, "runtime", song)
+    runtime.fg.fg_variants = list(result.variants)
+    runtime.fg.fg_run_wall_s = max(0.0, float(result.wall_seconds))
+    runtime.fg.cpu_fg_run_s = max(0.0, float(result.cpu_seconds))
+    song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
+    emit_profile_event(
+        component="inflight_fg_worker",
+        event="dispatch_done",
+        song_key=song_key,
+        metrics={
+            "fg_variants": int(len(runtime.fg.fg_variants or [])),
+            "process_isolated": 1,
+            "worker_wall_ms": float(result.wall_seconds) * 1000.0,
+            "worker_cpu_ms": float(result.cpu_seconds) * 1000.0,
+        },
+    )
+
+    fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
+    if isinstance(fg_record_info, dict):
+        runtime.db.record_info = fg_record_info
+        if progress_cb is not None:
+            try:
+                progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
+            except Exception as exc:
+                logger.debug("native_inflight_pipeline:apply_fg_materialization_result: %s", exc)
+
+
 def run_fg_job_sync(
     song: NativeSong,
     *,
@@ -476,7 +590,7 @@ def run_fg_job_sync(
         # FG scoring for this song is over (success OR failure): free its ~0.5-1.5 GB surface
         # pool now. Releasing only on success leaks one pool per failed song, so a failure storm
         # (e.g. a dying GPU service) pins gigabytes and trips the memory guard.
-        _release_fg_song_surfaces(song)
+        release_fg_song_surfaces(song)
 
 
 def _run_fg_job_sync_impl(

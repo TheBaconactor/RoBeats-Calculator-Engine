@@ -109,7 +109,7 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
         _unpack_stats_after_load,
     )
     from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.helpers.song_helpers.fg_config import require_response_surface
+    from gear_optimizer.helpers.song_helpers.fg_payload import require_response_surface
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 
     cfg_dict = cfg_to_dict(load_config())

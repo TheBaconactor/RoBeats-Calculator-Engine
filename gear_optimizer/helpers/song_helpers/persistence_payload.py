@@ -4,7 +4,7 @@ from collections.abc import Callable
 import logging
 
 from ...core.utils import get_selected_element, safe_int
-from .fg_config import has_valid_fg_config
+from .fg_payload import has_valid_fg_payload
 from .force_greats.result_application import read_visible_stats
 from .item_utils import names_list
 from .persistence_records import evaluate_record_update
@@ -131,7 +131,7 @@ def build_db_payload(
     current_run_fg_candidates = []
 
     for fg_entry in fg_variants:
-        if not has_valid_fg_config(fg_entry):
+        if not has_valid_fg_payload(fg_entry):
             continue
 
         fg_gear = fg_entry.get("gear", [])
@@ -161,7 +161,7 @@ def build_db_payload(
         if fg_score_i <= base_score_i:
             continue
         force_payload = normalize_force_payload(fg_data)
-        if not isinstance(force_payload, dict) or not force_payload or not has_valid_fg_config(force_payload):
+        if not isinstance(force_payload, dict) or not force_payload or not has_valid_fg_payload(force_payload):
             continue
         current_run_fg_candidates.append(
             {
@@ -279,7 +279,7 @@ def build_db_payload(
         prev_force = prev_record.get("force")
         # Validate propagated force data
 
-        if not has_valid_fg_config(prev_force):
+        if not has_valid_fg_payload(prev_force):
             prev_force = None
 
         if prev_force:

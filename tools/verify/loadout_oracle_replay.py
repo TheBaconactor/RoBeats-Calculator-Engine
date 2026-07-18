@@ -203,9 +203,8 @@ def _surface_sections(fd: dict) -> list[dict]:
                 "fever_end_index": int(e["fever_end_index"]),
                 "fever_window_end_ms": float(e.get("fever_window_end_ms", 0.0)),
                 "forced_start_index": int(e["forced_start_index"]),
-                "forced_prefix_count": int(e["forced_prefix_count"]),
-                "forced_run_start_index": int(e.get("forced_run_start_index", e["forced_start_index"])),
-                "forced_run_count": int(e.get("forced_run_count", e["forced_prefix_count"])),
+                "forced_run_start_index": int(e["forced_run_start_index"]),
+                "forced_run_count": int(e["forced_run_count"]),
                 "body_fever": int(e.get("body_fever", 0)),
                 "early_great_start": int(e.get("early_great_start", -1)),
                 "early_great_end": int(e.get("early_great_end", -1)),
@@ -374,7 +373,7 @@ def main(argv=None) -> int:
                 f"activation_hit_ms={ss['activation_hit_ms']:.1f} "
                 f"fever_window_end_ms={ss['fever_window_end_ms']:.1f} "
                 f"fever_end_index={ss['fever_end_index']} "
-                f"forced_prefix={ss['forced_prefix_count']} judgment={ss['activation_judgment']}"
+                f"forced_run={ss['forced_run_count']} judgment={ss['activation_judgment']}"
             )
     lines.append("")
     lines.append(f"PHANTOM fevered notes (surface-fevered, past game window end): {len(phantoms)}")

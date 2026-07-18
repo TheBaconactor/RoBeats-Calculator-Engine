@@ -5,6 +5,17 @@ from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_d
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
 
+_REPLAY_GEAR = [
+    "Juggernaut's Goggles",
+    "Kagan's Cowboy Pants",
+    "Chroma's Pixel Mage Hat",
+    "Tobu's Sweet Shades",
+    "Landino's Fro'",
+    "Onii's Otaku Beanie",
+]
+_REPLAY_MINIS = ["t+pazolite", "Trailblazing Trance Zara", "Halloween Witch Teresa"]
+
+
 def _ref_arrays() -> dict:
     from gear_optimizer.core.constants import TOTAL_ROWS
 
@@ -114,12 +125,13 @@ def test_retained_entries_keep_existing_details_when_stats_present():
 def test_missing_stats_details_rebuild_before_canonical_replay_scoring():
     calc_song = {
         "metadata": {
+            "Song Name": "pytest_missing_stats_replay_authority",
             "Primary Color": "Rush",
             "Secondary Color": "Flow",
             "Long Notes": 0,
             "Last Note Time": 0.0,
         },
-        "song_data": {"timestamps": [0.0]},
+        "song_data": {"timestamps": [0.0], "note_types": [0], "lanes": [0]},
     }
     ref_arrays = _ref_arrays()
     eval_stats = {
@@ -135,8 +147,8 @@ def test_missing_stats_details_rebuild_before_canonical_replay_scoring():
     exact_score = int(score_stats_exact(eval_stats, calc_song, ref_arrays))
     inflated_score = exact_score + 4321
 
-    gear = ["G1"]
-    minis = ["M1"]
+    gear = list(_REPLAY_GEAR)
+    minis = list(_REPLAY_MINIS)
     loadout_hash = get_loadout_hash(gear, minis)
     build_details = make_build_details_fn("Rush", "Flow", "Hard")
 
@@ -169,8 +181,8 @@ def test_missing_stats_details_rebuild_before_canonical_replay_scoring():
         {
             "score": 1,
             "fg_score": 0,
-            "gear": ["X"],
-            "minis": ["Y"],
+            "gear": list(_REPLAY_GEAR),
+            "minis": list(_REPLAY_MINIS),
             "details": {"Stats": _stats(1), "SelectedElement": "Rush"},
             "force": None,
         },
@@ -213,7 +225,7 @@ def test_build_persistence_entries_keeps_all_improving_fg_variants_from_payload(
             "data": {
                 "BaseScore": 1000,
                 "Stats": _stats(10),
-                "ForceGreats": {"config": {"NonFever1": 1}},
+                "response_surface": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
             },
         },
         {
@@ -224,7 +236,7 @@ def test_build_persistence_entries_keeps_all_improving_fg_variants_from_payload(
             "data": {
                 "BaseScore": 900,
                 "Stats": _stats(9),
-                "ForceGreats": {"config": {"NonFever1": 2}},
+                "response_surface": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
             },
         },
         {
@@ -235,7 +247,7 @@ def test_build_persistence_entries_keeps_all_improving_fg_variants_from_payload(
             "data": {
                 "BaseScore": 850,
                 "Stats": _stats(8),
-                "ForceGreats": {"config": {"NonFever1": 3}},
+                "response_surface": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
             },
         },
     ]

@@ -285,26 +285,36 @@ _TIMELINE_DP_SOURCES = (
 _FRONTIER_DISK_CACHE_VERSION = (
     f"{_FRONTIER_DISK_CACHE_BASE_VERSION}+logic-{module_logic_fingerprint(_TIMELINE_DP_SOURCES)}"
 )
-# Exact cache compatibility is deliberately explicit and non-transitive. This cleanup removed
-# only unreachable or test-only definitions from the shared producer modules; the Perfect-only
-# recurrence and every persisted Base payload member are unchanged.
+# Exact cache compatibility is deliberately explicit and non-transitive. A predecessor is listed
+# only after a byte gate proves its persisted payload identical to the current producer. Issue #161
+# proved the 1f182e5b89af, 4c69b48f08bb, and 9dfe907e66fb lineages diverge; they must rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
-    # Custom-cache routing and the pre-allocation workspace admission check do not alter any
-    # admitted Perfect-only recurrence or persisted payload member. Keep the prior production
-    # lineage readable so this operational safety change does not rebuild official frontiers.
-    "exact-frontier-v12+logic-eb0dbb32b028": (
-        "exact-frontier-v12+logic-e0b0e8ef6411",
-        "exact-frontier-v12+logic-1f182e5b89af",
-        "exact-frontier-v12+logic-4c69b48f08bb",
-        "exact-frontier-v12+logic-9dfe907e66fb",
+    # Custom-cache routing and pre-allocation admission do not alter an admitted frontier.
+    "exact-frontier-v12+logic-920bc4af7ee6": (
+        "exact-frontier-v12+logic-be26caca62b4",
     ),
-    # v12 payload bytes are unchanged: this version only narrows the Base fingerprint by removing
-    # FG score valuation. Ratify the existing exact Base lineage once; future FG policy edits no
-    # longer move this version, while any recurrence/geometry edit still fails closed on a new key.
-    "exact-frontier-v12+logic-e0b0e8ef6411": (
-        "exact-frontier-v12+logic-1f182e5b89af",
-        "exact-frontier-v12+logic-4c69b48f08bb",
-        "exact-frontier-v12+logic-9dfe907e66fb",
+    # Legacy cleanup deleted an orphaned timing-envelope wrapper. The live envelope builders and
+    # persisted Base payload bytes are unchanged; retain only the byte-proven Issue #161 lineage.
+    "exact-frontier-v12+logic-73245c017cbd": (
+        "exact-frontier-v12+logic-61d6f59cade0",
+        "exact-frontier-v12+logic-12c8db234d06",
+        "exact-frontier-v12+logic-e0b0e8ef6411",
+    ),
+    # Compact session pruning and exact-signature trace witness selection live in shared source
+    # files but run only after a frontier has been loaded. They cannot reach the Perfect-only
+    # recurrence or persisted Base arrays, so retain only the byte-proven v12 lineage.
+    "exact-frontier-v12+logic-61d6f59cade0": (
+        "exact-frontier-v12+logic-12c8db234d06",
+        "exact-frontier-v12+logic-e0b0e8ef6411",
+    ),
+    # FG trace-materialization host-path batching in the shared producer sources: identical
+    # predicates hoisted into vectorized precomputes (fill_crossing witness scheduler), two
+    # response_builder helpers routed through their existing numba twins, three zero-reference
+    # interval helpers deleted. The Perfect-only recurrence and every persisted Base payload
+    # member are unchanged (byte-identical 132-trace materialization oracle); ratify only that
+    # proven predecessor.
+    "exact-frontier-v12+logic-12c8db234d06": (
+        "exact-frontier-v12+logic-e0b0e8ef6411",
     ),
 }
 
@@ -839,8 +849,14 @@ def timeline_frontier_payload_cache_info(
             cached = _frontier_payload_cache.get(cache_key)
             if isinstance(cached, TimelineFrontierGridPayload):
                 cache_source = "memory"
-    disk_path = _frontier_disk_cache_path(cache_key)
-    if cache_source == "missing" and _live_frontier_disk_cache_path(cache_key) is not None:
+    # Report the file that actually serves this key: the current-version path when it
+    # exists, else the ratified predecessor's. Returning the (possibly nonexistent)
+    # current-version path here made the prebuild manifest unable to validate/record
+    # predecessor hits, so startup re-verified those songs every run instead of taking
+    # the manifest fast path.
+    live_path = _live_frontier_disk_cache_path(cache_key)
+    disk_path = live_path if live_path is not None else _frontier_disk_cache_path(cache_key)
+    if cache_source == "missing" and live_path is not None:
         cache_source = "disk"
 
     song_data = calc_song.get("song_data", {}) or {}
@@ -908,30 +924,35 @@ def _build_zero_ms_timeline_payload(calc_song: dict, ref_arrays: dict) -> Timeli
     body_normal_pool = np.zeros((1, pool_cap), dtype=np.int32)
     masks_pool = np.zeros((1, pool_cap, 4), dtype=np.uint32)
     head_coeffs_pool = np.zeros((1, pool_cap, 4), dtype=np.int16)
-    mask_buffer = np.zeros(total_notes, dtype=np.bool_)
     long_notes = int(metadata.get("Long Notes", 0) or 0)
     last_note_time = float(metadata.get("Last Note Time", float(timestamps[-1]) if total_notes else 0.0) or 0.0)
     pool_by_surface: dict[tuple[int, int, tuple[int, int, int, int], int, int], int] = {}
 
-    from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
+    from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
+
+    last_fever_end = np.zeros((grid_size, grid_size), dtype=np.int32)
+    calculate_fever_timeline_surface_grid(
+        timestamps,
+        total_notes,
+        ref_ft,
+        ref_ff,
+        long_notes,
+        last_note_time,
+        grid_count_body_fever[0],
+        grid_count_body_normal[0],
+        grid_fever_masks_bits[0],
+        grid_fever_activations[0],
+        last_fever_end,
+    )
+    grid_gap[0] = int(total_notes) - last_fever_end
 
     for ft_idx in range(grid_size):
         for ff_idx in range(grid_size):
-            head_mask, body_fever, body_normal, activations, last_end = calculate_fever_timeline_indices(
-                timestamps,
-                total_notes,
-                float(ref_ff[ff_idx]),
-                float(ref_ft[ft_idx]),
-                long_notes,
-                last_note_time,
-                mask_buffer,
-            )
-            words = [0, 0, 0, 0]
-            for note_idx, is_fever in enumerate(head_mask):
-                if bool(is_fever):
-                    words[note_idx // 32] |= 1 << (note_idx % 32)
-            word_tuple = tuple(int(word) for word in words)
-            gap = int(total_notes - int(last_end))
+            body_fever = int(grid_count_body_fever[0, ft_idx, ff_idx])
+            body_normal = int(grid_count_body_normal[0, ft_idx, ff_idx])
+            word_tuple = tuple(int(word) for word in grid_fever_masks_bits[0, ft_idx, ff_idx])
+            activations = int(grid_fever_activations[0, ft_idx, ff_idx])
+            gap = int(grid_gap[0, ft_idx, ff_idx])
             surface = (int(body_fever), int(body_normal), word_tuple, int(activations), gap)
             pool_idx = pool_by_surface.get(surface)
             if pool_idx is None:
@@ -946,12 +967,7 @@ def _build_zero_ms_timeline_payload(calc_song: dict, ref_arrays: dict) -> Timeli
                     _head_mask_coefficients_py(*word_tuple, head_len=min(total_notes, 100)),
                     dtype=np.int16,
                 )
-            grid_count_body_fever[0, ft_idx, ff_idx] = int(body_fever)
-            grid_count_body_normal[0, ft_idx, ff_idx] = int(body_normal)
-            grid_fever_masks_bits[0, ft_idx, ff_idx, :] = np.asarray(word_tuple, dtype=np.uint32)
             grid_frontier_offset[0, ft_idx, ff_idx] = int(pool_idx)
-            grid_gap[0, ft_idx, ff_idx] = gap
-            grid_fever_activations[0, ft_idx, ff_idx] = int(activations)
 
     return TimelineFrontierGridPayload(
         grid_count_body_fever=grid_count_body_fever,

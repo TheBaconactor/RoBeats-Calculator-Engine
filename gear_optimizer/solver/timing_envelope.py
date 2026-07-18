@@ -210,46 +210,6 @@ def prepare_grouped_timing_windows(
     }
 
 
-def prepare_perfect_timing_envelope(
-    timestamps_sec: np.ndarray,
-    note_types: np.ndarray | None,
-    *,
-    perfect_lower_ms: int,
-    perfect_upper_ms: int,
-    held_tail_type: int,
-    held_tail_time_multiplier: int,
-    quantize_ms: bool,
-) -> dict:
-    """Prepare chord-group Perfect timing windows for envelope kernels."""
-
-    ts_sec = np.asarray(timestamps_sec, dtype=np.float32)
-    n = int(ts_sec.shape[0])
-    if n <= 0:
-        return prepare_grouped_timing_windows(
-            ts_sec,
-            note_low_ms=np.zeros((0,), dtype=np.int32),
-            note_high_ms=np.zeros((0,), dtype=np.int32),
-            quantize_ms=quantize_ms,
-        )
-
-    if note_types is None or len(note_types) != n:
-        nt = np.ones(n, dtype=np.int16)
-    else:
-        nt = np.asarray(note_types, dtype=np.int16)
-
-    perfect_low_ms, perfect_high_ms = build_per_note_perfect_window_ms(
-        nt,
-        perfect_lower_ms=perfect_lower_ms,
-        perfect_upper_ms=perfect_upper_ms,
-        held_tail_type=held_tail_type,
-        held_tail_time_multiplier=held_tail_time_multiplier,
-    )
-    return prepare_grouped_timing_windows(
-        ts_sec,
-        note_low_ms=np.asarray(perfect_low_ms, dtype=np.int32),
-        note_high_ms=np.asarray(perfect_high_ms, dtype=np.int32),
-        quantize_ms=quantize_ms,
-    )
 
 
 def _perfect_window_edges_ms(
@@ -398,7 +358,24 @@ def build_perfect_candidate_envelope_sec(
         held_tail_type=held_tail_type,
         held_tail_time_multiplier=held_tail_time_multiplier,
     )
-    return _emit_pernote_edge_envelope_sec(ts_sec, high, prefix_max=False, quantize_ms=quantize_ms)
+    candidate = _emit_pernote_edge_envelope_sec(
+        ts_sec,
+        high,
+        prefix_max=False,
+        quantize_ms=quantize_ms,
+    )
+    # The integer-ms edge can round upward when encoded as float32 seconds. The judge compares the
+    # decoded hit against the float32 chart timestamp in float64, so that representation drift can
+    # turn +40/+80 ms into one step beyond Perfect (Issue #161). Cap each candidate at the latest
+    # float32 hit that is still inside its hard per-note judgment edge.
+    hard_high = ts_sec.astype(np.float64) + high.astype(np.float64) * 0.001
+    safe_high = hard_high.astype(np.float32)
+    overshot = safe_high.astype(np.float64) > hard_high
+    safe_high[overshot] = np.nextafter(
+        safe_high[overshot],
+        np.float32(-np.inf),
+    )
+    return np.minimum(candidate, safe_high).astype(np.float32, copy=False)
 
 
 def build_perfect_floor_envelope_sec(

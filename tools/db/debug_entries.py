@@ -30,14 +30,11 @@ for r in rows:
     gear = [maps.gear_id_to_name.get(int(i), "") for i in gear_ids if int(i) > 0]
     gear = [g for g in gear if g]
     force = json.loads(r[4]) if r[4] else None
-    fg_config = None
-    if force:
-        fg_meta = force.get("ForceGreats", {})
-        fg_config = fg_meta.get("config")
+    response_surface = force.get("response_surface") if isinstance(force, dict) else None
 
     print(f"hash={lhash}... score={int(r[1] or 0):,}, fg_score={int(r[2] or 0):,}")
     print(f"  gear[2:5]: {gear[2:5]}")
-    print(f"  force_details: {'YES' if force else 'NO'}, fg_config={fg_config}")
+    print(f"  force_details: {'YES' if force else 'NO'}, response_surface={response_surface}")
     print()
 
 conn.close()

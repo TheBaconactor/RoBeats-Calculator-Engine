@@ -97,7 +97,6 @@ _DB_TLS = connection._DB_TLS
 from .songs import (
     get_song_counters,
     get_song_names_present_in_db,
-    get_song_names_with_persisted_loadouts,
     update_song_counters,
 )
 
@@ -117,6 +116,7 @@ from .force_normalize import (
     _ensure_stats_in_details,
     _force_payload_base_score,
     _base_details_from_force_payload,
+    _align_force_stats_with_persisted_loadout,
     _compact_force_details_for_storage,
     _coerce_db_int,
     _normalize_force_for_persistence,
@@ -188,7 +188,6 @@ __all__ = [
     # songs
     "get_song_counters",
     "get_song_names_present_in_db",
-    "get_song_names_with_persisted_loadouts",
     "update_song_counters",
     # loadout io
     "_compact_gear_for_db",
@@ -202,6 +201,7 @@ __all__ = [
     "_ensure_stats_in_details",
     "_force_payload_base_score",
     "_base_details_from_force_payload",
+    "_align_force_stats_with_persisted_loadout",
     "_compact_force_details_for_storage",
     "_coerce_db_int",
     "_normalize_force_for_persistence",

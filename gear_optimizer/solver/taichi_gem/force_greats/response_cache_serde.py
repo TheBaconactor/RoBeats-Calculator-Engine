@@ -213,10 +213,28 @@ def _unpack_frontiers(
 
 
 class _LazyResponseFirstFrontier:
-    __slots__ = ("_bundle_key", "_first_start", "_first_count", "_materialized", "_surface_cache")
+    __slots__ = (
+        "_bundle_key",
+        "_bundle_path",
+        "_surface_generation",
+        "_first_start",
+        "_first_count",
+        "_materialized",
+        "_surface_cache",
+    )
 
-    def __init__(self, *, bundle_key: tuple, first_start: int, first_count: int) -> None:
+    def __init__(
+        self,
+        *,
+        bundle_key: tuple,
+        bundle_path: Path | None,
+        surface_generation: str | None,
+        first_start: int,
+        first_count: int,
+    ) -> None:
         self._bundle_key = bundle_key
+        self._bundle_path = bundle_path
+        self._surface_generation = surface_generation
         self._first_start = int(first_start)
         self._first_count = int(first_count)
         self._materialized: tuple[FgResponseSurface, ...] | None = None
@@ -228,6 +246,8 @@ class _LazyResponseFirstFrontier:
             first_pool, _coeffs = load_first_surface_scoring_rows(
                 self._bundle_key,
                 ((int(self._first_start), int(self._first_count)),),
+                surface_generation=self._surface_generation,
+                bundle_path=self._bundle_path,
             )
             materialized = tuple(
                 _surface_from_row_cached(first_pool[row_idx], self._surface_cache)
@@ -289,6 +309,8 @@ def frontier_result_from_scoring_bundle(
     else:
         first_frontier = _LazyResponseFirstFrontier(
             bundle_key=scoring_bundle.cache_key,
+            bundle_path=scoring_bundle.bundle_path,
+            surface_generation=scoring_bundle.surface_generation,
             first_start=int(first_start),
             first_count=int(first_count),
         )

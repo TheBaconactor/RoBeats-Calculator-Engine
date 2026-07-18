@@ -6,7 +6,7 @@ from typing import Any
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
-from gear_optimizer.helpers.song_helpers.fg_config import has_valid_fg_config
+from gear_optimizer.helpers.song_helpers.fg_payload import has_valid_fg_payload
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_candidate_names, materialize_entry_names
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
@@ -112,9 +112,9 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
         gear_names = _compact_items(v.get("gear") or [])
         mini_names = _compact_items(v.get("minis") or [])
         data = v.get("data")
-        if not (isinstance(data, dict) and has_valid_fg_config(data)):
+        if not (isinstance(data, dict) and has_valid_fg_payload(data)):
             data = v.get("force")
-        if not (isinstance(data, dict) and has_valid_fg_config(data)) and isinstance(v.get("_entry_ref"), dict):
+        if not (isinstance(data, dict) and has_valid_fg_payload(data)) and isinstance(v.get("_entry_ref"), dict):
             data = v["_entry_ref"].get("force")
         if not isinstance(data, dict):
             data = {}
@@ -127,7 +127,7 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
         details["ForceGreats"] = (data.get("ForceGreats", {}) if isinstance(data, dict) else {}) or {}
         force_obj = None
         try:
-            if isinstance(data, dict) and has_valid_fg_config(data):
+            if isinstance(data, dict) and has_valid_fg_payload(data):
                 force_obj = dict(data)
                 read_visible_stats(force_obj, mutate_payload=True)
         except Exception as e:

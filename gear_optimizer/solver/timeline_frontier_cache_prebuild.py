@@ -9,13 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-import numpy as np
-
-from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.constants import DIFFICULTIES, PATHS
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.recycling_process_pool import BoundedRecyclingProcessPool
 from gear_optimizer.solver.frontier_cache_manifest import (
+    _ref_axes_signature,
     apply_manifest_results as _shared_apply_manifest_results,
     build_manifest_plan as _shared_build_manifest_plan,
 )
@@ -116,12 +114,6 @@ def _cache_version() -> str:
     from gear_optimizer.solver.taichi_gem.api.timeline import _FRONTIER_DISK_CACHE_VERSION
 
     return str(_FRONTIER_DISK_CACHE_VERSION)
-
-
-def _ref_axes_signature(ref_arrays: dict) -> str:
-    ref_ft = np.asarray((ref_arrays or {}).get("Fever Time", ()), dtype=np.float32).reshape(-1)
-    ref_ff = np.asarray((ref_arrays or {}).get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
-    return bytes(array_sig16(ref_ft) + array_sig16(ref_ff)).hex()
 
 
 def _derived_frontier_cache_file(song_path: str, ref_arrays: dict) -> str | None:
