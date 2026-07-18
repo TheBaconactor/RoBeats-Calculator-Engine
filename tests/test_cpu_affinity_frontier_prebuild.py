@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+
+import pytest
+
 
 def test_cpu_affinity_sizes_frontier_prebuild_to_all_but_one_cpu(monkeypatch) -> None:
     from gear_optimizer.core import cpu_affinity
@@ -118,3 +124,68 @@ def test_windows_frontier_worker_pinning_full_set_on_uniform_cores(monkeypatch) 
     cpu_affinity.pin_frontier_prebuild_worker()
 
     assert masks == [0b0111]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows scheduling API contract")
+def test_windows_affinity_owner_applies_priority_and_disables_ecoqos() -> None:
+    """The native calls must receive a real pointer-sized process handle.
+
+    Without explicit ctypes signatures GetCurrentProcess was truncated to signed ``-1``;
+    affinity happened to accept that pseudo-handle, but priority and EcoQoS updates failed with
+    ERROR_INVALID_HANDLE while the production owner silently continued.
+    """
+    probe = r'''
+import ctypes
+import json
+from ctypes import wintypes
+
+import psutil
+
+from gear_optimizer.core.cpu_affinity import _apply_affinity_mask
+
+process = psutil.Process()
+mask = sum(1 << int(cpu) for cpu in process.cpu_affinity())
+_apply_affinity_mask(mask)
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+kernel32.GetCurrentProcess.argtypes = []
+kernel32.GetPriorityClass.restype = wintypes.DWORD
+kernel32.GetPriorityClass.argtypes = [wintypes.HANDLE]
+
+class PowerThrottle(ctypes.Structure):
+    _fields_ = [
+        ("Version", wintypes.DWORD),
+        ("ControlMask", wintypes.DWORD),
+        ("StateMask", wintypes.DWORD),
+    ]
+
+kernel32.GetProcessInformation.restype = wintypes.BOOL
+kernel32.GetProcessInformation.argtypes = [
+    wintypes.HANDLE,
+    ctypes.c_int,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+]
+handle = kernel32.GetCurrentProcess()
+power = PowerThrottle(1, 0, 0)
+if not kernel32.GetProcessInformation(handle, 4, ctypes.byref(power), ctypes.sizeof(power)):
+    raise ctypes.WinError(ctypes.get_last_error())
+print(json.dumps({
+    "priority": int(kernel32.GetPriorityClass(handle)),
+    "power_control": int(power.ControlMask),
+    "power_state": int(power.StateMask),
+}))
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["priority"] == 0x00008000
+    assert payload["power_control"] & 0x1
+    assert not payload["power_state"] & 0x1

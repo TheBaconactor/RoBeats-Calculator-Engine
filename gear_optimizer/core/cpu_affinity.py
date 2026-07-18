@@ -82,19 +82,38 @@ def _apply_affinity_mask(mask: int) -> None:
     from ctypes import wintypes
 
     k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.GetCurrentProcess.restype = wintypes.HANDLE
+    k.GetCurrentProcess.argtypes = []
     hproc = k.GetCurrentProcess()
     k.SetProcessAffinityMask.restype = wintypes.BOOL
     k.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
-    k.SetProcessAffinityMask(hproc, int(mask))
+    if not k.SetProcessAffinityMask(hproc, int(mask)):
+        raise ctypes.WinError(ctypes.get_last_error())
     # ABOVE_NORMAL signals "not background", so the scheduler keeps the process on the fast cores.
-    k.SetPriorityClass(hproc, 0x00008000)
+    k.SetPriorityClass.restype = wintypes.BOOL
+    k.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    if not k.SetPriorityClass(hproc, 0x00008000):
+        raise ctypes.WinError(ctypes.get_last_error())
 
     # Clear EcoQoS EXECUTION_SPEED throttling (StateMask=0) so the masked cores boost, not eco-park.
     class _PowerThrottle(ctypes.Structure):
         _fields_ = [("Version", wintypes.DWORD), ("ControlMask", wintypes.DWORD), ("StateMask", wintypes.DWORD)]
 
     st = _PowerThrottle(1, 0x1, 0)  # version=1, control=EXECUTION_SPEED, state=0(off)
-    k.SetProcessInformation(hproc, 4, ctypes.byref(st), ctypes.sizeof(st))  # 4 = ProcessPowerThrottling
+    k.SetProcessInformation.restype = wintypes.BOOL
+    k.SetProcessInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    if not k.SetProcessInformation(  # 4 = ProcessPowerThrottling
+        hproc,
+        4,
+        ctypes.byref(st),
+        ctypes.sizeof(st),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
 
 
 def pin_to_performance_cores() -> None:
