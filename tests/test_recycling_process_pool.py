@@ -21,6 +21,11 @@ def _return_identity_or_raise(value: int) -> tuple[int, int]:
     return int(value), os.getpid()
 
 
+def _return_after_delay(value: int, delay_s: float) -> int:
+    time.sleep(float(delay_s))
+    return int(value)
+
+
 def _fail_worker_initializer() -> None:
     raise RuntimeError("initializer sentinel")
 
@@ -45,6 +50,24 @@ def test_recycling_process_pool_completes_past_original_worker_capacity() -> Non
     results = [future.result() for future in done]
     assert sorted(value for value, _pid in results) == list(range(task_count))
     assert len({pid for _value, pid in results}) > workers
+
+
+def test_recycling_process_pool_replaces_first_drained_worker_without_global_barrier() -> None:
+    with BoundedRecyclingProcessPool(
+        max_workers=2,
+        max_tasks_per_worker=1,
+    ) as pool:
+        slow = pool.submit(_return_after_delay, 0, 3.0)
+        fast = pool.submit(_return_after_delay, 1, 0.01)
+
+        # Both original workers are at their lifetime cap. Submission may wait for the fast
+        # worker to drain and recycle, but must not wait for the unrelated slow worker.
+        replacement = pool.submit(_return_after_delay, 2, 0.0)
+        assert not slow.done()
+        assert fast.result(timeout=30.0) == 1
+        assert replacement.result(timeout=30.0) == 2
+
+    assert slow.result(timeout=30.0) == 0
 
 
 def test_recycling_process_pool_reports_failure_and_finishes_remaining_generations() -> None:

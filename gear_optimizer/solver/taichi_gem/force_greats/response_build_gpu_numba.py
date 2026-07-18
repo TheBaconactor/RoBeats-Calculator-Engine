@@ -2867,6 +2867,94 @@ _HEAD_FILTER_MIN_SURFACES = 96
 _HEAD_GENERATED_BOUND_MULTIPLIER = 64
 _HEAD_GENERATED_BOUND_MIN = 4096
 
+_DEBRUIJN_CTZ64 = (
+    0,
+    1,
+    48,
+    2,
+    57,
+    49,
+    28,
+    3,
+    61,
+    58,
+    50,
+    42,
+    38,
+    29,
+    17,
+    4,
+    62,
+    55,
+    59,
+    36,
+    53,
+    51,
+    43,
+    22,
+    45,
+    39,
+    33,
+    30,
+    24,
+    18,
+    12,
+    5,
+    63,
+    47,
+    56,
+    27,
+    60,
+    41,
+    37,
+    16,
+    54,
+    35,
+    52,
+    21,
+    44,
+    32,
+    23,
+    11,
+    46,
+    26,
+    40,
+    15,
+    34,
+    20,
+    31,
+    10,
+    25,
+    14,
+    19,
+    9,
+    13,
+    8,
+    7,
+    6,
+)
+
+
+@njit(cache=True, nogil=True)
+def _numba_ctz64_nonzero(value) -> int:
+    isolated = value & (np.uint64(0) - value)
+    table_idx = int(
+        (isolated * np.uint64(0x03F79D71B4CB0A89)) >> np.uint64(58)
+    )
+    return int(_DEBRUIJN_CTZ64[int(table_idx)])
+
+
+@njit(cache=True, nogil=True)
+def _numba_u64_range_mask(start: int, end: int):
+    if int(start) >= int(end):
+        return np.uint64(0)
+    lower = np.uint64(0xFFFFFFFFFFFFFFFF) << np.uint64(start)
+    if int(end) >= 64:
+        upper = np.uint64(0xFFFFFFFFFFFFFFFF)
+    else:
+        upper = (np.uint64(1) << np.uint64(end)) - np.uint64(1)
+    return lower & upper
+
 
 @njit(cache=True, nogil=True)
 def _numba_head_generated_threshold(min_surfaces: int) -> int:
@@ -2878,11 +2966,14 @@ def _numba_head_generated_threshold(min_surfaces: int) -> int:
 
 @njit(cache=True, nogil=True)
 def _numba_head_surface_basis(surface, lo_pos, hi_pos):
+    """Build the exact head basis while visiting only fever/Great union bits.
+
+    Lowest-set-bit iteration preserves the retired scan's ascending-position addition order, so
+    every float and downstream dominance comparison remains bit-identical.
+    """
     lo = int(lo_pos)
     hi = int(hi_pos)
-    hlen = hi - lo
     fl, fh, gl, gh, bf, bg, bfg = surface
-    one = np.uint64(1)
     c_lo = _HEAD_DOM_C[0]
     c_hi = _HEAD_DOM_C[1]
     k_lo = (c_lo - 1.0) / 100.0
@@ -2893,27 +2984,43 @@ def _numba_head_surface_basis(surface, lo_pos, hi_pos):
     b_hi = 0.0
     c_hi_arr = 0.0
     d_hi = 0.0
-    for idx in range(hlen):
-        pos = lo + idx
-        if pos < 64:
-            fbit = (fl >> np.uint64(pos)) & one
-            gbit = (gl >> np.uint64(pos)) & one
-        else:
-            fbit = (fh >> np.uint64(pos - 64)) & one
-            gbit = (gh >> np.uint64(pos - 64)) & one
-        if fbit == 0 and gbit == 0:
-            continue
-        slo = 1.0 + k_lo * float(lo + idx + 1)
-        shi = 1.0 + k_hi * float(lo + idx + 1)
-        if fbit != 0:
+    low_start = max(0, int(lo))
+    low_end = min(64, int(hi))
+    low_bits = (fl | gl) & _numba_u64_range_mask(int(low_start), int(low_end))
+    while low_bits != 0:
+        pos = _numba_ctz64_nonzero(low_bits)
+        bit = np.uint64(1) << np.uint64(pos)
+        slo = 1.0 + k_lo * float(int(pos) + 1)
+        shi = 1.0 + k_hi * float(int(pos) + 1)
+        if (fl & bit) != 0:
             b_lo += slo
             b_hi += shi
-        if gbit != 0:
+        if (gl & bit) != 0:
             c_lo_arr += slo
             c_hi_arr += shi
-        if fbit != 0 and gbit != 0:
+        if (fl & bit) != 0 and (gl & bit) != 0:
             d_lo += slo
             d_hi += shi
+        low_bits &= low_bits - np.uint64(1)
+    high_start = max(0, int(lo) - 64)
+    high_end = min(64, int(hi) - 64)
+    high_bits = (fh | gh) & _numba_u64_range_mask(int(high_start), int(high_end))
+    while high_bits != 0:
+        local_pos = _numba_ctz64_nonzero(high_bits)
+        bit = np.uint64(1) << np.uint64(local_pos)
+        pos = 64 + int(local_pos)
+        slo = 1.0 + k_lo * float(int(pos) + 1)
+        shi = 1.0 + k_hi * float(int(pos) + 1)
+        if (fh & bit) != 0:
+            b_lo += slo
+            b_hi += shi
+        if (gh & bit) != 0:
+            c_lo_arr += slo
+            c_hi_arr += shi
+        if (fh & bit) != 0 and (gh & bit) != 0:
+            d_lo += slo
+            d_hi += shi
+        high_bits &= high_bits - np.uint64(1)
     return (
         fl,
         fh,

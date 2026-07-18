@@ -3414,6 +3414,67 @@ def test_fg_response_bounded_exact_duplicate_skip_matches_every_retired_prefix()
     assert len(seen) == 3
 
 
+def test_fg_response_sparse_head_basis_matches_ordered_position_scan() -> None:
+    """Set-bit iteration must preserve the retired scan's exact float addition order."""
+    import random
+
+    from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
+        _HEAD_DOM_C,
+        _numba_ctz64_nonzero,
+        _numba_head_surface_basis,
+    )
+
+    for pos in range(64):
+        assert _numba_ctz64_nonzero(np.uint64(1) << np.uint64(pos)) == pos
+
+    rng = random.Random(20260718)
+    ranges = ((0, 100), (0, 64), (64, 100), (5, 99), (32, 72), (17, 17))
+    k_lo = (_HEAD_DOM_C[0] - 1.0) / 100.0
+    k_hi = (_HEAD_DOM_C[1] - 1.0) / 100.0
+    for _ in range(300):
+        surface = (
+            np.uint64(rng.getrandbits(64)),
+            np.uint64(rng.getrandbits(36)),
+            np.uint64(rng.getrandbits(64)),
+            np.uint64(rng.getrandbits(36)),
+            np.uint64(rng.randrange(101)),
+            np.uint64(rng.randrange(101, 201)),
+            np.uint64(rng.randrange(101)),
+        )
+        for lo, hi in ranges:
+            expected = [0.0] * 6
+            for pos in range(lo, hi):
+                word_pos = pos if pos < 64 else pos - 64
+                word = 0 if pos < 64 else 1
+                fever = (int(surface[word]) >> word_pos) & 1
+                great = (int(surface[2 + word]) >> word_pos) & 1
+                if not fever and not great:
+                    continue
+                slo = 1.0 + k_lo * float(pos + 1)
+                shi = 1.0 + k_hi * float(pos + 1)
+                if fever:
+                    expected[0] += slo
+                    expected[3] += shi
+                if great:
+                    expected[1] += slo
+                    expected[4] += shi
+                if fever and great:
+                    expected[2] += slo
+                    expected[5] += shi
+
+            actual = _numba_head_surface_basis(surface, lo, hi)
+            assert actual[:4] == surface[:4]
+            assert actual[4:7] == (
+                np.int64(surface[4]),
+                np.int64(surface[5]) - np.int64(surface[6]),
+                np.int64(surface[6]),
+            )
+            np.testing.assert_array_equal(
+                np.asarray(actual[7:], dtype=np.float64),
+                np.asarray(expected, dtype=np.float64),
+            )
+
+
 def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:
     from numba.typed import List
 
