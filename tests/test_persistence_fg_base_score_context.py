@@ -39,6 +39,8 @@ def test_save_loadouts_batch_preserves_fg_base_score_context(monkeypatch, tmp_pa
             "SecondaryColor": "Chill",
         },
         "force": {
+            "Stats": {"Perfect Points": 25, "Beat": 30},
+            "response_surface": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
             "ForceGreats": {"final_score": 95},
             "details": {
                 "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0},
