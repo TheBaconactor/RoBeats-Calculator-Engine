@@ -830,9 +830,12 @@ def test_current_fg_payload_cleanup_reuses_issue161_frontier_bytes() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
-    predecessor = "fg-response-frontier-visible-first-v31+logic-41f36c4647fe"
     assert current_version == "fg-response-frontier-visible-first-v31+logic-6d2c269a5b07"
-    assert response_cache_store.fg_response_compatible_cache_versions() == (current_version, predecessor)
+    assert response_cache_store.fg_response_compatible_cache_versions() == (
+        current_version,
+        "fg-response-frontier-visible-first-v31+logic-41f36c4647fe",
+        "fg-response-frontier-visible-first-v31+logic-3e63488abfec",
+    )
 
 
 def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(

@@ -86,6 +86,7 @@ _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     # Ephemeral custom-cache routing changes storage ownership, not admitted frontier bytes.
     "fg-response-frontier-visible-first-v31+logic-6d2c269a5b07": (
         "fg-response-frontier-visible-first-v31+logic-41f36c4647fe",
+        "fg-response-frontier-visible-first-v31+logic-3e63488abfec",
     ),
     # Persisted ForceGreats count/config compatibility was removed from payload materialization.
     # The changed response-builder field was only a redundant option-dict mirror, and note_graph's
