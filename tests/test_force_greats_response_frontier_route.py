@@ -30,7 +30,8 @@ def _trace_row(forced_count: int) -> dict[str, object]:
         "activation_index": 0,
         "activation_judgment": "perfect",
         "forced_start_index": 0,
-        "forced_prefix_count": 0,
+        "forced_run_start_index": 0,
+        "forced_run_count": 0,
         "activation_hit_window_upper_ms": 0.0,
     }
 
@@ -636,7 +637,8 @@ def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
                 "data": {
                     "Score": 100 + len(seen),
                     "BaseScore": 90,
-                    "ForceGreats": {"config": {"NonFever1": 1}},
+                    "ForceGreats": {},
+                    "response_surface": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
                 },
                 "gear": [f"G{len(seen)}"],
                 "minis": [f"M{len(seen)}"],
@@ -767,7 +769,6 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
     # frontier (non_fever_base=7): the trace primitive receives the override's non_fever_base.
     assert seen["non_fever_base"] == full_frontier.non_fever_base
     assert payload["BaseScore"] == 1000
-    assert payload["forced_counts"] == [1, 0, 1]
     assert [row["forced_count"] for row in payload["ForceGreats"]["frontier_trace"]] == [1, 0, 1]
     assert payload["Score"] == 1230
     assert payload["ForceGreats"]["final_score"] == 1230
@@ -885,7 +886,6 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
     )
 
     assert payload["BaseScore"] == 1000
-    assert payload["forced_counts"] == [1, 0, 1]
     assert [row["forced_count"] for row in payload["ForceGreats"]["frontier_trace"]] == [1, 0, 1]
     assert payload["Score"] == 1230
 
@@ -995,8 +995,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
     assert payload["BaseScore"] == 4000
     trace = payload["ForceGreats"]["frontier_trace"]
     assert not frontier.state_frontiers
-    assert payload["forced_counts"] == [int(target_option["k"])]
-    assert payload["ForceGreats"]["config"] == {"NonFever1": int(target_option["k"]), "NonFever2": 0}
+    assert [row["forced_count"] for row in trace] == [int(target_option["k"])]
     assert len(trace) == 1
     assert trace[0]["activation_judgment"] == "late_great"
     assert trace[0]["activation_index"] == int(target_option["activation_index"])
@@ -1074,8 +1073,7 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
             "FT": 0,
             "FF": 0,
             "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Overflow": 0},
-            "ForceGreats": {"config": {"NonFever1": 1}},
-            "forced_counts": [1],
+            "ForceGreats": {},
             "response_surface": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         }
 
@@ -1440,7 +1438,6 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
     assert out[0]["data"]["FF"] == 7
     assert out[0]["data"]["GemCounts"]["Element"] == 4
     assert set(out[0]["data"]["ForceGreats"]) == {
-        "config",
         "final_score",
         # Fever-window params persisted for the legality audit + frontend timing graph (reducer.py).
         "raw_fever_fill",
@@ -1452,7 +1449,6 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
         "frontier_transitions",
         "non_fever_base",
     }
-    assert out[0]["data"]["ForceGreats"]["config"] == {"NonFever1": 5, "NonFever2": 0}
     assert out[0]["gear"] == ["G1"]
     assert out[0]["minis"] == ["M1"]
 

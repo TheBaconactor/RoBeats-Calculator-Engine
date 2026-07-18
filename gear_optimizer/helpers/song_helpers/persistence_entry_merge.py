@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Callable
 import logging
 
-from .fg_config import has_valid_fg_config
+from .fg_payload import has_valid_fg_payload
 from .item_utils import names_list
 
 
@@ -42,7 +42,7 @@ def merge_persist_entry(
     if callable(normalize_force_payload_fn) and isinstance(force_obj, dict):
         force_out = normalize_force_payload_fn(force_obj)
 
-    fg_force_valid = isinstance(force_out, dict) and bool(force_out) and has_valid_fg_config(force_out)
+    fg_force_valid = isinstance(force_out, dict) and bool(force_out) and has_valid_fg_payload(force_out)
     fg_score_i = int(fg_score_val or 0)
     if fg_score_i > 0 and not fg_force_valid:
         fg_score_i = 0
@@ -124,5 +124,4 @@ def merge_persist_entry(
                 existing["fg_base_score"] = new_entry.get("fg_base_score")
         elif "fg_base_score" in new_entry and "fg_base_score" not in existing:
             existing["fg_base_score"] = new_entry.get("fg_base_score")
-
 

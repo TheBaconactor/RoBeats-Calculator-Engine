@@ -58,12 +58,14 @@ from .force_normalize import (
     _ensure_stats_in_details,
     _force_payload_base_score,
     _base_details_from_force_payload,
+    _align_force_stats_with_persisted_loadout,
     _compact_force_details_for_storage,
     _coerce_db_int,
     _normalize_force_for_persistence,
     _normalize_force_base_score_for_persistence,
     _assert_force_score_pairing,
 )
+from ...helpers.song_helpers.fg_payload import strip_retired_fg_fields
 
 logger = logging.getLogger(__name__)
 
@@ -838,6 +840,10 @@ def save_team_buff_loadouts_batch(
                 original_minis=minis,
                 eff=eff,
             )
+            if force_data is not None:
+                force_data = _align_force_stats_with_persisted_loadout(force_data, details)
+            details, _retired_details_count = strip_retired_fg_fields(details)
+            force_data, _retired_force_count = strip_retired_fg_fields(force_data)
             if (
                 isinstance(details, dict)
                 and isinstance(details.get("Stats"), dict)

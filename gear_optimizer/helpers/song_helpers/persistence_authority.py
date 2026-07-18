@@ -15,31 +15,8 @@ from ...solver.fg_response_scoring.physical_replay import (
     validate_base_physical_replay,
     validate_force_greats_physical_replay,
 )
-from .fg_config import extract_fg_config, has_valid_fg_config, require_response_surface
+from .fg_payload import has_valid_fg_payload, require_response_surface, strip_retired_fg_fields
 from .persistence_payload import normalize_force_payload
-
-
-def _config_counts(config: Mapping[str, Any]) -> list[int]:
-    pairs: list[tuple[int, int]] = []
-    for key, value in dict(config or {}).items():
-        if not isinstance(key, str) or not key.startswith("NonFever"):
-            continue
-        try:
-            idx = int(key.replace("NonFever", "")) - 1
-        except Exception as exc:
-            raise ValueError(f"Invalid ForceGreats section key {key!r}.") from exc
-        pairs.append((idx, max(0, require_int(value, field=key))))
-    if not pairs:
-        return []
-
-    pairs.sort(key=lambda pair: pair[0])
-    max_idx = pairs[-1][0]
-    counts = [0] * (max_idx + 1)
-    for idx, value in pairs:
-        if idx < 0:
-            raise ValueError(f"Invalid ForceGreats section index {idx + 1}.")
-        counts[idx] = int(value)
-    return counts
 
 
 def _force_stats(force_obj: Mapping[str, Any]) -> dict[str, Any]:
@@ -121,16 +98,10 @@ def _canonical_force_payload(
     out["score"] = int(fg_score)
 
     fg_meta = dict(out.get("ForceGreats") or {})
-    config_dict = fg_eval.get("config_dict")
-    if isinstance(config_dict, dict) and config_dict:
-        fg_meta["config"] = dict(config_dict)
     fg_meta["final_score"] = int(fg_score)
     out["ForceGreats"] = fg_meta
-
-    config_counts = fg_eval.get("config_counts")
-    if isinstance(config_counts, list) and config_counts:
-        out["forced_counts"] = [int(value) for value in config_counts]
-    return out
+    cleaned, _removed = strip_retired_fg_fields(out)
+    return cleaned
 
 
 def _source_paired_base_score(entry: Mapping[str, Any], force_obj: Mapping[str, Any]) -> int:
@@ -154,7 +125,6 @@ def _replay_force_payload(
     stats: Mapping[str, Any],
     calc_song: Mapping[str, Any],
     ref_arrays: Mapping[str, Any],
-    counts: list[int],
 ) -> dict[str, Any]:
     surface = require_response_surface(force_obj)
     metadata = calc_song.get("metadata", {}) if isinstance(calc_song, Mapping) else {}
@@ -182,11 +152,7 @@ def _replay_force_payload(
     final_score = score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, surface)
     if final_score is None:
         raise ValueError("Authoritative FG response surface replay failed.")
-    return {
-        "final_score": int(final_score),
-        "config_counts": [int(value) for value in counts],
-        "config_dict": extract_fg_config(force_obj),
-    }
+    return {"final_score": int(final_score)}
 
 
 def _assert_canonical_fg_invariants(entry: Mapping[str, Any], *, expected_fg: int | None) -> None:
@@ -240,7 +206,7 @@ def canonicalize_authoritative_fg_entry(
     _canonicalize_base_score(out, calc_song=calc_song, ref_arrays=ref_arrays)
 
     force_obj = out.get("force")
-    if not (isinstance(force_obj, dict) and has_valid_fg_config(force_obj)):
+    if not (isinstance(force_obj, dict) and has_valid_fg_payload(force_obj)):
         out["force"] = None
         out["fg_score"] = 0
         out.pop("fg_base_score", None)
@@ -252,21 +218,11 @@ def canonicalize_authoritative_fg_entry(
     fg_base_score = _source_paired_base_score(out, force_normalized)
     if fg_base_score <= 0:
         raise ValueError("Authoritative FG persistence is missing paired source base score.")
-    config = extract_fg_config(force_normalized)
-    counts = _config_counts(config)
-    if not counts or sum(int(value) for value in counts) <= 0:
-        out["force"] = None
-        out["fg_score"] = 0
-        out.pop("fg_base_score", None)
-        _assert_canonical_fg_invariants(out, expected_fg=None)
-        return out
-
     fg_eval = _replay_force_payload(
         force_normalized,
         stats=stats,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        counts=counts,
     )
     fg_score = int(fg_eval.get("final_score", 0) or 0)
     if fg_score <= fg_base_score:

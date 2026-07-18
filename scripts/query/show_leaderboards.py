@@ -52,7 +52,7 @@ def show_leaderboards():
 
     # --- FORCE GREATS SCORE LEADERBOARD ---
     print(">>> BY FORCE GREATS SCORE (Top 50 from 'team_buff_fg_loadouts' table)")
-    print(f"{'Rank':<5} {'FG Score':<12} {'Base Score':<12} {'Config Status'}")
+    print(f"{'Rank':<5} {'FG Score':<12} {'Base Score':<12} {'Replay Surface'}")
     print("-" * 80)
 
     # Note: team_buff_fg_loadouts is FG Score focused
@@ -76,21 +76,21 @@ def show_leaderboards():
         score = row["score"]
         force_json = row["force_details_json"]
 
-        config_status = "NULL (Clean)"
+        replay_status = "Missing"
         if force_json:
             try:
                 data = json.loads(force_json)
-                details = data.get("details", {})
-                if isinstance(details, dict):
-                    config = details.get("ForceGreats", {}).get("config", {})
-                    if config and sum(config.values()) > 0:
-                        config_status = "Valid Config"
-                    else:
-                        config_status = "Invalid/Zero"
-            except:
-                config_status = "Error Parsing"
+                surface = data.get("response_surface")
+                trace = (data.get("ForceGreats") or {}).get("frontier_trace")
+                replay_status = (
+                    f"{len(trace)} sections"
+                    if isinstance(surface, list) and len(surface) == 11 and isinstance(trace, list) and trace
+                    else "Invalid"
+                )
+            except (AttributeError, json.JSONDecodeError, TypeError):
+                replay_status = "Invalid JSON"
 
-        print(f"{i + 1:<5} {fg_score:<12} {score:<12} {config_status}")
+        print(f"{i + 1:<5} {fg_score:<12} {score:<12} {replay_status}")
 
     conn.close()
 

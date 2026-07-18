@@ -147,9 +147,9 @@ Returns:
 - `tiers`: the same top lists grouped under the selected tier key
 - `meta`: replay metadata from tier recomputation
 
-FG rows include `force_config` when present. The manager also adds `force_sections`, a list of `{section, key,
-forced_greats}` rows derived from `ForceGreats.config`, so a frontend can render the per-non-fever-section numbers
-without parsing `NonFeverN` keys itself.
+FG rows carry the exact `response_surface` and `ForceGreats.frontier_trace` needed for replay and note-graph
+rendering. The retired `force_config` / `force_sections` count model is intentionally absent because it cannot
+represent every trace produced by the current solver.
 
 Rows also normalize any available timing-delta display data:
 
@@ -185,5 +185,5 @@ Notes:
   - `secondary`: force TeamColor to the song Secondary Color (falls back to Primary)
 - The manager attempts to resolve the chart file path automatically from the repo `Data/` layout. If it cannot resolve
   the file for the given `song_name`, it returns `None`.
-- The row returned here uses the same normalized `force_sections` and hitsim-delta fields as
+- The row returned here uses the same normalized response-surface, frontier-trace, and hitsim-delta fields as
   `get_frontend_song_payload(...)`.

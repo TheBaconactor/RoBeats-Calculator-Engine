@@ -4,6 +4,9 @@ import pytest
 from gear_optimizer.pipeline.post_processor_fg_updates import build_fg_update_state, canonicalize_fg_update_entries
 
 
+_FG_SURFACE = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+
+
 def _mock_base_song(*, primary_color: str = "Rush", n_notes: int = 96) -> dict:
     timestamps = np.linspace(0.0, 30.0, int(n_notes), dtype=np.float32)
     return {
@@ -19,6 +22,7 @@ def _mock_base_song(*, primary_color: str = "Rush", n_notes: int = 96) -> dict:
         "song_data": {
             "timestamps": timestamps,
             "note_types": np.ones(int(n_notes), dtype=np.int16),
+            "lanes": np.arange(int(n_notes), dtype=np.int16) % 4,
         },
     }
 
@@ -199,8 +203,8 @@ def test_build_fg_update_state_preserves_existing_state_and_reports_improving_fg
             {
                 "score": 100,
                 "fg_score": 125,
-                "force": {"ForceGreats": {"config": [1, 0]}},
-                "details": {"ForceGreats": {"config": [1, 0]}},
+                "force": {"response_surface": _FG_SURFACE, "ForceGreats": {}},
+                "details": {"ForceGreats": {}},
             },
             {"score": 100, "fg_score": 140},
         ],
@@ -212,7 +216,7 @@ def test_build_fg_update_state_preserves_existing_state_and_reports_improving_fg
     assert state["best_fg"] == 125
     assert len(state["fg_variants"]) == 3
     assert state["fg_variants"][1] == {
-        "data": {"ForceGreats": {"config": [1, 0]}, "Score": 125},
+        "data": {"response_surface": _FG_SURFACE, "ForceGreats": {}, "Score": 125},
         "gear": [],
         "minis": [],
         "score": 100,

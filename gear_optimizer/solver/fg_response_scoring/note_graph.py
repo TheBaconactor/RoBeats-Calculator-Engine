@@ -1549,7 +1549,6 @@ def force_greats_note_graph(
     sequential, non-overlapping region of the timeline:
       - fever window  [activation_index, fever_end_index)            -> fever
       - forced greats [forced_run_start_index, forced_run_start_index+forced_run_count) -> Great (selector)
-        (older prefix-only traces map this to forced_start_index/forced_prefix_count)
       - the activation note is a timing WITNESS when activation_hit_offset_ms is nonzero.
         If activation_judgment == "late_great", that witness is also a Great; otherwise
         it remains Perfect.
@@ -1575,8 +1574,8 @@ def force_greats_note_graph(
         section = int(sec.get("section", 0))
         a = int(sec["activation_index"])
         e = int(sec["fever_end_index"])
-        fs = int(sec.get("forced_run_start_index", sec["forced_start_index"]))
-        fc = int(sec.get("forced_run_count", sec["forced_prefix_count"]))
+        fs = int(sec["forced_run_start_index"])
+        fc = int(sec["forced_run_count"])
 
         for j in range(max(0, fs), min(fs + fc, n)):     # forced (selector) Greats
             notes[j]["note_result"] = "Great"

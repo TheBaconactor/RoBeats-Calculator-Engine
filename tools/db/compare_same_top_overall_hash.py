@@ -21,11 +21,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.data.database import _base_details_from_force_payload, _unpack_stats_after_load
-from gear_optimizer.data.db_manager import _build_song_index_for_difficulty
 from gear_optimizer.data.migrations import _table_exists
 from gear_optimizer.data.song_io import get_base_calc_song
-from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact, score_stats_exact
+from gear_optimizer.helpers.song_helpers.fg_payload import require_response_surface
+from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact, score_stats_exact
 from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
+from tools.db.compare_overall_best_to_legacy_db import _song_file_from_name
 
 
 @dataclass(frozen=True)
@@ -46,26 +47,6 @@ class ReplayResult:
     has_stats: bool
     has_force_payload: bool
     reason: str
-
-
-def _infer_difficulty_from_song_name(song_name: str) -> str:
-    s = str(song_name or "")
-    for diff in ("Easy", "Normal", "Hard"):
-        if f" ({diff}) " in s:
-            return diff
-    return "Normal"
-
-
-def _song_file_from_name(song_name: str, difficulty_index: dict[str, dict[str, str]]) -> Path | None:
-    diff = _infer_difficulty_from_song_name(song_name)
-    fp = PROJECT_ROOT / "Data" / diff / f"{song_name}.txt"
-    if fp.exists():
-        return fp
-    idx = difficulty_index.get(diff) or {}
-    fp = Path(str(idx.get(song_name) or ""))
-    if fp.exists():
-        return fp
-    return None
 
 
 def _best_base(conn: sqlite3.Connection, *, song: str, team_buff: str) -> tuple[int, str]:
@@ -132,52 +113,17 @@ def _songs_in_db(conn: sqlite3.Connection, *, team_buff: str) -> set[str]:
     return out
 
 
-def _force_config_counts(force_details: dict, details: dict | None = None) -> list[int]:
-    forced = force_details.get("forced_counts")
-    if isinstance(forced, list) and forced:
-        try:
-            return [max(0, int(v or 0)) for v in forced]
-        except Exception:
-            return []
-
-    cfg = None
-    fg = force_details.get("ForceGreats")
-    if isinstance(fg, dict):
-        cfg = fg.get("config")
-    if not isinstance(cfg, dict) and isinstance(details, dict):
-        fg = details.get("ForceGreats")
-        if isinstance(fg, dict):
-            cfg = fg.get("config")
-
-    if not isinstance(cfg, dict):
-        return []
-
-    out: list[int] = []
-    i = 1
-    while True:
-        key = f"NonFever{i}"
-        if key not in cfg:
-            break
-        try:
-            out.append(max(0, int(cfg.get(key) or 0)))
-        except Exception:
-            out.append(0)
-        i += 1
-    return out
-
-
 def _resolve_calc_song(
     *,
     song: str,
     cfg_dict: dict[str, Any],
     calc_song_cache: dict[str, dict | None],
-    difficulty_index: dict[str, dict[str, str]],
 ) -> tuple[dict | None, str]:
     if song in calc_song_cache:
         calc_song = calc_song_cache[song]
         return calc_song, "ok" if isinstance(calc_song, dict) else "song_file_missing"
 
-    fp = _song_file_from_name(song, difficulty_index)
+    fp = _song_file_from_name(PROJECT_ROOT, song)
     if fp is None:
         calc_song_cache[song] = None
         return None, "song_file_missing"
@@ -213,7 +159,6 @@ def _replay_base(
     ref_arrays: dict[str, Any] | None,
     cfg_dict: dict[str, Any],
     calc_song_cache: dict[str, dict | None],
-    difficulty_index: dict[str, dict[str, str]],
 ) -> ReplayResult:
     row = conn.execute(
         """
@@ -304,7 +249,6 @@ def _replay_base(
         song=winner.song,
         cfg_dict=cfg_dict,
         calc_song_cache=calc_song_cache,
-        difficulty_index=difficulty_index,
     )
     if not isinstance(calc_song, dict):
         return ReplayResult(
@@ -353,7 +297,6 @@ def _replay_fg(
     ref_arrays: dict[str, Any] | None,
     cfg_dict: dict[str, Any],
     calc_song_cache: dict[str, dict | None],
-    difficulty_index: dict[str, dict[str, str]],
 ) -> ReplayResult:
     row = conn.execute(
         """
@@ -447,19 +390,6 @@ def _replay_fg(
             reason="stats_missing",
         )
 
-    counts = _force_config_counts(force_details, details)
-    if not counts:
-        return ReplayResult(
-            song=winner.song,
-            source=winner.source,
-            loadout_hash=winner.loadout_hash,
-            persisted_score=persisted_score,
-            replay_score=0,
-            has_stats=True,
-            has_force_payload=True,
-            reason="force_config_missing",
-        )
-
     if not isinstance(ref_arrays, dict) or not ref_arrays:
         return ReplayResult(
             song=winner.song,
@@ -476,7 +406,6 @@ def _replay_fg(
         song=winner.song,
         cfg_dict=cfg_dict,
         calc_song_cache=calc_song_cache,
-        difficulty_index=difficulty_index,
     )
     if not isinstance(calc_song, dict):
         return ReplayResult(
@@ -491,8 +420,9 @@ def _replay_fg(
         )
 
     try:
-        replay = evaluate_force_greats_exact(stats, calc_song, ref_arrays, counts)
-        replay_score = int((replay or {}).get("final_score", 0) or 0) if isinstance(replay, dict) else 0
+        surface = require_response_surface(force_details)
+        replay = score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, surface)
+        replay_score = int(replay or 0)
     except Exception:
         return ReplayResult(
             song=winner.song,
@@ -526,7 +456,6 @@ def _replay_winner(
     ref_arrays: dict[str, Any] | None,
     cfg_dict: dict[str, Any],
     calc_song_cache: dict[str, dict | None],
-    difficulty_index: dict[str, dict[str, str]],
 ) -> ReplayResult:
     if winner.source == "fg":
         return _replay_fg(
@@ -536,7 +465,6 @@ def _replay_winner(
             ref_arrays=ref_arrays,
             cfg_dict=cfg_dict,
             calc_song_cache=calc_song_cache,
-            difficulty_index=difficulty_index,
         )
     return _replay_base(
         conn,
@@ -545,7 +473,6 @@ def _replay_winner(
         ref_arrays=ref_arrays,
         cfg_dict=cfg_dict,
         calc_song_cache=calc_song_cache,
-        difficulty_index=difficulty_index,
     )
 
 
@@ -571,7 +498,6 @@ def main() -> int:
     try:
         ref_arrays = _get_team_buff_ref_arrays_cached()
         cfg_dict: dict[str, Any] = {}
-        difficulty_index = {diff: _build_song_index_for_difficulty(diff) for diff in ("Easy", "Normal", "Hard")}
         calc_song_cache_cur: dict[str, dict | None] = {}
         calc_song_cache_leg: dict[str, dict | None] = {}
 
@@ -638,7 +564,6 @@ def main() -> int:
                 ref_arrays=ref_arrays,
                 cfg_dict=cfg_dict,
                 calc_song_cache=calc_song_cache_cur,
-                difficulty_index=difficulty_index,
             )
             leg_replay = _replay_winner(
                 leg,
@@ -647,7 +572,6 @@ def main() -> int:
                 ref_arrays=ref_arrays,
                 cfg_dict=cfg_dict,
                 calc_song_cache=calc_song_cache_leg,
-                difficulty_index=difficulty_index,
             )
 
             reason_counts[f"current:{cur_replay.reason}"] = reason_counts.get(f"current:{cur_replay.reason}", 0) + 1

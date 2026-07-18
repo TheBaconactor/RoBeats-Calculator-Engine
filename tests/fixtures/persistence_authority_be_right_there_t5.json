@@ -7,7 +7,7 @@
   "secondary_color": "Rush",
   "base_entry": {
     "loadout_hash": "8765cac99b15f1f714916f558c138098",
-    "expected_score": 45507369,
+    "expected_score": 47192170,
     "gear": [
       "Autumnal Adept's Bloom",
       "Legendary Rush Chieftan's Beads",
@@ -25,7 +25,7 @@
       "FT": 0,
       "FF": 13,
       "st": [
-        47,
+        107,
         65,
         74,
         54,
@@ -46,7 +46,7 @@
       "pc": "Rush",
       "sc": "Rush",
       "Stats": {
-        "Perfect Points": 47,
+        "Perfect Points": 107,
         "Combo Multiplier": 65,
         "Fever Multiplier": 74,
         "Fever Fill Rate": 54,

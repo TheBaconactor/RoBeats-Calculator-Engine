@@ -899,7 +899,7 @@ def evaluate_force_greats_exact(
     forced_counts=None,
 ) -> dict[str, Any] | None:
     """
-    CPU exact replay for a persisted ForceGreats config.
+    CPU exact evaluator for an explicit forced-count experiment.
 
     This preserves the existing ForceGreats timeline and penalty placement rules,
     but computes the visible score with double precision.

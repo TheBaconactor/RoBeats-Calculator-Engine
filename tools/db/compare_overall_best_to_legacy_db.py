@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -187,65 +186,6 @@ def _best_base_rescored_legacy(
     return {"best": best_score, "hash": best_hash}
 
 
-def _force_config_counts(force_details: dict, details: dict | None = None) -> list[int]:
-    forced = force_details.get("forced_counts")
-    if isinstance(forced, list) and forced:
-        try:
-            return [max(0, int(v or 0)) for v in forced]
-        except Exception:
-            pass
-
-    cfg = None
-    fg = force_details.get("ForceGreats")
-    if isinstance(fg, dict):
-        cfg = fg.get("config")
-    if not isinstance(cfg, dict) and isinstance(details, dict):
-        fg = details.get("ForceGreats")
-        if isinstance(fg, dict):
-            cfg = fg.get("config")
-
-    if not isinstance(cfg, dict):
-        return []
-
-    out: list[int] = []
-    i = 1
-    while True:
-        key = f"NonFever{i}"
-        if key not in cfg:
-            break
-        try:
-            out.append(max(0, int(cfg.get(key) or 0)))
-        except Exception:
-            out.append(0)
-        i += 1
-    return out
-
-
-def _forced_counts_to_fp_targets(
-    *,
-    forced_counts: list[int],
-    base_stats: dict,
-    ft_gems: int,
-    ff_gems: int,
-    scorer,
-    gem_scale_fever: int = 3,
-) -> list[int]:
-    if not forced_counts:
-        return []
-    ft_stat = int(base_stats.get("Fever Time", 0) or 0) + int(ft_gems) * int(gem_scale_fever)
-    ff_stat = int(base_stats.get("Fever Fill Rate", 0) or 0) + int(ff_gems) * int(gem_scale_fever)
-    non_fever_base, _fever_duration, _great_to_fill, raw_fill = scorer.get_fever_params(ft_stat, ff_stat)
-    if int(non_fever_base) <= 0:
-        return [0] * len(forced_counts)
-    base_ceil = math.ceil(float(raw_fill))
-    targets: list[int] = []
-    for forced in forced_counts:
-        k = max(0, int(forced or 0))
-        fp = math.ceil(float(raw_fill) + (float(k) * 0.5)) - int(base_ceil)
-        targets.append(max(0, int(fp)))
-    return targets
-
-
 def _best_fg_rescored_legacy(
     conn: sqlite3.Connection,
     *,
@@ -255,21 +195,22 @@ def _best_fg_rescored_legacy(
     cfg_dict: dict,
     ref_arrays: dict,
     calc_song_cache: dict[str, dict],
+    validate_legality: bool = False,
 ):
     """
-    Recompute legacy FG rows with the CPU exact replay scorer.
+    Recompute persisted FG rows from their canonical response surface.
 
-    Legacy FG payloads can be stale in the same way legacy base payloads can be:
-    the persisted `fg_score` may have been produced by an older timeline/config
-    ranking path. This pass keeps the persisted base stats, FT/FF gems, and
-    forced-Great config, then re-solves the remaining gem budget exactly.
+    The response surface is the replay authority because it represents Fever/Great
+    overlap. Forced-count configs cannot, so replaying them here can invent score
+    regressions for otherwise valid rows.
     """
     if not _table_exists(conn, "team_buff_fg_loadouts"):
         return {"best": 0, "hash": ""}
 
     from gear_optimizer.data.database import _base_details_from_force_payload, _unpack_stats_after_load
     from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.solver.scoring.exact_rescore import evaluate_force_greats_exact
+    from gear_optimizer.helpers.song_helpers.fg_payload import require_response_surface
+    from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 
     rows = conn.execute(
         """
@@ -289,6 +230,14 @@ def _best_fg_rescored_legacy(
             return {"best": 0, "hash": ""}
         calc_song = get_base_calc_song(str(fp), cfg_dict)
         calc_song_cache[song] = calc_song
+
+    legality_calc_song = None
+    if validate_legality:
+        from gear_optimizer.data.song_io import clone_calc_song
+        from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+
+        legality_calc_song = clone_calc_song(calc_song)
+        apply_timing_envelope(legality_calc_song, mode="perfect_window")
 
     best_score = 0
     best_hash = ""
@@ -315,13 +264,19 @@ def _best_fg_rescored_legacy(
         stats = fg_details.get("Stats") if isinstance(fg_details, dict) else None
         if not isinstance(stats, dict) or not stats:
             continue
-        forced_counts = _force_config_counts(force_details, details)
-        if not forced_counts:
+        if legality_calc_song is not None:
+            from tools.dev.audit_loadout_legality import audit_fg_loadout
+
+            try:
+                if audit_fg_loadout(force_details, legality_calc_song, ref_arrays):
+                    continue
+            except (KeyError, TypeError, ValueError):
+                continue
+        surface = require_response_surface(force_details)
+        replay = score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, surface)
+        if replay is None:
             continue
-        replay = evaluate_force_greats_exact(stats, calc_song, ref_arrays, forced_counts)
-        if not isinstance(replay, dict):
-            continue
-        si = int(replay.get("final_score", 0) or 0)
+        si = int(replay)
         if si > best_score:
             best_score = si
             best_hash = str(loadout_hash)
@@ -368,6 +323,7 @@ def _best_fg_replayed(
         cfg_dict=cfg_dict,
         ref_arrays=ref_arrays,
         calc_song_cache=calc_song_cache,
+        validate_legality=True,
     )
 
 

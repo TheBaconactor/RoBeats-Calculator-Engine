@@ -3,16 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from gear_optimizer.core.utils import safe_int
-
-
-def _force_greats_config_total(data: dict[str, Any]) -> int:
-    fg_meta = data.get("ForceGreats") or {}
-    if not isinstance(fg_meta, dict):
-        return 0
-    cfg = fg_meta.get("config") or {}
-    if not isinstance(cfg, dict):
-        return 0
-    return sum(int(value) if isinstance(value, (int, float)) else 0 for value in cfg.values())
+from gear_optimizer.helpers.song_helpers.fg_payload import has_valid_fg_payload, require_response_surface
 
 
 def best_fg_improving_score_from_variants(variants: list[dict[str, Any]] | None) -> int:
@@ -23,7 +14,7 @@ def best_fg_improving_score_from_variants(variants: list[dict[str, Any]] | None)
         data = variant.get("data") or {}
         if not isinstance(data, dict):
             data = {}
-        if _force_greats_config_total(data) <= 0:
+        if not has_valid_fg_payload(data):
             continue
 
         fg_score = safe_int(variant.get("fg_score", 0))
@@ -47,7 +38,7 @@ def best_fg_improving_score_from_persist_entries(entries: list[dict[str, Any]] |
         fg_score = safe_int(entry.get("fg_score", 0))
         if fg_score <= score:
             continue
-        if not entry.get("force"):
+        if not has_valid_fg_payload(entry.get("force")):
             continue
         if fg_score > best:
             best = fg_score
@@ -65,6 +56,12 @@ def fg_variants_from_persist_entries(entries: list[dict[str, Any]] | None) -> li
         fg_score = safe_int(entry.get("fg_score", 0))
         base_score = safe_int(entry.get("score", 0))
         data = dict(details)
+        force = entry.get("force")
+        if has_valid_fg_payload(force):
+            data["response_surface"] = list(require_response_surface(force))
+            force_meta = force.get("ForceGreats") if isinstance(force, dict) else None
+            if isinstance(force_meta, dict):
+                data["ForceGreats"] = dict(force_meta)
         data["Score"] = fg_score or base_score
         variants.append(
             {

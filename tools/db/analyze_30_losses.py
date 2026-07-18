@@ -7,7 +7,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.data.database import _unpack_stats_after_load, _force_payload_base_score
 from gear_optimizer.data.migrations import _table_exists
-from gear_optimizer.helpers.song_helpers.fg_config import extract_fg_config, has_valid_fg_config
 
 team_buff = "T5"
 

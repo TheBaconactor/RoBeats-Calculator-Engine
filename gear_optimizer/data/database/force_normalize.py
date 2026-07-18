@@ -11,6 +11,14 @@ from ...core.team_buff import team_buff_effect
 
 logger = logging.getLogger(__name__)
 
+_CORE_SCORE_STAT_KEYS = (
+    "Perfect Points",
+    "Combo Multiplier",
+    "Fever Multiplier",
+    "Fever Fill Rate",
+    "Fever Time",
+)
+
 
 def _get_overflow_from_details(details):
     """
@@ -131,7 +139,7 @@ def _force_payload_base_score(force_data: Any) -> int:
 def _base_details_from_force_payload(base_details: Any, force_data: Any) -> dict:
     """
     Build the FG table details payload that explains the FG row's paired `score`.
-    `force_details_json` owns the FG replay surface (`fg_score` plus ForceGreats config).
+    `force_details_json` owns the FG replay surface (`fg_score` plus response surface).
     The FG row's `details_json` owns the paired base replay surface for the same FG
     allocation, so it must be derived from the force payload's BaseStats+gems instead
     of from the loadout's separate best-base winner.
@@ -178,7 +186,7 @@ def _compact_force_details_for_storage(force_data: Any) -> Any:
     """
     Return the raw FG payload without fields already persisted in FG details.
     `force_details_json` must keep the replay surface: BaseStats, GemCounts,
-    FT/FF, selected element, ForceGreats config, and score.
+    FT/FF, selected element, response surface, and score.
 
     Storage contract: on disk, `BaseStats` IS the post-gem visible stats row — the
     solved gem allocation is already baked into it. The reader
@@ -209,6 +217,58 @@ def _compact_force_details_for_storage(force_data: Any) -> Any:
                 out.pop("score", None)
         except Exception as e:
             logger.warning(f"database:_compact_force_details_for_storage: {e}")
+    return out
+
+
+def _align_force_stats_with_persisted_loadout(force_data: Any, details: Any) -> Any:
+    """Make the FG replay payload describe the same canonical mini representatives as the row.
+
+    Mini equivalence may replace a solved mini with a deterministic display representative.
+    Equivalent variants can differ only in off-song elemental stats, so the score remains exact,
+    but persisting the solved variant's full stat row beside the representative names makes the
+    displayed loadout internally inconsistent.  Relevant score dimensions must remain identical;
+    only then may the canonical representative's complete stat row replace the FG payload row.
+    """
+    if not isinstance(force_data, dict):
+        return force_data
+    if not isinstance(details, dict):
+        raise ValueError("FG persistence requires canonical loadout details")
+
+    canonical = details.get("Stats")
+    if not isinstance(canonical, dict) or not canonical:
+        raise ValueError("FG persistence requires canonical loadout Stats")
+
+    from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
+
+    solved = read_visible_stats(force_data)
+    if not solved:
+        raise ValueError("FG persistence requires replayable force Stats")
+
+    relevant = list(_CORE_SCORE_STAT_KEYS)
+    for key in (
+        details.get("PrimaryColor") or details.get("Primary Color"),
+        details.get("SecondaryColor") or details.get("Secondary Color"),
+        details.get("SelectedElement") or details.get("Selected Element"),
+    ):
+        name = str(key or "").strip()
+        if name and name not in relevant:
+            relevant.append(name)
+
+    changed_relevant = [
+        key
+        for key in relevant
+        if int(solved.get(key, 0) or 0) != int(canonical.get(key, 0) or 0)
+    ]
+    if changed_relevant:
+        raise ValueError(
+            "Canonical mini representatives changed FG scoring Stats: "
+            + ", ".join(changed_relevant)
+        )
+
+    out = dict(force_data)
+    out["Stats"] = {str(key): int(value or 0) for key, value in canonical.items()}
+    if isinstance(out.get("BaseStats"), dict):
+        out["BaseStats"] = dict(out["Stats"])
     return out
 
 

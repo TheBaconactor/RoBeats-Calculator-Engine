@@ -27,7 +27,7 @@ def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_b
             "gear": list(loadout_gear),
             "minis": list(loadout_minis),
             "details": {"marker": "fg"},
-            "force": {"ForceGreats": {"config": {"NonFever1": 1, "NonFever2": 0}}},
+            "force": {"response_surface": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]},
         },
     }
 
@@ -273,7 +273,7 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
             "minis": list(minis),
             "details": {"marker": "stale", "Stats": {"Rush": 2}},
             "fg_score": 130,
-            "force": {"ForceGreats": {"config": {"NonFever1": 1, "NonFever2": 0}}},
+            "force": {"response_surface": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]},
         }
     }
 

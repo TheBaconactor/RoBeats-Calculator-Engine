@@ -82,6 +82,13 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Persisted ForceGreats count/config compatibility was removed from payload materialization.
+    # The changed response-builder field was only a redundant option-dict mirror, and note_graph's
+    # changed branch was only an old persisted-trace fallback. Neither value is packed into V31
+    # frontier_meta or either surface sidecar, so the complete Issue #161 pool remains byte-exact.
+    "fg-response-frontier-visible-first-v31+logic-41f36c4647fe": (
+        "fg-response-frontier-visible-first-v31+logic-3e63488abfec",
+    ),
     # Legacy cleanup deleted the orphaned prepare_perfect_timing_envelope wrapper. The canonical
     # envelope builders remain live and the 132-trace byte oracle proves producer output unchanged.
     "fg-response-frontier-visible-first-v31+logic-31fb6828e146": (

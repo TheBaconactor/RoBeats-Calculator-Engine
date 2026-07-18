@@ -68,10 +68,8 @@ def dump_force(song_name, loadout_hash, conn, label):
             gems = force.get("GemCounts", {})
             print(f"    Gems: PP={gems.get('Perfect Points')} CM={gems.get('Combo Multiplier')} "
                   f"FM={gems.get('Fever Multiplier')} Elem={gems.get('Element')}")
-            fg_cfg = (force.get("ForceGreats") or {}).get("config") or {}
-            print(f"    FG config: {json.dumps(fg_cfg)}")
-            forced = force.get("forced_counts") or (force.get("ForceGreats") or {}).get("forced_counts")
-            print(f"    Forced counts: {forced}")
+            surface = force.get("response_surface") or (force.get("ForceGreats") or {}).get("response_surface")
+            print(f"    Response surface: {json.dumps(surface)}")
             if isinstance(details, dict) and details.get("Stats"):
                 stats = details["Stats"]
                 print(f"    Details Stats: PP={stats.get('Perfect Points')} CM={stats.get('Combo Multiplier')} "

@@ -1,6 +1,9 @@
 import pytest
 
 
+_FG_SURFACE = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+
+
 def _noop_status_emit(_msg: str) -> None:
     return
 
@@ -26,7 +29,8 @@ def test_results_printer_fg_debug_uses_wrapper_fg_score_for_cached_entries(capsy
             "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
             "Stats": {},
             "SelectedElement": "Rush",
-            "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 999},
+            "response_surface": _FG_SURFACE,
+            "ForceGreats": {"final_score": 999},
         },
         "gear": [{"Name": "G1", "type": "Hat"}],
         "minis": [{"Name": "M1"}],
@@ -71,7 +75,8 @@ def test_results_printer_fg_debug_uses_data_score_when_present(capsys):
             "FF": 2,
             "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
             "Selected Element": "Rush",
-            "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 777},
+            "response_surface": _FG_SURFACE,
+            "ForceGreats": {"final_score": 777},
         },
         "gear": [{"Name": "G1", "type": "Hat"}],
         "minis": [{"Name": "M1"}],
@@ -138,7 +143,8 @@ def test_results_printer_fg_debug_falls_back_to_force_greats_final_score(capsys)
             "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
             "Stats": {},
             "SelectedElement": "Rush",
-            "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 999},
+            "response_surface": _FG_SURFACE,
+            "ForceGreats": {"final_score": 999},
         },
         "gear": [{"Name": "G1", "type": "Hat"}],
         "minis": [{"Name": "M1"}],
@@ -166,11 +172,11 @@ def test_results_printer_fg_debug_falls_back_to_force_greats_final_score(capsys)
     assert "\nTotal Score: 999\n" in out
 
 
-def test_results_printer_prefers_nonzero_fg_config_over_zero_config(capsys):
+def test_results_printer_ignores_legacy_config_only_variant(capsys):
     """
     Regression test:
-    When FG variants include a "no-op" config (all zeros), prefer showing the
-    best variant with a non-zero FG config to match DB/persistence behavior.
+    A retired config-only payload is not FG authority. Prefer the variant carrying
+    the exact response surface even when the legacy payload has a higher score.
     """
     from gear_optimizer.helpers.song_helpers.results_printer import print_results
 
@@ -192,14 +198,15 @@ def test_results_printer_prefers_nonzero_fg_config_over_zero_config(capsys):
         "fg_score": 100,
     }
 
-    nonzero_cfg_variant = {
+    response_surface_variant = {
         "data": {
             "Score": 90,
             "FT": 0,
             "FF": 0,
             "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
             "Selected Element": "Rush",
-            "ForceGreats": {"config": {"NonFever1": 3, "NonFever2": 0}, "final_score": 90},
+            "response_surface": _FG_SURFACE,
+            "ForceGreats": {"final_score": 90},
         },
         "gear": [{"Name": "G2", "type": "Hat"}],
         "minis": [{"Name": "M2"}],
@@ -214,7 +221,7 @@ def test_results_printer_prefers_nonzero_fg_config_over_zero_config(capsys):
         best_minis=[],
         current_gear_list=[],
         current_mini_list=[],
-        fg_variants=[zero_cfg_variant, nonzero_cfg_variant],
+        fg_variants=[zero_cfg_variant, response_surface_variant],
         status_emit_fn=_noop_status_emit,
         fg_debug=True,
         ref_arrays={"dummy": 1},
@@ -224,15 +231,14 @@ def test_results_printer_prefers_nonzero_fg_config_over_zero_config(capsys):
 
     out = capsys.readouterr().out
     assert "\nTotal Score: 90\n" in out
-    assert "FG Config: {'NonFever1': 3, 'NonFever2': 0}" in out
-    assert "FG Config: {'NonFever1': 0, 'NonFever2': 0}" not in out
+    assert "FG Config:" not in out
 
 
 def test_results_printer_includes_db_cached_fg_variants_for_loadout_printing(capsys):
     """
     Regression test:
     When the best FG variant comes from a DB-cached entry (i.e. `_is_ga` is False),
-    the console output should still print the ForceGreats loadout + config.
+    the console output should still print the ForceGreats loadout.
     """
     from gear_optimizer.helpers.song_helpers.results_printer import print_results
 
@@ -245,7 +251,8 @@ def test_results_printer_includes_db_cached_fg_variants_for_loadout_printing(cap
             "FF": 0,
             "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
             "Selected Element": "Rush",
-            "ForceGreats": {"config": {"NonFever2": 2}, "final_score": 44612857},
+            "response_surface": _FG_SURFACE,
+            "ForceGreats": {"final_score": 44612857},
         },
         "gear": ["G1"],
         "minis": ["M1"],
@@ -270,7 +277,7 @@ def test_results_printer_includes_db_cached_fg_variants_for_loadout_printing(cap
     out = capsys.readouterr().out
     assert "Best FG Score Found: 44612857" in out
     assert "[Best Gear Loadout (ForceGreats)]" in out
-    assert "FG Config: {'NonFever2': 2}" in out
+    assert "FG Config:" not in out
 
 
 def test_results_printer_best_base_score_floors_to_db_record_when_higher(capsys):
@@ -330,7 +337,8 @@ def test_results_printer_best_fg_score_uses_variants_only(capsys):
             "FF": 0,
             "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
             "Selected Element": "Rush",
-            "ForceGreats": {"config": {"NonFever1": 3, "NonFever2": 0}, "final_score": 90},
+            "response_surface": _FG_SURFACE,
+            "ForceGreats": {"final_score": 90},
         },
         "gear": [{"Name": "G2", "type": "Hat"}],
         "minis": [{"Name": "M2"}],

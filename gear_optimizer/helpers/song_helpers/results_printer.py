@@ -1,7 +1,7 @@
 import logging
 from ...core.gem_defs import element_gem_count
 from ...core.utils import get_selected_element, safe_int
-from .fg_config import has_valid_fg_config
+from .fg_payload import has_valid_fg_payload
 
 
 
@@ -104,12 +104,12 @@ def print_results(
         #
         # Important: `fg_variants` can include DB-cached FG results (source="db") as well as
         # GA-origin results (source="ga"). Filtering to GA-only can hide the actual persisted
-        # best FG loadout (and its config) even when `db_best_fg_score` is correctly printed.
+        # best FG loadout even when `db_best_fg_score` is correctly printed.
         candidates: list[dict] = []
         for v in fg_variants or []:
             if not isinstance(v, dict):
                 continue
-            if not has_valid_fg_config(v):
+            if not has_valid_fg_payload(v):
                 continue
             candidates.append(v)
         if candidates:
@@ -121,7 +121,7 @@ def print_results(
             best_fg_entry = max(candidates, key=_fg_pick_key)
             best_fg_score_found = _extract_final_score(best_fg_entry)
 
-    # When ForceGreats is deferred (or disabled by config), `fg_variants` can be empty even if the
+    # When ForceGreats is deferred, `fg_variants` can be empty even if the
     # DB already contains a valid improving FG record. If the caller provides `db_best_fg_score`,
     # use it as a floor so we don't misleadingly print FG=0.
     fg_score_to_print = int(best_fg_score_found or 0)
@@ -183,18 +183,6 @@ def _is_same_variant(v1, v2):
             return str(item.get("Name", "") or "")
         return str(item) if item is not None else ""
 
-    # helper to clean zero configs or empty ones
-    def clean_cfg(c):
-        if not c:
-            return {}
-        return {str(k): int(v) for k, v in c.items() if int(v) > 0}
-
-    # Compare FG Config first
-    c1 = d1.get("ForceGreats", {}).get("config", {})
-    c2 = d2.get("ForceGreats", {}).get("config", {})
-    if clean_cfg(c1) != clean_cfg(c2):
-        return False
-
     # Compare Score (FG score vs Base score)
     # Note: d2 usually has "fg_score" if it's an FG-processed entry
     s1 = int(round(d1.get("Score", 0)))
@@ -253,24 +241,6 @@ def _print_loadout_section(title, variant):
             print(f"{m.get('Name', 'Unknown')}")
         else:
             print(f"{str(m)}")
-
-    if data.get("ForceGreats"):
-        fg_meta = data.get("ForceGreats", {})
-        config = fg_meta.get("config", {}) or {}
-        forced_total = 0
-        if isinstance(config, dict):
-            for v in config.values():
-                try:
-                    forced_total += int(v)
-                except Exception as e:
-                    logger.debug(f"results_printer:_print_loadout_section: {e}")
-                    continue
-
-        if forced_total > 0:
-            print(f"FG Config: {config}")
-        else:
-            # Make it explicit when FG ran but the optimal configuration is "no forced greats".
-            print("FG Config: (none)")
 
     _print_gem_allocation(data)
 

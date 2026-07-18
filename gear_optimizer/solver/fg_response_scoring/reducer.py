@@ -10,7 +10,6 @@ from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
-from gear_optimizer.solver.scoring.stats_scoring import _force_greats_counts_to_dict
 from gear_optimizer.solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     reconstruct_force_greats_response_trace,
@@ -61,9 +60,9 @@ def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_f
         a = int(row["activation_index"])
         if not (0 <= a < n):
             continue
-        section_start = max(0, int(row.get("forced_start_index", 0)))
-        forced_start = max(0, int(row.get("forced_run_start_index", section_start)))
-        forced_count = max(0, int(row.get("forced_run_count", row.get("forced_prefix_count", 0))))
+        section_start = max(0, int(row["forced_start_index"]))
+        forced_start = max(0, int(row["forced_run_start_index"]))
+        forced_count = max(0, int(row["forced_run_count"]))
         forced_end = min(n, forced_start + forced_count)
         is_great = np.zeros((n,), dtype=np.bool_)
         if forced_end > forced_start:
@@ -205,7 +204,6 @@ def materialize_force_payload_from_response_frontier(
             raise ValueError("ForceGreats response frontier forced_counts do not match the reconstructed trace")
     else:
         forced_counts = trace_counts
-    config = _force_greats_counts_to_dict(list(forced_counts), max(2, len(forced_counts)))
     paired_base = safe_int(paired_base_score, 0)
     if paired_base <= 0:
         raise ValueError("ForceGreats response frontier is missing paired source base score.")
@@ -223,7 +221,6 @@ def materialize_force_payload_from_response_frontier(
     payload["GemCounts"] = dict(result.gem_counts)
     payload["FT"] = int(result.ft)
     payload["FF"] = int(result.ff)
-    payload["forced_counts"] = list(forced_counts)
     payload["response_surface"] = [
         int(result.surface.fever0),
         int(result.surface.fever1),
@@ -238,7 +235,6 @@ def materialize_force_payload_from_response_frontier(
         int(result.surface.body_fever_great),
     ]
     payload["ForceGreats"] = {
-        "config": config,
         "final_score": int(final_score),
         # Fever-window parameters of this surface (the server's feverFillDenom and the fever
         # duration in seconds). Persisted so the legality audit (tools/dev/audit_loadout_legality.py)

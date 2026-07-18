@@ -413,7 +413,7 @@ def _hit_window_fields(*, hit: float, lo: float, hi: float, chart_time: float) -
 def _forced_fields(*, section_start: int, great_start: int, great_count: int, n: int) -> dict[str, int]:
     """Forced-Great fields for one response-surface option.
 
-    Two genuinely distinct concepts are recorded, plus one persisted-DB compatibility mirror:
+    Two genuinely distinct concepts are recorded:
 
     * ``forced_run_start_index`` / ``forced_run_count`` -- the canonical Great RUN (start index +
       length). This is the one true encoding every freshly reconstructed reader consumes.
@@ -421,19 +421,11 @@ def _forced_fields(*, section_start: int, great_start: int, great_count: int, n:
       use it distinctly as the reachability section boundary (``reducer._assert_trace_hit_time_
       reachable``, ``tools/dev/audit_loadout_legality.py``). It coincides with the run start only
       when the run is a section-start prefix.
-    * ``forced_prefix_count`` -- a persisted-DB compatibility mirror of ``forced_run_count`` for the
-      section-start-prefix case (0 for an offset run). Never read for its own meaning; required only
-      by the persisted-trace consumers (``audit_loadout_legality`` / oracle replay) and used as the
-      old-row fallback the DB-decode boundary (``fg_response_scoring.note_graph``) translates from.
-      Kept so pre-run-field DB rows keep decoding; it is not a dual-write of the run count for fresh
-      consumers.
     """
     great_start_i = max(0, min(int(great_start), int(n)))
     great_count_i = max(0, min(int(great_count), int(n) - int(great_start_i)))
-    prefix_count = int(great_count_i) if int(great_start_i) == int(section_start) else 0
     return {
         "forced_start_index": int(section_start),
-        "forced_prefix_count": int(prefix_count),
         "forced_run_start_index": int(great_start_i),
         "forced_run_count": int(great_count_i),
     }
@@ -1152,7 +1144,6 @@ def _option_with_witness(
             chart_time=float(w["chart_time"]),
         ),
         "forced_start_index": option["forced_start_index"],
-        "forced_prefix_count": option["forced_prefix_count"],
         "forced_run_start_index": option["forced_run_start_index"],
         "forced_run_count": option["forced_run_count"],
         "fever_end_index": option["fever_end_index"],

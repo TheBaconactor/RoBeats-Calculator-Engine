@@ -38,9 +38,9 @@ def _exact_force_greats_note_graph(
     for source in frontier_trace:
         row = dict(source)
         activation = int(row["activation_index"])
-        section_start = int(row.get("forced_start_index", 0))
-        forced_start = int(row.get("forced_run_start_index", section_start))
-        forced_count = int(row.get("forced_run_count", row.get("forced_prefix_count", 0)))
+        section_start = int(row["forced_start_index"])
+        forced_start = int(row["forced_run_start_index"])
+        forced_count = int(row["forced_run_count"])
         order = tuple(range(section_start, activation))
         great_count = sum(
             1 for index in order if forced_start <= int(index) < forced_start + forced_count
@@ -353,7 +353,7 @@ def test_fg_note_graph_body_counts_synthetic():
     # Case 1: head forced-Greats + a body fever window (no overlap).
     trace1 = [{
         "section": 1, "activation_index": 100, "fever_end_index": 105,
-        "forced_start_index": 0, "forced_prefix_count": 3,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 3,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
     }]
     g1 = _exact_force_greats_note_graph(frontier_trace=trace1, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
@@ -368,7 +368,7 @@ def test_fg_note_graph_body_counts_synthetic():
     # Case 2: body activation Late-Great WITNESS -> that body note is both fever AND great.
     trace2 = [{
         "section": 1, "activation_index": 102, "fever_end_index": 108,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "late_great", "activation_hit_offset_ms": 41.0,
     }]
     g2 = _exact_force_greats_note_graph(frontier_trace=trace2, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
@@ -384,7 +384,7 @@ def test_fg_note_graph_body_counts_synthetic():
     # Case 3: optimized Perfect-window activation WITNESS -> delayed, but not Great.
     trace_perfect = [{
         "section": 1, "activation_index": 12, "fever_end_index": 16,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
         "fever_start_source": "perfect_window",
     }]
@@ -399,11 +399,11 @@ def test_fg_note_graph_body_counts_synthetic():
     assert witp["note_result"] == "Perfect"
     assert witp["delta_ms"] == 40.0
 
-    # Case 3b: non-prefix forced-Great run. The legacy prefix fields say "none"; the load-bearing
-    # run fields place Greats at {2, 3}, with idx3 also carrying the late-Great witness.
+    # Case 3b: non-prefix forced-Great run. The run fields place Greats at {2, 3},
+    # with idx3 also carrying the late-Great witness.
     trace_run = [{
         "section": 1, "activation_index": 3, "fever_end_index": 6,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0,
         "forced_run_start_index": 2, "forced_run_count": 2,
         "activation_judgment": "late_great", "activation_hit_offset_ms": 41.0,
     }]
@@ -424,10 +424,10 @@ def test_fg_note_graph_body_counts_synthetic():
     # Case 4: multi-section (two fever windows), head fever + body fever.
     trace3 = [
         {"section": 1, "activation_index": 50, "fever_end_index": 56,
-         "forced_start_index": 0, "forced_prefix_count": 2,
+         "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 2,
          "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0},
         {"section": 2, "activation_index": 110, "fever_end_index": 116,
-         "forced_start_index": 100, "forced_prefix_count": 4,
+         "forced_start_index": 100, "forced_run_start_index": 100, "forced_run_count": 4,
          "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0},
     ]
     g3 = _exact_force_greats_note_graph(frontier_trace=trace3, total_notes=n, timestamps=ts, note_types=np.ones(n, dtype=np.int16))
@@ -451,7 +451,8 @@ def test_fg_note_graph_same_time_head_great_selector_preserves_ramp_order():
             "activation_index": 6,
             "fever_end_index": 8,
             "forced_start_index": 2,
-            "forced_prefix_count": 1,
+            "forced_run_start_index": 2,
+            "forced_run_count": 1,
             "activation_judgment": "perfect",
             "activation_hit_offset_ms": 0.0,
         }
@@ -761,7 +762,8 @@ def test_fg_note_graph_delays_following_perfect_to_preserve_late_activation_orde
             "activation_index": 2,
             "fever_end_index": 6,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 181.0,
         }
@@ -794,7 +796,8 @@ def test_fg_note_graph_centers_score_parity_activation_window():
             "activation_index": 0,
             "fever_end_index": 4,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 135.0,
             "activation_hit_offset_lower_ms": 80.0,
@@ -829,7 +832,8 @@ def test_fg_note_graph_decodes_float32_window_on_engine_ms_lattice():
             "activation_index": 0,
             "fever_end_index": 1,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "perfect",
             "activation_ms": float(timestamp) * 1000.0,
             "activation_hit_ms": absolute_hit_ms,
@@ -863,7 +867,8 @@ def test_fg_note_graph_centers_hold_head_activation_with_early_great_tail():
         "activation_index": 0,
         "fever_end_index": 2,
         "forced_start_index": 0,
-        "forced_prefix_count": 0,
+        "forced_run_start_index": 0,
+        "forced_run_count": 0,
         "activation_judgment": "perfect",
         "activation_hit_offset_ms": 20.0,
         "activation_hit_offset_lower_ms": 0.0,
@@ -897,7 +902,8 @@ def test_fg_note_graph_caps_activation_edge_to_preserve_following_perfect():
             "activation_index": 0,
             "fever_end_index": 3,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 120.0,
             "activation_hit_offset_lower_ms": 80.0,
@@ -934,7 +940,8 @@ def test_fg_note_graph_rejects_activation_edge_when_label_order_is_impossible():
             "activation_index": 0,
             "fever_end_index": 2,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 120.0,
             "activation_hit_offset_lower_ms": 80.0,
@@ -961,7 +968,8 @@ def test_fg_note_graph_exact_order_uses_inclusive_float32_label_boundary():
             "activation_index": 0,
             "fever_end_index": 2,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 165.00091552734375,
             "activation_hit_offset_lower_ms": 164.9932861328125,
@@ -1006,7 +1014,8 @@ def test_fg_note_graph_preserves_fractional_window_near_integer_boundary():
             "activation_index": 0,
             "fever_end_index": 2,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 166.96929931640625,
             "activation_hit_offset_lower_ms": 166.93878173828125,
@@ -1054,7 +1063,8 @@ def test_fg_note_graph_uses_exact_later_preactivation_witness_before_activation(
             "activation_index": 0,
             "fever_end_index": 2,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 120.0,
             "activation_hit_offset_lower_ms": 80.0,
@@ -1097,7 +1107,8 @@ def test_fg_note_graph_materializes_all_section_labels_before_activation_caps():
             "activation_index": 0,
             "fever_end_index": 2,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "late_great",
             "activation_hit_offset_ms": 120.0,
             "activation_hit_offset_lower_ms": 80.0,
@@ -1120,7 +1131,8 @@ def test_fg_note_graph_materializes_all_section_labels_before_activation_caps():
             "activation_index": 2,
             "fever_end_index": 3,
             "forced_start_index": 1,
-            "forced_prefix_count": 1,
+            "forced_run_start_index": 1,
+            "forced_run_count": 1,
             "activation_judgment": "perfect",
             "activation_hit_offset_ms": 0.0,
             "fever_window_end_ms": 31000.0,
@@ -1158,11 +1170,11 @@ def test_fg_note_graph_marks_fever_end_witness():
     ts = (np.arange(n) * 0.1).astype(np.float32)
     trace = [
         {"section": 1, "activation_index": 50, "fever_end_index": 56,
-         "forced_start_index": 0, "forced_prefix_count": 0,
+         "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
          "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
          "fever_window_end_ms": 5590.0},
         {"section": 2, "activation_index": 110, "fever_end_index": 116,
-         "forced_start_index": 100, "forced_prefix_count": 0,
+         "forced_start_index": 100, "forced_run_start_index": 100, "forced_run_count": 0,
          "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
          "fever_window_end_ms": 11590.0},
     ]
@@ -1191,7 +1203,7 @@ def test_note_graph_shows_endpoint_early_hit_on_pulled_in_note():
     ts = np.asarray([0.0, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0, 1.245, 1.5, 1.7], dtype=np.float32)
     fg_trace = [{
         "section": 1, "activation_index": 2, "fever_end_index": 8,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
         "fever_window_end_ms": 1240.0,
     }]
@@ -1237,7 +1249,7 @@ def test_endpoint_early_delta_never_below_legal_lower_bound():
     ts = np.asarray([0.0, 0.1, 0.2, 1.0195, 1.5], dtype=np.float32)
     fg_trace = [{
         "section": 1, "activation_index": 0, "fever_end_index": 4,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
         "fever_window_end_ms": 1000.0,
     }]
@@ -1295,7 +1307,7 @@ def test_endpoint_early_delta_is_largest_cushion_center():
     legal_low = -39.0  # held tail (BUG-1: -40 edge is exclusive; earliest legal is -39)
     fg_trace = [{
         "section": 1, "activation_index": 2, "fever_end_index": 6,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
         "fever_window_end_ms": cutoff,
     }]
@@ -1329,7 +1341,7 @@ def test_endpoint_early_delta_is_largest_cushion_center():
     ts2 = np.asarray([0.0, 0.1, 0.2, 0.3, 1.0, 1.405, 1.408], dtype=np.float32)
     fg_trace2 = [{
         "section": 1, "activation_index": 2, "fever_end_index": 7,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 40.0,
         "fever_window_end_ms": 1400.0,
     }]
@@ -1363,7 +1375,7 @@ def test_endpoint_early_degenerate_clamp_is_monotonic():
     cutoff = 1000.0
     trace = [{
         "section": 1, "activation_index": 0, "fever_end_index": 4,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
         "fever_window_end_ms": cutoff,
     }]
@@ -1568,7 +1580,7 @@ def test_fever_end_cluster_rejects_impossible_plus_560_ms():
     ts = np.asarray([0.0, 1.0, 1.2, 1.4, 1.6], dtype=np.float32)
     trace = [{
         "section": 1, "activation_index": 1, "fever_end_index": 4,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
         "fever_window_end_ms": 1560.0,
     }]
@@ -1590,7 +1602,7 @@ def test_fever_end_cluster_barely_inside_decoy_delta():
     ts = np.asarray([0.0, 61.167, 61.339, 61.339], dtype=np.float32)
     trace = [{
         "section": 1, "activation_index": 0, "fever_end_index": 4,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
         "fever_window_end_ms": cutoff,
     }]
@@ -1624,7 +1636,8 @@ def test_note_graph_displays_early_great_fever_end_tail():
             "activation_index": 0,
             "fever_end_index": 2,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "perfect",
             "activation_hit_offset_ms": 40.0,
             "fever_window_end_ms": cutoff,
@@ -1650,7 +1663,8 @@ def test_early_great_tail_accepts_submillisecond_strict_cutoff_interval():
         "activation_index": 0,
         "fever_end_index": 2,
         "forced_start_index": 0,
-        "forced_prefix_count": 0,
+        "forced_run_start_index": 0,
+        "forced_run_count": 0,
         "activation_judgment": "perfect",
         "activation_hit_offset_ms": 0.0,
         "fever_window_end_ms": cutoff,
@@ -1684,7 +1698,8 @@ def test_note_graph_displays_early_great_fever_end_tail_held_tail():
             "activation_index": 0,
             "fever_end_index": 2,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "perfect",
             "activation_hit_offset_ms": 40.0,
             "fever_window_end_ms": cutoff,
@@ -1715,7 +1730,8 @@ def test_note_graph_early_great_fever_end_fails_loud_beyond_floor():
             "activation_index": 0,
             "fever_end_index": 2,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "perfect",
             "activation_hit_offset_ms": 40.0,
             "fever_window_end_ms": float(cutoff),
@@ -1742,7 +1758,8 @@ def test_early_great_tail_uses_prior_perfect_endpoint_delta_for_monotonicity():
             "activation_index": 0,
             "fever_end_index": 3,
             "forced_start_index": 0,
-            "forced_prefix_count": 0,
+            "forced_run_start_index": 0,
+            "forced_run_count": 0,
             "activation_judgment": "perfect",
             "activation_hit_offset_ms": 40.0,
             "fever_window_end_ms": cutoff,
@@ -1782,7 +1799,7 @@ def test_zero_ms_note_graph_does_not_apply_fever_end_guidance():
     ts = np.asarray([0.0, 61.167, 61.339, 61.339], dtype=np.float32)
     trace_with_tight_fever_end = [{
         "section": 1, "activation_index": 0, "fever_start_note_index": 0, "fever_end_index": 4,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
         "fever_window_end_ms": cutoff,
     }]
@@ -1829,7 +1846,7 @@ def test_fever_end_cluster_same_chart_time_shared_delta():
     ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.220, 1.220, 1.4, 1.6], dtype=np.float32)
     trace = [{
         "section": 1, "activation_index": 3, "fever_end_index": 6,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
         "fever_window_end_ms": cutoff,
     }]
@@ -1849,7 +1866,7 @@ def test_fever_end_cluster_held_tail_intersection():
     ts = np.asarray([0.0, 0.2, 0.4, 0.6, 1.220, 1.220, 1.5], dtype=np.float32)
     trace = [{
         "section": 1, "activation_index": 3, "fever_end_index": 6,
-        "forced_start_index": 0, "forced_prefix_count": 0,
+        "forced_start_index": 0, "forced_run_start_index": 0, "forced_run_count": 0,
         "activation_judgment": "perfect", "activation_hit_offset_ms": 0.0,
         "fever_window_end_ms": cutoff,
     }]
@@ -2237,7 +2254,6 @@ def test_physical_replay_validates_exact_surface_and_event_time_fever() -> None:
         "activation_index": 0,
         "fever_end_index": 2,
         "forced_start_index": 0,
-        "forced_prefix_count": 0,
         "forced_run_start_index": 0,
         "forced_run_count": 0,
         "activation_judgment": "perfect",
@@ -2292,7 +2308,6 @@ def test_physical_replay_preserves_exact_body_cross_lane_prefix_swap() -> None:
         "activation_index": 102,
         "fever_end_index": 104,
         "forced_start_index": 0,
-        "forced_prefix_count": 0,
         "forced_run_start_index": 104,
         "forced_run_count": 0,
         "activation_judgment": "perfect",
@@ -2346,7 +2361,8 @@ def test_perfect_window_fg_rejects_legacy_trace_without_exact_schedule() -> None
                 "activation_index": 0,
                 "fever_end_index": 2,
                 "forced_start_index": 0,
-                "forced_prefix_count": 0,
+                "forced_run_start_index": 0,
+                "forced_run_count": 0,
                 "activation_judgment": "perfect",
                 "activation_hit_offset_ms": 0.0,
                 "fever_window_end_ms": 1_000.0,

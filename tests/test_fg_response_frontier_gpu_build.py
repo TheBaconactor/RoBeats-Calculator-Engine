@@ -1716,7 +1716,7 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
         int(option["activation_index"]) == 102
         and str(option["activation_judgment"]) == "late_great"
         and int(option.get("forced_run_start_index", option["forced_start_index"])) == 102
-        and int(option.get("forced_run_count", option["forced_prefix_count"])) == 1
+        and int(option["forced_run_count"]) == 1
         for option in options
     )
     bundle = [
@@ -1725,7 +1725,7 @@ def test_fg_response_region_late_great_forces_same_time_sibling_bundle() -> None
         if int(option["activation_index"]) == 102
         and str(option["activation_judgment"]) == "late_great"
         and int(option.get("forced_run_start_index", option["forced_start_index"])) == 102
-        and int(option.get("forced_run_count", option["forced_prefix_count"])) == 2
+        and int(option["forced_run_count"]) == 2
     ]
     assert bundle
     assert any(int(option["surface"].body_fever_great) >= 2 for option in bundle)
@@ -3724,8 +3724,8 @@ def test_fg_response_counts_reconstruct_from_slim_first_frontier() -> None:
                 and str(option["activation_judgment"]) == str(row["activation_judgment"])
                 and int(option.get("forced_run_start_index", option["forced_start_index"]))
                 == int(row.get("forced_run_start_index", row["forced_start_index"]))
-                and int(option.get("forced_run_count", option["forced_prefix_count"]))
-                == int(row.get("forced_run_count", row["forced_prefix_count"]))
+                and int(option["forced_run_count"])
+                == int(row["forced_run_count"])
                 and int(option.get("early_great_start", -1)) == int(row.get("early_great_start", -1))
                 and int(option.get("early_great_end", -1)) == int(row.get("early_great_end", -1))
             ):

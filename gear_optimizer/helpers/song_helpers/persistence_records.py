@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ...core.utils import safe_int
-from .fg_config import has_valid_fg_config
+from .fg_payload import has_valid_fg_payload
 
 
 RECORD_UPDATE_SCORE_EPSILON = 2
@@ -39,7 +39,7 @@ def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score
     for fg_entry in fg_variants or []:
         if not isinstance(fg_entry, dict):
             continue
-        if not has_valid_fg_config(fg_entry):
+        if not has_valid_fg_payload(fg_entry):
             continue
         base_score_i = entry_base_score(fg_entry)
         fg_score_i = safe_int(fg_entry.get("fg_score", 0), 0)
@@ -99,7 +99,7 @@ def evaluate_progress_record_update(
             for fg_entry in fg_variants or []:
                 if not isinstance(fg_entry, dict):
                     continue
-                if not has_valid_fg_config(fg_entry):
+                if not has_valid_fg_payload(fg_entry):
                     continue
                 base_score_i = entry_base_score(fg_entry)
                 fg_score_i = safe_int(fg_entry.get("fg_score", 0), 0)

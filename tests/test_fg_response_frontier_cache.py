@@ -826,12 +826,13 @@ def test_ratified_compatible_version_reuses_complete_bundle_without_build(
     assert legacy_path.exists()
 
 
-def test_issue161_perfect_edge_rotation_accepts_no_predecessors() -> None:
+def test_current_fg_payload_cleanup_reuses_issue161_frontier_bytes() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache, response_cache_store
 
     current_version = response_cache._FG_RESPONSE_CACHE_VERSION
-    assert current_version == "fg-response-frontier-visible-first-v31+logic-3e63488abfec"
-    assert response_cache_store.fg_response_compatible_cache_versions() == (current_version,)
+    predecessor = "fg-response-frontier-visible-first-v31+logic-3e63488abfec"
+    assert current_version == "fg-response-frontier-visible-first-v31+logic-41f36c4647fe"
+    assert response_cache_store.fg_response_compatible_cache_versions() == (current_version, predecessor)
 
 
 def test_issue149_reconstruction_predecessor_reuses_bundle_without_build(
@@ -1726,6 +1727,11 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
     monkeypatch.setattr(
         response_frontier,
         "_score_response_group_meta_gpu",
+        _score_must_receive_prepared_surfaces,
+    )
+    monkeypatch.setattr(
+        response_frontier,
+        "_score_response_group_meta_cpu",
         _score_must_receive_prepared_surfaces,
     )
     monkeypatch.setattr(

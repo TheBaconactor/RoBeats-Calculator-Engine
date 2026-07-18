@@ -13,11 +13,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.data.database import (  # noqa: E402
-    _STATS_PACK_KEYS,
     _json_loads,
     _unpack_stats_after_load,
     get_db_connection_readonly,
 )
+from gear_optimizer.core.gem_defs import STAT_KEYS  # noqa: E402
 from gear_optimizer.data.migrations import _table_exists  # noqa: E402
 
 
@@ -40,7 +40,7 @@ def _canonical_stats(details: Any) -> Optional[dict[str, int]]:
     if not isinstance(stats, dict) or not stats:
         return None
     out: dict[str, int] = {}
-    for key in _STATS_PACK_KEYS:
+    for key in STAT_KEYS:
         try:
             out[str(key)] = int(stats.get(key, 0) or 0)
         except Exception:
@@ -51,6 +51,7 @@ def _canonical_stats(details: Any) -> Optional[dict[str, int]]:
 def _canonical_gem_counts(details: Any) -> Optional[dict[str, int]]:
     if not isinstance(details, dict) or not details:
         return None
+    details = _unpack_stats_after_load(details)
     raw = details.get("GemCounts")
     if not isinstance(raw, dict) or not raw:
         return None

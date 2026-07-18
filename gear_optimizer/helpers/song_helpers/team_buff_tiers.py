@@ -18,7 +18,7 @@ from ...data.loadout_equivalence import (
     representative_mini_names,
 )
 from ...data.mini_ascension import materialize_minis_for_song
-from .fg_config import has_valid_fg_config, require_response_surface
+from .fg_payload import has_valid_fg_payload, require_response_surface
 from .ref_array_builder import resolve_exact_replay_ref_arrays
 
 
@@ -182,7 +182,7 @@ def _resolve_team_colors_for_tiering(
 
 def _entry_origin_priority(entry: dict) -> tuple[int, int, int]:
     force_obj = entry.get("force")
-    has_force = 1 if isinstance(force_obj, dict) and has_valid_fg_config(force_obj) else 0
+    has_force = 1 if isinstance(force_obj, dict) and has_valid_fg_payload(force_obj) else 0
     return (
         has_force,
         _safe_int(entry.get("fg_score"), 0),
@@ -643,12 +643,11 @@ def compute_team_buff_tier_leaderboards(
 
         force_obj = entry.get("force")
         fg_snapshot = None
-        if isinstance(force_obj, dict) and has_valid_fg_config(force_obj):
-            # Fail loud: an FG row must carry a valid response surface. The snapshot now only
-            # needs the force config -- the FG paired base is the loadout's re-solved meta base
-            # (carried verbatim in the tier loop below), never a per-snapshot recompute.
+        if isinstance(force_obj, dict) and has_valid_fg_payload(force_obj):
+            # Fail loud: an FG row must carry a valid response surface. The empty marker only
+            # records presence; the exact witness remains on the force payload.
             require_response_surface(force_obj)
-            fg_snapshot = {"config": (force_obj.get("ForceGreats", {}) or {}).get("config")}
+            fg_snapshot = {}
 
         if timing_mode == "zero_ms" and secondary_color:
             # Defensive (review #1/#2): team-buff meta loadouts are always primary-selected -- the
@@ -866,7 +865,6 @@ def compute_team_buff_tier_leaderboards(
                         "source_score": int(e.get("source_score") or 0),
                         "source_fg_base_score": int(e.get("source_fg_base_score") or 0),
                         "source_fg_score": int(e.get("source_fg_score") or 0),
-                        "force_config": fg.get("config"),
                     }
                 )
 

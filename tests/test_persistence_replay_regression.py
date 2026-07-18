@@ -44,7 +44,7 @@ def test_build_persistence_entries_routes_retained_surface_through_shared_canoni
                     "fg_score": 654,
                     "fg_base_score": 300,
                     "details": {"tag": "sentinel", "Stats": {"Rush": 2}},
-                    "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+                    "force": {"response_surface": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]},
                 },
             ]
         }
@@ -326,7 +326,7 @@ def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
 
 
 def _expected_00_hard_surface_fg_score(calc_song: dict, ref_arrays: dict) -> int:
-    from gear_optimizer.helpers.song_helpers.fg_config import require_response_surface
+    from gear_optimizer.helpers.song_helpers.fg_payload import require_response_surface
     from gear_optimizer.helpers.song_helpers.persistence_payload import normalize_force_payload
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 
