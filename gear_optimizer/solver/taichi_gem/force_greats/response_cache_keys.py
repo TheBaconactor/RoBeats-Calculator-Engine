@@ -10,6 +10,7 @@ import numpy as np
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.constants import PATHS, FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
 from gear_optimizer.core.parsing import env_get
+from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
 from .response_cache_types import (
@@ -112,6 +113,9 @@ def fg_response_frontier_geometry_cache_key(
 
 
 def _fg_response_disk_cache_dir() -> Path:
+    scoped = scoped_frontier_cache_dir("fg_response")
+    if scoped is not None:
+        return scoped
     override = str(env_get("FG_RESPONSE_FRONTIER_CACHE_DIR", "") or "").strip()
     if override:
         return Path(override)
