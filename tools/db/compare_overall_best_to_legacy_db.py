@@ -22,6 +22,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -31,6 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from gear_optimizer.core.team_buff import normalize_team_buff
 from gear_optimizer.data.migrations import _table_exists
+from gear_optimizer.data.song_io import scan_song_header
 
 
 def _infer_difficulty_from_song_name(song_name: str) -> str:
@@ -41,12 +43,26 @@ def _infer_difficulty_from_song_name(song_name: str) -> str:
     return "Normal"
 
 
+@lru_cache(maxsize=6)
+def _song_path_index(project_root: Path, difficulty: str) -> dict[str, Path]:
+    root = project_root / "Data" / difficulty
+    if not root.is_dir():
+        return {}
+    paths: dict[str, Path] = {}
+    for path in root.rglob("*.txt"):
+        metadata = scan_song_header(str(path))
+        name = str((metadata or {}).get("Song Name") or "").strip()
+        if name:
+            paths.setdefault(name, path)
+    return paths
+
+
 def _song_file_from_name(project_root: Path, song_name: str) -> Path | None:
     diff = _infer_difficulty_from_song_name(song_name)
     fp = project_root / "Data" / diff / f"{song_name}.txt"
     if fp.exists():
         return fp
-    return None
+    return _song_path_index(project_root, diff).get(song_name)
 
 
 @dataclass(frozen=True)
@@ -130,14 +146,7 @@ def _best_base_rescored_legacy(
     if calc_song is None:
         fp = _song_file_from_name(project_root, song)
         if fp is None:
-            # Fall back to the slower index scan used by EvolutionDbManager.
-            from gear_optimizer.data.db_manager import _build_song_index_for_difficulty
-
-            diff = _infer_difficulty_from_song_name(song)
-            idx = _build_song_index_for_difficulty(diff)
-            fp = Path(str(idx.get(song) or ""))
-            if not fp.exists():
-                return {"best": 0, "hash": ""}
+            return {"best": 0, "hash": ""}
         calc_song = get_base_calc_song(str(fp), cfg_dict)
         calc_song_cache[song] = calc_song
 
@@ -277,13 +286,7 @@ def _best_fg_rescored_legacy(
     if calc_song is None:
         fp = _song_file_from_name(project_root, song)
         if fp is None:
-            from gear_optimizer.data.db_manager import _build_song_index_for_difficulty
-
-            diff = _infer_difficulty_from_song_name(song)
-            idx = _build_song_index_for_difficulty(diff)
-            fp = Path(str(idx.get(song) or ""))
-            if not fp.exists():
-                return {"best": 0, "hash": ""}
+            return {"best": 0, "hash": ""}
         calc_song = get_base_calc_song(str(fp), cfg_dict)
         calc_song_cache[song] = calc_song
 
