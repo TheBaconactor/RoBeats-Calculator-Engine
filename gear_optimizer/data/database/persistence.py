@@ -841,7 +841,20 @@ def save_team_buff_loadouts_batch(
                 eff=eff,
             )
             if force_data is not None:
-                force_data = _align_force_stats_with_persisted_loadout(force_data, details)
+                force_details = dict(force_data)
+                primary = details.get("PrimaryColor") or details.get("Primary Color")
+                secondary = details.get("SecondaryColor") or details.get("Secondary Color")
+                if primary and not (force_details.get("PrimaryColor") or force_details.get("Primary Color")):
+                    force_details["PrimaryColor"] = primary
+                if secondary and not (force_details.get("SecondaryColor") or force_details.get("Secondary Color")):
+                    force_details["SecondaryColor"] = secondary
+                force_details = _details_with_representative_stats(
+                    force_details,
+                    gear_names_local=gear_names,
+                    mini_names_local=mini_names,
+                    team_color=str(primary or ""),
+                )
+                force_data = _align_force_stats_with_persisted_loadout(force_data, force_details)
             details, _retired_details_count = strip_retired_fg_fields(details)
             force_data, _retired_force_count = strip_retired_fg_fields(force_data)
             if (
