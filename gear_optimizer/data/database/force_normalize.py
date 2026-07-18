@@ -260,9 +260,12 @@ def _align_force_stats_with_persisted_loadout(force_data: Any, details: Any) -> 
         if int(solved.get(key, 0) or 0) != int(canonical.get(key, 0) or 0)
     ]
     if changed_relevant:
+        changes = ", ".join(
+            f"{key}={int(solved.get(key, 0) or 0)}->{int(canonical.get(key, 0) or 0)}"
+            for key in changed_relevant
+        )
         raise ValueError(
-            "Canonical mini representatives changed FG scoring Stats: "
-            + ", ".join(changed_relevant)
+            "Canonical mini representatives changed FG scoring Stats: " + changes
         )
 
     out = dict(force_data)

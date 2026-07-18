@@ -299,3 +299,88 @@ def test_fg_payload_stats_match_the_persisted_mini_representative(monkeypatch, t
     assert '"config"' not in persisted_json
     assert '"enabled"' not in persisted_json
     assert '"variant_applied"' not in persisted_json
+
+
+def test_fg_representative_stats_use_fg_gems_not_paired_base_gems(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "evolution.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+
+    import gear_optimizer.data.database as db
+
+    fake_minis = {
+        "BlackY": {"Name": "BlackY", "type": "mini", "Beat": 10, "Chill": 20, "Flow": 111},
+        "Heavy Metal Starlet": {
+            "Name": "Heavy Metal Starlet",
+            "type": "mini",
+            "Beat": 10,
+            "Chill": 20,
+            "Flow": 999,
+        },
+    }
+    monkeypatch.setattr(db, "get_minis_by_name_cached", lambda: fake_minis)
+    monkeypatch.setattr(db, "get_gears_by_name_cached", lambda: {})
+    db.init_db()
+
+    base_stats = {
+        "Perfect Points": 25,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Beat": 40,
+        "Chill": 20,
+        "Flow": 999,
+        "Rush": 0,
+        "Vibe": 0,
+    }
+    fg_stats = {**base_stats, "Fever Fill Rate": 3, "Beat": 100}
+    base_gems = {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0}
+    fg_gems = {**base_gems, "Element": 10}
+    db.save_loadouts_batch(
+        "pytest_fg_gem_surface",
+        [
+            {
+                "score": 123,
+                "fg_score": 130,
+                "fg_base_score": 123,
+                "gear": [],
+                "minis": ["Heavy Metal Starlet"],
+                "details": {
+                    "Stats": base_stats,
+                    "GemCounts": base_gems,
+                    "FT": 0,
+                    "FF": 0,
+                    "SelectedElement": "Beat",
+                    "PrimaryColor": "Beat",
+                    "SecondaryColor": "Chill",
+                },
+                "force": {
+                    "Score": 130,
+                    "BaseScore": 123,
+                    "Stats": fg_stats,
+                    "BaseStats": fg_stats,
+                    "GemCounts": fg_gems,
+                    "FT": 0,
+                    "FF": 1,
+                    "SelectedElement": "Beat",
+                    "response_surface": [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
+                    "ForceGreats": {"final_score": 130},
+                },
+            }
+        ],
+    )
+
+    con = sqlite3.connect(db_path)
+    try:
+        force = json.loads(
+            con.execute(
+                "SELECT force_details_json FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+                ("pytest_fg_gem_surface",),
+            ).fetchone()[0]
+        )
+    finally:
+        con.close()
+
+    assert force["BaseStats"]["Fever Fill Rate"] == 3
+    assert force["BaseStats"]["Beat"] == 100
+    assert force["BaseStats"]["Flow"] == 111
