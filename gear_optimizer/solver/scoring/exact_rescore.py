@@ -9,6 +9,7 @@ search score.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import floor
 import threading
 from typing import Any, Mapping
@@ -32,6 +33,510 @@ from .fg_policy import (
 
 
 _FG_TIMELINE_TLS = threading.local()
+
+# IR schema version -- bump when the ExactScoreIR field set changes. Part of the
+# cache_key so reverse-row-predicate compilers and any persisted IR-derived
+# artifacts invalidate cleanly on a schema change.
+_IR_SCHEMA_VERSION = 1
+
+# Batch slab bounds: the head replay holds ~4 K x 100 f64 intermediates and
+# the pool reduction a (pool x K) f64 lane matrix; these caps bound peak RAM
+# to a few hundred MB regardless of batch size or pool width.
+_CELL_SLAB_HEAD_ROWS = 65_536
+_CELL_SLAB_LANE_ELEMS = 16_000_000
+
+
+@dataclass(frozen=True, slots=True)
+class ExactScoreIR:
+    """Shared immutable scoring IR for one (chart, ref-table-version, timing-mode).
+
+    Compiled once by ``build_exact_score_ir`` and consumed by BOTH the forward
+    scorer (``score_from_ir``) and the reverse row-predicate compiler. The
+    field groups (see the K0 audit for full source-line provenance):
+
+    1. Chart state (song-intrinsic scalars)
+    2. Ref tables (PP/CM/FM float64, FT/FF float32 axes, shape (161,))
+    3. Clamps (stat-index and stat-value bounds, fever fill floor, base_notes offset)
+    4. Plateaus (np.unique dedup of PP/CM/FM tables -> values + inverse)
+    5. Color projection (base_int formula "2*primary + secondary" and 2-color collapse "v=2*c1+c2")
+    6. Frontier grid (per-cell replay pools, head bits, head coeffs, fever activations)
+    7. Score formulas (op-order-preserving f64 envelopes; total_score is max over pool lanes)
+    8. Residues (per-row stat factors and head residue integers)
+    9. Cache key tuple (frontier_cache_key, ref_content_hash, timing_mode, ir_schema_version)
+    """
+
+    # Group 1 -- chart state
+    total_notes: int
+    head_len: int
+    body_total: int
+    primary_color: str
+    secondary_color: str
+    color_projection: str
+    timing_mode: str
+    fever_fill_base_rate: float
+    fever_time_scale: float
+    fever_time_offset: float
+    long_notes: int
+    last_note_time: float
+
+    # Group 2 -- ref tables (float64) and FT/FF axes (float32)
+    pp_table: np.ndarray
+    cm_table: np.ndarray
+    fm_table: np.ndarray
+    ft_axis: np.ndarray
+    ff_axis: np.ndarray
+
+    # Group 3 -- clamps
+    stat_index_clamp_lo: int
+    stat_index_clamp_hi: int
+    stat_value_clamp_lo: int
+    stat_value_clamp_hi: int
+    fever_fill_floor: int
+    base_notes_first_section_offset: int
+
+    # Group 4 -- plateaus (derived-key collapse)
+    pp_plateau_values: np.ndarray
+    pp_plateau_inverse: np.ndarray
+    cm_plateau_values: np.ndarray
+    cm_plateau_inverse: np.ndarray
+    fm_plateau_values: np.ndarray
+    fm_plateau_inverse: np.ndarray
+
+    # Group 5 -- color projection
+    base_int_formula: str
+    base_int_range: tuple[int, int]
+    two_color_collapse_v: str
+
+    # Group 6 -- frontier grid (payload views; the payload stays alive via cache)
+    frontier_grid_count: np.ndarray
+    frontier_grid_offset: np.ndarray
+    frontier_pool_used: int
+    frontier_body_fever_pool: np.ndarray
+    frontier_body_normal_pool: np.ndarray
+    frontier_masks_bits_pool: np.ndarray
+    frontier_head_coeffs_pool: np.ndarray
+    frontier_head_len: np.ndarray
+    frontier_body_fever_min_max: tuple[int, int]
+    frontier_body_normal_min_max: tuple[int, int]
+    frontier_fever_activations: np.ndarray
+
+    # Group 7 -- score formulas (the f64 op-order envelope guard)
+    combo_val_formula: str
+    fever_val_formula: str
+    body_score_formula: str
+    head_combo_slope_formula: str
+    head_perfect_value_formula: str
+    head_normal_score_formula: str
+    head_fever_score_formula: str
+    head_fever_delta_formula: str
+    head_score_formula: str
+    total_score_formula: str
+    f64_envelope_guard: int
+
+    # Group 8 -- residues (per-row stat factors are computed in score_from_ir;
+    # these are the canonical formula strings + head residue integers for the
+    # perfect-window single-bar path the IR is built for)
+    residue_pp_factor: str
+    residue_combo_val: str
+    residue_fever_val: str
+    residue_head_normal_i: str
+    residue_head_fever_i: str
+    residue_great_penalty_base: str
+    gear_power_formula: str
+    accuracy_formula: str
+
+    # Group 9 -- cache key
+    cache_key: tuple
+
+
+def build_exact_score_ir(
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+    *,
+    timing_mode: str | None = None,
+) -> ExactScoreIR:
+    """Build the shared immutable scoring IR for one chart.
+
+    Performs the canonical preparation sequence:
+      ``build_or_load_timeline_frontier_payload`` -> ``_frontier_replay_refs`` ->
+      plateau dedup (``np.unique`` on PP/CM/FM tables) ->
+      frontier body range derivation.
+
+    Idempotent over (frontier cache_key, ref content hash, timing_mode).
+    """
+    from ..taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+
+    song_dict = calc_song if isinstance(calc_song, dict) else dict(calc_song)
+    song_data = song_dict.get("song_data", {}) or {}
+    timestamps = song_data.get("chart_timestamps")
+    if timestamps is None:
+        timestamps = song_data.get("timestamps", ())
+    total_notes = int(len(timestamps))
+
+    frontier_refs = _frontier_replay_refs(ref_arrays)
+    resolved_timing_mode = _resolve_timing_mode(song_dict, timing_mode)
+    frontier_result = build_or_load_timeline_frontier_payload(
+        song_dict, frontier_refs, timing_mode=resolved_timing_mode
+    )
+    payload = frontier_result.payload
+    song_meta = extract_song_meta(song_dict)
+    metadata = song_dict.get("metadata", {}) or {}
+    long_notes = safe_int(metadata.get("Long Notes"), 0)
+    default_last_note = float(timestamps[-1]) if total_notes else 0.0
+    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
+
+    pp_table = np.asarray(frontier_refs["Perfect Points"], dtype=np.float64).reshape(-1)
+    cm_table = np.asarray(frontier_refs["Combo Multiplier"], dtype=np.float64).reshape(-1)
+    fm_table = np.asarray(frontier_refs["Fever Multiplier"], dtype=np.float64).reshape(-1)
+    ft_axis = np.asarray(frontier_refs["Fever Time"], dtype=np.float32).reshape(-1)
+    ff_axis = np.asarray(frontier_refs["Fever Fill Rate"], dtype=np.float32).reshape(-1)
+
+    pp_plateau_values, pp_plateau_inverse = np.unique(pp_table[: TOTAL_ROWS + 1], return_inverse=True)
+    cm_plateau_values, cm_plateau_inverse = np.unique(cm_table[: TOTAL_ROWS + 1], return_inverse=True)
+    fm_plateau_values, fm_plateau_inverse = np.unique(fm_table[: TOTAL_ROWS + 1], return_inverse=True)
+
+    head_len = min(max(0, int(total_notes)), 100)
+    body_total = max(0, int(total_notes) - 100)
+
+    frontier_grid_count = np.asarray(payload.grid_frontier_count[0], dtype=np.int32)
+    frontier_grid_offset = np.asarray(payload.grid_frontier_offset[0], dtype=np.int32)
+    frontier_pool_used = int(payload.frontier_pool_used)
+    frontier_body_fever_pool = np.asarray(payload.grid_frontier_body_fever_pool[0], dtype=np.int64)
+    frontier_body_normal_pool = np.asarray(payload.grid_frontier_body_normal_pool[0], dtype=np.int64)
+    frontier_masks_bits_pool = np.asarray(payload.grid_frontier_masks_bits_pool[0], dtype=np.uint64)
+    frontier_head_coeffs_pool = np.asarray(payload.grid_frontier_head_coeffs_pool[0], dtype=np.int16)
+    frontier_head_len = np.asarray(payload.grid_head_len[0], dtype=np.int8)
+    frontier_fever_activations = np.asarray(payload.grid_fever_activations[0], dtype=np.int32)
+
+    if frontier_pool_used > 0:
+        body_fever_min = int(frontier_body_fever_pool[:frontier_pool_used].min())
+        body_fever_max = int(frontier_body_fever_pool[:frontier_pool_used].max())
+        body_normal_min = int(frontier_body_normal_pool[:frontier_pool_used].min())
+        body_normal_max = int(frontier_body_normal_pool[:frontier_pool_used].max())
+    else:
+        body_fever_min = body_fever_max = 0
+        body_normal_min = body_normal_max = 0
+
+    ref_content_hash = (
+        bytes(np.array(pp_table[: TOTAL_ROWS + 1].tobytes())),
+        bytes(np.array(cm_table[: TOTAL_ROWS + 1].tobytes())),
+        bytes(np.array(fm_table[: TOTAL_ROWS + 1].tobytes())),
+        bytes(np.array(ft_axis[: TOTAL_ROWS + 1].tobytes())),
+        bytes(np.array(ff_axis[: TOTAL_ROWS + 1].tobytes())),
+    )
+
+    cache_key = (
+        frontier_result.cache_key,
+        ref_content_hash,
+        str(resolved_timing_mode),
+        int(_IR_SCHEMA_VERSION),
+    )
+
+    return ExactScoreIR(
+        total_notes=int(total_notes),
+        head_len=int(head_len),
+        body_total=int(body_total),
+        primary_color=str(song_meta.primary_color),
+        secondary_color=str(song_meta.secondary_color),
+        color_projection="2*primary + secondary",
+        timing_mode=str(resolved_timing_mode),
+        fever_fill_base_rate=float(FEVER_FILL_BASE_RATE),
+        fever_time_scale=float(FEVER_TIME_SCALE),
+        fever_time_offset=float(FEVER_TIME_OFFSET),
+        long_notes=int(long_notes),
+        last_note_time=float(last_note_time),
+        pp_table=pp_table,
+        cm_table=cm_table,
+        fm_table=fm_table,
+        ft_axis=ft_axis,
+        ff_axis=ff_axis,
+        stat_index_clamp_lo=0,
+        stat_index_clamp_hi=int(TOTAL_ROWS),
+        stat_value_clamp_lo=-80,
+        stat_value_clamp_hi=160,
+        fever_fill_floor=1,
+        base_notes_first_section_offset=-1,
+        pp_plateau_values=pp_plateau_values,
+        pp_plateau_inverse=pp_plateau_inverse,
+        cm_plateau_values=cm_plateau_values,
+        cm_plateau_inverse=cm_plateau_inverse,
+        fm_plateau_values=fm_plateau_values,
+        fm_plateau_inverse=fm_plateau_inverse,
+        base_int_formula="2*primary + secondary",
+        base_int_range=(0, 2 * 250 + 250),
+        two_color_collapse_v="v = 2*c1 + c2",
+        frontier_grid_count=frontier_grid_count,
+        frontier_grid_offset=frontier_grid_offset,
+        frontier_pool_used=int(frontier_pool_used),
+        frontier_body_fever_pool=frontier_body_fever_pool,
+        frontier_body_normal_pool=frontier_body_normal_pool,
+        frontier_masks_bits_pool=frontier_masks_bits_pool,
+        frontier_head_coeffs_pool=frontier_head_coeffs_pool,
+        frontier_head_len=frontier_head_len,
+        frontier_body_fever_min_max=(int(body_fever_min), int(body_fever_max)),
+        frontier_body_normal_min_max=(int(body_normal_min), int(body_normal_max)),
+        frontier_fever_activations=frontier_fever_activations,
+        combo_val_formula="floor(base_value * combo_f)",
+        fever_val_formula="floor(base_value * combo_f * fever_f)",
+        body_score_formula="body_fever * fever_val + body_normal * combo_val",
+        head_combo_slope_formula="(combo_f - 1.0) / 100.0",
+        head_perfect_value_formula="base_value * ((combo_slope * (i + 1)) + 1.0)",
+        head_normal_score_formula="floor(perfect_value)",
+        head_fever_score_formula="floor(perfect_value * fever_f)",
+        head_fever_delta_formula="head_fever_score - head_normal_score",
+        head_score_formula="sum over i in [0, head_len) of (is_fever ? head_fever_score : head_normal_score)",
+        total_score_formula="max over pool lanes of (body_score + head_score)",
+        f64_envelope_guard=int(2**52),
+        residue_pp_factor="lookup_reference_py(pp_stat, pp_table, TOTAL_ROWS)",
+        residue_combo_val="floor(base_value * combo_f)",
+        residue_fever_val="floor(base_value * combo_f * fever_f)",
+        residue_head_normal_i="floor(base_value * ((combo_slope * (i + 1)) + 1.0))",
+        residue_head_fever_i="floor(base_value * ((combo_slope * (i + 1)) + 1.0) * fever_f)",
+        residue_great_penalty_base="compute_great_penalty_base(primary_val, secondary_val)",
+        gear_power_formula="(2 * primary_val + secondary_val) + pp_factor",
+        accuracy_formula="score / max(1, total_score_formula)",
+        cache_key=cache_key,
+    )
+
+
+def _resolve_timing_mode(calc_song: Mapping[str, Any], timing_mode: str | None) -> str:
+    if timing_mode is not None:
+        mode = str(timing_mode).strip().lower()
+    else:
+        metadata = (calc_song.get("metadata", {}) or {}) if isinstance(calc_song, Mapping) else {}
+        mode = str(
+            metadata.get("TimingEnvelopeMode") or metadata.get("Timing Mode") or "perfect_window"
+        ).strip().lower()
+    if mode not in {"perfect_window", "zero_ms"}:
+        raise ValueError(f"unknown timeline frontier timing mode {timing_mode!r}")
+    return mode
+
+
+def score_from_ir(
+    ir: ExactScoreIR,
+    primary_val: np.ndarray,
+    secondary_val: np.ndarray,
+    pp_stat: np.ndarray,
+    cm_stat: np.ndarray,
+    fm_stat: np.ndarray,
+    ft_stat: np.ndarray,
+    ff_stat: np.ndarray,
+) -> np.ndarray:
+    """Forward array-native scores from a prebuilt IR.
+
+    Canonical forward path: derived-key collapse (group 4) -> per-(FT,FF)-cell
+    vectorized pool replay (groups 6-7) -> argmax over pool lanes (group 7,
+    ``total_score_formula``). Bit-identical to the per-row replay by
+    construction (same f64 op order per lane, exact int64 reductions).
+
+    Both the forward Vulkan scorer and the reverse engine's canonical
+    soundness gate call this.
+    """
+    pv = np.asarray(primary_val, dtype=np.int64).reshape(-1)
+    sv = np.asarray(secondary_val, dtype=np.int64).reshape(-1)
+    ppi = np.clip(np.asarray(pp_stat, dtype=np.int64).reshape(-1), 0, TOTAL_ROWS)
+    cmi = np.clip(np.asarray(cm_stat, dtype=np.int64).reshape(-1), 0, TOTAL_ROWS)
+    fmi = np.clip(np.asarray(fm_stat, dtype=np.int64).reshape(-1), 0, TOTAL_ROWS)
+    fti = np.clip(np.asarray(ft_stat, dtype=np.int64).reshape(-1), 0, TOTAL_ROWS)
+    ffi = np.clip(np.asarray(ff_stat, dtype=np.int64).reshape(-1), 0, TOTAL_ROWS)
+    n = int(pv.shape[0])
+    if n == 0:
+        return np.zeros(0, dtype=np.int64)
+    if ir.total_notes <= 0:
+        return np.zeros(n, dtype=np.int64)
+
+    base_int = 2 * pv + sv
+    base_min = int(base_int.min())
+    base_off = base_int - base_min
+    n_base = int(base_off.max()) + 1
+    dims = (
+        n_base,
+        int(ir.pp_plateau_values.size),
+        int(ir.cm_plateau_values.size),
+        int(ir.fm_plateau_values.size),
+        TOTAL_ROWS + 1,
+        TOTAL_ROWS + 1,
+    )
+    packed_span = 1
+    for d in dims:
+        packed_span *= int(d)
+    if packed_span >= 2**63:
+        raise ValueError(
+            f"stat rows outside the packable derived-key range (span {packed_span})"
+        )
+    key = base_off
+    for id_col, d in (
+        (ir.pp_plateau_inverse[ppi], dims[1]),
+        (ir.cm_plateau_inverse[cmi], dims[2]),
+        (ir.fm_plateau_inverse[fmi], dims[3]),
+        (fti, dims[4]),
+        (ffi, dims[5]),
+    ):
+        key = key * d + id_col
+    uniq_key, first_idx, inverse = np.unique(key, return_index=True, return_inverse=True)
+
+    u_base = base_int[first_idx]
+    u_ppf = ir.pp_table[ppi[first_idx]].astype(np.float64)
+    u_cmf = ir.cm_table[cmi[first_idx]].astype(np.float64)
+    u_fmf = ir.fm_table[fmi[first_idx]].astype(np.float64)
+    u_ft = fti[first_idx]
+    u_ff = ffi[first_idx]
+
+    out_u = np.zeros(uniq_key.size, dtype=np.int64)
+    cell = u_ft * (TOTAL_ROWS + 1) + u_ff
+    for cell_key in np.unique(cell):
+        sel = np.flatnonzero(cell == cell_key)
+        ft_i = int(cell_key) // (TOTAL_ROWS + 1)
+        ff_i = int(cell_key) % (TOTAL_ROWS + 1)
+        out_u[sel] = _replay_cell(
+            ir,
+            ft_i=int(ft_i),
+            ff_i=int(ff_i),
+            base_int=u_base[sel],
+            pp_factor=u_ppf[sel],
+            combo_mul=u_cmf[sel],
+            fever_mul=u_fmf[sel],
+        )
+    return out_u[inverse]
+
+
+def score_from_ir_with_pool_idx(
+    ir: ExactScoreIR,
+    primary_val: int,
+    secondary_val: int,
+    pp_factor: float,
+    combo_mul: float,
+    fever_mul: float,
+    ft_idx: int,
+    ff_idx: int,
+) -> tuple[int, int]:
+    """Single-row twin of ``score_from_ir`` returning (score, winning pool index).
+
+    The winner's pool index is what the timeline-trace reconstruction needs.
+    Bit-identical to ``score_from_ir`` for the same inputs.
+    """
+    ft_i = max(0, min(int(ft_idx), TOTAL_ROWS))
+    ff_i = max(0, min(int(ff_idx), TOTAL_ROWS))
+    scores = _replay_cell(
+        ir,
+        ft_i=int(ft_i),
+        ff_i=int(ff_i),
+        base_int=np.array([int(primary_val) * 2 + int(secondary_val)], dtype=np.int64),
+        pp_factor=np.array([float(pp_factor)], dtype=np.float64),
+        combo_mul=np.array([float(combo_mul)], dtype=np.float64),
+        fever_mul=np.array([float(fever_mul)], dtype=np.float64),
+        return_pool_idx=True,
+    )
+    if isinstance(scores, tuple):
+        return int(scores[0][0]), int(scores[1][0])
+    return int(scores[0]), int(scores[2])
+
+
+def _replay_cell(
+    ir: ExactScoreIR,
+    *,
+    ft_i: int,
+    ff_i: int,
+    base_int: np.ndarray,
+    pp_factor: np.ndarray,
+    combo_mul: np.ndarray,
+    fever_mul: np.ndarray,
+    return_pool_idx: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Exact scores for one (FT, FF) frontier cell, vectorized over rows.
+
+    Per-element f64 op order matches ``_score_timeline_frontier_payload_
+    vectorized_result`` exactly; only exact-integer reductions are regrouped
+    (int64 sums; the pool bit-matrix product runs in f64, which is exact for
+    the guarded < 2^52 magnitudes). When ``return_pool_idx`` is True, also
+    returns the per-row winning pool index (same argmax as the score).
+    """
+    frontier_count = int(ir.frontier_grid_count[ft_i, ff_i])
+    if frontier_count <= 0:
+        raise ValueError("Timing frontier payload has no replayable surface for the requested FT/FF cell")
+    frontier_offset = int(ir.frontier_grid_offset[ft_i, ff_i])
+    frontier_limit = int(frontier_offset + frontier_count)
+    if frontier_offset < 0 or frontier_limit > int(ir.frontier_pool_used):
+        raise ValueError("Timing frontier payload contains an invalid surface range")
+
+    body_total = int(ir.body_total)
+    body_fever = np.asarray(
+        ir.frontier_body_fever_pool[frontier_offset:frontier_limit],
+        dtype=np.int64,
+    )
+    body_normal = np.asarray(
+        ir.frontier_body_normal_pool[frontier_offset:frontier_limit],
+        dtype=np.int64,
+    )
+    if bool(np.any(body_fever < 0)) or bool(np.any(body_normal < 0)) or bool(
+        np.any((body_fever + body_normal) != int(body_total))
+    ):
+        raise ValueError("Timing surface body counts do not match song body note count")
+
+    head_len = int(ir.head_len)
+    pool_n = int(body_fever.shape[0])
+    k_total = int(base_int.shape[0])
+    slab = max(1, min(_CELL_SLAB_HEAD_ROWS, _CELL_SLAB_LANE_ELEMS // max(1, pool_n)))
+    out = np.zeros(k_total, dtype=np.int64)
+    pool_idx_out = np.zeros(k_total, dtype=np.int64) if return_pool_idx else None
+    head_bits_f64: np.ndarray | None = None
+
+    for start in range(0, k_total, slab):
+        stop = min(k_total, start + slab)
+        base = base_int[start:stop].astype(np.float64) + pp_factor[start:stop]
+        combo = combo_mul[start:stop]
+        fever = fever_mul[start:stop]
+        bc = base * combo
+        combo_val = np.floor(bc).astype(np.int64)
+        fever_val = np.floor(bc * fever).astype(np.int64)
+        delta_body = fever_val - combo_val
+        scores0 = np.int64(body_total) * combo_val
+
+        head_delta: np.ndarray | None = None
+        if head_len > 0:
+            positions = np.arange(1, head_len + 1, dtype=np.float64)
+            combo_slope = (combo - np.float64(1.0)) / np.float64(100.0)
+            perfect_values = base[:, None] * ((combo_slope[:, None] * positions[None, :]) + np.float64(1.0))
+            normal_scores = np.floor(perfect_values).astype(np.int64)
+            fever_scores = np.floor(perfect_values * fever[:, None]).astype(np.int64)
+            scores0 = scores0 + normal_scores.sum(axis=1)
+            head_delta = fever_scores - normal_scores
+            if not bool(np.any(head_delta)):
+                head_delta = None
+
+        if head_delta is None and not bool(np.any(delta_body)):
+            out[start:stop] = scores0
+            if return_pool_idx:
+                # Argmax over a constant lane vector returns 0 for all rows.
+                pool_idx_out[start:stop] = int(frontier_offset)
+            continue
+
+        bound = int(np.abs(delta_body).max()) * max(1, body_total)
+        if head_delta is not None:
+            bound += int(np.abs(head_delta).max()) * head_len
+        if bound >= int(ir.f64_envelope_guard):
+            raise ValueError("frontier replay magnitudes exceed the exact f64 envelope")
+
+        lane = body_fever.astype(np.float64)[:, None] * delta_body.astype(np.float64)[None, :]
+        if head_delta is not None:
+            if head_bits_f64 is None:
+                words = np.asarray(
+                    ir.frontier_masks_bits_pool[frontier_offset:frontier_limit, :4],
+                    dtype=np.uint64,
+                )
+                note_idx = np.arange(head_len)
+                head_bits_f64 = (
+                    (words[:, note_idx // 32] >> (note_idx % 32).astype(np.uint64)) & np.uint64(1)
+                ).astype(np.float64)
+            lane = lane + head_bits_f64 @ head_delta.T.astype(np.float64)
+        lane_i64 = lane.astype(np.int64)
+        out[start:stop] = scores0 + lane_i64.max(axis=0)
+        if return_pool_idx:
+            winner_local = np.argmax(lane_i64, axis=0)
+            pool_idx_out[start:stop] = frontier_offset + winner_local
+    if return_pool_idx:
+        return out, pool_idx_out, np.full(k_total, int(frontier_offset), dtype=np.int64)
+    return out
 
 # Base timeline-trace memo: the reconstructed trace is a pure function of
 # (frontier payload cache_key, FT cell, FF cell, winning pool row) -- stats enter only
@@ -229,11 +734,8 @@ def score_stats_exact_with_timeline_trace(
     if total_notes <= 0:
         return {"score": 0, "TimelineFrontier": {"frontier_trace": []}}
 
-    from ..taichi_gem.api.timeline import load_timeline_frontier_payload
-
     frontier_refs = _frontier_replay_refs(ref_arrays)
-    frontier_result = load_timeline_frontier_payload(song_dict, frontier_refs)
-    payload = frontier_result.payload
+    ir = build_exact_score_ir(song_dict, frontier_refs)
     song_meta = extract_song_meta(song_dict)
     (
         primary_val,
@@ -247,9 +749,8 @@ def score_stats_exact_with_timeline_trace(
     ft_i = max(0, min(int(ft_idx), TOTAL_ROWS))
     ff_i = max(0, min(int(ff_idx), TOTAL_ROWS))
 
-    best_score, pool_idx = _score_timeline_frontier_payload_vectorized_result(
-        payload=payload,
-        total_notes=int(total_notes),
+    best_score, pool_idx = score_from_ir_with_pool_idx(
+        ir,
         primary_val=int(primary_val),
         secondary_val=int(secondary_val),
         pp_factor=float(pp_factor),
@@ -258,11 +759,11 @@ def score_stats_exact_with_timeline_trace(
         ft_idx=int(ft_idx),
         ff_idx=int(ff_idx),
     )
-    memo_key = (frontier_result.cache_key, ft_i, ff_i, int(pool_idx))
+    memo_key = (ir.cache_key[0], ft_i, ff_i, int(pool_idx))
     frontier_meta = _TIMELINE_TRACE_MEMO.get(memo_key)
     if frontier_meta is None:
         frontier_meta = _timeline_trace_for_payload_surface(
-            payload=payload,
+            payload=_ir_payload_view(ir),
             pool_idx=int(pool_idx),
             total_notes=int(total_notes),
             ft_idx=int(ft_idx),
@@ -293,37 +794,81 @@ def score_stats_exact_batch(
     if total_notes <= 0:
         return [0 for _stats in stats_rows]
 
-    from ..taichi_gem.api.timeline import load_timeline_frontier_payload
-
     frontier_refs = _frontier_replay_refs(ref_arrays)
-
-    payload = load_timeline_frontier_payload(song_dict, frontier_refs).payload
+    ir = build_exact_score_ir(song_dict, frontier_refs)
     song_meta = extract_song_meta(song_dict)
-    scores: list[int] = []
-    for stats in stats_rows:
-        (
-            primary_val,
-            secondary_val,
-            pp_factor,
-            combo_mul,
-            fever_mul,
-            ft_idx,
-            ff_idx,
-        ) = _score_stat_inputs(stats, frontier_refs, song_meta.primary_color, song_meta.secondary_color)
-        scores.append(
-            _score_timeline_frontier_payload_vectorized(
-                payload=payload,
-                total_notes=int(total_notes),
-                primary_val=int(primary_val),
-                secondary_val=int(secondary_val),
-                pp_factor=float(pp_factor),
-                combo_mul=float(combo_mul),
-                fever_mul=float(fever_mul),
-                ft_idx=int(ft_idx),
-                ff_idx=int(ff_idx),
-            )
-        )
-    return scores
+    n = len(stats_rows)
+    primary_val = np.zeros(n, dtype=np.int64)
+    secondary_val = np.zeros(n, dtype=np.int64)
+    pp_stat = np.zeros(n, dtype=np.int64)
+    cm_stat = np.zeros(n, dtype=np.int64)
+    fm_stat = np.zeros(n, dtype=np.int64)
+    ft_stat = np.zeros(n, dtype=np.int64)
+    ff_stat = np.zeros(n, dtype=np.int64)
+    for i, stats in enumerate(stats_rows):
+        primary_val[i] = safe_int(stats.get(song_meta.primary_color, 0), 0)
+        secondary_val[i] = safe_int(stats.get(song_meta.secondary_color, 0), 0)
+        pp_stat[i] = safe_int(stats.get("Perfect Points", 0), 0)
+        cm_stat[i] = safe_int(stats.get("Combo Multiplier", 0), 0)
+        fm_stat[i] = safe_int(stats.get("Fever Multiplier", 0), 0)
+        ft_stat[i] = safe_int(stats.get("Fever Time", 0), 0)
+        ff_stat[i] = safe_int(stats.get("Fever Fill Rate", 0), 0)
+
+    return score_from_ir(
+        ir,
+        primary_val,
+        secondary_val,
+        pp_stat,
+        cm_stat,
+        fm_stat,
+        ft_stat,
+        ff_stat,
+    ).tolist()
+
+
+def score_stat_arrays_exact_batch(
+    primary_val: np.ndarray,
+    secondary_val: np.ndarray,
+    pp_stat: np.ndarray,
+    cm_stat: np.ndarray,
+    fm_stat: np.ndarray,
+    ft_stat: np.ndarray,
+    ff_stat: np.ndarray,
+    calc_song: Mapping[str, Any],
+    ref_arrays: Mapping[str, Any],
+) -> np.ndarray:
+    """Array-native exact base scores (int64), bit-identical to the per-row
+    frontier replay. Thin adapter over the shared IR: ``build_exact_score_ir``
+    once, then ``score_from_ir``. This is the canonical GPU entry the handoff
+    names -- the reverse engine's soundness gate also calls this."""
+    ir = build_exact_score_ir(calc_song, ref_arrays)
+    return score_from_ir(ir, primary_val, secondary_val, pp_stat, cm_stat, fm_stat, ft_stat, ff_stat)
+
+
+def _ir_payload_view(ir: ExactScoreIR) -> Any:
+    """Reconstruct a TimelineFrontierGridPayload view from the IR's stored arrays.
+
+    The IR owns the per-slot slices the scorer needs; the trace reconstruction
+    helper still expects a payload object, so we hand it a frozen-shaped view
+    that exposes the same attributes it indexes into.
+    """
+    from ..timeline_exact_frontier import TimelineFrontierGridPayload
+
+    return TimelineFrontierGridPayload(
+        grid_count_body_fever=np.zeros((1, 0), dtype=np.int32),
+        grid_count_body_normal=np.zeros((1, 0), dtype=np.int32),
+        grid_head_len=ir.frontier_head_len[None, :, :],
+        grid_fever_masks_bits=np.zeros((1, 0, 4), dtype=np.uint32),
+        grid_frontier_count=ir.frontier_grid_count[None, :, :],
+        grid_frontier_offset=ir.frontier_grid_offset[None, :, :],
+        grid_frontier_body_fever_pool=ir.frontier_body_fever_pool[None, :],
+        grid_frontier_body_normal_pool=ir.frontier_body_normal_pool[None, :],
+        grid_frontier_masks_bits_pool=ir.frontier_masks_bits_pool[None, :, :],
+        grid_frontier_head_coeffs_pool=ir.frontier_head_coeffs_pool[None, :, :],
+        grid_gap=np.zeros((1, 0), dtype=np.int32),
+        grid_fever_activations=ir.frontier_fever_activations[None, :, :],
+        frontier_pool_used=int(ir.frontier_pool_used),
+    )
 
 
 def score_stats_fixed_timing_exact(
@@ -592,66 +1137,118 @@ def _score_timeline_frontier_payload_vectorized_result(
     ft_idx: int,
     ff_idx: int,
 ) -> tuple[int, int]:
-    ft_i = max(0, min(int(ft_idx), TOTAL_ROWS))
-    ff_i = max(0, min(int(ff_idx), TOTAL_ROWS))
-    frontier_count = int(payload.grid_frontier_count[0, ft_i, ff_i])
-    if frontier_count <= 0:
-        raise ValueError("Timing frontier payload has no replayable surface for the requested FT/FF cell")
-    frontier_offset = int(payload.grid_frontier_offset[0, ft_i, ff_i])
-    frontier_limit = int(frontier_offset + frontier_count)
-    if frontier_offset < 0 or frontier_limit > int(payload.frontier_pool_used):
-        raise ValueError("Timing frontier payload contains an invalid surface range")
+    """Scalar-per-row twin of ``score_from_ir_with_pool_idx`` that takes a raw payload.
 
-    body_total = max(0, int(total_notes) - 100)
-    body_fever = np.asarray(
-        payload.grid_frontier_body_fever_pool[0, frontier_offset:frontier_limit],
-        dtype=np.int64,
+    Delegates the per-cell replay to ``_replay_cell`` via a minimal IR view, so
+    the scalar trace path and the array-native forward path share one exact
+    replay implementation. Preserves the body_fever + body_normal == body_total
+    invariant check (now lives inside ``_replay_cell``).
+    """
+    ir = _ir_from_payload(payload, int(total_notes))
+    return score_from_ir_with_pool_idx(
+        ir,
+        primary_val=int(primary_val),
+        secondary_val=int(secondary_val),
+        pp_factor=float(pp_factor),
+        combo_mul=float(combo_mul),
+        fever_mul=float(fever_mul),
+        ft_idx=int(ft_idx),
+        ff_idx=int(ff_idx),
     )
-    body_normal = np.asarray(
-        payload.grid_frontier_body_normal_pool[0, frontier_offset:frontier_limit],
-        dtype=np.int64,
-    )
-    if bool(np.any(body_fever < 0)) or bool(np.any(body_normal < 0)) or bool(
-        np.any((body_fever + body_normal) != int(body_total))
-    ):
-        raise ValueError("Timing surface body counts do not match song body note count")
 
-    base_value = np.float64(float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor))
-    combo_f = np.float64(float(combo_mul))
-    fever_f = np.float64(float(fever_mul))
-    combo_val = np.int64(np.floor(base_value * combo_f))
-    fever_val = np.int64(np.floor(base_value * combo_f * fever_f))
-    scores = (body_fever * combo_val) + (body_normal * combo_val)
-    if int(fever_val) != int(combo_val):
-        scores = scores + (body_fever * (fever_val - combo_val))
 
+def _ir_from_payload(payload: Any, total_notes: int) -> ExactScoreIR:
+    """Build a minimal IR view from a raw TimelineFrontierGridPayload.
+
+    Only the fields ``_replay_cell`` indexes are populated; ref-table and
+    plateau fields are empty because the scalar twin already supplies the
+    resolved per-row factors. The body-count invariant check is preserved
+    inside ``_replay_cell`` via the body_fever/body_normal pool slices.
+    """
     head_len = min(max(0, int(total_notes)), 100)
-    combo_slope = np.float64((float(combo_f) - 1.0) / 100.0)
-    if head_len > 0:
-        # Vectorized head replay: the per-position f64 expressions (multiply, add,
-        # floor -- same op order per lane) are elementwise-identical to the scalar
-        # per-note loop this replaces, and only exact int64 additions are regrouped,
-        # so every pool lane's score is bit-identical (same argmax winner).
-        positions = np.arange(1, head_len + 1, dtype=np.float64)
-        perfect_values = base_value * ((combo_slope * positions) + np.float64(1.0))
-        normal_scores = np.floor(perfect_values).astype(np.int64)
-        fever_scores = np.floor(perfect_values * fever_f).astype(np.int64)
-        scores = scores + np.int64(normal_scores.sum())
-        fever_delta = fever_scores - normal_scores
-        if bool(np.any(fever_delta != 0)):
-            words = np.asarray(
-                payload.grid_frontier_masks_bits_pool[0, frontier_offset:frontier_limit, :4], dtype=np.uint64
-            )
-            note_idx = np.arange(head_len)
-            head_bits = ((words[:, note_idx // 32] >> (note_idx % 32).astype(np.uint64)) & np.uint64(1)).astype(
-                np.int64
-            )
-            scores = scores + (head_bits @ fever_delta)
-
-    if int(scores.shape[0]) <= 0:
-        raise ValueError("Timing frontier replay did not produce a score")
-    winner_local_idx = int(np.argmax(scores))
-    return int(scores[winner_local_idx]), int(frontier_offset + winner_local_idx)
+    body_total = max(0, int(total_notes) - 100)
+    grid_count = np.asarray(payload.grid_frontier_count[0], dtype=np.int32)
+    grid_offset = np.asarray(payload.grid_frontier_offset[0], dtype=np.int32)
+    body_fever_pool = np.asarray(payload.grid_frontier_body_fever_pool[0], dtype=np.int64)
+    body_normal_pool = np.asarray(payload.grid_frontier_body_normal_pool[0], dtype=np.int64)
+    masks_bits_pool = np.asarray(payload.grid_frontier_masks_bits_pool[0], dtype=np.uint64)
+    head_coeffs_pool = np.asarray(payload.grid_frontier_head_coeffs_pool[0], dtype=np.int16)
+    head_len_grid = np.asarray(payload.grid_head_len[0], dtype=np.int8)
+    fever_activations = np.asarray(payload.grid_fever_activations[0], dtype=np.int32)
+    pool_used = int(payload.frontier_pool_used)
+    if pool_used > 0:
+        body_fever_min = int(body_fever_pool[:pool_used].min())
+        body_fever_max = int(body_fever_pool[:pool_used].max())
+        body_normal_min = int(body_normal_pool[:pool_used].min())
+        body_normal_max = int(body_normal_pool[:pool_used].max())
+    else:
+        body_fever_min = body_fever_max = 0
+        body_normal_min = body_normal_max = 0
+    return ExactScoreIR(
+        total_notes=int(total_notes),
+        head_len=int(head_len),
+        body_total=int(body_total),
+        primary_color="",
+        secondary_color="",
+        color_projection="2*primary + secondary",
+        timing_mode="perfect_window",
+        fever_fill_base_rate=float(FEVER_FILL_BASE_RATE),
+        fever_time_scale=float(FEVER_TIME_SCALE),
+        fever_time_offset=float(FEVER_TIME_OFFSET),
+        long_notes=0,
+        last_note_time=0.0,
+        pp_table=np.zeros(0, dtype=np.float64),
+        cm_table=np.zeros(0, dtype=np.float64),
+        fm_table=np.zeros(0, dtype=np.float64),
+        ft_axis=np.zeros(0, dtype=np.float32),
+        ff_axis=np.zeros(0, dtype=np.float32),
+        stat_index_clamp_lo=0,
+        stat_index_clamp_hi=int(TOTAL_ROWS),
+        stat_value_clamp_lo=-80,
+        stat_value_clamp_hi=160,
+        fever_fill_floor=1,
+        base_notes_first_section_offset=-1,
+        pp_plateau_values=np.zeros(0, dtype=np.float64),
+        pp_plateau_inverse=np.zeros(0, dtype=np.int64),
+        cm_plateau_values=np.zeros(0, dtype=np.float64),
+        cm_plateau_inverse=np.zeros(0, dtype=np.int64),
+        fm_plateau_values=np.zeros(0, dtype=np.float64),
+        fm_plateau_inverse=np.zeros(0, dtype=np.int64),
+        base_int_formula="2*primary + secondary",
+        base_int_range=(0, 2 * 250 + 250),
+        two_color_collapse_v="v = 2*c1 + c2",
+        frontier_grid_count=grid_count,
+        frontier_grid_offset=grid_offset,
+        frontier_pool_used=int(pool_used),
+        frontier_body_fever_pool=body_fever_pool,
+        frontier_body_normal_pool=body_normal_pool,
+        frontier_masks_bits_pool=masks_bits_pool,
+        frontier_head_coeffs_pool=head_coeffs_pool,
+        frontier_head_len=head_len_grid,
+        frontier_body_fever_min_max=(int(body_fever_min), int(body_fever_max)),
+        frontier_body_normal_min_max=(int(body_normal_min), int(body_normal_max)),
+        frontier_fever_activations=fever_activations,
+        combo_val_formula="floor(base_value * combo_f)",
+        fever_val_formula="floor(base_value * combo_f * fever_f)",
+        body_score_formula="body_fever * fever_val + body_normal * combo_val",
+        head_combo_slope_formula="(combo_f - 1.0) / 100.0",
+        head_perfect_value_formula="base_value * ((combo_slope * (i + 1)) + 1.0)",
+        head_normal_score_formula="floor(perfect_value)",
+        head_fever_score_formula="floor(perfect_value * fever_f)",
+        head_fever_delta_formula="head_fever_score - head_normal_score",
+        head_score_formula="sum over i in [0, head_len) of (is_fever ? head_fever_score : head_normal_score)",
+        total_score_formula="max over pool lanes of (body_score + head_score)",
+        f64_envelope_guard=int(2**52),
+        residue_pp_factor="lookup_reference_py(pp_stat, pp_table, TOTAL_ROWS)",
+        residue_combo_val="floor(base_value * combo_f)",
+        residue_fever_val="floor(base_value * combo_f * fever_f)",
+        residue_head_normal_i="floor(base_value * ((combo_slope * (i + 1)) + 1.0))",
+        residue_head_fever_i="floor(base_value * ((combo_slope * (i + 1)) + 1.0) * fever_f)",
+        residue_great_penalty_base="compute_great_penalty_base(primary_val, secondary_val)",
+        gear_power_formula="(2 * primary_val + secondary_val) + pp_factor",
+        accuracy_formula="score / max(1, total_score_formula)",
+        cache_key=((), (), "perfect_window", int(_IR_SCHEMA_VERSION)),
+    )
 
 
 def _timeline_trace_for_payload_surface(
