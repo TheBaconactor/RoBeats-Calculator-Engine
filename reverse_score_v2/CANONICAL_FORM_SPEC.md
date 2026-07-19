@@ -24,6 +24,10 @@
   `gear_optimizer/solver/scoring/exact_rescore.py`:
   `score_stats_exact` / `score_stats_exact_batch` /
   `score_stat_arrays_exact_batch`. Reused unchanged by v2 per handoff §2.9.
+  `score_stat_arrays_exact_batch` now exists in v2 (committed in
+  `d0c38be4`) as the canonical array-native Vulkan soundness-gate scorer,
+  implemented as `ir = build_exact_score_ir(...); return score_from_ir(ir,
+  ...)`.
 - **Physical loadout.** A concrete `Loadout` (gear per slot, per-slot
   upgrade ids, mini states, gem alloc, team buff). Two physical loadouts
   may be one class member.
@@ -184,8 +188,11 @@ Example: 3 Perfect Points upgrades on slot 1 + 2 on slot 2 vs 2 on slot 1
 
 ### 2.2 Analysis: which upgrade types have piece-wise-invariant contribution
 
-An `UpgradeDef` (`reverse_score/webport_extract.py:42`) is a fixed stat
-pattern per upgrade type id:
+An `UpgradeDef` (v2 owner: `gear_optimizer.data.upgrades`, committed in
+`d0c38be4`; v1 reference: `reverse_score/webport_extract.py:42`) is a
+fixed stat pattern per upgrade type id. The v2 module also owns the
+22-type pattern table and the constants `UPGRADES_PER_PIECE_MAX = 15` and
+`UPGRADE_TOTAL_MAX = 90`:
 
 ```
 @dataclass(frozen=True)
@@ -194,8 +201,9 @@ class UpgradeDef:
     stats: dict[str, int]
 ```
 
-The composition path (`reverse_score/domain.py:315`, `compose_stats`) sums
-upgrades per-slot into a single global statsdict:
+The composition path (v2 owner: `gear_optimizer.data.upgrades`; v1
+reference: `reverse_score/domain.py:315`, `compose_stats`) sums upgrades
+per-slot into a single global statsdict:
 
 ```
 for slot in GEAR_SLOTS:
@@ -279,8 +287,10 @@ assert forward(loadout_from_placement(P_a)) == forward(loadout_from_placement(P_
 Empirical test protocol (the implementing agent runs this in K1.c):
 
 1. Enumerate a representative set of aggregate-count vectors across the
-   22 upgrade types, including negative-stat variants, with totals up to
-   `6 * UPGRADES_PER_PIECE_MAX = 90`.
+   22 upgrade types (pattern table owned by
+   `gear_optimizer.data.upgrades`), including negative-stat variants,
+   with totals up to `6 * UPGRADES_PER_PIECE_MAX = 90`
+   (`UPGRADE_TOTAL_MAX`, also owned by `gear_optimizer.data.upgrades`).
 2. For each vector, generate ≥2 distinct legal placements (e.g. via the
    canonical assignment in `_assemble_loadout` and one permutation).
 3. Forward-score each placement on a fixed chart through the canonical
@@ -290,7 +300,8 @@ Empirical test protocol (the implementing agent runs this in K1.c):
    ...)`.
 5. The check runs in the production soundness gate on every materialized
    class member: re-score every witness; witnesses sharing a key must
-   produce identical observables.
+   produce identical observables. Upgrade materialization in v2 reads the
+   `UpgradeDef` pattern table from `gear_optimizer.data.upgrades`.
 
 ## 3. Mini-identity fiber
 
@@ -318,15 +329,38 @@ slot-order-independent (minis are unordered in the loadout).
 
 Mini **STATE** persists across songs: a player's equipped minis — name,
 level, rank, ascension — are fixed across that player's leaderboard rows.
-Mini **EFFECT** is song-specific: `mini_stats_delta`
-(`reverse_score/domain.py:255`) takes `song_name`, `primary_color`,
-`secondary_color` parameters and applies `materialize_mini_for_song`,
-which uses the mini's `Song Target` list (`pet_song_targets`) to compute
-the ascension bonus. Two minis with the same base/rank/level/ascension
-numbers but different `name` can have identical stat contributions on
-one song (if their `materialize_mini_for_song` outputs coincide) but
-different contributions on another song (if their `Song Target` lists
-differ).
+Mini **EFFECT** is song-specific. The v2 production owners span two
+modules (both committed in `d0c38be4` unless noted):
+
+- `gear_optimizer.data.mini_scaling` — PetUtils level/rank scaling and
+  the PetInfo extractor. Exports `pet_stats_delta`, `pet_rank_to_max_level`,
+  `pet_color_level_scale`, `extract_pet_info`, `PetDef`, and the constants
+  `PET_MIN_LEVEL`, `PET_MAX_LEVEL`, `PET_RANK_TO_MAX_LEVEL`. This module
+  produces the level/rank-scaled base/color mods that determine the
+  ascension input row.
+- `gear_optimizer.data.mini_ascension` (existing production) — ascension
+  0..10 and song-target materialization. Exports
+  `materialize_mini_for_song` (at v2 line 249),
+  `mini_ascension_base_perfect_points_for_mini`, and
+  `MINI_ASCENSION_MAX_LEVEL`. This module applies the `Song Target` list
+  (`pet_song_targets`) to compute the ascension bonus.
+
+`materialize_mini_for_song` takes `song_name`, `primary_color`,
+`secondary_color` parameters and uses the mini's `Song Target` list
+(`pet_song_targets`) to compute the ascension bonus. Two minis with the
+same base/rank/level/ascension numbers but different `name` can have
+identical stat contributions on one song (if their
+`materialize_mini_for_song` outputs coincide) but different contributions
+on another song (if their `Song Target` lists differ).
+
+The fiber's distinctness proof (§3.4, §9.3) spans BOTH modules: the
+level/rank-scaled base/color mods (from `gear_optimizer.data.mini_scaling`)
+determine the ascension input row, and the ascension Song Target
+application (from `gear_optimizer.data.mini_ascension`) produces the
+song-specific stat contribution. The implementing agent must keep both
+modules in mind when wiring the proof.
+
+(v1 reference: `reverse_score/domain.py:255`, `mini_stats_delta`.)
 
 **Why this means mini identity cannot be collapsed by stat contribution
 alone:**
@@ -481,9 +515,12 @@ No check is needed because the invisibility is by construction (the
 scorer does not read those keys). The handoff §12 rule says: "the
 soundness gate would catch any bug that made a stat visible." The
 canonical scorer gate (handoff §5.A.3.e, §5.D) re-scores every materialized
-witness through `score_stat_arrays_exact_batch`; if a future code change
-made `Perfect Time` or an off-color stat visible, the gate would score
-two witnesses in the same class differently and raise
+witness through `score_stat_arrays_exact_batch` (now present in v2,
+committed in `d0c38be4`, as the canonical array-native Vulkan
+soundness-gate scorer; implemented as
+`ir = build_exact_score_ir(...); return score_from_ir(ir, ...)`); if a
+future code change made `Perfect Time` or an off-color stat visible, the
+gate would score two witnesses in the same class differently and raise
 `SoundnessGateMismatch`. The implementing agent MUST ensure the soundness
 gate runs on every materialized class member; that is the off-color
 fiber's check.
@@ -746,6 +783,17 @@ player, drifted chart).
 | Mini-identity (§3) | `assert_mini_identity_fiber_distinct` + multi-row filter | K1.c corpus; production multi-row filter | `FiberInvariantViolation("mini_identity", ...)` |
 | Off-color / invisible-stat (§4) | canonical scorer gate (`score_stat_arrays_exact_batch` re-score) | every materialized witness | `SoundnessGateMismatch` |
 
+`score_stat_arrays_exact_batch` (the canonical array-native Vulkan
+soundness-gate scorer named above) now exists in v2, committed in
+`d0c38be4`, as a thin adapter over the new `ExactScoreIR` +
+`score_from_ir`: implemented as
+`ir = build_exact_score_ir(...); return score_from_ir(ir, ...)`. The
+spec's references to it are valid. The upgrade-count fiber's
+materialization reads the `UpgradeDef` pattern table from
+`gear_optimizer.data.upgrades` (§2.2, §2.4). The mini-identity fiber's
+distinctness proof spans `gear_optimizer.data.mini_scaling` and
+`gear_optimizer.data.mini_ascension` (§3.3, §9.3).
+
 ## 9. Edge cases and non-trivial proofs
 
 ### 9.1 Two-color fiber: stat upper bound
@@ -784,7 +832,21 @@ defensive check, not a current correctness issue.
 
 ### 9.3 Mini-identity fiber: ascension and Song Target
 
-The mini-identity fiber's non-trivial case is the ascension bonus.
+The mini-identity fiber's non-trivial case is the ascension bonus. The
+v2 production owners span two modules (committed in `d0c38be4` unless
+noted):
+
+- `gear_optimizer.data.mini_scaling` owns PetUtils level/rank scaling and
+  the PetInfo extractor (`pet_stats_delta`, `PetDef`,
+  `pet_rank_to_max_level`, `pet_color_level_scale`, `extract_pet_info`,
+  `PET_MIN_LEVEL`, `PET_MAX_LEVEL`, `PET_RANK_TO_MAX_LEVEL`). Its output
+  is the level/rank-scaled base/color mod row fed into ascension.
+- `gear_optimizer.data.mini_ascension` (existing production) owns
+  ascension 0..10 and song-target materialization
+  (`materialize_mini_for_song` at v2 line 249,
+  `mini_ascension_base_perfect_points_for_mini`,
+  `MINI_ASCENSION_MAX_LEVEL`).
+
 `materialize_mini_for_song` uses the mini's `Song Target` list
 (`pet_song_targets` from `Minis.csv`) to decide whether the ascension
 bonus applies on a given song. Two minis with identical `(level, rank,
