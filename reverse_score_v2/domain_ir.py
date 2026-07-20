@@ -605,7 +605,9 @@ def _build_gem_axes(
     elem_options: list[AxisOption] = [
         AxisOption(label=("gem", "elemental", "", 0), vec=np.zeros(PROJECTION_DIM, dtype=np.int32))
     ]
-    for color in song_colors:
+    # Unique colors: ("Chill", "Chill") must not emit duplicate elemental
+    # options (same vec / same label stem).
+    for color in dict.fromkeys(song_colors):
         for count in range(1, gem_max_per_type + 1):
             vec = _gem_contribution(
                 primary=primary,

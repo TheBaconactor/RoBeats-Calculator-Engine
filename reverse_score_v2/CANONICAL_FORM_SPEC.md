@@ -1,18 +1,21 @@
 # `canonical_form` Specification — Reverse Score Engine v2
 
-> Status: K1 prerequisite. This document fixes the class-identity rule from
-> `docs/REVERSE_SCORE_V2_HANDOFF.md` §12 so the brute-force class-equality
-> gate (`test_class_completeness_vs_brute`) is well-defined. No production
-> code is changed by this document; it specifies the contract the v2
-> `canonical_form` implementation must satisfy.
+> Status: **FROZEN under persistent identities** (handoff §16.4 /
+> `CLASS_EQUIVALENCE_RESOLUTION.md`). Binding amendment: every physical
+> loadout is a distinct class member. Contribution-vector collapses
+> (two-color `v = 2c1+c2`, upgrade-count aggregates, off-color "expand at
+> witness time") are **removed from identity**. Search may still group
+> identical contribution vectors as weighted edges
+> (`Axis.identity_fibers`); materialization expands fiber weights into
+> distinct identities. Implementation: `reverse_score_v2/canonical.py`.
 >
-> Scope: defines the canonical key for the v2 reverse score engine, covering
-> all four fiber types named in §12 (two-color, upgrade-count, mini-identity,
-> off-color / invisible-stat). The brute-force gate hashes
-> `canonical_form(loadout)`; two loadouts are the same class member iff their
-> canonical keys are equal. Every collapse below is lossy at the physical
-> level by design and is proved lossless at the observable level by the
-> forward oracle.
+> Where this document's older §1 / §2 / §4.3 collapse wording conflicts
+> with the freeze above, the freeze wins. Sections marked SUPERSEDED are
+> retained as historical rationale only.
+>
+> Scope: defines the canonical key for the v2 reverse score engine. The
+> brute-force gate hashes `canonical_form(loadout)`; two loadouts are the
+> same class member iff their canonical keys are equal.
 
 ## 0. Terminology and references
 
@@ -525,45 +528,34 @@ gate would score two witnesses in the same class differently and raise
 gate runs on every materialized class member; that is the off-color
 fiber's check.
 
-## 5. Canonical key — complete typed definition
+## 5. Canonical key — complete typed definition (PERSISTENT IDENTITIES)
 
 ```python
-# v2 — typed definition. The brute-force class-equality gate hashes the
-# returned tuple. Two physical loadouts are the same class member iff
-# their canonical keys are equal.
+# v2 — persistent identities. The brute-force class-equality gate hashes the
+# returned tuple. Two physical loadouts are the same class member iff their
+# canonical keys are equal. Implemented in reverse_score_v2/canonical.py.
 
 def canonical_form(
     loadout: Loadout,
+    tables: Tables,
     *,
-    song_colors: tuple[str, ...],  # SongOracle.song_colors, length 1 or 2
+    song_name: str,
+    song_colors: tuple[str, ...],  # length 1 or 2
 ) -> tuple:
-    """Placement-invariant, song-color-aware identity for class-equality.
-
-    song_colors is part of the key context, not part of the loadout. The
-    caller fixes it per query (the engine inverts one row at a time, so
-    the chart's color arity is known). The key is only comparable across
-    loadouts inverted against the same song_colors.
-    """
-    # Gear slot assignment — NOT placement-invariant (gear name per slot
-    # matters; two different gear names in the same slot are different
-    # class members even if their stats coincide, because gear identity
-    # is part of the loadout the player actually equipped).
     gear_fiber = tuple(loadout.gear.get(slot) for slot in GEAR_SLOTS)
 
-    # Upgrade-count fiber (§2): aggregate count per upgrade type id.
-    upgrade_counts: dict[int, int] = {}
-    for ids in loadout.upgrades.values():
-        for uid in ids:
-            upgrade_counts[uid] = upgrade_counts.get(uid, 0) + 1
-    upgrade_fiber = tuple(sorted(upgrade_counts.items()))
+    # Per-(slot, type) placement — NOT aggregate counts (spec §2 collapse REMOVED).
+    upgrade_fiber = tuple(sorted(
+        (slot, uid)
+        for slot in GEAR_SLOTS
+        for uid in loadout.upgrades.get(slot, ())
+    ))
 
-    # Mini-identity fiber (§3): full identity tuple, sorted, not collapsed.
+    # Mini identity — full (name, level, rank, ascension), NOT collapsed.
     mini_fiber = tuple(sorted(
         (m.name, m.level, m.rank, m.ascension) for m in loadout.minis
     ))
 
-    # Gem allocation — not a fiber; the canonical key carries the full
-    # GemAlloc because gem counts are already the unit of identity.
     gem_fiber = (
         loadout.gems.perfect_points,
         loadout.gems.combo_multiplier,
@@ -574,56 +566,49 @@ def canonical_form(
         loadout.gems.selected_element,
     )
 
-    # Team buff — not a fiber; (tier, color) is the unit of identity.
     buff_fiber = loadout.team_buff
 
-    # Visible-stat projection (§4.3) — carries the off-color / invisible-
-    # stat fiber (§4). Composed stats are needed because minis' ascension
-    # bonuses depend on song_colors and song_name, so the projection is
-    # song-aware. The two-color fiber (§1) collapses (c1, c2) -> v when
-    # len(song_colors) == 2.
-    #
-    # The statsdict is computed by the caller and passed in, OR the key
-    # carries the loadout and the projection is computed at hash time.
-    # Either is acceptable; the typed definition below assumes the caller
-    # provides the composed stats.
+    # Visible-stat projection carries raw (c1[, c2]) — NO v=2c1+c2 collapse.
+    # Projection is derived, not identity; two loadouts with the same
+    # projection may still be distinct class members.
     return (
         gear_fiber,
         upgrade_fiber,
         mini_fiber,
         gem_fiber,
         buff_fiber,
-        visible_stat_projection(loadout, song_colors),  # see §5.1 below
+        visible_stat_projection(loadout, tables, song_name=song_name,
+                                song_colors=song_colors),
     )
 ```
 
-### 5.1 `visible_stat_projection`
+### 5.1 `visible_stat_projection` (no two-color collapse)
 
 ```
-def visible_stat_projection(
-    loadout: Loadout,
-    song_colors: tuple[str, ...],
-) -> tuple:
+def visible_stat_projection(loadout, tables, *, song_name, song_colors) -> tuple:
     stats = compose_stats(loadout, tables, song_name=..., primary_color=...,
                           secondary_color=...)
     if len(song_colors) == 2:
-        c1, c2 = song_colors
-        v = 2 * int(stats.get(c1, 0)) + int(stats.get(c2, 0))  # §1 two-color fiber
-        color_part = (v,)
+        color_part = (int(stats.get(song_colors[0], 0)),
+                      int(stats.get(song_colors[1], 0)))
     elif len(song_colors) == 1:
         color_part = (int(stats.get(song_colors[0], 0)),)
     else:
-        raise FiberError(f"song_colors must have length 1 or 2, got {song_colors!r}")
-    main_part = tuple(
-        int(stats.get(k, 0))
-        for k in ("Perfect Points", "Combo Multiplier",
-                  "Fever Multiplier", "Fever Time", "Fever Fill Rate")
-    )
+        raise ValueError(...)
+    main_part = tuple(int(stats.get(k, 0)) for k in
+        ("Perfect Points", "Combo Multiplier", "Fever Multiplier",
+         "Fever Time", "Fever Fill Rate"))
     return color_part + main_part
 ```
 
+> Historical note: the pre-freeze §5 typed definition collapsed upgrades to
+> aggregate counts and two-color stats to `v = 2*c1+c2`. That definition is
+> SUPERSEDED by persistent identities above. See
+> `CLASS_EQUIVALENCE_RESOLUTION.md` §1–§2.
+
 `Perfect Time` and any non-song-color stat are not in the projection
-(§4.3).
+(§4.3). Under persistent identities they remain distinct via the full
+loadout identity even when invisible to observables.
 
 ### 5.2 Hashing and equality
 
