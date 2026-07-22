@@ -32,10 +32,13 @@ def data_root(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "GEAR_DIR", tmp_path / "Data" / "Gear")
     monkeypatch.setattr(service, "_TIMELINE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "timeline_frontier_cache")
     monkeypatch.setattr(service, "_FG_RESPONSE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "fg_response_frontier_cache")
+    monkeypatch.setattr(service, "_SERVICE_DRAINING_FOR_UPDATE", False)
+    service._AUTHORITATIVE_PUBLICATION_READY.clear()
     service.clear_official_song_catalog_cache()
     with service._INFLIGHT_SOLVES_LOCK:
         service._INFLIGHT_SOLVES.clear()
     yield tmp_path
+    service._AUTHORITATIVE_PUBLICATION_READY.clear()
     service.clear_official_song_catalog_cache()
     with service._INFLIGHT_SOLVES_LOCK:
         service._INFLIGHT_SOLVES.clear()
@@ -48,6 +51,17 @@ def test_list_official_songs_reads_headers(data_root):
     assert songs["Canon in D [Normal]"]["difficulty"] == "Normal"
     assert songs["Canon in D [Normal]"]["primaryElement"] == "Beat"
     assert songs["Feeding [Hard]"]["difficulty"] == "Hard"
+
+
+def test_completed_publication_becomes_the_website_optimizer_data_source(data_root):
+    published = data_root / "published" / "Data"
+    (published / "Gear").mkdir(parents=True)
+
+    service._activate_published_data(published)
+
+    assert service._AUTHORITATIVE_PUBLICATION_READY.is_set()
+    assert service.DATA_ROOT == published.resolve()
+    assert service.GEAR_DIR == (published / "Gear").resolve()
 
 
 def test_api_catalog_uses_configured_webport_song_library(data_root, monkeypatch):
@@ -84,7 +98,7 @@ def test_configured_webport_library_requires_all_difficulty_directories(data_roo
         service.list_official_songs()
 
 
-def test_provisioned_catalog_cache_still_runs_destination_maintenance(monkeypatch):
+def test_service_starts_frontier_server_maintenance(monkeypatch):
     calls: list[str] = []
 
     class _Server:
@@ -94,7 +108,10 @@ def test_provisioned_catalog_cache_still_runs_destination_maintenance(monkeypatc
             pass
 
         def serve_forever(self):
-            pass
+            calls.append("serve")
+
+        def server_close(self):
+            calls.append("close")
 
     class _Thread:
         def __init__(self, *, target, **_kwargs):
@@ -103,23 +120,24 @@ def test_provisioned_catalog_cache_still_runs_destination_maintenance(monkeypatc
         def start(self):
             self._target()
 
-    monkeypatch.setenv("ROBEATSMETA_SKIP_CATALOG_PREBUILD", "1")
     monkeypatch.setattr(service, "ThreadingHTTPServer", _Server)
     monkeypatch.setattr(service.threading, "Thread", _Thread)
-    monkeypatch.setattr(
-        service,
-        "_maintain_provisioned_fg_frontier_cache",
-        lambda: calls.append("maintain"),
-    )
-    monkeypatch.setattr(
-        service,
-        "_prebuild_catalog_frontier_caches",
-        lambda: calls.append("prebuild"),
-    )
+
+    class _Maintainer:
+        def __init__(self, **_kwargs):
+            calls.append("init")
+
+        def serve_forever(self):
+            calls.append("maintain")
+
+        def stop(self):
+            calls.append("stop")
+
+    monkeypatch.setattr(service, "FrontierServerMaintainer", _Maintainer)
 
     assert service.main(["--host", "127.0.0.1", "--port", "0"]) == 0
 
-    assert calls == ["maintain"]
+    assert calls == ["init", "maintain", "serve", "stop", "close"]
 
 
 def test_find_official_chart_exact_match(data_root):
@@ -484,6 +502,7 @@ def _peak_concurrent_slots(workers: int, available: int, min_free: int, monkeypa
     monkeypatch.setattr(service, "_MIN_FREE_BYTES", min_free)
     monkeypatch.setattr(service, "_available_bytes", lambda: available)
     monkeypatch.setattr(service, "_active_solves", 0)
+    monkeypatch.setattr(service, "_SERVICE_DRAINING_FOR_UPDATE", False)
     peak = {"n": 0}
     peak_lock = threading.Lock()
     start = threading.Barrier(workers)

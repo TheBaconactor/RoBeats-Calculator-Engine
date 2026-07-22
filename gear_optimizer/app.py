@@ -40,6 +40,8 @@ from gear_optimizer.data.csv_parser import (
     read_table,
 )
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
+from gear_optimizer.client_update import update_and_restart_client
+from gear_optimizer.frontier_client import sync_frontiers_from_server
 from gear_optimizer.solver.scoring import FG_CACHE
 from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
 from gear_optimizer.app_async_db import AsyncDbSaver
@@ -378,6 +380,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 graceful_stop = True
                 loop_forever = False
                 return False
+            update_and_restart_client()
+            frontier_sync = sync_frontiers_from_server()
             cfg = load_config()
             runtime_settings = self._current_runtime_settings(cfg)
             self._runtime_settings = runtime_settings
@@ -434,6 +438,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 ref_arrays=ref_arrays,
                 data_root=PATHS.data_dir,
                 announce_stream=self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout,
+                build_missing=not frontier_sync.enabled,
             )
             self._configure_execution_and_prewarm(cfg)
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)

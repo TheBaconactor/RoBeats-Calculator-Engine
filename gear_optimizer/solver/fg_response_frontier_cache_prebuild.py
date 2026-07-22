@@ -848,6 +848,7 @@ def run_fg_response_frontier_cache_prebuild(
     ref_arrays: dict,
     data_root: str | os.PathLike[str] | None = None,
     authorize_destructive_rotation: bool = False,
+    build_missing: bool = True,
 ) -> FgResponseFrontierCachePrebuildSummary:
     del cfg
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
@@ -902,14 +903,29 @@ def run_fg_response_frontier_cache_prebuild(
         # their WOF backing even though every manifest entry validates. Run maintenance before the
         # complete-pool return so those exact cache hits regain lossless XPRESS16K compression. The
         # builder lock prevents this filesystem pass from overlapping a live bundle writer.
-        _maintain_fg_response_frontier_cache_under_lock(
-            authorize_destructive_rotation=bool(authorize_destructive_rotation)
-        )
+        if build_missing:
+            _maintain_fg_response_frontier_cache_under_lock(
+                authorize_destructive_rotation=bool(authorize_destructive_rotation)
+            )
 
         if not manifest_plan.missing_paths:
             return FgResponseFrontierCachePrebuildSummary(
                 total=int(manifest_plan.total_paths),
                 completed=int(manifest_hits),
+                disk=int(manifest_hits),
+                elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+            )
+
+        if not build_missing:
+            missing_count = len(manifest_plan.missing_paths)
+            logger.error(
+                "[FGResponseCache] Frontier server publication is missing %s required song cache(s).",
+                missing_count,
+            )
+            return FgResponseFrontierCachePrebuildSummary(
+                total=int(manifest_plan.total_paths),
+                completed=int(manifest_hits),
+                failures=int(missing_count),
                 disk=int(manifest_hits),
                 elapsed_ms=float((time.perf_counter() - started) * 1000.0),
             )

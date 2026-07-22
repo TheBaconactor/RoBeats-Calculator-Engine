@@ -61,6 +61,8 @@ def run_startup_cpu_work(
     ref_arrays: dict,
     data_root,
     announce_stream: TextIO | None = None,
+    build_missing: bool = True,
+    authorize_destructive_rotation: bool = False,
 ) -> None:
     message = "[Startup][Cache] Building and caching exact timeline + FG response frontiers before scoring..."
     stream = announce_stream or sys.stdout
@@ -84,6 +86,7 @@ def run_startup_cpu_work(
         song_queue=queue_items,
         ref_arrays=ref_arrays,
         data_root=data_root,
+        build_missing=build_missing,
     )
     timeline_elapsed_ms = float((time.perf_counter() - timeline_t0) * 1000.0)
     _announce_cache_summary(stream, label="Timeline frontier cache", summary=timeline_summary, elapsed_ms=timeline_elapsed_ms)
@@ -93,6 +96,8 @@ def run_startup_cpu_work(
         song_queue=queue_items,
         ref_arrays=ref_arrays,
         data_root=data_root,
+        build_missing=build_missing,
+        authorize_destructive_rotation=authorize_destructive_rotation,
     )
     fg_elapsed_ms = float((time.perf_counter() - fg_t0) * 1000.0)
     _announce_cache_summary(stream, label="FG response-frontier cache", summary=fg_summary, elapsed_ms=fg_elapsed_ms)

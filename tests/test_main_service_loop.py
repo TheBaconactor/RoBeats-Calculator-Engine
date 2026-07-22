@@ -21,6 +21,11 @@ def test_cli_run_inits_app_once_and_ignores_run_return_value(monkeypatch):
     monkeypatch.setattr(optimizer_cli, "_apply_debug_profile_env", lambda _cfg: None)
     monkeypatch.setattr(optimizer_cli, "_apply_gpu_song_slots_default", lambda: None)
     monkeypatch.setattr(optimizer_cli, "_apply_throughput_mode_env", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "gear_optimizer.client_update",
+        types.SimpleNamespace(update_and_restart_client=lambda: None),
+    )
     monkeypatch.setitem(sys.modules, "gear_optimizer.app", types.SimpleNamespace(GearOptimizerApp=FakeApp))
 
     assert optimizer_cli.run() == 0

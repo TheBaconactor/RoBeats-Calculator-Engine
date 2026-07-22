@@ -209,8 +209,46 @@ The service exposes:
 
 - `GET /songs` — official chart metadata
 - `POST /optimize` — isolated optimization for an official chart or supplied chart text
+- `GET /metafinder/v1/manifest` and versioned bundle downloads — authenticated standalone-client updates
 
 It binds to loopback by default. Set `ROBEATSMETA_OPTIMIZER_API_TOKEN` before exposing it outside a trusted local environment, and place any public deployment behind TLS and an appropriate reverse proxy. Request solves use isolated working directories while sharing canonical compatible frontier caches.
+
+### Central frontier/Data service and standalone clients
+
+The optimizer service on the RoBeatsMeta host is the only frontier builder for standalone installations. It polls the private trusted `origin/main` Git ref. A code update drains website solves, fast-forwards the clean host checkout, and restarts the service before doing any work, so the new code—not the old process—runs the exported-game-data sync and prebuilds every missing timeline and FG frontier. Only then does the host atomically publish the exact code/Data/cache revision. Website `/songs` and `/optimize` resume against that published Data snapshot; they never expose a half-built revision. The public client bridge is `https://api.robeatsmeta.net/metafinder/v1`.
+
+Standalone startup is fail-closed and ordered:
+
+1. Authenticate to the published manifest.
+2. Install changed code bundles for the exact private-repository commit published by the host, then restart if code changed. The client does not contact GitHub.
+3. Install changed Data/frontier bundles with SHA-256 verification and atomic file replacement.
+4. Verify every required frontier locally without permitting a local rebuild.
+
+Code and frontier files are packed into stable content buckets, so a new or invalidated file changes only its bucket; unchanged bundle hashes and unchanged local file identities transfer nothing. Replacements are downloaded and verified before previously managed files absent from the new publication are removed. Local configuration, credentials, Data generated state, databases, and unrelated files are never part of code cleanup.
+
+Each installation needs its own credential. On the host:
+
+```bash
+python3 -m gear_optimizer.frontier_auth issue <client-id> /secure/transfer/frontier_client_credentials.json
+```
+
+Transfer that file securely to the client's `bin/frontier_client_credentials.json` and restrict it to the installation owner (`chmod 600` on POSIX). Revoke it with:
+
+```bash
+python3 -m gear_optimizer.frontier_auth revoke <client-id>
+```
+
+The credential is deliberately never stored in Git. The private Git checkout is required as an installation marker and initial managed-file inventory, but files or folder names cannot be an authentication factor because they can be copied. Authorization therefore proves possession of the separately issued installation credential. Clients need no GitHub access after installation; if a credential is copied, revoke that client immediately.
+
+Relevant external-boundary configuration:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `METAFINDER_FRONTIER_SERVER_URL` | `https://api.robeatsmeta.net/metafinder/v1` | Standalone update origin; remote URLs must use HTTPS. |
+| `METAFINDER_FRONTIER_CREDENTIALS_FILE` | `bin/frontier_client_credentials.json` | Per-install client credential. |
+| `ROBEATSMETA_FRONTIER_CLIENTS_FILE` | `bin/frontier_server_clients.json` | Host-side client registry. |
+| `ROBEATSMETA_FRONTIER_GIT_REMOTE` / `ROBEATSMETA_FRONTIER_GIT_BRANCH` | `origin` / `main` | Trusted private server code/Data source. |
+| `ROBEATSMETA_FRONTIER_GIT_POLL_SECONDS` | `300` | Host refresh interval. |
 
 ## Architecture
 

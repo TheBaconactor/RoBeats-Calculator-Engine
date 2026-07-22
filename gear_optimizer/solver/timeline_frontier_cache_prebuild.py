@@ -301,6 +301,7 @@ def run_timeline_frontier_cache_prebuild(
     song_queue: Iterable[tuple],
     ref_arrays: dict,
     data_root: str | os.PathLike[str] | None = None,
+    build_missing: bool = True,
 ) -> TimelineFrontierCachePrebuildSummary:
     del cfg
     from gear_optimizer.solver.taichi_gem.api.timeline import _frontier_disk_cache_dir
@@ -343,6 +344,20 @@ def run_timeline_frontier_cache_prebuild(
             return TimelineFrontierCachePrebuildSummary(
                 total=int(manifest_plan.total_paths),
                 completed=int(manifest_hits),
+                disk=int(manifest_hits),
+                elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+            )
+
+        if not build_missing:
+            missing_count = len(manifest_plan.missing_paths)
+            logger.error(
+                "[TimelineCache] Frontier server publication is missing %s required song cache(s).",
+                missing_count,
+            )
+            return TimelineFrontierCachePrebuildSummary(
+                total=int(manifest_plan.total_paths),
+                completed=int(manifest_hits),
+                failures=int(missing_count),
                 disk=int(manifest_hits),
                 elapsed_ms=float((time.perf_counter() - started) * 1000.0),
             )

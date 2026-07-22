@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -15,10 +17,13 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.core.parsing import env_flag, env_int, env_str
+from gear_optimizer.core.parsing import env_int, env_str
 from gear_optimizer.data.database import get_best_loadouts
+from gear_optimizer.frontier_auth import FrontierRequestAuthenticator
+from gear_optimizer.frontier_server import FrontierDistributionState, FrontierServerMaintainer
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +71,11 @@ _SOLVE_SEMAPHORE = threading.Semaphore(_SOLVE_POOL_SIZE)
 _MIN_FREE_BYTES = max(0, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_MIN_FREE_MB", 3000)) * 1024 * 1024
 _admission = threading.Condition()
 _active_solves = 0
+_SERVICE_DRAINING_FOR_UPDATE = False
+
+
+class ServiceNotReady(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -89,8 +99,12 @@ def _acquire_solve_slot() -> None:
     """Block until it is memory-safe to start another solve subprocess."""
     global _active_solves
     with _admission:
+        if _SERVICE_DRAINING_FOR_UPDATE:
+            raise ServiceNotReady("optimizer service is activating a new MetaFinder revision")
         while _active_solves > 0 and _MIN_FREE_BYTES and _available_bytes() < _MIN_FREE_BYTES:
             _admission.wait(timeout=1.0)  # re-check as running solves free memory
+            if _SERVICE_DRAINING_FOR_UPDATE:
+                raise ServiceNotReady("optimizer service is activating a new MetaFinder revision")
         _active_solves += 1
 
 
@@ -107,6 +121,9 @@ _TIMELINE_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "timeline_frontier_cache"
 _FG_RESPONSE_FRONTIER_CACHE_DIR = REPO_ROOT / "bin" / "fg_response_frontier_cache"
 _TIMELINE_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _FG_RESPONSE_FRONTIER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_FRONTIER_DISTRIBUTION = FrontierDistributionState()
+_FRONTIER_AUTH = FrontierRequestAuthenticator()
+_AUTHORITATIVE_PUBLICATION_READY = threading.Event()
 
 # Concurrent writes to the shared frontier cache are safe: both writers (timeline frontier grid and
 # FG response cache) write to a unique per-thread temp file and atomically os.replace() it into
@@ -189,61 +206,80 @@ def _release_job_solve(job: str, state: _InFlightSolve) -> None:
             del _INFLIGHT_SOLVES[job]
 
 
-def _prebuild_catalog_frontier_caches() -> None:
-    """Attempt to fill missing canonical cache entries for the official catalog at deployment.
+def _prebuild_frontier_caches(data_root: Path) -> dict[str, set[str]]:
+    """Build every missing canonical cache before a Data revision becomes downloadable."""
+    import numpy as np
 
-    This runs in the service process after it starts listening. Existing uploaded entries are
-    manifest/disk hits; only missing or key-invalidated songs build. A failure is logged loudly but
-    does not remove live serviceability because the isolated solve path runs the same builders on a
-    cache miss.
-    """
-    try:
-        import numpy as np
+    from gear_optimizer.core.config import load_config
+    from gear_optimizer.data.csv_parser import read_table
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+    from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
 
-        from gear_optimizer.core.config import load_config, load_paths_cache
-        from gear_optimizer.core.constants import PATHS
-        from gear_optimizer.data.csv_parser import read_table
-        from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
-        from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
+    stats_path = data_root / "Gear" / "Stats.txt"
+    stats_table = read_table(str(stats_path))
+    ref_arrays = build_ref_arrays_from_stats(stats_table, dtype=np.float32)
+    song_paths = tuple(
+        str(chart)
+        for difficulty in DIFFICULTIES
+        for chart in sorted((data_root / difficulty).glob("*.txt"))
+    )
+    if not song_paths:
+        raise RuntimeError(f"frontier server Data revision has no song charts: {data_root}")
+    run_startup_cpu_work(
+        cfg=load_config(),
+        song_queue=song_paths,
+        ref_arrays=ref_arrays,
+        data_root=data_root,
+        build_missing=True,
+        authorize_destructive_rotation=True,
+    )
+    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
+        _build_manifest_plan as build_fg_manifest_plan,
+        _manifest_path as fg_manifest_path,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
+        _surface_sidecar_paths,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
+    from gear_optimizer.solver.timeline_frontier_cache_prebuild import (
+        _build_manifest_plan as build_timeline_manifest_plan,
+        _manifest_path as timeline_manifest_path,
+    )
 
-        cfg = load_config()
-        paths = load_paths_cache()
-        stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
-        ref_arrays = build_ref_arrays_from_stats(stats_table, dtype=np.float32)
-        song_paths = tuple(
-            str(chart)
-            for _difficulty, folder in _official_song_directories()
-            for chart in sorted(folder.glob("*.txt"))
-        )
-        run_startup_cpu_work(
-            cfg=cfg,
-            song_queue=song_paths,
-            ref_arrays=ref_arrays,
-            data_root=DATA_ROOT,
-        )
-    except Exception:
-        logger.exception(
-            "catalog frontier cache prebuild failed; live requests will retry missing entries"
-        )
+    def recorded_files(plan, manifest_path: Path, cache_root: Path) -> set[str]:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        entries = payload.get("entries") if isinstance(payload, dict) else None
+        if not isinstance(entries, dict) or plan.missing_paths:
+            raise RuntimeError("frontier prebuild did not produce a complete publication manifest")
+        files: set[str] = set()
+        for key in set(plan.key_by_norm_path.values()):
+            entry = entries.get(key)
+            cache_file = Path(str(entry.get("cache_file") or "")) if isinstance(entry, dict) else Path()
+            if cache_file.parent.resolve() != cache_root.resolve() or not cache_file.is_file():
+                raise RuntimeError(f"frontier manifest references an invalid cache file: {cache_file}")
+            files.add(cache_file.name)
+        return files
 
-
-def _maintain_provisioned_fg_frontier_cache() -> None:
-    """Apply destination-native maintenance to an externally copied FG pool without building."""
-    try:
-        from gear_optimizer.solver.fg_response_frontier_cache_prebuild import (
-            maintain_provisioned_fg_response_frontier_cache,
-        )
-
-        maintain_provisioned_fg_response_frontier_cache()
-    except Exception:
-        logger.exception("provisioned FG frontier cache maintenance failed")
-
-
-def _run_catalog_frontier_cache_startup() -> None:
-    if env_flag("ROBEATSMETA_SKIP_CATALOG_PREBUILD"):
-        _maintain_provisioned_fg_frontier_cache()
-    else:
-        _prebuild_catalog_frontier_caches()
+    timeline_plan = build_timeline_manifest_plan(song_paths, ref_arrays, persist_validated_entries=False)
+    timeline_files = recorded_files(
+        timeline_plan,
+        timeline_manifest_path(),
+        _TIMELINE_FRONTIER_CACHE_DIR,
+    )
+    fg_plan = build_fg_manifest_plan(
+        song_paths,
+        ref_arrays,
+        stat_keys=all_response_stat_keys(),
+        persist_validated_entries=False,
+    )
+    fg_bundles = recorded_files(fg_plan, fg_manifest_path(), _FG_RESPONSE_FRONTIER_CACHE_DIR)
+    fg_files = set(fg_bundles)
+    for bundle_name in fg_bundles:
+        for sidecar in _surface_sidecar_paths(_FG_RESPONSE_FRONTIER_CACHE_DIR / bundle_name):
+            if not sidecar.is_file():
+                raise RuntimeError(f"FG frontier bundle is missing a sidecar: {sidecar}")
+            fg_files.add(sidecar.name)
+    return {"timeline": timeline_files, "fg": fg_files}
 
 
 class RequestError(ValueError):
@@ -310,6 +346,41 @@ def clear_official_song_catalog_cache() -> None:
     with _OFFICIAL_CATALOG_LOCK:
         _OFFICIAL_CATALOG_CACHE = None
         _OFFICIAL_CATALOG_CACHE_KEY = None
+
+
+def _activate_published_data(data_root: Path) -> None:
+    global DATA_ROOT, GEAR_DIR, _SERVICE_DRAINING_FOR_UPDATE
+    root = Path(data_root).resolve()
+    if not (root / "Gear").is_dir():
+        raise RuntimeError(f"published MetaFinder Data has no Gear directory: {root}")
+    DATA_ROOT = root
+    GEAR_DIR = root / "Gear"
+    clear_official_song_catalog_cache()
+    with _admission:
+        _SERVICE_DRAINING_FOR_UPDATE = False
+        _admission.notify_all()
+    _AUTHORITATIVE_PUBLICATION_READY.set()
+
+
+def _prepare_server_code_update() -> None:
+    global _SERVICE_DRAINING_FOR_UPDATE
+    _AUTHORITATIVE_PUBLICATION_READY.clear()
+    with _admission:
+        _SERVICE_DRAINING_FOR_UPDATE = True
+        while _active_solves:
+            _admission.wait(timeout=1.0)
+    _OFFICIAL_CATALOG_LOCK.acquire()
+
+
+def _finish_server_code_update(*, aborted: bool) -> None:
+    global _SERVICE_DRAINING_FOR_UPDATE
+    if _OFFICIAL_CATALOG_LOCK.locked():
+        _OFFICIAL_CATALOG_LOCK.release()
+    if aborted:
+        with _admission:
+            _SERVICE_DRAINING_FOR_UPDATE = False
+            _admission.notify_all()
+        _AUTHORITATIVE_PUBLICATION_READY.set()
 
 
 def _build_official_song_catalog() -> _OfficialSongCatalog:
@@ -605,23 +676,72 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
 # --- HTTP --------------------------------------------------------------------
 
 class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
-    server_version = "RoBeatsMetaOptimizer/2.0"
+    server_version = "RoBeatsMetaOptimizer/3.0"
 
     def _authorized(self) -> bool:
         token = env_str("ROBEATSMETA_OPTIMIZER_API_TOKEN", "").strip()
-        return not token or self.headers.get("Authorization") == f"Bearer {token}"
+        supplied = self.headers.get("Authorization", "")
+        return not token or hmac.compare_digest(supplied, f"Bearer {token}")
 
     def do_GET(self) -> None:
-        if self.path.rstrip("/") != "/songs":
+        parsed = urlsplit(self.path)
+        if parsed.path.startswith("/metafinder/v1/"):
+            self._serve_frontier_distribution(parsed.path, parsed.query)
+            return
+        if parsed.path.rstrip("/") != "/songs" or parsed.query:
             self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
         if not self._authorized():
             self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
+        if not _AUTHORITATIVE_PUBLICATION_READY.is_set():
+            self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "frontier_publication_not_ready"})
+            return
         try:
             self._send(HTTPStatus.OK, {"songs": list_official_songs()})
         except Exception as exc:  # noqa: BLE001 - HTTP boundary: surface as 500
             self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+    def _serve_frontier_distribution(self, path: str, query: str) -> None:
+        if query or not _FRONTIER_AUTH.authorize(method="GET", path=path, headers=self.headers):
+            self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        if path == "/metafinder/v1/manifest":
+            body = _FRONTIER_DISTRIBUTION.manifest_bytes()
+            if body is None:
+                self._send(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"error": "frontier_publication_not_ready"},
+                )
+                return
+            self._send_bytes(
+                HTTPStatus.OK,
+                body,
+                content_type="application/json",
+                cache_control="private, no-store",
+            )
+            return
+        parts = path.strip("/").split("/")
+        if len(parts) != 5 or parts[:3] != ["metafinder", "v1", "bundles"]:
+            self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        bundle = _FRONTIER_DISTRIBUTION.bundle_info(parts[3], parts[4])
+        if bundle is None:
+            self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        bundle_path, digest = bundle
+        try:
+            size = int(bundle_path.stat().st_size)
+            self.send_response(int(HTTPStatus.OK))
+            self.send_header("Content-Type", "application/gzip")
+            self.send_header("Content-Length", str(size))
+            self.send_header("X-Content-SHA256", digest)
+            self.send_header("Cache-Control", "private, max-age=31536000, immutable")
+            self.end_headers()
+            with bundle_path.open("rb") as handle:
+                shutil.copyfileobj(handle, self.wfile, length=1024 * 1024)
+        except OSError:
+            logger.exception("failed to stream frontier bundle %s", bundle_path)
 
     def do_POST(self) -> None:
         if self.path.rstrip("/") != "/optimize":
@@ -629,6 +749,9 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
             return
         if not self._authorized():
             self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        if not _AUTHORITATIVE_PUBLICATION_READY.is_set():
+            self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "frontier_publication_not_ready"})
             return
         try:
             request = self._read_json()
@@ -638,6 +761,8 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": str(exc)})
         except RequestError as exc:
             self._send(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except ServiceNotReady as exc:
+            self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - HTTP boundary: optimizer failure -> 500
             self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
@@ -657,9 +782,20 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
 
     def _send(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self._send_bytes(status, body, content_type="application/json", cache_control="no-store")
+
+    def _send_bytes(
+        self,
+        status: HTTPStatus,
+        body: bytes,
+        *,
+        content_type: str,
+        cache_control: str,
+    ) -> None:
         self.send_response(int(status))
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(body)
 
@@ -672,26 +808,44 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default=env_str("ROBEATSMETA_OPTIMIZER_API_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=env_int("ROBEATSMETA_OPTIMIZER_API_PORT", 8765))
     args = parser.parse_args(argv)
+    try:
+        loopback_bind = ipaddress.ip_address(str(args.host)).is_loopback
+    except ValueError:
+        loopback_bind = str(args.host).strip().lower() == "localhost"
+    if not loopback_bind and not env_str("ROBEATSMETA_OPTIMIZER_API_TOKEN", ""):
+        raise RuntimeError("ROBEATSMETA_OPTIMIZER_API_TOKEN is required for a non-loopback bind")
     server = ThreadingHTTPServer((args.host, int(args.port)), RoBeatsMetaServiceHandler)
     server.daemon_threads = True
-    # Service-mode external boundary: when the FG/timeline caches are provisioned externally (e.g.
-    # built on a beefier host and copied in), skip the deployment-time catalog prebuild so the box
-    # does not grind rebuilding what is about to be dropped in. Serving is unaffected -- the isolated
-    # solve path still builds any genuinely missing entry on demand.
-    if env_flag("ROBEATSMETA_SKIP_CATALOG_PREBUILD"):
-        print(
-            "[robeatsmeta-service] catalog frontier cache prebuild SKIPPED "
-            "(ROBEATSMETA_SKIP_CATALOG_PREBUILD): maintaining the provisioned FG pool; "
-            "missing entries build on demand.",
-            flush=True,
-        )
-        logger.info("catalog frontier cache prebuild skipped (ROBEATSMETA_SKIP_CATALOG_PREBUILD)")
-    prebuild = threading.Thread(
-        target=_run_catalog_frontier_cache_startup,
-        name="catalog-frontier-cache-startup",
+    restart_revision: list[str] = []
+    serving = threading.Event()
+
+    def request_restart(commit: str) -> None:
+        restart_revision[:] = [commit]
+        _finish_server_code_update(aborted=False)
+
+        def shutdown_when_serving() -> None:
+            if serving.wait(timeout=30):
+                server.shutdown()
+
+        threading.Thread(target=shutdown_when_serving, name="frontier-server-restart", daemon=True).start()
+
+    maintainer = FrontierServerMaintainer(
+        repo_root=REPO_ROOT,
+        timeline_cache_root=_TIMELINE_FRONTIER_CACHE_DIR,
+        fg_cache_root=_FG_RESPONSE_FRONTIER_CACHE_DIR,
+        state=_FRONTIER_DISTRIBUTION,
+        prebuild=_prebuild_frontier_caches,
+        restart_requested=request_restart,
+        publication_ready=_activate_published_data,
+        prepare_code_update=_prepare_server_code_update,
+        code_update_aborted=lambda: _finish_server_code_update(aborted=True),
+    )
+    maintenance = threading.Thread(
+        target=maintainer.serve_forever,
+        name="frontier-server-maintenance",
         daemon=True,
     )
-    prebuild.start()
+    maintenance.start()
     print(
         f"[robeatsmeta-service] listening on http://{args.host}:{args.port}"
         f" (pool={_SOLVE_POOL_SIZE}, timeline_cache={_TIMELINE_FRONTIER_CACHE_DIR},"
@@ -699,9 +853,23 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
     try:
+        serving.set()
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        maintainer.stop()
+        server.server_close()
+    if restart_revision:
+        print(
+            f"[robeatsmeta-service] restarting into fetched revision {restart_revision[0][:12]}",
+            flush=True,
+        )
+        command_args = list(sys.argv[1:] if argv is None else argv)
+        os.execv(
+            sys.executable,
+            [sys.executable, "-m", "gear_optimizer.robeatsmeta_service", *command_args],
+        )
     return 0
 
 
