@@ -106,6 +106,10 @@ def run() -> int:
 
         configure_default_logging()
 
+        from gear_optimizer.client_update import update_and_restart_client
+
+        update_and_restart_client()
+
         cfg_path = _read_config_path()
         _apply_taichi_shell_env()
         _apply_debug_profile_env(cfg_path)
