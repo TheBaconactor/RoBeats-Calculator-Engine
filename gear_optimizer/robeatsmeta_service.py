@@ -457,7 +457,12 @@ def find_official_chart(song_id: str) -> Path:
 
 def _job_slug(value: Any) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip()).strip("_")
-    return slug or "job"
+    # This slug is joined onto the run root and shutil.rmtree'd; a pure-dot slug ("." / ".." / "...")
+    # would escape the per-request sandbox and wipe <repo>/bin (the frontier caches). Slashes are
+    # already neutralized above, so rejecting all-dots is the only remaining traversal to close.
+    if not slug or slug.strip(".") == "":
+        return "job"
+    return slug
 
 
 def _normalize_timing_mode(value: Any) -> str:
