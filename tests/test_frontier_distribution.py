@@ -356,3 +356,53 @@ def test_server_checkout_installs_only_fast_forward_clean_updates(tmp_path: Path
     assert tracked.read_text(encoding="utf-8") == "two\n"
     assert events == ["prepare", "restart"]
     assert not _install_server_checkout(repo, second)
+
+
+def test_prune_stale_artifacts_keeps_current_previous_and_running_commit(monkeypatch, tmp_path: Path) -> None:
+    from gear_optimizer import frontier_server
+    from gear_optimizer.frontier_server import FrontierDistributionState, FrontierServerMaintainer
+
+    repo = tmp_path / "server"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "main.py").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "main.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "one"], cwd=repo, check=True, capture_output=True)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    publications = tmp_path / "publications"
+    keep_current = "a" * 64
+    keep_previous = "b" * 64
+    stale = "c" * 64
+    for revision in (keep_current, keep_previous, stale):
+        (publications / revision / "bundles").mkdir(parents=True)
+    (publications / "current.json").write_text("{}", encoding="utf-8")
+
+    snapshots = tmp_path / "snapshots"
+    (snapshots / commit).mkdir(parents=True)
+    (snapshots / "old-commit").mkdir(parents=True)
+    (snapshots / ".sync").mkdir()
+    (snapshots / ".sync" / f"{commit}.json").write_text("{}", encoding="utf-8")
+    (snapshots / ".sync" / "old-commit.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(frontier_server, "source_snapshot_root", lambda: snapshots)
+
+    maintainer = FrontierServerMaintainer(
+        repo_root=repo,
+        timeline_cache_root=tmp_path / "timeline",
+        fg_cache_root=tmp_path / "fg",
+        state=FrontierDistributionState(publications),
+        prebuild=lambda _data: {},
+    )
+    maintainer._prune_stale_artifacts({keep_current, keep_previous}, commit)
+
+    assert (publications / keep_current).is_dir()
+    assert (publications / keep_previous).is_dir()
+    assert not (publications / stale).exists()
+    assert (publications / "current.json").is_file(), "non-revision entries are untouched"
+    assert (snapshots / commit).is_dir()
+    assert not (snapshots / "old-commit").exists()
+    assert (snapshots / ".sync" / f"{commit}.json").is_file()
+    assert not (snapshots / ".sync" / "old-commit.json").exists()

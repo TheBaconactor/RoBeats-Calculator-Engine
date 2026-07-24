@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -305,7 +306,9 @@ def _read_full_header(path: Path) -> dict[str, str]:
                     key, _, value = line.partition("\t")
                     header[key.strip()] = value.strip()
     except OSError:
-        pass
+        # Never swallow silently: an empty header makes the catalog builder skip the chart, so a
+        # permissions/disk hiccup would quietly shrink /songs with no trace.
+        logger.warning("unreadable chart header, chart will be missing from the catalog: %s", path)
     return header
 
 
@@ -456,7 +459,9 @@ def find_official_chart(song_id: str) -> Path:
 # --- solve -------------------------------------------------------------------
 
 def _job_slug(value: Any) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip()).strip("_")
+    # Length cap: the slug becomes a directory name, so a multi-KB jobId would otherwise hit
+    # ENAMETOOLONG at mkdir and surface as a 500 instead of a client error.
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip()).strip("_")[:80]
     # This slug is joined onto the run root and shutil.rmtree'd; a pure-dot slug ("." / ".." / "...")
     # would escape the per-request sandbox and wipe <repo>/bin (the frontier caches). Slashes are
     # already neutralized above, so rejecting all-dots is the only remaining traversal to close.
@@ -525,6 +530,10 @@ def _validate_custom_chart_event_limit(chart_text: str) -> None:
             raise RequestError(
                 f"custom chart exceeds {_MAX_CUSTOM_CHART_EVENTS} replay events"
             )
+    if not in_song_data:
+        # A chart with no "Song Data" marker would count zero events, pass this gate at up to the
+        # 32 MB body cap, and waste a full subprocess spawn before failing loudly in the child.
+        raise RequestError("custom chart has no Song Data section")
 
 
 def chart_text_and_result_song_name_for_request(request: dict[str, Any], *, fallback_name: str) -> tuple[str, str]:
@@ -604,6 +613,10 @@ def _solve_isolated(
         "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(work / "bin"),
         "TIMELINE_FRONTIER_CACHE_DIR": str(timeline_cache_dir),
         "FG_RESPONSE_FRONTIER_CACHE_DIR": str(fg_cache_dir),
+        # Pin service mode for the child regardless of how THIS process was started: without it a
+        # solve child re-enables the frontier self-update client and can network-sync + os.execv
+        # itself mid-job (the launchd wrapper happens to export this, but nothing else does).
+        "ROBEATSMETA_OPTIMIZER_SERVICE_MODE": "1",
     }
     with _SOLVE_SEMAPHORE:
         _acquire_solve_slot()  # memory-headroom gate: hold here until it's safe to add a solve
@@ -655,7 +668,13 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
     reasoning = _normalize_reasoning(request.get("reasoning"))
     timing_mode = _normalize_timing_mode(request.get("timingMode"))
-    state, owner = _claim_job_solve(job)
+    # Dedup on the job AND the solve inputs: two concurrent requests whose ids merely slug
+    # identically (or both fall back to "job") must never silently join and hand the second
+    # caller a leaderboard computed for a different chart/reasoning/timing.
+    solve_key = job + ":" + hashlib.sha256(
+        f"{reasoning}|{timing_mode}|{repeats}|{chart_text}".encode("utf-8")
+    ).hexdigest()[:16]
+    state, owner = _claim_job_solve(solve_key)
     if not owner:
         logger.info("joining in-flight optimizer solve for job %s", job)
         return state.wait()
@@ -675,13 +694,17 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         raise
     finally:
         state.done.set()
-        _release_job_solve(job, state)
+        _release_job_solve(solve_key, state)
 
 
 # --- HTTP --------------------------------------------------------------------
 
 class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
     server_version = "RoBeatsMetaOptimizer/3.0"
+    # Socket timeout for reads AND writes: without it a client that stalls mid-body (or mid-bundle
+    # download) pins a daemon thread and its fds for the life of the process. Remote standalone
+    # installs talk to this service over real networks; stalls happen.
+    timeout = 60
 
     def _authorized(self) -> bool:
         token = env_str("ROBEATSMETA_OPTIMIZER_API_TOKEN", "").strip()
@@ -819,6 +842,9 @@ def main(argv: list[str] | None = None) -> int:
         loopback_bind = str(args.host).strip().lower() == "localhost"
     if not loopback_bind and not env_str("ROBEATSMETA_OPTIMIZER_API_TOKEN", ""):
         raise RuntimeError("ROBEATSMETA_OPTIMIZER_API_TOKEN is required for a non-loopback bind")
+    # Reclaim workspaces orphaned by a crash/SIGKILL: _solve_isolated cleans up in its finally, but
+    # nothing else ever sweeps here. Safe because launchd runs a single service instance.
+    shutil.rmtree(_service_run_root(), ignore_errors=True)
     server = ThreadingHTTPServer((args.host, int(args.port)), RoBeatsMetaServiceHandler)
     server.daemon_threads = True
     restart_revision: list[str] = []

@@ -301,7 +301,11 @@ class FrontierDistributionState:
         if loaded is None:
             raise ValueError("invalid frontier publication manifest")
         with self._lock:
+            prior = self._revision
             self._revision = revision
+            # Keep only the new and outgoing revisions; anything older is (or is about to be)
+            # pruned from disk, and bundle_info reloads lazily if a kept revision is ever evicted.
+            self._manifest_cache = {rev: m for rev, m in self._manifest_cache.items() if rev in {revision, prior}}
             self._manifest_cache[revision] = loaded
 
     def manifest_bytes(self) -> bytes | None:
@@ -463,6 +467,34 @@ class FrontierServerMaintainer:
             raise RuntimeError("Git returned an invalid frontier Data revision")
         return commit, data_revision
 
+    def _prune_stale_artifacts(self, keep_revisions: set[str], keep_commit: str) -> None:
+        """Delete publication revisions and source snapshots nothing can still need: everything but
+        the freshly installed publication and its predecessor (kept for clients mid-download), and
+        every snapshot/.sync entry for commits other than the running one. Without this, every
+        code/Data revision left a multi-GB frontier bundle set behind forever (this box has a
+        disk-full outage precedent)."""
+        snapshots = source_snapshot_root()
+        try:
+            for entry in self.state.root.iterdir():
+                if entry.is_dir() and _REVISION_RE.fullmatch(entry.name) and entry.name not in keep_revisions:
+                    logger.info("pruning stale frontier publication %s", entry.name)
+                    shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            pass
+        try:
+            for entry in snapshots.iterdir():
+                if entry.name != ".sync" and entry.is_dir() and entry.name != keep_commit:
+                    logger.info("pruning stale source snapshot %s", entry.name)
+                    shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            pass
+        try:
+            for entry in (snapshots / ".sync").iterdir():
+                if entry.name != f"{keep_commit}.json":
+                    entry.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def run_once(self) -> bool:
         commit, data_revision = self._remote_commit()
         if commit != self._runtime_commit:
@@ -489,6 +521,8 @@ class FrontierServerMaintainer:
                 shutil.rmtree(snapshot)
             _extract_repository_snapshot(self.repo_root, commit, snapshot)
         data_root = snapshot / "Data"
+        prior_payload = _read_manifest(self.state.root / "current.json") or {}
+        prior_revision = str(prior_payload.get("revision") or "")
         sync_exported_game_data(
             paths=ExportedGameDataPaths(
                 exported_json=data_root / "exported_game_data.json",
@@ -510,6 +544,7 @@ class FrontierServerMaintainer:
             cache_allowlist=cache_allowlist,
         )
         self.state.install(publication)
+        self._prune_stale_artifacts({publication.name, prior_revision}, commit)
         if self.publication_ready is not None:
             self.publication_ready(data_root)
         self._last_commit = commit
