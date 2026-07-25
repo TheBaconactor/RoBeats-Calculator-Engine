@@ -26,6 +26,7 @@ import taichi as ti
 
 from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET, TOTAL_ROWS
 from gear_optimizer.solver.taichi_gem import api as gem_api
+from gear_optimizer.solver.taichi_gem.runtime import taichi_runtime_lock
 
 _INT_MIN = -2147483648
 
@@ -73,27 +74,32 @@ def _ensure_fields() -> None:
     we rebuild.
     """
     global _FB, _sf, _sp, _km, _kc, _wb, _err, _BUILT_AGAINST
-    gem_api.ensure_ready()
-    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    # Placement into a FieldsBuilder is global Taichi state, so two threads racing this leave one
+    # tree unfinalized and its handles dangling -- observed in production as
+    # `TaichiRuntimeError: Field builder ... is not finalized`. The same lock also keeps
+    # `reset_taichi` from freeing the tree between our finalize and the caller's first access.
+    with taichi_runtime_lock():
+        gem_api.ensure_ready()
+        from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
-    sentinel = gpu_fields.ga_fg_candidates_packed
-    if _FB is not None and _BUILT_AGAINST is sentinel:
-        return
-    sf = ti.field(ti.i32)
-    sp = ti.field(ti.i32)
-    km = ti.field(ti.i32)
-    kc = ti.field(ti.i32)
-    wb = ti.field(ti.i32)
-    err = ti.field(ti.i32)
-    fb = ti.FieldsBuilder()
-    fb.dense(ti.ijk, (_MAX_CAND, _MAX_FRONTIERS, 4)).place(sf)
-    fb.dense(ti.ijk, (_MAX_CAND, _MAX_PAIRS, 2)).place(sp)
-    fb.dense(ti.ij, (_MAX_CAND, _MAX_PAIRS)).place(km)
-    fb.dense(ti.i, _MAX_CAND).place(kc)
-    fb.dense(ti.i, _MAX_CAND).place(wb)
-    fb.dense(ti.i, 1).place(err)
-    fb.finalize()
-    _sf, _sp, _km, _kc, _wb, _err, _FB, _BUILT_AGAINST = sf, sp, km, kc, wb, err, fb, sentinel
+        sentinel = gpu_fields.ga_fg_candidates_packed
+        if _FB is not None and _BUILT_AGAINST is sentinel:
+            return
+        sf = ti.field(ti.i32)
+        sp = ti.field(ti.i32)
+        km = ti.field(ti.i32)
+        kc = ti.field(ti.i32)
+        wb = ti.field(ti.i32)
+        err = ti.field(ti.i32)
+        fb = ti.FieldsBuilder()
+        fb.dense(ti.ijk, (_MAX_CAND, _MAX_FRONTIERS, 4)).place(sf)
+        fb.dense(ti.ijk, (_MAX_CAND, _MAX_PAIRS, 2)).place(sp)
+        fb.dense(ti.ij, (_MAX_CAND, _MAX_PAIRS)).place(km)
+        fb.dense(ti.i, _MAX_CAND).place(kc)
+        fb.dense(ti.i, _MAX_CAND).place(wb)
+        fb.dense(ti.i, 1).place(err)
+        fb.finalize()
+        _sf, _sp, _km, _kc, _wb, _err, _FB, _BUILT_AGAINST = sf, sp, km, kc, wb, err, fb, sentinel
 
 
 @ti.func
@@ -380,65 +386,69 @@ def build_response_group_rows_gpu(
     if max_frontier >= _MAX_FRONTIERS:
         raise ValueError(f"response frontier group builder max_frontier {max_frontier} exceeds cap {_MAX_FRONTIERS}")
 
-    _ensure_fields()
-    _err[0] = 0
-    _fg_count_group_rows_kernel(
-        candidate_count,
-        pair_count,
-        max_frontier,
-        1 if bool(score_elements_constant) else 0,
-        base_components,
-        ft_values,
-        ff_values,
-        residual_values,
-        frontier_idx_by_stat,
-        primary_ftff_delta_values,
-        secondary_ftff_delta_values,
-    )
-    ti.sync()
-    if int(_err[0]) != 0:
-        raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
+    # Owner-thread critical section: every field below (_err/_kc/_wb and the kernels' _km/_sf
+    # scratch) is module-global, so two threads here interleave their per-candidate slabs and
+    # silently swap rows between callers. Serialize instead of trusting callers to be the owner.
+    with taichi_runtime_lock():
+        _ensure_fields()
+        _err[0] = 0
+        _fg_count_group_rows_kernel(
+            candidate_count,
+            pair_count,
+            max_frontier,
+            1 if bool(score_elements_constant) else 0,
+            base_components,
+            ft_values,
+            ff_values,
+            residual_values,
+            frontier_idx_by_stat,
+            primary_ftff_delta_values,
+            secondary_ftff_delta_values,
+        )
+        ti.sync()
+        if int(_err[0]) != 0:
+            raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
 
-    keep_counts = _kc.to_numpy()[:candidate_count]
-    write_base = np.zeros((candidate_count,), dtype=np.int32)
-    running = 0
-    for candidate_idx in range(candidate_count):
-        count = int(keep_counts[candidate_idx])
-        if count <= 0:
-            raise ValueError("response frontier exact GPU batch produced no pair result")
-        write_base[candidate_idx] = running
-        _wb[candidate_idx] = running
-        running += count
-    total_count = running
+        keep_counts = _kc.to_numpy()[:candidate_count]
+        write_base = np.zeros((candidate_count,), dtype=np.int32)
+        running = 0
+        for candidate_idx in range(candidate_count):
+            count = int(keep_counts[candidate_idx])
+            if count <= 0:
+                raise ValueError("response frontier exact GPU batch produced no pair result")
+            write_base[candidate_idx] = running
+            _wb[candidate_idx] = running
+            running += count
+        total_count = running
 
-    group_meta = np.zeros((total_count, 8), dtype=np.int32)
-    group_ftff = np.zeros((total_count, 4), dtype=np.int32)
-    _fg_emit_group_rows_kernel(
-        candidate_count,
-        pair_count,
-        max_frontier,
-        1 if bool(score_elements_constant) else 0,
-        int(head_len),
-        int(body_total),
-        base_components,
-        ft_values,
-        ff_values,
-        residual_values,
-        frontier_idx_by_stat,
-        primary_ftff_delta_values,
-        secondary_ftff_delta_values,
-        group_meta,
-        group_ftff,
-    )
-    ti.sync()
-    if int(_err[0]) != 0:
-        raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
+        group_meta = np.zeros((total_count, 8), dtype=np.int32)
+        group_ftff = np.zeros((total_count, 4), dtype=np.int32)
+        _fg_emit_group_rows_kernel(
+            candidate_count,
+            pair_count,
+            max_frontier,
+            1 if bool(score_elements_constant) else 0,
+            int(head_len),
+            int(body_total),
+            base_components,
+            ft_values,
+            ff_values,
+            residual_values,
+            frontier_idx_by_stat,
+            primary_ftff_delta_values,
+            secondary_ftff_delta_values,
+            group_meta,
+            group_ftff,
+        )
+        ti.sync()
+        if int(_err[0]) != 0:
+            raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
 
-    candidate_slices = np.empty((candidate_count, 2), dtype=np.int32)
-    candidate_slices[:, 0] = write_base
-    candidate_slices[:, 1] = np.asarray(keep_counts, dtype=np.int32)
-    group_ft = np.ascontiguousarray(group_ftff[:, _FT])
-    group_ff = np.ascontiguousarray(group_ftff[:, _FF])
-    group_ft_stat = np.ascontiguousarray(group_ftff[:, _FTS])
-    group_ff_stat = np.ascontiguousarray(group_ftff[:, _FFS])
-    return group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices
+        candidate_slices = np.empty((candidate_count, 2), dtype=np.int32)
+        candidate_slices[:, 0] = write_base
+        candidate_slices[:, 1] = np.asarray(keep_counts, dtype=np.int32)
+        group_ft = np.ascontiguousarray(group_ftff[:, _FT])
+        group_ff = np.ascontiguousarray(group_ftff[:, _FF])
+        group_ft_stat = np.ascontiguousarray(group_ftff[:, _FTS])
+        group_ff_stat = np.ascontiguousarray(group_ftff[:, _FFS])
+        return group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices

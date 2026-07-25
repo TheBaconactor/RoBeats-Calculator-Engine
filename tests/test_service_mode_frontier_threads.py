@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+import os
+
+# `configure_timeline_pair_build_threads` now delegates to the shared lane-aware reducer, so the
+# effective count lives in `response_build_gpu_reducer._FIRST_ONLY_REDUCER_THREADS`; the old
+# `timeline_exact_frontier._TIMELINE_PAIR_BUILD_THREADS` global went away with that move. The setter
+# clamps to os.cpu_count(), so assert the clamped value rather than a bare literal.
+
+
+def _effective_threads() -> int:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
+
+    return int(response_build_gpu_reducer._FIRST_ONLY_REDUCER_THREADS)
+
 
 def test_service_mode_configures_timeline_pair_build_threads(monkeypatch) -> None:
     from gear_optimizer import cli
@@ -12,7 +25,7 @@ def test_service_mode_configures_timeline_pair_build_threads(monkeypatch) -> Non
 
     cli._apply_service_mode_frontier_threads()
 
-    assert timeline_exact_frontier._TIMELINE_PAIR_BUILD_THREADS == 7
+    assert _effective_threads() == min(7, os.cpu_count() or 1)
 
 
 def test_standalone_mode_does_not_reconfigure_timeline_pair_build_threads(monkeypatch) -> None:
@@ -24,4 +37,4 @@ def test_standalone_mode_does_not_reconfigure_timeline_pair_build_threads(monkey
 
     cli._apply_service_mode_frontier_threads()
 
-    assert timeline_exact_frontier._TIMELINE_PAIR_BUILD_THREADS == 3
+    assert _effective_threads() == min(3, os.cpu_count() or 1)
