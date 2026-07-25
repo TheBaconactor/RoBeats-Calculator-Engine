@@ -1,7 +1,7 @@
 """Per-loadout note-graph reconstruction data (Deliverable B).
 
-Produces, per note, exactly the fields the game's client `NoteTimeGraph`
-(`ReplicatedStorage/Lobby/UI/NoteTimeGraph.lua`) renders for a registered hit:
+Produces, per note, exactly the fields the client note-time graph renders for a
+registered hit:
 
     HitTime    -> hit_time_ms   (note position on the song timeline, ms)
     Delta      -> delta_ms       (hit timing offset, ms; +late / -early). Carries the exact

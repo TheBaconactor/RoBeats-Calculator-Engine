@@ -13,7 +13,7 @@ This is a **community-built analysis tool**. It is not affiliated with, endorsed
 | Persona | Data source |
 |---|---|
 | **Host operator** | Maintains the canonical `Data/` tree in git and on the authoritative machine; builds frontiers and publishes revisions. |
-| **Trusted clients** | Receive the host's published Data/frontier bundles via `https://api.robeatsmeta.net/metafinder/v1` (requires `bin/frontier_client_credentials.json`). |
+| **Trusted clients** | Receive Data/frontier bundles from an explicitly configured host (requires `bin/frontier_client_credentials.json`). |
 | **Community DIY users** | Use the `Data/` tree from a git clone, or populate their own copy before the first run. Frontier sync is skipped when no credential file is present. |
 
 ## Directory layout
@@ -48,7 +48,7 @@ Runtime results live in `evolution.db` at the repository root by default. Do not
 export METAFINDER_EVOLUTION_DB=/path/to/evolution.db
 ```
 
-The host operator and [RoBeatsMeta](https://robeatsmeta.net) website pipeline typically use an external database path via this variable.
+Host operators typically use an external database path via this variable.
 
 ## Generated caches (not in git)
 
@@ -69,5 +69,4 @@ On the host, only the authoritative machine builds timeline and FG frontiers for
 | `Data/` tree | Maintained in git and on the host; published via frontier bundles |
 | `evolution.db` | External path via `METAFINDER_EVOLUTION_DB` |
 | Frontier server | Publication flow, client registry, and `/metafinder/v1` distribution |
-| Website bridge | `ROBEATSMETA_OPTIMIZER_REPO_ROOT`, service token, `/songs`, `/optimize` |
-| Website game-data sync | RoBeatsMeta can sync `Data/exported_game_data.json` from this repo on GitHub, or copy from a local sibling checkout |
+| Host application | Authenticate to the documented `/songs` and `/optimize` service endpoints |

@@ -1,6 +1,6 @@
 """game_sim.py -- ONE faithful full-pipeline RoBeats simulator (pure Python, no Babylon).
 
-This is the game-truth harness: unlike ``webport_oracle`` (which replays a PRE-RESOLVED
+This is the game-truth harness: unlike ``reference_oracle`` (which replays a PRE-RESOLVED
 one-event-per-note stream), this tool implements BOTH halves of the real client and runs them
 frame-by-frame like ``game.ts``:
 
@@ -9,9 +9,8 @@ frame-by-frame like ``game.ts``:
     removal, and the judge-window comparator (late edge INCLUSIVE, early edge EXCLUSIVE). A press is
     RESOLVED against the live active-note list -- it is NOT pre-mapped to a note.
 
-  * MODEL B -- FILL / FEVER / SCORE (``GameScoreEngine``): a 1:1 port of the WebPort stat-driven
-    ``ScoreEngine`` (``tools/verify/webport_oracle/score_bundle.mjs`` == [REDACTED PRIVATE REPOSITORY]
-    ``score/scoreEngine.ts`` + ``score/gearStats.ts``): the gear ``fN`` stat curves, per-note points,
+  * MODEL B -- FILL / FEVER / SCORE (``GameScoreEngine``): a faithful port of the reference
+    ``ScoreEngine`` (``tools/verify/reference_oracle/score_bundle.mjs``): the gear ``fN`` stat curves, per-note points,
     two-color colorPointBonus, continuous combo multiplier, fever fill/drain/decay, the AUTO
     activation gate, and the ``wastedFillPending`` "wasted note" after a fever window closes.
 
@@ -54,7 +53,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 # ============================================================================================
-# MODEL B -- gear stat curves (1:1 port of score_bundle.mjs / [REDACTED PRIVATE REPOSITORY] score/gearStats.ts)
+# MODEL B -- gear stat curves (faithful port of the reference score bundle)
 # ============================================================================================
 
 
@@ -245,7 +244,7 @@ _FEVER_ACTIVATE_AT = 1.0
 
 
 class GameScoreEngine:
-    """1:1 port of score_bundle.mjs ScoreEngine ([REDACTED PRIVATE REPOSITORY] score/scoreEngine.ts).
+    """Faithful port of the reference score bundle's ScoreEngine.
 
     ``manualFever`` defaults False (AUTO) to match the replay/meta-sim path -- fever fires the frame
     the bar fills. Frame granularity is supplied by the driver via ``feverTick(dt)``.
@@ -360,7 +359,7 @@ class GameScoreEngine:
 
 
 # ============================================================================================
-# MODEL A -- input / note matching ([REDACTED PRIVATE REPOSITORY] notes/noteSystem.ts + judge/judge.ts)
+# MODEL A -- input / note matching from the independent reference model
 # ============================================================================================
 
 _JUDGE_EDGES_TAP = (430, 190, 40, -20, -95, -235)

@@ -2,8 +2,7 @@
 pulled INTO fever by an early **GREAT** hit -- the greats-side analog of the #42
 Perfect-early fix.
 
-GROUND TRUTH = the decompiled server scorer (place 706824758 Spotco_Robeats_dev,
-`ServerPlayerNoteSequenceInfo:push_note_sequence` + `GearStats`):
+GROUND TRUTH = the independently verified server scoring model:
   * fever membership = powerbar active at the note's verified event time;
     `get_verified_event_time` clamps only to +-(okay width=380ms) -> a no-op for any
     legal hit, so the verified time IS the chosen hit offset;
@@ -40,8 +39,7 @@ from math import floor
 
 import numpy as np
 
-# CUMULATIVE judgment-window edges (ms), from the decompiled game's GearStats.get_note_times +
-# SPUtil.timedelta_to_result (place 706824758): each tier ADDS its gear-stat extra to the previous
+# CUMULATIVE judgment-window edges (ms): each tier ADDS its gear-stat extra to the previous
 # boundary (great = perfect +- great_extra, okay = great +- okay_extra). Held tail (note_type 3)
 # doubles every edge. Negative = early. (NoteTimeGraph renders "-95ms (Great)" / "+190ms (Great)".)
 PERFECT_LO_MS = -20

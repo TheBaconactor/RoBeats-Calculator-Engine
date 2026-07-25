@@ -51,8 +51,10 @@ bin/paths_cache.json
 # Local databases (generated during runtime)
 evolution*.db
 
-# Website export folder
-RoBeatMetaWebsite/
+# Local telemetry and player-data exports
+*_leaderboards.json
+*_player_export*.json
+*_telemetry*.json
 
 # RoBeats Rojo project (legacy game code)
 RoBeats-Rojo/
@@ -78,8 +80,5 @@ run_*.log
 .reasonix/
 compare_results.json
 
-# Agent/benchmark scratch: .ai-bridge holds a throwaway benchmark virtualenv (frontier-bench-venv,
-# ~262MB of taichi/numpy binaries); docs/research + tools/research are ad-hoc benchmark artifacts.
+# Local benchmark scratch and throwaway virtual environments
 .ai-bridge/
-docs/research/
-tools/research/

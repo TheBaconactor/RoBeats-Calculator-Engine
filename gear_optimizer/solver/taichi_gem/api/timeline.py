@@ -245,7 +245,7 @@ _frontier_payload_cache_lock = threading.RLock()
 # gained it, so a pure-logic change went invisible to the (input+window)-hashed key. Symptom:
 # Bopeebo Easy T5 Vibe persisted base 1,360,389 (nominal ff24) from a stale v7 payload while a
 # fresh build of the SAME loadout selects the floor-optimal ff22 -> 1,364,025 (bit-exact to the
-# website's live re-solve). Bumping forces a rebuild from the current floor-aware DP. Strictly
+# host application's live re-solve). Bumping forces a rebuild from the current floor-aware DP. Strictly
 # regression-safe: perfect_floor <= chart pointwise, so a rebuilt cell's body_fever only rises
 # or stays equal; songs with no endpoint-early boundary note are byte-identical.
 # v9: fold a DP-LOGIC FINGERPRINT into the version (Fix 1, 2026-07-04). The base string above is the

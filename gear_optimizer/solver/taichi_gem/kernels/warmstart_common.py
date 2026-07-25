@@ -71,8 +71,8 @@ def solve_combo_warmstart_preloaded(
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
         # Incumbent-based upper-bound cull (score_cull_threshold) is the only gate here;
-        # the former timeline-plateau prune was removed (bit-exact but perf-neutral on
-        # both GA and Skyline -- see docs/Implementation Records).
+        # the former timeline-plateau prune was removed because it was bit-exact but
+        # performance-neutral on both GA and Skyline.
         pruned: ti.i32 = 0
         if pruned == 0:
             body_total: ti.i32 = (

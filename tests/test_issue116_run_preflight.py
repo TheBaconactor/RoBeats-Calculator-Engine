@@ -40,7 +40,7 @@ branch refs/heads/main
 
 worktree C:/mfbench/issue116-a0
 HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-branch refs/heads/codex/issue-116-a0-investigation
+branch refs/heads/feature/issue-116-a0-investigation
 """
     assert _primary_worktree_from_porcelain(output) == Path("C:/repo/primary")
 

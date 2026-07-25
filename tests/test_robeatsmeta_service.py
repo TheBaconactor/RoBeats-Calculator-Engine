@@ -54,7 +54,7 @@ def test_list_official_songs_reads_headers(data_root):
     assert songs["Feeding [Hard]"]["difficulty"] == "Hard"
 
 
-def test_completed_publication_becomes_the_website_optimizer_data_source(data_root):
+def test_completed_publication_becomes_the_service_data_source(data_root):
     published = data_root / "published" / "Data"
     (published / "Gear").mkdir(parents=True)
 
@@ -65,12 +65,12 @@ def test_completed_publication_becomes_the_website_optimizer_data_source(data_ro
     assert service.GEAR_DIR == (published / "Gear").resolve()
 
 
-def test_api_catalog_uses_configured_webport_song_library(data_root, monkeypatch):
-    _write_chart(data_root, "Hard", "Private MetaFinder Chart")
-    webport_data = data_root / "[REDACTED PRIVATE REPOSITORY]" / "Data"
+def test_api_catalog_uses_configured_external_song_library(data_root, monkeypatch):
+    _write_chart(data_root, "Hard", "Private Calculator Chart")
+    reference_data = data_root / "ReferenceClient" / "Data"
     for difficulty in ("Easy", "Normal", "Hard"):
-        (webport_data / f"{difficulty} Songs").mkdir(parents=True)
-    external_chart = webport_data / "Hard Songs" / "canonical.txt"
+        (reference_data / f"{difficulty} Songs").mkdir(parents=True)
+    external_chart = reference_data / "Hard Songs" / "canonical.txt"
     external_chart.write_text(
         "Song Name\tCanonical Replay Chart\n"
         "Difficulty\t24\n"
@@ -80,20 +80,20 @@ def test_api_catalog_uses_configured_webport_song_library(data_root, monkeypatch
         "1000\t0\t0\t1\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(webport_data))
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(reference_data))
 
     songs = service.list_official_songs()
 
     assert [song["songId"] for song in songs] == ["Canonical Replay Chart"]
     assert service.find_official_chart("Canonical Replay Chart") == external_chart
     with pytest.raises(service.RequestError):
-        service.find_official_chart("Private MetaFinder Chart")
+        service.find_official_chart("Private Calculator Chart")
 
 
-def test_configured_webport_library_requires_all_difficulty_directories(data_root, monkeypatch):
-    webport_data = data_root / "[REDACTED PRIVATE REPOSITORY]" / "Data"
-    (webport_data / "Hard Songs").mkdir(parents=True)
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(webport_data))
+def test_configured_external_library_requires_all_difficulty_directories(data_root, monkeypatch):
+    reference_data = data_root / "ReferenceClient" / "Data"
+    (reference_data / "Hard Songs").mkdir(parents=True)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(reference_data))
 
     with pytest.raises(RuntimeError, match="Easy Songs.*Normal Songs"):
         service.list_official_songs()
@@ -255,7 +255,7 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
         {"jobId": "job_abc", "targetSongId": "Feeding [Hard]", "timingMode": "zero_ms"}
     )
 
-    assert result == [entry]  # full T5 leaderboard returned verbatim (website persists + replays it)
+    assert result == [entry]  # full T5 leaderboard returned verbatim for host persistence/replay
     env = captured["env"]
     assert env["EVOLUTION_DB_PATH"].endswith("result.db")  # output DB redirected off evolution.db
     run_root = data_root / "runs" / "job_abc"

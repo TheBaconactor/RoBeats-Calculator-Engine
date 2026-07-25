@@ -84,8 +84,8 @@ def taichi_runtime_lock() -> threading.RLock:
     fields is the same global state: two threads inside it interleave FieldsBuilder placement
     (``TaichiRuntimeError: Field builder ... is not finalized``) and, worse, share per-candidate
     scratch, so a surviving pair of requests can read each other's rows. Callers outside the
-    optimizer's own single-GPU-thread executor -- the website hub reaches FG scoring through a
-    thread pool -- must hold this while they are the owner.
+    optimizer's own single-GPU-thread executor -- including host applications that call FG
+    scoring through a thread pool -- must hold this while they are the owner.
 
     Reentrant on purpose: Vulkan recovery calls ``reset_taichi`` from inside owner work.
     """

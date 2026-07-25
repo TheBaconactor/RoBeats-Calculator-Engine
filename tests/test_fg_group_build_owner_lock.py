@@ -1,6 +1,6 @@
 """The FG group-row builder's scratch is module-global, so it must be owner-serialized.
 
-The website hub reaches this through a thread pool, which is how production hit
+The host application reaches this through a thread pool, which is how production hit
 `TaichiRuntimeError: Field builder ... is not finalized`: two threads interleaved FieldsBuilder
 placement. The crash was the visible half -- the quiet half is that two threads sharing the
 per-candidate scratch slabs can swap rows between callers.

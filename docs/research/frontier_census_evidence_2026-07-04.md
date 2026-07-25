@@ -1,8 +1,7 @@
 # Frontier Census Evidence — Exactness + GA-Speed, Loadout Search Space
 
 Generated: 2026-07-04
-Status: first measured evidence pass for
-`docs/research/single_song_cell_conditioned_exact_frontier_proposal.md` (Gate A).
+Status: measured evidence for the cell-conditioned exact-frontier model.
 Harness: `tools/research/frontier_census.py` (CPU-only; runnable on any machine).
 Raw results: `docs/research/frontier_census_results_2026-07-04/*.json`.
 

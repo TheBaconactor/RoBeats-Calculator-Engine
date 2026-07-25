@@ -30,15 +30,14 @@ logger = logging.getLogger(__name__)
 
 # Stateless HTTP front-end over the canonical optimizer pipeline.
 #
-# The website owns identity, credits, sharing and result persistence; this service only solves.
-#   GET  /songs     -> the official chart list (from Data/ headers) the website picker chooses from
+# The host application owns identity, quotas, sharing, and result persistence; this service only
+# solves.
+#   GET  /songs     -> the official chart list (from Data/ headers)
 #   POST /optimize  -> solve one chart (official `targetSongId` OR custom `chartText`) and return
 #                      its full T5 baseline leaderboard (top 51 base + 51 FG by hash), in the exact
-#                      shape `get_best_loadouts` yields for the catalog. The website persists this
-#                      verbatim into a per-job evolution.db-format file and replays it across tiers /
-#                      modes / ranks / colors / timing via the same on-demand re-score path the
-#                      catalog uses on evolution.db, so an optimizer result is a peer of a catalog
-#                      meta card.
+#                      shape `get_best_loadouts` yields for the catalog. A host may persist this
+#                      into a per-job evolution.db-format file and replay it through the same
+#                      on-demand rescore path used by the catalog.
 #
 # Every solve runs in a throwaway per-request dir with the song source, run state and output DB
 # redirected via the ROBEATSMETA_OPTIMIZER_* path overrides, so requests never touch the catalog
@@ -131,9 +130,8 @@ _AUTHORITATIVE_PUBLICATION_READY = threading.Event()
 # place, so a partial file is never observed and the last writer wins on identical content.
 
 # Body-size cap for /optimize: reject anything absurd with 413 so an oversized body can't be read
-# into memory. Sized above the website's 4k optimizer-event translated-chart limit with JSON-escape
-# margin; the website also caps chartText before sending. Belongs behind loopback/private + bearer
-# auth regardless.
+# into memory. Sized above the supported custom-chart event limit with JSON-escape margin. Deploy
+# behind loopback/private networking and bearer authentication.
 _MAX_BODY_BYTES = max(1024, env_int("ROBEATSMETA_OPTIMIZER_MAX_BODY_BYTES", 32 * 1024 * 1024))
 _MAX_CUSTOM_CHART_EVENTS = max(1, env_int("ROBEATSMETA_OPTIMIZER_MAX_CUSTOM_EVENTS", 4_000))
 
@@ -141,13 +139,12 @@ _MAX_CUSTOM_CHART_EVENTS = max(1, env_int("ROBEATSMETA_OPTIMIZER_MAX_CUSTOM_EVEN
 # (so main.py's GPU/worker children don't linger) and the request fails. Must exceed a real solve.
 _SOLVE_TIMEOUT_S = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_TIMEOUT_S", 30 * 60))
 
-# Reasoning effort: the website lets a user spend extra credits to make the optimizer search harder.
-# The chosen level scales the GA search knobs that most directly raise the odds of reaching the true
+# Reasoning effort lets a host request a larger optimizer search budget. The chosen level scales
+# the GA search knobs that most directly raise the odds of reaching the true
 # optimum -- how deep the GA evolves (GA_SearchDepth) and how many independent starting populations
 # it searches in parallel (GA_MultiStart, ~free since it runs concurrently on the GPU). Scaling is
 # linear in the multiplier; "default" reproduces the stock config defaults exactly (nothing is
-# written, so config.py's own fallbacks apply). This levels/multipliers table is a cross-repo
-# contract mirrored by the website (optimizer_job_contract.py).
+# written, so config.py's own fallbacks apply).
 _REASONING_MULTIPLIERS: dict[str, float] = {"default": 1.0, "strong": 2.0, "max": 4.0}
 # Bases mirror the canonical config defaults: GA_SearchDepth fallback (gear_optimizer/core/config.py)
 # and GA_MULTI_RUNS_DEFAULT (gear_optimizer/core/constants.py). "default" reasoning => these exact
@@ -315,9 +312,9 @@ def _read_full_header(path: Path) -> dict[str, str]:
 def _official_song_directories() -> tuple[tuple[str, Path], ...]:
     """Return the exact chart directories backing the API's official-song catalog.
 
-    Direct MetaFinder runs retain the native ``Data/{difficulty}`` layout. The website service
-    may instead select WebPort's canonical replay library at the deployment boundary; once that
-    root is explicitly configured, every expected difficulty directory is required.
+    Direct runs retain the native ``Data/{difficulty}`` layout. A service deployment may instead
+    select an external canonical chart library; once that root is explicitly configured, every
+    expected difficulty directory is required.
     """
     configured = env_str("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", "").strip()
     if not configured:
@@ -333,7 +330,7 @@ def _official_song_directories() -> tuple[tuple[str, Path], ...]:
     missing = [str(folder) for _difficulty, folder in directories if not folder.is_dir()]
     if missing:
         raise RuntimeError(
-            "ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR must contain WebPort's "
+            "ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR must contain "
             f"Easy Songs, Normal Songs, and Hard Songs directories; missing: {', '.join(missing)}"
         )
     return directories
@@ -431,7 +428,7 @@ def _official_song_catalog() -> _OfficialSongCatalog:
 
 
 def list_official_songs() -> list[dict[str, str]]:
-    """The official chart list for the website picker, read from the catalog Data/ headers.
+    """The official chart list for a host picker, read from the catalog Data/ headers.
 
     Every chart file's header is read in full so the picker gets title, artist, audioId, and
     coverImageId directly from the source — no catalog or evolution.db dependency. The difficulty
@@ -444,7 +441,7 @@ def list_official_songs() -> list[dict[str, str]]:
 def find_official_chart(song_id: str) -> Path:
     """Return the official chart file whose `Song Name` header equals `song_id` exactly.
 
-    The website picks from `list_official_songs()` and echoes back the exact `songId`, so an exact
+    Hosts pick from `list_official_songs()` and echo back the exact `songId`, so an exact
     match is the contract -- no fuzzy/substring matching.
     """
     target = str(song_id or "").strip()
@@ -828,10 +825,9 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     """Solve one chart in an isolated per-request workspace and return its full T5 leaderboard.
 
     The returned list is the merged top-N base + FG leaderboard (ranked by score / fg_score, deduped
-    by loadout_hash) exactly as `get_best_loadouts` yields for the catalog. The website writes this
-    verbatim into a per-job evolution.db-format file via `save_loadouts_batch`, so every downstream
-    replay (any tier / mode / rank / color / timing) runs through the catalog's own on-demand re-score
-    path (`build_team_buff_tier_db_batches`) and produces a byte-identical SongBuild.
+    by loadout_hash) exactly as `get_best_loadouts` yields for the catalog. A host can persist the
+    result into an evolution.db-format file and replay it through the catalog's on-demand rescore
+    path.
     """
     job = _job_slug(request.get("jobId") or request.get("resultKey"))
     chart_text, result_song_name = chart_text_and_result_song_name_for_request(request, fallback_name=job)

@@ -114,7 +114,7 @@ def _build_replayed_loadout_rows_for_song(
     - GeneralMeta build-time stays on the baseline TeamBuff tier (T5) persisted in
       evolution.db. We do NOT run the per-tier gem re-solve (``build_team_buff_tier_db_batches``)
       here: that path requires the candidate-independent timeline/FG-response frontier caches
-      (expensive to prebuild) and re-allocates gems per tier. The website already serves
+      (expensive to prebuild) and re-allocates gems per tier. The host application serves
       per-tier on-demand re-solves live, so reproducing them at build time is redundant cost.
     - Every TeamBuff tier label in ``DEFAULT_TEAM_BUFF_REPLAY_TIERS`` is populated from the
       same T5 seed rows so the frontend can present the tier selector as a cosmetic surface;
@@ -143,7 +143,7 @@ def _build_replayed_loadout_rows_for_song(
 
     # Read T5 seed entries directly from the DB. Pass the cached name->stats maps so entries
     # carry full gear/mini stat dicts (required by downstream persistence canonicalization
-    # and the on-demand re-solve path on the website).
+    # and the host application's on-demand re-solve path).
     entries = get_best_loadouts(
         str(song_name),
         limit=int(LOADOUTS_PER_SONG_LIMIT),
@@ -153,7 +153,7 @@ def _build_replayed_loadout_rows_for_song(
     )
 
     # Project the same T5 seed rows under every tier label (cosmetic tiers). The per-tier
-    # gem re-solve happens live on the website; the static snapshot only carries T5 data.
+    # gem re-solve happens live in the host application; the static snapshot only carries T5 data.
     # Flatten gear/mini stat dicts to name strings — downstream aggregation (find_most_common_loadout,
     # _build_loadout_entry) keys loadout identity by gear name tuples and expects string gear lists.
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import _flat_item_names

@@ -24,7 +24,6 @@ from gear_optimizer.frontier_auth import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SERVER = "https://api.robeatsmeta.net/metafinder/v1"
 _REVISION_RE = re.compile(r"[0-9a-f]{64}\Z")
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 _BUNDLE_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,80}\.tar\.gz\Z")
@@ -51,7 +50,11 @@ def frontier_client_enabled() -> bool:
 
 
 def _server_base_url() -> str:
-    value = env_str("METAFINDER_FRONTIER_SERVER_URL", _DEFAULT_SERVER).rstrip("/")
+    value = env_str("METAFINDER_FRONTIER_SERVER_URL", "").strip().rstrip("/")
+    if not value:
+        raise RuntimeError(
+            "METAFINDER_FRONTIER_SERVER_URL is required when hosted frontier sync is configured"
+        )
     try:
         parsed = urlsplit(value)
         host = str(parsed.hostname or "").lower().rstrip(".")

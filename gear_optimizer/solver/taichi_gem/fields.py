@@ -414,8 +414,7 @@ def reset_fields_state() -> None:
     timing_response_genome_length = None
     MAX_GA_RUNS = int(DEFAULT_MAX_GA_RUNS)
     MAX_GA_RUN_GENOMES = int(DEFAULT_MAX_GA_RUN_GENOMES)
-    # Restore-defaults-on-reset contract (docs/Implementation Records/
-    # GPU_GA_BUFFER_CONFIG_RESET_RESTORE.md): clear the requested record so a stale
+    # Restore-defaults-on-reset contract: clear the requested record so a stale
     # session size never silently re-applies after a hard_reset_taichi. The GA
     # recovery paths (genetic_pipeline.py) explicitly re-call configure_ga_run_buffers()
     # after a mid-run reset to re-size for the rest of the song -- fixing the

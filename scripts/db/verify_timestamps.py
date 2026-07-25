@@ -13,7 +13,7 @@ def verify_timestamps():
     song_key = "1"  # Assuming '1' is a valid ID from previous context or finding one
 
     # We need to find a valid song file first.
-    # Let's list the map storage or just rely on what we see in 'place .../src/ReplicatedStorage/AudioData/PreloadedSongs'
+    # List the exported song catalog or rely on the timestamps already present in the data file.
     # Actually, let's just use the song_loader logic and see what it returns for a dummy/test query or inspect a known map file
 
     # Alternatively, inspect 'check_fg_base_score.py' which likely loads a song

@@ -308,6 +308,8 @@ def test_standalone_sync_installs_once_and_redownloads_locally_changed_files(
 def test_client_update_requires_github_installation_marker(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer import client_update
 
+    monkeypatch.setattr(client_update, "frontier_client_enabled", lambda: True)
+    monkeypatch.setattr(client_update, "frontier_credentials_configured", lambda: True)
     client = tmp_path / "client"
     (client / "gear_optimizer").mkdir(parents=True)
     (client / "main.py").write_text("", encoding="utf-8")
@@ -415,3 +417,14 @@ def test_frontier_sync_skipped_without_credentials(tmp_path: Path, monkeypatch: 
     monkeypatch.setenv("METAFINDER_FRONTIER_CREDENTIALS_FILE", str(tmp_path / "missing.json"))
     result = frontier_client.sync_frontiers_from_server()
     assert result.enabled is False
+
+
+def test_frontier_server_url_has_no_embedded_deployment_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gear_optimizer import frontier_client
+
+    monkeypatch.delenv("METAFINDER_FRONTIER_SERVER_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="METAFINDER_FRONTIER_SERVER_URL is required"):
+        frontier_client._server_base_url()

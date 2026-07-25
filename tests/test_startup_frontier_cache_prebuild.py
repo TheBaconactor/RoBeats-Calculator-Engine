@@ -18,7 +18,7 @@ def test_app_runs_startup_cache_prebuild_before_gpu_and_live_execution() -> None
     assert cache_idx < gpu_idx < execute_idx
 
 
-def test_standalone_and_website_share_the_startup_cache_owner() -> None:
+def test_standalone_and_service_share_the_startup_cache_owner() -> None:
     app_source = Path("gear_optimizer/app.py").read_text(encoding="utf-8")
     service_source = Path("gear_optimizer/robeatsmeta_service.py").read_text(encoding="utf-8")
 

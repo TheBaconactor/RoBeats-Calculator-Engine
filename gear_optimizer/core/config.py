@@ -467,7 +467,7 @@ def find_and_cache_paths():
     targets_dirs = set(["Easy", "Normal", "Hard"])
     targets_files = set(["Gears.csv", "Minis.csv", "Stats.txt"])
     # Honors ROBEATSMETA_OPTIMIZER_DATA_DIR (via PATHS) so a dedicated instance can point its
-    # song source at an isolated dir (e.g. the website's custom-chart bridge).
+    # song source at an isolated directory.
     data_dir = Path(PATHS.data_dir)
     base_dir = data_dir if data_dir.exists() else PROJECT_ROOT
     queue = deque([base_dir])

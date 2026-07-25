@@ -4,7 +4,6 @@
 
 - Human-friendly index: `docs/README.md`
 - Current code map: this file
-- Historical implementation records: `docs/Implementation Records/README.md`
 - Research bundles: `docs/research/README.md`
 
 ## Primary Entry Points
@@ -55,16 +54,13 @@
 - Engineering doctrine and harness layout: `docs/ENGINEERING_PRINCIPLES.md`
 - Architecture overview: `docs/ARCHITECTURE.md`
 - Database schema: `docs/DATABASE_SCHEMA.md`
-- Frontend DB readiness note: `docs/integration/DB_READY_FOR_FRONTEND.md`
 - Fever timeline math: `docs/FEVER_TIMELINE_MATH.md`
-- Timing envelope details: `docs/Implementation Records/TIMING_ENVELOPE_EXACT_FRONTIER.md`
+- Timing envelope details: `docs/TIMING_ENVELOPE_EXACT_FRONTIER.md`
 - Stats verifier: `docs/STATS_VERIFIER.md`
 
 ## Refactoring and Maintenance Notes
 
-- Duplication reduction map: `docs/DUPLICATION_REDUCTION.md`
 - Runtime/GPU maintenance playbook: `docs/MAINTENANCE_PLAYBOOK.md`
 - In-flight integrated throughput architecture and A/B protocol: `docs/INFLIGHT_GA_FG_THROUGHPUT.md`
 - Same-slot GPU-resident GA->FG handoff and legacy-path cleanup: `docs/GPU_RESIDENT_GA_FG_PLAN.md`
 - Historical steady-state/unique-eval GA proposal: `docs/STEADY_STATE_UNIQUE_EVAL_GA_PLAN.md`
-- Historical implementation records index: `docs/Implementation Records/README.md`

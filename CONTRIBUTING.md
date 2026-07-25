@@ -34,7 +34,7 @@ On Windows PowerShell, activate the environment with `.\.venv\Scripts\Activate.p
 7. Disclose material AI assistance in the pull-request description. AI-assisted work is held to the same authorship, testing, and review standards as any other contribution.
 8. Run `python -m ruff check .` and the applicable pytest markers (`not gpu` at minimum).
 
-Behavior or policy changes need an implementation record under `docs/Implementation Records/`.
+Behavior or policy changes must update the relevant maintained reference under `docs/`.
 
 ### Acceptance rules
 

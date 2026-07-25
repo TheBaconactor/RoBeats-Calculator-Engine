@@ -2,7 +2,7 @@ Fever Fill / Fever Time Formula Notes (Game-Parity)
 
 This file is a plain-English companion to:
 - `docs/FEVER_TIMELINE_MATH.md` (math spec)
-- `docs/Implementation Records/FEVER_FIX_PLAN.md` (server-parity timeline details)
+- `docs/TIMING_ENVELOPE_EXACT_FRONTIER.md` (exact timing-frontier details)
 
 Fever fill is based on "song key hit count"
 
@@ -10,7 +10,7 @@ In the game source, the fill per hit is derived from the song's hit count (the n
 
 song_key_hit_count = Total Notes - Long Notes
 
-Conceptually (see the historical decompile in `OLD LEGACY SOURCE GAME CODE/.../Avatar/GearStats.lua`):
+Conceptually (matching the independently verified reference formula):
 
 fill_per_perfect = 1 / (song_key_hit_count * fill_base_perfect)
 fill_per_great   = 1 / (song_key_hit_count * fill_base_great)

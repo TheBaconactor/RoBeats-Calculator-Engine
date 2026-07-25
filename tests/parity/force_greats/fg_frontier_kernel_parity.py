@@ -4,8 +4,8 @@ Builds byte-identical inputs to the production Numba kernel
 ``_first_frontier_from_precomputed_end_indices_numba`` for a single
 ``(raw_fever_fill, non_fever_base, real_fever_time)`` geometry, by reusing the
 exact production prep functions (action table -> compaction -> end-index
-precompute). The Numba kernel is the bit-exact parity ORACLE that the Vulkan
-port must reproduce (see docs/Implementation Records/FG_FRONTIER_VULKAN_PORT.md).
+precompute). The Numba kernel is the bit-exact parity oracle that the Vulkan
+port must reproduce.
 """
 
 from __future__ import annotations

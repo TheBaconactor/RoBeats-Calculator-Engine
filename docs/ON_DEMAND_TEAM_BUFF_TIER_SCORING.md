@@ -18,8 +18,7 @@ On-demand recompute uses **CPU exact replay** via `gear_optimizer/helpers/song_h
 - FG score: `solver.scoring.exact_rescore.score_force_greats_response_surface_exact(...)` over the
   persisted `response_surface` (the canonical exact FG representation). FG rows without a persisted
   surface fail loudly. Tier deltas never shift FT/FF, so the fever/great timeline is tier-invariant
-  and the baseline-tier replay is bit-exact to the persisted `fg_score`. See
-  `docs/Implementation Records/FG_TIER_REPLAY_RESPONSE_SURFACE_AUTHORITY.md`.
+  and the baseline-tier replay is bit-exact to the persisted `fg_score`.
 
 Production FG optimization itself remains GPU Bellman-only; tier recompute does not call the removed
 finder GPU API.

@@ -19,8 +19,7 @@ Per-call DEBUG/PROFILING/TELEMETRY flags (DB_TIMING, POST_TIMING,
 INFLIGHT_STAGE_PROFILE*, GA_LOOP_PROFILE*, GPU_EXECUTOR_LIVE/HEARTBEAT*, the
 INFLIGHT_*_DEBUG family, etc.) are intentionally read at call time via the
 parsing.py helpers (env_flag/env_int/env_float/env_str) so dev tooling and
-tests can toggle them at runtime. They are gated OFF by default and the full
-surface is inventoried in docs/Implementation Records/ENV_FLAG_ELIMINATION.md.
+tests can toggle them at runtime. They are gated OFF by default.
 No production code may read os.environ directly or parse with bare int()/float()
 in a silent try/except -- always go through the parsing.py helpers.
 """
@@ -68,7 +67,7 @@ class EnvConfig:
     gpu_executor_batch_wait_ms: int  # GPU_EXECUTOR_BATCH_WAIT_MS
     gpu_executor_max_batch: int  # GPU_EXECUTOR_MAX_BATCH
 
-    # Serving context: true only when the RoBeatsMeta website API is importing this
+    # Serving context: true only when a host application is importing this
     # optimizer in-process to re-solve builds on demand. The standalone optimizer
     # (``python main.py``) never sets this, so fail-loud invariants stay fail-loud
     # there. Read once at import (the API sets the env var before sys.path insert).

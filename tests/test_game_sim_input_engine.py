@@ -15,7 +15,7 @@ def test_game_oracles_never_add_a_frame_to_fever_duration() -> None:
     result = simulate(NoteChart([], [], []), {}, [], [], _cfg(2))
     assert result.fever_time_sec == pytest.approx(10.0 * 0.15)
 
-    bundle = Path(__file__).resolve().parents[1] / "tools/verify/webport_oracle/score_bundle.mjs"
+    bundle = Path(__file__).resolve().parents[1] / "tools/verify/reference_oracle/score_bundle.mjs"
     source = bundle.read_text(encoding="utf-8")
     assert "cfg.lastNoteTimeSec * 0.15 * (feverDecayRate(stats) / 0.15)" in source
     assert "cfg.lastNoteTimeSec * 0.15 + 1 / 60" not in source

@@ -33,7 +33,7 @@ Repository snapshot as of July 25, 2026:
 |---|---|
 | Supported catalog | 967 unique chart titles across 2,249 tracked difficulty files |
 | Engineering depth | 649 Python files and 604 invariant/implementation records |
-| Verification surface | 234 focused test modules, including CPU/GPU parity and exact-score regression coverage |
+| Verification surface | 232 focused test modules, including CPU/GPU parity and exact-score regression coverage |
 | Maintenance activity | 1,827 commits; 877 commits and 78 merged-PR commits in the preceding 90 days |
 | Production role | Optimizer and chart-catalog backend for [RoBeatsMeta](https://robeatsmeta.net) |
 
@@ -132,7 +132,7 @@ Generated results are stored in `evolution.db` by default. Override the location
 
 ### HTTP service
 
-The service interface supports website integration and self-hosted deployments:
+The service interface supports host-application integration and self-hosted deployments:
 
 ```bash
 python -m gear_optimizer.robeatsmeta_service --host 127.0.0.1 --port 8765
@@ -149,7 +149,7 @@ Bind to loopback unless the service is behind a trusted boundary. Set `ROBEATSME
 <details>
 <summary><strong>Managed frontier distribution</strong></summary>
 
-The production deployment behind RoBeatsMeta uses one authoritative host to build and publish frontier bundles. Trusted clients authenticate to the host and install SHA-256-verified code, data, and frontier revisions.
+Managed deployments use one authoritative host to build and publish frontier bundles. Trusted clients authenticate to that host and install SHA-256-verified code, data, and frontier revisions.
 
 Community clones do not require frontier credentials. If `bin/frontier_client_credentials.json` is absent, hosted synchronization is skipped and the optimizer uses the local checkout and `Data/` tree.
 
@@ -172,10 +172,11 @@ The “state-of-the-art” position is tied to inspectable technical work:
 
 - Exact per-note integer scoring and canonical rescoring: [`gear_optimizer/solver/scoring/`](gear_optimizer/solver/scoring/)
 - Non-dominated fever-timing frontiers: [`docs/FEVER_TIMELINE_MATH.md`](docs/FEVER_TIMELINE_MATH.md)
+- Exact timing-envelope construction: [`docs/TIMING_ENVELOPE_EXACT_FRONTIER.md`](docs/TIMING_ENVELOPE_EXACT_FRONTIER.md)
 - Physically reachable Force Great response surfaces: [`docs/ANALYTICAL_FG_PROBLEM.md`](docs/ANALYTICAL_FG_PROBLEM.md)
 - GPU-native GA and frontier execution: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Separate Base and Force Great persistence authority: [`docs/DATABASE_SCHEMA.md`](docs/DATABASE_SCHEMA.md)
-- Hundreds of decision records preserving the reasoning behind correctness and performance changes: [`docs/Implementation Records/README.md`](docs/Implementation%20Records/README.md)
+- Reproducible research artifacts and reduction studies: [`docs/research/README.md`](docs/research/README.md)
 
 The exact components preserve integer floors, timing order, ties, witnesses, and supported reachability semantics. The outer gear/Mini genetic search remains budget-bounded and heuristic.
 

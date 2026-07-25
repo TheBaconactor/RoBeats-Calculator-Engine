@@ -1,13 +1,12 @@
-"""Game-faithful replay of a persisted FG loadout through the WebPort ScoreEngine oracle.
+"""Game-faithful replay of a persisted FG loadout through the reference ScoreEngine oracle.
 
 Given a DB, a song, and a rank (0 = top by fg_score), this tool:
   1. decodes the loadout's persisted ForceGreats surface (frontier_trace and visible stats),
   2. reconstructs the per-note play (Perfect/Great + hit offsets) via the canonical
      ``force_greats_note_graph`` witness reconstruction,
-  3. reads the persisted post-gem visible stat vector and maps it into the WebPort
+  3. reads the persisted post-gem visible stat vector and maps it into the reference
      ``GEAR_STAT_TYPES`` raw-point statsdict the oracle expects,
-  4. replays the resulting event stream through ``tools/verify/webport_oracle/oracle.mjs`` (a 1:1
-     port of the game's ScoreEngine / fever gate),
+  4. replays the resulting event stream through ``tools/verify/reference_oracle/oracle.mjs``,
   5. prints the GAME score + fever membership (feverHits, per-section activation/end/noteCount)
      and DIFFS it against the persisted surface -- in particular the PHANTOM fever notes: surface
      notes the game does NOT fever because its (reachable) activation ends the window earlier.
@@ -59,7 +58,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_types import (  # no
 from tools.verify.game_sim import _synth_offset  # noqa: E402
 
 _DIFF_DIRS = ("Easy", "Normal", "Hard")
-_ORACLE = ROOT / "tools" / "verify" / "webport_oracle" / "oracle.mjs"
+_ORACLE = ROOT / "tools" / "verify" / "reference_oracle" / "oracle.mjs"
 
 # Optimizer stat name -> WebPort GEAR_STAT_TYPE (score-relevant subset). The oracle runs these
 # RAW point counts through its own fN curves, so we feed the FINAL (base+gem) point count.

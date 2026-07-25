@@ -9,7 +9,6 @@ hit-time timeline (chart + T). These CPU tests pin:
 - that a non-uniform offset genuinely moves the exact score; and
 - the fail-loud guards (reordering / wrong-length timing vectors are invalid input).
 
-See docs/Implementation Records/CUSTOMIZABLE_TIMING_MODE.md.
 """
 
 from __future__ import annotations

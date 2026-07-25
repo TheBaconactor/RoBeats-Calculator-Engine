@@ -32,9 +32,8 @@ FEVER_TIME_SCALE = 0.15
 
 # Fever Time constant offset added to scaled duration (seconds).
 #
-# 0.15 is the FEVER_TIME_SCALE-driven "+1000ms of song length" term (see
-# SongDatabase.lua:1212 songkey_get_approx_length_sec, ported verbatim as
-# [REDACTED PRIVATE REPOSITORY]/web/src/score/scoreEngine.ts's `cfg.lastNoteTimeSec`); this
+# 0.15 is the FEVER_TIME_SCALE-driven "+1000ms of song length" term from the
+# reference scoring model's `lastNoteTimeSec`; this
 # repo folds that same convention directly into the offset constant instead
 # of a separate approx-length variable (algebraically identical).
 #
@@ -123,8 +122,8 @@ class PathConfig:
         # We want <root> as the script_dir so that user-facing files like
         # config.ini, Data/, bin/, etc resolve correctly.
         script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        # External-boundary overrides (cache/data dirs) so a dedicated instance — e.g. the
-        # website's custom-chart bridge — can run against an isolated state dir + song source
+        # External-boundary overrides (cache/data dirs) so a dedicated service instance can run
+        # against an isolated state dir + song source
         # without touching the catalog bin/ or Data/ trees. Empty => default (current behavior).
         bin_dir = env_str("ROBEATSMETA_OPTIMIZER_BIN_DIR", "").strip() or os.path.join(script_dir, "bin")
         data_dir = env_str("ROBEATSMETA_OPTIMIZER_DATA_DIR", "").strip() or os.path.join(script_dir, "Data")

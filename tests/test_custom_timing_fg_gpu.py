@@ -7,7 +7,6 @@ tests pin:
   through the new param); and
 - a non-zero per-note ``T`` re-optimizes to a VALID surface, exactly scored under ``chart + T``.
 
-See docs/Implementation Records/CUSTOMIZABLE_TIMING_MODE.md.
 """
 
 from __future__ import annotations

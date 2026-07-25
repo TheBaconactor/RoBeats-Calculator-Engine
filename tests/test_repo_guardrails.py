@@ -22,6 +22,9 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GITHUB_MATH_TEXT_UNDERSCORE = re.compile(r"\\text\{[^}]*_[^}]*\}")
+_SENSITIVE_PLAYER_EXPORT_KEY = re.compile(
+    r'"(?:localPlayerId|playerId|playerName)"\s*:'
+)
 
 
 def test_github_math_text_labels_do_not_use_underscores() -> None:
@@ -41,6 +44,22 @@ def test_github_math_text_labels_do_not_use_underscores() -> None:
         "GitHub strips Markdown underscore escapes inside LaTeX "
         r"\text{...} labels; use spaces in displayed labels instead:"
         "\n" + "\n".join(offenders)
+    )
+
+
+def test_repository_does_not_contain_player_identity_exports() -> None:
+    offenders: list[str] = []
+    for path in sorted(_REPO_ROOT.rglob("*.json")):
+        if any(part in {".git", ".venv", "bin", "node_modules", "venv"} for part in path.parts):
+            continue
+        if _SENSITIVE_PLAYER_EXPORT_KEY.search(
+            path.read_text(encoding="utf-8", errors="ignore")
+        ):
+            offenders.append(str(path.relative_to(_REPO_ROOT)))
+
+    assert not offenders, (
+        "Player-identity exports must stay outside the repository:\n"
+        + "\n".join(offenders)
     )
 
 

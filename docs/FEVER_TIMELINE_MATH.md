@@ -70,10 +70,10 @@ Therefore the number of non-fever scored notes before the fever window begins is
 - Section 1 (start of song): `notes_to_fill(k) - 1`
 - Section 2+ (after a fever window): `notes_to_fill(k)`
 
-Current Metafinder Status
-- The intended parity behavior includes both:
+Current behavior:
+- The parity model includes both:
   - activation note is Fever, and
-  - the transition-note effect after each fever window (see `docs/Implementation Records/FEVER_FIX_PLAN.md`).
+  - the transition-note effect after each fever window.
 
 ---
 
@@ -143,7 +143,7 @@ Since $fp(k)$ increases in discrete steps:
 
 $$\text{Breakpoints} = \{0\} \cup \{k : fp(k) \neq fp(k-1)\}$$
 
-ForceGreatsFinder commonly enumerates breakpoint configs in **FP-target space** (per-section extra hits), then converts FP targets back into Great counts for output/scoring. That inverse depends on `raw_fill` and is documented in `docs/Implementation Records/FG_FP_TARGET_INVERSE_BUG_FIX.md`.
+The Force Great solver enumerates breakpoint configs in **FP-target space** (per-section extra hits), then converts FP targets back into Great counts for output and scoring. That inverse depends on `raw_fill`.
 
 ---
 

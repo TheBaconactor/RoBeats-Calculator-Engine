@@ -181,7 +181,6 @@ def test_configure_execution_prewarms_native_ga():
 
 
 def test_ga_buffer_config_restores_defaults_and_clears_request_on_reset():
-    # Contract (docs/Implementation Records/GPU_GA_BUFFER_CONFIG_RESET_RESTORE.md):
     # reset_fields_state() restores GA buffer sizing to defaults AND clears the requested
     # record, so a stale session size never silently re-applies after a hard_reset_taichi
     # (CPU-level mirror of the gpu-marked test_gpu_ga_run_buffer_config_restores_defaults_
