@@ -1,40 +1,26 @@
 # Engineering Principles
 
-This document is the durable doctrine that the root `AGENTS.md` routes to.
-Use it when changing behavior, refactoring APIs, or updating how the repo guides agents and contributors.
+This document defines the repository's durable engineering doctrine.
+Use it when changing behavior, refactoring APIs, or updating contributor guidance.
 
-## Harness layout
+## Engineering workflow
 
-- Root `AGENTS.md` is a concise router and non-negotiable contract.
-- Nested `AGENTS.md` files stay small and keep local rules close to the code or docs they govern.
-- Use `AGENTS.override.md` only when a subtree truly needs to replace broader guidance instead of extending it.
-- This document holds long-lived engineering doctrine so the root harness can stay short.
-- `docs/HARNESS_ENGINEERING.md` holds agent-first harness practices, feedback loops, and mechanical enforcement
-  expectations.
 - `tools/dev` and CI are enforcement harnesses.
 - `tools/bench`, `tools/profile`, and replay scripts are evaluation harnesses.
-- Repo-local MCP servers are not a supported harness layer.
 
-## Agent-first harness doctrine
+## Repository knowledge
 
 - Keep repository knowledge as the system of record. If a decision matters after this session, put it in docs,
   implementation records, tests, or maintained tools.
-- Prefer concise routers and scoped references over large monolithic instruction files.
+- Prefer concise, scoped references over large monolithic instruction files.
 - Make high-risk contracts mechanically checkable when the invariant is stable enough to encode.
-- When an agent struggles, treat that as a harness signal: identify the missing map, tool, verifier, or guardrail and
-  feed it back into the repo.
 - Capture repeated review feedback as durable guidance or executable checks so the correction compounds.
 
-## Repo-Local Automation Doctrine
+## Repository automation
 
-- Do not add or restore repo-local MCP servers.
-- Do not add repo-local custom Codex skills for this surface.
-- Do not use broad user skills as default routing. Keep reusable repo workflow in docs or ordinary tools unless the user
-  explicitly asks for a skill.
 - Repeated engineering workflows should live in maintained docs or ordinary repo tools under `tools/dev`, `tools/bench`,
   or `tools/verify`.
-- Keep repo-local automation easy to run from a shell, CI, or PR review without requiring Codex-specific server
-  registration.
+- Keep repository automation easy to run from a shell, CI, or pull-request review.
 
 ## Root-cause-first fixes
 
@@ -47,7 +33,7 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
   - changes the owning layer instead of papering over the symptom downstream
   - adds the narrowest regression test, verifier, or replay that would have caught the defect
   - updates docs or implementation records when behavior or policy changed
-- Temporary mitigations are allowed only when they are narrow, explicitly labeled, and paired with a follow-up artifact in `docs/CODEX_WORKLOG.md` or an implementation record.
+- Temporary mitigations are allowed only when they are narrow, explicitly labeled, and paired with an implementation record.
 
 ## Ownership and API boundaries
 
@@ -77,7 +63,7 @@ Use it when changing behavior, refactoring APIs, or updating how the repo guides
 - Apply the smallest root-cause change in the owning layer.
 - Add the narrowest meaningful regression proof.
 - Run the narrowest verification that proves the fix.
-- Update `docs/Implementation Records/` and `docs/CODEX_WORKLOG.md` when the change affects behavior, policy, or engineering guidance.
+- Update `docs/Implementation Records/` when the change affects behavior, policy, or engineering guidance.
 
 ## Quick review checklist
 

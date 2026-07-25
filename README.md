@@ -17,7 +17,7 @@
 </div>
 
 > [!NOTE]
-> RoBeats Calculator Engine is an independent community project. It is not affiliated with or endorsed by RoBeats, Roblox, or any game publisher. “#1 state-of-the-art” is the project’s brand position, grounded in the modeled surfaces and verification standards documented below; it does not mean the outer genetic loadout search is exhaustive.
+> RoBeats Calculator Engine is an independent community project. It is not affiliated with or endorsed by RoBeats, Roblox, or any game publisher. The “#1 state-of-the-art” claim is grounded in the modeled surfaces and verification standards documented below; it does not mean the outer genetic loadout search is exhaustive.
 
 ## Overview
 
@@ -32,12 +32,10 @@ Repository snapshot as of July 25, 2026:
 | Signal | Evidence |
 |---|---|
 | Supported catalog | 967 unique chart titles across 2,249 tracked difficulty files |
-| Engineering depth | 650 Python files and 650 invariant/implementation records |
+| Engineering depth | 649 Python files and 604 invariant/implementation records |
 | Verification surface | 234 focused test modules, including CPU/GPU parity and exact-score regression coverage |
-| Maintenance activity | 1,825 commits; 876 commits and 78 merged-PR commits in the preceding 90 days |
+| Maintenance activity | 1,827 commits; 877 commits and 78 merged-PR commits in the preceding 90 days |
 | Production role | Optimizer and chart-catalog backend for [RoBeatsMeta](https://robeatsmeta.net) |
-
-See [`docs/COMMUNITY_IMPACT.md`](docs/COMMUNITY_IMPACT.md) for definitions, reproducible counting commands, and the evidence still needed for user/adoption claims.
 
 ### Highlights
 
@@ -271,8 +269,6 @@ Cold runs compile Numba and Taichi kernels and may build missing exact frontiers
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system architecture
 - [`docs/NAVIGATION.md`](docs/NAVIGATION.md) — file-level code map
 - [`docs/ENGINEERING_PRINCIPLES.md`](docs/ENGINEERING_PRINCIPLES.md) — engineering principles
-- [`docs/COMMUNITY_IMPACT.md`](docs/COMMUNITY_IMPACT.md) — adoption evidence and metric definitions
-- [`docs/BRAND.md`](docs/BRAND.md) — brand positioning and asset usage
 - [`DATA.md`](DATA.md) — data layout and deployment notes
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution guidelines
 - [`GOVERNANCE.md`](GOVERNANCE.md) — authority, roles, and change control

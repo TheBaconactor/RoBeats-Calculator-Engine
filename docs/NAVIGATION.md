@@ -6,7 +6,6 @@
 - Current code map: this file
 - Historical implementation records: `docs/Implementation Records/README.md`
 - Research bundles: `docs/research/README.md`
-- Legacy archive: `docs/archive/README.md`
 
 ## Primary Entry Points
 

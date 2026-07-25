@@ -1,5 +1,5 @@
 """
-RoBeats MetaFinder optimizer package.
+RoBeats Calculator Engine optimizer package.
 
 For in-code ownership guidance, inspect `docs/NAVIGATION.md`.
 """

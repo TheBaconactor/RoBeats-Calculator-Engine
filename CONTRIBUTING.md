@@ -25,7 +25,7 @@ On Windows PowerShell, activate the environment with `.\.venv\Scripts\Activate.p
 
 ## Pull requests
 
-1. Read [`AGENTS.md`](AGENTS.md) and any subtree-specific agent notes.
+1. Read [`docs/ENGINEERING_PRINCIPLES.md`](docs/ENGINEERING_PRINCIPLES.md) and [`docs/NAVIGATION.md`](docs/NAVIGATION.md).
 2. Open an issue before implementing a new feature, scoring-policy change, schema change, public API change, or architectural rewrite.
 3. Fix the owning invariant—no song-specific exceptions or silent fallbacks in optimizer logic.
 4. Keep Base and Force Great leaderboards separate (`songs.best_score` vs `songs.best_fg_score`).
@@ -34,7 +34,7 @@ On Windows PowerShell, activate the environment with `.\.venv\Scripts\Activate.p
 7. Disclose material AI assistance in the pull-request description. AI-assisted work is held to the same authorship, testing, and review standards as any other contribution.
 8. Run `python -m ruff check .` and the applicable pytest markers (`not gpu` at minimum).
 
-Behavior or policy changes need an implementation record under `docs/Implementation Records/` and an entry in `docs/CODEX_WORKLOG.md`.
+Behavior or policy changes need an implementation record under `docs/Implementation Records/`.
 
 ### Acceptance rules
 

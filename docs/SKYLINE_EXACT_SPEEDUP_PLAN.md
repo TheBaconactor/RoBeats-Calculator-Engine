@@ -1,8 +1,7 @@
 # Skyline Exact Speedup Plan — FINALIZED
 
 Status: finalized 2026-06-13. Companions: memory `skyline-vs-ga-parity-infeasible`,
-`skyline-fg-fold-exactness-gap`; `docs/SKYLINE_EXACT_OBJECTIVE_HANDOFF.md` (+ an independent
-external review whose two corrections are folded in below); CODEX_WORKLOG 2026-06-13.
+`skyline-fg-fold-exactness-gap`; independent review corrections are folded in below.
 
 ## 1. Objective (finalized)
 

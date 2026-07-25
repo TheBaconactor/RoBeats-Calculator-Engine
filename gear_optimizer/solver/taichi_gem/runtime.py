@@ -209,7 +209,7 @@ def _maybe_set_vulkan_visible_device() -> None:
     Taichi's Vulkan backend will pick a default device if multiple adapters are present.
     You can force a specific device index (as seen by Taichi) via:
       - `TAICHI_VULKAN_VISIBLE_DEVICE=1`
-    Or ask RoBeats MetaFinder to auto-select the first discrete GPU via:
+    Or ask RoBeats Calculator Engine to auto-select the first discrete GPU via:
       - `TAICHI_VULKAN_VISIBLE_DEVICE=discrete`
 
     Notes:
@@ -449,7 +449,7 @@ def get_kernel_profiler_enabled() -> bool:
 
 
 def get_block_dim() -> int:
-    # Hardwired (was TAICHI_BLOCK_DIM): 256 is the worklog-proven best for this
+    # Hardwired (was TAICHI_BLOCK_DIM): 256 is the implementation record-proven best for this
     # workload; _clamp_block_dim keeps the Vulkan [1,1024] dispatch bound.
     return _clamp_block_dim(256)
 

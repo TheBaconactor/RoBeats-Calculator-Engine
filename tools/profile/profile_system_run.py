@@ -1,5 +1,5 @@
 """
-End-to-end system profiler for RoBeats MetaFinder runs (Windows-friendly).
+End-to-end system profiler for RoBeats Calculator Engine runs (Windows-friendly).
 
 Captures:
   - Per-process-tree CPU%, RSS, thread counts (psutil)

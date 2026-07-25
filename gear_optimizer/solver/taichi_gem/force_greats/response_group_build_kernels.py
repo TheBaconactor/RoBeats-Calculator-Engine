@@ -3,7 +3,7 @@
 Canonical production group-row builder: prunes FT/FF pairs per loadout and
 emits the packed arrays the GPU inner scorer consumes. Integer-only; tests
 compare against the prune-composition reference in `tests/fg_group_build_reference.py`.
-No toggles / no fallbacks (CLAUDE.md).
+No toggles / no fallbacks (docs/ENGINEERING_PRINCIPLES.md).
 
 Scratch (head/tail/next/ordered/best/keep_mask) lives in persistent Taichi fields,
 NOT in read/write ndarray kernel args: mixing read/write ndarray scratch with

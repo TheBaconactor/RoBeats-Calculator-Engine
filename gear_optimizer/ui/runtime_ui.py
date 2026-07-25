@@ -170,7 +170,7 @@ class RuntimeUiMixin:
     def _print_banner(self) -> None:
         stream = self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout
         try:
-            stream.write("RoBeats MetaFinder\n")
+            stream.write("RoBeats Calculator Engine\n")
             stream.flush()
         except Exception as e:
             logger.debug(f"runtime_ui:_print_banner: {e}")

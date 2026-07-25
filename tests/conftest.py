@@ -130,7 +130,7 @@ if not _HAS_PYTEST_BENCHMARK:
         """
         Minimal fallback for environments without pytest-benchmark installed.
 
-        The real plugin measures timings; for CI/codex runs we only need the
+        The real plugin measures timings; for CI runs we only need the
         benchmark tests to execute without failing collection.
         """
 
