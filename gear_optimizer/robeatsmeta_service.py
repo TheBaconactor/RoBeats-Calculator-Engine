@@ -548,6 +548,111 @@ def chart_text_and_result_song_name_for_request(request: dict[str, Any], *, fall
     raise RequestError("request must include targetSongId or chartText")
 
 
+# --- custom gear / mini pool -------------------------------------------------
+#
+# A caller may pool up to 5 hypothetical gear pieces and 5 hypothetical minis alongside the real
+# catalog FOR ONE SOLVE. They are written as extra rows into the per-request Data/Gear CSV copies,
+# so the canonical pipeline discovers them exactly like catalog items and nothing outside the
+# throwaway workspace is touched. This is an external boundary, so every field is validated here.
+
+_MAX_CUSTOM_POOL_ITEMS = 5
+_MAX_CUSTOM_ITEM_NAME = 32
+_MAX_CUSTOM_STAT = 999
+_CUSTOM_ITEM_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 '\-_.!?()&+:]{0,31}$")
+_CUSTOM_GEAR_SLOTS = ("Hat", "Face", "Neck", "Shirt", "Pants", "Back")
+_CUSTOM_MINI_TYPES = ("Chill", "Flow", "Rush", "Beat", "Vibe")
+# Request stat key -> CSV column header, per item kind (the two CSVs spell the same stats
+# differently). Keys the CSV lacks are simply never written.
+_CUSTOM_GEAR_COLUMNS = {
+    "chill": "Chill", "flow": "Flow", "rush": "Rush", "beat": "Beat", "vibe": "Vibe",
+    "ppoint": "PPoint", "cmult": "CMult", "fmult": "FMult", "time": "Time", "fill": "Fill",
+}
+# No PPoint: Minis.csv has no such column (a mini's Perfect Points come from ascension level only).
+_CUSTOM_MINI_COLUMNS = {
+    "chill": "Chill", "flow": "Flow", "rush": "Rush", "beat": "Beat", "vibe": "Vibe",
+    "cbmlt": "CbMlt", "fvmlt": "FvMlt", "fvtim": "FvTim", "fvfil": "FvFil",
+}
+
+
+def _custom_item(raw: Any, *, columns: dict[str, str], types: tuple[str, ...], seen: set[str]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise RequestError("each custom pool item must be a JSON object")
+    name = str(raw.get("name") or "").strip()
+    if not _CUSTOM_ITEM_NAME_RE.match(name) or len(name) > _MAX_CUSTOM_ITEM_NAME:
+        raise RequestError(f"invalid custom item name {name!r}")
+    if name.casefold() in seen:
+        raise RequestError(f"duplicate custom item name {name!r}")
+    seen.add(name.casefold())
+    item_type = str(raw.get("type") or "").strip()
+    if item_type not in types:
+        raise RequestError(f"invalid custom item type {item_type!r} for {name!r}")
+    item: dict[str, Any] = {"name": name, "type": item_type}
+    for key in columns:
+        value = raw.get(key, 0)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RequestError(f"custom item {name!r} stat {key!r} must be an integer")
+        if value < 0 or value > _MAX_CUSTOM_STAT:
+            raise RequestError(f"custom item {name!r} stat {key!r} out of range")
+        item[key] = int(value)
+    return item
+
+
+def _custom_pool_for_request(request: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    pool: dict[str, list[dict[str, Any]]] = {"gear": [], "minis": []}
+    for field_name, key, columns, types in (
+        ("customGear", "gear", _CUSTOM_GEAR_COLUMNS, _CUSTOM_GEAR_SLOTS),
+        ("customMinis", "minis", _CUSTOM_MINI_COLUMNS, _CUSTOM_MINI_TYPES),
+    ):
+        raw = request.get(field_name)
+        if raw is None:
+            continue
+        if not isinstance(raw, list):
+            raise RequestError(f"{field_name} must be a list")
+        if len(raw) > _MAX_CUSTOM_POOL_ITEMS:
+            raise RequestError(f"{field_name} exceeds {_MAX_CUSTOM_POOL_ITEMS} items")
+        seen: set[str] = set()
+        pool[key] = [_custom_item(entry, columns=columns, types=types, seen=seen) for entry in raw]
+    return pool
+
+
+def _append_custom_pool_rows(gear_dir: Path, pool: dict[str, list[dict[str, Any]]]) -> None:
+    """Append the pool's rows to the per-request Gears.csv / Minis.csv copies."""
+    import csv
+
+    for filename, items, columns, name_column in (
+        ("Gears.csv", pool["gear"], _CUSTOM_GEAR_COLUMNS, "Gear Name"),
+        ("Minis.csv", pool["minis"], _CUSTOM_MINI_COLUMNS, "Mini Name"),
+    ):
+        if not items:
+            continue
+        path = gear_dir / filename
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.reader(handle))
+        header = [h.strip() for h in rows[0]]
+        # A custom row that reuses a catalog name would silently redefine that catalog item for the
+        # whole solve (name->stats maps are last-write-wins), so refuse instead.
+        name_index = header.index(name_column)
+        existing = {str(row[name_index]).strip().casefold() for row in rows[1:] if len(row) > name_index}
+        new_rows: list[list[str]] = []
+        for item in items:
+            if str(item["name"]).casefold() in existing:
+                raise RequestError(f"custom item name {item['name']!r} already exists in {filename}")
+            cell_by_column = {columns[key]: str(item[key]) for key in columns if item[key]}
+            cell_by_column[name_column] = str(item["name"])
+            cell_by_column["Type"] = str(item["type"])
+            # Minis.csv repeats every stat column for the L1 ascension block; fill only the FIRST
+            # occurrence of each header (which is what the parser reads for live stats) and leave
+            # the repeats blank, so a custom mini has no L1 ascension stats.
+            filled: set[str] = set()
+            row_out: list[str] = []
+            for column in header:
+                row_out.append("" if column in filled else cell_by_column.get(column, ""))
+                filled.add(column)
+            new_rows.append(row_out)
+        with path.open("a", encoding="utf-8", newline="") as handle:
+            csv.writer(handle).writerows(new_rows)
+
+
 def _service_run_root() -> Path:
     override = env_str("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", "").strip()
     return Path(override) if override else (REPO_ROOT / "bin" / "robeatsmeta_api_runs")
@@ -572,6 +677,7 @@ def _solve_isolated(
     reasoning: str = "default",
     timing_mode: str = "perfect_window",
     ephemeral_frontiers: bool = False,
+    custom_pool: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the canonical optimizer pipeline once in a throwaway per-job workspace."""
     work = _service_run_root() / job
@@ -579,6 +685,9 @@ def _solve_isolated(
     data_dir = work / "Data"
     (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
     shutil.copytree(GEAR_DIR, data_dir / "Gear")  # real files; discovery does not follow symlinks
+    if custom_pool and (custom_pool["gear"] or custom_pool["minis"]):
+        # Per-request copies only — the catalog Data/Gear CSVs are never touched.
+        _append_custom_pool_rows(data_dir / "Gear", custom_pool)
     (data_dir / "Hard" / f"{job}.txt").write_text(
         _normalize_chart(chart_text, result_song_name, _normalize_timing_mode(timing_mode)),
         encoding="utf-8",
@@ -668,11 +777,13 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
     reasoning = _normalize_reasoning(request.get("reasoning"))
     timing_mode = _normalize_timing_mode(request.get("timingMode"))
+    custom_pool = _custom_pool_for_request(request)
     # Dedup on the job AND the solve inputs: two concurrent requests whose ids merely slug
     # identically (or both fall back to "job") must never silently join and hand the second
-    # caller a leaderboard computed for a different chart/reasoning/timing.
+    # caller a leaderboard computed for a different chart/reasoning/timing/custom pool.
+    pool_key = json.dumps(custom_pool, sort_keys=True, separators=(",", ":"))
     solve_key = job + ":" + hashlib.sha256(
-        f"{reasoning}|{timing_mode}|{repeats}|{chart_text}".encode("utf-8")
+        f"{reasoning}|{timing_mode}|{repeats}|{pool_key}|{chart_text}".encode("utf-8")
     ).hexdigest()[:16]
     state, owner = _claim_job_solve(solve_key)
     if not owner:
@@ -687,6 +798,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
             reasoning,
             timing_mode,
             ephemeral_frontiers=bool(str(request.get("chartText") or "").strip()),
+            custom_pool=custom_pool,
         )
         return state.result
     except BaseException as exc:

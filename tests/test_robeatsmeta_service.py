@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import threading
 import time
@@ -536,3 +537,69 @@ def test_memory_guard_allows_concurrency_when_memory_ample(monkeypatch):
     # Plenty of memory -> the gate admits everyone; concurrency is bounded only by the pool.
     peak = _peak_concurrent_slots(workers=4, available=64 * 1024 * 1024 * 1024, min_free=1, monkeypatch=monkeypatch)
     assert peak == 4
+
+
+# --- custom gear / mini pool -------------------------------------------------
+
+_CUSTOM_GEAR = {"name": "Test Hat", "type": "Hat", "chill": 30, "ppoint": 20}
+_CUSTOM_MINI = {"name": "Test Mini", "type": "Chill", "chill": 90, "cbmlt": 30}
+
+
+@pytest.mark.parametrize(
+    "request_payload",
+    [
+        pytest.param({"customGear": [dict(_CUSTOM_GEAR, name=f"Hat {i}") for i in range(6)]}, id="over-item-cap"),
+        pytest.param({"customGear": {"name": "Hat"}}, id="not-a-list"),
+        pytest.param({"customGear": ["Hat"]}, id="item-not-an-object"),
+        pytest.param({"customGear": [dict(_CUSTOM_GEAR, name='a,b"\nHat')]}, id="csv-hostile-name"),
+        pytest.param({"customGear": [dict(_CUSTOM_GEAR, name="=1+1")]}, id="formula-injection-name"),
+        pytest.param({"customGear": [dict(_CUSTOM_GEAR, name="x" * 33)]}, id="name-too-long"),
+        pytest.param({"customGear": [dict(_CUSTOM_GEAR, type="Wings")]}, id="unknown-slot"),
+        pytest.param({"customMinis": [dict(_CUSTOM_MINI, type="Sparkle")]}, id="unknown-mini-type"),
+        pytest.param({"customGear": [dict(_CUSTOM_GEAR, chill=-1)]}, id="negative-stat"),
+        pytest.param({"customGear": [dict(_CUSTOM_GEAR, chill=10**9)]}, id="stat-out-of-range"),
+        pytest.param({"customGear": [dict(_CUSTOM_GEAR, chill="30")]}, id="stat-not-an-int"),
+        pytest.param({"customGear": [_CUSTOM_GEAR, dict(_CUSTOM_GEAR, type="Face")]}, id="duplicate-name"),
+    ],
+)
+def test_custom_pool_rejects_invalid_requests(request_payload):
+    with pytest.raises(service.RequestError):
+        service._custom_pool_for_request(request_payload)
+
+
+def test_custom_pool_rows_land_in_the_request_copy_and_never_the_catalog(tmp_path):
+    catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
+    before = (catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()
+
+    work = tmp_path / "Gear"
+    shutil.copytree(catalog, work)
+    pool = service._custom_pool_for_request({"customGear": [_CUSTOM_GEAR], "customMinis": [_CUSTOM_MINI]})
+    service._append_custom_pool_rows(work, pool)
+
+    from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
+
+    gear = next(g for g in parse_gear_rows(str(work / "Gears.csv")) if g["Name"] == "Test Hat")
+    mini = next(m for m in parse_mini_rows(str(work / "Minis.csv")) if m["Name"] == "Test Mini")
+    assert (gear["type"], gear["Chill"], gear["Perfect Points"]) == ("Hat", 30, 20)
+    assert (mini["type"], mini["Chill"], mini["Combo Multiplier"]) == ("Chill", 90, 30)
+    # The repeated L1 ascension columns in Minis.csv must stay empty for a custom mini.
+    assert "Mini Ascension Base Chill" not in mini
+    assert ((catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()) == before
+
+
+def test_custom_pool_refuses_to_redefine_a_catalog_item(tmp_path):
+    catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
+    work = tmp_path / "Gear"
+    shutil.copytree(catalog, work)
+    import csv
+
+    with (catalog / "Gears.csv").open(encoding="utf-8-sig", newline="") as handle:
+        # A catalog name the validator itself accepts, so the collision check is what rejects it.
+        taken = next(
+            row["Gear Name"]
+            for row in csv.DictReader(handle)
+            if service._CUSTOM_ITEM_NAME_RE.match(str(row["Gear Name"]).strip())
+        )
+    pool = service._custom_pool_for_request({"customGear": [dict(_CUSTOM_GEAR, name=taken)]})
+    with pytest.raises(service.RequestError):
+        service._append_custom_pool_rows(work, pool)
