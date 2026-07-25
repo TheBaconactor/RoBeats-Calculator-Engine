@@ -15,11 +15,33 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_GITHUB_MATH_TEXT_UNDERSCORE = re.compile(r"\\text\{[^}]*_[^}]*\}")
+
+
+def test_github_math_text_labels_do_not_use_underscores() -> None:
+    offenders: list[str] = []
+    for path in sorted(_REPO_ROOT.rglob("*.md")):
+        if any(part in {".git", ".venv", "bin", "node_modules", "venv"} for part in path.parts):
+            continue
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        ):
+            if _GITHUB_MATH_TEXT_UNDERSCORE.search(line):
+                rel = path.relative_to(_REPO_ROOT)
+                offenders.append(f"{rel}:{line_number}")
+
+    assert not offenders, (
+        "GitHub strips Markdown underscore escapes inside LaTeX "
+        r"\text{...} labels; use spaces in displayed labels instead:"
+        "\n" + "\n".join(offenders)
+    )
 
 
 def _load_policy_offense_scan():

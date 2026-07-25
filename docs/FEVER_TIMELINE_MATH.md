@@ -19,17 +19,17 @@
 
 ### Fill Rate (notes to trigger fever)
 
-$$\text{non\_fever\_cas} = (N - L) \times 0.333$$
+$$\text{non fever cas} = (N - L) \times 0.333$$
 
-$$\text{non\_fever\_base} = \lceil \text{non\_fever\_cas} \times f_{FF}(FF) \rceil$$
+$$\text{non fever base} = \lceil \text{non fever cas} \times f_{FF}(FF) \rceil$$
 
 ### Fever Duration
 
 The game derives fever duration from a 15% base scaled by the approximate song length, then applies the Fever Time stat multiplier. The additive offset is the `+1000ms` song-length convention folded in as `+0.15`; decompiled server note-sequence scoring drains by event-time delta, so the `1/60` tick unit cancels and does not grant an extra duration tick:
 
-$$\text{fever\_time\_cas} = (t_{last} \times 0.15) + 0.15$$
+$$\text{fever time cas} = (t_{last} \times 0.15) + 0.15$$
 
-$$\text{fever\_duration} = \text{fever\_time\_cas} \times f_{FT}(FT)$$
+$$\text{fever duration} = \text{fever time cas} \times f_{FT}(FT)$$
 
 ### Fill Penalty (forced greats delay)
 
@@ -37,15 +37,15 @@ In-game powerbar fill is continuous, and Great contributes **half** the fill of 
 
 Let:
 
-$$\text{raw\_fill} = \text{non\_fever\_cas} \times f_{FF}(FF)$$
+$$\text{raw fill} = \text{non fever cas} \times f_{FF}(FF)$$
 
 The number of hits required to activate fever when you force $k$ Greats (and the rest Perfects) before fever activates is:
 
-$$\text{notes\_to\_fill}(k) = \lceil \text{raw\_fill} + 0.5k \rceil$$
+$$\text{notes to fill}(k) = \lceil \text{raw fill} + 0.5k \rceil$$
 
 Define the fill-penalty target (extra hits required vs all-Perfect):
 
-$$fp(k) = \lceil \text{raw\_fill} + 0.5k \rceil - \lceil \text{raw\_fill} \rceil$$
+$$fp(k) = \lceil \text{raw fill} + 0.5k \rceil - \lceil \text{raw fill} \rceil$$
 
 Important: $\lceil a + b \rceil \neq \lceil a \rceil + \lceil b \rceil$ in general. The fractional part of `raw_fill` changes when a given number of Greats starts to increase `notes_to_fill`.
 
@@ -81,10 +81,10 @@ Current Metafinder Status
 
 Given fever starts at note index $i$ at timestamp $t_i$:
 
-$$\text{fever\_end\_time} = t_i + \text{fever\_duration}$$
+$$\text{fever end time} = t_i + \text{fever duration}$$
 
 Find $j$ such that:
-$$t_j \geq \text{fever\_end\_time} \quad \text{and} \quad t_{j-1} < \text{fever\_end\_time}$$
+$$t_j \geq \text{fever end time} \quad \text{and} \quad t_{j-1} < \text{fever end time}$$
 
 **This uses `side="left"` binary search (>= condition)**
 
@@ -132,10 +132,10 @@ WHILE idx < N:
 
 A **breakpoint** at forced count $k$ exists if:
 
-$$\text{new\_section\_start}(k) \neq \text{new\_section\_start}(k-1)$$
+$$\text{new section start}(k) \neq \text{new section start}(k-1)$$
 
 Where:
-$$\text{new\_section\_start}(k) = \text{baseline\_start} + \left(\text{notes\_to\_fill}(k) - \text{notes\_to\_fill}(0)\right)$$
+$$\text{new section start}(k) = \text{baseline start} + \left(\text{notes to fill}(k) - \text{notes to fill}(0)\right)$$
 
 ### Optimization Insight
 
@@ -150,10 +150,10 @@ ForceGreatsFinder commonly enumerates breakpoint configs in **FP-target space** 
 ## Score Impact
 
 ### Perfect Note Value
-$$V_{perfect} = (P_{val} \times 2 + S_{val} + PP_{bonus}) \times \text{combo\_multiplier}$$
+$$V_{perfect} = (P_{val} \times 2 + S_{val} + PP_{bonus}) \times \text{combo multiplier}$$
 
 ### Great Note Value (forced great)
-$$V_{great} = \left\lfloor (P_{val} \times 2 + S_{val}) \times \frac{2}{3} + 150 \right\rfloor \times \text{combo\_multiplier}$$
+$$V_{great} = \left\lfloor (P_{val} \times 2 + S_{val}) \times \frac{2}{3} + 150 \right\rfloor \times \text{combo multiplier}$$
 
 ### Score Penalty per Forced Great
 $$\text{penalty} = V_{perfect} - V_{great}$$
@@ -173,9 +173,9 @@ For a config $C = [c_0, c_1, ..., c_S]$ (forced greats per section):
 
 In other words (high level):
 
-$$\text{total\_score}(C) = \text{score\_from\_timeline}(C) - \sum_{s=0}^{S}\sum_{i \in \text{forced\_great\_notes}(s)} \left(V_{perfect,i} - V_{great,i}\right)$$
+$$\text{total score}(C) = \text{score from timeline}(C) - \sum_{s=0}^{S}\sum_{i \in \text{forced great notes}(s)} \left(V_{perfect,i} - V_{great,i}\right)$$
 
-The optimizer finds $C^*$ that maximizes $\text{total\_score}$. 
+The optimizer finds $C^*$ that maximizes $\text{total score}$.
 
 Penalty placement for forced Greats
 - Section 1 (start of song): penalties start at `section_start`.

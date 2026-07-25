@@ -17,7 +17,7 @@ This document combines two closely related variants of the Force Greats problem:
 1. **Primary target: count-only Force Greats.**
    - Decision variables: the forced-Great counts $k_s$ per non-fever section.
    - Fever-timeline effect: only the fill-delay rule
-     $$\text{notes\_to\_fill}(k) = \lceil \text{raw\_fill} + 0.5k \rceil$$
+     $$\text{notes to fill}(k) = \lceil \text{raw fill} + 0.5k \rceil$$
    - This is the cleanest analytical problem and the one most likely to admit an exact structural solution.
 
 2. **Bonus / extension: timing-aware Force Greats.**
@@ -47,21 +47,21 @@ Both problems reshape the same fever timeline. HitSim shifts fever boundaries by
 | $\text{FF}$ | Fever Fill Rate stat multiplier (real number, from gear loadout) |
 | $\text{FT}$ | Fever Time stat multiplier (real number, from gear loadout) |
 | $\text{base}$ | Base score value per note (from gear loadout) |
-| $\text{combo\_mul}$ | Combo multiplier (from gear loadout) |
-| $\text{fever\_mul}$ | Fever multiplier (from gear loadout, $> 1$) |
+| $\text{combo mul}$ | Combo multiplier (from gear loadout) |
+| $\text{fever mul}$ | Fever multiplier (from gear loadout, $> 1$) |
 | $\text{PP}$ | Perfect Points bonus (from gear loadout) |
 
 ### Fever Fill (Count-Based)
 
 The number of non-fever notes required to trigger each fever activation (with all Perfects):
 
-$$\text{raw\_fill} = (N - L) \times 0.333 \times \text{FF}$$
+$$\text{raw fill} = (N - L) \times 0.333 \times \text{FF}$$
 
-$$\text{fill\_count} = \lceil \text{raw\_fill} \rceil$$
+$$\text{fill count} = \lceil \text{raw fill} \rceil$$
 
 ### Fever Duration (Time-Based)
 
-$$\text{fever\_duration} = (t_{N-1} \times 0.15 + 0.15) \times \text{FT}$$
+$$\text{fever duration} = (t_{N-1} \times 0.15 + 0.15) \times \text{FT}$$
 
 This is a fixed number of **seconds**, determined entirely by song length and the FT stat. It does not change with Force Greats.
 
@@ -69,11 +69,11 @@ This is a fixed number of **seconds**, determined entirely by song length and th
 
 When $k$ notes in a non-fever section are forced to Great instead of Perfect, each Great contributes only **half** the fill of a Perfect. The adjusted fill requirement becomes:
 
-$$\text{notes\_to\_fill}(k) = \lceil \text{raw\_fill} + 0.5k \rceil$$
+$$\text{notes to fill}(k) = \lceil \text{raw fill} + 0.5k \rceil$$
 
 The **fill penalty** (extra notes needed vs all-Perfect) is:
 
-$$\text{fp}(k) = \lceil \text{raw\_fill} + 0.5k \rceil - \lceil \text{raw\_fill} \rceil$$
+$$\text{fp}(k) = \lceil \text{raw fill} + 0.5k \rceil - \lceil \text{raw fill} \rceil$$
 
 Since the ceiling function increases in discrete jumps, $\text{fp}(k)$ is a **staircase**: it stays flat for stretches, then jumps by 1. The values of $k$ where $\text{fp}(k)$ increases are called **breakpoints**.
 
@@ -83,7 +83,7 @@ A breakpoint at forced count $k$ exists iff:
 
 $$\text{fp}(k) \neq \text{fp}(k-1)$$
 
-Since $\text{fp}(k) = \lceil \text{raw\_fill} + 0.5k \rceil - \lceil \text{raw\_fill} \rceil$, a jump occurs when $0.5k$ crosses an integer boundary relative to the fractional part of $\text{raw\_fill}$. Let $f = \text{raw\_fill} - \lfloor \text{raw\_fill} \rfloor$ be the fractional part. Then:
+Since $\text{fp}(k) = \lceil \text{raw fill} + 0.5k \rceil - \lceil \text{raw fill} \rceil$, a jump occurs when $0.5k$ crosses an integer boundary relative to the fractional part of $\text{raw fill}$. Let $f = \text{raw fill} - \lfloor \text{raw fill} \rfloor$ be the fractional part. Then:
 
 $$\text{breakpoints} = \{k : \lfloor 0.5k + f \rfloor > \lfloor 0.5(k-1) + f \rfloor \}$$
 
@@ -136,27 +136,27 @@ while idx < N:
 
 For notes in the **head region** ($i < 100$), the score ramps linearly:
 
-$$V_{\text{perfect}}(i) = \left\lfloor \text{base\_value} \times \left(1 + (\text{combo\_mul} - 1) \times \frac{i+1}{100}\right) \right\rfloor$$
+$$V_{\text{perfect}}(i) = \left\lfloor \text{base value} \times \left(1 + (\text{combo mul} - 1) \times \frac{i+1}{100}\right) \right\rfloor$$
 
-where $\text{base\_value} = (\text{primary} \times 2) + \text{secondary} + \text{PP}$.
+where $\text{base value} = (\text{primary} \times 2) + \text{secondary} + \text{PP}$.
 
 For notes in the **body region** ($i \geq 100$), the score is flat:
 
-$$V_{\text{perfect}}^{\text{body}} = \lfloor \text{base\_value} \times \text{combo\_mul} \rfloor$$
+$$V_{\text{perfect}}^{\text{body}} = \lfloor \text{base value} \times \text{combo mul} \rfloor$$
 
 ### Great Note Value
 
 A Great uses $\frac{2}{3}$ of the primary and secondary components, plus a fixed +150 bonus:
 
-$$\text{great\_base} = \left\lfloor \text{primary} \times 2 \times \frac{2}{3} \right\rfloor + \left\lfloor \text{secondary} \times \frac{2}{3} \right\rfloor + 150$$
+$$\text{great base} = \left\lfloor \text{primary} \times 2 \times \frac{2}{3} \right\rfloor + \left\lfloor \text{secondary} \times \frac{2}{3} \right\rfloor + 150$$
 
 For head notes:
 
-$$V_{\text{great}}(i) = \left\lfloor \text{great\_base} \times \left(1 + (\text{combo\_mul} - 1) \times \frac{i+1}{100}\right) \right\rfloor$$
+$$V_{\text{great}}(i) = \left\lfloor \text{great base} \times \left(1 + (\text{combo mul} - 1) \times \frac{i+1}{100}\right) \right\rfloor$$
 
 For body notes:
 
-$$V_{\text{great}}^{\text{body}} = \left\lfloor \left(\text{primary} \times 2 \times \frac{2}{3} + \text{secondary} \times \frac{2}{3} + 150\right) \times \text{combo\_mul} \right\rfloor$$
+$$V_{\text{great}}^{\text{body}} = \left\lfloor \left(\text{primary} \times 2 \times \frac{2}{3} + \text{secondary} \times \frac{2}{3} + 150\right) \times \text{combo mul} \right\rfloor$$
 
 (Note: the body formula uses the **unrounded** great base for the floor, while the head formula uses the **rounded** great base. This matches the game's floor-after-multiply behavior.)
 
@@ -170,9 +170,9 @@ This penalty depends on the **note index** where the Great is placed (because of
 
 For a forced-Great configuration $C = [k_1, k_2, \ldots, k_S]$:
 
-$$\text{score}(C) = \text{base\_score}(\text{timeline}(C)) - \sum_{s=1}^{S} \sum_{i \in \text{forced\_notes}(s)} \text{penalty}(i)$$
+$$\text{score}(C) = \text{base score}(\text{timeline}(C)) - \sum_{s=1}^{S} \sum_{i \in \text{forced notes}(s)} \text{penalty}(i)$$
 
-where $\text{base\_score}(\text{timeline}(C))$ is the all-Perfect score computed on the fever timeline induced by $C$.
+where $\text{base score}(\text{timeline}(C))$ is the all-Perfect score computed on the fever timeline induced by $C$.
 
 The **fill penalty** (shifted activation indices → different fever mask → different base score) is already captured in the timeline-derived base score. It is not subtracted separately.
 
@@ -195,7 +195,7 @@ For each non-fever section $s \in \{1, 2, \ldots, S\}$:
 
 $$k_s \in \{0, 1, 2, \ldots, K_s\}$$
 
-where $K_s = \min(\text{non\_fever\_base},\; \text{notes\_in\_section}_s)$ is the maximum number of notes that can be forced to Great in section $s$. Here $\text{non\_fever\_base} = \lceil \text{raw\_fill} \rceil$ is the all-Perfects fill count.
+where $K_s = \min(\text{non fever base},\; \text{notes in section}_s)$ is the maximum number of notes that can be forced to Great in section $s$. Here $\text{non fever base} = \lceil \text{raw fill} \rceil$ is the all-Perfects fill count.
 
 ### Objective
 
@@ -296,7 +296,7 @@ This is a prefix sum of non-negative values → monotonically non-decreasing. Mo
 
 In practice, the fill penalty from section $s$ shifts the activation index by $\text{fp}(k_s)$ notes. For songs with roughly uniform note density, this shift moves the fever window by:
 
-$$\Delta t \approx \frac{\text{fp}(k_s)}{\text{notes\_per\_second}}$$
+$$\Delta t \approx \frac{\text{fp}(k_s)}{\text{notes per second}}$$
 
 If $\Delta t$ is small relative to the fever duration, the fever window captures approximately the same number of notes at the shifted position. The cascade effect decays with note density.
 
@@ -311,7 +311,7 @@ The net benefit is:
 
 $$\text{benefit}(k_s) = \underbrace{\Delta n \times (V_{\text{fever}} - V_{\text{normal}})}_{\text{fever gain from shift}} - \underbrace{\sum_{i} \text{penalty}(i)}_{\text{Great score loss}}$$
 
-For body-region notes where values are flat, $\Delta n$ changes in discrete steps (at breakpoints). The tradeoff is: "does gaining one more fever note (worth $g = \lfloor \text{base} \cdot \text{combo\_mul} \cdot \text{fever\_mul} \rfloor - \lfloor \text{base} \cdot \text{combo\_mul} \rfloor$) justify the accumulated Great penalties?"
+For body-region notes where values are flat, $\Delta n$ changes in discrete steps (at breakpoints). The tradeoff is: "does gaining one more fever note (worth $g = \lfloor \text{base} \cdot \text{combo mul} \cdot \text{fever mul} \rfloor - \lfloor \text{base} \cdot \text{combo mul} \rfloor$) justify the accumulated Great penalties?"
 
 ---
 
@@ -348,7 +348,7 @@ For what types of songs/loadouts does FG matter?
 
 - When is the optimal configuration always $(0, 0, \ldots, 0)$ (never force Greats)?
 - Can a fast precheck determine whether FG can possibly improve the score?
-- How does the benefit scale with $\text{fever\_mul}$, note density, and section count?
+- How does the benefit scale with $\text{fever mul}$, note density, and section count?
 
 ### Q4: Scalability
 
@@ -368,7 +368,7 @@ Consider a simple song: $N = 100$ notes, $L = 0$ long notes, evenly spaced at 10
 
 | Quantity | Value |
 |----------|-------|
-| $\text{raw\_fill}$ | $100 \times 0.333 \times 1.0 = 33.3$ |
+| $\text{raw fill}$ | $100 \times 0.333 \times 1.0 = 33.3$ |
 | fill_count | 34 |
 | fever_duration | $(9.9 \times 0.15 + 0.15) \times 1.0 = 1.635$ s |
 | Sections | 2 (section 1: notes 0–32 fill, fever at 33; section 2: after first fever ends) |
@@ -398,13 +398,13 @@ FG helps when the fever boundary falls in a **density transition** — e.g., a s
 | $S$ | $\mathbb{Z}^+$ | Number of non-fever sections |
 | $k_s$ | $\{0, \ldots, K_s\}$ | Forced Greats in section $s$ |
 | $K_s$ | $\mathbb{Z}_{\geq 0}$ | Max forced Greats in section $s$ |
-| $\text{raw\_fill}$ | $\mathbb{R}^+$ | Base fill before ceiling: $(N-L) \times 0.333 \times \text{FF}$ |
-| $\text{fill\_count}$ | $\mathbb{Z}^+$ | $\lceil \text{raw\_fill} \rceil$ |
-| $\text{fp}(k)$ | $\mathbb{Z}_{\geq 0}$ | Fill penalty: $\lceil \text{raw\_fill} + 0.5k \rceil - \lceil \text{raw\_fill} \rceil$ |
-| $\text{fever\_duration}$ | $\mathbb{R}^+$ (seconds) | $(t_{N-1} \times 0.15 + 0.15) \times \text{FT}$ |
+| $\text{raw fill}$ | $\mathbb{R}^+$ | Base fill before ceiling: $(N-L) \times 0.333 \times \text{FF}$ |
+| $\text{fill count}$ | $\mathbb{Z}^+$ | $\lceil \text{raw fill} \rceil$ |
+| $\text{fp}(k)$ | $\mathbb{Z}_{\geq 0}$ | Fill penalty: $\lceil \text{raw fill} + 0.5k \rceil - \lceil \text{raw fill} \rceil$ |
+| $\text{fever duration}$ | $\mathbb{R}^+$ (seconds) | $(t_{N-1} \times 0.15 + 0.15) \times \text{FT}$ |
 | $V_{\text{perfect}}(i)$ | $\mathbb{Z}^+$ | Score for note $i$ as Perfect |
 | $V_{\text{great}}(i)$ | $\mathbb{Z}^+$ | Score for note $i$ as Great |
 | $\text{penalty}(i)$ | $\mathbb{Z}_{\geq 0}$ | $V_{\text{perfect}}(i) - V_{\text{great}}(i)$ |
-| $g$ | $\mathbb{Z}^+$ | Per-note fever gain: $\lfloor \text{base} \cdot \text{combo\_mul} \cdot \text{fever\_mul} \rfloor - \lfloor \text{base} \cdot \text{combo\_mul} \rfloor$ |
+| $g$ | $\mathbb{Z}^+$ | Per-note fever gain: $\lfloor \text{base} \cdot \text{combo mul} \cdot \text{fever mul} \rfloor - \lfloor \text{base} \cdot \text{combo mul} \rfloor$ |
 | $\text{FF}$ | $\mathbb{R}^+$ | Fever Fill Rate multiplier |
 | $\text{FT}$ | $\mathbb{R}^+$ | Fever Time multiplier |

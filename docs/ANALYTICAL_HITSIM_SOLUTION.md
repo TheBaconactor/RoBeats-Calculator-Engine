@@ -230,7 +230,7 @@ where "fever gain" means $\sum_{i \in \text{fever}} w_i$ with $w_i = V_{\text{fe
      a candidate with end note $j = \text{first note of group } g$.
    - If $I$ becomes empty, stop the sweep.
 6. For each feasible fever-end candidate $j$ with exit-carry interval $C$:
-   - The next activation is at $A_f(j) = j + \text{fill\_count}$
+   - The next activation is at $A_f(j) = j + \text{fill count}$
      (section 2+ uses `fill_count`, not `fill_count - 1`).
    - Propagate $C$ through the non-fever fill segment groups to get the carry interval
      at the next activation group: $I_{\text{next}} = \Phi(C)$.
@@ -245,7 +245,7 @@ continuation is 0.
 
 $$\text{optimal score} = \underbrace{\sum_{i=0}^{N-1} V_{\text{normal}}(i)}_{\text{timing-independent base}} + V(a_1, r_1^*)$$
 
-where $a_1 = \text{fill\_count} - 1$ is the first activation index, and $r_1^*$ is chosen
+where $a_1 = \text{fill count} - 1$ is the first activation index, and $r_1^*$ is chosen
 to maximize $V(a_1, r)$ over the feasible carry range at group $s_1 = \text{group}(a_1)$.
 Since the first activation's carry is unconstrained by earlier windows, $r_1^*$ is found by
 evaluating $V(a_1, r)$ for all $r \in [l_{s_1}, u_{s_1}]$.
@@ -318,8 +318,8 @@ index), there is no choice and greedy is trivially exact.
 **Condition 2: Body-region uniform density.** If all fever windows fall entirely within
 the body region ($i \geq 100$) and note density is locally uniform near each boundary:
 
-- Every note has the same fever gain $g = \lfloor \text{base} \cdot \text{combo\_mul}
-  \cdot \text{fever\_mul} \rfloor - \lfloor \text{base} \cdot \text{combo\_mul} \rfloor$.
+- Every note has the same fever gain $g = \lfloor \text{base} \cdot \text{combo mul}
+  \cdot \text{fever mul} \rfloor - \lfloor \text{base} \cdot \text{combo mul} \rfloor$.
 - Capturing one extra note in window $k$ gives $+g$.
 - The cascade shifts window $k+1$'s activation by one note. In a uniform-density region,
   the number of notes in window $k+1$'s fever duration is the same at the shifted position.
@@ -524,7 +524,7 @@ where:
 - $K$ = number of fever windows (3-12)
 - $\rho_{\text{boundary}}$ = note density at fever boundary (notes/ms)
 - $w_{\text{swing}}$ = swing zone width in ms (120-240 ms depending on note types)
-- $g_{\text{body}} = \lfloor \text{base} \cdot \text{combo\_mul} \cdot \text{fever\_mul} \rfloor - \lfloor \text{base} \cdot \text{combo\_mul} \rfloor$
+- $g_{\text{body}} = \lfloor \text{base} \cdot \text{combo mul} \cdot \text{fever mul} \rfloor - \lfloor \text{base} \cdot \text{combo mul} \rfloor$
 
 ### When the Gap Is Negligible
 
@@ -553,7 +553,7 @@ At 10 notes/second and fever_mul = 2.0, the gap can reach 2-4% of total score.
 
 A fast precheck before running the full DP:
 
-$$\text{Risk}(\text{fill\_count}, d) = \sum_{\text{reachable windows}} \sum_{i \in \text{boundary band}} w_i$$
+$$\text{Risk}(\text{fill count}, d) = \sum_{\text{reachable windows}} \sum_{i \in \text{boundary band}} w_i$$
 
 If Risk = 0, the timeline is deterministic — skip all analytical machinery. If Risk is
 small relative to the score difference between adjacent loadout candidates, a single
@@ -680,9 +680,9 @@ different result than integer comparison.
 Stress test of 4.3 million comparisons between integer-ms and float32 arithmetic:
 
 - **286 disagreements (0.007%)**
-- All occur when $\text{note\_ms}$ exactly equals $\text{activation\_ms} + D_{\text{ms}}$
+- All occur when $\text{note ms}$ exactly equals $\text{activation ms} + D_{\text{ms}}$
   as integers
-- Float32 rounding of the sum $(\text{activation\_ms} + D_{\text{ms}}) \times 0.001$ can be slightly larger
+- Float32 rounding of the sum $(\text{activation ms} + D_{\text{ms}}) \times 0.001$ can be slightly larger
   than the exact value, causing the float32 comparison to include one extra note
 
 ### Mitigation
@@ -747,7 +747,7 @@ uncommon case (cached DP lookup).
 | $D$ | $\mathbb{R}^+$ (seconds) | Fever duration |
 | $D_{\text{ms}}$ | $\mathbb{R}^+$ (ms) | Fever duration in milliseconds |
 | $d$ | $\mathbb{Z}^+$ (ms) | $\lceil D_{\text{ms}} \rceil$, discretized fever duration |
-| $\text{fill\_count}$ | $\mathbb{Z}^+$ | Notes to trigger fever |
+| $\text{fill count}$ | $\mathbb{Z}^+$ | Notes to trigger fever |
 | $Q$ | $\mathbb{Z}$ (ms) | Fever threshold $c_s + r + d$ |
 | $w_i$ | $\mathbb{Z}_{\geq 0}$ | Fever gain for note $i$: $V_{\text{fever}}(i) - V_{\text{normal}}(i)$ |
 | $W[j]$ | $\mathbb{Z}_{\geq 0}$ | Prefix sum of fever gains |

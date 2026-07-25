@@ -28,24 +28,24 @@ This document defines the underlying **analytical hit-timing problem** (exact op
 | $\text{FF}$ | Fever Fill Rate stat multiplier (real number, from gear loadout) |
 | $\text{FT}$ | Fever Time stat multiplier (real number, from gear loadout) |
 | $\text{base}$ | Base score value per note (from gear loadout) |
-| $\text{combo\_mul}$ | Combo multiplier (from gear loadout) |
-| $\text{fever\_mul}$ | Fever multiplier (from gear loadout, > 1) |
+| $\text{combo mul}$ | Combo multiplier (from gear loadout) |
+| $\text{fever mul}$ | Fever multiplier (from gear loadout, > 1) |
 
 ### Fever Fill (Count-Based)
 
 The number of non-fever notes required to trigger each fever activation:
 
-$$\text{raw\_fill} = (N - L) \times 0.333 \times \text{FF}$$
+$$\text{raw fill} = (N - L) \times 0.333 \times \text{FF}$$
 
-$$\text{fill\_count} = \lceil \text{raw\_fill} \rceil$$
+$$\text{fill count} = \lceil \text{raw fill} \rceil$$
 
 ### Fever Duration (Time-Based)
 
-$$\text{fever\_duration} = (t_{N-1} \times 0.15 + 0.15) \times \text{FT}$$
+$$\text{fever duration} = (t_{N-1} \times 0.15 + 0.15) \times \text{FT}$$
 
 This is a fixed number of **seconds**, determined entirely by song length and the FT stat.
 
-For the offset analysis below, define $D_{\text{ms}} = 1000 \times \text{fever\_duration}$ so the boundary comparisons use the same units as the hit offsets.
+For the offset analysis below, define $D_{\text{ms}} = 1000 \times \text{fever duration}$ so the boundary comparisons use the same units as the hit offsets.
 
 ### Fever Timeline Walk
 
@@ -143,11 +143,11 @@ In the implementation, each group samples from its own feasible integer-ms inter
 
 Let $[l_g, u_g]$ be the nominal integer-ms offset window for group $g$ after applying the note-type rules (regular notes or held-tail notes). The feasible interval is:
 
-$$\text{eff\_low}_g = \max(l_g, e_{g-1} - c_g)$$
+$$\text{eff low}_g = \max(l_g, e_{g-1} - c_g)$$
 
-$$\text{eff\_high}_g = u_g$$
+$$\text{eff high}_g = u_g$$
 
-If $\text{eff\_low}_g \leq \text{eff\_high}_g$, the group offset is sampled uniformly from the integers in $[\text{eff\_low}_g, \text{eff\_high}_g]$. If the interval is empty, the implementation snaps the group to the latest feasible time and then, if needed, advances it to the previous group's event time to keep the sequence monotone.
+If $\text{eff low}_g \leq \text{eff high}_g$, the group offset is sampled uniformly from the integers in $[\text{eff low}_g, \text{eff high}_g]$. If the interval is empty, the implementation snaps the group to the latest feasible time and then, if needed, advances it to the previous group's event time to keep the sequence monotone.
 
 ---
 
@@ -208,7 +208,7 @@ This creates a **sequential dependency** across fever windows (typically 3-8 per
 
 ### Q1: Optimal Single-Evaluation Hit Timing (Primary)
 
-Given a song's chart times $T$, note count $N$, long note count $L$, and a loadout's stats ($\text{FF}$, $\text{FT}$, $\text{base}$, $\text{combo\_mul}$, $\text{fever\_mul}$):
+Given a song's chart times $T$, note count $N$, long note count $L$, and a loadout's stats ($\text{FF}$, $\text{FT}$, $\text{base}$, $\text{combo mul}$, $\text{fever mul}$):
 
 **Find a set of offsets $\{\delta_g\}$ for each chord group $g$ that maximizes total score, subject to:**
 1. $\delta_g \in [\delta_{\min}^{(g)}, \delta_{\max}^{(g)}]$ (Perfect window, possibly doubled for held tails)
@@ -260,8 +260,8 @@ Consider a simplified song:
 - Last note time: $t_{49} = 4.9$ s
 
 **Fill count:**
-$$\text{raw\_fill} = 50 \times 0.333 \times 1.0 = 16.65$$
-$$\text{fill\_count} = \lceil 16.65 \rceil = 17$$
+$$\text{raw fill} = 50 \times 0.333 \times 1.0 = 16.65$$
+$$\text{fill count} = \lceil 16.65 \rceil = 17$$
 
 **Fever duration:**
 $$D_{\text{ms}} = (4.9 \times 0.15 + 0.15) \times 1.0 = 0.885 \text{ s} = 885 \text{ ms}$$
@@ -316,7 +316,7 @@ So for window 1, the optimal strategy is: **activation note late (+40ms), bounda
 | $\text{FT}$ | $\mathbb{R}^+$ | Fever Time multiplier |
 | $D$ | $\mathbb{R}^+$ (seconds) | Fever duration |
 | $D_{\text{ms}}$ | $\mathbb{R}^+$ (ms) | Fever duration converted to milliseconds for boundary comparisons |
-| $\text{fill\_count}$ | $\mathbb{Z}^+$ | Notes to trigger fever |
+| $\text{fill count}$ | $\mathbb{Z}^+$ | Notes to trigger fever |
 | $V_{\text{fever}}(i)$ | $\mathbb{Z}^+$ | Score for note $i$ if in fever |
 | $V_{\text{normal}}(i)$ | $\mathbb{Z}^+$ | Score for note $i$ if not in fever |
 
@@ -331,5 +331,5 @@ So for window 1, the optimal strategy is: **activation note late (+40ms), bounda
 | Fever windows per song | 3 - 12 | Depends on fill rate and song length |
 | Swing notes per window | 0 - 4 | Depends on note density near boundary; wider with held tails |
 | Chord group size | 1 - 4 notes | Singles, doubles, triples |
-| $\text{fever\_mul}$ | 1.1 - 2.0+ | Higher multiplier = larger score impact per swing note |
+| $\text{fever mul}$ | 1.1 - 2.0+ | Higher multiplier = larger score impact per swing note |
 | Evaluations per song | 10,000 - 500,000 | GA search; analytical method runs per evaluation |
