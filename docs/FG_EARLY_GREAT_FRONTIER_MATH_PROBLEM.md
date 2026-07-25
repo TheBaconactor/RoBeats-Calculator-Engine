@@ -1,5 +1,10 @@
 # Force-Greats Early-Great Frontier — Self-Contained Mathematical Problem
 
+> [!NOTE]
+> This document freezes a research formulation for independent algorithm work.
+> It is not a description of the current production module layout or runtime
+> strategy.
+
 **Audience:** algorithms / optimization / combinatorics people. No domain knowledge of the
 game or the codebase is required; everything needed is below. The goal is an **exact,
 polynomial-time** algorithm (or an impossibility proof + best achievable) for the
@@ -16,8 +21,8 @@ some items *great*. Each play induces a **feature vector** `S` (a 200-bit head m
 piecewise-linear-with-integer-floors function of a parameter vector `θ`. For a fixed
 instance we must compute `max over feasible plays of score(S; θ)` **for every `θ` in a
 given finite grid `Θ`**, exactly. The naïve method — enumerate the Pareto set of feature
-vectors `S` once (independent of `θ`), then score each against every `θ` — is what the
-production system does today; a recently added move (the "early-Great extension", §5)
+vectors `S` once (independent of `θ`), then score each against every `θ` — is the
+baseline formulation studied here; the "early-Great extension" in §5
 makes that Pareto set **exponential** in the number of segments. We want a method whose
 cost is polynomial in `N` and `|Θ|`. §8 gives strong structural hints (the value function
 decomposes into a position-sensitive 100-element *head* and a position-flat *body*).

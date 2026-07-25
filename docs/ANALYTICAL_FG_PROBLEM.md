@@ -1,12 +1,17 @@
 # Analytical Optimal Force-Greats for Fever Maximization
 
+> [!NOTE]
+> This is a self-contained mathematical problem statement, not the current
+> runtime architecture. Production uses exact response frontiers and the
+> maintained implementation boundaries in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Problem Context
 
 A rhythm game optimizer computes the best gear loadout (stat allocation) for each song. The score depends on a **fever system**: a power meter fills as the player hits notes, activates for a fixed time duration, then must refill. Notes hit during fever receive a multiplicative bonus.
 
 **The complication:** The optimizer has discovered that intentionally hitting some non-fever notes as **"Great"** instead of **"Perfect"** can sometimes **increase** total score. A Great judgment contributes only **half** the fever-bar fill of a Perfect, which **delays** when fever activates. This delay shifts the fever window to cover different (potentially more valuable) notes. The tradeoff is that each forced Great note loses some direct score value.
 
-**The current approach:** Exhaustively enumerate all possible forced-Great configurations per section, recompute the fever timeline for each, and keep the best. This works for songs with few fever sections but **explodes combinatorially** for songs with many sections.
+**The baseline approach studied here:** Exhaustively enumerate all possible forced-Great configurations per section, recompute the fever timeline for each, and keep the best. This works for songs with few fever sections but **explodes combinatorially** for songs with many sections.
 
 **The goal:** Find an analytical or structural approach that solves this optimization without exhaustive enumeration.
 

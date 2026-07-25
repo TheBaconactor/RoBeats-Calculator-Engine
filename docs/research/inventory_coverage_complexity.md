@@ -3,6 +3,11 @@
 **Date:** April 26, 2026  
 **Status:** Formal Analysis
 
+> [!NOTE]
+> This is a standalone inventory-coverage model preserved as a research
+> artifact. Names used in examples and reductions are not current
+> RoBeats Calculator Engine runtime APIs.
+
 ## 1. Problem Statement (Formal)
 
 ### 1.1 Data

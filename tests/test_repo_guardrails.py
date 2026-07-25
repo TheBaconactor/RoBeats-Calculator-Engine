@@ -18,12 +18,34 @@ import importlib.util
 import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GITHUB_MATH_TEXT_UNDERSCORE = re.compile(r"\\text\{[^}]*_[^}]*\}")
 _SENSITIVE_PLAYER_EXPORT_KEY = re.compile(
     r'"(?:localPlayerId|playerId|playerName)"\s*:'
+)
+_MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+_MAINTAINED_DOCS = (
+    "README.md",
+    "DATA.md",
+    "CONTRIBUTING.md",
+    "GOVERNANCE.md",
+    "MAINTAINERS.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    "docs/README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/DATABASE_SCHEMA.md",
+    "docs/ENGINEERING_PRINCIPLES.md",
+    "docs/FEVER_TIMELINE_MATH.md",
+    "docs/FORMULA_REFERENCE.md",
+    "docs/MAINTENANCE_PLAYBOOK.md",
+    "docs/NAVIGATION.md",
+    "docs/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md",
+    "docs/TIMING_ENVELOPE_EXACT_FRONTIER.md",
 )
 
 
@@ -59,6 +81,92 @@ def test_repository_does_not_contain_player_identity_exports() -> None:
 
     assert not offenders, (
         "Player-identity exports must stay outside the repository:\n"
+        + "\n".join(offenders)
+    )
+
+
+def _github_heading_slug(heading: str) -> str:
+    text = re.sub(r"<[^>]+>", "", heading)
+    text = re.sub(r"[`*_~]", "", text).strip().lower()
+    text = re.sub(r"[^a-z0-9 _-]", "", text)
+    return re.sub(r"\s+", "-", text)
+
+
+def _heading_slugs(path: Path) -> set[str]:
+    slugs: set[str] = set()
+    counts: dict[str, int] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if not match:
+            continue
+        base = _github_heading_slug(match.group(1))
+        occurrence = counts.get(base, 0)
+        counts[base] = occurrence + 1
+        slugs.add(base if occurrence == 0 else f"{base}-{occurrence}")
+    return slugs
+
+
+def test_maintained_document_links_resolve() -> None:
+    offenders: list[str] = []
+    for relative_path in _MAINTAINED_DOCS:
+        source = _REPO_ROOT / relative_path
+        assert source.is_file(), f"Maintained document is missing: {relative_path}"
+        text = source.read_text(encoding="utf-8")
+        for match in _MARKDOWN_LINK.finditer(text):
+            raw_target = match.group(1).strip().strip("<>")
+            if not raw_target or raw_target.startswith(
+                ("#", "http://", "https://", "mailto:")
+            ):
+                continue
+            target_text, _, fragment = raw_target.partition("#")
+            target = (source.parent / unquote(target_text)).resolve()
+            try:
+                target.relative_to(_REPO_ROOT)
+            except ValueError:
+                offenders.append(f"{relative_path}: link escapes repository: {raw_target}")
+                continue
+            if not target.exists():
+                offenders.append(f"{relative_path}: missing target: {raw_target}")
+                continue
+            if fragment and target.is_file() and target.suffix.lower() == ".md":
+                decoded_fragment = unquote(fragment).lower()
+                if decoded_fragment not in _heading_slugs(target):
+                    offenders.append(
+                        f"{relative_path}: missing heading #{fragment} in "
+                        f"{target.relative_to(_REPO_ROOT)}"
+                    )
+
+    assert not offenders, "Maintained documentation has broken links:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_maintained_documentation_does_not_reference_retired_surfaces() -> None:
+    retired = (
+        "gear_optimizer/solver/genetic.py",
+        "gear_optimizer/data/database.py",
+        "gear_optimizer.data.db_manager",
+        "EvolutionDbManager",
+        "native_inflight_stages.py",
+        "gpu_profiler.py",
+        "force_greats/bellman_fixed.py",
+        "bench_gpu_native_ga_eval.py",
+        "METAFINDER_EVOLUTION_DB",
+        "FEVER_FIX_PLAN.md",
+        "implementation records",
+    )
+    offenders: list[str] = []
+    for relative_path in _MAINTAINED_DOCS:
+        text = (_REPO_ROOT / relative_path).read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        hits = [token for token in retired if token in text]
+        if hits:
+            offenders.append(f"{relative_path}: {', '.join(hits)}")
+
+    assert not offenders, (
+        "Maintained documentation references retired code or policy surfaces:\n"
         + "\n".join(offenders)
     )
 

@@ -10,8 +10,9 @@ Use it when changing behavior, refactoring APIs, or updating contributor guidanc
 
 ## Repository knowledge
 
-- Keep repository knowledge as the system of record. If a decision matters after this session, put it in docs,
-  implementation records, tests, or maintained tools.
+- Keep repository knowledge as the system of record. If a decision matters
+  after this session, put it in maintained documentation, an issue, a test, or
+  a maintained tool.
 - Prefer concise, scoped references over large monolithic instruction files.
 - Make high-risk contracts mechanically checkable when the invariant is stable enough to encode.
 - Capture repeated review feedback as durable guidance or executable checks so the correction compounds.
@@ -32,8 +33,9 @@ Use it when changing behavior, refactoring APIs, or updating contributor guidanc
 - A fix is not complete until it:
   - changes the owning layer instead of papering over the symptom downstream
   - adds the narrowest regression test, verifier, or replay that would have caught the defect
-  - updates docs or implementation records when behavior or policy changed
-- Temporary mitigations are allowed only when they are narrow, explicitly labeled, and paired with an implementation record.
+  - updates maintained documentation when behavior or policy changed
+- Temporary mitigations are allowed only when they are narrow, explicitly
+  labeled, and tracked in a public issue with an owner and removal condition.
 
 ## Ownership and API boundaries
 

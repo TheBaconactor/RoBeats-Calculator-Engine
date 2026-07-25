@@ -1,271 +1,173 @@
-# Database Schema & Developer Guide
+# Database Schema
 
-## Overview
+RoBeats Calculator Engine stores retained results in SQLite. The canonical
+Python surface is `gear_optimizer.data.database`; schema definition and
+validation live in `gear_optimizer/data/migrations/`.
 
-The Gear Optimizer uses a SQLite database to store song metadata and loadout configurations.
+## Path and lifecycle
 
-Default persistence behavior (`evolution.db`):
+- `EVOLUTION_DB_PATH` overrides the database location for the current process.
+- Without an override, the connection layer uses the resolved default
+  `evolution.db` location.
+- Write connections enable WAL mode and validate schema version 18.
+- A new empty database receives the current schema.
+- An unversioned, legacy-version, or newer-than-supported existing database
+  fails loudly. Rebuild or migrate it explicitly; startup does not guess.
 
-- Persist only the **baseline** TeamBuff tier rows (typically `T5`).
-- Derived tiers (`NONE/T1/T10/T20/T50/T51`) are computed **on demand** (not persisted).
-- On-demand scoring entrypoint: `gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards(...)`
-  (tool helper: `tools/db/compute_team_buff_tiers_on_demand.py`).
-- Guide: `docs/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md`
-- Storage is compact by default:
-  - Gear/minis are persisted as compact integer IDs via encoding tables + BLOB columns (not repeated JSON strings).
-  - `details_json` stores packed Stats (`st`), gem counts (`gc`), and color context (`se`/`pc`/`sc`) instead of verbose
-    repeated keys.
-  - `force_details_json` stores the replay surface for FG (`BaseStats`, `GemCounts`, `FT`, `FF`, selected element,
-    `ForceGreats`, score); redundant final `Stats` copies are omitted when they can be reconstructed.
-  - Large derived fields (notably `hitsim_offset_deltas_ms`) are computed on demand and not persisted.
-  - Full FG replay payloads are stored in `team_buff_fg_loadouts`; base rows keep scalar `fg_score` context but do not
-    duplicate `force_details_json`.
+Runtime databases are generated state and must not be committed.
 
-`EVOLUTION_DB_PATH` always overrides the resolved DB path for the current process.
+## Tables
 
-The schema below describes the canonical tables. The optimizer only writes baseline-tier rows into the tiered tables.
-When upgrading an older DB that still stores `gear_json` / `minis_json`, schema init backfills the compact BLOB columns
-in place so current readers can decode those rows without a separate conversion step.
+### `songs`
 
-## Schema Definitions
-
-### 1. `songs` Table
-Stores high-level metadata and best known scores for each song.
+Stores per-chart maxima and attempt counters.
 
 ```sql
 CREATE TABLE songs (
-    name TEXT PRIMARY KEY,          -- Unique song name
-    best_score INTEGER DEFAULT 0,   -- Best Base Score
-    best_fg_score INTEGER DEFAULT 0,-- Best Force Greats Score
-    last_updated REAL               -- Timestamp of last update
+    name TEXT PRIMARY KEY,
+    best_score INTEGER DEFAULT 0,
+    best_fg_score INTEGER DEFAULT 0,
+    last_updated REAL,
+    attempt_lifetime INTEGER DEFAULT 0,
+    attempts_first INTEGER DEFAULT 0
 );
 ```
 
-### 2. `pending_fg_jobs` Table (Explicit Deferred Force Greats Work)
-Stores a compact snapshot of GA candidates only for songs whose Force Greats
-evaluation is explicitly made durable for later work.
+### `team_buff_loadouts`
 
-This table is **not** the retained coverage frontier and should not be populated
-by the normal in-process FG queue. Normal GPU-native in-flight runs drain FG in
-memory; writing every in-memory FG job into SQLite creates large transient JSON
-pages that SQLite may keep after delete.
-
-Rules:
-- `team_buff_loadouts` remains the retained base coverage frontier.
-- Nonzero pending rows after a normal drained run should be treated as FG debt or
-  an interrupted/deferred run, not as healthy coverage.
-- A large pending row count is intentionally diagnostic: audit tooling warns when
-  `pending_fg_jobs` exceeds `100` rows so the run can be inspected instead of
-  silently hiding the backlog.
-
-```sql
-CREATE TABLE pending_fg_jobs (
-    song_name TEXT PRIMARY KEY,
-    candidates_json TEXT NOT NULL,  -- JSON array of compact GA candidates
-    created_ts REAL,
-    updated_ts REAL
-);
-```
-
-### 3. `team_buff_loadouts` Table (Baseline TeamBuff Base Leaderboard)
-Stores the **baseline** base leaderboard for a song under the run's baseline TeamBuff tier (typically `T5`).
-
-Note:
-- The schema allows `team_buff` values like `NONE/T1/T10/T20/T50/T51`, but the optimizer does not persist derived tiers.
-- `NONE` is the true zero-effect view; the `51st+` non-zero cutoff is modeled separately as `T51`.
-- Historical DBs may still contain the stale `T15` label, but current readers no longer alias those rows into canonical lookups.
+Retains the Base leaderboard. `score` is the ranking authority; `fg_score` is
+context only.
 
 ```sql
 CREATE TABLE team_buff_loadouts (
     song_name TEXT,
-    team_buff TEXT,                -- 'NONE' | 'T1' | 'T5' | 'T10' | 'T20' | 'T50' | 'T51'
-    loadout_hash TEXT,             -- Effective hash of (gear + mini signatures)
-    score INTEGER,                 -- Base Score under this TeamBuff tier (PRIMARY RANKING METRIC)
-    fg_score INTEGER DEFAULT 0,    -- Force Greats score under this tier (Contextual; may be 0)
-    gear_ids_blob BLOB,            -- Compact gear IDs (varint list) into `gear_name_encoding`
-    minis_ids_blob BLOB,           -- Compact mini variant-group IDs into `mini_name_encoding`
+    team_buff TEXT,
+    loadout_hash TEXT,
+    score INTEGER,
+    fg_score INTEGER DEFAULT 0,
+    gear_ids_blob BLOB,
+    minis_ids_blob BLOB,
     details_json TEXT,
-    force_details_json TEXT,       -- legacy/nullable; new writes keep full FG payloads in team_buff_fg_loadouts
+    force_details_json TEXT,
     timestamp REAL,
     PRIMARY KEY (song_name, team_buff, loadout_hash),
     FOREIGN KEY (song_name) REFERENCES songs(name)
 );
 ```
 
-### 4. `team_buff_fg_loadouts` Table (Baseline TeamBuff Force Greats Leaderboard)
-Stores the **Force Greats leaderboard** re-scored under Team Buff tiers.
-Only includes rows where `fg_score > score`.
+### `team_buff_fg_loadouts`
 
-Note:
-- As with `team_buff_loadouts`, only baseline-tier rows are written by the optimizer.
+Retains the Force Great leaderboard. `fg_score` is the ranking authority and
+the row carries the replayable Force Great payload.
 
 ```sql
 CREATE TABLE team_buff_fg_loadouts (
     song_name TEXT,
-    team_buff TEXT,                -- 'NONE' | 'T1' | 'T5' | 'T10' | 'T20' | 'T50' | 'T51'
+    team_buff TEXT,
     loadout_hash TEXT,
-    score INTEGER,                 -- Base score under this TeamBuff tier (Contextual)
-    fg_score INTEGER,              -- Force Greats score under this tier (PRIMARY RANKING METRIC)
-    gear_ids_blob BLOB,            -- Compact gear IDs (varint list) into `gear_name_encoding`
-    minis_ids_blob BLOB,           -- Compact mini variant-group IDs into `mini_name_encoding`
-    details_json TEXT,             -- Base details/stats that explain and replay `score`
-    force_details_json TEXT,       -- FG details/stats that explain and replay `fg_score`
+    score INTEGER,
+    fg_score INTEGER,
+    gear_ids_blob BLOB,
+    minis_ids_blob BLOB,
+    details_json TEXT,
+    force_details_json TEXT,
     timestamp REAL,
     PRIMARY KEY (song_name, team_buff, loadout_hash),
     FOREIGN KEY (song_name) REFERENCES songs(name)
 );
 ```
 
-Contract:
-- `details_json` explains and replays `score`.
-- `force_details_json` explains and replays `fg_score`.
-- Do not write ForceGreats gem reallocations into `details_json`; that creates a mixed-context row where `score`
-  belongs to one stat surface and displayed stats belong to another.
+The two leaderboard tables are intentionally separate. A high Base result may
+not be the best Force Great result, and pruning one table by the other
+objective would lose valid candidates.
 
----
+### Name-encoding tables
 
-## Compact Name Encoding (Schema v18+)
-
-To keep the DB tiny, piece names are de-duplicated into encoding tables and persisted rows store only short integer IDs.
-
-### `gear_name_encoding`
+Gear and Mini names are deduplicated and referenced by compact integer IDs:
 
 ```sql
 CREATE TABLE gear_name_encoding (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE
 );
-```
 
-### `mini_name_encoding`
-
-```sql
 CREATE TABLE mini_name_encoding (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE
 );
 ```
 
-Notes:
-- IDs are assigned deterministically in sorted order when initialized from the dataset, and then appended in sorted order
-  for any newly-seen names.
-- In the compact/default workflow, consumers decode piece names via encoding tables + `*_ids_blob`. Prefer the Python
-  DB helpers/manager (see below) instead of reimplementing decoding logic.
+`gear_ids_blob` stores a packed ID list. `minis_ids_blob` stores packed Mini
+variant groups. Use the Python database package to decode them.
 
-## Compact `details_json` Payload
+## Indexes
 
-To reduce row size, some fields are stored in a compact form.
+```sql
+CREATE INDEX idx_team_buff_loadouts_score
+    ON team_buff_loadouts (song_name, team_buff, score DESC);
 
-### Packed Stats (`details_json.st`)
+CREATE INDEX idx_team_buff_loadouts_fg_score
+    ON team_buff_loadouts (song_name, team_buff, fg_score DESC);
 
-Instead of persisting a verbose `details_json.Stats` dict, rows store:
+CREATE INDEX idx_team_buff_fg_loadouts_score
+    ON team_buff_fg_loadouts (song_name, team_buff, fg_score DESC);
+```
 
-- `details_json.st`: fixed-order integer list (length 10)
+## Payload contracts
 
-Order:
-1. Perfect Points
-2. Combo Multiplier
-3. Fever Multiplier
-4. Fever Fill Rate
-5. Fever Time
-6. Chill
-7. Flow
-8. Rush
-9. Beat
-10. Vibe
+- `details_json` describes and replays `score`.
+- `force_details_json` on a Force Great row describes and replays `fg_score`.
+- Gear and Mini names are represented by the encoding BLOBs, not repeated JSON
+  lists.
+- Stats and common color/gem fields are compacted for storage and expanded by
+  `get_best_loadouts`.
+- A Force Great gem allocation must not overwrite the Base details payload.
 
-When loading via `gear_optimizer.data.database.get_best_loadouts(...)` (or via the manager), this is unpacked back into
-`details["Stats"]` for consumers.
+Default optimizer writes retain the configured baseline Team Buff, normally
+`T5`. Other tiers can be recomputed from retained candidates through the
+[on-demand tier scoring API](ON_DEMAND_TEAM_BUFF_TIER_SCORING.md).
 
-### Packed Gem Counts and Colors
+## Python API
 
-Current writes also compact common per-row context:
-
-- `details_json.gc`: fixed-order gem count list: Perfect Points, Combo Multiplier, Fever Multiplier, Element
-- `details_json.se`: selected element
-- `details_json.pc`: primary song color
-- `details_json.sc`: secondary song color
-
-The Python load helpers unpack these back into `GemCounts`, `SelectedElement`, `PrimaryColor`, and `SecondaryColor`.
-
-### Not Persisted
-
-Some large derived fields are intentionally not persisted (computed on demand), including:
-
-- `hitsim_offset_deltas_ms` (per-window timing deltas)
-
-## Developer Guide: How to Query
-
-### Prefer the DB Manager (Recommended)
-
-Most consumers should not query SQLite directly anymore. Use the centralized manager API:
-
-- `EvolutionDbManager.get_song_catalog(...)`: list songs + available ranks for base/FG leaderboards
-- `EvolutionDbManager.get_frontend_song_payload(...)`: get one selected song page with top base/FG lists, difficulty,
-  tier/color metadata, per-section FG config rows, and normalized hitsim delta display fields when available
-- `EvolutionDbManager.get_leaderboard_entry(...)`: view a single (song, tier, leaderboard, rank) entry
-
-Example:
+Initialize a database:
 
 ```python
-from gear_optimizer.data.db_manager import EvolutionDbManager
+from gear_optimizer.data.database import init_db
 
-db = EvolutionDbManager.from_env()
+init_db()
+```
 
-catalog = db.get_song_catalog(max_rank=51)
+Read retained candidates:
 
-page = db.get_frontend_song_payload(
+```python
+from gear_optimizer.data.database import get_best_loadouts
+
+entries = get_best_loadouts(
     "Rainshower (Easy) by Silentroom",
-    tier="T10",
-    limit=50,
-    element="selected",
-)
-
-row = db.get_leaderboard_entry(
-    "Rainshower (Easy) by Silentroom",
-    leaderboard="fg",   # "base" or "fg"
-    tier="T10",         # NONE/T1/T5/T10/T20/T50/T51 (computed on demand)
-    rank=1,
-    element="selected", # selected|primary|secondary
+    team_buff="T5",
+    limit=51,
 )
 ```
 
-The frontend payload returns decoded `gear`/`minis` names, top base/FG rows, difficulty, resolved colors, and
-row-level `hitsim_offset_deltas_ms` / `base_hitsim_offset_deltas_ms` / `fg_hitsim_offset_deltas_ms` fields when
-those deltas are present in the replayed row payload. FG replay and note-graph data comes from the exact
-`response_surface` and `ForceGreats.frontier_trace`; the retired per-section count configuration is not stored or
-returned. The single-entry API returns full decoded row details.
+Persist a complete optimizer result atomically:
 
-See: `docs/DB_MANAGER.md`.
+```python
+from gear_optimizer.data.database import save_optimizer_song_result
 
-### Raw SQL (Use With Care)
+save_optimizer_song_result(
+    song_name,
+    entries,
+    processed_run=True,
+    team_buff="T5",
+)
+```
 
-If you only need scalar counts/scores, direct SQL is fine. Decoding `*_ids_blob` is intentionally a Python-level operation.
+`save_optimizer_song_result` commits retained entries and the processed-run
+counters in one transaction. Lower-level functions such as
+`save_loadouts_batch` exist for scoped maintenance and integration work.
 
-### Key Differences for Developers
+## Raw SQL
 
-| Feature | `team_buff_loadouts` Table | `team_buff_fg_loadouts` Table |
-| :--- | :--- | :--- |
-| **Primary Metric** | `score` (Base Score) | `fg_score` (Force Greats Score) |
-| **Content** | All Loadouts (per tier) | Only Valid FG Loadouts (per tier) |
-| **Garbage Collection** | Keeps Top N by Score | Keeps Top N by FG Score |
-| **FG Payload** | Scalar `fg_score`; full payload is not duplicated | Replayable `force_details_json` payload |
-| **Use Case** | General Gameplay, Leaderboards | FG Research, Simulation Analysis |
-
-### Maintenance
-
-*   **Migration**: Schema is managed by `PRAGMA user_version` migrations in `gear_optimizer/data/migrations/`.
-*   **Deduplication**: Both tables use `loadout_hash` as part of the composite primary key to prevent duplicate entries for the same *effective* gear+mini loadout (song-context mini equivalence).
-
-### Mini Variant Groups
-
-Mini slots are persisted as `minis_ids_blob` (encoding-table IDs) as a list of **variant groups**.
-
-Conceptually this decodes to:
-
-- `[[\"MiniA\",\"MiniA2\"],[\"MiniB\"],[\"MiniC\"]]`
-
-Variant groups are populated *deterministically* from `Data/Gear/Minis.csv` using the song context
-(primary/secondary/selected element), not based on which mini-name variants happened to appear during GA exploration.
-
-Within a group, all names are considered equivalent for this song context (core stats + only the relevant element stats).
+Direct SQL is appropriate for scalar inspection. Do not reimplement BLOB or
+payload decoding in a separate consumer; use the package facade so schema and
+normalization changes remain centralized.

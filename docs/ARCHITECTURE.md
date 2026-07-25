@@ -1,371 +1,132 @@
-# Gear Optimizer - Software Architecture
+# Architecture
 
-> [!NOTE]
-> This is a high-level overview. For the current file-level map, start at `docs/NAVIGATION.md`.
+RoBeats Calculator Engine is a GPU-first optimizer with exact scoring,
+timing-frontier, and persistence boundaries. This page describes the current
+production path. For individual files, see [NAVIGATION.md](NAVIGATION.md).
 
-## System Overview
+## Runtime overview
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          MAIN ENTRY POINT                            │
-│                            (main.py)                                 │
-│                                                                       │
-│  - Initialize systems                                                │
-│  - Load configuration                                                │
-│  - Orchestrate song processing                                       │
-│  - Handle graceful shutdown                                          │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    NATIVE IN-FLIGHT ENGINE                           │
-│                 (solver/native_inflight_orchestrator.py)              │
-│                                                                       │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │ Read Song    │──│ Parse Config │──│ Execute      │              │
-│  │ Files        │  │ & Settings   │  │ Optimization │              │
-│  └──────────────┘  └──────────────┘  └──────────────┘              │
-│                                                                       │
-└───────────┬──────────────────────────┬──────────────────────────────┘
-            │                          │
-            ▼                          ▼
-┌───────────────────────┐    ┌───────────────────────┐
-│  GENETIC ALGORITHM    │    │  SCORING ENGINE       │
-│  (solver/genetic.py)  │◄───│  (solver/scoring/)    │
-│                       │    │                       │
-│  - Population mgmt    │    │  - Score calculation  │
-│  - Mutation/crossover │    │  - Gem optimization   │
-│  - Multi-start logic  │    │  - Force greats       │
-│  - Fitness evaluation │    │  - Caching (LRU)      │
-└───────────┬───────────┘    └───────────┬───────────┘
-            │                            │
-            │                            │
-            ▼                            ▼
-┌───────────────────────────────────────────────────────────────────┐
-│                         DATA PERSISTENCE LAYER                     │
-│                                                                     │
-│  ┌────────────────┐    ┌────────────────┐    ┌────────────────┐ │
-│  │  DATABASE      │    │  CSV PARSER    │    │  CONFIG        │ │
-│  │  (database.py) │    │  (csv_parser.py)│   │  (core/config.py)│ │
-│  │                │    │                 │    │                 │ │
-│  │ - SQLite ops   │    │ - Load gear    │    │ - Parse ini    │ │
-│  │ - Loadout CRUD │    │ - Load minis   │    │ - Validate     │ │
-│  │ - Compression  │    │ - Load stats   │    │ - Cache paths  │ │
-│  └────────────────┘    └────────────────┘    └────────────────┘ │
-└───────────────────────────────────────────────────────────────────┘
-            │                            │
-            ▼                            ▼
-┌───────────────────────┐    ┌───────────────────────┐
-│  MEMORY MANAGEMENT    │    │  EXTERNAL SERVICES    │
-│  (memory.py)          │    │  (discord_reporter.py)│
-│                       │    │                       │
-│  - Watchdog thread    │    │  - Webhook sender     │
-│  - RSS monitoring     │    │  - Stats formatter    │
-│  - Resume tracking    │    │  - Log reporter       │
-└───────────────────────┘    └───────────────────────┘
-            │
-            ▼
-┌───────────────────────────────────────────────────────────────────┐
-│                     FOUNDATION LAYER                               │
-│                                                                     │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐           │
-│  │ CONSTANTS   │    │   MODELS    │    │   UTILS     │           │
-│  │             │    │             │    │             │           │
-│  │ - GA params │    │ - Tee       │    │ - safe_int  │           │
-│  │ - Paths     │    │ - GASettings│    │ - safe_float│           │
-│  │ - Limits    │    │ - WarnOnce  │    │ - pruning   │           │
-│  └─────────────┘    └─────────────┘    └─────────────┘           │
-└───────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    A["CLI or HTTP request"] --> B["Configuration and chart loading"]
+    B --> C["Song queue and CPU preparation"]
+    C --> D["Single GPU owner"]
+    D --> E["Native genetic search"]
+    D --> F["Exact timing and Force Great evaluation"]
+    E --> G["Canonical decode and rescore"]
+    F --> G
+    G --> H["Base leaderboard"]
+    G --> I["Force Great leaderboard"]
+    H --> J[("SQLite")]
+    I --> J
 ```
 
-## Module Dependencies
+The primary command-line path is `main.py` → `gear_optimizer.cli.run()` →
+`GearOptimizerApp.run()`. The HTTP integration surface lives in
+`gear_optimizer.robeatsmeta_service`.
 
-### Import Hierarchy (Top → Bottom)
+## Subsystem boundaries
 
-```
-Level 1 (No Dependencies):
-  └─ core/constants.py
-  └─ data/models.py
-  └─ core/utils.py
+### Application and queue ownership
 
-Level 2 (Depend on Level 1):
-  └─ core/config.py      [constants, utils]
-  └─ data/csv_parser.py  [constants, utils]
-  └─ core/memory.py      [constants, models]
+- `gear_optimizer/app.py` owns top-level optimizer lifecycle and mode routing.
+- `gear_optimizer/song_queue.py` builds selected chart work.
+- `gear_optimizer/task_execution.py` dispatches queue tasks.
+- `gear_optimizer/pipeline/queue_task_coordinator.py` coordinates task
+  completion and post-processing.
 
-Level 3 (Depend on Levels 1-2):
-  └─ data/database.py    [constants, utils, config]
-  └─ solver/scoring/     [constants, utils, models]
+Application code decides *what* work should run. It does not own scoring math or
+SQLite layout.
 
-Level 4 (Depend on Levels 1-3):
-  └─ solver/genetic.py     [constants, models, utils, database, scoring]
-  └─ data/discord_reporter.py [config]
+### Native in-flight pipeline
 
-Level 5 (Orchestration):
-  └─ solver/native_inflight_orchestrator.py [optimizer]
-  └─ pipeline/post_processor.py [results]
-  └─ legacy/song_processor.py [calculate-only]
-  └─ main.py          [ALL]
-```
+- `gear_optimizer/solver/native_inflight_orchestrator.py` owns multi-song
+  scheduling.
+- `gear_optimizer/solver/native_inflight_lifecycle.py` owns preparation,
+  resources, progress, and shutdown.
+- `gear_optimizer/solver/native_inflight_pipeline.py` owns GA decode, Force
+  Great preparation, and stage profiling.
+- `gear_optimizer/solver/native_inflight_pipeline_fg.py` owns deferred Force
+  Great materialization.
 
-## Data Flow
+CPU chart preparation, GPU work, decode, and persistence overlap, but all Taichi
+and Vulkan operations remain behind one GPU owner. This prevents multiple
+threads from racing mutable device state.
 
-### Song Optimization Pipeline
+### Genetic search and GPU execution
 
-```
-┌──────────┐
-│ Song CSV │
-└────┬─────┘
-     │
-     ▼
-┌────────────────┐
-│ Read Song File │  (data/song_io.py)
-└────┬───────────┘
-     │
-     ▼
-┌──────────────────┐
-│ Load Gear/Minis  │  (csv_parser.parse_gear_rows)
-└────┬─────────────┘
-     │
-     ▼
-┌──────────────────────┐
-│ Load DB Seeds        │  (database.get_best_loadouts)
-│ (Top 50 from prev)   │
-└────┬─────────────────┘
-     │
-     ▼
-┌──────────────────────────┐
-│ Genetic Algorithm Solver │  (genetic_pipeline GPU-native helpers)
-│                          │
-│  ┌─────────────────┐    │
-│  │ Initialize Pop  │────┼──┐
-│  └────────┬────────┘    │  │
-│           │             │  │
-│           ▼             │  │  Multi-start
-│  ┌─────────────────┐   │  │  Loop (3x)
-│  │ Evaluate        │◄──┼──┘
-│  │ (solver/scoring/)│   │
-│  └────────┬────────┘   │
-│           │            │
-│           ▼            │
-│  ┌─────────────────┐  │
-│  │ Select/Mutate   │  │
-│  └────────┬────────┘  │
-│           │           │
-│           ▼           │
-│  ┌─────────────────┐ │
-│  │ Memetic Search  │ │
-│  └────────┬────────┘ │
-│           │          │
-│           ▼          │
-│  ┌─────────────────┐│
-│  │ Return Best     ││
-│  └────────┬────────┘│
-└───────────┼─────────┘
-            │
-            ▼
-┌────────────────────┐
-│ Save to Database   │  (database.save_loadouts_batch)
-│ (Top 50 preserved) │
-└────────────────────┘
-```
+- `gear_optimizer/solver/genetic_pipeline.py` and
+  `genetic_pipeline_decode.py` implement the current GA pipeline.
+- `gear_optimizer/solver/gpu_service.py` is the request boundary used by
+  orchestration.
+- `gear_optimizer/solver/gpu_executor.py` owns device execution.
+- `gear_optimizer/solver/taichi_gem/api/` is the public Taichi solver surface.
+- `gear_optimizer/solver/taichi_gem/kernels/` contains device kernels.
 
-## Key Design Patterns
+The outer loadout search is budget-bounded and heuristic. Exactness claims apply
+to evaluation of supported score and timing surfaces, not to exhaustive
+enumeration of every possible loadout.
 
-### 1. **Separation of Concerns**
-- Each module has single, well-defined responsibility
-- Data access isolated in `gear_optimizer/data/database.py` and `gear_optimizer/data/csv_parser.py`
-- Business logic in `gear_optimizer/solver/genetic.py` and `gear_optimizer/solver/scoring/`
-- Infrastructure in `gear_optimizer/core/memory.py` and `gear_optimizer/core/config.py`
+### Exact scoring and frontiers
 
-### 2. **Dependency Injection**
-```python
-# Bad (Original)
-def solve_genetic(...):
-    cfg = configparser.ConfigParser()  # Hard dependency
-    cfg.read("config.ini")
+- `gear_optimizer/solver/scoring/` owns score evaluation and canonical rescore.
+- `gear_optimizer/solver/fever_timeline.py` owns Fever timeline semantics.
+- `gear_optimizer/solver/timeline_exact_frontier.py` constructs exact
+  non-dominated timing surfaces.
+- `gear_optimizer/solver/timing_envelope.py` applies the selected timing model.
+- `gear_optimizer/solver/fg_response_frontier.py` and related response modules
+  own Force Great response surfaces and cache identity.
 
-# Good (Refactored)
-def solve_genetic(cfg: ConfigParser, ...):
-    # cfg injected, testable
-```
+Reference CPU implementations verify device results. They are verification
+authorities, not silent production fallbacks for a failed GPU path.
 
-### 3. **Cache Abstraction**
-```python
-# solver/scoring/*
-from cachetools import LRUCache
+### Data and persistence
 
-# Global caches with bounded memory
-GEM_SOLVER_CACHE = LRUCache(maxsize=5000)
-FEVER_TIMELINE_CACHE = LRUCache(maxsize=10000)
-```
+- `gear_optimizer/data/song_io.py` parses chart headers and note data.
+- `gear_optimizer/data/database/connection.py` resolves the database path and
+  initializes schema.
+- `gear_optimizer/data/database/persistence.py` owns transactional writes.
+- `gear_optimizer/data/database/leaderboards.py` owns seed and leaderboard
+  reads.
+- `gear_optimizer/data/migrations/` defines and validates the current schema.
 
-### 4. **Strategy Pattern** (Genetic Algorithm)
-```python
-# Different mutation strategies
-def mutate_genome_standard(genome, rate): ...
-def mutate_genome_adaptive(genome, rate): ...
+The package facade is `gear_optimizer.data.database`. Base and Force Great
+leaderboards have separate ranking authority and are persisted in separate
+tables.
 
-# Configurable via GASettings
-```
+### Service integration
 
-### 5. **Native In-Flight Orchestration** (Production Optimizer)
-```python
-def run_native_inflight_song_pipeline(tasks, *, in_flight_songs, completed_songs, post_queue):
-    cfg = parse_inflight_config(tasks, in_flight_songs=in_flight_songs)
-    gpu_client = GpuServiceClient(get_gpu_executor())
+`gear_optimizer/robeatsmeta_service.py` exposes:
 
-    # CPU prep, native GA, native FG scoring, deferred post, and async DB writes
-    # are coordinated by one native in-flight scheduler.
-    ...
-```
+- `GET /songs` for the official chart catalog;
+- `POST /optimize` for official or supplied chart optimization; and
+- authenticated `/metafinder/v1/manifest` distribution metadata.
 
-## Performance Optimizations
+Non-loopback binding requires `ROBEATSMETA_OPTIMIZER_API_TOKEN`. Managed
+frontier distribution is optional for community checkouts.
 
-### 1. **JIT Compilation** (solver/score_math.py)
-```python
-try:
-    from numba import jit
-    HAS_NUMBA = True
-except ImportError:
-    def jit(nopython=True, cache=True):
-        def decorator(func):
-            return func
-        return decorator
-    HAS_NUMBA = False
+## Core invariants
 
-@jit(nopython=True)
-def lookup_reference_jit(value, ref_array, total_rows):
-    # 10x faster than Python loop
-```
+1. **One GPU owner:** orchestration submits work; it does not call mutable
+   Taichi internals from worker threads.
+2. **Exact visible scores:** retained results are canonically rescored with the
+   integer and timing rules used by the supported model.
+3. **Separate objectives:** Base ranking uses `score`; Force Great ranking uses
+   `fg_score`. One objective cannot overwrite the other's retained frontier.
+4. **Semantic cache identity:** chart data, timing mode, and solver semantics
+   that affect a frontier must affect its cache identity.
+5. **Atomic persistence:** a processed song's retained entries and attempt
+   counters are committed together.
+6. **Fail loud on invalid internal state:** missing exact surfaces, malformed
+   score payloads, and incompatible schemas are errors, not reasons to produce
+   plausible fallback output.
 
-### 2. **LRU Caching** (solver/scoring/)
-```python
-# Cache key based on inputs that matter
-signature = stats_signature(stats, calc_song, selected_color)
-if signature in GEM_SOLVER_CACHE:
-    return GEM_SOLVER_CACHE[signature]  # ~100x faster
-```
+## Verification layers
 
-### 3. **Single GPU Owner + In-Flight Overlap**
-```python
-# Keep one Taichi/Vulkan GPU owner and overlap CPU prep/decode/post work
-# around native GPU GA + native ForceGreats scoring.
-run_native_inflight_song_pipeline(tasks, in_flight_songs=in_flight_songs, ...)
-```
-
-### 4. **Database Optimization** (database.py)
-- WAL mode for concurrent reads
-- Batch inserts with relaxed synchronous mode
-- Indexed queries on (song_name, score DESC)
-- Compact storage (names only, not full dicts)
-
-## Error Handling Strategy
-
-### Layered Approach
-
-```
-Layer 1: Individual Functions
-  └─ try/except with logging
-  └─ Return None or default on error
-
-Layer 2: Song Processing
-  └─ Native in-flight result-event payloads
-  └─ Deferred post-processing and async DB persistence
-
-Layer 3: Main Loop
-  └─ Continue processing other songs on failure
-  └─ Report errors to Discord
-  └─ Log to file
-
-Layer 4: Memory Guard
-  └─ Resume queue for restart after OOM
-  └─ Graceful shutdown on memory limit
-```
-
-### Example
-```python
-# database.py
-def save_loadouts_batch(song_name, entries):
-    try:
-        conn = get_db_connection()
-        conn.execute(...)
-        conn.commit()
-    except Exception as e:
-        print(f"[DB] Error saving loadout: {e}")
-        # Graceful degradation - continue without DB
-    finally:
-        conn.close()
-```
-
-## Testing Strategy
-
-### Unit Tests (Per Module)
-```python
-# tests/test_utils.py
-def test_safe_int():
-    assert safe_int("123") == 123
-    assert safe_int("invalid", 999) == 999
-
-# tests/test_database.py
-def test_loadout_hash():
-    gear1 = [{"Name": "A"}, {"Name": "B"}]
-    gear2 = [{"Name": "B"}, {"Name": "A"}]  # Different order
-    assert get_loadout_hash(gear1, []) == get_loadout_hash(gear2, [])
-```
-
-### Integration Tests
-```python
-# tests/test_genetic.py
-def test_full_optimization():
-    # Load test song
-    # Run GA
-    # Verify score is reasonable
-    # Verify loadout is valid
-```
-
-### Regression Tests
-```bash
-# Compare before/after refactoring
-python baseline.py > baseline_scores.txt
-python main.py > refactored_scores.txt
-diff baseline_scores.txt refactored_scores.txt
-```
-
-## Deployment
-
-### Production Checklist
-- [ ] All modules have docstrings
-- [ ] Comment ratio > 15%
-- [ ] No functions > 150 lines
-- [ ] No nesting > 5 levels
-- [ ] All tests pass
-- [ ] Memory usage verified
-- [ ] Database migrations tested
-
-### Configuration
-```ini
-[CalculateSong]
-Song_Name =
-Difficulty =
-TargetPrimary = All
-TargetSecondary = All
-LoopForever = true
-```
-
-## Future Improvements
-
-1. **Type Hints**: Add throughout for better IDE support
-2. **Async I/O**: For Discord webhook and file I/O
-3. **Plugin System**: Extensible mutation/crossover strategies
-4. **Web UI**: Real-time optimization monitoring
-5. **Distributed**: Run GA across multiple machines
-
----
-
-**This architecture provides:**
-✅ Clear module boundaries
-✅ Testable components
-✅ Maintainable codebase
-✅ Professional structure
-✅ Scalability for future features
+- CPU/reference tests cover scoring and data contracts without requiring a GPU.
+- GPU-marked tests cover Taichi/Vulkan parity, ownership, and execution.
+- `tests/test_repo_guardrails.py` prevents deleted surfaces, sensitive exports,
+  stale maintained-doc references, and GitHub math-rendering regressions from
+  returning.
+- Maintained benchmarks under `tools/bench/` measure performance; they do not
+  redefine correctness.

@@ -57,7 +57,8 @@ The game scores each hit after updating powerbar state. On the server path, the 
 2) update the powerbar by delta time
 3) score the hit
 
-See `<redacted-place-path>`.
+This ordering is preserved from the independently verified server scoring
+semantics and covered by timeline regression tests.
 
 This means the hit that crosses the fill threshold is scored as a Fever note (activation is on the note itself).
 

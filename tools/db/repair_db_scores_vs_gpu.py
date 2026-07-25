@@ -41,12 +41,25 @@ def _infer_difficulty_from_song_name(song_name: str) -> str:
     return "Normal"
 
 
-def _song_file_from_name(project_root: Path, song_name: str) -> Path | None:
-    diff = _infer_difficulty_from_song_name(song_name)
-    fp = project_root / "Data" / diff / f"{song_name}.txt"
-    if fp.exists():
-        return fp
-    return None
+def _build_song_header_index(project_root: Path, difficulty: str) -> dict[str, Path]:
+    """Map canonical chart keys to files using the current chart-header parser."""
+    from gear_optimizer.data.song_io import scan_song_header
+
+    chart_dir = project_root / "Data" / str(difficulty)
+    index: dict[str, Path] = {}
+    for chart_path in sorted(chart_dir.glob("*.txt")):
+        metadata = scan_song_header(str(chart_path)) or {}
+        song_name = str(metadata.get("Song Name") or "").strip()
+        if not song_name:
+            continue
+        existing = index.get(song_name)
+        if existing is not None and existing != chart_path:
+            raise ValueError(
+                f"Duplicate Song Name header {song_name!r} in "
+                f"{existing.name!r} and {chart_path.name!r}"
+            )
+        index[song_name] = chart_path
+    return index
 
 
 def _validate_table_name(table: str) -> str:
@@ -115,7 +128,7 @@ def main() -> int:
     conn.row_factory = sqlite3.Row
 
     calc_song_cache: dict[str, dict] = {}
-    song_index_cache: dict[str, dict[str, str]] = {}
+    song_index_cache: dict[str, dict[str, Path]] = {}
 
     def _resolve_song_file(song_name: str, *, difficulty_hint: str | None = None) -> Path | None:
         # Fast path: use difficulty hint when available; otherwise fall back to name inference.
@@ -136,24 +149,15 @@ def main() -> int:
             if fp.exists():
                 return fp
 
-        # Slow fallback: use the EvolutionDbManager song index (handles name normalization & path discovery).
-        try:
-            from gear_optimizer.data.db_manager import _build_song_index_for_difficulty
-        except Exception:
-            _build_song_index_for_difficulty = None
-
-        if callable(_build_song_index_for_difficulty):
-            for diff in diffs:
-                idx = song_index_cache.get(diff)
-                if idx is None:
-                    try:
-                        idx = _build_song_index_for_difficulty(str(diff))
-                    except Exception:
-                        idx = {}
-                    song_index_cache[diff] = idx
-                fp0 = Path(str((idx or {}).get(song_name) or ""))
-                if fp0.exists():
-                    return fp0
+        # Header-based lookup handles canonical song keys that differ from filenames.
+        for diff in diffs:
+            index = song_index_cache.get(diff)
+            if index is None:
+                index = _build_song_header_index(project_root, diff)
+                song_index_cache[diff] = index
+            chart_path = index.get(song_name)
+            if chart_path is not None and chart_path.exists():
+                return chart_path
 
         return None
 
