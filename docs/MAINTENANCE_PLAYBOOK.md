@@ -1,168 +1,113 @@
-# Maintenance Playbook (Runtime + GPU Stack)
+# Maintenance Playbook
 
-This document is a practical guide for making safe, performance-oriented changes to the optimizer runtime and GPU stack.
+This playbook covers the current optimizer runtime, GPU stack, persistence
+layer, and documentation checks.
 
-## Effective config + env precedence
+## Configuration and generated state
 
-### Config path resolution
-- **Primary**: `METAFINDER_CONFIG_PATH` (when set and non-empty)
-- **Fallback**: `config.ini`
+| Setting | Current contract |
+|---|---|
+| Config path | `METAFINDER_CONFIG_PATH`, otherwise `config.ini` |
+| Results database | `EVOLUTION_DB_PATH`, otherwise the resolved default |
+| Graceful stop file | `METAFINDER_STOP_FILE`, otherwise `bin/STOP` |
+| Local path cache | `bin/paths_cache.json` |
+| Timing frontier cache | `bin/timeline_frontier_cache/` |
+| Force Great frontier cache | `bin/fg_response_frontier_cache/` |
 
-Code: `gear_optimizer/core/config.py` (`get_config_path()`, `load_config()`).
+Delete `bin/paths_cache.json` after moving or replacing the `Data/` tree. Do not
+commit generated databases, caches, logs, credentials, or profiler output.
 
-### Debug-profile gating (profiling knobs)
-`main.py` gates certain overhead-heavy env toggles behind DebugProfile:
-- If DebugProfile is **off**, it will clear env vars like `PERF_TIMING`, `GPU_EXECUTOR_PROFILE`, `GPU_PROFILER`, etc.
-- If DebugProfile is **on**, it sets `METAFINDER_DEBUG_PROFILE=1`.
+## Debug and profiling
 
-`gear_optimizer/core/env_config.py` reads `DEBUG_PROFILE` / `METAFINDER_DEBUG_PROFILE` once and exposes a typed `ENV` singleton.
+Expensive profiling settings are accepted only when the Debug Profile is
+enabled in configuration or through `DEBUG_PROFILE=1` /
+`METAFINDER_DEBUG_PROFILE=1`.
 
-### ForceGreats radius defaults
-- FG search radius is hard-coded to `-1`, meaning full FT/FF allocation search.
-- `FG_SEARCH_RADIUS` and `IterationEngine.FG_SearchRadius` are no longer production tuning knobs.
+Useful targeted controls include:
 
-Code: `gear_optimizer/core/constants.py` (`FG_SEARCH_RADIUS`), `gear_optimizer/core/config.py` (`read_fg_search_radius()`).
+- `GPU_SERVICE_PROFILE=1` for GPU service request timing;
+- `INFLIGHT_STAGE_PROFILE=1` for preparation, decode, and Force Great stage
+  timing;
+- `TAICHI_KERNEL_PROFILER=1` and
+  `TAICHI_KERNEL_PROFILER_PRINT=1` for Taichi kernel timing; and
+- `PERF_TIMING=1` for focused runtime timing.
 
-## Key runtime data shapes (boundary contracts)
+Profilers perturb the workload. Compare like-for-like runs and disable them for
+throughput measurements.
 
-### `calc_song`
-Canonical per-song payload passed through CPU prep → scoring → GPU timeline:
-- `calc_song["metadata"]`: header dict (Song Name, Primary/Secondary Color, Difficulty, etc.)
-- `calc_song["song_data"]`: arrays (timestamps, note_types, …)
+Current profiling ownership:
 
-Type reference: `gear_optimizer/core/types.py` (`CalcSong`, `CalcSongData`).
+- GPU service: `gear_optimizer/solver/gpu_service.py`
+- In-flight stage profiler:
+  `gear_optimizer/solver/native_inflight_pipeline.py`
+- Taichi runtime and kernels: `gear_optimizer/solver/taichi_gem/`
 
-### Per-song result payload (pipeline → app/post-processor)
-Core keys (success and error payloads share the same identity/error contract):
-- `song`, `_queue_key`, `_queue_label`
-- `_error`, `_error_type`, `_trace` (when returning failures instead of raising)
+## Performance investigations
 
-Type reference: `gear_optimizer/core/types.py` (`SongResultPayload`).
-Builder: `gear_optimizer/core/result_payloads.py` (`build_error_payload()`).
+Start with an explicit hypothesis and a correctness-preserving baseline.
 
-### DB persistence entries
-Batch inserts are built from lists of dict entries:
-- `score`, `fg_score`, `gear`, `minis`, `details`, `force`
+Maintained harnesses include:
 
-Type reference: `gear_optimizer/core/types.py` (`PersistenceEntry`).
-Write path: `gear_optimizer/data/database.py` (`save_loadouts_batch()`).
+```bash
+python tools/bench/bench_ga_plateau_ab.py --help
+python tools/bench/bench_fg_bundle_real_song.py --help
+python -m tools list
+```
 
-### GPU IPC request payloads
-GPU executor request payloads are dicts keyed by request type.
-Type reference:
-- `gear_optimizer/solver/gpu_executor_types.py` (`GpuRequestType`: `LOAD_REF_ARRAYS`, `GPU_NATIVE_GA_RUN`, `SHUTDOWN`)
-- payload bodies are `JsonDict` values on `GpuRequest.payload`
+Record the chart set, configuration, cache state, hardware, driver, Python
+version, and profiler settings with benchmark results. A faster result is not
+acceptable if CPU/GPU parity, exact rescore, retained witnesses, or either
+leaderboard frontier changes unexpectedly.
 
-Executor: `gear_optimizer/solver/gpu_executor.py`.
+## Database maintenance
 
-## Profiling checklist (GPU executor + kernels)
+The database facade is `gear_optimizer.data.database`; schema ownership is in
+`gear_optimizer/data/migrations/`.
 
-### 1) Confirm the run is allowed to profile
-- Ensure DebugProfile is enabled (via config or env) so `main.py` doesn’t clear profiling env vars.
+- Current schema version is validated through `PRAGMA user_version`.
+- Incompatible or unversioned existing databases fail loudly.
+- `EVOLUTION_DB_PATH` selects an external database.
+- Use `tools/db/` for inspection or narrowly scoped repair utilities.
+- Keep Base and Force Great ranking and replay payloads separate.
 
-### 2) Executor-level utilization (queue + Python overhead)
-- Enable executor profiling:
-  - `GPU_EXECUTOR_PROFILE=1`
-- Optional live periodic report:
-  - Look for `[GpuExecutor][LIVE] ...` prints during runtime.
+Never edit a production database without a backup and a dry run. Database
+repair tools should resolve charts through current chart metadata, validate
+table names and payloads, and report skipped rows.
 
-Interpreting output:
-- `wait=` is time spent blocked waiting for work.
-- `exec=` is time spent executing requests on the GPU owner thread (includes some host-side overhead).
-- `pack=` is time spent preparing/coalescing batches inside the executor (helps spot CPU packing bottlenecks).
+## Removing or replacing an implementation
 
-### 3) Kernel-level + transfer-level timing (GPU profiler)
-- Enable:
-  - `GPU_PROFILER=1` (or `PERF_TIMING=1` when DebugProfile is on)
+1. Rewire production callers to the new owner.
+2. Update maintained tools and tests.
+3. Add parity or regression coverage for the replacement.
+4. Delete the superseded modules and compatibility shims.
+5. Add the retired path or symbol to `tests/test_repo_guardrails.py` when
+   accidental reintroduction would be costly.
+6. Update the architecture, navigation, and owning technical reference in the
+   same pull request.
 
-This reports:
-- kernel seconds
-- upload/download seconds and bytes
-- genomes evaluated
-- estimated GPU utilization vs wall time
+Git history is the archive for completed plans. Do not keep a finished
+implementation plan in the maintained documentation index.
 
-Code: `gear_optimizer/solver/gpu_profiler.py`.
+## Validation
 
-### 4) Taichi kernel profiler (deep kernel breakdown)
-- Enable (DebugProfile recommended):
-  - `TAICHI_KERNEL_PROFILER=1`
-  - `TAICHI_KERNEL_PROFILER_PRINT=1`
+For documentation and repository metadata:
 
-Note: this can add overhead; use for targeted investigations.
+```bash
+python -m pytest tests/test_repo_guardrails.py
+python -m ruff check .
+```
 
-### 5) In-flight stage profiling (CPU prep/decode/FG overlap)
-- Enable:
-  - `INFLIGHT_STAGE_PROFILE=1`
-  - Optional periodic emit: `INFLIGHT_STAGE_PROFILE_EMIT_SEC=...`
+For runtime changes that do not require Vulkan:
 
-Stages are aggregated in:
-- `gear_optimizer/solver/native_inflight_stages.py` (`_InFlightStageProfiler`)
+```bash
+python -m pytest -m "not gpu" tests/
+```
 
-## Production FG path (Bellman)
+For GPU execution, timing, cache, or reachability changes, also run the
+GPU-marked suite on a Vulkan-capable machine:
 
-Force Greats optimization in live runs uses the fixed-stats Bellman GPU route:
+```bash
+python -m pytest -m gpu tests/
+```
 
-- `process_force_greats(...)` → `process_force_greats_bellman_fixed_gpu(...)`
-- `solve_force_greats_bellman_fixed_stats_gpu(...)` in `taichi_gem/force_greats/bellman_fixed.py`
-
-Legacy finder Stage-1 env knobs (`FG_SMALL_WORK_*`, `FG_TARGET_THREADS_PER_KERNEL`, FG executor
-coalescing) were removed with the finder GPU teardown.
-
-## Repeatable occupancy sweeps
-Use the maintained sweep harness for archived apples-to-apples **GA** knob comparisons:
-
-- GA example:
-  - `python tools/bench/bench_gpu_occupancy_matrix.py --mode ga --ga-taichi-block-dims 128,256 --ga-reduce-block-dims 128,256 --ga-batch-runs 0,1 --ga-materialize-modes none,update_global,results --ga-genomes 705 --ga-iters 6 --ga-kernel-profiler`
-
-For real-song FG wall-time / queue behavior, use:
-
-- `python tools/bench/bench_fg_bundle_real_song.py --jobs 100 --workers 12`
-
-Underlying GA bench also supports machine-readable output directly:
-
-- `python tools/bench/bench_gpu_native_ga_eval.py --materialize-mode update_global --kernel-profiler --json`
-- `python tools/bench/bench_gpu_native_ga_eval.py --materialize-mode results_update_runs --kernel-profiler --json`
-
-When `--kernel-profiler` is enabled, the bench JSON now includes per-kernel
-entries in `kernel_profiler_kernels` plus accounting fields
-`kernel_profiler_accounted_total_sec`, `kernel_profiler_unaccounted_total_sec`,
-and `kernel_profiler_accounted_pct`. Use those fields to distinguish
-"GPU time is genuinely concentrated in these kernels" from "we are still
-missing profiler attribution."
-
-For the live steady-state GA path, prefer `--materialize-mode results_update_runs`.
-That mode mirrors the shipped orchestration more closely by timing:
-
-- `ga_evaluate_population(..., materialize_mode="none")`
-- `ga_write_best_results_and_update_runs_best(...)`
-
-## In-flight GA+FG throughput architecture (integrated)
-
-For the GA+FG integrated scheduler updates (continuous GA burst control, FG slot partitioning,
-adaptive FG submit burst, fused FG request policy, and reproducible A/B protocol), see:
-
-- `docs/INFLIGHT_GA_FG_THROUGHPUT.md`
-
-## Recent modularization points (where to edit)
-- **Env access**: `gear_optimizer/core/env_config.py` (single source of truth for env knobs)
-- **Result payload contract**: `gear_optimizer/core/result_payloads.py`
-- **App helpers**:
-  - `gear_optimizer/app_async_db.py` (async DB saves off the critical path)
-  - `gear_optimizer/app_stop_control.py` (stop/signal control)
-- **In-flight stages**: `gear_optimizer/solver/native_inflight_stages.py` (decode + FG prep + stage profiling)
-
-## Repo guardrails (avoid removed-path regressions)
-
-### Guardrail tests
-- Removed-symbol gate + import-surface gate live in: `tests/test_repo_guardrails.py`
-- Included in the dev quality check: `tools/dev/quality_check.ps1`
-
-### Deprecation/removal checklist (when adding a new GPU path)
-1. Rewire production call sites first (scoring + executor submit paths). Avoid landing a "new path" that isn't used.
-2. Update maintained tooling (`tools/bench/`, `tools/verify/`) to use the new surface, not the old helpers.
-3. Add/adjust parity tests that cover the new implementation (CPU reference vs GPU, plus at least one integration).
-4. Delete the superseded implementation (requests/types/kernels/fields), and extend the guardrail forbidden-symbol list if needed.
-5. Run at least:
-   - `python -m ruff check .`
-   - `python -m pytest -m "not gpu" tests/`
-   - `python -m pytest -m gpu tests/` (on a Vulkan-capable machine)
+Report exactly which checks ran and which hardware-dependent checks remain.

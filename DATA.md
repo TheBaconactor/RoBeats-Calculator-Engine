@@ -2,8 +2,6 @@
 
 RoBeats Calculator Engine ships chart files, gear tables, and `exported_game_data.json` in the `Data/` tree. Runtime results (`evolution.db`) and frontier credentials stay local and out of git.
 
-See the root README [Deployment models](README.md#deployment-models) for how each persona uses this data.
-
 ## Disclaimer
 
 This is a **community-built analysis tool**. It is not affiliated with, endorsed by, or connected to RoBeats, Roblox, or any game publisher.
@@ -45,7 +43,7 @@ python -m gear_optimizer.cli sync-data
 Runtime results live in `evolution.db` at the repository root by default. Do not commit this file.
 
 ```bash
-export METAFINDER_EVOLUTION_DB=/path/to/evolution.db
+export EVOLUTION_DB_PATH=/path/to/evolution.db
 ```
 
 Host operators typically use an external database path via this variable.
@@ -67,6 +65,6 @@ On the host, only the authoritative machine builds timeline and FG frontiers for
 | Asset | Action |
 |---|---|
 | `Data/` tree | Maintained in git and on the host; published via frontier bundles |
-| `evolution.db` | External path via `METAFINDER_EVOLUTION_DB` |
+| `evolution.db` | External path via `EVOLUTION_DB_PATH` |
 | Frontier server | Publication flow, client registry, and `/metafinder/v1` distribution |
 | Host application | Authenticate to the documented `/songs` and `/optimize` service endpoints |

@@ -29,6 +29,6 @@ List the commands you ran and the relevant results.
 - [ ] I kept Base and Force Great leaderboards separate.
 - [ ] I did not add secrets, credentials, generated databases, caches, logs, or artifacts.
 - [ ] I did not include absolute workstation paths, personal identifiers, or private infrastructure details.
-- [ ] I updated documentation or implementation records when required.
+- [ ] I updated the owning maintained documentation when required.
 - [ ] I disclosed material AI assistance and reviewed every submitted line.
 - [ ] I understand that submitting a contribution does not grant merge, release, administration, deployment, or maintainer authority.

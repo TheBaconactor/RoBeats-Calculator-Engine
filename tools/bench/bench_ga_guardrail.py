@@ -6,12 +6,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _safe_int
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _safe_int
 from tools.bench.bench_ga_winner_stability import run_benchmark
 
 
@@ -31,13 +30,6 @@ def _metric_mean(summary: dict[str, Any], key: str) -> float:
     return _safe_float(value, 0.0)
 
 
-def _metric_max(summary: dict[str, Any], key: str) -> float:
-    value = summary.get(key, 0.0)
-    if isinstance(value, dict):
-        return _safe_float(value.get("max", 0.0), 0.0)
-    return _safe_float(value, 0.0)
-
-
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Compare GA stability benchmark outputs against a saved baseline.")
     ap.add_argument("--baseline", required=True, help="Baseline JSON produced by bench_ga_winner_stability.")
@@ -51,7 +43,6 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--seeds", default="")
     ap.add_argument("--ga-multi-start", type=int, default=0)
     ap.add_argument("--fg-candidate-limit", type=int, default=0)
-    ap.add_argument("--fg-search-radius", type=int, default=0)
     ap.add_argument("--db-path", default="")
     ap.add_argument(
         "--candidate-out",
@@ -66,7 +57,6 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-base-score-drop", type=float, default=0.0)
     ap.add_argument("--max-fg-score-drop", type=float, default=0.0)
     ap.add_argument("--max-duplicate-ratio-increase", type=float, default=0.0)
-    ap.add_argument("--max-fg-debt-increase", type=float, default=0.0)
     ap.add_argument("--max-error-run-increase", type=int, default=0)
     ap.add_argument("--max-elapsed-increase-pct", type=float, default=0.10)
     return ap
@@ -79,7 +69,6 @@ def compare_payloads(
     max_base_score_drop: float,
     max_fg_score_drop: float,
     max_duplicate_ratio_increase: float,
-    max_fg_debt_increase: float,
     max_error_run_increase: int,
     max_elapsed_increase_pct: float,
 ) -> dict[str, Any]:
@@ -160,21 +149,6 @@ def compare_payloads(
                 }
             )
 
-        base_fg_debt_max = _metric_max(base_summary, "pending_fg_jobs_song_delta")
-        cand_fg_debt_max = _metric_max(cand_summary, "pending_fg_jobs_song_delta")
-        if cand_fg_debt_max > base_fg_debt_max + float(max_fg_debt_increase):
-            findings.append(
-                {
-                    "kind": "regression",
-                    "depth": int(depth),
-                    "metric": "pending_fg_jobs_song_delta.max",
-                    "baseline": base_fg_debt_max,
-                    "candidate": cand_fg_debt_max,
-                    "allowed_increase": float(max_fg_debt_increase),
-                    "message": "Candidate FG debt increased beyond threshold.",
-                }
-            )
-
         base_error_runs = _safe_int(base_summary.get("error_runs", 0), 0)
         cand_error_runs = _safe_int(cand_summary.get("error_runs", 0), 0)
         if cand_error_runs > base_error_runs + int(max_error_run_increase):
@@ -235,7 +209,6 @@ def _resolve_candidate_payload(args: argparse.Namespace, baseline: dict[str, Any
         seeds=seeds,
         ga_multi_start=int(args.ga_multi_start or baseline.get("ga_multi_start") or 3),
         fg_candidate_limit=int(args.fg_candidate_limit or baseline.get("fg_candidate_limit") or 51),
-        fg_search_radius=int(args.fg_search_radius or baseline.get("fg_search_radius") or 5),
         db_path=str(args.db_path or baseline.get("db_source_path") or ""),
     )
     candidate_path = Path(str(args.candidate_out))
@@ -256,7 +229,6 @@ def main(argv: list[str] | None = None) -> int:
         max_base_score_drop=float(args.max_base_score_drop),
         max_fg_score_drop=float(args.max_fg_score_drop),
         max_duplicate_ratio_increase=float(args.max_duplicate_ratio_increase),
-        max_fg_debt_increase=float(args.max_fg_debt_increase),
         max_error_run_increase=int(args.max_error_run_increase),
         max_elapsed_increase_pct=float(args.max_elapsed_increase_pct),
     )
@@ -269,7 +241,6 @@ def main(argv: list[str] | None = None) -> int:
             "max_base_score_drop": float(args.max_base_score_drop),
             "max_fg_score_drop": float(args.max_fg_score_drop),
             "max_duplicate_ratio_increase": float(args.max_duplicate_ratio_increase),
-            "max_fg_debt_increase": float(args.max_fg_debt_increase),
             "max_error_run_increase": int(args.max_error_run_increase),
             "max_elapsed_increase_pct": float(args.max_elapsed_increase_pct),
         },

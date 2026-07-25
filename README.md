@@ -27,14 +27,12 @@ This is production community infrastructure, not a showcase-only calculator. The
 
 ### Community footprint
 
-Repository snapshot as of July 25, 2026:
-
 | Signal | Evidence |
 |---|---|
-| Supported catalog | 967 unique chart titles across 2,249 tracked difficulty files |
-| Engineering depth | 649 Python files and 604 invariant/implementation records |
-| Verification surface | 232 focused test modules, including CPU/GPU parity and exact-score regression coverage |
-| Maintenance activity | 1,827 commits; 877 commits and 78 merged-PR commits in the preceding 90 days |
+| Supported catalog | 2,250 bundled difficulty-chart files |
+| Engineering depth | More than 600 Python modules across the engine, service, tools, and tests |
+| Verification surface | More than 230 focused test modules, including CPU/GPU parity and exact-score regression coverage |
+| Maintenance history | More than 1,800 commits preserved in the public development history |
 | Production role | Optimizer and chart-catalog backend for [RoBeatsMeta](https://robeatsmeta.net) |
 
 ### Highlights
@@ -128,7 +126,8 @@ python -m gear_optimizer.cli sync-data        # Rebuild gear CSVs from exported 
 python -m tools list                          # List maintained developer tools
 ```
 
-Generated results are stored in `evolution.db` by default. Override the location with `METAFINDER_EVOLUTION_DB`.
+Generated results are stored in `evolution.db` by default. Override the
+location with `EVOLUTION_DB_PATH`.
 
 ### HTTP service
 
@@ -160,7 +159,7 @@ Community clones do not require frontier credentials. If `bin/frontier_client_cr
 | `ROBEATSMETA_OPTIMIZER_SERVICE_MODE` | Disable client-side sync on the authoritative host |
 | `ROBEATSMETA_FRONTIER_CLIENTS_FILE` | Host-side client registry |
 | `ROBEATSMETA_FRONTIER_GIT_REMOTE` / `ROBEATSMETA_FRONTIER_GIT_BRANCH` | Repository ref polled by the host |
-| `METAFINDER_EVOLUTION_DB` | External results database path |
+| `EVOLUTION_DB_PATH` | External results database path |
 
 Never commit client credentials, server registries, API tokens, or deployment secrets.
 
@@ -212,7 +211,7 @@ RoBeats-Calculator-Engine/
 ├── general_meta/         # Cross-song analysis
 ├── tests/                # CPU, GPU, parity, and regression coverage
 ├── tools/                # Verification and maintenance tools
-├── docs/                 # Architecture, math, and implementation records
+├── docs/                 # Maintained architecture, math, and operations references
 ├── Data/                 # Bundled charts and gear data
 ├── config.ini            # Chart and queue selection
 └── main.py               # Primary entry point

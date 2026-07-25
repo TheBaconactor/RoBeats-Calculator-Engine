@@ -1,5 +1,8 @@
 # ECLIPSE Implementation Plan
 
+> Archived research snapshot. This proposal is not the current production
+> architecture or an active implementation plan.
+
 ## Goal
 Implement an exact, GPU-first throughput optimization for the GA -> FG pipeline by combining:
 1. exact score-signature deduplication for GA evaluation, and

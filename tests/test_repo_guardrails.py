@@ -16,14 +16,43 @@ from __future__ import annotations
 import ast
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GITHUB_MATH_TEXT_UNDERSCORE = re.compile(r"\\text\{[^}]*_[^}]*\}")
 _SENSITIVE_PLAYER_EXPORT_KEY = re.compile(
     r'"(?:localPlayerId|playerId|playerName)"\s*:'
+)
+_MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+_REPOSITORY_PATH_LITERAL = re.compile(
+    r"`((?:gear_optimizer|general_meta|tools|scripts|tests|docs)/[^`\s]+)`"
+)
+_MAINTAINED_DOCS = (
+    "README.md",
+    "DATA.md",
+    "Data/README.md",
+    "CONTRIBUTING.md",
+    "GOVERNANCE.md",
+    "MAINTAINERS.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    "configs/README.md",
+    "docs/README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/DATABASE_SCHEMA.md",
+    "docs/ENGINEERING_PRINCIPLES.md",
+    "docs/FEVER_TIMELINE_MATH.md",
+    "docs/FORMULA_REFERENCE.md",
+    "docs/MAINTENANCE_PLAYBOOK.md",
+    "docs/NAVIGATION.md",
+    "docs/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md",
+    "docs/TIMING_ENVELOPE_EXACT_FRONTIER.md",
+    "tools/verify/reference_oracle/README.md",
 )
 
 
@@ -59,6 +88,205 @@ def test_repository_does_not_contain_player_identity_exports() -> None:
 
     assert not offenders, (
         "Player-identity exports must stay outside the repository:\n"
+        + "\n".join(offenders)
+    )
+
+
+def _github_heading_slug(heading: str) -> str:
+    text = re.sub(r"<[^>]+>", "", heading)
+    text = re.sub(r"[`*_~]", "", text).strip().lower()
+    text = re.sub(r"[^a-z0-9 _-]", "", text)
+    return re.sub(r"\s+", "-", text)
+
+
+def _heading_slugs(path: Path) -> set[str]:
+    slugs: set[str] = set()
+    counts: dict[str, int] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if not match:
+            continue
+        base = _github_heading_slug(match.group(1))
+        occurrence = counts.get(base, 0)
+        counts[base] = occurrence + 1
+        slugs.add(base if occurrence == 0 else f"{base}-{occurrence}")
+    return slugs
+
+
+def test_repository_document_links_resolve() -> None:
+    offenders: list[str] = []
+    for relative_path in _MAINTAINED_DOCS:
+        assert (_REPO_ROOT / relative_path).is_file(), (
+            f"Maintained document is missing: {relative_path}"
+        )
+
+    for source in sorted(_REPO_ROOT.rglob("*.md")):
+        if any(
+            part in {".git", ".venv", "bin", "node_modules", "venv"}
+            for part in source.parts
+        ):
+            continue
+        relative_path = str(source.relative_to(_REPO_ROOT))
+        text = source.read_text(encoding="utf-8")
+        for match in _MARKDOWN_LINK.finditer(text):
+            raw_target = match.group(1).strip().strip("<>")
+            if not raw_target or raw_target.startswith(
+                ("#", "http://", "https://", "mailto:")
+            ):
+                continue
+            target_text, _, fragment = raw_target.partition("#")
+            target = (source.parent / unquote(target_text)).resolve()
+            try:
+                target.relative_to(_REPO_ROOT)
+            except ValueError:
+                offenders.append(f"{relative_path}: link escapes repository: {raw_target}")
+                continue
+            if not target.exists():
+                offenders.append(f"{relative_path}: missing target: {raw_target}")
+                continue
+            if fragment and target.is_file() and target.suffix.lower() == ".md":
+                decoded_fragment = unquote(fragment).lower()
+                if decoded_fragment not in _heading_slugs(target):
+                    offenders.append(
+                        f"{relative_path}: missing heading #{fragment} in "
+                        f"{target.relative_to(_REPO_ROOT)}"
+                    )
+
+    assert not offenders, "Repository documentation has broken links:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_maintained_document_code_paths_resolve() -> None:
+    offenders: list[str] = []
+    for relative_path in _MAINTAINED_DOCS:
+        text = (_REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        for match in _REPOSITORY_PATH_LITERAL.finditer(text):
+            raw_target = match.group(1)
+            target_text = raw_target.split("::", 1)[0].rstrip(".,;:)")
+            if any(char in target_text for char in "*{}<>"):
+                continue
+            if not (_REPO_ROOT / target_text).exists():
+                offenders.append(f"{relative_path}: missing code path: {raw_target}")
+
+    assert not offenders, "Maintained documentation has stale code paths:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_repository_config_samples_load() -> None:
+    from gear_optimizer.core.config import load_config, read_iteration_engine_settings
+
+    config_paths = [
+        _REPO_ROOT / "config.ini",
+        _REPO_ROOT / "config.profile.ini",
+        *sorted((_REPO_ROOT / "configs").rglob("*.ini")),
+    ]
+    offenders: list[str] = []
+    for path in config_paths:
+        try:
+            cfg = load_config(str(path))
+            read_iteration_engine_settings(cfg)
+            if any(cfg.has_option(section, "_extends") for section in cfg.sections()):
+                offenders.append(f"{path.relative_to(_REPO_ROOT)}: unresolved _extends")
+        except Exception as exc:
+            offenders.append(
+                f"{path.relative_to(_REPO_ROOT)}: {type(exc).__name__}: {exc}"
+            )
+
+    assert not offenders, "Repository config samples do not load:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_retired_force_great_options_stay_out_of_configs_and_tools() -> None:
+    retired_config_options = (
+        "ForceGreatsMode",
+        "FG_SolverMode",
+        "ForceGreatsFinder",
+        "FG_SearchRadius",
+    )
+    retired_runtime_state = ("pending_fg_jobs",)
+    offenders: list[str] = []
+
+    config_paths = [
+        _REPO_ROOT / "config.ini",
+        _REPO_ROOT / "config.profile.ini",
+        *sorted((_REPO_ROOT / "configs").rglob("*.ini")),
+    ]
+    for path in config_paths:
+        text = path.read_text(encoding="utf-8", errors="ignore").lower()
+        hits = [token for token in retired_config_options if token.lower() in text]
+        if hits:
+            offenders.append(f"{path.relative_to(_REPO_ROOT)}: {', '.join(hits)}")
+
+    for path in sorted((_REPO_ROOT / "tools").rglob("*.py")):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        hits = [
+            token
+            for token in (*retired_config_options, *retired_runtime_state)
+            if token in text
+        ]
+        if hits:
+            offenders.append(f"{path.relative_to(_REPO_ROOT)}: {', '.join(hits)}")
+
+    assert not offenders, "Retired Force Great controls were reintroduced:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_maintained_tool_entry_points_support_direct_help() -> None:
+    entry_points = (
+        "tools/bench/bench_fg_depth_quick.py",
+        "tools/bench/bench_ga_guardrail.py",
+        "tools/bench/bench_ga_winner_stability.py",
+        "tools/db/smoke_run_and_audit.py",
+    )
+    offenders: list[str] = []
+    for relative_path in entry_points:
+        result = subprocess.run(
+            [sys.executable, relative_path, "--help"],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip().splitlines()
+            detail = stderr[-1] if stderr else f"exit {result.returncode}"
+            offenders.append(f"{relative_path}: {detail}")
+
+    assert not offenders, "Maintained tool entry points do not launch:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_maintained_documentation_does_not_reference_retired_surfaces() -> None:
+    retired = (
+        "gear_optimizer/solver/genetic.py",
+        "gear_optimizer/data/database.py",
+        "gear_optimizer.data.db_manager",
+        "EvolutionDbManager",
+        "native_inflight_stages.py",
+        "gpu_profiler.py",
+        "force_greats/bellman_fixed.py",
+        "bench_gpu_native_ga_eval.py",
+        "METAFINDER_EVOLUTION_DB",
+        "FEVER_FIX_PLAN.md",
+        "implementation records",
+    )
+    offenders: list[str] = []
+    for relative_path in _MAINTAINED_DOCS:
+        text = (_REPO_ROOT / relative_path).read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+        hits = [token for token in retired if token in text]
+        if hits:
+            offenders.append(f"{relative_path}: {', '.join(hits)}")
+
+    assert not offenders, (
+        "Maintained documentation references retired code or policy surfaces:\n"
         + "\n".join(offenders)
     )
 
@@ -134,6 +362,7 @@ def test_non_skyline_compatibility_shims_stay_deleted() -> None:
         "gear_optimizer/solver/gpu_executor_profile.py",
         "gear_optimizer/solver/gpu_profiler.py",
         "gear_optimizer/solver/item_pools.py",
+        "gear_optimizer/solver/marginal_pruning.py",
         "gear_optimizer/solver/taichi_gem/ftff_combos.py",
         "gear_optimizer/solver/taichi_gem/api/gpu_prefetch.py",
         "gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu.py",
@@ -155,7 +384,10 @@ def test_non_skyline_compatibility_shims_stay_deleted() -> None:
         "tests/test_gpu_ga_global_best_consistency.py",
         "tests/test_gpu_ga_ops.py",
         "tests/test_gpu_native_ga_plateau_prune_regression.py",
+        "tests/test_gpu_occupancy_matrix.py",
+        "tools/bench/bench_gpu_occupancy_matrix.py",
         "tools/bench/bench_gpu_native_ga_eval.py",
+        "tools/db/verify_recompute_fix.py",
         "tools/profile/tests/profile_ga.py",
     ]
 

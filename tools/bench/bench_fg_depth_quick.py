@@ -99,7 +99,6 @@ def main() -> int:
     ap.add_argument("--base-config", default="config.ini")
     ap.add_argument("--song", default="Feeling Alright")
     ap.add_argument("--difficulty", default="All")
-    ap.add_argument("--fg-radius", type=int, default=5)
     ap.add_argument("--depths", default="200,2000", help="Comma-separated GA_SearchDepth values.")
     ap.add_argument(
         "--inflight-songs",
@@ -151,7 +150,6 @@ def main() -> int:
                 "CalculateSong": {"Song_Name": str(args.song), "Difficulty": str(args.difficulty)},
                 "IterationEngine": {
                     "GA_SearchDepth": str(int(depth)),
-                    "FG_SearchRadius": str(int(args.fg_radius)),
                     "LoopForever": "false",
                 },
             }

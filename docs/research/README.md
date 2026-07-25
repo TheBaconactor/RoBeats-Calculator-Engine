@@ -1,6 +1,9 @@
 # Research Index
 
-This folder stores reproducible research artifacts that are not required for day-to-day runtime documentation.
+This folder stores dated, reproducible research artifacts. They are not
+day-to-day runtime documentation and may describe standalone models, companion
+prototypes, or proposals that were never adopted. Use the parent
+[documentation index](../README.md) for current production contracts.
 
 ## Files
 

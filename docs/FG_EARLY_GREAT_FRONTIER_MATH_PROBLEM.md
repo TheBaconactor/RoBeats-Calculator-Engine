@@ -1,5 +1,10 @@
 # Force-Greats Early-Great Frontier — Self-Contained Mathematical Problem
 
+> [!NOTE]
+> This document freezes a research formulation for independent algorithm work.
+> It is not a description of the current production module layout or runtime
+> strategy.
+
 **Audience:** algorithms / optimization / combinatorics people. No domain knowledge of the
 game or the codebase is required; everything needed is below. The goal is an **exact,
 polynomial-time** algorithm (or an impossibility proof + best achievable) for the
@@ -16,8 +21,8 @@ some items *great*. Each play induces a **feature vector** `S` (a 200-bit head m
 piecewise-linear-with-integer-floors function of a parameter vector `θ`. For a fixed
 instance we must compute `max over feasible plays of score(S; θ)` **for every `θ` in a
 given finite grid `Θ`**, exactly. The naïve method — enumerate the Pareto set of feature
-vectors `S` once (independent of `θ`), then score each against every `θ` — is what the
-production system does today; a recently added move (the "early-Great extension", §5)
+vectors `S` once (independent of `θ`), then score each against every `θ` — is the
+baseline formulation studied here; the "early-Great extension" in §5
 makes that Pareto set **exponential** in the number of segments. We want a method whose
 cost is polynomial in `N` and `|Θ|`. §8 gives strong structural hints (the value function
 decomposes into a position-sensitive 100-element *head* and a position-flat *body*).
@@ -356,17 +361,17 @@ vectors, all distinct, `175` distinct head count-classes. A good method must han
 
 ---
 
-## 11. Glossary ↔ production code (for engineers verifying against the implementation)
+## 11. Glossary and implementation locations at the snapshot date
 
 | symbol / term | code location |
 |---|---|
 | `pf`, `gf`, `pc`, `gc` envelopes | `gear_optimizer/solver/timing_envelope.py` (`build_perfect_floor_envelope_sec`, `build_great_floor_envelope_sec`, `build_perfect_candidate_envelope_sec`, `build_great_candidate_envelope_sec`) |
-| `EP`, `EG`, fever-end search | `searchsorted(pf/gf, cutoff)` in `response_build_gpu_precompute.py::_precompute_end_indices` |
-| play / segment DP, frontier build | `response_build_gpu_numba.py::_first_frontier_from_precomputed_end_indices_numba` |
-| §3(e) early-Great extension (the new, blowing-up code) | `_numba_packet_queue_push_activation`, the head loop, `_numba_pack_edge_eg` in the same file |
-| feature vector `S` | `FgResponseSurface` (`response_types.py`): `fever0..3`, `great0..3` (head bitmasks, 4×32 bits), `body_fever`, `body_great`, `body_fever_great` |
+| `EP`, `EG`, fever-end search | `searchsorted(pf/gf, cutoff)` in `gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu_precompute.py::_precompute_end_indices` |
+| play / segment DP, frontier build | `gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu_numba.py::_first_frontier_from_precomputed_end_indices_numba` |
+| §3(e) early-Great extension (the new, blowing-up code) | `_numba_packet_queue_push_activation`, the head loop, and `_numba_pack_edge_eg` in `gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu_numba.py` |
+| feature vector `S` | `gear_optimizer/solver/taichi_gem/force_greats/response_types.py::FgResponseSurface`: `fever0..3`, `great0..3` (head bitmasks, 4×32 bits), `body_fever`, `body_great`, `body_fever_great` |
 | `score(S;θ)` | `gear_optimizer/solver/scoring/exact_rescore.py::score_force_greats_response_surface_exact` |
-| timeline / forced-greats / fill | `gear_optimizer/solver/fever_timeline.py::calculate_force_greats_timeline_indices`; constants `0.333, 0.15, 0.15`, great base `+150` in `fg_policy.py::compute_great_penalty_base` |
+| timeline / forced-greats / fill | `gear_optimizer/solver/fever_timeline.py::calculate_force_greats_timeline_indices`; constants `0.333, 0.15, 0.15`, great base `+150` in `gear_optimizer/solver/scoring/fg_policy.py::compute_great_penalty_base` |
 
 **Remark R1 (a separate, secondary correctness item — not part of the math problem).** The
 production Great-upper offset is `+190` ms (`Uᴳ`), whereas the game's decompiled Great window

@@ -15,13 +15,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _safe_int
-
-
-from gear_optimizer.core.parsing import env_get
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from gear_optimizer.core.parsing import env_get
+from gear_optimizer.core.utils import safe_float as _safe_float, safe_int as _safe_int
+
 
 def _summary_stats(values: list[float]) -> dict[str, float]:
     if not values:
@@ -151,12 +151,6 @@ def summarize_depth_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
             ]
         ),
         "elapsed_wall_sec": _summary_stats([_safe_float(row.get("elapsed_wall_sec", 0.0), 0.0) for row in runs]),
-        "pending_fg_jobs_song_after": _summary_stats(
-            [_safe_float(row.get("pending_fg_jobs_song_after", 0.0), 0.0) for row in runs]
-        ),
-        "pending_fg_jobs_song_delta": _summary_stats(
-            [_safe_float(row.get("pending_fg_jobs_song_delta", 0.0), 0.0) for row in runs]
-        ),
         "unique_base_hashes": int(len(set(base_hashes))),
         "unique_fg_hashes": int(len(set(fg_hashes))),
         "base_mode_hash": base_mode_hash,
@@ -166,7 +160,6 @@ def summarize_depth_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "fg_mode_count": int(fg_mode_count),
         "fg_stability_ratio": (float(fg_mode_count) / float(len(runs))) if runs else 0.0,
         "error_runs": int(sum(1 for row in runs if str(row.get("error", "") or "").strip())),
-        "fg_debt_runs": int(sum(1 for row in runs if _safe_int(row.get("pending_fg_jobs_song_delta", 0), 0) > 0)),
         "stage_timing": stage_means,
         "gpu_timing": gpu_means,
     }
@@ -229,7 +222,6 @@ def _prepare_cfg_dict(
     ga_depth: int,
     ga_multi_start: int,
     fg_candidate_limit: int,
-    fg_search_radius: int,
 ) -> dict[str, Any]:
     cfg_dict = copy.deepcopy(base_cfg_dict)
     cfg_dict.setdefault("CalculateSong", {})
@@ -247,7 +239,6 @@ def _prepare_cfg_dict(
     ie["GA_SearchDepth"] = str(int(ga_depth))
     ie["GA_MultiStart"] = str(int(ga_multi_start))
     ie["FG_CandidateLimit"] = str(int(fg_candidate_limit))
-    ie["FG_SearchRadius"] = str(int(fg_search_radius))
 
     for k in ("perfect_points", "combo_multiplier", "fever_multiplier", "fever_fill", "fever_time"):
         cfg_dict["UserInputStatsGems"][k] = "0"
@@ -289,25 +280,6 @@ def _prepare_seed_db(*, db_source_path: Path | None, temp_root: Path, depth: int
     if db_source_path is not None and db_source_path.exists():
         shutil.copy2(str(db_source_path), str(run_db_path))
     return run_db_path
-
-
-def _count_pending_fg_jobs_for_song(db_path: Path, song_name: str) -> int:
-    if not db_path.exists():
-        return 0
-    try:
-        with sqlite3.connect(str(db_path)) as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_fg_jobs'"
-            ).fetchone()
-            if not row or int(row[0] or 0) <= 0:
-                return 0
-            result = conn.execute(
-                "SELECT COUNT(*) FROM pending_fg_jobs WHERE song_name = ?",
-                (str(song_name),),
-            ).fetchone()
-            return int((result or [0])[0] or 0)
-    except Exception:
-        return 0
 
 
 def _cleanup_temp_root(temp_root: Path) -> None:
@@ -383,7 +355,6 @@ def _query_team_buff_bests(db_path: Path, song_name: str, *, team_buff: str = "T
         "fg_hash": "",
         "base_rows": 0,
         "fg_rows": 0,
-        "pending_fg_jobs": 0,
     }
     if not db_path.exists():
         return out
@@ -432,16 +403,6 @@ def _query_team_buff_bests(db_path: Path, song_name: str, *, team_buff: str = "T
             if fg_rows:
                 out["fg_rows"] = _safe_int(fg_rows[0], 0)
 
-            pending = conn.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_fg_jobs'"
-            ).fetchone()
-            if pending and _safe_int(pending[0], 0) > 0:
-                pending_rows = conn.execute(
-                    "SELECT COUNT(*) FROM pending_fg_jobs WHERE song_name = ?",
-                    (str(song_name),),
-                ).fetchone()
-                if pending_rows:
-                    out["pending_fg_jobs"] = _safe_int(pending_rows[0], 0)
     except Exception:
         return out
 
@@ -500,7 +461,6 @@ def run_single_seed_inflight(
     except Exception:
         pass
 
-    pending_fg_before = _count_pending_fg_jobs_for_song(run_db_path, song_name)
     post_queue, post_proc = _start_post_processor(total_tasks=1)
     completed_songs: set[str] = set()
     t0 = time.perf_counter()
@@ -513,7 +473,6 @@ def run_single_seed_inflight(
                 completed_songs=completed_songs,
                 memory_resume_tracker=None,
                 post_queue=post_queue,
-                total_tasks=1,
                 stop_requested=None,
                 progress_cb=None,
                 bundle_completed_cb=None,
@@ -539,7 +498,6 @@ def run_single_seed_inflight(
     elapsed = time.perf_counter() - t0
     audit_record = _read_last_audit_record(audit_path, song_name)
     summary = _query_team_buff_bests(run_db_path, song_name, team_buff="T5")
-    pending_fg_after = _count_pending_fg_jobs_for_song(run_db_path, song_name)
 
     return {
         "seed": int(ga_seed),
@@ -556,9 +514,6 @@ def run_single_seed_inflight(
         "duplicate_signature_ratio": None
         if audit_record is None
         else _safe_float(audit_record.get("duplicate_signature_ratio", 0.0), 0.0),
-        "pending_fg_jobs_song_before": int(pending_fg_before),
-        "pending_fg_jobs_song_after": int(pending_fg_after),
-        "pending_fg_jobs_song_delta": int(pending_fg_after - pending_fg_before),
         "error": str(error_msg or ""),
     }
 
@@ -572,7 +527,6 @@ def run_benchmark(
     seeds: list[int],
     ga_multi_start: int,
     fg_candidate_limit: int,
-    fg_search_radius: int,
     db_path: str | None = None,
 ) -> dict[str, Any]:
     base_cfg_dict = _load_cfg_dict(config_path)
@@ -595,7 +549,6 @@ def run_benchmark(
                     ga_depth=int(depth),
                     ga_multi_start=int(ga_multi_start),
                     fg_candidate_limit=int(fg_candidate_limit),
-                    fg_search_radius=int(fg_search_radius),
                 )
                 run_db_path = _prepare_seed_db(
                     db_source_path=db_source_path,
@@ -634,7 +587,6 @@ def run_benchmark(
         "seeds": [int(s) for s in seeds],
         "ga_multi_start": int(ga_multi_start),
         "fg_candidate_limit": int(fg_candidate_limit),
-        "fg_search_radius": int(fg_search_radius),
         "db_source_path": "" if db_source_path is None else str(db_source_path),
         "seed_db_isolated": True,
         "runs_by_depth": all_depth_runs,
@@ -651,7 +603,6 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--seeds", default="1337,1338,1339,1340,1341")
     ap.add_argument("--ga-multi-start", type=int, default=3)
     ap.add_argument("--fg-candidate-limit", type=int, default=51)
-    ap.add_argument("--fg-search-radius", type=int, default=5)
     ap.add_argument(
         "--db-path",
         default="",
@@ -690,7 +641,6 @@ def main(argv: list[str] | None = None) -> int:
         seeds=seeds,
         ga_multi_start=int(args.ga_multi_start),
         fg_candidate_limit=int(args.fg_candidate_limit),
-        fg_search_radius=int(args.fg_search_radius),
         db_path=str(args.db_path or ""),
     )
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

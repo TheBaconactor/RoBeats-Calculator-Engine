@@ -4,7 +4,7 @@ Stats Scoring - Stats Evaluation Helpers.
 This module provides functions for evaluating fixed stats without gem optimization:
 - evaluate_stats_score: Calculate score for a fixed stats snapshot
 - build_great_penalty_table: Precompute ramp penalties for force greats
-- fg_baseline_params: Lightweight baseline computation for ForceGreatsFinder batching
+- fg_baseline_params: Lightweight baseline computation for Force Great batching
 - Helper functions for song caching and config conversion
 """
 
@@ -67,7 +67,7 @@ def _get_fg_baseline_grids(
     ref_arrays: dict,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Build or fetch per-song baseline grids for fast ForceGreatsFinder batching.
+    Build or fetch per-song baseline grids for fast Force Great batching.
 
     Returns:
         (fever_activations_grid, gap_grid, non_fever_base_by_ff)
@@ -271,7 +271,7 @@ def _fg_baseline_params_point(
 
 def fg_baseline_params(stats, calc_song, ref_arrays, *, prefer_grid: bool | None = None):
     """
-    Lightweight baseline computation for ForceGreatsFinder batching.
+    Lightweight baseline computation for Force Great batching.
 
     Returns:
         (num_non_fever_sections, non_fever_base)

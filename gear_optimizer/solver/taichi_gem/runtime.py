@@ -449,7 +449,7 @@ def get_kernel_profiler_enabled() -> bool:
 
 
 def get_block_dim() -> int:
-    # Hardwired (was TAICHI_BLOCK_DIM): 256 is the implementation record-proven best for this
+    # Hardwired (was TAICHI_BLOCK_DIM): 256 is the benchmark-validated default for this
     # workload; _clamp_block_dim keeps the Vulkan [1,1024] dispatch bound.
     return _clamp_block_dim(256)
 
