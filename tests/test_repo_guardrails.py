@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import unquote
@@ -27,15 +28,20 @@ _SENSITIVE_PLAYER_EXPORT_KEY = re.compile(
     r'"(?:localPlayerId|playerId|playerName)"\s*:'
 )
 _MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+_REPOSITORY_PATH_LITERAL = re.compile(
+    r"`((?:gear_optimizer|general_meta|tools|scripts|tests|docs)/[^`\s]+)`"
+)
 _MAINTAINED_DOCS = (
     "README.md",
     "DATA.md",
+    "Data/README.md",
     "CONTRIBUTING.md",
     "GOVERNANCE.md",
     "MAINTAINERS.md",
     "SECURITY.md",
     "SUPPORT.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
+    "configs/README.md",
     "docs/README.md",
     "docs/ARCHITECTURE.md",
     "docs/DATABASE_SCHEMA.md",
@@ -46,6 +52,7 @@ _MAINTAINED_DOCS = (
     "docs/NAVIGATION.md",
     "docs/ON_DEMAND_TEAM_BUFF_TIER_SCORING.md",
     "docs/TIMING_ENVELOPE_EXACT_FRONTIER.md",
+    "tools/verify/reference_oracle/README.md",
 )
 
 
@@ -106,11 +113,20 @@ def _heading_slugs(path: Path) -> set[str]:
     return slugs
 
 
-def test_maintained_document_links_resolve() -> None:
+def test_repository_document_links_resolve() -> None:
     offenders: list[str] = []
     for relative_path in _MAINTAINED_DOCS:
-        source = _REPO_ROOT / relative_path
-        assert source.is_file(), f"Maintained document is missing: {relative_path}"
+        assert (_REPO_ROOT / relative_path).is_file(), (
+            f"Maintained document is missing: {relative_path}"
+        )
+
+    for source in sorted(_REPO_ROOT.rglob("*.md")):
+        if any(
+            part in {".git", ".venv", "bin", "node_modules", "venv"}
+            for part in source.parts
+        ):
+            continue
+        relative_path = str(source.relative_to(_REPO_ROOT))
         text = source.read_text(encoding="utf-8")
         for match in _MARKDOWN_LINK.finditer(text):
             raw_target = match.group(1).strip().strip("<>")
@@ -136,7 +152,111 @@ def test_maintained_document_links_resolve() -> None:
                         f"{target.relative_to(_REPO_ROOT)}"
                     )
 
-    assert not offenders, "Maintained documentation has broken links:\n" + "\n".join(
+    assert not offenders, "Repository documentation has broken links:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_maintained_document_code_paths_resolve() -> None:
+    offenders: list[str] = []
+    for relative_path in _MAINTAINED_DOCS:
+        text = (_REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        for match in _REPOSITORY_PATH_LITERAL.finditer(text):
+            raw_target = match.group(1)
+            target_text = raw_target.split("::", 1)[0].rstrip(".,;:)")
+            if any(char in target_text for char in "*{}<>"):
+                continue
+            if not (_REPO_ROOT / target_text).exists():
+                offenders.append(f"{relative_path}: missing code path: {raw_target}")
+
+    assert not offenders, "Maintained documentation has stale code paths:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_repository_config_samples_load() -> None:
+    from gear_optimizer.core.config import load_config, read_iteration_engine_settings
+
+    config_paths = [
+        _REPO_ROOT / "config.ini",
+        _REPO_ROOT / "config.profile.ini",
+        *sorted((_REPO_ROOT / "configs").rglob("*.ini")),
+    ]
+    offenders: list[str] = []
+    for path in config_paths:
+        try:
+            cfg = load_config(str(path))
+            read_iteration_engine_settings(cfg)
+            if any(cfg.has_option(section, "_extends") for section in cfg.sections()):
+                offenders.append(f"{path.relative_to(_REPO_ROOT)}: unresolved _extends")
+        except Exception as exc:
+            offenders.append(
+                f"{path.relative_to(_REPO_ROOT)}: {type(exc).__name__}: {exc}"
+            )
+
+    assert not offenders, "Repository config samples do not load:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_retired_force_great_options_stay_out_of_configs_and_tools() -> None:
+    retired_config_options = (
+        "ForceGreatsMode",
+        "FG_SolverMode",
+        "ForceGreatsFinder",
+        "FG_SearchRadius",
+    )
+    retired_runtime_state = ("pending_fg_jobs",)
+    offenders: list[str] = []
+
+    config_paths = [
+        _REPO_ROOT / "config.ini",
+        _REPO_ROOT / "config.profile.ini",
+        *sorted((_REPO_ROOT / "configs").rglob("*.ini")),
+    ]
+    for path in config_paths:
+        text = path.read_text(encoding="utf-8", errors="ignore").lower()
+        hits = [token for token in retired_config_options if token.lower() in text]
+        if hits:
+            offenders.append(f"{path.relative_to(_REPO_ROOT)}: {', '.join(hits)}")
+
+    for path in sorted((_REPO_ROOT / "tools").rglob("*.py")):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        hits = [
+            token
+            for token in (*retired_config_options, *retired_runtime_state)
+            if token in text
+        ]
+        if hits:
+            offenders.append(f"{path.relative_to(_REPO_ROOT)}: {', '.join(hits)}")
+
+    assert not offenders, "Retired Force Great controls were reintroduced:\n" + "\n".join(
+        offenders
+    )
+
+
+def test_maintained_tool_entry_points_support_direct_help() -> None:
+    entry_points = (
+        "tools/bench/bench_fg_depth_quick.py",
+        "tools/bench/bench_ga_guardrail.py",
+        "tools/bench/bench_ga_winner_stability.py",
+        "tools/db/smoke_run_and_audit.py",
+    )
+    offenders: list[str] = []
+    for relative_path in entry_points:
+        result = subprocess.run(
+            [sys.executable, relative_path, "--help"],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip().splitlines()
+            detail = stderr[-1] if stderr else f"exit {result.returncode}"
+            offenders.append(f"{relative_path}: {detail}")
+
+    assert not offenders, "Maintained tool entry points do not launch:\n" + "\n".join(
         offenders
     )
 
@@ -242,6 +362,7 @@ def test_non_skyline_compatibility_shims_stay_deleted() -> None:
         "gear_optimizer/solver/gpu_executor_profile.py",
         "gear_optimizer/solver/gpu_profiler.py",
         "gear_optimizer/solver/item_pools.py",
+        "gear_optimizer/solver/marginal_pruning.py",
         "gear_optimizer/solver/taichi_gem/ftff_combos.py",
         "gear_optimizer/solver/taichi_gem/api/gpu_prefetch.py",
         "gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu.py",
@@ -263,7 +384,10 @@ def test_non_skyline_compatibility_shims_stay_deleted() -> None:
         "tests/test_gpu_ga_global_best_consistency.py",
         "tests/test_gpu_ga_ops.py",
         "tests/test_gpu_native_ga_plateau_prune_regression.py",
+        "tests/test_gpu_occupancy_matrix.py",
+        "tools/bench/bench_gpu_occupancy_matrix.py",
         "tools/bench/bench_gpu_native_ga_eval.py",
+        "tools/db/verify_recompute_fix.py",
         "tools/profile/tests/profile_ga.py",
     ]
 

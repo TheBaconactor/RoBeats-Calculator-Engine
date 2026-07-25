@@ -50,7 +50,6 @@ def _write_smoke_config(*, out_path: Path, base_config_path: Path, song: str, di
     cfg.set("IterationEngine", "GA_SearchDepth", "5")
     cfg.set("IterationEngine", "GA_MultiStart", "1")
     cfg.set("IterationEngine", "FG_CandidateLimit", "10")
-    cfg.set("IterationEngine", "FG_SearchRadius", "3")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:

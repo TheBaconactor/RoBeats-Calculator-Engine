@@ -1,5 +1,8 @@
 # ECLIPSE Submission Bundle
 
+Status: archived research snapshot. These artifacts do not describe the current
+production architecture or supported benchmark surface.
+
 Files:
 - `eclipse_report.pdf` - research-style report
 - `eclipse_report.tex` - report source

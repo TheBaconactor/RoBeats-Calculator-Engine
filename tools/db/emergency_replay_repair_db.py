@@ -260,7 +260,7 @@ def _repair_db(db_path: Path, *, write: bool) -> dict[str, int]:
         counts["fg_changed_songs"] = len(fg_changed_songs)
         counts["changed_songs"] = len(base_changed_songs | fg_changed_songs | bad_songs)
         if write and bad_songs:
-            for table in ("pending_fg_jobs", "team_buff_fg_loadouts", "team_buff_loadouts"):
+            for table in ("team_buff_fg_loadouts", "team_buff_loadouts"):
                 if _table_exists(conn, table):
                     conn.executemany(f"DELETE FROM {table} WHERE song_name=?", [(s,) for s in bad_songs])
             conn.executemany("DELETE FROM songs WHERE name=?", [(s,) for s in bad_songs])

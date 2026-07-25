@@ -1,7 +1,7 @@
 """
 Benchmark: FG bundle (real song) wall-time + GPU executor gaps.
 
-Goal: isolate ForceGreatsFinder GPU bundle behavior (no GA) and measure the
+Goal: isolate Force Great response-frontier GPU bundle behavior (no GA) and measure the
 time *between* FG GPU jobs when many FG jobs are queued.
 
 This script:

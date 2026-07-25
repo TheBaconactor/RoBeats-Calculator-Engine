@@ -255,9 +255,10 @@ $$\text{total evaluations} = \prod_{s=1}^{S} (K_s + 1) \times |\text{FT window}|
 
 With a radius of 5, the FT/FF window is $11 \times 11 = 121$ pairs. Combined with 8 sections at cap 5, this gives $121 \times 1{,}679{,}616 \approx 2 \times 10^8$ evaluations.
 
-### Current Mitigations (Brute Force + Caps)
+### Historical Baseline (Brute Force + Caps)
 
-The current implementation mitigates the explosion with hard caps:
+An earlier bounded-search implementation mitigated the explosion with hard
+caps:
 
 | Sections | Per-section caps | Max configs |
 |----------|------------------|-------------|
@@ -267,9 +268,13 @@ The current implementation mitigates the explosion with hard caps:
 | 4+ | 5 per section | $6^S$ |
 | 21+ | — | **bail out** (return baseline, skip FG entirely) |
 
-These caps are heuristic. They discard potentially optimal high-count configurations for songs with many sections. The cap of 5 for 4+ sections is particularly aggressive — it reduces the search space but may miss the true optimum.
+Those caps were heuristic. They could discard optimal high-count
+configurations for songs with many sections; the cap of 5 for 4+ sections was
+particularly aggressive.
 
-Note: in current production, FG evaluation is organized around exact, score-sufficient frontiers (a response-frontier bundle plus exact inner solve). Any remaining bounds are GPU-safety/workload guards, not “human hit sim” style probabilistic simulation.
+Current production FG evaluation uses exact, score-sufficient frontiers: a
+response-frontier bundle plus an exact inner solve. Remaining bounds are
+GPU-safety and workload guards, not probabilistic human-play simulation.
 
 ---
 

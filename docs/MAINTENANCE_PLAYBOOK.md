@@ -49,7 +49,7 @@ Start with an explicit hypothesis and a correctness-preserving baseline.
 Maintained harnesses include:
 
 ```bash
-python tools/bench/bench_gpu_occupancy_matrix.py --help
+python tools/bench/bench_ga_plateau_ab.py --help
 python tools/bench/bench_fg_bundle_real_song.py --help
 python -m tools list
 ```

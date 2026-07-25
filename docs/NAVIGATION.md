@@ -27,6 +27,8 @@ Use this page to find the current owner of a behavior. The
 - GA/decode pipeline: `gear_optimizer/solver/native_inflight_pipeline.py`
 - Force Great materialization:
   `gear_optimizer/solver/native_inflight_pipeline_fg.py`
+- Post-processor process: `gear_optimizer/pipeline/post_processor.py`
+- Asynchronous database writer: `gear_optimizer/app_async_db.py`
 
 ## Solver and exact scoring
 
@@ -37,8 +39,12 @@ Use this page to find the current owner of a behavior. The
 - Exact timing frontier:
   `gear_optimizer/solver/timeline_exact_frontier.py`
 - Timing envelope: `gear_optimizer/solver/timing_envelope.py`
-- Force Great response frontier:
-  `gear_optimizer/solver/fg_response_frontier.py`
+- Force Great planning and replay:
+  `gear_optimizer/solver/fg_response_scoring/`
+- Force Great device response frontier:
+  `gear_optimizer/solver/taichi_gem/force_greats/response_frontier.py`
+- Startup response-frontier cache build:
+  `gear_optimizer/solver/fg_response_frontier_cache_prebuild.py`
 
 ## GPU and Taichi
 
@@ -64,6 +70,7 @@ not directly from kernel internals.
 - Transactional writes: `gear_optimizer/data/database/persistence.py`
 - Leaderboard reads: `gear_optimizer/data/database/leaderboards.py`
 - Schema definition and validation: `gear_optimizer/data/migrations/`
+- Service request isolation: `gear_optimizer/robeatsmeta_service.py`
 
 ## Tools
 

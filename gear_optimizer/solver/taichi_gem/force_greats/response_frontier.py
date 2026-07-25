@@ -828,7 +828,7 @@ def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
 
     Required hardware-safety boundary: on macOS, ``ti.vulkan`` lowers through MoltenVK, which
     has no ``shaderFloat64``, so the FG inner gem-search kernel compiles at f32 there. f32
-    mis-floors the per-note products at score magnitudes (implementation record: 129/4M floor mismatches),
+    mis-floors the per-note products at score magnitudes (parity corpus: 129/4M floor mismatches),
     which flips the razor-thin greats-vs-no-greats argmax (FG gains only ~0.4-0.5% over base)
     and makes the search select a greats-free surface -- whose CPU-f64 rescore equals the base
     score, so the FG winner-gate drops every candidate (FG=0). Route the search to the

@@ -1509,14 +1509,12 @@ def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
             _cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 0)
         ),
         "FG_CandidateLimit": _cfg_get_int(cfg, "IterationEngine", "FG_CandidateLimit", 51),
-        "FG_SearchRadius": _cfg_get_int(cfg, "IterationEngine", "FG_SearchRadius", 1),
     }
     tracked_env = (
         "METAFINDER_CONFIG_PATH",
         "EVOLUTION_DB_PATH",
         "GA_SEED",
         "SONG_REPEATS",
-        "FG_SEARCH_RADIUS",
         "SONG_QUEUE_LIMIT",
         "DEBUG_PROFILE",
         "METAFINDER_DEBUG_PROFILE",
