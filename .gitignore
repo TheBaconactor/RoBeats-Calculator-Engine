@@ -83,13 +83,3 @@ compare_results.json
 .ai-bridge/
 docs/research/
 tools/research/
-
-# User-supplied chart and gear data (see DATA.md; keep Data/README.md)
-Data/Easy/
-Data/Normal/
-Data/Hard/
-Data/Gear/
-Data/exported_game_data.json
-Data/AGENTS.md
-Data/CLAUDE.md
-!Data/README.md

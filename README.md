@@ -16,7 +16,7 @@ Search gear, Minis, gems, fever timing, and Force Great strategies with integer-
 
 </div>
 
-> **Community tool — not affiliated with RoBeats, Roblox, or any game publisher.** Chart and gear data are not shipped in this repository. See [DATA.md](DATA.md) and [Deployment models](#deployment-models) below.
+> **Community tool — not affiliated with RoBeats, Roblox, or any game publisher.** See [DATA.md](DATA.md) and [Deployment models](#deployment-models) below.
 
 > [!IMPORTANT]
 > The optimizer preserves exact integer scoring, floor operations, ordering, ties, witnesses, timing-frontier semantics, and modeled input-engine reachability. The **outer gear/Mini search is a multi-start GPU genetic search**, so a result is the best solution found under the configured search budget—not a proof that no better loadout exists.
@@ -67,7 +67,7 @@ flowchart TB
     GH[Public GitHub main] -->|host polls code| HOST[Host operator machine]
     HOST -->|builds timeline + FG frontiers| PUB[Published revision]
     PUB -->|HTTPS + per-client credentials| CLIENT[Trusted client installs]
-    GH -->|clone + own Data| DIY[Community DIY users]
+    GH -->|clone includes Data| DIY[Community DIY users]
     HOST -->|/songs /optimize| WEB[RoBeatsMeta website]
     HOST -->|evolution.db| WEB
 ```
@@ -87,7 +87,7 @@ The production deployment behind [RoBeatsMeta](https://robeatsmeta.net). **One m
 
 Host-side frontier sync is **disabled** in service mode (`ROBEATSMETA_OPTIMIZER_SERVICE_MODE=1`). Clients never pull raw GitHub for frontiers — they receive the host's published revision.
 
-After OSS, the host continues as today. Point `ROBEATSMETA_FRONTIER_GIT_REMOTE` / `ROBEATSMETA_FRONTIER_GIT_BRANCH` at the public repository; local `Data/` and `evolution.db` stay on the machine and out of git.
+After OSS, the host continues as today. Point `ROBEATSMETA_FRONTIER_GIT_REMOTE` / `ROBEATSMETA_FRONTIER_GIT_BRANCH` at the repository; maintain the canonical `Data/` tree in git and on the machine. Keep `evolution.db` external via `METAFINDER_EVOLUTION_DB`.
 
 ### 2. Trusted clients (GitHub install + hosted sync)
 
@@ -113,13 +113,12 @@ python3 -m gear_optimizer.frontier_auth revoke <client-id>
 
 Transfer the credential file securely (`chmod 600` on POSIX).
 
-### 3. Community DIY users (GitHub clone + your own data)
+### 3. Community DIY users (GitHub clone)
 
 For contributors and independent users who do not participate in the hosted distribution channel.
 
-1. Clone from GitHub and install Python dependencies.
-2. Populate `Data/` with your own charts and gear tables — see [DATA.md](DATA.md).
-3. Copy `config.ini.example` to `config.ini` and run `python main.py`.
+1. Clone from GitHub and install Python dependencies (includes the bundled `Data/` tree).
+2. Copy `config.ini.example` to `config.ini` and run `python main.py`.
 
 **Frontier auth is optional** for this persona. When `bin/frontier_client_credentials.json` is absent, startup skips hosted sync and uses your local checkout and local `Data/` unchanged. You build any required frontiers locally on your own GPU.
 
@@ -148,11 +147,11 @@ python -m pip install -r requirements.txt
 
 Development and test dependencies: `python -m pip install -r requirements-dev.txt`
 
-### Provide data (DIY users)
+### Configure and run
 
-The public repository ships **code only**. If you are a community DIY user, populate `Data/` before your first run — see **[DATA.md](DATA.md)**.
+The repository includes chart and gear data under `Data/`. See **[DATA.md](DATA.md)** for layout details.
 
-Trusted clients receive Data from the host via frontier sync. Host operators maintain Data locally (untracked).
+Trusted clients receive updates from the host via frontier sync. Host operators maintain the canonical `Data/` tree in git and publish through frontier bundles.
 
 ```bash
 cp config.ini.example config.ini
@@ -175,7 +174,7 @@ robeats-song-optimizer/
 ├── tests/                   # CPU, GPU, parity, and regression coverage
 ├── tools/                   # Verification and maintenance tools
 ├── docs/                    # Architecture, math, and implementation records
-├── Data/                    # User-supplied charts and gear (not in git)
+├── Data/                    # Charts and gear (tracked in git)
 ├── config.ini               # Local target selection (copy from config.ini.example)
 ├── evolution.db             # Generated results (not in git)
 ├── bin/                     # Caches, logs, run state (not in git)
@@ -278,7 +277,7 @@ Cold runs compile Numba/Taichi kernels and may build missing exact frontiers. La
 - [`docs/README.md`](docs/README.md) — documentation index
 - [`docs/NAVIGATION.md`](docs/NAVIGATION.md) — file-level code map
 - [`docs/ENGINEERING_PRINCIPLES.md`](docs/ENGINEERING_PRINCIPLES.md) — engineering doctrine
-- [`DATA.md`](DATA.md) — user-supplied data setup
+- [`DATA.md`](DATA.md) — data layout and deployment notes
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution guidelines
 - [`AGENTS.md`](AGENTS.md) — agent and contributor rules
 

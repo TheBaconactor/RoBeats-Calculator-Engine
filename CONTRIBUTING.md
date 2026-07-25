@@ -14,11 +14,8 @@ Behavior or policy changes need an implementation record under `docs/Implementat
 
 ## What not to commit
 
-- Chart files under `Data/Easy`, `Data/Normal`, or `Data/Hard`
 - `evolution.db`, frontier credentials, client registries, or `.env` secrets
 - Generated artifacts under `bin/` or `artifacts/`
-
-See [`DATA.md`](DATA.md) for the user-supplied data contract.
 
 ## License
 
