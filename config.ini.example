@@ -1,0 +1,8 @@
+[CalculateSong]
+; Copy to config.ini and set your target chart.
+; PRODUCTION: song target selection inputs (Song_Name, Difficulty, TargetPrimary, TargetSecondary).
+Song_Name =
+Difficulty =
+TargetPrimary = All
+TargetSecondary = All
+LoopForever = false

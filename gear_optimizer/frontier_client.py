@@ -16,7 +16,11 @@ import requests
 
 from gear_optimizer.core.constants import PATHS
 from gear_optimizer.core.parsing import env_flag, env_str
-from gear_optimizer.frontier_auth import load_client_credentials, signed_request_headers
+from gear_optimizer.frontier_auth import (
+    frontier_credentials_configured,
+    load_client_credentials,
+    signed_request_headers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +361,9 @@ def _sync_scopes(
     code_root: Path | None = None,
     initial_managed_files: set[tuple[str, str]] | None = None,
 ) -> FrontierSyncResult:
+    if not frontier_credentials_configured():
+        logger.info("[FrontierSync] skipped; no frontier credential file configured")
+        return FrontierSyncResult(enabled=False)
     credentials = load_client_credentials()
     base_url = _server_base_url()
     previous_state = _load_state(state_filename)

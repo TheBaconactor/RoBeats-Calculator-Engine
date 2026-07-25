@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from gear_optimizer.frontier_auth import frontier_credentials_configured
 from gear_optimizer.frontier_client import frontier_client_enabled, sync_code_from_server
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,8 @@ def _initial_managed_files(repo_root: Path) -> set[tuple[str, str]]:
 
 def update_client_checkout(repo_root: str | Path | None = None) -> ClientUpdateResult:
     if not frontier_client_enabled():
+        return ClientUpdateResult(enabled=False)
+    if not frontier_credentials_configured():
         return ClientUpdateResult(enabled=False)
     root = (Path(repo_root) if repo_root is not None else Path(__file__).resolve().parents[1]).resolve()
     if not (root / ".git").is_dir() or not (root / "main.py").is_file() or not (root / "gear_optimizer").is_dir():

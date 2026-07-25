@@ -37,9 +37,12 @@ Desktop.ini
 Discord.env
 *.env
 .env
+**/frontier_client_credentials.json
+**/frontier_server_clients.json
 
 # Paths cache (local config)
 paths_cache.json
+bin/paths_cache.json
 
 # IDE/AI tool config (local)
 .claude/
@@ -54,12 +57,13 @@ RoBeatMetaWebsite/
 # RoBeats Rojo project (legacy game code)
 RoBeats-Rojo/
 
-# Local bin folder (logs, temp files, local databases)
+# Local bin folder (logs, temp files, local databases, frontier state)
 bin/
 gear_optimizer/bin/
 
 # Generated results files
 general_meta_results.json
+artifacts/general_meta_results.json
 
 # Local benchmark / run artifacts
 artifacts/
@@ -79,3 +83,13 @@ compare_results.json
 .ai-bridge/
 docs/research/
 tools/research/
+
+# User-supplied chart and gear data (see DATA.md; keep Data/README.md)
+Data/Easy/
+Data/Normal/
+Data/Hard/
+Data/Gear/
+Data/exported_game_data.json
+Data/AGENTS.md
+Data/CLAUDE.md
+!Data/README.md

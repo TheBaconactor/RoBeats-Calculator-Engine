@@ -1,5 +1,7 @@
 # Documentation Index
 
+**RoBeats Song Optimizer** — engineering docs for the GPU-native loadout optimizer (package name `gear_optimizer`, legacy name MetaFinder in some internal paths).
+
 This directory is organized by how docs are used:
 
 - Current references: architecture, schema, math, and runtime behavior.

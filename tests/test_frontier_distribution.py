@@ -406,3 +406,12 @@ def test_prune_stale_artifacts_keeps_current_previous_and_running_commit(monkeyp
     assert not (snapshots / "old-commit").exists()
     assert (snapshots / ".sync" / f"{commit}.json").is_file()
     assert not (snapshots / ".sync" / "old-commit.json").exists()
+
+
+def test_frontier_sync_skipped_without_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from gear_optimizer import frontier_client
+
+    monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", raising=False)
+    monkeypatch.setenv("METAFINDER_FRONTIER_CREDENTIALS_FILE", str(tmp_path / "missing.json"))
+    result = frontier_client.sync_frontiers_from_server()
+    assert result.enabled is False

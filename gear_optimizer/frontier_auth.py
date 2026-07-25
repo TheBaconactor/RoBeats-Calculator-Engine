@@ -38,6 +38,11 @@ def client_credentials_path() -> Path:
     return Path(configured).expanduser() if configured else Path(PATHS.bin_path("frontier_client_credentials.json"))
 
 
+def frontier_credentials_configured(path: str | Path | None = None) -> bool:
+    resolved = Path(path) if path is not None else client_credentials_path()
+    return resolved.is_file()
+
+
 def server_clients_path() -> Path:
     configured = env_str("ROBEATSMETA_FRONTIER_CLIENTS_FILE", "")
     return Path(configured).expanduser() if configured else Path(PATHS.bin_path("frontier_server_clients.json"))
@@ -66,7 +71,8 @@ def load_client_credentials(path: str | Path | None = None) -> FrontierClientCre
     if not resolved.is_file():
         raise FileNotFoundError(
             f"MetaFinder frontier credential file is required: {resolved}. "
-            "Ask the RoBeatsMeta host operator to issue this installation a credential."
+            "Install from GitHub for a standalone setup, or ask the RoBeatsMeta host operator "
+            "to issue a credential for hosted frontier updates."
         )
     _require_private_file(resolved)
     payload = json.loads(resolved.read_text(encoding="utf-8"))
