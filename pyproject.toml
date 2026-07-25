@@ -1,9 +1,11 @@
 [project]
-name = "robeats-metafinder"
+name = "robeats-calculator-engine"
 version = "2.0.0"
-description = "High-performance genetic algorithm solver for optimizing gear and mini loadouts"
+description = "State-of-the-art GPU-native RoBeats calculator with integer-exact score modeling"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+keywords = ["robeats", "optimization", "gpu", "taichi", "numba"]
 dependencies = [
     "numpy==1.26.4",
     "numba==0.59.1",
@@ -13,6 +15,11 @@ dependencies = [
     "python-dotenv==1.2.1",
     "cachetools==6.2.4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/TheBaconactor/RoBeats-Calculator-Engine"
+Repository = "https://github.com/TheBaconactor/RoBeats-Calculator-Engine"
+Issues = "https://github.com/TheBaconactor/RoBeats-Calculator-Engine/issues"
 
 [tool.ruff]
 line-length = 120

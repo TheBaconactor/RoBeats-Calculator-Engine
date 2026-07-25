@@ -1,0 +1,12 @@
+# The lead maintainer owns final review across the repository.
+* @TheBaconactor
+
+# Explicitly list high-risk surfaces for branch-protection readability.
+/gear_optimizer/solver/ @TheBaconactor
+/gear_optimizer/data/ @TheBaconactor
+/gear_optimizer/robeatsmeta_service.py @TheBaconactor
+/Data/ @TheBaconactor
+/.github/ @TheBaconactor
+/GOVERNANCE.md @TheBaconactor
+/MAINTAINERS.md @TheBaconactor
+/SECURITY.md @TheBaconactor

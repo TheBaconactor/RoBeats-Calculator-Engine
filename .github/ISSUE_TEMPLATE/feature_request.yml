@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a focused improvement to the project
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or contributor problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior and why it belongs in this project.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe workarounds or other approaches you considered.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Correctness and performance considerations
+      description: Note any scoring invariants, GPU implications, or validation needed.

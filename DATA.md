@@ -1,6 +1,6 @@
 # Data setup
 
-RoBeats Song Optimizer ships chart files, gear tables, and `exported_game_data.json` in the `Data/` tree. Runtime results (`evolution.db`) and frontier credentials stay local and out of git.
+RoBeats Calculator Engine ships chart files, gear tables, and `exported_game_data.json` in the `Data/` tree. Runtime results (`evolution.db`) and frontier credentials stay local and out of git.
 
 See the root README [Deployment models](README.md#deployment-models) for how each persona uses this data.
 

@@ -1,6 +1,6 @@
 # Documentation Index
 
-**RoBeats Song Optimizer** — engineering docs for the GPU-native loadout optimizer (package name `gear_optimizer`, legacy name MetaFinder in some internal paths).
+**RoBeats Calculator Engine** — engineering docs for the GPU-native calculator (package name `gear_optimizer`, legacy name MetaFinder in some internal paths).
 
 This directory is organized by how docs are used:
 
@@ -15,6 +15,8 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 ## Current Reference
 
 - [ENGINEERING_PRINCIPLES.md](ENGINEERING_PRINCIPLES.md) - repo-wide engineering doctrine, harness layout, and root-cause fix policy.
+- [COMMUNITY_IMPACT.md](COMMUNITY_IMPACT.md) - production role, repository scale, and reproducible impact metrics.
+- [BRAND.md](BRAND.md) - public brand position and asset guidance.
 - [HARNESS_ENGINEERING.md](HARNESS_ENGINEERING.md) - agent-first harness practices, feedback loops, and mechanical enforcement doctrine.
 - [ARCHITECTURE.md](ARCHITECTURE.md) - system overview and package boundaries.
 - [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) - SQLite schema and persistence layout.
