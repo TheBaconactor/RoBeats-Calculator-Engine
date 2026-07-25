@@ -597,8 +597,35 @@ def _custom_item(raw: Any, *, columns: dict[str, str], types: tuple[str, ...], s
     return item
 
 
-def _custom_pool_for_request(request: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    pool: dict[str, list[dict[str, Any]]] = {"gear": [], "minis": []}
+_MAX_EXCLUDED = {"excludeGear": 400, "excludeMinis": 200}
+# Catalog names are only ever COMPARED against CSV cells here, never written into one, so the rule is
+# just "printable, no control chars / quotes / newlines" — real names contain '*', ',', unicode, etc.
+_EXCLUDED_NAME_RE = re.compile(r'^[^\x00-\x1f\x7f"\r\n]{1,64}$')
+
+
+def _excluded_names(request: dict[str, Any], field: str) -> list[str]:
+    raw = request.get(field)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise RequestError(f"{field} must be a list")
+    if len(raw) > _MAX_EXCLUDED[field]:
+        raise RequestError(f"{field} exceeds {_MAX_EXCLUDED[field]} items")
+    out: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            raise RequestError(f"{field} entries must be strings")
+        name = entry.strip()
+        if not name:
+            continue
+        if not _EXCLUDED_NAME_RE.match(name):
+            raise RequestError(f"invalid excluded item name {name!r}")
+        out.append(name)
+    return out
+
+
+def _custom_pool_for_request(request: dict[str, Any]) -> dict[str, list[Any]]:
+    pool: dict[str, list[Any]] = {"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []}
     for field_name, key, columns, types in (
         ("customGear", "gear", _CUSTOM_GEAR_COLUMNS, _CUSTOM_GEAR_SLOTS),
         ("customMinis", "minis", _CUSTOM_MINI_COLUMNS, _CUSTOM_MINI_TYPES),
@@ -612,7 +639,42 @@ def _custom_pool_for_request(request: dict[str, Any]) -> dict[str, list[dict[str
             raise RequestError(f"{field_name} exceeds {_MAX_CUSTOM_POOL_ITEMS} items")
         seen: set[str] = set()
         pool[key] = [_custom_item(entry, columns=columns, types=types, seen=seen) for entry in raw]
+    pool["excludeGear"] = _excluded_names(request, "excludeGear")
+    pool["excludeMinis"] = _excluded_names(request, "excludeMinis")
     return pool
+
+
+def _remove_excluded_rows(gear_dir: Path, pool: dict[str, list[Any]]) -> None:
+    """Delete the caller's excluded catalog rows from the per-request CSV copies.
+
+    Rewrites each file without those rows, so the pipeline simply never discovers them — the same
+    mechanism as appending custom rows, in reverse. Names are matched case-insensitively; an
+    unknown name is a no-op (the catalog moves, a stale exclusion should not fail a solve).
+    """
+    import csv
+
+    for filename, names, name_column in (
+        ("Gears.csv", pool["excludeGear"], "Gear Name"),
+        ("Minis.csv", pool["excludeMinis"], "Mini Name"),
+    ):
+        if not names:
+            continue
+        drop = {str(n).strip().casefold() for n in names}
+        path = gear_dir / filename
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.reader(handle))
+        if not rows:
+            continue
+        header = [h.strip() for h in rows[0]]
+        name_index = header.index(name_column)
+        kept = [rows[0]] + [
+            row for row in rows[1:]
+            if not (len(row) > name_index and str(row[name_index]).strip().casefold() in drop)
+        ]
+        if len(kept) == len(rows):
+            continue
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            csv.writer(handle).writerows(kept)
 
 
 def _append_custom_pool_rows(gear_dir: Path, pool: dict[str, list[dict[str, Any]]]) -> None:
@@ -685,8 +747,9 @@ def _solve_isolated(
     data_dir = work / "Data"
     (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
     shutil.copytree(GEAR_DIR, data_dir / "Gear")  # real files; discovery does not follow symlinks
-    if custom_pool and (custom_pool["gear"] or custom_pool["minis"]):
+    if custom_pool and any(custom_pool.values()):
         # Per-request copies only — the catalog Data/Gear CSVs are never touched.
+        _remove_excluded_rows(data_dir / "Gear", custom_pool)
         _append_custom_pool_rows(data_dir / "Gear", custom_pool)
     (data_dir / "Hard" / f"{job}.txt").write_text(
         _normalize_chart(chart_text, result_song_name, _normalize_timing_mode(timing_mode)),

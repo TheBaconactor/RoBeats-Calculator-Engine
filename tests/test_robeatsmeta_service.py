@@ -603,3 +603,70 @@ def test_custom_pool_refuses_to_redefine_a_catalog_item(tmp_path):
     pool = service._custom_pool_for_request({"customGear": [dict(_CUSTOM_GEAR, name=taken)]})
     with pytest.raises(service.RequestError):
         service._append_custom_pool_rows(work, pool)
+
+
+@pytest.mark.parametrize(
+    "request_payload",
+    [
+        pytest.param({"excludeGear": "Hat"}, id="not-a-list"),
+        pytest.param({"excludeGear": [123]}, id="not-a-string"),
+        pytest.param({"excludeGear": ["a\nb"]}, id="newline-in-name"),
+        pytest.param({"excludeGear": ['a"b']}, id="quote-in-name"),
+        pytest.param({"excludeGear": ["x" * 65]}, id="name-too-long"),
+        pytest.param({"excludeGear": [f"Hat {i}" for i in range(401)]}, id="over-gear-cap"),
+        pytest.param({"excludeMinis": [f"Mini {i}" for i in range(201)]}, id="over-mini-cap"),
+    ],
+)
+def test_excluded_names_reject_invalid_requests(request_payload):
+    with pytest.raises(service.RequestError):
+        service._custom_pool_for_request(request_payload)
+
+
+def test_excluded_names_accept_real_catalog_names_with_punctuation():
+    # Real names carry characters a USER may not invent ("(The) Red * Room", commas, unicode).
+    pool = service._custom_pool_for_request(
+        {"excludeGear": ["Juggernaut's Goggles"], "excludeMinis": ["(The) Red * Room", "t+pazolite"]}
+    )
+    assert pool["excludeGear"] == ["Juggernaut's Goggles"]
+    assert pool["excludeMinis"] == ["(The) Red * Room", "t+pazolite"]
+
+
+def test_excluded_rows_leave_the_request_copy_without_them_and_never_the_catalog(tmp_path):
+    from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
+
+    catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
+    before = (catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()
+    gears_before = parse_gear_rows(str(catalog / "Gears.csv"))
+    minis_before = parse_mini_rows(str(catalog / "Minis.csv"))
+    drop_gear = [g["Name"] for g in gears_before[:3]]
+    drop_mini = [m["Name"] for m in minis_before[:2]]
+
+    work = tmp_path / "Gear"
+    shutil.copytree(catalog, work)
+    pool = service._custom_pool_for_request(
+        {"customGear": [_CUSTOM_GEAR], "excludeGear": drop_gear, "excludeMinis": drop_mini}
+    )
+    service._remove_excluded_rows(work, pool)
+    service._append_custom_pool_rows(work, pool)
+
+    gears_after = parse_gear_rows(str(work / "Gears.csv"))
+    minis_after = parse_mini_rows(str(work / "Minis.csv"))
+    assert {g["Name"] for g in gears_after}.isdisjoint(drop_gear)
+    assert {m["Name"] for m in minis_after}.isdisjoint(drop_mini)
+    # exactly the excluded rows left, and the custom one arrived
+    assert len(gears_after) == len(gears_before) - len(drop_gear) + 1
+    assert len(minis_after) == len(minis_before) - len(drop_mini)
+    assert _CUSTOM_GEAR["name"] in {g["Name"] for g in gears_after}
+    assert ((catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()) == before
+
+
+def test_excluding_an_unknown_name_is_a_no_op(tmp_path):
+    from gear_optimizer.data.csv_parser import parse_gear_rows
+
+    catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
+    work = tmp_path / "Gear"
+    shutil.copytree(catalog, work)
+    pool = service._custom_pool_for_request({"excludeGear": ["No Such Gear At All"]})
+    service._remove_excluded_rows(work, pool)
+    # A stale exclusion (catalog moved on) must not fail the solve or drop anything.
+    assert len(parse_gear_rows(str(work / "Gears.csv"))) == len(parse_gear_rows(str(catalog / "Gears.csv")))
