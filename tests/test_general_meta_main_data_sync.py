@@ -312,4 +312,4 @@ def test_checked_in_mini_song_targets_resolve_to_song_headers() -> None:
         linked_count += len(targets)
 
     assert len(rows) == 90
-    assert linked_count == 2737
+    assert linked_count == 2855
