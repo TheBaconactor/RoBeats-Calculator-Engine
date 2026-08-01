@@ -448,6 +448,31 @@ class FrontierServerMaintainer:
         self._last_commit = ""
         self._initialized = False
 
+    def _adopt_current_publication(self, commit: str, data_revision: str) -> bool:
+        manifest_body = self.state.manifest_bytes()
+        if manifest_body is None:
+            return False
+        try:
+            manifest = json.loads(manifest_body)
+        except json.JSONDecodeError:
+            return False
+        if (
+            not isinstance(manifest, dict)
+            or str(manifest.get("code_revision") or "") != commit
+            or str(manifest.get("data_revision") or "") != data_revision
+        ):
+            return False
+        snapshot = source_snapshot_root() / commit
+        data_root = snapshot / "Data"
+        if not data_root.is_dir() or not (snapshot / "gear_optimizer").is_dir():
+            return False
+        if self.publication_ready is not None:
+            self.publication_ready(data_root)
+        self._last_commit = commit
+        self._initialized = True
+        logger.info("adopted completed frontier publication for revision %s", commit)
+        return True
+
     def _remote_commit(self) -> tuple[str, str]:
         try:
             _git(
@@ -512,6 +537,8 @@ class FrontierServerMaintainer:
             self._stop.set()
             if self.restart_requested is not None:
                 self.restart_requested(commit)
+            return False
+        if not self._initialized and self._adopt_current_publication(commit, data_revision):
             return False
         if self._initialized and commit == self._last_commit:
             return False

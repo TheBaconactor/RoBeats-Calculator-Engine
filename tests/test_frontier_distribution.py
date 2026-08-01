@@ -360,6 +360,58 @@ def test_server_checkout_installs_only_fast_forward_clean_updates(tmp_path: Path
     assert not _install_server_checkout(repo, second)
 
 
+def test_maintainer_adopts_matching_publication_without_catalog_prebuild(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from gear_optimizer import frontier_server
+    from gear_optimizer.frontier_server import FrontierServerMaintainer
+
+    repo = tmp_path / "server"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "main.py").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "main.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "one"], cwd=repo, check=True, capture_output=True)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    data_revision = "d" * 40
+    snapshots = tmp_path / "snapshots"
+    data_root = snapshots / commit / "Data"
+    data_root.mkdir(parents=True)
+    (snapshots / commit / "gear_optimizer").mkdir()
+    monkeypatch.setattr(frontier_server, "source_snapshot_root", lambda: snapshots)
+
+    class _State:
+        @staticmethod
+        def manifest_bytes():
+            return json.dumps(
+                {"code_revision": commit, "data_revision": data_revision}
+            ).encode()
+
+    activated: list[Path] = []
+    maintainer = FrontierServerMaintainer(
+        repo_root=repo,
+        timeline_cache_root=tmp_path / "timeline",
+        fg_cache_root=tmp_path / "fg",
+        state=_State(),  # type: ignore[arg-type]
+        prebuild=lambda _data: pytest.fail("matching publication must not be rebuilt"),
+        publication_ready=activated.append,
+    )
+    maintainer._remote_commit = lambda: (commit, data_revision)  # type: ignore[method-assign]
+
+    assert not maintainer.run_once()
+    assert activated == [data_root]
+    assert maintainer._initialized
+    assert maintainer._last_commit == commit
+
+
 def test_prune_stale_artifacts_keeps_current_previous_and_running_commit(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer import frontier_server
     from gear_optimizer.frontier_server import FrontierDistributionState, FrontierServerMaintainer

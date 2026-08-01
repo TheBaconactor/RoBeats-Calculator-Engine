@@ -24,7 +24,11 @@ from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_int, env_str
 from gear_optimizer.data.database import get_best_loadouts
 from gear_optimizer.frontier_auth import FrontierRequestAuthenticator
-from gear_optimizer.frontier_server import FrontierDistributionState, FrontierServerMaintainer
+from gear_optimizer.frontier_server import (
+    FrontierDistributionState,
+    FrontierServerMaintainer,
+    source_snapshot_root,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +364,28 @@ def _activate_published_data(data_root: Path) -> None:
         _SERVICE_DRAINING_FOR_UPDATE = False
         _admission.notify_all()
     _AUTHORITATIVE_PUBLICATION_READY.set()
+
+
+def _activate_last_complete_publication(
+    state: FrontierDistributionState,
+    *,
+    snapshots_root: Path | None = None,
+) -> bool:
+    manifest_body = state.manifest_bytes()
+    if manifest_body is None:
+        return False
+    try:
+        manifest = json.loads(manifest_body)
+        code_revision = str(manifest.get("code_revision") or "")
+        if re.fullmatch(r"[0-9a-f]{40,64}", code_revision) is None:
+            return False
+        data_root = (snapshots_root or source_snapshot_root()) / code_revision / "Data"
+        _activate_published_data(data_root)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, RuntimeError):
+        logger.warning("last complete frontier publication could not be activated", exc_info=True)
+        return False
+    logger.info("activated last complete frontier publication %s at startup", code_revision)
+    return True
 
 
 def _prepare_server_code_update() -> None:
@@ -1018,6 +1044,7 @@ def main(argv: list[str] | None = None) -> int:
     shutil.rmtree(_service_run_root(), ignore_errors=True)
     server = ThreadingHTTPServer((args.host, int(args.port)), RoBeatsMetaServiceHandler)
     server.daemon_threads = True
+    _activate_last_complete_publication(_FRONTIER_DISTRIBUTION)
     restart_revision: list[str] = []
     serving = threading.Event()
 

@@ -65,6 +65,26 @@ def test_completed_publication_becomes_the_service_data_source(data_root):
     assert service.GEAR_DIR == (published / "Gear").resolve()
 
 
+def test_last_complete_publication_is_active_during_restart(data_root):
+    code_revision = "a" * 40
+    published = data_root / "snapshots" / code_revision / "Data"
+    (published / "Gear").mkdir(parents=True)
+
+    class _Distribution:
+        @staticmethod
+        def manifest_bytes():
+            return f'{{"code_revision":"{code_revision}"}}'.encode()
+
+    restored = service._activate_last_complete_publication(
+        _Distribution(),  # type: ignore[arg-type]
+        snapshots_root=data_root / "snapshots",
+    )
+
+    assert restored is True
+    assert service._AUTHORITATIVE_PUBLICATION_READY.is_set()
+    assert service.DATA_ROOT == published.resolve()
+
+
 def test_api_catalog_uses_configured_external_song_library(data_root, monkeypatch):
     _write_chart(data_root, "Hard", "Private Calculator Chart")
     reference_data = data_root / "ReferenceClient" / "Data"
@@ -123,6 +143,11 @@ def test_service_starts_frontier_server_maintenance(monkeypatch):
 
     monkeypatch.setattr(service, "ThreadingHTTPServer", _Server)
     monkeypatch.setattr(service.threading, "Thread", _Thread)
+    monkeypatch.setattr(
+        service,
+        "_activate_last_complete_publication",
+        lambda _state: calls.append("restore") or True,
+    )
 
     class _Maintainer:
         def __init__(self, **_kwargs):
@@ -138,7 +163,7 @@ def test_service_starts_frontier_server_maintenance(monkeypatch):
 
     assert service.main(["--host", "127.0.0.1", "--port", "0"]) == 0
 
-    assert calls == ["init", "maintain", "serve", "stop", "close"]
+    assert calls == ["restore", "init", "maintain", "serve", "stop", "close"]
 
 
 def test_find_official_chart_exact_match(data_root):

@@ -69,6 +69,7 @@ artifacts/general_meta_results.json
 
 # Local benchmark / run artifacts
 artifacts/
+artifacts
 tmp_dbg/
 analysis.txt
 tmp_general_meta_debug*.db*
@@ -77,6 +78,7 @@ run_*.log
 
 # Local scratch/profiling DBs, tool state, and ad-hoc validation output (never checked in)
 .calc/
+.calc
 .reasonix/
 compare_results.json
 

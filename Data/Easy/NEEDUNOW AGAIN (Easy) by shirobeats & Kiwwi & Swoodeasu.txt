@@ -7,7 +7,7 @@ Primary Color	Rush
 Secondary Color	Beat
 Cover Image ID	93144738037167
 Audio Asset ID	rbxassetid://103996932208994
-Audio File	N/A
+Audio File	103996932208994.ogg
 Last Note Time	131.976
 Total Notes	414
 Fever Fill	119
