@@ -128,6 +128,61 @@ def _read_manifest(path: Path) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _server_code_changed(repo_root: Path, before: str, after: str) -> bool:
+    """Return whether a fetched commit changes anything shipped in the code scope."""
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            before,
+            after,
+            "--",
+            ".",
+            ":(exclude)Data/**",
+            ":(exclude)config.ini",
+        ],
+        cwd=repo_root,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode == 0:
+        return False
+    if result.returncode == 1:
+        return True
+    raise RuntimeError(f"Git could not compare server code revisions: {result.stderr.strip()}")
+
+
+def _changed_chart_paths(repo_root: Path, before: str, after: str, data_root: Path) -> tuple[Path, ...] | None:
+    """Return an incremental chart set, or None when a full cache build is required."""
+    result = subprocess.run(
+        ["git", "diff", "--no-renames", "--name-only", "-z", before, after, "--", "Data"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    )
+    relative_paths = [item.decode("utf-8") for item in result.stdout.split(b"\0") if item]
+    if not relative_paths:
+        return None
+    charts: list[Path] = []
+    for relative in relative_paths:
+        parsed = PurePosixPath(relative)
+        if (
+            len(parsed.parts) != 3
+            or parsed.parts[0] != "Data"
+            or parsed.parts[1] not in {"Easy", "Normal", "Hard"}
+            or parsed.suffix != ".txt"
+        ):
+            return None
+        chart = data_root.joinpath(*parsed.parts[1:])
+        if not chart.is_file():
+            return None
+        charts.append(chart)
+    return tuple(sorted(charts, key=lambda item: item.as_posix()))
+
+
 def _write_bundle(path: Path, files: list[tuple[dict, Path]]) -> None:
     with tarfile.open(path, "w:gz", compresslevel=6) as archive:
         for entry, source in files:
@@ -424,7 +479,7 @@ class FrontierServerMaintainer:
         timeline_cache_root: str | Path,
         fg_cache_root: str | Path,
         state: FrontierDistributionState,
-        prebuild: Callable[[Path], dict[str, set[str]]],
+        prebuild: Callable[[Path, tuple[Path, ...] | None], dict[str, set[str]]],
         restart_requested: Callable[[str], None] | None = None,
         publication_ready: Callable[[Path], None] | None = None,
         prepare_code_update: Callable[[], None] | None = None,
@@ -524,22 +579,25 @@ class FrontierServerMaintainer:
     def run_once(self) -> bool:
         commit, data_revision = self._remote_commit()
         if commit != self._runtime_commit:
-            if self.prepare_code_update is not None:
-                self.prepare_code_update()
-            try:
-                checkout_updated = _install_server_checkout(self.repo_root, commit)
-            except Exception:
-                if self.code_update_aborted is not None:
-                    self.code_update_aborted()
-                raise
-            if checkout_updated:
-                logger.info("installed MetaFinder server code revision %s", commit)
-            logger.info("restarting into MetaFinder server code revision %s before prebuild", commit)
-            self._stop.set()
-            self._wake.set()
-            if self.restart_requested is not None:
-                self.restart_requested(commit)
-            return False
+            if _server_code_changed(self.repo_root, self._runtime_commit, commit):
+                if self.prepare_code_update is not None:
+                    self.prepare_code_update()
+                try:
+                    checkout_updated = _install_server_checkout(self.repo_root, commit)
+                except Exception:
+                    if self.code_update_aborted is not None:
+                        self.code_update_aborted()
+                    raise
+                if checkout_updated:
+                    logger.info("installed MetaFinder server code revision %s", commit)
+                logger.info("restarting into MetaFinder server code revision %s before prebuild", commit)
+                self._stop.set()
+                self._wake.set()
+                if self.restart_requested is not None:
+                    self.restart_requested(commit)
+                return False
+            logger.info("processing Data-only MetaFinder revision %s without restarting service", commit)
+            self._runtime_commit = commit
         if not self._initialized and self._adopt_current_publication(commit, data_revision):
             return False
         if self._initialized and commit == self._last_commit:
@@ -550,6 +608,11 @@ class FrontierServerMaintainer:
                 shutil.rmtree(snapshot)
             _extract_repository_snapshot(self.repo_root, commit, snapshot)
         data_root = snapshot / "Data"
+        changed_charts = (
+            _changed_chart_paths(self.repo_root, self._last_commit, commit, data_root)
+            if self._initialized and self._last_commit
+            else None
+        )
         prior_payload = _read_manifest(self.state.root / "current.json") or {}
         prior_revision = str(prior_payload.get("revision") or "")
         sync_exported_game_data(
@@ -561,7 +624,7 @@ class FrontierServerMaintainer:
             ),
             force=True,
         )
-        cache_allowlist = self.prebuild(data_root)
+        cache_allowlist = self.prebuild(data_root, changed_charts)
         publication = build_publication(
             code_root=snapshot,
             data_root=data_root,

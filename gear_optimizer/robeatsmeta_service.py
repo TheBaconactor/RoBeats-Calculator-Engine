@@ -208,7 +208,10 @@ def _release_job_solve(job: str, state: _InFlightSolve) -> None:
             del _INFLIGHT_SOLVES[job]
 
 
-def _prebuild_frontier_caches(data_root: Path) -> dict[str, set[str]]:
+def _prebuild_frontier_caches(
+    data_root: Path,
+    changed_charts: tuple[Path, ...] | None = None,
+) -> dict[str, set[str]]:
     """Build every missing canonical cache before a Data revision becomes downloadable."""
     import numpy as np
 
@@ -220,10 +223,14 @@ def _prebuild_frontier_caches(data_root: Path) -> dict[str, set[str]]:
     stats_path = data_root / "Gear" / "Stats.txt"
     stats_table = read_table(str(stats_path))
     ref_arrays = build_ref_arrays_from_stats(stats_table, dtype=np.float32)
-    song_paths = tuple(
-        str(chart)
-        for difficulty in DIFFICULTIES
-        for chart in sorted((data_root / difficulty).glob("*.txt"))
+    song_paths = (
+        tuple(str(chart) for chart in changed_charts)
+        if changed_charts is not None
+        else tuple(
+            str(chart)
+            for difficulty in DIFFICULTIES
+            for chart in sorted((data_root / difficulty).glob("*.txt"))
+        )
     )
     if not song_paths:
         raise RuntimeError(f"frontier server Data revision has no song charts: {data_root}")
@@ -274,13 +281,34 @@ def _prebuild_frontier_caches(data_root: Path) -> dict[str, set[str]]:
         stat_keys=all_response_stat_keys(),
         persist_validated_entries=False,
     )
-    fg_bundles = recorded_files(fg_plan, fg_manifest_path(), _FG_RESPONSE_FRONTIER_CACHE_DIR)
+    fg_bundles = recorded_files(
+        fg_plan,
+        fg_manifest_path(),
+        _FG_RESPONSE_FRONTIER_CACHE_DIR,
+    )
     fg_files = set(fg_bundles)
     for bundle_name in fg_bundles:
         for sidecar in _surface_sidecar_paths(_FG_RESPONSE_FRONTIER_CACHE_DIR / bundle_name):
             if not sidecar.is_file():
                 raise RuntimeError(f"FG frontier bundle is missing a sidecar: {sidecar}")
             fg_files.add(sidecar.name)
+    if changed_charts is not None:
+        previous_body = _FRONTIER_DISTRIBUTION.manifest_bytes()
+        previous = json.loads(previous_body) if previous_body is not None else None
+        if not isinstance(previous, dict):
+            raise RuntimeError("incremental frontier build requires the active complete publication")
+        for bundle in previous.get("bundles", []):
+            if not isinstance(bundle, dict):
+                continue
+            for entry in bundle.get("files", []):
+                if not isinstance(entry, dict):
+                    continue
+                scope = str(entry.get("scope") or "")
+                path = str(entry.get("path") or "")
+                if scope == "timeline" and path:
+                    timeline_files.add(path)
+                elif scope == "fg" and path:
+                    fg_files.add(path)
     return {"timeline": timeline_files, "fg": fg_files}
 
 

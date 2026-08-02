@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tarfile
 import threading
@@ -348,7 +349,7 @@ def test_server_checkout_installs_only_fast_forward_clean_updates(tmp_path: Path
         timeline_cache_root=tmp_path / "timeline",
         fg_cache_root=tmp_path / "fg",
         state=FrontierDistributionState(tmp_path / "publications"),
-        prebuild=lambda _data: events.append("prebuild") or {},
+        prebuild=lambda _data, _charts: events.append("prebuild") or {},
         prepare_code_update=lambda: events.append("prepare"),
         restart_requested=lambda _commit: events.append("restart"),
     )
@@ -358,6 +359,57 @@ def test_server_checkout_installs_only_fast_forward_clean_updates(tmp_path: Path
     assert tracked.read_text(encoding="utf-8") == "two\n"
     assert events == ["prepare", "restart"]
     assert not _install_server_checkout(repo, second)
+
+
+def test_data_only_revision_prebuilds_only_changed_charts_without_restart(monkeypatch, tmp_path: Path) -> None:
+    from gear_optimizer import frontier_server
+    from gear_optimizer.frontier_server import FrontierDistributionState, FrontierServerMaintainer
+
+    repo = tmp_path / "server"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "Data" / "Normal").mkdir(parents=True)
+    (repo / "main.py").write_text("one\n", encoding="utf-8")
+    (repo / "Data" / "Normal" / "Old Song.txt").write_text("old\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (repo / "Data" / "Normal" / "New Song.txt").write_text("new\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "song"], cwd=repo, check=True, capture_output=True)
+    second = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    snapshots = tmp_path / "snapshots"
+    snapshot = snapshots / second
+    shutil.copytree(repo / "Data", snapshot / "Data")
+    (snapshot / "main.py").write_text("one\n", encoding="utf-8")
+    monkeypatch.setattr(frontier_server, "source_snapshot_root", lambda: snapshots)
+    monkeypatch.setattr(frontier_server, "sync_exported_game_data", lambda **_kwargs: None)
+
+    calls: list[tuple[Path, ...] | None] = []
+    (tmp_path / "timeline").mkdir()
+    (tmp_path / "fg").mkdir()
+    maintainer = FrontierServerMaintainer(
+        repo_root=repo,
+        timeline_cache_root=tmp_path / "timeline",
+        fg_cache_root=tmp_path / "fg",
+        state=FrontierDistributionState(tmp_path / "publications"),
+        prebuild=lambda _data, charts: calls.append(charts) or {},
+        restart_requested=lambda _commit: pytest.fail("Data-only revision must not restart the service"),
+    )
+    maintainer._runtime_commit = first
+    maintainer._last_commit = first
+    maintainer._initialized = True
+    maintainer._remote_commit = lambda: (second, "d" * 40)  # type: ignore[method-assign]
+
+    assert maintainer.run_once()
+    assert maintainer._runtime_commit == second
+    assert calls == [(snapshot / "Data" / "Normal" / "New Song.txt",)]
 
 
 def test_maintainer_refresh_request_wakes_poll_wait(tmp_path: Path) -> None:
@@ -376,7 +428,7 @@ def test_maintainer_refresh_request_wakes_poll_wait(tmp_path: Path) -> None:
         timeline_cache_root=tmp_path / "timeline",
         fg_cache_root=tmp_path / "fg",
         state=FrontierDistributionState(tmp_path / "publications"),
-        prebuild=lambda _data: {},
+        prebuild=lambda _data, _charts: {},
     )
 
     assert not maintainer._wake.is_set()
@@ -425,7 +477,7 @@ def test_maintainer_adopts_matching_publication_without_catalog_prebuild(
         timeline_cache_root=tmp_path / "timeline",
         fg_cache_root=tmp_path / "fg",
         state=_State(),  # type: ignore[arg-type]
-        prebuild=lambda _data: pytest.fail("matching publication must not be rebuilt"),
+        prebuild=lambda _data, _charts: pytest.fail("matching publication must not be rebuilt"),
         publication_ready=activated.append,
     )
     maintainer._remote_commit = lambda: (commit, data_revision)  # type: ignore[method-assign]
@@ -472,7 +524,7 @@ def test_prune_stale_artifacts_keeps_current_previous_and_running_commit(monkeyp
         timeline_cache_root=tmp_path / "timeline",
         fg_cache_root=tmp_path / "fg",
         state=FrontierDistributionState(publications),
-        prebuild=lambda _data: {},
+        prebuild=lambda _data, _charts: {},
     )
     maintainer._prune_stale_artifacts({keep_current, keep_previous}, commit)
 
