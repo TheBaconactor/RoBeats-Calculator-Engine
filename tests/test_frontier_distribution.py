@@ -488,6 +488,67 @@ def test_maintainer_adopts_matching_publication_without_catalog_prebuild(
     assert maintainer._last_commit == commit
 
 
+def test_cache_neutral_code_revision_reuses_complete_publication(monkeypatch, tmp_path: Path) -> None:
+    from gear_optimizer import frontier_server
+    from gear_optimizer.frontier_server import FrontierDistributionState, FrontierServerMaintainer
+
+    repo = tmp_path / "server"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "gear_optimizer").mkdir()
+    (repo / "Data" / "Normal").mkdir(parents=True)
+    (repo / "gear_optimizer" / "frontier_server.py").write_text("one\n", encoding="utf-8")
+    (repo / "Data" / "Normal" / "Song.txt").write_text("chart\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (repo / "gear_optimizer" / "frontier_server.py").write_text("two\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-am", "service"], cwd=repo, check=True, capture_output=True)
+    second = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    snapshots = tmp_path / "snapshots"
+    snapshot = snapshots / second
+    shutil.copytree(repo / "Data", snapshot / "Data")
+    shutil.copytree(repo / "gear_optimizer", snapshot / "gear_optimizer")
+    monkeypatch.setattr(frontier_server, "source_snapshot_root", lambda: snapshots)
+    monkeypatch.setattr(frontier_server, "sync_exported_game_data", lambda **_kwargs: None)
+
+    publications = tmp_path / "publications"
+    state = FrontierDistributionState(publications)
+    manifest = {
+        "code_revision": first,
+        "data_revision": "d" * 40,
+        "bundles": [
+            {"files": [{"scope": "timeline", "path": "aa.npz"}]},
+            {"files": [{"scope": "fg", "path": "bb.npz"}]},
+        ],
+    }
+    state.manifest_bytes = lambda: json.dumps(manifest).encode()  # type: ignore[method-assign]
+    installed: list[Path] = []
+    state.install = installed.append  # type: ignore[method-assign]
+    (tmp_path / "timeline").mkdir()
+    (tmp_path / "timeline" / "aa.npz").write_bytes(b"timeline")
+    (tmp_path / "fg").mkdir()
+    (tmp_path / "fg" / "bb.npz").write_bytes(b"fg")
+
+    maintainer = FrontierServerMaintainer(
+        repo_root=repo,
+        timeline_cache_root=tmp_path / "timeline",
+        fg_cache_root=tmp_path / "fg",
+        state=state,
+        prebuild=lambda _data, _charts: pytest.fail("cache-neutral code must reuse active caches"),
+    )
+    maintainer._remote_commit = lambda: (second, "d" * 40)  # type: ignore[method-assign]
+
+    assert maintainer.run_once()
+    assert len(installed) == 1
+
+
 def test_prune_stale_artifacts_keeps_current_previous_and_running_commit(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer import frontier_server
     from gear_optimizer.frontier_server import FrontierDistributionState, FrontierServerMaintainer

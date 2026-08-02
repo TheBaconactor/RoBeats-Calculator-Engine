@@ -183,6 +183,46 @@ def _changed_chart_paths(repo_root: Path, before: str, after: str, data_root: Pa
     return tuple(sorted(charts, key=lambda item: item.as_posix()))
 
 
+def _cache_implementation_changed(repo_root: Path, before: str, after: str) -> bool:
+    """Return whether a code-only deployment can change canonical frontier bytes."""
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "-z", before, after],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+    )
+    neutral_files = {
+        "gear_optimizer/frontier_server.py",
+        "gear_optimizer/robeatsmeta_service.py",
+    }
+    neutral_prefixes = (".github/", "docs/", "tests/")
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
+            continue
+        relative = raw.decode("utf-8")
+        if relative in neutral_files or relative.startswith(neutral_prefixes):
+            continue
+        return True
+    return False
+
+
+def _publication_cache_allowlist(manifest: dict) -> dict[str, set[str]]:
+    allowlist = {"timeline": set(), "fg": set()}
+    for bundle in manifest.get("bundles", []):
+        if not isinstance(bundle, dict):
+            continue
+        for entry in bundle.get("files", []):
+            if not isinstance(entry, dict):
+                continue
+            scope = str(entry.get("scope") or "")
+            path = str(entry.get("path") or "")
+            if scope in allowlist and path:
+                allowlist[scope].add(path)
+    if not allowlist["timeline"] or not allowlist["fg"]:
+        raise RuntimeError("active frontier publication has no reusable canonical caches")
+    return allowlist
+
+
 def _write_bundle(path: Path, files: list[tuple[dict, Path]]) -> None:
     with tarfile.open(path, "w:gz", compresslevel=6) as archive:
         for entry, source in files:
@@ -624,7 +664,21 @@ class FrontierServerMaintainer:
             ),
             force=True,
         )
-        cache_allowlist = self.prebuild(data_root, changed_charts)
+        active_manifest_body = self.state.manifest_bytes()
+        active_manifest = json.loads(active_manifest_body) if active_manifest_body is not None else None
+        prior_code_revision = str(active_manifest.get("code_revision") or "") if isinstance(active_manifest, dict) else ""
+        reuse_active_caches = bool(
+            not self._initialized
+            and isinstance(active_manifest, dict)
+            and str(active_manifest.get("data_revision") or "") == data_revision
+            and re.fullmatch(r"[0-9a-f]{40,64}", prior_code_revision)
+            and not _cache_implementation_changed(self.repo_root, prior_code_revision, commit)
+        )
+        if reuse_active_caches:
+            cache_allowlist = _publication_cache_allowlist(active_manifest)
+            logger.info("reusing complete frontier caches for cache-neutral code revision %s", commit)
+        else:
+            cache_allowlist = self.prebuild(data_root, changed_charts)
         publication = build_publication(
             code_root=snapshot,
             data_root=data_root,
