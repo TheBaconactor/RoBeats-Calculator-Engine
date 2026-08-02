@@ -360,6 +360,30 @@ def test_server_checkout_installs_only_fast_forward_clean_updates(tmp_path: Path
     assert not _install_server_checkout(repo, second)
 
 
+def test_maintainer_refresh_request_wakes_poll_wait(tmp_path: Path) -> None:
+    from gear_optimizer.frontier_server import FrontierDistributionState, FrontierServerMaintainer
+
+    repo = tmp_path / "server"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "main.py").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "main.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "one"], cwd=repo, check=True, capture_output=True)
+
+    maintainer = FrontierServerMaintainer(
+        repo_root=repo,
+        timeline_cache_root=tmp_path / "timeline",
+        fg_cache_root=tmp_path / "fg",
+        state=FrontierDistributionState(tmp_path / "publications"),
+        prebuild=lambda _data: {},
+    )
+
+    assert not maintainer._wake.is_set()
+    maintainer.request_refresh()
+    assert maintainer._wake.is_set()
+
+
 def test_maintainer_adopts_matching_publication_without_catalog_prebuild(
     monkeypatch,
     tmp_path: Path,

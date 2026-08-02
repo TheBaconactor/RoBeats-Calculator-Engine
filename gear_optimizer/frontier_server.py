@@ -444,6 +444,7 @@ class FrontierServerMaintainer:
         self.poll_seconds = max(60, env_int("ROBEATSMETA_FRONTIER_GIT_POLL_SECONDS", 300))
         self.fetch_timeout = max(30, env_int("ROBEATSMETA_FRONTIER_GIT_TIMEOUT_SECONDS", 120))
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._runtime_commit = _git(self.repo_root, "rev-parse", "--verify", "HEAD^{commit}")
         self._last_commit = ""
         self._initialized = False
@@ -535,6 +536,7 @@ class FrontierServerMaintainer:
                 logger.info("installed MetaFinder server code revision %s", commit)
             logger.info("restarting into MetaFinder server code revision %s before prebuild", commit)
             self._stop.set()
+            self._wake.set()
             if self.restart_requested is not None:
                 self.restart_requested(commit)
             return False
@@ -585,7 +587,13 @@ class FrontierServerMaintainer:
                 self.run_once()
             except Exception:
                 logger.exception("frontier server maintenance failed; the last complete publication remains active")
-            self._stop.wait(self.poll_seconds)
+            self._wake.wait(self.poll_seconds)
+            self._wake.clear()
+
+    def request_refresh(self) -> None:
+        """Wake the maintainer without running publication work on the caller's thread."""
+        self._wake.set()
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()

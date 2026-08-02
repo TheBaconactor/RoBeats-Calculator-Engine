@@ -166,6 +166,25 @@ def test_service_starts_frontier_server_maintenance(monkeypatch):
     assert calls == ["restore", "init", "maintain", "serve", "stop", "close"]
 
 
+def test_frontier_refresh_endpoint_only_wakes_maintainer(data_root, monkeypatch):
+    calls: list[tuple[object, object]] = []
+
+    class _Maintainer:
+        def request_refresh(self):
+            calls.append(("wake", None))
+
+    handler = service.RoBeatsMetaServiceHandler.__new__(service.RoBeatsMetaServiceHandler)
+    handler.path = "/frontiers/refresh"
+    handler.headers = {"Authorization": "Bearer secret"}
+    handler.server = type("Server", (), {"frontier_maintainer": _Maintainer()})()
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_API_TOKEN", "secret")
+    monkeypatch.setattr(handler, "_send", lambda status, payload: calls.append((status, payload)))
+
+    handler.do_POST()
+
+    assert calls == [("wake", None), (service.HTTPStatus.ACCEPTED, {"queued": True})]
+
+
 def test_find_official_chart_exact_match(data_root):
     _write_chart(data_root, "Normal", "Canon in D [Normal]")
     chart = service.find_official_chart("Canon in D [Normal]")

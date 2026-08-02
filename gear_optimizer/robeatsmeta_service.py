@@ -969,11 +969,20 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
             logger.exception("failed to stream frontier bundle %s", bundle_path)
 
     def do_POST(self) -> None:
-        if self.path.rstrip("/") != "/optimize":
+        path = self.path.rstrip("/")
+        if path not in {"/optimize", "/frontiers/refresh"}:
             self._send(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
         if not self._authorized():
             self._send(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+            return
+        if path == "/frontiers/refresh":
+            maintainer = getattr(self.server, "frontier_maintainer", None)
+            if maintainer is None:
+                self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "frontier_maintainer_unavailable"})
+                return
+            maintainer.request_refresh()
+            self._send(HTTPStatus.ACCEPTED, {"queued": True})
             return
         if not _AUTHORITATIVE_PUBLICATION_READY.is_set():
             self._send(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "frontier_publication_not_ready"})
@@ -1069,6 +1078,7 @@ def main(argv: list[str] | None = None) -> int:
         prepare_code_update=_prepare_server_code_update,
         code_update_aborted=lambda: _finish_server_code_update(aborted=True),
     )
+    server.frontier_maintainer = maintainer  # type: ignore[attr-defined]
     maintenance = threading.Thread(
         target=maintainer.serve_forever,
         name="frontier-server-maintenance",
