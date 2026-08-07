@@ -35,6 +35,11 @@ from ...core.parsing import env_flag, env_int
 
 from gear_optimizer.core.parsing import env_get
 _ti_initialized = False
+# Whether THIS process has ever completed a Taichi materialization. Distinct from
+# `_ti_initialized`, which `reset_taichi()` clears: the GLFW/Cocoa context that the first
+# materialization acquires is process-global, so only that first one carries the macOS
+# main-thread requirement. See `_assert_darwin_main_thread_materialization()`.
+_ti_materialized_once = False
 _ti_lock = threading.RLock()
 _printed_vulkan_device_hint = False
 _offline_cache_dir: str | None = None
@@ -74,6 +79,40 @@ del _ti_suppress, _ti_saved_stdout, _ti_saved_stderr, _ti_import_guard
 def is_initialized() -> bool:
     """Check if Taichi has been initialized."""
     return _ti_initialized
+
+
+def _assert_darwin_main_thread_materialization() -> None:
+    """Refuse a process's FIRST Taichi materialization off the macOS main thread.
+
+    Required OS/GPU dispatch-safety boundary. On darwin ``ti.vulkan`` lowers through MoltenVK,
+    and Taichi acquires a GLFW/Cocoa context inside ``VulkanProgramImpl::materialize_runtime``.
+    AppKit hard-traps that off the OS main thread (``EXC_BREAKPOINT`` /
+    "NSUpdateCycleInitialize() is called off the main thread"), which kills the WHOLE process --
+    a lazy first-use from one request thread takes down every other in-flight request with it.
+
+    Raising here converts that unrecoverable trap into an ordinary exception the caller can shed
+    on. Hosts that want in-process GPU on darwin materialize on the main thread first (see
+    ``app.py::_materialize_gpu_runtime_on_main_thread`` and the RoBeatsMeta API's startup hook);
+    once that has run, ``init_taichi()`` short-circuits on ``_ti_initialized`` and every thread
+    proceeds normally.
+
+    Scoped to the first materialization only: the GLFW context is process-global and refcounted,
+    so a ``reset_taichi()`` recovery re-init does not necessarily re-enter GLFW init. That path
+    has never been observed to trap, so it keeps its existing behaviour rather than being
+    speculatively broken.
+    """
+    if sys.platform != "darwin":
+        return
+    if _ti_materialized_once:
+        return
+    if threading.current_thread() is threading.main_thread():
+        return
+    raise RuntimeError(
+        "Taichi's GPU runtime must be materialized on the OS main thread on macOS; got thread "
+        f"'{threading.current_thread().name}'. Taichi/MoltenVK acquires a GLFW/Cocoa context "
+        "during materialize_runtime, which traps off the main thread and kills the process. "
+        "Materialize on the main thread during startup before dispatching GPU work to threads."
+    )
 
 
 def taichi_runtime_lock() -> threading.RLock:
@@ -552,10 +591,12 @@ def init_taichi():
     Uses f32 precision for performance (sufficient for score accuracy).
     """
     global _ti_initialized
+    global _ti_materialized_once
     global _offline_cache_dir
     with _ti_lock:
         if _ti_initialized:
             return
+        _assert_darwin_main_thread_materialization()
         kernel_profiler = get_kernel_profiler_enabled()
         block_dim = get_block_dim()
         arch, backend_name = _detect_backend()
@@ -639,6 +680,7 @@ def init_taichi():
             with _taichi_init_lock():
                 _init_with_winerror_retry(init_kwargs)
         _ti_initialized = True
+        _ti_materialized_once = True
         logger.debug(
             "[Taichi] Initialized with %s backend - f32 precision (kernel_profiler=%s, block_dim=%s)",
             backend_name,
