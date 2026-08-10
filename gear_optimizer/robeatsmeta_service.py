@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_int, env_str
-from gear_optimizer.data.database import get_best_loadouts
+from gear_optimizer.data.database import get_best_loadouts, get_evolution_db_path, save_loadouts_batch
 from gear_optimizer.frontier_auth import FrontierRequestAuthenticator
 from gear_optimizer.frontier_server import (
     FrontierDistributionState,
@@ -34,8 +34,9 @@ logger = logging.getLogger(__name__)
 
 # Stateless HTTP front-end over the canonical optimizer pipeline.
 #
-# The host application owns identity, quotas, sharing, and result persistence; this service only
-# solves.
+# The host application owns identity, quotas, sharing, and per-job persistence. This service owns
+# canonical catalog promotion because it is the process that can prove a solve used an official
+# chart and the untouched item catalog.
 #   GET  /songs     -> the official chart list (from Data/ headers)
 #   POST /optimize  -> solve one chart (official `targetSongId` OR custom `chartText`) and return
 #                      its full T5 baseline leaderboard (top 51 base + 51 FG by hash), in the exact
@@ -44,8 +45,8 @@ logger = logging.getLogger(__name__)
 #                      on-demand rescore path used by the catalog.
 #
 # Every solve runs in a throwaway per-request dir with the song source, run state and output DB
-# redirected via the ROBEATSMETA_OPTIMIZER_* path overrides, so requests never touch the catalog
-# bin/ queues, the Data/ catalog, or evolution.db.
+# redirected via the ROBEATSMETA_OPTIMIZER_* path overrides. After a clean official solve finishes,
+# its canonical-format leaderboard is merged into evolution.db; custom inputs remain isolated.
 #
 # The service is a concurrent pool: ThreadingHTTPServer handles requests in parallel, and a bounded
 # semaphore caps concurrent solves (default 10). Each solve spawns main.py as a subprocess; the
@@ -695,6 +696,30 @@ def _custom_pool_for_request(request: dict[str, Any]) -> dict[str, list[Any]]:
     return pool
 
 
+def _promote_official_result(
+    request: dict[str, Any],
+    *,
+    song_name: str,
+    entries: list[dict[str, Any]],
+    timing_mode: str,
+    custom_pool: dict[str, list[Any]],
+) -> None:
+    """Merge a canonical official solve into the shared evolution database."""
+    if str(request.get("chartText") or "").strip():
+        return
+    if not str(request.get("targetSongId") or "").strip():
+        return
+    if timing_mode != "perfect_window" or any(custom_pool.values()):
+        return
+    save_loadouts_batch(
+        song_name,
+        entries,
+        db_path=get_evolution_db_path(),
+        team_buff="T5",
+    )
+    logger.info("promoted official optimizer result for %s into evolution.db", song_name)
+
+
 def _remove_excluded_rows(gear_dir: Path, pool: dict[str, list[Any]]) -> None:
     """Delete the caller's excluded catalog rows from the per-request CSV copies.
 
@@ -911,6 +936,13 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
             reasoning,
             timing_mode,
             ephemeral_frontiers=bool(str(request.get("chartText") or "").strip()),
+            custom_pool=custom_pool,
+        )
+        _promote_official_result(
+            request,
+            song_name=result_song_name,
+            entries=state.result,
+            timing_mode=timing_mode,
             custom_pool=custom_pool,
         )
         return state.result

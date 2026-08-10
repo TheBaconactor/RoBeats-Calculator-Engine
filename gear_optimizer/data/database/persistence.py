@@ -160,6 +160,7 @@ def _save_loadouts_batch_in_transaction(
     team_buff: str,
     preserve_attempt_meta: bool,
 ) -> None:
+    updated_at = time.time()
     best_score_max, best_fg_max = _loadout_score_maxima(entries)
     save_team_buff_loadouts_batch(
         song_name,
@@ -173,22 +174,22 @@ def _save_loadouts_batch_in_transaction(
     if best_score_max is not None:
         conn.execute(
             """
-            INSERT INTO songs (name, best_score) VALUES (?, ?)
+            INSERT INTO songs (name, best_score, last_updated) VALUES (?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 best_score = MAX(best_score, excluded.best_score),
-                last_updated = strftime('%s', 'now')
+                last_updated = excluded.last_updated
             """,
-            (song_name, best_score_max),
+            (song_name, best_score_max, updated_at),
         )
     if best_fg_max:
         conn.execute(
             """
-            INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
+            INSERT INTO songs (name, best_fg_score, last_updated) VALUES (?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
-                last_updated = strftime('%s', 'now')
+                last_updated = excluded.last_updated
             """,
-            (song_name, best_fg_max),
+            (song_name, best_fg_max, updated_at),
         )
 
 

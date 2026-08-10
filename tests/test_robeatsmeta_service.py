@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import shutil
 import subprocess
 import threading
@@ -34,6 +35,7 @@ def data_root(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_TIMELINE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "timeline_frontier_cache")
     monkeypatch.setattr(service, "_FG_RESPONSE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "fg_response_frontier_cache")
     monkeypatch.setattr(service, "_SERVICE_DRAINING_FOR_UPDATE", False)
+    monkeypatch.setattr(service, "_promote_official_result", lambda *_args, **_kwargs: None)
     service._AUTHORITATIVE_PUBLICATION_READY.clear()
     service.clear_official_song_catalog_cache()
     with service._INFLIGHT_SOLVES_LOCK:
@@ -307,6 +309,115 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     assert Path(env["ROBEATSMETA_OPTIMIZER_BIN_DIR"]) == run_root / "bin"  # isolated run state
     assert Path(env["TIMELINE_FRONTIER_CACHE_DIR"]) == data_root / "bin" / "timeline_frontier_cache"
     assert Path(env["FG_RESPONSE_FRONTIER_CACHE_DIR"]) == data_root / "bin" / "fg_response_frontier_cache"
+
+
+def test_clean_official_solve_promotes_its_result(data_root, monkeypatch):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    gear = data_root / "Data" / "Gear"
+    gear.mkdir(parents=True, exist_ok=True)
+    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
+    entry = {"loadout_hash": "h", "score": 999, "gear": ["A"], "minis": ["B"], "details": {}}
+    promoted: list[tuple[str, list[dict[str, object]], str]] = []
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(service, "get_best_loadouts", lambda *args, **kwargs: [entry])
+    monkeypatch.setattr(
+        service,
+        "_promote_official_result",
+        lambda _request, *, song_name, entries, timing_mode, custom_pool: promoted.append(
+            (song_name, entries, timing_mode)
+        ),
+    )
+
+    result = service.solve({"jobId": "job_promote", "targetSongId": "Feeding [Hard]"})
+
+    assert result == [entry]
+    assert promoted == [("Feeding [Hard]", [entry], "perfect_window")]
+
+
+def test_promotion_accepts_only_clean_perfect_window_official_results(monkeypatch):
+    saved: list[tuple[str, list[dict[str, object]], str]] = []
+    monkeypatch.setattr(service, "get_evolution_db_path", lambda: "/tmp/evolution.db")
+    monkeypatch.setattr(
+        service,
+        "save_loadouts_batch",
+        lambda song_name, entries, *, db_path, **_kwargs: saved.append((song_name, entries, db_path)),
+    )
+    entry = {"score": 123}
+
+    service._promote_official_result(
+        {"targetSongId": "Official"},
+        song_name="Official",
+        entries=[entry],
+        timing_mode="perfect_window",
+        custom_pool={"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []},
+    )
+    service._promote_official_result(
+        {"targetSongId": "Official"},
+        song_name="Official",
+        entries=[entry],
+        timing_mode="zero_ms",
+        custom_pool={"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []},
+    )
+    service._promote_official_result(
+        {"targetSongId": "Official"},
+        song_name="Official",
+        entries=[entry],
+        timing_mode="perfect_window",
+        custom_pool={"gear": [{"name": "Custom"}], "minis": [], "excludeGear": [], "excludeMinis": []},
+    )
+    service._promote_official_result(
+        {"chartText": "Song Data\n"},
+        song_name="custom-job",
+        entries=[entry],
+        timing_mode="perfect_window",
+        custom_pool={"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []},
+    )
+
+    assert saved == [("Official", [entry], "/tmp/evolution.db")]
+
+
+def test_clean_official_promotion_writes_the_canonical_database(tmp_path, monkeypatch):
+    from gear_optimizer.data.database import init_db
+
+    db_path = tmp_path / "evolution.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    monkeypatch.setattr(service, "get_evolution_db_path", lambda: str(db_path))
+    init_db()
+
+    service._promote_official_result(
+        {"targetSongId": "Official Song"},
+        song_name="Official Song",
+        entries=[
+            {
+                "score": 1234,
+                "fg_score": 0,
+                "gear": ["Gear A"],
+                "minis": ["Mini A"],
+                "details": {"attempt_lifetime": 1, "attempts_first": 1},
+                "force": None,
+            }
+        ],
+        timing_mode="perfect_window",
+        custom_pool={"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []},
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        score, details_json = conn.execute(
+            "SELECT score, details_json FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5'",
+            ("Official Song",),
+        ).fetchone()
+    assert score == 1234
+    assert "attempt_lifetime" not in (details_json or "")
 
 
 def test_custom_solve_frontier_caches_are_inside_throwaway_workspace(data_root, monkeypatch):

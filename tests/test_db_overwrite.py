@@ -1,5 +1,6 @@
 import json
 import pytest
+from gear_optimizer.data.database import persistence
 
 from gear_optimizer.data.database import (
     get_db_connection,
@@ -97,6 +98,21 @@ def test_save_loadouts_batch_overwrite(db_connection):
     ).fetchone()
     assert row["score"] == 1100
     assert json.loads(row["details_json"])["test"] == "higher"
+
+
+def test_save_loadouts_batch_records_fractional_update_time(db_connection, monkeypatch):
+    monkeypatch.setattr(persistence.time, "time", lambda: 1_723_310_400.25)
+
+    save_loadouts_batch(
+        "Timestamp Song",
+        [{"score": 1000, "fg_score": 0, "gear": ["G1"], "minis": ["M1"], "details": {}, "force": None}],
+    )
+
+    row = db_connection.execute(
+        "SELECT last_updated FROM songs WHERE name = ?",
+        ("Timestamp Song",),
+    ).fetchone()
+    assert row["last_updated"] == 1_723_310_400.25
 
 
 def test_save_loadouts_batch_deferred_fg_update_preserves_base_details(db_connection):
