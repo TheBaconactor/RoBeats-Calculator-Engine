@@ -7,7 +7,7 @@ Primary Color	Chill
 Secondary Color	Flow
 Cover Image ID	139255326059496
 Audio Asset ID	rbxassetid://103353918933139
-Audio File	N/A
+Audio File	103353918933139.ogg
 Last Note Time	417.239
 Total Notes	2770
 Fever Fill	740
