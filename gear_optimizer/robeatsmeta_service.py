@@ -369,8 +369,20 @@ def _official_song_directories() -> tuple[tuple[str, Path], ...]:
     return directories
 
 
-def _official_catalog_cache_key() -> tuple[tuple[str, Path], ...]:
-    return _official_song_directories()
+def _official_catalog_cache_key() -> tuple[tuple[str, Path, tuple[tuple[str, int, int], ...]], ...]:
+    """Track chart-file state so an external catalog cannot stay stale after a song import."""
+    directories = _official_song_directories()
+    return tuple(
+        (
+            difficulty,
+            diff_dir,
+            tuple(
+                (chart.name, chart.stat().st_mtime_ns, chart.stat().st_size)
+                for chart in sorted(diff_dir.glob("*.txt"), key=lambda path: path.name)
+            ),
+        )
+        for difficulty, diff_dir in directories
+    )
 
 
 def clear_official_song_catalog_cache() -> None:

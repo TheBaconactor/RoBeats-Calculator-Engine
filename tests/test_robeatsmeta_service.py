@@ -112,6 +112,30 @@ def test_api_catalog_uses_configured_external_song_library(data_root, monkeypatc
         service.find_official_chart("Private Calculator Chart")
 
 
+def test_external_catalog_cache_invalidates_when_a_chart_is_added(data_root, monkeypatch):
+    reference_data = data_root / "ReferenceClient" / "Data"
+    for difficulty in ("Easy", "Normal", "Hard"):
+        (reference_data / f"{difficulty} Songs").mkdir(parents=True)
+    normal_dir = reference_data / "Normal Songs"
+    (normal_dir / "first.txt").write_text(
+        "Song Name\tFirst Imported Chart\nSong Data\n1000\t0\t0\t1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", str(reference_data))
+
+    assert [song["songId"] for song in service.list_official_songs()] == ["First Imported Chart"]
+
+    (normal_dir / "second.txt").write_text(
+        "Song Name\tSecond Imported Chart\nSong Data\n1000\t0\t0\t1\n",
+        encoding="utf-8",
+    )
+
+    assert [song["songId"] for song in service.list_official_songs()] == [
+        "First Imported Chart",
+        "Second Imported Chart",
+    ]
+
+
 def test_configured_external_library_requires_all_difficulty_directories(data_root, monkeypatch):
     reference_data = data_root / "ReferenceClient" / "Data"
     (reference_data / "Hard Songs").mkdir(parents=True)
