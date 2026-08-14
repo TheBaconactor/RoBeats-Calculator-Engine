@@ -35,17 +35,17 @@ def test_song_preparation_uses_chart_timing_metadata(monkeypatch):
 def test_startup_prepares_both_frontier_cache_families(monkeypatch):
     from gear_optimizer.solver import cpu_work_manager
 
-    calls = {"timeline": 0, "fg": 0}
+    calls: dict[str, list[tuple[str, ...]]] = {"timeline": [], "fg": []}
 
     class Summary:
         total = completed = failures = built = disk = memory = 0
 
-    def fake_timeline(**_kwargs):
-        calls["timeline"] += 1
+    def fake_timeline(**kwargs):
+        calls["timeline"].append(tuple(kwargs["timing_modes"]))
         return Summary()
 
-    def fake_fg(**_kwargs):
-        calls["fg"] += 1
+    def fake_fg(**kwargs):
+        calls["fg"].append(tuple(kwargs["timing_modes"]))
         return Summary()
 
     monkeypatch.setattr(cpu_work_manager, "run_timeline_frontier_cache_prebuild", fake_timeline)
@@ -57,7 +57,10 @@ def test_startup_prepares_both_frontier_cache_families(monkeypatch):
         data_root=".",
         announce_stream=io.StringIO(),
     )
-    assert calls == {"timeline": 1, "fg": 1}
+    assert calls == {
+        "timeline": [("perfect_window", "zero_ms")],
+        "fg": [("perfect_window", "zero_ms")],
+    }
 
 
 def test_team_buff_unknown_mode_fails_loud():

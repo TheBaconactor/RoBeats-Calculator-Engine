@@ -79,7 +79,7 @@ The disk representation stores one source slot and the used pool prefix.
 Runtime upload remaps that payload into the active GPU slot. Temporary and
 incompatible cache files are never accepted as complete results.
 
-Startup CPU work verifies or builds the chart-pool timing and Force Great
+Startup CPU work verifies or builds both timing-mode chart-pool and Force Great
 frontier caches before scoring. This host-side symbolic construction prepares
 the GPU product path; it is not CPU fallback scoring.
 

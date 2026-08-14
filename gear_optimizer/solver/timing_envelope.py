@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # which no frame rate guarantees. The planner must never claim a hit later
 # than this cap.
 NOTE_REMOVE_LATE_CAP_MS = 200
+TIMING_MODES = ("perfect_window", "zero_ms")
 
 
 def floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
@@ -504,7 +505,7 @@ def apply_timing_envelope(
         return None
     metadata = calc_song.get("metadata", {}) or {}
     timing_mode = str(mode if mode is not None else metadata.get("Timing Mode") or "perfect_window").strip().lower()
-    if timing_mode not in {"perfect_window", "zero_ms"}:
+    if timing_mode not in TIMING_MODES:
         raise ValueError(f"apply_timing_envelope: unknown timing mode {mode!r}")
     if (
         baseline_offset is not None

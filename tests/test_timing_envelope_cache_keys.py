@@ -21,6 +21,7 @@ def _calc_song() -> dict:
             "timestamps": timestamps.copy(),
             "chart_timestamps": timestamps.copy(),
             "note_types": np.ones(timestamps.shape[0], dtype=np.int16),
+            "lanes": np.arange(timestamps.shape[0], dtype=np.int32),
         },
     }
 

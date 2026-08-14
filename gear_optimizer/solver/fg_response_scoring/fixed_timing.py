@@ -57,10 +57,11 @@ def _solve_fixed_timing_response_results(
 
     ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
     calc_song = dict(calc_song)
-    # The chart-only bundle is distinct from perfect_window and is built on demand. Build only
-    # the FT/FF cells this exact batch can address: base FT/FF plus every legal gem pair, clipped
-    # by the same stat bounds as the canonical group builder. This is complete reachability, not
-    # a score prune, so tier/buff changes still evaluate every legal candidate losslessly.
+    # The chart-only bundle is distinct from perfect_window and is prebuilt for the catalog at
+    # optimizer startup. Build only the FT/FF cells this exact batch can address: base FT/FF plus
+    # every legal gem pair, clipped by the same stat bounds as the canonical group builder. This is
+    # complete reachability, not a score prune, so tier/buff changes still evaluate every legal
+    # candidate losslessly; a missing cache remains a valid recovery path.
     required_stat_keys = required_response_stat_keys_for_scoring_batch(
         base_stats_list=rows,
         total_budget=total_budget,

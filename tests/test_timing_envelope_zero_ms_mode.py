@@ -209,7 +209,7 @@ def test_fixed_timing_base_scorer_batch_matches_single():
     assert batch[0] != batch[1]  # different FT/FF -> different fixed timeline
 
 
-def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_without_disk_cache(tmp_path, monkeypatch):
+def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_path, monkeypatch):
     from gear_optimizer.solver.taichi_gem.api import timeline
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
@@ -226,10 +226,15 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_without_disk_cach
 
     loaded = timeline.load_timeline_frontier_payload(cs, ref)
 
-    assert loaded.cache_source == "fixed_zero_ms"
+    assert loaded.cache_source == "built"
     assert loaded.payload.frontier_pool_used > 0
     assert np.all(loaded.payload.grid_frontier_count == 1)
-    assert list(tmp_path.glob("*.npz")) == []
+    cache_files = list(tmp_path.glob("*.npz"))
+    assert len(cache_files) == 1
+
+    timeline.reset_timeline_state()
+    loaded_again = timeline.load_timeline_frontier_payload(cs, ref)
+    assert loaded_again.cache_source == "disk"
     assert score_stats_exact_batch(stats_rows, cs, ref) == score_stats_fixed_timing_exact_batch(
         stats_rows, cs, ref
     )

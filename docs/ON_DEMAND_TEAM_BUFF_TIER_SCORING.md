@@ -67,8 +67,9 @@ lookup arrays explicitly.
 
 `timing_mode="perfect_window"` uses the exact timing-envelope model and is the
 default. `timing_mode="zero_ms"` evaluates chart-time hits and recomputes both
-surfaces for that timing model. Zero-millisecond views are on-demand rankings
-and must not replace the canonical persisted leaderboard.
+surfaces for that timing model. The optimizer prebuilds both timing frontiers at
+startup; tier views remain derived rankings and must not replace the canonical
+persisted leaderboard.
 
 ## Persistence
 

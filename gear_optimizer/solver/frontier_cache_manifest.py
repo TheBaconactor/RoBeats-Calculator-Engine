@@ -16,7 +16,6 @@ from gear_optimizer.core.array_signature import array_sig16
 
 logger = logging.getLogger(__name__)
 _SCHEMA = 1
-_TIMING_ENVELOPE_MODE = "perfect_window"
 _LOCK = threading.RLock()
 
 
@@ -60,13 +59,14 @@ def _manifest_key(
     cache_version: str,
     ref_sig_hex: str,
     stat_sig_hex: str | None,
+    timing_mode: str,
     abs_song_path: str,
     mtime_ns: int,
     file_size: int,
 ) -> str:
     parts = [
         str(cache_version),
-        _TIMING_ENVELOPE_MODE,
+        str(timing_mode or "perfect_window").strip().lower(),
         str(ref_sig_hex),
     ]
     if stat_sig_hex is not None:
@@ -124,6 +124,7 @@ def build_manifest_plan(
     version_field: str,
     ref_sig_hex: str,
     stat_sig_hex: str | None = None,
+    timing_mode: str = "perfect_window",
     cache_file_validator: Callable[[str], bool] | None = None,
     derived_cache_file_fn: Callable[[str], str | None] | None = None,
     drift_sample_size: int = 8,
@@ -149,6 +150,7 @@ def build_manifest_plan(
             cache_version=cache_version,
             ref_sig_hex=ref_sig_hex,
             stat_sig_hex=stat_sig_hex,
+            timing_mode=timing_mode,
             abs_song_path=abs_path,
             mtime_ns=mtime_ns,
             file_size=file_size,

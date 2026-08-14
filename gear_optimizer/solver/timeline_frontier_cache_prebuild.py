@@ -24,6 +24,7 @@ from gear_optimizer.core.cpu_affinity import (
 )
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.solver.timeline_exact_frontier import configure_timeline_pair_build_threads
+from gear_optimizer.solver.timing_envelope import TIMING_MODES
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +60,12 @@ def _init_prebuild_worker(ref_arrays: dict, pair_build_threads: int, total_worke
     _PREBUILD_WORKER_REF_ARRAYS = dict(ref_arrays or {})
 
 
-def _build_timeline_frontier_cache_for_path_shared(song_path_text: str) -> TimelineFrontierCacheBuildResult:
+def _build_timeline_frontier_cache_for_path_shared(
+    song_path_text: str,
+    timing_mode: str = "perfect_window",
+) -> TimelineFrontierCacheBuildResult:
     shared = _PREBUILD_WORKER_REF_ARRAYS if isinstance(_PREBUILD_WORKER_REF_ARRAYS, dict) else {}
-    return build_timeline_frontier_cache_for_path(song_path_text, shared)
+    return build_timeline_frontier_cache_for_path(song_path_text, shared, timing_mode=timing_mode)
 
 
 def iter_timeline_frontier_cache_song_paths(
@@ -116,23 +120,32 @@ def _cache_version() -> str:
     return str(_FRONTIER_DISK_CACHE_VERSION)
 
 
-def _derived_frontier_cache_file(song_path: str, ref_arrays: dict) -> str | None:
+def _derived_frontier_cache_file(
+    song_path: str,
+    ref_arrays: dict,
+    *,
+    timing_mode: str = "perfect_window",
+) -> str | None:
     """Parse one chart and return the cache file its CURRENT frontier key derives (drift probe)."""
-    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
     from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_payload_cache_info
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    calc_song = get_base_calc_song(str(song_path), {})
-    if not calc_song:
+    base_song = get_base_calc_song(str(song_path), {})
+    if not base_song:
         return None
-    apply_timing_envelope(calc_song)
-    return str(timeline_frontier_payload_cache_info(calc_song, ref_arrays).disk_path)
+    calc_song = clone_calc_song(base_song)
+    apply_timing_envelope(calc_song, mode=timing_mode)
+    return str(
+        timeline_frontier_payload_cache_info(calc_song, ref_arrays, timing_mode=timing_mode).disk_path
+    )
 
 
 def _build_manifest_plan(
     song_paths: Iterable[str],
     ref_arrays: dict,
     *,
+    timing_mode: str = "perfect_window",
     persist_validated_entries: bool = True,
 ):
     from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_cache_file_is_complete
@@ -143,8 +156,11 @@ def _build_manifest_plan(
         cache_version=_cache_version(),
         version_field="frontier_version",
         ref_sig_hex=_ref_axes_signature(ref_arrays),
+        timing_mode=timing_mode,
         cache_file_validator=timeline_frontier_cache_file_is_complete,
-        derived_cache_file_fn=lambda song_path: _derived_frontier_cache_file(song_path, ref_arrays),
+        derived_cache_file_fn=lambda song_path: _derived_frontier_cache_file(
+            song_path, ref_arrays, timing_mode=timing_mode
+        ),
         persist_validated_entries=persist_validated_entries,
     )
 
@@ -178,8 +194,10 @@ def cleanup_timeline_frontier_cache_temp_files(cache_dir: str | os.PathLike[str]
 def build_timeline_frontier_cache_for_path(
     song_path_text: str,
     ref_arrays: dict,
+    *,
+    timing_mode: str = "perfect_window",
 ) -> TimelineFrontierCacheBuildResult:
-    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload,
         timeline_frontier_payload_cache_info,
@@ -187,9 +205,10 @@ def build_timeline_frontier_cache_for_path(
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     song_path = Path(song_path_text)
-    calc_song = get_base_calc_song(str(song_path), {})
-    apply_timing_envelope(calc_song)
-    cache_info = timeline_frontier_payload_cache_info(calc_song, ref_arrays)
+    base_song = get_base_calc_song(str(song_path), {})
+    calc_song = clone_calc_song(base_song)
+    apply_timing_envelope(calc_song, mode=timing_mode)
+    cache_info = timeline_frontier_payload_cache_info(calc_song, ref_arrays, timing_mode=timing_mode)
     if cache_info.cache_source in {"disk", "memory"}:
         return TimelineFrontierCacheBuildResult(
             path=str(song_path),
@@ -197,7 +216,9 @@ def build_timeline_frontier_cache_for_path(
             build_ms=0.0,
             cache_file=str(cache_info.disk_path),
         )
-    result = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    result = build_or_load_timeline_frontier_payload(
+        calc_song, ref_arrays, timing_mode=timing_mode
+    )
     return TimelineFrontierCacheBuildResult(
         path=str(song_path),
         source=str(result.cache_source),
@@ -206,7 +227,12 @@ def build_timeline_frontier_cache_for_path(
     )
 
 
-def _run_missing_timeline_prebuild(paths: list[str], ref_arrays: dict) -> tuple[TimelineFrontierCachePrebuildSummary, list[TimelineFrontierCacheBuildResult]]:
+def _run_missing_timeline_prebuild(
+    paths: list[str],
+    ref_arrays: dict,
+    *,
+    timing_mode: str = "perfect_window",
+) -> tuple[TimelineFrontierCachePrebuildSummary, list[TimelineFrontierCacheBuildResult]]:
     if not paths:
         return TimelineFrontierCachePrebuildSummary(total=0), []
     t0 = time.perf_counter()
@@ -217,7 +243,12 @@ def _run_missing_timeline_prebuild(paths: list[str], ref_arrays: dict) -> tuple[
     if len(paths) == 1:
         path = str(paths[0])
         try:
-            result = build_timeline_frontier_cache_for_path(path, ref_arrays)
+            if timing_mode == "perfect_window":
+                result = build_timeline_frontier_cache_for_path(path, ref_arrays)
+            else:
+                result = build_timeline_frontier_cache_for_path(
+                    path, ref_arrays, timing_mode=timing_mode
+                )
         except Exception as exc:
             failures = 1
             logger.warning("[TimelineCache] Failed to prebuild %s: %s", path, exc)
@@ -249,7 +280,14 @@ def _run_missing_timeline_prebuild(paths: list[str], ref_arrays: dict) -> tuple[
         # allocations as small as 1 MiB on the production 2,249-song pool.
         max_tasks_per_worker=_TIMELINE_PREBUILD_MAX_TASKS_PER_WORKER,
     ) as executor:
-        futures = {executor.submit(_build_timeline_frontier_cache_for_path_shared, path): path for path in paths}
+        futures = {
+            (
+                executor.submit(_build_timeline_frontier_cache_for_path_shared, path)
+                if timing_mode == "perfect_window"
+                else executor.submit(_build_timeline_frontier_cache_for_path_shared, path, timing_mode)
+            ): path
+            for path in paths
+        }
         for future in concurrent.futures.as_completed(futures):
             path = futures[future]
             try:
@@ -295,13 +333,14 @@ def _run_missing_timeline_prebuild(paths: list[str], ref_arrays: dict) -> tuple[
     return summary, results
 
 
-def run_timeline_frontier_cache_prebuild(
+def _run_timeline_frontier_cache_prebuild_for_mode(
     *,
     cfg,
     song_queue: Iterable[tuple],
     ref_arrays: dict,
     data_root: str | os.PathLike[str] | None = None,
     build_missing: bool = True,
+    timing_mode: str = "perfect_window",
 ) -> TimelineFrontierCachePrebuildSummary:
     del cfg
     from gear_optimizer.solver.taichi_gem.api.timeline import _frontier_disk_cache_dir
@@ -315,7 +354,12 @@ def run_timeline_frontier_cache_prebuild(
     # Fully recorded cache hits are readers, not builders. Probe without mutating the manifest so
     # they never wait behind an unrelated deployment prebuild that owns the single-builder lock.
     # Complete derived hits absent from the manifest enter the lock once below to persist metadata.
-    optimistic_plan = _build_manifest_plan(paths, ref_arrays, persist_validated_entries=False)
+    optimistic_plan = _build_manifest_plan(
+        paths,
+        ref_arrays,
+        timing_mode=timing_mode,
+        persist_validated_entries=False,
+    )
     if not optimistic_plan.missing_paths and int(optimistic_plan.validated_entry_count) == 0:
         return TimelineFrontierCachePrebuildSummary(
             total=int(optimistic_plan.total_paths),
@@ -327,7 +371,7 @@ def run_timeline_frontier_cache_prebuild(
     # Single-builder lock: a second concurrent process waits here, then re-runs its manifest plan
     # below -- which now fast-hits everything this process wrote -- instead of duplicating the build.
     with FrontierBuildLock(_frontier_disk_cache_dir(), label="timeline"):
-        manifest_plan = _build_manifest_plan(paths, ref_arrays)
+        manifest_plan = _build_manifest_plan(paths, ref_arrays, timing_mode=timing_mode)
         manifest_hits = int(manifest_plan.hit_count)
         if manifest_hits > 0:
             logger.info(
@@ -362,7 +406,9 @@ def run_timeline_frontier_cache_prebuild(
                 elapsed_ms=float((time.perf_counter() - started) * 1000.0),
             )
 
-        run_summary, results = _run_missing_timeline_prebuild(list(manifest_plan.missing_paths), ref_arrays)
+        run_summary, results = _run_missing_timeline_prebuild(
+            list(manifest_plan.missing_paths), ref_arrays, timing_mode=timing_mode
+        )
         _apply_manifest_results(plan=manifest_plan, results=results)
         elapsed_ms = float((time.perf_counter() - started) * 1000.0)
         combined = TimelineFrontierCachePrebuildSummary(
@@ -389,3 +435,37 @@ def run_timeline_frontier_cache_prebuild(
             },
         )
         return combined
+
+
+def run_timeline_frontier_cache_prebuild(
+    *,
+    cfg,
+    song_queue: Iterable[tuple],
+    ref_arrays: dict,
+    data_root: str | os.PathLike[str] | None = None,
+    build_missing: bool = True,
+    timing_modes: Iterable[str] = TIMING_MODES,
+) -> TimelineFrontierCachePrebuildSummary:
+    """Prebuild timeline frontiers for each requested timing model."""
+    started = time.perf_counter()
+    queue_items = list(song_queue or [])
+    summaries = [
+        _run_timeline_frontier_cache_prebuild_for_mode(
+            cfg=cfg,
+            song_queue=queue_items,
+            ref_arrays=ref_arrays,
+            data_root=data_root,
+            build_missing=build_missing,
+            timing_mode=str(mode or "").strip().lower(),
+        )
+        for mode in timing_modes
+    ]
+    return TimelineFrontierCachePrebuildSummary(
+        total=sum(int(summary.total) for summary in summaries),
+        completed=sum(int(summary.completed) for summary in summaries),
+        failures=sum(int(summary.failures) for summary in summaries),
+        built=sum(int(summary.built) for summary in summaries),
+        disk=sum(int(summary.disk) for summary in summaries),
+        memory=sum(int(summary.memory) for summary in summaries),
+        elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+    )

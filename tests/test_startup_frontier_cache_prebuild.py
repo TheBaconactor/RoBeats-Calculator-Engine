@@ -524,6 +524,7 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
         song_queue=[(str(song_a),), (str(song_b),)],
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         data_root=tmp_path,
+        timing_modes=("perfect_window",),
     )
 
     assert summary.total == 2
@@ -599,6 +600,7 @@ def test_complete_manifest_enters_locked_maintenance_when_sidecars_need_compress
         song_queue=[(str(song_path),)],
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         data_root=tmp_path,
+        timing_modes=("perfect_window",),
     )
 
     assert plan_calls == 2
@@ -665,6 +667,7 @@ def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch
         song_queue=[(str(song_path),)],
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         data_root=tmp_path,
+        timing_modes=("perfect_window",),
     )
 
     assert persist_calls == [True]
@@ -732,6 +735,7 @@ def test_fg_current_manifest_persists_complete_unrecorded_hits_under_lock(monkey
         song_queue=[(str(song_path),)],
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         data_root=tmp_path,
+        timing_modes=("perfect_window",),
     )
 
     assert persist_calls == [False, True]
@@ -773,6 +777,7 @@ def test_timeline_prebuild_manifest_hits_do_not_acquire_build_lock(monkeypatch, 
         song_queue=[(str(song_path),)],
         ref_arrays={},
         data_root=tmp_path,
+        timing_modes=("perfect_window",),
     )
 
     assert summary.total == 1
@@ -823,6 +828,7 @@ def test_timeline_prebuild_persists_complete_unrecorded_hits_under_lock(monkeypa
         song_queue=[(str(song_path),)],
         ref_arrays={},
         data_root=tmp_path,
+        timing_modes=("perfect_window",),
     )
 
     assert persist_calls == [False, True]

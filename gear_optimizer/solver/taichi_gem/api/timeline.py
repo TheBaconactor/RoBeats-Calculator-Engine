@@ -290,7 +290,9 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # proved the 1f182e5b89af, 4c69b48f08bb, and 9dfe907e66fb lineages diverge; they must rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
     # Custom-cache routing and pre-allocation admission do not alter an admitted frontier.
-    "exact-frontier-v12+logic-920bc4af7ee6": (
+    "exact-frontier-v12+logic-e2108556084d": (
+        # Keep the currently deployed v12 cache lineage readable during the rolling update.
+        "exact-frontier-v12+logic-920bc4af7ee6",
         "exact-frontier-v12+logic-be26caca62b4",
     ),
     # Legacy cleanup deleted an orphaned timing-envelope wrapper. The live envelope builders and
@@ -987,22 +989,38 @@ def _build_zero_ms_timeline_payload(calc_song: dict, ref_arrays: dict) -> Timeli
 
 
 def _zero_ms_timeline_result(calc_song: dict, ref_arrays: dict) -> TimelineFrontierPrewarmResult:
-    """Wrap the cheap zero_ms singleton payload as a prewarm result (in-memory, never persisted).
-
-    zero_ms is the fixed chart-time subset of the shared frontier representation: it is built on
-    demand and NOT written to the perfect_window disk cache, so a strict-zero_ms deployment never
-    pays -- or stores -- the full candidate-frontier build. cache_source ``"fixed_zero_ms"`` marks
-    the provenance for telemetry.
-    """
+    """Load or persist the cheap zero_ms singleton payload."""
     t0 = time.perf_counter()
     lookup = _timeline_payload_lookup_context(calc_song, ref_arrays)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
-    payload = _build_zero_ms_timeline_payload(calc_song, ref_arrays)
+    payload, cache_source = _get_cached_frontier_payload_with_source(
+        lookup["song_key"],
+        ref_ft=lookup["ref_ft"],
+        ref_ff=lookup["ref_ff"],
+    )
+    if payload is None:
+        payload = _build_zero_ms_timeline_payload(calc_song, ref_arrays)
+        _save_frontier_payload_to_disk(cache_key, payload)
+        cache_source = "built"
+        if not frontier_cache_is_ephemeral():
+            moment = time.monotonic()
+            with _frontier_payload_cache_lock:
+                cached = _frontier_payload_cache.get(cache_key)
+                if isinstance(cached, TimelineFrontierGridPayload):
+                    payload = cached
+                    cache_source = "memory"
+                else:
+                    _frontier_payload_cache[cache_key] = payload
+                    _frontier_payload_cache.move_to_end(cache_key)
+                    _frontier_payload_last_access[cache_key] = moment
+                    while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
+                        stale_key, _stale_value = _frontier_payload_cache.popitem(last=False)
+                        _frontier_payload_last_access.pop(stale_key, None)
     return TimelineFrontierPrewarmResult(
         payload=payload,
         cache_key=cache_key,
         disk_path=_frontier_disk_cache_path(cache_key),
-        cache_source="fixed_zero_ms",
+        cache_source=cache_source,
         elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
         song_profile_key=lookup["song_profile_key"],
         total_notes=int(lookup["total_notes"]),
@@ -1024,8 +1042,8 @@ def build_or_load_timeline_frontier_payload(
     """
     resolved_timing_mode = _prepare_timeline_frontier_calc_song(calc_song, timing_mode=timing_mode)
     if resolved_timing_mode == "zero_ms":
-        # zero_ms is fixed timing: serve the cheap chart-time singleton (the "partial" build) and
-        # never touch the perfect_window candidate-frontier build or its disk cache.
+        # zero_ms is fixed timing: serve the cheap chart-time singleton and never touch the
+        # perfect_window candidate-frontier build or its disk cache.
         return _zero_ms_timeline_result(calc_song, ref_arrays)
     t0 = time.perf_counter()
     lookup = _timeline_payload_lookup_context(calc_song, ref_arrays)

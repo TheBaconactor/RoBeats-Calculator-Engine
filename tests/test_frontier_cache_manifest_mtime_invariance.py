@@ -22,7 +22,14 @@ _VERSION_FIELD = "frontier_version"
 _CACHE_VERSION = "v1"
 
 
-def _plan(song_path: Path, manifest_path: Path, *, validator=None, derived_cache_file_fn=None):
+def _plan(
+    song_path: Path,
+    manifest_path: Path,
+    *,
+    validator=None,
+    derived_cache_file_fn=None,
+    timing_mode: str = "perfect_window",
+):
     return build_manifest_plan(
         [str(song_path)],
         manifest_path=manifest_path,
@@ -30,6 +37,7 @@ def _plan(song_path: Path, manifest_path: Path, *, validator=None, derived_cache
         version_field=_VERSION_FIELD,
         ref_sig_hex="ref",
         stat_sig_hex="stat",
+        timing_mode=timing_mode,
         cache_file_validator=validator,
         derived_cache_file_fn=derived_cache_file_fn,
     )
@@ -56,6 +64,18 @@ def _seed_manifest_entry(song_path: Path, cache_path: Path, manifest_path: Path)
         ),
         encoding="utf-8",
     )
+
+
+def test_manifest_keys_separate_timing_modes(tmp_path: Path) -> None:
+    song_path = tmp_path / "Song.txt"
+    manifest_path = tmp_path / "manifest.json"
+    song_path.write_text("chart", encoding="utf-8")
+
+    perfect = _plan(song_path, manifest_path, timing_mode="perfect_window")
+    zero = _plan(song_path, manifest_path, timing_mode="zero_ms")
+    path_key = os.path.abspath(song_path).casefold()
+
+    assert perfect.key_by_norm_path[path_key] != zero.key_by_norm_path[path_key]
 
 
 def test_manifestless_derived_cache_hit_needs_no_builder_manifest_write(tmp_path: Path) -> None:

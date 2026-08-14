@@ -934,8 +934,9 @@ def build_team_buff_tier_db_batches(
       leaderboards; the base note graph is the chart-fixed timeline (no Perfect-window
       ``TimelineFrontier`` is attached, so the renderer draws delta=0 from ``Stats``), and
       each FG row carries the rebuilt 0ms ``force`` (chart-fixed ``frontier_trace``) rather
-      than the persisted Perfect-window one. zero_ms is an on-demand ranking mode and must
-      NOT be persisted to the canonical leaderboards.
+      than the persisted Perfect-window one. zero_ms rankings use the prebuilt chart-only
+      response frontier; tier materialization remains a derived view and is not persisted to
+      the canonical leaderboards.
     """
     tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
     timing_mode = str(timing_mode or "perfect_window").strip().lower()

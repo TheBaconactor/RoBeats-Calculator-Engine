@@ -26,6 +26,7 @@ from gear_optimizer.solver.frontier_cache_manifest import (
     build_manifest_plan as _shared_build_manifest_plan,
 )
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import ordered_frontier_cache_song_paths
+from gear_optimizer.solver.timing_envelope import TIMING_MODES
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
 
 logger = logging.getLogger(__name__)
@@ -348,6 +349,7 @@ def _init_prebuild_worker(
 def _build_fg_response_frontier_cache_for_path_shared(
     song_path_text: str,
     reducer_threads: int | None = None,
+    timing_mode: str = "perfect_window",
 ) -> FgResponseFrontierCacheBuildResult:
     if reducer_threads is not None:
         from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
@@ -359,6 +361,7 @@ def _build_fg_response_frontier_cache_for_path_shared(
         song_path_text,
         shared,
         stat_keys=_PREBUILD_WORKER_STAT_KEYS,
+        timing_mode=timing_mode,
     )
 
 def _manifest_path() -> Path:
@@ -378,17 +381,23 @@ def _stat_keys_signature(stat_keys: Iterable[tuple[int, int]]) -> str:
     return bytes(array_sig16(rows.reshape(-1))).hex()
 
 
-def _derived_bundle_cache_file(song_path: str, ref_arrays: dict) -> str | None:
+def _derived_bundle_cache_file(
+    song_path: str,
+    ref_arrays: dict,
+    *,
+    timing_mode: str = "perfect_window",
+) -> str | None:
     """Parse one chart and return the cache file its CURRENT bundle key derives (drift probe)."""
-    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import resolve_fg_response_bundle_path
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    calc_song = get_base_calc_song(str(song_path), {})
-    if not calc_song:
+    base_song = get_base_calc_song(str(song_path), {})
+    if not base_song:
         return None
-    apply_timing_envelope(calc_song)
+    calc_song = clone_calc_song(base_song)
+    apply_timing_envelope(calc_song, mode=timing_mode)
     return str(resolve_fg_response_bundle_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)))
 
 
@@ -407,6 +416,7 @@ def _build_manifest_plan(
     ref_arrays: dict,
     *,
     stat_keys: Iterable[tuple[int, int]],
+    timing_mode: str = "perfect_window",
     persist_validated_entries: bool = True,
 ):
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import fg_response_cache_file_is_complete
@@ -419,11 +429,14 @@ def _build_manifest_plan(
         version_field="cache_version",
         ref_sig_hex=_ref_axes_signature(ref_arrays),
         stat_sig_hex=_stat_keys_signature(stat_keys_tuple),
+        timing_mode=timing_mode,
         cache_file_validator=lambda cache_file: fg_response_cache_file_is_complete(
             cache_file,
             stat_keys=stat_keys_tuple,
         ),
-        derived_cache_file_fn=lambda song_path: _derived_bundle_cache_file(song_path, ref_arrays),
+        derived_cache_file_fn=lambda song_path: _derived_bundle_cache_file(
+            song_path, ref_arrays, timing_mode=timing_mode
+        ),
         persist_validated_entries=persist_validated_entries,
     )
 
@@ -446,7 +459,10 @@ def _apply_manifest_results(*, plan, results: Iterable[object], stat_keys: Itera
 
 
 def _dedupe_paths_by_response_bundle_key(
-    paths: Iterable[str], ref_arrays: dict
+    paths: Iterable[str],
+    ref_arrays: dict,
+    *,
+    timing_mode: str = "perfect_window",
 ) -> tuple[list[tuple[str, int]], dict[str, tuple[str, ...]]]:
     """Deduplicate songs by response bundle key; representatives carry their note count.
 
@@ -454,7 +470,7 @@ def _dedupe_paths_by_response_bundle_key(
     the admission memory weights, so no second per-song parse happens on the coordinating process.
     Duplicates share the bundle key (same chart timing content), hence the same note count.
     """
-    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
@@ -463,8 +479,9 @@ def _dedupe_paths_by_response_bundle_key(
     representative_by_key: dict[tuple, str] = {}
     for path_text in paths:
         path = str(path_text)
-        calc_song = get_base_calc_song(path, {})
-        apply_timing_envelope(calc_song)
+        base_song = get_base_calc_song(path, {})
+        calc_song = clone_calc_song(base_song)
+        apply_timing_envelope(calc_song, mode=timing_mode)
         key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
         representative = representative_by_key.get(key)
         if representative is None:
@@ -487,8 +504,9 @@ def build_fg_response_frontier_cache_for_path(
     ref_arrays: dict,
     *,
     stat_keys: Iterable[tuple[int, int]],
+    timing_mode: str = "perfect_window",
 ) -> FgResponseFrontierCacheBuildResult:
-    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         fg_response_frontier_payload_cache_info,
@@ -500,8 +518,9 @@ def build_fg_response_frontier_cache_for_path(
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     song_path = Path(song_path_text)
-    calc_song = get_base_calc_song(str(song_path), {})
-    apply_timing_envelope(calc_song)
+    base_song = get_base_calc_song(str(song_path), {})
+    calc_song = clone_calc_song(base_song)
+    apply_timing_envelope(calc_song, mode=timing_mode)
     cache_info = fg_response_frontier_payload_cache_info(calc_song, ref_arrays, stat_keys=stat_keys)
     if cache_info.cache_source in {"disk", "memory"}:
         return FgResponseFrontierCacheBuildResult(
@@ -594,6 +613,8 @@ def _run_missing_fg_prebuild(
     paths: list[str],
     ref_arrays: dict,
     stat_keys: tuple[tuple[int, int], ...],
+    *,
+    timing_mode: str = "perfect_window",
 ) -> tuple[FgResponseFrontierCachePrebuildSummary, list[FgResponseFrontierCacheBuildResult]]:
     if not paths:
         return FgResponseFrontierCachePrebuildSummary(total=0), []
@@ -602,14 +623,24 @@ def _run_missing_fg_prebuild(
     failures = 0
     completed = 0
     results: list[FgResponseFrontierCacheBuildResult] = []
-    build_items, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(paths, ref_arrays)
+    if timing_mode == "perfect_window":
+        build_items, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(paths, ref_arrays)
+    else:
+        build_items, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(
+            paths, ref_arrays, timing_mode=timing_mode
+        )
     # Heaviest-first (same makespan ordering as before), note counts from the dedupe parse pass.
     build_items.sort(key=lambda item: (-int(item[1]), str(item[0]).lower()))
     if len(build_items) == 1:
         path = str(build_items[0][0])
         duplicate_paths = duplicate_paths_by_representative.get(path, ())
         try:
-            result = build_fg_response_frontier_cache_for_path(path, ref_arrays, stat_keys=stat_keys)
+            if timing_mode == "perfect_window":
+                result = build_fg_response_frontier_cache_for_path(path, ref_arrays, stat_keys=stat_keys)
+            else:
+                result = build_fg_response_frontier_cache_for_path(
+                    path, ref_arrays, stat_keys=stat_keys, timing_mode=timing_mode
+                )
         except Exception as exc:
             failures = 1 + int(len(duplicate_paths))
             logger.warning("[FGResponseCache] Failed to prebuild %s: %s", path, exc)
@@ -712,7 +743,19 @@ def _run_missing_fg_prebuild(
                 # collections are empty here, but this admission still owns one unit of work.
                 workload_count=1 + len(pending) + len(in_flight),
             )
-            future = executor.submit(_build_fg_response_frontier_cache_for_path_shared, path, int(reducer_threads))
+            if timing_mode == "perfect_window":
+                future = executor.submit(
+                    _build_fg_response_frontier_cache_for_path_shared,
+                    path,
+                    int(reducer_threads),
+                )
+            else:
+                future = executor.submit(
+                    _build_fg_response_frontier_cache_for_path_shared,
+                    path,
+                    int(reducer_threads),
+                    timing_mode,
+                )
             in_flight[future] = (path, float(weight_gb))
             admitted_weight_gb += float(weight_gb)
             if weight_gb >= 4.0:
@@ -841,7 +884,7 @@ def _run_missing_fg_prebuild(
     return summary, results
 
 
-def run_fg_response_frontier_cache_prebuild(
+def _run_fg_response_frontier_cache_prebuild_for_mode(
     *,
     cfg,
     song_queue: Iterable[tuple],
@@ -849,6 +892,7 @@ def run_fg_response_frontier_cache_prebuild(
     data_root: str | os.PathLike[str] | None = None,
     authorize_destructive_rotation: bool = False,
     build_missing: bool = True,
+    timing_mode: str = "perfect_window",
 ) -> FgResponseFrontierCachePrebuildSummary:
     del cfg
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
@@ -872,6 +916,7 @@ def run_fg_response_frontier_cache_prebuild(
             paths,
             ref_arrays,
             stat_keys=stat_keys,
+            timing_mode=timing_mode,
             persist_validated_entries=False,
         )
         if (
@@ -890,7 +935,9 @@ def run_fg_response_frontier_cache_prebuild(
     # below -- which now fast-hits everything this process wrote -- instead of duplicating the
     # multi-GB cold build and multiplying peak RAM.
     with FrontierBuildLock(_fg_response_disk_cache_dir(), label="fg_response"):
-        manifest_plan = _build_manifest_plan(paths, ref_arrays, stat_keys=stat_keys)
+        manifest_plan = _build_manifest_plan(
+            paths, ref_arrays, stat_keys=stat_keys, timing_mode=timing_mode
+        )
         manifest_hits = int(manifest_plan.hit_count)
         if manifest_hits > 0:
             logger.info(
@@ -933,7 +980,9 @@ def run_fg_response_frontier_cache_prebuild(
         # Deterministic input order; heaviest-first execution ordering happens inside
         # _run_missing_fg_prebuild from the same parse pass that computes admission weights.
         missing_paths = sorted(str(path) for path in manifest_plan.missing_paths)
-        run_summary, results = _run_missing_fg_prebuild(list(missing_paths), ref_arrays, stat_keys)
+        run_summary, results = _run_missing_fg_prebuild(
+            list(missing_paths), ref_arrays, stat_keys, timing_mode=timing_mode
+        )
         _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
         elapsed_ms = float((time.perf_counter() - started) * 1000.0)
         if int(run_summary.built) > 0:
@@ -949,3 +998,39 @@ def run_fg_response_frontier_cache_prebuild(
             memory=int(run_summary.memory),
             elapsed_ms=elapsed_ms,
         )
+
+
+def run_fg_response_frontier_cache_prebuild(
+    *,
+    cfg,
+    song_queue: Iterable[tuple],
+    ref_arrays: dict,
+    data_root: str | os.PathLike[str] | None = None,
+    authorize_destructive_rotation: bool = False,
+    build_missing: bool = True,
+    timing_modes: Iterable[str] = TIMING_MODES,
+) -> FgResponseFrontierCachePrebuildSummary:
+    """Prebuild FG response frontiers for each requested timing model."""
+    started = time.perf_counter()
+    queue_items = list(song_queue or [])
+    summaries = [
+        _run_fg_response_frontier_cache_prebuild_for_mode(
+            cfg=cfg,
+            song_queue=queue_items,
+            ref_arrays=ref_arrays,
+            data_root=data_root,
+            authorize_destructive_rotation=authorize_destructive_rotation,
+            build_missing=build_missing,
+            timing_mode=str(mode or "").strip().lower(),
+        )
+        for mode in timing_modes
+    ]
+    return FgResponseFrontierCachePrebuildSummary(
+        total=sum(int(summary.total) for summary in summaries),
+        completed=sum(int(summary.completed) for summary in summaries),
+        failures=sum(int(summary.failures) for summary in summaries),
+        built=sum(int(summary.built) for summary in summaries),
+        disk=sum(int(summary.disk) for summary in summaries),
+        memory=sum(int(summary.memory) for summary in summaries),
+        elapsed_ms=float((time.perf_counter() - started) * 1000.0),
+    )

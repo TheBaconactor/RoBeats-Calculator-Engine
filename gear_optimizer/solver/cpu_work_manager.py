@@ -10,6 +10,7 @@ from gear_optimizer.solver.fg_response_frontier_cache_prebuild import run_fg_res
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import (
     run_timeline_frontier_cache_prebuild,
 )
+from gear_optimizer.solver.timing_envelope import TIMING_MODES
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ def run_startup_cpu_work(
         ref_arrays=ref_arrays,
         data_root=data_root,
         build_missing=build_missing,
+        timing_modes=TIMING_MODES,
     )
     timeline_elapsed_ms = float((time.perf_counter() - timeline_t0) * 1000.0)
     _announce_cache_summary(stream, label="Timeline frontier cache", summary=timeline_summary, elapsed_ms=timeline_elapsed_ms)
@@ -98,6 +100,7 @@ def run_startup_cpu_work(
         data_root=data_root,
         build_missing=build_missing,
         authorize_destructive_rotation=authorize_destructive_rotation,
+        timing_modes=TIMING_MODES,
     )
     fg_elapsed_ms = float((time.perf_counter() - fg_t0) * 1000.0)
     _announce_cache_summary(stream, label="FG response-frontier cache", summary=fg_summary, elapsed_ms=fg_elapsed_ms)
