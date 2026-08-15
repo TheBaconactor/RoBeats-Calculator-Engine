@@ -108,8 +108,8 @@ _FG_PREBUILD_FLOOR_COMMIT_GB = 2.0  # prior: measured ~1.76 GB retained worker b
 _FG_PREBUILD_PEAK_COMMIT_GB = 7.0
 _FG_PREBUILD_PEAK_COMMIT_NOTES = 7000.0  # note count of the charts that anchored the prior
 _FG_PREBUILD_SYSTEM_RESERVE_GB = 6.0  # main process + OS/desktop headroom the pool must never claim
-_FG_PREBUILD_SUSPEND_FLOOR_GB = 5.0  # guard: below this free RAM, suspend the youngest workers
-_FG_PREBUILD_RESUME_FLOOR_GB = 12.0  # guard: above this free RAM, resume one suspended worker per poll
+_FG_PREBUILD_SUSPEND_FLOOR_GB = 2.0  # guard: below this free RAM, suspend the youngest workers (lowered: macOS memory compression handles pressure)
+_FG_PREBUILD_RESUME_FLOOR_GB = 4.0  # guard: above this free RAM, resume one suspended worker per poll (lowered to match)
 _FG_PREBUILD_GUARD_POLL_SECONDS = 5.0
 # Deadlock breaker: on a RAM-starved host free RAM may never reach the resume floor, so after this
 # many consecutive polls suspended without a normal resume (~60s at the poll interval) force-resume
