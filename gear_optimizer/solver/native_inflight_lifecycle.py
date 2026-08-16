@@ -229,6 +229,7 @@ def shutdown_native_inflight_resources(
     post_sender,
     gpu_client,
     gpu_executor,
+    keep_gpu_executor_running: bool = False,
 ) -> None:
     """Shut down native in-flight resources: worker executors concurrently
     (ThreadPoolExecutor + as_completed), then post_sender / gpu_client /
@@ -282,7 +283,8 @@ def shutdown_native_inflight_resources(
         if gpu_executor.is_running:
             gpu_executor.stop()
 
-    _shutdown_step("gpu_executor.stop", _stop_gpu_executor_if_running, shutdown_debug=shutdown_debug)
+    if not keep_gpu_executor_running:
+        _shutdown_step("gpu_executor.stop", _stop_gpu_executor_if_running, shutdown_debug=shutdown_debug)
 
 
 __all__ = [

@@ -134,6 +134,17 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
     return conn
 
 
+def close_cached_db_connection(db_path: Optional[str] = None) -> None:
+    """Close and forget the current thread's cached connection for ``db_path``."""
+    resolved = str(db_path or get_evolution_db_path())
+    conns = getattr(_DB_TLS, "conns", None)
+    if not isinstance(conns, dict):
+        return
+    conn = conns.pop(resolved, None)
+    if conn is not None:
+        conn.close()
+
+
 def init_db():
     """
     Initialize the SQLite database schema if it doesn't exist.

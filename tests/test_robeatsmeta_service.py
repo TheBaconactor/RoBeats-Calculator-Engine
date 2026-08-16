@@ -35,6 +35,8 @@ def data_root(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_TIMELINE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "timeline_frontier_cache")
     monkeypatch.setattr(service, "_FG_RESPONSE_FRONTIER_CACHE_DIR", tmp_path / "bin" / "fg_response_frontier_cache")
     monkeypatch.setattr(service, "_SERVICE_DRAINING_FOR_UPDATE", False)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "0")
+    monkeypatch.setattr(service, "_PERSISTENT_SOLVE_WORKER", None)
     monkeypatch.setattr(service, "_promote_official_result", lambda *_args, **_kwargs: None)
     service._AUTHORITATIVE_PUBLICATION_READY.clear()
     service.clear_official_song_catalog_cache()
@@ -333,6 +335,34 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     assert Path(env["ROBEATSMETA_OPTIMIZER_BIN_DIR"]) == run_root / "bin"  # isolated run state
     assert Path(env["TIMELINE_FRONTIER_CACHE_DIR"]) == data_root / "bin" / "timeline_frontier_cache"
     assert Path(env["FG_RESPONSE_FRONTIER_CACHE_DIR"]) == data_root / "bin" / "fg_response_frontier_cache"
+
+
+def test_official_solve_uses_persistent_worker_for_mode_switches(data_root, monkeypatch):
+    _write_chart(data_root, "Hard", "Feeding [Hard]")
+    worker_calls: list[dict[str, object]] = []
+    entry = {"loadout_hash": "persistent", "score": 999}
+
+    class FakeWorker:
+        def request(self, payload):
+            worker_calls.append(payload)
+            return [entry]
+
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "1")
+    monkeypatch.setattr(service, "_get_persistent_solve_worker", lambda: FakeWorker())
+
+    result = service.solve(
+        {
+            "jobId": "persistent_mode_switch",
+            "targetSongId": "Feeding [Hard]",
+            "reasoning": "strong",
+            "timingMode": "zero_ms",
+        }
+    )
+
+    assert result == [entry]
+    assert len(worker_calls) == 1
+    assert worker_calls[0]["reasoning"] == "strong"
+    assert "Timing Mode\tzero_ms" in str(worker_calls[0]["chartText"])
 
 
 def test_clean_official_solve_promotes_its_result(data_root, monkeypatch):

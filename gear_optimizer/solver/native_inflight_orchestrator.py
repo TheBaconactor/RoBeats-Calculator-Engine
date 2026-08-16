@@ -16,6 +16,7 @@ import time
 import traceback
 from collections import deque
 from gear_optimizer.core.memory import memory_release_requested
+from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.domain.jobs import extract_repeat_context, task_file_path, task_queue_label, task_song_name
 from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
@@ -994,4 +995,5 @@ def run_native_inflight_song_pipeline(
             post_sender=post_sender,
             gpu_client=gpu_client,
             gpu_executor=gpu_executor,
+            keep_gpu_executor_running=env_flag("ROBEATSMETA_OPTIMIZER_PERSISTENT_WORKER"),
         )

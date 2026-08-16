@@ -7,6 +7,7 @@ import ipaddress
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import signal
@@ -819,6 +820,188 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
             pass
 
 
+class _PersistentSolveWorker:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen[str] | None = None
+        self._responses: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._root = _service_run_root() / "persistent_solver"
+
+    def _read_stdout(self, proc: subprocess.Popen[str], responses: queue.Queue[dict[str, Any]]) -> None:
+        stdout = proc.stdout
+        if stdout is None:
+            responses.put({"ok": False, "error": "persistent solver has no stdout pipe", "eof": True})
+            return
+        try:
+            for line in stdout:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning("persistent solver emitted non-JSON output: %s", line.rstrip())
+                    continue
+                if isinstance(payload, dict):
+                    responses.put(payload)
+        finally:
+            responses.put({"ok": False, "error": "persistent solver exited", "eof": True})
+
+    @staticmethod
+    def _drain_stderr(proc: subprocess.Popen[str]) -> None:
+        stderr = proc.stderr
+        if stderr is None:
+            return
+        for line in stderr:
+            text = line.rstrip()
+            if text:
+                logger.debug("[persistent-solver] %s", text)
+
+    def _start_locked(self) -> subprocess.Popen[str]:
+        shutil.rmtree(self._root, ignore_errors=True)
+        data_dir = self._root / "Data"
+        bin_dir = self._root / "bin"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(GEAR_DIR, data_dir / "Gear")
+        env = {
+            **os.environ,
+            "EVOLUTION_DB_PATH": str(bin_dir / "service_result.db"),
+            "METAFINDER_CONFIG_PATH": str(self._root / "config.ini"),
+            "ROBEATSMETA_OPTIMIZER_DATA_DIR": str(data_dir),
+            "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(bin_dir),
+            "ROBEATSMETA_OPTIMIZER_GEAR_SOURCE_DIR": str(GEAR_DIR),
+            "TIMELINE_FRONTIER_CACHE_DIR": str(_TIMELINE_FRONTIER_CACHE_DIR),
+            "FG_RESPONSE_FRONTIER_CACHE_DIR": str(_FG_RESPONSE_FRONTIER_CACHE_DIR),
+            "ROBEATSMETA_OPTIMIZER_SERVICE_MODE": "1",
+            "ROBEATSMETA_OPTIMIZER_PERSISTENT_WORKER": "1",
+            "METAFINDER_PROGRESS": "0",
+            "METAFINDER_OUTPUT": "0",
+            "PYTHONUNBUFFERED": "1",
+        }
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "gear_optimizer.service_worker"],
+            cwd=str(REPO_ROOT),
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            start_new_session=True,
+        )
+        responses: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._responses = responses
+        threading.Thread(
+            target=self._read_stdout,
+            args=(proc, responses),
+            name="persistent-solver-stdout",
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=self._drain_stderr,
+            args=(proc,),
+            name="persistent-solver-stderr",
+            daemon=True,
+        ).start()
+        self._proc = proc
+        return proc
+
+    def _stop_locked(self) -> None:
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        _kill_process_group(proc)
+        try:
+            proc.wait(timeout=5.0)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass
+
+    def request(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        with self._lock:
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                self._stop_locked()
+                proc = self._start_locked()
+            if proc.stdin is None:
+                self._stop_locked()
+                raise RuntimeError("persistent solver has no stdin pipe")
+            try:
+                proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+                proc.stdin.flush()
+                response = self._responses.get(timeout=_SOLVE_TIMEOUT_S)
+            except queue.Empty as exc:
+                self._stop_locked()
+                raise RuntimeError(f"persistent optimizer timed out after {_SOLVE_TIMEOUT_S}s") from exc
+            except (BrokenPipeError, OSError) as exc:
+                self._stop_locked()
+                raise RuntimeError("persistent optimizer worker disconnected") from exc
+            if not bool(response.get("ok")):
+                if response.get("eof") or response.get("restart"):
+                    self._stop_locked()
+                raise RuntimeError(str(response.get("error") or "persistent optimizer failed"))
+            loadouts = response.get("loadouts")
+            if not isinstance(loadouts, list):
+                raise RuntimeError("persistent optimizer returned an invalid loadout payload")
+            return loadouts
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stop_locked()
+
+
+_PERSISTENT_SOLVE_WORKER: _PersistentSolveWorker | None = None
+
+
+def _persistent_worker_enabled() -> bool:
+    value = env_str("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _get_persistent_solve_worker() -> _PersistentSolveWorker:
+    global _PERSISTENT_SOLVE_WORKER
+    if _PERSISTENT_SOLVE_WORKER is None:
+        _PERSISTENT_SOLVE_WORKER = _PersistentSolveWorker()
+    return _PERSISTENT_SOLVE_WORKER
+
+
+def _stop_persistent_solve_worker() -> None:
+    global _PERSISTENT_SOLVE_WORKER
+    worker = _PERSISTENT_SOLVE_WORKER
+    _PERSISTENT_SOLVE_WORKER = None
+    if worker is not None:
+        worker.stop()
+
+
+def _solve_persistent(
+    job: str,
+    chart_text: str,
+    result_song_name: str,
+    repeats: int,
+    reasoning: str,
+    timing_mode: str,
+) -> list[dict[str, Any]]:
+    normalized_chart = _normalize_chart(chart_text, result_song_name, timing_mode)
+    with _SOLVE_SEMAPHORE:
+        _acquire_solve_slot()
+        try:
+            return _get_persistent_solve_worker().request(
+                {
+                    "jobId": job,
+                    "chartText": normalized_chart,
+                    "songName": result_song_name,
+                    "repeats": int(repeats),
+                    "reasoning": reasoning,
+                }
+            )
+        finally:
+            _release_solve_slot()
+
+
 def _solve_isolated(
     job: str,
     chart_text: str,
@@ -940,16 +1123,29 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         logger.info("joining in-flight optimizer solve for job %s", job)
         return state.wait()
     try:
-        state.result = _solve_isolated(
-            job,
-            chart_text,
-            result_song_name,
-            repeats,
-            reasoning,
-            timing_mode,
-            ephemeral_frontiers=bool(str(request.get("chartText") or "").strip()),
-            custom_pool=custom_pool,
+        custom_request = bool(str(request.get("chartText") or "").strip()) or any(
+            custom_pool.get(key) for key in ("gear", "minis", "excludeGear", "excludeMinis")
         )
+        if _persistent_worker_enabled() and not custom_request:
+            state.result = _solve_persistent(
+                job,
+                chart_text,
+                result_song_name,
+                repeats,
+                reasoning,
+                timing_mode,
+            )
+        else:
+            state.result = _solve_isolated(
+                job,
+                chart_text,
+                result_song_name,
+                repeats,
+                reasoning,
+                timing_mode,
+                ephemeral_frontiers=custom_request,
+                custom_pool=custom_pool,
+            )
         _promote_official_result(
             request,
             song_name=result_song_name,
@@ -1139,6 +1335,11 @@ def main(argv: list[str] | None = None) -> int:
 
         threading.Thread(target=shutdown_when_serving, name="frontier-server-restart", daemon=True).start()
 
+    def handle_shutdown_signal(_signum: int, _frame: Any) -> None:
+        threading.Thread(target=server.shutdown, name="optimizer-signal-shutdown", daemon=True).start()
+
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
     maintainer = FrontierServerMaintainer(
         repo_root=REPO_ROOT,
         timeline_cache_root=_TIMELINE_FRONTIER_CACHE_DIR,
@@ -1169,6 +1370,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        _stop_persistent_solve_worker()
         maintainer.stop()
         server.server_close()
     if restart_revision:

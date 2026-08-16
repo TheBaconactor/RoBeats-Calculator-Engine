@@ -115,3 +115,21 @@ def test_shutdown_native_inflight_resources_continues_after_shutdown_failure(mon
         ]
     )
     assert calls[5:] == ["gpu_client:{'timeout': 2.0}"]
+
+
+def test_persistent_worker_keeps_gpu_executor_alive(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(shutdown, "inflight_shutdown_debug_enabled", lambda: False)
+
+    shutdown.shutdown_native_inflight_resources(
+        fg_pipeline=_FgPipeline(calls),
+        decode_queue=_ShutdownQueue(calls, "decode"),
+        prep_queue=_ShutdownQueue(calls, "prep"),
+        post_sender=None,
+        gpu_client=_GpuClient(calls),
+        gpu_executor=_GpuExecutor(calls),
+        keep_gpu_executor_running=True,
+    )
+
+    assert calls[-1] == "gpu_client:{'timeout': 2.0}"
+    assert "gpu_executor.stop" not in calls
