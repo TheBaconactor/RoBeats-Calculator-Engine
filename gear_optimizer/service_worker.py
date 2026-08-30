@@ -10,6 +10,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.core.macos_background import (
+    make_process_background_only,
+    reassert_process_background_only,
+)
+
+if __name__ == "__main__":
+    make_process_background_only()
+
 from gear_optimizer.core.config import (
     AppRuntimeSettings,
     compute_memory_guard_limit,
@@ -100,6 +108,7 @@ class PersistentOptimizerSession:
         warm_cfg = self._max_reasoning_config(cfg)
         self._app._runtime_settings = AppRuntimeSettings.from_config(warm_cfg)
         self._app._configure_execution_and_prewarm(warm_cfg)
+        reassert_process_background_only()
         self._initialized = True
 
     def _write_request_config(self, *, repeats: int, reasoning: str) -> None:
@@ -207,6 +216,7 @@ class PersistentOptimizerSession:
 
 
 def main() -> int:
+    make_process_background_only()
     from gear_optimizer.cli import (
         _apply_service_mode_frontier_threads,
         _apply_taichi_shell_env,
@@ -225,6 +235,7 @@ def main() -> int:
             _apply_taichi_shell_env()
             _apply_throughput_mode_env()
             _apply_service_mode_frontier_threads()
+            reassert_process_background_only()
             session = PersistentOptimizerSession()
             for raw_line in sys.stdin:
                 line = raw_line.strip()
