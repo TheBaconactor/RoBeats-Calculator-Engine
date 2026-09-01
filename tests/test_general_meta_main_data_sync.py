@@ -278,6 +278,28 @@ def test_checked_in_optimizer_csvs_match_exported_game_data(tmp_path: Path) -> N
     )
 
 
+def test_ultimate_end_uses_one_canonical_identity_across_export_and_charts() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    payload = json.loads((repo_root / "Data" / "exported_game_data.json").read_text(encoding="utf-8"))
+    exported_text = json.dumps(payload, ensure_ascii=False)
+
+    assert "ULT!MATE END" not in exported_text
+    assert exported_text.count("ULTIMATE END") > 0
+
+    expected = {
+        repo_root / "Data" / "Normal" / "ULTIMATE END by BlackY.txt": "ULTIMATE END by BlackY",
+        repo_root / "Data" / "Hard" / "ULTIMATE END (Hard) by BlackY.txt": "ULTIMATE END (Hard) by BlackY",
+    }
+    for path, song_name in expected.items():
+        assert path.is_file()
+        assert path.read_text(encoding="utf-8").splitlines()[0] == f"Song Name\t{song_name}"
+
+    minis_text = (repo_root / "Data" / "Gear" / "Minis.csv").read_text(encoding="utf-8")
+    assert "ULT!MATE END" not in minis_text
+    assert "ULTIMATE END by BlackY" in minis_text
+    assert "ULTIMATE END (Hard) by BlackY" in minis_text
+
+
 def test_checked_in_mini_song_targets_resolve_to_song_headers() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     song_names: set[str] = set()
@@ -311,5 +333,13 @@ def test_checked_in_mini_song_targets_resolve_to_song_headers() -> None:
         assert not missing, f"{row['Mini Name']} has unresolved Song Target(s): {missing[:5]}"
         linked_count += len(targets)
 
+    payload = json.loads((repo_root / "Data" / "exported_game_data.json").read_text(encoding="utf-8"))
+    expected_linked_count = sum(
+        len(mini.get("ascension_songs") or [])
+        for entry in payload.get("minis", {}).values()
+        if isinstance(entry, dict)
+        for mini in entry.get("minis", [])
+        if isinstance(mini, dict)
+    )
     assert len(rows) == 90
-    assert linked_count == 2855
+    assert linked_count == expected_linked_count
