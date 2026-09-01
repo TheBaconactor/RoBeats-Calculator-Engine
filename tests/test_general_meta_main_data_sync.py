@@ -292,7 +292,9 @@ def test_ultimate_end_uses_one_canonical_identity_across_export_and_charts() -> 
     }
     for path, song_name in expected.items():
         assert path.is_file()
-        assert path.read_text(encoding="utf-8").splitlines()[0] == f"Song Name\t{song_name}"
+        chart_text = path.read_text(encoding="utf-8")
+        assert chart_text.splitlines()[0] == f"Song Name\t{song_name}"
+        assert "ULT!MATE END" not in chart_text
 
     minis_text = (repo_root / "Data" / "Gear" / "Minis.csv").read_text(encoding="utf-8")
     assert "ULT!MATE END" not in minis_text

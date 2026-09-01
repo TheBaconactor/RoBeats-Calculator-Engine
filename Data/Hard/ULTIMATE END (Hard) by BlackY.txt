@@ -1,7 +1,7 @@
 Song Name	ULTIMATE END (Hard) by BlackY
 Title	ULTIMATE END (Hard)
 Artist	BlackY
-Description	'Who is WAiKURO?' An artist shrouded in mystery who burst onto the rhythm game scene like a comet. Track 13 from BlackY's 2020 album 'ULT!MATE END', art by ??.
+Description	'Who is WAiKURO?' An artist shrouded in mystery who burst onto the rhythm game scene like a comet. Track 13 from BlackY's 2020 album 'ULTIMATE END', art by ??.
 Difficulty	35
 Primary Color	Flow
 Secondary Color	Rush
