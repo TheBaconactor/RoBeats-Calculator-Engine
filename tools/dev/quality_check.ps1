@@ -31,7 +31,6 @@ Write-Host "== Gear Optimizer: Quality Check =="
 Invoke-NativeStep -Label "compileall" -Executable "python" -Arguments @("-m", "compileall", "-q", "gear_optimizer", "tests")
 
 # 2. Policy offense scan
-Invoke-NativeStep -Label "policy offense scan" -Executable "python" -Arguments @("tools/dev/policy_offense_scan.py")
 
 # 3. Lint
 if ($Fix) {

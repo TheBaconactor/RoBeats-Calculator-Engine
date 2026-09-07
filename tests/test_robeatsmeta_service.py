@@ -330,7 +330,10 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
     assert result == [entry]  # full T5 leaderboard returned verbatim for host persistence/replay
     env = captured["env"]
     assert env["EVOLUTION_DB_PATH"].endswith("result.db")  # output DB redirected off evolution.db
-    run_root = data_root / "runs" / "job_abc"
+    run_root = Path(env["EVOLUTION_DB_PATH"]).parent
+    assert run_root.parent == data_root / "runs"
+    assert run_root.name.startswith("job_abc-")
+    assert not run_root.exists()
     assert Path(env["ROBEATSMETA_OPTIMIZER_DATA_DIR"]) == run_root / "Data"  # isolated song source
     assert Path(env["ROBEATSMETA_OPTIMIZER_BIN_DIR"]) == run_root / "bin"  # isolated run state
     assert Path(env["TIMELINE_FRONTIER_CACHE_DIR"]) == data_root / "bin" / "timeline_frontier_cache"
@@ -497,10 +500,11 @@ def test_custom_solve_frontier_caches_are_inside_throwaway_workspace(data_root, 
         "chartText": "Song Name\tCustom\nSong Data\n0.500\t1\t1\t1\n",
     })
 
-    run_bin = data_root / "runs" / "job_custom" / "bin"
+    workspace = Path(captured["EVOLUTION_DB_PATH"]).parent
+    run_bin = workspace / "bin"
     assert Path(captured["TIMELINE_FRONTIER_CACHE_DIR"]) == run_bin / "timeline_frontier_cache"
     assert Path(captured["FG_RESPONSE_FRONTIER_CACHE_DIR"]) == run_bin / "fg_response_frontier_cache"
-    assert not (data_root / "runs" / "job_custom").exists()
+    assert not workspace.exists()
 
 
 def test_solve_stamps_requested_timing_mode_into_isolated_chart(data_root, monkeypatch):
@@ -879,3 +883,91 @@ def test_excluding_an_unknown_name_is_a_no_op(tmp_path):
     service._remove_excluded_rows(work, pool)
     # A stale exclusion (catalog moved on) must not fail the solve or drop anything.
     assert len(parse_gear_rows(str(work / "Gears.csv"))) == len(parse_gear_rows(str(catalog / "Gears.csv")))
+
+
+def test_same_job_different_inputs_own_separate_workspaces(data_root, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    gear = data_root / 'Data' / 'Gear'
+    gear.mkdir(parents=True)
+    (gear / 'Gears.csv').write_text('name\n', encoding='utf-8')
+    runs = data_root / 'runs'
+    monkeypatch.setenv('ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR', str(runs))
+    monkeypatch.setattr(service, '_SOLVE_SEMAPHORE', threading.Semaphore(2))
+    monkeypatch.setattr(service, '_acquire_solve_slot', lambda: None)
+    monkeypatch.setattr(service, '_release_solve_slot', lambda: None)
+    first_started = threading.Event()
+    both_started = threading.Barrier(2, timeout=5)
+    paths = []
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, _cmd, **kwargs):
+            self.work = Path(kwargs['env']['EVOLUTION_DB_PATH']).parent
+            self.chart = self.work / 'Data' / 'Hard' / 'same.txt'
+            self.original = self.chart.read_text()
+            paths.append(self.work)
+            first_started.set()
+
+        def communicate(self, timeout=None):
+            both_started.wait()
+            assert self.chart.read_text() == self.original
+            return '', ''
+
+    monkeypatch.setattr(service.subprocess, 'Popen', Process)
+    monkeypatch.setattr(service, 'get_best_loadouts', lambda *a, **kw: [{'score': 1}])
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(service.solve, {'jobId': 'same', 'chartText': 'Song Data\n500\t0\t0\t1\n'})
+        assert first_started.wait(5)
+        second = pool.submit(service.solve, {'jobId': 'same', 'chartText': 'Song Data\n750\t0\t0\t1\n'})
+        assert first.result(timeout=10) == [{'score': 1}]
+        assert second.result(timeout=10) == [{'score': 1}]
+    assert len(set(paths)) == 2
+    assert all(path.parent == runs and not path.exists() for path in paths)
+
+
+def test_isolated_workspace_cleanup_includes_preparation_failure(data_root, monkeypatch):
+    runs = data_root / 'runs'
+    monkeypatch.setenv('ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR', str(runs))
+
+    def fail_copy(*args, **kwargs):
+        raise OSError('catalog unavailable')
+
+    monkeypatch.setattr(service.shutil, 'copytree', fail_copy)
+    with pytest.raises(OSError, match='catalog unavailable'):
+        service._solve_isolated('job', 'Song Data\n500\t0\t0\t1\n', 'song', 1)
+    assert not list(runs.iterdir())
+
+
+@pytest.mark.parametrize('exit_code, entries, message', [
+    (1, [{'score': 1}], 'optimizer exited 1'),
+    (0, [], 'optimizer produced no T5 loadout'),
+])
+def test_failed_solve_never_publishes_plausible_results(data_root, monkeypatch, exit_code, entries, message):
+    from unittest.mock import Mock
+
+    _write_chart(data_root, 'Hard', 'Official')
+    gear = data_root / 'Data' / 'Gear'
+    gear.mkdir(parents=True)
+    (gear / 'Gears.csv').write_text('name\n', encoding='utf-8')
+    runs = data_root / 'runs'
+    monkeypatch.setenv('ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR', str(runs))
+    publish = Mock()
+    monkeypatch.setattr(service, '_promote_official_result', publish)
+    monkeypatch.setattr(service, 'get_best_loadouts', lambda *a, **kw: entries)
+
+    class Process:
+        returncode = exit_code
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def communicate(self, timeout=None):
+            return '', 'GPU execution failed'
+
+    monkeypatch.setattr(service.subprocess, 'Popen', Process)
+    with pytest.raises(RuntimeError, match=message):
+        service.solve({'jobId': 'failure', 'targetSongId': 'Official'})
+    publish.assert_not_called()
+    assert not list(runs.iterdir())

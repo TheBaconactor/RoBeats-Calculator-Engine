@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -1012,87 +1013,88 @@ def _solve_isolated(
     ephemeral_frontiers: bool = False,
     custom_pool: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Run the canonical optimizer pipeline once in a throwaway per-job workspace."""
-    work = _service_run_root() / job
-    shutil.rmtree(work, ignore_errors=True)
-    data_dir = work / "Data"
-    (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
-    shutil.copytree(GEAR_DIR, data_dir / "Gear")  # real files; discovery does not follow symlinks
-    if custom_pool and any(custom_pool.values()):
-        # Per-request copies only — the catalog Data/Gear CSVs are never touched.
-        _remove_excluded_rows(data_dir / "Gear", custom_pool)
-        _append_custom_pool_rows(data_dir / "Gear", custom_pool)
-    (data_dir / "Hard" / f"{job}.txt").write_text(
-        _normalize_chart(chart_text, result_song_name, _normalize_timing_mode(timing_mode)),
-        encoding="utf-8",
-    )
-    # Reasoning effort scales the GA search knobs. Only write them above "default" so the default
-    # path stays byte-identical to before this knob existed (config.py's own fallbacks apply).
-    level = _normalize_reasoning(reasoning)
-    reasoning_lines = ""
-    if level != "default":
-        depth, multi_start = _reasoning_search_knobs(level)
-        reasoning_lines = f"GA_SearchDepth = {depth}\nGA_MultiStart = {multi_start}\n"
-    # The isolated Data dir holds exactly this one chart, so "process discovered charts once"
-    # (empty Song_Name + LoopForever off) solves it; a fresh bin means no resume/candidate queue.
-    (work / "config.ini").write_text(
-        "[CalculateSong]\n"
-        "LoopForever = false\n\n"
-        "[IterationEngine]\n"
-        "IgnoreResumeQueue = true\n"
-        f"SongRepeats = {repeats}\n"
-        "SongQueueLimit = 1\n"
-        f"{reasoning_lines}",
-        encoding="utf-8",
-    )
-    db_path = work / "result.db"
-    timeline_cache_dir = work / "bin" / "timeline_frontier_cache" if ephemeral_frontiers else _TIMELINE_FRONTIER_CACHE_DIR
-    fg_cache_dir = work / "bin" / "fg_response_frontier_cache" if ephemeral_frontiers else _FG_RESPONSE_FRONTIER_CACHE_DIR
-    env = {
-        **os.environ,
-        "EVOLUTION_DB_PATH": str(db_path),
-        "METAFINDER_CONFIG_PATH": str(work / "config.ini"),
-        "ROBEATSMETA_OPTIMIZER_DATA_DIR": str(data_dir),
-        "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(work / "bin"),
-        "TIMELINE_FRONTIER_CACHE_DIR": str(timeline_cache_dir),
-        "FG_RESPONSE_FRONTIER_CACHE_DIR": str(fg_cache_dir),
-        # Pin service mode for the child regardless of how THIS process was started: without it a
-        # solve child re-enables the frontier self-update client and can network-sync + os.execv
-        # itself mid-job (the launchd wrapper happens to export this, but nothing else does).
-        "ROBEATSMETA_OPTIMIZER_SERVICE_MODE": "1",
-    }
-    with _SOLVE_SEMAPHORE:
-        _acquire_solve_slot()  # memory-headroom gate: hold here until it's safe to add a solve
-        try:
-            # start_new_session -> the solve gets its own process group, so on timeout we can reap
-            # the whole tree (main.py + its GPU/worker children) instead of orphaning them.
-            proc = subprocess.Popen(
-                [sys.executable, str(REPO_ROOT / "main.py"), "run"],
-                cwd=str(REPO_ROOT),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
+    """Run the canonical optimizer pipeline in an execution-owned workspace."""
+    run_root = _service_run_root()
+    run_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"{job}-", dir=run_root) as workspace:
+        work = Path(workspace)
+        data_dir = work / "Data"
+        (data_dir / "Hard").mkdir(parents=True, exist_ok=True)
+        shutil.copytree(GEAR_DIR, data_dir / "Gear")  # real files; discovery does not follow symlinks
+        if custom_pool and any(custom_pool.values()):
+            # Per-request copies only — the catalog Data/Gear CSVs are never touched.
+            _remove_excluded_rows(data_dir / "Gear", custom_pool)
+            _append_custom_pool_rows(data_dir / "Gear", custom_pool)
+        (data_dir / "Hard" / f"{job}.txt").write_text(
+            _normalize_chart(chart_text, result_song_name, _normalize_timing_mode(timing_mode)),
+            encoding="utf-8",
+        )
+        # Reasoning effort scales the GA search knobs. Only write them above "default" so the default
+        # path stays byte-identical to before this knob existed (config.py's own fallbacks apply).
+        level = _normalize_reasoning(reasoning)
+        reasoning_lines = ""
+        if level != "default":
+            depth, multi_start = _reasoning_search_knobs(level)
+            reasoning_lines = f"GA_SearchDepth = {depth}\nGA_MultiStart = {multi_start}\n"
+        # The isolated Data dir holds exactly this one chart, so "process discovered charts once"
+        # (empty Song_Name + LoopForever off) solves it; a fresh bin means no resume/candidate queue.
+        (work / "config.ini").write_text(
+            "[CalculateSong]\n"
+            "LoopForever = false\n\n"
+            "[IterationEngine]\n"
+            "IgnoreResumeQueue = true\n"
+            f"SongRepeats = {repeats}\n"
+            "SongQueueLimit = 1\n"
+            f"{reasoning_lines}",
+            encoding="utf-8",
+        )
+        db_path = work / "result.db"
+        timeline_cache_dir = work / "bin" / "timeline_frontier_cache" if ephemeral_frontiers else _TIMELINE_FRONTIER_CACHE_DIR
+        fg_cache_dir = work / "bin" / "fg_response_frontier_cache" if ephemeral_frontiers else _FG_RESPONSE_FRONTIER_CACHE_DIR
+        env = {
+            **os.environ,
+            "EVOLUTION_DB_PATH": str(db_path),
+            "METAFINDER_CONFIG_PATH": str(work / "config.ini"),
+            "ROBEATSMETA_OPTIMIZER_DATA_DIR": str(data_dir),
+            "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(work / "bin"),
+            "TIMELINE_FRONTIER_CACHE_DIR": str(timeline_cache_dir),
+            "FG_RESPONSE_FRONTIER_CACHE_DIR": str(fg_cache_dir),
+            # Pin service mode for the child regardless of how THIS process was started: without it a
+            # solve child re-enables the frontier self-update client and can network-sync + os.execv
+            # itself mid-job (the launchd wrapper happens to export this, but nothing else does).
+            "ROBEATSMETA_OPTIMIZER_SERVICE_MODE": "1",
+        }
+        with _SOLVE_SEMAPHORE:
+            _acquire_solve_slot()  # memory-headroom gate: hold here until it's safe to add a solve
             try:
-                out, err = proc.communicate(timeout=_SOLVE_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                _kill_process_group(proc)
-                proc.communicate()
-                raise RuntimeError(f"optimizer timed out after {_SOLVE_TIMEOUT_S}s")
-            if proc.returncode != 0:
-                tail = " | ".join((err or out or "").strip().splitlines()[-20:])
-                raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
-            entries = get_best_loadouts(
-                result_song_name, limit=LOADOUTS_PER_SONG_LIMIT, team_buff="T5", db_path=str(db_path)
-            )
-            if not entries:
-                raise RuntimeError("optimizer produced no T5 loadout")
-            return entries
-        finally:
-            _release_solve_slot()
-            shutil.rmtree(work, ignore_errors=True)
+                # start_new_session -> the solve gets its own process group, so on timeout we can reap
+                # the whole tree (main.py + its GPU/worker children) instead of orphaning them.
+                proc = subprocess.Popen(
+                    [sys.executable, str(REPO_ROOT / "main.py"), "run"],
+                    cwd=str(REPO_ROOT),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+                try:
+                    out, err = proc.communicate(timeout=_SOLVE_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    _kill_process_group(proc)
+                    proc.communicate()
+                    raise RuntimeError(f"optimizer timed out after {_SOLVE_TIMEOUT_S}s")
+                if proc.returncode != 0:
+                    tail = " | ".join((err or out or "").strip().splitlines()[-20:])
+                    raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
+                entries = get_best_loadouts(
+                    result_song_name, limit=LOADOUTS_PER_SONG_LIMIT, team_buff="T5", db_path=str(db_path)
+                )
+                if not entries:
+                    raise RuntimeError("optimizer produced no T5 loadout")
+                return entries
+            finally:
+                _release_solve_slot()
 
 
 def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
