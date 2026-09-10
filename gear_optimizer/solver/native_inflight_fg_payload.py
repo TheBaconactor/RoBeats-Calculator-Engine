@@ -9,9 +9,8 @@ from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_payload import has_valid_fg_payload
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_candidate_names, materialize_entry_names
-from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants
+from gear_optimizer.helpers.song_helpers.payload_compaction import compact_fg_variants, compact_item_names, compact_prev_record
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
-from gear_optimizer.solver.inflight_utils import _compact_items, _compact_prev_record
 from gear_optimizer.solver.native_inflight_config import NativeSong
 from gear_optimizer.solver.native_inflight_pipeline import prepare_ga_candidate_surface_for_fg
 
@@ -80,13 +79,13 @@ def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
         "ref_arrays": song.gpu_inputs.ref_arrays,
         "calc_song": song.gpu_inputs.calc_song,
         "best_data": best_data_post,
-        "best_gear": _compact_items(song.runtime.decode.best_gear),
-        "best_minis": _compact_items(song.runtime.decode.best_minis),
-        "current_gear": _compact_items(song.gpu_inputs.current_gear_list),
-        "current_minis": _compact_items(song.gpu_inputs.current_mini_list),
+        "best_gear": compact_item_names(song.runtime.decode.best_gear, drop_empty=True),
+        "best_minis": compact_item_names(song.runtime.decode.best_minis, drop_empty=True),
+        "current_gear": compact_item_names(song.gpu_inputs.current_gear_list, drop_empty=True),
+        "current_minis": compact_item_names(song.gpu_inputs.current_mini_list, drop_empty=True),
         "fg_variants": fg_variants_post,
         "ga_candidates": ga_candidates_post,
-        "prev_record": _compact_prev_record(song.runtime.db.prev_record),
+        "prev_record": compact_prev_record(song.runtime.db.prev_record, drop_empty_item_names=True),
         "attempt_lifetime": int(song.runtime.db.attempt_lifetime or 0),
         "prev_attempts_first": int(song.runtime.db.prev_attempts_first or 0),
         "db_best_fg_score": int(song.runtime.db.db_best_fg_score or 0),
@@ -109,8 +108,8 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
         is_ga = bool(v.get("_is_ga"))
         base_score = safe_int(v.get("base_score", v.get("score", 0)), 0)
         fg_score = safe_int(v.get("fg_score", 0), 0)
-        gear_names = _compact_items(v.get("gear") or [])
-        mini_names = _compact_items(v.get("minis") or [])
+        gear_names = compact_item_names(v.get("gear") or [], drop_empty=True)
+        mini_names = compact_item_names(v.get("minis") or [], drop_empty=True)
         data = v.get("data")
         if not (isinstance(data, dict) and has_valid_fg_payload(data)):
             data = v.get("force")

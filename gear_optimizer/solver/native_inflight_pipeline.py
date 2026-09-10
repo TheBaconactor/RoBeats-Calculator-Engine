@@ -7,14 +7,13 @@ import time
 from typing import Any, Optional
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.core.parsing import env_get
+from gear_optimizer.core.parsing import env_get, truthy
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.data.song_io import clone_calc_song
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.native_inflight_config import NativeSong
 from gear_optimizer.solver.native_inflight_pipeline_fg import (
     NativeFGJobCompletion,
@@ -107,7 +106,7 @@ class InFlightStageProfiler:
         self._stage: dict[str, dict[str, Any]] = {}
         self._song: dict[str, dict[str, float]] = {}
         self._allow_prefixes = self._parse_prefixes(env_get("INFLIGHT_STAGE_PROFILE_PREFIX", ""))
-        if _truthy(env_get("INFLIGHT_STAGE_PROFILE_FG_ONLY", "0")) and not self._allow_prefixes:
+        if truthy(env_get("INFLIGHT_STAGE_PROFILE_FG_ONLY", "0")) and not self._allow_prefixes:
             self._allow_prefixes = ("fg_", "underfed_wait")
 
     @staticmethod
@@ -365,7 +364,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     queue_wait_ms = 0.0
     if isinstance(prep_submit_t0, (int, float)):
         queue_wait_ms = max(0.0, (float(wall_t0) - float(prep_submit_t0)) * 1000.0)
-    perf = _truthy(env_get("PERF_TIMING", "0"))
+    perf = truthy(env_get("PERF_TIMING", "0"))
     t0 = time.perf_counter()
     fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT)
     resolve_active_fg_calc_song(song)

@@ -1,4 +1,6 @@
 from concurrent.futures import Future
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from tests.native_song_factory import make_native_song
@@ -108,7 +110,7 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
 
     calc_song = {
         "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
-        "song_data": {"timestamps": [0.0], "note_types": [1]},
+        "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
     }
     ref_arrays = _ref_arrays()
     _prebuild_timeline_frontier(calc_song, ref_arrays)
@@ -185,7 +187,7 @@ def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
 
     calc_song = {
         "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
-        "song_data": {"timestamps": [0.0]},
+        "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
     }
     ref_arrays = _ref_arrays()
     _prebuild_timeline_frontier(calc_song, ref_arrays)
@@ -240,7 +242,7 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
 
     inline_calc_song = {
         "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
-        "song_data": {"timestamps": [0.0]},
+        "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
     }
     inline_ref_arrays = _ref_arrays()
     _prebuild_timeline_frontier(inline_calc_song, inline_ref_arrays)
@@ -389,19 +391,26 @@ def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
     assert song.runtime.db.record_info["record_update"] is True
 
 
-def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay_authority(monkeypatch):
+def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay_authority():
     from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "persistence_authority_be_right_there_t5.json").read_text()
+    )
+    gear = fixture["base_entry"]["gear"]
+    minis = fixture["base_entry"]["minis"]
     calc_song = {
         "metadata": {
+            "Song Name": "pytest_native_deferred_post_exact_authority",
+            "Difficulty": "Hard",
             "Primary Color": "Rush",
             "Secondary Color": "Flow",
             "Long Notes": 0,
             "Last Note Time": 0.0,
         },
-        "song_data": {"timestamps": [0.0]},
+        "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
     }
     ref_arrays = _ref_arrays()
     stats = {
@@ -416,15 +425,6 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
     _prebuild_timeline_frontier(calc_song, ref_arrays)
     raw_exact_score = int(score_stats_exact(stats, calc_song, ref_arrays))
     inflated_score = raw_exact_score + 12345
-
-    monkeypatch.setattr(
-        result_events,
-        "materialize_candidate_names",
-        lambda candidate, *, registry=None, mutate=False: (
-            list(candidate.get("Gear") or []),
-            list(candidate.get("Minis") or []),
-        ),
-    )
 
     song = make_native_song(
         song_name="pytest_native_deferred_post_exact_authority",
@@ -444,8 +444,8 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
             "Stats": dict(stats),
             "Selected Element": "Rush",
         },
-        best_gear=["G1"],
-        best_minis=["M1"],
+        best_gear=gear,
+        best_minis=minis,
         current_gear_list=[],
         current_mini_list=[],
         meta_primary_color="Rush",
@@ -478,8 +478,8 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
     persisted = persist_entries[0]
     persisted_stats = dict((persisted.get("details") or {}).get("Stats") or {})
 
-    assert persisted["gear"] == ["G1"]
-    assert persisted["minis"] == ["M1"]
+    assert persisted["gear"] == gear
+    assert persisted["minis"] == minis
     assert persisted["fg_score"] == 0
     assert persisted["force"] is None
     assert persisted["score"] != inflated_score

@@ -289,33 +289,6 @@ def skyline_load_initial_populations_batch(
     return n_total
 
 
-def skyline_upload_init_heuristic_topk(*, topk_ids: np.ndarray, heuristic_k: int, n_slots: int = 9) -> None:
-    """
-    Upload per-slot heuristic sampling table used by GPU initial population generation.
-
-    `topk_ids` is shape (n_slots, heuristic_k) containing valid item IDs for each slot.
-    When heuristic_k <= 0, callers can skip this entirely.
-    """
-    ensure_ready()
-    heuristic_k = int(heuristic_k)
-    n_slots = int(n_slots)
-    if heuristic_k <= 0:
-        return
-
-    src = np.asarray(topk_ids, dtype=np.int32)
-    if src.ndim != 2:
-        raise ValueError(f"topk_ids must be 2D; got shape={getattr(src, 'shape', None)}")
-    if int(src.shape[0]) < n_slots:
-        raise ValueError(f"topk_ids has too few slots: {src.shape[0]} < {n_slots}")
-
-    # Field shape is (MAX_SLOTS, K) where K may be 1 when disabled.
-    k_field = int(getattr(fields, "SKYLINE_INIT_HEURISTIC_K", heuristic_k) or heuristic_k)
-    k_field = max(1, int(k_field))
-    buf = np.zeros((fields.MAX_SLOTS, k_field), dtype=np.int32)
-    buf[:n_slots, : min(k_field, heuristic_k)] = src[:n_slots, : min(heuristic_k, k_field)]
-    fields.skyline_init_heuristic_topk.from_numpy(buf)
-
-
 def skyline_generate_initial_populations(
     *,
     run_idx_start: int,
@@ -965,57 +938,6 @@ def skyline_write_best_and_update_global(
     )
 
 
-def skyline_write_best_results_from_key(
-    n_genomes: int,
-    n_slots: int,
-    total_budget: int,
-    gem_scale_fever: int,
-    *,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
-    song_slot: int = 0,
-    use_exact_inner_solver: bool = True,
-) -> None:
-    """
-    Materialize per-genome skyline result rows from the already-evaluated chunk state.
-
-    This is the explicit "finalize full population now" companion to
-    `skyline_evaluate_population(..., materialize_mode="none")`.
-    """
-    ensure_ready()
-    _skyline_materialize_population_results(
-        n_genomes=int(n_genomes),
-        n_slots=int(n_slots),
-        total_budget=int(total_budget),
-        gem_scale_fever=int(gem_scale_fever),
-        is_p_ft=int(is_p_ft),
-        is_s_ft=int(is_s_ft),
-        is_p_ff=int(is_p_ff),
-        is_s_ff=int(is_s_ff),
-        is_p_pp=int(is_p_pp),
-        is_s_pp=int(is_s_pp),
-        is_p_cm=int(is_p_cm),
-        is_s_cm=int(is_s_cm),
-        is_p_fm=int(is_p_fm),
-        is_s_fm=int(is_s_fm),
-        is_p_ov=int(is_p_ov),
-        is_s_ov=int(is_s_ov),
-        song_slot=int(song_slot),
-        use_exact_inner_solver=bool(use_exact_inner_solver),
-        materialize_mode="results_only",
-    )
-
-
 def _validate_skyline_runs_batch(
     *, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int
 ) -> tuple[int, int, int, int]:
@@ -1039,70 +961,6 @@ def _validate_skyline_runs_batch(
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
     return run_idx_start, n_runs, n_genomes_per_run, n_slots
-
-
-def skyline_write_best_results_and_update_runs_best(
-    *,
-    run_idx_start: int,
-    n_runs: int,
-    n_genomes_per_run: int,
-    n_slots: int,
-    total_budget: int,
-    gem_scale_fever: int,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
-    song_slot: int = 0,
-    use_exact_inner_solver: bool = True,
-) -> None:
-    """
-    FUSED: materialize per-genome skyline results and refresh per-run best rows.
-
-    This is the packed multi-run companion to `skyline_write_best_and_update_global()`.
-    Call it after `skyline_evaluate_population(..., materialize_mode="none")` when the active
-    population packs multiple independent runs contiguously.
-    """
-    ensure_ready()
-    run_idx_start, n_runs, n_genomes_per_run, n_slots = _validate_skyline_runs_batch(
-        run_idx_start=run_idx_start,
-        n_runs=n_runs,
-        n_genomes_per_run=n_genomes_per_run,
-        n_slots=n_slots,
-    )
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-
-    kernels.skyline_write_best_results_and_update_runs_best_kernel(
-        int(run_idx_start),
-        int(n_runs),
-        int(n_genomes_per_run),
-        int(n_slots),
-        int(total_budget),
-        int(gem_scale_fever),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
-        int(song_slot),
-        int(bool(use_exact_inner_solver)),
-    )
 
 
 def skyline_refresh_scores_and_update_runs_best(
@@ -1311,106 +1169,6 @@ def skyline_next_generation_fused_runs(
         int(novelty_repair_attempts),
     )
     kernels.SKYLINE_swap_population_kernel(int(n_total), n_slots)
-
-
-def skyline_refresh_scores_update_runs_best_and_next_generation_fused_runs(
-    *,
-    run_idx_start: int,
-    n_runs: int,
-    n_genomes_per_run: int,
-    n_slots: int = 9,
-    total_budget: int,
-    gem_scale_fever: int,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
-    song_slot: int = 0,
-    use_exact_inner_solver: bool = True,
-    mutation_rate: float = 0.02,
-    immigrant_rate: float = 0.0,
-    tournament_k: int = 3,
-    n_islands: int = 1,
-    elites_per_island: int = 1,
-    novelty_repair_attempts: int = 0,
-) -> None:
-    """
-    Fused packed multi-run transition.
-
-    This is the non-final, non-migration companion to:
-    `skyline_refresh_scores_and_update_runs_best()` followed by `skyline_next_generation_fused_runs()`.
-    It preserves row-0 run best before mutating the population, then swaps the next generation in.
-    """
-    ensure_ready()
-    run_idx_start, n_runs, n_genomes_per_run, n_slots = _validate_skyline_runs_batch(
-        run_idx_start=run_idx_start,
-        n_runs=n_runs,
-        n_genomes_per_run=n_genomes_per_run,
-        n_slots=n_slots,
-    )
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-
-    n_islands = int(n_islands)
-    elites_per_island = int(elites_per_island)
-    tournament_k = int(tournament_k)
-    if n_islands < 1:
-        n_islands = 1
-    if elites_per_island < 0:
-        elites_per_island = 0
-    if tournament_k < 1:
-        tournament_k = 1
-    novelty_repair_attempts = max(0, min(4, int(novelty_repair_attempts)))
-
-    mr_fp = probability_to_u32_fp(float(mutation_rate))
-    ir_fp = probability_to_u32_fp(float(immigrant_rate))
-
-    kernels.skyline_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
-        int(run_idx_start),
-        int(n_runs),
-        int(n_genomes_per_run),
-        int(n_slots),
-        int(total_budget),
-        int(gem_scale_fever),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
-        int(song_slot),
-        int(bool(use_exact_inner_solver)),
-        int(n_islands),
-        int(elites_per_island),
-        int(tournament_k),
-        mr_fp,
-        ir_fp,
-        int(novelty_repair_attempts),
-    )
-    kernels.SKYLINE_swap_population_kernel(int(n_runs) * int(n_genomes_per_run), int(n_slots))
-
-
-def skyline_download_population_indices(*, n_genomes: int, n_slots: int = 9) -> np.ndarray:
-    """Download the current resident population indices (for testing / debugging)."""
-    ensure_ready()
-    n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-    out = fields.population_indices.to_numpy()
-    return np.asarray(out[:n_genomes, :n_slots], dtype=np.int32)
 
 
 def skyline_download_scores(n_genomes: int) -> np.ndarray:
@@ -1689,23 +1447,6 @@ def SKYLINE_INIT_global_best() -> None:
     """
     ensure_ready()
     kernels.SKYLINE_INIT_global_best_kernel()
-
-
-def skyline_update_global_best(n_genomes: int, n_slots: int = 9) -> None:
-    """
-    Update global best genome on GPU if current generation has a better score.
-
-    Atomically tracks the best genome across all generations on GPU,
-    avoiding expensive per-generation CPU downloads.
-
-    Call this after each skyline_evaluate_population() call.
-
-    Args:
-        n_genomes: Number of genomes to check
-        n_slots: Number of equipment slots per genome
-    """
-    ensure_ready()
-    kernels.skyline_update_global_best_kernel(int(n_genomes), int(n_slots))
 
 
 def skyline_download_global_best() -> tuple[int, np.ndarray, np.ndarray]:

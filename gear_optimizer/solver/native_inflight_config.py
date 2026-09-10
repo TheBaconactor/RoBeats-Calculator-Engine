@@ -17,10 +17,9 @@ from typing import Any, Optional
 import numpy as np
 
 from gear_optimizer.core.config import GASettings as GARuntimeSettings
-from gear_optimizer.core.parsing import env_get
+from gear_optimizer.core.parsing import env_get, truthy
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.domain.jobs import task_cfg_dict
-from gear_optimizer.solver.inflight_utils import _truthy
 
 logger = logging.getLogger(__name__)
 
@@ -130,11 +129,11 @@ def read_inflight_runtime_settings(
 
 
 def inflight_stall_debug_enabled(*, env_get_fn=env_get) -> bool:
-    return _truthy(env_get_fn("INFLIGHT_STALL_DEBUG", "0"))
+    return truthy(env_get_fn("INFLIGHT_STALL_DEBUG", "0"))
 
 
 def inflight_shutdown_debug_enabled(*, env_get_fn=env_get) -> bool:
-    return _truthy(env_get_fn("INFLIGHT_SHUTDOWN_DEBUG", "0"))
+    return truthy(env_get_fn("INFLIGHT_SHUTDOWN_DEBUG", "0"))
 
 
 def first_task_config(tasks: list[tuple]) -> Any | None:
@@ -265,7 +264,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     try:
         if os.name == "nt" and env_get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE") is None:
             os.environ["GPU_ALLOW_SYSTEM_TIMER_OVERRIDE"] = "1"
-            if _truthy(env_get("PERF_TIMING", "0")):
+            if truthy(env_get("PERF_TIMING", "0")):
                 logger.debug(
                     "[InFlight][Perf] Enabled 1ms Windows timer period for GPU batching "
                     "(set GPU_ALLOW_SYSTEM_TIMER_OVERRIDE=0 to disable)."
@@ -273,7 +272,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     except (ValueError, TypeError):
         pass
 
-    stage_profile_enabled = _truthy(env_get("INFLIGHT_STAGE_PROFILE", "0"))
+    stage_profile_enabled = truthy(env_get("INFLIGHT_STAGE_PROFILE", "0"))
     stage_profile_path = env_get("INFLIGHT_STAGE_PROFILE_PATH")
     if stage_profile_enabled and not stage_profile_path:
         try:
@@ -284,7 +283,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
             logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
             stage_profile_path = None
 
-    fg_submit_debug = _truthy(env_get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
+    fg_submit_debug = truthy(env_get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
     runtime = read_inflight_runtime_settings()
     loop_observer = read_inflight_loop_observer_settings()
 

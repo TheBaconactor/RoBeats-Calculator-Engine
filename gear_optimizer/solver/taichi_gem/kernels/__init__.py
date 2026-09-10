@@ -227,7 +227,6 @@ try:
         skyline_aggregate_and_init_best_kernel,
         skyline_next_generation_full_kernel,
         skyline_next_generation_full_runs_kernel,
-        skyline_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
         SKYLINE_swap_population_kernel,
     )
     from .skyline_eval import (
@@ -235,7 +234,6 @@ try:
         skyline_refresh_scores_and_update_runs_best_kernel,
         skyline_write_scores_from_key_kernel,
         skyline_write_best_results_from_key_kernel,
-        skyline_write_best_results_and_update_runs_best_kernel,
         SKYLINE_INIT_global_best_kernel,
         skyline_pack_global_best_kernel,
         skyline_update_global_best_kernel,
@@ -280,17 +278,11 @@ else:
         "skyline_aggregate_and_init_best_kernel": skyline_aggregate_and_init_best_kernel,
         "skyline_next_generation_full_kernel": skyline_next_generation_full_kernel,
         "skyline_next_generation_full_runs_kernel": skyline_next_generation_full_runs_kernel,
-        "skyline_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel": (
-            skyline_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel
-        ),
         "SKYLINE_swap_population_kernel": SKYLINE_swap_population_kernel,
         "skyline_find_best_combo_warmstart_kernel": skyline_find_best_combo_warmstart_kernel,
         "skyline_refresh_scores_and_update_runs_best_kernel": skyline_refresh_scores_and_update_runs_best_kernel,
         "skyline_write_scores_from_key_kernel": skyline_write_scores_from_key_kernel,
         "skyline_write_best_results_from_key_kernel": skyline_write_best_results_from_key_kernel,
-        "skyline_write_best_results_and_update_runs_best_kernel": (
-            skyline_write_best_results_and_update_runs_best_kernel
-        ),
         "SKYLINE_INIT_global_best_kernel": SKYLINE_INIT_global_best_kernel,
         "skyline_pack_global_best_kernel": skyline_pack_global_best_kernel,
         "skyline_update_global_best_kernel": skyline_update_global_best_kernel,

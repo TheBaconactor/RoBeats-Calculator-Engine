@@ -12,12 +12,11 @@ import numpy as np
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.config import GASettings as GARuntimeSettings
 from gear_optimizer.core.gem_defs import UserGemsSettings
-from gear_optimizer.core.parsing import env_get
+from gear_optimizer.core.parsing import env_get, truthy
 from gear_optimizer.core.singleflight import SingleFlight
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_view
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
-from gear_optimizer.solver.inflight_utils import _truthy
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
 from gear_optimizer.solver.native_inflight_config import (
@@ -100,7 +99,7 @@ def _prep_cache_get_or_build(
 
 
 def _cache_stats_enabled() -> bool:
-    return _truthy(env_get("INFLIGHT_CACHE_STATS", "0"))
+    return truthy(env_get("INFLIGHT_CACHE_STATS", "0"))
 
 
 def _cache_stats_emit_interval_s() -> float:

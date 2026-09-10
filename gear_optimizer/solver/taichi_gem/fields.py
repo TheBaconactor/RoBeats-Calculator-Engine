@@ -461,8 +461,6 @@ def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | 
     _sync_skyline_aliases()
 
 
-def configure_skyline_run_buffers(*, max_runs: int | None = None, max_genomes: int | None = None) -> None:
-    configure_ga_run_buffers(max_runs=max_runs, max_genomes=max_genomes)
 def _apply_requested_ga_run_buffers() -> None:
     """
     Re-apply the last requested GA buffer sizing before the first field allocation.

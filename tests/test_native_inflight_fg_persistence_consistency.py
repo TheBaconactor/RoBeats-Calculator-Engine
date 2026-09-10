@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from tests.native_song_factory import make_native_song
 
@@ -160,14 +161,32 @@ def test_native_inflight_fg_persist_entries_drop_non_force_variants():
 
 
 def test_native_inflight_fg_persist_entries_save_direct_fg_row(tmp_path, monkeypatch):
-    from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
+    from gear_optimizer.core.stats_calculator import compute_full_stats
+    from gear_optimizer.core.team_buff import team_buff_effect
+    from gear_optimizer.data.database import (
+        get_db_connection, get_gears_by_name_cached, get_minis_by_name_cached, init_db, save_loadouts_batch,
+    )
+    from gear_optimizer.data.mini_ascension import materialize_minis_for_song
     from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
 
     db_path = tmp_path / "native_fg_direct.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     init_db()
 
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "persistence_authority_be_right_there_t5.json").read_text()
+    )
+    gear = fixture["base_entry"]["gear"]
+    minis = fixture["base_entry"]["minis"]
     song_name = "pytest_native_inflight_fg_direct"
+    _, minis_by_name, _ = materialize_minis_for_song(
+        minis_by_name=get_minis_by_name_cached(), song_name=song_name,
+        primary_color="Rush", secondary_color="Flow",
+    )
+    visible = compute_full_stats(
+        gear, minis, {"Perfect Points": 1, "Fever Time": 9, "Fever Fill Rate": 18}, "Rush",
+        get_gears_by_name_cached(), minis_by_name, team_buff_effect("T5", "Rush"),
+    )
     entries = build_fg_persist_entries(
         _song_with_variants(
             [
@@ -176,9 +195,9 @@ def test_native_inflight_fg_persist_entries_save_direct_fg_row(tmp_path, monkeyp
                     "score": 1000,
                     "base_score": 1000,
                     "fg_score": 1200,
-                    "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
-                    "minis": ["M1", "M2", "M3"],
-                    "data": _force_payload(),
+                    "gear": gear,
+                    "minis": minis,
+                    "data": _force_payload(base_stats=visible),
                 }
             ]
         )

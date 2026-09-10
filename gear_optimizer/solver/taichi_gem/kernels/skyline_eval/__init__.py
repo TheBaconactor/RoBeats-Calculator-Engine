@@ -15,7 +15,6 @@ from .write_results import (
     skyline_refresh_scores_and_update_runs_best_kernel,
     skyline_write_scores_from_key_kernel,
     skyline_write_best_and_update_global_kernel,
-    skyline_write_best_results_and_update_runs_best_kernel,
     skyline_write_best_results_from_key_kernel,
 )
 
@@ -23,7 +22,6 @@ __all__ = [
     "skyline_write_best_results_from_key_kernel",
     "skyline_write_scores_from_key_kernel",
     "skyline_refresh_scores_and_update_runs_best_kernel",
-    "skyline_write_best_results_and_update_runs_best_kernel",
     "skyline_write_best_and_update_global_kernel",
     "SKYLINE_INIT_global_best_kernel",
     "skyline_pack_global_best_kernel",
