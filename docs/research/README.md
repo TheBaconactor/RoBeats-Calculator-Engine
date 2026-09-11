@@ -7,6 +7,7 @@ prototypes, or proposals that were never adopted. Use the parent
 
 ## Files
 
+- [Shared-budget core search](shared_budget_core_search.md) — 2026-09-11 real-catalog bound probe, numerical proof, and benchmark scope
 - `inventory_coverage_complexity.md` — NP-completeness proof, reduction analysis, structural theorems for the inventory coverage problem
 - `math_first_rewrite_proposal.md` — mathematical reduction directions for the exact optimizer
 - `frontier_census_evidence_2026-07-04.md` — methodology and evidence for the retained-frontier census
