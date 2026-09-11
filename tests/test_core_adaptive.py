@@ -12,6 +12,52 @@ from tools.research._core_bound_search import Candidate, CoreEnumeration
 from tools.research._core_adaptive_score import region_queue
 
 
+def test_log_intervals_enclose_high_precision_values_at_all_scales():
+    from decimal import Decimal, localcontext
+    from fractions import Fraction
+    from tools.research._core_bound_math import SCALE
+    rng = np.random.default_rng(591)
+    values = [Fraction(int(a), int(b)) for a, b in rng.integers(1, 2**50, (200, 2))]
+    values += [Fraction(2) ** e + offset for e in (-1000, -10, 0, 10, 1000)
+               for offset in (0, Fraction(1, 2**1100))]
+    with localcontext() as ctx:
+        ctx.prec = 400
+        for value in values:
+            expected = (Decimal(value.numerator) / Decimal(value.denominator)).ln() * SCALE
+            lo, hi = log_interval(value)
+            assert lo <= expected <= hi
+            assert hi - lo <= 1
+
+
+@pytest.mark.parametrize("secondary", ["Chill", "Flow"])
+def test_core_input_mapping_matches_named_catalog_witnesses(secondary):
+    from pathlib import Path
+    from gear_optimizer.data.csv_parser import load_csv_db
+    from gear_optimizer.solver.base_stats import build_stats_array, build_stats_dict
+    from tools.research._core_bound_domain import catalog_domain, project
+    from tools.research._core_adaptive_score import core_inputs
+    data = Path(__file__).resolve().parents[1] / "Data/Gear"
+    gears = list(load_csv_db(str(data / "Gears.csv"), "gear").values())
+    minis = list(load_csv_db(str(data / "Minis.csv"), "mini").values())
+    song = {"metadata": {"Song Name": "no target", "Primary Color": "Chill", "Secondary Color": secondary}}
+    fixed = {"Perfect Points": 3, "Chill": 100, "Flow": 11}
+    domain = catalog_domain(gears, minis, song=song, fixed=fixed)
+    chart = SimpleNamespace(domain=domain, base=build_stats_array(fixed))
+    rng = np.random.default_rng(139)
+    identities = [tuple(int(rng.integers(len(g))) for g in domain.gear)
+                  + tuple(map(int, rng.choice(len(domain.minis), 3, replace=False))) for _ in range(20)]
+    for rows in (identities, []):
+        core = CoreEnumeration(tuple(Candidate(row, ()) for row in rows), (), 0, True)
+        registry, _, ids, raw, projected = core_inputs(chart, core)
+        assert ids.shape == (len(rows), 9)
+        assert projected.shape == (len(rows), 6)
+        for i, row in enumerate(rows):
+            names = [domain.gear_items[s][row[s]]["Name"] for s in range(6)]
+            names += [domain.mini_items[m]["Name"] for m in row[6:]]
+            assert [registry.id_to_item[j]["Name"] for j in ids[i]] == names
+            assert projected[i].tolist() == project(build_stats_dict(raw[i]), "Chill", secondary)
+
+
 @pytest.mark.parametrize("seed", [13, 91, 204])
 def test_greedy_affine_support_equals_exhaustive_box_budget(seed):
     rng = np.random.default_rng(seed)

@@ -15,15 +15,17 @@ def core_inputs(chart, core):
     domain = chart.domain
     registry = ItemRegistry(dict(zip(GEAR_SLOTS, domain.gear_items)), list(domain.mini_items), list(GEAR_SLOTS))
     arrays = registry.to_gpu_arrays()
-    identities = [c.identity for c in core.candidates]
+    identities = np.array([c.identity for c in core.candidates], dtype=np.int64).reshape(-1, 9)
     ids = np.empty((len(identities), 9), dtype=np.int32)
-    for i, row in enumerate(identities):
-        for slot in range(9):
-            items = domain.gear_items[slot] if slot < 6 else domain.mini_items
-            ids[i, slot] = registry.item_to_id[(min(slot, 6), items[row[slot]]["Name"])]
+    for slot in range(9):
+        items = domain.gear_items[slot] if slot < 6 else domain.mini_items
+        lookup = np.array([registry.item_to_id[(min(slot, 6), item["Name"])] for item in items])
+        ids[:, slot] = lookup[identities[:, slot]]
     raw = chart.base + arrays["item_stats"][ids].sum(axis=1)
-    base = np.array([domain.fixed + sum(domain.gear[s][row[s]] for s in range(6))
-                     + domain.minis[list(row[6:])].sum(axis=0) for row in identities], dtype=np.int64).reshape(-1, 6)
+    base = np.broadcast_to(domain.fixed, (len(identities), 6)).copy()
+    for slot in range(6):
+        base += domain.gear[slot][identities[:, slot]]
+    base += domain.minis[identities[:, 6:]].sum(axis=1)
     return registry, arrays, ids, raw, base
 
 

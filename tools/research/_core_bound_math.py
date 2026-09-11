@@ -15,8 +15,8 @@ import numpy as np
 SCALE = 1 << 36
 
 
-def _log_series(x):
-    """Rational enclosure of log(x), 1 <= x <= 2, using atanh's series."""
+def _log_enclosures(x):
+    """Successive rational enclosures of log(x), 1 <= x <= 2."""
     z = (x - 1) / (x + 1)
     square = z * z
     power = z
@@ -24,7 +24,10 @@ def _log_series(x):
     for k in range(32):
         lower += 2 * power / (2 * k + 1)
         power *= square
-    return lower, lower + 2 * power / (65 * (1 - square))
+        yield lower, lower + 2 * power / ((2 * k + 3) * (1 - square))
+
+
+_LOG_TWO = tuple(_log_enclosures(Fraction(2)))[-1]
 
 
 @lru_cache(maxsize=4096)
@@ -38,11 +41,17 @@ def log_interval(value):
     if mantissa < 1:
         exponent -= 1
         mantissa *= 2
-    lower, upper = _log_series(mantissa)
-    lo2, hi2 = _log_series(Fraction(2))
-    lower += exponent * (lo2 if exponent >= 0 else hi2)
-    upper += exponent * (hi2 if exponent >= 0 else lo2)
-    return math.floor(lower * SCALE), math.ceil(upper * SCALE)
+    lo2, hi2 = _LOG_TWO
+    shift_lo = exponent * (lo2 if exponent >= 0 else hi2)
+    shift_hi = exponent * (hi2 if exponent >= 0 else lo2)
+    for lower, upper in _log_enclosures(mantissa):
+        lo = math.floor((lower + shift_lo) * SCALE)
+        hi = math.ceil((upper + shift_hi) * SCALE)
+        # The remaining positive series tail is already enclosed. Once these
+        # outward integers are adjacent, more terms cannot tighten this bound.
+        if hi - lo <= 1:
+            break
+    return lo, hi
 
 
 def lookup_domain(interval, table):
