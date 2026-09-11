@@ -10,6 +10,7 @@ import taichi as ti
 from gear_optimizer.core.constants import GEM_SCALE_FEVER
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 from gear_optimizer.solver.taichi_gem.api import (
+    precompute_timeline_gpu,
     skyline_aggregate_stats, skyline_upload_base_fixed_stats,
     skyline_upload_item_stats, skyline_upload_population_indices,
 )
@@ -46,6 +47,7 @@ def solve_regions(chart, arrays, ids, lows, highs):
                           for color in ("p", "s")], dtype=np.int32)
     result = np.empty((len(ids), 7), dtype=np.int32)
     with _GPU_LOCK:
+        precompute_timeline_gpu(chart.song, chart.refs, song_slot=0)
         skyline_upload_item_stats(arrays["item_stats"], arrays["slot_start"], arrays["slot_count"])
         skyline_upload_base_fixed_stats(chart.base)
         skyline_upload_population_indices(ids, n_slots=9)

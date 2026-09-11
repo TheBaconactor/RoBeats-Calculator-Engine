@@ -49,6 +49,13 @@ def test_regional_gpu_returns_restricted_allocations_with_distinct_row_domains(t
     assert scores[1] == seed["score"]
     assert min(scores) > 0
 
+    # A prepared chart object must retain its meaning after another chart uses
+    # the shared GPU timeline slot. Repeated calls cannot depend on call order.
+    other_song = next((root / "Data/Hard").glob('The Vocab Quiz *'))
+    prepare_chart(other_song, refs, gears, minis)
+    restored = solve_regions(chart, chart.arrays, ids, lows, highs)
+    assert np.array_equal(restored, result)
+
     from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
     from tools.research._core_bound_domain import project
     from gear_optimizer.solver.base_stats import build_stats_dict
@@ -91,4 +98,3 @@ def test_regional_gpu_returns_restricted_allocations_with_distinct_row_domains(t
     assert stopped["best"]["loadout"] == [chart.registry.id_to_item[i]["Name"] for i in seed["ids"]]
     assert not stopped["queue_exhausted"]
     assert not stopped["optimality_certified"]
-
