@@ -469,6 +469,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     fg_gear_name_rank: "np.ndarray | None" = None,
     fg_mini_sig_id: "np.ndarray | None" = None,
     abort_requested=None,
+    on_generation=None,
 ) -> "np.ndarray":
     """
     Run the GPU-native GA for multiple runs using either:
@@ -478,6 +479,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     This entrypoint is designed for the GPU-native in-flight pipeline:
     - CPU prepares/encodes initial populations and item registry arrays
     - GPU-owner thread executes kernels back-to-back and returns a compact runs payload
+
+    ``on_generation``, when provided, receives a copied (runs, 17) tracked-best
+    table after each generation: score, nine item IDs, and seven result values.
+    It observes only; production callers leave it unset. Callback time and GPU
+    downloads are part of the caller's measured runtime.
 
     Important: This must be called from the Taichi/Vulkan owner thread (GpuExecutor).
     """
@@ -1076,6 +1082,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         _raise_if_abort_requested(
                             abort_requested, f"after GPU-native GA runs-best update generation {int(gen)}"
                         )
+                        if on_generation is not None:
+                            # Optional research observer; never feeds scores back into GA selection.
+                            on_generation(gpu_api.ga_download_runs_best(n_runs=int(seg_len)))
                         if t0:
                             _log_phase(
                                 phase="update_runs_best",

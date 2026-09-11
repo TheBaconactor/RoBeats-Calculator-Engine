@@ -18,12 +18,14 @@ class Region:
     losses: list
 
 
-def refine_regions(domain, *, refs, notes, fever_counts, anchor_base, incumbent, max_leaves=64):
+def refine_regions(domain, *, refs, notes, fever_counts, anchor_base, incumbent, max_leaves=64, members=9):
     """Split the unresolved region with the highest bound, covering raw cap tails.
 
     All leaves together cover the original timing domain. A limit only stops
     refinement; it never turns an unresolved region into an optimality claim.
     """
+    if members < 1:
+        raise ValueError("positive member count required")
     if max_leaves < 1:
         raise ValueError("max_leaves must be positive")
     threshold = log_interval(int(incumbent))[0]
@@ -35,7 +37,7 @@ def refine_regions(domain, *, refs, notes, fever_counts, anchor_base, incumbent,
         ft, ff = np.clip(intervals[3:5], 0, np.array(fever_counts.shape)[:, None] - 1)
         fever = int(fever_counts[ft[0]:ft[1] + 1, ff[0]:ff[1] + 1].max())
         coefficients = fit_bounds(domain, refs=refs, notes=notes, fever_notes=fever,
-                                  anchor_base=anchor_base, intervals=intervals)
+                                  anchor_base=anchor_base, intervals=intervals, members=members)
         bank = certify_bounds(coefficients, intervals=intervals, refs=refs, notes=notes, fever_notes=fever)
         root, losses = family_terms(bank, fixed=domain.fixed, gear=domain.gear, minis=domain.minis,
                                    gems=domain.gems, budget=domain.budget)
@@ -64,4 +66,5 @@ def refine_regions(domain, *, refs, notes, fever_counts, anchor_base, incumbent,
         build(right)
     leaves = terminal + [entry[2] for entry in queue]
     return broad, leaves, {"regions_built": built, "regions_excluded": excluded,
+                           "lps": built * members,
                            "unresolved_regions": len(leaves), "certified": not leaves}

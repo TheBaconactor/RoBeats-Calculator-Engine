@@ -89,22 +89,45 @@ def replay_results(chart, arrays, ids, results):
     return scores, stats_rows
 
 
-def run_ga(chart, *, generations, population, runs, seed):
+def run_ga(chart, *, generations, population, runs, seed, on_improvement=None):
     start = time.perf_counter()
+    observed_best, observer_seconds = 0, 0.
+    observed_witness = None
+
+    def observe(rows):
+        nonlocal observed_best, observer_seconds, observed_witness
+        t = time.perf_counter()
+        rows = rows[rows[:, 0] > 0]
+        if len(rows):
+            scores, observed_stats = replay_results(chart, chart.arrays, rows[:, 1:10], rows[:, 10:17])
+            score = int(max(scores))
+            if score > observed_best:
+                observed_best = score
+                winner = int(np.argmax(scores))
+                observed_witness = (rows[winner, 1:10].copy(), rows[winner, 10:17].copy(), observed_stats[winner])
+                on_improvement(score)
+        observer_seconds += time.perf_counter() - t
+
     payload = run_gpu_native_ga_runs_payload_prebuilt(**chart.ga_kwargs, ga_seed=seed,
-        n_generations=generations, n_genomes=population, num_runs=runs)
+        n_generations=generations, n_genomes=population, num_runs=runs,
+        on_generation=observe if on_improvement is not None else None)
     ga_seconds = time.perf_counter() - start
     ids = np.asarray(payload[:1, 2:11], dtype=np.int32)
     result = np.asarray(payload[:1, 11:18], dtype=np.int64)
     start = time.perf_counter()
     scores, stats = replay_results(chart, chart.arrays, ids, result)
-    return {"score": int(scores[0]), "gpu_score": int(payload[0, 1]), "stats": stats[0],
+    if observed_best > scores[0]:
+        ids[0], result[0], stats[0] = observed_witness
+        scores[0] = observed_best
+    if on_improvement is not None:
+        on_improvement(int(scores[0]))
+    return {"score": int(scores[0]), "observer_s": observer_seconds, "gpu_score": int(result[0, 0]), "stats": stats[0],
             "ids": ids[0].tolist(), "gems": result[0, 1:7].tolist(), "ga_s": ga_seconds,
             "replay_s": time.perf_counter() - start,
             "settings": {"generations": generations, "population": population, "runs": runs, "seed": seed}}
 
 
-def score_core(chart, core):
+def score_core(chart, core, *, on_improvement=None, deadline=None):
     total_start = time.perf_counter()
     if not core.complete:
         raise ValueError("the core enumeration hit its work limit")
@@ -123,8 +146,12 @@ def score_core(chart, core):
             ids[i, slot] = registry.item_to_id[(6, domain.mini_items[row[slot]]["Name"])]
     best, solve_seconds, replay_seconds = 0, 0., 0.
     best_witness = None
+    scored = 0
     for start in range(0, len(ids), 512):
+        if deadline is not None and time.perf_counter() >= deadline:
+            break
         batch = ids[start:start + 512]
+        scored += len(batch)
         t = time.perf_counter()
         result = np.asarray(dispatch_registry_solve(RegistrySolveRequest(
             population_indices=batch, item_stats=arrays["item_stats"], slot_start=arrays["slot_start"],
@@ -137,8 +164,10 @@ def score_core(chart, core):
         winner = int(np.argmax(scores))
         if scores[winner] > best:
             best = int(scores[winner])
+            if on_improvement is not None:
+                on_improvement(best)
             best_witness = {"catalog_indices": witnesses[start + winner], "stats": stats[winner],
                             "gems": result[winner, 1:7].tolist()}
         replay_seconds += time.perf_counter() - t
-    return {"scored": len(witnesses), "best_score": best, "best_witness": best_witness,
+    return {"scored": scored, "queue_exhausted": scored == len(witnesses), "best_score": best, "best_witness": best_witness,
             "solve_s": solve_seconds, "replay_s": replay_seconds, "total_s": time.perf_counter() - total_start}

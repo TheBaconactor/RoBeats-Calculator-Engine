@@ -7,6 +7,8 @@ prototypes, or proposals that were never adopted. Use the parent
 
 ## Files
 
+- [Adaptive regional core search](adaptive_region_core_search.md) — regional handoff, canonical feedback, and score-versus-time measurements
+
 - [Shared-budget core search](shared_budget_core_search.md) — 2026-09-11 real-catalog bound probe, numerical proof, and benchmark scope
 - `inventory_coverage_complexity.md` — NP-completeness proof, reduction analysis, structural theorems for the inventory coverage problem
 - `math_first_rewrite_proposal.md` — mathematical reduction directions for the exact optimizer
