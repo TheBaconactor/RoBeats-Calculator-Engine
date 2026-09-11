@@ -162,6 +162,8 @@ def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monk
         ref_pp,
         ref_cm,
         ref_fm,
+        pp_prefix_bounds,
+        pp_bound_rows,
         out_rows,
         allow_pp_template,
     ):
@@ -188,6 +190,8 @@ def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monk
         ref_pp,
         ref_cm,
         ref_fm,
+        pp_prefix_bounds,
+        pp_bound_rows,
         out_scores,
         out_details,
         allow_pp_template,
@@ -241,9 +245,9 @@ def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monk
         dtype=np.int32,
     )
     ref_arrays = {
-        "Perfect Points": np.ones(4, dtype=np.float32),
-        "Combo Multiplier": np.ones(4, dtype=np.float32),
-        "Fever Multiplier": np.ones(4, dtype=np.float32),
+        "Perfect Points": np.ones(161, dtype=np.float32),
+        "Combo Multiplier": np.ones(161, dtype=np.float32),
+        "Fever Multiplier": np.ones(161, dtype=np.float32),
     }
 
     rows, logical_surface_rows = response_inner._score_response_group_meta_gpu(
@@ -289,6 +293,8 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
         ref_pp,
         ref_cm,
         ref_fm,
+        pp_prefix_bounds,
+        pp_bound_rows,
         out_rows,
         allow_pp_template,
     ):
@@ -308,6 +314,8 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
         ref_pp,
         ref_cm,
         ref_fm,
+        pp_prefix_bounds,
+        pp_bound_rows,
         out_scores,
         out_details,
         allow_pp_template,
@@ -330,9 +338,9 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
     surface_words = np.zeros((4, 8), dtype=np.uint32)
     surface_counts = np.zeros((4, 3), dtype=np.int32)
     ref_arrays = {
-        "Perfect Points": np.ones(4, dtype=np.float32),
-        "Combo Multiplier": np.ones(4, dtype=np.float32),
-        "Fever Multiplier": np.ones(4, dtype=np.float32),
+        "Perfect Points": np.ones(161, dtype=np.float32),
+        "Combo Multiplier": np.ones(161, dtype=np.float32),
+        "Fever Multiplier": np.ones(161, dtype=np.float32),
     }
 
     response_inner._score_response_group_meta_gpu(
@@ -387,6 +395,8 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
         ref_pp,
         ref_cm,
         ref_fm,
+        pp_prefix_bounds,
+        pp_bound_rows,
         out_rows,
         allow_pp_template,
     ):
@@ -406,6 +416,8 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
         ref_pp,
         ref_cm,
         ref_fm,
+        pp_prefix_bounds,
+        pp_bound_rows,
         out_scores,
         out_details,
         allow_pp_template,
@@ -470,6 +482,8 @@ def test_response_inner_default_surface_work_cap_keeps_high_work_batch_together(
         ref_pp,
         ref_cm,
         ref_fm,
+        pp_prefix_bounds,
+        pp_bound_rows,
         out_scores,
         out_details,
         allow_pp_template,
@@ -535,6 +549,8 @@ def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
         ref_pp,
         ref_cm,
         ref_fm,
+        pp_prefix_bounds,
+        pp_bound_rows,
         out_rows,
         allow_pp_template,
     ):
@@ -551,9 +567,9 @@ def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
     surface_words = np.zeros((1, 8), dtype=np.uint32)
     surface_counts = np.zeros((1, 3), dtype=np.int32)
     ref_arrays = {
-        "Perfect Points": np.ones(4, dtype=np.float32),
-        "Combo Multiplier": np.ones(4, dtype=np.float32),
-        "Fever Multiplier": np.ones(4, dtype=np.float32),
+        "Perfect Points": np.ones(161, dtype=np.float32),
+        "Combo Multiplier": np.ones(161, dtype=np.float32),
+        "Fever Multiplier": np.ones(161, dtype=np.float32),
     }
 
     rows, logical_surface_rows = response_inner._score_response_group_meta_gpu(

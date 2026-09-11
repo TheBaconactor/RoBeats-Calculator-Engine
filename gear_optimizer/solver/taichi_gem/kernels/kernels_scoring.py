@@ -622,73 +622,75 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
     seed_cm = seed_best_cm0
     seed_fm = seed_best_fm0
     for _seed_pass in ti.static(range(2)):
-        leftover: ti.i32 = budget - seed_cm - seed_fm
-        max_pp_here: ti.i32 = max_pp_gems
-        if max_pp_here > leftover:
-            max_pp_here = leftover
+        # Identical walks choose the same PP split as well as the same CM/FM pair.
+        if _seed_pass == 0 or seed_cm != seed_best_cm0 or seed_fm != seed_best_fm0:
+            leftover: ti.i32 = budget - seed_cm - seed_fm
+            max_pp_here: ti.i32 = max_pp_gems
+            if max_pp_here > leftover:
+                max_pp_here = leftover
 
-        g_pp_best: ti.i32 = ti.cast(
-            kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here],
-            ti.i32,
-        )
-        g_ov: ti.i32 = leftover - g_pp_best
+            g_pp_best: ti.i32 = ti.cast(
+                kernels_helpers.exact_pp_best_gems_prefix[flags_idx, cur_pp_idx, max_pp_here],
+                ti.i32,
+            )
+            g_ov: ti.i32 = leftover - g_pp_best
 
-        cm_stat: ti.i32 = cur_cm + (seed_cm * GEM_SCALE_NORMAL)
-        fm_stat: ti.i32 = cur_fm + (seed_fm * GEM_SCALE_FEVER)
-        c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
-        f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
+            cm_stat: ti.i32 = cur_cm + (seed_cm * GEM_SCALE_NORMAL)
+            fm_stat: ti.i32 = cur_fm + (seed_fm * GEM_SCALE_FEVER)
+            c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
 
-        pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
-        best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
+            pp_stat: ti.i32 = cur_pp + (g_pp_best * GEM_SCALE_NORMAL)
+            best_pp_extra: ti.f32 = ti.cast(g_pp_best * delta_pp_vs_ov, ti.f32) + kernels_helpers.lookup_ref_pp(pp_stat)
 
-        base_linear: ti.i32 = base_init + (seed_cm * w_cm) + (seed_fm * w_fm) + (leftover * w_ov)
-        base_value: ti.f32 = ti.cast(base_linear, ti.f32) + best_pp_extra
-        score = calc_score_cached_device(
-            base_value,
-            c_mul,
-            f_mul,
-            head_len,
-            count_fever,
-            count_normal,
-            m0,
-            m1,
-            m2,
-            m3,
-        )
+            base_linear: ti.i32 = base_init + (seed_cm * w_cm) + (seed_fm * w_fm) + (leftover * w_ov)
+            base_value: ti.f32 = ti.cast(base_linear, ti.f32) + best_pp_extra
+            score = calc_score_cached_device(
+                base_value,
+                c_mul,
+                f_mul,
+                head_len,
+                count_fever,
+                count_normal,
+                m0,
+                m1,
+                m2,
+                m3,
+            )
 
-        better = 0
-        if score > best_score:
-            better = 1
-        elif score == best_score:
-            if seed_cm < best_cm:
+            better = 0
+            if score > best_score:
                 better = 1
-            elif seed_cm == best_cm:
-                if seed_fm < best_fm:
+            elif score == best_score:
+                if seed_cm < best_cm:
                     better = 1
-                elif seed_fm == best_fm:
-                    if g_pp_best < best_pp:
+                elif seed_cm == best_cm:
+                    if seed_fm < best_fm:
                         better = 1
+                    elif seed_fm == best_fm:
+                        if g_pp_best < best_pp:
+                            better = 1
 
-        if better != 0:
-            best_score = score
-            best_pp = g_pp_best
-            best_cm = seed_cm
-            best_fm = seed_fm
-            best_ov = g_ov
-            best_p = (
-                cur_p_val
-                + (g_pp_best * pp_p_delta)
-                + (seed_cm * cm_p_delta)
-                + (seed_fm * fm_p_delta)
-                + (g_ov * ov_p_delta)
-            )
-            best_s = (
-                cur_s_val
-                + (g_pp_best * pp_s_delta)
-                + (seed_cm * cm_s_delta)
-                + (seed_fm * fm_s_delta)
-                + (g_ov * ov_s_delta)
-            )
+            if better != 0:
+                best_score = score
+                best_pp = g_pp_best
+                best_cm = seed_cm
+                best_fm = seed_fm
+                best_ov = g_ov
+                best_p = (
+                    cur_p_val
+                    + (g_pp_best * pp_p_delta)
+                    + (seed_cm * cm_p_delta)
+                    + (seed_fm * fm_p_delta)
+                    + (g_ov * ov_p_delta)
+                )
+                best_s = (
+                    cur_s_val
+                    + (g_pp_best * pp_s_delta)
+                    + (seed_cm * cm_s_delta)
+                    + (seed_fm * fm_s_delta)
+                    + (g_ov * ov_s_delta)
+                )
 
         # Candidate 1 (prefer FM ties)
         seed_cm = seed_best_cm1
@@ -709,6 +711,13 @@ def _optimize_core_device_exact_bound_preloaded_bits_impl(
 
         g_fm: ti.i32 = 0
         while g_fm <= max_fm_here:
+            # Both seeds were already scored and compared with the same tie ordering.
+            if (g_cm == seed_best_cm0 and g_fm == seed_best_fm0) or (
+                g_cm == seed_best_cm1 and g_fm == seed_best_fm1
+            ):
+                g_fm += 1
+                continue
+
             leftover: ti.i32 = budget - g_cm - g_fm
             if leftover < 0:
                 break

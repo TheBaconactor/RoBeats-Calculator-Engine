@@ -25,6 +25,7 @@ from .response_inner_kernels import (
     _fg_response_inner_batch_kernel,
     _fg_response_inner_group_kernel,
 )
+from .response_pp_bounds import build_pp_prefix_bounds
 from .response_types import FgResponseInnerResult, FgResponseSurface
 
 _FG_RESPONSE_INNER_GPU_MAX_DISPATCH_WORK = 1_000_000_000
@@ -412,6 +413,7 @@ def _score_response_group_meta_gpu(
     ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=SOLVER_NP_FP))
     ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=SOLVER_NP_FP))
     ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=SOLVER_NP_FP))
+    pp_prefix_bounds, pp_bound_rows = build_pp_prefix_bounds(group_meta[:, 1], ref_pp, flags)
     surface_pattern_ids_all = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
     surface_pattern_words_all = np.ascontiguousarray(surface_pattern_words, dtype=np.uint32)
     surface_counts_all = np.ascontiguousarray(surface_counts, dtype=np.int32)
@@ -503,6 +505,8 @@ def _score_response_group_meta_gpu(
             ref_pp,
             ref_cm,
             ref_fm,
+            pp_prefix_bounds,
+            pp_bound_rows,
             out_rows,
             bool(allow_pp),
         )
@@ -535,6 +539,8 @@ def _score_response_group_meta_gpu(
                 ref_pp,
                 ref_cm,
                 ref_fm,
+                pp_prefix_bounds,
+                pp_bound_rows[int(chunk_start) : int(chunk_stop)],
                 out_rows[int(chunk_start) : int(chunk_stop)],
                 bool(allow_pp),
             )
@@ -613,6 +619,8 @@ def _score_response_group_meta_gpu(
             ref_pp,
             ref_cm,
             ref_fm,
+            pp_prefix_bounds,
+            pp_bound_rows,
             scores_view,
             details_view,
             bool(allow_pp),
@@ -756,6 +764,7 @@ def _optimize_response_surfaces_gpu(
     ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=SOLVER_NP_FP))
     ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=SOLVER_NP_FP))
     ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=SOLVER_NP_FP))
+    pp_prefix_bounds, pp_bound_rows = build_pp_prefix_bounds(group_meta[:, 1], ref_pp, flags)
     out_rows = np.zeros((len(groups), 11), dtype=np.int32)
     _fg_response_inner_group_kernel(
         int(len(groups)),
@@ -770,6 +779,8 @@ def _optimize_response_surfaces_gpu(
         ref_pp,
         ref_cm,
         ref_fm,
+        pp_prefix_bounds,
+        pp_bound_rows,
         out_rows,
         bool(allow_pp),
     )
@@ -857,22 +868,13 @@ def _fg_response_surface_score_native_f64(
     score = body_fever * fever_val + body_normal * combo_val
     combo_slope = (combo_mul - 1.0) / 100.0
 
-    for i in range(head_len):
-        wi = i >> 5
-        b = i & 31
-        is_fever = (int(surface_words[sr, wi]) >> b) & 1
-        scaling = combo_slope * float(i + 1) + 1.0
-        if is_fever != 0:
-            score += int(np.floor(base_value * scaling * fever_mul))
-        else:
-            score += int(np.floor(base_value * scaling))
-
     great_or = (
         int(surface_words[sr, 4])
         | int(surface_words[sr, 5])
         | int(surface_words[sr, 6])
         | int(surface_words[sr, 7])
     )
+    great_base = 0.0
     if body_great > 0 or great_or != 0:
         great_head_base = (
             int(np.floor(float(primary_val) * (4.0 / 3.0)))
@@ -894,22 +896,24 @@ def _fg_response_surface_score_native_f64(
                 body_fever_penalty = 0
             score -= body_normal_great * body_normal_penalty
             score -= body_fever_great * body_fever_penalty
-        if great_or != 0:
-            for i in range(head_len):
-                wi = i >> 5
-                b = i & 31
-                if ((int(surface_words[sr, 4 + wi]) >> b) & 1) != 0:
-                    is_fever = (int(surface_words[sr, wi]) >> b) & 1
-                    scaling = combo_slope * float(i + 1) + 1.0
-                    if is_fever != 0:
-                        perfect_val = int(np.floor(base_value * scaling * fever_mul))
-                        great_val = int(np.floor(great_base * scaling * fever_mul))
-                    else:
-                        perfect_val = int(np.floor(base_value * scaling))
-                        great_val = int(np.floor(great_base * scaling))
-                    penalty = perfect_val - great_val
-                    if penalty > 0:
-                        score -= penalty
+
+    for i in range(head_len):
+        wi = i >> 5
+        b = i & 31
+        is_fever = (int(surface_words[sr, wi]) >> b) & 1
+        scaling = combo_slope * float(i + 1) + 1.0
+        if is_fever != 0:
+            perfect_val = int(np.floor(base_value * scaling * fever_mul))
+        else:
+            perfect_val = int(np.floor(base_value * scaling))
+
+        if ((int(surface_words[sr, 4 + wi]) >> b) & 1) != 0:
+            if is_fever != 0:
+                great_val = int(np.floor(great_base * scaling * fever_mul))
+            else:
+                great_val = int(np.floor(great_base * scaling))
+            perfect_val = min(perfect_val, great_val)
+        score += perfect_val
     return score
 
 
@@ -1103,12 +1107,19 @@ def _score_fg_response_groups_native_f64(
                         )
                         if allow_pp and max_pp_gems > 0:
                             g_pp = 0
+                            record_base_value = -1.0e30
                             while g_pp <= g_pp_max:
                                 g_ov = leftover_after_fm - g_pp
                                 pp_stat = cur_pp + g_pp * GEM_SCALE_NORMAL
                                 primary_val = primary_base + g_pp * pp_primary_delta
                                 secondary_val = secondary_base + g_pp * pp_secondary_delta
                                 pp_base_value = float(base_linear_common + g_pp * delta_pp_vs_ov) + pp_ref_cache[g_pp]
+                                # Great bases are nonincreasing only when both coordinates are.
+                                if pp_primary_delta <= 0 and pp_secondary_delta <= 0:
+                                    if pp_base_value <= record_base_value:
+                                        g_pp += 1
+                                        continue
+                                    record_base_value = pp_base_value
                                 pp_ub = _fg_response_upper_bound_native_f64(
                                     pp_base_value, cm_mul, fm_mul, body_fever, body_normal, n_hn, n_hf, sigma_hn, sigma_hf
                                 )

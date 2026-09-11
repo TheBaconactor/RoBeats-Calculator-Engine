@@ -9,7 +9,6 @@ from gear_optimizer.core.constants import (
     GEM_SCALE_NORMAL,
     GEM_STAT_TO_ELEMENT_SCALE,
     MAX_STAT_INDEX,
-    TOTAL_GEM_BUDGET,
     TOTAL_ROWS,
 )
 
@@ -57,6 +56,23 @@ def _fg_response_head_score(
 
 
 @ti.func
+def _fg_response_head_contribution(
+    base_value: FP,
+    great_base: FP,
+    combo_slope: FP,
+    fever_mul: FP,
+    note_idx: ti.i32,
+    is_fever: ti.i32,
+    is_great: ti.i32,
+) -> ti.i32:
+    perfect = _fg_response_head_score(base_value, combo_slope, fever_mul, note_idx, is_fever)
+    if is_great != 0:
+        # P - max(P - G, 0) == min(P, G), after the existing per-note floors.
+        perfect = ti.min(perfect, _fg_response_head_score(great_base, combo_slope, fever_mul, note_idx, is_fever))
+    return perfect
+
+
+@ti.func
 def _fg_response_score_device(
     fever0: ti.u32,
     fever1: ti.u32,
@@ -85,55 +101,15 @@ def _fg_response_score_device(
         body_normal = 0
     score: ti.i32 = body_fever * fever_val + body_normal * combo_val
 
-    combo_span: FP = combo_mul - FP(1.0)
-    combo_slope: FP = combo_span / FP(100.0)
-    n0 = ti.min(head_len, 32)
-    for i in range(n0):
-        score += _fg_response_head_score(
-            base_value,
-            combo_slope,
-            fever_mul,
-            i,
-            _fg_response_bit(fever0, i),
-        )
-    if head_len > 32:
-        n1 = ti.min(head_len, 64)
-        for i in range(32, n1):
-            score += _fg_response_head_score(
-                base_value,
-                combo_slope,
-                fever_mul,
-                i,
-                _fg_response_bit(fever1, i - 32),
-            )
-    if head_len > 64:
-        n2 = ti.min(head_len, 96)
-        for i in range(64, n2):
-            score += _fg_response_head_score(
-                base_value,
-                combo_slope,
-                fever_mul,
-                i,
-                _fg_response_bit(fever2, i - 64),
-            )
-    if head_len > 96:
-        for i in range(96, head_len):
-            score += _fg_response_head_score(
-                base_value,
-                combo_slope,
-                fever_mul,
-                i,
-                _fg_response_bit(fever3, i - 96),
-            )
-
     great_bits: ti.u32 = great0 | great1 | great2 | great3
+    great_base = FP(0.0)
     if body_great > 0 or great_bits != ti.u32(0):
         great_head_base: ti.i32 = (
             ti.cast(ti.floor(ti.cast(primary_val, FP) * FP(4.0 / 3.0)), ti.i32)
             + ti.cast(ti.floor(ti.cast(secondary_val, FP) * FP(2.0 / 3.0)), ti.i32)
             + 150
         )
-        great_base: FP = ti.cast(great_head_base, FP)
+        great_base = ti.cast(great_head_base, FP)
         great_combo_val: ti.i32 = ti.cast(ti.floor(great_base * combo_mul), ti.i32)
         great_fever_val: ti.i32 = ti.cast(ti.floor(great_base * combo_mul * fever_mul), ti.i32)
         if body_great > 0:
@@ -149,90 +125,55 @@ def _fg_response_score_device(
             score -= body_normal_great * body_normal_penalty
             score -= body_fever_great * body_fever_penalty
 
-        if great_bits != ti.u32(0):
-            for i in range(n0):
-                if _fg_response_bit(great0, i) != 0:
-                    is_fever: ti.i32 = _fg_response_bit(fever0, i)
-                    perfect_val: ti.i32 = _fg_response_head_score(
-                        base_value,
-                        combo_slope,
-                        fever_mul,
-                        i,
-                        is_fever,
-                    )
-                    great_val: ti.i32 = _fg_response_head_score(
-                        great_base,
-                        combo_slope,
-                        fever_mul,
-                        i,
-                        is_fever,
-                    )
-                    penalty: ti.i32 = perfect_val - great_val
-                    if penalty > 0:
-                        score -= penalty
-            if head_len > 32:
-                for i in range(32, ti.min(head_len, 64)):
-                    if _fg_response_bit(great1, i - 32) != 0:
-                        is_fever: ti.i32 = _fg_response_bit(fever1, i - 32)
-                        perfect_val: ti.i32 = _fg_response_head_score(
-                            base_value,
-                            combo_slope,
-                            fever_mul,
-                            i,
-                            is_fever,
-                        )
-                        great_val: ti.i32 = _fg_response_head_score(
-                            great_base,
-                            combo_slope,
-                            fever_mul,
-                            i,
-                            is_fever,
-                        )
-                        penalty: ti.i32 = perfect_val - great_val
-                        if penalty > 0:
-                            score -= penalty
-            if head_len > 64:
-                for i in range(64, ti.min(head_len, 96)):
-                    if _fg_response_bit(great2, i - 64) != 0:
-                        is_fever: ti.i32 = _fg_response_bit(fever2, i - 64)
-                        perfect_val: ti.i32 = _fg_response_head_score(
-                            base_value,
-                            combo_slope,
-                            fever_mul,
-                            i,
-                            is_fever,
-                        )
-                        great_val: ti.i32 = _fg_response_head_score(
-                            great_base,
-                            combo_slope,
-                            fever_mul,
-                            i,
-                            is_fever,
-                        )
-                        penalty: ti.i32 = perfect_val - great_val
-                        if penalty > 0:
-                            score -= penalty
-            if head_len > 96:
-                for i in range(96, head_len):
-                    if _fg_response_bit(great3, i - 96) != 0:
-                        is_fever: ti.i32 = _fg_response_bit(fever3, i - 96)
-                        perfect_val: ti.i32 = _fg_response_head_score(
-                            base_value,
-                            combo_slope,
-                            fever_mul,
-                            i,
-                            is_fever,
-                        )
-                        great_val: ti.i32 = _fg_response_head_score(
-                            great_base,
-                            combo_slope,
-                            fever_mul,
-                            i,
-                            is_fever,
-                        )
-                        penalty: ti.i32 = perfect_val - great_val
-                        if penalty > 0:
-                            score -= penalty
+    combo_span: FP = combo_mul - FP(1.0)
+    combo_slope: FP = combo_span / FP(100.0)
+    n0 = ti.min(head_len, 32)
+    for i in range(n0):
+        score += _fg_response_head_contribution(
+            base_value,
+            great_base,
+            combo_slope,
+            fever_mul,
+            i,
+            _fg_response_bit(fever0, i),
+            _fg_response_bit(great0, i),
+        )
+    if head_len > 32:
+        n1 = ti.min(head_len, 64)
+        for i in range(32, n1):
+            score += _fg_response_head_contribution(
+                base_value,
+                great_base,
+                combo_slope,
+                fever_mul,
+                i,
+                _fg_response_bit(fever1, i - 32),
+                _fg_response_bit(great1, i - 32),
+            )
+    if head_len > 64:
+        n2 = ti.min(head_len, 96)
+        for i in range(64, n2):
+            score += _fg_response_head_contribution(
+                base_value,
+                great_base,
+                combo_slope,
+                fever_mul,
+                i,
+                _fg_response_bit(fever2, i - 64),
+                _fg_response_bit(great2, i - 64),
+            )
+    if head_len > 96:
+        for i in range(96, head_len):
+            score += _fg_response_head_contribution(
+                base_value,
+                great_base,
+                combo_slope,
+                fever_mul,
+                i,
+                _fg_response_bit(fever3, i - 96),
+                _fg_response_bit(great3, i - 96),
+            )
+
     return score
 
 
@@ -274,6 +215,8 @@ def _fg_response_inner_batch_kernel(
     ref_pp: ti.types.ndarray(dtype=FP, ndim=1),
     ref_cm: ti.types.ndarray(dtype=FP, ndim=1),
     ref_fm: ti.types.ndarray(dtype=FP, ndim=1),
+    pp_prefix_bounds: ti.types.ndarray(dtype=FP, ndim=2),
+    pp_bound_rows: ti.types.ndarray(dtype=ti.i32, ndim=1),
     out_scores: ti.types.ndarray(dtype=ti.i32, ndim=1),
     out_details: ti.types.ndarray(dtype=ti.i32, ndim=2),
     allow_pp_template: ti.template(),
@@ -347,18 +290,6 @@ def _fg_response_inner_batch_kernel(
         pp_secondary_delta: ti.i32 = pp_s_delta - ov_s_delta
         base_init: ti.i32 = (cur_primary << 1) + cur_secondary
         pp_ref_base = _fg_response_lookup_ref(ref_pp, cur_pp)
-        pp_bound_prefix_max = ti.Vector.zero(FP, TOTAL_GEM_BUDGET + 1)
-        if ti.static(allow_pp_template):
-            g_pp_cache: ti.i32 = 0
-            running_pp_bound_max: FP = FP(-1e30)
-            while g_pp_cache <= max_pp_gems:
-                pp_stat_cache: ti.i32 = cur_pp + g_pp_cache * GEM_SCALE_NORMAL
-                pp_ref_val: FP = _fg_response_lookup_ref(ref_pp, pp_stat_cache)
-                pp_bound_val: FP = ti.cast(g_pp_cache * delta_pp_vs_ov, FP) + pp_ref_val
-                if pp_bound_val > running_pp_bound_max:
-                    running_pp_bound_max = pp_bound_val
-                pp_bound_prefix_max[g_pp_cache] = running_pp_bound_max
-                g_pp_cache += 1
 
         pattern_row: ti.i32 = surface_pattern_ids[surface_row]
         fever0: ti.u32 = surface_pattern_words[pattern_row, 0]
@@ -414,7 +345,7 @@ def _fg_response_inner_batch_kernel(
                 base_linear_common: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover_after_fm * w_ov)
                 max_base_value: FP = ti.cast(base_linear_common, FP) + pp_ref_base
                 if ti.static(allow_pp_template):
-                    max_base_value = ti.cast(base_linear_common, FP) + pp_bound_prefix_max[g_pp_max]
+                    max_base_value = ti.cast(base_linear_common, FP) + pp_prefix_bounds[pp_bound_rows[owner], g_pp_max]
                 ub = _fg_response_surface_upper_bound(
                     max_base_value,
                     cm_mul,
@@ -475,6 +406,7 @@ def _fg_response_inner_batch_kernel(
                                 best_final_secondary = secondary_base
                         else:
                             g_pp: ti.i32 = 0
+                            record_base_value = FP(-1e30)
                             while g_pp <= g_pp_max:
                                 g_ov: ti.i32 = leftover_after_fm - g_pp
                                 pp_stat: ti.i32 = cur_pp + g_pp * GEM_SCALE_NORMAL
@@ -484,6 +416,13 @@ def _fg_response_inner_batch_kernel(
                                     base_linear_common + g_pp * delta_pp_vs_ov,
                                     FP,
                                 ) + _fg_response_lookup_ref(ref_pp, pp_stat)
+                                # Both Great coordinates decrease here. An earlier PP split
+                                # with an equal/better rounded Perfect base dominates this one.
+                                if pp_primary_delta <= 0 and pp_secondary_delta <= 0:
+                                    if pp_base_value <= record_base_value:
+                                        g_pp += 1
+                                        continue
+                                    record_base_value = pp_base_value
                                 pp_ub = _fg_response_surface_upper_bound(
                                     pp_base_value,
                                     cm_mul,
@@ -606,6 +545,8 @@ def _fg_response_inner_group_kernel(
     ref_pp: ti.types.ndarray(dtype=FP, ndim=1),
     ref_cm: ti.types.ndarray(dtype=FP, ndim=1),
     ref_fm: ti.types.ndarray(dtype=FP, ndim=1),
+    pp_prefix_bounds: ti.types.ndarray(dtype=FP, ndim=2),
+    pp_bound_rows: ti.types.ndarray(dtype=ti.i32, ndim=1),
     out_rows: ti.types.ndarray(dtype=ti.i32, ndim=2),
     allow_pp_template: ti.template(),
 ):
@@ -675,18 +616,6 @@ def _fg_response_inner_group_kernel(
         pp_secondary_delta: ti.i32 = pp_s_delta - ov_s_delta
         base_init: ti.i32 = (cur_primary << 1) + cur_secondary
         pp_ref_base = _fg_response_lookup_ref(ref_pp, cur_pp)
-        pp_bound_prefix_max = ti.Vector.zero(FP, TOTAL_GEM_BUDGET + 1)
-        if ti.static(allow_pp_template):
-            g_pp_cache: ti.i32 = 0
-            running_pp_bound_max: FP = FP(-1e30)
-            while g_pp_cache <= max_pp_gems:
-                pp_stat_cache: ti.i32 = cur_pp + g_pp_cache * GEM_SCALE_NORMAL
-                pp_ref_val: FP = _fg_response_lookup_ref(ref_pp, pp_stat_cache)
-                pp_bound_val: FP = ti.cast(g_pp_cache * delta_pp_vs_ov, FP) + pp_ref_val
-                if pp_bound_val > running_pp_bound_max:
-                    running_pp_bound_max = pp_bound_val
-                pp_bound_prefix_max[g_pp_cache] = running_pp_bound_max
-                g_pp_cache += 1
 
         group_best_score: ti.i32 = -1
         group_best_surface: ti.i32 = 0
@@ -759,7 +688,7 @@ def _fg_response_inner_group_kernel(
                     base_linear_common: ti.i32 = base_init + (g_cm * w_cm) + (g_fm * w_fm) + (leftover_after_fm * w_ov)
                     max_base_value: FP = ti.cast(base_linear_common, FP) + pp_ref_base
                     if ti.static(allow_pp_template):
-                        max_base_value = ti.cast(base_linear_common, FP) + pp_bound_prefix_max[g_pp_max]
+                        max_base_value = ti.cast(base_linear_common, FP) + pp_prefix_bounds[pp_bound_rows[group], g_pp_max]
                     ub = _fg_response_surface_upper_bound(
                         max_base_value,
                         cm_mul,
@@ -820,6 +749,7 @@ def _fg_response_inner_group_kernel(
                                     best_final_secondary = secondary_base
                             else:
                                 g_pp: ti.i32 = 0
+                                record_base_value = FP(-1e30)
                                 while g_pp <= g_pp_max:
                                     g_ov: ti.i32 = leftover_after_fm - g_pp
                                     pp_stat: ti.i32 = cur_pp + g_pp * GEM_SCALE_NORMAL
@@ -829,6 +759,13 @@ def _fg_response_inner_group_kernel(
                                         base_linear_common + g_pp * delta_pp_vs_ov,
                                         FP,
                                     ) + _fg_response_lookup_ref(ref_pp, pp_stat)
+                                    # Both Great coordinates decrease here. An earlier PP split
+                                    # with an equal/better rounded Perfect base dominates this one.
+                                    if pp_primary_delta <= 0 and pp_secondary_delta <= 0:
+                                        if pp_base_value <= record_base_value:
+                                            g_pp += 1
+                                            continue
+                                        record_base_value = pp_base_value
                                     pp_ub = _fg_response_surface_upper_bound(
                                         pp_base_value,
                                         cm_mul,

@@ -113,6 +113,8 @@ def _run_gpu(b, allow_pp):
 
     init_taichi()
     fp = rik.SOLVER_NP_FP
+    from gear_optimizer.solver.taichi_gem.force_greats.response_pp_bounds import build_pp_prefix_bounds
+    bounds, bound_rows = build_pp_prefix_bounds(b["row_meta"][:, 1], b["ref_pp"].astype(fp), b["color_flags"])
     out = np.zeros((int(b["row_meta"].shape[0]), 11), dtype=np.int32)
     rik._fg_response_inner_group_kernel(
         int(b["row_meta"].shape[0]),
@@ -127,6 +129,8 @@ def _run_gpu(b, allow_pp):
         np.ascontiguousarray(b["ref_pp"], dtype=fp),
         np.ascontiguousarray(b["ref_cm"], dtype=fp),
         np.ascontiguousarray(b["ref_fm"], dtype=fp),
+        bounds,
+        bound_rows,
         out,
         bool(allow_pp),
     )

@@ -6,7 +6,6 @@ from . import kernels_helpers
 from .kernels_scoring import (
     optimize_core_device_exact_bound,
     response_score_upper_bound_relaxed,
-    score_solution_from_gems_frontier,
 )
 
 MAX_STAT = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
@@ -128,37 +127,6 @@ def solve_combo_warmstart_preloaded(
                     ff_idx,
                 )
                 if res_vec[0] >= 0:
-                    score = score_solution_from_gems_frontier(
-                        ft,
-                        ff,
-                        res_vec[1],
-                        res_vec[2],
-                        res_vec[3],
-                        res_vec[4],
-                        base_pp,
-                        base_cm,
-                        base_fm,
-                        base_p_val,
-                        base_s_val,
-                        base_ft_stat,
-                        base_ff_stat,
-                        gem_scale_fever,
-                        is_p_ft,
-                        is_s_ft,
-                        is_p_ff,
-                        is_s_ff,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        song_slot,
-                        ft_idx,
-                        ff_idx,
-                        head_len,
-                    )
-                    out_res = ti.Vector([score, res_vec[1], res_vec[2], res_vec[3], res_vec[4]])
+                    # The exact solver already maximized over every retained timing variant.
+                    out_res = ti.Vector([res_vec[0], res_vec[1], res_vec[2], res_vec[3], res_vec[4]])
     return out_res
