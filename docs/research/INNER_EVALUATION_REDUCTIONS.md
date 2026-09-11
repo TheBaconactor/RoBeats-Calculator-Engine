@@ -108,6 +108,25 @@ and `/tmp/robeats-base-inner-reductions-benchmark.json`.
 ## Deployment note
 
 The existing FG cache identity fingerprints the edited scoring modules.
-The new PP-bound module is included in that source list as well. This
-changes the cache identity, so deployment must follow the normal frontier
-prebuild process. No production caches were rebuilt or modified here.
+The new PP-bound module is included in that source list as well. The first
+deployment therefore rotated the FG pool even though its producer output
+was unchanged. The production canary exposed the resulting missing bundle.
+
+1. **Broken invariant:** a runtime-only scoring change must retain access
+   to byte-equivalent complete frontier caches.
+2. **First violation:** the conservative source fingerprint changed without
+   ratifying the exact predecessor in the existing cache compatibility map.
+3. **Fix:** explicitly ratify only `d73bd8aab735` -> `60e33a1d805f`.
+   Unknown future fingerprints still have no inherited compatibility;
+   cache files retain full metadata and sidecar validation.
+4. **Evidence:** the new loader regression fails with the production
+   missing-bundle error before ratification and passes afterward. The
+   source audit confirms the producer and head coefficient packer are
+   unchanged. Five complete new/prior bundle pairs match common metadata,
+   all 1,697,265 ordered surface rows and coefficients, and all 25,921 stat
+   keys per bundle. The existing independent logical oracle performed the
+   comparisons on staging copies. All 6,792 files from the last complete
+   publication were restored to staging and checked against their published
+   SHA-256 hashes before reuse.
+5. **Complexity:** one explicit pair in the existing compatibility map;
+   no new resolver, fallback, cache format, or production scoring path.

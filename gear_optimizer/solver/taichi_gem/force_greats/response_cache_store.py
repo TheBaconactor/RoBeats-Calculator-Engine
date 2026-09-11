@@ -83,6 +83,12 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Inner-evaluation reductions change runtime scorers only. The frontier producer and head
+    # coefficient packer are unchanged; five complete rebuilt bundles match the prior metadata,
+    # ordered surfaces, coefficients and all 25,921 stat-key resolutions. Ratify only this pair.
+    "fg-response-frontier-visible-first-v31+logic-d73bd8aab735": (
+        "fg-response-frontier-visible-first-v31+logic-60e33a1d805f",
+    ),
     # Ephemeral custom-cache routing changes storage ownership, not admitted frontier bytes.
     "fg-response-frontier-visible-first-v31+logic-6d2c269a5b07": (
         "fg-response-frontier-visible-first-v31+logic-41f36c4647fe",
