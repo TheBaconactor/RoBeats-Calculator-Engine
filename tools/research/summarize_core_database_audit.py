@@ -37,7 +37,10 @@ def combine(paths):
     region_rows = [row["regional"] for row in results if "regional" in row]
     if summaries[0]["regional_check"] and len(region_rows) != len(names):
         raise ValueError("regional audit has missing charts")
-    return {"complete": True, "clean": clean, "optimality_certified": False, "unseen_loadout_search": False,
+    return {"complete": True, "witness_and_regional_winner_checks_pass": clean,
+            "production_per_loadout_checks_pass": (all(r["production_per_loadout_deficits"] == 0 for r in region_rows)
+                                                   if region_rows else None),
+            "optimality_certified": False, "unseen_loadout_search": False,
             "database": summaries[0]["database"], "source_sha256": summaries[0]["source_sha256"],
             "schema": summaries[0]["schema"], "charts": len(names), "tables": dict(tables),
             "checked": dict(checked), "findings": dict(findings),

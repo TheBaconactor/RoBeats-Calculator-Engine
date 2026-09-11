@@ -32,7 +32,10 @@ def test_global_report_rejects_incomplete_or_overlapping_shards(tmp_path):
                    "schema": 18, "regional_check": False, "source_sha256": {}, "checked": {"base": 3},
                    "tables": {"base": 3}, "findings": {}, "integrity": ["ok"], "foreign_key_errors": []}
         path.with_suffix(".summary.json").write_text(json.dumps(summary))
-    assert combine(paths)["checked"] == {"base": 6}
+    report = combine(paths)
+    assert report["checked"] == {"base": 6}
+    assert report["witness_and_regional_winner_checks_pass"]
+    assert report["production_per_loadout_checks_pass"] is None
     with pytest.raises(ValueError, match="distinct"):
         combine([paths[0], paths[0]])
     summary["complete"] = False
