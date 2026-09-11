@@ -30,7 +30,7 @@ from ..fields import MAX_EVALS_PER_DISPATCH
 from ..skyline_chunking import compute_skyline_combo_chunk
 from ..kernel_loader import get_kernels
 
-from .common_operations import compute_array_sig, probability_to_u32_fp
+from .common_operations import probability_to_u32_fp
 from .initialization import (
     ensure_ready,
     _ensure_ftff_combo_tables,
@@ -146,14 +146,6 @@ kernels = get_kernels()
 # ============================================================================
 # UPLOAD CACHES (avoid redundant uploads over eGPU/Thunderbolt)
 # ============================================================================
-# Cache item_stats, slot_start, slot_count to avoid re-uploading ~2.6MB per song
-# Cache base_fixed_stats (tiny but frequently called)
-
-# Cache state for item_stats + slot boundaries
-_ITEM_STATS_CACHE: dict = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
-
-# Cache state for base_fixed_stats (simple tuple comparison)
-_BASE_FIXED_STATS_CACHE: tuple | None = None
 # Cache state for island boundaries (simple tuple comparison)
 _ISLAND_BOUNDARIES_CACHE: tuple | None = None
 _ISLAND_ELITES_CACHE: tuple | None = None
@@ -162,11 +154,11 @@ _ISLAND_ELITES_UPLOAD_BUFFER: np.ndarray | None = None
 
 def reset_skyline_upload_caches() -> None:
     """Reset upload caches after ti.reset() or when switching songs."""
-    global _ITEM_STATS_CACHE, _BASE_FIXED_STATS_CACHE, _ISLAND_BOUNDARIES_CACHE
+    global _ISLAND_BOUNDARIES_CACHE
     global _ISLAND_ELITES_CACHE, _ISLAND_ELITES_UPLOAD_BUFFER
     global _SKYLINE_KERNELS_WARMED, _SKYLINE_KERNELS_LIGHT_WARMED, _SKYLINE_LIVE_REQUEST_WARMED
-    _ITEM_STATS_CACHE = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
-    _BASE_FIXED_STATS_CACHE = None
+    from .registry_upload import reset_registry_upload_cache
+    reset_registry_upload_cache()
     _ISLAND_BOUNDARIES_CACHE = None
     _ISLAND_ELITES_CACHE = None
     _ISLAND_ELITES_UPLOAD_BUFFER = None
@@ -401,101 +393,15 @@ def skyline_seed_rng_runs(*, n_runs: int, n_genomes_per_run: int, seed: int = 12
 
 
 def skyline_upload_item_stats(
-    item_stats_np: np.ndarray,
-    slot_start_np: np.ndarray,
-    slot_count_np: np.ndarray,
+    item_stats_np: np.ndarray, slot_start_np: np.ndarray, slot_count_np: np.ndarray,
 ) -> int:
-    """
-    Upload item stats and slot pool boundaries for GPU-native GA.
-
-    Caches uploads to avoid redundant transfers over Thunderbolt/eGPU.
-
-    Args:
-        item_stats_np: (n_items, 10) int32 - per-item stats
-        slot_start_np: (9,) int32 - first item_id per slot
-        slot_count_np: (9,) int32 - count of items per slot
-
-    Returns:
-        Number of items uploaded (or cached)
-    """
-    global _ITEM_STATS_CACHE
-
-    ensure_ready()
-    n_items = int(item_stats_np.shape[0])
-
-    if n_items > fields.MAX_ITEMS:
-        raise ValueError(f"Too many items: {n_items} > {fields.MAX_ITEMS}")
-
-    # Fast-path: if the caller is reusing the *same* numpy array objects, avoid hashing.
-    try:
-        if (
-            _ITEM_STATS_CACHE.get("n_items") == n_items
-            and _ITEM_STATS_CACHE.get("array_id") == id(item_stats_np)
-            and _ITEM_STATS_CACHE.get("slot_start_id") == id(slot_start_np)
-            and _ITEM_STATS_CACHE.get("slot_count_id") == id(slot_count_np)
-        ):
-            return n_items
-    except Exception as e:
-        logger.debug(f"skyline_operations:skyline_upload_item_stats: {e}")
-
-    # Check cache - avoid redundant uploads (~2.6MB savings)
-    sig = compute_array_sig(
-        np.asarray(item_stats_np[:n_items, : fields.ITEM_STAT_DIM], dtype=np.int32),
-        np.asarray(slot_start_np, dtype=np.int32),
-        np.asarray(slot_count_np, dtype=np.int32),
-    )
-    if _ITEM_STATS_CACHE.get("sig") == sig:
-        # Also memoize identities so subsequent calls can hit the fast-path.
-        _ITEM_STATS_CACHE["n_items"] = n_items
-        _ITEM_STATS_CACHE["array_id"] = id(item_stats_np)
-        _ITEM_STATS_CACHE["slot_start_id"] = id(slot_start_np)
-        _ITEM_STATS_CACHE["slot_count_id"] = id(slot_count_np)
-        return n_items  # Already uploaded
-
-    # Upload only the active rows instead of a full MAX_ITEMS padded table.
-    stats_src = np.ascontiguousarray(item_stats_np[:n_items, : fields.ITEM_STAT_DIM], dtype=np.int32)
-
-    slot_start_arr = np.zeros(fields.MAX_SLOTS, dtype=np.int32)
-    slot_count_arr = np.zeros(fields.MAX_SLOTS, dtype=np.int32)
-    start_np = np.asarray(slot_start_np, dtype=np.int32).reshape(-1)
-    count_np = np.asarray(slot_count_np, dtype=np.int32).reshape(-1)
-    n_slot_vals = min(int(fields.MAX_SLOTS), int(start_np.shape[0]), int(count_np.shape[0]))
-    if n_slot_vals > 0:
-        slot_start_arr[:n_slot_vals] = start_np[:n_slot_vals]
-        slot_count_arr[:n_slot_vals] = count_np[:n_slot_vals]
-
-    kernels.skyline_upload_item_stats_and_slots_kernel(stats_src, int(n_items), slot_start_arr, slot_count_arr)
-
-    _ITEM_STATS_CACHE["sig"] = sig
-    _ITEM_STATS_CACHE["n_items"] = n_items
-    _ITEM_STATS_CACHE["array_id"] = id(item_stats_np)
-    _ITEM_STATS_CACHE["slot_start_id"] = id(slot_start_np)
-    _ITEM_STATS_CACHE["slot_count_id"] = id(slot_count_np)
-    return n_items
+    from .registry_upload import upload_item_stats
+    return upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
 
 
 def skyline_upload_base_fixed_stats(base_stats_np: np.ndarray) -> None:
-    """
-    Upload fixed base stats (added to all genomes during aggregation).
-
-    Caches uploads to avoid redundant transfers.
-
-    Args:
-        base_stats_np: (10,) int32 - base stats [PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill]
-    """
-    global _BASE_FIXED_STATS_CACHE
-
-    # Fast tuple comparison for small array
-    key = tuple(int(x) for x in base_stats_np[: fields.ITEM_STAT_DIM])
-    if _BASE_FIXED_STATS_CACHE == key:
-        return  # Already uploaded
-
-    ensure_ready()
-    buf = np.zeros(fields.ITEM_STAT_DIM, dtype=np.int32)
-    buf[: len(base_stats_np)] = np.asarray(base_stats_np, dtype=np.int32)
-    fields.base_fixed_stats.from_numpy(buf)
-
-    _BASE_FIXED_STATS_CACHE = key
+    from .registry_upload import upload_base_fixed_stats
+    upload_base_fixed_stats(base_stats_np)
 
 
 def skyline_upload_fg_effective_tables(gear_name_rank_np: np.ndarray, mini_sig_id_np: np.ndarray) -> None:
