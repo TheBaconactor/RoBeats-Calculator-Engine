@@ -36,7 +36,7 @@ class Curve:
 def legacy_modules(root, ref, folder):
     """Run the actual #180 fitter/refiner/enumerator, not a renamed approximation."""
     modules = {}
-    for name in ("fit", "regions", "search"):
+    for name in ("math", "fit", "regions", "search"):
         source = subprocess.check_output(["git", "show", f"{ref}:tools/research/_core_bound_{name}.py"],
                                          cwd=root, text=True)
         path = folder / f"legacy_{name}.py"
@@ -46,6 +46,13 @@ def legacy_modules(root, ref, folder):
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         modules[name] = module
+    # Preserve the baseline's certificate implementation too: otherwise a new
+    # logarithm optimization silently changes the arm labeled as #180.
+    for name, helpers in {"fit": ("fever_coefficients", "lookup_domain"),
+                          "regions": ("certify_bounds", "family_terms", "log_interval"),
+                          "search": ("log_interval",)}.items():
+        for helper in helpers:
+            setattr(modules[name], helper, getattr(modules["math"], helper))
     modules["regions"].fit_bounds = modules["fit"].fit_bounds
     return modules
 
@@ -99,6 +106,8 @@ def measure(args, folder):
     gears = list(load_csv_db(str(root / "Data/Gear/Gears.csv"), "gear").values())
     minis = list(load_csv_db(str(root / "Data/Gear/Minis.csv"), "mini").values())
     report = {"baseline_commit": subprocess.check_output(["git", "rev-parse", args.baseline_ref], cwd=root, text=True).strip(),
+              "measured_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+              "baseline_certificate_math_isolated": True,
               "platform": platform.platform(), "python": platform.python_version(),
               "numpy": np.__version__, "numba": numba.__version__, "scipy": scipy.__version__,
               "hardware_role": args.hardware_role, "optimality_certified": False,
