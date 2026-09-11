@@ -1,0 +1,1446 @@
+{
+  "baseline_commit": "e7b80c06bca6028764d10af2002c9375e66aaaa5",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.11.9",
+  "numpy": "2.3.5",
+  "numba": "0.62.1",
+  "scipy": "1.15.3",
+  "results": [
+    {
+      "chart": "Data/Hard/Aurora (Hard) by Creo.txt",
+      "notes": 1709,
+      "prepare_s": 31.73065216600662,
+      "catalog_loadouts": 767196551721600,
+      "gear_counts": [
+        78,
+        39,
+        35,
+        41,
+        44,
+        34
+      ],
+      "mini_count": 90,
+      "gem_budget": 90,
+      "primary_color": "Chill",
+      "secondary_color": "Chill",
+      "short_seed": [
+        {
+          "score": 55173112,
+          "gpu_score": 55173112,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 66,
+            "Fever Multiplier": 69,
+            "Fever Time": 15,
+            "Fever Fill Rate": 73,
+            "Beat": 56,
+            "Vibe": 63,
+            "Rush": 44,
+            "Flow": 6,
+            "Chill": 855
+          },
+          "ids": [
+            3,
+            45,
+            64,
+            90,
+            106,
+            126,
+            136,
+            137,
+            139
+          ],
+          "gems": [
+            0,
+            5,
+            0,
+            0,
+            6,
+            79
+          ],
+          "ga_s": 0.41021466604433954,
+          "replay_s": 0.00018579198513180017,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 55173112,
+          "gpu_score": 55173112,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 66,
+            "Fever Multiplier": 69,
+            "Fever Time": 15,
+            "Fever Fill Rate": 73,
+            "Beat": 56,
+            "Vibe": 63,
+            "Rush": 44,
+            "Flow": 6,
+            "Chill": 855
+          },
+          "ids": [
+            3,
+            45,
+            64,
+            90,
+            106,
+            126,
+            136,
+            137,
+            139
+          ],
+          "gems": [
+            0,
+            5,
+            0,
+            0,
+            6,
+            79
+          ],
+          "ga_s": 0.40919099998427555,
+          "replay_s": 0.000181709008757025,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 55173112,
+          "gpu_score": 55173112,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 66,
+            "Fever Multiplier": 69,
+            "Fever Time": 15,
+            "Fever Fill Rate": 73,
+            "Beat": 56,
+            "Vibe": 63,
+            "Rush": 44,
+            "Flow": 6,
+            "Chill": 855
+          },
+          "ids": [
+            3,
+            45,
+            64,
+            90,
+            106,
+            126,
+            136,
+            137,
+            139
+          ],
+          "gems": [
+            0,
+            5,
+            0,
+            0,
+            6,
+            79
+          ],
+          "ga_s": 0.402894374972675,
+          "replay_s": 0.0001824580249376595,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        }
+      ],
+      "baseline_ga": [
+        {
+          "score": 55268089,
+          "gpu_score": 55268089,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 62,
+            "Fever Multiplier": 70,
+            "Fever Time": 16,
+            "Fever Fill Rate": 75,
+            "Beat": 56,
+            "Vibe": 57,
+            "Rush": 42,
+            "Flow": 13,
+            "Chill": 860
+          },
+          "ids": [
+            3,
+            45,
+            64,
+            80,
+            106,
+            130,
+            136,
+            137,
+            139
+          ],
+          "gems": [
+            0,
+            3,
+            0,
+            0,
+            8,
+            79
+          ],
+          "ga_s": 44.0233298750245,
+          "replay_s": 0.00018483295571058989,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 55268089,
+          "gpu_score": 55268089,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 62,
+            "Fever Multiplier": 70,
+            "Fever Time": 16,
+            "Fever Fill Rate": 75,
+            "Beat": 56,
+            "Vibe": 57,
+            "Rush": 42,
+            "Flow": 13,
+            "Chill": 860
+          },
+          "ids": [
+            3,
+            45,
+            64,
+            80,
+            106,
+            130,
+            136,
+            137,
+            139
+          ],
+          "gems": [
+            0,
+            3,
+            0,
+            0,
+            8,
+            79
+          ],
+          "ga_s": 43.95013266702881,
+          "replay_s": 0.00018145801732316613,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 55268089,
+          "gpu_score": 55268089,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 62,
+            "Fever Multiplier": 70,
+            "Fever Time": 16,
+            "Fever Fill Rate": 75,
+            "Beat": 56,
+            "Vibe": 57,
+            "Rush": 42,
+            "Flow": 13,
+            "Chill": 860
+          },
+          "ids": [
+            3,
+            45,
+            64,
+            80,
+            106,
+            130,
+            136,
+            137,
+            139
+          ],
+          "gems": [
+            0,
+            3,
+            0,
+            0,
+            8,
+            79
+          ],
+          "ga_s": 44.00759912497597,
+          "replay_s": 0.0001853749854490161,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        }
+      ],
+      "fg_count_bound": {
+        "s": 0.23208224994596094,
+        "upper_score_display": 74209531.40339977,
+        "gear_prefixes": [
+          {
+            "depth": 1,
+            "visited": 78,
+            "surviving": 78
+          },
+          {
+            "depth": 2,
+            "visited": 3042,
+            "surviving": 3042
+          },
+          {
+            "depth": 3,
+            "visited": 106470,
+            "surviving": 106470
+          }
+        ]
+      },
+      "base_bound_s": 7.929108417010866,
+      "base_broad_upper_display": 66684482.64634469,
+      "base_regions": {
+        "regions_built": 127,
+        "regions_excluded": 18,
+        "unresolved_regions": 46,
+        "certified": false
+      },
+      "core_enumeration_s": 0.40199662500526756,
+      "core_complete": true,
+      "core_nodes": 155683,
+      "core_loadouts": 15844,
+      "inner": {
+        "scored": 15844,
+        "best_score": 55268089,
+        "best_witness": {
+          "catalog_indices": [
+            27,
+            22,
+            9,
+            6,
+            22,
+            3,
+            9,
+            68,
+            72
+          ],
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 62,
+            "Fever Multiplier": 70,
+            "Fever Time": 16,
+            "Fever Fill Rate": 75,
+            "Beat": 56,
+            "Vibe": 57,
+            "Rush": 42,
+            "Flow": 13,
+            "Chill": 860
+          },
+          "gems": [
+            0,
+            3,
+            0,
+            0,
+            8,
+            79
+          ]
+        },
+        "solve_s": 17.243493543122895,
+        "replay_s": 0.4722216258523986,
+        "total_s": 17.7342695419793
+      },
+      "baseline_ga_and_replay_s": 44.00778449996142,
+      "short_seed_bounds_inner_replay_s": 26.474747292988468,
+      "baseline_score": 55268089,
+      "core_score": 55268089,
+      "measured_base_improvement": true,
+      "optimality_certified": false
+    },
+    {
+      "chart": "Data/Hard/All Right There (Hard) by BSlick feat CG5.txt",
+      "notes": 1048,
+      "prepare_s": 0.6301294580334798,
+      "catalog_loadouts": 767196551721600,
+      "gear_counts": [
+        78,
+        39,
+        35,
+        41,
+        44,
+        34
+      ],
+      "mini_count": 90,
+      "gem_budget": 90,
+      "primary_color": "Vibe",
+      "secondary_color": "Vibe",
+      "short_seed": [
+        {
+          "score": 31091338,
+          "gpu_score": 31091338,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 57,
+            "Fever Multiplier": 69,
+            "Fever Time": 43,
+            "Fever Fill Rate": 57,
+            "Beat": 43,
+            "Vibe": 770,
+            "Rush": 41,
+            "Flow": 0,
+            "Chill": 100
+          },
+          "ids": [
+            25,
+            41,
+            57,
+            76,
+            97,
+            120,
+            132,
+            141,
+            145
+          ],
+          "gems": [
+            0,
+            19,
+            0,
+            0,
+            2,
+            69
+          ],
+          "ga_s": 0.32933108299039304,
+          "replay_s": 0.00017804099479690194,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 31091338,
+          "gpu_score": 31091338,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 57,
+            "Fever Multiplier": 69,
+            "Fever Time": 43,
+            "Fever Fill Rate": 57,
+            "Beat": 43,
+            "Vibe": 770,
+            "Rush": 41,
+            "Flow": 0,
+            "Chill": 100
+          },
+          "ids": [
+            25,
+            41,
+            57,
+            76,
+            97,
+            120,
+            132,
+            141,
+            145
+          ],
+          "gems": [
+            0,
+            19,
+            0,
+            0,
+            2,
+            69
+          ],
+          "ga_s": 0.32500683300895616,
+          "replay_s": 0.00019754102686420083,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 31091338,
+          "gpu_score": 31091338,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 57,
+            "Fever Multiplier": 69,
+            "Fever Time": 43,
+            "Fever Fill Rate": 57,
+            "Beat": 43,
+            "Vibe": 770,
+            "Rush": 41,
+            "Flow": 0,
+            "Chill": 100
+          },
+          "ids": [
+            25,
+            41,
+            57,
+            76,
+            97,
+            120,
+            132,
+            141,
+            145
+          ],
+          "gems": [
+            0,
+            19,
+            0,
+            0,
+            2,
+            69
+          ],
+          "ga_s": 0.32866458303760737,
+          "replay_s": 0.00017241697059944272,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        }
+      ],
+      "baseline_ga": [
+        {
+          "score": 31110912,
+          "gpu_score": 31110912,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 77,
+            "Fever Multiplier": 69,
+            "Fever Time": 48,
+            "Fever Fill Rate": 62,
+            "Beat": 34,
+            "Vibe": 723,
+            "Rush": 118,
+            "Flow": 0,
+            "Chill": 35
+          },
+          "ids": [
+            25,
+            41,
+            57,
+            76,
+            104,
+            120,
+            132,
+            141,
+            143
+          ],
+          "gems": [
+            0,
+            19,
+            0,
+            0,
+            11,
+            60
+          ],
+          "ga_s": 41.70348616596311,
+          "replay_s": 0.00017595902318134904,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 31110912,
+          "gpu_score": 31110912,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 77,
+            "Fever Multiplier": 69,
+            "Fever Time": 48,
+            "Fever Fill Rate": 62,
+            "Beat": 34,
+            "Vibe": 723,
+            "Rush": 118,
+            "Flow": 0,
+            "Chill": 35
+          },
+          "ids": [
+            25,
+            41,
+            57,
+            76,
+            104,
+            120,
+            132,
+            141,
+            143
+          ],
+          "gems": [
+            0,
+            19,
+            0,
+            0,
+            11,
+            60
+          ],
+          "ga_s": 41.69008129101712,
+          "replay_s": 0.00016987498383969069,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 31110912,
+          "gpu_score": 31110912,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 77,
+            "Fever Multiplier": 69,
+            "Fever Time": 48,
+            "Fever Fill Rate": 62,
+            "Beat": 34,
+            "Vibe": 723,
+            "Rush": 118,
+            "Flow": 0,
+            "Chill": 35
+          },
+          "ids": [
+            25,
+            41,
+            57,
+            76,
+            104,
+            120,
+            132,
+            141,
+            143
+          ],
+          "gems": [
+            0,
+            19,
+            0,
+            0,
+            11,
+            60
+          ],
+          "ga_s": 41.26766845904058,
+          "replay_s": 0.00025112502044066787,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        }
+      ],
+      "fg_count_bound": {
+        "s": 0.14087266696151346,
+        "upper_score_display": 40701689.46849486,
+        "gear_prefixes": [
+          {
+            "depth": 1,
+            "visited": 78,
+            "surviving": 78
+          },
+          {
+            "depth": 2,
+            "visited": 3042,
+            "surviving": 3042
+          },
+          {
+            "depth": 3,
+            "visited": 106470,
+            "surviving": 106470
+          }
+        ]
+      },
+      "base_bound_s": 8.573470207978971,
+      "base_broad_upper_display": 37417794.94787257,
+      "base_regions": {
+        "regions_built": 127,
+        "regions_excluded": 15,
+        "unresolved_regions": 49,
+        "certified": false
+      },
+      "core_enumeration_s": 0.10932850005337968,
+      "core_complete": true,
+      "core_nodes": 38053,
+      "core_loadouts": 1542,
+      "inner": {
+        "scored": 1542,
+        "best_score": 31110912,
+        "best_witness": {
+          "catalog_indices": [
+            71,
+            22,
+            30,
+            24,
+            17,
+            19,
+            3,
+            53,
+            61
+          ],
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 77,
+            "Fever Multiplier": 69,
+            "Fever Time": 48,
+            "Fever Fill Rate": 62,
+            "Beat": 34,
+            "Vibe": 723,
+            "Rush": 118,
+            "Flow": 0,
+            "Chill": 35
+          },
+          "gems": [
+            0,
+            19,
+            0,
+            0,
+            11,
+            60
+          ]
+        },
+        "solve_s": 2.3156296249944717,
+        "replay_s": 0.04562795796664432,
+        "total_s": 2.364581374975387
+      },
+      "baseline_ga_and_replay_s": 41.69025116600096,
+      "short_seed_bounds_inner_replay_s": 11.376217083015945,
+      "baseline_score": 31110912,
+      "core_score": 31110912,
+      "measured_base_improvement": true,
+      "optimality_certified": false
+    },
+    {
+      "chart": "Data/Hard/Sky Gazer (Hard) by ARForest.txt",
+      "notes": 1659,
+      "prepare_s": 0.7447204170166515,
+      "catalog_loadouts": 767196551721600,
+      "gear_counts": [
+        78,
+        39,
+        35,
+        41,
+        44,
+        34
+      ],
+      "mini_count": 90,
+      "gem_budget": 90,
+      "primary_color": "Chill",
+      "secondary_color": "Beat",
+      "short_seed": [
+        {
+          "score": 44322312,
+          "gpu_score": 44322312,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 66,
+            "Fever Multiplier": 72,
+            "Fever Time": 47,
+            "Fever Fill Rate": 64,
+            "Beat": 232,
+            "Vibe": 54,
+            "Rush": 106,
+            "Flow": 6,
+            "Chill": 842
+          },
+          "ids": [
+            4,
+            56,
+            76,
+            103,
+            122,
+            143,
+            157,
+            158,
+            160
+          ],
+          "gems": [
+            0,
+            2,
+            0,
+            0,
+            15,
+            73
+          ],
+          "ga_s": 0.4994120419723913,
+          "replay_s": 0.00016725005116313696,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 44322312,
+          "gpu_score": 44322312,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 66,
+            "Fever Multiplier": 72,
+            "Fever Time": 47,
+            "Fever Fill Rate": 64,
+            "Beat": 232,
+            "Vibe": 54,
+            "Rush": 106,
+            "Flow": 6,
+            "Chill": 842
+          },
+          "ids": [
+            4,
+            56,
+            76,
+            103,
+            122,
+            143,
+            157,
+            158,
+            160
+          ],
+          "gems": [
+            0,
+            2,
+            0,
+            0,
+            15,
+            73
+          ],
+          "ga_s": 0.5003103340277448,
+          "replay_s": 0.0002174580004066229,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 44322312,
+          "gpu_score": 44322312,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 66,
+            "Fever Multiplier": 72,
+            "Fever Time": 47,
+            "Fever Fill Rate": 64,
+            "Beat": 232,
+            "Vibe": 54,
+            "Rush": 106,
+            "Flow": 6,
+            "Chill": 842
+          },
+          "ids": [
+            4,
+            56,
+            76,
+            103,
+            122,
+            143,
+            157,
+            158,
+            160
+          ],
+          "gems": [
+            0,
+            2,
+            0,
+            0,
+            15,
+            73
+          ],
+          "ga_s": 0.49790008401032537,
+          "replay_s": 0.00018016697140410542,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        }
+      ],
+      "baseline_ga": [
+        {
+          "score": 44378197,
+          "gpu_score": 44378197,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 62,
+            "Fever Multiplier": 73,
+            "Fever Time": 51,
+            "Fever Fill Rate": 66,
+            "Beat": 235,
+            "Vibe": 48,
+            "Rush": 104,
+            "Flow": 13,
+            "Chill": 841
+          },
+          "ids": [
+            4,
+            56,
+            76,
+            93,
+            122,
+            148,
+            157,
+            158,
+            160
+          ],
+          "gems": [
+            1,
+            0,
+            0,
+            0,
+            17,
+            72
+          ],
+          "ga_s": 45.20126608299324,
+          "replay_s": 0.00017812498845160007,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 44378197,
+          "gpu_score": 44378197,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 62,
+            "Fever Multiplier": 73,
+            "Fever Time": 51,
+            "Fever Fill Rate": 66,
+            "Beat": 235,
+            "Vibe": 48,
+            "Rush": 104,
+            "Flow": 13,
+            "Chill": 841
+          },
+          "ids": [
+            4,
+            56,
+            76,
+            93,
+            122,
+            148,
+            157,
+            158,
+            160
+          ],
+          "gems": [
+            1,
+            0,
+            0,
+            0,
+            17,
+            72
+          ],
+          "ga_s": 45.15675900003407,
+          "replay_s": 0.000203833042178303,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 44378197,
+          "gpu_score": 44378197,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 62,
+            "Fever Multiplier": 73,
+            "Fever Time": 51,
+            "Fever Fill Rate": 66,
+            "Beat": 235,
+            "Vibe": 48,
+            "Rush": 104,
+            "Flow": 13,
+            "Chill": 841
+          },
+          "ids": [
+            4,
+            56,
+            76,
+            93,
+            122,
+            148,
+            157,
+            158,
+            160
+          ],
+          "gems": [
+            1,
+            0,
+            0,
+            0,
+            17,
+            72
+          ],
+          "ga_s": 45.17307208298007,
+          "replay_s": 0.0001712499652057886,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        }
+      ],
+      "fg_count_bound": {
+        "s": 0.14351716596866027,
+        "upper_score_display": 55654673.32713563,
+        "gear_prefixes": [
+          {
+            "depth": 1,
+            "visited": 78,
+            "surviving": 78
+          },
+          {
+            "depth": 2,
+            "visited": 3042,
+            "surviving": 3042
+          },
+          {
+            "depth": 3,
+            "visited": 106470,
+            "surviving": 106470
+          }
+        ]
+      },
+      "base_bound_s": 8.590425749949645,
+      "base_broad_upper_display": 51022362.58697505,
+      "base_regions": {
+        "regions_built": 127,
+        "regions_excluded": 18,
+        "unresolved_regions": 46,
+        "certified": false
+      },
+      "core_enumeration_s": 0.12684341700514778,
+      "core_complete": true,
+      "core_nodes": 46255,
+      "core_loadouts": 16032,
+      "inner": {
+        "scored": 16032,
+        "best_score": 44378197,
+        "best_witness": {
+          "catalog_indices": [
+            27,
+            22,
+            9,
+            6,
+            22,
+            3,
+            33,
+            68,
+            72
+          ],
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 62,
+            "Fever Multiplier": 73,
+            "Fever Time": 51,
+            "Fever Fill Rate": 66,
+            "Beat": 235,
+            "Vibe": 48,
+            "Rush": 104,
+            "Flow": 13,
+            "Chill": 841
+          },
+          "gems": [
+            1,
+            0,
+            0,
+            0,
+            17,
+            72
+          ]
+        },
+        "solve_s": 18.211260040989146,
+        "replay_s": 0.4766325850505382,
+        "total_s": 18.706404666998424
+      },
+      "baseline_ga_and_replay_s": 45.173243332945276,
+      "short_seed_bounds_inner_replay_s": 27.92325312597677,
+      "baseline_score": 44378197,
+      "core_score": 44378197,
+      "measured_base_improvement": true,
+      "optimality_certified": false
+    },
+    {
+      "chart": "Data/Hard/Scattered Faith (Full Version) [EXTENDED CUT] (Hard) by Kurokotei [Anniversary].txt",
+      "notes": 6503,
+      "prepare_s": 0.9482769999885932,
+      "catalog_loadouts": 767196551721600,
+      "gear_counts": [
+        78,
+        39,
+        35,
+        41,
+        44,
+        34
+      ],
+      "mini_count": 90,
+      "gem_budget": 90,
+      "primary_color": "Chill",
+      "secondary_color": "Rush",
+      "short_seed": [
+        {
+          "score": 151280505,
+          "gpu_score": 151280505,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 67,
+            "Fever Multiplier": 74,
+            "Fever Time": 38,
+            "Fever Fill Rate": 64,
+            "Beat": 15,
+            "Vibe": 33,
+            "Rush": 250,
+            "Flow": 38,
+            "Chill": 705
+          },
+          "ids": [
+            3,
+            52,
+            79,
+            96,
+            118,
+            144,
+            154,
+            157,
+            158
+          ],
+          "gems": [
+            5,
+            1,
+            0,
+            0,
+            13,
+            71
+          ],
+          "ga_s": 0.5564617500058375,
+          "replay_s": 0.00017254101112484932,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 151280505,
+          "gpu_score": 151280505,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 67,
+            "Fever Multiplier": 74,
+            "Fever Time": 38,
+            "Fever Fill Rate": 64,
+            "Beat": 15,
+            "Vibe": 33,
+            "Rush": 250,
+            "Flow": 38,
+            "Chill": 705
+          },
+          "ids": [
+            3,
+            52,
+            79,
+            96,
+            118,
+            144,
+            154,
+            157,
+            158
+          ],
+          "gems": [
+            5,
+            1,
+            0,
+            0,
+            13,
+            71
+          ],
+          "ga_s": 0.556283708952833,
+          "replay_s": 0.00018583302153274417,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 151280505,
+          "gpu_score": 151280505,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 67,
+            "Fever Multiplier": 74,
+            "Fever Time": 38,
+            "Fever Fill Rate": 64,
+            "Beat": 15,
+            "Vibe": 33,
+            "Rush": 250,
+            "Flow": 38,
+            "Chill": 705
+          },
+          "ids": [
+            3,
+            52,
+            79,
+            96,
+            118,
+            144,
+            154,
+            157,
+            158
+          ],
+          "gems": [
+            5,
+            1,
+            0,
+            0,
+            13,
+            71
+          ],
+          "ga_s": 0.5612028340110555,
+          "replay_s": 0.00018616701709106565,
+          "settings": {
+            "generations": 10,
+            "population": 64,
+            "runs": 1,
+            "seed": 1337
+          }
+        }
+      ],
+      "baseline_ga": [
+        {
+          "score": 151280505,
+          "gpu_score": 151280505,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 67,
+            "Fever Multiplier": 74,
+            "Fever Time": 38,
+            "Fever Fill Rate": 64,
+            "Beat": 15,
+            "Vibe": 33,
+            "Rush": 250,
+            "Flow": 38,
+            "Chill": 705
+          },
+          "ids": [
+            3,
+            52,
+            79,
+            96,
+            118,
+            144,
+            154,
+            157,
+            158
+          ],
+          "gems": [
+            5,
+            1,
+            0,
+            0,
+            13,
+            71
+          ],
+          "ga_s": 45.46548591600731,
+          "replay_s": 0.000181750045157969,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 151280505,
+          "gpu_score": 151280505,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 67,
+            "Fever Multiplier": 74,
+            "Fever Time": 38,
+            "Fever Fill Rate": 64,
+            "Beat": 15,
+            "Vibe": 33,
+            "Rush": 250,
+            "Flow": 38,
+            "Chill": 705
+          },
+          "ids": [
+            3,
+            52,
+            79,
+            96,
+            118,
+            144,
+            154,
+            157,
+            158
+          ],
+          "gems": [
+            5,
+            1,
+            0,
+            0,
+            13,
+            71
+          ],
+          "ga_s": 45.52386012498755,
+          "replay_s": 0.000172999978531152,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        },
+        {
+          "score": 151280505,
+          "gpu_score": 151280505,
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 67,
+            "Fever Multiplier": 74,
+            "Fever Time": 38,
+            "Fever Fill Rate": 64,
+            "Beat": 15,
+            "Vibe": 33,
+            "Rush": 250,
+            "Flow": 38,
+            "Chill": 705
+          },
+          "ids": [
+            3,
+            52,
+            79,
+            96,
+            118,
+            144,
+            154,
+            157,
+            158
+          ],
+          "gems": [
+            5,
+            1,
+            0,
+            0,
+            13,
+            71
+          ],
+          "ga_s": 45.34797250002157,
+          "replay_s": 0.00019358296412974596,
+          "settings": {
+            "generations": 125,
+            "population": 705,
+            "runs": 3,
+            "seed": 1337
+          }
+        }
+      ],
+      "fg_count_bound": {
+        "s": 0.14597854198655114,
+        "upper_score_display": 202395581.14869127,
+        "gear_prefixes": [
+          {
+            "depth": 1,
+            "visited": 78,
+            "surviving": 78
+          },
+          {
+            "depth": 2,
+            "visited": 3042,
+            "surviving": 3042
+          },
+          {
+            "depth": 3,
+            "visited": 106470,
+            "surviving": 106470
+          }
+        ]
+      },
+      "base_bound_s": 11.009588291984983,
+      "base_broad_upper_display": 181821976.63039786,
+      "base_regions": {
+        "regions_built": 127,
+        "regions_excluded": 18,
+        "unresolved_regions": 46,
+        "certified": false
+      },
+      "core_enumeration_s": 0.3503639579867013,
+      "core_complete": true,
+      "core_nodes": 119516,
+      "core_loadouts": 17282,
+      "inner": {
+        "scored": 17282,
+        "best_score": 151280505,
+        "best_witness": {
+          "catalog_indices": [
+            27,
+            7,
+            9,
+            6,
+            39,
+            26,
+            8,
+            72,
+            85
+          ],
+          "stats": {
+            "Perfect Points": 85,
+            "Combo Multiplier": 67,
+            "Fever Multiplier": 74,
+            "Fever Time": 38,
+            "Fever Fill Rate": 64,
+            "Beat": 15,
+            "Vibe": 33,
+            "Rush": 250,
+            "Flow": 38,
+            "Chill": 705
+          },
+          "gems": [
+            5,
+            1,
+            0,
+            0,
+            13,
+            71
+          ]
+        },
+        "solve_s": 18.697058957070112,
+        "replay_s": 0.513636417046655,
+        "total_s": 19.230293875036296
+      },
+      "baseline_ga_and_replay_s": 45.46566766605247,
+      "short_seed_bounds_inner_replay_s": 31.146880416024942,
+      "baseline_score": 151280505,
+      "core_score": 151280505,
+      "measured_base_improvement": true,
+      "optimality_certified": false
+    }
+  ]
+}
