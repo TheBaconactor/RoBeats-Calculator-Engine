@@ -3,7 +3,7 @@
   "suites": {
     "cpu": {
       "branch": {
-        "passed": 1382,
+        "passed": 1388,
         "failure": 134,
         "error": 0,
         "skipped": 3
@@ -16,6 +16,9 @@
       },
       "status_changes": [],
       "added_tests": {
+        "tests/test_core_adaptive.py::test_log_intervals_enclose_high_precision_values_at_all_scales": "passed",
+        "tests/test_core_adaptive.py::test_core_input_mapping_matches_named_catalog_witnesses[Chill]": "passed",
+        "tests/test_core_adaptive.py::test_core_input_mapping_matches_named_catalog_witnesses[Flow]": "passed",
         "tests/test_core_adaptive.py::test_greedy_affine_support_equals_exhaustive_box_budget[13]": "passed",
         "tests/test_core_adaptive.py::test_greedy_affine_support_equals_exhaustive_box_budget[91]": "passed",
         "tests/test_core_adaptive.py::test_greedy_affine_support_equals_exhaustive_box_budget[204]": "passed",
@@ -28,9 +31,15 @@
         "tests/test_core_adaptive.py::test_incomplete_enumeration_never_excludes_unvisited_regions": "passed",
         "tests/test_core_adaptive.py::test_mandatory_timing_gems_tighten_only_survivor_bound": "passed",
         "tests/test_core_adaptive.py::test_matrix_is_reused_across_lambda_bank": "passed",
-        "tests/test_core_adaptive.py::test_timing_pair_count_equals_explicit_triangle_intersection": "passed"
+        "tests/test_core_adaptive.py::test_timing_pair_count_equals_explicit_triangle_intersection": "passed",
+        "tests/test_core_db_audit.py::test_packed_witness_requires_all_stats_and_gems": "passed",
+        "tests/test_core_db_audit.py::test_global_report_rejects_incomplete_or_overlapping_shards": "passed",
+        "tests/test_item_registry_encoding.py::test_new_registry_uses_current_pool_contents_even_when_counts_are_unchanged": "passed"
       },
-      "message_changes": [],
+      "message_changes": [
+        "tests/test_fg_response_frontier_cache.py::test_current_fg_payload_cleanup_reuses_issue161_frontier_bytes",
+        "tests/test_song_queue_db_priority.py::test_build_song_queue_resume_limit_preserves_prepended_paths"
+      ],
       "baseline_failure_nodes": [
         "tests/test_app_new_counter_authority.py::test_new_counter_counts_native_fg_record_event_before_tracker_advances",
         "tests/test_async_db_atomic_persistence.py::test_optimizer_result_preserves_meta_only_and_deferred_fg_semantics",
@@ -186,7 +195,9 @@
         "tests/test_gpu_core_adaptive.py::test_regional_gpu_returns_restricted_allocations_with_distinct_row_domains": "passed",
         "tests/test_gpu_registry_upload_ownership.py::test_alternating_upload_paths_and_in_place_edits_reach_shared_fields": "passed"
       },
-      "message_changes": [],
+      "message_changes": [
+        "tests/test_fg_atom_champion.py::test_exact_scorer_atom_champion_projection_preserves_declared_domain"
+      ],
       "baseline_failure_nodes": [
         "tests/test_custom_timing_fg_gpu.py::test_leaderboard_under_nonzero_baseline_offset_is_valid",
         "tests/test_fg_atom_champion.py::test_exact_scorer_atom_champion_projection_preserves_declared_domain",
@@ -223,5 +234,14 @@
     }
   },
   "complete": true,
-  "no_new_failures": true
+  "no_new_failures": true,
+  "same_verbosity_recheck": {
+    "assertion_messages_match_main": {
+      "test_current_fg_payload_cleanup_reuses_issue161_frontier_bytes": true,
+      "test_build_song_queue_resume_limit_preserves_prepended_paths": true,
+      "test_exact_scorer_atom_champion_projection_preserves_declared_domain": true
+    },
+    "cases": 3,
+    "failures": 3
+  }
 }

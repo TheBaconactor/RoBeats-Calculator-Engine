@@ -83,10 +83,41 @@ Python object-ID reuse hazards. This deletes duplicated upload/cache code and th
 No cross-invalidation flags or silent upload exceptions remain in that path. The GPU regression reproduces the wrong
 resident item table on main and passes after the ownership fix.
 
+Two further state invariants were tested during the database audit:
+
+- A regional solve must bind its own chart and reference tables under the GPU
+  lock. Previously, preparing chart B and then reusing chart A could score A with
+  B's resident timeline. The regression failed with scores around 20 million in
+  place of 2.6 million. `solve_regions` now calls the existing timeline owner
+  before dispatch; the A/B/A regression passes.
+- A newly constructed `ItemRegistry` must represent the supplied items. Its host
+  cache used pool object identity, slot counts, and fixed-item names, so a changed
+  pool with the same counts or a replacement fixed item could reuse old gear.
+  The cache and its key builders are deleted. Construction now derives the maps
+  directly from the supplied items. The regression fails before deletion and
+  passes afterward. All 2,264 database chart catalogs produce byte-identical GPU
+  arrays and identical IDs with the old and new constructors.
+
+The host registry deletion also affects production callers. The timeline fix is
+confined to the research regional solver. Neither change adds a fallback.
+
+## Bound preparation follow-up
+
+The exact rational logarithm enclosure now stops once its outward-rounded integer
+bounds are adjacent. Every iteration includes an analytic upper bound on the
+remaining positive series tail, and the enclosure of log(2) is computed once.
+This retains the pruning certificate while avoiding unnecessary rational terms.
+Tests compare the resulting enclosures against 400-digit Decimal logarithms,
+including values near powers of two from exponents -1,000 to 1,000.
+
+Candidate-to-registry mapping and raw-stat accumulation now use array indexing.
+Named catalog witnesses test the mapping, all ten raw stats, separate primary and
+secondary projections, same-color charts, and an empty candidate set.
+
 ## Measurement contract
 
 Run `python -m tools.research.measure_adaptive_core --help` for the maintained
-harness. It compares the GA, the actual #180 fitter/refiner/enumerator loaded from
+harness. It compares the GA, the actual #180 certificate arithmetic, fitter, refiner, and enumerator loaded from
 commit `7b46703b`, and the adaptive runner. All arms use the same cache-corrected
 scoring backend and canonical observation harness. The latter downloads tracked
 GA leaders after generations without feeding canonical scores back into GA
@@ -115,6 +146,10 @@ no certified reference optimum is available. FG is not measured, and these Base
 results supply no evidence of FG speed or coverage.
 
 ## Measured results
+
+The following 30-run results were measured at `09af4f9c`, before the database-audit
+state fixes and bound-preparation follow-up. They remain historical measurements;
+they are not timings of the later changes.
 
 Eight development charts and two held-out charts, three random seeds each
 (`1337`, `2027`, `9041`), cover all five primary colors, one- and two-color
@@ -178,25 +213,52 @@ explicitly loaded #180 fitting/enumeration modules. NumPy 2.3.5 and Numba
 qualify this measured host/workload; they do not establish a release-wide
 latency distribution. FG was not benchmarked by the Base search.
 
+## Post-audit sparse-chart follow-up
+
+After the state fixes and preparation changes, the two previously slower charts
+were rerun at `47f3ae81` with seeds 1337, 2027, and 9041. All audit workers had
+exited before measurements. These are development follow-ups on known charts,
+not new held-out evidence. The baseline also loads #180's original certificate
+math so the optimized logarithm does not silently benefit both arms.
+
+| Chart | #180 median finish | Updated median finish | Difference | #180 best-known hits | Updated hits |
+|---|---:|---:|---:|---:|---:|
+| Comfort Zone (Easy) | 4.71s | 5.67s | +0.97s | 0/3 | 3/3 |
+| crystallized (Easy) | 4.94s | 7.82s | +2.87s | 2/3 | 3/3 |
+
+All six updated runs match their best-known score, with no deficit in 30 paired
+checkpoints at 5, 10, 20, 40, and 60 seconds. **The completion-time regressions
+remain.** Both searches hit the witness cap; the updated method processes known
+surviving regions and uses a stronger seed. This is not a zero-latency-regression
+qualification, and the PR remains a draft for review. The full 30-run comparison
+above was not rerun on this revision; its timings remain labeled historical.
+
+[Complete follow-up runs and score curves](adaptive_core_sparse_followup_2026-09-11.json)
+
 ## Verification
 
-`python -m ruff check .` passes. The focused solver, handoff, service, protocol,
-and guardrail selection passes **126 tests**. The full suites were run on both
-this branch and a clean checkout of current main (`7b46703b`):
+`python -m ruff check .` passes. After the database-audit fixes, the focused
+state, bound, handoff, and audit selection passes **45 tests**. The full suites
+were rerun and compared against the clean main baseline (`7b46703b`):
 
-| Suite | This branch | Current main |
+| Suite | Updated branch | Current main baseline |
 |---|---|---|
-| `pytest -m "not gpu" tests/` | 1,382 passed; 134 failed; 3 skipped | 1,369 passed; 134 failed; 3 skipped |
+| `pytest -m "not gpu" tests/` | 1,388 passed; 134 failed; 3 skipped | 1,369 passed; 134 failed; 3 skipped |
 | `pytest -m gpu tests/` | 69 passed; 28 failed; 3 errors; 5 skipped | 67 passed; 28 failed; 3 errors; 5 skipped |
 
-All common test statuses and failure messages match (after normalizing checkout
-paths, temporary pytest run numbers, and object addresses). **All 15 added tests
-pass; there are no newly failing or newly skipped tests.** The repository-wide
-suites are not green. Existing failures were neither loosened nor skipped to make
-this patch pass. The shared-upload regression was also run against main separately
-and failed on the stale resident item table as expected.
+**All common test statuses match, and all 21 added tests pass.** There are no newly
+failing or newly skipped tests. Three failure-message representations differ due
+to pytest verbosity/truncation. Rerunning those three tests with the baseline
+verbosity produces identical normalized failure messages. The
+repository-wide suites are not green. Existing failures were neither loosened
+nor skipped. The shared-upload, chart-switch, and changed-pool regressions were
+also observed failing before their respective fixes.
 
 [Full validation counts and baseline failure nodes](adaptive_region_core_validation_2026-09-11.json)
+
+The [global database audit](adaptive_core_database_audit_2026-09-11.md) checks stored
+witness consistency and regional winner preservation separately from canonical
+optimality. It includes the existing Kanpai timing-selection counterexample.
 
 ## Reproduce
 
@@ -225,16 +287,20 @@ than the checkpoint; never use a later final score for an earlier budget.
 
 - **Invariant:** proved timing exclusions must reach the inner search; pruning
   thresholds must be canonically achieved; a shared GPU field has one resident
-  registry and therefore one upload-cache owner.
+  registry and therefore one upload-cache owner; each solve must bind its chart;
+  registry construction must reflect its input contents.
 - **First violation:** #180 discarded regional membership at the identity-only
-  handoff; GA and skyline separately memoized writes to the same GPU fields.
+  handoff; GA and skyline separately memoized writes to the same GPU fields; the regional
+  solver assumed its chart was still resident; host registry keys omitted content.
 - **Fix:** retain regional upper bounds, restrict real scoring to legal regional
-  pairs, feed back canonical improvements, and unify GPU registry ownership.
+  pairs, feed back canonical improvements, unify GPU registry ownership, bind the chart under the same lock, and delete
+  the unsafe host registry cache.
 - **Tests:** exhaustive small gem boxes, raw timing boundaries/cap tails, ties,
   incomplete-region coverage, matrix reuse, regional/full GPU comparison, deadline
-  retention, and GA/core upload switching. The upload-switch regression fails on
+  retention, GA/core upload switching, A/B/A chart switching, and changed-pool construction. The upload-switch regression fails on
   main with the wrong item table resident.
 - **Complexity:** new focused research modules implement regional support,
-  scheduling, and materialization; shared production upload code becomes smaller.
+  scheduling, and materialization; shared production upload code becomes smaller, and the host registry change
+  removes 72 net lines.
   No new dependency, outer skyline, persistent solver, or persistent evaluation
   cache is introduced.

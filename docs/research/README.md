@@ -7,6 +7,7 @@ prototypes, or proposals that were never adopted. Use the parent
 
 ## Files
 
+- [Global adaptive-core database audit](adaptive_core_database_audit_2026-09-11.md) — stored Base/FG witnesses, regional winner preservation, and remaining selection limits
 - [Adaptive regional core search](adaptive_region_core_search.md) — regional handoff, canonical feedback, and score-versus-time measurements
 
 - [Shared-budget core search](shared_budget_core_search.md) — 2026-09-11 real-catalog bound probe, numerical proof, and benchmark scope
