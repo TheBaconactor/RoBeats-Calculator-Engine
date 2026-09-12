@@ -1,0 +1,2142 @@
+{
+  "baseline_commit": "7b46703ba40292fd47aea2e5ce7d5b1365ac068d",
+  "measured_commit": "47f3ae81d31d284750125dc6fa0a93ee2c5b1f80",
+  "baseline_certificate_math_isolated": true,
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "python": "3.11.9",
+  "numpy": "2.3.5",
+  "numba": "0.62.1",
+  "scipy": "1.15.3",
+  "hardware_role": "production",
+  "optimality_certified": false,
+  "fg": "not measured; Base results give no FG coverage or speed claim",
+  "settings": {
+    "seeds": [
+      1337,
+      2027,
+      9041
+    ],
+    "arms": [
+      "legacy",
+      "adaptive"
+    ],
+    "baseline_ref": "7b46703b",
+    "hardware_role": "production",
+    "split": "development",
+    "time_budget": 60.0,
+    "portfolio": 4,
+    "regions": 64,
+    "members": 9,
+    "max_nodes": 1000000,
+    "max_witnesses": 100000
+  },
+  "results": [
+    {
+      "chart": "Data/Easy/Comfort Zone (Easy) by KepoWorld.txt",
+      "split": "development",
+      "notes": 145,
+      "primary": "Chill",
+      "secondary": "Vibe",
+      "prepare_s": 35.26366512500681,
+      "warmup_s": 3.9454682499635965,
+      "runs": [
+        {
+          "events": [
+            {
+              "s": 0.09860004100482911,
+              "score": 2292194
+            },
+            {
+              "s": 0.12088016601046547,
+              "score": 2382779
+            },
+            {
+              "s": 0.164170624979306,
+              "score": 2411066
+            },
+            {
+              "s": 0.18602124997414649,
+              "score": 2445856
+            },
+            {
+              "s": 0.2050406659836881,
+              "score": 2484989
+            },
+            {
+              "s": 0.24592783296247944,
+              "score": 2538187
+            },
+            {
+              "s": 0.2669330830103718,
+              "score": 2545682
+            },
+            {
+              "s": 0.28560508298687637,
+              "score": 2593617
+            },
+            {
+              "s": 0.5206115409964696,
+              "score": 2616303
+            }
+          ],
+          "score": 2616303,
+          "total_s": 7.448467375012115,
+          "seed_result": {
+            "score": 2616303,
+            "observer_s": 0.003059582901187241,
+            "gpu_score": 2616303,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 32,
+              "Fever Multiplier": 70,
+              "Fever Time": 63,
+              "Fever Fill Rate": 64,
+              "Beat": 6,
+              "Vibe": 94,
+              "Rush": 40,
+              "Flow": 16,
+              "Chill": 784
+            },
+            "ids": [
+              3,
+              52,
+              73,
+              93,
+              121,
+              143,
+              155,
+              170,
+              184
+            ],
+            "gems": [
+              0,
+              2,
+              0,
+              0,
+              3,
+              85
+            ],
+            "ga_s": 0.444093708996661,
+            "replay_s": 0.0004045420209877193,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 1,
+              "seed": 1337
+            }
+          },
+          "bounds_s": 6.522070375038311,
+          "enumeration_s": 0.40564220800297335,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 0,
+            "unresolved_regions": 64,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 177827,
+          "inner": null,
+          "arm": "legacy",
+          "seed": 1337
+        },
+        {
+          "events": [
+            {
+              "s": 0.08915004099253565,
+              "score": 2292194
+            },
+            {
+              "s": 0.15729262499371544,
+              "score": 2382779
+            },
+            {
+              "s": 0.2915512500330806,
+              "score": 2423258
+            },
+            {
+              "s": 0.35610837501008064,
+              "score": 2467015
+            },
+            {
+              "s": 0.4181027080048807,
+              "score": 2484989
+            },
+            {
+              "s": 0.48026983300223947,
+              "score": 2500687
+            },
+            {
+              "s": 0.5436433749855496,
+              "score": 2538187
+            },
+            {
+              "s": 0.6067663750145584,
+              "score": 2545682
+            },
+            {
+              "s": 0.6678629580419511,
+              "score": 2593617
+            },
+            {
+              "s": 1.8684556660009548,
+              "score": 2631111
+            }
+          ],
+          "score": 2631111,
+          "total_s": 6.019028040987905,
+          "seed_result": {
+            "score": 2631111,
+            "observer_s": 0.0065543740638531744,
+            "gpu_score": 2631111,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 58,
+              "Fever Multiplier": 71,
+              "Fever Time": 38,
+              "Fever Fill Rate": 49,
+              "Beat": 44,
+              "Vibe": 93,
+              "Rush": 37,
+              "Flow": 3,
+              "Chill": 779
+            },
+            "ids": [
+              34,
+              52,
+              73,
+              93,
+              128,
+              143,
+              155,
+              156,
+              184
+            ],
+            "gems": [
+              1,
+              0,
+              0,
+              0,
+              4,
+              85
+            ],
+            "ga_s": 1.8682160419994034,
+            "replay_s": 0.0002199580194428563,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 4,
+              "seed": 1337
+            }
+          },
+          "bounds_s": 3.3173552909865975,
+          "enumeration_s": 0.5317514580092393,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 0,
+            "lps": 1143,
+            "unresolved_regions": 64,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 180266,
+          "inner": {
+            "best": {
+              "score": 2631111,
+              "observer_s": 0.0065543740638531744,
+              "gpu_score": 2631111,
+              "stats": {
+                "Perfect Points": 85,
+                "Combo Multiplier": 58,
+                "Fever Multiplier": 71,
+                "Fever Time": 38,
+                "Fever Fill Rate": 49,
+                "Beat": 44,
+                "Vibe": 93,
+                "Rush": 37,
+                "Flow": 3,
+                "Chill": 779
+              },
+              "ids": [
+                67,
+                103,
+                138,
+                173,
+                232,
+                254,
+                276,
+                277,
+                344
+              ],
+              "gems": [
+                1,
+                0,
+                0,
+                0,
+                4,
+                85
+              ],
+              "ga_s": 1.8682160419994034,
+              "replay_s": 0.0002199580194428563,
+              "settings": {
+                "generations": 10,
+                "population": 64,
+                "runs": 4,
+                "seed": 1337
+              },
+              "loadout": [
+                "The Games: Hidden Shine",
+                "Legendary Vibe Ringleader's Necktie",
+                "Lester's Muzzle",
+                "Legendary Marshall's Coat",
+                "The Games: Cape",
+                "Legendary Marshall's Trousers",
+                "Adventure Starlet",
+                "Apocalypse Survivor Starlet",
+                "Trailblazing Trance Zara"
+              ]
+            },
+            "scored_regions": 799,
+            "timing_pairs_evaluated": 799,
+            "feedback_pruned_regions": 0,
+            "queue_exhausted": true,
+            "enumeration_complete": false,
+            "unresolved_queue_rows": 0,
+            "optimality_certified": false,
+            "solve_s": 0.016415333026088774,
+            "replay_s": 0.024259166966658086,
+            "total_s": 0.2932877920102328,
+            "broad_region_pairs": 100000,
+            "surviving_region_pairs": 799,
+            "broad_surviving_timing_pairs": 8771,
+            "unvisited_regions": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61,
+              62,
+              63
+            ],
+            "candidates": 100000,
+            "distinct_base_inputs": 99299,
+            "distinct_regional_inputs": 799,
+            "full_loadout_timing_pairs": 189729601
+          },
+          "arm": "adaptive",
+          "seed": 1337
+        },
+        {
+          "events": [
+            {
+              "s": 0.07669658301165327,
+              "score": 2279506
+            },
+            {
+              "s": 0.14648937503807247,
+              "score": 2334725
+            },
+            {
+              "s": 0.20962187502300367,
+              "score": 2471670
+            },
+            {
+              "s": 0.27778004202991724,
+              "score": 2520510
+            },
+            {
+              "s": 0.3421540000126697,
+              "score": 2521754
+            },
+            {
+              "s": 0.40596962498966604,
+              "score": 2536662
+            },
+            {
+              "s": 0.46557679201941937,
+              "score": 2564609
+            },
+            {
+              "s": 0.5284112920053303,
+              "score": 2568248
+            },
+            {
+              "s": 0.5882379169925116,
+              "score": 2615062
+            },
+            {
+              "s": 1.700225250038784,
+              "score": 2631111
+            }
+          ],
+          "score": 2631111,
+          "total_s": 5.67379912501201,
+          "seed_result": {
+            "score": 2631111,
+            "observer_s": 0.008000955975148827,
+            "gpu_score": 2631111,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 58,
+              "Fever Multiplier": 71,
+              "Fever Time": 38,
+              "Fever Fill Rate": 49,
+              "Beat": 44,
+              "Vibe": 93,
+              "Rush": 37,
+              "Flow": 3,
+              "Chill": 779
+            },
+            "ids": [
+              34,
+              52,
+              73,
+              93,
+              128,
+              143,
+              155,
+              156,
+              184
+            ],
+            "gems": [
+              1,
+              0,
+              0,
+              0,
+              4,
+              85
+            ],
+            "ga_s": 1.6997029579943046,
+            "replay_s": 0.0004903749795630574,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 4,
+              "seed": 2027
+            }
+          },
+          "bounds_s": 2.932370125025045,
+          "enumeration_s": 0.7490520409774035,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 0,
+            "lps": 1143,
+            "unresolved_regions": 64,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 180266,
+          "inner": {
+            "best": {
+              "score": 2631111,
+              "observer_s": 0.008000955975148827,
+              "gpu_score": 2631111,
+              "stats": {
+                "Perfect Points": 85,
+                "Combo Multiplier": 58,
+                "Fever Multiplier": 71,
+                "Fever Time": 38,
+                "Fever Fill Rate": 49,
+                "Beat": 44,
+                "Vibe": 93,
+                "Rush": 37,
+                "Flow": 3,
+                "Chill": 779
+              },
+              "ids": [
+                67,
+                103,
+                138,
+                173,
+                232,
+                254,
+                276,
+                277,
+                344
+              ],
+              "gems": [
+                1,
+                0,
+                0,
+                0,
+                4,
+                85
+              ],
+              "ga_s": 1.6997029579943046,
+              "replay_s": 0.0004903749795630574,
+              "settings": {
+                "generations": 10,
+                "population": 64,
+                "runs": 4,
+                "seed": 2027
+              },
+              "loadout": [
+                "The Games: Hidden Shine",
+                "Legendary Vibe Ringleader's Necktie",
+                "Lester's Muzzle",
+                "Legendary Marshall's Coat",
+                "The Games: Cape",
+                "Legendary Marshall's Trousers",
+                "Adventure Starlet",
+                "Apocalypse Survivor Starlet",
+                "Trailblazing Trance Zara"
+              ]
+            },
+            "scored_regions": 799,
+            "timing_pairs_evaluated": 799,
+            "feedback_pruned_regions": 0,
+            "queue_exhausted": true,
+            "enumeration_complete": false,
+            "unresolved_queue_rows": 0,
+            "optimality_certified": false,
+            "solve_s": 0.010330958000849932,
+            "replay_s": 0.023979124962352216,
+            "total_s": 0.2836866250145249,
+            "broad_region_pairs": 100000,
+            "surviving_region_pairs": 799,
+            "broad_surviving_timing_pairs": 8771,
+            "unvisited_regions": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61,
+              62,
+              63
+            ],
+            "candidates": 100000,
+            "distinct_base_inputs": 99299,
+            "distinct_regional_inputs": 799,
+            "full_loadout_timing_pairs": 189729601
+          },
+          "arm": "adaptive",
+          "seed": 2027
+        },
+        {
+          "events": [
+            {
+              "s": 0.029346249997615814,
+              "score": 2243054
+            },
+            {
+              "s": 0.05326954199699685,
+              "score": 2245427
+            },
+            {
+              "s": 0.0730954579776153,
+              "score": 2366726
+            },
+            {
+              "s": 0.09349079197272658,
+              "score": 2414150
+            },
+            {
+              "s": 0.1158170829876326,
+              "score": 2425273
+            },
+            {
+              "s": 0.1349139169906266,
+              "score": 2449313
+            },
+            {
+              "s": 0.1541303750127554,
+              "score": 2481229
+            },
+            {
+              "s": 0.1732278749695979,
+              "score": 2526265
+            },
+            {
+              "s": 0.19074954197276384,
+              "score": 2543629
+            },
+            {
+              "s": 0.20783408300485462,
+              "score": 2546789
+            },
+            {
+              "s": 0.4548455830081366,
+              "score": 2603709
+            }
+          ],
+          "score": 2603709,
+          "total_s": 4.707080250023864,
+          "seed_result": {
+            "score": 2603709,
+            "observer_s": 0.0022172509343363345,
+            "gpu_score": 2603709,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 38,
+              "Fever Multiplier": 71,
+              "Fever Time": 65,
+              "Fever Fill Rate": 63,
+              "Beat": 9,
+              "Vibe": 103,
+              "Rush": 32,
+              "Flow": 16,
+              "Chill": 757
+            },
+            "ids": [
+              34,
+              52,
+              73,
+              104,
+              121,
+              143,
+              155,
+              170,
+              184
+            ],
+            "gems": [
+              1,
+              4,
+              0,
+              0,
+              4,
+              81
+            ],
+            "ga_s": 0.45448295801179484,
+            "replay_s": 0.0003427090123295784,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 1,
+              "seed": 2027
+            }
+          },
+          "bounds_s": 3.848971833998803,
+          "enumeration_s": 0.4031797920470126,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 0,
+            "unresolved_regions": 64,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 175602,
+          "inner": null,
+          "arm": "legacy",
+          "seed": 2027
+        },
+        {
+          "events": [
+            {
+              "s": 0.033429250004701316,
+              "score": 2198604
+            },
+            {
+              "s": 0.05564933398272842,
+              "score": 2370271
+            },
+            {
+              "s": 0.0777488750172779,
+              "score": 2405804
+            },
+            {
+              "s": 0.09544141701189801,
+              "score": 2493507
+            },
+            {
+              "s": 0.13185312499990687,
+              "score": 2521513
+            },
+            {
+              "s": 0.44947970897192135,
+              "score": 2601038
+            }
+          ],
+          "score": 2601038,
+          "total_s": 4.597939958970528,
+          "seed_result": {
+            "score": 2601038,
+            "observer_s": 0.002355002041440457,
+            "gpu_score": 2601038,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 37,
+              "Fever Multiplier": 70,
+              "Fever Time": 51,
+              "Fever Fill Rate": 56,
+              "Beat": 9,
+              "Vibe": 101,
+              "Rush": 38,
+              "Flow": 27,
+              "Chill": 786
+            },
+            "ids": [
+              3,
+              52,
+              69,
+              93,
+              121,
+              144,
+              155,
+              170,
+              184
+            ],
+            "gems": [
+              1,
+              0,
+              0,
+              0,
+              2,
+              87
+            ],
+            "ga_s": 0.4492721250280738,
+            "replay_s": 0.00019233301281929016,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 1,
+              "seed": 9041
+            }
+          },
+          "bounds_s": 3.736202540982049,
+          "enumeration_s": 0.41218416596530005,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 0,
+            "unresolved_regions": 64,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 177165,
+          "inner": null,
+          "arm": "legacy",
+          "seed": 9041
+        },
+        {
+          "events": [
+            {
+              "s": 0.07607170898700133,
+              "score": 2333128
+            },
+            {
+              "s": 0.1437210000003688,
+              "score": 2370271
+            },
+            {
+              "s": 0.20927183399908245,
+              "score": 2405804
+            },
+            {
+              "s": 0.27257604198530316,
+              "score": 2493507
+            },
+            {
+              "s": 0.34064070897875354,
+              "score": 2517756
+            },
+            {
+              "s": 0.40492629195796326,
+              "score": 2521513
+            },
+            {
+              "s": 0.5288661669474095,
+              "score": 2525336
+            },
+            {
+              "s": 0.5894364999840036,
+              "score": 2537363
+            },
+            {
+              "s": 0.647805624990724,
+              "score": 2540815
+            },
+            {
+              "s": 1.6984314169967547,
+              "score": 2631111
+            }
+          ],
+          "score": 2631111,
+          "total_s": 5.643935166997835,
+          "seed_result": {
+            "score": 2631111,
+            "observer_s": 0.004537708126008511,
+            "gpu_score": 2631111,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 58,
+              "Fever Multiplier": 71,
+              "Fever Time": 38,
+              "Fever Fill Rate": 49,
+              "Beat": 44,
+              "Vibe": 93,
+              "Rush": 37,
+              "Flow": 3,
+              "Chill": 779
+            },
+            "ids": [
+              34,
+              52,
+              73,
+              93,
+              128,
+              143,
+              155,
+              156,
+              184
+            ],
+            "gems": [
+              1,
+              0,
+              0,
+              0,
+              4,
+              85
+            ],
+            "ga_s": 1.698072208033409,
+            "replay_s": 0.00034008396323770285,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 4,
+              "seed": 9041
+            }
+          },
+          "bounds_s": 3.0036387080326676,
+          "enumeration_s": 0.6441502080415376,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 0,
+            "lps": 1143,
+            "unresolved_regions": 64,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 180266,
+          "inner": {
+            "best": {
+              "score": 2631111,
+              "observer_s": 0.004537708126008511,
+              "gpu_score": 2631111,
+              "stats": {
+                "Perfect Points": 85,
+                "Combo Multiplier": 58,
+                "Fever Multiplier": 71,
+                "Fever Time": 38,
+                "Fever Fill Rate": 49,
+                "Beat": 44,
+                "Vibe": 93,
+                "Rush": 37,
+                "Flow": 3,
+                "Chill": 779
+              },
+              "ids": [
+                67,
+                103,
+                138,
+                173,
+                232,
+                254,
+                276,
+                277,
+                344
+              ],
+              "gems": [
+                1,
+                0,
+                0,
+                0,
+                4,
+                85
+              ],
+              "ga_s": 1.698072208033409,
+              "replay_s": 0.00034008396323770285,
+              "settings": {
+                "generations": 10,
+                "population": 64,
+                "runs": 4,
+                "seed": 9041
+              },
+              "loadout": [
+                "The Games: Hidden Shine",
+                "Legendary Vibe Ringleader's Necktie",
+                "Lester's Muzzle",
+                "Legendary Marshall's Coat",
+                "The Games: Cape",
+                "Legendary Marshall's Trousers",
+                "Adventure Starlet",
+                "Apocalypse Survivor Starlet",
+                "Trailblazing Trance Zara"
+              ]
+            },
+            "scored_regions": 799,
+            "timing_pairs_evaluated": 799,
+            "feedback_pruned_regions": 0,
+            "queue_exhausted": true,
+            "enumeration_complete": false,
+            "unresolved_queue_rows": 0,
+            "optimality_certified": false,
+            "solve_s": 0.009973708016332239,
+            "replay_s": 0.02468054200289771,
+            "total_s": 0.2885941250133328,
+            "broad_region_pairs": 100000,
+            "surviving_region_pairs": 799,
+            "broad_surviving_timing_pairs": 8771,
+            "unvisited_regions": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61,
+              62,
+              63
+            ],
+            "candidates": 100000,
+            "distinct_base_inputs": 99299,
+            "distinct_regional_inputs": 799,
+            "full_loadout_timing_pairs": 189729601
+          },
+          "arm": "adaptive",
+          "seed": 9041
+        }
+      ]
+    },
+    {
+      "chart": "Data/Easy/crystallized (Easy) by Camellia.txt",
+      "split": "development",
+      "notes": 225,
+      "primary": "Beat",
+      "secondary": "Rush",
+      "prepare_s": 0.25803216599160805,
+      "warmup_s": 2.579751542012673,
+      "runs": [
+        {
+          "events": [
+            {
+              "s": 0.02376420795917511,
+              "score": 4221795
+            },
+            {
+              "s": 0.046007499971892685,
+              "score": 4360064
+            },
+            {
+              "s": 0.0684605409624055,
+              "score": 4453214
+            },
+            {
+              "s": 0.09056062495801598,
+              "score": 4476357
+            },
+            {
+              "s": 0.11347662500338629,
+              "score": 4521494
+            },
+            {
+              "s": 0.1353364159585908,
+              "score": 4607511
+            },
+            {
+              "s": 0.17876929097110406,
+              "score": 4625563
+            },
+            {
+              "s": 0.19981745799304917,
+              "score": 4668220
+            },
+            {
+              "s": 0.22247491596499458,
+              "score": 4690666
+            },
+            {
+              "s": 0.5618466250016354,
+              "score": 4859453
+            }
+          ],
+          "score": 4859453,
+          "total_s": 7.333147833007388,
+          "seed_result": {
+            "score": 4859453,
+            "observer_s": 0.004269667144399136,
+            "gpu_score": 4859453,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 63,
+              "Fever Multiplier": 74,
+              "Fever Time": 54,
+              "Fever Fill Rate": 76,
+              "Beat": 740,
+              "Vibe": 38,
+              "Rush": 166,
+              "Flow": 54,
+              "Chill": 0
+            },
+            "ids": [
+              4,
+              62,
+              75,
+              99,
+              126,
+              139,
+              161,
+              164,
+              172
+            ],
+            "gems": [
+              14,
+              0,
+              0,
+              0,
+              20,
+              56
+            ],
+            "ga_s": 0.5613050000392832,
+            "replay_s": 0.0005062500131316483,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 1,
+              "seed": 1337
+            }
+          },
+          "bounds_s": 6.234403416980058,
+          "enumeration_s": 0.5367940829601139,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 2,
+            "unresolved_regions": 62,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 204797,
+          "inner": null,
+          "arm": "legacy",
+          "seed": 1337
+        },
+        {
+          "events": [
+            {
+              "s": 0.08167645800858736,
+              "score": 4292677
+            },
+            {
+              "s": 0.15332216600654647,
+              "score": 4400895
+            },
+            {
+              "s": 0.22149504104163498,
+              "score": 4481041
+            },
+            {
+              "s": 0.2926953330170363,
+              "score": 4481799
+            },
+            {
+              "s": 0.36094587499974295,
+              "score": 4521494
+            },
+            {
+              "s": 0.4267319160280749,
+              "score": 4607511
+            },
+            {
+              "s": 0.5579065410420299,
+              "score": 4625563
+            },
+            {
+              "s": 0.6222180830081925,
+              "score": 4668220
+            },
+            {
+              "s": 0.6881926660425961,
+              "score": 4690666
+            },
+            {
+              "s": 2.008572583028581,
+              "score": 4859453
+            }
+          ],
+          "score": 4859453,
+          "total_s": 7.901526833011303,
+          "seed_result": {
+            "score": 4859453,
+            "observer_s": 0.004231582977809012,
+            "gpu_score": 4859453,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 63,
+              "Fever Multiplier": 74,
+              "Fever Time": 54,
+              "Fever Fill Rate": 76,
+              "Beat": 740,
+              "Vibe": 38,
+              "Rush": 166,
+              "Flow": 54,
+              "Chill": 0
+            },
+            "ids": [
+              4,
+              62,
+              75,
+              99,
+              126,
+              139,
+              161,
+              164,
+              172
+            ],
+            "gems": [
+              14,
+              0,
+              0,
+              0,
+              20,
+              56
+            ],
+            "ga_s": 2.00813674996607,
+            "replay_s": 0.00041320803575217724,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 4,
+              "seed": 1337
+            }
+          },
+          "bounds_s": 3.647954749991186,
+          "enumeration_s": 0.7602137079811655,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 2,
+            "lps": 1143,
+            "unresolved_regions": 62,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 204797,
+          "inner": {
+            "best": {
+              "score": 4859453,
+              "observer_s": 0.004231582977809012,
+              "gpu_score": 4859453,
+              "stats": {
+                "Perfect Points": 85,
+                "Combo Multiplier": 63,
+                "Fever Multiplier": 74,
+                "Fever Time": 54,
+                "Fever Fill Rate": 76,
+                "Beat": 740,
+                "Vibe": 38,
+                "Rush": 166,
+                "Flow": 54,
+                "Chill": 0
+              },
+              "ids": [
+                5,
+                103,
+                130,
+                177,
+                221,
+                251,
+                287,
+                297,
+                314
+              ],
+              "gems": [
+                14,
+                0,
+                0,
+                0,
+                20,
+                56
+              ],
+              "ga_s": 2.00813674996607,
+              "replay_s": 0.00041320803575217724,
+              "settings": {
+                "generations": 10,
+                "population": 64,
+                "runs": 4,
+                "seed": 1337
+              },
+              "loadout": [
+                "Autumnal Adept's Bloom",
+                "Legendary Vibe Ringleader's Necktie",
+                "Legendary Beat Cyborg's Goggles",
+                "Legendary Vibe Ringleader's Suit",
+                "No-Scope Loadout",
+                "Legendary Beat Cyborg's Jumpsuit Pants",
+                "Camellia",
+                "Halloween Witch Teresa",
+                "Make a Cake Chef"
+              ]
+            },
+            "scored_regions": 20825,
+            "timing_pairs_evaluated": 225097,
+            "feedback_pruned_regions": 0,
+            "queue_exhausted": true,
+            "enumeration_complete": false,
+            "unresolved_queue_rows": 0,
+            "optimality_certified": false,
+            "solve_s": 0.43434362579137087,
+            "replay_s": 0.627938752179034,
+            "total_s": 1.4700629999861121,
+            "broad_region_pairs": 100000,
+            "surviving_region_pairs": 20825,
+            "broad_surviving_timing_pairs": 1093454,
+            "unvisited_regions": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61
+            ],
+            "candidates": 100000,
+            "distinct_base_inputs": 96819,
+            "distinct_regional_inputs": 20472,
+            "full_loadout_timing_pairs": 187394710
+          },
+          "arm": "adaptive",
+          "seed": 1337
+        },
+        {
+          "events": [
+            {
+              "s": 0.07277125003747642,
+              "score": 4280433
+            },
+            {
+              "s": 0.14092504204018041,
+              "score": 4386148
+            },
+            {
+              "s": 0.2073833750328049,
+              "score": 4442667
+            },
+            {
+              "s": 0.2730123340152204,
+              "score": 4519293
+            },
+            {
+              "s": 0.3413945420179516,
+              "score": 4601679
+            },
+            {
+              "s": 0.40899829199770465,
+              "score": 4666676
+            },
+            {
+              "s": 0.5450332500040531,
+              "score": 4713800
+            },
+            {
+              "s": 0.6781525840051472,
+              "score": 4725694
+            },
+            {
+              "s": 2.0216367919929326,
+              "score": 4859453
+            }
+          ],
+          "score": 4859453,
+          "total_s": 7.164229584042914,
+          "seed_result": {
+            "score": 4859453,
+            "observer_s": 0.00404495612019673,
+            "gpu_score": 4859453,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 63,
+              "Fever Multiplier": 74,
+              "Fever Time": 54,
+              "Fever Fill Rate": 76,
+              "Beat": 740,
+              "Vibe": 38,
+              "Rush": 166,
+              "Flow": 54,
+              "Chill": 0
+            },
+            "ids": [
+              4,
+              62,
+              75,
+              99,
+              126,
+              139,
+              161,
+              164,
+              172
+            ],
+            "gems": [
+              14,
+              0,
+              0,
+              0,
+              20,
+              56
+            ],
+            "ga_s": 2.0212754160165787,
+            "replay_s": 0.0003357909736223519,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 4,
+              "seed": 2027
+            }
+          },
+          "bounds_s": 2.8665080000064336,
+          "enumeration_s": 0.7586232080357149,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 2,
+            "lps": 1143,
+            "unresolved_regions": 62,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 204797,
+          "inner": {
+            "best": {
+              "score": 4859453,
+              "observer_s": 0.00404495612019673,
+              "gpu_score": 4859453,
+              "stats": {
+                "Perfect Points": 85,
+                "Combo Multiplier": 63,
+                "Fever Multiplier": 74,
+                "Fever Time": 54,
+                "Fever Fill Rate": 76,
+                "Beat": 740,
+                "Vibe": 38,
+                "Rush": 166,
+                "Flow": 54,
+                "Chill": 0
+              },
+              "ids": [
+                5,
+                103,
+                130,
+                177,
+                221,
+                251,
+                287,
+                297,
+                314
+              ],
+              "gems": [
+                14,
+                0,
+                0,
+                0,
+                20,
+                56
+              ],
+              "ga_s": 2.0212754160165787,
+              "replay_s": 0.0003357909736223519,
+              "settings": {
+                "generations": 10,
+                "population": 64,
+                "runs": 4,
+                "seed": 2027
+              },
+              "loadout": [
+                "Autumnal Adept's Bloom",
+                "Legendary Vibe Ringleader's Necktie",
+                "Legendary Beat Cyborg's Goggles",
+                "Legendary Vibe Ringleader's Suit",
+                "No-Scope Loadout",
+                "Legendary Beat Cyborg's Jumpsuit Pants",
+                "Camellia",
+                "Halloween Witch Teresa",
+                "Make a Cake Chef"
+              ]
+            },
+            "scored_regions": 20825,
+            "timing_pairs_evaluated": 225097,
+            "feedback_pruned_regions": 0,
+            "queue_exhausted": true,
+            "enumeration_complete": false,
+            "unresolved_queue_rows": 0,
+            "optimality_certified": false,
+            "solve_s": 0.44574937503784895,
+            "replay_s": 0.6322076689684764,
+            "total_s": 1.5044358329614624,
+            "broad_region_pairs": 100000,
+            "surviving_region_pairs": 20825,
+            "broad_surviving_timing_pairs": 1093454,
+            "unvisited_regions": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61
+            ],
+            "candidates": 100000,
+            "distinct_base_inputs": 96819,
+            "distinct_regional_inputs": 20472,
+            "full_loadout_timing_pairs": 187394710
+          },
+          "arm": "adaptive",
+          "seed": 2027
+        },
+        {
+          "events": [
+            {
+              "s": 0.022905249963514507,
+              "score": 4194559
+            },
+            {
+              "s": 0.04385724995518103,
+              "score": 4321264
+            },
+            {
+              "s": 0.06413504097145051,
+              "score": 4442667
+            },
+            {
+              "s": 0.08396220800932497,
+              "score": 4463555
+            },
+            {
+              "s": 0.10456337500363588,
+              "score": 4489514
+            },
+            {
+              "s": 0.12614729098277166,
+              "score": 4490960
+            },
+            {
+              "s": 0.14710908295819536,
+              "score": 4528281
+            },
+            {
+              "s": 0.16736562497681007,
+              "score": 4628539
+            },
+            {
+              "s": 0.18982162501197308,
+              "score": 4628753
+            },
+            {
+              "s": 0.596049582993146,
+              "score": 4859453
+            }
+          ],
+          "score": 4859453,
+          "total_s": 4.893210500013083,
+          "seed_result": {
+            "score": 4859453,
+            "observer_s": 0.002150791173335165,
+            "gpu_score": 4859453,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 63,
+              "Fever Multiplier": 74,
+              "Fever Time": 54,
+              "Fever Fill Rate": 76,
+              "Beat": 740,
+              "Vibe": 38,
+              "Rush": 166,
+              "Flow": 54,
+              "Chill": 0
+            },
+            "ids": [
+              4,
+              62,
+              75,
+              99,
+              126,
+              139,
+              161,
+              164,
+              172
+            ],
+            "gems": [
+              14,
+              0,
+              0,
+              0,
+              20,
+              56
+            ],
+            "ga_s": 0.5958132090163417,
+            "replay_s": 0.00022124999668449163,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 1,
+              "seed": 2027
+            }
+          },
+          "bounds_s": 3.759474750026129,
+          "enumeration_s": 0.5376125419861637,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 2,
+            "unresolved_regions": 62,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 204797,
+          "inner": null,
+          "arm": "legacy",
+          "seed": 2027
+        },
+        {
+          "events": [
+            {
+              "s": 0.037397250009234995,
+              "score": 4247280
+            },
+            {
+              "s": 0.057589500036556274,
+              "score": 4321430
+            },
+            {
+              "s": 0.09936016704887152,
+              "score": 4375993
+            },
+            {
+              "s": 0.11974395904690027,
+              "score": 4433100
+            },
+            {
+              "s": 0.14220683404710144,
+              "score": 4507561
+            },
+            {
+              "s": 0.1631971670431085,
+              "score": 4529485
+            },
+            {
+              "s": 0.18361762503627688,
+              "score": 4560506
+            },
+            {
+              "s": 0.20511833403725177,
+              "score": 4564686
+            },
+            {
+              "s": 0.6205688340123743,
+              "score": 4847237
+            }
+          ],
+          "score": 4847237,
+          "total_s": 4.94234933401458,
+          "seed_result": {
+            "score": 4847237,
+            "observer_s": 0.0024444180307909846,
+            "gpu_score": 4847237,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 72,
+              "Fever Multiplier": 74,
+              "Fever Time": 40,
+              "Fever Fill Rate": 58,
+              "Beat": 771,
+              "Vibe": 21,
+              "Rush": 141,
+              "Flow": 63,
+              "Chill": 0
+            },
+            "ids": [
+              4,
+              62,
+              75,
+              94,
+              126,
+              139,
+              161,
+              164,
+              165
+            ],
+            "gems": [
+              7,
+              1,
+              0,
+              0,
+              20,
+              62
+            ],
+            "ga_s": 0.6203566669719294,
+            "replay_s": 0.00019691599300131202,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 1,
+              "seed": 9041
+            }
+          },
+          "bounds_s": 3.744139999966137,
+          "enumeration_s": 0.5775618749903515,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 1,
+            "unresolved_regions": 63,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 212918,
+          "inner": null,
+          "arm": "legacy",
+          "seed": 9041
+        },
+        {
+          "events": [
+            {
+              "s": 0.0797948749968782,
+              "score": 4315566
+            },
+            {
+              "s": 0.14708633301779628,
+              "score": 4330415
+            },
+            {
+              "s": 0.21815404103836045,
+              "score": 4458651
+            },
+            {
+              "s": 0.3563442910090089,
+              "score": 4559001
+            },
+            {
+              "s": 0.42456641601165757,
+              "score": 4588200
+            },
+            {
+              "s": 0.4917443330050446,
+              "score": 4645951
+            },
+            {
+              "s": 0.5603908750344999,
+              "score": 4648855
+            },
+            {
+              "s": 0.6270507500157692,
+              "score": 4694982
+            },
+            {
+              "s": 2.651363165990915,
+              "score": 4859453
+            }
+          ],
+          "score": 4859453,
+          "total_s": 7.815385124995373,
+          "seed_result": {
+            "score": 4859453,
+            "observer_s": 0.004308626055717468,
+            "gpu_score": 4859453,
+            "stats": {
+              "Perfect Points": 85,
+              "Combo Multiplier": 63,
+              "Fever Multiplier": 74,
+              "Fever Time": 54,
+              "Fever Fill Rate": 76,
+              "Beat": 740,
+              "Vibe": 38,
+              "Rush": 166,
+              "Flow": 54,
+              "Chill": 0
+            },
+            "ids": [
+              4,
+              62,
+              75,
+              99,
+              126,
+              139,
+              161,
+              164,
+              172
+            ],
+            "gems": [
+              14,
+              0,
+              0,
+              0,
+              20,
+              56
+            ],
+            "ga_s": 2.6507552079856396,
+            "replay_s": 0.0005825000116601586,
+            "settings": {
+              "generations": 10,
+              "population": 64,
+              "runs": 4,
+              "seed": 9041
+            }
+          },
+          "bounds_s": 2.890949082968291,
+          "enumeration_s": 0.7780746670323424,
+          "regions": {
+            "regions_built": 127,
+            "regions_excluded": 2,
+            "lps": 1143,
+            "unresolved_regions": 62,
+            "certified": false
+          },
+          "core_complete": false,
+          "core_candidates": 100000,
+          "core_nodes": 204797,
+          "inner": {
+            "best": {
+              "score": 4859453,
+              "observer_s": 0.004308626055717468,
+              "gpu_score": 4859453,
+              "stats": {
+                "Perfect Points": 85,
+                "Combo Multiplier": 63,
+                "Fever Multiplier": 74,
+                "Fever Time": 54,
+                "Fever Fill Rate": 76,
+                "Beat": 740,
+                "Vibe": 38,
+                "Rush": 166,
+                "Flow": 54,
+                "Chill": 0
+              },
+              "ids": [
+                5,
+                103,
+                130,
+                177,
+                221,
+                251,
+                287,
+                297,
+                314
+              ],
+              "gems": [
+                14,
+                0,
+                0,
+                0,
+                20,
+                56
+              ],
+              "ga_s": 2.6507552079856396,
+              "replay_s": 0.0005825000116601586,
+              "settings": {
+                "generations": 10,
+                "population": 64,
+                "runs": 4,
+                "seed": 9041
+              },
+              "loadout": [
+                "Autumnal Adept's Bloom",
+                "Legendary Vibe Ringleader's Necktie",
+                "Legendary Beat Cyborg's Goggles",
+                "Legendary Vibe Ringleader's Suit",
+                "No-Scope Loadout",
+                "Legendary Beat Cyborg's Jumpsuit Pants",
+                "Camellia",
+                "Halloween Witch Teresa",
+                "Make a Cake Chef"
+              ]
+            },
+            "scored_regions": 20825,
+            "timing_pairs_evaluated": 225097,
+            "feedback_pruned_regions": 0,
+            "queue_exhausted": true,
+            "enumeration_complete": false,
+            "unresolved_queue_rows": 0,
+            "optimality_certified": false,
+            "solve_s": 0.43655520799802616,
+            "replay_s": 0.6279879162320867,
+            "total_s": 1.479008750000503,
+            "broad_region_pairs": 100000,
+            "surviving_region_pairs": 20825,
+            "broad_surviving_timing_pairs": 1093454,
+            "unvisited_regions": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              57,
+              58,
+              59,
+              60,
+              61
+            ],
+            "candidates": 100000,
+            "distinct_base_inputs": 96819,
+            "distinct_regional_inputs": 20472,
+            "full_loadout_timing_pairs": 187394710
+          },
+          "arm": "adaptive",
+          "seed": 9041
+        }
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "chart": "Data/Easy/Comfort Zone (Easy) by KepoWorld.txt",
+      "reference": 2631111,
+      "best_known_hits": {
+        "legacy": 0,
+        "adaptive": 3
+      },
+      "median_finish_s": {
+        "legacy": 4.707080250023864,
+        "adaptive": 5.67379912501201
+      },
+      "paired_checkpoints": 15,
+      "score_deficits": []
+    },
+    {
+      "chart": "Data/Easy/crystallized (Easy) by Camellia.txt",
+      "reference": 4859453,
+      "best_known_hits": {
+        "legacy": 2,
+        "adaptive": 3
+      },
+      "median_finish_s": {
+        "legacy": 4.94234933401458,
+        "adaptive": 7.815385124995373
+      },
+      "paired_checkpoints": 15,
+      "score_deficits": []
+    }
+  ],
+  "scope": "Post-audit sparse-chart follow-up; two previously measured charts, three seeds, legacy and adaptive only. Development follow-up, not new held-out data. All audit workers exited before measurements. Production services remained running."
+}

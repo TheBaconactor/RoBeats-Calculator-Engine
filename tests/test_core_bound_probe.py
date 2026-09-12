@@ -160,9 +160,16 @@ def test_lazy_core_is_identical_to_exhaustive_family_filter():
     result = enumerate_core(domain, [region, region], incumbent=1000)
     assert result.complete
     assert result.witnesses == expected  # Also dedupes witnesses across timing regions.
+    for candidate in result.candidates:
+        assert {r for r, _ in candidate.region_bounds} == {0, 1}
+        g, m = candidate.identity[:6], candidate.identity[6:]
+        stats = fixed + sum(gear[i][j] for i, j in enumerate(g)) + minis[list(m)].sum(axis=0)
+        upper = int(np.min(stats @ bank.weights.T + bank.intercepts + support))
+        assert candidate.region_bounds == ((0, upper), (1, upper))
     limited = enumerate_core(domain, [region], incumbent=1000, max_nodes=1)
     assert not limited.complete
     assert limited.nodes == 1
+    assert limited.unresolved_regions == (0,)
 
 
 def test_fg_relaxation_covers_forced_greats_on_every_small_head_mask():
