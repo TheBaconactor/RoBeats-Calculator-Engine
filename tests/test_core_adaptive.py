@@ -105,6 +105,28 @@ def test_incomplete_enumeration_never_excludes_unvisited_regions():
     assert not core.complete  # unseen loadout identities still unresolved
 
 
+@pytest.mark.parametrize("limits,count", [({"max_nodes": 11}, 2), ({"max_witnesses": 5}, 5)])
+def test_mini_priority_is_preserved_under_work_limits(limits, count):
+    from tools.research._core_bound_search import enumerate_core
+    threshold = log_interval(1000)[0]
+    minis = np.zeros((6, 6), dtype=np.int64)
+    minis[:, 0] = [4, 9, 2, 7, 9, 1]
+    domain = SimpleNamespace(gear=[np.zeros((1, 6), dtype=np.int64) for _ in range(6)],
+                             minis=minis, gems=np.zeros((6, 6), dtype=np.int64),
+                             fixed=np.zeros(6, dtype=np.int64), budget=0)
+    bank = BoundBank(np.array([[1, 0, 0, 0, 0, 0]], dtype=np.int64), np.array([threshold - 15]))
+    region = SimpleNamespace(bank=bank, root=np.array([threshold + 10]))
+    result = enumerate_core(domain, [region, region], incumbent=1000, **limits)
+    # Descending support ranks IDs 1, 4, 3, 0, 2, 5 (stable on the 9/9 tie).
+    # Depth-first traversal must preserve that rank at every Mini branch.
+    expected = [(1, 3, 4), (0, 1, 4), (1, 2, 4), (1, 4, 5), (0, 1, 3)][:count]
+    assert [c.identity for c in result.candidates] == [(0,) * 6 + m for m in expected]
+    for candidate, m in zip(result.candidates, expected, strict=True):
+        assert candidate.region_bounds == ((0, threshold - 15 + int(minis[list(m), 0].sum())),)
+    assert not result.complete
+    assert result.unresolved_regions == (0, 1)
+
+
 def test_mandatory_timing_gems_tighten_only_survivor_bound():
     threshold = log_interval(1000)[0]
     # FT adds no value; PP is the only positive objective. A region requiring

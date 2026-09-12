@@ -81,7 +81,9 @@ def enumerate_core(domain, regions, *, incumbent, max_nodes=1_000_000, max_witne
                     continue
                 values = value + mini_values[start:stop]
                 upper = values + mini_suffix[start + 1:stop + 1, remaining - 1]
-                for offset in np.flatnonzero(upper.min(axis=1) >= threshold):
+                # Push lower-priority children first so LIFO visits the stable
+                # descending-support Mini order, including under work limits.
+                for offset in reversed(np.flatnonzero(upper.min(axis=1) >= threshold)):
                     choice = start + int(offset)
                     stack.append((gear_ids, mini_ids + (int(order[choice]),), choice + 1, values[offset]))
             else:

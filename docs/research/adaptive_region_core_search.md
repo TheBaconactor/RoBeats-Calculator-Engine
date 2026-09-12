@@ -43,6 +43,25 @@ identical loadouts with different domains cannot share the wrong result. Ascendi
 FT/FF order with the highest index on equal scores retains the full-table timing
 tie rule. This restricted solve must not substitute for full per-genome GA fitness.
 
+## Traversal-order review correction
+
+Revision `38140fea` pushed eligible Mini children in ascending rank order onto a
+LIFO stack. This inverted the intended stable descending-support traversal and
+spent node/witness budgets on lower-priority children first. The correction
+pushes the same eligible children in reverse order, so `stack.pop()` visits the
+highest-priority child first at each Mini depth.
+
+The regression covers both node and witness limits, tied Mini support, early
+candidate order, retained regional bounds, and the unresolved-region ledger.
+Both cutoff cases fail before the fix; all **47 focused tests**, including GPU
+integration, pass after it. Ruff passes. The existing exhaustive-family comparison
+checks that completed traversal still preserves the candidate set and regional
+bounds. This is one reversed iteration, with no new state, cache, or fallback.
+
+The performance measurements and global database audit below predate this
+traversal correction. They have not been rerun for this correction and should not
+be treated as score/time qualification of the changed capped traversal.
+
 ## Fitting and allocation selection
 
 The LP matrix is constructed once per region; only its right-hand side changes
@@ -238,8 +257,8 @@ above was not rerun on this revision; its timings remain labeled historical.
 ## Verification
 
 `python -m ruff check .` passes. After the database-audit fixes, the focused
-state, bound, handoff, and audit selection passes **45 tests**. The full suites
-were rerun and compared against the clean main baseline (`7b46703b`):
+state, bound, handoff, and audit selection passes **45 tests**. The full-suite results retained in `38140fea`, before the traversal correction,
+were compared against the clean main baseline (`7b46703b`):
 
 | Suite | Updated branch | Current main baseline |
 |---|---|---|
@@ -288,13 +307,15 @@ than the checkpoint; never use a later final score for an earlier budget.
 - **Invariant:** proved timing exclusions must reach the inner search; pruning
   thresholds must be canonically achieved; a shared GPU field has one resident
   registry and therefore one upload-cache owner; each solve must bind its chart;
-  registry construction must reflect its input contents.
+  registry construction must reflect its input contents; Mini traversal must honor
+  its priority order under node and witness limits.
 - **First violation:** #180 discarded regional membership at the identity-only
   handoff; GA and skyline separately memoized writes to the same GPU fields; the regional
-  solver assumed its chart was still resident; host registry keys omitted content.
+  solver assumed its chart was still resident; host registry keys omitted content;
+  ascending Mini pushes inverted priority on the LIFO stack.
 - **Fix:** retain regional upper bounds, restrict real scoring to legal regional
   pairs, feed back canonical improvements, unify GPU registry ownership, bind the chart under the same lock, and delete
-  the unsafe host registry cache.
+  the unsafe host registry cache; reverse eligible Mini pushes to preserve priority.
 - **Tests:** exhaustive small gem boxes, raw timing boundaries/cap tails, ties,
   incomplete-region coverage, matrix reuse, regional/full GPU comparison, deadline
   retention, GA/core upload switching, A/B/A chart switching, and changed-pool construction. The upload-switch regression fails on
