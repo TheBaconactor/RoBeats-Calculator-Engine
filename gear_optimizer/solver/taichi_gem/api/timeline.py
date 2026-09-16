@@ -157,6 +157,9 @@ def _upload_timeline_frontier_payload_slot(
     Vulkan that is a large forced download plus a large upload. These prefix kernels
     update only the active slot.
     """
+    from .ga_operations import reset_ga_evaluation_cache
+
+    reset_ga_evaluation_cache()
     source_slot_i = int(source_slot_i)
     song_slot_i = int(song_slot_i)
     upload_bytes = 0

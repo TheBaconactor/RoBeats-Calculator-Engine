@@ -38,6 +38,7 @@ def main():
         current_kernel = ga_operations.kernels.ga_find_best_combo_warmstart_kernel
 
         def run(kernel):
+            ga_operations.reset_ga_evaluation_cache()
             ga_operations.kernels.ga_find_best_combo_warmstart_kernel = kernel
             try:
                 return fixture._run_production_eval(flags)

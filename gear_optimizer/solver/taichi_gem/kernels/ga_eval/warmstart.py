@@ -44,7 +44,7 @@ def ga_find_best_combo_warmstart_kernel(
     exact-count launch computed; `ga_scatter_dup_results_kernel` copies each
     duplicate's winning key/results from its representative afterwards.
     (`ga_build_unique_slot_table_kernel`'s serial ascending emit bounds the count
-    to [1, n_genomes] structurally, and the launch width is the host-validated
+    to [0, n_genomes] structurally, and the launch width is the host-validated
     population size, so the dispatch-safety bound is unchanged.)
 
     Each (genome, lane) strides the chunk's combos and stages its lane-local
@@ -168,7 +168,7 @@ def ga_find_best_combo_warmstart_kernel(
             kernels_helpers.ga_warmstart_lane_best_results[genome_idx, lane, 3] = local_best_ov
 @ti.kernel
 def ga_finalize_warmstart_lane_best_kernel(n_genomes_launch: ti.i32):
-    # Compacted like the eval kernel: only unique rows have freshly-written lane
+    # Compacted like the eval kernel: only uncached unique rows have freshly-written lane
     # arrays; iterating all rows would reduce stale lanes for duplicate rows.
     # Launch width is the host-known population size; live slots are gated
     # on-device (same no-host-readback contract as the eval kernel).
@@ -188,56 +188,3 @@ def ga_finalize_warmstart_lane_best_kernel(n_genomes_launch: ti.i32):
             kernels_helpers.chunk_best_key[g] = best_key
             for i in ti.static(range(4)):
                 kernels_helpers.chunk_best_results[g, i] = kernels_helpers.ga_warmstart_lane_best_results[g, best_lane, i]
-
-
-@ti.kernel
-def ga_compute_exact_eval_rep_kernel(n_genomes: ti.i32):
-    # GPU-side exact-eval dedup: rep[g] = lowest-index genome with identical
-    # genome_base_stats (the full per-genome eval input), else g itself. The exact
-    # eval reads ONLY genome_base_stats[g] per row (combos/grid/refs are shared), so
-    # identical 7-tuples => identical result => a duplicate can reuse its rep's result.
-    # Replaces the removed HOST rep-map (which cost more than it saved); this is O(g)
-    # per row but tiny vs the O(n_combos) exact eval it lets us skip.
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for g in range(n_genomes):
-        s = kernels_helpers.genome_base_stats[g]
-        rep = g
-        for j in range(g):
-            t = kernels_helpers.genome_base_stats[j]
-            same = 1
-            for k in ti.static(range(7)):
-                if s[k] != t[k]:
-                    same = 0
-            if same == 1:
-                rep = j
-                break
-        kernels_helpers.ga_exact_eval_rep_idx[g] = rep
-
-
-@ti.kernel
-def ga_scatter_dup_results_kernel(n_genomes: ti.i32):
-    # After eval+finalize, copy each duplicate genome's winning key/results from its
-    # representative (the row that was actually evaluated). Bit-exact: the rep's result
-    # is independent of the skipped duplicates (per-genome incumbent, no cross-row state).
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for g in range(n_genomes):
-        rep = kernels_helpers.ga_exact_eval_rep_idx[g]
-        if rep != g:
-            kernels_helpers.chunk_best_key[g] = kernels_helpers.chunk_best_key[rep]
-            for i in ti.static(range(4)):
-                kernels_helpers.chunk_best_results[g, i] = kernels_helpers.chunk_best_results[rep, i]
-
-
-@ti.kernel
-def ga_build_unique_slot_table_kernel(n_genomes: ti.i32):
-    # Emit representative rows (rep[g] == g) into a dense slot table in ascending
-    # genome order and publish the unique count. Serialized single-thread pass:
-    # bounded by MAX_GENOMES (~4.6k iterations), deterministic table order, and
-    # tiny vs the O(n_combos) eval it sizes.
-    ti.loop_config(serialize=True)
-    count = 0
-    for g in range(n_genomes):
-        if kernels_helpers.ga_exact_eval_rep_idx[g] == g:
-            kernels_helpers.ga_unique_slot_to_genome[count] = g
-            count += 1
-    kernels_helpers.ga_exact_eval_unique_count[0] = count

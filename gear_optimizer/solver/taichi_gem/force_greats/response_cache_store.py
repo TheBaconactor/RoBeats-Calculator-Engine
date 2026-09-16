@@ -686,16 +686,6 @@ def _sidecar_needs_filesystem_compression(path: Path) -> bool:
         return False
 
 
-def cache_dir_sidecars_need_compression() -> bool:
-    """Whether startup should enter locked filesystem maintenance for exact sidecars."""
-    if sys.platform not in {"darwin", "win32"}:
-        return False
-    directory = _fg_response_disk_cache_dir()
-    if not directory.exists():
-        return False
-    return any(_sidecar_needs_filesystem_compression(path) for path in _surface_sidecar_files(directory))
-
-
 def _compress_cache_dir_sidecars_windows(directory: Path) -> None:
     try:
         result = subprocess.run(

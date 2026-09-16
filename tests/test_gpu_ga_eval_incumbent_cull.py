@@ -472,6 +472,10 @@ def test_culled_eval_equals_exhaustive_reference(eval_device_state) -> None:
         # slot table -> finalize(n_unique) -> scatter dups from reps. The exhaustive
         # reference evaluated every row, so rep rows carry the same lane data the
         # compacted production path produced for them.
+        # The exhaustive oracle must not consume production memoized winners.
+        from gear_optimizer.solver.taichi_gem.api.ga_operations import reset_ga_evaluation_cache
+
+        reset_ga_evaluation_cache()
         ga_compute_exact_eval_rep_kernel(_N_GENOMES)
         ga_build_unique_slot_table_kernel(_N_GENOMES)
         _ref_n_unique = int(fields.ga_exact_eval_unique_count.to_numpy()[0])

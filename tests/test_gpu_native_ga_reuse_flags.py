@@ -13,10 +13,7 @@ def test_ga_prepare_population_never_builds_exact_reuse_map(monkeypatch) -> None
 
     calls: list[str] = []
     fake_kernels = SimpleNamespace(
-        ga_build_exact_eval_reuse_map_kernel=lambda *_a: calls.append("raw_reuse"),
-        ga_aggregate_and_init_best_kernel=lambda *_a: calls.append("aggregate"),
-        ga_propagate_exact_eval_reuse_base_stats_kernel=lambda *_a: calls.append("propagate_base_stats"),
-        ga_build_exact_eval_reuse_map_from_base_stats_kernel=lambda *_a: calls.append("stats_reuse"),
+        ga_aggregate_genome_stats_kernel=lambda *_a: calls.append("aggregate"),
     )
 
     # All former opt-in env vars (and their legacy aliases) must now be inert.

@@ -897,7 +897,6 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
     del cfg
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         _fg_response_disk_cache_dir,
-        cache_dir_sidecars_need_compression,
         compress_cache_dir_sidecars,
     )
 
@@ -908,7 +907,7 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
     if not paths:
         return FgResponseFrontierCachePrebuildSummary(total=0)
 
-    if _manifest_records_current_cache_version():
+    if _manifest_records_current_cache_version() and not authorize_destructive_rotation:
         # Fully recorded current-manifest hits are readers, not builders. Probe without mutating
         # the manifest so they never wait behind an unrelated deployment prebuild that owns the
         # lock. Complete derived hits absent from the manifest enter the lock once below.
@@ -919,11 +918,7 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
             timing_mode=timing_mode,
             persist_validated_entries=False,
         )
-        if (
-            not optimistic_plan.missing_paths
-            and int(optimistic_plan.validated_entry_count) == 0
-            and not cache_dir_sidecars_need_compression()
-        ):
+        if not optimistic_plan.missing_paths and int(optimistic_plan.validated_entry_count) == 0:
             return FgResponseFrontierCachePrebuildSummary(
                 total=int(optimistic_plan.total_paths),
                 completed=int(optimistic_plan.hit_count),
@@ -946,11 +941,9 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
                 int(manifest_plan.total_paths),
             )
 
-        # A copied/restored pool and complete bundles left by an interrupted prebuild can have lost
-        # their WOF backing even though every manifest entry validates. Run maintenance before the
-        # complete-pool return so those exact cache hits regain lossless XPRESS16K compression. The
-        # builder lock prevents this filesystem pass from overlapping a live bundle writer.
-        if build_missing:
+        # Cache hits only read or repair manifest metadata. Compression belongs to builders and
+        # explicit maintenance: incompressible sidecars must not trigger it on every solve.
+        if build_missing and (manifest_plan.missing_paths or authorize_destructive_rotation):
             _maintain_fg_response_frontier_cache_under_lock(
                 authorize_destructive_rotation=bool(authorize_destructive_rotation)
             )

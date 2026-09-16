@@ -154,6 +154,10 @@ def main():
         eval_kw = dict(total_budget=_TOTAL_BUDGET, gem_scale_fever=_GEM_SCALE_FEVER, song_slot=_SONG_SLOT, **prep_kw)
 
         def one():
+            # This benchmark measures the inner search, not memoized repeated calls.
+            from gear_optimizer.solver.taichi_gem.api.ga_operations import reset_ga_evaluation_cache
+
+            reset_ga_evaluation_cache()
             gpu_api.ga_prepare_population_base_stats(n_genomes, _N_SLOTS, **prep_kw)
             gpu_api.ga_evaluate_prepared_population(n_genomes, _N_SLOTS, **eval_kw)
 

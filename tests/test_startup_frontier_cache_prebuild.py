@@ -486,10 +486,6 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
     monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: _Plan())
     monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
     monkeypatch.setattr(prebuild, "_apply_manifest_results", lambda **_kwargs: 0)
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cache_dir_sidecars_need_compression",
-        lambda: False,
-    )
 
     def _unexpected_lock(*_args, **_kwargs):
         raise AssertionError("cache hits must not acquire the build lock")
@@ -533,15 +529,21 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
     assert compression_calls == 0
 
 
-def test_complete_manifest_enters_locked_maintenance_when_sidecars_need_compression(
+def test_complete_manifest_skips_maintenance_with_uncompressed_sidecars(
     monkeypatch, tmp_path: Path
 ) -> None:
-    from contextlib import nullcontext
+    import numpy as np
 
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
 
     song_path = tmp_path / "Song.txt"
     song_path.write_text("fake", encoding="utf-8")
+    sidecar = tmp_path / f"cached{store._SURFACE_ROW_SIDECAR_SUFFIX}"
+    np.save(sidecar, np.arange(20000, dtype=np.uint32))
+    original = sidecar.read_bytes()
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(store, "sys", SimpleNamespace(platform="darwin"))
 
     class _Plan:
         total_paths = 1
@@ -570,11 +572,11 @@ def test_complete_manifest_enters_locked_maintenance_when_sidecars_need_compress
     monkeypatch.setattr(prebuild, "all_response_stat_keys", lambda: ((0, 0),))
     monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
     monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
-    monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cache_dir_sidecars_need_compression",
-        lambda: True,
-    )
+
+    def _unexpected_lock(*_args, **_kwargs):
+        raise AssertionError("cache hits must not acquire the build lock for compression")
+
+    monkeypatch.setattr(prebuild, "FrontierBuildLock", _unexpected_lock)
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
         lambda: 0,
@@ -603,8 +605,9 @@ def test_complete_manifest_enters_locked_maintenance_when_sidecars_need_compress
         timing_modes=("perfect_window",),
     )
 
-    assert plan_calls == 2
-    assert compression_calls == 1
+    assert plan_calls == 1
+    assert compression_calls == 0
+    assert sidecar.read_bytes() == original
     assert summary.completed == 1
     assert summary.disk == 1
     assert summary.built == 0
@@ -675,7 +678,7 @@ def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch
     assert summary.completed == 1
     assert summary.disk == 1
     assert summary.built == 0
-    assert compression_calls == 1
+    assert compression_calls == 0
 
 
 def test_fg_current_manifest_persists_complete_unrecorded_hits_under_lock(monkeypatch, tmp_path: Path) -> None:
@@ -710,10 +713,6 @@ def test_fg_current_manifest_persists_complete_unrecorded_hits_under_lock(monkey
     monkeypatch.setattr(prebuild, "_build_manifest_plan", _plan)
     monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", lambda: True)
     monkeypatch.setattr(prebuild, "FrontierBuildLock", lambda *_args, **_kwargs: nullcontext())
-    monkeypatch.setattr(
-        "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cache_dir_sidecars_need_compression",
-        lambda: False,
-    )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.cleanup_fg_response_frontier_cache_temp_files",
         lambda: 0,

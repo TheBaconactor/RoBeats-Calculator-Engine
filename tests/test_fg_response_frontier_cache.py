@@ -1066,7 +1066,7 @@ def test_macos_sidecar_compression_failure_keeps_original_bytes(tmp_path: Path, 
 
 
 @pytest.mark.parametrize("destination_platform", ["darwin", "win32"])
-def test_plain_cross_platform_export_is_detected_for_destination_compression(
+def test_plain_cross_platform_export_needs_filesystem_compression(
     tmp_path: Path, monkeypatch, destination_platform: str
 ) -> None:
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
@@ -1078,7 +1078,7 @@ def test_plain_cross_platform_export_is_detected_for_destination_compression(
     expected = sidecar.read_bytes()
     monkeypatch.setattr(store, "_file_allocated_bytes", lambda path: int(path.stat().st_size))
 
-    assert store.cache_dir_sidecars_need_compression()
+    assert store._sidecar_needs_filesystem_compression(sidecar)
     assert sidecar.read_bytes() == expected
 
 

@@ -380,6 +380,9 @@ def load_ref_arrays(ref_arrays: dict):
         if arr.ndim != 1 or arr.shape[0] != GRID_SIZE:
             raise ValueError(f"ref_arrays[{k!r}] must be shape ({GRID_SIZE},), got {arr.shape}")
 
+    from .ga_operations import reset_ga_evaluation_cache
+
+    reset_ga_evaluation_cache()
     fields.ref_pp_field.from_numpy(ref_arrays["Perfect Points"].astype(np.float32))
     fields.ref_cm_field.from_numpy(ref_arrays["Combo Multiplier"].astype(np.float32))
     fields.ref_fm_field.from_numpy(ref_arrays["Fever Multiplier"].astype(np.float32))

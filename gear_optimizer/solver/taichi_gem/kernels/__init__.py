@@ -74,13 +74,8 @@ from .kernels_ga import (
     ga_seed_rng_runs_indexed_kernel,
     ga_load_initial_populations_batch_kernel,
     ga_generate_initial_populations_kernel,
-    ga_build_exact_eval_reuse_map_kernel,
-    ga_build_exact_eval_reuse_map_from_base_stats_kernel,
-    ga_propagate_exact_eval_reuse_base_stats_kernel,
-    ga_propagate_exact_eval_reuse_chunk_best_kernel,
     ga_aggregate_genome_stats_kernel,
     # FUSED kernels
-    ga_aggregate_and_init_best_kernel,
     ga_next_generation_full_runs_kernel,  # FUSED: multi-run batching + population swap
     ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
 )
@@ -169,13 +164,8 @@ __all__ = [
     "ga_seed_rng_runs_indexed_kernel",
     "ga_load_initial_populations_batch_kernel",
     "ga_generate_initial_populations_kernel",
-    "ga_build_exact_eval_reuse_map_kernel",
-    "ga_build_exact_eval_reuse_map_from_base_stats_kernel",
-    "ga_propagate_exact_eval_reuse_base_stats_kernel",
-    "ga_propagate_exact_eval_reuse_chunk_best_kernel",
     "ga_aggregate_genome_stats_kernel",
     # FUSED GA kernels
-    "ga_aggregate_and_init_best_kernel",
     "ga_next_generation_full_runs_kernel",
     "ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel",
     # Scoring functions

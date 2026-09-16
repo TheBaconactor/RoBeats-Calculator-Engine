@@ -27,6 +27,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - CPU-only import/test pa
         MAX_GA_RUNS=128,
         MAX_GA_RUN_GENOMES=1024,
         ITEM_STAT_DIM=10,
+        ga_eval_cache_key=None,
     )
     MAX_EVALS_PER_DISPATCH = int(fields.MAX_EVALS_PER_DISPATCH)
     def ensure_ready(*_args, **_kwargs):
@@ -163,12 +164,24 @@ def _ga_eval_budget() -> int:
     return int(MAX_EVALS_PER_DISPATCH)
 kernels = get_kernels()
 _FG_EFFECTIVE_TABLES_CACHE: dict = {"sig": None, "rank_id": None, "sig_id": None}
+_GA_EVAL_CONTEXT: tuple | None = None
+
+
+def reset_ga_evaluation_cache() -> None:
+    """Discard results when a batch, reference table, or timeline is replaced."""
+    global _GA_EVAL_CONTEXT
+    _GA_EVAL_CONTEXT = None
+    if fields.ga_eval_cache_key is not None:
+        fields.ga_eval_cache_key.fill(0)
+
+
 def reset_ga_upload_caches() -> None:
     """Reset upload caches after ti.reset() or when switching songs."""
     global _FG_EFFECTIVE_TABLES_CACHE
     from .registry_upload import reset_registry_upload_cache
     reset_registry_upload_cache()
     _FG_EFFECTIVE_TABLES_CACHE = {"sig": None, "rank_id": None, "sig_id": None}
+    reset_ga_evaluation_cache()
 def ga_upload_initial_populations(populations_np: np.ndarray, *, n_runs: int, n_genomes: int, n_slots: int = 9) -> None:
     """
     Upload a batch of initial populations for multi-start GA runs.
@@ -223,6 +236,7 @@ def ga_load_initial_populations_batch(
     n_total = n_runs * n_genomes_per_run
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+    reset_ga_evaluation_cache()
     kernels.ga_load_initial_populations_batch_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
     return n_total
 def ga_upload_init_heuristic_topk(*, topk_ids: np.ndarray, heuristic_k: int, n_slots: int = 9) -> None:
@@ -422,12 +436,12 @@ def ga_prepare_population_base_stats(
     is_s_ov: int = 0,
 ) -> None:
     """
-    Aggregate the active population into `genome_base_stats` and initialize exact-eval state.
+    Aggregate the active population into `genome_base_stats`. Evaluation owns winner initialization.
     """
     ensure_ready()
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
-    kernels.ga_aggregate_and_init_best_kernel(
+    kernels.ga_aggregate_genome_stats_kernel(
         n_genomes,
         n_slots,
         int(is_p_ft),
@@ -442,7 +456,6 @@ def ga_prepare_population_base_stats(
         int(is_s_fm),
         int(is_p_ov),
         int(is_s_ov),
-        0,  # exact-eval reuse-map removed (per-generation host overhead; was always off)
     )
 def ga_evaluate_prepared_population(
     n_genomes: int,
@@ -504,28 +517,23 @@ def ga_evaluate_prepared_population(
     max_ff_gems_i = int(total_budget_i) if max_ff_gems_global is None else int(max_ff_gems_global)
     max_ft_gems_i = max(0, min(int(total_budget_i), int(max_ft_gems_i)))
     max_ff_gems_i = max(0, min(int(total_budget_i), int(max_ff_gems_i)))
+    global _GA_EVAL_CONTEXT
+    context = (
+        total_budget_i, gem_scale_fever_i, song_slot_i, max_ft_gems_i, max_ff_gems_i,
+        int(is_p_ft), int(is_s_ft), int(is_p_ff), int(is_s_ff), int(is_p_pp), int(is_s_pp),
+        int(is_p_cm), int(is_s_cm), int(is_p_fm), int(is_s_fm), int(is_p_ov), int(is_s_ov),
+    )
+    if context != _GA_EVAL_CONTEXT:
+        reset_ga_evaluation_cache()
+        _GA_EVAL_CONTEXT = context
     n_combos = _ensure_ftff_combo_tables(
         total_budget_i,
         max_ft_gems=max_ft_gems_i,
         max_ff_gems=max_ff_gems_i,
     )
-    # GPU-side exact-eval dedup + COMPACTED launch: build the representative map once
-    # (base_stats are constant across combo chunks), emit the dense unique-slot table,
-    # and evaluate ONLY unique genome rows; the scatter copies each rep's result back
-    # to its duplicates. Bit-exact (genome_base_stats[g] is the sole per-genome eval
-    # input). Replaces skip-in-place, which still paid launch slots for duplicates —
-    # converged populations measure ~81% duplicate rows.
-    #
-    # NO HOST READBACK: the unique count stays on-device (the eval/finalize kernels
-    # gate slots on ga_exact_eval_unique_count[0], written by the slot-table kernel
-    # in the same stream). Reading it back per generation was a full pipeline drain
-    # that serialized the deferred GA generation stream against the host launch loop
-    # (launch-bound owner, GPU idle during every generation's host window). Launch
-    # width and chunk sizing use the host-known population width instead — a
-    # conservative upper bound of the actual on-device work, so the TDR/dispatch
-    # bound is preserved (chunks can only shrink), and results are unchanged (chunk
-    # partitioning is already generation-dynamic and partition-independent — see the
-    # batch-width invariance suite).
+    # Restore verified cache hits, then evaluate only unique uncached stat rows.
+    # The pending count stays on-device and may be zero. Launch sizing uses the
+    # host-known population bound, preserving dispatch limits without readbacks.
     kernels.ga_compute_exact_eval_rep_kernel(n_genomes)
     kernels.ga_build_unique_slot_table_kernel(n_genomes)
     eval_budget = int(_ga_eval_budget())
