@@ -158,6 +158,35 @@ def test_publication_reuses_unchanged_content_after_git_snapshot_mtime_changes(t
     assert first_hashes == second_hashes
 
 
+def test_publication_reuses_recorded_digests_of_unchanged_bundles(monkeypatch, tmp_path: Path) -> None:
+    from gear_optimizer import frontier_server
+
+    for directory in ("code", "Data/Hard", "timeline", "fg"):
+        (tmp_path / directory).mkdir(parents=True)
+    (tmp_path / "code" / "main.py").write_text("print('same')\n", encoding="utf-8")
+    (tmp_path / "Data" / "Hard" / "song.txt").write_text("Song Name\tSame\n", encoding="utf-8")
+    roots = {
+        "code_root": tmp_path / "code",
+        "data_root": tmp_path / "Data",
+        "timeline_cache_root": tmp_path / "timeline",
+        "fg_cache_root": tmp_path / "fg",
+        "root": tmp_path / "publications",
+    }
+    first = frontier_server.build_publication(data_revision="1" * 40, code_revision="2" * 40, **roots)
+    hashed: list[Path] = []
+    real_sha256_file = frontier_server._sha256_file
+    monkeypatch.setattr(frontier_server, "_sha256_file", lambda path: hashed.append(path) or real_sha256_file(path))
+
+    second = frontier_server.build_publication(data_revision="3" * 40, code_revision="4" * 40, **roots)
+
+    first_bundles = json.loads((first / "manifest.json").read_text(encoding="utf-8"))["bundles"]
+    second_bundles = json.loads((second / "manifest.json").read_text(encoding="utf-8"))["bundles"]
+    assert hashed == []
+    assert [(b["name"], b["size"], b["sha256"]) for b in first_bundles] == [
+        (b["name"], b["size"], b["sha256"]) for b in second_bundles
+    ]
+
+
 def test_standalone_sync_installs_once_and_redownloads_locally_changed_files(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -546,6 +575,106 @@ def test_cache_neutral_code_revision_reuses_complete_publication(monkeypatch, tm
     maintainer._remote_commit = lambda: (second, "d" * 40)  # type: ignore[method-assign]
 
     assert maintainer.run_once()
+    assert len(installed) == 1
+
+
+def _game_data_revisions(tmp_path: Path, *, code_change: bool, new_chart: bool) -> tuple[Path, str, str]:
+    repo = tmp_path / "server"
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "gear_optimizer").mkdir()
+    (repo / "Data" / "Normal").mkdir(parents=True)
+    (repo / "Data" / "Gear").mkdir()
+    (repo / "gear_optimizer" / "frontier_server.py").write_text("one\n", encoding="utf-8")
+    (repo / "Data" / "Normal" / "Song.txt").write_text("chart\n", encoding="utf-8")
+    for name, body in (("exported_game_data.json", "{}\n"), ("Gear/Gears.csv", "a\n"), ("Gear/Minis.csv", "b\n")):
+        (repo / "Data" / name).write_text(body, encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
+    first = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    for name, body in (("exported_game_data.json", '{"songs": {}}\n'), ("Gear/Gears.csv", "a2\n"), ("Gear/Minis.csv", "b2\n")):
+        (repo / "Data" / name).write_text(body, encoding="utf-8")
+    if new_chart:
+        (repo / "Data" / "Normal" / "New Song.txt").write_text("new\n", encoding="utf-8")
+    if code_change:
+        (repo / "gear_optimizer" / "frontier_server.py").write_text("two\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "game data"], cwd=repo, check=True, capture_output=True)
+    second = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    return repo, first, second
+
+
+def _maintainer_over_active_publication(monkeypatch, tmp_path: Path, repo: Path, first: str, second: str, prebuild):
+    from gear_optimizer import frontier_server
+    from gear_optimizer.frontier_server import FrontierDistributionState, FrontierServerMaintainer
+
+    snapshots = tmp_path / "snapshots"
+    shutil.copytree(repo / "Data", snapshots / second / "Data")
+    shutil.copytree(repo / "gear_optimizer", snapshots / second / "gear_optimizer")
+    monkeypatch.setattr(frontier_server, "source_snapshot_root", lambda: snapshots)
+    monkeypatch.setattr(frontier_server, "sync_exported_game_data", lambda **_kwargs: None)
+    state = FrontierDistributionState(tmp_path / "publications")
+    manifest = {
+        "code_revision": first,
+        "data_revision": "d" * 40,
+        "bundles": [
+            {"files": [{"scope": "timeline", "path": "aa.npz"}]},
+            {"files": [{"scope": "fg", "path": "bb.npz"}]},
+        ],
+    }
+    state.manifest_bytes = lambda: json.dumps(manifest).encode()  # type: ignore[method-assign]
+    installed: list[Path] = []
+    state.install = installed.append  # type: ignore[method-assign]
+    (tmp_path / "timeline").mkdir()
+    (tmp_path / "timeline" / "aa.npz").write_bytes(b"timeline")
+    (tmp_path / "fg").mkdir()
+    (tmp_path / "fg" / "bb.npz").write_bytes(b"fg")
+    maintainer = FrontierServerMaintainer(
+        repo_root=repo,
+        timeline_cache_root=tmp_path / "timeline",
+        fg_cache_root=tmp_path / "fg",
+        state=state,
+        prebuild=prebuild,
+    )
+    maintainer._remote_commit = lambda: (second, "e" * 40)  # type: ignore[method-assign]
+    return maintainer, installed, snapshots / second / "Data"
+
+
+@pytest.mark.parametrize("restarted", [False, True])
+def test_game_data_revision_reuses_active_caches_without_reverifying(monkeypatch, tmp_path: Path, restarted: bool) -> None:
+    repo, first, second = _game_data_revisions(tmp_path, code_change=restarted, new_chart=False)
+    maintainer, installed, _data = _maintainer_over_active_publication(
+        monkeypatch,
+        tmp_path,
+        repo,
+        first,
+        second,
+        prebuild=lambda _data, _charts: pytest.fail("game data never changes frontier caches"),
+    )
+    if not restarted:
+        maintainer._runtime_commit = first
+        maintainer._last_commit = first
+        maintainer._initialized = True
+
+    assert maintainer.run_once()
+    assert len(installed) == 1
+
+
+def test_game_data_revision_with_a_new_chart_builds_only_that_chart(monkeypatch, tmp_path: Path) -> None:
+    repo, first, second = _game_data_revisions(tmp_path, code_change=True, new_chart=True)
+    calls: list[tuple[Path, ...] | None] = []
+    maintainer, installed, data_root = _maintainer_over_active_publication(
+        monkeypatch,
+        tmp_path,
+        repo,
+        first,
+        second,
+        prebuild=lambda _data, charts: calls.append(charts) or {"timeline": {"aa.npz"}, "fg": {"bb.npz"}},
+    )
+
+    assert maintainer.run_once()
+    assert calls == [(data_root / "Normal" / "New Song.txt",)]
     assert len(installed) == 1
 
 

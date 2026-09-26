@@ -21,6 +21,12 @@ from gear_optimizer.data.exported_game_data_sync import ExportedGameDataPaths, s
 logger = logging.getLogger(__name__)
 
 _PROTOCOL = 2
+# The game export and the item catalogs generated from it. Frontier cache keys hash only chart
+# content and Data/Gear/Stats.txt (the reference arrays), so a game-data publication that changes
+# nothing else reuses the active caches instead of re-verifying every song's frontier.
+_FRONTIER_NEUTRAL_DATA_PATHS = frozenset(
+    {"Data/exported_game_data.json", "Data/Gear/Gears.csv", "Data/Gear/Minis.csv"}
+)
 _REVISION_RE = re.compile(r"[0-9a-f]{64}\Z")
 _BUNDLE_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,80}\.tar\.gz\Z")
 _GIT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}\Z")
@@ -156,7 +162,8 @@ def _server_code_changed(repo_root: Path, before: str, after: str) -> bool:
 
 
 def _changed_chart_paths(repo_root: Path, before: str, after: str, data_root: Path) -> tuple[Path, ...] | None:
-    """Return an incremental chart set, or None when a full cache build is required."""
+    """Return the charts whose caches a revision changes (empty when only frontier-neutral Data
+    changed), or None when a full cache build is required."""
     result = subprocess.run(
         ["git", "diff", "--no-renames", "--name-only", "-z", before, after, "--", "Data"],
         cwd=repo_root,
@@ -168,6 +175,8 @@ def _changed_chart_paths(repo_root: Path, before: str, after: str, data_root: Pa
         return None
     charts: list[Path] = []
     for relative in relative_paths:
+        if relative in _FRONTIER_NEUTRAL_DATA_PATHS:
+            continue
         parsed = PurePosixPath(relative)
         if (
             len(parsed.parts) != 3
@@ -184,7 +193,10 @@ def _changed_chart_paths(repo_root: Path, before: str, after: str, data_root: Pa
 
 
 def _cache_implementation_changed(repo_root: Path, before: str, after: str) -> bool:
-    """Return whether a code-only deployment can change canonical frontier bytes."""
+    """Return whether code between two revisions can change canonical frontier bytes.
+
+    Data/ is judged separately, chart by chart, by ``_changed_chart_paths``.
+    """
     result = subprocess.run(
         ["git", "diff", "--name-only", "-z", before, after],
         cwd=repo_root,
@@ -192,10 +204,11 @@ def _cache_implementation_changed(repo_root: Path, before: str, after: str) -> b
         capture_output=True,
     )
     neutral_files = {
+        "gear_optimizer/data/exported_game_data_sync.py",
         "gear_optimizer/frontier_server.py",
         "gear_optimizer/robeatsmeta_service.py",
     }
-    neutral_prefixes = (".github/", "docs/", "tests/")
+    neutral_prefixes = (".github/", "Data/", "docs/", "tests/")
     for raw in result.stdout.split(b"\0"):
         if not raw:
             continue
@@ -319,22 +332,26 @@ def build_publication(
     bundles_root = work / "bundles"
     bundles_root.mkdir(parents=True)
     previous_by_content = {
-        str(bundle.get("content_sha256")): str(bundle.get("name"))
+        str(bundle.get("content_sha256")): bundle
         for bundle in (previous_manifest or {}).get("bundles", [])
         if isinstance(bundle, dict)
     }
     try:
         for bundle in bundle_specs:
             destination = bundles_root / str(bundle["name"])
-            prior_name = previous_by_content.get(str(bundle["content_sha256"]))
-            prior_path = previous_root / "bundles" / prior_name if previous_root is not None and prior_name else None
-            if prior_path is not None and prior_path.is_file():
+            prior = previous_by_content.get(str(bundle["content_sha256"])) or {}
+            prior_path = previous_root / "bundles" / str(prior["name"]) if previous_root is not None and prior.get("name") else None
+            linked = prior_path is not None and prior_path.is_file()
+            if linked:
                 os.link(prior_path, destination)
             else:
                 _write_bundle(destination, bundle.pop("_sources"))
             bundle.pop("_sources", None)
             bundle["size"] = int(destination.stat().st_size)
-            bundle["sha256"] = _sha256_file(destination)
+            # A hard link shares the prior bundle's bytes, so its recorded digest still holds;
+            # re-reading every unchanged bundle cost gigabytes of I/O per publication.
+            recorded = str(prior.get("sha256") or "") if linked and prior.get("size") == bundle["size"] else ""
+            bundle["sha256"] = recorded if re.fullmatch(r"[0-9a-f]{64}", recorded) else _sha256_file(destination)
         manifest = {
             "protocol": _PROTOCOL,
             "revision": revision,
@@ -616,6 +633,35 @@ class FrontierServerMaintainer:
         except OSError:
             pass
 
+    def _charts_needing_caches(
+        self,
+        active_manifest: dict | None,
+        commit: str,
+        data_revision: str,
+        data_root: Path,
+    ) -> tuple[Path, ...] | None:
+        """Charts a revision needs caches for beyond the active publication's.
+
+        () reuses the active caches as they are; None requires a full cache build. The active
+        caches belong to the revision this process last published or, right after a restart, to
+        the revision the service restarted from.
+        """
+        cached_commit = (
+            self._last_commit
+            if self._initialized
+            else str(active_manifest.get("code_revision") or "") if isinstance(active_manifest, dict) else ""
+        )
+        if re.fullmatch(r"[0-9a-f]{40,64}", cached_commit) is None:
+            return None
+        try:
+            if _cache_implementation_changed(self.repo_root, cached_commit, commit):
+                return None
+            if isinstance(active_manifest, dict) and str(active_manifest.get("data_revision") or "") == data_revision:
+                return ()
+            return _changed_chart_paths(self.repo_root, cached_commit, commit, data_root)
+        except subprocess.CalledProcessError:
+            return None
+
     def run_once(self) -> bool:
         commit, data_revision = self._remote_commit()
         if commit != self._runtime_commit:
@@ -648,11 +694,6 @@ class FrontierServerMaintainer:
                 shutil.rmtree(snapshot)
             _extract_repository_snapshot(self.repo_root, commit, snapshot)
         data_root = snapshot / "Data"
-        changed_charts = (
-            _changed_chart_paths(self.repo_root, self._last_commit, commit, data_root)
-            if self._initialized and self._last_commit
-            else None
-        )
         prior_payload = _read_manifest(self.state.root / "current.json") or {}
         prior_revision = str(prior_payload.get("revision") or "")
         sync_exported_game_data(
@@ -666,19 +707,12 @@ class FrontierServerMaintainer:
         )
         active_manifest_body = self.state.manifest_bytes()
         active_manifest = json.loads(active_manifest_body) if active_manifest_body is not None else None
-        prior_code_revision = str(active_manifest.get("code_revision") or "") if isinstance(active_manifest, dict) else ""
-        reuse_active_caches = bool(
-            not self._initialized
-            and isinstance(active_manifest, dict)
-            and str(active_manifest.get("data_revision") or "") == data_revision
-            and re.fullmatch(r"[0-9a-f]{40,64}", prior_code_revision)
-            and not _cache_implementation_changed(self.repo_root, prior_code_revision, commit)
-        )
-        if reuse_active_caches:
+        changed_charts = self._charts_needing_caches(active_manifest, commit, data_revision, data_root)
+        if changed_charts == () and isinstance(active_manifest, dict):
             cache_allowlist = _publication_cache_allowlist(active_manifest)
-            logger.info("reusing complete frontier caches for cache-neutral code revision %s", commit)
+            logger.info("reusing the active frontier caches for revision %s", commit)
         else:
-            cache_allowlist = self.prebuild(data_root, changed_charts)
+            cache_allowlist = self.prebuild(data_root, changed_charts or None)
         publication = build_publication(
             code_root=snapshot,
             data_root=data_root,
