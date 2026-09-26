@@ -1092,3 +1092,34 @@ def test_persistent_worker_restarts_when_a_new_catalog_activates(data_root, monk
         worker.stop()
 
     assert spawned == [first, second]
+
+
+def test_incremental_frontier_prebuild_queues_only_the_changed_charts(data_root, monkeypatch):
+    from gear_optimizer.data import csv_parser
+    from gear_optimizer.helpers.song_helpers import ref_array_builder
+    from gear_optimizer.solver import cpu_work_manager
+    from gear_optimizer.solver.timeline_frontier_cache_prebuild import ordered_frontier_cache_song_paths
+
+    _write_chart(data_root, "Normal", "Old by Artist", "old.txt")
+    _write_chart(data_root, "Normal", "New by Artist", "new.txt")
+    changed = data_root / "Data" / "Normal" / "new.txt"
+    monkeypatch.setattr(csv_parser, "read_table", lambda _path: {})
+    monkeypatch.setattr(ref_array_builder, "build_ref_arrays_from_stats", lambda *_args, **_kwargs: {})
+    queued: list[object] = []
+
+    class _Stop(Exception):
+        pass
+
+    def capture(**kwargs):
+        queued.append(kwargs["song_queue"])
+        raise _Stop
+
+    monkeypatch.setattr(cpu_work_manager, "run_startup_cpu_work", capture)
+
+    with pytest.raises(_Stop):
+        service._prebuild_frontier_caches(data_root / "Data", (changed,))
+
+    # The prebuild reads the chart path from each queue tuple; anything else falls back to
+    # every chart under Data/.
+    queue_paths = [str(item[0]) for item in queued[0] if isinstance(item, tuple) and item]
+    assert ordered_frontier_cache_song_paths(queue_paths=queue_paths, data_root=data_root / "Data") == [str(changed)]

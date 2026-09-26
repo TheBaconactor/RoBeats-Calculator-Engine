@@ -247,7 +247,9 @@ def _prebuild_frontier_caches(
         raise RuntimeError(f"frontier server Data revision has no song charts: {data_root}")
     run_startup_cpu_work(
         cfg=load_config(),
-        song_queue=song_paths,
+        # Queue entries are (chart path, ...) tuples. Bare path strings were silently ignored,
+        # which turned every incremental song publish into a full 2272-song re-verification.
+        song_queue=tuple((path,) for path in song_paths),
         ref_arrays=ref_arrays,
         data_root=data_root,
         build_missing=True,
