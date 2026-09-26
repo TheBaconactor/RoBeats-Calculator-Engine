@@ -39,6 +39,7 @@ def test_persistent_worker_reuses_one_process(monkeypatch):
         nonlocal starts
         starts += 1
         worker._responses = queue.Queue()
+        worker._gear_source = service.GEAR_DIR
         worker._proc = FakeProcess()
         return worker._proc
 

@@ -167,6 +167,11 @@ def _song_names_by_id(payload: dict[str, Any]) -> dict[int, str]:
     return song_names
 
 
+def exported_song_names(payload: dict[str, Any]) -> set[str]:
+    """Every Song Name the export describes -- the same names Mini Song Targets link to."""
+    return set(_song_names_by_id(payload).values())
+
+
 def _render_song_targets(
     mini: dict[str, Any],
     *,

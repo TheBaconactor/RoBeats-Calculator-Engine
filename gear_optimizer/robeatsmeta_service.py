@@ -24,7 +24,13 @@ from urllib.parse import urlsplit
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.parsing import env_int, env_str
-from gear_optimizer.data.database import get_best_loadouts, get_evolution_db_path, save_loadouts_batch
+from gear_optimizer.data.database import (
+    get_best_loadouts,
+    get_evolution_db_path,
+    get_song_names_present_in_db,
+    save_loadouts_batch,
+)
+from gear_optimizer.data.exported_game_data_sync import exported_song_names
 from gear_optimizer.frontier_auth import FrontierRequestAuthenticator
 from gear_optimizer.frontier_server import (
     FrontierDistributionState,
@@ -49,6 +55,8 @@ logger = logging.getLogger(__name__)
 # Every solve runs in a throwaway per-request dir with the song source, run state and output DB
 # redirected via the ROBEATSMETA_OPTIMIZER_* path overrides. After a clean official solve finishes,
 # its canonical-format leaderboard is merged into evolution.db; custom inputs remain isolated.
+# Each activated publication also solves the official charts evolution.db has no build for yet,
+# so a newly published song reaches the catalog without waiting for someone to optimize it.
 #
 # The service is a concurrent pool: ThreadingHTTPServer handles requests in parallel, and a bounded
 # semaphore caps concurrent solves (default 10). Each solve spawns main.py as a subprocess; the
@@ -827,6 +835,10 @@ class _PersistentSolveWorker:
         self._proc: subprocess.Popen[str] | None = None
         self._responses: queue.Queue[dict[str, Any]] = queue.Queue()
         self._root = _service_run_root() / "persistent_solver"
+        # The worker copies and loads the item catalog once, at spawn. A newly activated publication
+        # (new gear, minis or ascension targets) must restart it, or official solves keep scoring
+        # against the catalog that was active when the worker started.
+        self._gear_source: Path | None = None
 
     def _read_stdout(self, proc: subprocess.Popen[str], responses: queue.Queue[dict[str, Any]]) -> None:
         stdout = proc.stdout
@@ -861,14 +873,16 @@ class _PersistentSolveWorker:
         bin_dir = self._root / "bin"
         data_dir.mkdir(parents=True, exist_ok=True)
         bin_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(GEAR_DIR, data_dir / "Gear")
+        gear_dir = GEAR_DIR  # one read: a concurrent activation must not split copy and record
+        self._gear_source = gear_dir
+        shutil.copytree(gear_dir, data_dir / "Gear")
         env = {
             **os.environ,
             "EVOLUTION_DB_PATH": str(bin_dir / "service_result.db"),
             "METAFINDER_CONFIG_PATH": str(self._root / "config.ini"),
             "ROBEATSMETA_OPTIMIZER_DATA_DIR": str(data_dir),
             "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(bin_dir),
-            "ROBEATSMETA_OPTIMIZER_GEAR_SOURCE_DIR": str(GEAR_DIR),
+            "ROBEATSMETA_OPTIMIZER_GEAR_SOURCE_DIR": str(gear_dir),
             "TIMELINE_FRONTIER_CACHE_DIR": str(_TIMELINE_FRONTIER_CACHE_DIR),
             "FG_RESPONSE_FRONTIER_CACHE_DIR": str(_FG_RESPONSE_FRONTIER_CACHE_DIR),
             "ROBEATSMETA_OPTIMIZER_SERVICE_MODE": "1",
@@ -925,7 +939,7 @@ class _PersistentSolveWorker:
     def request(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         with self._lock:
             proc = self._proc
-            if proc is None or proc.poll() is not None:
+            if proc is None or proc.poll() is not None or self._gear_source != GEAR_DIR:
                 self._stop_locked()
                 proc = self._start_locked()
             if proc.stdin is None:
@@ -1164,6 +1178,70 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         _release_job_solve(solve_key, state)
 
 
+# --- catalog builds ----------------------------------------------------------
+#
+# evolution.db is the website's song catalog, and a chart only enters it through a promoted official
+# solve. The website also refuses to publish while any published chart is unbuilt, so a new chart
+# that nobody happened to optimize froze every website data update. After each publication
+# activates, solve every official chart the active game data describes but evolution.db has no build
+# for, one at a time, through the same path as a user's request. Waiting for the game data is
+# deliberate: its mini ascension targets change a new song's scores.
+
+def unbuilt_catalog_song_ids() -> list[str]:
+    """Official charts the active game data describes that evolution.db has no build for."""
+    payload = json.loads((DATA_ROOT / "exported_game_data.json").read_text(encoding="utf-8"))
+    candidates = exported_song_names(payload).intersection(_official_song_catalog().paths_by_song_id)
+    return sorted(candidates - get_song_names_present_in_db(candidates))
+
+
+def build_missing_catalog_songs() -> None:
+    missing = unbuilt_catalog_song_ids()
+    if missing:
+        print(f"[robeatsmeta-service] building {len(missing)} official chart(s) missing from the catalog", flush=True)
+    for song_id in missing:
+        if not _AUTHORITATIVE_PUBLICATION_READY.is_set():
+            return  # a code update is draining; the next activation starts a fresh pass
+        digest = hashlib.sha256(song_id.encode("utf-8")).hexdigest()[:16]
+        try:
+            solve({"jobId": f"catalog-{digest}", "targetSongId": song_id})
+        except ServiceNotReady:
+            return
+        except Exception:  # noqa: BLE001 - one bad chart must not stop the rest of the catalog
+            logger.exception("catalog build failed for %s", song_id)
+            print(f"[robeatsmeta-service] catalog build FAILED for {song_id}; retried on the next publication", flush=True)
+            continue
+        print(f"[robeatsmeta-service] built catalog entry for {song_id}", flush=True)
+
+
+class _CatalogBuilder:
+    """Run build passes on a background thread; a request during a pass queues exactly one more."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending = False
+        self._running = False
+
+    def request(self) -> None:
+        with self._lock:
+            self._pending = True
+            if self._running:
+                return
+            self._running = True
+        threading.Thread(target=self._run, name="catalog-builder", daemon=True).start()
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                if not self._pending:
+                    self._running = False
+                    return
+                self._pending = False
+            try:
+                build_missing_catalog_songs()
+            except Exception:  # noqa: BLE001 - background thread: record it, the next publication retries
+                logger.exception("catalog build pass failed")
+
+
 # --- HTTP --------------------------------------------------------------------
 
 class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
@@ -1342,6 +1420,12 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGINT, handle_shutdown_signal)
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
+    catalog_builder = _CatalogBuilder()
+
+    def publication_ready(data_root: Path) -> None:
+        _activate_published_data(data_root)
+        catalog_builder.request()
+
     maintainer = FrontierServerMaintainer(
         repo_root=REPO_ROOT,
         timeline_cache_root=_TIMELINE_FRONTIER_CACHE_DIR,
@@ -1349,7 +1433,7 @@ def main(argv: list[str] | None = None) -> int:
         state=_FRONTIER_DISTRIBUTION,
         prebuild=_prebuild_frontier_caches,
         restart_requested=request_restart,
-        publication_ready=_activate_published_data,
+        publication_ready=publication_ready,
         prepare_code_update=_prepare_server_code_update,
         code_update_aborted=lambda: _finish_server_code_update(aborted=True),
     )

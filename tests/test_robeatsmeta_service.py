@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+import json
+import queue
 import sqlite3
 import shutil
 import subprocess
@@ -177,8 +180,11 @@ def test_service_starts_frontier_server_maintenance(monkeypatch):
         lambda _state: calls.append("restore") or True,
     )
 
+    maintainer_kwargs: dict[str, object] = {}
+
     class _Maintainer:
-        def __init__(self, **_kwargs):
+        def __init__(self, **kwargs):
+            maintainer_kwargs.update(kwargs)
             calls.append("init")
 
         def serve_forever(self):
@@ -187,11 +193,21 @@ def test_service_starts_frontier_server_maintenance(monkeypatch):
         def stop(self):
             calls.append("stop")
 
+    class _CatalogBuilder:
+        def request(self):
+            calls.append("catalog build")
+
     monkeypatch.setattr(service, "FrontierServerMaintainer", _Maintainer)
+    monkeypatch.setattr(service, "_CatalogBuilder", _CatalogBuilder)
+    monkeypatch.setattr(service, "_activate_published_data", lambda root: calls.append(f"activate {root}"))
 
     assert service.main(["--host", "127.0.0.1", "--port", "0"]) == 0
 
     assert calls == ["restore", "init", "maintain", "serve", "stop", "close"]
+
+    # Every publication the maintainer activates builds the charts it made newly solvable.
+    maintainer_kwargs["publication_ready"](Path("published"))
+    assert calls[-2:] == ["activate published", "catalog build"]
 
 
 def test_frontier_refresh_endpoint_only_wakes_maintainer(data_root, monkeypatch):
@@ -971,3 +987,108 @@ def test_failed_solve_never_publishes_plausible_results(data_root, monkeypatch, 
         service.solve({'jobId': 'failure', 'targetSongId': 'Official'})
     publish.assert_not_called()
     assert not list(runs.iterdir())
+
+
+def _write_export(data_root: Path, *songs: tuple[int, str, str]) -> None:
+    payload = {
+        "songs": {
+            "1": {
+                "songs": [
+                    {"songid": song_id, "displayname": displayname, "artist": artist}
+                    for song_id, displayname, artist in songs
+                ]
+            }
+        }
+    }
+    (data_root / "Data" / "exported_game_data.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_catalog_build_solves_described_official_charts_missing_from_the_catalog(data_root, monkeypatch):
+    from gear_optimizer.data.database import init_db
+
+    _write_chart(data_root, "Normal", "Built by Artist", "built.txt")
+    _write_chart(data_root, "Hard", "New (Hard) by Artist", "new.txt")
+    _write_chart(data_root, "Normal", "Unreleased by Artist", "unreleased.txt")
+    _write_export(data_root, (1, "Built", "Artist"), (2, "New (Hard)", "Artist"))
+    db_path = data_root / "evolution.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("INSERT INTO songs (name, best_score, last_updated) VALUES ('Built by Artist', 1, 0)")
+    solved: list[dict[str, object]] = []
+    monkeypatch.setattr(service, "solve", lambda request: solved.append(request) or [])
+    service._AUTHORITATIVE_PUBLICATION_READY.set()
+
+    service.build_missing_catalog_songs()
+
+    # Only the chart the game data describes and the catalog lacks, as a clean official request
+    # (default perfect_window timing, no custom pool) so its result is promoted into the catalog.
+    assert solved == [{"jobId": solved[0]["jobId"], "targetSongId": "New (Hard) by Artist"}]
+
+
+def test_catalog_build_continues_past_a_failed_chart_and_yields_to_a_code_update(data_root, monkeypatch):
+    for name in ("A by Artist", "B by Artist", "C by Artist"):
+        _write_chart(data_root, "Normal", name, f"{name}.txt")
+    _write_export(data_root, (1, "A", "Artist"), (2, "B", "Artist"), (3, "C", "Artist"))
+    monkeypatch.setattr(service, "get_song_names_present_in_db", lambda _names: set())
+    attempted: list[str] = []
+
+    def solve(request):
+        attempted.append(request["targetSongId"])
+        if request["targetSongId"] == "A by Artist":
+            raise RuntimeError("optimizer exited 1")
+        service._AUTHORITATIVE_PUBLICATION_READY.clear()  # a code update starts draining
+        return []
+
+    monkeypatch.setattr(service, "solve", solve)
+    service._AUTHORITATIVE_PUBLICATION_READY.set()
+
+    service.build_missing_catalog_songs()
+
+    assert attempted == ["A by Artist", "B by Artist"]
+
+
+def test_persistent_worker_restarts_when_a_new_catalog_activates(data_root, monkeypatch):
+    first = data_root / "first" / "Gear"
+    second = data_root / "second" / "Gear"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    spawned: list[Path] = []
+
+    class _SolverProcess:
+        def __init__(self, *_args, **_kwargs):
+            spawned.append(service.GEAR_DIR)
+            self._lines: queue.Queue[str | None] = queue.Queue()
+            self.stdin = self
+            self.stdout = self
+            self.stderr = io.StringIO()
+
+        def __iter__(self):
+            return iter(self._lines.get, None)
+
+        def write(self, _payload):
+            self._lines.put('{"ok": true, "loadouts": []}\n')
+
+        def flush(self):
+            pass
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def close(self):
+            self._lines.put(None)
+
+    monkeypatch.setattr(service.subprocess, "Popen", _SolverProcess)
+    monkeypatch.setattr(service, "_kill_process_group", lambda _proc: None)
+    worker = service._PersistentSolveWorker()
+    try:
+        for gear_dir in (first, first, second):
+            monkeypatch.setattr(service, "GEAR_DIR", gear_dir)
+            assert worker.request({"jobId": "job"}) == []
+    finally:
+        worker.stop()
+
+    assert spawned == [first, second]
