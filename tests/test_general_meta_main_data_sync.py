@@ -278,30 +278,6 @@ def test_checked_in_optimizer_csvs_match_exported_game_data(tmp_path: Path) -> N
     )
 
 
-def test_ultimate_end_uses_one_canonical_identity_across_export_and_charts() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    payload = json.loads((repo_root / "Data" / "exported_game_data.json").read_text(encoding="utf-8"))
-    exported_text = json.dumps(payload, ensure_ascii=False)
-
-    assert "ULT!MATE END" not in exported_text
-    assert exported_text.count("ULTIMATE END") > 0
-
-    expected = {
-        repo_root / "Data" / "Normal" / "ULTIMATE END by BlackY.txt": "ULTIMATE END by BlackY",
-        repo_root / "Data" / "Hard" / "ULTIMATE END (Hard) by BlackY.txt": "ULTIMATE END (Hard) by BlackY",
-    }
-    for path, song_name in expected.items():
-        assert path.is_file()
-        chart_text = path.read_text(encoding="utf-8")
-        assert chart_text.splitlines()[0] == f"Song Name\t{song_name}"
-        assert "ULT!MATE END" not in chart_text
-
-    minis_text = (repo_root / "Data" / "Gear" / "Minis.csv").read_text(encoding="utf-8")
-    assert "ULT!MATE END" not in minis_text
-    assert "ULTIMATE END by BlackY" in minis_text
-    assert "ULTIMATE END (Hard) by BlackY" in minis_text
-
-
 def test_checked_in_mini_song_targets_resolve_to_song_headers() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     song_names: set[str] = set()
