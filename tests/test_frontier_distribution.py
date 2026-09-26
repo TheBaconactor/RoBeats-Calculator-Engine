@@ -678,6 +678,26 @@ def test_game_data_revision_with_a_new_chart_builds_only_that_chart(monkeypatch,
     assert len(installed) == 1
 
 
+def test_renamed_chart_builds_only_the_new_name(monkeypatch, tmp_path: Path) -> None:
+    repo, first, _second = _game_data_revisions(tmp_path, code_change=False, new_chart=False)
+    subprocess.run(["git", "mv", "Data/Normal/Song.txt", "Data/Normal/Song Renamed.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "rename"], cwd=repo, check=True, capture_output=True)
+    renamed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+    calls: list[tuple[Path, ...] | None] = []
+    maintainer, installed, data_root = _maintainer_over_active_publication(
+        monkeypatch,
+        tmp_path,
+        repo,
+        first,
+        renamed,
+        prebuild=lambda _data, charts: calls.append(charts) or {"timeline": {"aa.npz"}, "fg": {"bb.npz"}},
+    )
+
+    assert maintainer.run_once()
+    assert calls == [(data_root / "Normal" / "Song Renamed.txt",)]
+    assert len(installed) == 1
+
+
 def test_prune_stale_artifacts_keeps_current_previous_and_running_commit(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer import frontier_server
     from gear_optimizer.frontier_server import FrontierDistributionState, FrontierServerMaintainer

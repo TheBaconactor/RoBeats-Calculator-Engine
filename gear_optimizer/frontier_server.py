@@ -165,16 +165,17 @@ def _changed_chart_paths(repo_root: Path, before: str, after: str, data_root: Pa
     """Return the charts whose caches a revision changes (empty when only frontier-neutral Data
     changed), or None when a full cache build is required."""
     result = subprocess.run(
-        ["git", "diff", "--no-renames", "--name-only", "-z", before, after, "--", "Data"],
+        ["git", "diff", "--no-renames", "--name-status", "-z", before, after, "--", "Data"],
         cwd=repo_root,
         check=True,
         capture_output=True,
     )
-    relative_paths = [item.decode("utf-8") for item in result.stdout.split(b"\0") if item]
-    if not relative_paths:
+    fields = [item.decode("utf-8") for item in result.stdout.split(b"\0") if item]
+    changes = list(zip(fields[0::2], fields[1::2]))
+    if not changes:
         return None
     charts: list[Path] = []
-    for relative in relative_paths:
+    for status, relative in changes:
         if relative in _FRONTIER_NEUTRAL_DATA_PATHS:
             continue
         parsed = PurePosixPath(relative)
@@ -185,6 +186,8 @@ def _changed_chart_paths(repo_root: Path, before: str, after: str, data_root: Pa
             or parsed.suffix != ".txt"
         ):
             return None
+        if status == "D":
+            continue  # a removed (or renamed-away) chart needs no cache
         chart = data_root.joinpath(*parsed.parts[1:])
         if not chart.is_file():
             return None
