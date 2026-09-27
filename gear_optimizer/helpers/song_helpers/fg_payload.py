@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ...solver.taichi_gem.force_greats.response_types import FgResponseSurface
+if TYPE_CHECKING:
+    from ...solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
 
 _RETIRED_FORCE_META_FIELDS = frozenset({"config", "variant_applied", "enabled"})
@@ -21,6 +22,10 @@ def _payload(container: Any) -> dict[str, Any]:
 
 def require_response_surface(container: Any) -> FgResponseSurface:
     """Return the canonical persisted Force Greats replay surface."""
+    # Importing the taichi_gem package runs its __init__, which pulls Taichi, numba and the FG
+    # solver, so the SQLite persistence layer must not import it at module level.
+    from ...solver.taichi_gem.force_greats.response_types import FgResponseSurface
+
     payload = _payload(container)
     surface = payload.get("response_surface")
     if surface is None:

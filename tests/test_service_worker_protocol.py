@@ -50,6 +50,77 @@ def test_persistent_worker_reuses_one_process(monkeypatch):
     assert starts == 1
 
 
+def _fake_persistent_worker(monkeypatch):
+    starts: list[int] = []
+    killed: list[int] = []
+    solver = service._PersistentSolveWorker()
+
+    class FakeStdin:
+        def write(self, line: str) -> int:
+            solver._responses.put({"ok": True, "loadouts": [json.loads(line)]})
+            return len(line)
+
+        def flush(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class FakeProcess:
+        stdin = FakeStdin()
+        stdout = None
+        stderr = None
+        pid = 1
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(timeout=None):
+            return 0
+
+    def fake_start():
+        starts.append(1)
+        solver._responses = queue.Queue()
+        solver._gear_source = service.GEAR_DIR
+        solver._proc = FakeProcess()
+        return solver._proc
+
+    monkeypatch.setattr(solver, "_start_locked", fake_start)
+    monkeypatch.setattr(service, "_kill_process_group", lambda proc: killed.append(proc.pid))
+    return solver, starts, killed
+
+
+def test_idle_reap_stops_worker_and_next_request_respawns(monkeypatch):
+    solver, starts, killed = _fake_persistent_worker(monkeypatch)
+
+    assert solver.request({"mode": "default"}) == [{"mode": "default"}]
+    solver._idle_since -= service._PERSISTENT_WORKER_IDLE_EXIT_S + 1
+
+    assert solver.reap_if_idle() is True
+    assert solver._proc is None
+    assert killed == [1]
+    assert solver.request({"mode": "zero_ms"}) == [{"mode": "zero_ms"}]
+    assert len(starts) == 2
+
+
+def test_idle_reap_skips_when_recent_or_request_in_flight(monkeypatch):
+    solver, starts, killed = _fake_persistent_worker(monkeypatch)
+    solver.request({"mode": "default"})
+    proc = solver._proc
+
+    assert solver.reap_if_idle() is False  # it just served a request
+
+    solver._idle_since -= service._PERSISTENT_WORKER_IDLE_EXIT_S + 1
+    with solver._lock:  # a solve in flight holds the lock for its whole duration
+        assert solver.reap_if_idle() is False
+
+    assert solver._proc is proc
+    assert killed == []
+    assert len(starts) == 1
+
+
 def test_persistent_worker_stop_is_idempotent(monkeypatch):
     worker = service._PersistentSolveWorker()
     stopped: list[int] = []

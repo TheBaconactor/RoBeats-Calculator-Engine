@@ -914,7 +914,7 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
     if not paths:
         return FgResponseFrontierCachePrebuildSummary(total=0)
 
-    if _manifest_records_current_cache_version() and not authorize_destructive_rotation:
+    if not authorize_destructive_rotation and _manifest_records_current_cache_version():
         # Fully recorded current-manifest hits are readers, not builders. Probe without mutating
         # the manifest so they never wait behind an unrelated deployment prebuild that owns the
         # lock. Complete derived hits absent from the manifest enter the lock once below.

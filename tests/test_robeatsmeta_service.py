@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import concurrent.futures
 import io
 import json
 import queue
 import sqlite3
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -200,10 +202,13 @@ def test_service_starts_frontier_server_maintenance(monkeypatch):
     monkeypatch.setattr(service, "FrontierServerMaintainer", _Maintainer)
     monkeypatch.setattr(service, "_CatalogBuilder", _CatalogBuilder)
     monkeypatch.setattr(service, "_activate_published_data", lambda root: calls.append(f"activate {root}"))
+    monkeypatch.setattr(service, "_reap_idle_persistent_worker_forever", lambda: calls.append("idle reaper"))
 
     assert service.main(["--host", "127.0.0.1", "--port", "0"]) == 0
 
-    assert calls == ["restore", "init", "maintain", "serve", "stop", "close"]
+    assert calls == ["restore", "init", "maintain", "idle reaper", "serve", "stop", "close"]
+    # Publication prebuilds run in a child process, never on the service's maintenance thread.
+    assert maintainer_kwargs["prebuild"] is service._prebuild_frontier_caches_isolated
 
     # Every publication the maintainer activates builds the charts it made newly solvable.
     maintainer_kwargs["publication_ready"](Path("published"))
@@ -768,6 +773,39 @@ def test_memory_guard_allows_concurrency_when_memory_ample(monkeypatch):
     assert peak == 4
 
 
+def test_available_bytes_darwin_excludes_compressible_and_speculative(monkeypatch):
+    counters = {
+        "vm.page_free_count": 100,
+        "vm.page_pageable_external_count": 1000,
+        "vm.page_purgeable_count": 10,
+        "vm.page_speculative_count": 50,  # already inside pageable_external; must not be added
+        "hw.pagesize": 16384,
+    }
+    monkeypatch.setattr(service.sys, "platform", "darwin")
+    monkeypatch.setattr(service, "_sysctl_uint", counters.__getitem__)
+
+    assert service._available_bytes() == (100 + 1000 + 10) * 16384
+
+
+def test_available_bytes_darwin_sysctl_failure_raises(monkeypatch):
+    def fail(name: str) -> int:
+        raise OSError(2, name)
+
+    monkeypatch.setattr(service.sys, "platform", "darwin")
+    monkeypatch.setattr(service, "_sysctl_uint", fail)
+
+    with pytest.raises(OSError):
+        service._available_bytes()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="reads macOS VM counters")
+def test_sysctl_uint_reads_real_counters():
+    assert service._sysctl_uint("vm.page_free_count") > 0  # a 4-byte counter
+    assert service._sysctl_uint("hw.pagesize") > 0  # an 8-byte value
+    with pytest.raises(OSError):
+        service._sysctl_uint("vm.no_such_counter")
+
+
 # --- custom gear / mini pool -------------------------------------------------
 
 _CUSTOM_GEAR = {"name": "Test Hat", "type": "Hat", "chill": 30, "ppoint": 20}
@@ -1123,3 +1161,89 @@ def test_incremental_frontier_prebuild_queues_only_the_changed_charts(data_root,
     # every chart under Data/.
     queue_paths = [str(item[0]) for item in queued[0] if isinstance(item, tuple) and item]
     assert ordered_frontier_cache_song_paths(queue_paths=queue_paths, data_root=data_root / "Data") == [str(changed)]
+
+
+class _InlineExecutor:
+    """ProcessPoolExecutor stand-in that runs the child body synchronously."""
+
+    created: list[dict[str, object]] = []
+
+    def __init__(self, **kwargs):
+        _InlineExecutor.created.append(kwargs)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def submit(self, fn, *args):
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        try:
+            future.set_result(fn(*args))
+        except BaseException as exc:  # noqa: BLE001 - mirror a child failure into the future
+            future.set_exception(exc)
+        return future
+
+
+class _ActivePublication:
+    def __init__(self, body: bytes | None):
+        self._body = body
+
+    def manifest_bytes(self) -> bytes | None:
+        return self._body
+
+
+_ACTIVE_MANIFEST = json.dumps(
+    {"bundles": [{"files": [{"scope": "timeline", "path": "c.npz"}, {"scope": "fg", "path": "d.npz"}]}]}
+).encode("utf-8")
+
+
+def test_isolated_prebuild_merges_active_publication_in_parent(tmp_path, monkeypatch):
+    child_calls: list[tuple[object, ...]] = []
+
+    def child_body(data_root, changed_charts):
+        child_calls.append((data_root, changed_charts))
+        return {"timeline": {"a.npz"}, "fg": {"b.npz"}}
+
+    _InlineExecutor.created.clear()
+    monkeypatch.setattr(service.concurrent.futures, "ProcessPoolExecutor", _InlineExecutor)
+    monkeypatch.setattr(service, "_prebuild_frontier_caches", child_body)
+    monkeypatch.setattr(service, "_FRONTIER_DISTRIBUTION", _ActivePublication(_ACTIVE_MANIFEST))
+    changed = tmp_path / "Data" / "Normal" / "new.txt"
+
+    incremental = service._prebuild_frontier_caches_isolated(tmp_path / "Data", [changed])
+    full = service._prebuild_frontier_caches_isolated(tmp_path / "Data", None)
+
+    assert incremental == {"timeline": {"a.npz", "c.npz"}, "fg": {"b.npz", "d.npz"}}
+    assert full == {"timeline": {"a.npz"}, "fg": {"b.npz"}}
+    assert child_calls == [(tmp_path / "Data", (changed,)), (tmp_path / "Data", None)]
+    assert [(kw["max_workers"], kw["mp_context"].get_start_method()) for kw in _InlineExecutor.created] == [
+        (1, "spawn"),
+        (1, "spawn"),
+    ]
+
+
+def test_isolated_prebuild_propagates_child_failure(tmp_path, monkeypatch):
+    def child_body(_data_root, _changed_charts):
+        raise RuntimeError("frontier prebuild failed in the child")
+
+    monkeypatch.setattr(service.concurrent.futures, "ProcessPoolExecutor", _InlineExecutor)
+    monkeypatch.setattr(service, "_prebuild_frontier_caches", child_body)
+    monkeypatch.setattr(service, "_FRONTIER_DISTRIBUTION", _ActivePublication(_ACTIVE_MANIFEST))
+
+    with pytest.raises(RuntimeError, match="failed in the child"):
+        service._prebuild_frontier_caches_isolated(tmp_path / "Data", None)
+
+
+def test_isolated_prebuild_requires_active_publication(tmp_path, monkeypatch):
+    monkeypatch.setattr(service.concurrent.futures, "ProcessPoolExecutor", _InlineExecutor)
+    monkeypatch.setattr(
+        service,
+        "_prebuild_frontier_caches",
+        lambda *_args: {"timeline": {"a.npz"}, "fg": {"b.npz"}},
+    )
+    monkeypatch.setattr(service, "_FRONTIER_DISTRIBUTION", _ActivePublication(None))
+
+    with pytest.raises(RuntimeError, match="requires the active complete publication"):
+        service._prebuild_frontier_caches_isolated(tmp_path / "Data", (tmp_path / "Data" / "Normal" / "new.txt",))

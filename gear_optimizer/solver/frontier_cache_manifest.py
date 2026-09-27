@@ -104,6 +104,14 @@ def _load_manifest(path: Path, *, cache_version: str, version_field: str) -> dic
 
 
 def _save_manifest(path: Path, *, cache_version: str, version_field: str, entries: dict[str, dict]) -> None:
+    # Keys hash the chart's absolute path, so an entry whose chart is gone (a pruned publication
+    # snapshot, a finished job workspace) can never be looked up again. Legacy entries without a
+    # recorded song_path are dropped too.
+    entries = {
+        key: entry
+        for key, entry in entries.items()
+        if isinstance(entry.get("song_path"), str) and os.path.exists(entry["song_path"])
+    }
     payload = {
         "schema": _SCHEMA,
         version_field: str(cache_version),
@@ -201,6 +209,7 @@ def build_manifest_plan(
                     "cache_mtime_ns": int(cache_mtime_ns),
                     "cache_size": int(cache_size),
                     "updated_at_ns": int(time.time_ns()),
+                    "song_path": str(abs_path),
                 }
                 updated_entries += 1
         if cache_hit:
@@ -322,6 +331,7 @@ def apply_manifest_results(
             "cache_mtime_ns": int(cache_mtime_ns),
             "cache_size": int(cache_size),
             "updated_at_ns": now_ns,
+            "song_path": os.path.abspath(song_path),
         }
         updated += 1
 

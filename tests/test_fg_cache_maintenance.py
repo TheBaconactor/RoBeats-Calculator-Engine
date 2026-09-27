@@ -66,3 +66,33 @@ def test_cache_build_and_explicit_maintenance_remain_locked(
     assert summary.completed == int(not missing or build_missing)
     assert summary.failures == int(missing and not build_missing)
     assert summary.built == int(missing and build_missing)
+
+
+def test_destructive_rotation_never_parses_the_manifest_for_its_version(monkeypatch, tmp_path):
+    song = tmp_path / "Song.txt"
+    song.write_text("test chart")
+    paths = (str(song),)
+    plan = FrontierCacheManifestPlan(total_paths=1, hit_paths=paths, missing_paths=(), key_by_norm_path={})
+
+    def version_probe():
+        raise AssertionError("a destructive-rotation prebuild must not parse the whole FG manifest")
+
+    @contextmanager
+    def lock(*_args, **_kwargs):
+        yield
+
+    monkeypatch.setattr(prebuild, "_manifest_records_current_cache_version", version_probe)
+    monkeypatch.setattr(prebuild, "_build_manifest_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(prebuild, "FrontierBuildLock", lock)
+    monkeypatch.setattr(prebuild, "_maintain_fg_response_frontier_cache_under_lock", lambda **_kwargs: None)
+
+    summary = prebuild.run_fg_response_frontier_cache_prebuild(
+        cfg=object(),
+        song_queue=[paths],
+        ref_arrays={},
+        data_root=tmp_path,
+        authorize_destructive_rotation=True,
+        timing_modes=("perfect_window",),
+    )
+
+    assert summary.completed == 1

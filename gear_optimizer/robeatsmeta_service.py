@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import ctypes
+import ctypes.util
 import hashlib
 import hmac
 import ipaddress
 import json
 import logging
+import multiprocessing
 import os
 import queue
 import re
@@ -15,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +28,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.core.macos_background import make_process_background_only
 from gear_optimizer.core.parsing import env_int, env_str
 from gear_optimizer.data.database import (
     get_best_loadouts,
@@ -81,8 +87,11 @@ _SOLVE_SEMAPHORE = threading.Semaphore(_SOLVE_POOL_SIZE)
 # on a 16 GB unified-memory Mac: 2 concurrent solves drove free memory to ~70 MB). So gate the START
 # of each *additional* concurrent solve on real available memory: the first concurrent solve always
 # runs (progress guarantee, never deadlocks), and a further one only starts once at least
-# ROBEATSMETA_OPTIMIZER_SERVICE_MIN_FREE_MB is free -- otherwise it waits for a running solve to
-# finish. This makes effective concurrency track the box's memory regardless of the pool size.
+# ROBEATSMETA_OPTIMIZER_SERVICE_MIN_FREE_MB is reclaimable without compressing or swapping (see
+# _available_bytes: psutil on macOS counts inactive anonymous pages as available) -- otherwise it
+# waits for a running solve to finish. This makes effective concurrency track the box's memory
+# regardless of the pool size. The gate samples memory at start time, so two solves admitted at the
+# same moment can both pass before either one allocates.
 _MIN_FREE_BYTES = max(0, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_MIN_FREE_MB", 3000)) * 1024 * 1024
 _admission = threading.Condition()
 _active_solves = 0
@@ -104,7 +113,32 @@ _OFFICIAL_CATALOG_CACHE_KEY: tuple[tuple[str, Path], ...] | None = None
 _OFFICIAL_CATALOG_CACHE: _OfficialSongCatalog | None = None
 
 
+if sys.platform == "darwin":
+    _LIBC = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+
+
+def _sysctl_uint(name: str) -> int:
+    value = ctypes.c_uint64(0)
+    size = ctypes.c_size_t(ctypes.sizeof(value))
+    if _LIBC.sysctlbyname(name.encode("ascii"), ctypes.byref(value), ctypes.byref(size), None, ctypes.c_size_t(0)) != 0:
+        raise OSError(ctypes.get_errno(), f"sysctlbyname failed: {name}")
+    if size.value not in (4, 8):  # page counts are 4 bytes; purgeable and pagesize are 8
+        raise OSError(f"sysctl {name} returned {size.value} bytes, expected 4 or 8")
+    return int(value.value)
+
+
 def _available_bytes() -> int:
+    if sys.platform == "darwin":
+        # psutil's macOS "available" is inactive + free, and inactive anonymous pages only come back
+        # by compressing or swapping them, so it stays high while the box swaps. Count what the
+        # kernel frees without either: free, file-backed (pageable external, which already holds
+        # the speculative pages) and purgeable.
+        pages = (
+            _sysctl_uint("vm.page_free_count")
+            + _sysctl_uint("vm.page_pageable_external_count")
+            + _sysctl_uint("vm.page_purgeable_count")
+        )
+        return pages * _sysctl_uint("hw.pagesize")
     import psutil
 
     return int(psutil.virtual_memory().available)
@@ -153,6 +187,10 @@ _MAX_CUSTOM_CHART_EVENTS = max(1, env_int("ROBEATSMETA_OPTIMIZER_MAX_CUSTOM_EVEN
 # Hard wall-clock cap on a single solve subprocess: on timeout the whole process group is killed
 # (so main.py's GPU/worker children don't linger) and the request fails. Must exceed a real solve.
 _SOLVE_TIMEOUT_S = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_TIMEOUT_S", 30 * 60))
+
+# An idle persistent solver still holds its whole Taichi device, prewarmed app and per-song caches
+# (~0.8 GB). Stop it after this long without a request; the next official solve respawns it cold.
+_PERSISTENT_WORKER_IDLE_EXIT_S = max(60, env_int("ROBEATSMETA_OPTIMIZER_PERSISTENT_IDLE_EXIT_S", 15 * 60))
 
 # Reasoning effort lets a host request a larger optimizer search budget. The chosen level scales
 # the GA search knobs that most directly raise the odds of reaching the true
@@ -223,7 +261,11 @@ def _prebuild_frontier_caches(
     data_root: Path,
     changed_charts: tuple[Path, ...] | None = None,
 ) -> dict[str, set[str]]:
-    """Build every missing canonical cache before a Data revision becomes downloadable."""
+    """Build every missing canonical cache before a Data revision becomes downloadable.
+
+    Returns only the files of the charts it verified; _prebuild_frontier_caches_isolated runs it
+    in a child process and adds the active publication's files for an incremental build.
+    """
     import numpy as np
 
     from gear_optimizer.core.config import load_config
@@ -305,7 +347,31 @@ def _prebuild_frontier_caches(
             if not sidecar.is_file():
                 raise RuntimeError(f"FG frontier bundle is missing a sidecar: {sidecar}")
             fg_files.add(sidecar.name)
+    return {"timeline": timeline_files, "fg": fg_files}
+
+
+def _prebuild_frontier_caches_isolated(
+    data_root: Path,
+    changed_charts: tuple[Path, ...] | None = None,
+) -> dict[str, set[str]]:
+    """Run the prebuild in a short-lived spawned process, then merge the active publication.
+
+    The prebuild imports the solver stack and may build a single chart in-process; its memory
+    high-water would otherwise stay resident in this long-lived service after every publication.
+    """
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=multiprocessing.get_context("spawn"),
+        # Before the prebuild imports Taichi/MoltenVK, keep the child out of the Dock like the solver.
+        initializer=make_process_background_only,
+    ) as executor:
+        files = executor.submit(
+            _prebuild_frontier_caches,
+            Path(data_root),
+            tuple(changed_charts) if changed_charts is not None else None,
+        ).result()
     if changed_charts is not None:
+        # The active publication is this process's in-memory state; a fresh child has none.
         previous_body = _FRONTIER_DISTRIBUTION.manifest_bytes()
         previous = json.loads(previous_body) if previous_body is not None else None
         if not isinstance(previous, dict):
@@ -319,10 +385,10 @@ def _prebuild_frontier_caches(
                 scope = str(entry.get("scope") or "")
                 path = str(entry.get("path") or "")
                 if scope == "timeline" and path:
-                    timeline_files.add(path)
+                    files["timeline"].add(path)
                 elif scope == "fg" and path:
-                    fg_files.add(path)
-    return {"timeline": timeline_files, "fg": fg_files}
+                    files["fg"].add(path)
+    return files
 
 
 class RequestError(ValueError):
@@ -841,6 +907,7 @@ class _PersistentSolveWorker:
         # (new gear, minis or ascension targets) must restart it, or official solves keep scoring
         # against the catalog that was active when the worker started.
         self._gear_source: Path | None = None
+        self._idle_since = time.monotonic()
 
     def _read_stdout(self, proc: subprocess.Popen[str], responses: queue.Queue[dict[str, Any]]) -> None:
         stdout = proc.stdout
@@ -940,31 +1007,50 @@ class _PersistentSolveWorker:
 
     def request(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         with self._lock:
-            proc = self._proc
-            if proc is None or proc.poll() is not None or self._gear_source != GEAR_DIR:
-                self._stop_locked()
-                proc = self._start_locked()
-            if proc.stdin is None:
-                self._stop_locked()
-                raise RuntimeError("persistent solver has no stdin pipe")
             try:
-                proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
-                proc.stdin.flush()
-                response = self._responses.get(timeout=_SOLVE_TIMEOUT_S)
-            except queue.Empty as exc:
-                self._stop_locked()
-                raise RuntimeError(f"persistent optimizer timed out after {_SOLVE_TIMEOUT_S}s") from exc
-            except (BrokenPipeError, OSError) as exc:
-                self._stop_locked()
-                raise RuntimeError("persistent optimizer worker disconnected") from exc
-            if not bool(response.get("ok")):
-                if response.get("eof") or response.get("restart"):
+                proc = self._proc
+                if proc is None or proc.poll() is not None or self._gear_source != GEAR_DIR:
                     self._stop_locked()
-                raise RuntimeError(str(response.get("error") or "persistent optimizer failed"))
-            loadouts = response.get("loadouts")
-            if not isinstance(loadouts, list):
-                raise RuntimeError("persistent optimizer returned an invalid loadout payload")
-            return loadouts
+                    proc = self._start_locked()
+                if proc.stdin is None:
+                    self._stop_locked()
+                    raise RuntimeError("persistent solver has no stdin pipe")
+                try:
+                    proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+                    proc.stdin.flush()
+                    response = self._responses.get(timeout=_SOLVE_TIMEOUT_S)
+                except queue.Empty as exc:
+                    self._stop_locked()
+                    raise RuntimeError(f"persistent optimizer timed out after {_SOLVE_TIMEOUT_S}s") from exc
+                except (BrokenPipeError, OSError) as exc:
+                    self._stop_locked()
+                    raise RuntimeError("persistent optimizer worker disconnected") from exc
+                if not bool(response.get("ok")):
+                    if response.get("eof") or response.get("restart"):
+                        self._stop_locked()
+                    raise RuntimeError(str(response.get("error") or "persistent optimizer failed"))
+                loadouts = response.get("loadouts")
+                if not isinstance(loadouts, list):
+                    raise RuntimeError("persistent optimizer returned an invalid loadout payload")
+                return loadouts
+            finally:
+                self._idle_since = time.monotonic()
+
+    def reap_if_idle(self) -> bool:
+        """Stop the worker once it has sat idle past the timeout; never waits behind a solve."""
+        if not self._lock.acquire(blocking=False):
+            return False  # a solve is in flight
+        try:
+            idle_s = time.monotonic() - self._idle_since
+            if self._proc is None or idle_s < _PERSISTENT_WORKER_IDLE_EXIT_S:
+                return False
+            logger.info("stopping idle persistent solver after %ss", int(idle_s))
+            # SIGKILL like every publication and shutdown: a graceful stdin-EOF exit would tear
+            # Taichi down under the live daemon GPU-executor thread.
+            self._stop_locked()
+            return True
+        finally:
+            self._lock.release()
 
     def stop(self) -> None:
         with self._lock:
@@ -992,6 +1078,14 @@ def _stop_persistent_solve_worker() -> None:
     _PERSISTENT_SOLVE_WORKER = None
     if worker is not None:
         worker.stop()
+
+
+def _reap_idle_persistent_worker_forever() -> None:
+    while True:
+        time.sleep(60)
+        worker = _PERSISTENT_SOLVE_WORKER
+        if worker is not None:
+            worker.reap_if_idle()
 
 
 def _solve_persistent(
@@ -1433,7 +1527,7 @@ def main(argv: list[str] | None = None) -> int:
         timeline_cache_root=_TIMELINE_FRONTIER_CACHE_DIR,
         fg_cache_root=_FG_RESPONSE_FRONTIER_CACHE_DIR,
         state=_FRONTIER_DISTRIBUTION,
-        prebuild=_prebuild_frontier_caches,
+        prebuild=_prebuild_frontier_caches_isolated,
         restart_requested=request_restart,
         publication_ready=publication_ready,
         prepare_code_update=_prepare_server_code_update,
@@ -1446,6 +1540,11 @@ def main(argv: list[str] | None = None) -> int:
         daemon=True,
     )
     maintenance.start()
+    threading.Thread(
+        target=_reap_idle_persistent_worker_forever,
+        name="persistent-solver-idle-reaper",
+        daemon=True,
+    ).start()
     print(
         f"[robeatsmeta-service] listening on http://{args.host}:{args.port}"
         f" (pool={_SOLVE_POOL_SIZE}, timeline_cache={_TIMELINE_FRONTIER_CACHE_DIR},"
