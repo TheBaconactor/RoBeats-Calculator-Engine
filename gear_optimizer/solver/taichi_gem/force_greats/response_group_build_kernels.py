@@ -17,6 +17,8 @@ every scratch buffer is per-candidate-slabbed so threads never share state. Each
 candidate's inner reduction stays serial within its thread, so per-candidate results
 (including all order-dependent tie-breaks) are bit-identical to the serialized
 original, and emit ranges are disjoint via the host-computed prefix sum.
+Batches larger than _MAX_CAND run as sequential count+emit chunks; candidates are
+independent, so the concatenated result is identical to a single launch.
 
 Two-phase count-then-emit (host computes the exclusive prefix sum of keep_counts
 between launches, because the total output length is data-dependent).
@@ -33,7 +35,7 @@ _INT_MIN = -2147483648
 # Capacity bounds (GPU-safety: real shape bounds, fail-loud if exceeded).
 _MAX_PAIRS = (TOTAL_GEM_BUDGET + 1) * (TOTAL_GEM_BUDGET + 2) // 2  # ftff combo count at full budget (4186 @ B=90)
 _MAX_FRONTIERS = (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1)  # frontier ids come from the full clipped stat grid
-_MAX_CAND = 256  # candidate batch cap; production funnel is LOADOUTS_PER_SONG_LIMIT=51
+_MAX_CAND = 64  # per-launch candidate chunk (scratch slab count); larger batches run as sequential chunks
 
 # scratch_frontier columns
 _H = 0  # head
@@ -379,8 +381,6 @@ def build_response_group_rows_gpu(
     max_frontier = int(frontier_idx_by_stat.max())
     if max_frontier < 0:
         raise ValueError("response frontier exact group builder received no loaded frontiers")
-    if candidate_count > _MAX_CAND:
-        raise ValueError(f"response frontier group builder candidate_count {candidate_count} exceeds cap {_MAX_CAND}")
     if pair_count > _MAX_PAIRS:
         raise ValueError(f"response frontier group builder pair_count {pair_count} exceeds cap {_MAX_PAIRS}")
     if max_frontier >= _MAX_FRONTIERS:
@@ -392,61 +392,74 @@ def build_response_group_rows_gpu(
     with taichi_runtime_lock():
         _ensure_fields()
         _err[0] = 0
-        _fg_count_group_rows_kernel(
-            candidate_count,
-            pair_count,
-            max_frontier,
-            1 if bool(score_elements_constant) else 0,
-            base_components,
-            ft_values,
-            ff_values,
-            residual_values,
-            frontier_idx_by_stat,
-            primary_ftff_delta_values,
-            secondary_ftff_delta_values,
-        )
-        ti.sync()
-        if int(_err[0]) != 0:
-            raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
-
-        keep_counts = _kc.to_numpy()[:candidate_count]
-        write_base = np.zeros((candidate_count,), dtype=np.int32)
-        running = 0
-        for candidate_idx in range(candidate_count):
-            count = int(keep_counts[candidate_idx])
-            if count <= 0:
-                raise ValueError("response frontier exact GPU batch produced no pair result")
-            write_base[candidate_idx] = running
-            _wb[candidate_idx] = running
-            running += count
-        total_count = running
-
-        group_meta = np.zeros((total_count, 8), dtype=np.int32)
-        group_ftff = np.zeros((total_count, 4), dtype=np.int32)
-        _fg_emit_group_rows_kernel(
-            candidate_count,
-            pair_count,
-            max_frontier,
-            1 if bool(score_elements_constant) else 0,
-            int(head_len),
-            int(body_total),
-            base_components,
-            ft_values,
-            ff_values,
-            residual_values,
-            frontier_idx_by_stat,
-            primary_ftff_delta_values,
-            secondary_ftff_delta_values,
-            group_meta,
-            group_ftff,
-        )
-        ti.sync()
-        if int(_err[0]) != 0:
-            raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
-
         candidate_slices = np.empty((candidate_count, 2), dtype=np.int32)
-        candidate_slices[:, 0] = write_base
-        candidate_slices[:, 1] = np.asarray(keep_counts, dtype=np.int32)
+        metas: list[np.ndarray] = []
+        ftffs: list[np.ndarray] = []
+        offset = 0
+        # Chunk-by-chunk: each chunk's emit reads the _km/_sf slabs its own count phase wrote.
+        for c0 in range(0, candidate_count, _MAX_CAND):
+            c1 = min(c0 + _MAX_CAND, candidate_count)
+            n = c1 - c0
+            chunk = base_components[c0:c1]
+            _fg_count_group_rows_kernel(
+                n,
+                pair_count,
+                max_frontier,
+                1 if bool(score_elements_constant) else 0,
+                chunk,
+                ft_values,
+                ff_values,
+                residual_values,
+                frontier_idx_by_stat,
+                primary_ftff_delta_values,
+                secondary_ftff_delta_values,
+            )
+            ti.sync()
+            if int(_err[0]) != 0:
+                raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
+
+            keep_counts = _kc.to_numpy()[:n]
+            write_base = np.zeros((n,), dtype=np.int32)
+            running = 0
+            for candidate_idx in range(n):
+                count = int(keep_counts[candidate_idx])
+                if count <= 0:
+                    raise ValueError("response frontier exact GPU batch produced no pair result")
+                write_base[candidate_idx] = running
+                _wb[candidate_idx] = running
+                running += count
+
+            chunk_meta = np.zeros((running, 8), dtype=np.int32)
+            chunk_ftff = np.zeros((running, 4), dtype=np.int32)
+            _fg_emit_group_rows_kernel(
+                n,
+                pair_count,
+                max_frontier,
+                1 if bool(score_elements_constant) else 0,
+                int(head_len),
+                int(body_total),
+                chunk,
+                ft_values,
+                ff_values,
+                residual_values,
+                frontier_idx_by_stat,
+                primary_ftff_delta_values,
+                secondary_ftff_delta_values,
+                chunk_meta,
+                chunk_ftff,
+            )
+            ti.sync()
+            if int(_err[0]) != 0:
+                raise ValueError("FG response frontier prewarmed scoring bundle does not cover requested stat keys")
+
+            candidate_slices[c0:c1, 0] = write_base + offset
+            candidate_slices[c0:c1, 1] = keep_counts
+            metas.append(chunk_meta)
+            ftffs.append(chunk_ftff)
+            offset += running
+
+        group_meta = metas[0] if len(metas) == 1 else np.concatenate(metas, axis=0)
+        group_ftff = ftffs[0] if len(ftffs) == 1 else np.concatenate(ftffs, axis=0)
         group_ft = np.ascontiguousarray(group_ftff[:, _FT])
         group_ff = np.ascontiguousarray(group_ftff[:, _FF])
         group_ft_stat = np.ascontiguousarray(group_ftff[:, _FTS])

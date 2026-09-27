@@ -41,6 +41,22 @@ def _frontier_idx_sparse_stat_grid_ids(ft_values, ff_values):
     return grid
 
 
+def _covering_grid(frontier_id_by_pos, base_components, ft_values, ff_values):
+    # Every stat key reached from each candidate's FT/FF base gets a frontier id (later bases win on overlap).
+    grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    for base_ft, base_ff in base_components[:, 5:7].tolist():
+        ft_stat = np.clip(base_ft + ft_values * GEM_SCALE_FEVER, 0, TOTAL_ROWS)
+        ff_stat = np.clip(base_ff + ff_values * GEM_SCALE_FEVER, 0, TOTAL_ROWS)
+        grid[ft_stat, ff_stat] = frontier_id_by_pos
+    return grid
+
+
+_FRONTIER_ID_BY_POS = {
+    "per_pos": lambda ft_values, ff_values: np.arange(int(ft_values.shape[0]), dtype=np.int32),
+    "grouped_by_ff": lambda ft_values, ff_values: ff_values,
+}
+
+
 def _assert_six_equal(gpu_out, ref_out):
     names = ("group_meta", "group_ft", "group_ff", "group_ft_stat", "group_ff_stat", "candidate_slices")
     for name, g, c in zip(names, gpu_out, ref_out):
@@ -123,3 +139,20 @@ def test_group_build_larger_budget_stress():
 def test_group_build_accepts_sparse_stat_grid_frontier_ids():
     base = np.array([[100, 50, 25, 60, 70, 0, 0], [10, 20, 30, 5, 9, 0, 0]], dtype=np.int32)
     _run_case(budget=12, base_components=base, score_elements_constant=False, geometry=_frontier_idx_sparse_stat_grid_ids)
+
+
+@pytest.mark.parametrize("frontier_ids", sorted(_FRONTIER_ID_BY_POS))
+@pytest.mark.parametrize("score_elements_constant", (True, False))
+@pytest.mark.parametrize("candidate_count", (1, 51, 63, 64, 65, 128, 129, 300))
+def test_group_build_any_batch_size_matches_reference(candidate_count, score_elements_constant, frontier_ids):
+    # Sizes straddle the per-launch candidate chunk boundaries and exceed the old 256-candidate cap.
+    rng = np.random.default_rng(candidate_count)
+    base = np.concatenate(
+        (rng.integers(0, 100, size=(candidate_count, 5)), rng.integers(0, 41, size=(candidate_count, 2))),
+        axis=1,
+    ).astype(np.int32)
+
+    def geometry(ft_values, ff_values):
+        return _covering_grid(_FRONTIER_ID_BY_POS[frontier_ids](ft_values, ff_values), base, ft_values, ff_values)
+
+    _run_case(budget=12, base_components=base, score_elements_constant=score_elements_constant, geometry=geometry)
