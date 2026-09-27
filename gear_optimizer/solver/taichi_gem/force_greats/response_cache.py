@@ -27,6 +27,7 @@ from .response_cache_serde import (
     frontier_result_from_scoring_bundle_for_stats,
 )
 from .response_cache_store import (
+    _dense_rank_pattern_ids_inplace,
     _frontier_is_complete,
     _invalidate_bundle_array_views,
     _load_bundle_array_members,
@@ -278,7 +279,9 @@ def session_prune_scoring_bundle(
         raise ValueError("session-box prune received a frontier outside the surface pool")
     kept_prefix = np.empty(int(row_count) + 1, dtype=np.int64)
     kept_prefix[0] = 0
-    np.cumsum(np.asarray(keep, dtype=np.int64), out=kept_prefix[1:])
+    # Cast the mask straight into the prefix buffer and accumulate in place (no N-row int64 copy).
+    kept_prefix[1:] = keep
+    np.cumsum(kept_prefix[1:], out=kept_prefix[1:])
     kept_lengths = kept_prefix[ends_all] - kept_prefix[offsets_all]
     if bool(np.any((lengths_all > 0) & (kept_lengths <= 0))):
         raise ValueError("session-box prune emptied a frontier -- the greedy filter must keep at least one row")
@@ -286,10 +289,11 @@ def session_prune_scoring_bundle(
     if int(kept_prefix[-1]) > int(np.iinfo(np.int32).max):
         raise OverflowError("session-box prune compact surface pool exceeds int32 offsets")
     pruned_counts = np.ascontiguousarray(counts[keep], dtype=np.int32)
-    # Compact-loader IDs follow the persisted lexicographic pattern order. Uniquing the surviving
-    # IDs therefore recreates exactly the dense IDs/table the retired row re-intern produced.
-    used_pattern_ids, pruned_pattern_ids = np.unique(pattern_ids[keep], return_inverse=True)
-    pruned_pattern_ids = np.ascontiguousarray(pruned_pattern_ids, dtype=np.int32)
+    # Compact-loader IDs follow the persisted lexicographic pattern order. Dense-ranking the
+    # surviving IDs (the sorted np.unique set and inverse) therefore recreates exactly the dense
+    # IDs/table the retired row re-intern produced.
+    pruned_pattern_ids = np.ascontiguousarray(pattern_ids[keep], dtype=np.int32)
+    used_pattern_ids = _dense_rank_pattern_ids_inplace(pruned_pattern_ids, int(pattern_words.shape[0]))
     pruned_pattern_words = np.ascontiguousarray(pattern_words[used_pattern_ids], dtype=np.uint32)
     pruned_pattern_coeffs = np.ascontiguousarray(pattern_coeffs[used_pattern_ids], dtype=np.int32)
     return dataclasses.replace(
@@ -462,27 +466,33 @@ def fg_response_frontier_payload_cache_info(
     )
 
 
+def _stat_key_index_rows(keys: tuple[tuple[int, int], ...]) -> np.ndarray:
+    return np.asarray(keys, dtype=np.intp).reshape((-1, 2))
+
+
 def _materialize_scoring_bundle_from_arrays(
     *,
     cache_key: tuple,
     keys: tuple[tuple[int, int], ...],
     arrays: dict[str, np.ndarray],
 ) -> FgResponseFrontierScoringBundle:
-    stat_key_rows = np.asarray(arrays["stat_keys"], dtype=np.int32)
-    frontier_ids = np.asarray(arrays["frontier_ids"], dtype=np.int32)
-    frontier_idx_by_key: dict[tuple[int, int], int] = {}
-    requested = set(keys)
-    for idx, row in enumerate(stat_key_rows):
-        key = _normalize_stat_key((int(row[0]), int(row[1])))
-        if key in requested:
-            frontier_idx_by_key[key] = int(frontier_ids[int(idx)])
-    if len(frontier_idx_by_key) != len(keys):
-        missing = sorted(set(keys) - set(frontier_idx_by_key))
-        raise ValueError(f"FG response frontier scoring bundle is missing stat keys: {missing[:5]!r}")
+    stat_key_rows = np.clip(np.asarray(arrays["stat_keys"], dtype=np.int32).reshape((-1, 2)), 0, TOTAL_ROWS)
+    frontier_ids = np.asarray(arrays["frontier_ids"], dtype=np.int32).reshape(-1)
+    if int(frontier_ids.shape[0]) != int(stat_key_rows.shape[0]) or bool(np.any(frontier_ids < 0)):
+        raise ValueError("FG response frontier scoring bundle has invalid frontier ids")
+    present = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    present[stat_key_rows[:, 0], stat_key_rows[:, 1]] = frontier_ids
+    requested = _stat_key_index_rows(keys)
+    requested_ids = present[requested[:, 0], requested[:, 1]]
+    if bool(np.any(requested_ids < 0)):
+        # `keys` is sorted, so the first missing positions are the sorted-first missing keys.
+        missing = [keys[int(idx)] for idx in np.flatnonzero(requested_ids < 0)[:5]]
+        raise ValueError(f"FG response frontier scoring bundle is missing stat keys: {missing!r}")
 
+    # Only REQUESTED keys are marked present: a partial bundle must invalidate-and-reload on a
+    # later request for keys it was not materialized with.
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
-    for key, frontier_idx in frontier_idx_by_key.items():
-        frontier_idx_by_stat[int(key[0]), int(key[1])] = int(frontier_idx)
+    frontier_idx_by_stat[requested[:, 0], requested[:, 1]] = requested_ids
     total_notes = int(np.asarray(arrays["total_notes"]).item())
     expected_head_len = min(int(total_notes), 100)
     persisted_head_len = arrays.get("first_surface_head_len")
@@ -502,7 +512,6 @@ def _materialize_scoring_bundle_from_arrays(
         bundle_path = Path(str(np.asarray(raw_bundle_path).item()))
     return FgResponseFrontierScoringBundle(
         cache_key=cache_key,
-        frontier_idx_by_key=frontier_idx_by_key,
         frontier_idx_by_stat=frontier_idx_by_stat,
         raw_fill_by_ff=np.asarray(arrays["raw_fill_by_ff"], dtype=np.float64),
         non_fever_base_by_ff=np.asarray(arrays["non_fever_base_by_ff"], dtype=np.int32),
@@ -533,9 +542,8 @@ def load_response_frontier_scoring_bundle(
     bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
     cached_scoring = _scoring_bundle_memory_get(bundle_key)
     if cached_scoring is not None:
-        if len(cached_scoring.frontier_idx_by_key) >= (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1) or all(
-            key in cached_scoring.frontier_idx_by_key for key in keys
-        ):
+        requested = _stat_key_index_rows(keys)
+        if bool(np.all(cached_scoring.frontier_idx_by_stat[requested[:, 0], requested[:, 1]] >= 0)):
             return cached_scoring
         # A partial bundle may have been extended by this or another process. Drop the old metadata
         # view before retrying so all arrays come from the newly published generation.

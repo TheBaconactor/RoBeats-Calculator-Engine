@@ -896,6 +896,31 @@ def _gather_surface_ranges(
         raise ValueError("FG response surface gather produced the wrong row count")
 
 
+_DENSE_RANK_BLOCK_ROWS = 1 << 18
+
+
+def _dense_rank_pattern_ids_inplace(ids: np.ndarray, pattern_count: int) -> np.ndarray:
+    """Rewrite in-range head-pattern IDs in place to their dense rank among the IDs present.
+
+    Returns the sorted used IDs and leaves ``ids`` equal to the int32 inverse -- exactly
+    ``np.unique(ids, return_inverse=True)`` -- via a ``pattern_count``-sized presence table instead
+    of an N-row sort. ``ids`` must be a contiguous 1-D int32 array; blocks bound the intp index
+    temporaries. Out-of-range IDs (a u32 >= 2**31 wraps negative in int32) fail loud."""
+    row_count = int(ids.shape[0])
+    used = np.zeros(int(pattern_count), dtype=np.bool_)
+    for start in range(0, row_count, _DENSE_RANK_BLOCK_ROWS):
+        block = ids[start : start + _DENSE_RANK_BLOCK_ROWS]
+        if int(block.min()) < 0 or int(block.max()) >= int(pattern_count):
+            raise ValueError("FG response surface row references an invalid head-pattern ID")
+        used[block] = True
+    dense_by_id = np.cumsum(used, dtype=np.int32)
+    dense_by_id -= 1
+    for start in range(0, row_count, _DENSE_RANK_BLOCK_ROWS):
+        block = ids[start : start + _DENSE_RANK_BLOCK_ROWS]
+        block[...] = dense_by_id[block]
+    return np.flatnonzero(used)
+
+
 def _as_uint8_exact(name: str, values: np.ndarray) -> np.ndarray:
     array = np.asarray(values)
     if array.size:
@@ -1467,7 +1492,8 @@ def load_first_surface_scoring_patterns(
         )
         surface_row_count, surface_pattern_count = _surface_counts_from_sidecars(row_sidecar, pattern_sidecar)
     row_count = sum(int(count) for _start, count in normalized)
-    row_refs = np.empty((int(row_count), SURFACE_ROW_COLUMNS), dtype=np.uint32)
+    surface_pattern_ids = np.empty((int(row_count),), dtype=np.int32)
+    surface_counts = np.empty((int(row_count), 3), dtype=np.int32)
     load_t0 = time.perf_counter()
     row_memmap = _open_surface_sidecar_memmap(
         row_sidecar,
@@ -1483,18 +1509,21 @@ def load_first_surface_scoring_patterns(
     )
     load_ms = float((time.perf_counter() - load_t0) * 1000.0)
     copy_t0 = time.perf_counter()
-    _gather_surface_ranges(row_memmap, ranges=normalized, out=row_refs)
-    global_pattern_ids = np.asarray(row_refs[:, 0], dtype=np.uint64)
-    if bool(np.any(global_pattern_ids >= int(surface_pattern_count))):
-        raise ValueError("FG response surface row references an invalid head-pattern ID")
-    unique_ids, local_ids = np.unique(global_pattern_ids, return_inverse=True)
-    selected_patterns = np.ascontiguousarray(
-        pattern_memmap[np.asarray(unique_ids, dtype=np.intp)],
-        dtype=np.uint32,
-    )
+    # Split each row-ref block straight into the int32 id/count outputs (no N x 4 staging copy).
+    out_cursor = 0
+    for start, count in normalized:
+        end = int(start) + int(count)
+        if end > int(row_memmap.shape[0]):
+            raise ValueError("FG response surface range exceeds cached rows")
+        block = row_memmap[int(start) : end]
+        surface_pattern_ids[out_cursor : out_cursor + int(count)] = block[:, 0]
+        surface_counts[out_cursor : out_cursor + int(count)] = block[:, 1:4]
+        out_cursor += int(count)
+    if out_cursor != int(row_count):
+        raise ValueError("FG response surface gather produced the wrong row count")
+    unique_ids = _dense_rank_pattern_ids_inplace(surface_pattern_ids, int(surface_pattern_count))
+    selected_patterns = np.ascontiguousarray(pattern_memmap[unique_ids], dtype=np.uint32)
     pattern_words, pattern_coeffs = unpack_surface_patterns(selected_patterns)
-    surface_counts = np.ascontiguousarray(row_refs[:, 1:4], dtype=np.int32)
-    surface_pattern_ids = np.ascontiguousarray(local_ids, dtype=np.int32)
     copy_ms = float((time.perf_counter() - copy_t0) * 1000.0)
     emit_profile_event(
         component="fg_response_cache",

@@ -39,8 +39,12 @@ _FG_TIMELINE_TLS = threading.local()
 # so entries can never alias across songs or ref tables. Memoized values are kept
 # pristine; every hand-out is a fresh copy because callers graft the per-note dicts
 # into mutable details payloads.
+# Reuse is intra-song only (the key carries the song cache_key). The cap must exceed one
+# pass's distinct keys -- an on-demand tier build inserts at most 7 tiers x 51 rows, and the
+# persistence authority pass re-requests the canonicalize pass's keys (<= a few x
+# LOADOUTS_PER_SONG_LIMIT entries) -- or FIFO eviction turns every second-pass lookup into a miss.
 _TIMELINE_TRACE_MEMO: dict[tuple, dict[str, Any]] = {}
-_TIMELINE_TRACE_MEMO_MAX = 4096
+_TIMELINE_TRACE_MEMO_MAX = 1024
 
 
 def _copy_timeline_trace_meta(meta: dict[str, Any]) -> dict[str, Any]:

@@ -51,6 +51,10 @@ def _varying_ref_arrays() -> dict[str, np.ndarray]:
     }
 
 
+def _loaded_stat_keys(bundle) -> set[tuple[int, int]]:
+    return {(int(ft), int(ff)) for ft, ff in np.argwhere(np.asarray(bundle.frontier_idx_by_stat) >= 0).tolist()}
+
+
 def _fake_response_frontiers(geometries) -> tuple:
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
@@ -129,7 +133,7 @@ def _read_fg_bundle_across_publish_worker(cache_dir: str, ready_event, published
             _varying_ref_arrays(),
             stat_keys=((0, 0),),
         )
-        frontier_idx = int(scoring.frontier_idx_by_key[(0, 0)])
+        frontier_idx = int(scoring.frontier_idx_by_stat[0, 0])
         surface_range = (
             int(scoring.frontier_offsets[frontier_idx]),
             int(scoring.frontier_lengths[frontier_idx]),
@@ -148,7 +152,7 @@ def _read_fg_bundle_across_publish_worker(cache_dir: str, ready_event, published
             _varying_ref_arrays(),
             stat_keys=((1, 0),),
         )
-        if (1, 0) not in extended.frontier_idx_by_key:
+        if int(extended.frontier_idx_by_stat[1, 0]) < 0:
             raise AssertionError("reader did not observe the completed bundle extension")
         result_queue.put(("reader_ok", int(rows.shape[0])))
     except BaseException as exc:
@@ -549,7 +553,7 @@ def test_fg_response_frontier_scoring_bundle_does_not_unpack_payload_on_disk_hit
         stat_keys=keys,
     )
 
-    assert set(bundle.frontier_idx_by_key) == set(keys)
+    assert _loaded_stat_keys(bundle) == set(keys)
     assert bundle.surface_pattern_ids.shape == (0,)
     assert bundle.surface_pattern_words.shape == (0, 8)
     assert int(bundle.surface_row_count) > 0
@@ -592,8 +596,8 @@ def test_fg_response_frontier_scoring_bundle_reuses_persisted_head_coeffs(
         stat_keys=keys,
     )
 
-    assert set(bundle.frontier_idx_by_key) == set(keys)
-    frontier_idx = bundle.frontier_idx_by_key[(0, 0)]
+    assert _loaded_stat_keys(bundle) == set(keys)
+    frontier_idx = int(bundle.frontier_idx_by_stat[0, 0])
     start = int(bundle.frontier_offsets[int(frontier_idx)])
     count = int(bundle.frontier_lengths[int(frontier_idx)])
     _rows, coeffs = response_cache.load_first_surface_scoring_rows(bundle.cache_key, ((start, count),))
@@ -625,7 +629,7 @@ def test_fg_response_frontier_scoring_bundle_disk_hit_skips_redundant_disk_info_
         stat_keys=keys,
     )
 
-    assert set(bundle.frontier_idx_by_key) == set(keys)
+    assert _loaded_stat_keys(bundle) == set(keys)
     assert bundle.surface_pattern_ids.shape == (0,)
     assert bundle.surface_pattern_words.shape == (0, 8)
     assert int(bundle.surface_row_count) > 0
@@ -1798,7 +1802,6 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
             frontier_idx_by_stat[int(ft_stat), int(ff_stat)] = 0
         surface_words = np.zeros((1, 8), dtype=np.uint32)
         bundle = SimpleNamespace(
-            frontier_idx_by_key={key: 0 for key in keys},
             frontier_idx_by_stat=frontier_idx_by_stat,
             frontier_offsets=np.asarray([0], dtype=np.int32),
             frontier_lengths=np.asarray([1], dtype=np.int32),
@@ -1891,7 +1894,6 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
     frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 0
     prewarmed_bundle = SimpleNamespace(
-        frontier_idx_by_key={(0, 0): 0},
         frontier_idx_by_stat=frontier_idx_by_stat,
         frontier_offsets=np.asarray([0], dtype=np.int32),
         frontier_lengths=np.asarray([1], dtype=np.int32),
@@ -1947,7 +1949,6 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
     surface_counts = np.arange(9, dtype=np.int32).reshape(3, 3)
     surface_head_coeffs = np.full((3, 4), 3, dtype=np.int32)
     prewarmed_bundle = SimpleNamespace(
-        frontier_idx_by_key={(0, 0): 1},
         frontier_idx_by_stat=frontier_idx_by_stat,
         frontier_offsets=np.asarray([0, 2], dtype=np.int32),
         frontier_lengths=np.asarray([2, 1], dtype=np.int32),
@@ -2007,7 +2008,7 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
     assert not hasattr(built, "scoring_logical_work_cumsum")
 
 
-def test_packed_scoring_batch_dedupes_and_coalesces_selected_segments() -> None:
+def test_packed_scoring_batch_scores_in_memory_pool_in_place() -> None:
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
@@ -2053,6 +2054,67 @@ def test_packed_scoring_batch_dedupes_and_coalesces_selected_segments() -> None:
     np.testing.assert_array_equal(packed_coeffs, surface_head_coeffs)
     assert group_offsets.tolist() == [0, 0, 2]
     assert group_lengths.tolist() == [2, 2, 1]
+    # The session-pruned in-memory pool is scored in place: no per-batch copy of the pool.
+    assert np.shares_memory(packed_pattern_ids, bundle.surface_pattern_ids)
+    assert np.shares_memory(packed_counts, bundle.surface_counts)
+    assert np.shares_memory(packed_words, bundle.surface_pattern_words)
+    assert np.shares_memory(packed_coeffs, bundle.surface_pattern_head_coeffs)
+
+    # A subset batch with nonzero offsets and non-dense pattern IDs keeps absolute pool offsets.
+    subset_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    subset_idx_by_stat[0, 0] = 1
+    subset_idx_by_stat[1, 0] = 2
+    subset_bundle = SimpleNamespace(
+        frontier_idx_by_stat=subset_idx_by_stat,
+        frontier_offsets=np.asarray([0, 3, 5], dtype=np.int32),
+        frontier_lengths=np.asarray([3, 2, 1], dtype=np.int32),
+        surface_pattern_ids=np.asarray([4, 0, 4, 2, 4, 1], dtype=np.int32),
+        surface_pattern_words=np.arange(40, dtype=np.uint32).reshape(5, 8),
+        surface_counts=np.arange(18, dtype=np.int32).reshape(6, 3),
+        surface_pattern_head_coeffs=np.arange(20, dtype=np.int32).reshape(5, 4),
+        cache_key=("unit", "unused"),
+    )
+    subset_packed = response_frontier._pack_scoring_surfaces_for_batch(
+        scoring_bundle=subset_bundle,
+        group_meta=np.asarray([[0, 0, 0, 0, 0, 0, 3, 0]] * 3, dtype=np.int32),
+        group_ft_stat=np.asarray([1, 0, 1], dtype=np.int32),
+        group_ff_stat=np.asarray([0, 0, 0], dtype=np.int32),
+    )
+    assert subset_packed[6] == 2
+    assert subset_packed[4].tolist() == [5, 3, 5]
+    assert subset_packed[5].tolist() == [1, 2, 1]
+    assert np.shares_memory(subset_packed[0], subset_bundle.surface_pattern_ids)
+    for group_offset, group_length in zip(subset_packed[4], subset_packed[5], strict=True):
+        rows = slice(int(group_offset), int(group_offset) + int(group_length))
+        np.testing.assert_array_equal(
+            subset_packed[1][subset_packed[0][rows]],
+            subset_bundle.surface_pattern_words[subset_bundle.surface_pattern_ids[rows]],
+        )
+
+
+def test_packed_scoring_batch_rejects_frontier_outside_in_memory_pool() -> None:
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
+
+    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat[0, 0] = 0
+    bundle = SimpleNamespace(
+        frontier_idx_by_stat=frontier_idx_by_stat,
+        frontier_offsets=np.asarray([2], dtype=np.int32),
+        frontier_lengths=np.asarray([2], dtype=np.int32),
+        surface_pattern_ids=np.zeros((3,), dtype=np.int32),
+        surface_pattern_words=np.zeros((1, 8), dtype=np.uint32),
+        surface_counts=np.zeros((3, 3), dtype=np.int32),
+        surface_pattern_head_coeffs=np.zeros((1, 4), dtype=np.int32),
+        cache_key=("unit", "unused"),
+    )
+    with pytest.raises(ValueError, match="outside the in-memory surface pool"):
+        response_frontier._pack_scoring_surfaces_for_batch(
+            scoring_bundle=bundle,
+            group_meta=np.asarray([[0, 0, 0, 0, 0, 0, 3, 0]], dtype=np.int32),
+            group_ft_stat=np.asarray([0], dtype=np.int32),
+            group_ff_stat=np.asarray([0], dtype=np.int32),
+        )
 
 
 def test_release_fg_response_song_memory_evicts_only_target_song():
@@ -2102,5 +2164,325 @@ def test_release_fg_response_song_memory_evicts_only_target_song():
         # Song B is a different prefix and must survive untouched.
         assert b_bundle in store._scoring_bundle_cache
         assert b_geo in store._frontier_cache
+    finally:
+        store.reset_fg_response_frontier_payload_cache()
+
+
+def _synthetic_scoring_arrays(stat_keys, frontier_ids) -> dict[str, np.ndarray]:
+    frontier_count = int(np.max(frontier_ids)) + 1 if len(frontier_ids) else 1
+    return {
+        "stat_keys": np.asfortranarray(np.asarray(stat_keys, dtype=np.uint8).reshape((-1, 2))),
+        "frontier_ids": np.asarray(frontier_ids, dtype=np.int32),
+        "total_notes": np.asarray(150, dtype=np.int32),
+        "long_notes": np.asarray(0, dtype=np.int32),
+        "first_surface_head_len": np.asarray(100, dtype=np.uint8),
+        "use_forced_great_timing": np.asarray(1, dtype=np.int8),
+        "raw_fill_by_ff": np.zeros((161,), dtype=np.float64),
+        "non_fever_base_by_ff": np.zeros((161,), dtype=np.int32),
+        "real_time_by_ft": np.zeros((161,), dtype=np.float64),
+        "frontier_meta": np.zeros((frontier_count, 7), dtype=np.int32),
+        "first_offsets": np.zeros((frontier_count,), dtype=np.int32),
+        "first_counts": np.ones((frontier_count,), dtype=np.int32),
+        "first_surface_row_count": np.asarray(1, dtype=np.int32),
+    }
+
+
+def _retired_per_key_dict_grid(stat_keys, frontier_ids, keys) -> np.ndarray:
+    """The retired per-key dict materialization (and its missing-key error), kept as the oracle."""
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import _normalize_stat_key
+
+    frontier_idx_by_key: dict[tuple[int, int], int] = {}
+    requested = set(keys)
+    for idx, row in enumerate(np.asarray(stat_keys, dtype=np.int32).reshape((-1, 2))):
+        key = _normalize_stat_key((int(row[0]), int(row[1])))
+        if key in requested:
+            frontier_idx_by_key[key] = int(frontier_ids[int(idx)])
+    if len(frontier_idx_by_key) != len(keys):
+        missing = sorted(set(keys) - set(frontier_idx_by_key))
+        raise ValueError(f"FG response frontier scoring bundle is missing stat keys: {missing[:5]!r}")
+    grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    for key, frontier_idx in frontier_idx_by_key.items():
+        grid[int(key[0]), int(key[1])] = int(frontier_idx)
+    return grid
+
+
+def test_scoring_bundle_grid_matches_retired_per_key_dict_build() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
+        all_response_stat_keys,
+        normalize_fg_response_stat_keys,
+    )
+
+    rng = np.random.default_rng(20260927)
+    all_keys = all_response_stat_keys()
+    stat_keys = np.asarray(all_keys, dtype=np.int32)
+    frontier_ids = rng.integers(0, 4000, size=len(all_keys), dtype=np.int32)
+    arrays = _synthetic_scoring_arrays(stat_keys, frontier_ids)
+    subsets = [all_keys]
+    for size in (1, 7, 300, 9000):
+        picked = rng.choice(len(all_keys), size=size, replace=False)
+        subsets.append(normalize_fg_response_stat_keys([all_keys[int(i)] for i in picked]))
+    for keys in subsets:
+        bundle = response_cache._materialize_scoring_bundle_from_arrays(
+            cache_key=("unit", "grid-parity"),
+            keys=keys,
+            arrays=arrays,
+        )
+        expected = _retired_per_key_dict_grid(stat_keys, frontier_ids, keys)
+        assert bundle.frontier_idx_by_stat.dtype == np.dtype(np.int32)
+        np.testing.assert_array_equal(bundle.frontier_idx_by_stat, expected)
+        requested = set(keys)
+        for key in list(keys)[:50] + [(0, 0), (160, 160), (5, 9)]:
+            want = int(expected[key]) if key in requested else None
+            assert bundle.frontier_idx_by_key.get(key) == want
+        assert bundle.frontier_idx_by_key.get((161, 0)) is None
+        assert bundle.frontier_idx_by_key.get((-1, 0)) is None
+
+
+def test_scoring_bundle_missing_stat_keys_error_matches_retired_dict_build() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import all_response_stat_keys
+
+    rng = np.random.default_rng(7)
+    all_keys = all_response_stat_keys()
+    dropped = set(int(i) for i in rng.choice(len(all_keys), size=9, replace=False))
+    kept_keys = [key for idx, key in enumerate(all_keys) if idx not in dropped]
+    stat_keys = np.asarray(kept_keys, dtype=np.int32)
+    frontier_ids = rng.integers(0, 50, size=len(kept_keys), dtype=np.int32)
+    arrays = _synthetic_scoring_arrays(stat_keys, frontier_ids)
+
+    with pytest.raises(ValueError) as expected:
+        _retired_per_key_dict_grid(stat_keys, frontier_ids, all_keys)
+    with pytest.raises(ValueError) as actual:
+        response_cache._materialize_scoring_bundle_from_arrays(
+            cache_key=("unit", "missing"),
+            keys=all_keys,
+            arrays=arrays,
+        )
+    assert str(actual.value) == str(expected.value)
+
+
+def test_scoring_bundle_rejects_invalid_frontier_ids() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+
+    keys = ((0, 0), (0, 1))
+    with pytest.raises(ValueError, match="invalid frontier ids"):
+        response_cache._materialize_scoring_bundle_from_arrays(
+            cache_key=("unit", "negative"),
+            keys=keys,
+            arrays=_synthetic_scoring_arrays(np.asarray(keys), np.asarray([0, -1], dtype=np.int32)),
+        )
+    short = _synthetic_scoring_arrays(np.asarray(keys), np.asarray([0, 1], dtype=np.int32))
+    short["frontier_ids"] = np.asarray([0], dtype=np.int32)
+    with pytest.raises(ValueError, match="invalid frontier ids"):
+        response_cache._materialize_scoring_bundle_from_arrays(cache_key=("unit", "short"), keys=keys, arrays=short)
+
+
+def _other_song() -> dict:
+    calc_song = _calc_song()
+    calc_song["song_data"] = dict(calc_song["song_data"])
+    calc_song["song_data"]["timestamps"] = np.asarray([0.0, 0.3, 0.6], dtype=np.float32)
+    return calc_song
+
+
+def test_ensure_response_frontier_cache_releases_song_memory_after_cold_build(monkeypatch) -> None:
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
+        fg_response_frontier_bundle_cache_key,
+        fg_response_frontier_payload_cache_key,
+    )
+
+    song = _calc_song()
+    ref_a = _ref_arrays()
+    a_bundle = fg_response_frontier_bundle_cache_key(song, ref_a)
+    a_payload = fg_response_frontier_payload_cache_key(song, ref_a, [(3, 5)])
+    b_bundle = fg_response_frontier_bundle_cache_key(song, _varying_ref_arrays())
+    assert a_bundle[:-1] != b_bundle[:-1]
+    built: list[tuple] = []
+
+    def _fake_build(calc_song, ref_arrays, *, stat_keys):
+        built.append(tuple(stat_keys))
+        store._payload_cache[a_bundle] = object()
+        store._payload_cache[a_payload] = object()
+        store._payload_cache[b_bundle] = object()
+
+    monkeypatch.setattr(
+        response_cache,
+        "fg_response_frontier_payload_cache_info",
+        lambda *_args, **_kwargs: SimpleNamespace(cache_source="missing"),
+    )
+    monkeypatch.setattr(response_cache, "build_or_load_response_frontier_payload", _fake_build)
+    store.reset_fg_response_frontier_payload_cache()
+    try:
+        prebuild.ensure_response_frontier_cache_for_calc_song(song, ref_a, stat_keys=((3, 5),))
+
+        assert built == [((3, 5),)]
+        assert a_bundle not in store._payload_cache
+        assert a_payload not in store._payload_cache
+        assert b_bundle in store._payload_cache
+    finally:
+        store.reset_fg_response_frontier_payload_cache()
+
+
+def test_ensure_response_frontier_cache_warm_hit_keeps_memos(monkeypatch) -> None:
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
+
+    song = _calc_song()
+    ref_a = _ref_arrays()
+    a_bundle = fg_response_frontier_bundle_cache_key(song, ref_a)
+    monkeypatch.setattr(
+        response_cache,
+        "fg_response_frontier_payload_cache_info",
+        lambda *_args, **_kwargs: SimpleNamespace(cache_source="disk"),
+    )
+    monkeypatch.setattr(
+        response_cache,
+        "build_or_load_response_frontier_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("warm hit must not build")),
+    )
+    monkeypatch.setattr(
+        response_cache,
+        "release_fg_response_song_memory",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("warm hit must not release memos")),
+    )
+    store.reset_fg_response_frontier_payload_cache()
+    try:
+        store._scoring_bundle_cache[a_bundle] = object()
+        prebuild.ensure_response_frontier_cache_for_calc_song(song, ref_a, stat_keys=((3, 5),))
+        assert a_bundle in store._scoring_bundle_cache
+    finally:
+        store.reset_fg_response_frontier_payload_cache()
+
+
+def test_ensure_response_frontier_cache_releases_on_build_failure(monkeypatch) -> None:
+    from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_payload_cache_key
+
+    song = _calc_song()
+    ref_a = _ref_arrays()
+    a_payload = fg_response_frontier_payload_cache_key(song, ref_a, [(3, 5)])
+
+    def _failing_build(*_args, **_kwargs):
+        store._payload_cache[a_payload] = object()
+        raise ValueError("simulated cold build failure")
+
+    monkeypatch.setattr(
+        response_cache,
+        "fg_response_frontier_payload_cache_info",
+        lambda *_args, **_kwargs: SimpleNamespace(cache_source="missing"),
+    )
+    monkeypatch.setattr(response_cache, "build_or_load_response_frontier_payload", _failing_build)
+    store.reset_fg_response_frontier_payload_cache()
+    try:
+        with pytest.raises(ValueError, match="simulated cold build failure"):
+            prebuild.ensure_response_frontier_cache_for_calc_song(song, ref_a, stat_keys=((3, 5),))
+        assert a_payload not in store._payload_cache
+    finally:
+        store.reset_fg_response_frontier_payload_cache()
+
+
+def _seed_fixed_timing_song_memos(store, song, refs, other_song) -> tuple[list[tuple[object, tuple]], tuple]:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
+        fg_response_frontier_bundle_cache_key,
+        fg_response_frontier_geometry_cache_key,
+        fg_response_frontier_payload_cache_key,
+    )
+
+    a_bundle = fg_response_frontier_bundle_cache_key(song, refs)
+    seeded = [
+        (store._scoring_bundle_cache, a_bundle),
+        (store._bundle_array_cache, a_bundle),
+        (store._frontier_cache, fg_response_frontier_geometry_cache_key(song, refs, ft_stat=3, ff_stat=5)),
+        (store._payload_cache, fg_response_frontier_payload_cache_key(song, refs, [(3, 5)])),
+    ]
+    for cache, key in seeded:
+        cache[key] = object()
+    b_bundle = fg_response_frontier_bundle_cache_key(other_song, refs)
+    assert a_bundle[:-1] != b_bundle[:-1]
+    store._scoring_bundle_cache[b_bundle] = object()
+    return seeded, b_bundle
+
+
+def test_fixed_timing_fg_replays_release_song_memory_on_failure(monkeypatch) -> None:
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
+    from gear_optimizer.solver.fg_response_scoring import fixed_timing
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+
+    song = _calc_song()
+    refs = resolve_exact_replay_ref_arrays(_ref_arrays())
+    store.reset_fg_response_frontier_payload_cache()
+    try:
+        seeded: list = []
+        other: list = []
+
+        def _failing_solve(*_args, **_kwargs):
+            rows, b_bundle = _seed_fixed_timing_song_memos(store, dict(song), refs, _other_song())
+            seeded.extend(rows)
+            other.append(b_bundle)
+            raise RuntimeError("simulated FG solve failure")
+
+        monkeypatch.setattr(fixed_timing, "_solve_fixed_timing_response_results", _failing_solve)
+        with pytest.raises(RuntimeError, match="simulated FG solve failure"):
+            fixed_timing.build_fixed_timing_fg_replays(
+                fg_stats_list=[{"Perfect Points": 1}],
+                base_stats_list=[{"Perfect Points": 1}],
+                calc_song=song,
+                ref_arrays=_ref_arrays(),
+                selected_color="Rush",
+            )
+        assert len(seeded) == 4
+        for cache, key in seeded:
+            assert key not in cache
+        assert other[0] in store._scoring_bundle_cache
+    finally:
+        store.reset_fg_response_frontier_payload_cache()
+
+
+def test_fixed_timing_fg_replays_release_song_memory_on_success(monkeypatch) -> None:
+    from gear_optimizer.helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
+    from gear_optimizer.solver.fg_response_scoring import fixed_timing, reducer
+    from gear_optimizer.solver.scoring import exact_rescore
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+
+    song = _calc_song()
+    refs = resolve_exact_replay_ref_arrays(_ref_arrays())
+    store.reset_fg_response_frontier_payload_cache()
+    try:
+        seeded: list = []
+        other: list = []
+        result = SimpleNamespace(surface="surface-0", stats={"Perfect Points": 1})
+
+        def _solve(*_args, **_kwargs):
+            rows, b_bundle = _seed_fixed_timing_song_memos(store, dict(song), refs, _other_song())
+            seeded.extend(rows)
+            other.append(b_bundle)
+            return [result], dict(song), refs
+
+        monkeypatch.setattr(fixed_timing, "_solve_fixed_timing_response_results", _solve)
+        monkeypatch.setattr(exact_rescore, "score_stats_fixed_timing_exact_batch", lambda rows, *_args: [100] * len(rows))
+        monkeypatch.setattr(
+            reducer,
+            "materialize_force_payload_from_response_frontier",
+            lambda **kwargs: {"paired_base": int(kwargs["paired_base_score"])},
+        )
+        replays = fixed_timing.build_fixed_timing_fg_replays(
+            fg_stats_list=[{"Perfect Points": 1}],
+            base_stats_list=[{"Perfect Points": 1}],
+            calc_song=song,
+            ref_arrays=_ref_arrays(),
+            selected_color="Rush",
+        )
+        assert replays == [{"surface": "surface-0", "force": {"paired_base": 100}}]
+        for cache, key in seeded:
+            assert key not in cache
+        assert other[0] in store._scoring_bundle_cache
     finally:
         store.reset_fg_response_frontier_payload_cache()

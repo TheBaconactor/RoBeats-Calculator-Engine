@@ -327,35 +327,6 @@ def _pack_scoring_surfaces_for_batch(
     if int(head_lengths.shape[0]) != 1:
         raise ValueError("response frontier GPU group metadata has inconsistent head length")
     unique_frontiers = np.ascontiguousarray(np.unique(kept_frontiers), dtype=np.int32)
-    selected_segments = sorted(
-        {
-            (int(frontier_offsets_all[int(frontier_idx)]), int(frontier_lengths_all[int(frontier_idx)]))
-            for frontier_idx in unique_frontiers
-        }
-    )
-    copy_ranges: list[tuple[int, int, int]] = []
-    segment_offsets: dict[tuple[int, int], int] = {}
-    cursor = 0
-    for start, length in selected_segments:
-        if copy_ranges and int(copy_ranges[-1][0]) + int(copy_ranges[-1][1]) == int(start):
-            prev_start, prev_length, target_start = copy_ranges[-1]
-            copy_ranges[-1] = (int(prev_start), int(prev_length) + int(length), int(target_start))
-            segment_offsets[(int(start), int(length))] = int(cursor)
-        else:
-            copy_ranges.append((int(start), int(length), int(cursor)))
-            segment_offsets[(int(start), int(length))] = int(cursor)
-        cursor += int(length)
-    ranges = tuple((int(start), int(length)) for start, length, _target_start in copy_ranges)
-    frontier_remap = np.full((frontier_count,), -1, dtype=np.int32)
-    for frontier_idx in unique_frontiers:
-        segment = (
-            int(frontier_offsets_all[int(frontier_idx)]),
-            int(frontier_lengths_all[int(frontier_idx)]),
-        )
-        frontier_remap[int(frontier_idx)] = int(segment_offsets[segment])
-    group_offsets = np.ascontiguousarray(frontier_remap[kept_frontiers], dtype=np.int32)
-    if bool(np.any(group_offsets < 0)):
-        raise ValueError("FG response frontier packed batch failed to remap selected frontiers")
 
     full_surface_pattern_ids = np.asarray(scoring_bundle.surface_pattern_ids)
     full_surface_pattern_words = np.asarray(scoring_bundle.surface_pattern_words)
@@ -374,29 +345,46 @@ def _pack_scoring_surfaces_for_batch(
             or int(full_surface_pattern_head_coeffs.shape[1]) != 4
         ):
             raise ValueError("FG response frontier scoring bundle has invalid in-memory surface arrays")
-        selected_pattern_ids = np.empty((int(cursor),), dtype=np.int32)
-        surface_counts = np.empty((int(cursor), 3), dtype=np.int32)
-        for source_start, length, compact_start in copy_ranges:
-            source_end = int(source_start) + int(length)
-            target_start = int(compact_start)
-            target_end = target_start + int(length)
-            selected_pattern_ids[target_start:target_end] = full_surface_pattern_ids[int(source_start) : source_end]
-            surface_counts[target_start:target_end] = full_surface_counts[int(source_start) : source_end]
-        if bool(np.any(selected_pattern_ids < 0)) or bool(
-            np.any(selected_pattern_ids >= int(full_surface_pattern_words.shape[0]))
-        ):
-            raise ValueError("FG response frontier scoring bundle references an invalid head-pattern ID")
-        used_pattern_ids, surface_pattern_ids = np.unique(selected_pattern_ids, return_inverse=True)
-        surface_pattern_words = np.ascontiguousarray(
-            full_surface_pattern_words[used_pattern_ids],
-            dtype=np.uint32,
-        )
-        surface_pattern_head_coeffs = np.ascontiguousarray(
-            full_surface_pattern_head_coeffs[used_pattern_ids],
-            dtype=np.int32,
-        )
-        surface_pattern_ids = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
+        # In-memory (session-pruned) pools are scored in place through absolute frontier offsets,
+        # like response_cache_serde does; the scorers validate the whole pool's IDs and counts.
+        surface_pattern_ids = full_surface_pattern_ids
+        surface_pattern_words = full_surface_pattern_words
+        surface_counts = full_surface_counts
+        surface_pattern_head_coeffs = full_surface_pattern_head_coeffs
+        group_offsets = np.ascontiguousarray(frontier_offsets_all[kept_frontiers], dtype=np.int32)
+        group_ends = group_offsets.astype(np.int64) + group_lengths
+        if bool(np.any(group_offsets < 0)) or bool(np.any(group_ends > int(full_surface_pattern_ids.shape[0]))):
+            raise ValueError("FG response frontier selected a range outside the in-memory surface pool")
     else:
+        selected_segments = sorted(
+            {
+                (int(frontier_offsets_all[int(frontier_idx)]), int(frontier_lengths_all[int(frontier_idx)]))
+                for frontier_idx in unique_frontiers
+            }
+        )
+        copy_ranges: list[tuple[int, int, int]] = []
+        segment_offsets: dict[tuple[int, int], int] = {}
+        cursor = 0
+        for start, length in selected_segments:
+            if copy_ranges and int(copy_ranges[-1][0]) + int(copy_ranges[-1][1]) == int(start):
+                prev_start, prev_length, target_start = copy_ranges[-1]
+                copy_ranges[-1] = (int(prev_start), int(prev_length) + int(length), int(target_start))
+                segment_offsets[(int(start), int(length))] = int(cursor)
+            else:
+                copy_ranges.append((int(start), int(length), int(cursor)))
+                segment_offsets[(int(start), int(length))] = int(cursor)
+            cursor += int(length)
+        ranges = tuple((int(start), int(length)) for start, length, _target_start in copy_ranges)
+        frontier_remap = np.full((frontier_count,), -1, dtype=np.int32)
+        for frontier_idx in unique_frontiers:
+            segment = (
+                int(frontier_offsets_all[int(frontier_idx)]),
+                int(frontier_lengths_all[int(frontier_idx)]),
+            )
+            frontier_remap[int(frontier_idx)] = int(segment_offsets[segment])
+        group_offsets = np.ascontiguousarray(frontier_remap[kept_frontiers], dtype=np.int32)
+        if bool(np.any(group_offsets < 0)):
+            raise ValueError("FG response frontier packed batch failed to remap selected frontiers")
         (
             surface_pattern_ids,
             surface_counts,

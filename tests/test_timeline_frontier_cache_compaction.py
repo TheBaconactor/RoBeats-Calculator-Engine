@@ -86,7 +86,7 @@ def test_frontier_disk_cache_write_is_compact_and_leak_free(tmp_path: Path, monk
     assert saved.exists()
     assert not list(tmp_path.glob("*.tmp.npz"))
 
-    loaded = timeline_api._load_frontier_payload_from_disk(key)
+    loaded, _raw = timeline_api._load_frontier_payload_from_disk(key)
     assert loaded is not None
     assert int(loaded.grid_count_body_fever.shape[0]) == 1
     assert int(loaded.grid_frontier_body_fever_pool.shape[0]) == 1
@@ -210,6 +210,131 @@ def test_build_or_load_timeline_frontier_payload_disk_hit_reuses_compact_payload
     second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
     assert second.cache_source == "disk"
     assert int(second.total_notes) == 4
+
+
+_PAYLOAD_ARRAY_NAMES = (
+    "grid_count_body_fever",
+    "grid_count_body_normal",
+    "grid_head_len",
+    "grid_fever_masks_bits",
+    "grid_frontier_count",
+    "grid_frontier_offset",
+    "grid_frontier_body_fever_pool",
+    "grid_frontier_body_normal_pool",
+    "grid_frontier_masks_bits_pool",
+    "grid_frontier_head_coeffs_pool",
+    "grid_gap",
+    "grid_fever_activations",
+)
+
+
+def _warm_disk_timeline_song(name: str) -> dict:
+    calc_song = {
+        "metadata": {
+            "Song Name": name,
+            "Difficulty": "Easy",
+            "Long Notes": 0,
+            "Last Note Time": 0.6,
+        },
+        "song_data": {
+            "timestamps": np.array([0.0, 0.0, 0.2, 0.4, 0.6], dtype=np.float32),
+            "note_types": np.array([1, 1, 1, 1, 1], dtype=np.int16),
+        },
+    }
+    _apply_physical_timing(calc_song)
+    return calc_song
+
+
+def _assert_payload_live_region_equal(left, right) -> None:
+    used = int(left.frontier_pool_used)
+    assert int(right.frontier_pool_used) == used
+    for name in _PAYLOAD_ARRAY_NAMES:
+        a = np.asarray(getattr(left, name))
+        b = np.asarray(getattr(right, name))
+        assert a.dtype == b.dtype, name
+        if name.endswith("_pool"):
+            a, b = a[:, :used], b[:, :used]
+        np.testing.assert_array_equal(a, b, err_msg=name)
+
+
+def test_frontier_payload_memory_hit_serves_the_built_and_disk_payload(tmp_path: Path, monkeypatch) -> None:
+    """Built, memory-hit and disk-hit payloads agree on every array the consumers read (grids plus
+    the pool rows below frontier_pool_used), so the memory tier cannot change a score."""
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    timeline_api.reset_timeline_state()
+    calc_song = _warm_disk_timeline_song("Memory Tier Timeline")
+
+    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    timeline_api.reset_timeline_state()
+    third = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+
+    assert (first.cache_source, second.cache_source, third.cache_source) == ("built", "memory", "disk")
+    assert int(first.payload.frontier_pool_used) > 0
+    _assert_payload_live_region_equal(first.payload, second.payload)
+    _assert_payload_live_region_equal(second.payload, third.payload)
+
+
+def test_frontier_payload_memory_tier_holds_compressed_disk_bytes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    timeline_api.reset_timeline_state()
+    calc_song = _warm_disk_timeline_song("Compressed Memory Tier Timeline")
+
+    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert first.cache_source == "built"
+    cached = timeline_api._frontier_payload_cache[first.cache_key]
+    assert isinstance(cached, bytes)
+    assert len(cached) < 200_000
+    assert cached == Path(first.disk_path).read_bytes()
+    info = timeline_api.timeline_frontier_payload_cache_info(calc_song, _ref_arrays())
+    assert info.cache_source == "memory"
+
+    with monkeypatch.context() as no_disk:
+        no_disk.setattr(
+            timeline_api,
+            "_live_frontier_disk_cache_path",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("memory hit must not touch disk")),
+        )
+        second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert second.cache_source == "memory"
+
+    timeline_api.reset_timeline_state()
+    third = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert third.cache_source == "disk"
+    assert timeline_api._frontier_payload_cache[third.cache_key] == cached
+    # A memory hit decodes exactly the disk form: identical arrays, dtypes and (trimmed) shapes.
+    for name in _PAYLOAD_ARRAY_NAMES:
+        a = np.asarray(getattr(second.payload, name))
+        b = np.asarray(getattr(third.payload, name))
+        assert a.dtype == b.dtype and a.shape == b.shape, name
+        np.testing.assert_array_equal(a, b, err_msg=name)
+    assert int(second.payload.frontier_pool_used) == int(third.payload.frontier_pool_used)
+    _assert_payload_live_region_equal(first.payload, second.payload)
+
+
+def test_frontier_payload_memory_tier_survives_failed_disk_write(tmp_path: Path, monkeypatch) -> None:
+    """A swallowed disk-write failure must not break the memory tier: the bytes are serialized
+    before the write, so the next lookup is still a memory hit."""
+    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
+    timeline_api.reset_timeline_state()
+    calc_song = _warm_disk_timeline_song("Failed Write Timeline")
+
+    with monkeypatch.context() as failing_replace:
+
+        def _raise_replace(self, target):
+            raise OSError("simulated replace failure")
+
+        failing_replace.setattr(Path, "replace", _raise_replace)
+        first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert first.cache_source == "built"
+    assert not Path(first.disk_path).exists()
+
+    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    assert second.cache_source == "memory"
+    _assert_payload_live_region_equal(first.payload, second.payload)
 
 
 def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(

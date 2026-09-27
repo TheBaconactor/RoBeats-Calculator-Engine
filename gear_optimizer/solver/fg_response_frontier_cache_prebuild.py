@@ -578,7 +578,7 @@ def ensure_response_frontier_cache_for_calc_song(
     *,
     stat_keys: Iterable[tuple[int, int]] | None = None,
 ) -> None:
-    """Ensure the response-frontier CACHE (npz bundle + sidecars) exists on disk/in memory.
+    """Ensure the response-frontier CACHE (npz bundle + sidecars) exists on disk.
 
     In-memory owner entry for callers that hold a prepared calc_song (e.g. fixed-0ms
     tier replay) rather than a song path. The candidate-independent all-FT/FF bundle is
@@ -591,11 +591,16 @@ def ensure_response_frontier_cache_for_calc_song(
     probe and deliberately skips ``build_or_load``'s eager per-row object materialization
     (seconds on heavy bundles), because the scoring batch prepared downstream
     (``prepare_force_greats_response_frontier_scoring_batch``) reads only the slim bundle
-    + sidecars, never that payload. A cold miss builds the bundle in full.
+    + sidecars, never that payload. A cold miss builds the requested reachable cells, publishes
+    them, then releases this song's process-local memo tiers (the full payload is never retained).
     """
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         fg_response_frontier_payload_cache_info,
+        release_fg_response_song_memory,
+    )
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
+        fg_response_frontier_bundle_cache_key,
     )
 
     keys = tuple(stat_keys) if stat_keys is not None else all_response_stat_keys()
@@ -606,7 +611,13 @@ def ensure_response_frontier_cache_for_calc_song(
     cache_info = fg_response_frontier_payload_cache_info(calc_song, ref_arrays, stat_keys=keys)
     if cache_info.cache_source in {"disk", "memory"}:
         return
-    build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
+    try:
+        build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
+    finally:
+        # build_or_load pins the merged bundle + request payload in the process-global payload LRU
+        # and no consumer on this path reads them (same rationale as the prebuild wrapper above);
+        # the caller's load_response_frontier_scoring_bundle re-opens the slim arrays from disk.
+        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays))
 
 
 def _run_missing_fg_prebuild(

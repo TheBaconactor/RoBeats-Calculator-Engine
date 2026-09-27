@@ -247,7 +247,6 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
     monkeypatch.setattr(response_cache, "load_first_surface_scoring_rows", _expanded_loader_must_not_run)
     bundle = FgResponseFrontierScoringBundle(
         cache_key=("test",),
-        frontier_idx_by_key={(0, 0): 0, (0, 1): 1, (1, 0): 2},
         frontier_idx_by_stat=np.zeros((2, 2), dtype=np.int32),
         raw_fill_by_ff=np.zeros(1),
         non_fever_base_by_ff=np.zeros(1, dtype=np.int32),
@@ -310,3 +309,121 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
     # unchanged metadata carried through
     assert pruned.total_notes == head_len and pruned.cache_key == ("test",)
     assert dataclasses.is_dataclass(pruned)
+
+
+def _retired_session_prune_arrays(pattern_ids, counts, pattern_words, pattern_coeffs, offsets, lengths, keep):
+    """The retired prune bookkeeping (int64 mask copy + np.unique remap), kept as the parity oracle."""
+    row_count = int(pattern_ids.shape[0])
+    offsets_all = np.asarray(offsets, dtype=np.int64)
+    ends_all = offsets_all + np.asarray(lengths, dtype=np.int64)
+    kept_prefix = np.empty(row_count + 1, dtype=np.int64)
+    kept_prefix[0] = 0
+    np.cumsum(np.asarray(keep, dtype=np.int64), out=kept_prefix[1:])
+    used_pattern_ids, pruned_pattern_ids = np.unique(pattern_ids[keep], return_inverse=True)
+    return {
+        "surface_pattern_ids": np.ascontiguousarray(pruned_pattern_ids, dtype=np.int32),
+        "surface_pattern_words": np.ascontiguousarray(pattern_words[used_pattern_ids], dtype=np.uint32),
+        "surface_counts": np.ascontiguousarray(counts[keep], dtype=np.int32),
+        "surface_pattern_head_coeffs": np.ascontiguousarray(pattern_coeffs[used_pattern_ids], dtype=np.int32),
+        "frontier_offsets": np.ascontiguousarray(kept_prefix[offsets_all], dtype=np.int32),
+        "frontier_lengths": np.ascontiguousarray(kept_prefix[ends_all] - kept_prefix[offsets_all], dtype=np.int32),
+    }
+
+
+@pytest.mark.parametrize(
+    "combo_box, fever_box",
+    [
+        ((float(_HEAD_DOM_C[0]), float(_HEAD_DOM_C[1])), (float(_HEAD_DOM_F[0]), float(_HEAD_DOM_F[1]))),
+        ((2.45, 2.72), (4.60, 5.48)),
+    ],
+)
+def test_session_prune_matches_retired_unique_remap(monkeypatch, combo_box, fever_box):
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
+        FgResponseFrontierScoringBundle,
+    )
+
+    rng = np.random.default_rng(20260927)
+    head_len = 40
+    pattern_count = 300
+    template_words, _template_counts = _random_packed_frontier(rng, pattern_count, head_len)
+    _template_ids, pattern_words = _compact_patterns(template_words)
+    pattern_count = int(pattern_words.shape[0])
+    pattern_coeffs = rng.integers(0, 100, size=(pattern_count, 4)).astype(np.int32)
+    # Rows reference only the first 80% of the table, so some patterns are never used.
+    row_count = 5000
+    pattern_ids = np.ascontiguousarray(rng.integers(0, int(pattern_count * 0.8), size=row_count), dtype=np.int32)
+    counts = np.empty((row_count, 3), dtype=np.int32)
+    counts[:, 0] = rng.integers(0, 40, size=row_count)
+    counts[:, 2] = rng.integers(0, 5, size=row_count)
+    counts[:, 1] = counts[:, 2] + rng.integers(0, 8, size=row_count)
+    # Frontiers: contiguous segments, one shared (duplicate) segment, and one zero-length frontier.
+    lengths_list = [int(v) for v in rng.integers(20, 200, size=40)]
+    lengths_list[-1] = row_count - sum(lengths_list[:-1])
+    assert lengths_list[-1] > 0
+    offsets_list = [0]
+    for length in lengths_list[:-1]:
+        offsets_list.append(offsets_list[-1] + length)
+    offsets_list += [offsets_list[3], offsets_list[-1]]
+    lengths_list += [lengths_list[3], 0]
+    offsets = np.asarray(offsets_list, dtype=np.int32)
+    lengths = np.asarray(lengths_list, dtype=np.int32)
+
+    def _load_compact(_key, ranges, **_kwargs):
+        assert tuple(ranges) == ((0, row_count),)
+        return pattern_ids, counts, pattern_words, pattern_coeffs
+
+    monkeypatch.setattr(response_cache, "load_first_surface_scoring_patterns", _load_compact)
+    bundle = FgResponseFrontierScoringBundle(
+        cache_key=("test", "prune-parity"),
+        frontier_idx_by_stat=np.zeros((2, 2), dtype=np.int32),
+        raw_fill_by_ff=np.zeros(1),
+        non_fever_base_by_ff=np.zeros(1, dtype=np.int32),
+        real_time_by_ft=np.zeros(1),
+        frontier_meta=np.zeros((int(offsets.shape[0]), 1), dtype=np.int32),
+        surface_pattern_ids=np.empty((0,), dtype=np.int32),
+        surface_pattern_words=np.empty((0, 8), dtype=np.uint32),
+        surface_counts=np.empty((0, 3), dtype=np.int32),
+        surface_pattern_head_coeffs=np.empty((0, 4), dtype=np.int32),
+        frontier_offsets=offsets,
+        frontier_lengths=lengths,
+        surface_row_count=row_count,
+        total_notes=head_len,
+        long_notes=0,
+        use_forced_great_timing=True,
+    )
+    ref_arrays = {
+        "Combo Multiplier": np.asarray(combo_box),
+        "Fever Multiplier": np.asarray(fever_box),
+    }
+    pattern_ids_before = pattern_ids.copy()
+    box = response_cache.session_head_dominance_box(ref_arrays)
+    keep = np.asarray(
+        _numba_session_box_keep_mask(
+            pattern_ids, pattern_words, counts, offsets, lengths, 0, head_len, *box
+        ),
+        dtype=bool,
+    )
+    expected = _retired_session_prune_arrays(pattern_ids, counts, pattern_words, pattern_coeffs, offsets, lengths, keep)
+
+    pruned = response_cache.session_prune_scoring_bundle(bundle, ref_arrays)
+
+    for name, want in expected.items():
+        got = getattr(pruned, name)
+        assert got.dtype == want.dtype, name
+        np.testing.assert_array_equal(got, want, err_msg=name)
+    assert int(pruned.surface_row_count) == int(np.count_nonzero(keep))
+    # The loader's arrays are read, never rewritten in place.
+    np.testing.assert_array_equal(pattern_ids, pattern_ids_before)
+
+
+def test_in_place_kept_prefix_equals_int64_copy_cumsum():
+    rng = np.random.default_rng(3)
+    for row_count in (0, 1, 7, 100_003):
+        keep = rng.random(row_count) < 0.6
+        kept_prefix = np.empty(row_count + 1, dtype=np.int64)
+        kept_prefix[0] = 0
+        kept_prefix[1:] = keep
+        np.cumsum(kept_prefix[1:], out=kept_prefix[1:])
+        expected = np.concatenate([[0], np.cumsum(keep.astype(np.int64))])
+        np.testing.assert_array_equal(kept_prefix, expected)

@@ -377,7 +377,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     prepare_fg_static_sync(song)
     # Hydrate the in-memory timeline-frontier payload cache from this prep worker so
     # the owner thread's upload at the GA turn hits the "memory" branch instead of
-    # decompressing the .npz at the song boundary (load-only entrypoint: no Taichi,
+    # re-reading the .npz from disk at the song boundary (load-only entrypoint: no Taichi,
     # fails loud here -- earlier and off the owner -- if the startup cache is missing).
     from gear_optimizer.solver.taichi_gem.api.timeline import load_timeline_frontier_payload
 

@@ -244,10 +244,26 @@ class FgResponseFrontierPrewarmResult:
     frontier_count: int
 
 
+class _FrontierIdxByStatView:
+    """Read-only ``(ft, ff) -> frontier index`` lookup over a ``frontier_idx_by_stat`` grid
+    (``-1`` = stat key not loaded)."""
+
+    __slots__ = ("_grid",)
+
+    def __init__(self, grid: np.ndarray) -> None:
+        self._grid = grid
+
+    def get(self, key: tuple[int, int], default: int | None = None) -> int | None:
+        ft_stat, ff_stat = int(key[0]), int(key[1])
+        if not (0 <= ft_stat < int(self._grid.shape[0]) and 0 <= ff_stat < int(self._grid.shape[1])):
+            return default
+        frontier_idx = int(self._grid[ft_stat, ff_stat])
+        return frontier_idx if frontier_idx >= 0 else default
+
+
 @dataclass(frozen=True, slots=True)
 class FgResponseFrontierScoringBundle:
     cache_key: tuple
-    frontier_idx_by_key: dict[tuple[int, int], int]
     frontier_idx_by_stat: np.ndarray
     raw_fill_by_ff: np.ndarray
     non_fever_base_by_ff: np.ndarray
@@ -265,6 +281,12 @@ class FgResponseFrontierScoringBundle:
     use_forced_great_timing: bool
     surface_generation: str | None = None
     bundle_path: Path | None = None
+
+    @property
+    def frontier_idx_by_key(self) -> _FrontierIdxByStatView:
+        # The grid is the bundle's only key map (a per-key dict duplicated it at ~135 B/key). This
+        # view keeps the fingerprinted serde reader's ``frontier_idx_by_key.get`` unchanged.
+        return _FrontierIdxByStatView(self.frontier_idx_by_stat)
 
 
 def _normalize_stat_key(stat_key: tuple[int, int] | list[int]) -> tuple[int, int]:

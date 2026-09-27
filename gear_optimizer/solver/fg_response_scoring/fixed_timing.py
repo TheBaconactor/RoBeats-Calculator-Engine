@@ -164,6 +164,8 @@ def build_fixed_timing_fg_replays(
         score_stats_exact_batch,
         score_stats_fixed_timing_exact_batch,
     )
+    from ..taichi_gem.force_greats.response_cache import release_fg_response_song_memory
+    from ..taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
     from .reducer import FgTraceMaterializationCache, materialize_force_payload_from_response_frontier
 
     # Paired-base scorer follows the timing mode: zero_ms -> fixed-0ms chart timeline;
@@ -173,37 +175,46 @@ def build_fixed_timing_fg_replays(
     base_score_batch = (
         score_stats_fixed_timing_exact_batch if str(timing_mode) == "zero_ms" else score_stats_exact_batch
     )
+    # Same key inputs as the solve's bundle loads (shallow calc_song copy + resolved refs).
+    bundle_key = fg_response_frontier_bundle_cache_key(dict(calc_song), resolve_exact_replay_ref_arrays(ref_arrays))
 
-    results, cs, refs = _solve_fixed_timing_response_results(
-        fg_rows, calc_song, ref_arrays, selected_color, total_budget=int(total_budget)
-    )
-    # Paired base = each loadout's NON-FG base score under the same timeline; the materializer
-    # requires it (>0) as the FG row's source base score. For a gem re-solve (total_budget>0) the
-    # gems change, so the paired base is the non-FG score at the RE-SOLVED stats (result.stats), not
-    # the pre-gem search input.
-    if int(total_budget) > 0:
-        paired_base_rows = [dict(getattr(result, "stats", None) or {}) for result in results]
-        paired_base_scores = base_score_batch(paired_base_rows, cs, refs)
-    else:
-        paired_base_rows = base_rows
-        paired_base_scores = base_score_batch(base_rows, cs, refs)
-
-    replays: list[dict[str, Any]] = []
-    # Batch-shared trace memo: loadouts in one replay batch commonly share the FG surface +
-    # fill inputs, and the reconstruct DFS is the dominant materialize cost (same memo the
-    # fused owner path uses; key completeness incl. raw_fever_fill/non_fever_base lives in
-    # the reducer).
-    trace_cache = FgTraceMaterializationCache()
-    for result, base_stats, paired_base in zip(results, paired_base_rows, paired_base_scores, strict=True):
-        force = materialize_force_payload_from_response_frontier(
-            eval_data={},
-            base_stats=dict(base_stats),
-            paired_base_score=int(paired_base),
-            selected_element=str(selected_color or ""),
-            result=result,
-            calc_song=cs,
-            ref_arrays=refs,
-            trace_cache=trace_cache,
+    try:
+        results, cs, refs = _solve_fixed_timing_response_results(
+            fg_rows, calc_song, ref_arrays, selected_color, total_budget=int(total_budget)
         )
-        replays.append({"surface": result.surface, "force": force})
-    return replays
+        # Paired base = each loadout's NON-FG base score under the same timeline; the materializer
+        # requires it (>0) as the FG row's source base score. For a gem re-solve (total_budget>0) the
+        # gems change, so the paired base is the non-FG score at the RE-SOLVED stats (result.stats), not
+        # the pre-gem search input.
+        if int(total_budget) > 0:
+            paired_base_rows = [dict(getattr(result, "stats", None) or {}) for result in results]
+            paired_base_scores = base_score_batch(paired_base_rows, cs, refs)
+        else:
+            paired_base_rows = base_rows
+            paired_base_scores = base_score_batch(base_rows, cs, refs)
+
+        replays: list[dict[str, Any]] = []
+        # Batch-shared trace memo: loadouts in one replay batch commonly share the FG surface +
+        # fill inputs, and the reconstruct DFS is the dominant materialize cost (same memo the
+        # fused owner path uses; key completeness incl. raw_fever_fill/non_fever_base lives in
+        # the reducer).
+        trace_cache = FgTraceMaterializationCache()
+        for result, base_stats, paired_base in zip(results, paired_base_rows, paired_base_scores, strict=True):
+            force = materialize_force_payload_from_response_frontier(
+                eval_data={},
+                base_stats=dict(base_stats),
+                paired_base_score=int(paired_base),
+                selected_element=str(selected_color or ""),
+                result=result,
+                calc_song=cs,
+                ref_arrays=refs,
+                trace_cache=trace_cache,
+            )
+            replays.append({"surface": result.surface, "force": force})
+        return replays
+    finally:
+        # Same contract as fg_response_frontier_cache_prebuild.build_fg_response_frontier_cache_for_path:
+        # drop this song's scoring-bundle, slim-metadata, lazy-frontier and cold-miss payload memo
+        # tiers (long-lived ranked/API processes never sweep them otherwise); the next access
+        # re-opens them from disk.
+        release_fg_response_song_memory(bundle_key)

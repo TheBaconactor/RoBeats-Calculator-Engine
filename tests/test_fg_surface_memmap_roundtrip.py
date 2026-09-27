@@ -366,3 +366,119 @@ def test_compact_scoring_loader_preserves_range_order_and_pattern_sharing(
     np.testing.assert_array_equal(pattern_words[pattern_ids], expanded_rows[:, :8])
     np.testing.assert_array_equal(counts, expanded_rows[:, 8:11].astype(np.int32))
     np.testing.assert_array_equal(pattern_coeffs[pattern_ids], expanded_coeffs)
+
+
+def _shared_pattern_pool(row_count: int, pattern_count: int) -> np.ndarray:
+    """A pool whose rows reuse `pattern_count` distinct head mask-word rows (unique body counts)."""
+    rng = np.random.default_rng(20260927)
+    templates = _synthetic_pool(pattern_count)
+    pool = _synthetic_pool(row_count)
+    pool[:, :8] = templates[rng.integers(0, pattern_count, size=row_count), :8]
+    return pool
+
+
+def _retired_unique_compact_load(cache_key: tuple, ranges: tuple[tuple[int, int], ...]):
+    """The retired N-row np.unique remap over the raw sidecars, kept as the loader oracle."""
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import unpack_surface_patterns
+
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
+    row_refs_all = np.load(row_sidecar, allow_pickle=False)
+    patterns_all = np.load(pattern_sidecar, allow_pickle=False)
+    row_refs = np.concatenate([row_refs_all[start : start + count] for start, count in ranges])
+    unique_ids, local_ids = np.unique(np.asarray(row_refs[:, 0], dtype=np.uint64), return_inverse=True)
+    words, coeffs = unpack_surface_patterns(patterns_all[np.asarray(unique_ids, dtype=np.intp)])
+    return (
+        np.ascontiguousarray(local_ids, dtype=np.int32),
+        np.ascontiguousarray(row_refs[:, 1:4], dtype=np.int32),
+        words,
+        coeffs,
+    )
+
+
+def test_compact_scoring_loader_matches_retired_unique_remap(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    response_cache_store.reset_fg_response_frontier_payload_cache()
+    row_count = 300
+    pool = _shared_pattern_pool(row_count, 23)
+    cache_key = ("unit", "compact-loader-oracle")
+    _save_payload(cache_key, _build_payload(pool, total_notes=80))
+
+    for ranges in (
+        ((0, row_count),),
+        ((250, 50), (0, 40), (100, 1)),
+        ((10, 5), (12, 30), (299, 1)),
+        ((7, 1),),
+    ):
+        got = load_first_surface_scoring_patterns(cache_key, ranges)
+        want = _retired_unique_compact_load(cache_key, ranges)
+        for got_array, want_array in zip(got, want, strict=True):
+            assert got_array.dtype == want_array.dtype
+            assert got_array.shape == want_array.shape
+            np.testing.assert_array_equal(got_array, want_array)
+
+
+def _replace_row_sidecar(cache_key: tuple, row_refs: np.ndarray) -> None:
+    row_sidecar, _pattern_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
+    staged = row_sidecar.with_name(row_sidecar.name + ".staged")
+    with open(staged, "wb") as handle:
+        np.save(handle, np.ascontiguousarray(row_refs, dtype=np.uint32), allow_pickle=False)
+    staged.replace(row_sidecar)
+
+
+def test_compact_scoring_loader_rejects_invalid_pattern_ids_and_ranges(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    response_cache_store.reset_fg_response_frontier_payload_cache()
+    pool = _shared_pattern_pool(6, 3)
+    cache_key = ("unit", "compact-loader-invalid")
+    _save_payload(cache_key, _build_payload(pool, total_notes=80))
+
+    with pytest.raises(ValueError, match="range exceeds cached rows"):
+        load_first_surface_scoring_patterns(cache_key, ((4, 3),))
+
+    row_sidecar, pattern_sidecar = _surface_sidecar_paths(_fg_response_disk_cache_path(cache_key))
+    clean_rows = np.array(np.load(row_sidecar, allow_pickle=False))
+    pattern_count = int(np.load(pattern_sidecar, mmap_mode="r", allow_pickle=False).shape[0])
+    for bad_id in (pattern_count, 2**31, 2**32 - 1):
+        bad_rows = clean_rows.copy()
+        bad_rows[3, 0] = np.uint32(bad_id)
+        _replace_row_sidecar(cache_key, bad_rows)
+        with pytest.raises(ValueError, match="invalid head-pattern ID"):
+            load_first_surface_scoring_patterns(cache_key, ((0, 6),))
+        # Ranges that skip the corrupt row still load.
+        ids, _counts, _words, _coeffs = load_first_surface_scoring_patterns(cache_key, ((4, 2), (0, 3)))
+        assert ids.shape == (5,)
+
+
+@pytest.mark.parametrize("pattern_count", [1, 7, 101, 400_000])
+def test_dense_rank_pattern_ids_matches_np_unique_inverse(pattern_count: int) -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
+        _DENSE_RANK_BLOCK_ROWS,
+        _dense_rank_pattern_ids_inplace,
+    )
+
+    rng = np.random.default_rng(pattern_count)
+    block = int(_DENSE_RANK_BLOCK_ROWS)
+    cases = [
+        np.empty((0,), dtype=np.int32),
+        rng.integers(0, pattern_count, size=block - 1),
+        rng.integers(0, pattern_count, size=block + 1),
+        np.full((block + 17,), pattern_count - 1),
+        rng.choice(pattern_count, size=min(pattern_count, 5), replace=False),
+        np.tile(rng.permutation(pattern_count), -(-(block + 2) // pattern_count)),
+    ]
+    for case in cases:
+        ids = np.ascontiguousarray(case, dtype=np.int32)
+        expected_unique, expected_inverse = np.unique(ids, return_inverse=True)
+        ranked = ids.copy()
+        unique = _dense_rank_pattern_ids_inplace(ranked, pattern_count)
+        np.testing.assert_array_equal(unique, expected_unique)
+        assert ranked.dtype == np.dtype(np.int32)
+        np.testing.assert_array_equal(ranked, np.asarray(expected_inverse, dtype=np.int32))
+
+
+def test_dense_rank_pattern_ids_rejects_out_of_range_ids() -> None:
+    from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import _dense_rank_pattern_ids_inplace
+
+    for bad in (np.asarray([0, 3], dtype=np.int32), np.asarray([-1, 0], dtype=np.int32)):
+        with pytest.raises(ValueError, match="invalid head-pattern ID"):
+            _dense_rank_pattern_ids_inplace(bad, 3)

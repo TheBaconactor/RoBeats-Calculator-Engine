@@ -5,6 +5,7 @@ Startup builds the candidate-independent timeline frontier cache; runtime upload
 the cached grid/frontier payload for the active song slot.
 """
 
+import io
 import time
 import hashlib
 import threading
@@ -226,10 +227,11 @@ def _upload_timeline_frontier_payload_slot(
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
 # Sized to cover the native in-flight prep window (prep_limit tops out around 36):
 # prep workers hydrate a song's payload ahead of its GA turn, and the entry must
-# survive in this LRU until the owner uploads it. Payloads run ~1-2MB typical.
+# survive in this LRU until the owner uploads it. Entries hold the compressed .npz
+# bytes (~20-90KB, the exact disk form) instead of the ~1.1MB decoded payload; each
+# hit decodes its own arrays (<1ms) through the same reader as a disk load.
 _FRONTIER_PAYLOAD_CACHE_MAX = 40
-_frontier_payload_cache: "OrderedDict[tuple, object]" = OrderedDict()
-_frontier_payload_last_access: dict[tuple, float] = {}
+_frontier_payload_cache: "OrderedDict[tuple, bytes]" = OrderedDict()
 _frontier_payload_cache_lock = threading.RLock()
 # Bump whenever the base frontier OUTPUT changes in a way the cache key does NOT capture.
 # The key (_frontier_payload_cache_key -> song_key) hashes raw song inputs + window settings,
@@ -387,69 +389,77 @@ def _live_frontier_disk_cache_path(cache_key: tuple) -> Path | None:
     return None
 
 
-def _load_frontier_payload_from_disk(cache_key: tuple) -> TimelineFrontierGridPayload | None:
+def _decode_frontier_payload_npz(raw: bytes) -> TimelineFrontierGridPayload | None:
+    with np.load(io.BytesIO(raw), allow_pickle=False) as data:
+        version = str(data["version"].item())
+        if version not in timeline_frontier_compatible_cache_versions():
+            return None
+        grid_count_body_fever = np.asarray(data["grid_count_body_fever"], dtype=np.int32)
+        grid_count_body_normal = np.asarray(data["grid_count_body_normal"], dtype=np.int32)
+        grid_head_len = np.asarray(data["grid_head_len"], dtype=np.int8)
+        grid_fever_masks_bits = np.asarray(data["grid_fever_masks_bits"], dtype=np.uint32)
+        grid_frontier_count = np.asarray(data["grid_frontier_count"], dtype=np.int32)
+        grid_frontier_offset = np.asarray(data["grid_frontier_offset"], dtype=np.int32)
+        grid_frontier_body_fever_pool = np.asarray(data["grid_frontier_body_fever_pool"], dtype=np.int32)
+        grid_frontier_body_normal_pool = np.asarray(data["grid_frontier_body_normal_pool"], dtype=np.int32)
+        grid_frontier_masks_bits_pool = np.asarray(data["grid_frontier_masks_bits_pool"], dtype=np.uint32)
+        grid_frontier_head_coeffs_pool = np.asarray(data["grid_frontier_head_coeffs_pool"], dtype=np.int16)
+        grid_gap = np.asarray(data["grid_gap"], dtype=np.int32)
+        grid_fever_activations = np.asarray(data["grid_fever_activations"], dtype=np.int32)
+
+        # Compact on-disk format stores a single source slot; runtime upload remaps it.
+        if grid_count_body_fever.ndim == 2:
+            grid_count_body_fever = np.expand_dims(grid_count_body_fever, axis=0)
+        if grid_count_body_normal.ndim == 2:
+            grid_count_body_normal = np.expand_dims(grid_count_body_normal, axis=0)
+        if grid_head_len.ndim == 2:
+            grid_head_len = np.expand_dims(grid_head_len, axis=0)
+        if grid_fever_masks_bits.ndim == 3:
+            grid_fever_masks_bits = np.expand_dims(grid_fever_masks_bits, axis=0)
+        if grid_frontier_count.ndim == 2:
+            grid_frontier_count = np.expand_dims(grid_frontier_count, axis=0)
+        if grid_frontier_offset.ndim == 2:
+            grid_frontier_offset = np.expand_dims(grid_frontier_offset, axis=0)
+        if grid_frontier_body_fever_pool.ndim == 1:
+            grid_frontier_body_fever_pool = np.expand_dims(grid_frontier_body_fever_pool, axis=0)
+        if grid_frontier_body_normal_pool.ndim == 1:
+            grid_frontier_body_normal_pool = np.expand_dims(grid_frontier_body_normal_pool, axis=0)
+        if grid_frontier_masks_bits_pool.ndim == 2:
+            grid_frontier_masks_bits_pool = np.expand_dims(grid_frontier_masks_bits_pool, axis=0)
+        if grid_frontier_head_coeffs_pool.ndim == 2:
+            grid_frontier_head_coeffs_pool = np.expand_dims(grid_frontier_head_coeffs_pool, axis=0)
+        if grid_gap.ndim == 2:
+            grid_gap = np.expand_dims(grid_gap, axis=0)
+        if grid_fever_activations.ndim == 2:
+            grid_fever_activations = np.expand_dims(grid_fever_activations, axis=0)
+        payload = TimelineFrontierGridPayload(
+            grid_count_body_fever=grid_count_body_fever,
+            grid_count_body_normal=grid_count_body_normal,
+            grid_head_len=grid_head_len,
+            grid_fever_masks_bits=grid_fever_masks_bits,
+            grid_frontier_count=grid_frontier_count,
+            grid_frontier_offset=grid_frontier_offset,
+            grid_frontier_body_fever_pool=grid_frontier_body_fever_pool,
+            grid_frontier_body_normal_pool=grid_frontier_body_normal_pool,
+            grid_frontier_masks_bits_pool=grid_frontier_masks_bits_pool,
+            grid_frontier_head_coeffs_pool=grid_frontier_head_coeffs_pool,
+            grid_gap=grid_gap,
+            grid_fever_activations=grid_fever_activations,
+            frontier_pool_used=int(data["frontier_pool_used"].item()),
+        )
+        return payload
+
+
+def _load_frontier_payload_from_disk(cache_key: tuple) -> tuple[TimelineFrontierGridPayload, bytes] | None:
     path = _live_frontier_disk_cache_path(cache_key)
     if path is None:
         return None
     try:
-        with np.load(path, allow_pickle=False) as data:
-            version = str(data["version"].item())
-            if version not in timeline_frontier_compatible_cache_versions():
-                return None
-            grid_count_body_fever = np.asarray(data["grid_count_body_fever"], dtype=np.int32)
-            grid_count_body_normal = np.asarray(data["grid_count_body_normal"], dtype=np.int32)
-            grid_head_len = np.asarray(data["grid_head_len"], dtype=np.int8)
-            grid_fever_masks_bits = np.asarray(data["grid_fever_masks_bits"], dtype=np.uint32)
-            grid_frontier_count = np.asarray(data["grid_frontier_count"], dtype=np.int32)
-            grid_frontier_offset = np.asarray(data["grid_frontier_offset"], dtype=np.int32)
-            grid_frontier_body_fever_pool = np.asarray(data["grid_frontier_body_fever_pool"], dtype=np.int32)
-            grid_frontier_body_normal_pool = np.asarray(data["grid_frontier_body_normal_pool"], dtype=np.int32)
-            grid_frontier_masks_bits_pool = np.asarray(data["grid_frontier_masks_bits_pool"], dtype=np.uint32)
-            grid_frontier_head_coeffs_pool = np.asarray(data["grid_frontier_head_coeffs_pool"], dtype=np.int16)
-            grid_gap = np.asarray(data["grid_gap"], dtype=np.int32)
-            grid_fever_activations = np.asarray(data["grid_fever_activations"], dtype=np.int32)
-
-            # Compact on-disk format stores a single source slot; runtime upload remaps it.
-            if grid_count_body_fever.ndim == 2:
-                grid_count_body_fever = np.expand_dims(grid_count_body_fever, axis=0)
-            if grid_count_body_normal.ndim == 2:
-                grid_count_body_normal = np.expand_dims(grid_count_body_normal, axis=0)
-            if grid_head_len.ndim == 2:
-                grid_head_len = np.expand_dims(grid_head_len, axis=0)
-            if grid_fever_masks_bits.ndim == 3:
-                grid_fever_masks_bits = np.expand_dims(grid_fever_masks_bits, axis=0)
-            if grid_frontier_count.ndim == 2:
-                grid_frontier_count = np.expand_dims(grid_frontier_count, axis=0)
-            if grid_frontier_offset.ndim == 2:
-                grid_frontier_offset = np.expand_dims(grid_frontier_offset, axis=0)
-            if grid_frontier_body_fever_pool.ndim == 1:
-                grid_frontier_body_fever_pool = np.expand_dims(grid_frontier_body_fever_pool, axis=0)
-            if grid_frontier_body_normal_pool.ndim == 1:
-                grid_frontier_body_normal_pool = np.expand_dims(grid_frontier_body_normal_pool, axis=0)
-            if grid_frontier_masks_bits_pool.ndim == 2:
-                grid_frontier_masks_bits_pool = np.expand_dims(grid_frontier_masks_bits_pool, axis=0)
-            if grid_frontier_head_coeffs_pool.ndim == 2:
-                grid_frontier_head_coeffs_pool = np.expand_dims(grid_frontier_head_coeffs_pool, axis=0)
-            if grid_gap.ndim == 2:
-                grid_gap = np.expand_dims(grid_gap, axis=0)
-            if grid_fever_activations.ndim == 2:
-                grid_fever_activations = np.expand_dims(grid_fever_activations, axis=0)
-            payload = TimelineFrontierGridPayload(
-                grid_count_body_fever=grid_count_body_fever,
-                grid_count_body_normal=grid_count_body_normal,
-                grid_head_len=grid_head_len,
-                grid_fever_masks_bits=grid_fever_masks_bits,
-                grid_frontier_count=grid_frontier_count,
-                grid_frontier_offset=grid_frontier_offset,
-                grid_frontier_body_fever_pool=grid_frontier_body_fever_pool,
-                grid_frontier_body_normal_pool=grid_frontier_body_normal_pool,
-                grid_frontier_masks_bits_pool=grid_frontier_masks_bits_pool,
-                grid_frontier_head_coeffs_pool=grid_frontier_head_coeffs_pool,
-                grid_gap=grid_gap,
-                grid_fever_activations=grid_fever_activations,
-                frontier_pool_used=int(data["frontier_pool_used"].item()),
-            )
-            return payload
+        raw = path.read_bytes()
+        payload = _decode_frontier_payload_npz(raw)
+        if payload is None:
+            return None
+        return payload, raw
     except Exception as e:
         logger.debug(f"timeline:_load_frontier_payload_from_disk: {e}")
         try:
@@ -517,67 +527,75 @@ def _get_cached_frontier_payload_with_source(
     ref_ff: np.ndarray,
 ) -> tuple[TimelineFrontierGridPayload | None, str]:
     cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
-    moment = time.monotonic()
     ephemeral = frontier_cache_is_ephemeral()
     if not ephemeral:
         with _frontier_payload_cache_lock:
-            cached = _frontier_payload_cache.get(cache_key)
-            if isinstance(cached, TimelineFrontierGridPayload):
+            cached_raw = _frontier_payload_cache.get(cache_key)
+            if cached_raw is not None:
                 _frontier_payload_cache.move_to_end(cache_key)
-                _frontier_payload_last_access[cache_key] = moment
-                return cached, "memory"
+        if cached_raw is not None:
+            cached = _decode_frontier_payload_npz(cached_raw)
+            if cached is None:
+                raise ValueError("timeline frontier memory cache holds an incompatible payload")
+            return cached, "memory"
 
-    cached = _load_frontier_payload_from_disk(cache_key)
-    if isinstance(cached, TimelineFrontierGridPayload):
+    loaded = _load_frontier_payload_from_disk(cache_key)
+    if loaded is not None:
+        cached, raw = loaded
         if not ephemeral:
-            moment = time.monotonic()
-            with _frontier_payload_cache_lock:
-                _frontier_payload_cache[cache_key] = cached
-                _frontier_payload_cache.move_to_end(cache_key)
-                _frontier_payload_last_access[cache_key] = moment
-                while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
-                    stale_key, _stale_value = _frontier_payload_cache.popitem(last=False)
-                    _frontier_payload_last_access.pop(stale_key, None)
+            _frontier_payload_memory_put(cache_key, raw)
         return cached, "disk"
     return None, "missing"
+
+
+def _frontier_payload_memory_put(cache_key: tuple, raw: bytes) -> None:
+    with _frontier_payload_cache_lock:
+        _frontier_payload_cache[cache_key] = raw
+        _frontier_payload_cache.move_to_end(cache_key)
+        while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
+            _frontier_payload_cache.popitem(last=False)
 
 
 def _save_frontier_payload_to_disk(
     cache_key: tuple,
     payload: TimelineFrontierGridPayload,
-) -> None:
+) -> bytes:
+    """Serialize the compact .npz form, persist it best-effort, and return its bytes."""
+    source_slot_i = 0
+    pool_used = max(0, int(payload.frontier_pool_used))
+    buf = io.BytesIO()
+    np.savez_compressed(
+        buf,
+        version=np.asarray(_FRONTIER_DISK_CACHE_VERSION),
+        frontier_pool_used=np.asarray(pool_used, dtype=np.int32),
+        grid_count_body_fever=np.asarray(payload.grid_count_body_fever[source_slot_i], dtype=np.int32),
+        grid_count_body_normal=np.asarray(payload.grid_count_body_normal[source_slot_i], dtype=np.int32),
+        grid_head_len=np.asarray(payload.grid_head_len[source_slot_i], dtype=np.int8),
+        grid_fever_masks_bits=np.asarray(payload.grid_fever_masks_bits[source_slot_i], dtype=np.uint32),
+        grid_frontier_count=np.asarray(payload.grid_frontier_count[source_slot_i], dtype=np.int32),
+        grid_frontier_offset=np.asarray(payload.grid_frontier_offset[source_slot_i], dtype=np.int32),
+        grid_frontier_body_fever_pool=np.asarray(
+            payload.grid_frontier_body_fever_pool[source_slot_i, :pool_used], dtype=np.int32
+        ),
+        grid_frontier_body_normal_pool=np.asarray(
+            payload.grid_frontier_body_normal_pool[source_slot_i, :pool_used], dtype=np.int32
+        ),
+        grid_frontier_masks_bits_pool=np.asarray(
+            payload.grid_frontier_masks_bits_pool[source_slot_i, :pool_used, :], dtype=np.uint32
+        ),
+        grid_frontier_head_coeffs_pool=np.asarray(
+            payload.grid_frontier_head_coeffs_pool[source_slot_i, :pool_used, :], dtype=np.int16
+        ),
+        grid_gap=np.asarray(payload.grid_gap[source_slot_i], dtype=np.int32),
+        grid_fever_activations=np.asarray(payload.grid_fever_activations[source_slot_i], dtype=np.int32),
+    )
+    raw = buf.getvalue()
     path = _frontier_disk_cache_path(cache_key)
     tmp: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f"{path.stem}.{threading.get_ident()}.{time.perf_counter_ns()}.tmp.npz")
-        source_slot_i = 0
-        pool_used = max(0, int(payload.frontier_pool_used))
-        np.savez_compressed(
-            tmp,
-            version=np.asarray(_FRONTIER_DISK_CACHE_VERSION),
-            frontier_pool_used=np.asarray(pool_used, dtype=np.int32),
-            grid_count_body_fever=np.asarray(payload.grid_count_body_fever[source_slot_i], dtype=np.int32),
-            grid_count_body_normal=np.asarray(payload.grid_count_body_normal[source_slot_i], dtype=np.int32),
-            grid_head_len=np.asarray(payload.grid_head_len[source_slot_i], dtype=np.int8),
-            grid_fever_masks_bits=np.asarray(payload.grid_fever_masks_bits[source_slot_i], dtype=np.uint32),
-            grid_frontier_count=np.asarray(payload.grid_frontier_count[source_slot_i], dtype=np.int32),
-            grid_frontier_offset=np.asarray(payload.grid_frontier_offset[source_slot_i], dtype=np.int32),
-            grid_frontier_body_fever_pool=np.asarray(
-                payload.grid_frontier_body_fever_pool[source_slot_i, :pool_used], dtype=np.int32
-            ),
-            grid_frontier_body_normal_pool=np.asarray(
-                payload.grid_frontier_body_normal_pool[source_slot_i, :pool_used], dtype=np.int32
-            ),
-            grid_frontier_masks_bits_pool=np.asarray(
-                payload.grid_frontier_masks_bits_pool[source_slot_i, :pool_used, :], dtype=np.uint32
-            ),
-            grid_frontier_head_coeffs_pool=np.asarray(
-                payload.grid_frontier_head_coeffs_pool[source_slot_i, :pool_used, :], dtype=np.int16
-            ),
-            grid_gap=np.asarray(payload.grid_gap[source_slot_i], dtype=np.int32),
-            grid_fever_activations=np.asarray(payload.grid_fever_activations[source_slot_i], dtype=np.int32),
-        )
+        tmp.write_bytes(raw)
         tmp.replace(path)
     except Exception as e:
         logger.debug(f"timeline:_save_frontier_payload_to_disk: {e}")
@@ -586,6 +604,7 @@ def _save_frontier_payload_to_disk(
                 tmp.unlink(missing_ok=True)
             except Exception as e:
                 logger.debug(f"timeline:_save_frontier_payload_to_disk: {e}")
+    return raw
 
 
 def _timeline_song_profile_key(calc_song: dict | None) -> str | None:
@@ -711,23 +730,9 @@ def _get_or_build_frontier_payload_with_source(
         ref_ff=np.asarray(ref_ff, dtype=np.float32),
     )
 
-    _save_frontier_payload_to_disk(cache_key, payload)
-    if frontier_cache_is_ephemeral():
-        return payload, "built"
-    moment = time.monotonic()
-    with _frontier_payload_cache_lock:
-        cached = _frontier_payload_cache.get(cache_key)
-        if isinstance(cached, TimelineFrontierGridPayload):
-            _frontier_payload_cache.move_to_end(cache_key)
-            _frontier_payload_last_access[cache_key] = moment
-            return cached, "memory"
-        _frontier_payload_cache[cache_key] = payload
-        _frontier_payload_cache.move_to_end(cache_key)
-        _frontier_payload_last_access[cache_key] = moment
-        while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
-            stale_key, _stale_value = _frontier_payload_cache.popitem(last=False)
-            _frontier_payload_last_access.pop(stale_key, None)
-
+    raw = _save_frontier_payload_to_disk(cache_key, payload)
+    if not frontier_cache_is_ephemeral():
+        _frontier_payload_memory_put(cache_key, raw)
     return payload, "built"
 
 
@@ -851,8 +856,7 @@ def timeline_frontier_payload_cache_info(
     cache_source = "missing"
     if not frontier_cache_is_ephemeral():
         with _frontier_payload_cache_lock:
-            cached = _frontier_payload_cache.get(cache_key)
-            if isinstance(cached, TimelineFrontierGridPayload):
+            if isinstance(_frontier_payload_cache.get(cache_key), bytes):
                 cache_source = "memory"
     # Report the file that actually serves this key: the current-version path when it
     # exists, else the ratified predecessor's. Returning the (possibly nonexistent)
@@ -1003,22 +1007,10 @@ def _zero_ms_timeline_result(calc_song: dict, ref_arrays: dict) -> TimelineFront
     )
     if payload is None:
         payload = _build_zero_ms_timeline_payload(calc_song, ref_arrays)
-        _save_frontier_payload_to_disk(cache_key, payload)
+        raw = _save_frontier_payload_to_disk(cache_key, payload)
         cache_source = "built"
         if not frontier_cache_is_ephemeral():
-            moment = time.monotonic()
-            with _frontier_payload_cache_lock:
-                cached = _frontier_payload_cache.get(cache_key)
-                if isinstance(cached, TimelineFrontierGridPayload):
-                    payload = cached
-                    cache_source = "memory"
-                else:
-                    _frontier_payload_cache[cache_key] = payload
-                    _frontier_payload_cache.move_to_end(cache_key)
-                    _frontier_payload_last_access[cache_key] = moment
-                    while len(_frontier_payload_cache) > int(_FRONTIER_PAYLOAD_CACHE_MAX):
-                        stale_key, _stale_value = _frontier_payload_cache.popitem(last=False)
-                        _frontier_payload_last_access.pop(stale_key, None)
+            _frontier_payload_memory_put(cache_key, raw)
     return TimelineFrontierPrewarmResult(
         payload=payload,
         cache_key=cache_key,
@@ -1293,4 +1285,3 @@ def reset_timeline_state() -> None:
     _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS
     with _frontier_payload_cache_lock:
         _frontier_payload_cache.clear()
-        _frontier_payload_last_access.clear()
