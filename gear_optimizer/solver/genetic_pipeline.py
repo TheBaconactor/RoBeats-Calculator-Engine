@@ -27,13 +27,6 @@ from ..core.color_flags import normalize_color_flags
 from ..core.profile_events import emit_profile_event, profile_events_active
 from .gpu_tuning_policy import choose_ga_batch_runs
 
-# Optional: GPU-native GA dependencies are probed without importing Taichi eagerly.
-try:
-    _GPU_NATIVE_AVAILABLE = importlib.util.find_spec("taichi") is not None
-except Exception as e:
-    logger.debug(f"genetic:taichi_probe: {e}")
-    _GPU_NATIVE_AVAILABLE = False
-
 
 def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
     # cfg-driven only (config.ini GPU_GA_NoveltyRepairAttempts -> ga_novelty_repair_attempts);
@@ -139,62 +132,60 @@ _GPU_NATIVE_GA_VULKAN_RETRIES = 1
 _GPU_NATIVE_GA_BATCH_RUNS = 0  # auto: choose_ga_batch_runs decides (was GPU_NATIVE_GA_BATCH_RUNS)
 
 
-if _GPU_NATIVE_AVAILABLE:
+def build_ga_init_heuristic_topk(
+    *,
+    item_stats: "np.ndarray",
+    slot_start: "np.ndarray",
+    slot_count: "np.ndarray",
+    primary_color: str,
+    secondary_color: str,
+    heuristic_k: int,
+    n_slots: int = 9,
+) -> "np.ndarray | None":
+    heuristic_k = int(heuristic_k)
+    if heuristic_k <= 0:
+        return None
 
-    def build_ga_init_heuristic_topk(
-        *,
-        item_stats: "np.ndarray",
-        slot_start: "np.ndarray",
-        slot_count: "np.ndarray",
-        primary_color: str,
-        secondary_color: str,
-        heuristic_k: int,
-        n_slots: int = 9,
-    ) -> "np.ndarray | None":
-        heuristic_k = int(heuristic_k)
-        if heuristic_k <= 0:
-            return None
+    color_to_idx = {
+        "Perfect Points": 0,
+        "Combo Multiplier": 1,
+        "Fever Multiplier": 2,
+        "Beat": 5,
+        "Vibe": 6,
+        "Rush": 7,
+        "Flow": 8,
+        "Chill": 9,
+    }
+    p_idx = color_to_idx.get(str(primary_color or ""), -1)
+    s_idx = color_to_idx.get(str(secondary_color or ""), -1)
+    pp_idx = 0
 
-        color_to_idx = {
-            "Perfect Points": 0,
-            "Combo Multiplier": 1,
-            "Fever Multiplier": 2,
-            "Beat": 5,
-            "Vibe": 6,
-            "Rush": 7,
-            "Flow": 8,
-            "Chill": 9,
-        }
-        p_idx = color_to_idx.get(str(primary_color or ""), -1)
-        s_idx = color_to_idx.get(str(secondary_color or ""), -1)
-        pp_idx = 0
+    n_slots = int(n_slots)
+    if n_slots <= 0:
+        return None
 
-        n_slots = int(n_slots)
-        if n_slots <= 0:
-            return None
-
-        topk = np.zeros((n_slots, max(1, heuristic_k)), dtype=np.int32)
-        for slot_i in range(n_slots):
-            start_id = int(slot_start[slot_i])
-            count = int(slot_count[slot_i])
-            if count <= 0:
-                continue
-            ids = np.arange(start_id, start_id + count, dtype=np.int32)
-            sc = np.zeros((count,), dtype=np.int64)
-            if p_idx >= 0:
-                sc += item_stats[ids, p_idx].astype(np.int64) * 2
-            if s_idx >= 0:
-                sc += item_stats[ids, s_idx].astype(np.int64)
-            sc += item_stats[ids, pp_idx].astype(np.int64)
-            k_eff = min(int(heuristic_k), int(count))
-            if k_eff <= 0:
-                continue
-            order = np.lexsort((ids.astype(np.int64), -sc))
-            sel = ids[order[:k_eff]]
-            topk[slot_i, :k_eff] = sel
-            if k_eff < heuristic_k:
-                topk[slot_i, k_eff:heuristic_k] = sel[-1]
-        return topk
+    topk = np.zeros((n_slots, max(1, heuristic_k)), dtype=np.int32)
+    for slot_i in range(n_slots):
+        start_id = int(slot_start[slot_i])
+        count = int(slot_count[slot_i])
+        if count <= 0:
+            continue
+        ids = np.arange(start_id, start_id + count, dtype=np.int32)
+        sc = np.zeros((count,), dtype=np.int64)
+        if p_idx >= 0:
+            sc += item_stats[ids, p_idx].astype(np.int64) * 2
+        if s_idx >= 0:
+            sc += item_stats[ids, s_idx].astype(np.int64)
+        sc += item_stats[ids, pp_idx].astype(np.int64)
+        k_eff = min(int(heuristic_k), int(count))
+        if k_eff <= 0:
+            continue
+        order = np.lexsort((ids.astype(np.int64), -sc))
+        sel = ids[order[:k_eff]]
+        topk[slot_i, :k_eff] = sel
+        if k_eff < heuristic_k:
+            topk[slot_i, k_eff:heuristic_k] = sel[-1]
+    return topk
 
 
 def score_fused_fg_from_selected_payload(
@@ -278,8 +269,6 @@ def upload_ga_song_slot_timeline_state(
     setup_phase_emitter=None,
 ) -> None:
     """Precompute timeline state for one GPU song slot."""
-    if not _GPU_NATIVE_AVAILABLE:
-        raise RuntimeError("GPU-native GA not available (missing dependencies)")
     try:
         gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
     except Exception as exc:
@@ -306,8 +295,6 @@ def upload_ga_global_static_state(
     setup_phase_emitter=None,
 ) -> None:
     """Upload GA global item/base-stat buffers immediately before a GA run."""
-    if not _GPU_NATIVE_AVAILABLE:
-        raise RuntimeError("GPU-native GA not available (missing dependencies)")
     try:
         gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
     except Exception as exc:
@@ -503,9 +490,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             "tables for the song's color context (built at prep via "
             "fg_effective_dedup.effective_tables_for_context)"
         )
-
-    if not _GPU_NATIVE_AVAILABLE:
-        raise RuntimeError("GPU-native GA not available (missing dependencies)")
 
     # Import on-demand so the app can auto-size GPU_SONG_SLOTS before Taichi fields allocate.
     try:

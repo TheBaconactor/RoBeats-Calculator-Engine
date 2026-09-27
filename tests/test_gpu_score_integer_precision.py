@@ -7,15 +7,6 @@ from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 pytestmark = pytest.mark.gpu
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_calc_score_with_grid_bits_preserves_large_integer_body_score() -> None:
     import taichi as ti
 
@@ -47,7 +38,6 @@ def test_calc_score_with_grid_bits_preserves_large_integer_body_score() -> None:
     assert score == 12345 * 1701
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_base_gpu_rescore_uses_best_retained_physical_surface() -> None:
     """The legacy single-grid representative must never replace frontier maximization."""
     import taichi as ti

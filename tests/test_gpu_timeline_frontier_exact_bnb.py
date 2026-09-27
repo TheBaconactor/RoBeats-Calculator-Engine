@@ -6,15 +6,6 @@ import pytest
 pytestmark = pytest.mark.gpu
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
     import taichi as ti
 

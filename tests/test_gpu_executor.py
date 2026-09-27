@@ -10,15 +10,7 @@ import multiprocessing
 import time
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
-pytestmark = [pytest.mark.gpu, pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")]
+pytestmark = pytest.mark.gpu
 
 
 def test_gpu_executor_basic_lifecycle():

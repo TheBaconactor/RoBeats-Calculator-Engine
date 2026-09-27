@@ -14,14 +14,6 @@ pytestmark = pytest.mark.gpu
 _REAL_POOLS = Path("artifacts/profile/_slice1_pools.jsonl")
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
 def _gpu_select(candidates: np.ndarray, gear_name_rank: np.ndarray, mini_sig_id: np.ndarray, *, limit: int) -> set:
     """Run the device select over one run's candidate rows; return selected (score, ids) set.
 
@@ -83,7 +75,6 @@ def _reference_select(candidates: np.ndarray, gear_name_rank: np.ndarray, mini_s
     return out
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_effective_dedup_collapses_equivalent_loadouts_like_reference() -> None:
     # gear ids 1 and 2 share a name rank; mini ids 101 and 102 share a sig.
     gear_name_rank = np.zeros(16, dtype=np.int32)
@@ -113,7 +104,6 @@ def test_gpu_effective_dedup_collapses_equivalent_loadouts_like_reference() -> N
     assert got == expected
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 @pytest.mark.skipif(not _REAL_POOLS.exists(), reason="no captured real pools on this machine")
 def test_gpu_effective_dedup_matches_reference_on_real_pool() -> None:
     line = _REAL_POOLS.read_text(encoding="utf-8").splitlines()[0]

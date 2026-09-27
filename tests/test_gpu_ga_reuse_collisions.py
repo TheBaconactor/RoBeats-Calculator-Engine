@@ -3,8 +3,6 @@
 import numpy as np
 import pytest
 
-pytest.importorskip("taichi")
-
 from gear_optimizer.solver.taichi_gem import fields, kernels
 from gear_optimizer.solver.taichi_gem.api.ga_operations import reset_ga_evaluation_cache
 from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready

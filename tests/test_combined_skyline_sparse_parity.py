@@ -2,18 +2,9 @@ import numpy as np
 import pytest
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
 pytestmark = [pytest.mark.gpu]
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_sparse_matches_cpu_reference_with_duplicates():
     from tests.parity.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
     from tests.parity.exact_skyline import (
@@ -66,7 +57,6 @@ def test_sparse_matches_cpu_reference_with_duplicates():
     assert stats(sparse_g, sparse_m) == stats(cpu_g, cpu_m)
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_sparse_keeps_different_ff_timing_cells():
     from tests.parity.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
 
@@ -87,7 +77,6 @@ def test_sparse_keeps_different_ff_timing_cells():
     }
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_sparse_empty_inputs():
     from tests.parity.combined_skyline_sparse import combined_global_skyline_pairs_6d_sparse
 

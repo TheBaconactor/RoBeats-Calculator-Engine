@@ -1,33 +1,25 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Sequence
+
+import orjson
 
 from ..core.gem_defs import GEM_KEYS, STAT_KEYS
 
 logger = logging.getLogger(__name__)
 
-try:
-    import orjson as _orjson
-except Exception:  # pragma: no cover - optional dependency
-    _orjson = None
-
 
 def _json_dumps_compact(value: Any) -> str:
-    """Serialize JSON using compact separators, with optional orjson acceleration."""
-    if _orjson is not None:
-        return _orjson.dumps(value).decode("utf-8")
-    return json.dumps(value, separators=(",", ":"))
+    """Serialize JSON compactly with orjson."""
+    return orjson.dumps(value).decode("utf-8")
 
 
 def _json_loads(value: Any) -> Any:
-    """Deserialize JSON with optional orjson acceleration."""
+    """Deserialize JSON with orjson."""
     if value is None or value == "":
         return None
-    if _orjson is not None:
-        return _orjson.loads(value)
-    return json.loads(value)
+    return orjson.loads(value)
 
 
 def _encode_uvarint(value: int) -> bytes:

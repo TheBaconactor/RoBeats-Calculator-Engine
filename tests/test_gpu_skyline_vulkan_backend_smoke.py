@@ -6,15 +6,6 @@ import pytest
 pytestmark = pytest.mark.gpu
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 @pytest.mark.skipif(sys.platform != "darwin", reason="Regression reproduces on macOS Vulkan")
 def test_skyline_warmup_compiles_on_macos_vulkan() -> None:
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields

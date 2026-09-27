@@ -1,16 +1,3 @@
-import pytest
-
-
-def _has_taichi() -> bool:
-    try:
-        import taichi  # noqa: F401
-
-        return True
-    except Exception:
-        return False
-
-
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_timeline_slot_cache_key_is_tuple_and_stable():
     from gear_optimizer.solver.taichi_gem.api.initialization import _ref_arrays_sig
     from gear_optimizer.solver.taichi_gem.api.timeline import _song_timing_cache_key

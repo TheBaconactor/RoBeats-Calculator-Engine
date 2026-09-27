@@ -27,7 +27,6 @@ import numpy as np
 import pytest
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.solver import genetic_pipeline_decode as genetic_decode
 from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
@@ -48,14 +47,6 @@ _BASE_STATS7_COL0 = 2 + 1 + 9 + 7  # run_idx,row_idx + score + ids(9) + results(
 _PRIMARY_COLOR = "Beat"
 _SECONDARY_COLOR = "Flow"
 _SELECTED_COLOR = "Rush"
-
-
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
 
 
 def _item(name: str, **stats: int) -> dict:
@@ -161,11 +152,6 @@ def real_ga_run():
 
     Yields (decoded_candidates, payload_base_stats7, calc_song, ref_arrays).
     """
-    if not _has_taichi():
-        pytest.skip("Taichi not available")
-    if not getattr(genetic_decode, "_GPU_NATIVE_AVAILABLE", False):
-        pytest.skip("GPU-native GA modules not available")
-
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload,

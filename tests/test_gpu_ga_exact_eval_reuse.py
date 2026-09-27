@@ -7,14 +7,6 @@ import pytest
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
 pytestmark = pytest.mark.gpu
 
 
@@ -29,7 +21,6 @@ def _stage_population(population: np.ndarray, *, n_slots: int = 9) -> None:
     fields.population_indices.from_numpy(buf)
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_ga_aggregate_genome_stats_kernel_always_aggregates_every_genome():
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api import ensure_ready

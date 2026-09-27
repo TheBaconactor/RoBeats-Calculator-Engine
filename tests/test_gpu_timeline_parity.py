@@ -19,7 +19,6 @@ pytestmark = pytest.mark.gpu
 
 @pytest.fixture(scope="module", autouse=True)
 def _taichi_ready():
-    pytest.importorskip("taichi")
     try:
         from gear_optimizer.solver.taichi_gem.runtime import init_taichi
 

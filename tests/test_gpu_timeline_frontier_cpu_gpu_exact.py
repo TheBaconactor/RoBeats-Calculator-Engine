@@ -2,14 +2,6 @@ import numpy as np
 import pytest
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
 pytestmark = pytest.mark.gpu
 
 
@@ -37,7 +29,6 @@ def _cpu_frontier_payload(calc_song: dict, ref_arrays: dict):
     )
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
     """
     Ensure the uploaded GPU fields match the exact CPU frontier payload on a synthetic chart.
@@ -132,7 +123,6 @@ def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
         )
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_timeline_frontier_repeated_upload_matches_baseline() -> None:
     """
     Ensure repeated exact frontier uploads produce identical grid outputs.

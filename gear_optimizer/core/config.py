@@ -212,11 +212,7 @@ def compute_memory_guard_limit(cfg):
     if limit_gb > 0:
         candidates.append(limit_gb * (1024**3))
     if effective_percent > 0:
-        total_ram = detect_total_physical_memory()
-        if total_ram > 0:
-            candidates.append(total_ram * (effective_percent / 100.0))
-        else:
-            logging.warning("[MemoryGuard] Physical RAM auto-detect failed; percent limit ignored.")
+        candidates.append(detect_total_physical_memory() * (effective_percent / 100.0))
     if not candidates:
         return 0
     return int(min(candidates))

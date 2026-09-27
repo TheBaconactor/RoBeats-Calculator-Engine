@@ -112,35 +112,6 @@ def prebuild_timeline_frontier():
 
 
 # -----------------------------------------------------------------------------
-# Optional pytest-benchmark support
-# -----------------------------------------------------------------------------
-
-try:
-    import pytest_benchmark  # noqa: F401
-
-    _HAS_PYTEST_BENCHMARK = True
-except Exception:
-    _HAS_PYTEST_BENCHMARK = False
-
-
-if not _HAS_PYTEST_BENCHMARK:
-
-    @pytest.fixture
-    def benchmark():
-        """
-        Minimal fallback for environments without pytest-benchmark installed.
-
-        The real plugin measures timings; for CI runs we only need the
-        benchmark tests to execute without failing collection.
-        """
-
-        def _runner(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        return _runner
-
-
-# -----------------------------------------------------------------------------
 # Taichi/Vulkan test isolation
 # -----------------------------------------------------------------------------
 

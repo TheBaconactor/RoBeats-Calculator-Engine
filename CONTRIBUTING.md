@@ -14,6 +14,8 @@ Participation in this project is governed by the [`CODE_OF_CONDUCT.md`](CODE_OF_
 
 ## Development setup
 
+Use Python 3.11 or newer.
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate

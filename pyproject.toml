@@ -3,17 +3,18 @@ name = "robeats-calculator-engine"
 version = "2.0.0"
 description = "State-of-the-art GPU-native RoBeats calculator with integer-exact score modeling"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 keywords = ["robeats", "optimization", "gpu", "taichi", "numba"]
 dependencies = [
-    "numpy==1.26.4",
-    "numba==0.59.1",
+    "numpy==2.3.5",
+    "numba==0.62.1",
+    "llvmlite==0.45.1",
     "taichi==1.7.4",
     "psutil==7.1.3",
     "requests==2.33.0",
-    "python-dotenv==1.2.2",
     "cachetools==6.2.4",
+    "orjson==3.11.6",
 ]
 
 [project.urls]
@@ -23,7 +24,7 @@ Issues = "https://github.com/TheBaconactor/RoBeats-Calculator-Engine/issues"
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 
 # Include all Python files
 include = ["gear_optimizer/**/*.py", "tests/**/*.py", "scripts/**/*.py", "tools/**/*.py", "*.py"]

@@ -10,15 +10,6 @@ from gear_optimizer.solver.taichi_gem.api.ga_operations import ga_download_fg_se
 pytestmark = pytest.mark.gpu
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_fg_selected_payload_header_uses_selected_top_base_row() -> None:
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
 

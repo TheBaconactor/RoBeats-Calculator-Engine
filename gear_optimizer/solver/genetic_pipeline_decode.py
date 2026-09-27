@@ -9,7 +9,6 @@ GPU-native GA path and the in-flight pipeline (GpuExecutor owner thread for
 kernels + CPU main thread for formatting).
 """
 
-import importlib.util
 import logging
 import time
 
@@ -35,14 +34,6 @@ from .scoring.stats_ops import apply_gems_to_base_stats
 
 logger = logging.getLogger(__name__)
 
-# GPU-native availability is probed independently here (do not couple to the
-# genetic_pipeline run-loop global). Taichi is not imported eagerly.
-try:
-    _GPU_NATIVE_AVAILABLE = importlib.util.find_spec("taichi") is not None
-except Exception as e:
-    logger.debug(f"genetic_decode:taichi_probe: {e}")
-    _GPU_NATIVE_AVAILABLE = False
-
 # DEV / DEBUG: PERF_TIMING (local copy; tests setattr module globals directly).
 _PERF_TIMING = env_flag("PERF_TIMING", "0")
 
@@ -65,9 +56,6 @@ def decode_gpu_native_ga_runs_payload(
     Important: This function must remain GPU-free (no Taichi calls). It only
     decodes the payload and reconstructs candidate dicts for downstream stages.
     """
-    if not _GPU_NATIVE_AVAILABLE:
-        raise RuntimeError("GPU-native GA not available (missing dependencies)")
-
     runs_payload = np.asarray(runs_payload, dtype=np.int32)
     if runs_payload.ndim == 2:
         # GPU-selected payload format (preferred):

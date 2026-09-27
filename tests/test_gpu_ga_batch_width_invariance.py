@@ -49,14 +49,6 @@ _N_GENERATIONS = 6
 _GA_SEED = 20260612
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
 def _item(name: str, **stats: int) -> dict:
     out = {"Name": name}
     out.update(stats)
@@ -226,11 +218,7 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
     return np.asarray(payload, dtype=np.int32)
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_batch_width_invariant_batch2x3_equals_batch6(monkeypatch):
-    if not getattr(genetic, "_GPU_NATIVE_AVAILABLE", False):
-        pytest.skip("GPU-native GA modules not available")
-
     # Sanity: this geometry actually exercises both regimes -- batch-2 stays under
     # the eval budget (no combo chunking) while batch-6 exceeds it (combo chunking
     # accumulates across chunks). If they were not distinct schedules the proof

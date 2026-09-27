@@ -8,13 +8,12 @@ Features:
 - Background thread monitoring RSS usage
 - Automatic cleanup triggers for process pool workers
 - Resume queue tracking for interrupted batches
-- Cross-platform memory detection (Windows, macOS, Linux)
+- Physical RAM detection via psutil
 """
 
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -26,18 +25,13 @@ from dataclasses import dataclass
 
 from gear_optimizer.song_queue import normalize_queue_item, queue_path_key
 
-try:
-    import psutil
-except ImportError:
-    psutil = None
+import psutil
 
 # Errors a per-process RSS read can raise. `psutil.AccessDenied` is a `psutil.Error`, NOT an
 # `OSError`, so it must be listed explicitly or it escapes the read guard and kills the
 # watchdog thread (on macOS, `memory_full_info()` on a CHILD process needs the `task_for_pid`
 # entitlement and raises AccessDenied).
-_RSS_READ_ERRORS: tuple[type[BaseException], ...] = (OSError, AttributeError, ValueError)
-if psutil is not None:
-    _RSS_READ_ERRORS = _RSS_READ_ERRORS + (psutil.Error,)
+_RSS_READ_ERRORS: tuple[type[BaseException], ...] = (OSError, AttributeError, ValueError, psutil.Error)
 
 from .constants import MEMORY_WATCHDOG_INTERVAL_SEC, PATHS
 
@@ -47,8 +41,6 @@ MEMORY_WATCHDOG_THREAD = None
 MEMORY_WATCHDOG_EVENT = threading.Event()
 MEMORY_WATCHDOG_ANNOUNCED_LIMIT = None
 MEMORY_WATCHDOG_TOTAL_RAM_BYTES = None
-MEMORY_WATCHDOG_TOTAL_RAM_LOGGED = False
-MEMORY_WATCHDOG_PSUTIL_WARNED = False
 MEMORY_GUARD_RESUME_FILE = PATHS.bin_path("memory_guard_resume.json")
 
 
@@ -139,8 +131,6 @@ def _memory_watchdog_loop():
     Background thread loop that monitors memory usage.
     Triggers graceful shutdown when RSS exceeds soft limit.
     """
-    if psutil is None:
-        return
     process = psutil.Process(os.getpid())
     include_compressed = sys.platform == "darwin"
     while True:
@@ -161,8 +151,6 @@ def _memory_watchdog_loop():
 def ensure_memory_watchdog_thread():
     """Start the memory watchdog thread if not already running."""
     global MEMORY_WATCHDOG_THREAD
-    if psutil is None:
-        return
     if MEMORY_WATCHDOG_THREAD and MEMORY_WATCHDOG_THREAD.is_alive():
         return
     MEMORY_WATCHDOG_THREAD = threading.Thread(target=_memory_watchdog_loop, name="MemoryWatchdog", daemon=True)
@@ -176,18 +164,11 @@ def set_memory_watchdog_limit(limit_bytes):
     Args:
         limit_bytes: RSS limit in bytes (0 to disable)
     """
-    global MEMORY_WATCHDOG_LIMIT_BYTES, MEMORY_WATCHDOG_ANNOUNCED_LIMIT, MEMORY_WATCHDOG_PSUTIL_WARNED
+    global MEMORY_WATCHDOG_LIMIT_BYTES, MEMORY_WATCHDOG_ANNOUNCED_LIMIT
     limit_bytes = max(0, int(limit_bytes or 0))
     MEMORY_WATCHDOG_LIMIT_BYTES = limit_bytes
     if limit_bytes <= 0:
         MEMORY_WATCHDOG_ANNOUNCED_LIMIT = None
-        return
-    if psutil is None:
-        if not MEMORY_WATCHDOG_PSUTIL_WARNED:
-            warn = "[MemoryGuard] psutil is unavailable; memory watchdog cannot monitor RSS."
-            logging.warning(warn)
-            print(warn)
-            MEMORY_WATCHDOG_PSUTIL_WARNED = True
         return
     ensure_memory_watchdog_thread()
     if MEMORY_WATCHDOG_ANNOUNCED_LIMIT != limit_bytes:
@@ -197,109 +178,16 @@ def set_memory_watchdog_limit(limit_bytes):
 
 def detect_total_physical_memory():
     """
-    Detect total physical RAM in bytes using psutil (preferred) or
-    platform-specific fallbacks so we can derive percentage-based limits.
+    Detect total physical RAM in bytes with psutil (cached after the first call)
+    so we can derive percentage-based limits.
 
     Returns:
-        int: Total physical RAM in bytes (0 if detection fails)
+        int: Total physical RAM in bytes
     """
-    global MEMORY_WATCHDOG_TOTAL_RAM_BYTES, MEMORY_WATCHDOG_TOTAL_RAM_LOGGED
-    if MEMORY_WATCHDOG_TOTAL_RAM_BYTES is not None:
-        return MEMORY_WATCHDOG_TOTAL_RAM_BYTES
-
-    def _safe_detect(func):
-        try:
-            value = int(func() or 0)
-            if value > 0:
-                return value
-        except (OSError, TypeError, ValueError):
-            return 0
-        return 0
-
-    detectors = []
-    if psutil is not None:
-        _psutil = psutil
-        detectors.append(lambda _psutil=_psutil: _psutil.virtual_memory().total)
-
-    if os.name == "nt":
-
-        def _win32_ctypes_total():
-            import ctypes
-
-            kernel32 = ctypes.windll.kernel32
-            get_mem = getattr(kernel32, "GetPhysicallyInstalledSystemMemory", None)
-            if not get_mem:
-                return 0
-            value = ctypes.c_ulonglong(0)
-            if get_mem(ctypes.byref(value)):
-                return value.value * 1024
-            return 0
-
-        def _wmic_total():
-            out = subprocess.check_output(
-                ["wmic", "computersystem", "get", "TotalPhysicalMemory"],
-                text=True,
-                timeout=3,
-            )
-            for line in out.splitlines():
-                line = line.strip()
-                if line.isdigit():
-                    return int(line)
-            return 0
-
-        detectors.extend((_win32_ctypes_total, _wmic_total))
-    else:
-
-        def _sysconf_total():
-            page_size = os.sysconf("SC_PAGE_SIZE")
-            phys_pages = os.sysconf("SC_PHYS_PAGES")
-            return int(page_size) * int(phys_pages)
-
-        detectors.append(_sysconf_total)
-
-        if sys.platform == "darwin":
-
-            def _sysctl_total():
-                out = subprocess.check_output(
-                    ["sysctl", "-n", "hw.memsize"],
-                    text=True,
-                    timeout=3,
-                )
-                return int(out.strip())
-
-            detectors.append(_sysctl_total)
-        else:
-
-            def _proc_meminfo_total():
-                try:
-                    with open("/proc/meminfo", "r", encoding="utf-8") as fh:
-                        for line in fh:
-                            if line.lower().startswith("memtotal:"):
-                                match = re.search(r"(\\d+)", line)
-                                if match:
-                                    return int(match.group(1)) * 1024
-                except FileNotFoundError:
-                    return 0
-                return 0
-
-            detectors.append(_proc_meminfo_total)
-
-    for detector in detectors:
-        total = _safe_detect(detector)
-        if total:
-            MEMORY_WATCHDOG_TOTAL_RAM_BYTES = total
-            break
-    else:
-        MEMORY_WATCHDOG_TOTAL_RAM_BYTES = 0
-
-    if MEMORY_WATCHDOG_TOTAL_RAM_BYTES > 0:
-        if not MEMORY_WATCHDOG_TOTAL_RAM_LOGGED:
-            print(f"[MemoryGuard] Detected physical RAM: {_bytes_to_gb(MEMORY_WATCHDOG_TOTAL_RAM_BYTES):.2f} GB")
-            MEMORY_WATCHDOG_TOTAL_RAM_LOGGED = True
-    elif not MEMORY_WATCHDOG_TOTAL_RAM_LOGGED:
-        logging.warning("[MemoryGuard] Unable to auto-detect physical RAM; percent-based soft limit disabled.")
-        MEMORY_WATCHDOG_TOTAL_RAM_LOGGED = True
-
+    global MEMORY_WATCHDOG_TOTAL_RAM_BYTES
+    if MEMORY_WATCHDOG_TOTAL_RAM_BYTES is None:
+        MEMORY_WATCHDOG_TOTAL_RAM_BYTES = int(psutil.virtual_memory().total)
+        print(f"[MemoryGuard] Detected physical RAM: {_bytes_to_gb(MEMORY_WATCHDOG_TOTAL_RAM_BYTES):.2f} GB")
     return MEMORY_WATCHDOG_TOTAL_RAM_BYTES
 
 

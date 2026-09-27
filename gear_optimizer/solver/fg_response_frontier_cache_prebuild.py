@@ -543,27 +543,23 @@ def build_fg_response_frontier_cache_for_path(
     if profile_events_active():
         # Per-song worker memory ground truth: calibrates/validates the admission weight anchors
         # (peak_wset/private are Windows-only psutil fields; 0.0 elsewhere).
-        try:
-            import psutil
+        import psutil
 
-            memory = psutil.Process().memory_info()
-        except ImportError:
-            memory = None
-        if memory is not None:
-            timestamps = calc_song.get("song_data", {}).get("timestamps", ())
-            emit_profile_event(
-                component="fg_response_cache",
-                event="prebuild_song_done",
-                song_key=song_path.name,
-                metrics={
-                    "build_ms": float(result.elapsed_ms),
-                    "source": str(result.cache_source),
-                    "note_count": int(len(timestamps) if timestamps is not None else 0),
-                    "rss_gb": float(memory.rss) / 1e9,
-                    "peak_wset_gb": float(getattr(memory, "peak_wset", 0)) / 1e9,
-                    "private_gb": float(getattr(memory, "private", 0)) / 1e9,
-                },
-            )
+        memory = psutil.Process().memory_info()
+        timestamps = calc_song.get("song_data", {}).get("timestamps", ())
+        emit_profile_event(
+            component="fg_response_cache",
+            event="prebuild_song_done",
+            song_key=song_path.name,
+            metrics={
+                "build_ms": float(result.elapsed_ms),
+                "source": str(result.cache_source),
+                "note_count": int(len(timestamps) if timestamps is not None else 0),
+                "rss_gb": float(memory.rss) / 1e9,
+                "peak_wset_gb": float(getattr(memory, "peak_wset", 0)) / 1e9,
+                "private_gb": float(getattr(memory, "private", 0)) / 1e9,
+            },
+        )
     return FgResponseFrontierCacheBuildResult(
         path=str(song_path),
         source=str(result.cache_source),

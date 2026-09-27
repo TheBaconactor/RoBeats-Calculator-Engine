@@ -25,7 +25,6 @@ import numpy as np
 import pytest
 
 from gear_optimizer.core.color_flags import build_color_flags, normalize_color_flags
-from gear_optimizer.solver import genetic_pipeline as genetic
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
@@ -40,14 +39,6 @@ _N_SLOTS = 9
 _TOTAL_BUDGET = 90
 _GEM_SCALE_FEVER = 3
 _SONG_SLOT = 0
-
-
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
 
 
 def _item(name: str, **stats: int) -> dict:
@@ -263,11 +254,6 @@ def _make_exhaustive_reference_kernel():
 @pytest.fixture(scope="module")
 def eval_device_state():
     """Upload real GA device state (timeline, items, seeded population) once."""
-    if not _has_taichi():
-        pytest.skip("Taichi not available")
-    if not getattr(genetic, "_GPU_NATIVE_AVAILABLE", False):
-        pytest.skip("GPU-native GA modules not available")
-
     import importlib
 
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready

@@ -8,14 +8,6 @@ import pytest
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
 pytestmark = pytest.mark.gpu
 
 
@@ -51,7 +43,6 @@ def _download_population_indices(*, n_genomes: int, n_slots: int = 9) -> np.ndar
     return np.asarray(fields.population_indices.to_numpy()[: int(n_genomes), : int(n_slots)], dtype=np.int32)
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_load_initial_populations_batch_roundtrip():
     from gear_optimizer.solver.taichi_gem.api import (
         ga_upload_initial_populations,
@@ -74,7 +65,6 @@ def test_gpu_ga_load_initial_populations_batch_roundtrip():
     assert np.array_equal(out, expected)
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_run_buffer_config_restores_defaults_after_hard_reset():
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready, hard_reset_taichi
@@ -100,7 +90,6 @@ def test_gpu_ga_run_buffer_config_restores_defaults_after_hard_reset():
         hard_reset_taichi(reason="test cleanup ga run buffers")
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_next_generation_fused_runs_matches_sequential():
     from gear_optimizer.solver.taichi_gem.api import (
         ga_seed_rng_runs,
@@ -173,7 +162,6 @@ def test_gpu_ga_next_generation_fused_runs_matches_sequential():
     assert np.array_equal(out[n_genomes:], seq_out[1])
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_indexed_seed_batched_runs_match_sequential_seed_series():
     from gear_optimizer.solver.taichi_gem.api import (
         ga_seed_rng_runs,
@@ -240,7 +228,6 @@ def test_gpu_ga_indexed_seed_batched_runs_match_sequential_seed_series():
     assert np.array_equal(out[n_genomes:], seq_out[1])
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_next_generation_fused_runs_repairs_parent_clones():
     from gear_optimizer.solver.taichi_gem.api import (
         ga_next_generation_fused_runs,
@@ -279,7 +266,6 @@ def test_gpu_ga_next_generation_fused_runs_repairs_parent_clones():
     assert len(unique_rows) > 1
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_refresh_next_fused_runs_matches_separate_transition():
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api import (

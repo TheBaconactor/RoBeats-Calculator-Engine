@@ -2,14 +2,6 @@ import numpy as np
 import pytest
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi as _  # noqa: F401
-    except Exception:
-        return False
-    return True
-
-
 pytestmark = [pytest.mark.gpu]
 
 
@@ -32,7 +24,6 @@ def _point_code_rows(points: np.ndarray, codes: np.ndarray) -> list[tuple[int, .
     )
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_global_gear_skyline_gpu_matches_cpu_reference():
     from tests.parity.exact_skyline import (
         _global_gear_skyline_points_6d_lane_base_with_codes,

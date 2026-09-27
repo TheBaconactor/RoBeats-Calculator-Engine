@@ -1,17 +1,6 @@
 import numpy as np
-import pytest
 
 
-def _has_taichi() -> bool:
-    try:
-        import taichi  # noqa: F401
-
-        return True
-    except Exception:
-        return False
-
-
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_ensure_ftff_combo_tables_order_and_cache(monkeypatch):
     from gear_optimizer.solver.taichi_gem.api import initialization as init
 
@@ -50,7 +39,6 @@ def test_ensure_ftff_combo_tables_order_and_cache(monkeypatch):
     assert int(uploads["calls"]) == calls_after_first
 
 
-@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_ensure_ftff_combo_tables_respects_global_caps(monkeypatch):
     from gear_optimizer.solver.taichi_gem.api import initialization as init
 

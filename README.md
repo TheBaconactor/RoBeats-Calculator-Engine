@@ -6,7 +6,7 @@
 
 **The #1 state-of-the-art RoBeats calculator—integer-exact scoring, exact timing frontiers, and GPU-native search.**
 
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Numba](https://img.shields.io/badge/Numba-JIT-00A3E0)](https://numba.pydata.org/)
 [![Taichi](https://img.shields.io/badge/Taichi-Vulkan-000000)](https://www.taichi-lang.org/)
@@ -52,7 +52,7 @@ This is production community infrastructure, not a showcase-only calculator. The
 
 ## Requirements
 
-- Python 3.10 or newer
+- Python 3.11 or newer
 - A Vulkan-capable GPU with current graphics drivers
 - Git
 - Disk space for dependencies, JIT output, chart data, and frontier caches
@@ -86,7 +86,7 @@ python -m pip install -r requirements.txt
 <summary><strong>Windows PowerShell</strong></summary>
 
 ```powershell
-py -3.10 -m venv .venv
+py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
