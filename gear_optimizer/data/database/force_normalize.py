@@ -3,7 +3,6 @@ Force-Greats payload normalization, base-score derivation, and pairing asserts,
 plus stats-reconstruction helpers used when persisting details.
 """
 from typing import Any, Optional
-from ...core.fallback_monitor import warn_fallback
 from ...core.gem_defs import element_gem_count
 from ...core.utils import safe_int as _safe_int_for_db
 from ...core.team_buff import team_buff_effect
@@ -53,12 +52,6 @@ def _ensure_stats_in_details(
     stats_obj = details.get("Stats")
     if isinstance(stats_obj, dict) and stats_obj:
         return details
-    warn_fallback(
-        "db.ensure_stats",
-        "details missing Stats, reconstructing stats for persistence",
-        context={"team_buff": team_buff or "", "team_color": team_color or ""},
-        fatal=False,
-    )
     from gear_optimizer.core.stats_calculator import compute_full_stats
     from gear_optimizer.data import database as _db
     gear_names = []

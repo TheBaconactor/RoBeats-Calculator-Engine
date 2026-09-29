@@ -7,11 +7,10 @@ This is THE one post-processing path; there is no second/alternate route.
 """
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
+import configparser
 from typing import Any, Callable
 
-from gear_optimizer.core.fallback_monitor import FallbackAwareConfigParser
 from gear_optimizer.core.utils import cfg_from_dict, safe_int
 from gear_optimizer.helpers.song_helpers.persistence_canon import (
     ReplayContext,
@@ -24,7 +23,6 @@ from gear_optimizer.helpers.song_helpers.persistence_payload import (
 from gear_optimizer.domain.results import PersistenceBatch
 from gear_optimizer.pipeline.post_processor_fg_variants import best_fg_improving_score_from_variants
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -43,7 +41,7 @@ class PostPersistContext:
 
 def build_post_persist_context(item: dict[str, Any]) -> PostPersistContext:
     cfg_dict = item.get("cfg_dict") or {}
-    cfg = cfg_from_dict(cfg_dict) if cfg_dict else FallbackAwareConfigParser()
+    cfg = cfg_from_dict(cfg_dict) if cfg_dict else configparser.ConfigParser()
 
     primary = str(item.get("meta_primary_color") or "")
     secondary = str(item.get("meta_secondary_color") or "")

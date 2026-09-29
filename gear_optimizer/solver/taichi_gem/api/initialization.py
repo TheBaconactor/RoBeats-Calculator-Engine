@@ -8,7 +8,6 @@ This module provides initialization and setup functions:
 """
 
 from __future__ import annotations
-import logging
 
 import taichi as ti
 import numpy as np
@@ -29,7 +28,6 @@ from ..fields import (
 
 
 
-logger = logging.getLogger(__name__)
 # ============================================================================
 # REFERENCE LOADING STATE
 # ============================================================================
@@ -109,19 +107,13 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     _reset_taichi_runtime(reason=reason)
 
     # Clear all Taichi field allocation state (fields are invalid after reset)
-    try:
-        from ..fields import reset_fields_state as _reset_fields_state
+    from ..fields import reset_fields_state as _reset_fields_state
 
-        _reset_fields_state()
-    except Exception as e:
-        logger.debug(f"initialization:hard_reset_taichi: {e}")
+    _reset_fields_state()
 
-    try:
-        from ..force_greats.fields import reset_fields_state as _reset_fg_fields_state
+    from ..force_greats.fields import reset_fields_state as _reset_fg_fields_state
 
-        _reset_fg_fields_state()
-    except Exception as e:
-        logger.debug(f"initialization:hard_reset_taichi: {e}")
+    _reset_fg_fields_state()
 
     # Clear API-level caches that assume device state exists
     _ref_loaded = False
@@ -130,26 +122,17 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     _FTFF_COMBO_CACHE = {"key": None, "n_combos": 0}
     _TIMING_RESPONSE_COMBO_CACHE = {"key": None, "n_combos": 0}
 
-    try:
-        from .timeline import reset_timeline_state as _reset_timeline_state
+    from .timeline import reset_timeline_state as _reset_timeline_state
 
-        _reset_timeline_state()
-    except Exception as e:
-        logger.debug(f"initialization:hard_reset_taichi: {e}")
+    _reset_timeline_state()
 
-    try:
-        from ..force_greats.fields import reset_force_greats_api_state as _reset_fg_api_state
+    from ..force_greats.fields import reset_force_greats_api_state as _reset_fg_api_state
 
-        _reset_fg_api_state()
-    except Exception as e:
-        logger.debug(f"initialization:hard_reset_taichi: {e}")
+    _reset_fg_api_state()
 
-    try:
-        from .ga_operations import reset_ga_upload_caches as _reset_ga_caches
+    from .ga_operations import reset_ga_upload_caches as _reset_ga_caches
 
-        _reset_ga_caches()
-    except Exception as e:
-        logger.debug(f"initialization:hard_reset_taichi: {e}")
+    _reset_ga_caches()
 
 
 def _ensure_ftff_combo_tables(

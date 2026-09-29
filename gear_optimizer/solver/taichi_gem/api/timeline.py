@@ -461,11 +461,12 @@ def _load_frontier_payload_from_disk(cache_key: tuple) -> tuple[TimelineFrontier
             return None
         return payload, raw
     except Exception as e:
+        # An unreadable or corrupt payload is a cache miss: drop it so the next build rewrites it.
         logger.debug(f"timeline:_load_frontier_payload_from_disk: {e}")
         try:
             path.unlink(missing_ok=True)
-        except Exception as e:
-            logger.debug(f"timeline:_load_frontier_payload_from_disk: {e}")
+        except OSError:
+            pass
         return None
 
 
@@ -598,26 +599,23 @@ def _save_frontier_payload_to_disk(
         tmp.write_bytes(raw)
         tmp.replace(path)
     except Exception as e:
+        # The disk tier is an optimization: a failed write leaves the in-memory payload in use.
         logger.debug(f"timeline:_save_frontier_payload_to_disk: {e}")
         if tmp is not None:
             try:
                 tmp.unlink(missing_ok=True)
-            except Exception as e:
-                logger.debug(f"timeline:_save_frontier_payload_to_disk: {e}")
+            except OSError:
+                pass
     return raw
 
 
 def _timeline_song_profile_key(calc_song: dict | None) -> str | None:
-    try:
-        meta = (calc_song or {}).get("metadata", {}) or {}
-        song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
-        if not song_name:
-            return None
-        diff = str(meta.get("Difficulty") or "").strip()
-        return f"{song_name} ({diff})" if diff else song_name
-    except Exception as e:
-        logger.debug(f"timeline:_timeline_song_profile_key: {e}")
+    meta = (calc_song or {}).get("metadata", {}) or {}
+    song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
+    if not song_name:
         return None
+    diff = str(meta.get("Difficulty") or "").strip()
+    return f"{song_name} ({diff})" if diff else song_name
 
 
 def _emit_timeline_phase(

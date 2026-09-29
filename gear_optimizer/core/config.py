@@ -10,7 +10,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from .fallback_monitor import FallbackAwareConfigParser, warn_fallback
 from .constants import (
     DEFAULT_MEMORY_GUARD_PERCENT,
     GA_ELITISM,
@@ -21,7 +20,7 @@ from .constants import (
     PATHS,
 )
 from .parsing import env_get, env_str
-from .utils import safe_float, safe_int
+from .utils import safe_int
 _EXTENDS_KEY = "_extends"
 def get_config_path(default: str = "config.ini") -> str:
     """
@@ -79,39 +78,27 @@ def load_config(path: str | None = None) -> configparser.ConfigParser:
     This intentionally does not raise on missing files to preserve existing behavior in entrypoints
     that historically used `ConfigParser().read(...)` without checking the return value.
     """
-    cfg = FallbackAwareConfigParser()
+    cfg = configparser.ConfigParser()
     cfg_path = str(path or get_config_path())
     chain = _resolve_extends_chain(cfg_path)
     try:
         cfg.read(chain, encoding="utf-8-sig")
     except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
-        warn_fallback("config.load.read_error", "failed to read config file", context={"path": cfg_path}, exc=exc)
         logging.debug(f"[Config] Failed to read {cfg_path}: {type(exc).__name__}: {exc}")
     for section in cfg.sections():
         if cfg.has_option(section, _EXTENDS_KEY):
             cfg.remove_option(section, _EXTENDS_KEY)
     return cfg
-def _warn_cfg_fallback(method: str, section: str, key: str, default: Any, exc: BaseException) -> None:
-    warn_fallback(
-        f"config.{method}.invalid",
-        "failed reading config value; using default",
-        context={"section": section, "option": key, "fallback": default},
-        exc=exc,
-    )
+def _warn_cfg_fallback(section: str, key: str, default: Any, exc: BaseException) -> None:
+    logging.warning("[Config] Invalid value for [%s] %s (%s); using %r", section, key, exc, default)
 def _parse_cfg_int(raw: Any) -> int:
     sentinel = object()
     parsed = safe_int(raw, sentinel)
     if parsed is sentinel:
         raise ValueError(f"invalid integer value: {raw!r}")
     return int(parsed)
-_parse_cfg_int.__name__ = "getint"
 def _parse_cfg_float(raw: Any) -> float:
-    sentinel = object()
-    parsed = safe_float(raw, sentinel)
-    if parsed is sentinel:
-        raise ValueError(f"invalid float value: {raw!r}")
-    return float(parsed)
-_parse_cfg_float.__name__ = "getfloat"
+    return float(raw)
 def cfg_get(cfg: Any, section: str, key: str, type_, default: Any, *, clamp_min=None, clamp_max=None):
     try:
         raw = cfg.get(section, key, fallback=default)
@@ -120,12 +107,7 @@ def cfg_get(cfg: Any, section: str, key: str, type_, default: Any, *, clamp_min=
         else:
             value = type_(raw)
     except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
-        method = "get"
-        if type_ is _parse_cfg_int:
-            method = "getint"
-        elif type_ is _parse_cfg_float:
-            method = "getfloat"
-        _warn_cfg_fallback(method, section, key, default, exc)
+        _warn_cfg_fallback(section, key, default, exc)
         return default
     if clamp_min is not None or clamp_max is not None:
         try:
@@ -134,14 +116,14 @@ def cfg_get(cfg: Any, section: str, key: str, type_, default: Any, *, clamp_min=
             if clamp_max is not None:
                 value = min(clamp_max, value)
         except (TypeError, ValueError) as exc:
-            _warn_cfg_fallback("get", section, key, default, exc)
+            _warn_cfg_fallback(section, key, default, exc)
             return default
     return value
 def cfg_get_bool(cfg: Any, section: str, key: str, default: bool = False) -> bool:
     try:
         return bool(cfg.getboolean(section, key, fallback=default))
     except (AttributeError, TypeError, ValueError, configparser.Error) as exc:
-        _warn_cfg_fallback("getboolean", section, key, default, exc)
+        _warn_cfg_fallback(section, key, default, exc)
         return bool(default)
 def cfg_get_int(
     cfg: Any,
@@ -522,13 +504,6 @@ def load_paths_cache():
                 if all(cached.get(k) for k in ["Easy", "Normal", "Hard", "Gears", "Stats"]):
                     return cached
         except (OSError, json.JSONDecodeError, KeyError) as e:
-            warn_fallback(
-                "config.paths_cache.read",
-                "failed loading paths cache; rediscovering paths",
-                context={"cache_file": cache_file},
-                exc=e,
-            )
             logging.debug(f"[Paths] Failed to load/validate paths_cache.json: {e}", exc_info=True)
-    warn_fallback("config.paths_cache.miss", "paths cache missing/invalid; running path discovery")
     print("[Paths] Discovering data file paths...")
     return find_and_cache_paths()

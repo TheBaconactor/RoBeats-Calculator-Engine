@@ -9,7 +9,6 @@ These functions are called from the GPU executor's native in-flight path.
 """
 from __future__ import annotations
 import time
-import logging
 from types import SimpleNamespace
 import numpy as np
 from gear_optimizer.core.parsing import env_flag
@@ -38,7 +37,6 @@ except ModuleNotFoundError as exc:  # pragma: no cover - CPU-only import/test pa
         return SimpleNamespace()
 from ..ga_chunking import compute_ga_combo_chunk
 from .common_operations import compute_array_sig, probability_to_u32_fp
-logger = logging.getLogger(__name__)
 _GA_COMBO_CHUNK_MIN: int = 1024  # exact-combo dispatch chunk floor (TDR-safe)
 _GA_COMBO_CHUNK_MAX: int = 4096  # exact-combo dispatch chunk ceiling (TDR-safe)
 _GA_COMBO_TAIL_MERGE_MAX: int = 256  # merge a trailing remainder up to this size into the last chunk
@@ -996,11 +994,7 @@ def ga_download_fg_selected_payload(
     kernels.ga_copy_fg_selected_payload_to_download_staging_kernel(int(table_slot), int(n_runs), out_field)
     out = out_field.to_numpy()
     selected_n = 0
-    try:
-        selected_n = int(out[0, 0])
-    except Exception as e:
-        logger.debug(f"ga_operations:ga_download_fg_selected_payload: {e}")
-        selected_n = 0
+    selected_n = int(out[0, 0])
     if selected_n < 0:
         selected_n = 0
     max_rows = int(out.shape[0]) - 1
@@ -1009,13 +1003,8 @@ def ga_download_fg_selected_payload(
     view = out[: selected_n + 1, :]
     total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
     if perf:
-        try:
-            view_bytes = int(getattr(view, "nbytes", 0) or 0)
-            out_bytes = int(getattr(out, "nbytes", 0) or 0)
-        except Exception as e:
-            logger.debug(f"ga_operations:ga_download_fg_selected_payload: {e}")
-            view_bytes = 0
-            out_bytes = 0
+        view_bytes = int(getattr(view, "nbytes", 0) or 0)
+        out_bytes = int(getattr(out, "nbytes", 0) or 0)
         print(
             "[PERF][GADownloadGaFgSelected] "
             f"slot={table_slot} runs={n_runs} limit={limit} total={total_ms:.1f}ms "

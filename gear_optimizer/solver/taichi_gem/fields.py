@@ -33,10 +33,7 @@ def _clamp_song_slots(n: int) -> int:
     if n < 2:
         return 2
     if n > 256:
-        try:
-            logger.warning("[GPU] GPU_SONG_SLOTS=%s too large; clamping to 256 to avoid VRAM OOM.", int(n))
-        except Exception as e:
-            logger.debug(f"fields:_clamp_song_slots: {e}")
+        logger.warning("[GPU] GPU_SONG_SLOTS=%s too large; clamping to 256 to avoid VRAM OOM.", int(n))
         return 256
     return n
 MAX_TIMELINE_FRONTIER_SURFACES = 262144  # GPU frontier field-size cap (within [1, 1_048_576] VRAM bound)

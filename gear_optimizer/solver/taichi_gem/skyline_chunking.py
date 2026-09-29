@@ -19,34 +19,18 @@ def compute_skyline_combo_chunk(
     dispatches on Windows/Vulkan (TDR/UI freeze risk), while allowing larger chunks
     when safe for throughput.
     """
-    try:
-        n_genomes_i = int(n_genomes)
-    except Exception as e:
-        logger.debug(f"skyline_chunking:compute_skyline_combo_chunk: {e}")
-        n_genomes_i = 1
+    n_genomes_i = int(n_genomes)
     n_genomes_i = max(1, int(n_genomes_i))
 
-    try:
-        n_combos_i = int(n_combos)
-    except Exception as e:
-        logger.debug(f"skyline_chunking:compute_skyline_combo_chunk: {e}")
-        n_combos_i = 0
+    n_combos_i = int(n_combos)
     n_combos_i = max(0, int(n_combos_i))
     if n_combos_i <= 0:
         return 0
 
-    try:
-        max_evals_i = int(max_evals)
-    except Exception as e:
-        logger.debug(f"skyline_chunking:compute_skyline_combo_chunk: {e}")
-        max_evals_i = 1
+    max_evals_i = int(max_evals)
     max_evals_i = max(1, int(max_evals_i))
 
-    try:
-        chunk_min_i = int(chunk_min)
-    except Exception as e:
-        logger.debug(f"skyline_chunking:compute_skyline_combo_chunk: {e}")
-        chunk_min_i = 1
+    chunk_min_i = int(chunk_min)
     chunk_min_i = max(1, int(chunk_min_i))
 
     try:

@@ -9,7 +9,6 @@ import sqlite3
 import time
 import warnings
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
-from ...core.fallback_monitor import warn_fallback
 from ...core.gem_defs import fg_score_from_force
 from ...core.parsing import env_flag
 from ...core.team_buff import (
@@ -426,17 +425,6 @@ def save_team_buff_loadouts_batch(
                 p_color, s_color, sel_color = extract_song_colors(details_row)
                 if p_color or s_color:
                     song_color_fallback = (p_color, s_color, sel_color)
-                    warn_fallback(
-                        "db.song_color_fallback",
-                        "using existing DB details colors as fallback for effective mini hashing",
-                        context={
-                            "song_name": song_name,
-                            "team_buff": team_buff,
-                            "primary": p_color,
-                            "secondary": s_color,
-                        },
-                        fatal=False,
-                    )
                     break
         except sqlite3.Error:
             pass
@@ -510,12 +498,6 @@ def save_team_buff_loadouts_batch(
             eff = _effective_hash_for_entry(entry)
             effective_cache_by_entry_id[entry_id] = eff
         if eff is None:
-            warn_fallback(
-                "db.hash.raw_names",
-                "missing song color metadata; using raw name hash fallback",
-                context={"song_name": song_name, "team_buff": team_buff},
-                fatal=False,
-            )
             gear_names_local, mini_names_local = _compact_entry_names(entry)
             h = _db._loadout_hash_from_names(gear_names_local, mini_names_local)
         else:
@@ -630,12 +612,6 @@ def save_team_buff_loadouts_batch(
         eff: Optional[tuple[str, list[tuple[Any, ...]], str, str, str]],
     ) -> tuple[str, list[list[str]], list[str]]:
         if eff is None:
-            warn_fallback(
-                "db.minis_groups.singletons",
-                "effective mini grouping unavailable; persisting singleton mini groups",
-                context={"song_name": song_name, "team_buff": team_buff},
-                fatal=False,
-            )
             return _db._loadout_hash_from_names(gear_names_local, mini_names_local), [[n] for n in mini_names_local], [
                 *mini_names_local
             ]

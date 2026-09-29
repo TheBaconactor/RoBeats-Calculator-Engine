@@ -15,10 +15,9 @@ import struct
 import sys
 import threading
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
-from ...core.fallback_monitor import warn_fallback
 from ...core.output import (
     restore_native_stdio,
     restore_stderr,
@@ -48,14 +47,10 @@ logger = logging.getLogger(__name__)
 
 def _taichi_verbose_enabled() -> bool:
     # Keep Taichi banners in explicit verbose mode only.
-    try:
-        if env_flag("METAFINDER_OUTPUT"):
-            return True
-        if env_flag("METAFINDER_VERBOSE"):
-            return True
-    except Exception as e:
-        logger.debug(f"runtime:_taichi_verbose_enabled: {e}")
-        return False
+    if env_flag("METAFINDER_OUTPUT"):
+        return True
+    if env_flag("METAFINDER_VERBOSE"):
+        return True
     return False
 
 
@@ -149,14 +144,11 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interv
         if os.name == "nt":
             import msvcrt
 
-            try:
-                handle.seek(0)
-                if not handle.read(1):
-                    handle.write("0")
-                    handle.flush()
-                handle.seek(0)
-            except Exception as e:
-                logger.debug(f"runtime:_file_lock: {e}")
+            handle.seek(0)
+            if not handle.read(1):
+                handle.write("0")
+                handle.flush()
+            handle.seek(0)
             while True:
                 try:
                     # `msvcrt.locking(..., LK_LOCK, ...)` is not reliably blocking on Windows and can raise
@@ -194,12 +186,9 @@ def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interv
                 import fcntl
 
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        except Exception as e:
-            logger.debug(f"runtime:_file_lock: {e}")
-        try:
-            handle.close()
-        except Exception as e:
-            logger.debug(f"runtime:_file_lock: {e}")
+        except OSError:
+            pass  # Not locked: acquiring it failed (e.g. timed out), which is already propagating.
+        handle.close()
 
 
 @contextmanager
@@ -258,16 +247,15 @@ def _maybe_set_vulkan_visible_device() -> None:
     """
 
     def _enumerate_vulkan_physical_devices() -> list[dict[str, object]]:
-        try:
-            import ctypes
+        import ctypes
 
+        try:
             if os.name == "nt":
                 lib = ctypes.WinDLL("vulkan-1.dll")  # noqa: S404
             else:
                 lib = ctypes.CDLL("libvulkan.so.1")  # noqa: S404
-        except Exception as e:
-            logger.debug(f"runtime:_enumerate_vulkan_physical_devices: {e}")
-            return []
+        except OSError:
+            return []  # No system Vulkan loader (macOS: Taichi reaches the GPU through MoltenVK).
 
         VK_SUCCESS = 0
         VK_STRUCTURE_TYPE_APPLICATION_INFO = 0
@@ -299,29 +287,25 @@ def _maybe_set_vulkan_visible_device() -> None:
                 ("ppEnabledExtensionNames", ctypes.c_void_p),
             ]
 
-        try:
-            vkCreateInstance = lib.vkCreateInstance
-            vkCreateInstance.restype = ctypes.c_int32
-            vkCreateInstance.argtypes = [
-                ctypes.POINTER(VkInstanceCreateInfo),
-                ctypes.c_void_p,
-                ctypes.POINTER(VkInstance),
-            ]
+        vkCreateInstance = lib.vkCreateInstance
+        vkCreateInstance.restype = ctypes.c_int32
+        vkCreateInstance.argtypes = [
+            ctypes.POINTER(VkInstanceCreateInfo),
+            ctypes.c_void_p,
+            ctypes.POINTER(VkInstance),
+        ]
 
-            vkDestroyInstance = lib.vkDestroyInstance
-            vkDestroyInstance.restype = None
-            vkDestroyInstance.argtypes = [VkInstance, ctypes.c_void_p]
+        vkDestroyInstance = lib.vkDestroyInstance
+        vkDestroyInstance.restype = None
+        vkDestroyInstance.argtypes = [VkInstance, ctypes.c_void_p]
 
-            vkEnumeratePhysicalDevices = lib.vkEnumeratePhysicalDevices
-            vkEnumeratePhysicalDevices.restype = ctypes.c_int32
-            vkEnumeratePhysicalDevices.argtypes = [VkInstance, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+        vkEnumeratePhysicalDevices = lib.vkEnumeratePhysicalDevices
+        vkEnumeratePhysicalDevices.restype = ctypes.c_int32
+        vkEnumeratePhysicalDevices.argtypes = [VkInstance, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
 
-            vkGetPhysicalDeviceProperties = lib.vkGetPhysicalDeviceProperties
-            vkGetPhysicalDeviceProperties.restype = None
-            vkGetPhysicalDeviceProperties.argtypes = [VkPhysicalDevice, ctypes.c_void_p]
-        except Exception as e:
-            logger.debug(f"runtime:_enumerate_vulkan_physical_devices: {e}")
-            return []
+        vkGetPhysicalDeviceProperties = lib.vkGetPhysicalDeviceProperties
+        vkGetPhysicalDeviceProperties.restype = None
+        vkGetPhysicalDeviceProperties.argtypes = [VkPhysicalDevice, ctypes.c_void_p]
 
         app = VkApplicationInfo(
             sType=VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -362,19 +346,11 @@ def _maybe_set_vulkan_visible_device() -> None:
             out: list[dict[str, object]] = []
             for i in range(n):
                 buf = ctypes.create_string_buffer(4096)
-                try:
-                    vkGetPhysicalDeviceProperties(arr[i], ctypes.cast(buf, ctypes.c_void_p))
-                except Exception as e:
-                    logger.debug(f"runtime:_enumerate_vulkan_physical_devices: {e}")
-                    continue
+                vkGetPhysicalDeviceProperties(arr[i], ctypes.cast(buf, ctypes.c_void_p))
 
-                try:
-                    # VkPhysicalDeviceProperties starts with:
-                    # apiVersion, driverVersion, vendorID, deviceID, deviceType, ...
-                    api_v, drv_v, vendor_id, device_id, device_type = struct.unpack_from("<IIIII", buf.raw, 0)
-                except Exception as e:
-                    logger.debug(f"runtime:_enumerate_vulkan_physical_devices: {e}")
-                    continue
+                # VkPhysicalDeviceProperties starts with:
+                # apiVersion, driverVersion, vendorID, deviceID, deviceType, ...
+                api_v, drv_v, vendor_id, device_id, device_type = struct.unpack_from("<IIIII", buf.raw, 0)
 
                 name_raw = bytes(buf.raw[20 : 20 + 256])
                 name = name_raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
@@ -391,20 +367,13 @@ def _maybe_set_vulkan_visible_device() -> None:
                 )
             return out
         finally:
-            try:
-                vkDestroyInstance(inst, None)
-            except Exception as e:
-                logger.debug(f"runtime:_enumerate_vulkan_physical_devices: {e}")
+            vkDestroyInstance(inst, None)
 
     def _pick_first_discrete_index(devs: list[dict[str, object]]) -> int | None:
         # VkPhysicalDeviceType: 2 = DISCRETE_GPU
         for d in devs:
-            try:
-                if int(d.get("device_type", -1) or -1) == 2:
-                    return int(d.get("index", 0) or 0)
-            except Exception as e:
-                logger.debug(f"runtime:_pick_first_discrete_index: {e}")
-                continue
+            if int(d.get("device_type", -1) or -1) == 2:
+                return int(d.get("index", 0) or 0)
         return None
 
     raw = str(env_get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip()
@@ -416,12 +385,7 @@ def _maybe_set_vulkan_visible_device() -> None:
         idx = _pick_first_discrete_index(devs)
         if idx is None:
             if raw:
-                warn_fallback(
-                    "taichi_runtime.vulkan_visible_device",
-                    "TAICHI_VULKAN_VISIBLE_DEVICE requested discrete GPU but none were found; using default device",
-                    context={"value": raw, "devices": devs},
-                    fatal=False,
-                )
+                logger.warning("[Taichi] TAICHI_VULKAN_VISIBLE_DEVICE=%s: no discrete GPU found; using the default", raw)
             return
         target = str(idx)
         os.environ["TAICHI_VULKAN_VISIBLE_DEVICE"] = target
@@ -434,12 +398,7 @@ def _maybe_set_vulkan_visible_device() -> None:
                 ok = False
                 break
         if not ok:
-            warn_fallback(
-                "taichi_runtime.vulkan_visible_device",
-                "ignoring invalid TAICHI_VULKAN_VISIBLE_DEVICE value",
-                context={"value": raw},
-                fatal=False,
-            )
+            logger.warning("[Taichi] Ignoring invalid TAICHI_VULKAN_VISIBLE_DEVICE=%r", raw)
             return
         target = raw
 
@@ -448,18 +407,10 @@ def _maybe_set_vulkan_visible_device() -> None:
 
         ti_core.set_vulkan_visible_device(target)
         if auto_discrete:
-            try:
-                print(f"[Taichi] Using TAICHI_VULKAN_VISIBLE_DEVICE={target}", flush=True)
-            except Exception as e:
-                logger.debug(f"runtime:_pick_first_discrete_index: {e}")
-    except Exception as exc:
-        warn_fallback(
-            "taichi_runtime.vulkan_visible_device",
-            "failed to set TAICHI_VULKAN_VISIBLE_DEVICE",
-            context={"value": target},
-            exc=exc,
-            fatal=False,
-        )
+            print(f"[Taichi] Using TAICHI_VULKAN_VISIBLE_DEVICE={target}", flush=True)
+    except Exception:
+        # Device selection only steers hybrid-GPU boxes; Taichi falls back to its default device.
+        logger.warning("[Taichi] Could not select Vulkan device %s", target, exc_info=True)
 
 
 def _maybe_print_vulkan_device_hint() -> None:
@@ -520,51 +471,42 @@ def _get_offline_cache_dir() -> str:
         - Hashing the Taichi sources invalidates only when the kernel-related code changes,
           while still avoiding reuse of stale caches after kernel edits.
         """
-        try:
-            import hashlib
+        import hashlib
 
-            taichi_root = os.path.join(repo_root, "gear_optimizer", "solver", "taichi_gem")
-            if not os.path.isdir(taichi_root):
-                return "nogit"
-
-            # Hash file contents for stability across git checkouts (mtime changes are noisy on Windows).
-            h = hashlib.blake2b(digest_size=16)
-            paths: list[str] = []
-            for root, dirs, files in os.walk(taichi_root):
-                dirs[:] = [d for d in dirs if d != "__pycache__"]
-                for f in files:
-                    if not f.endswith(".py"):
-                        continue
-                    paths.append(os.path.join(root, f))
-            for abs_path in sorted(paths):
-                rel = os.path.relpath(abs_path, repo_root).replace("\\", "/")
-                h.update(rel.encode("utf-8", errors="replace"))
-                with open(abs_path, "rb") as fp:
-                    for chunk in iter(lambda: fp.read(64 * 1024), b""):
-                        h.update(chunk)
-            return h.hexdigest()[:12]
-        except Exception as e:
-            logger.debug(f"runtime:_read_taichi_gem_signature_short: {e}")
+        taichi_root = os.path.join(repo_root, "gear_optimizer", "solver", "taichi_gem")
+        if not os.path.isdir(taichi_root):
             return "nogit"
 
-    try:
-        # `.../gear_optimizer/solver/taichi_gem/runtime.py` -> repo root is 3 levels up.
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-        cache_schema = "v2"
-        raw_ver = getattr(ti, "__version__", "unknown") or "unknown"
-        if isinstance(raw_ver, tuple):
-            raw_ver = ".".join(str(x) for x in raw_ver)
-        ti_ver = str(raw_ver)
-        ti_ver = "".join((c if (c.isalnum() or c in "._-") else "_") for c in ti_ver).replace(".", "_")
-        env_key = _sanitize_cache_token(env_get("TAICHI_OFFLINE_CACHE_KEY", ""))
-        cache_key = env_key or _read_taichi_gem_signature_short(repo_root)
-        cache_dir = os.path.join(repo_root, "bin", "taichi_cache", cache_schema, f"ti_{ti_ver}", cache_key)
-        os.makedirs(cache_dir, exist_ok=True)
-        return cache_dir
-    except Exception as e:
-        # Fallback: let Taichi pick a default location.
-        logger.debug(f"runtime:_read_taichi_gem_signature_short: {e}")
-        return "taichi_cache"
+        # Hash file contents for stability across git checkouts (mtime changes are noisy on Windows).
+        h = hashlib.blake2b(digest_size=16)
+        paths: list[str] = []
+        for root, dirs, files in os.walk(taichi_root):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            for f in files:
+                if not f.endswith(".py"):
+                    continue
+                paths.append(os.path.join(root, f))
+        for abs_path in sorted(paths):
+            rel = os.path.relpath(abs_path, repo_root).replace("\\", "/")
+            h.update(rel.encode("utf-8", errors="replace"))
+            with open(abs_path, "rb") as fp:
+                for chunk in iter(lambda: fp.read(64 * 1024), b""):
+                    h.update(chunk)
+        return h.hexdigest()[:12]
+
+    # `.../gear_optimizer/solver/taichi_gem/runtime.py` -> repo root is 3 levels up.
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    cache_schema = "v2"
+    raw_ver = getattr(ti, "__version__", "unknown") or "unknown"
+    if isinstance(raw_ver, tuple):
+        raw_ver = ".".join(str(x) for x in raw_ver)
+    ti_ver = str(raw_ver)
+    ti_ver = "".join((c if (c.isalnum() or c in "._-") else "_") for c in ti_ver).replace(".", "_")
+    env_key = _sanitize_cache_token(env_get("TAICHI_OFFLINE_CACHE_KEY", ""))
+    cache_key = env_key or _read_taichi_gem_signature_short(repo_root)
+    cache_dir = os.path.join(repo_root, "bin", "taichi_cache", cache_schema, f"ti_{ti_ver}", cache_key)
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
 
 
 def _init_taichi_quietly(init_kwargs: dict, *, force_verbose: bool = False) -> None:
@@ -600,15 +542,12 @@ def init_taichi():
         kernel_profiler = get_kernel_profiler_enabled()
         block_dim = get_block_dim()
         arch, backend_name = _detect_backend()
-        try:
-            from . import fields as gpu_fields
+        from . import fields as gpu_fields
 
-            # Skyline's packed-u64 atomic reduction is not available on macOS:
-            # `ti.vulkan` still lowers through MoltenVK into Metal shaders, which
-            # reject `atomic_fetch_max` on `ulong`.
-            gpu_fields.IS_METAL = bool(sys.platform == "darwin")
-        except Exception as e:
-            logger.debug(f"runtime:init_taichi: {e}")
+        # Skyline's packed-u64 atomic reduction is not available on macOS:
+        # `ti.vulkan` still lowers through MoltenVK into Metal shaders, which
+        # reject `atomic_fetch_max` on `ulong`.
+        gpu_fields.IS_METAL = bool(sys.platform == "darwin")
 
         if arch == ti.vulkan:
             _maybe_set_vulkan_visible_device()
@@ -635,22 +574,11 @@ def init_taichi():
             offline_cache=True,
             offline_cache_file_path=_get_offline_cache_dir(),
         )
-        try:
-            _offline_cache_dir = str(init_kwargs.get("offline_cache_file_path") or "").strip() or None
-        except Exception as e:
-            logger.debug(f"runtime:init_taichi: {e}")
-            _offline_cache_dir = None
+        _offline_cache_dir = str(init_kwargs.get("offline_cache_file_path") or "").strip() or None
 
         # Some Windows/Vulkan stacks are sensitive to concurrent Taichi/Vulkan initialization across
         # multiple spawned processes (dual-process in-flight). Serialize `ti.init()` per offline-cache
         # directory to avoid races in the Vulkan loader/driver and on-disk cache setup.
-        def _taichi_init_lock():
-            try:
-                return offline_cache_lock(timeout_sec=None)
-            except Exception as e:
-                logger.debug(f"runtime:_taichi_init_lock: {e}")
-                return nullcontext("")
-
         def _init_with_winerror_retry(kwargs: dict) -> None:
             try:
                 _init_taichi_quietly(kwargs)
@@ -664,20 +592,14 @@ def init_taichi():
                 raise
 
         try:
-            with _taichi_init_lock():
+            with offline_cache_lock(timeout_sec=None):
                 _init_with_winerror_retry(init_kwargs)
-        except Exception as e:
-            # Be robust: if offline cache init fails for any reason, fall back to normal init.
-            warn_fallback(
-                "taichi_runtime.offline_cache",
-                "offline-cache init failed; retrying Taichi init without offline cache",
-                context={"backend": backend_name},
-                exc=e,
-                fatal=False,
-            )
+        except Exception:
+            # The offline kernel cache only saves compile time: retry once without it.
+            logger.warning("[Taichi] Init with the offline kernel cache failed; retrying without it", exc_info=True)
             init_kwargs.pop("offline_cache", None)
             init_kwargs.pop("offline_cache_file_path", None)
-            with _taichi_init_lock():
+            with offline_cache_lock(timeout_sec=None):
                 _init_with_winerror_retry(init_kwargs)
         _ti_initialized = True
         _ti_materialized_once = True
@@ -689,10 +611,7 @@ def init_taichi():
         )
 
         if kernel_profiler:
-            try:
-                ti.profiler.clear_kernel_profiler_info()
-            except Exception as e:
-                logger.debug(f"runtime:_init_with_winerror_retry: {e}")
+            ti.profiler.clear_kernel_profiler_info()
 
 
 def reset_taichi(*, reason: str | None = None) -> None:
@@ -711,16 +630,15 @@ def reset_taichi(*, reason: str | None = None) -> None:
         if not _ti_initialized:
             return
 
+        # Best effort: this also runs after a lost device, where sync and even reset can fail.
+        # The runtime is marked uninitialized regardless so the caller's retry re-inits it.
         try:
             ti.sync()
-        except Exception as e:
-            logger.debug(f"runtime:reset_taichi: {e}")
-
+        except Exception:
+            logger.warning("[Taichi] sync before reset failed", exc_info=True)
         try:
             ti.reset()
-        except Exception as e:
-            # If reset fails, we'll still mark as uninitialized and let callers try
-            # to re-init; worst case they crash again but with a clearer log path.
-            logger.debug(f"runtime:reset_taichi: {e}")
+        except Exception:
+            logger.warning("[Taichi] reset failed", exc_info=True)
 
         _ti_initialized = False
