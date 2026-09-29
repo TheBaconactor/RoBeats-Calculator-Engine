@@ -219,4 +219,4 @@ The CP-SAT component (Theorem 4's ILP construction) already proves optimality on
 - `inventory_optimizer/gpu_full_solver.py` — Greedy + LNS solver
 - `inventory_optimizer/cpsat_hypergraph.py` — CP-SAT neighborhood exact solver (Theorem 4 construction)
 - `inventory_optimizer/coverage.py` — Orchestration and objective
-- `gear_optimizer/core/constants.py` — Gem scaling constants
+- `gear_optimizer/rules.py` — Gem scaling constants

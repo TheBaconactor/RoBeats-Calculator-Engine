@@ -45,7 +45,7 @@ def calculate_fever_timeline_indices(
     non_fever_cas = (total_notes - long_notes_count) * 0.333  # FEVER_FILL_PER_NOTE
     non_fever_base = ceil(non_fever_cas * fever_fill_rate)
     # Keep these literals in this cached kernel's own bytecode. Numba's disk-cache key does not
-    # include values imported from another module, so using FEVER_TIME_SCALE/OFFSET here can revive
+    # include values imported from another module, so using FEVER_TIME_PER_SECOND/OFFSET here can revive
     # machine code compiled with older constants after rules.py changes.
     fever_time_cas = last_note_time * 0.15 + 0.15
     real_fever_time = fever_time_cas * fever_time_stat

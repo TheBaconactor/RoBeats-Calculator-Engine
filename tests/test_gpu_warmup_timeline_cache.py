@@ -79,7 +79,7 @@ def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypat
     from types import SimpleNamespace
     from gear_optimizer.solver.taichi_gem.api import timeline
 
-    total_rows = int(timeline.TOTAL_ROWS)
+    total_rows = int(timeline.MAX_STAT)
     fake_payload = SimpleNamespace(
         grid_frontier_count=np.zeros((1, total_rows + 1, total_rows + 1), dtype=np.int32),
         frontier_pool_used=0,
