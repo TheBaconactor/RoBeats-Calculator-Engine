@@ -8,13 +8,12 @@ from typing import Any
 import numpy as np
 import taichi as ti
 
-from gear_optimizer.core.constants import (
-    ELEMENTAL_GEM_SCALE,
-    GEM_SCALE_FEVER,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    MAX_STAT_INDEX,
-    TOTAL_ROWS,
+from gear_optimizer.rules import (
+    ELEMENT_GEM_GAIN,
+    MAX_STAT,
+    STAT_GEM_ELEMENT_GAIN,
+    STAT_GEM_GAIN_FEVER,
+    STAT_GEM_GAIN_NORMAL,
 )
 from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
@@ -102,24 +101,24 @@ def _response_inner_combo_count_jit(residual_budget, cur_pp, cur_cm, cur_fm, all
     if residual < 0:
         residual = 0
     max_pp_gems = 0
-    if bool(allow_pp) and cur_pp < MAX_STAT_INDEX:
-        rem_pp = MAX_STAT_INDEX - cur_pp
-        max_pp_gems = rem_pp // GEM_SCALE_NORMAL
-        if rem_pp % GEM_SCALE_NORMAL != 0:
+    if bool(allow_pp) and cur_pp < MAX_STAT:
+        rem_pp = MAX_STAT - cur_pp
+        max_pp_gems = rem_pp // STAT_GEM_GAIN_NORMAL
+        if rem_pp % STAT_GEM_GAIN_NORMAL != 0:
             max_pp_gems += 1
 
     max_cm_gems = 0
-    if cur_cm < MAX_STAT_INDEX:
-        rem_cm = MAX_STAT_INDEX - cur_cm
-        max_cm_gems = rem_cm // GEM_SCALE_NORMAL
-        if rem_cm % GEM_SCALE_NORMAL != 0:
+    if cur_cm < MAX_STAT:
+        rem_cm = MAX_STAT - cur_cm
+        max_cm_gems = rem_cm // STAT_GEM_GAIN_NORMAL
+        if rem_cm % STAT_GEM_GAIN_NORMAL != 0:
             max_cm_gems += 1
 
     max_fm_gems = 0
-    if cur_fm < MAX_STAT_INDEX:
-        rem_fm = MAX_STAT_INDEX - cur_fm
-        max_fm_gems = rem_fm // GEM_SCALE_FEVER
-        if rem_fm % GEM_SCALE_FEVER != 0:
+    if cur_fm < MAX_STAT:
+        rem_fm = MAX_STAT - cur_fm
+        max_fm_gems = rem_fm // STAT_GEM_GAIN_FEVER
+        if rem_fm % STAT_GEM_GAIN_FEVER != 0:
             max_fm_gems += 1
 
     if max_pp_gems > residual:
@@ -928,14 +927,14 @@ def _score_fg_response_groups_native_f64(
     is_p_ov = int(color_flags[6])
     is_s_ov = int(color_flags[7])
 
-    pp_p_delta = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
-    pp_s_delta = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
-    cm_p_delta = GEM_STAT_TO_ELEMENT_SCALE * is_p_cm
-    cm_s_delta = GEM_STAT_TO_ELEMENT_SCALE * is_s_cm
-    fm_p_delta = GEM_STAT_TO_ELEMENT_SCALE * is_p_fm
-    fm_s_delta = GEM_STAT_TO_ELEMENT_SCALE * is_s_fm
-    ov_p_delta = ELEMENTAL_GEM_SCALE * is_p_ov
-    ov_s_delta = ELEMENTAL_GEM_SCALE * is_s_ov
+    pp_p_delta = STAT_GEM_ELEMENT_GAIN * is_p_pp
+    pp_s_delta = STAT_GEM_ELEMENT_GAIN * is_s_pp
+    cm_p_delta = STAT_GEM_ELEMENT_GAIN * is_p_cm
+    cm_s_delta = STAT_GEM_ELEMENT_GAIN * is_s_cm
+    fm_p_delta = STAT_GEM_ELEMENT_GAIN * is_p_fm
+    fm_s_delta = STAT_GEM_ELEMENT_GAIN * is_s_fm
+    ov_p_delta = ELEMENT_GEM_GAIN * is_p_ov
+    ov_s_delta = ELEMENT_GEM_GAIN * is_s_ov
     w_pp = (pp_p_delta << 1) + pp_s_delta
     w_cm = (cm_p_delta << 1) + cm_s_delta
     w_fm = (fm_p_delta << 1) + fm_s_delta
@@ -957,22 +956,22 @@ def _score_fg_response_groups_native_f64(
             head_len = 100
 
         max_pp_gems = 0
-        if allow_pp and cur_pp < MAX_STAT_INDEX:
-            rem_pp = MAX_STAT_INDEX - cur_pp
-            max_pp_gems = rem_pp // GEM_SCALE_NORMAL
-            if rem_pp % GEM_SCALE_NORMAL != 0:
+        if allow_pp and cur_pp < MAX_STAT:
+            rem_pp = MAX_STAT - cur_pp
+            max_pp_gems = rem_pp // STAT_GEM_GAIN_NORMAL
+            if rem_pp % STAT_GEM_GAIN_NORMAL != 0:
                 max_pp_gems += 1
         max_cm_gems = 0
-        if cur_cm < MAX_STAT_INDEX:
-            rem_cm = MAX_STAT_INDEX - cur_cm
-            max_cm_gems = rem_cm // GEM_SCALE_NORMAL
-            if rem_cm % GEM_SCALE_NORMAL != 0:
+        if cur_cm < MAX_STAT:
+            rem_cm = MAX_STAT - cur_cm
+            max_cm_gems = rem_cm // STAT_GEM_GAIN_NORMAL
+            if rem_cm % STAT_GEM_GAIN_NORMAL != 0:
                 max_cm_gems += 1
         max_fm_gems = 0
-        if cur_fm < MAX_STAT_INDEX:
-            rem_fm = MAX_STAT_INDEX - cur_fm
-            max_fm_gems = rem_fm // GEM_SCALE_FEVER
-            if rem_fm % GEM_SCALE_FEVER != 0:
+        if cur_fm < MAX_STAT:
+            rem_fm = MAX_STAT - cur_fm
+            max_fm_gems = rem_fm // STAT_GEM_GAIN_FEVER
+            if rem_fm % STAT_GEM_GAIN_FEVER != 0:
                 max_fm_gems += 1
         if max_pp_gems > residual_budget:
             max_pp_gems = residual_budget
@@ -985,10 +984,10 @@ def _score_fg_response_groups_native_f64(
         pp_ref_base = ref_pp[_fg_clamp_ref_idx_native(cur_pp, total_rows)]
         cm_ref_cache = np.empty(max_cm_gems + 1, dtype=np.float64)
         for gc in range(max_cm_gems + 1):
-            cm_ref_cache[gc] = ref_cm[_fg_clamp_ref_idx_native(cur_cm + gc * GEM_SCALE_NORMAL, total_rows)]
+            cm_ref_cache[gc] = ref_cm[_fg_clamp_ref_idx_native(cur_cm + gc * STAT_GEM_GAIN_NORMAL, total_rows)]
         fm_ref_cache = np.empty(max_fm_gems + 1, dtype=np.float64)
         for gf in range(max_fm_gems + 1):
-            fm_ref_cache[gf] = ref_fm[_fg_clamp_ref_idx_native(cur_fm + gf * GEM_SCALE_FEVER, total_rows)]
+            fm_ref_cache[gf] = ref_fm[_fg_clamp_ref_idx_native(cur_fm + gf * STAT_GEM_GAIN_FEVER, total_rows)]
         pp_ref_cache = np.empty(max_pp_gems + 1, dtype=np.float64)
         pp_bound_prefix_max = np.empty(max_pp_gems + 1, dtype=np.float64)
         pp_ref_cache[0] = pp_ref_base
@@ -996,7 +995,7 @@ def _score_fg_response_groups_native_f64(
         if allow_pp:
             running = -1.0e30
             for gp in range(max_pp_gems + 1):
-                v = ref_pp[_fg_clamp_ref_idx_native(cur_pp + gp * GEM_SCALE_NORMAL, total_rows)]
+                v = ref_pp[_fg_clamp_ref_idx_native(cur_pp + gp * STAT_GEM_GAIN_NORMAL, total_rows)]
                 pp_ref_cache[gp] = v
                 bound = float(gp * delta_pp_vs_ov) + v
                 if bound > running:
@@ -1047,7 +1046,7 @@ def _score_fg_response_groups_native_f64(
                 leftover_after_cm = residual_budget - g_cm
                 if leftover_after_cm < 0:
                     break
-                cm_stat = cur_cm + g_cm * GEM_SCALE_NORMAL
+                cm_stat = cur_cm + g_cm * STAT_GEM_GAIN_NORMAL
                 cm_mul = cm_ref_cache[g_cm]
                 g_fm_max = max_fm_gems
                 if g_fm_max > leftover_after_cm:
@@ -1055,7 +1054,7 @@ def _score_fg_response_groups_native_f64(
                 g_fm = 0
                 while g_fm <= g_fm_max:
                     leftover_after_fm = leftover_after_cm - g_fm
-                    fm_stat = cur_fm + g_fm * GEM_SCALE_FEVER
+                    fm_stat = cur_fm + g_fm * STAT_GEM_GAIN_FEVER
                     fm_mul = fm_ref_cache[g_fm]
                     g_pp_max = max_pp_gems
                     if g_pp_max > leftover_after_fm:
@@ -1080,7 +1079,7 @@ def _score_fg_response_groups_native_f64(
                             record_base_value = -1.0e30
                             while g_pp <= g_pp_max:
                                 g_ov = leftover_after_fm - g_pp
-                                pp_stat = cur_pp + g_pp * GEM_SCALE_NORMAL
+                                pp_stat = cur_pp + g_pp * STAT_GEM_GAIN_NORMAL
                                 primary_val = primary_base + g_pp * pp_primary_delta
                                 secondary_val = secondary_base + g_pp * pp_secondary_delta
                                 pp_base_value = float(base_linear_common + g_pp * delta_pp_vs_ov) + pp_ref_cache[g_pp]
@@ -1276,7 +1275,7 @@ def _score_response_group_meta_cpu(
             ref_cm,
             ref_fm,
             bool(allow_pp),
-            int(TOTAL_ROWS),
+            int(MAX_STAT),
         ),
     )
     return np.asarray(out_rows, dtype=np.int32), int(logical_surface_rows)

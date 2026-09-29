@@ -623,8 +623,8 @@ def test_fg_response_game_engine_inputs_are_part_of_logic_fingerprint() -> None:
         for source in response_cache_types._FG_GAME_ENGINE_SOURCES
     }
     assert relative_sources == {
-        "core/constants.py",
         "core/time_quantize.py",
+        "rules.py",
         "solver/fg_response_scoring/note_graph.py",
         "solver/input_engine_breakpoints.py",
         "solver/scoring/fg_policy.py",

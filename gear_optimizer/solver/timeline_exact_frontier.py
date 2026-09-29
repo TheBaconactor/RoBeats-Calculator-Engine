@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE
+from gear_optimizer.rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND
 
 from .taichi_gem.fields import GRID_SIZE, MAX_TIMELINE_FRONTIER_SURFACES
 
@@ -177,8 +177,8 @@ def build_timeline_frontier_grid_payload(
     if bool(np.any(timestamps[1:] < timestamps[:-1])):
         raise ValueError("timeline frontier timestamps must be sorted in chart order")
 
-    non_fever_base = float(max(0, total_notes_i - long_notes_i)) * float(FEVER_FILL_BASE_RATE)
-    fever_time_base = float(last_note_time) * float(FEVER_TIME_SCALE) + float(FEVER_TIME_OFFSET)
+    non_fever_base = float(max(0, total_notes_i - long_notes_i)) * float(FEVER_FILL_PER_NOTE)
+    fever_time_base = float(last_note_time) * float(FEVER_TIME_PER_SECOND) + float(FEVER_TIME_OFFSET)
     fill_counts = np.maximum(
         np.ceil(float(non_fever_base) * ref_ff.astype(np.float64)).astype(np.int32),
         np.int32(1),

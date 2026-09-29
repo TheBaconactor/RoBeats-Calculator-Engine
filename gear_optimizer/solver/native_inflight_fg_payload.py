@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_payload import has_valid_fg_payload
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats

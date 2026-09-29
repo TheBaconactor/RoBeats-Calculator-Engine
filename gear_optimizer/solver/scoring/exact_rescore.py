@@ -14,8 +14,8 @@ from typing import Any
 import numpy as np
 
 from ... import score as core_score
-from ...core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE
-from ...gamedata import CURVE_STATS, MAX_STAT, STATS, StatCurves
+from gear_optimizer.rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND, MAX_STAT
+from ...gamedata import CURVE_STATS, STATS, StatCurves
 from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from ...timing import fixed_timeline_cell
 from .fg_policy import extract_fg_song_inputs
@@ -258,8 +258,8 @@ def _timeline_trace_for_payload_surface(
 
     total_notes_i = int(song_inputs.total_notes)
     long_notes_i = int(song_inputs.long_notes)
-    non_fever_cas = float(max(0, total_notes_i - long_notes_i)) * float(FEVER_FILL_BASE_RATE)
-    fever_time_cas = float(song_inputs.last_note_time) * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
+    non_fever_cas = float(max(0, total_notes_i - long_notes_i)) * float(FEVER_FILL_PER_NOTE)
+    fever_time_cas = float(song_inputs.last_note_time) * FEVER_TIME_PER_SECOND + FEVER_TIME_OFFSET
     raw_fever_fill = float(non_fever_cas) * float(ref_ff[ff_idx])
     fill_count = int(np.ceil(raw_fever_fill))
     fill_count = max(1, int(fill_count))

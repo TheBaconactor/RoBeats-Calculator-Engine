@@ -2,13 +2,12 @@
 
 import taichi as ti
 
+from ....rules import MAX_STAT
 from . import kernels_helpers
 from .kernels_scoring import (
     optimize_core_device_exact_bound,
     response_score_upper_bound_relaxed,
 )
-
-MAX_STAT = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
 
 
 @ti.func

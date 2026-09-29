@@ -22,7 +22,7 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
     Exact frontier smoke: build the candidate-independent payload, upload it, and
     verify representative cells expose retained fever surfaces.
     """
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload,
         precompute_timeline_gpu,
@@ -62,7 +62,7 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
     }
     apply_timing_envelope(calc_song, mode="perfect_window")
 
-    rows = int(TOTAL_ROWS) + 1
+    rows = int(MAX_STAT) + 1
     ref_arrays = {
         # Taichi runtime expects these core lookup tables to be present.
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float64),

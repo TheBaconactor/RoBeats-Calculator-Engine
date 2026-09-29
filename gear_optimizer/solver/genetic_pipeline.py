@@ -14,18 +14,17 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-from ..core.constants import (
-    GA_POPULATION_SIZE,
-    GA_MUTATION_RATE,
-    GA_ELITISM,
-    LOADOUTS_PER_SONG_LIMIT,
-    GPU_GA_NUM_ISLANDS,
-)
 from ..core.color_flags import normalize_color_flags
+from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from .gpu_tuning_policy import choose_ga_batch_runs
 
 
+GA_POPULATION_SIZE = 705
 # GA selection/variation policy (fixed; the config.ini overrides were never set in production).
+GA_MUTATION_RATE = 0.35
+GA_ELITISM = 1
+# The next-generation kernel's elitism layout is parameterized by islands; one island (migration was removed).
+GPU_GA_NUM_ISLANDS = 1
 GA_TOURNAMENT_K = 3
 GA_IMMIGRANT_RATE = 0.0
 GA_NOVELTY_REPAIR_ATTEMPTS = 2

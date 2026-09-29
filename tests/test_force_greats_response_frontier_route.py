@@ -55,14 +55,14 @@ def _minimal_fg_calc_song(note_count: int = 4) -> dict:
 
 
 def _minimal_fg_ref_arrays() -> dict[str, np.ndarray]:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
 
     return {
-        "Perfect Points": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
-        "Combo Multiplier": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
-        "Fever Multiplier": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
-        "Fever Time": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
-        "Fever Fill Rate": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float32),
+        "Perfect Points": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
+        "Combo Multiplier": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
+        "Fever Multiplier": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
+        "Fever Time": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
     }
 
 
@@ -1130,7 +1130,7 @@ def test_response_frontier_best_position_prune_matches_sort_reference_randomized
 
 @pytest.mark.gpu
 def test_response_frontier_gpu_group_builder_matches_prune_reference():
-    from gear_optimizer.core.constants import GEM_SCALE_FEVER, GEM_STAT_TO_ELEMENT_SCALE, TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
     from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
     from gear_optimizer.solver.taichi_gem.force_greats.response_group_build_kernels import (
         build_response_group_rows_gpu,
@@ -1146,18 +1146,18 @@ def test_response_frontier_gpu_group_builder_matches_prune_reference():
         ],
         dtype=np.int32,
     )
-    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     for base in base_components:
         for ft, ff in zip(ft_values, ff_values, strict=True):
-            ft_stat = int(np.clip(int(base[5]) + int(ft) * GEM_SCALE_FEVER, 0, TOTAL_ROWS))
-            ff_stat = int(np.clip(int(base[6]) + int(ff) * GEM_SCALE_FEVER, 0, TOTAL_ROWS))
-            frontier_idx_by_stat[ft_stat, ff_stat] = int((ft_stat // GEM_SCALE_FEVER + ff_stat // GEM_SCALE_FEVER) % 3)
+            ft_stat = int(np.clip(int(base[5]) + int(ft) * STAT_GEM_GAIN_FEVER, 0, MAX_STAT))
+            ff_stat = int(np.clip(int(base[6]) + int(ff) * STAT_GEM_GAIN_FEVER, 0, MAX_STAT))
+            frontier_idx_by_stat[ft_stat, ff_stat] = int((ft_stat // STAT_GEM_GAIN_FEVER + ff_stat // STAT_GEM_GAIN_FEVER) % 3)
 
     cases = (
         (np.zeros_like(ft_values, dtype=np.int32), np.zeros_like(ff_values, dtype=np.int32), True),
         (
-            np.asarray(ft_values * GEM_STAT_TO_ELEMENT_SCALE, dtype=np.int32),
-            np.asarray(ff_values * GEM_STAT_TO_ELEMENT_SCALE, dtype=np.int32),
+            np.asarray(ft_values * STAT_GEM_ELEMENT_GAIN, dtype=np.int32),
+            np.asarray(ff_values * STAT_GEM_ELEMENT_GAIN, dtype=np.int32),
             False,
         ),
     )

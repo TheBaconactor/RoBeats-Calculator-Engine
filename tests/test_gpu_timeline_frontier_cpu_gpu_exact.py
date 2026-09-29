@@ -33,7 +33,7 @@ def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
     """
     Ensure the uploaded GPU fields match the exact CPU frontier payload on a synthetic chart.
     """
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload,
         precompute_timeline_gpu,
@@ -73,7 +73,7 @@ def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
 
     apply_timing_envelope(calc_song, mode="perfect_window")
 
-    rows = int(TOTAL_ROWS) + 1
+    rows = int(MAX_STAT) + 1
     ref_arrays = {
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float32),
@@ -130,7 +130,7 @@ def test_gpu_timeline_frontier_repeated_upload_matches_baseline() -> None:
     This guards the cache/upload path that reuses the exact symbolic frontier for
     repeated requests of the same song and reference arrays.
     """
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload,
         precompute_timeline_gpu,
@@ -169,7 +169,7 @@ def test_gpu_timeline_frontier_repeated_upload_matches_baseline() -> None:
 
     apply_timing_envelope(calc_song, mode="perfect_window")
 
-    rows = int(TOTAL_ROWS) + 1
+    rows = int(MAX_STAT) + 1
     ref_arrays = {
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float32),

@@ -118,14 +118,14 @@ def test_nonzero_baseline_offset_reoptimizes_to_valid_surface(tmp_path, monkeypa
 def test_leaderboard_under_nonzero_baseline_offset_is_valid(tmp_path, monkeypatch):
     """End-to-end: a non-zero baseline T produces valid per-tier meta + FG leaderboards
     (replay AND optimize -- gems/greats re-solved, scores exact under chart + T)."""
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
     calc_song = _song()
     offset = np.asarray([0.0, 0.03, 0.0, 0.05, 0.0, 0.04, 0.0, 0.02, 0.0], dtype=np.float32)
 

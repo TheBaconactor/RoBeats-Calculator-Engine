@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 
-from gear_optimizer.core.constants import MAX_STAT_INDEX
+from gear_optimizer.rules import MAX_STAT
 
 _LAST_COMBINED_SKYLINE_STATS: dict[str, object] = {}
 
@@ -41,9 +41,9 @@ def combined_global_skyline_pairs_6d_sparse(
     mini = np.ascontiguousarray(mini_points.astype(np.int32))
     M = int(mini.shape[0])
     max_pp = int(np.max(gear[:, 0]))
-    max_cm = int(min(MAX_STAT_INDEX, int(np.max(gear[:, 1]) + np.max(mini[:, 0]))))
-    max_fm = int(min(MAX_STAT_INDEX, int(np.max(gear[:, 2]) + np.max(mini[:, 1]))))
-    max_ff = int(min(MAX_STAT_INDEX, int(np.max(gear[:, 4]) + np.max(mini[:, 3]))))
+    max_cm = int(min(MAX_STAT, int(np.max(gear[:, 1]) + np.max(mini[:, 0]))))
+    max_fm = int(min(MAX_STAT, int(np.max(gear[:, 2]) + np.max(mini[:, 1]))))
+    max_ff = int(min(MAX_STAT, int(np.max(gear[:, 4]) + np.max(mini[:, 3]))))
     base_max = int(np.max(gear[:, 5]) + np.max(mini[:, 4]))
     base_dtype = np.int16 if base_max <= int(np.iinfo(np.int16).max) else np.int32
     cm_size = int(max_cm) + 1
@@ -84,10 +84,10 @@ def combined_global_skyline_pairs_6d_sparse(
         layer_rows_total += int(K) * int(M)
 
         t_phase = time.perf_counter()
-        cm = np.minimum(lg[:, 1:2] + mini[None, :, 0], MAX_STAT_INDEX).ravel().astype(np.int32)
-        fm = np.minimum(lg[:, 2:3] + mini[None, :, 1], MAX_STAT_INDEX).ravel().astype(np.int32)
-        ft = np.minimum(lg[:, 3:4] + mini[None, :, 2], MAX_STAT_INDEX).ravel().astype(np.int32)
-        ff = np.minimum(lg[:, 4:5] + mini[None, :, 3], MAX_STAT_INDEX).ravel().astype(np.int32)
+        cm = np.minimum(lg[:, 1:2] + mini[None, :, 0], MAX_STAT).ravel().astype(np.int32)
+        fm = np.minimum(lg[:, 2:3] + mini[None, :, 1], MAX_STAT).ravel().astype(np.int32)
+        ft = np.minimum(lg[:, 3:4] + mini[None, :, 2], MAX_STAT).ravel().astype(np.int32)
+        ff = np.minimum(lg[:, 4:5] + mini[None, :, 3], MAX_STAT).ravel().astype(np.int32)
         base = (lg[:, 5:6] + mini[None, :, 4]).ravel().astype(np.int32)
         gi = np.broadcast_to(lo[:, None], (K, M)).ravel().astype(np.int32)
         mi = np.broadcast_to(np.arange(M, dtype=np.int32)[None, :], (K, M)).ravel().astype(np.int32)

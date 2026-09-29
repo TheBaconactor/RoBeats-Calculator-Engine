@@ -5,7 +5,8 @@ Includes:
 """
 import taichi as ti
 from .. import kernels_helpers
-from ..warmstart_common import MAX_STAT, solve_combo_warmstart_preloaded
+from .....rules import MAX_STAT
+from ..warmstart_common import solve_combo_warmstart_preloaded
 @ti.kernel
 def ga_find_best_combo_warmstart_kernel(
     n_genomes_launch: ti.i32,

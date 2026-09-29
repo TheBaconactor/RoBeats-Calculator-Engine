@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from gear_optimizer.core.constants import SKIP_ITEM_KEYS
+from gear_optimizer.gamedata import SKIP_ITEM_KEYS
 from gear_optimizer.solver.force_greats_common import extract_base_stats
 from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination
 

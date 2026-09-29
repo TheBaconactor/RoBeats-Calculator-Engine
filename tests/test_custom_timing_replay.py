@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.core.utils import timing_envelope_timing_context
 from gear_optimizer.solver.scoring.exact_rescore import (
     score_stats_fixed_timing_exact_batch,
@@ -26,7 +26,7 @@ from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
 
 def _ref_arrays() -> dict[str, np.ndarray]:
-    rows = TOTAL_ROWS + 1
+    rows = MAX_STAT + 1
     return {
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),

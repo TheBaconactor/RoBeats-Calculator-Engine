@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from gear_optimizer.core.constants import FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
+from gear_optimizer.rules import FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND, MAX_STAT
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +42,7 @@ def _stat_lookup(stat_index: int, column: int) -> float:
         line = raw.strip()
         if line:
             rows.append([float(part) for part in line.split("\t")])
-    return rows[TOTAL_ROWS - int(stat_index)][int(column)]
+    return rows[MAX_STAT - int(stat_index)][int(column)]
 
 
 def _server_fever_flags(cutoff_sec: float, event_times_sec: dict[int, float]) -> dict[int, bool]:
@@ -53,7 +53,7 @@ def test_memories_of_blue_note89_duration_excludes_note375_without_tick_grace():
     metadata, notes = _chart_metadata_and_notes()
     last_note_time = float(metadata["Last Note Time"])
     fever_time_factor = _stat_lookup(16, 4)
-    duration = (last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET) * fever_time_factor
+    duration = (last_note_time * FEVER_TIME_PER_SECOND + FEVER_TIME_OFFSET) * fever_time_factor
     cutoff = notes[89][0] + duration
 
     assert FEVER_TIME_OFFSET == pytest.approx(0.15)

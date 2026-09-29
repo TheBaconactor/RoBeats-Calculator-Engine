@@ -180,11 +180,11 @@ def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, ref_arrays:
 
 
 def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     calc_song = _mock_song(name="pytest_team_buff_tiers", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     # Stats here are assumed to already include the base TeamBuff=T5.
     # Under T20, PP decreases by 10 vs T5, pushing Entry A below the PP breakpoint
@@ -249,7 +249,7 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers(monkeypatc
 
 
 def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     # Primary/secondary determine scoring contribution; TeamColor should follow Primary in auto mode.
@@ -269,7 +269,7 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
             "lanes": np.arange(12, dtype=np.int32) % 4,
         },
     }
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     # The baseline is always TeamBuff=T5 on the song's Primary Color.
 
@@ -311,11 +311,11 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
 
 
 def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_minis(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_buff_batches", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     stats = {
         "Perfect Points": 120,
@@ -365,11 +365,11 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
 
 
 def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_and_fg_rows(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_buff_row_order", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     stats = {
@@ -476,11 +476,11 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
 
 
 def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_gear_minis(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_buff_hash_collision", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     shared_stats = {
@@ -600,11 +600,11 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
 
 
 def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_buff_missing_base_effect", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     # Auto mode => base TeamBuff is T5 + TeamColor follows Primary (Rush).
 
@@ -657,11 +657,11 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
 
 
 def test_team_buff_tiers_support_target_team_color_overrides(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_color_modes", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     # Baseline row already includes T5 + Primary(Rush) effect.
     stats = {
@@ -725,11 +725,11 @@ def test_team_buff_tiers_support_target_team_color_overrides(monkeypatch):
 
 
 def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     calc_song = _mock_song(name="pytest_team_buff_fg_tiered", n_notes=24)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     stats = {
         "Perfect Points": 120,
@@ -782,11 +782,11 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
 
 
 def test_team_buff_tier_replay_requires_persisted_response_surface():
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     calc_song = _mock_song(name="pytest_team_buff_missing_surface", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     stats = {"Perfect Points": 100, "Combo Multiplier": 0, "Fever Multiplier": 0,
              "Fever Fill Rate": 0, "Fever Time": 0, "Rush": 150, "Flow": 0,
@@ -812,12 +812,12 @@ def test_team_buff_tier_replay_requires_persisted_response_surface():
 
 
 def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     calc_song = _mock_song(name="pytest_team_buff_fg_base_context", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     stats = {
         "Perfect Points": 100,
@@ -879,11 +879,11 @@ def test_baseline_carry_fails_loud_on_valid_force_with_nonpositive_fg_score(monk
     filter silently DROPPED the row -- a lost valid FG loadout. The re-solve branch it replaced
     would have RANKED that row from its freshly recomputed force Score. Since the carry does not
     recompute, it must fail loud on the inconsistency rather than silently drop."""
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     calc_song = _mock_song(name="pytest_carry_stale_fg_score", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     stats = {
         "Perfect Points": 100,
@@ -934,12 +934,12 @@ def test_fg_paired_base_is_loadout_base_not_gemless_recompute(monkeypatch):
     neutering the ``fg_score > base`` gate and showing set-crafters a wrong base on the site. Here
     ``force['BaseStats']`` is deliberately gemless; ``fg_base_score`` must still equal the loadout's
     base leaderboard score."""
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     calc_song = _mock_song(name="pytest_fg_paired_base_gemless_guard", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     stats = {
         "Perfect Points": 100,
@@ -997,13 +997,13 @@ def test_fg_paired_base_is_loadout_base_not_gemless_recompute(monkeypatch):
 
 @pytest.mark.parametrize("tier_name", ["NONE", "T1", "T10", "T20", "T50", "T51"])
 def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_base_score(monkeypatch, tier_name: str):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.core.team_buff import team_buff_effect
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     calc_song = _mock_song(name=f"pytest_team_buff_derived_fg_visibility_{tier_name}", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     stats = {
         "Perfect Points": 100,
@@ -1064,11 +1064,11 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
 
 
 def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_rows(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_buff_fg_batch_ctx", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     stats = {
@@ -1168,11 +1168,11 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
 
 
 def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_top_rows(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_buff_fg_source_meta", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     entry = {
         "loadout_hash": "hash-source-meta",
@@ -1257,11 +1257,11 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
 
 
 def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_identity(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_buff_zero_ms_fg_identity", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
 
     stats = {
         "Perfect Points": 100,
@@ -1393,12 +1393,12 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
 
 
 def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_target_team_color(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.core.team_buff import team_buff_effect
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_buff_strict_sanity", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     stats = {
@@ -1577,11 +1577,11 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
 
 
 def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appends_fg_only_rows(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
     calc_song = _mock_song(name="pytest_team_buff_batch_order", n_notes=12)
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     stats = {

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # module, so every relative import that was anchored at `data/` gains one dot
 # (`..core` -> `...core`, `.migrations` -> `..migrations`, sibling data modules
 # `.database_codecs` -> `..database_codecs`, etc.). Absolute imports are unchanged.
-from ...core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from ..database_codecs import (
     _json_dumps_compact,
     _json_loads,

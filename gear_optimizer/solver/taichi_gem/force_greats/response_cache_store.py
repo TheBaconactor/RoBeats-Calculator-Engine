@@ -16,7 +16,7 @@ from typing import Iterable
 import numpy as np
 from numpy.lib import format as np_format
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.frontier_cache_scope import frontier_cache_is_ephemeral
 
 from .response_cache_keys import (
@@ -1182,7 +1182,7 @@ def _load_payload(cache_key: tuple) -> FgResponseFrontierCachePayload | None:
                 long_notes=int(np.asarray(data["long_notes"]).item()),
                 use_forced_great_timing=bool(int(np.asarray(data["use_forced_great_timing"]).item())),
             )
-            if payload.raw_fill_by_ff.shape[0] != TOTAL_ROWS + 1 or payload.real_time_by_ft.shape[0] != TOTAL_ROWS + 1:
+            if payload.raw_fill_by_ff.shape[0] != MAX_STAT + 1 or payload.real_time_by_ft.shape[0] != MAX_STAT + 1:
                 return None
             return payload
     except FgResponseSurfaceSidecarError:
@@ -1235,9 +1235,9 @@ def _payload_file_info_if_complete(path: Path, keys: Iterable[tuple[int, int]]) 
                 return None
             if int(first_offsets.shape[0]) != int(meta.shape[0]) or int(first_counts.shape[0]) != int(meta.shape[0]):
                 return None
-            if int(raw_fill_by_ff.shape[0]) != TOTAL_ROWS + 1:
+            if int(raw_fill_by_ff.shape[0]) != MAX_STAT + 1:
                 return None
-            if int(non_fever_base_by_ff.shape[0]) != TOTAL_ROWS + 1 or int(real_time_by_ft.shape[0]) != TOTAL_ROWS + 1:
+            if int(non_fever_base_by_ff.shape[0]) != MAX_STAT + 1 or int(real_time_by_ft.shape[0]) != MAX_STAT + 1:
                 return None
             if total_notes < 0 or long_notes < 0 or long_notes > total_notes:
                 return None

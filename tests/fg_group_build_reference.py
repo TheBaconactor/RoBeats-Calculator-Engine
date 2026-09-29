@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT, STAT_GEM_GAIN_FEVER
 from tests.parity.response_ftff_prune import (
     prune_best_positions_by_frontier,
     prune_dominated_ftff_response_positions,
@@ -42,8 +42,8 @@ def build_response_group_rows_reference(
 
     for base in base_components:
         base_pp, base_cm, base_fm, base_primary, base_secondary, base_ft, base_ff = (int(v) for v in base)
-        ft_stat_seq = np.clip(base_ft + ft_values * GEM_SCALE_FEVER, 0, TOTAL_ROWS).astype(np.int32)
-        ff_stat_seq = np.clip(base_ff + ff_values * GEM_SCALE_FEVER, 0, TOTAL_ROWS).astype(np.int32)
+        ft_stat_seq = np.clip(base_ft + ft_values * STAT_GEM_GAIN_FEVER, 0, MAX_STAT).astype(np.int32)
+        ff_stat_seq = np.clip(base_ff + ff_values * STAT_GEM_GAIN_FEVER, 0, MAX_STAT).astype(np.int32)
         frontier_ids = np.ascontiguousarray(frontier_idx_by_stat[ft_stat_seq, ff_stat_seq], dtype=np.int32)
         if bool(score_elements_constant):
             best_positions = prune_best_positions_by_frontier(

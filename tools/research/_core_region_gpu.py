@@ -7,7 +7,7 @@ fitness result. Each row returns an allocation for canonical host comparison.
 import numpy as np
 import taichi as ti
 
-from gear_optimizer.core.constants import GEM_SCALE_FEVER
+from gear_optimizer.rules import STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 from gear_optimizer.solver.taichi_gem.api import (
     precompute_timeline_gpu,
@@ -52,5 +52,5 @@ def solve_regions(chart, arrays, ids, lows, highs):
         skyline_upload_base_fixed_stats(chart.base)
         skyline_upload_population_indices(ids, n_slots=9)
         skyline_aggregate_stats(len(ids), n_slots=9, **flags)
-        _regional_kernel(len(ids), chart.domain.budget, GEM_SCALE_FEVER, limits, flag_array, result)
+        _regional_kernel(len(ids), chart.domain.budget, STAT_GEM_GAIN_FEVER, limits, flag_array, result)
     return result

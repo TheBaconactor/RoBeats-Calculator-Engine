@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from gear_optimizer.core.constants import MAX_STAT_INDEX
+from gear_optimizer.rules import MAX_STAT
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ def reduce_fixed_timing_prefix_skyline(
     points: np.ndarray,
     codes: np.ndarray,
     *,
-    max_stat_index: int = MAX_STAT_INDEX,
+    max_stat_index: int = MAX_STAT,
 ) -> tuple[FixedTimingPrefixSkylineStats, np.ndarray, np.ndarray]:
     """Return the fixed-FT/FF prefix skyline of ``points`` with aligned ``codes``.
 

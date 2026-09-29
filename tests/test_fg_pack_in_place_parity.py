@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 
 _HEAD_LEN = 40
 _BODY_TOTAL = 100
@@ -58,8 +58,8 @@ def _random_in_memory_batch(seed: int):
     frontier_segments = list(range(20)) + [3, 3, 11]
     frontier_offsets = np.asarray([segment_offsets[s] for s in frontier_segments], dtype=np.int32)
     frontier_lengths = np.asarray([segment_lengths[s] for s in frontier_segments], dtype=np.int32)
-    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
-    stat_keys = [(int(ft), int(ff)) for ft, ff in rng.integers(0, TOTAL_ROWS + 1, size=(len(frontier_segments), 2))]
+    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
+    stat_keys = [(int(ft), int(ff)) for ft, ff in rng.integers(0, MAX_STAT + 1, size=(len(frontier_segments), 2))]
     stat_keys = list(dict.fromkeys(stat_keys))
     for frontier_idx, (ft, ff) in enumerate(stat_keys):
         frontier_idx_by_stat[ft, ff] = frontier_idx
@@ -134,7 +134,7 @@ def _score_cpu_f64(group_meta, packed, *, allow_pp: bool) -> np.ndarray:
     from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _score_fg_response_groups_native_f64
 
     ids, words, counts, coeffs, group_offsets, group_lengths = packed[:6]
-    idx = np.arange(TOTAL_ROWS + 1, dtype=np.float64)
+    idx = np.arange(MAX_STAT + 1, dtype=np.float64)
     color_flags = (
         np.asarray([1, 0, 0, 0, 0, 0, 1, 0], dtype=np.int32)
         if allow_pp
@@ -154,7 +154,7 @@ def _score_cpu_f64(group_meta, packed, *, allow_pp: bool) -> np.ndarray:
             np.ascontiguousarray(1.0 + idx * 0.011),
             np.ascontiguousarray(1.0 + idx * 0.017),
             bool(allow_pp),
-            int(TOTAL_ROWS),
+            int(MAX_STAT),
         ),
         dtype=np.int32,
     )

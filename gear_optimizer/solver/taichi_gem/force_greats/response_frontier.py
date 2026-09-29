@@ -8,12 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from gear_optimizer.core.constants import (
-    GEM_SCALE_FEVER,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    TOTAL_GEM_BUDGET,
-    TOTAL_ROWS,
-)
+from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
 from gear_optimizer.core.gem_defs import build_gem_counts
 from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
@@ -85,16 +80,16 @@ def _required_response_stat_keys(
         raise ValueError("response frontier FT/FF gem arrays must be aligned and non-empty")
 
     ft_stats = np.clip(
-        components[:, 5, None] + (ft_gems[None, :] * int(GEM_SCALE_FEVER)),
+        components[:, 5, None] + (ft_gems[None, :] * int(STAT_GEM_GAIN_FEVER)),
         0,
-        int(TOTAL_ROWS),
+        int(MAX_STAT),
     )
     ff_stats = np.clip(
-        components[:, 6, None] + (ff_gems[None, :] * int(GEM_SCALE_FEVER)),
+        components[:, 6, None] + (ff_gems[None, :] * int(STAT_GEM_GAIN_FEVER)),
         0,
-        int(TOTAL_ROWS),
+        int(MAX_STAT),
     )
-    axis = int(TOTAL_ROWS) + 1
+    axis = int(MAX_STAT) + 1
     encoded = np.asarray((ft_stats * axis) + ff_stats, dtype=np.int32).reshape(-1)
     unique_encoded = np.unique(encoded)
     return tuple((int(value // axis), int(value % axis)) for value in unique_encoded)
@@ -103,7 +98,7 @@ def _required_response_stat_keys(
 def required_response_stat_keys_for_scoring_batch(
     *,
     base_stats_list: list[dict[str, Any]] | tuple[dict[str, Any], ...],
-    total_budget: int = TOTAL_GEM_BUDGET,
+    total_budget: int = GEM_BUDGET,
     base_stats7_list: list[Any] | tuple[Any, ...] | None = None,
 ) -> tuple[tuple[int, int], ...]:
     """Return the exact response-cache cells addressable by a scoring batch.
@@ -406,7 +401,7 @@ def _unique_response_stat_keys_tuple(
     group_ff_stat: np.ndarray,
     frontier_idx_by_stat: np.ndarray,
 ) -> tuple[tuple[int, int], ...]:
-    axis = int(TOTAL_ROWS) + 1
+    axis = int(MAX_STAT) + 1
     encoded = np.ascontiguousarray(
         (np.asarray(group_ft_stat, dtype=np.int32) * axis) + np.asarray(group_ff_stat, dtype=np.int32),
         dtype=np.int32,
@@ -429,14 +424,14 @@ def warmup_response_frontier_group_builder() -> None:
     from .response_group_build_kernels import build_response_group_rows_gpu
 
     ft_values, ff_values, residual_values = ftff_combo_arrays(2)
-    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     for pos in range(int(ft_values.shape[0])):
-        ft_stat = min(TOTAL_ROWS, int(ft_values[pos]) * GEM_SCALE_FEVER)
-        ff_stat = min(TOTAL_ROWS, int(ff_values[pos]) * GEM_SCALE_FEVER)
+        ft_stat = min(MAX_STAT, int(ft_values[pos]) * STAT_GEM_GAIN_FEVER)
+        ff_stat = min(MAX_STAT, int(ff_values[pos]) * STAT_GEM_GAIN_FEVER)
         frontier_idx_by_stat[ft_stat, ff_stat] = int(pos)
     base_components = np.asarray([[0, 0, 0, 1, 2, 0, 0]], dtype=np.int32)
-    primary_delta = np.asarray(ft_values * GEM_STAT_TO_ELEMENT_SCALE, dtype=np.int32)
-    secondary_delta = np.asarray(ff_values * GEM_STAT_TO_ELEMENT_SCALE, dtype=np.int32)
+    primary_delta = np.asarray(ft_values * STAT_GEM_ELEMENT_GAIN, dtype=np.int32)
+    secondary_delta = np.asarray(ff_values * STAT_GEM_ELEMENT_GAIN, dtype=np.int32)
     group_meta, group_ft, group_ff, group_ft_stat, group_ff_stat, candidate_slices = build_response_group_rows_gpu(
         np.ascontiguousarray(base_components, dtype=np.int32),
         np.ascontiguousarray(ft_values, dtype=np.int32),
@@ -453,8 +448,8 @@ def warmup_response_frontier_group_builder() -> None:
         int(group_meta.shape[0]) != int(ft_values.shape[0])
         or group_ft.tolist() != ft_values.astype(np.int32, copy=False).tolist()
         or group_ff.tolist() != ff_values.astype(np.int32, copy=False).tolist()
-        or group_ft_stat.tolist() != (ft_values * GEM_SCALE_FEVER).astype(np.int32, copy=False).tolist()
-        or group_ff_stat.tolist() != (ff_values * GEM_SCALE_FEVER).astype(np.int32, copy=False).tolist()
+        or group_ft_stat.tolist() != (ft_values * STAT_GEM_GAIN_FEVER).astype(np.int32, copy=False).tolist()
+        or group_ff_stat.tolist() != (ff_values * STAT_GEM_GAIN_FEVER).astype(np.int32, copy=False).tolist()
         or candidate_slices.tolist() != [[0, int(ft_values.shape[0])]]
     ):
         raise RuntimeError("FG response group-row builder warmup produced an invalid result")
@@ -536,7 +531,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
     ref_arrays: dict[str, Any],
     selected_color: str,
     base_stats7_list: list[Any] | tuple[Any, ...] | None = None,
-    total_budget: int = TOTAL_GEM_BUDGET,
+    total_budget: int = GEM_BUDGET,
     started: float | None = None,
     scoring_bundle: FgResponseFrontierScoringBundle | None = None,
 ) -> FgResponseFrontierPackedScoringBatch:
@@ -574,10 +569,10 @@ def prepare_force_greats_response_frontier_scoring_batch(
     song_inputs = extract_fg_song_inputs(calc_song)
     primary_color = str(song_inputs.primary_color or "")
     secondary_color = str(song_inputs.secondary_color or "")
-    primary_ft_delta = GEM_STAT_TO_ELEMENT_SCALE if primary_color == "Beat" else 0
-    primary_ff_delta = GEM_STAT_TO_ELEMENT_SCALE if primary_color == "Vibe" else 0
-    secondary_ft_delta = GEM_STAT_TO_ELEMENT_SCALE if secondary_color == "Beat" else 0
-    secondary_ff_delta = GEM_STAT_TO_ELEMENT_SCALE if secondary_color == "Vibe" else 0
+    primary_ft_delta = STAT_GEM_ELEMENT_GAIN if primary_color == "Beat" else 0
+    primary_ff_delta = STAT_GEM_ELEMENT_GAIN if primary_color == "Vibe" else 0
+    secondary_ft_delta = STAT_GEM_ELEMENT_GAIN if secondary_color == "Beat" else 0
+    secondary_ff_delta = STAT_GEM_ELEMENT_GAIN if secondary_color == "Vibe" else 0
     score_elements_constant = (
         primary_ft_delta == 0
         and primary_ff_delta == 0
@@ -1026,7 +1021,7 @@ def score_fused_owner_base_components_on_gpu_owner(
     ref_arrays: dict[str, Any],
     selected_color: str,
     scoring_bundle: FgResponseFrontierScoringBundle,
-    total_budget: int = TOTAL_GEM_BUDGET,
+    total_budget: int = GEM_BUDGET,
 ) -> dict[tuple[int, ...], FgFusedOwnerScoreRow]:
     """Score FG response frontier for a candidate set on the GPU owner, fused.
 

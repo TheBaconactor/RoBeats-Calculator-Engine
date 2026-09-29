@@ -23,7 +23,8 @@ def measure(args):
     import numpy as np
     import numba
     import scipy
-    from gear_optimizer.core.constants import GA_MULTI_RUNS_DEFAULT, GA_POPULATION_SIZE
+    from gear_optimizer.settings import RunSettings
+    from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
     from gear_optimizer.data.csv_parser import load_csv_db, read_table
     from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
@@ -53,7 +54,7 @@ def measure(args):
         prepare_seconds = time.perf_counter() - start
         print(f"Prepared {chart_name}: {prepare_seconds:.3f}s", flush=True)
         settings = [dict(generations=10, population=64, runs=1),
-                    dict(generations=125, population=GA_POPULATION_SIZE, runs=GA_MULTI_RUNS_DEFAULT)]
+                    dict(generations=125, population=GA_POPULATION_SIZE, runs=RunSettings().multi_start)]
         for setting in settings:
             print(f"Warming GA: {setting}", flush=True)
             run_ga(chart, **setting, seed=args.seed)

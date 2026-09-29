@@ -6,7 +6,7 @@ import pytest
 
 pytestmark = pytest.mark.gpu
 
-from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 from gear_optimizer.solver.taichi_gem.force_greats.response_group_build_kernels import (
     build_response_group_rows_gpu,
@@ -15,38 +15,38 @@ from tests.fg_group_build_reference import build_response_group_rows_reference
 
 
 def _frontier_idx_per_pos(ft_values, ff_values):
-    grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    grid = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     for pos in range(int(ft_values.shape[0])):
-        ft_stat = min(TOTAL_ROWS, int(ft_values[pos]) * GEM_SCALE_FEVER)
-        ff_stat = min(TOTAL_ROWS, int(ff_values[pos]) * GEM_SCALE_FEVER)
+        ft_stat = min(MAX_STAT, int(ft_values[pos]) * STAT_GEM_GAIN_FEVER)
+        ff_stat = min(MAX_STAT, int(ff_values[pos]) * STAT_GEM_GAIN_FEVER)
         grid[ft_stat, ff_stat] = int(pos)
     return grid
 
 
 def _frontier_idx_grouped_by_ff(ft_values, ff_values):
-    grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    grid = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     for pos in range(int(ft_values.shape[0])):
-        ft_stat = min(TOTAL_ROWS, int(ft_values[pos]) * GEM_SCALE_FEVER)
-        ff_stat = min(TOTAL_ROWS, int(ff_values[pos]) * GEM_SCALE_FEVER)
+        ft_stat = min(MAX_STAT, int(ft_values[pos]) * STAT_GEM_GAIN_FEVER)
+        ff_stat = min(MAX_STAT, int(ff_values[pos]) * STAT_GEM_GAIN_FEVER)
         grid[ft_stat, ff_stat] = int(ff_values[pos])
     return grid
 
 
 def _frontier_idx_sparse_stat_grid_ids(ft_values, ff_values):
-    grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    grid = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     for pos in range(int(ft_values.shape[0])):
-        ft_stat = min(TOTAL_ROWS, int(ft_values[pos]) * GEM_SCALE_FEVER)
-        ff_stat = min(TOTAL_ROWS, int(ff_values[pos]) * GEM_SCALE_FEVER)
-        grid[ft_stat, ff_stat] = int((ft_stat * (TOTAL_ROWS + 1)) + ff_stat)
+        ft_stat = min(MAX_STAT, int(ft_values[pos]) * STAT_GEM_GAIN_FEVER)
+        ff_stat = min(MAX_STAT, int(ff_values[pos]) * STAT_GEM_GAIN_FEVER)
+        grid[ft_stat, ff_stat] = int((ft_stat * (MAX_STAT + 1)) + ff_stat)
     return grid
 
 
 def _covering_grid(frontier_id_by_pos, base_components, ft_values, ff_values):
     # Every stat key reached from each candidate's FT/FF base gets a frontier id (later bases win on overlap).
-    grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    grid = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     for base_ft, base_ff in base_components[:, 5:7].tolist():
-        ft_stat = np.clip(base_ft + ft_values * GEM_SCALE_FEVER, 0, TOTAL_ROWS)
-        ff_stat = np.clip(base_ff + ff_values * GEM_SCALE_FEVER, 0, TOTAL_ROWS)
+        ft_stat = np.clip(base_ft + ft_values * STAT_GEM_GAIN_FEVER, 0, MAX_STAT)
+        ff_stat = np.clip(base_ff + ff_values * STAT_GEM_GAIN_FEVER, 0, MAX_STAT)
         grid[ft_stat, ff_stat] = frontier_id_by_pos
     return grid
 
@@ -77,8 +77,8 @@ def _run_case(*, budget, base_components, score_elements_constant, geometry, hea
         primary_delta = np.zeros_like(ft_values)
         secondary_delta = np.zeros_like(ff_values)
     else:
-        primary_delta = np.ascontiguousarray(ft_values * GEM_SCALE_FEVER, dtype=np.int32)
-        secondary_delta = np.ascontiguousarray(ff_values * GEM_SCALE_FEVER, dtype=np.int32)
+        primary_delta = np.ascontiguousarray(ft_values * STAT_GEM_GAIN_FEVER, dtype=np.int32)
+        secondary_delta = np.ascontiguousarray(ff_values * STAT_GEM_GAIN_FEVER, dtype=np.int32)
 
     args = (
         base_components,

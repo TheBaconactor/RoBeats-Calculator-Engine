@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.core.constants import GEM_SCALE_NORMAL
+from gear_optimizer.rules import STAT_GEM_GAIN_NORMAL
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact, score_stats_exact_batch
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
@@ -45,7 +45,7 @@ def test_hydrate_fg_candidate_stats_prefers_base_stats_over_rebuilding_from_geno
 
     stats = cand["Data"]["Stats"]
     assert cand["Data"]["BaseStats"]["Perfect Points"] == 10
-    assert stats["Perfect Points"] == 10 + GEM_SCALE_NORMAL
+    assert stats["Perfect Points"] == 10 + STAT_GEM_GAIN_NORMAL
 
 
 def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_ga_search_score(

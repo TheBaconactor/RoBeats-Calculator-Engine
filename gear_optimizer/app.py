@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 import numpy as np
-from gear_optimizer.core.constants import GA_POPULATION_SIZE
+from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
 from gear_optimizer.data.database import (
     init_db,

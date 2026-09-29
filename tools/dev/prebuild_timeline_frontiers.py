@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from gear_optimizer.core.constants import DIFFICULTIES
+from gear_optimizer.settings import DIFFICULTIES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET
+from gear_optimizer.rules import GEM_BUDGET, STAT_GEM_GAIN_FEVER
 
 
 @dataclass(frozen=True)
@@ -16,8 +16,8 @@ class RegistrySolveRequest:
     timeline_grid: Any
     ref_arrays: Any
     flags: dict[str, int]
-    total_budget: int = TOTAL_GEM_BUDGET
-    gem_scale_fever: int = GEM_SCALE_FEVER
+    total_budget: int = GEM_BUDGET
+    gem_scale_fever: int = STAT_GEM_GAIN_FEVER
     song_slot: int = 0
     use_exact_inner_solver: bool = True
     max_ft_gems_global: int | None = None

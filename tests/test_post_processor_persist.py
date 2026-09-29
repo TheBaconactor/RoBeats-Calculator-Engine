@@ -9,9 +9,9 @@ from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
 
 def _ref_arrays() -> dict:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
 
-    rows = int(TOTAL_ROWS) + 1
+    rows = int(MAX_STAT) + 1
     return {
         "Perfect Points": [1.0] * rows,
         "Combo Multiplier": [1.0] * rows,

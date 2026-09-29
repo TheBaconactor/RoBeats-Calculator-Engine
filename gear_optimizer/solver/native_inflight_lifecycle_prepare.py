@@ -10,7 +10,7 @@ from typing import Optional
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.constants import GA_ELITISM, GA_MUTATION_RATE
+from gear_optimizer.solver.genetic_pipeline import GA_ELITISM, GA_MUTATION_RATE
 from gear_optimizer.core.singleflight import SingleFlight
 from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_view
 from gear_optimizer.solver.base_stats import build_stats_array
@@ -85,7 +85,7 @@ def _prep_cache_get_or_build(
 def prepare_native_song(task: tuple) -> NativeSong:
     wall_t0 = time.perf_counter()
     cpu_t0 = thread_cpu_time_s()
-    from gear_optimizer.core.constants import GA_POPULATION_SIZE
+    from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import initialize_pools
 
     task_view = task_tuple_to_view(task)

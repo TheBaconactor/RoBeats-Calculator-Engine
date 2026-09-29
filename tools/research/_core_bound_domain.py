@@ -5,7 +5,7 @@ from math import comb, prod
 
 import numpy as np
 
-from gear_optimizer.core.constants import TOTAL_GEM_BUDGET
+from gear_optimizer.rules import GEM_BUDGET
 from gear_optimizer.core.utils import _relevant_row_projection
 from gear_optimizer.data.mini_ascension import materialize_minis_for_song
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
@@ -33,7 +33,7 @@ class CatalogDomain:
         return prod(len(g) for g in self.gear) * comb(len(self.minis), 3)
 
 
-def catalog_domain(gears, minis, *, song, fixed, budget=TOTAL_GEM_BUDGET):
+def catalog_domain(gears, minis, *, song, fixed, budget=GEM_BUDGET):
     primary = song["metadata"]["Primary Color"]
     secondary = song["metadata"].get("Secondary Color", "")
     materialized, _, _ = materialize_minis_for_song(

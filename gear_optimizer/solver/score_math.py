@@ -13,12 +13,10 @@ GPU port only needs to reimplement these functions in Taichi.
 import numpy as np
 
 from ..core.jit_setup import jit
-from ..core.constants import (
-    TOTAL_ROWS,
-)
+from gear_optimizer.rules import MAX_STAT
 
 
-def lookup_reference_py(value, ref_array, total_rows=TOTAL_ROWS):
+def lookup_reference_py(value, ref_array, total_rows=MAX_STAT):
     """
     Python implementation of reference lookup.
     Clamps value to valid range and returns corresponding reference value.

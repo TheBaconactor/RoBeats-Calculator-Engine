@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict
 
-from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     OPTIMIZER_BASELINE_TEAM_BUFF,

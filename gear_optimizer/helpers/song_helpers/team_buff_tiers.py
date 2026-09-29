@@ -3,7 +3,7 @@ from __future__ import annotations
 from heapq import nsmallest
 import re
 
-from ...core.constants import SKIP_ITEM_KEYS
+from gear_optimizer.gamedata import SKIP_ITEM_KEYS
 from ...core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     OPTIMIZER_BASELINE_TEAM_BUFF,
@@ -269,14 +269,14 @@ def resolve_tier_fg_force(
 
     ``fixed_song_stats`` is the tier-adjusted song fixed-stats row; ``loadout_items`` is the
     loadout's 6 gear + 3 mini stat dicts before gems. Re-solves the gem allocation
-    at ``total_budget=TOTAL_GEM_BUDGET`` via the canonical FG response frontier (GPU search on the
+    at ``total_budget=GEM_BUDGET`` via the canonical FG response frontier (GPU search on the
     fp-gated kernel -- f32 on MoltenVK / f64 on AMD -- then CPU-f64 exact rescore), and returns the
     materialized ``force`` payload (re-solved GemCounts/Stats/Score + frontier_trace). The FG solve
     + paired-base score follow the ``calc_song`` timing (already enveloped per ``timing_mode``), so
     one recipe serves zero_ms and perfect_window. Shared by serving and the lossless-exact gate, so
     served == native.
     """
-    from ...core.constants import TOTAL_GEM_BUDGET
+    from gear_optimizer.rules import GEM_BUDGET
     from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_fg_replays
 
     pre_gem_stats = _pre_gem_loadout_stats(fixed_song_stats, loadout_items)
@@ -286,7 +286,7 @@ def resolve_tier_fg_force(
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         selected_color=str(selected_color or ""),
-        total_budget=int(TOTAL_GEM_BUDGET),
+        total_budget=int(GEM_BUDGET),
         timing_mode=str(timing_mode),
     )
     if len(replays) != 1:
@@ -312,7 +312,7 @@ def resolve_tier_fg_force_batch(
     (per ``timing_mode``). Returns N ``force`` payloads in order. Each loadout's surface/gem search
     is independent, so the per-loadout result equals ``resolve_tier_fg_force`` (the gate's
     per-loadout path) -> served == native (delta=0)."""
-    from ...core.constants import TOTAL_GEM_BUDGET
+    from gear_optimizer.rules import GEM_BUDGET
     from ...solver.fg_response_scoring.fixed_timing import build_fixed_timing_fg_replays
 
     rows = list(loadouts or [])
@@ -325,7 +325,7 @@ def resolve_tier_fg_force_batch(
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         selected_color=str(selected_color or ""),
-        total_budget=int(TOTAL_GEM_BUDGET),
+        total_budget=int(GEM_BUDGET),
         timing_mode=str(timing_mode),
     )
     if len(replays) != len(rows):

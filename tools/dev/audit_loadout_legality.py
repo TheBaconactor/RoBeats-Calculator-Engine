@@ -25,8 +25,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from gear_optimizer.core.constants import (
-    FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET, TOTAL_ROWS)
+from gear_optimizer.rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND, MAX_STAT
 from gear_optimizer.data.song_io import get_base_calc_song, scan_song_header
 from gear_optimizer.data.database_codecs import _unpack_stats_after_load
 from gear_optimizer.solver.score_math import lookup_reference_py
@@ -58,7 +57,7 @@ def _chart_path(song_name: str) -> str | None:
 
 
 def _factor(stats: dict, key: str, ref: dict) -> float:
-    return float(lookup_reference_py(int(stats[key]), np.asarray(ref[key], dtype=np.float32), TOTAL_ROWS))
+    return float(lookup_reference_py(int(stats[key]), np.asarray(ref[key], dtype=np.float32), MAX_STAT))
 
 
 def audit_fg_loadout(fg: dict, calc_song: dict, ref: dict) -> list[str]:

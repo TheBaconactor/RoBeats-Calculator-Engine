@@ -2,12 +2,12 @@
 
 import numpy as np
 
-from gear_optimizer.core.constants import (
-    ELEMENTAL_GEM_SCALE,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    TOTAL_GEM_BUDGET,
-    TOTAL_ROWS,
+from gear_optimizer.rules import (
+    ELEMENT_GEM_GAIN,
+    GEM_BUDGET,
+    MAX_STAT,
+    STAT_GEM_ELEMENT_GAIN,
+    STAT_GEM_GAIN_NORMAL,
 )
 
 
@@ -19,9 +19,9 @@ def build_pp_prefix_bounds(cur_pp_values, ref_pp, color_flags):
     stats until after adding gems, matching the device's lookup clamping.
     """
     states, owners = np.unique(np.asarray(cur_pp_values, dtype=np.int32), return_inverse=True)
-    gems = np.arange(TOTAL_GEM_BUDGET + 1, dtype=np.int32)
-    indices = np.clip(states[:, None] + gems * GEM_SCALE_NORMAL, 0, TOTAL_ROWS)
+    gems = np.arange(GEM_BUDGET + 1, dtype=np.int32)
+    indices = np.clip(states[:, None] + gems * STAT_GEM_GAIN_NORMAL, 0, MAX_STAT)
     p_pp, s_pp, *_, p_ov, s_ov = color_flags
-    delta = GEM_STAT_TO_ELEMENT_SCALE * (2 * int(p_pp) + int(s_pp)) - ELEMENTAL_GEM_SCALE * (2 * int(p_ov) + int(s_ov))
+    delta = STAT_GEM_ELEMENT_GAIN * (2 * int(p_pp) + int(s_pp)) - ELEMENT_GEM_GAIN * (2 * int(p_ov) + int(s_ov))
     extras = (gems * delta).astype(ref_pp.dtype) + ref_pp[indices]
     return np.maximum.accumulate(extras, axis=1), owners.astype(np.int32)

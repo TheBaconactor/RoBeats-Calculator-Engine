@@ -5,18 +5,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from .gamedata import ELEMENTS, Stats, empty_stats
+from .rules import ELEMENT_GEM_GAIN, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_NORMAL
 
-GEM_BUDGET = 90
 # A stat gem raises its stat and one element; an element gem raises the selected element.
 STAT_GEMS: dict[str, tuple[int, str]] = {
-    "Perfect Points": (2, "Chill"),
-    "Combo Multiplier": (2, "Flow"),
-    "Fever Multiplier": (3, "Rush"),
-    "Fever Time": (3, "Beat"),
-    "Fever Fill Rate": (3, "Vibe"),
+    "Perfect Points": (STAT_GEM_GAIN_NORMAL, "Chill"),
+    "Combo Multiplier": (STAT_GEM_GAIN_NORMAL, "Flow"),
+    "Fever Multiplier": (STAT_GEM_GAIN_FEVER, "Rush"),
+    "Fever Time": (STAT_GEM_GAIN_FEVER, "Beat"),
+    "Fever Fill Rate": (STAT_GEM_GAIN_FEVER, "Vibe"),
 }
-STAT_GEM_ELEMENT_GAIN = 3
-ELEMENT_GEM_GAIN = 6
 # Gem counts are keyed by the stat a gem raises, plus "Element" for the selected element.
 GEM_KINDS = (*STAT_GEMS, "Element")
 

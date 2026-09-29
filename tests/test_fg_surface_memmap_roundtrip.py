@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import (
     expand_surface_rows,
@@ -161,9 +161,9 @@ def _build_payload(pool: np.ndarray, *, total_notes: int) -> FgResponseFrontierC
     frontier = FgResponseFrontierResult(surfaces, {}, 1, 2, 3, 4, 5, 6, 7, 0.0)
     return FgResponseFrontierCachePayload(
         frontier_by_key={(0, 0): frontier},
-        raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
-        non_fever_base_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.int32),
-        real_time_by_ft=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
+        raw_fill_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.float64),
+        non_fever_base_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.int32),
+        real_time_by_ft=np.zeros((MAX_STAT + 1,), dtype=np.float64),
         total_notes=int(total_notes),
         long_notes=0,
         use_forced_great_timing=True,

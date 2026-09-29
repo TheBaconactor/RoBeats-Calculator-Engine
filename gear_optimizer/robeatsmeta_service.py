@@ -27,9 +27,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.macos_background import make_process_background_only
-from gear_optimizer.settings import REASONING_LEVELS, reasoning_search, service_settings
+from gear_optimizer.settings import DIFFICULTIES, REASONING_LEVELS, reasoning_search, service_settings
 from gear_optimizer.data.database import (
     get_best_loadouts,
     get_evolution_db_path,
@@ -73,7 +73,6 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = REPO_ROOT / "Data"
 GEAR_DIR = DATA_ROOT / "Gear"
-DIFFICULTIES = ("Easy", "Normal", "Hard")
 
 # Global solve pool: caps concurrent optimizer subprocesses. The GPU is the bottleneck (one song
 # at a time on the Vulkan device), but the CPU-side frontier build + chart parse + DB write

@@ -378,7 +378,7 @@ def test_fg_response_frontier_sparse_bundle_is_single_disk_artifact(tmp_path: Pa
 
 
 def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Path, monkeypatch) -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_surfaces import SurfaceRowsFirstFrontier
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
         _fg_response_disk_cache_path,
@@ -402,9 +402,9 @@ def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Pa
     second = FgResponseFrontierResult(SurfaceRowsFirstFrontier(rows.copy()), {}, 8, 9, 10, 11, 12, 13, 14, 0.0)
     payload = FgResponseFrontierCachePayload(
         frontier_by_key={(0, 0): first, (1, 0): second},
-        raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
-        non_fever_base_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.int32),
-        real_time_by_ft=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
+        raw_fill_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.float64),
+        non_fever_base_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.int32),
+        real_time_by_ft=np.zeros((MAX_STAT + 1,), dtype=np.float64),
         total_notes=120,
         long_notes=0,
         use_forced_great_timing=True,
@@ -446,7 +446,7 @@ def test_fg_response_frontier_bundle_interns_equal_surface_segments(tmp_path: Pa
 
 
 def test_fg_response_frontier_surface_chunk_loader_reads_requested_ranges(tmp_path: Path, monkeypatch) -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
         _save_payload,
         load_first_surface_scoring_rows,
@@ -463,9 +463,9 @@ def test_fg_response_frontier_surface_chunk_loader_reads_requested_ranges(tmp_pa
     frontier = FgResponseFrontierResult(surfaces, {}, 1, 2, 3, 4, 5, 6, 7, 0.0)
     payload = FgResponseFrontierCachePayload(
         frontier_by_key={(0, 0): frontier},
-        raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
-        non_fever_base_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.int32),
-        real_time_by_ft=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
+        raw_fill_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.float64),
+        non_fever_base_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.int32),
+        real_time_by_ft=np.zeros((MAX_STAT + 1,), dtype=np.float64),
         total_notes=3,
         long_notes=0,
         use_forced_great_timing=True,
@@ -487,7 +487,7 @@ def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
     monkeypatch,
     cache_mutation: str,
 ) -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
         _fg_response_disk_cache_path,
         _payload_disk_info_if_complete,
@@ -505,9 +505,9 @@ def test_fg_response_frontier_disk_info_rejects_non_exact_bundle(
     )
     payload = FgResponseFrontierCachePayload(
         frontier_by_key={(0, 0): FgResponseFrontierResult(surfaces, {}, 1, 2, 3, 4, 5, 6, 7, 0.0)},
-        raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
-        non_fever_base_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.int32),
-        real_time_by_ft=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
+        raw_fill_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.float64),
+        non_fever_base_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.int32),
+        real_time_by_ft=np.zeros((MAX_STAT + 1,), dtype=np.float64),
         total_notes=3,
         long_notes=0,
         use_forced_great_timing=True,
@@ -1643,7 +1643,7 @@ def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -
 
 
 def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
         FgResponseFrontierResult,
@@ -1651,7 +1651,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
     )
 
     surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 0
     bundle = SimpleNamespace(
         frontier_idx_by_stat=frontier_idx_by_stat,
@@ -1661,8 +1661,8 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
         surface_pattern_words=np.zeros((1, 8), dtype=np.uint32),
         surface_counts=np.zeros((1, 3), dtype=np.int32),
         surface_pattern_head_coeffs=np.zeros((1, 4), dtype=np.int32),
-        raw_fill_by_ff=np.zeros((TOTAL_ROWS + 1,), dtype=np.float64),
-        real_time_by_ft=np.ones((TOTAL_ROWS + 1,), dtype=np.float64),
+        raw_fill_by_ff=np.zeros((MAX_STAT + 1,), dtype=np.float64),
+        real_time_by_ft=np.ones((MAX_STAT + 1,), dtype=np.float64),
     )
     batch = response_frontier.FgResponseFrontierPackedScoringBatch(
         started=0.0,
@@ -1762,7 +1762,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
 
 
 def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch) -> None:
-    from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT, STAT_GEM_GAIN_FEVER
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
     song_inputs = SimpleNamespace(
@@ -1781,9 +1781,9 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
     seen: dict[str, object] = {}
     canonical_keys = (
         (0, 0),
-        (0, GEM_SCALE_FEVER),
-        (GEM_SCALE_FEVER, 0),
-        (TOTAL_ROWS, TOTAL_ROWS),
+        (0, STAT_GEM_GAIN_FEVER),
+        (STAT_GEM_GAIN_FEVER, 0),
+        (MAX_STAT, MAX_STAT),
     )
 
     monkeypatch.setattr(response_frontier, "extract_fg_song_inputs", lambda _song: song_inputs)
@@ -1794,7 +1794,7 @@ def test_packed_scoring_batch_loads_canonical_bundle_during_prepare(monkeypatch)
         seen["calc_song"] = calc_song
         seen["ref_arrays"] = ref_arrays
         seen["stat_keys"] = keys
-        frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+        frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
         for ft_stat, ff_stat in keys:
             frontier_idx_by_stat[int(ft_stat), int(ff_stat)] = 0
         surface_words = np.zeros((1, 8), dtype=np.uint32)
@@ -1872,7 +1872,7 @@ def test_required_response_stat_keys_are_the_complete_legal_ftff_projection() ->
 
 
 def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
     song_inputs = SimpleNamespace(
@@ -1888,7 +1888,7 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
         perfect_floor=np.asarray([0.0], dtype=np.float32),
         great_floor=np.asarray([0.0], dtype=np.float32),
     )
-    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 0
     prewarmed_bundle = SimpleNamespace(
         frontier_idx_by_stat=frontier_idx_by_stat,
@@ -1924,7 +1924,7 @@ def test_packed_scoring_batch_uses_supplied_prewarmed_bundle(monkeypatch) -> Non
 
 
 def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
     song_inputs = SimpleNamespace(
@@ -1940,7 +1940,7 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
         perfect_floor=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
         great_floor=np.asarray([0.0, 0.1, 0.2], dtype=np.float32),
     )
-    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 1
     surface_words = np.arange(24, dtype=np.uint32).reshape(3, 8)
     surface_counts = np.arange(9, dtype=np.int32).reshape(3, 3)
@@ -2006,10 +2006,10 @@ def test_packed_scoring_batch_compacts_selected_frontier_surfaces(monkeypatch) -
 
 
 def test_packed_scoring_batch_scores_in_memory_pool_in_place() -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
-    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 0
     frontier_idx_by_stat[1, 0] = 1
     frontier_idx_by_stat[2, 0] = 2
@@ -2058,7 +2058,7 @@ def test_packed_scoring_batch_scores_in_memory_pool_in_place() -> None:
     assert np.shares_memory(packed_coeffs, bundle.surface_pattern_head_coeffs)
 
     # A subset batch with nonzero offsets and non-dense pattern IDs keeps absolute pool offsets.
-    subset_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    subset_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     subset_idx_by_stat[0, 0] = 1
     subset_idx_by_stat[1, 0] = 2
     subset_bundle = SimpleNamespace(
@@ -2090,10 +2090,10 @@ def test_packed_scoring_batch_scores_in_memory_pool_in_place() -> None:
 
 
 def test_packed_scoring_batch_rejects_frontier_outside_in_memory_pool() -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
-    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[0, 0] = 0
     bundle = SimpleNamespace(
         frontier_idx_by_stat=frontier_idx_by_stat,
@@ -2186,7 +2186,7 @@ def _synthetic_scoring_arrays(stat_keys, frontier_ids) -> dict[str, np.ndarray]:
 
 def _retired_per_key_dict_grid(stat_keys, frontier_ids, keys) -> np.ndarray:
     """The retired per-key dict materialization (and its missing-key error), kept as the oracle."""
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import _normalize_stat_key
 
     frontier_idx_by_key: dict[tuple[int, int], int] = {}
@@ -2198,7 +2198,7 @@ def _retired_per_key_dict_grid(stat_keys, frontier_ids, keys) -> np.ndarray:
     if len(frontier_idx_by_key) != len(keys):
         missing = sorted(set(keys) - set(frontier_idx_by_key))
         raise ValueError(f"FG response frontier scoring bundle is missing stat keys: {missing[:5]!r}")
-    grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    grid = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     for key, frontier_idx in frontier_idx_by_key.items():
         grid[int(key[0]), int(key[1])] = int(frontier_idx)
     return grid

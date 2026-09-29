@@ -5,7 +5,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from gear_optimizer.core.constants import GEM_SCALE_FEVER, GEM_STAT_TO_ELEMENT_SCALE, TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
 from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 
@@ -21,9 +21,9 @@ def best_response_positions_for_base_ftff(
     base_ff: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ft_values, ff_values, remaining = ftff_combo_arrays(int(total_budget))
-    ft_stat_seq = np.clip(int(base_ft) + (ft_values * GEM_SCALE_FEVER), 0, TOTAL_ROWS).astype(np.int32, copy=False)
-    ff_stat_seq = np.clip(int(base_ff) + (ff_values * GEM_SCALE_FEVER), 0, TOTAL_ROWS).astype(np.int32, copy=False)
-    canonical_key_seq = ((ft_stat_seq * (TOTAL_ROWS + 1)) + ff_stat_seq).astype(np.int32, copy=False)
+    ft_stat_seq = np.clip(int(base_ft) + (ft_values * STAT_GEM_GAIN_FEVER), 0, MAX_STAT).astype(np.int32, copy=False)
+    ff_stat_seq = np.clip(int(base_ff) + (ff_values * STAT_GEM_GAIN_FEVER), 0, MAX_STAT).astype(np.int32, copy=False)
+    canonical_key_seq = ((ft_stat_seq * (MAX_STAT + 1)) + ff_stat_seq).astype(np.int32, copy=False)
     positions = np.arange(int(ft_values.shape[0]), dtype=np.int32)
     unique_keys, first_positions = np.unique(canonical_key_seq, return_index=True)
     if int(unique_keys.shape[0]) == int(canonical_key_seq.shape[0]):
@@ -283,9 +283,9 @@ def prune_dominated_ftff_response_positions(
 
 def element_ftff_delta(color: str, ft: int, ff: int) -> int:
     if str(color or "") == "Beat":
-        return int(ft) * GEM_STAT_TO_ELEMENT_SCALE
+        return int(ft) * STAT_GEM_ELEMENT_GAIN
     if str(color or "") == "Vibe":
-        return int(ff) * GEM_STAT_TO_ELEMENT_SCALE
+        return int(ff) * STAT_GEM_ELEMENT_GAIN
     return 0
 
 

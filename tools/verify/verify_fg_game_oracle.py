@@ -36,11 +36,11 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
-from gear_optimizer.core.constants import (
-    ELEMENTAL_GEM_SCALE,
-    GEM_SCALE_FEVER,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
+from gear_optimizer.rules import (
+    ELEMENT_GEM_GAIN,
+    STAT_GEM_ELEMENT_GAIN,
+    STAT_GEM_GAIN_FEVER,
+    STAT_GEM_GAIN_NORMAL,
 )
 from gear_optimizer.core.time_quantize import quantize_to_int_ms
 from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song, scan_song_header

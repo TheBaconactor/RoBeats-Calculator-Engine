@@ -7,7 +7,7 @@ from typing import Iterable
 
 import numpy as np
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
 
 from .response_types import FgResponseFrontierResult
@@ -108,11 +108,12 @@ _FG_RESPONSE_CACHE_BASE_VERSION = "fg-response-frontier-visible-first-v31"
 _HERE = Path(__file__).resolve().parent
 _SOLVER_DIR = _HERE.parents[1]
 _CORE_DIR = _SOLVER_DIR.parent / "core"
+_RULES = _SOLVER_DIR.parent / "rules.py"
 # Canonical game-engine inputs to the cached transition producer. Keep this ownership explicit:
 # cache compaction may reuse exact producer output, but it must never make timing, input-order,
 # lane-reachability, fever, or witness semantics invisible to cache compatibility.
 _FG_GAME_ENGINE_SOURCES = (
-    _CORE_DIR / "constants.py",
+    _RULES,
     _CORE_DIR / "time_quantize.py",
     _SOLVER_DIR / "input_engine_breakpoints.py",
     _SOLVER_DIR / "timing_envelope.py",
@@ -123,7 +124,7 @@ _FG_GAME_ENGINE_SOURCES = (
 # identity imports this tuple directly so a producer edit can never leave one product surface on
 # stale bytes while the other rotates correctly.
 _FG_SHARED_FRONTIER_PRODUCER_SOURCES = (
-    _CORE_DIR / "constants.py",
+    _RULES,
     _CORE_DIR / "time_quantize.py",
     _SOLVER_DIR / "input_engine_breakpoints.py",
     _SOLVER_DIR / "timing_envelope.py",
@@ -186,7 +187,7 @@ _SCORING_BUNDLE_ARRAY_NAMES = frozenset(
 
 @lru_cache(maxsize=1)
 def all_response_stat_keys() -> tuple[tuple[int, int], ...]:
-    return tuple((int(ft), int(ff)) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
+    return tuple((int(ft), int(ff)) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1))
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,8 +293,8 @@ class FgResponseFrontierScoringBundle:
 def _normalize_stat_key(stat_key: tuple[int, int] | list[int]) -> tuple[int, int]:
     if len(stat_key) != 2:
         raise ValueError("FG response frontier stat keys must be (ft_stat, ff_stat)")
-    ft_stat = max(0, min(TOTAL_ROWS, int(stat_key[0])))
-    ff_stat = max(0, min(TOTAL_ROWS, int(stat_key[1])))
+    ft_stat = max(0, min(MAX_STAT, int(stat_key[0])))
+    ff_stat = max(0, min(MAX_STAT, int(stat_key[1])))
     return int(ft_stat), int(ff_stat)
 
 

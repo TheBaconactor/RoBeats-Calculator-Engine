@@ -6,13 +6,12 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.core.constants import (
-    ELEMENTAL_GEM_SCALE,
-    GEM_SCALE_FEVER,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    MAX_STAT_INDEX,
-    TOTAL_ROWS,
+from gear_optimizer.rules import (
+    ELEMENT_GEM_GAIN,
+    MAX_STAT,
+    STAT_GEM_ELEMENT_GAIN,
+    STAT_GEM_GAIN_FEVER,
+    STAT_GEM_GAIN_NORMAL,
 )
 from gear_optimizer.solver.scoring.fg_policy import compute_great_penalty_base
 from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _score_response_group_meta_gpu
@@ -78,7 +77,7 @@ def _atom_from_row(row: np.ndarray, *, surface_index: int) -> ChampionAtom:
 
 
 def _lookup_ref(ref: np.ndarray, idx: int) -> float:
-    safe_idx = max(0, min(int(idx), TOTAL_ROWS))
+    safe_idx = max(0, min(int(idx), MAX_STAT))
     return float(ref[safe_idx])
 
 
@@ -157,21 +156,21 @@ def _color_deltas(primary_color: str, secondary_color: str, selected_color: str)
     is_secondary_ov = int(secondary == selected and bool(selected))
     allow_pp = bool(is_primary_pp or is_secondary_pp)
     return allow_pp, (
-        GEM_STAT_TO_ELEMENT_SCALE * is_primary_pp,
-        GEM_STAT_TO_ELEMENT_SCALE * is_secondary_pp,
-        GEM_STAT_TO_ELEMENT_SCALE * is_primary_cm,
-        GEM_STAT_TO_ELEMENT_SCALE * is_secondary_cm,
-        GEM_STAT_TO_ELEMENT_SCALE * is_primary_fm,
-        GEM_STAT_TO_ELEMENT_SCALE * is_secondary_fm,
-        ELEMENTAL_GEM_SCALE * is_primary_ov,
-        ELEMENTAL_GEM_SCALE * is_secondary_ov,
+        STAT_GEM_ELEMENT_GAIN * is_primary_pp,
+        STAT_GEM_ELEMENT_GAIN * is_secondary_pp,
+        STAT_GEM_ELEMENT_GAIN * is_primary_cm,
+        STAT_GEM_ELEMENT_GAIN * is_secondary_cm,
+        STAT_GEM_ELEMENT_GAIN * is_primary_fm,
+        STAT_GEM_ELEMENT_GAIN * is_secondary_fm,
+        ELEMENT_GEM_GAIN * is_primary_ov,
+        ELEMENT_GEM_GAIN * is_secondary_ov,
     )
 
 
 def _max_gems(cur_stat: int, scale: int, residual_budget: int) -> int:
-    if int(cur_stat) >= MAX_STAT_INDEX:
+    if int(cur_stat) >= MAX_STAT:
         return 0
-    rem = int(MAX_STAT_INDEX) - int(cur_stat)
+    rem = int(MAX_STAT) - int(cur_stat)
     count = int(rem // int(scale))
     if int(rem % int(scale)) != 0:
         count += 1
@@ -186,9 +185,9 @@ def _valid_atom_for_group(atom: ChampionAtom, row: np.ndarray, *, allow_pp: bool
         return False
     if not bool(allow_pp) and int(atom.g_pp) != 0:
         return False
-    max_pp = _max_gems(int(row[1]), GEM_SCALE_NORMAL, residual) if bool(allow_pp) else 0
-    max_cm = _max_gems(int(row[2]), GEM_SCALE_NORMAL, residual)
-    max_fm = _max_gems(int(row[3]), GEM_SCALE_FEVER, residual)
+    max_pp = _max_gems(int(row[1]), STAT_GEM_GAIN_NORMAL, residual) if bool(allow_pp) else 0
+    max_cm = _max_gems(int(row[2]), STAT_GEM_GAIN_NORMAL, residual)
+    max_fm = _max_gems(int(row[3]), STAT_GEM_GAIN_FEVER, residual)
     return int(atom.g_pp) <= max_pp and int(atom.g_cm) <= max_cm and int(atom.g_fm) <= max_fm
 
 
@@ -213,9 +212,9 @@ def _score_atom_for_group(
     cur_primary = int(row[4])
     cur_secondary = int(row[5])
 
-    final_pp = int(cur_pp) + int(atom.g_pp) * GEM_SCALE_NORMAL
-    final_cm = int(cur_cm) + int(atom.g_cm) * GEM_SCALE_NORMAL
-    final_fm = int(cur_fm) + int(atom.g_fm) * GEM_SCALE_FEVER
+    final_pp = int(cur_pp) + int(atom.g_pp) * STAT_GEM_GAIN_NORMAL
+    final_cm = int(cur_cm) + int(atom.g_cm) * STAT_GEM_GAIN_NORMAL
+    final_fm = int(cur_fm) + int(atom.g_fm) * STAT_GEM_GAIN_FEVER
     final_primary = (
         int(cur_primary)
         + int(atom.g_pp) * int(pp_p_delta)

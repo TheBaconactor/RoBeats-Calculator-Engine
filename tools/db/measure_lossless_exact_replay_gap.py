@@ -31,7 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
-from gear_optimizer.core.constants import TOTAL_GEM_BUDGET
+from gear_optimizer.rules import GEM_BUDGET
 from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, normalize_team_buff, team_buff_effect
 from gear_optimizer.core.utils import get_selected_element
 from gear_optimizer.data.database import get_best_loadouts, get_evolution_db_path
@@ -234,7 +234,7 @@ def _normalize_gem_counts(payload: dict[str, Any]) -> dict[str, int]:
 
 
 def _gem_sum(gem_counts: dict[str, int]) -> int:
-    """Total gems in a served/resolved gem-count dict. Must never exceed TOTAL_GEM_BUDGET --
+    """Total gems in a served/resolved gem-count dict. Must never exceed GEM_BUDGET --
     a higher sum is an impossible build (a served card a player cannot reproduce)."""
     return sum(int(v or 0) for v in (gem_counts or {}).values())
 
@@ -589,7 +589,7 @@ def main() -> int:
     illegal = [
         row
         for row in rows
-        if _gem_sum(row.replay_gem_counts) > TOTAL_GEM_BUDGET or _gem_sum(row.resolved_gem_counts) > TOTAL_GEM_BUDGET
+        if _gem_sum(row.replay_gem_counts) > GEM_BUDGET or _gem_sum(row.resolved_gem_counts) > GEM_BUDGET
     ]
 
     if args.json:
@@ -613,11 +613,11 @@ def main() -> int:
             print(
                 f"  OVER-BUDGET {row.song_name[:40]!r} {row.mode}/{row.tier}: "
                 f"replay={_gem_sum(row.replay_gem_counts)} resolved={_gem_sum(row.resolved_gem_counts)} "
-                f"(budget={TOTAL_GEM_BUDGET}) replay_gems={row.replay_gem_counts}",
+                f"(budget={GEM_BUDGET}) replay_gems={row.replay_gem_counts}",
                 file=sys.stderr,
             )
         raise SystemExit(
-            f"GEM BUDGET VIOLATION: {len(illegal)} row(s) exceed {TOTAL_GEM_BUDGET} gems (impossible builds)."
+            f"GEM BUDGET VIOLATION: {len(illegal)} row(s) exceed {GEM_BUDGET} gems (impossible builds)."
         )
     return 0
 

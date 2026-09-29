@@ -15,15 +15,39 @@ from pathlib import Path
 
 import numpy as np
 
+from .rules import MAX_STAT
+
 ELEMENTS = ("Chill", "Flow", "Rush", "Beat", "Vibe")
 # The five stats with a Stats.txt curve, in the file's column order.
 CURVE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time")
 # Every stat, in the order evolution.db stores them (details "st").
 STATS = (*CURVE_STATS, *ELEMENTS)
-# Curves are indexed by stat value 0..MAX_STAT; higher values read the last row.
-MAX_STAT = 160
 
 Stats = dict[str, int]
+
+# Keys of the old item dicts (csv_parser, Mini Ascension) that are metadata, not stats.
+SKIP_ITEM_KEYS = frozenset(
+    {
+        "Name",
+        "type",
+        "Song Target",
+        "Mini Ascension Enabled",
+        "Mini Ascension Level",
+        "Mini Ascension Source Version",
+        "Mini Ascension Song Target Applied",
+        "Mini Ascension Elemental Bonus",
+        "Mini Ascension Match Qualities",
+        "Mini Ascension Materialized",
+        "Mini Ascension Materialized Song",
+        "Mini Ascension Materialized Primary Color",
+        "Mini Ascension Materialized Secondary Color",
+        "Mini Ascension Base Chill",
+        "Mini Ascension Base Flow",
+        "Mini Ascension Base Rush",
+        "Mini Ascension Base Beat",
+        "Mini Ascension Base Vibe",
+    }
+)
 
 _GEAR_COLUMNS = {
     "Chill": "Chill",

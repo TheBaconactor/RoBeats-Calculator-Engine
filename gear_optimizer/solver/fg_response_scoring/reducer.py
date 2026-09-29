@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact

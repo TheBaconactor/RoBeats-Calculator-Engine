@@ -5,7 +5,7 @@ import os
 import json
 import sqlite3
 from typing import Any, Dict, List, Optional
-from ...core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from ...core.team_buff import normalize_team_buff, team_buff_query_values
 from ..database_codecs import (
     _json_loads,

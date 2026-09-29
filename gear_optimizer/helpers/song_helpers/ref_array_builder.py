@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 
 
 logger = logging.getLogger(__name__)
@@ -30,16 +30,16 @@ _EXACT_REPLAY_REF_ARRAYS_CACHE: dict[str, np.ndarray] | None = None
 
 
 def build_ref_arrays_from_stats(stats_table, *, dtype=np.float64) -> dict[str, np.ndarray]:
-    if not stats_table or len(stats_table) < TOTAL_ROWS + 1:
+    if not stats_table or len(stats_table) < MAX_STAT + 1:
         raise ValueError(
-            f"Stats lookup table must contain at least {TOTAL_ROWS + 1} rows; "
+            f"Stats lookup table must contain at least {MAX_STAT + 1} rows; "
             f"got {len(stats_table) if stats_table else 0}"
         )
     ref_arrays: dict[str, np.ndarray] = {}
     for i, name in enumerate(_STAT_NAMES):
         values = []
-        for v in range(TOTAL_ROWS + 1):
-            lookup_index = TOTAL_ROWS - v
+        for v in range(MAX_STAT + 1):
+            lookup_index = MAX_STAT - v
             try:
                 val = stats_table[lookup_index][i]
             except Exception as exc:

@@ -41,12 +41,12 @@ def calculate_fever_timeline_indices(
         tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
                last_fever_end_idx = where the last fever window ends (for gap calculation)
     """
-    # Game formula constants (see constants.FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET)
-    non_fever_cas = (total_notes - long_notes_count) * 0.333  # FEVER_FILL_BASE_RATE
+    # Game formula constants (see rules.FEVER_FILL_PER_NOTE, FEVER_TIME_PER_SECOND, FEVER_TIME_OFFSET)
+    non_fever_cas = (total_notes - long_notes_count) * 0.333  # FEVER_FILL_PER_NOTE
     non_fever_base = ceil(non_fever_cas * fever_fill_rate)
     # Keep these literals in this cached kernel's own bytecode. Numba's disk-cache key does not
     # include values imported from another module, so using FEVER_TIME_SCALE/OFFSET here can revive
-    # machine code compiled with older constants after constants.py changes.
+    # machine code compiled with older constants after rules.py changes.
     fever_time_cas = last_note_time * 0.15 + 0.15
     real_fever_time = fever_time_cas * fever_time_stat
 

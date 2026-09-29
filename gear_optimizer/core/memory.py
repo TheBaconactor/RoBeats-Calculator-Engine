@@ -33,8 +33,12 @@ import psutil
 # entitlement and raises AccessDenied).
 _RSS_READ_ERRORS: tuple[type[BaseException], ...] = (OSError, AttributeError, ValueError, psutil.Error)
 
-from .constants import DEFAULT_MEMORY_GUARD_PERCENT, MEMORY_WATCHDOG_INTERVAL_SEC, STRICT_PLATFORM_MEMORY_GUARD_PERCENT
 from ..settings import ENGINE_ROOT, RunSettings, paths
+
+# Default RSS ceiling as a share of physical memory; Windows and macOS keep a stricter default.
+DEFAULT_MEMORY_GUARD_PERCENT = 50.0
+STRICT_PLATFORM_MEMORY_GUARD_PERCENT = 35.0
+MEMORY_WATCHDOG_INTERVAL_SEC = 5
 
 # Global watchdog state
 MEMORY_WATCHDOG_LIMIT_BYTES = 0

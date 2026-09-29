@@ -95,7 +95,8 @@ def run_core(chart, *, curve, seed, portfolio, regions, legacy, members,
 def measure(args, folder):
     import numba
     import scipy
-    from gear_optimizer.core.constants import GA_POPULATION_SIZE, GA_MULTI_RUNS_DEFAULT
+    from gear_optimizer.settings import RunSettings
+    from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
     from gear_optimizer.data.csv_parser import load_csv_db, read_table
     from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
     from tools.research._core_bound_benchmark import prepare_chart, run_ga
@@ -126,7 +127,7 @@ def measure(args, folder):
         if "legacy" in args.arms and args.portfolio != 1:
             run_ga(chart, generations=10, population=64, runs=1, seed=args.seeds[0], on_improvement=lambda _: None)
         if "ga" in args.arms:
-            run_ga(chart, generations=125, population=GA_POPULATION_SIZE, runs=GA_MULTI_RUNS_DEFAULT,
+            run_ga(chart, generations=125, population=GA_POPULATION_SIZE, runs=RunSettings().multi_start,
                    seed=args.seeds[0], on_improvement=lambda _: None)
         ids = np.array([warm["ids"]], dtype=np.int32)
         low = np.zeros((1, 6), dtype=np.int64)
@@ -145,7 +146,7 @@ def measure(args, folder):
                 curve = Curve()
                 if arm == "ga":
                     result = run_ga(chart, generations=125, population=GA_POPULATION_SIZE,
-                                    runs=GA_MULTI_RUNS_DEFAULT, seed=seed, on_improvement=curve.record)
+                                    runs=RunSettings().multi_start, seed=seed, on_improvement=curve.record)
                     result = {**curve.report(), "ga": result}
                 else:
                     result = run_core(chart, curve=curve, seed=seed,

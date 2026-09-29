@@ -289,7 +289,7 @@ def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> Non
     Compares RAW per-row solve scores (before the FG winner-emit gate), so the proof
     holds even when no candidate's FG beats its base on this synthetic song.
     """
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
@@ -319,7 +319,7 @@ def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> Non
         build_or_load_response_frontier_payload(
             calc_song,
             ref_arrays,
-            stat_keys=tuple((ft, ff) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1)),
+            stat_keys=tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1)),
         )
 
         device_plan = FgPlanner.plan_many(device_candidates, calc_song, ref_arrays, _PRIMARY_COLOR)

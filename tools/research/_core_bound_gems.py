@@ -2,12 +2,12 @@
 
 import numpy as np
 
-from gear_optimizer.core.constants import GEM_SCALE_FEVER, GEM_SCALE_NORMAL, MAX_STAT_INDEX
+from gear_optimizer.rules import MAX_STAT, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_NORMAL
 
 # Gem order FT, FF, PP, CM, FM, overflow; projected stat order PP, CM, FM, FT, FF, E.
 _AXES = np.array([3, 4, 0, 1, 2])
-_SCALES = np.array([GEM_SCALE_FEVER, GEM_SCALE_FEVER, GEM_SCALE_NORMAL,
-                    GEM_SCALE_NORMAL, GEM_SCALE_FEVER])
+_SCALES = np.array([STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_NORMAL,
+                    STAT_GEM_GAIN_NORMAL, STAT_GEM_GAIN_FEVER])
 
 
 def gem_limits(base, intervals, budget):
@@ -19,7 +19,7 @@ def gem_limits(base, intervals, budget):
     base = np.asarray(base, dtype=np.int64)
     low = np.zeros((*base.shape[:-1], 6), dtype=np.int64)
     high = np.full_like(low, budget)
-    high[..., :5] = np.minimum(budget, np.maximum(0, (MAX_STAT_INDEX - base[..., _AXES]) // _SCALES))
+    high[..., :5] = np.minimum(budget, np.maximum(0, (MAX_STAT - base[..., _AXES]) // _SCALES))
     for gem, axis in enumerate((3, 4)):
         low[..., gem] = np.maximum(0, -((base[..., axis] - intervals[axis, 0]) // _SCALES[gem]))
         high[..., gem] = np.minimum(high[..., gem], (intervals[axis, 1] - base[..., axis]) // _SCALES[gem])

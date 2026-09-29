@@ -15,7 +15,7 @@ import sys
 import numpy as np
 import pytest
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 
 
 def _build_controlled_batch(allow_pp: bool):
@@ -25,8 +25,8 @@ def _build_controlled_batch(allow_pp: bool):
     body_total = 100
     residual_budget = 20
 
-    # Fractional, monotonic reference curves (length TOTAL_ROWS+1).
-    idx = np.arange(TOTAL_ROWS + 1, dtype=np.float64)
+    # Fractional, monotonic reference curves (length MAX_STAT+1).
+    idx = np.arange(MAX_STAT + 1, dtype=np.float64)
     ref_pp = (idx * 0.5 + 0.3)
     ref_cm = (1.0 + idx * 0.011)
     ref_fm = (1.0 + idx * 0.017)
@@ -101,7 +101,7 @@ def _run_cpu_f64(b, allow_pp):
             np.ascontiguousarray(b["ref_cm"], dtype=np.float64),
             np.ascontiguousarray(b["ref_fm"], dtype=np.float64),
             bool(allow_pp),
-            int(TOTAL_ROWS),
+            int(MAX_STAT),
         ),
         dtype=np.int64,
     )

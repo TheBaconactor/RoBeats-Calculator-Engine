@@ -6,7 +6,7 @@ import time
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.constants import GEM_SCALE_FEVER, GEM_SCALE_NORMAL, MAX_STAT_INDEX
+from gear_optimizer.rules import MAX_STAT, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_NORMAL
 from gear_optimizer.data.song_io import get_base_calc_song
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
 from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
@@ -75,8 +75,8 @@ def replay_results(chart, arrays, ids, results):
             raise ValueError("inner solver witness violates the shared gem budget")
         base = build_stats_dict(chart.base + arrays["item_stats"][genome].sum(axis=0))
         names = ("Fever Time", "Fever Fill Rate", "Perfect Points", "Combo Multiplier", "Fever Multiplier")
-        scales = (GEM_SCALE_FEVER, GEM_SCALE_FEVER, GEM_SCALE_NORMAL, GEM_SCALE_NORMAL, GEM_SCALE_FEVER)
-        if any(g > max(0, (MAX_STAT_INDEX - base[name]) // scale)
+        scales = (STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_NORMAL, STAT_GEM_GAIN_NORMAL, STAT_GEM_GAIN_FEVER)
+        if any(g > max(0, (MAX_STAT - base[name]) // scale)
                for name, g, scale in zip(names, gems, scales)):
             raise ValueError("inner solver witness exceeds a stat-gem cap")
         stats_rows.append(apply_gems_to_base_stats(base, selected, *gems))

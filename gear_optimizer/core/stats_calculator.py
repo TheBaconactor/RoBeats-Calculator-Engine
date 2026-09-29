@@ -5,12 +5,12 @@ Consolidates shared stats computation logic so optimizer and maintenance tools
 derive the same base stat surfaces.
 """
 
-from .constants import (
-    GEM_SCALE_NORMAL,
-    GEM_SCALE_FEVER,
-    ELEMENTAL_GEM_SCALE,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    SKIP_ITEM_KEYS,
+from gear_optimizer.gamedata import SKIP_ITEM_KEYS
+from gear_optimizer.rules import (
+    ELEMENT_GEM_GAIN,
+    STAT_GEM_ELEMENT_GAIN,
+    STAT_GEM_GAIN_FEVER,
+    STAT_GEM_GAIN_NORMAL,
 )
 from .gem_defs import ELEMENT_STAT_KEYS, GemKey, element_gem_count
 
@@ -60,21 +60,21 @@ def compute_full_stats(gear_names, mini_names, gem_counts, selected_element, gea
     g_ov = element_gem_count(gem_counts)
 
     # Stat gem scaling
-    stats[GemKey.PP.value] = stats.get(GemKey.PP.value, 0) + g_pp * GEM_SCALE_NORMAL
-    stats[GemKey.CM.value] = stats.get(GemKey.CM.value, 0) + g_cm * GEM_SCALE_NORMAL
-    stats[GemKey.FM.value] = stats.get(GemKey.FM.value, 0) + g_fm * GEM_SCALE_FEVER
-    stats[GemKey.FT.value] = stats.get(GemKey.FT.value, 0) + g_ft * GEM_SCALE_FEVER
-    stats[GemKey.FF.value] = stats.get(GemKey.FF.value, 0) + g_ff * GEM_SCALE_FEVER
+    stats[GemKey.PP.value] = stats.get(GemKey.PP.value, 0) + g_pp * STAT_GEM_GAIN_NORMAL
+    stats[GemKey.CM.value] = stats.get(GemKey.CM.value, 0) + g_cm * STAT_GEM_GAIN_NORMAL
+    stats[GemKey.FM.value] = stats.get(GemKey.FM.value, 0) + g_fm * STAT_GEM_GAIN_FEVER
+    stats[GemKey.FT.value] = stats.get(GemKey.FT.value, 0) + g_ft * STAT_GEM_GAIN_FEVER
+    stats[GemKey.FF.value] = stats.get(GemKey.FF.value, 0) + g_ff * STAT_GEM_GAIN_FEVER
 
     # Stat-to-element conversion
-    stats[ELEMENT_STAT_KEYS[0]] = stats.get(ELEMENT_STAT_KEYS[0], 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-    stats[ELEMENT_STAT_KEYS[1]] = stats.get(ELEMENT_STAT_KEYS[1], 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-    stats[ELEMENT_STAT_KEYS[2]] = stats.get(ELEMENT_STAT_KEYS[2], 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-    stats[ELEMENT_STAT_KEYS[3]] = stats.get(ELEMENT_STAT_KEYS[3], 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
-    stats[ELEMENT_STAT_KEYS[4]] = stats.get(ELEMENT_STAT_KEYS[4], 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
+    stats[ELEMENT_STAT_KEYS[0]] = stats.get(ELEMENT_STAT_KEYS[0], 0) + g_pp * STAT_GEM_ELEMENT_GAIN
+    stats[ELEMENT_STAT_KEYS[1]] = stats.get(ELEMENT_STAT_KEYS[1], 0) + g_cm * STAT_GEM_ELEMENT_GAIN
+    stats[ELEMENT_STAT_KEYS[2]] = stats.get(ELEMENT_STAT_KEYS[2], 0) + g_fm * STAT_GEM_ELEMENT_GAIN
+    stats[ELEMENT_STAT_KEYS[3]] = stats.get(ELEMENT_STAT_KEYS[3], 0) + g_ft * STAT_GEM_ELEMENT_GAIN
+    stats[ELEMENT_STAT_KEYS[4]] = stats.get(ELEMENT_STAT_KEYS[4], 0) + g_ff * STAT_GEM_ELEMENT_GAIN
 
     # Elemental overflow
     if selected_element:
-        stats[selected_element] = stats.get(selected_element, 0) + g_ov * ELEMENTAL_GEM_SCALE
+        stats[selected_element] = stats.get(selected_element, 0) + g_ov * ELEMENT_GEM_GAIN
 
     return stats

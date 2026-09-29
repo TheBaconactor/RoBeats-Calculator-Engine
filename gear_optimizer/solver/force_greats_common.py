@@ -3,11 +3,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from gear_optimizer.core.constants import (
-    ELEMENTAL_GEM_SCALE,
-    GEM_SCALE_FEVER,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
+from gear_optimizer.rules import (
+    ELEMENT_GEM_GAIN,
+    STAT_GEM_ELEMENT_GAIN,
+    STAT_GEM_GAIN_FEVER,
+    STAT_GEM_GAIN_NORMAL,
 )
 from gear_optimizer.core.gem_defs import element_gem_count
 
@@ -105,20 +105,20 @@ def extract_base_stats(
         g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
         g_ov = element_gem_count(gem_counts)
         deltas = {
-            "Perfect Points": g_pp * int(GEM_SCALE_NORMAL),
-            "Chill": g_pp * int(GEM_STAT_TO_ELEMENT_SCALE),
-            "Combo Multiplier": g_cm * int(GEM_SCALE_NORMAL),
-            "Flow": g_cm * int(GEM_STAT_TO_ELEMENT_SCALE),
-            "Fever Multiplier": g_fm * int(GEM_SCALE_FEVER),
-            "Rush": g_fm * int(GEM_STAT_TO_ELEMENT_SCALE),
-            "Fever Time": int(ft_gems) * int(GEM_SCALE_FEVER),
-            "Beat": int(ft_gems) * int(GEM_STAT_TO_ELEMENT_SCALE),
-            "Fever Fill Rate": int(ff_gems) * int(GEM_SCALE_FEVER),
-            "Vibe": int(ff_gems) * int(GEM_STAT_TO_ELEMENT_SCALE),
+            "Perfect Points": g_pp * int(STAT_GEM_GAIN_NORMAL),
+            "Chill": g_pp * int(STAT_GEM_ELEMENT_GAIN),
+            "Combo Multiplier": g_cm * int(STAT_GEM_GAIN_NORMAL),
+            "Flow": g_cm * int(STAT_GEM_ELEMENT_GAIN),
+            "Fever Multiplier": g_fm * int(STAT_GEM_GAIN_FEVER),
+            "Rush": g_fm * int(STAT_GEM_ELEMENT_GAIN),
+            "Fever Time": int(ft_gems) * int(STAT_GEM_GAIN_FEVER),
+            "Beat": int(ft_gems) * int(STAT_GEM_ELEMENT_GAIN),
+            "Fever Fill Rate": int(ff_gems) * int(STAT_GEM_GAIN_FEVER),
+            "Vibe": int(ff_gems) * int(STAT_GEM_ELEMENT_GAIN),
         }
         if selected_color:
             selected = str(selected_color)
-            deltas[selected] = deltas.get(selected, 0) + g_ov * int(ELEMENTAL_GEM_SCALE)
+            deltas[selected] = deltas.get(selected, 0) + g_ov * int(ELEMENT_GEM_GAIN)
 
         for key, delta in deltas.items():
             if int(delta) > 0 and int(gs(key, 0)) - int(delta) < -50:

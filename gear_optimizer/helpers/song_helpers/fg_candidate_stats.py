@@ -4,7 +4,7 @@ from typing import Optional
 
 import numpy as np
 
-from ...core.constants import SKIP_ITEM_KEYS
+from gear_optimizer.gamedata import SKIP_ITEM_KEYS
 from ...core.gem_defs import element_gem_count
 from ...core.utils import get_selected_element, safe_int
 from ...solver.base_stats import build_stats_dict, build_stats_list

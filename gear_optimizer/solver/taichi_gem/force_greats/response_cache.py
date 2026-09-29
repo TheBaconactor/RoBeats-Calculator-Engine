@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
@@ -457,11 +457,11 @@ def _materialize_scoring_bundle_from_arrays(
     keys: tuple[tuple[int, int], ...],
     arrays: dict[str, np.ndarray],
 ) -> FgResponseFrontierScoringBundle:
-    stat_key_rows = np.clip(np.asarray(arrays["stat_keys"], dtype=np.int32).reshape((-1, 2)), 0, TOTAL_ROWS)
+    stat_key_rows = np.clip(np.asarray(arrays["stat_keys"], dtype=np.int32).reshape((-1, 2)), 0, MAX_STAT)
     frontier_ids = np.asarray(arrays["frontier_ids"], dtype=np.int32).reshape(-1)
     if int(frontier_ids.shape[0]) != int(stat_key_rows.shape[0]) or bool(np.any(frontier_ids < 0)):
         raise ValueError("FG response frontier scoring bundle has invalid frontier ids")
-    present = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    present = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     present[stat_key_rows[:, 0], stat_key_rows[:, 1]] = frontier_ids
     requested = _stat_key_index_rows(keys)
     requested_ids = present[requested[:, 0], requested[:, 1]]
@@ -472,7 +472,7 @@ def _materialize_scoring_bundle_from_arrays(
 
     # Only REQUESTED keys are marked present: a partial bundle must invalidate-and-reload on a
     # later request for keys it was not materialized with.
-    frontier_idx_by_stat = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1), -1, dtype=np.int32)
+    frontier_idx_by_stat = np.full((MAX_STAT + 1, MAX_STAT + 1), -1, dtype=np.int32)
     frontier_idx_by_stat[requested[:, 0], requested[:, 1]] = requested_ids
     total_notes = int(np.asarray(arrays["total_notes"]).item())
     expected_head_len = min(int(total_notes), 100)

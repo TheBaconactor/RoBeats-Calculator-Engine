@@ -13,11 +13,8 @@ from math import ceil
 import numpy as np
 
 from .chart import Chart
+from .rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND
 from .score import HEAD_NOTES, TimelineCell, single_surface_cell
-
-FEVER_FILL_PER_NOTE = 0.333
-FEVER_TIME_PER_SECOND = 0.15
-FEVER_TIME_OFFSET = 0.15
 
 
 def fever_fill_notes(total_notes: int, long_notes: int, fill_factor: float) -> int:

@@ -26,15 +26,15 @@ between launches, because the total output length is data-dependent).
 import numpy as np
 import taichi as ti
 
-from gear_optimizer.core.constants import GEM_SCALE_FEVER, TOTAL_GEM_BUDGET, TOTAL_ROWS
+from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.taichi_gem import api as gem_api
 from gear_optimizer.solver.taichi_gem.runtime import taichi_runtime_lock
 
 _INT_MIN = -2147483648
 
 # Capacity bounds (GPU-safety: real shape bounds, fail-loud if exceeded).
-_MAX_PAIRS = (TOTAL_GEM_BUDGET + 1) * (TOTAL_GEM_BUDGET + 2) // 2  # ftff combo count at full budget (4186 @ B=90)
-_MAX_FRONTIERS = (TOTAL_ROWS + 1) * (TOTAL_ROWS + 1)  # frontier ids come from the full clipped stat grid
+_MAX_PAIRS = (GEM_BUDGET + 1) * (GEM_BUDGET + 2) // 2  # ftff combo count at full budget (4186 @ B=90)
+_MAX_FRONTIERS = (MAX_STAT + 1) * (MAX_STAT + 1)  # frontier ids come from the full clipped stat grid
 _MAX_CAND = 64  # per-launch candidate chunk (scratch slab count); larger batches run as sequential chunks
 
 # scratch_frontier columns
@@ -109,8 +109,8 @@ def _clip_stat(value: ti.i32) -> ti.i32:
     out = value
     if out < 0:
         out = 0
-    if out > TOTAL_ROWS:
-        out = TOTAL_ROWS
+    if out > MAX_STAT:
+        out = MAX_STAT
     return out
 
 
@@ -140,8 +140,8 @@ def _fg_count_group_rows_kernel(
                 _sf[candidate_idx, fid, _BP] = -1
                 _sf[candidate_idx, fid, _BR] = _INT_MIN
             for pos in range(pair_count):
-                ft_stat = _clip_stat(base_ft + ft_values[pos] * GEM_SCALE_FEVER)
-                ff_stat = _clip_stat(base_ff + ff_values[pos] * GEM_SCALE_FEVER)
+                ft_stat = _clip_stat(base_ft + ft_values[pos] * STAT_GEM_GAIN_FEVER)
+                ff_stat = _clip_stat(base_ff + ff_values[pos] * STAT_GEM_GAIN_FEVER)
                 frontier_id = frontier_idx_by_stat[ft_stat, ff_stat]
                 if frontier_id < 0:
                     _err[0] = 1
@@ -157,8 +157,8 @@ def _fg_count_group_rows_kernel(
                         _sf[candidate_idx, frontier_id, _BR] = residual
             kept_count = 0
             for pos in range(pair_count):
-                ft_stat = _clip_stat(base_ft + ft_values[pos] * GEM_SCALE_FEVER)
-                ff_stat = _clip_stat(base_ff + ff_values[pos] * GEM_SCALE_FEVER)
+                ft_stat = _clip_stat(base_ft + ft_values[pos] * STAT_GEM_GAIN_FEVER)
+                ff_stat = _clip_stat(base_ff + ff_values[pos] * STAT_GEM_GAIN_FEVER)
                 frontier_id = frontier_idx_by_stat[ft_stat, ff_stat]
                 if frontier_id >= 0 and _sf[candidate_idx, frontier_id, _BP] == pos:
                     _km[candidate_idx, pos] = 1
@@ -172,8 +172,8 @@ def _fg_count_group_rows_kernel(
                 _sp[candidate_idx, pos, _NX] = -1
             ordered_count = 0
             for pos in range(pair_count):
-                ft_stat = _clip_stat(base_ft + ft_values[pos] * GEM_SCALE_FEVER)
-                ff_stat = _clip_stat(base_ff + ff_values[pos] * GEM_SCALE_FEVER)
+                ft_stat = _clip_stat(base_ft + ft_values[pos] * STAT_GEM_GAIN_FEVER)
+                ff_stat = _clip_stat(base_ff + ff_values[pos] * STAT_GEM_GAIN_FEVER)
                 frontier_id = frontier_idx_by_stat[ft_stat, ff_stat]
                 if frontier_id < 0:
                     _err[0] = 1
@@ -280,8 +280,8 @@ def _fg_emit_group_rows_kernel(
             _sp[candidate_idx, pos, _NX] = -1
         ordered_count = 0
         for pos in range(pair_count):
-            ft_stat = _clip_stat(base_ft + ft_values[pos] * GEM_SCALE_FEVER)
-            ff_stat = _clip_stat(base_ff + ff_values[pos] * GEM_SCALE_FEVER)
+            ft_stat = _clip_stat(base_ft + ft_values[pos] * STAT_GEM_GAIN_FEVER)
+            ff_stat = _clip_stat(base_ff + ff_values[pos] * STAT_GEM_GAIN_FEVER)
             frontier_id = frontier_idx_by_stat[ft_stat, ff_stat]
             if frontier_id < 0:
                 _err[0] = 1
@@ -311,8 +311,8 @@ def _fg_emit_group_rows_kernel(
                 if pos >= 0:
                     ft = ft_values[pos]
                     ff = ff_values[pos]
-                    ft_stat = _clip_stat(base_ft + ft * GEM_SCALE_FEVER)
-                    ff_stat = _clip_stat(base_ff + ff * GEM_SCALE_FEVER)
+                    ft_stat = _clip_stat(base_ft + ft * STAT_GEM_GAIN_FEVER)
+                    ff_stat = _clip_stat(base_ff + ff * STAT_GEM_GAIN_FEVER)
                     group_meta[write, 0] = residual_values[pos]
                     group_meta[write, 1] = base_pp
                     group_meta[write, 2] = base_cm
@@ -332,8 +332,8 @@ def _fg_emit_group_rows_kernel(
                     if _km[candidate_idx, row] != 0:
                         ft = ft_values[row]
                         ff = ff_values[row]
-                        ft_stat = _clip_stat(base_ft + ft * GEM_SCALE_FEVER)
-                        ff_stat = _clip_stat(base_ff + ff * GEM_SCALE_FEVER)
+                        ft_stat = _clip_stat(base_ft + ft * STAT_GEM_GAIN_FEVER)
+                        ff_stat = _clip_stat(base_ff + ff * STAT_GEM_GAIN_FEVER)
                         group_meta[write, 0] = residual_values[row]
                         group_meta[write, 1] = base_pp
                         group_meta[write, 2] = base_cm

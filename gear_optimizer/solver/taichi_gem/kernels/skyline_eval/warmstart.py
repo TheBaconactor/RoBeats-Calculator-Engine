@@ -9,7 +9,8 @@ import taichi as ti
 
 from ... import fields as gpu_fields
 from .. import kernels_helpers
-from ..warmstart_common import MAX_STAT, solve_combo_warmstart_preloaded
+from .....rules import MAX_STAT
+from ..warmstart_common import solve_combo_warmstart_preloaded
 
 
 @ti.func

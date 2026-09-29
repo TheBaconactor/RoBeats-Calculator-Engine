@@ -62,12 +62,12 @@ def _prebuild_team_buff_timeline_frontier(calc_song: dict, ref_arrays: dict) -> 
 
 
 def test_score_stats_exact_uses_exact_replay_ref_arrays_for_float32_callers(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers import ref_array_builder as rab
     from gear_optimizer.solver.scoring import exact_rescore as er
 
-    authoritative = _ref_arrays(TOTAL_ROWS + 1, dtype=np.float64)
-    caller_refs = _ref_arrays(TOTAL_ROWS + 1, dtype=np.float32)
+    authoritative = _ref_arrays(MAX_STAT + 1, dtype=np.float64)
+    caller_refs = _ref_arrays(MAX_STAT + 1, dtype=np.float32)
     stats = _boundary_drift_stats()
     calc_song = _mock_song(name="pytest_exact_rescore_ref_authority")
 
@@ -84,7 +84,7 @@ def test_score_stats_exact_uses_exact_replay_ref_arrays_for_float32_callers(monk
 
 
 def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.scoring.exact_rescore import (
         score_stats_exact,
         score_stats_exact_with_timeline_trace,
@@ -109,11 +109,11 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
         },
     }
     ref_arrays = {
-        "Perfect Points": np.ones(TOTAL_ROWS + 1, dtype=np.float64),
-        "Combo Multiplier": np.ones(TOTAL_ROWS + 1, dtype=np.float64) * 2.0,
-        "Fever Multiplier": np.ones(TOTAL_ROWS + 1, dtype=np.float64) * 4.0,
-        "Fever Fill Rate": np.ones(TOTAL_ROWS + 1, dtype=np.float64),
-        "Fever Time": np.ones(TOTAL_ROWS + 1, dtype=np.float64),
+        "Perfect Points": np.ones(MAX_STAT + 1, dtype=np.float64),
+        "Combo Multiplier": np.ones(MAX_STAT + 1, dtype=np.float64) * 2.0,
+        "Fever Multiplier": np.ones(MAX_STAT + 1, dtype=np.float64) * 4.0,
+        "Fever Fill Rate": np.ones(MAX_STAT + 1, dtype=np.float64),
+        "Fever Time": np.ones(MAX_STAT + 1, dtype=np.float64),
     }
     stats = {
         "Perfect Points": 0,
@@ -142,14 +142,14 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
 
 
 def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers import ref_array_builder as rab
     from gear_optimizer.helpers.song_helpers import team_buff_tiers as tbt
     from gear_optimizer.solver.scoring import exact_rescore as er
     from tests.test_team_buff_tier_postprocess import _install_synthetic_tier_resolve
 
-    authoritative = _ref_arrays(TOTAL_ROWS + 1, dtype=np.float64)
-    caller_refs = _ref_arrays(TOTAL_ROWS + 1, dtype=np.float32)
+    authoritative = _ref_arrays(MAX_STAT + 1, dtype=np.float64)
+    caller_refs = _ref_arrays(MAX_STAT + 1, dtype=np.float32)
     stats = _boundary_drift_stats()
     entry = {
         "score": 1,

@@ -212,7 +212,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
     chosen FT/FF, the resolved final stats, AND the exact surface rescore
     (score_force_greats_response_surface_exact == the value that becomes best_fg_score).
     """
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
     from gear_optimizer.solver.scoring.exact_rescore import (
@@ -252,7 +252,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
         build_or_load_response_frontier_payload(
             calc_song,
             ref_arrays,
-            stat_keys=tuple((ft, ff) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1)),
+            stat_keys=tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1)),
         )
         scoring_bundle = load_response_frontier_scoring_bundle(
             calc_song, ref_arrays, stat_keys=all_response_stat_keys()

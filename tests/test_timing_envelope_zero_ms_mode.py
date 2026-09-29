@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
 from gear_optimizer import score
 from gear_optimizer.solver.scoring.exact_rescore import (
@@ -24,7 +24,7 @@ from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
 
 def _ref_arrays() -> dict[str, np.ndarray]:
-    rows = TOTAL_ROWS + 1
+    rows = MAX_STAT + 1
     return {
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
@@ -137,11 +137,11 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     cs = _calc_song()
     ref = _ref_arrays()
 
-    pp = lookup_reference_py(stats["Perfect Points"], ref["Perfect Points"], TOTAL_ROWS)
-    combo = lookup_reference_py(stats["Combo Multiplier"], ref["Combo Multiplier"], TOTAL_ROWS)
-    fever = lookup_reference_py(stats["Fever Multiplier"], ref["Fever Multiplier"], TOTAL_ROWS)
-    ft_factor = lookup_reference_py(stats["Fever Time"], ref["Fever Time"], TOTAL_ROWS)
-    ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref["Fever Fill Rate"], TOTAL_ROWS)
+    pp = lookup_reference_py(stats["Perfect Points"], ref["Perfect Points"], MAX_STAT)
+    combo = lookup_reference_py(stats["Combo Multiplier"], ref["Combo Multiplier"], MAX_STAT)
+    fever = lookup_reference_py(stats["Fever Multiplier"], ref["Fever Multiplier"], MAX_STAT)
+    ft_factor = lookup_reference_py(stats["Fever Time"], ref["Fever Time"], MAX_STAT)
+    ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref["Fever Fill Rate"], MAX_STAT)
     base_value = float(stats["Rush"] * 2 + stats["Flow"]) + float(pp)
 
     timestamps = cs["song_data"]["timestamps"]
@@ -207,7 +207,7 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_
     stats_rows = [
         _stats(),
         {**_stats(), "Fever Time": 0, "Fever Fill Rate": 0},
-        {**_stats(), "Fever Time": TOTAL_ROWS, "Fever Fill Rate": TOTAL_ROWS},
+        {**_stats(), "Fever Time": MAX_STAT, "Fever Fill Rate": MAX_STAT},
         {**_stats(), "Fever Time": 17, "Fever Fill Rate": 143, "Combo Multiplier": 160},
     ]
 

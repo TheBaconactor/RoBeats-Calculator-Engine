@@ -98,7 +98,7 @@ def test_response_surface_head_coeffs_do_not_unpack_per_surface_bits(monkeypatch
 
 
 def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     pattern_a = np.zeros((8,), dtype=np.uint32)
@@ -116,9 +116,9 @@ def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
         "secondary_color": "Flow",
         "selected_color": "Rush",
         "ref_arrays": {
-            "Perfect Points": np.linspace(1.0, 2.0, TOTAL_ROWS + 1, dtype=np.float64),
-            "Combo Multiplier": np.linspace(2.0, 2.6, TOTAL_ROWS + 1, dtype=np.float64),
-            "Fever Multiplier": np.linspace(3.0, 5.0, TOTAL_ROWS + 1, dtype=np.float64),
+            "Perfect Points": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float64),
+            "Combo Multiplier": np.linspace(2.0, 2.6, MAX_STAT + 1, dtype=np.float64),
+            "Fever Multiplier": np.linspace(3.0, 5.0, MAX_STAT + 1, dtype=np.float64),
         },
         "surface_counts": counts,
     }
@@ -637,31 +637,31 @@ def test_response_inner_combo_estimator_matches_duplicate_group_meta_rows():
 
 
 def test_response_inner_combo_count_matches_bruteforce():
-    from gear_optimizer.core.constants import GEM_SCALE_FEVER, GEM_SCALE_NORMAL, MAX_STAT_INDEX
+    from gear_optimizer.rules import MAX_STAT, STAT_GEM_GAIN_FEVER, STAT_GEM_GAIN_NORMAL
     from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as response_inner
 
     def brute_combo_count(*, residual_budget: int, cur_pp: int, cur_cm: int, cur_fm: int, allow_pp: bool) -> int:
         residual = max(0, int(residual_budget))
 
         max_pp_gems = 0
-        if bool(allow_pp) and int(cur_pp) < MAX_STAT_INDEX:
-            rem_pp = MAX_STAT_INDEX - int(cur_pp)
-            max_pp_gems = rem_pp // GEM_SCALE_NORMAL
-            if rem_pp % GEM_SCALE_NORMAL != 0:
+        if bool(allow_pp) and int(cur_pp) < MAX_STAT:
+            rem_pp = MAX_STAT - int(cur_pp)
+            max_pp_gems = rem_pp // STAT_GEM_GAIN_NORMAL
+            if rem_pp % STAT_GEM_GAIN_NORMAL != 0:
                 max_pp_gems += 1
 
         max_cm_gems = 0
-        if int(cur_cm) < MAX_STAT_INDEX:
-            rem_cm = MAX_STAT_INDEX - int(cur_cm)
-            max_cm_gems = rem_cm // GEM_SCALE_NORMAL
-            if rem_cm % GEM_SCALE_NORMAL != 0:
+        if int(cur_cm) < MAX_STAT:
+            rem_cm = MAX_STAT - int(cur_cm)
+            max_cm_gems = rem_cm // STAT_GEM_GAIN_NORMAL
+            if rem_cm % STAT_GEM_GAIN_NORMAL != 0:
                 max_cm_gems += 1
 
         max_fm_gems = 0
-        if int(cur_fm) < MAX_STAT_INDEX:
-            rem_fm = MAX_STAT_INDEX - int(cur_fm)
-            max_fm_gems = rem_fm // GEM_SCALE_FEVER
-            if rem_fm % GEM_SCALE_FEVER != 0:
+        if int(cur_fm) < MAX_STAT:
+            rem_fm = MAX_STAT - int(cur_fm)
+            max_fm_gems = rem_fm // STAT_GEM_GAIN_FEVER
+            if rem_fm % STAT_GEM_GAIN_FEVER != 0:
                 max_fm_gems += 1
 
         max_pp_gems = min(int(max_pp_gems), int(residual))

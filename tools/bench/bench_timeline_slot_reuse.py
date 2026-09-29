@@ -31,9 +31,9 @@ class _Case:
 
 
 def _make_ref_arrays() -> dict:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
 
-    rows = int(TOTAL_ROWS) + 1
+    rows = int(MAX_STAT) + 1
     return {
         "Perfect Points": np.linspace(1.0, 2.0, rows, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float32),

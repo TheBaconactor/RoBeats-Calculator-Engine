@@ -49,12 +49,12 @@ def _loadout_items(name: str, **stats: int) -> list[dict]:
 
 
 def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
     calc_song = {
         "metadata": {
@@ -147,7 +147,7 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
 
 
 def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch):
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
         build_team_buff_tier_db_batches,
         resolve_tier_base,
@@ -162,7 +162,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()
 
-    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    ref_arrays = _ref_arrays(MAX_STAT + 1)
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
     calc_song = {
         "metadata": {

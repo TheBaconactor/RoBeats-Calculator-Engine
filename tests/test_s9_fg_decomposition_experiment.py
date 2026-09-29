@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Must set Numba cache before importing solver modules
 os.environ.setdefault("NUMBA_CACHE_DIR", os.path.join(os.path.dirname(__file__), "__pycache__"))
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.score_math import fast_calculate_score, lookup_reference_py
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
 

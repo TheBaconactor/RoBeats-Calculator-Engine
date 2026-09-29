@@ -8,12 +8,12 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.core.constants import GEM_SCALE_FEVER, MAX_STAT_INDEX, TOTAL_GEM_BUDGET
+from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_GAIN_FEVER
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
 
 logger = logging.getLogger(__name__)
 
-_GRID = int(MAX_STAT_INDEX) + 1
+_GRID = int(MAX_STAT) + 1
 _ANTICHAIN_TABLE_CACHE_MAX = 4
 _ANTICHAIN_TABLE_CACHE: "OrderedDict[tuple[Any, ...], TimingResponseAntichainTable]" = OrderedDict()
 
@@ -63,8 +63,8 @@ def build_timing_response_antichain_table(
     calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
     flags: dict[str, int],
-    total_budget: int = TOTAL_GEM_BUDGET,
-    gem_scale_fever: int = GEM_SCALE_FEVER,
+    total_budget: int = GEM_BUDGET,
+    gem_scale_fever: int = STAT_GEM_GAIN_FEVER,
 ) -> tuple[TimingResponseAntichainTable | None, TimingResponseAntichainStats]:
     cells = np.unique(np.asarray(start_cells, dtype=np.int32).reshape(-1))
     cells = cells[(cells >= 0) & (cells < int(_GRID) * int(_GRID))]
@@ -115,8 +115,8 @@ def build_timing_response_antichain_table(
     for row, cell in enumerate(cells.tolist()):
         start_ft = int(cell) // int(_GRID)
         start_ff = int(cell) % int(_GRID)
-        cap_ft = max(0, (int(MAX_STAT_INDEX) - start_ft) // int(gem_scale_fever))
-        cap_ff = max(0, (int(MAX_STAT_INDEX) - start_ff) // int(gem_scale_fever))
+        cap_ft = max(0, (int(MAX_STAT) - start_ft) // int(gem_scale_fever))
+        cap_ff = max(0, (int(MAX_STAT) - start_ff) // int(gem_scale_fever))
         ft, ff, rem = ftff_combo_arrays(
             int(total_budget),
             max_ft_gems=int(cap_ft),
@@ -126,8 +126,8 @@ def build_timing_response_antichain_table(
             ft = np.asarray([0], dtype=np.int32)
             ff = np.asarray([0], dtype=np.int32)
             rem = np.asarray([int(total_budget)], dtype=np.int32)
-        final_ft = np.minimum(int(MAX_STAT_INDEX), start_ft + ft.astype(np.int32, copy=False) * int(gem_scale_fever))
-        final_ff = np.minimum(int(MAX_STAT_INDEX), start_ff + ff.astype(np.int32, copy=False) * int(gem_scale_fever))
+        final_ft = np.minimum(int(MAX_STAT), start_ft + ft.astype(np.int32, copy=False) * int(gem_scale_fever))
+        final_ff = np.minimum(int(MAX_STAT), start_ff + ff.astype(np.int32, copy=False) * int(gem_scale_fever))
         packs = cell_pack[final_ft, final_ff].astype(np.int32, copy=False)
         lam = (
             int(w_ft) * ft.astype(np.int32, copy=False)
@@ -288,11 +288,11 @@ def _cells_digest(cells: np.ndarray) -> bytes:
 def _reference_blocker(ref_arrays: dict[str, Any]) -> str:
     for key in ("Perfect Points", "Combo Multiplier", "Fever Multiplier"):
         arr = np.asarray(ref_arrays.get(key), dtype=np.float64).reshape(-1)
-        if arr.shape[0] <= int(MAX_STAT_INDEX):
+        if arr.shape[0] <= int(MAX_STAT):
             return f"missing_ref_array_{key}"
-        if np.any(np.diff(arr[: int(MAX_STAT_INDEX) + 1]) < 0):
+        if np.any(np.diff(arr[: int(MAX_STAT) + 1]) < 0):
             logger.warning(
-                "_reference_blocker: %s reference array is non-monotone over [0..MAX_STAT_INDEX] "
+                "_reference_blocker: %s reference array is non-monotone over [0..MAX_STAT] "
                 "- timing response antichain disabled. Data integrity issue.",
                 key,
             )

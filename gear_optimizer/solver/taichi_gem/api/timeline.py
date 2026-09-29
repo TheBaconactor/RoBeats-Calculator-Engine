@@ -16,7 +16,7 @@ import logging
 import numpy as np
 import taichi as ti
 
-from gear_optimizer.core.constants import TOTAL_ROWS
+from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
 from gear_optimizer.core.utils import timing_envelope_timing_context
@@ -440,7 +440,7 @@ def timeline_frontier_cache_file_is_complete(cache_file: str | Path) -> bool:
         return False
     if not path.exists():
         return False
-    grid_shape = (TOTAL_ROWS + 1, TOTAL_ROWS + 1)
+    grid_shape = (MAX_STAT + 1, MAX_STAT + 1)
     try:
         with np.load(path, allow_pickle=False) as data:
             files = set(data.files)
@@ -840,7 +840,7 @@ def _build_zero_ms_timeline_payload(calc_song: dict, ref_arrays: dict) -> Timeli
 
     ref_ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
     ref_ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
-    grid_size = TOTAL_ROWS + 1
+    grid_size = MAX_STAT + 1
     if ref_ft.shape != (grid_size,) or ref_ff.shape != (grid_size,):
         raise ValueError(f"zero_ms timeline axes must both have shape ({grid_size},)")
 
@@ -1085,9 +1085,9 @@ def precompute_timeline_gpu(
     )
     song_slot_i = int(song_slot)
     frontier_payload = frontier_result.payload
-    if int(frontier_payload.grid_frontier_count.shape[1]) < TOTAL_ROWS + 1 or int(
+    if int(frontier_payload.grid_frontier_count.shape[1]) < MAX_STAT + 1 or int(
         frontier_payload.grid_frontier_count.shape[2]
-    ) < TOTAL_ROWS + 1:
+    ) < MAX_STAT + 1:
         raise ValueError(
             "Timeline frontier payload is incomplete. Startup cache prebuild must build the "
             "candidate-independent all-FT/FF timeline frontier before runtime scoring."

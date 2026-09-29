@@ -16,7 +16,7 @@ from gear_optimizer.core.macos_background import (
 if __name__ == "__main__":
     make_process_background_only()
 
-from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import (
     MEMORY_GUARD_RESUME_FILE,
     MemoryGuardResumeTracker,

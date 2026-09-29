@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...core.constants import (
-    ELEMENTAL_GEM_SCALE,
-    GEM_SCALE_FEVER,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
+from gear_optimizer.rules import (
+    ELEMENT_GEM_GAIN,
+    STAT_GEM_ELEMENT_GAIN,
+    STAT_GEM_GAIN_FEVER,
+    STAT_GEM_GAIN_NORMAL,
 )
 from ...core.gem_defs import ELEMENT_STAT_KEYS, GemKey
 
@@ -50,19 +50,19 @@ def apply_gems_to_base_stats(
         A new stats dictionary with gem effects applied.
     """
     out = dict(base or {})
-    out[GemKey.PP.value] = out.get(GemKey.PP.value, 0) + int(g_pp) * GEM_SCALE_NORMAL
-    out[GemKey.CM.value] = out.get(GemKey.CM.value, 0) + int(g_cm) * GEM_SCALE_NORMAL
-    out[GemKey.FM.value] = out.get(GemKey.FM.value, 0) + int(g_fm) * GEM_SCALE_FEVER
-    out[GemKey.FT.value] = out.get(GemKey.FT.value, 0) + int(ft) * GEM_SCALE_FEVER
-    out[GemKey.FF.value] = out.get(GemKey.FF.value, 0) + int(ff) * GEM_SCALE_FEVER
+    out[GemKey.PP.value] = out.get(GemKey.PP.value, 0) + int(g_pp) * STAT_GEM_GAIN_NORMAL
+    out[GemKey.CM.value] = out.get(GemKey.CM.value, 0) + int(g_cm) * STAT_GEM_GAIN_NORMAL
+    out[GemKey.FM.value] = out.get(GemKey.FM.value, 0) + int(g_fm) * STAT_GEM_GAIN_FEVER
+    out[GemKey.FT.value] = out.get(GemKey.FT.value, 0) + int(ft) * STAT_GEM_GAIN_FEVER
+    out[GemKey.FF.value] = out.get(GemKey.FF.value, 0) + int(ff) * STAT_GEM_GAIN_FEVER
 
-    out[ELEMENT_STAT_KEYS[0]] = out.get(ELEMENT_STAT_KEYS[0], 0) + int(g_pp) * GEM_STAT_TO_ELEMENT_SCALE
-    out[ELEMENT_STAT_KEYS[1]] = out.get(ELEMENT_STAT_KEYS[1], 0) + int(g_cm) * GEM_STAT_TO_ELEMENT_SCALE
-    out[ELEMENT_STAT_KEYS[2]] = out.get(ELEMENT_STAT_KEYS[2], 0) + int(g_fm) * GEM_STAT_TO_ELEMENT_SCALE
-    out[ELEMENT_STAT_KEYS[3]] = out.get(ELEMENT_STAT_KEYS[3], 0) + int(ft) * GEM_STAT_TO_ELEMENT_SCALE
-    out[ELEMENT_STAT_KEYS[4]] = out.get(ELEMENT_STAT_KEYS[4], 0) + int(ff) * GEM_STAT_TO_ELEMENT_SCALE
+    out[ELEMENT_STAT_KEYS[0]] = out.get(ELEMENT_STAT_KEYS[0], 0) + int(g_pp) * STAT_GEM_ELEMENT_GAIN
+    out[ELEMENT_STAT_KEYS[1]] = out.get(ELEMENT_STAT_KEYS[1], 0) + int(g_cm) * STAT_GEM_ELEMENT_GAIN
+    out[ELEMENT_STAT_KEYS[2]] = out.get(ELEMENT_STAT_KEYS[2], 0) + int(g_fm) * STAT_GEM_ELEMENT_GAIN
+    out[ELEMENT_STAT_KEYS[3]] = out.get(ELEMENT_STAT_KEYS[3], 0) + int(ft) * STAT_GEM_ELEMENT_GAIN
+    out[ELEMENT_STAT_KEYS[4]] = out.get(ELEMENT_STAT_KEYS[4], 0) + int(ff) * STAT_GEM_ELEMENT_GAIN
 
     if sel_color:
         if add_missing_element_key or sel_color in out:
-            out[sel_color] = out.get(sel_color, 0) + int(g_ov) * ELEMENTAL_GEM_SCALE
+            out[sel_color] = out.get(sel_color, 0) + int(g_ov) * ELEMENT_GEM_GAIN
     return out

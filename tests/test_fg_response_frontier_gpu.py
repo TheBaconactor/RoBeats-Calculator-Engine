@@ -63,7 +63,7 @@ def _solve_one_batch(
 
 
 def _prebuild_response_bundle(calc_song, ref_arrays, base_stats_list, *, total_budget: int) -> None:
-    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         reset_fg_response_frontier_payload_cache,
@@ -71,7 +71,7 @@ def _prebuild_response_bundle(calc_song, ref_arrays, base_stats_list, *, total_b
 
     _ = base_stats_list, total_budget
     reset_fg_response_frontier_payload_cache()
-    full_stat_grid = tuple((ft, ff) for ft in range(TOTAL_ROWS + 1) for ff in range(TOTAL_ROWS + 1))
+    full_stat_grid = tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1))
     build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=full_stat_grid)
 
 

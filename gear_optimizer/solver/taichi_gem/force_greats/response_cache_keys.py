@@ -8,7 +8,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from gear_optimizer.core.array_signature import array_sig16
-from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
+from gear_optimizer.rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND, MAX_STAT
 from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
@@ -126,11 +126,11 @@ def _response_axes(calc_song: dict[str, Any], ref_arrays: dict[str, Any]) -> tup
     song_inputs = extract_fg_song_inputs(calc_song)
     ref_ft = np.asarray(ref_arrays["Fever Time"], dtype=np.float32).reshape(-1)
     ref_ff = np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32).reshape(-1)
-    if int(ref_ft.shape[0]) <= TOTAL_ROWS or int(ref_ff.shape[0]) <= TOTAL_ROWS:
+    if int(ref_ft.shape[0]) <= MAX_STAT or int(ref_ff.shape[0]) <= MAX_STAT:
         raise ValueError("FG response cache requires full Fever Time and Fever Fill Rate ref arrays")
-    base_fill = max(0.0, float(song_inputs.total_notes - int(song_inputs.long_notes)) * float(FEVER_FILL_BASE_RATE))
-    base_time = float(song_inputs.last_note_time) * float(FEVER_TIME_SCALE) + float(FEVER_TIME_OFFSET)
-    raw_fill_by_ff = np.asarray([base_fill * float(ref_ff[idx]) for idx in range(TOTAL_ROWS + 1)], dtype=np.float64)
+    base_fill = max(0.0, float(song_inputs.total_notes - int(song_inputs.long_notes)) * float(FEVER_FILL_PER_NOTE))
+    base_time = float(song_inputs.last_note_time) * float(FEVER_TIME_PER_SECOND) + float(FEVER_TIME_OFFSET)
+    raw_fill_by_ff = np.asarray([base_fill * float(ref_ff[idx]) for idx in range(MAX_STAT + 1)], dtype=np.float64)
     non_fever_base_by_ff = np.asarray([int(ceil(float(v))) for v in raw_fill_by_ff], dtype=np.int32)
-    real_time_by_ft = np.asarray([base_time * float(ref_ft[idx]) for idx in range(TOTAL_ROWS + 1)], dtype=np.float64)
+    real_time_by_ft = np.asarray([base_time * float(ref_ft[idx]) for idx in range(MAX_STAT + 1)], dtype=np.float64)
     return song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft

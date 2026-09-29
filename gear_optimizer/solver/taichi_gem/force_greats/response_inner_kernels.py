@@ -3,13 +3,12 @@ import sys
 import numpy as np
 import taichi as ti
 
-from gear_optimizer.core.constants import (
-    ELEMENTAL_GEM_SCALE,
-    GEM_SCALE_FEVER,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    MAX_STAT_INDEX,
-    TOTAL_ROWS,
+from gear_optimizer.rules import (
+    ELEMENT_GEM_GAIN,
+    MAX_STAT,
+    STAT_GEM_ELEMENT_GAIN,
+    STAT_GEM_GAIN_FEVER,
+    STAT_GEM_GAIN_NORMAL,
 )
 
 # Hardware-gated solver fp for the FG response-inner gem search. The RX 7900 XTX (and any
@@ -30,8 +29,8 @@ def _fg_response_lookup_ref(ref: ti.template(), idx: ti.i32) -> FP:
     safe_idx: ti.i32 = idx
     if safe_idx < 0:
         safe_idx = 0
-    if safe_idx > TOTAL_ROWS:
-        safe_idx = TOTAL_ROWS
+    if safe_idx > MAX_STAT:
+        safe_idx = MAX_STAT
     return ref[safe_idx]
 
 
@@ -243,35 +242,35 @@ def _fg_response_inner_batch_kernel(
         is_p_ov: ti.i32 = color_flags[6]
         is_s_ov: ti.i32 = color_flags[7]
 
-        pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
-        pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
-        cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_cm
-        cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_cm
-        fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_fm
-        fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_fm
-        ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
-        ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
+        pp_p_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_p_pp
+        pp_s_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_s_pp
+        cm_p_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_p_cm
+        cm_s_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_s_cm
+        fm_p_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_p_fm
+        fm_s_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_s_fm
+        ov_p_delta: ti.i32 = ELEMENT_GEM_GAIN * is_p_ov
+        ov_s_delta: ti.i32 = ELEMENT_GEM_GAIN * is_s_ov
 
         max_pp_gems: ti.i32 = 0
         if ti.static(allow_pp_template):
-            if cur_pp < MAX_STAT_INDEX:
-                rem_pp: ti.i32 = MAX_STAT_INDEX - cur_pp
-                max_pp_gems = rem_pp // GEM_SCALE_NORMAL
-                if rem_pp % GEM_SCALE_NORMAL != 0:
+            if cur_pp < MAX_STAT:
+                rem_pp: ti.i32 = MAX_STAT - cur_pp
+                max_pp_gems = rem_pp // STAT_GEM_GAIN_NORMAL
+                if rem_pp % STAT_GEM_GAIN_NORMAL != 0:
                     max_pp_gems += 1
 
         max_cm_gems: ti.i32 = 0
-        if cur_cm < MAX_STAT_INDEX:
-            rem_cm: ti.i32 = MAX_STAT_INDEX - cur_cm
-            max_cm_gems = rem_cm // GEM_SCALE_NORMAL
-            if rem_cm % GEM_SCALE_NORMAL != 0:
+        if cur_cm < MAX_STAT:
+            rem_cm: ti.i32 = MAX_STAT - cur_cm
+            max_cm_gems = rem_cm // STAT_GEM_GAIN_NORMAL
+            if rem_cm % STAT_GEM_GAIN_NORMAL != 0:
                 max_cm_gems += 1
 
         max_fm_gems: ti.i32 = 0
-        if cur_fm < MAX_STAT_INDEX:
-            rem_fm: ti.i32 = MAX_STAT_INDEX - cur_fm
-            max_fm_gems = rem_fm // GEM_SCALE_FEVER
-            if rem_fm % GEM_SCALE_FEVER != 0:
+        if cur_fm < MAX_STAT:
+            rem_fm: ti.i32 = MAX_STAT - cur_fm
+            max_fm_gems = rem_fm // STAT_GEM_GAIN_FEVER
+            if rem_fm % STAT_GEM_GAIN_FEVER != 0:
                 max_fm_gems += 1
 
         if max_pp_gems > residual_budget:
@@ -328,7 +327,7 @@ def _fg_response_inner_batch_kernel(
             leftover_after_cm: ti.i32 = residual_budget - g_cm
             if leftover_after_cm < 0:
                 break
-            cm_stat: ti.i32 = cur_cm + g_cm * GEM_SCALE_NORMAL
+            cm_stat: ti.i32 = cur_cm + g_cm * STAT_GEM_GAIN_NORMAL
             cm_mul = _fg_response_lookup_ref(ref_cm, cm_stat)
             g_fm_max: ti.i32 = max_fm_gems
             if g_fm_max > leftover_after_cm:
@@ -336,7 +335,7 @@ def _fg_response_inner_batch_kernel(
             g_fm: ti.i32 = 0
             while g_fm <= g_fm_max:
                 leftover_after_fm: ti.i32 = leftover_after_cm - g_fm
-                fm_stat: ti.i32 = cur_fm + g_fm * GEM_SCALE_FEVER
+                fm_stat: ti.i32 = cur_fm + g_fm * STAT_GEM_GAIN_FEVER
                 fm_mul = _fg_response_lookup_ref(ref_fm, fm_stat)
                 g_pp_max: ti.i32 = max_pp_gems
                 if g_pp_max > leftover_after_fm:
@@ -409,7 +408,7 @@ def _fg_response_inner_batch_kernel(
                             record_base_value = FP(-1e30)
                             while g_pp <= g_pp_max:
                                 g_ov: ti.i32 = leftover_after_fm - g_pp
-                                pp_stat: ti.i32 = cur_pp + g_pp * GEM_SCALE_NORMAL
+                                pp_stat: ti.i32 = cur_pp + g_pp * STAT_GEM_GAIN_NORMAL
                                 primary_val: ti.i32 = primary_base + g_pp * pp_primary_delta
                                 secondary_val: ti.i32 = secondary_base + g_pp * pp_secondary_delta
                                 pp_base_value: FP = ti.cast(
@@ -569,35 +568,35 @@ def _fg_response_inner_group_kernel(
         is_p_ov: ti.i32 = color_flags[6]
         is_s_ov: ti.i32 = color_flags[7]
 
-        pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
-        pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
-        cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_cm
-        cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_cm
-        fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_p_fm
-        fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT_SCALE * is_s_fm
-        ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
-        ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
+        pp_p_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_p_pp
+        pp_s_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_s_pp
+        cm_p_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_p_cm
+        cm_s_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_s_cm
+        fm_p_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_p_fm
+        fm_s_delta: ti.i32 = STAT_GEM_ELEMENT_GAIN * is_s_fm
+        ov_p_delta: ti.i32 = ELEMENT_GEM_GAIN * is_p_ov
+        ov_s_delta: ti.i32 = ELEMENT_GEM_GAIN * is_s_ov
 
         max_pp_gems: ti.i32 = 0
         if ti.static(allow_pp_template):
-            if cur_pp < MAX_STAT_INDEX:
-                rem_pp: ti.i32 = MAX_STAT_INDEX - cur_pp
-                max_pp_gems = rem_pp // GEM_SCALE_NORMAL
-                if rem_pp % GEM_SCALE_NORMAL != 0:
+            if cur_pp < MAX_STAT:
+                rem_pp: ti.i32 = MAX_STAT - cur_pp
+                max_pp_gems = rem_pp // STAT_GEM_GAIN_NORMAL
+                if rem_pp % STAT_GEM_GAIN_NORMAL != 0:
                     max_pp_gems += 1
 
         max_cm_gems: ti.i32 = 0
-        if cur_cm < MAX_STAT_INDEX:
-            rem_cm: ti.i32 = MAX_STAT_INDEX - cur_cm
-            max_cm_gems = rem_cm // GEM_SCALE_NORMAL
-            if rem_cm % GEM_SCALE_NORMAL != 0:
+        if cur_cm < MAX_STAT:
+            rem_cm: ti.i32 = MAX_STAT - cur_cm
+            max_cm_gems = rem_cm // STAT_GEM_GAIN_NORMAL
+            if rem_cm % STAT_GEM_GAIN_NORMAL != 0:
                 max_cm_gems += 1
 
         max_fm_gems: ti.i32 = 0
-        if cur_fm < MAX_STAT_INDEX:
-            rem_fm: ti.i32 = MAX_STAT_INDEX - cur_fm
-            max_fm_gems = rem_fm // GEM_SCALE_FEVER
-            if rem_fm % GEM_SCALE_FEVER != 0:
+        if cur_fm < MAX_STAT:
+            rem_fm: ti.i32 = MAX_STAT - cur_fm
+            max_fm_gems = rem_fm // STAT_GEM_GAIN_FEVER
+            if rem_fm % STAT_GEM_GAIN_FEVER != 0:
                 max_fm_gems += 1
 
         if max_pp_gems > residual_budget:
@@ -671,7 +670,7 @@ def _fg_response_inner_group_kernel(
                 leftover_after_cm: ti.i32 = residual_budget - g_cm
                 if leftover_after_cm < 0:
                     break
-                cm_stat: ti.i32 = cur_cm + g_cm * GEM_SCALE_NORMAL
+                cm_stat: ti.i32 = cur_cm + g_cm * STAT_GEM_GAIN_NORMAL
                 cm_mul = _fg_response_lookup_ref(ref_cm, cm_stat)
                 g_fm_max: ti.i32 = max_fm_gems
                 if g_fm_max > leftover_after_cm:
@@ -679,7 +678,7 @@ def _fg_response_inner_group_kernel(
                 g_fm: ti.i32 = 0
                 while g_fm <= g_fm_max:
                     leftover_after_fm: ti.i32 = leftover_after_cm - g_fm
-                    fm_stat: ti.i32 = cur_fm + g_fm * GEM_SCALE_FEVER
+                    fm_stat: ti.i32 = cur_fm + g_fm * STAT_GEM_GAIN_FEVER
                     fm_mul = _fg_response_lookup_ref(ref_fm, fm_stat)
                     g_pp_max: ti.i32 = max_pp_gems
                     if g_pp_max > leftover_after_fm:
@@ -752,7 +751,7 @@ def _fg_response_inner_group_kernel(
                                 record_base_value = FP(-1e30)
                                 while g_pp <= g_pp_max:
                                     g_ov: ti.i32 = leftover_after_fm - g_pp
-                                    pp_stat: ti.i32 = cur_pp + g_pp * GEM_SCALE_NORMAL
+                                    pp_stat: ti.i32 = cur_pp + g_pp * STAT_GEM_GAIN_NORMAL
                                     primary_val: ti.i32 = primary_base + g_pp * pp_primary_delta
                                     secondary_val: ti.i32 = secondary_base + g_pp * pp_secondary_delta
                                     pp_base_value: FP = ti.cast(

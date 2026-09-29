@@ -13,12 +13,12 @@ import logging
 
 import numpy as np
 
-from ..core.constants import (
-    ELEMENTAL_GEM_SCALE,
-    GEM_SCALE_FEVER,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    SKIP_ITEM_KEYS,
+from gear_optimizer.gamedata import SKIP_ITEM_KEYS
+from gear_optimizer.rules import (
+    ELEMENT_GEM_GAIN,
+    STAT_GEM_ELEMENT_GAIN,
+    STAT_GEM_GAIN_FEVER,
+    STAT_GEM_GAIN_NORMAL,
 )
 from ..core.gem_defs import build_gem_counts, build_gem_details
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
@@ -208,20 +208,20 @@ def decode_gpu_native_ga_runs_payload(
             g_fm = results_mat[:, 5]
             g_ov = results_mat[:, 6]
 
-            gem_contributions[:, 0] = g_pp * GEM_SCALE_NORMAL
-            gem_contributions[:, 1] = g_cm * GEM_SCALE_NORMAL
-            gem_contributions[:, 2] = g_fm * GEM_SCALE_FEVER
-            gem_contributions[:, 3] = g_ft * GEM_SCALE_FEVER
-            gem_contributions[:, 4] = g_ff * GEM_SCALE_FEVER
+            gem_contributions[:, 0] = g_pp * STAT_GEM_GAIN_NORMAL
+            gem_contributions[:, 1] = g_cm * STAT_GEM_GAIN_NORMAL
+            gem_contributions[:, 2] = g_fm * STAT_GEM_GAIN_FEVER
+            gem_contributions[:, 3] = g_ft * STAT_GEM_GAIN_FEVER
+            gem_contributions[:, 4] = g_ff * STAT_GEM_GAIN_FEVER
 
-            gem_contributions[:, 5] = g_ft * GEM_STAT_TO_ELEMENT_SCALE
-            gem_contributions[:, 6] = g_ff * GEM_STAT_TO_ELEMENT_SCALE
-            gem_contributions[:, 7] = g_fm * GEM_STAT_TO_ELEMENT_SCALE
-            gem_contributions[:, 8] = g_cm * GEM_STAT_TO_ELEMENT_SCALE
-            gem_contributions[:, 9] = g_pp * GEM_STAT_TO_ELEMENT_SCALE
+            gem_contributions[:, 5] = g_ft * STAT_GEM_ELEMENT_GAIN
+            gem_contributions[:, 6] = g_ff * STAT_GEM_ELEMENT_GAIN
+            gem_contributions[:, 7] = g_fm * STAT_GEM_ELEMENT_GAIN
+            gem_contributions[:, 8] = g_cm * STAT_GEM_ELEMENT_GAIN
+            gem_contributions[:, 9] = g_pp * STAT_GEM_ELEMENT_GAIN
 
             if 5 <= sel_color_idx <= 9:
-                gem_contributions[:, sel_color_idx] += g_ov * ELEMENTAL_GEM_SCALE
+                gem_contributions[:, sel_color_idx] += g_ov * ELEMENT_GEM_GAIN
 
             final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
 
