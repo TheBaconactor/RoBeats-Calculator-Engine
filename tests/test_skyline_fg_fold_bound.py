@@ -21,7 +21,7 @@ This test makes that gap EXPLICIT and BOUNDED rather than silent:
       per-song FG winner.
 
 Single-color songs are unaffected (penalty = 2P+150, base_lane = 2P, both functions of P).
-See memory skyline-fg-fold-exactness-gap and tools/dev/prove_skyline_fg_fold_gap.py.
+See memory skyline-fg-fold-exactness-gap.
 """
 
 import os

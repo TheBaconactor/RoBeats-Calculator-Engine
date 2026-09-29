@@ -248,7 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser.set_defaults(func=_cmd_audit)
 
     run_parser = subparsers.add_parser("run", help="Run a script by id, name, or path.")
-    run_parser.add_argument("target", help="Script identifier (e.g. tools:db/check_db).")
+    run_parser.add_argument("target", help="Script identifier (e.g. tools:db/smoke_run_and_audit).")
     run_parser.add_argument(
         "--source",
         choices=("all", "tools", "scripts"),

@@ -79,7 +79,6 @@ not directly from kernel internals.
 - Run a tool by identifier: `python -m tools run <id> -- <args>`
 - Benchmarks: `tools/bench/`
 - Database inspection and repair: `tools/db/`
-- Data maintenance: `tools/data/`
 - Development checks: `tools/dev/`
 - Profiling: `tools/profile/`
 - Verification: `tools/verify/`
