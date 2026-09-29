@@ -156,11 +156,7 @@ def solve_best_fever_combination(
     is_p_ff = flags["is_p_ff"]
     is_s_ff = flags["is_s_ff"]
 
-    try:
-        song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
-    except Exception as e:
-        logger.debug(f"fever_solver:solve_best_fever_combination: {e}")
-        song_slot = 0
+    song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
 
     # Single-genome registry payload:
     # - Keep this path on the same registry/native dispatch used by batch evaluators.
@@ -302,11 +298,7 @@ def solve_best_fever_combination_batch(cfg, stats_list, calc_song, ref_arrays, o
         item_stats[g + 1, :] = np.asarray(build_stats_array(nb), dtype=np.int32)[:10]
         population_indices[g, 0] = g + 1
 
-    try:
-        song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
-    except Exception as e:
-        logger.debug(f"fever_solver:solve_best_fever_combination_batch: {e}")
-        song_slot = 0
+    song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
 
     request = RegistrySolveRequest(
         population_indices=population_indices,

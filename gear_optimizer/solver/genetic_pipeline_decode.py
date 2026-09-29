@@ -73,11 +73,7 @@ def decode_gpu_native_ga_runs_payload(
         perf = _PERF_TIMING
         t_total = time.perf_counter() if perf else 0.0
 
-        try:
-            selected_n = int(runs_payload[0, 0])
-        except Exception as e:
-            logger.debug(f"genetic:decode_gpu_native_ga_runs_payload: {e}")
-            selected_n = 0
+        selected_n = int(runs_payload[0, 0])
         if selected_n < 0:
             selected_n = 0
         if selected_n > int(eff_limit):

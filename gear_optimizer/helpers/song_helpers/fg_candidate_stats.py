@@ -39,13 +39,10 @@ def _candidate_genome(candidate: dict) -> list[dict]:
     registry = candidate.get("_ga_registry")
     genome_ids = candidate.get("GenomeIDs")
     if registry is not None and genome_ids is not None:
-        try:
-            genome = registry.decode_genome(np.asarray(genome_ids, dtype=np.int32))
-            if isinstance(genome, list) and genome:
-                candidate["Genome"] = genome
-                return _as_genome(candidate)
-        except Exception as e:
-            logger.debug(f"fg_candidate_stats:_candidate_genome: {e}")
+        genome = registry.decode_genome(np.asarray(genome_ids, dtype=np.int32))
+        if isinstance(genome, list) and genome:
+            candidate["Genome"] = genome
+            return _as_genome(candidate)
 
     return _as_genome(candidate)
 
@@ -53,20 +50,8 @@ def _candidate_genome(candidate: dict) -> list[dict]:
 def _candidate_gem_config(cand: dict, data: dict) -> tuple[int, int, dict, int, int, int, int]:
     """Read the candidate's (FT, FF, GemCounts, per-type gem counts) with the
     data-then-candidate precedence the hydration contract defines."""
-    ft_raw = data.get("FT", cand.get("FT", 0) or 0) or 0
-    ff_raw = data.get("FF", cand.get("FF", 0) or 0) or 0
-    # Exact original coercion semantics (int(), NOT safe_int: safe_int parses
-    # decimal strings via float and would turn "3.5" into 3 instead of 0).
-    try:
-        ft = int(ft_raw)
-    except Exception as e:
-        logger.debug(f"fg_candidate_stats:_candidate_gem_config: {e}")
-        ft = 0
-    try:
-        ff = int(ff_raw)
-    except Exception as e:
-        logger.debug(f"fg_candidate_stats:_candidate_gem_config: {e}")
-        ff = 0
+    ft = int(data.get("FT", cand.get("FT", 0) or 0) or 0)
+    ff = int(data.get("FF", cand.get("FF", 0) or 0) or 0)
     gem_counts = cand.get("GemCounts") or data.get("GemCounts") or {}
     if not isinstance(gem_counts, dict):
         gem_counts = {}

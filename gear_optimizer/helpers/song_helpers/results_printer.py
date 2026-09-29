@@ -34,30 +34,14 @@ def print_results(
 
     def _extract_final_score(entry: dict) -> int:
         # Prefer wrapper-level `fg_score` for cached FG reuse entries; fall back to inner `data`.
-        try:
-            data = entry.get("data", {}) or {}
-        except Exception as e:
-            logger.debug(f"results_printer:_extract_final_score: {e}")
-            data = {}
+        data = entry.get("data", {}) or {}
 
         score_val = None
-        try:
-            score_val = entry.get("fg_score")
-        except Exception as e:
-            logger.debug(f"results_printer:_extract_final_score: {e}")
-            score_val = None
+        score_val = entry.get("fg_score")
         if not score_val:
-            try:
-                score_val = data.get("fg_score") or data.get("Score")
-            except Exception as e:
-                logger.debug(f"results_printer:_extract_final_score: {e}")
-                score_val = None
+            score_val = data.get("fg_score") or data.get("Score")
         if not score_val:
-            try:
-                score_val = entry.get("score")
-            except Exception as e:
-                logger.debug(f"results_printer:_extract_final_score: {e}")
-                score_val = None
+            score_val = entry.get("score")
         if (not score_val) and isinstance(data.get("ForceGreats"), dict):
             score_val = data.get("ForceGreats", {}).get("final_score")
         return safe_int(score_val)
@@ -276,10 +260,6 @@ def _print_detailed_debug(found_song_name, entry, ref_arrays, calc_song, cfg):
         final_score_int = int(final_score)
     except Exception as e:
         logger.debug(f"results_printer:_print_detailed_debug: {e}")
-        try:
-            final_score_int = int(float(final_score))
-        except Exception as e:
-            logger.debug(f"results_printer:_print_detailed_debug: {e}")
-            final_score_int = 0
+        final_score_int = int(float(final_score))
 
     print(f"\nTotal Score: {final_score_int}")

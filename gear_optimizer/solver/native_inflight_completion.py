@@ -91,10 +91,7 @@ def mark_song_completed(
     if memory_resume_tracker:
         memory_resume_tracker.mark_completed(song_path=song_path, song_name=str(song_name))
     if bundle_completed_cb is not None:
-        try:
-            bundle_completed_cb(key, completed_songs)
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:mark_song_completed: {e}")
+        bundle_completed_cb(key, completed_songs)
 
 
 def emit_deferred_post_payload(

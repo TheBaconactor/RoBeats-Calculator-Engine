@@ -7,7 +7,6 @@ from dataclasses import dataclass
 
 
 
-logger = logging.getLogger(__name__)
 
 
 class WarnOnce:
@@ -20,14 +19,8 @@ class WarnOnce:
         if key in self._issued:
             return
         self._issued.add(key)
-        try:
-            logging.warning(message)
-        except Exception as e:
-            logger.debug(f"models:warn: {e}")
-        try:
-            print(message)
-        except Exception as e:
-            logger.debug(f"models:warn: {e}")
+        logging.warning(message)
+        print(message)
 
 
 @dataclass
@@ -57,11 +50,8 @@ class GAEvolutionSettings:
             )
 
         def get_option(option, fallback):
-            try:
-                if hasattr(cfg, "has_option") and cfg.has_option(section, option):
-                    return cfg.get(section, option, fallback=fallback)
-            except Exception as e:
-                logger.debug(f"models:get_option: {e}")
+            if hasattr(cfg, "has_option") and cfg.has_option(section, option):
+                return cfg.get(section, option, fallback=fallback)
             return fallback
 
         memetic_elites = max(0, safe_int(get_option("GA_MemeticElites", "4"), 4))

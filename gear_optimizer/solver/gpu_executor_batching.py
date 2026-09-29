@@ -380,23 +380,20 @@ class ResponseDeliveryTracker:
             return False
 
     def _record_failure(self, request: GpuRequest, message: str) -> None:
-        try:
-            self.failures_total += 1
-            self.failures_by_worker[int(request.worker_id)] += 1
-            now = time.monotonic()
-            if (now - float(self.last_warn_monotonic or 0.0)) < 5.0:
-                return
-            self.last_warn_monotonic = now
-            logger.warning(
-                "[GpuExecutor] %s (worker_id=%s request_id=%s type=%s total_failures=%s)",
-                str(message),
-                int(request.worker_id),
-                int(getattr(request, "request_id", 0) or 0),
-                str(getattr(getattr(request, "request_type", None), "value", "") or ""),
-                int(self.failures_total),
-            )
-        except Exception as e:
-            logger.debug(f"gpu_executor_dispatch:_record_failure: {e}")
+        self.failures_total += 1
+        self.failures_by_worker[int(request.worker_id)] += 1
+        now = time.monotonic()
+        if (now - float(self.last_warn_monotonic or 0.0)) < 5.0:
+            return
+        self.last_warn_monotonic = now
+        logger.warning(
+            "[GpuExecutor] %s (worker_id=%s request_id=%s type=%s total_failures=%s)",
+            str(message),
+            int(request.worker_id),
+            int(getattr(request, "request_id", 0) or 0),
+            str(getattr(getattr(request, "request_type", None), "value", "") or ""),
+            int(self.failures_total),
+        )
 
 # ---- merged from gpu_executor_native_ga.py ----
 """GPU executor handler for native GA requests."""

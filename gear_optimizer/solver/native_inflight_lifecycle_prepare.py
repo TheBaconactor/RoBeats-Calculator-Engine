@@ -136,24 +136,21 @@ def _cache_stats_maybe_emit() -> None:
     except Exception as e:
         logger.debug(f"native_inflight_lifecycle:_cache_stats_maybe_emit: {e}")
         return
-    try:
-        pools_h = int(snap.get("pools_hit", 0) or 0)
-        pools_m = int(snap.get("pools_miss", 0) or 0)
-        reg_h = int(snap.get("registry_hit", 0) or 0)
-        reg_m = int(snap.get("registry_miss", 0) or 0)
-        heur_h = int(snap.get("heur_hit", 0) or 0)
-        heur_m = int(snap.get("heur_miss", 0) or 0)
-        logger.debug(
-            "[InFlight][CacheStats] pools hit=%s miss=%s | registry hit=%s miss=%s | heur_topk hit=%s miss=%s",
-            pools_h,
-            pools_m,
-            reg_h,
-            reg_m,
-            heur_h,
-            heur_m,
-        )
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_cache_stats_maybe_emit: {e}")
+    pools_h = int(snap.get("pools_hit", 0) or 0)
+    pools_m = int(snap.get("pools_miss", 0) or 0)
+    reg_h = int(snap.get("registry_hit", 0) or 0)
+    reg_m = int(snap.get("registry_miss", 0) or 0)
+    heur_h = int(snap.get("heur_hit", 0) or 0)
+    heur_m = int(snap.get("heur_miss", 0) or 0)
+    logger.debug(
+        "[InFlight][CacheStats] pools hit=%s miss=%s | registry hit=%s miss=%s | heur_topk hit=%s miss=%s",
+        pools_h,
+        pools_m,
+        reg_h,
+        reg_m,
+        heur_h,
+        heur_m,
+    )
 
 
 def prepare_native_song(task: tuple) -> NativeSong:

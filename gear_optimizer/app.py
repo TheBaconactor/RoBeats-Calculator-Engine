@@ -163,40 +163,31 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         cfg_slots = int(runtime_settings.gpu.gpu_song_slots)
         if int(cfg_slots) > 0:
             os.environ["GPU_SONG_SLOTS"] = str(cfg_slots)
-            try:
-                logger.debug(
-                    "[GPU] Set GPU_SONG_SLOTS={} from config (IterationEngine.GPU_SongSlots). Set GPU_SONG_SLOTS env var to override.".format(
-                        int(cfg_slots)
-                    )
+            logger.debug(
+                "[GPU] Set GPU_SONG_SLOTS={} from config (IterationEngine.GPU_SongSlots). Set GPU_SONG_SLOTS env var to override.".format(
+                    int(cfg_slots)
                 )
-            except Exception as e:
-                logger.debug(f"app:_maybe_autoset_gpu_song_slots: {e}")
+            )
             return
         inflight_songs = self._get_inflight_songs_requested(cfg)
         if int(inflight_songs) <= 1:
             return
-        try:
-            if "gear_optimizer.solver.taichi_gem.fields" in sys.modules:
-                logger.debug("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
-                return
-        except Exception as e:
-            logger.debug(f"app:_maybe_autoset_gpu_song_slots: {e}")
+        if "gear_optimizer.solver.taichi_gem.fields" in sys.modules:
+            logger.debug("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
+            return
         from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT
 
         ga_queue_mult = int(CANONICAL_GA_QUEUE_MULT)
         required = int(inflight_songs) * int(ga_queue_mult) + 2
         slots = min(max(24, int(required)), 256)
         os.environ["GPU_SONG_SLOTS"] = str(slots)
-        try:
-            logger.debug(
-                "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, canonical_ga_queue_mult={}). Set GPU_SONG_SLOTS to override.".format(
-                    int(slots),
-                    int(inflight_songs),
-                    int(ga_queue_mult),
-                )
+        logger.debug(
+            "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, canonical_ga_queue_mult={}). Set GPU_SONG_SLOTS to override.".format(
+                int(slots),
+                int(inflight_songs),
+                int(ga_queue_mult),
             )
-        except Exception as e:
-            logger.debug(f"app:_maybe_autoset_gpu_song_slots: {e}")
+        )
 
     def _materialize_gpu_runtime_on_main_thread(self) -> None:
         """

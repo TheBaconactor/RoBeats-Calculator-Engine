@@ -97,11 +97,7 @@ class UserGemsSettings:
                 logger.debug(f"gem_defs:_cfg_get: {e}")
                 return int(fallback)
 
-        try:
-            static_element = safe_int(cfg.get("ElementalGems", selected, fallback=0), 0) if selected else 0
-        except Exception as e:
-            logger.debug(f"gem_defs:_cfg_get: {e}")
-            static_element = 0
+        static_element = safe_int(cfg.get("ElementalGems", selected, fallback=0), 0) if selected else 0
 
         return cls(
             fever_time=_cfg_get("fever_time", 0),

@@ -267,15 +267,12 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
         song.runtime.fg.fg_owner_score_map = ga_result.get("fg_owner_score")
     except AttributeError:
         pass
-    try:
-        emit_profile_event(
-            component="inflight_decode",
-            event="future_start",
-            song_key=song_key,
-            metrics={"song_slot": int(getattr(song.runtime, "song_slot", 0) or 0)},
-        )
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:decode_ga_payload_sync: {e}")
+    emit_profile_event(
+        component="inflight_decode",
+        event="future_start",
+        song_key=song_key,
+        metrics={"song_slot": int(getattr(song.runtime, "song_slot", 0) or 0)},
+    )
     decode_cfg_data = dict(getattr(song.gpu_inputs, "cfg_data", {}) or {})
     best_data, best_gear, best_minis, ga_candidates = decode_gpu_native_ga_runs_payload(
         runs_payload=runs_payload,
@@ -290,19 +287,16 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
         song.runtime.decode.cpu_decode_s = cpu_s
     except (AttributeError, TypeError, ValueError):
         cpu_s = None
-    try:
-        emit_profile_event(
-            component="inflight_decode",
-            event="future_done",
-            song_key=song_key,
-            metrics={
-                "song_slot": int(getattr(song.runtime, "song_slot", 0) or 0),
-                "ga_candidates": int(len(ga_candidates or [])),
-                "cpu_s": float(cpu_s or 0.0),
-            },
-        )
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:decode_ga_payload_sync: {e}")
+    emit_profile_event(
+        component="inflight_decode",
+        event="future_done",
+        song_key=song_key,
+        metrics={
+            "song_slot": int(getattr(song.runtime, "song_slot", 0) or 0),
+            "ga_candidates": int(len(ga_candidates or [])),
+            "cpu_s": float(cpu_s or 0.0),
+        },
+    )
     return out
 
 
@@ -417,24 +411,21 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
         song.runtime.fg.cpu_fg_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     except (AttributeError, TypeError, ValueError):
         pass
-    try:
-        emit_profile_event(
-            component="inflight_fg_prep",
-            event="prep_done",
-            song_key=str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or ""),
-            metrics={
-                "queue_wait_ms": float(queue_wait_ms),
-                "select_ms": float(select_ms),
-                "candidate_select_ms": float(candidate_select_ms),
-                "hydrate_stats_ms": float(hydrate_stats_ms),
-                "plan_ms": float(plan_ms),
-                "total_ms": float(total_ms),
-                "preselect_ga_candidates": int(preselect_ga_candidates),
-                "ga_candidates": int(len(ga_candidates or [])),
-                "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
-                "prepared_batches": int(len(prepared_batches)),
-                "prepared_bundle_ms": float(prepared_bundle_ms),
-            },
-        )
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:prepare_fg_job_sync: {e}")
+    emit_profile_event(
+        component="inflight_fg_prep",
+        event="prep_done",
+        song_key=str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or ""),
+        metrics={
+            "queue_wait_ms": float(queue_wait_ms),
+            "select_ms": float(select_ms),
+            "candidate_select_ms": float(candidate_select_ms),
+            "hydrate_stats_ms": float(hydrate_stats_ms),
+            "plan_ms": float(plan_ms),
+            "total_ms": float(total_ms),
+            "preselect_ga_candidates": int(preselect_ga_candidates),
+            "ga_candidates": int(len(ga_candidates or [])),
+            "hydrated_fg_stats": int(bool(hydrated_fg_stats)),
+            "prepared_batches": int(len(prepared_batches)),
+            "prepared_bundle_ms": float(prepared_bundle_ms),
+        },
+    )

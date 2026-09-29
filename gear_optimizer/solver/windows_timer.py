@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import os
 import threading
-import logging
 
 from gear_optimizer.core.parsing import env_flag
 
 
-logger = logging.getLogger(__name__)
 _WIN_TIMER_LOCK = threading.Lock()
 _WIN_TIMER_USERS = 0
 _WIN_TIMER_ACTIVE = False
@@ -36,15 +34,12 @@ def acquire_windows_timer_period_1ms() -> bool:
         _WIN_TIMER_USERS += 1
         if _WIN_TIMER_ACTIVE:
             return True
-        try:
-            import ctypes
+        import ctypes
 
-            mmres = int(ctypes.windll.winmm.timeBeginPeriod(1))
-            if mmres == 0:
-                _WIN_TIMER_ACTIVE = True
-                return True
-        except Exception as e:
-            logger.debug(f"windows_timer:acquire_windows_timer_period_1ms: {e}")
+        mmres = int(ctypes.windll.winmm.timeBeginPeriod(1))
+        if mmres == 0:
+            _WIN_TIMER_ACTIVE = True
+            return True
         _WIN_TIMER_USERS = max(0, int(_WIN_TIMER_USERS) - 1)
         return False
 
@@ -61,10 +56,7 @@ def release_windows_timer_period_1ms() -> None:
             return
         if not _WIN_TIMER_ACTIVE:
             return
-        try:
-            import ctypes
+        import ctypes
 
-            ctypes.windll.winmm.timeEndPeriod(1)
-        except Exception as e:
-            logger.debug(f"windows_timer:release_windows_timer_period_1ms: {e}")
+        ctypes.windll.winmm.timeEndPeriod(1)
         _WIN_TIMER_ACTIVE = False

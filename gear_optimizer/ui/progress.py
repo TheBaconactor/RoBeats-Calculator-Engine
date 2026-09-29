@@ -62,10 +62,7 @@ class ProgressUI:
             return
         self._stop.set()
         if self._thread is not None:
-            try:
-                self._thread.join(timeout=2.0)
-            except Exception as e:
-                logger.debug(f"progress:stop: {e}")
+            self._thread.join(timeout=2.0)
         self._render(final=True)
 
     def update_counts(
@@ -121,77 +118,67 @@ class ProgressUI:
     def _render(self, *, final: bool = False) -> None:
         if not self._enabled:
             return
-        try:
-            now = time.perf_counter()
-            with self._lock:
-                completed = int(self._completed)
-                total = int(self._total)
-                failed = int(self._failed)
-                new_records = int(self._new_records)
-                status = str(self._status or "")
-                status_clean = status.strip()
-                if status_clean.upper() == "DONE":
-                    status_clean = ""
-                song = str(self._song or "")
-                frame = self._frame
-                self._frame = (self._frame + 1) % len(self._spinner)
-            elapsed = max(0.0, float(now - self._start))
-            eta_s = None
-            if completed > 0 and total > 0 and completed <= total:
-                avg = float(elapsed) / float(completed)
-                eta_s = max(0.0, float(total - completed) * avg)
+        now = time.perf_counter()
+        with self._lock:
+            completed = int(self._completed)
+            total = int(self._total)
+            failed = int(self._failed)
+            new_records = int(self._new_records)
+            status = str(self._status or "")
+            status_clean = status.strip()
+            if status_clean.upper() == "DONE":
+                status_clean = ""
+            song = str(self._song or "")
+            frame = self._frame
+            self._frame = (self._frame + 1) % len(self._spinner)
+        elapsed = max(0.0, float(now - self._start))
+        eta_s = None
+        if completed > 0 and total > 0 and completed <= total:
+            avg = float(elapsed) / float(completed)
+            eta_s = max(0.0, float(total - completed) * avg)
 
-            spinner = self._spinner[frame % len(self._spinner)]
-            pct = (float(completed) / float(total) * 100.0) if total > 0 else 0.0
-            filled = int(round((float(completed) / float(total)) * self._bar_width)) if total > 0 else 0
-            filled = max(0, min(self._bar_width, filled))
-            bar = "=" * filled + "-" * (self._bar_width - filled)
+        spinner = self._spinner[frame % len(self._spinner)]
+        pct = (float(completed) / float(total) * 100.0) if total > 0 else 0.0
+        filled = int(round((float(completed) / float(total)) * self._bar_width)) if total > 0 else 0
+        filled = max(0, min(self._bar_width, filled))
+        bar = "=" * filled + "-" * (self._bar_width - filled)
 
-            eta_str = self._format_duration(eta_s) if eta_s is not None else "--:--"
-            elapsed_str = self._format_duration(elapsed)
+        eta_str = self._format_duration(eta_s) if eta_s is not None else "--:--"
+        elapsed_str = self._format_duration(elapsed)
 
-            tail = ""
-            if song:
-                tail += f" | Song: {song}"
-            if status_clean:
-                tail += f" | {status_clean}"
-            if len(tail) > 60:
-                tail = tail[:57] + "..."
+        tail = ""
+        if song:
+            tail += f" | Song: {song}"
+        if status_clean:
+            tail += f" | {status_clean}"
+        if len(tail) > 60:
+            tail = tail[:57] + "..."
 
-            def c(text: str, code: str) -> str:
-                return f"\x1b[{code}m{text}\x1b[0m"
+        def c(text: str, code: str) -> str:
+            return f"\x1b[{code}m{text}\x1b[0m"
 
-            spinner_s = c(spinner, "36")
-            bar_s = c(bar, "96")
-            pct_s = c(f"{pct:5.1f}%", "92" if pct >= 99.9 else "36")
-            new_s = c(str(new_records), "92")
-            failed_s = c(str(failed), "91")
-            line = (
-                f"{spinner_s} [{bar_s}] {completed}/{total} {pct_s} "
-                f"| ETA {eta_str} | Elapsed {elapsed_str} | New: {new_s} | Failed: {failed_s}{tail}"
-            )
-            self._write(line, final=final)
-        except Exception as e:
-            logger.debug(f"progress:c: {e}")
+        spinner_s = c(spinner, "36")
+        bar_s = c(bar, "96")
+        pct_s = c(f"{pct:5.1f}%", "92" if pct >= 99.9 else "36")
+        new_s = c(str(new_records), "92")
+        failed_s = c(str(failed), "91")
+        line = (
+            f"{spinner_s} [{bar_s}] {completed}/{total} {pct_s} "
+            f"| ETA {eta_str} | Elapsed {elapsed_str} | New: {new_s} | Failed: {failed_s}{tail}"
+        )
+        self._write(line, final=final)
 
     def _write(self, line: str, *, final: bool = False) -> None:
         if not self._enabled or self._stream is None:
             return
-        try:
-            term_width = 0
-            try:
-                term_width = int(shutil.get_terminal_size(fallback=(0, 0)).columns or 0)
-            except Exception as e:
-                logger.debug(f"progress:_write: {e}")
-                term_width = 0
-            if term_width > 0:
-                line = self._truncate_ansi(line, max_len=max(1, term_width - 1))
-            self._stream.write("\r" + line + "\x1b[K")
-            if final:
-                self._stream.write("\n")
-            self._stream.flush()
-        except Exception as e:
-            logger.debug(f"progress:_write: {e}")
+        term_width = 0
+        term_width = int(shutil.get_terminal_size(fallback=(0, 0)).columns or 0)
+        if term_width > 0:
+            line = self._truncate_ansi(line, max_len=max(1, term_width - 1))
+        self._stream.write("\r" + line + "\x1b[K")
+        if final:
+            self._stream.write("\n")
+        self._stream.flush()
 
     @staticmethod
     def _truncate_ansi(text: str, *, max_len: int) -> str:
@@ -219,11 +206,7 @@ class ProgressUI:
     def _format_duration(seconds: float | None) -> str:
         if seconds is None:
             return "--:--"
-        try:
-            total = int(max(0.0, float(seconds)))
-        except Exception as e:
-            logger.debug(f"progress:_format_duration: {e}")
-            total = 0
+        total = int(max(0.0, float(seconds)))
         h, rem = divmod(total, 3600)
         m, s = divmod(rem, 60)
         if h > 0:

@@ -50,10 +50,7 @@ def mark_song_completed(*args, **kwargs):
 def _emit_startup_status(progress_cb: ProgressCallback | None, status: str) -> None:
     if progress_cb is None:
         return
-    try:
-        progress_cb(completed_delta=0, failed_delta=0, record_info={"status": status})
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_emit_startup_status: {e}")
+    progress_cb(completed_delta=0, failed_delta=0, record_info={"status": status})
 
 
 def start_native_inflight_gpu_client(icfg, *, progress_cb: ProgressCallback | None = None):
@@ -67,10 +64,7 @@ def start_native_inflight_gpu_client(icfg, *, progress_cb: ProgressCallback | No
         msg = "[InFlight] GPU executor Taichi init failed or timed out"
         if err:
             msg = f"{msg} ({err})"
-        try:
-            gpu_executor.stop()
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:start_native_inflight_gpu_client: {e}")
+        gpu_executor.stop()
         raise RuntimeError(msg)
     _emit_startup_status(progress_cb, "GPU warmup (Taichi JIT)")
     gpu_client = GpuServiceClient(gpu_executor)
@@ -110,21 +104,14 @@ class GpuAbortRequester:
         if self.requested_once:
             return False
         self.requested_once = True
-        try:
-            self.gpu_executor.request_abort(str(reason or "stop requested"))
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:GpuAbortRequester.request: {e}")
+        self.gpu_executor.request_abort(str(reason or "stop requested"))
         return True
 
 
 def is_stop_abort_exception(exc: BaseException) -> bool:
     if isinstance(exc, concurrent.futures.CancelledError):
         return True
-    try:
-        msg = str(exc or "")
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:is_stop_abort_exception: {e}")
-        msg = ""
+    msg = str(exc or "")
     return "GpuExecutor aborted:" in msg
 
 
@@ -146,14 +133,10 @@ def build_abort_queue_snapshot(
     )
 
 
-def native_abort_log_path() -> Path | None:
-    try:
-        from gear_optimizer.core.constants import PATHS
+def native_abort_log_path() -> Path:
+    from gear_optimizer.core.constants import PATHS
 
-        return Path(PATHS.bin_path("inflight_native_abort.log"))
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:native_abort_log_path: {e}")
-        return None
+    return Path(PATHS.bin_path("inflight_native_abort.log"))
 
 
 def append_native_abort_log(
@@ -165,18 +148,17 @@ def append_native_abort_log(
     timestamp: str | None = None,
 ) -> bool:
     log_path = Path(path) if path is not None else native_abort_log_path()
-    if log_path is None:
-        return False
+    ts = str(timestamp or time.strftime("%Y-%m-%d %H:%M:%S"))
     try:
-        ts = str(timestamp or time.strftime("%Y-%m-%d %H:%M:%S"))
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(f"\n[{ts}] {type(exc).__name__}: {exc}\n")
             fh.write(str(snapshot) + "\n")
             fh.write(str(trace) + "\n")
-        return True
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:append_native_abort_log: {e}")
+    except OSError:
+        # Diagnostics only: never let the abort log replace the exception being reported.
+        logger.warning("[InFlight] Could not write %s", log_path, exc_info=True)
         return False
+    return True
 
 
 def log_native_abort(
@@ -194,30 +176,27 @@ def log_native_abort(
     path: str | Path | None = None,
     timestamp: str | None = None,
 ) -> bool:
-    try:
-        snapshot = build_abort_queue_snapshot(
-            pending_tasks=pending_tasks,
-            prepared=prepared,
-            prep_inflight=prep_inflight,
-            ga_inflight=ga_inflight,
-            decode_inflight=decode_inflight,
-            pending_fg=pending_fg,
-            fg_prep=fg_prep,
-            fg_futures=fg_futures,
-        )
-        return append_native_abort_log(exc, snapshot=snapshot, trace=trace, path=path, timestamp=timestamp)
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:log_native_abort: {e}")
-        return False
+    snapshot = build_abort_queue_snapshot(
+        pending_tasks=pending_tasks,
+        prepared=prepared,
+        prep_inflight=prep_inflight,
+        ga_inflight=ga_inflight,
+        decode_inflight=decode_inflight,
+        pending_fg=pending_fg,
+        fg_prep=fg_prep,
+        fg_futures=fg_futures,
+    )
+    return append_native_abort_log(exc, snapshot=snapshot, trace=trace, path=path, timestamp=timestamp)
 
 
 def _shutdown_step(label: str, action: Callable[[], None], *, shutdown_debug: bool) -> None:
+    if shutdown_debug:
+        logger.debug("[InFlight][SHUTDOWN] %s", label)
     try:
-        if shutdown_debug:
-            logger.debug("[InFlight][SHUTDOWN] %s", label)
         action()
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_shutdown_step: {e}")
+    except Exception:
+        # Best effort: one failed step must not skip the remaining shutdown steps.
+        logger.warning("[InFlight][SHUTDOWN] %s failed", label, exc_info=True)
 
 
 def shutdown_native_inflight_resources(
@@ -263,17 +242,10 @@ def shutdown_native_inflight_resources(
             )
         )
 
-    if parallel_steps:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(parallel_steps)) as pool:
-            futures = {
-                pool.submit(_shutdown_step, label, action, shutdown_debug=shutdown_debug): label
-                for label, action in parallel_steps
-            }
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except Exception as e:
-                    logger.debug(f"native_inflight_lifecycle:shutdown_parallel: {e}")
+    # Leaving the pool's context waits for every step.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(parallel_steps)) as pool:
+        for label, action in parallel_steps:
+            pool.submit(_shutdown_step, label, action, shutdown_debug=shutdown_debug)
 
     if post_sender is not None:
         _shutdown_step("post_sender.close", lambda: post_sender.close(timeout=10.0), shutdown_debug=shutdown_debug)

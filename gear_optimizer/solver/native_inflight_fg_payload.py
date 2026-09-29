@@ -1,7 +1,6 @@
 """FG deferred-post and persistence payload builders for native in-flight."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
@@ -14,7 +13,6 @@ from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_d
 from gear_optimizer.solver.native_inflight_config import NativeSong
 from gear_optimizer.solver.native_inflight_pipeline import prepare_ga_candidate_surface_for_fg
 
-logger = logging.getLogger(__name__)
 
 def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) -> dict[str, Any]:
     return {
@@ -125,13 +123,9 @@ def build_fg_persist_entries(song: NativeSong) -> list[dict]:
         details = dict(details)
         details["ForceGreats"] = (data.get("ForceGreats", {}) if isinstance(data, dict) else {}) or {}
         force_obj = None
-        try:
-            if isinstance(data, dict) and has_valid_fg_payload(data):
-                force_obj = dict(data)
-                read_visible_stats(force_obj, mutate_payload=True)
-        except Exception as e:
-            logger.debug(f"native_inflight_fg_payload:build_fg_persist_entries: {e}")
-            force_obj = None
+        if isinstance(data, dict) and has_valid_fg_payload(data):
+            force_obj = dict(data)
+            read_visible_stats(force_obj, mutate_payload=True)
         if force_obj is None:
             continue
         if not gear_names and not mini_names:

@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
+import queue
 import time
 
-from gear_optimizer.core.constants import BIN_DIR
 from gear_optimizer.core.config import resolve_inflight_songs
 from gear_optimizer.core.memory import memory_release_requested
-from gear_optimizer.core.parsing import env_get, truthy
+from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.domain.jobs import task_cfg_dict
 from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimizationRequest
@@ -106,7 +106,6 @@ class TaskExecutionMixin:
 
             post_queue = None
             post_proc = None
-            inflight_fatal_gpu_err = False
             try:
                 post_queue, post_proc = self._start_post_processor(total_tasks)
 
@@ -127,36 +126,11 @@ class TaskExecutionMixin:
                 )
                 return
             except Exception as inflight_err:
-                inflight_fatal_gpu_err = self._is_fatal_inflight_exception(inflight_err)
-                logger.error(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}")
-                if inflight_fatal_gpu_err:
+                logger.exception("[InFlight] Native in-flight pipeline failed")
+                if self._is_fatal_inflight_exception(inflight_err):
                     logger.error(
                         "[InFlight] Fatal GPU runtime failure detected; aborting so the supervisor can restart cleanly.",
                     )
-                try:
-                    import traceback
-
-                    tb = traceback.format_exc()
-                    try:
-                        logging.error("[InFlight] Traceback:\\n" + tb)
-                    except Exception as e:
-                        logger.debug(f"task_execution:_run_sequential: {e}")
-                    try:
-                        trace_path = os.path.join(BIN_DIR, "inflight_disabled_traceback.log")
-                        ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                        with open(trace_path, "a", encoding="utf-8") as fh:
-                            fh.write(f"\n[{ts}] {type(inflight_err).__name__}: {inflight_err}\n")
-                            fh.write(tb)
-                    except Exception as e:
-                        logger.debug(f"task_execution:_run_sequential: {e}")
-                    if truthy(env_get("INFLIGHT_PRINT_TRACE", "0")):
-                        try:
-                            logger.error(tb)
-                        except Exception as e:
-                            logger.debug(f"task_execution:_run_sequential: {e}")
-                except Exception as e:
-                    logger.debug(f"task_execution:_run_sequential: {e}")
-                if inflight_fatal_gpu_err:
                     raise
                 raise RuntimeError(
                     "Native in-flight pipeline failed; no sequential path remains."
@@ -182,44 +156,23 @@ class TaskExecutionMixin:
 
     def _stop_post_processor(self, post_queue, post_proc):
             sentinel_sent = False
-            try:
-                if post_queue is not None:
-                    # Bounded post queues (POST_PIPELINE_QUEUE) can be full at shutdown. A single short
-                    # timeout can miss the sentinel and make the join wait the full timeout.
-                    t0 = time.perf_counter()
-                    while True:
-                        try:
-                            post_queue.put(None, block=True, timeout=0.5)
-                            sentinel_sent = True
+            if post_queue is not None:
+                # Bounded post queues (POST_PIPELINE_QUEUE) can be full at shutdown. A single short
+                # timeout can miss the sentinel and make the join wait the full timeout.
+                deadline = time.perf_counter() + 15.0
+                while not sentinel_sent:
+                    try:
+                        post_queue.put(None, block=True, timeout=0.5)
+                        sentinel_sent = True
+                    except queue.Full:
+                        if post_proc is None or not post_proc.is_alive() or time.perf_counter() >= deadline:
                             break
-                        except Exception as e:
-                            logger.debug(f"task_execution:_stop_post_processor: {e}")
-                            try:
-                                if post_proc is None or not post_proc.is_alive():
-                                    break
-                            except Exception as e:
-                                logger.debug(f"task_execution:_stop_post_processor: {e}")
-                                break
-                            if (time.perf_counter() - t0) >= 15.0:
-                                break
-                            continue
-            except Exception as e:
-                logger.debug(f"task_execution:_stop_post_processor: {e}")
-            try:
-                if post_proc is not None:
-                    if not sentinel_sent:
-                        try:
-                            logger.warning(
-                                "[POST] Failed to enqueue shutdown sentinel in time; forcing post-processor shutdown."
-                            )
-                        except Exception as e:
-                            logger.debug(f"task_execution:_stop_post_processor: {e}")
-                    post_proc.join(timeout=120.0 if sentinel_sent else 5.0)
-            except Exception as e:
-                logger.debug(f"task_execution:_stop_post_processor: {e}")
-            try:
-                if post_proc is not None and post_proc.is_alive():
-                    post_proc.terminate()
-                    post_proc.join(timeout=5.0)
-            except Exception as e:
-                logger.debug(f"task_execution:_stop_post_processor: {e}")
+            if post_proc is not None:
+                if not sentinel_sent:
+                    logger.warning(
+                        "[POST] Failed to enqueue shutdown sentinel in time; forcing post-processor shutdown."
+                    )
+                post_proc.join(timeout=120.0 if sentinel_sent else 5.0)
+            if post_proc is not None and post_proc.is_alive():
+                post_proc.terminate()
+                post_proc.join(timeout=5.0)

@@ -184,13 +184,9 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     requested_inflight = max(1, int(in_flight_songs))
     inflight_limit = min(int(requested_inflight), len(tasks))
 
-    try:
-        from gear_optimizer.solver.taichi_gem.fields import MAX_SONG_SLOTS
+    from gear_optimizer.solver.taichi_gem.fields import MAX_SONG_SLOTS
 
-        max_song_slots = int(MAX_SONG_SLOTS)
-    except Exception as e:
-        logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
-        max_song_slots = 8
+    max_song_slots = int(MAX_SONG_SLOTS)
     song_slot_limit = max(1, int(max_song_slots) - 1)
     inflight_limit = min(int(inflight_limit), int(song_slot_limit))
     if int(in_flight_songs) > 1:
@@ -252,14 +248,11 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     except (ValueError, TypeError):
         pass
 
-    try:
-        from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-        from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
+    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+    from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
 
-        ga_runs = read_ga_multi_start(cfg0)
-        gpu_fields.configure_ga_run_buffers(max_runs=ga_runs, max_genomes=GA_POPULATION_SIZE)
-    except Exception as e:
-        logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
+    ga_runs = read_ga_multi_start(cfg0)
+    gpu_fields.configure_ga_run_buffers(max_runs=ga_runs, max_genomes=GA_POPULATION_SIZE)
 
     try:
         if os.name == "nt" and env_get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE") is None:
@@ -275,13 +268,9 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     stage_profile_enabled = truthy(env_get("INFLIGHT_STAGE_PROFILE", "0"))
     stage_profile_path = env_get("INFLIGHT_STAGE_PROFILE_PATH")
     if stage_profile_enabled and not stage_profile_path:
-        try:
-            from gear_optimizer.core.constants import PATHS
+        from gear_optimizer.core.constants import PATHS
 
-            stage_profile_path = PATHS.bin_path("inflight_stage_profile.json")
-        except Exception as e:
-            logger.debug(f"native_inflight_config:parse_inflight_config: {e}")
-            stage_profile_path = None
+        stage_profile_path = PATHS.bin_path("inflight_stage_profile.json")
 
     fg_submit_debug = truthy(env_get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
     runtime = read_inflight_runtime_settings()

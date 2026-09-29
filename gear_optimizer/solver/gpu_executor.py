@@ -276,12 +276,9 @@ class GpuExecutor:
         _send_shutdown_request(self._request_queue)
         if self._executor_thread:
             self._executor_thread.join(timeout=10.0)
-            try:
-                if self._executor_thread.is_alive():
-                    logger.warning("[GpuExecutor] Stop timed out; executor thread is still alive.")
-                    self._write_heartbeat(phase="error", note="stop_timeout_thread_alive", force=True)
-            except Exception as e:
-                logger.debug(f"gpu_executor:stop: {e}")
+            if self._executor_thread.is_alive():
+                logger.warning("[GpuExecutor] Stop timed out; executor thread is still alive.")
+                self._write_heartbeat(phase="error", note="stop_timeout_thread_alive", force=True)
         self._running = False
         if self._high_res_timer_enabled:
             _release_windows_timer_period_1ms()
@@ -528,14 +525,8 @@ class GpuExecutor:
                         _try_put_response(req, resp)
                     except (ValueError, TypeError, AttributeError):
                         continue
-                try:
-                    logger.debug("[GpuExecutor] Error: %s", e)
-                except Exception as e:
-                    logger.debug(f"gpu_executor:_execute_grouped_requests: {e}")
-                try:
-                    traceback.print_exc()
-                except Exception as e:
-                    logger.debug(f"gpu_executor:_execute_grouped_requests: {e}")
+                logger.debug("[GpuExecutor] Error: %s", e)
+                traceback.print_exc()
                 self._write_heartbeat(phase="error", batch=batch, note=str(err), force=True)
         self._write_heartbeat(phase="stopped", note=self._last_init_error or "", force=True)
     def _queue_get(self, timeout: float):
@@ -750,8 +741,5 @@ def _auto_stop_gpu_executor_at_exit() -> None:
     if not _executor_auto_stop_enabled(env_flag_fn=env_flag):
         return
     global _executor
-    try:
-        _stop_executor_if_running(_executor)
-    except Exception as e:
-        logger.debug(f"gpu_executor:_auto_stop_gpu_executor_at_exit: {e}")
+    _stop_executor_if_running(_executor)
 atexit.register(_auto_stop_gpu_executor_at_exit)

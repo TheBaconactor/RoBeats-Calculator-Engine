@@ -17,11 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_budget(total_budget: int) -> int:
-    try:
-        budget = int(total_budget)
-    except Exception as e:
-        logger.debug(f"ftff_combos:_normalize_budget: {e}")
-        budget = 0
+    budget = int(total_budget)
     return max(0, budget)
 
 

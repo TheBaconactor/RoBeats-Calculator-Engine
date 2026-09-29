@@ -156,16 +156,10 @@ class GpuServiceClient:
         self._timeout_thread = None
 
         if self._profile_enabled and self._profile_print:
-            try:
-                self.report_profile()
-            except Exception as e:
-                logger.debug(f"gpu_service:close: {e}")
+            self.report_profile()
 
         if self._worker_id is not None:
-            try:
-                self._executor.unregister_worker(int(self._worker_id))
-            except Exception as e:
-                logger.debug(f"gpu_service:close: {e}")
+            self._executor.unregister_worker(int(self._worker_id))
         self._worker_id = None
         self._request_queue = None
         self._response_queue = None
@@ -246,14 +240,10 @@ class GpuServiceClient:
             logger.debug(f"gpu_service:_record_latency_sample: {e}")
             return
         key_label = ""
-        try:
-            if isinstance(key, GpuRequestType):
-                key_label = str(key.value)
-            else:
-                key_label = str(key)
-        except Exception as e:
-            logger.debug(f"gpu_service:_record_latency_sample: {e}")
-            key_label = ""
+        if isinstance(key, GpuRequestType):
+            key_label = str(key.value)
+        else:
+            key_label = str(key)
         emit_profile_event(
             component="gpu_service",
             event="latency_sample",
@@ -290,18 +280,15 @@ class GpuServiceClient:
             t_submit = pending.submit_ts
 
             if self._profile_enabled and isinstance(req_type, GpuRequestType) and isinstance(t_submit, (int, float)):
-                try:
-                    latency = max(0.0, time.perf_counter() - float(t_submit))
-                    self._record_latency_sample(
-                        key=req_type,
-                        latency_sec=float(latency),
-                        counts=self._profile_counts,
-                        totals=self._profile_total_sec,
-                        maxes=self._profile_max_sec,
-                        samples=self._profile_samples,
-                    )
-                except Exception as e:
-                    logger.debug(f"gpu_service:_rx_loop: {e}")
+                latency = max(0.0, time.perf_counter() - float(t_submit))
+                self._record_latency_sample(
+                    key=req_type,
+                    latency_sec=float(latency),
+                    counts=self._profile_counts,
+                    totals=self._profile_total_sec,
+                    maxes=self._profile_max_sec,
+                    samples=self._profile_samples,
+                )
 
             # The pop-under-lock above makes this thread the sole owner of the
             # entry (the timeout loop can never see it), so the only competing
@@ -342,14 +329,8 @@ class GpuServiceClient:
         self._timeout_abort_requested.set()
 
         def _abort() -> None:
-            try:
-                print(f"[GpuService] Fatal request timeout: {message}")
-            except Exception as e:
-                logger.debug(f"gpu_service:_abort: {e}")
-            try:
-                time.sleep(0.1)
-            except Exception as e:
-                logger.debug(f"gpu_service:_abort: {e}")
+            print(f"[GpuService] Fatal request timeout: {message}")
+            time.sleep(0.1)
             try:
                 os.kill(os.getpid(), signal.SIGTERM)
             except Exception as e:
@@ -418,14 +399,10 @@ class GpuServiceClient:
             samples = list(self._profile_samples.get(req_type, ()))
             p95 = None
             if samples:
-                try:
-                    samples_sorted = sorted(samples)
-                    idx = int(round(0.95 * (len(samples_sorted) - 1)))
-                    idx = max(0, min(idx, len(samples_sorted) - 1))
-                    p95 = float(samples_sorted[idx])
-                except Exception as e:
-                    logger.debug(f"gpu_service:profile_summary: {e}")
-                    p95 = None
+                samples_sorted = sorted(samples)
+                idx = int(round(0.95 * (len(samples_sorted) - 1)))
+                idx = max(0, min(idx, len(samples_sorted) - 1))
+                p95 = float(samples_sorted[idx])
             out["by_type"][req_type.value] = {
                 "count": int(count),
                 "avg_sec": float(avg),
@@ -439,14 +416,10 @@ class GpuServiceClient:
             samples = list(self._client_profile_samples.get(name, ()))
             p95 = None
             if samples:
-                try:
-                    samples_sorted = sorted(samples)
-                    idx = int(round(0.95 * (len(samples_sorted) - 1)))
-                    idx = max(0, min(idx, len(samples_sorted) - 1))
-                    p95 = float(samples_sorted[idx])
-                except Exception as e:
-                    logger.debug(f"gpu_service:profile_summary: {e}")
-                    p95 = None
+                samples_sorted = sorted(samples)
+                idx = int(round(0.95 * (len(samples_sorted) - 1)))
+                idx = max(0, min(idx, len(samples_sorted) - 1))
+                p95 = float(samples_sorted[idx])
             out["client_jobs"][name] = {
                 "count": int(count),
                 "avg_sec": float(avg),
@@ -483,10 +456,7 @@ class GpuServiceClient:
                 logger.debug(f"gpu_service:report_profile: {e}")
                 continue
         line = "[GpuServiceClient][PROFILE] " + "; ".join(parts)
-        try:
-            print(line)
-        except Exception as e:
-            logger.debug(f"gpu_service:report_profile: {e}")
+        print(line)
         client_jobs = summary.get("client_jobs") or {}
         if client_jobs:
             items2 = []
@@ -509,8 +479,5 @@ class GpuServiceClient:
                     logger.debug(f"gpu_service:report_profile: {e}")
                     continue
             line2 = "[GpuServiceClient][CLIENT_PROFILE] " + "; ".join(parts2)
-            try:
-                print(line2)
-            except Exception as e:
-                logger.debug(f"gpu_service:report_profile: {e}")
+            print(line2)
         return line

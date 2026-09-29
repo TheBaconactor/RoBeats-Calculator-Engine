@@ -144,11 +144,7 @@ def build_taichi_init_failure_report(
     traceback_format_fn: Callable[[], str] = traceback.format_exc,
 ) -> TaichiInitFailureReport:
     err = f"{type(exc).__name__}: {exc}"
-    try:
-        tb = traceback_format_fn()
-    except Exception as e:
-        logger.debug(f"gpu_executor_lifecycle:build_taichi_init_failure_report: {e}")
-        tb = ""
+    tb = traceback_format_fn()
 
     trace_path = None
     try:
@@ -173,10 +169,7 @@ def _dump_kernel_profiler_records(ti: Any, dump_path: str) -> bool:
     of the C++ print_kernel_profiler_info() stdout at teardown.
     """
     prog = ti.lang.impl.get_runtime().prog
-    try:
-        prog.sync_kernel_profiler()
-    except Exception as e:
-        logger.debug(f"gpu_executor_lifecycle:_dump_kernel_profiler_records sync: {e}")
+    prog.sync_kernel_profiler()
     records = prog.get_kernel_profiler_records()
     agg: dict[str, dict[str, float]] = {}
     for r in records:
@@ -205,11 +198,7 @@ def _dump_kernel_profiler_records(ti: Any, dump_path: str) -> bool:
             }
         )
     rows.sort(key=lambda d: d["total_ms"], reverse=True)
-    try:
-        device_total_s = float(prog.kernel_profiler_total_time())
-    except Exception as e:
-        logger.debug(f"gpu_executor_lifecycle:_dump_kernel_profiler_records total: {e}")
-        device_total_s = 0.0
+    device_total_s = float(prog.kernel_profiler_total_time())
     payload = {
         "device": str(prog.get_kernel_profiler_device_name()) if hasattr(prog, "get_kernel_profiler_device_name") else "",
         "device_total_ms": round(device_total_s * 1000.0, 3),
@@ -244,10 +233,7 @@ def print_taichi_kernel_profiler(
         ti = import_module_fn("taichi")
         ti.sync()
         if dump_path:
-            try:
-                _dump_kernel_profiler_records(ti, dump_path)
-            except Exception as e:
-                logger.debug(f"gpu_executor_lifecycle:print_taichi_kernel_profiler dump: {e}")
+            _dump_kernel_profiler_records(ti, dump_path)
         if bool(enabled):
             ti.profiler.print_kernel_profiler_info()
         return True

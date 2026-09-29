@@ -17,12 +17,9 @@ def expected_selected_element(entry: dict[str, Any], meta_primary_color: str) ->
     2) `entry["details"]` Selected Element/SelectedElement (DB-cached payloads)
     3) `meta_primary_color` fallback
     """
-    try:
-        v = entry.get("selected_element")
-        if v:
-            return str(v)
-    except Exception as e:
-        logger.debug(f"entry_utils:expected_selected_element: {e}")
+    v = entry.get("selected_element")
+    if v:
+        return str(v)
     try:
         det0 = entry.get("details") or {}
         return get_selected_element(det0, meta_primary_color)
@@ -41,11 +38,7 @@ def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict
       - GemCounts
       - optional BaseStats (when upstream provides it, e.g. GPU-native GA)
     """
-    try:
-        eval_data = entry.get("eval_data")
-    except Exception as e:
-        logger.debug(f"entry_utils:eval_data_from_entry: {e}")
-        eval_data = None
+    eval_data = entry.get("eval_data")
     if isinstance(eval_data, dict):
         # Prefer full Stats when present (most complete signal).
         stats = eval_data.get("Stats")

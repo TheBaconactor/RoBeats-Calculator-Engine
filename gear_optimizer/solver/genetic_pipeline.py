@@ -33,11 +33,7 @@ def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
     # the ambient GPU_GA_NOVELTY_REPAIR_ATTEMPTS env override was removed.
     cfg = dict(cfg_data or {})
     raw = cfg.get("ga_novelty_repair_attempts", 2)
-    try:
-        attempts = int(raw)
-    except Exception as e:
-        logger.debug(f"genetic:_resolve_ga_novelty_repair_attempts: {e}")
-        attempts = 2
+    attempts = int(raw)
     return max(0, min(4, int(attempts)))
 
 
@@ -550,18 +546,10 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     # Optional stability toggles (mirrors the native GPU payload path)
     reset_every_runs_env = str(_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS)
-    try:
-        reset_every_runs = int(reset_every_runs_env)
-    except Exception as e:
-        logger.debug(f"genetic:run_gpu_native_ga_runs_payload_prebuilt: {e}")
-        reset_every_runs = 0
+    reset_every_runs = int(reset_every_runs_env)
 
     max_retries_env = str(_GPU_NATIVE_GA_VULKAN_RETRIES)
-    try:
-        max_retries = int(max_retries_env)
-    except Exception as e:
-        logger.debug(f"genetic:run_gpu_native_ga_runs_payload_prebuilt: {e}")
-        max_retries = 1
+    max_retries = int(max_retries_env)
 
     # DEV / DEBUG: phase timing flag (GPU_NATIVE_GA_PHASE_TIMING).
     perf = _PERF_TIMING
@@ -572,15 +560,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     )
     phase_events_enabled = bool(phase_timing and profile_events_enabled)
     song_profile_key = None
-    try:
-        meta = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
-        song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
-        song_diff = str(meta.get("Difficulty") or "").strip()
-        if song_name:
-            song_profile_key = f"{song_name} ({song_diff})" if song_diff else song_name
-    except Exception as e:
-        logger.debug(f"genetic:run_gpu_native_ga_runs_payload_prebuilt: {e}")
-        song_profile_key = None
+    meta = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
+    song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
+    song_diff = str(meta.get("Difficulty") or "").strip()
+    if song_name:
+        song_profile_key = f"{song_name} ({song_diff})" if song_diff else song_name
 
     def _emit_ga_setup_phase(*, phase: str, start: float, **extra_metrics) -> None:
         if not profile_events_enabled:
@@ -728,17 +712,13 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     # Determine an auto batch size that avoids combo-chunking in ga_evaluate_population.
     # Chunking increases kernel launch count, so we prefer keeping n_total*n_combos <= MAX_EVALS_PER_DISPATCH.
     t_phase = time.perf_counter()
-    try:
-        n_combos = int(
-            gpu_api._ensure_ftff_combo_tables(
-                total_budget,
-                max_ft_gems=int(max_ft_gems_global),
-                max_ff_gems=int(max_ff_gems_global),
-            )
+    n_combos = int(
+        gpu_api._ensure_ftff_combo_tables(
+            total_budget,
+            max_ft_gems=int(max_ft_gems_global),
+            max_ff_gems=int(max_ff_gems_global),
         )
-    except Exception as e:
-        logger.debug(f"genetic:_restore_song_gpu_state: {e}")
-        n_combos = 0
+    )
     _emit_ga_setup_phase(phase="ensure_ftff_combo_tables", start=t_phase, combos=int(n_combos))
 
     # Batch width is sized by genome capacity only (MAX_GENOMES pool); the
@@ -1335,16 +1315,13 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             _lp_rec["pk_fused_gpu_mean_ms"] = 1000.0 * float(_lp_acc["pk_fused_gpu_s"]) / _lp_pk_n
         _lp_path = str(env_get("GA_LOOP_PROFILE_PATH", "") or "").strip()
         if _lp_path:
-            try:
-                import json as _lp_json
-                import os as _lp_os
+            import json as _lp_json
+            import os as _lp_os
 
-                _lp_dir = _lp_os.path.dirname(_lp_os.path.abspath(_lp_path))
-                if _lp_dir:
-                    _lp_os.makedirs(_lp_dir, exist_ok=True)
-                with open(_lp_path, "a", encoding="utf-8") as _lp_fh:
-                    _lp_fh.write(_lp_json.dumps(_lp_rec) + "\n")
-            except Exception as e:
-                logger.debug(f"genetic:ga_loop_profile_write: {e}")
+            _lp_dir = _lp_os.path.dirname(_lp_os.path.abspath(_lp_path))
+            if _lp_dir:
+                _lp_os.makedirs(_lp_dir, exist_ok=True)
+            with open(_lp_path, "a", encoding="utf-8") as _lp_fh:
+                _lp_fh.write(_lp_json.dumps(_lp_rec) + "\n")
 
     return payload_segments[0]

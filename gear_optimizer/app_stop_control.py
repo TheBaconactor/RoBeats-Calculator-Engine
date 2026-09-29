@@ -4,12 +4,10 @@ import os
 import signal
 import threading
 import time
-import logging
 
 
 from gear_optimizer.core.parsing import env_get
 
-logger = logging.getLogger(__name__)
 class StopController:
     """
     Centralized stop/shutdown control for long-running optimizer runs.
@@ -55,10 +53,7 @@ class StopController:
                 f"[Shutdown] Stop requested ({reason}). Finishing current work then exiting. "
                 "Press Ctrl+C again to force."
             )
-            try:
-                print(msg, flush=True)
-            except Exception as e:
-                logger.debug(f"app_stop_control:request_stop: {e}")
+            print(msg, flush=True)
 
         if force:
             raise KeyboardInterrupt
@@ -70,11 +65,7 @@ class StopController:
         stop_after_raw = str(env_get("METAFINDER_STOP_AFTER_SEC", "0") or "0").strip()
         if force or stop_after_raw != self._stop_after_raw:
             self._stop_after_raw = stop_after_raw
-            try:
-                stop_after_sec = float(stop_after_raw or "0")
-            except Exception as e:
-                logger.debug(f"app_stop_control:_refresh_runtime_settings: {e}")
-                stop_after_sec = 0.0
+            stop_after_sec = float(stop_after_raw or "0")
             self._stop_after_sec = max(0.0, float(stop_after_sec))
             if self._stop_after_sec > 0.0:
                 self._stop_after_deadline_monotonic = float(self._run_start_monotonic) + float(self._stop_after_sec)
@@ -91,11 +82,7 @@ class StopController:
         stop_file_poll_raw = str(env_get("METAFINDER_STOP_FILE_POLL_SEC", "1.0") or "1.0").strip()
         if force or stop_file_poll_raw != self._stop_file_poll_raw:
             self._stop_file_poll_raw = stop_file_poll_raw
-            try:
-                stop_file_poll_sec = float(stop_file_poll_raw or "1.0")
-            except Exception as e:
-                logger.debug(f"app_stop_control:_refresh_runtime_settings: {e}")
-                stop_file_poll_sec = 1.0
+            stop_file_poll_sec = float(stop_file_poll_raw or "1.0")
             self._stop_file_poll_sec = max(0.01, float(stop_file_poll_sec))
 
     def stop_requested_now(self) -> bool:
@@ -105,22 +92,16 @@ class StopController:
         if now >= float(self._next_settings_refresh_monotonic):
             self._refresh_runtime_settings()
             self._next_settings_refresh_monotonic = now + float(self._settings_refresh_sec)
-        try:
-            if self._stop_after_deadline_monotonic is not None and now >= float(self._stop_after_deadline_monotonic):
-                self.request_stop(f"stop-after timer reached: {self._stop_after_sec:.0f}s")
-                return True
-        except Exception as e:
-            logger.debug(f"app_stop_control:stop_requested_now: {e}")
-        try:
-            if now >= float(self._stop_file_next_check_monotonic):
-                stop_file = self._stop_file_path()
-                self._stop_file_present_cache = bool(stop_file and os.path.exists(stop_file))
-                self._stop_file_next_check_monotonic = now + float(self._stop_file_poll_sec)
-            if self._stop_file_present_cache:
-                self.request_stop(f"stop file detected: {self._stop_file_path()!r}")
-                return True
-        except Exception as e:
-            logger.debug(f"app_stop_control:stop_requested_now: {e}")
+        if self._stop_after_deadline_monotonic is not None and now >= float(self._stop_after_deadline_monotonic):
+            self.request_stop(f"stop-after timer reached: {self._stop_after_sec:.0f}s")
+            return True
+        if now >= float(self._stop_file_next_check_monotonic):
+            stop_file = self._stop_file_path()
+            self._stop_file_present_cache = bool(stop_file and os.path.exists(stop_file))
+            self._stop_file_next_check_monotonic = now + float(self._stop_file_poll_sec)
+        if self._stop_file_present_cache:
+            self.request_stop(f"stop file detected: {self._stop_file_path()!r}")
+            return True
         return self.stop_requested_event.is_set()
 
     def install_signal_handlers(self) -> None:
@@ -143,9 +124,6 @@ class StopController:
         ):
             if sig is None:
                 continue
-            try:
-                signal.signal(sig, _handler)
-            except Exception as e:
-                logger.debug(f"app_stop_control:_handler: {e}")
+            signal.signal(sig, _handler)
 
         self._signal_handlers_installed = True

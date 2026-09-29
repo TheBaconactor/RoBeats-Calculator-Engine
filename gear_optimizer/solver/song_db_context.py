@@ -83,26 +83,23 @@ def _db_context_cache_put(
     key = _cache_key(db_key, team_buff)
     if not key[0]:
         return
-    try:
-        record_copy = compact_prev_record(prev_record, drop_empty_item_names=True) if isinstance(prev_record, dict) else None
-        with _DB_CONTEXT_CACHE_LOCK:
-            _DB_CONTEXT_CACHE[key] = (
-                float(time.monotonic()),
-                record_copy,
-                int(db_best_score or 0),
-                int(db_best_fg_score or 0),
-                int(attempt_lifetime or 0),
-                int(prev_attempts_first or 0),
-            )
-            _DB_CONTEXT_CACHE.move_to_end(key)
-            max_n = int(_db_context_cache_max())
-            if max_n <= 0:
-                _DB_CONTEXT_CACHE.clear()
-                return
-            while len(_DB_CONTEXT_CACHE) > max_n:
-                _DB_CONTEXT_CACHE.popitem(last=False)
-    except Exception as e:
-        logger.debug(f"song_db_context:_db_context_cache_put: {e}")
+    record_copy = compact_prev_record(prev_record, drop_empty_item_names=True) if isinstance(prev_record, dict) else None
+    with _DB_CONTEXT_CACHE_LOCK:
+        _DB_CONTEXT_CACHE[key] = (
+            float(time.monotonic()),
+            record_copy,
+            int(db_best_score or 0),
+            int(db_best_fg_score or 0),
+            int(attempt_lifetime or 0),
+            int(prev_attempts_first or 0),
+        )
+        _DB_CONTEXT_CACHE.move_to_end(key)
+        max_n = int(_db_context_cache_max())
+        if max_n <= 0:
+            _DB_CONTEXT_CACHE.clear()
+            return
+        while len(_DB_CONTEXT_CACHE) > max_n:
+            _DB_CONTEXT_CACHE.popitem(last=False)
 
 
 def load_prepared_song_db_context(

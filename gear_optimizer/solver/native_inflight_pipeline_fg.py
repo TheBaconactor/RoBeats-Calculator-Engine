@@ -183,11 +183,7 @@ class NativeFGPipeline:
             fut = getattr(song.runtime.fg, "fg_prep_future", None)
             if fut is None:
                 continue
-            try:
-                fut_id = int(id(fut))
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:active_prep_count: {e}")
-                fut_id = 0
+            fut_id = int(id(fut))
             if fut_id and fut_id in seen:
                 continue
             if fut_id:
@@ -242,10 +238,7 @@ class NativeFGPipeline:
                 if submit_t0 is not None:
                     song.runtime.fg.fg_prep_submit_t0 = None
                 future.result()
-                try:
-                    song.runtime.fg.fg_dynamic_prep_done = True
-                except Exception as e:
-                    logger.debug(f"native_inflight_pipeline:finish_completed_prep: {e}")
+                song.runtime.fg.fg_dynamic_prep_done = True
             except Exception as exc:
                 error = exc
                 trace = traceback.format_exc()
@@ -448,11 +441,7 @@ class NativeFGPipeline:
         completions: list[NativeFGJobCompletion] = []
         still_pending: deque[tuple[NativeSong, concurrent.futures.Future, float]] = deque()
         for song, future, submit_t0 in list(self.futures):
-            try:
-                done = future.done()
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:pop_completed_jobs: {e}")
-                done = False
+            done = future.done()
             if done:
                 completions.append(
                     NativeFGJobCompletion(
@@ -514,14 +503,11 @@ def release_fg_song_surfaces(song: NativeSong) -> None:
         return
     bundle = getattr(fg, "fg_response_scoring_bundle", None)
     if bundle is not None:
-        try:
-            from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
-                release_fg_response_song_memory,
-            )
+        from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
+            release_fg_response_song_memory,
+        )
 
-            release_fg_response_song_memory(getattr(bundle, "cache_key", ()))
-        except Exception as e:
-            logger.debug(f"native_inflight_pipeline:_release_fg_song_surfaces: {e}")
+        release_fg_response_song_memory(getattr(bundle, "cache_key", ()))
     fg.fg_response_scoring_bundle = None
     fg.fg_response_frontier_plan = None
     fg.fg_owner_score_map = None
@@ -609,18 +595,15 @@ def _run_fg_job_sync_impl(
 
     cpu_t0 = thread_cpu_time_s()
     song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
-    try:
-        emit_profile_event(
-            component="inflight_fg_worker",
-            event="start",
-            song_key=song_key,
-            metrics={
-                "had_prep_future": int(getattr(song.runtime.fg, "fg_prep_future", None) is not None),
-                "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
-            },
-        )
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
+    emit_profile_event(
+        component="inflight_fg_worker",
+        event="start",
+        song_key=song_key,
+        metrics={
+            "had_prep_future": int(getattr(song.runtime.fg, "fg_prep_future", None) is not None),
+            "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
+        },
+    )
     fg_prep_future = getattr(song.runtime.fg, "fg_prep_future", None)
     if fg_prep_future is not None:
         prep_wait_t0 = time.perf_counter()
@@ -638,17 +621,14 @@ def _run_fg_job_sync_impl(
         except Exception as exc:
             raise RuntimeError(f"FG dynamic prep failed for {song_key}") from exc
         finally:
-            try:
-                emit_profile_event(
-                    component="inflight_fg_worker",
-                    event="prep_wait",
-                    song_key=song_key,
-                    metrics={
-                        "wait_ms": max(0.0, (time.perf_counter() - float(prep_wait_t0)) * 1000.0),
-                    },
-                )
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
+            emit_profile_event(
+                component="inflight_fg_worker",
+                event="prep_wait",
+                song_key=song_key,
+                metrics={
+                    "wait_ms": max(0.0, (time.perf_counter() - float(prep_wait_t0)) * 1000.0),
+                },
+            )
             song.runtime.fg.fg_prep_future = None
     if getattr(song.runtime.fg, "fg_response_frontier_plan", None) is None:
         prepare_fg_job_sync(song, gpu_client=gpu_client)
@@ -656,37 +636,28 @@ def _run_fg_job_sync_impl(
             song.runtime.fg.fg_dynamic_prep_done = True
         except AttributeError:
             pass
-    try:
-        emit_profile_event(
-            component="inflight_fg_worker",
-            event="prep_ready",
-            song_key=song_key,
-            metrics={
-                "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
-            },
-        )
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
-    try:
-        emit_profile_event(
-            component="inflight_fg_worker",
-            event="pre_dispatch",
-            song_key=song_key,
-            metrics={
-                "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
-            },
-        )
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
-    try:
-        emit_profile_event(
-            component="inflight_fg_worker",
-            event="dispatch_start",
-            song_key=song_key,
-            metrics={},
-        )
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
+    emit_profile_event(
+        component="inflight_fg_worker",
+        event="prep_ready",
+        song_key=song_key,
+        metrics={
+            "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
+        },
+    )
+    emit_profile_event(
+        component="inflight_fg_worker",
+        event="pre_dispatch",
+        song_key=song_key,
+        metrics={
+            "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
+        },
+    )
+    emit_profile_event(
+        component="inflight_fg_worker",
+        event="dispatch_start",
+        song_key=song_key,
+        metrics={},
+    )
     prepared_plan = getattr(song.runtime.fg, "fg_response_frontier_plan", None)
     if prepared_plan is None:
         raise RuntimeError("FG response frontier run requires a prepared exact scoring plan")
@@ -714,25 +685,19 @@ def _run_fg_job_sync_impl(
         song.runtime.fg.cpu_fg_run_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     except AttributeError:
         pass
-    try:
-        emit_profile_event(
-            component="inflight_fg_worker",
-            event="dispatch_done",
-            song_key=song_key,
-            metrics={
-                "fg_variants": int(len(getattr(song.runtime.fg, "fg_variants", None) or [])),
-            },
-        )
-    except Exception as e:
-        logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
+    emit_profile_event(
+        component="inflight_fg_worker",
+        event="dispatch_done",
+        song_key=song_key,
+        metrics={
+            "fg_variants": int(len(getattr(song.runtime.fg, "fg_variants", None) or [])),
+        },
+    )
     if progress_cb is not None:
         fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
         if isinstance(fg_record_info, dict):
             song.runtime.db.record_info = fg_record_info
-            try:
-                progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:run_fg_job_sync: {e}")
+            progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
     else:
         fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
         if isinstance(fg_record_info, dict):

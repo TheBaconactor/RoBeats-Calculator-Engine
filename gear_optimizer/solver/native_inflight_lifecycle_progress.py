@@ -123,16 +123,8 @@ class ProgressTracker:
     def emit_error_item_progress(self, progress_cb: Callable[..., Any] | None, item: Any) -> bool:
         if not isinstance(item, dict) or not item.get("_error") or bool(item.get("_suppress_progress")):
             return False
-        try:
-            song_label = self.error_item_song_label(item)
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:emit_error_item_progress: {e}")
-            song_label = None
-        try:
-            progress_key = self.error_item_progress_key(item)
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:emit_error_item_progress: {e}")
-            progress_key = ""
+        song_label = self.error_item_song_label(item)
+        progress_key = self.error_item_progress_key(item)
         if progress_key:
             with self.lock:
                 if progress_key in self.failed_progress_keys:
@@ -207,16 +199,10 @@ class ActiveRuntimeProgressReporter:
             ("ga", ga_inflight),
             ("decode", decode_inflight),
         ):
-            try:
-                if source:
-                    return native_song_label(source[0])
-            except Exception as e:
-                logger.debug(f"native_inflight_lifecycle:active_song_label:{source_name}: {e}")
-        try:
-            if fg_futures:
-                return native_song_label(fg_futures[0][0])
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:active_song_label:fg: {e}")
+            if source:
+                return native_song_label(source[0])
+        if fg_futures:
+            return native_song_label(fg_futures[0][0])
         return ""
 
     def emit(

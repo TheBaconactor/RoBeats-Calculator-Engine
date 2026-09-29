@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
-import logging
 
 import numpy as np
 
 from ..song_helpers.ga_entry_utils import canonicalize_genome_ids
 
 
-logger = logging.getLogger(__name__)
 PayloadT = TypeVar("PayloadT")
 
 
@@ -64,11 +62,7 @@ class GlobalUniqueEvalTable(Generic[PayloadT]):
             self._skipped_non_exact += 1
             return False
 
-        try:
-            score_i = int(score)
-        except Exception as e:
-            logger.debug(f"unique_eval:upsert: {e}")
-            score_i = 0
+        score_i = int(score)
 
         key = self._normalize_key(genome_ids)
         prev = self._entries.get(key)

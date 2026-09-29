@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import logging
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -9,7 +8,6 @@ from typing import Any, Callable
 
 from gear_optimizer.solver.native_inflight_config import NativeSong
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -54,11 +52,7 @@ class GADecodeQueue:
             future = song.runtime.decode.decode_future
             if future is None:
                 continue
-            try:
-                done = future.done()
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:pop_completed: {e}")
-                done = False
+            done = future.done()
             if not done:
                 continue
             self.inflight.remove(song)
@@ -73,11 +67,8 @@ class GADecodeQueue:
 
     def cancel_all(self) -> None:
         for song in list(self.inflight):
-            try:
-                if song.runtime.decode.decode_future is not None:
-                    song.runtime.decode.decode_future.cancel()
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:cancel_all: {e}")
+            if song.runtime.decode.decode_future is not None:
+                song.runtime.decode.decode_future.cancel()
 
     def shutdown(self, *, wait: bool = True, cancel_futures: bool = True) -> None:
         self.executor.shutdown(wait=wait, cancel_futures=cancel_futures)
@@ -93,10 +84,7 @@ class InflightGAPipeline:
     def reserve_slot(song: NativeSong, slot_pool: Any) -> int:
         if int(song.runtime.song_slot or 0) <= 0:
             song.runtime.song_slot = int(slot_pool.acquire())
-        try:
-            song.gpu_inputs.calc_song["_gpu_song_slot"] = int(song.runtime.song_slot)
-        except Exception as e:
-            logger.debug(f"native_inflight_pipeline:reserve_slot: {e}")
+        song.gpu_inputs.calc_song["_gpu_song_slot"] = int(song.runtime.song_slot)
         return int(song.runtime.song_slot)
 
     @staticmethod
@@ -105,11 +93,8 @@ class InflightGAPipeline:
         if song_slot > 0:
             slot_pool.release(song_slot)
         song.runtime.song_slot = 0
-        try:
-            if isinstance(song.gpu_inputs.calc_song, dict):
-                song.gpu_inputs.calc_song.pop("_gpu_song_slot", None)
-        except Exception as e:
-            logger.debug(f"native_inflight_pipeline:release_slot: {e}")
+        if isinstance(song.gpu_inputs.calc_song, dict):
+            song.gpu_inputs.calc_song.pop("_gpu_song_slot", None)
 
     @staticmethod
     def prepare_submit(song: NativeSong) -> None:
@@ -178,11 +163,7 @@ class InflightGAPipeline:
             future = song.runtime.ga.ga_future
             if future is None:
                 continue
-            try:
-                done = future.done()
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:pop_completed_runs: {e}")
-                done = False
+            done = future.done()
             if not done:
                 continue
             self.inflight.remove(song)

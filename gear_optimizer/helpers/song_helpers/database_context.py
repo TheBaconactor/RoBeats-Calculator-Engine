@@ -66,11 +66,7 @@ def _maybe_wal_maintenance(conn) -> None:
     This MUST NOT run on every per-song DB read: TRUNCATE checkpoints can take locks
     and stall concurrent writers, which can indirectly starve the GPU pipeline.
     """
-    try:
-        interval_sec = float(env_get("DB_WAL_MAINT_INTERVAL_SEC", "30") or "30")
-    except Exception as e:
-        logger.debug(f"database_context:_maybe_wal_maintenance: {e}")
-        interval_sec = 30.0
+    interval_sec = float(env_get("DB_WAL_MAINT_INTERVAL_SEC", "30") or "30")
 
     if interval_sec <= 0:
         return
@@ -122,11 +118,7 @@ def load_database_context(
     prev_record = None
 
     pid = None
-    try:
-        pid = os.getpid()
-    except Exception as e:
-        logger.debug(f"database_context:load_database_context: {e}")
-        pid = None
+    pid = os.getpid()
 
     if _db_context_verbose():
         # Always print DB path + exact lookup key to make seeding issues obvious.
@@ -154,26 +146,14 @@ def load_database_context(
         prev_record = best_loadouts[0]
 
     if prev_record:
-        try:
-            prev_base = int(prev_record.get("score", 0) or 0)
-        except Exception as e:
-            logger.debug(f"database_context:load_database_context: {e}")
-            prev_base = 0
-        prev_best_fg = 0
-        try:
-            prev_best_fg = max(int(r.get("fg_score", 0) or 0) for r in (best_loadouts or []) if isinstance(r, dict))
-        except Exception as e:
-            logger.debug(f"database_context:load_database_context: {e}")
-            prev_best_fg = 0
+        prev_base = int(prev_record.get("score", 0) or 0)
+        prev_best_fg = max(int(r.get("fg_score", 0) or 0) for r in best_loadouts if isinstance(r, dict))
 
         if _db_context_verbose():
             tag = f"[DB pid={pid}]" if pid is not None else "[DB]"
             print(f"{tag} Found previous best (Base: {prev_base}, FG: {prev_best_fg})")
-    try:
-        conn = get_db_connection_cached()
-        _maybe_wal_maintenance(conn)
-    except Exception as e:
-        logger.debug(f"database_context:load_database_context: {e}")
+    conn = get_db_connection_cached()
+    _maybe_wal_maintenance(conn)
 
     return prev_record
 
@@ -240,27 +220,15 @@ def load_database_progress_baseline(
                 (str(found_song_name or "").strip(), str(team_buff or "T5")),
             ).fetchone()
             if row is not None:
-                try:
-                    db_best_fg_score = int(row[0] or 0)
-                except Exception as e:
-                    logger.debug(f"database_context:load_database_progress_baseline: {e}")
-                    db_best_fg_score = 0
+                db_best_fg_score = int(row[0] or 0)
     except sqlite3.Error:
         return _invalid_baseline_result()
 
     if not db_best_score and isinstance(prev_record, dict):
-        try:
-            db_best_score = int(prev_record.get("score", 0) or 0)
-        except Exception as e:
-            logger.debug(f"database_context:load_database_progress_baseline: {e}")
-            db_best_score = 0
+        db_best_score = int(prev_record.get("score", 0) or 0)
 
     if not db_best_fg_score and isinstance(prev_record, dict):
-        try:
-            db_best_fg_score = int(prev_record.get("fg_score", 0) or 0)
-        except Exception as e:
-            logger.debug(f"database_context:load_database_progress_baseline: {e}")
-            db_best_fg_score = 0
+        db_best_fg_score = int(prev_record.get("fg_score", 0) or 0)
 
     if isinstance(prev_record, dict) and "details" in prev_record:
         try:

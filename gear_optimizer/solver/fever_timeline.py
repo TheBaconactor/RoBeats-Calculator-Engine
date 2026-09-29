@@ -23,13 +23,10 @@ from ..core.utils import parse_float as _safe_float, safe_int as _safe_int, timi
 logger = logging.getLogger(__name__)
 
 def _song_first_last_ms(timestamps: object) -> tuple[int, int]:
-    try:
-        if hasattr(timestamps, "__len__") and len(timestamps):  # type: ignore[arg-type]
-            first_ms = int(float(timestamps[0]) * 1000.0)  # type: ignore[index]
-            last_ms = int(float(timestamps[len(timestamps) - 1]) * 1000.0)  # type: ignore[index]
-            return first_ms, last_ms
-    except Exception as e:
-        logger.debug(f"fever_timeline:_song_first_last_ms: {e}")
+    if hasattr(timestamps, "__len__") and len(timestamps):  # type: ignore[arg-type]
+        first_ms = int(float(timestamps[0]) * 1000.0)  # type: ignore[index]
+        last_ms = int(float(timestamps[len(timestamps) - 1]) * 1000.0)  # type: ignore[index]
+        return first_ms, last_ms
     return 0, 0
 
 
@@ -44,11 +41,7 @@ def _timeline_grid_cache_key(calc_song: dict) -> tuple:
     song_data = calc_song.get("song_data", {}) or {}
     timestamps = song_data.get("chart_timestamps", song_data.get("timestamps", ()))
 
-    try:
-        n = int(len(timestamps))
-    except Exception as e:
-        logger.debug(f"fever_timeline:_timeline_grid_cache_key: {e}")
-        n = 0
+    n = int(len(timestamps))
 
     first_ms, last_ms = _song_first_last_ms(timestamps)
 

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import logging
 import queue
 import threading
 import time
@@ -22,7 +21,6 @@ from gear_optimizer.domain.jobs import (
 from gear_optimizer.solver.native_inflight_config import NativeSong
 from gear_optimizer.solver.native_inflight_scheduler_policy import closed_loop_bubble_kpi
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -57,11 +55,7 @@ class SongPrepQueue:
     def pop_completed(self) -> list[SongPrepCompletion]:
         completions: list[SongPrepCompletion] = []
         for task, logical_task, future, submit_t0 in list(self.inflight):
-            try:
-                done = future.done()
-            except Exception as e:
-                logger.debug(f"native_inflight_lifecycle:SongPrepQueue.pop_completed: {e}")
-                done = False
+            done = future.done()
             if not done:
                 continue
             self.inflight.remove((task, logical_task, future, submit_t0))
@@ -77,10 +71,7 @@ class SongPrepQueue:
 
     def cancel_all(self) -> None:
         for _task, _logical_task, future, _submit_t0 in list(self.inflight):
-            try:
-                future.cancel()
-            except Exception as e:
-                logger.debug(f"native_inflight_lifecycle:SongPrepQueue.cancel_all: {e}")
+            future.cancel()
         self.inflight.clear()
 
     def shutdown(self, *, wait: bool = True, cancel_futures: bool = True) -> None:
@@ -110,50 +101,32 @@ class PostSender:
             return
         try:
             self._q.put(self._sentinel, block=True, timeout=max(0.0, float(timeout)))
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:PostSender.close: {e}")
+        except queue.Full:
             return
-        try:
-            self._thread.join(timeout=timeout)
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:PostSender.close: {e}")
+        self._thread.join(timeout=timeout)
 
     def _run(self) -> None:
         timing = env_flag("POST_TIMING")
-        threshold_ms = 50.0
-        try:
-            threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", str(threshold_ms)))
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:PostSender._run: {e}")
-            threshold_ms = 50.0
+        threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", "50"))
         while True:
             item = self._q.get()
             if item is self._sentinel:
                 return
-            try:
-                t0 = time.perf_counter()
-                while True:
-                    if self._stop_requested is not None and callable(self._stop_requested) and self._stop_requested():
-                        return
-                    try:
-                        self._post_queue.put(item, block=True, timeout=0.5)
-                        break
-                    except Exception as e:
-                        logger.debug(f"native_inflight_lifecycle:PostSender._run: {e}")
-                        continue
-                if timing:
-                    ms = (time.perf_counter() - t0) * 1000.0
-                    if ms >= threshold_ms:
-                        kind = None
-                        try:
-                            kind = item.get("song") if isinstance(item, dict) else None
-                        except Exception as e:
-                            logger.debug(f"native_inflight_lifecycle:PostSender._run: {e}")
-                            kind = None
-                        prefix = f"[PostSender][TIMING] {kind} " if kind else "[PostSender][TIMING] "
-                        print(f"{prefix}post_queue_put={ms:.1f}ms")
-            except Exception as e:
-                logger.debug(f"native_inflight_lifecycle:PostSender._run: {e}")
+            t0 = time.perf_counter()
+            while True:
+                if self._stop_requested is not None and self._stop_requested():
+                    return
+                try:
+                    self._post_queue.put(item, block=True, timeout=0.5)
+                    break
+                except queue.Full:
+                    continue
+            if timing:
+                ms = (time.perf_counter() - t0) * 1000.0
+                if ms >= threshold_ms:
+                    kind = item.get("song") if isinstance(item, dict) else None
+                    prefix = f"[PostSender][TIMING] {kind} " if kind else "[PostSender][TIMING] "
+                    print(f"{prefix}post_queue_put={ms:.1f}ms")
 
 
 @dataclass
@@ -316,13 +289,8 @@ class InflightBundleTracker:
             return
         song.runtime.bundle.bundle_parent_task = parent_task
         song.runtime.bundle.bundle_task_key = task_queue_label(parent_task)
-        try:
-            song.runtime.bundle.bundle_repeat_index = int(repeat_ctx.get("repeat_index") or 0)
-            song.runtime.bundle.bundle_repeat_total = int(repeat_ctx.get("repeat_total") or 0)
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:InflightBundleTracker.bind_song: {e}")
-            song.runtime.bundle.bundle_repeat_index = 0
-            song.runtime.bundle.bundle_repeat_total = 0
+        song.runtime.bundle.bundle_repeat_index = int(repeat_ctx.get("repeat_index") or 0)
+        song.runtime.bundle.bundle_repeat_total = int(repeat_ctx.get("repeat_total") or 0)
 
     def advance(
         self,
@@ -339,22 +307,14 @@ class InflightBundleTracker:
         self.progress[id(parent_task)] = int(next_idx)
         info: dict = {}
         if isinstance(record_info, dict):
-            try:
-                info = dict(record_info)
-            except Exception as e:
-                logger.debug(f"native_inflight_lifecycle:InflightBundleTracker.advance: {e}")
-                info = {}
+            info = dict(record_info)
         repeat_label = None
-        try:
-            ctx = runs[int(next_idx) - 1] if int(next_idx) > 0 and int(next_idx) <= len(runs) else None
-            if is_repeat_context(ctx):
-                ridx = int(ctx.get("repeat_index") or next_idx)
-                rtotal = int(ctx.get("repeat_total") or len(runs))
-                if ridx > 0 and rtotal > 1:
-                    repeat_label = f"{song_name} (Run {ridx}/{rtotal})"
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:InflightBundleTracker.advance: {e}")
-            repeat_label = None
+        ctx = runs[int(next_idx) - 1] if int(next_idx) > 0 and int(next_idx) <= len(runs) else None
+        if is_repeat_context(ctx):
+            ridx = int(ctx.get("repeat_index") or next_idx)
+            rtotal = int(ctx.get("repeat_total") or len(runs))
+            if ridx > 0 and rtotal > 1:
+                repeat_label = f"{song_name} (Run {ridx}/{rtotal})"
         info.setdefault("song", repeat_label or song_name)
         info.setdefault("status", "FAILED" if failed else "DONE")
         self.emit_progress(
@@ -373,8 +333,5 @@ class InflightBundleTracker:
                 song_name=song_name,
             )
         if self.bundle_completed_cb is not None:
-            try:
-                self.bundle_completed_cb(bundle_key, self.completed_songs)
-            except Exception as e:
-                logger.debug(f"native_inflight_lifecycle:InflightBundleTracker.advance: {e}")
+            self.bundle_completed_cb(bundle_key, self.completed_songs)
         return True

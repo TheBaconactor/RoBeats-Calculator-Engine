@@ -55,17 +55,11 @@ def _decode_names_from_registry(registry: Any, genome_ids: tuple[int, ...]) -> l
     ids_arr = np.asarray(genome_ids, dtype=np.int32)
     decode_names = getattr(registry, "decode_names", None)
     if callable(decode_names):
-        try:
-            decoded = cast(Any, decode_names)(ids_arr)
-            return [str(x if x is not None else "None") for x in list(decoded)]
-        except Exception as e:
-            logger.debug(f"ga_entry_utils:_decode_names_from_registry: {e}")
+        decoded = cast(Any, decode_names)(ids_arr)
+        return [str(x if x is not None else "None") for x in list(decoded)]
     decode_genome = getattr(registry, "decode_genome", None)
     if callable(decode_genome):
-        try:
-            return names_list(decode_genome(ids_arr))
-        except Exception as e:
-            logger.debug(f"ga_entry_utils:_decode_names_from_registry: {e}")
+        return names_list(decode_genome(ids_arr))
     return []
 
 
@@ -139,19 +133,16 @@ def candidate_loadout_hash(
         selected_color = primary_color or secondary_color
 
     if (primary_color or secondary_color) and isinstance(minis_by_name, dict):
-        try:
-            from ...data.loadout_equivalence import (
-                effective_loadout_hash_from_names,
-                effective_mini_signature_for_name,
-            )
+        from ...data.loadout_equivalence import (
+            effective_loadout_hash_from_names,
+            effective_mini_signature_for_name,
+        )
 
-            mini_sigs = [
-                effective_mini_signature_for_name(str(name), minis_by_name, primary_color, secondary_color, selected_color)
-                for name in mini_names
-            ]
-            return _remember(effective_loadout_hash_from_names(list(gear_names), mini_sigs))
-        except Exception as e:
-            logger.debug(f"ga_entry_utils:_remember: {e}")
+        mini_sigs = [
+            effective_mini_signature_for_name(str(name), minis_by_name, primary_color, secondary_color, selected_color)
+            for name in mini_names
+        ]
+        return _remember(effective_loadout_hash_from_names(list(gear_names), mini_sigs))
 
     try:
         from ...data.database import get_loadout_hash

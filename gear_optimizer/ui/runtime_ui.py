@@ -155,10 +155,7 @@ class RuntimeUiMixin:
                     continue
                 if str(ch or "").strip().lower() != "q":
                     continue
-                try:
-                    self.request_stop("hotkey stop")
-                except Exception as e:
-                    logger.debug(f"runtime_ui:_start_hotkeys_runner: {e}")
+                self.request_stop("hotkey stop")
                 return
 
         self._hotkey_thread = threading.Thread(target=_runner, name="Hotkeys", daemon=True)
@@ -169,8 +166,5 @@ class RuntimeUiMixin:
 
     def _print_banner(self) -> None:
         stream = self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout
-        try:
-            stream.write("RoBeats Calculator Engine\n")
-            stream.flush()
-        except Exception as e:
-            logger.debug(f"runtime_ui:_print_banner: {e}")
+        stream.write("RoBeats Calculator Engine\n")
+        stream.flush()
