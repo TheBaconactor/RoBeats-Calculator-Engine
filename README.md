@@ -25,16 +25,6 @@ RoBeats Calculator Engine searches gear, Mini, gem, fever-timing, and Force Grea
 
 This is production community infrastructure, not a showcase-only calculator. The engine supplies chart metadata and on-demand optimization to [RoBeatsMeta](https://robeatsmeta.net), while remaining independently runnable and auditable from a source checkout.
 
-### Community footprint
-
-| Signal | Evidence |
-|---|---|
-| Supported catalog | 2,250 bundled difficulty-chart files |
-| Engineering depth | More than 600 Python modules across the engine, service, tools, and tests |
-| Verification surface | More than 230 focused test modules, including CPU/GPU parity and exact-score regression coverage |
-| Maintenance history | More than 1,800 commits preserved in the public development history |
-| Production role | Optimizer and chart-catalog backend for [RoBeatsMeta](https://robeatsmeta.net) |
-
 ### Highlights
 
 | Area | What the optimizer provides |
