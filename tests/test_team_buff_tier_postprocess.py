@@ -51,7 +51,11 @@ def _mock_song(*, name: str, n_notes: int = 16, duration: float = 60.0) -> dict:
             "Last Note Time": float(timestamps[-1]),
             "Total Notes": int(timestamps.shape[0]),
         },
-        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
+            "lanes": np.arange(int(timestamps.shape[0]), dtype=np.int32) % 4,
+        },
     }
 
 
@@ -73,8 +77,8 @@ def _ref_arrays(rows: int) -> dict:
 # minus this constant song-level base, which carries only the sentinel).
 _SENTINEL_SONG_BASE = "__synthetic_song_base__"
 
-# Mutable cell shared between the loadout-items hook and the cfg/fixed-stats hook within one
-# `_install_synthetic_tier_resolve` install (set by the cfg/fixed-stats hook on every install).
+# Mutable cell shared between the loadout-items hook and the fixed-stats hook within one
+# `_install_synthetic_tier_resolve` install (set by the fixed-stats hook on every install).
 _CURRENT_BASE_EFFECT: dict[str, dict] = {"effect": {}}
 
 
@@ -111,7 +115,7 @@ def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, ref_arrays:
 
     # Captured by the loadout-items hook so the synthetic re-solve can recover the per-loadout
     # base/FG stat rows (the real helper would demand 6 gear + 3 mini stat-dicts).
-    def _fake_entry_loadout_items(entry: dict) -> list[dict]:
+    def _fake_entry_loadout_items(entry: dict, calc_song: dict | None = None) -> list[dict]:
         e = entry or {}
         details = e.get("details") if isinstance(e.get("details"), dict) else {}
         stats_base = real_ensure_base(details.get("Stats") or {}, _CURRENT_BASE_EFFECT["effect"])
@@ -123,15 +127,14 @@ def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, ref_arrays:
             fg_stats = stats_base
         return [{"__base_stats__": dict(stats_base), "__fg_stats__": dict(fg_stats)}]
 
-    def _fake_tier_cfg_and_song_fixed_stats(cfg_dict, calc_song_arg):
+    def _fake_baseline_fixed_stats(calc_song_arg):
         # Capture the baseline TeamBuff effect (base buff + base color) so the loadout-items hook can
         # mirror the postprocess's `_ensure_stats_include_base_effect` exactly.
-        base_team_buff = tbt._resolve_base_team_buff(cfg_dict)
-        base_team_color, _target = tbt._resolve_team_colors_for_tiering(cfg_dict, calc_song_arg)
-        _CURRENT_BASE_EFFECT["effect"] = team_buff_effect(base_team_buff, base_team_color)
+        base_team_color, _target = tbt._resolve_team_colors_for_tiering(calc_song_arg)
+        _CURRENT_BASE_EFFECT["effect"] = team_buff_effect(tbt.OPTIMIZER_BASELINE_TEAM_BUFF, base_team_color)
         # Non-empty song base carrying only the sentinel, so `_apply_stat_delta` keeps the per-tier
         # delta keys intact and the synthetic re-solve can subtract the sentinel back out.
-        return None, {_SENTINEL_SONG_BASE: 0}
+        return {_SENTINEL_SONG_BASE: 0}
 
     def _delta_from_fixed(fixed_song_stats: dict) -> dict:
         return {k: int(v) for k, v in dict(fixed_song_stats or {}).items() if k != _SENTINEL_SONG_BASE}
@@ -171,7 +174,7 @@ def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, ref_arrays:
         return forces
 
     monkeypatch.setattr(tbt, "_entry_loadout_items", _fake_entry_loadout_items)
-    monkeypatch.setattr(tbt, "_tier_cfg_and_song_fixed_stats", _fake_tier_cfg_and_song_fixed_stats)
+    monkeypatch.setattr(tbt, "baseline_fixed_stats", _fake_baseline_fixed_stats)
     monkeypatch.setattr(tbt, "resolve_tier_base_batch", _fake_resolve_tier_base_batch)
     monkeypatch.setattr(tbt, "resolve_tier_fg_force_batch", _fake_resolve_tier_fg_force_batch)
 
@@ -182,7 +185,6 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers(monkeypatc
 
     calc_song = _mock_song(name="pytest_team_buff_tiers", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     # Stats here are assumed to already include the base TeamBuff=T5.
     # Under T20, PP decreases by 10 vs T5, pushing Entry A below the PP breakpoint
@@ -237,7 +239,7 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers(monkeypatc
     _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, ref_arrays=ref_arrays)
 
     out = compute_team_buff_tier_leaderboards(
-        entries=[entry_a, entry_b], calc_song=calc_song, ref_arrays=ref_arrays, cfg_dict=cfg_dict
+        entries=[entry_a, entry_b], calc_song=calc_song, ref_arrays=ref_arrays
     )
     tiers = out["tiers"]
 
@@ -264,17 +266,12 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
         "song_data": {
             "timestamps": np.linspace(0.0, 10.0, 12, dtype=np.float32),
             "note_types": np.ones(12, dtype=np.int16),
+            "lanes": np.arange(12, dtype=np.int32) % 4,
         },
     }
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
 
-    # NOTE: cfg_dict intentionally lies about TeamBuff/TeamColor. In runtime auto mode, we override to:
-    # - TeamBuff=T5
-    # - TeamColor=Primary Color
-    cfg_dict = {
-        "IterationEngine": {},
-        "TeamContributionBuffConstant": {"TeamBuff": "T20", "TeamColor": "Rush"},
-    }
+    # The baseline is always TeamBuff=T5 on the song's Primary Color.
 
     # Stats represent the base run under auto TeamBuff=T5 + TeamColor=Vibe already applied.
     # Under T1 (vs base T5), Vibe should increase by +5 which should increase score.
@@ -303,7 +300,6 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5", "T1"),
     )
     assert out["meta"]["team_color"] == "Vibe"
@@ -320,7 +316,6 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
 
     calc_song = _mock_song(name="pytest_team_buff_batches", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 120,
@@ -353,7 +348,6 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         limit=1,
         tiers=("T5",),
     )
@@ -377,7 +371,6 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
     calc_song = _mock_song(name="pytest_team_buff_row_order", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 100,
@@ -475,7 +468,6 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
         entries=entries,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         limit=3,
         tiers=("T5",),
     )
@@ -490,7 +482,6 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
     calc_song = _mock_song(name="pytest_team_buff_hash_collision", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     shared_stats = {
         "Perfect Points": 120,
@@ -594,7 +585,6 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
         entries=[entry_a, entry_b],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5",),
         limit=2,
     )
@@ -617,7 +607,6 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
 
     # Auto mode => base TeamBuff is T5 + TeamColor follows Primary (Rush).
-    cfg_dict = {"IterationEngine": {}}
 
     # Stats here are intentionally loadout-only (missing base T5 effect).
     stats = {
@@ -656,7 +645,6 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         limit=1,
         tiers=("NONE", "T5", "T10", "T20", "T50", "T51"),
     )
@@ -674,7 +662,6 @@ def test_team_buff_tiers_support_target_team_color_overrides(monkeypatch):
 
     calc_song = _mock_song(name="pytest_team_color_modes", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     # Baseline row already includes T5 + Primary(Rush) effect.
     stats = {
@@ -706,14 +693,12 @@ def test_team_buff_tiers_support_target_team_color_overrides(monkeypatch):
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5",),
     )
     secondary_batches = build_team_buff_tier_db_batches(
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5",),
         target_team_color_override="Flow",
     )
@@ -721,7 +706,6 @@ def test_team_buff_tiers_support_target_team_color_overrides(monkeypatch):
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5",),
         target_team_color_override="",
     )
@@ -746,7 +730,6 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
 
     calc_song = _mock_song(name="pytest_team_buff_fg_tiered", n_notes=24)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 120,
@@ -786,7 +769,6 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5", "T51"),
     )
 
@@ -805,7 +787,6 @@ def test_team_buff_tier_replay_requires_persisted_response_surface():
 
     calc_song = _mock_song(name="pytest_team_buff_missing_surface", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {"Perfect Points": 100, "Combo Multiplier": 0, "Fever Multiplier": 0,
              "Fever Fill Rate": 0, "Fever Time": 0, "Rush": 150, "Flow": 0,
@@ -825,7 +806,6 @@ def test_team_buff_tier_replay_requires_persisted_response_surface():
             entries=[entry],
             calc_song=calc_song,
             ref_arrays=ref_arrays,
-            cfg_dict=cfg_dict,
             tiers=("T5",),
             limit=1,
         )
@@ -838,7 +818,6 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
 
     calc_song = _mock_song(name="pytest_team_buff_fg_base_context", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 100,
@@ -879,7 +858,6 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5",),
         limit=1,
     )
@@ -906,7 +884,6 @@ def test_baseline_carry_fails_loud_on_valid_force_with_nonpositive_fg_score(monk
 
     calc_song = _mock_song(name="pytest_carry_stale_fg_score", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 100,
@@ -944,7 +921,6 @@ def test_baseline_carry_fails_loud_on_valid_force_with_nonpositive_fg_score(monk
             entries=[entry],
             calc_song=calc_song,
             ref_arrays=ref_arrays,
-            cfg_dict=cfg_dict,
             tiers=("T5",),
             limit=1,
         )
@@ -964,7 +940,6 @@ def test_fg_paired_base_is_loadout_base_not_gemless_recompute(monkeypatch):
 
     calc_song = _mock_song(name="pytest_fg_paired_base_gemless_guard", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 100,
@@ -1009,7 +984,6 @@ def test_fg_paired_base_is_loadout_base_not_gemless_recompute(monkeypatch):
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5",),
         limit=1,
     )
@@ -1030,7 +1004,6 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
 
     calc_song = _mock_song(name=f"pytest_team_buff_derived_fg_visibility_{tier_name}", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 100,
@@ -1074,7 +1047,6 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=(tier_name,),
         limit=1,
     )
@@ -1098,7 +1070,6 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
     calc_song = _mock_song(name="pytest_team_buff_fg_batch_ctx", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 100,
@@ -1183,7 +1154,6 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5",),
         limit=1,
     )
@@ -1203,7 +1173,6 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
 
     calc_song = _mock_song(name="pytest_team_buff_fg_source_meta", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     entry = {
         "loadout_hash": "hash-source-meta",
@@ -1277,7 +1246,6 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T10",),
         limit=1,
     )
@@ -1294,7 +1262,6 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
 
     calc_song = _mock_song(name="pytest_team_buff_zero_ms_fg_identity", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 100,
@@ -1399,7 +1366,6 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5",),
         limit=1,
         replay_surface="fg",
@@ -1434,7 +1400,6 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
     calc_song = _mock_song(name="pytest_team_buff_strict_sanity", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 125,
@@ -1572,7 +1537,6 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
         entries=[entry_a, entry_b],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T20",),
         limit=2,
         target_team_color_override="Flow",
@@ -1619,7 +1583,6 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
     calc_song = _mock_song(name="pytest_team_buff_batch_order", n_notes=12)
     ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
     _prebuild_timeline_frontier(calc_song, ref_arrays)
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
 
     stats = {
         "Perfect Points": 100,
@@ -1717,7 +1680,6 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
         entries=[entry_a, entry_b, entry_c],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T10",),
         limit=3,
     )
@@ -1777,7 +1739,11 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
             "Last Note Time": float(timestamps[-1]),
             "Total Notes": int(timestamps.shape[0]),
         },
-        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
+        "song_data": {
+            "timestamps": timestamps,
+            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
+            "lanes": np.arange(int(timestamps.shape[0]), dtype=np.int32) % 4,
+        },
     }
 
     stats = {
@@ -1809,16 +1775,11 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
         "details": {"Stats": stats},
         "force": None,
     }
-    cfg_dict = {
-        "IterationEngine": {},
-        "TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Vibe"},
-    }
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tiers=("T5",),
         limit=1,
     )

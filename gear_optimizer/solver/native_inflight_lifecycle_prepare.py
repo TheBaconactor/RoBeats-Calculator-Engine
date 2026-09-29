@@ -10,12 +10,10 @@ from typing import Optional
 import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
-from gear_optimizer.core.config import GASettings as GARuntimeSettings
-from gear_optimizer.core.gem_defs import UserGemsSettings
+from gear_optimizer.core.constants import GA_ELITISM, GA_MUTATION_RATE
 from gear_optimizer.core.singleflight import SingleFlight
-from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_view
-from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
+from gear_optimizer.solver.base_stats import build_stats_array
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
 from gear_optimizer.solver.native_inflight_config import (
@@ -99,23 +97,19 @@ def prepare_native_song(task: tuple) -> NativeSong:
     fp = job.file_path
     found_song_name = job.song_name
     effective_difficulty = job.difficulty
-    cfg_dict = run_context.cfg_dict
+    multi_start = run_context.multi_start
     ref_arrays = run_context.ref_arrays
     all_gears = run_context.all_gears
     all_minis = run_context.all_minis
     gears_by_name = run_context.gears_by_name
     minis_by_name = run_context.minis_by_name
     ga_depth = run_context.ga_depth
-    fg_debug = run_context.fg_debug
-    cfg = cfg_from_dict(cfg_dict)
     prepared_core = build_prepared_song_core(
         fp=fp,
         found_song_name=found_song_name,
-        cfg_dict=cfg_dict,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
         all_minis=all_minis,
-        cfg=cfg,
         cache_db_context=True,
     )
     calc_song = prepared_core.calc_song
@@ -124,11 +118,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     mini_ascension_context = prepared_core.mini_ascension_context
     meta_primary_color = prepared_core.meta_primary_color
     meta_secondary_color = prepared_core.meta_secondary_color
-    prepared_config = prepared_core.prepared_config
-    ga_settings = prepared_config.ga_settings
-    fixed_stats = prepared_config.fixed_stats
-    current_gear_list = prepared_config.current_gear_list
-    current_mini_list = prepared_config.current_mini_list
+    fixed_stats = prepared_core.fixed_stats
     db_context = prepared_core.db_context
     db_key = db_context.db_key
     prev_record = db_context.prev_record
@@ -174,28 +164,14 @@ def prepare_native_song(task: tuple) -> NativeSong:
         cache_name="registry",
         maxsize=_REGISTRY_CACHE_MAX,
     )
-    ga_runtime_settings = GARuntimeSettings.from_config(cfg)
-    user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
     cfg_data = {
         "selected_color": selected_color,
         "primary_color": str(p_color or ""),
         "secondary_color": str(s_color or ""),
-        "user_ft": int(user_gems.fever_time),
-        "user_ff": int(user_gems.fever_fill),
-        "user_pp": int(user_gems.perfect_points),
-        "user_cm": int(user_gems.combo_multiplier),
-        "user_fm": int(user_gems.fever_multiplier),
-        "static_elem_input": int(user_gems.static_element),
+        "fg_require_stats": True,
     }
-    cfg_data["ga_novelty_repair_attempts"] = int(ga_runtime_settings.novelty_repair_attempts)
-    cfg_data["fg_require_stats"] = True
-    base_fixed_stats_arr, _ = build_base_fixed_stats_array(fixed_stats, cfg_data)
-    tournament_k = int(ga_runtime_settings.tournament_k)
-    mutation_rate = float(ga_runtime_settings.mutation_rate)
-    immigrant_rate = float(ga_runtime_settings.immigrant_rate)
-    num_runs = int(getattr(ga_settings, "multi_start", 1) or 1)
-    if num_runs <= 0:
-        num_runs = 1
+    base_fixed_stats_arr = build_stats_array(fixed_stats)
+    num_runs = max(1, int(multi_start))
     ga_depth = int(ga_depth or 0)
     if ga_depth <= 0:
         ga_depth = 1
@@ -204,7 +180,11 @@ def prepare_native_song(task: tuple) -> NativeSong:
     init_heuristic_topk: Optional[np.ndarray] = None
     init_heuristic_k = 64  # heuristic-seeded initial genomes (was GPU_GA_INIT_HEURISTIC_K)
     init_heuristic_copies = 25
-    from gear_optimizer.solver.genetic_pipeline import build_ga_init_heuristic_topk
+    from gear_optimizer.solver.genetic_pipeline import (
+        GA_IMMIGRANT_RATE,
+        GA_TOURNAMENT_K,
+        build_ga_init_heuristic_topk,
+    )
 
     if init_heuristic_k > 0:
         cache_key = (pool_key, int(init_heuristic_k))
@@ -241,7 +221,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
         secondary_color=str(s_color or ""),
         selected_color=str(selected_color or ""),
     )
-    elite_count = max(0, int(ga_runtime_settings.elite_count))
     song = NativeSong(
         config=NativeSongConfig(
             fp=str(fp),
@@ -250,10 +229,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
             ga_seed=int(ga_seed) if ga_seed is not None else None,
             db_key=str(db_key),
             effective_difficulty=str(effective_difficulty),
-            cfg_dict=cfg_dict,
-            cfg=cfg,
             ga_depth=int(ga_depth),
-            fg_debug=bool(fg_debug),
         ),
         gpu_inputs=NativeSongGPUInputs(
             ref_arrays=ref_arrays,
@@ -265,8 +241,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             meta_primary_color=meta_primary_color,
             meta_secondary_color=meta_secondary_color,
             fixed_stats=fixed_stats,
-            current_gear_list=current_gear_list,
-            current_mini_list=current_mini_list,
             registry=registry,
             cfg_data=cfg_data,
             color_flags=color_flags,
@@ -277,10 +251,10 @@ def prepare_native_song(task: tuple) -> NativeSong:
             slot_start=gpu_data["slot_start"],
             slot_count=gpu_data["slot_count"],
             base_fixed_stats_arr=np.asarray(base_fixed_stats_arr, dtype=np.int32),
-            elite_count=int(elite_count),
-            mutation_rate=float(mutation_rate),
-            immigrant_rate=float(immigrant_rate),
-            tournament_k=int(tournament_k),
+            elite_count=GA_ELITISM,
+            mutation_rate=GA_MUTATION_RATE,
+            immigrant_rate=GA_IMMIGRANT_RATE,
+            tournament_k=GA_TOURNAMENT_K,
             init_heuristic_topk=init_heuristic_topk,
             init_heuristic_k=int(init_heuristic_k),
             init_heuristic_copies=int(init_heuristic_copies),

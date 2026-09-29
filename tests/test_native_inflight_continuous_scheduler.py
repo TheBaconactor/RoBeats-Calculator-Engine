@@ -1,5 +1,3 @@
-import configparser
-
 from gear_optimizer.solver.native_inflight_orchestrator import (
     continuous_fg_allow_not_ready,
     continuous_fg_prep_start_budget,
@@ -13,9 +11,7 @@ from gear_optimizer.solver.native_inflight_scheduler_policy import (
 )
 from gear_optimizer.solver.native_inflight_config import (
     default_worker_threads,
-    first_task_config,
     read_db_prefetch_workers,
-    read_ga_multi_start,
     read_inflight_worker_count,
 )
 from gear_optimizer.solver.inflight_wait import (
@@ -25,12 +21,6 @@ from gear_optimizer.solver.inflight_wait import (
     wait_for_completion_event,
 )
 from tests.native_song_factory import make_native_song
-
-
-def _cfg_with_iteration_engine(**pairs: str) -> configparser.ConfigParser:
-    cfg = configparser.ConfigParser()
-    cfg["IterationEngine"] = {k: str(v) for k, v in pairs.items()}
-    return cfg
 
 
 def test_count_active_song_lanes_deduplicates_ga_decode_and_fg_keys():
@@ -50,12 +40,6 @@ def test_count_active_song_lanes_deduplicates_ga_decode_and_fg_keys():
 
 def test_read_fg_scheduler_mode_defaults_to_continuous():
     assert read_fg_scheduler_mode() == "continuous"
-
-
-def test_read_ga_multi_start_uses_runtime_ga_settings():
-    cfg = _cfg_with_iteration_engine(GA_MultiStart="4")
-
-    assert read_ga_multi_start(cfg) == 4
 
 
 def test_ga_admission_fg_backlog_limit_sizes_to_fg_stage_steady_state():
@@ -152,15 +136,6 @@ def test_continuous_fg_submit_budget_honors_end_of_run_drain():
         )
         == 4
     )
-
-
-def test_first_task_config_extracts_legacy_task_config():
-    task = (None, "Song", "Hard", {"IterationEngine": {"SomeSetting": "6"}})
-    cfg = first_task_config([task])
-
-    assert cfg is not None
-    assert cfg.get("IterationEngine", "SomeSetting") == "6"
-    assert first_task_config([]) is None
 
 
 def test_read_inflight_worker_count_uses_canonical_cpu_sizing_and_ga_seed():

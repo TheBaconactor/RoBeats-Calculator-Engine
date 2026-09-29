@@ -6,8 +6,7 @@ import csv
 import json
 import os
 from ..settings import paths
-from ..core.stats_calculator import build_base_stats_from_config
-from ..core.utils import cfg_to_dict, safe_int, empty_stats
+from ..core.utils import safe_int
 from .mini_ascension import MINI_ASCENSION_BASE_STAT_PREFIX, MINI_ASCENSION_MAX_LEVEL
 from .models import WarnOnce
 
@@ -237,87 +236,6 @@ def load_all_minis_list():
 def load_all_gears_list():
     """All gear from <data>/Gear/Gears.csv."""
     return parse_gear_rows(str(paths().gears_csv))
-
-
-def get_fixed_stats(cfg):
-    """
-    Calculate fixed stats from gems and team buffs in config.
-
-    Args:
-        cfg: ConfigParser instance
-
-    Returns:
-        dict: Stats dictionary with gem and team buff contributions
-    """
-    return build_base_stats_from_config(cfg_to_dict(cfg))
-
-
-def get_config_gear_stats(cfg, gears_db=None):
-    """
-    Load gear stats from config.ini.
-
-    Args:
-        cfg: ConfigParser instance
-        gears_db: Optional preloaded gear database
-
-    Returns:
-        tuple: (gear_stats_dict, gear_list)
-    """
-    if gears_db is None:
-        gears_db = load_csv_db(str(paths().gears_csv), "gear")
-
-    gear_stats = empty_stats()
-    gear_list = []
-    gear_slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
-    for slot in gear_slots:
-        key = "Pant" if slot == "Pants" else slot
-        item_name_raw = ""
-        if hasattr(cfg, "has_option") and cfg.has_option("Gear", key):
-            item_name_raw = cfg.get("Gear", key, fallback="")
-        elif hasattr(cfg, "has_option") and cfg.has_option("Gear", slot):
-            item_name_raw = cfg.get("Gear", slot, fallback="")
-        else:
-            item_name_raw = cfg.get("Gear", key, fallback=cfg.get("Gear", slot, fallback=""))
-        item_name = str(item_name_raw or "").strip().strip(" .")
-        if item_name in gears_db:
-            item_data = gears_db[item_name]
-            if item_data.get("type", "Hat") == slot:
-                gear_list.append(item_data)
-                for k in gear_stats:
-                    if k in item_data:
-                        gear_stats[k] += item_data.get(k, 0)
-        else:
-            gear_list.append({"Name": "(Empty)", "type": slot})
-    return gear_stats, gear_list
-
-
-def get_config_mini_stats(cfg, minis_db=None):
-    """
-    Load mini stats from config.ini.
-
-    Args:
-        cfg: ConfigParser instance
-        minis_db: Optional preloaded mini database
-
-    Returns:
-        tuple: (mini_stats_dict, mini_list)
-    """
-    if minis_db is None:
-        minis_db = load_csv_db(str(paths().minis_csv), "mini")
-
-    mini_stats = empty_stats()
-    mini_list = []
-    for i in range(1, 4):
-        item_name = cfg.get("Minis", str(i), fallback="").strip().strip(" .")
-        if item_name in minis_db:
-            item_data = minis_db[item_name]
-            mini_list.append(item_data)
-            for k in mini_stats:
-                if k in item_data:
-                    mini_stats[k] += item_data.get(k, 0)
-        else:
-            mini_list.append({"Name": "(Empty)", "type": "Mini"})
-    return mini_stats, mini_list
 
 
 def read_table(fp):

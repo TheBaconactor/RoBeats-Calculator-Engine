@@ -1,24 +1,15 @@
-import logging
 from ...core.gem_defs import element_gem_count
 from ...core.utils import get_selected_element, safe_int
 from .fg_payload import has_valid_fg_payload
 
 
-
-logger = logging.getLogger(__name__)
 def print_results(
     found_song_name,
     best_data,
     best_gear,
     best_minis,
-    current_gear_list,
-    current_mini_list,
     fg_variants,
     status_emit_fn,
-    fg_debug=False,
-    ref_arrays=None,
-    calc_song=None,
-    cfg=None,
     db_best_fg_score=None,
     prev_record=None,
 ):
@@ -121,25 +112,6 @@ def print_results(
     status_emit_fn(f"Base={base_score_to_print} | FG={fg_score_to_print}")
 
     if fg_variants:
-        if fg_debug and ref_arrays and calc_song:
-            if best_fg_entry is not None and _is_same_variant(base_entry_to_print, best_fg_entry):
-                print("\n" + "=" * 50)
-                print(" DEBUG: BASE & FORCE GREATS ARE IDENTICAL ".center(50, "="))
-                print("=" * 50)
-                _print_detailed_debug(found_song_name, base_entry_to_print, ref_arrays, calc_song, cfg)
-            else:
-                print("\n" + "=" * 50)
-                print(" === BASE OPTIMIZATION DEBUG === ".center(50, "="))
-                print("=" * 50)
-                _print_detailed_debug(found_song_name, base_entry_to_print, ref_arrays, calc_song, cfg)
-
-                print("\n" + "=" * 50)
-                print(" === FORCE GREATS OPTIMIZATION DEBUG === ".center(50, "="))
-                print("=" * 50)
-                if best_fg_entry is not None:
-                    _print_detailed_debug(found_song_name, best_fg_entry, ref_arrays, calc_song, cfg)
-
-        # Print Loadouts
         if best_fg_entry is not None and _is_same_variant(base_entry_to_print, best_fg_entry):
             _print_loadout_section("Best Overall Loadout (Base & FG)", best_fg_entry)
         else:
@@ -148,10 +120,6 @@ def print_results(
                 _print_loadout_section("Best Gear Loadout (ForceGreats)", best_fg_entry)
 
     else:
-        # Standard output when FG is disabled
-        if fg_debug and ref_arrays and calc_song:
-            _print_detailed_debug(found_song_name, base_entry_to_print, ref_arrays, calc_song, cfg)
-
         _print_loadout_section("Best Gear Loadout", base_entry_to_print)
 
 
@@ -242,24 +210,3 @@ def _print_gem_allocation(data):
     print(f"Gem Allocation -> Combo Multiplier: {gem_counts.get('Combo Multiplier', 0)}")
     print(f"Gem Allocation -> Perfect Points: {gem_counts.get('Perfect Points', 0)}")
     print(f"Gem Allocation -> {sel_el} (Overflow): {element_gem_count(gem_counts)}")
-
-
-def _print_detailed_debug(found_song_name, entry, ref_arrays, calc_song, cfg):
-    """Print detailed debug output for a specific variant entry."""
-    variant_data = entry.get("data", {})
-
-    # Prefer wrapper-level fg_score for cached FG reuse entries (where `data` is
-    # just the persisted details dict without a Score field).
-    final_score = entry.get("fg_score")
-    if final_score is None or final_score == 0:
-        final_score = variant_data.get("fg_score") or variant_data.get("Score")
-    if (final_score is None or final_score == 0) and isinstance(variant_data.get("ForceGreats"), dict):
-        final_score = variant_data.get("ForceGreats", {}).get("final_score")
-
-    try:
-        final_score_int = int(final_score)
-    except Exception as e:
-        logger.debug(f"results_printer:_print_detailed_debug: {e}")
-        final_score_int = int(float(final_score))
-
-    print(f"\nTotal Score: {final_score_int}")

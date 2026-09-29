@@ -6,7 +6,6 @@ import os
 import sys
 from typing import Sequence
 
-from gear_optimizer.core.config import load_config
 from gear_optimizer import settings
 
 
@@ -73,9 +72,8 @@ def meta() -> int:
         from gear_optimizer.data.database import init_db
         from general_meta import export_general_meta_json, run_general_meta
 
-        cfg = load_config()
         init_db()
-        results = run_general_meta(cfg)
+        results = run_general_meta()
         output_path = export_general_meta_json(results)
         print("\n" + "=" * 60)
         print("GENERAL META COMPLETE")

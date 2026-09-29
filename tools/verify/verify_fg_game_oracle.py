@@ -140,7 +140,7 @@ def run_solve(song_name: str, difficulty: str, db_path: Path, repeats: int, idx:
 
 
 def build_calc_song(chart_path: Path) -> dict:
-    base = get_base_calc_song(str(chart_path), {})
+    base = get_base_calc_song(str(chart_path))
     if not base:
         _fail(f"could not load base calc_song for {chart_path}")
     calc_song = clone_calc_song(base)

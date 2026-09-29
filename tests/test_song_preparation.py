@@ -1,6 +1,7 @@
 import numpy as np
 
 from gear_optimizer.solver.song_db_context import PreparedSongDbContext
+from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
 from gear_optimizer.solver import song_preparation
 
 
@@ -20,7 +21,6 @@ def test_build_prepared_calc_song_clones_preloaded_song_and_normalizes_timestamp
 
     prepared = song_preparation.build_prepared_calc_song(
         fp="unused",
-        cfg_dict={},
         preloaded_calc_song=preloaded,
     )
 
@@ -42,10 +42,10 @@ def test_build_prepared_calc_song_clones_cached_base_song(monkeypatch):
             "chart_timestamps": np.asarray([4.0], dtype=np.float32),
         },
     }
-    monkeypatch.setattr(song_preparation, "get_base_calc_song", lambda fp, cfg_dict: base)
+    monkeypatch.setattr(song_preparation, "get_base_calc_song", lambda fp: base)
     monkeypatch.setattr(song_preparation, "_apply_timing_envelope", lambda calc_song: None)
 
-    prepared = song_preparation.build_prepared_calc_song(fp="song.txt", cfg_dict={"x": "y"})
+    prepared = song_preparation.build_prepared_calc_song(fp="song.txt")
     prepared.calc_song["metadata"]["Primary Color"] = "Changed"
 
     assert prepared.calc_song is not base
@@ -53,51 +53,12 @@ def test_build_prepared_calc_song_clones_cached_base_song(monkeypatch):
     np.testing.assert_allclose(prepared.calc_song["song_data"]["chart_timestamps"], base["song_data"]["chart_timestamps"])
 
 
-def test_build_prepared_song_config_names_setup_tuple_fields(monkeypatch):
-    ga_settings = object()
-    monkeypatch.setattr(
-        song_preparation,
-        "_setup_song_config",
-        lambda *args, **kwargs: (
-            ga_settings,
-            {"Perfect Points": 1},
-            {"gear": 2},
-            [{"Name": "G"}],
-            {"mini": 3},
-            [{"Name": "M"}],
-        ),
-    )
-
-    prepared = song_preparation.build_prepared_song_config(
-        cfg=object(),
-        calc_song={"metadata": {}, "song_data": {}},
-        gears_by_name={},
-        minis_by_name={},
-    )
-
-    assert prepared.ga_settings is ga_settings
-    assert prepared.fixed_stats == {"Perfect Points": 1}
-    assert prepared.current_gear_stats == {"gear": 2}
-    assert prepared.current_gear_list == [{"Name": "G"}]
-    assert prepared.current_mini_stats == {"mini": 3}
-    assert prepared.current_mini_list == [{"Name": "M"}]
-
-
-def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
-    cfg = object()
+def test_build_prepared_song_core_owns_calc_stats_and_db_setup(monkeypatch):
     prepared_calc = song_preparation.PreparedCalcSong(
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}, "song_data": {}},
         read_sec=1.5,
         timing_envelope_sec=0.25,
         timing_envelope_info=None,
-    )
-    prepared_config = song_preparation.PreparedSongConfig(
-        ga_settings=object(),
-        fixed_stats={},
-        current_gear_stats={},
-        current_gear_list=[],
-        current_mini_stats={},
-        current_mini_list=[],
     )
     db_context = PreparedSongDbContext(
         baseline_team_buff="T5",
@@ -116,34 +77,26 @@ def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
         calls["calc"] = kwargs
         return prepared_calc
 
-    def _fake_config(**kwargs):
-        calls["config"] = kwargs
-        return prepared_config
-
     def _fake_db(**kwargs):
         calls["db"] = kwargs
         return db_context
 
     monkeypatch.setattr(song_preparation, "build_prepared_calc_song", _fake_calc)
-    monkeypatch.setattr(song_preparation, "build_prepared_song_config", _fake_config)
     monkeypatch.setattr(song_preparation, "load_prepared_song_db_context", _fake_db)
 
     prepared = song_preparation.build_prepared_song_core(
         fp="song.txt",
         found_song_name="Song",
-        cfg_dict={"IterationEngine": {}},
         gears_by_name={},
         minis_by_name={},
-        cfg=cfg,
         cache_db_context=True,
     )
 
-    assert prepared.cfg is cfg
     assert prepared.calc_song is prepared_calc.calc_song
-    assert prepared.prepared_config is prepared_config
+    assert prepared.fixed_stats == baseline_fixed_stats(prepared_calc.calc_song)
+    assert prepared.fixed_stats["Rush"] == 30
     assert prepared.db_context is db_context
     assert prepared.meta_primary_color == "Rush"
     assert prepared.meta_secondary_color == "Flow"
-    assert calls["config"]["calc_song"] is prepared_calc.calc_song
     assert calls["db"]["calc_song"] is prepared_calc.calc_song
     assert calls["db"]["cache_db_context"] is True

@@ -229,7 +229,7 @@ def main(argv=None) -> int:
         args.db, args.song, args.rank)
     chart_fp, chart_name = _chart_path(song_name)
 
-    cs = get_base_calc_song(chart_fp, {})
+    cs = get_base_calc_song(chart_fp)
     apply_timing_envelope(cs, mode="perfect_window")
     sd = cs["song_data"]
     meta = cs["metadata"]

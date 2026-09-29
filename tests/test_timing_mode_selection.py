@@ -51,7 +51,6 @@ def test_startup_prepares_both_frontier_cache_families(monkeypatch):
     monkeypatch.setattr(cpu_work_manager, "run_timeline_frontier_cache_prebuild", fake_timeline)
     monkeypatch.setattr(cpu_work_manager, "run_fg_response_frontier_cache_prebuild", fake_fg)
     cpu_work_manager.run_startup_cpu_work(
-        cfg=None,
         song_queue=["chart.txt"],
         ref_arrays={},
         data_root=".",
@@ -68,11 +67,11 @@ def test_team_buff_unknown_mode_fails_loud():
 
     with pytest.raises(ValueError):
         tbt.build_team_buff_tier_db_batches(
-            entries=[{}], calc_song={}, ref_arrays={}, cfg_dict={}, timing_mode="bogus_mode"
+            entries=[{}], calc_song={}, ref_arrays={}, timing_mode="bogus_mode"
         )
     with pytest.raises(ValueError):
         tbt.compute_team_buff_tier_leaderboards(
-            entries=[{}], calc_song={}, ref_arrays={}, cfg_dict={}, timing_mode="bogus_mode"
+            entries=[{}], calc_song={}, ref_arrays={}, timing_mode="bogus_mode"
         )
 
 

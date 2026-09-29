@@ -855,7 +855,7 @@ def _build_aurora_intended():
                 fp = f
     if fp is None:
         raise SystemExit(f"chart not found for {row['song_name']!r}")
-    cs = get_base_calc_song(fp, {})
+    cs = get_base_calc_song(fp)
     apply_timing_envelope(cs, mode="perfect_window")
     sd = cs["song_data"]
     meta = cs["metadata"]

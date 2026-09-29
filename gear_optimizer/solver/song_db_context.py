@@ -4,12 +4,12 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Optional
 
+from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from gear_optimizer.helpers.song_helpers.database_context import (
     build_db_key,
     load_database_progress_baseline,
-    resolve_database_baseline_team_buff,
 )
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_prev_record
 
@@ -100,13 +100,11 @@ def load_prepared_song_db_context(
     *,
     found_song_name: str,
     calc_song: dict | None,
-    cfg: Any | None,
-    cfg_dict: Mapping[str, Any] | None,
     gears_by_name: dict,
     minis_by_name: dict,
     cache_db_context: bool = False,
 ) -> PreparedSongDbContext:
-    baseline_team_buff = resolve_database_baseline_team_buff(cfg, cfg_dict=cfg_dict)
+    baseline_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
     db_key = build_db_key(found_song_name, calc_song)
 
     cached = None

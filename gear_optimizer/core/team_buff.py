@@ -11,10 +11,10 @@ song primary color before scoring.
 This module centralizes:
 - tier normalization
 - shared TeamBuff stat deltas
-- resolving the fixed optimizer baseline TeamBuff
+- the fixed optimizer baseline TeamBuff (OPTIMIZER_BASELINE_TEAM_BUFF)
 """
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 logger = logging.getLogger(__name__)
 TEAM_BUFF_TIER_EFFECTS: dict[str, dict[str, int]] = {
@@ -99,8 +99,6 @@ def team_buff_display_label(team_buff: Any, *, default: str = "T5") -> str:
 def team_buff_effect(team_buff: Any, team_color: Any) -> dict[str, int]:
     """
     Return the raw stat delta applied by TeamBuff for the provided team color.
-
-    This matches `gear_optimizer.core.stats_calculator.build_base_stats_from_config`.
     """
     tier = TEAM_BUFF_TIER_EFFECTS.get(canonicalize_team_buff(team_buff))
     if not tier:
@@ -119,36 +117,3 @@ def team_buff_effect(team_buff: Any, team_color: Any) -> dict[str, int]:
     return out
 
 
-def _get_team_section_from_cfg_dict(cfg_dict: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    if not isinstance(cfg_dict, Mapping):
-        return {}
-    sec = cfg_dict.get("TeamContributionBuffConstant") or cfg_dict.get("teamcontributionbuffconstant") or {}
-    return sec if isinstance(sec, Mapping) else {}
-
-
-def resolve_team_color_from_cfg_dict(
-    cfg_dict: Mapping[str, Any] | None,
-    *,
-    primary_color: str = "",
-) -> str:
-    sec = _get_team_section_from_cfg_dict(cfg_dict)
-    color = str(primary_color or "").strip()
-    if not color:
-        color = str(sec.get("TeamColor", sec.get("teamcolor", ""))).strip()
-    return color
-
-
-def resolve_baseline_team_buff_from_cfg_dict(cfg_dict: Mapping[str, Any] | None, *, default: str = "T5") -> str:
-    """
-    Resolve the native baseline TeamBuff tier for persistence/replay.
-    """
-    _ = cfg_dict, default
-    return OPTIMIZER_BASELINE_TEAM_BUFF
-
-
-def resolve_baseline_team_buff_from_cfg(cfg: Any, *, default: str = "T5") -> str:
-    """
-    Resolve the native baseline TeamBuff tier for persistence/replay.
-    """
-    _ = cfg, default
-    return OPTIMIZER_BASELINE_TEAM_BUFF

@@ -7,19 +7,17 @@ import numpy as np
 
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import GEM_SCALE_FEVER, GEM_SCALE_NORMAL, MAX_STAT_INDEX
-from gear_optimizer.core.config import load_config
-from gear_optimizer.data.csv_parser import get_fixed_stats
 from gear_optimizer.data.song_io import get_base_calc_song
 from gear_optimizer.helpers.ga_helpers.pool_initialization import initialize_pools
-from gear_optimizer.helpers.song_helpers.song_config import apply_baseline_team_buff_config
-from gear_optimizer.solver.base_stats import build_base_fixed_stats_array, build_stats_dict
+from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
+from gear_optimizer.solver.base_stats import build_stats_array, build_stats_dict
 from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_context
 from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payload_prebuilt
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_batch
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
-from gear_optimizer.solver.solver_common import GEAR_SLOTS, build_solver_cfg_data
+from gear_optimizer.solver.solver_common import GEAR_SLOTS
 from gear_optimizer.solver.taichi_gem.api.timeline import (
     build_or_load_timeline_frontier_payload, precompute_timeline_gpu,
 )
@@ -40,14 +38,11 @@ class PreparedChart:
 
 
 def prepare_chart(path, refs, gears, minis):
-    song = get_base_calc_song(str(path), {})
+    song = get_base_calc_song(str(path))
     apply_timing_envelope(song, mode="perfect_window")
     primary, secondary = (song["metadata"][k] for k in ("Primary Color", "Secondary Color"))
-    cfg = load_config()
-    apply_baseline_team_buff_config(cfg, song)
-    fixed = get_fixed_stats(cfg)
-    cfg_data = build_solver_cfg_data(cfg, p_color=primary, s_color=secondary, selected_color=primary)
-    base, _ = build_base_fixed_stats_array(fixed, cfg_data)
+    cfg_data = {"selected_color": primary, "primary_color": primary, "secondary_color": secondary}
+    base = build_stats_array(baseline_fixed_stats(song))
     domain = catalog_domain(gears, minis, song=song, fixed=build_stats_dict(base))
     gear_pool, mini_pool, *_ = initialize_pools(gears, list(domain.mini_items), primary,
                                                list(GEAR_SLOTS), s_color=secondary)

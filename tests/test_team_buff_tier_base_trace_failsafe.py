@@ -125,7 +125,6 @@ def test_failed_per_tier_recompute_drops_stale_baseline_timeline_frontier() -> N
             entries=[_entry()],
             calc_song=_mock_song(),
             ref_arrays=_ref_arrays(),
-            cfg_dict=_CFG,
             tiers=("T10",),
             limit=1,
         )
@@ -147,7 +146,6 @@ def test_successful_per_tier_recompute_replaces_baseline_trace() -> None:
             entries=[_entry()],
             calc_song=_mock_song(),
             ref_arrays=_ref_arrays(),
-            cfg_dict=_CFG,
             tiers=("T10",),
             limit=1,
         )

@@ -100,8 +100,6 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         db_key="pytest_post_processor_exact_authority",
         fp="Data/Hard/pytest_post_processor_exact_authority.txt",
         effective_difficulty="Hard",
-        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
-        fg_debug=False,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         ga_candidates=[],
@@ -113,8 +111,6 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         },
         best_gear=list(_REPLAY_GEAR),
         best_minis=list(_REPLAY_MINIS),
-        current_gear_list=[],
-        current_mini_list=[],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         prev_record=None,
@@ -171,7 +167,7 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
 
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert ref_arrays
-    calc_song = get_base_calc_song("Data/Hard/00 (Hard) by garlagan.txt", {})
+    calc_song = get_base_calc_song("Data/Hard/00 (Hard) by garlagan.txt")
     _prebuild_timeline_frontier(calc_song, ref_arrays)
 
     force_payload = {
@@ -304,7 +300,6 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
             "song": "pytest_post_processor_fg_update_authority",
             "db_key": "pytest_post_processor_fg_update_authority",
             "file_path": "Data/Hard/00 (Hard) by garlagan.txt",
-            "cfg_dict": {"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
             "ref_arrays": ref_arrays,
             "persist_entries": [
                 {

@@ -30,10 +30,7 @@ def test_same_color_force_greats_formula_preserves_component_floor_order() -> No
 
 
 def test_dark_sheep_force_greats_matches_observed_game_score() -> None:
-    calc_song = get_base_calc_song(
-        str(ROOT / "Data" / "Hard" / "Dark Sheep [EXTENDED CUT] (Hard) by Chroma.txt"),
-        {},
-    )
+    calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "Dark Sheep [EXTENDED CUT] (Hard) by Chroma.txt"))
     ref_arrays = build_ref_arrays_from_stats(
         read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")),
         dtype=np.float64,

@@ -454,7 +454,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
         score_prepared_force_greats_response_frontier_batch_cpu_sync,
     )
 
-    calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"), {})
+    calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"))
     apply_timing_envelope(calc_song, mode="perfect_window")
     ref_arrays = build_ref_arrays_from_stats(read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")), dtype=np.float64)
     final_stats = {
@@ -589,7 +589,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     )
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"), {})
+    calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"))
     apply_timing_envelope(calc_song, mode="perfect_window")
     ref_arrays = build_ref_arrays_from_stats(read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")), dtype=np.float64)
     final_stats = {

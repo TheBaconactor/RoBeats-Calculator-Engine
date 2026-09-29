@@ -6,9 +6,8 @@ import re
 from ...core.constants import SKIP_ITEM_KEYS
 from ...core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
+    OPTIMIZER_BASELINE_TEAM_BUFF,
     normalize_team_buff_sequence,
-    resolve_baseline_team_buff_from_cfg_dict,
-    resolve_team_color_from_cfg_dict,
     team_buff_effect,
 )
 from ...core.utils import get_selected_element, safe_int as _safe_int
@@ -20,6 +19,7 @@ from ...data.loadout_equivalence import (
 from ...data.mini_ascension import materialize_minis_for_song
 from .fg_payload import has_valid_fg_payload, require_response_surface
 from .ref_array_builder import resolve_exact_replay_ref_arrays
+from .song_config import baseline_fixed_stats
 
 
 def _norm_text(v: object) -> str:
@@ -129,32 +129,7 @@ def _representative_mini_names_from_any(minis: object) -> list[str]:
 
 
 
-def _resolve_team_color(cfg_dict: dict, calc_song: dict) -> str:
-    primary_color = _norm_text((calc_song.get("metadata", {}) or {}).get("Primary Color", ""))
-    return resolve_team_color_from_cfg_dict(cfg_dict, primary_color=primary_color)
-
-
-def _resolve_base_team_buff(cfg_dict: dict) -> str:
-    if isinstance(cfg_dict, dict):
-        if isinstance(cfg_dict.get("IterationEngine"), dict):
-            return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
-        sec = cfg_dict.get("TeamContributionBuffConstant")
-        if isinstance(sec, dict):
-            raw = _norm_text(sec.get("TeamBuff", sec.get("teambuff", "")))
-            if raw:
-                normalized = normalize_team_buff_sequence((raw,), default=("T5",))
-                if normalized:
-                    return str(normalized[0])
-        raw = _norm_text(cfg_dict.get("TeamBuff", cfg_dict.get("teambuff", "")))
-        if raw:
-            normalized = normalize_team_buff_sequence((raw,), default=("T5",))
-            if normalized:
-                return str(normalized[0])
-    return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
-
-
 def _resolve_team_colors_for_tiering(
-    cfg_dict: dict,
     calc_song: dict,
     *,
     base_team_color_override: object = None,
@@ -163,12 +138,11 @@ def _resolve_team_colors_for_tiering(
     """
     Resolve source/target TeamColor for tier delta computation.
 
-    - source/base color: color used by persisted baseline rows.
+    - source/base color: color used by persisted baseline rows (the song's primary color).
     - target color: color to evaluate output tiers against.
     """
-    resolved = _resolve_team_color(cfg_dict, calc_song)
     if base_team_color_override is None:
-        base_team_color = resolved
+        base_team_color = _norm_text((calc_song.get("metadata", {}) or {}).get("Primary Color", ""))
     else:
         base_team_color = _norm_text(base_team_color_override)
 
@@ -359,22 +333,6 @@ def resolve_tier_fg_force_batch(
     return [r["force"] for r in replays]
 
 
-def _tier_cfg_and_song_fixed_stats(cfg_dict: dict, calc_song: dict):
-    """``(cfg, song fixed_stats)`` for the 0ms re-solve, identical to the lossless-exact gate's
-    input. Mirrors setup_song_config: ``cfg_from_dict`` + ``apply_baseline_team_buff_config`` ->
-    ``get_fixed_stats``. The SAME ``cfg`` is reused for the base re-solve (build_candidate_payload),
-    so FG, base, and the gate share one config -> served == native. Computed once per song; the
-    per-tier delta is applied on top."""
-    from ...core.utils import cfg_from_dict
-    from ...data.csv_parser import get_fixed_stats
-    from ...data.song_io import clone_calc_song
-    from .song_config import apply_baseline_team_buff_config
-
-    cfg = cfg_from_dict(dict(cfg_dict or {}))
-    apply_baseline_team_buff_config(cfg, clone_calc_song(calc_song))
-    return cfg, dict(get_fixed_stats(cfg) or {})
-
-
 def _exact_base_score_batch_for_mode(
     stats_rows: list, calc_song: dict, ref_arrays: dict, timing_mode: str
 ) -> list[int]:
@@ -395,13 +353,11 @@ def _exact_base_score_batch_for_mode(
 
 def resolve_tier_base(
     *,
-    cfg,
     fixed_song_stats: dict,
     loadout_items: list[dict],
     calc_song: dict,
     ref_arrays: dict,
     primary_color: str,
-    secondary_color: str,
     selected_color: str,
     timing_mode: str = "zero_ms",
 ) -> tuple[dict, int]:
@@ -415,26 +371,14 @@ def resolve_tier_base(
     ``loadout_items`` is the loadout's 6 gear + 3 mini stat dicts before gems. Returns
     ``(resolved_payload, score)``. Shared by serving and the lossless gate so served == native
     (delta=0)."""
-    from ...solver.solver_common import (
-        build_candidate_payload,
-        build_solver_cfg_data,
-        build_solver_override_cfg,
-    )
+    from ...solver.solver_common import build_candidate_payload
 
-    p_color = str(primary_color or "")
-    cfg_data = build_solver_cfg_data(
-        cfg, p_color=p_color, s_color=str(secondary_color or ""), selected_color=str(selected_color or "")
-    )
-    override_cfg = build_solver_override_cfg(cfg_data, p_color=p_color, selected_color=str(selected_color or ""))
-    override_cfg["use_gpu"] = True
     resolved = build_candidate_payload(
-        cfg=cfg,
         base_stats_fixed=dict(fixed_song_stats or {}),
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         genome=list(loadout_items or []),
-        override_cfg=override_cfg,
-        gpu_client=None,
+        selected_color=str(selected_color or "") or str(primary_color or ""),
     )
     resolved_stats = dict(resolved.get("Stats") or {})
     if not resolved_stats:
@@ -445,13 +389,11 @@ def resolve_tier_base(
 
 def resolve_tier_base_batch(
     *,
-    cfg,
     fixed_song_stats: dict,
     loadouts: list,
     calc_song: dict,
     ref_arrays: dict,
     primary_color: str,
-    secondary_color: str,
     selected_color: str,
     timing_mode: str = "zero_ms",
 ) -> list:
@@ -465,23 +407,18 @@ def resolve_tier_base_batch(
     independent, so the per-loadout result equals ``resolve_tier_base`` (the gate's per-loadout
     path) -> served == native (delta=0)."""
     from ...solver.scoring.fever_solver import solve_best_fever_combination_batch
-    from ...solver.solver_common import (
-        _add_genome_item_stats,
-        build_solver_cfg_data,
-        build_solver_override_cfg,
-    )
+    from ...solver.solver_common import _add_genome_item_stats
 
     rows = list(loadouts or [])
     if not rows:
         return []
-    p_color = str(primary_color or "")
-    cfg_data = build_solver_cfg_data(
-        cfg, p_color=p_color, s_color=str(secondary_color or ""), selected_color=str(selected_color or "")
-    )
-    override_cfg = build_solver_override_cfg(cfg_data, p_color=p_color, selected_color=str(selected_color or ""))
-    override_cfg["use_gpu"] = True
     pre_gem_rows = [_add_genome_item_stats(dict(fixed_song_stats or {}), list(items or [])) for items in rows]
-    results = solve_best_fever_combination_batch(cfg, pre_gem_rows, calc_song, ref_arrays, override_cfg)
+    results = solve_best_fever_combination_batch(
+        pre_gem_rows,
+        calc_song,
+        ref_arrays,
+        selected_color=str(selected_color or "") or str(primary_color or ""),
+    )
     if len(results) != len(rows):
         raise ValueError(f"batched tier base re-solve returned {len(results)} != {len(rows)} results")
     resolved_stats_rows: list[dict] = []
@@ -539,7 +476,6 @@ def compute_team_buff_tier_leaderboards(
     entries: list[dict],
     calc_song: dict,
     ref_arrays: dict,
-    cfg_dict: dict,
     limit: int = 51,
     tiers: tuple[str, ...] = DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     base_team_color_override: object = None,
@@ -610,12 +546,11 @@ def compute_team_buff_tier_leaderboards(
     secondary_color = _norm_text(meta0.get("Secondary Color", ""))
 
     base_team_color, target_team_color = _resolve_team_colors_for_tiering(
-        cfg_dict,
         calc_song,
         base_team_color_override=base_team_color_override,
         target_team_color_override=target_team_color_override,
     )
-    base_team_buff = _resolve_base_team_buff(cfg_dict)
+    base_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
     tier_list = normalize_team_buff_sequence(tiers, default=DEFAULT_TEAM_BUFF_REPLAY_TIERS)
 
     from ...solver.timing_envelope import apply_timing_envelope
@@ -681,11 +616,11 @@ def compute_team_buff_tier_leaderboards(
             }
         )
 
-    # Shared re-solve config (cfg + song fixed_stats), built once per song and used by BOTH the base
-    # (meta) and FG re-solves, for BOTH timing modes, so they (and the lossless gate) share one
-    # config. The gem search reads timing from calc_song (enveloped per timing_mode above), so the
-    # SAME re-solve serves zero_ms and perfect_window; only the final exact rescore differs.
-    tier_resolve_cfg, tier_song_fixed_stats = _tier_cfg_and_song_fixed_stats(cfg_dict, calc_song)
+    # The song's baseline fixed stats, shared by BOTH the base (meta) and FG re-solves, for BOTH timing
+    # modes, so they (and the lossless gate) start from the same stats. The gem search reads timing
+    # from calc_song (enveloped per timing_mode above), so the SAME re-solve serves zero_ms and
+    # perfect_window; only the final exact rescore differs.
+    tier_song_fixed_stats = baseline_fixed_stats(calc_song)
 
     meta_scores_by_tier: dict[str, list[int]] = {}
     # Per (tier, loadout_hash) RE-SOLVED base payloads (re-solved Stats/GemCounts/Score) -- for BOTH
@@ -709,13 +644,11 @@ def compute_team_buff_tier_leaderboards(
             # low-level solver batch dimension). Per-loadout result is identical to the
             # single-loadout path (independent gem searches) -> delta=0.
             batch = resolve_tier_base_batch(
-                cfg=tier_resolve_cfg,
                 fixed_song_stats=tier_fixed_stats,
                 loadouts=base_loadouts,
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
                 primary_color=primary_color,
-                secondary_color=secondary_color,
                 selected_color=primary_color,
                 timing_mode=timing_mode,
             )
@@ -906,7 +839,6 @@ def build_team_buff_tier_db_batches(
     entries: list[dict],
     calc_song: dict,
     ref_arrays: dict,
-    cfg_dict: dict,
     limit: int = 51,
     tiers: tuple[str, ...] = DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     base_team_color_override: object = None,
@@ -954,7 +886,6 @@ def build_team_buff_tier_db_batches(
         entries=entries,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         limit=limit,
         tiers=tier_list,
         base_team_color_override=base_team_color_override,
@@ -967,12 +898,11 @@ def build_team_buff_tier_db_batches(
     resolved_base_by_tier_hash = payload.get("resolved_base_by_tier_hash") or {}
 
     payload_meta = payload.get("meta") or {}
-    base_team_buff = _norm_text(payload_meta.get("base_team_buff")) or _resolve_base_team_buff(cfg_dict)
+    base_team_buff = _norm_text(payload_meta.get("base_team_buff")) or OPTIMIZER_BASELINE_TEAM_BUFF
     base_team_color = _norm_text(payload_meta.get("base_team_color"))
     target_team_color = _norm_text(payload_meta.get("target_team_color"))
     if not base_team_color or not target_team_color:
         base_team_color, target_team_color = _resolve_team_colors_for_tiering(
-            cfg_dict,
             calc_song,
             base_team_color_override=base_team_color_override,
             target_team_color_override=target_team_color_override,

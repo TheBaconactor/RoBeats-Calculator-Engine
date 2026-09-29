@@ -26,8 +26,6 @@ def test_cached_db_context_uses_baseline_team_buff_key(monkeypatch):
     first = song_db_context.load_prepared_song_db_context(
         found_song_name="song",
         calc_song={"metadata": {}, "song_data": {}},
-        cfg=None,
-        cfg_dict={},
         gears_by_name={},
         minis_by_name={},
         cache_db_context=True,
@@ -35,8 +33,6 @@ def test_cached_db_context_uses_baseline_team_buff_key(monkeypatch):
     cached = song_db_context.load_prepared_song_db_context(
         found_song_name="song",
         calc_song={"metadata": {}, "song_data": {}},
-        cfg=None,
-        cfg_dict={},
         gears_by_name={},
         minis_by_name={},
         cache_db_context=True,
@@ -66,8 +62,6 @@ def test_prepared_db_context_preserves_attempts(monkeypatch):
     ctx = song_db_context.load_prepared_song_db_context(
         found_song_name="song",
         calc_song={"metadata": {}, "song_data": {}},
-        cfg=None,
-        cfg_dict={},
         gears_by_name={},
         minis_by_name={},
     )

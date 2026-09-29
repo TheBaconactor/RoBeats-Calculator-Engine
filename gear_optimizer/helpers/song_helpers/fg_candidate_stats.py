@@ -7,7 +7,7 @@ import numpy as np
 from ...core.constants import SKIP_ITEM_KEYS
 from ...core.gem_defs import element_gem_count
 from ...core.utils import get_selected_element, safe_int
-from ...solver.base_stats import build_base_fixed_stats_list, build_stats_dict
+from ...solver.base_stats import build_stats_dict, build_stats_list
 from ...solver.scoring.exact_rescore import score_stats_exact_batch
 from ...solver.scoring.stats_ops import apply_gems_to_base_stats
 
@@ -141,7 +141,6 @@ def hydrate_fg_candidate_stats(
     *,
     base_stats_fixed: dict,
     selected_color: str,
-    cfg_data: Optional[dict] = None,
     calc_song: Optional[dict] = None,
     ref_arrays: Optional[dict] = None,
 ) -> None:
@@ -155,22 +154,14 @@ def hydrate_fg_candidate_stats(
     if not candidates:
         return
 
-    cfg_data = cfg_data if isinstance(cfg_data, dict) else {}
-    selected_color = str(selected_color or cfg_data.get("selected_color", "") or "")
+    selected_color = str(selected_color or "")
 
     base_fixed: dict[str, int] | None = None
 
     def _base_fixed_stats() -> dict[str, int]:
-        nonlocal base_fixed, selected_color
+        nonlocal base_fixed
         if base_fixed is None:
-            base_fixed_list, fallback_sel = build_base_fixed_stats_list(
-                base_stats_fixed,
-                cfg_data,
-                fallback_selected_color=selected_color,
-            )
-            base_fixed = build_stats_dict(base_fixed_list)
-            if fallback_sel and not selected_color:
-                selected_color = str(fallback_sel)
+            base_fixed = build_stats_dict(build_stats_list(base_stats_fixed))
         return base_fixed
 
     if (calc_song is None) != (ref_arrays is None):

@@ -31,18 +31,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
-from gear_optimizer.core.config import load_config
 from gear_optimizer.core.constants import TOTAL_GEM_BUDGET
-from gear_optimizer.core.team_buff import (
-    normalize_team_buff,
-    resolve_baseline_team_buff_from_cfg_dict,
-    resolve_team_color_from_cfg_dict,
-    team_buff_effect,
-)
-from gear_optimizer.core.utils import cfg_to_dict, get_selected_element
+from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, normalize_team_buff, team_buff_effect
+from gear_optimizer.core.utils import get_selected_element
 from gear_optimizer.data.database import get_best_loadouts, get_evolution_db_path
 from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
 from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
     build_team_buff_tier_db_batches,
     resolve_tier_base,
@@ -203,7 +198,6 @@ def _apply_stat_delta(stats: dict[str, Any], delta: dict[str, int]) -> dict[str,
 def _resolve_target_fixed_stats(
     *,
     fixed_stats: dict[str, Any],
-    cfg_dict: dict[str, Any],
     calc_song: dict[str, Any],
     tier: str,
     base_team_color_override: str | None,
@@ -211,12 +205,11 @@ def _resolve_target_fixed_stats(
 ) -> tuple[dict[str, Any], str, str, str]:
     metadata = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
     song_primary = str(metadata.get("Primary Color") or "").strip()
-    resolved_color = resolve_team_color_from_cfg_dict(cfg_dict, primary_color=song_primary)
-    base_team_color = str(base_team_color_override if base_team_color_override is not None else resolved_color or "")
+    base_team_color = str(base_team_color_override if base_team_color_override is not None else song_primary)
     target_team_color = str(
         target_team_color_override if target_team_color_override is not None else base_team_color or ""
     )
-    base_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
+    base_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
     delta = _team_buff_delta_map(
         base_team_buff=str(base_team_buff),
         target_team_buff=normalize_team_buff(tier, default="T5"),
@@ -293,7 +286,6 @@ def _find_replay_row(
     entry: dict[str, Any],
     active_calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
-    cfg_dict: dict[str, Any],
     tier: str,
     timing_mode: str,
     base_team_color_override: str | None,
@@ -303,7 +295,6 @@ def _find_replay_row(
         entries=[entry],
         calc_song=clone_calc_song(active_calc_song),
         ref_arrays=dict(ref_arrays),
-        cfg_dict=dict(cfg_dict),
         limit=1,
         tiers=(str(tier),),
         base_team_color_override=base_team_color_override,
@@ -369,8 +360,6 @@ def _selected_element_for_mode(*, replay_payload: dict[str, Any] | None, fallbac
 def _compare_entry_mode(
     *,
     entry: dict[str, Any],
-    cfg: Any,
-    cfg_dict: dict[str, Any],
     fixed_stats: dict[str, Any],
     active_calc_song: dict[str, Any],
     ref_arrays: dict[str, Any],
@@ -385,7 +374,6 @@ def _compare_entry_mode(
         entry=entry,
         active_calc_song=active_calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
         tier=tier,
         timing_mode=timing_mode,
         base_team_color_override=base_team_color_override,
@@ -402,7 +390,6 @@ def _compare_entry_mode(
 
     target_fixed_stats, _base_team_buff, _base_team_color, target_team_color = _resolve_target_fixed_stats(
         fixed_stats=fixed_stats,
-        cfg_dict=cfg_dict,
         calc_song=active_calc_song,
         tier=tier,
         base_team_color_override=base_team_color_override,
@@ -424,13 +411,11 @@ def _compare_entry_mode(
         # exact rescore follows timing_mode. Using the SAME production helper here is what makes
         # served base == native (delta=0) for zero_ms AND perfect_window.
         resolved, resolved_score = resolve_tier_base(
-            cfg=cfg,
             fixed_song_stats=target_fixed_stats,
             loadout_items=loadout_items,
             calc_song=clone_calc_song(active_calc_song),
             ref_arrays=ref_arrays,
             primary_color=chart_primary,
-            secondary_color=chart_secondary,
             selected_color=selected_element,
             timing_mode=timing_mode,
         )
@@ -498,7 +483,6 @@ def _render_table(rows: list[ReplayGapRow]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=str, default=str(get_evolution_db_path()))
-    parser.add_argument("--config", type=str, default=str(PROJECT_ROOT / "config.ini"))
     parser.add_argument("--song", action="append", default=[])
     parser.add_argument("--samples", type=int, default=10)
     parser.add_argument("--per-song-limit", type=int, default=2)
@@ -530,13 +514,11 @@ def main() -> int:
     # (f32 on MoltenVK / f64 on AMD), so the GPU gem search runs here; the served score is the
     # CPU-f64 exact rescore of the winner (lossless). --mode {meta,fg,both} all run.
 
-    cfg = load_config(str(args.config))
-    cfg_dict = cfg_to_dict(cfg)
     ref_arrays = _get_team_buff_ref_arrays_cached()
     if not isinstance(ref_arrays, dict) or not ref_arrays:
         raise SystemExit("ref_arrays unavailable (failed to load Stats lookup tables)")
 
-    baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
+    baseline_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
     gears_by_name = get_gears_by_name_cached()
     minis_by_name = get_minis_by_name_cached()
 
@@ -566,7 +548,7 @@ def main() -> int:
         if song_file is None or not song_file.exists():
             continue
 
-        base_calc_song = get_base_calc_song(str(song_file), cfg_dict)
+        base_calc_song = get_base_calc_song(str(song_file))
         active_calc_song, base_team_color_override, target_team_color_override = _prepare_active_calc_song(
             base_calc_song,
             timing_mode=str(args.timing_mode),
@@ -576,21 +558,12 @@ def main() -> int:
         )
         build_or_load_timeline_frontier_payload(clone_calc_song(active_calc_song), ref_arrays)
 
-        from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
-
-        _ga_settings, fixed_stats, _cur_gear_stats, _cur_gear_list, _cur_mini_stats, _cur_mini_list = setup_song_config(
-            cfg,
-            clone_calc_song(active_calc_song),
-            gears_by_name,
-            minis_by_name,
-        )
+        fixed_stats = baseline_fixed_stats(active_calc_song)
 
         for entry in entries[: max(1, int(args.per_song_limit))]:
             for mode in mode_list:
                 row = _compare_entry_mode(
                     entry=entry,
-                    cfg=cfg,
-                    cfg_dict=cfg_dict,
                     fixed_stats=fixed_stats,
                     active_calc_song=active_calc_song,
                     ref_arrays=ref_arrays,

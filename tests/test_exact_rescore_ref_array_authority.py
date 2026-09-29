@@ -151,7 +151,6 @@ def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(
     authoritative = _ref_arrays(TOTAL_ROWS + 1, dtype=np.float64)
     caller_refs = _ref_arrays(TOTAL_ROWS + 1, dtype=np.float32)
     stats = _boundary_drift_stats()
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "NONE", "TeamColor": "Rush"}}
     entry = {
         "score": 1,
         "fg_score": 0,
@@ -174,7 +173,6 @@ def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(
         entries=[entry],
         calc_song=raw_song,
         ref_arrays=caller_refs,
-        cfg_dict=cfg_dict,
         tiers=("NONE",),
     )
     raw_score = int(raw["tiers"]["NONE"]["base_top51"][0]["score"])
@@ -186,7 +184,6 @@ def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(
         entries=[entry],
         calc_song=expected_song,
         ref_arrays=authoritative,
-        cfg_dict=cfg_dict,
         tiers=("NONE",),
     )
     expected_score = int(expected["tiers"]["NONE"]["base_top51"][0]["score"])
@@ -202,7 +199,6 @@ def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(
         entries=[entry],
         calc_song=resolved_song,
         ref_arrays=caller_refs,
-        cfg_dict=cfg_dict,
         tiers=("NONE",),
     )
     assert int(resolved["tiers"]["NONE"]["base_top51"][0]["score"]) == expected_score

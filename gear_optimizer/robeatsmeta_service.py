@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.macos_background import make_process_background_only
-from gear_optimizer.settings import service_settings
+from gear_optimizer.settings import REASONING_LEVELS, reasoning_search, service_settings
 from gear_optimizer.data.database import (
     get_best_loadouts,
     get_evolution_db_path,
@@ -192,33 +192,10 @@ _SOLVE_TIMEOUT_S = service_settings().solve_timeout_s
 # (~0.8 GB). Stop it after this long without a request; the next official solve respawns it cold.
 _PERSISTENT_WORKER_IDLE_EXIT_S = service_settings().persistent_idle_exit_s
 
-# Reasoning effort lets a host request a larger optimizer search budget. The chosen level scales
-# the GA search knobs that most directly raise the odds of reaching the true
-# optimum -- how deep the GA evolves (GA_SearchDepth) and how many independent starting populations
-# it searches in parallel (GA_MultiStart, ~free since it runs concurrently on the GPU). Scaling is
-# linear in the multiplier; "default" reproduces the stock config defaults exactly (nothing is
-# written, so config.py's own fallbacks apply).
-_REASONING_MULTIPLIERS: dict[str, float] = {"default": 1.0, "strong": 2.0, "max": 4.0}
-# Bases mirror the canonical config defaults: GA_SearchDepth fallback (gear_optimizer/core/config.py)
-# and GA_MULTI_RUNS_DEFAULT (gear_optimizer/core/constants.py). "default" reasoning => these exact
-# values, i.e. no behavior change from before this knob existed.
-_REASONING_BASE_SEARCH_DEPTH = 125
-_REASONING_BASE_MULTI_START = 3
-
-
+# Reasoning effort lets a host request a larger optimizer search budget (settings.reasoning_search).
 def _normalize_reasoning(value: Any) -> str:
     level = str(value or "").strip().lower()
-    return level if level in _REASONING_MULTIPLIERS else "default"
-
-
-def _reasoning_search_knobs(reasoning: str) -> tuple[int, int]:
-    """(GA_SearchDepth, GA_MultiStart) for a reasoning level -- ceil(base x multiplier), linear."""
-    import math
-
-    mult = _REASONING_MULTIPLIERS[_normalize_reasoning(reasoning)]
-    depth = int(math.ceil(_REASONING_BASE_SEARCH_DEPTH * mult))
-    multi_start = int(math.ceil(_REASONING_BASE_MULTI_START * mult))
-    return depth, multi_start
+    return level if level in REASONING_LEVELS else "default"
 
 
 @dataclass
@@ -268,7 +245,6 @@ def _prebuild_frontier_caches(
     """
     import numpy as np
 
-    from gear_optimizer.core.config import load_config
     from gear_optimizer.data.csv_parser import read_table
     from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
     from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
@@ -288,7 +264,6 @@ def _prebuild_frontier_caches(
     if not song_paths:
         raise RuntimeError(f"frontier server Data revision has no song charts: {data_root}")
     run_startup_cpu_work(
-        cfg=load_config(),
         # Queue entries are (chart path, ...) tuples. Bare path strings were silently ignored,
         # which turned every incremental song publish into a full 2272-song re-verification.
         song_queue=tuple((path,) for path in song_paths),
@@ -940,7 +915,6 @@ class _PersistentSolveWorker:
         env = {
             **os.environ,
             "EVOLUTION_DB_PATH": str(bin_dir / "service_result.db"),
-            "METAFINDER_CONFIG_PATH": str(self._root / "config.ini"),
             "ROBEATSMETA_OPTIMIZER_DATA_DIR": str(data_dir),
             "ROBEATSMETA_OPTIMIZER_BIN_DIR": str(bin_dir),
             "ROBEATSMETA_OPTIMIZER_GEAR_SOURCE_DIR": str(gear_dir),
@@ -1135,7 +1109,7 @@ def _solve_isolated(
         level = _normalize_reasoning(reasoning)
         reasoning_lines = ""
         if level != "default":
-            depth, multi_start = _reasoning_search_knobs(level)
+            depth, multi_start = reasoning_search(level)
             reasoning_lines = f"GA_SearchDepth = {depth}\nGA_MultiStart = {multi_start}\n"
         # The isolated Data dir holds exactly this one chart, so "process discovered charts once"
         # (empty Song_Name + LoopForever off) solves it; a fresh bin means no resume/candidate queue.

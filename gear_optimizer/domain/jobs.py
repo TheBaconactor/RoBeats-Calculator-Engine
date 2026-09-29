@@ -10,14 +10,14 @@ from typing import Any, Mapping, Sequence
 # pipeline (app -> execution -> engine). The code originally named it "legacy"
 # when refactoring toward typed `SongJob`/`SharedRunContext` while keeping the
 # tuple as the durable interchange format.
-TASK_FIXED_FIELD_COUNT = 12
+TASK_FIXED_FIELD_COUNT = 11
 
 
 class TaskIndex(IntEnum):
     FILE_PATH = 0
     SONG_NAME = 1
     DIFFICULTY = 2
-    CFG_DICT = 3
+    MULTI_START = 3
     REF_ARRAYS = 4
     ALL_GEARS = 5
     ALL_MINIS = 6
@@ -25,7 +25,6 @@ class TaskIndex(IntEnum):
     MINIS_BY_NAME = 8
     GA_DEPTH = 9
     PARALLEL_WORKERS = 10
-    FG_DEBUG = 11
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +49,7 @@ class PreparedSongSeedPlan:
 
 @dataclass(frozen=True, slots=True)
 class SharedRunContext:
-    cfg_dict: Mapping[str, Any] | None
+    multi_start: int
     ref_arrays: Any
     all_gears: Any
     all_minis: Any
@@ -58,7 +57,6 @@ class SharedRunContext:
     minis_by_name: Mapping[str, Any] | None
     ga_depth: int
     parallel_workers: int
-    fg_debug: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,13 +122,6 @@ def task_song_name(task: Sequence[Any] | Any) -> str:
     if not _is_task_sequence(task) or len(task) <= int(TaskIndex.SONG_NAME):
         return ""
     return str(task[int(TaskIndex.SONG_NAME)] or "").strip()
-
-
-def task_cfg_dict(task: Sequence[Any] | Any) -> dict:
-    if not _is_task_sequence(task) or len(task) <= int(TaskIndex.CFG_DICT):
-        return {}
-    cfg_dict = task[int(TaskIndex.CFG_DICT)]
-    return cfg_dict if isinstance(cfg_dict, dict) else {}
 
 
 def task_queue_label(task: Sequence[Any] | Any) -> str:
@@ -250,7 +241,7 @@ def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
         parallel_workers = 0
 
     return SharedRunContext(
-        cfg_dict=task[int(TaskIndex.CFG_DICT)],
+        multi_start=int(task[int(TaskIndex.MULTI_START)]),
         ref_arrays=task[int(TaskIndex.REF_ARRAYS)],
         all_gears=task[int(TaskIndex.ALL_GEARS)],
         all_minis=task[int(TaskIndex.ALL_MINIS)],
@@ -258,7 +249,6 @@ def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
         minis_by_name=task[int(TaskIndex.MINIS_BY_NAME)],
         ga_depth=ga_depth,
         parallel_workers=parallel_workers,
-        fg_debug=bool(task[int(TaskIndex.FG_DEBUG)]),
     )
 
 
@@ -280,7 +270,7 @@ def task_tuple_from_job_context(
         job.file_path,
         job.song_name,
         job.difficulty,
-        context.cfg_dict,
+        context.multi_start,
         context.ref_arrays,
         context.all_gears,
         context.all_minis,
@@ -288,7 +278,6 @@ def task_tuple_from_job_context(
         context.minis_by_name,
         context.ga_depth,
         context.parallel_workers,
-        context.fg_debug,
         *extras,
     )
 

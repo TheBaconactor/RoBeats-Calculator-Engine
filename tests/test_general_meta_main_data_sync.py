@@ -103,14 +103,13 @@ def test_run_general_meta_syncs_before_loading_gears(monkeypatch) -> None:
     from general_meta.app import run_general_meta
 
     monkeypatch.setattr("general_meta.app.sync_exported_game_data", _fake_sync)
-    monkeypatch.setattr("general_meta.app.read_table", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         "general_meta.app.load_all_gears_list",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(_StopAfterSync()),
     )
 
     with pytest.raises(_StopAfterSync):
-        run_general_meta(None)
+        run_general_meta()
 
     assert sync_calls == [False]
 

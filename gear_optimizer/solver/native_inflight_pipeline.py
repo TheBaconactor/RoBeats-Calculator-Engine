@@ -155,7 +155,6 @@ def prepare_ga_candidate_surface_for_fg(
             selected,
             base_stats_fixed=gpu_inputs.fixed_stats,
             selected_color=str((getattr(gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
-            cfg_data=getattr(gpu_inputs, "cfg_data", None),
             calc_song=resolve_active_fg_calc_song(song),
             ref_arrays=song.gpu_inputs.ref_arrays,
         )

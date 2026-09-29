@@ -21,7 +21,6 @@ def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) ->
         "db_key": song.config.db_key,
         "persist_entries": list(persist_entries or []),
         "file_path": song.config.fp,
-        "cfg_dict": song.config.cfg_dict,
     }
 def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
     best_data_for_post = song.runtime.decode.best_data or {}
@@ -73,14 +72,11 @@ def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
         "_ga_seed": song.config.ga_seed,
         "db_key": song.config.db_key,
         "difficulty": song.config.effective_difficulty,
-        "cfg_dict": song.config.cfg_dict,
         "ref_arrays": song.gpu_inputs.ref_arrays,
         "calc_song": song.gpu_inputs.calc_song,
         "best_data": best_data_post,
         "best_gear": compact_item_names(song.runtime.decode.best_gear, drop_empty=True),
         "best_minis": compact_item_names(song.runtime.decode.best_minis, drop_empty=True),
-        "current_gear": compact_item_names(song.gpu_inputs.current_gear_list, drop_empty=True),
-        "current_minis": compact_item_names(song.gpu_inputs.current_mini_list, drop_empty=True),
         "fg_variants": fg_variants_post,
         "ga_candidates": ga_candidates_post,
         "prev_record": compact_prev_record(song.runtime.db.prev_record, drop_empty_item_names=True),
@@ -89,7 +85,6 @@ def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
         "db_best_fg_score": int(song.runtime.db.db_best_fg_score or 0),
         "meta_primary_color": song.gpu_inputs.meta_primary_color,
         "meta_secondary_color": song.gpu_inputs.meta_secondary_color,
-        "fg_debug": bool(song.config.fg_debug),
     }
 
 

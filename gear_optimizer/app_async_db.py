@@ -8,7 +8,7 @@ import time
 from typing import Optional
 
 from gear_optimizer.settings import paths
-from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from gear_optimizer.data.database import (
     configure_persistent_writer_connection,
     get_db_connection,
@@ -44,17 +44,6 @@ def _get_team_buff_ref_arrays_cached() -> dict | None:
         stats_table = read_table(str(paths().stats_txt))
         _TEAM_BUFF_REF_ARRAYS_CACHE = _build_ref_arrays_from_stats_table(stats_table)
         return _TEAM_BUFF_REF_ARRAYS_CACHE
-
-
-def _resolve_base_team_buff_for_persistence(cfg_dict: dict) -> str:
-    """
-    Resolve the baseline TeamBuff tier used by the optimizer for this run.
-
-    This matches runtime semantics:
-    - runtime baseline TeamBuff tier is fixed at T5
-    - stale TeamContributionBuffConstant config entries are ignored
-    """
-    return resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
 
 
 class AsyncDbSaver:
@@ -246,7 +235,6 @@ class AsyncDbSaver:
                     try:
                         db_key = meta.get("db_key") or song_name
                         processed_run = bool(meta.get("_processed_run", True))
-                        cfg_dict = meta.get("cfg_dict") or {}
                         canonical_db_path = str(get_evolution_db_path() or "").strip()
                         conn = self._get_writer_connection(canonical_db_path)
                         save_optimizer_song_result(
@@ -255,7 +243,7 @@ class AsyncDbSaver:
                             processed_run=processed_run,
                             conn=conn,
                             db_path=canonical_db_path,
-                            team_buff=_resolve_base_team_buff_for_persistence(cfg_dict),
+                            team_buff=OPTIMIZER_BASELINE_TEAM_BUFF,
                         )
                     except Exception as exc:
                         self._record_error("save", exc, song_name=str(song_name))

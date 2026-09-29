@@ -3,8 +3,6 @@ Utility functions and helpers for the gear optimizer.
 Pure functions with no external dependencies.
 """
 
-import configparser
-
 # --- STAT KEYS / HELPERS ---
 STAT_KEYS = [
     "Perfect Points",
@@ -18,41 +16,6 @@ STAT_KEYS = [
     "Beat",
     "Vibe",
 ]
-
-def cfg_to_dict(cfg):
-    """
-    Serialize ConfigParser to a plain dict for safe process transport.
-
-    Args:
-        cfg: ConfigParser instance
-
-    Returns:
-        dict: Serialized configuration
-    """
-    return {section: dict(cfg.items(section)) for section in cfg.sections()}
-
-
-def cfg_from_dict(cfg_dict):
-    """
-    Rehydrate ConfigParser from a plain dict copy.
-
-    Args:
-        cfg_dict: Dictionary with config sections
-
-    Returns:
-        ConfigParser: Reconstructed configuration object
-    """
-    # Use a plain ConfigParser here: this runs on hot paths (per-song/task) where
-    # fallback diagnostics would otherwise spam logs and materially hurt throughput.
-    # Full fallback diagnostics are still available during top-level config loading.
-    cfg = configparser.ConfigParser()
-    for section, items in cfg_dict.items():
-        if not cfg.has_section(section):
-            cfg.add_section(section)
-        for k, v in items.items():
-            cfg.set(section, k, v)
-    return cfg
-
 
 def empty_stats():
     """
@@ -133,15 +96,6 @@ def safe_float(val, default=0.0):
         if not val or val == "-":
             return default
         return float(val)
-    except (TypeError, ValueError):
-        return default
-
-
-def parse_float(val, default=0.0):
-    try:
-        if val is None:
-            return default
-        return float(str(val).strip())
     except (TypeError, ValueError):
         return default
 

@@ -235,7 +235,6 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
         build_details_fn=lambda data: dict(data or {}),
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},
         ref_arrays={"Perfect Points": [0]},
-        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}},
     )
 
     entry = next(e for e in out if e.get("gear") == gear and e.get("minis") == minis)
@@ -324,7 +323,6 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
         build_details_fn=lambda data: dict(data or {}),
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},
         ref_arrays={"Perfect Points": [0]},
-        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}},
     )
 
     entry = next(e for e in out if e.get("gear") == gear and e.get("minis") == minis)

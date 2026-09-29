@@ -72,40 +72,6 @@ class GemTotals:
         return (self.pp, self.cm, self.fm, self.ft, self.ff, self.element)
 
 
-@dataclass(frozen=True, slots=True)
-class UserGemsSettings:
-    fever_time: int = 0
-    fever_fill: int = 0
-    perfect_points: int = 0
-    combo_multiplier: int = 0
-    fever_multiplier: int = 0
-    static_element: int = 0
-    selected_color: str = ""
-
-    @classmethod
-    def from_config(cls, cfg: Any, selected_color: str = "") -> "UserGemsSettings":
-        if cfg is None:
-            return cls(selected_color=str(selected_color or ""))
-
-        section = "UserInputStatsGems"
-        selected = str(selected_color or "")
-
-        def _cfg_get(option: str, fallback: int = 0) -> int:
-            return safe_int(cfg.get(section, option, fallback=fallback), fallback)
-
-        static_element = safe_int(cfg.get("ElementalGems", selected, fallback=0), 0) if selected else 0
-
-        return cls(
-            fever_time=_cfg_get("fever_time", 0),
-            fever_fill=_cfg_get("fever_fill", 0),
-            perfect_points=_cfg_get("perfect_points", 0),
-            combo_multiplier=_cfg_get("combo_multiplier", 0),
-            fever_multiplier=_cfg_get("fever_multiplier", 0),
-            static_element=int(static_element),
-            selected_color=selected,
-        )
-
-
 def _read_first_int(mapping: Mapping[str, Any], *keys: str) -> int:
     for key in keys:
         if key not in mapping:

@@ -90,7 +90,7 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         "Vibe": 0,
     }
     # zero_ms re-solves the gem allocation from gear/mini item stats, not from already allocated Stats.
-    # With the minimal cfg here, song fixed stats are zero, so the pre-gem row is just the item sum.
+    # Song fixed stats are zero here, so the pre-gem row is just the item sum.
     entry = {
         "loadout_hash": "pytest_zero_ms_loadout",
         "score": 1,
@@ -134,7 +134,6 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}},
         timing_mode="zero_ms",
     )
 
@@ -149,7 +148,6 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
 
 def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch):
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.core.utils import cfg_from_dict
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
         build_team_buff_tier_db_batches,
         resolve_tier_base,
@@ -180,7 +178,6 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     apply_timing_envelope(calc_song, mode="zero_ms")
     build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
 
-    cfg = cfg_from_dict({"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}})
     fixed_song_stats = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -222,25 +219,21 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
 
     base_singles = [
         resolve_tier_base(
-            cfg=cfg,
             fixed_song_stats=fixed_song_stats,
             loadout_items=loadout,
             calc_song=dict(calc_song),
             ref_arrays=ref_arrays,
             primary_color="Rush",
-            secondary_color="Flow",
             selected_color="Rush",
         )
         for loadout in loadouts
     ]
     base_batch = resolve_tier_base_batch(
-        cfg=cfg,
         fixed_song_stats=fixed_song_stats,
         loadouts=loadouts,
         calc_song=dict(calc_song),
         ref_arrays=ref_arrays,
         primary_color="Rush",
-        secondary_color="Flow",
         selected_color="Rush",
     )
 
@@ -297,7 +290,6 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         entries=[entry],
         calc_song=dict(calc_song),
         ref_arrays=ref_arrays,
-        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}},
         limit=1,
         tiers=("T5",),
         replay_surface="fg",

@@ -181,7 +181,6 @@ def test_leaderboard_under_nonzero_baseline_offset_is_valid(tmp_path, monkeypatc
         entries=[entry],
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}},
         timing_mode="zero_ms",
         baseline_offset=offset,
     )

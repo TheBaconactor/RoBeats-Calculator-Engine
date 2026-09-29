@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 import logging
 
-from ...core.team_buff import resolve_baseline_team_buff_from_cfg_dict
+from ...core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from ...core.utils import safe_int
 from .fg_payload import has_valid_fg_payload
 from .item_utils import names_list
@@ -34,7 +34,6 @@ def stable_loadout_key(entry_obj: Mapping[str, Any]) -> tuple[tuple[str, ...], t
 class ReplayContext:
     calc_song: dict
     ref_arrays: dict
-    cfg_dict: dict
 
 
 def _details_have_stats(details_obj: Any) -> bool:
@@ -197,12 +196,7 @@ def _canonicalize_entry_from_row(entry: dict[str, Any], row: Mapping[str, Any]) 
     return merged
 
 
-def _replay_batch(
-    entries: list[dict[str, Any]],
-    *,
-    replay_ctx: ReplayContext,
-    baseline_team_buff: str,
-) -> list[dict]:
+def _replay_batch(entries: list[dict[str, Any]], *, replay_ctx: ReplayContext) -> list[dict]:
     # Thread the calc_song's prepared timing model into the re-solve so a zero_ms-prepared song
     # canonicalizes at fixed chart time. Absent/unknown stamp -> perfect_window, which is
     # build_team_buff_tier_db_batches' own default, so the perfect_window path is unchanged.
@@ -214,21 +208,15 @@ def _replay_batch(
         entries=entries,
         calc_song=replay_ctx.calc_song,
         ref_arrays=dict(replay_ctx.ref_arrays),
-        cfg_dict=dict(replay_ctx.cfg_dict),
         limit=max(1, int(len(entries))),
-        tiers=(str(baseline_team_buff),),
+        tiers=(OPTIMIZER_BASELINE_TEAM_BUFF,),
         timing_mode=timing_mode,
     )
-    return list(batch.get(str(baseline_team_buff)) or [])
+    return list(batch.get(OPTIMIZER_BASELINE_TEAM_BUFF) or [])
 
 
-def _replay_single_or_fail(
-    entry: dict[str, Any],
-    *,
-    replay_ctx: ReplayContext,
-    baseline_team_buff: str,
-) -> dict[str, Any]:
-    rows = _replay_batch([entry], replay_ctx=replay_ctx, baseline_team_buff=baseline_team_buff)
+def _replay_single_or_fail(entry: dict[str, Any], *, replay_ctx: ReplayContext) -> dict[str, Any]:
+    rows = _replay_batch([entry], replay_ctx=replay_ctx)
     if rows and isinstance(rows[0], dict):
         return _canonicalize_entry_from_row(entry, rows[0])
     raise RuntimeError(
@@ -245,9 +233,7 @@ def _canonicalize_entries(
     if not entries:
         return []
 
-    cfg_dict_local = dict(replay_ctx.cfg_dict)
-    baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict_local, default="T5")
-    canonical_rows = _replay_batch(entries, replay_ctx=replay_ctx, baseline_team_buff=baseline_team_buff)
+    canonical_rows = _replay_batch(entries, replay_ctx=replay_ctx)
 
     rows_by_hash: dict[str, list[dict]] = {}
     rows_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], list[dict]] = {}
@@ -274,7 +260,7 @@ def _canonicalize_entries(
         if isinstance(row, dict):
             out.append(_canonicalize_entry_from_row(entry, row))
             continue
-        out.append(_replay_single_or_fail(entry, replay_ctx=replay_ctx, baseline_team_buff=str(baseline_team_buff)))
+        out.append(_replay_single_or_fail(entry, replay_ctx=replay_ctx))
     return out
 
 
@@ -361,16 +347,11 @@ def build_persistence_entries(
     *,
     calc_song: dict | None = None,
     ref_arrays: dict | None = None,
-    cfg_dict: dict | None = None,
 ):
     if not (isinstance(calc_song, dict) and calc_song and isinstance(ref_arrays, dict) and ref_arrays):
         raise ValueError("build_persistence_entries requires calc_song and ref_arrays for authoritative replay.")
 
-    replay_ctx = ReplayContext(
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        cfg_dict=dict(cfg_dict) if isinstance(cfg_dict, dict) else {},
-    )
+    replay_ctx = ReplayContext(calc_song=calc_song, ref_arrays=ref_arrays)
     return canonicalize_and_assemble(
         db_payload=db_payload if isinstance(db_payload, dict) else {},
         ga_candidates=ga_candidates,

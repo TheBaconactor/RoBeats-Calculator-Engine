@@ -97,14 +97,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             payload.get("best_data") or {},
             payload.get("best_gear") or [],
             payload.get("best_minis") or [],
-            payload.get("current_gear") or [],
-            payload.get("current_minis") or [],
             fg_variants,
             payload.get("_emit") or (lambda _msg: None),
-            fg_debug=bool(payload.get("fg_debug")),
-            ref_arrays=payload.get("ref_arrays"),
-            calc_song=payload.get("calc_song"),
-            cfg=payload.get("cfg"),
             db_best_fg_score=db_best_fg_floor,
             prev_record=payload.get("prev_record"),
         )
@@ -145,7 +139,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 persisted = _canonicalize_fg_update_entries(
                     persisted,
                     file_path=str(item.get("file_path") or ""),
-                    cfg_dict=item.get("cfg_dict") or {},
                     ref_arrays=item.get("ref_arrays"),
                     song_name=str(song_name),
                 )
@@ -159,7 +152,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         meta={
                             "db_key": db_key,
                             "_processed_run": False,  # FG-only update: do NOT increment attempts
-                            "cfg_dict": item.get("cfg_dict") or {},
                         },
                     )
                 else:
@@ -248,14 +240,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             post_context.best_data,
                             post_context.best_gear,
                             post_context.best_minis,
-                            item.get("current_gear") or [],
-                            item.get("current_minis") or [],
                             post_context.fg_variants,
                             _emit,
-                            fg_debug=bool(item.get("fg_debug")),
-                            ref_arrays=item.get("ref_arrays"),
-                            calc_song=item.get("calc_song"),
-                            cfg=post_context.cfg,
                             db_best_fg_score=post_context.db_best_fg_score,
                             prev_record=post_context.prev_record,
                         )
@@ -286,7 +272,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             meta={
                                 "db_key": db_key,
                                 "_processed_run": True,
-                                "cfg_dict": item.get("cfg_dict") or {},
                             },
                         )
                     else:
@@ -298,7 +283,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             meta={
                                 "db_key": db_key,
                                 "_processed_run": True,
-                                "cfg_dict": item.get("cfg_dict") or {},
                             },
                         )
 

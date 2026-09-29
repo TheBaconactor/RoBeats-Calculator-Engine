@@ -1,4 +1,3 @@
-import configparser
 import os
 import sys
 import types
@@ -6,9 +5,9 @@ import types
 import pytest
 
 from gear_optimizer.app import GearOptimizerApp
-from gear_optimizer.core.config import DEFAULT_INFLIGHT_SONGS
+from gear_optimizer.domain.jobs import SharedRunContext, SongJob, task_tuple_from_job_context
 from gear_optimizer.engine.native import NativeOptimizationEngine
-from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT
+from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT, IN_FLIGHT_SONGS
 from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
 
 
@@ -25,33 +24,26 @@ def _make_minimal_app() -> GearOptimizerApp:
     return app
 
 
-def _build_tasks(*, inflight_songs: int = 2, count: int = 2):
-    cfg = {"IterationEngine": {"inflightsongs": inflight_songs}}
+def _build_tasks(*, count: int = 2):
+    context = SharedRunContext(
+        multi_start=3,
+        ref_arrays={},
+        all_gears=[],
+        all_minis=[],
+        gears_by_name={},
+        minis_by_name={},
+        ga_depth=1,
+        parallel_workers=1,
+    )
     return [
-        (
-            f"song-{idx}.txt",
-            f"Song {idx}",
-            "Hard",
-            cfg,
-            {},
-            {},
-            [],
-            [],
-            {},
-            {},
-            True,
-            1,
-            None,
-            0,
-            False,
-        )
+        task_tuple_from_job_context(SongJob(file_path=f"song-{idx}.txt", song_name=f"Song {idx}", difficulty="Hard"), context)
         for idx in range(count)
     ]
 
 
 def test_single_song_still_uses_native_inflight_pipeline(monkeypatch):
     app = _make_minimal_app()
-    tasks = _build_tasks(inflight_songs=1, count=1)
+    tasks = _build_tasks(count=1)
     calls: list[dict] = []
 
     def _record_run(*args, **kwargs):
@@ -74,7 +66,7 @@ def test_single_song_still_uses_native_inflight_pipeline(monkeypatch):
 
 def test_full_task_prefix_uses_native_inflight_pipeline(monkeypatch):
     app = _make_minimal_app()
-    tasks = _build_tasks(inflight_songs=1, count=1)
+    tasks = _build_tasks(count=1)
     native_calls: list[dict] = []
 
     def _record_run(*args, **kwargs):
@@ -94,12 +86,12 @@ def test_full_task_prefix_uses_native_inflight_pipeline(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("configured", "count", "expected"),
-    [(0, 2, 2), (1, 2, 1), (20, 2, 2)],
+    ("count", "expected"),
+    [(1, 1), (2, 2), (IN_FLIGHT_SONGS + 5, IN_FLIGHT_SONGS)],
 )
-def test_native_execution_uses_canonical_inflight_resolution(monkeypatch, configured, count, expected):
+def test_native_execution_caps_inflight_songs_at_the_queue(monkeypatch, count, expected):
     app = _make_minimal_app()
-    tasks = _build_tasks(inflight_songs=configured, count=count)
+    tasks = _build_tasks(count=count)
     calls: list[dict] = []
 
     def _record_run(*args, **kwargs):
@@ -118,7 +110,7 @@ def test_native_execution_uses_canonical_inflight_resolution(monkeypatch, config
 
 def test_inflight_failure_raises_instead_of_falling_back(monkeypatch):
     app = _make_minimal_app()
-    tasks = _build_tasks(inflight_songs=2, count=2)
+    tasks = _build_tasks(count=2)
 
     def _raise_runtime(*_args, **_kwargs):
         raise RuntimeError("boom")
@@ -157,10 +149,7 @@ def test_configure_execution_prewarms_native_ga():
 
     app = object.__new__(GearOptimizerApp)
     gpu_fields._REQUESTED_MAX_GA_RUNS = None
-    cfg = configparser.ConfigParser()
-    cfg.read_dict({"IterationEngine": {"InFlightSongs": "0", "GA_MultiStart": "3"}})
-
-    app._configure_execution_and_prewarm(cfg)
+    app._configure_execution_and_prewarm(3)
 
     # GA buffer sizing is recorded in-process now (was the GPU_NATIVE_GA_MAX_RUNS env bridge).
     assert gpu_fields._REQUESTED_MAX_GA_RUNS == 3

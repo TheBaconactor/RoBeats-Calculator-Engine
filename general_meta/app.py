@@ -5,17 +5,17 @@ import os
 from datetime import datetime
 from typing import Any, Dict
 
-from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
-    resolve_baseline_team_buff_from_cfg,
+    OPTIMIZER_BASELINE_TEAM_BUFF,
     team_buff_display_label,
     team_buff_effect,
 )
-from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
+from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display, representative_mini_names
-from gear_optimizer.settings import ENGINE_ROOT, paths
+from gear_optimizer.settings import ENGINE_ROOT
 
 from .analysis import (
     _ELEMENT_ORDER,
@@ -101,13 +101,7 @@ def _serialize_details_json(details: object) -> str | None:
         return None
 
 
-def _build_replayed_loadout_rows_for_song(
-    song: dict,
-    *,
-    team_color: str,
-    cfg_dict: dict | None,
-    ref_arrays: dict | None,
-) -> tuple[dict | None, dict | None, dict[str, list[dict]]]:
+def _build_replayed_loadout_rows_for_song(song: dict) -> dict[str, list[dict]]:
     """
     Build per-tier loadout rows for a song.
 
@@ -125,9 +119,6 @@ def _build_replayed_loadout_rows_for_song(
       ``build_team_buff_tier_db_batches`` with ``replay_surface``/``timing_mode`` set as
       needed. Until then, keep this on the T5-only no-replay path.
     """
-    from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
-    from gear_optimizer.core.utils import cfg_to_dict
-    from gear_optimizer.core.config import load_config
     from gear_optimizer.data.database import get_best_loadouts
     from gear_optimizer.data.loadout_equivalence import (
         get_gears_by_name_cached,
@@ -137,10 +128,9 @@ def _build_replayed_loadout_rows_for_song(
 
     song_name = str((song or {}).get("song_name") or "").strip()
     if not song_name:
-        return cfg_dict, ref_arrays, {}
+        return {}
 
-    cfg_dict_local = dict(cfg_dict) if cfg_dict is not None else cfg_to_dict(load_config())
-    baseline_team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict_local, default="T5")
+    baseline_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
 
     # Read T5 seed entries directly from the DB. Pass the cached name->stats maps so entries
     # carry full gear/mini stat dicts (required by downstream persistence canonicalization
@@ -189,43 +179,18 @@ def _build_replayed_loadout_rows_for_song(
         tier_label = team_buff_display_label(str(tier), default="NONE")
         rows_by_tier[tier_label] = list(tier_rows)
 
-    return cfg_dict_local, ref_arrays, rows_by_tier
+    return rows_by_tier
 
 
-def run_general_meta(cfg) -> dict:
+def run_general_meta() -> dict:
     """
     Main entry point for GeneralMeta optimization.
     """
-    import numpy as np
-
     print("\n" + "=" * 60)
     print("GENERAL META - Cross-Song Optimization")
     print("=" * 60)
 
     sync_exported_game_data()
-
-    stats_table = read_table(str(paths().stats_txt))
-    stat_names = [
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Fill Rate",
-        "Fever Time",
-    ]
-    ref_arrays = {}
-    for i, name in enumerate(stat_names):
-        temp_list = []
-        for v in range(TOTAL_ROWS + 1):
-            lookup_index = TOTAL_ROWS - v
-            try:
-                val = stats_table[lookup_index][i] if stats_table else 0
-            except Exception:
-                val = 0
-            temp_list.append(val)
-        ref_arrays[name] = np.array(temp_list, dtype=np.float64)
-
-    _ = cfg
-    _ = ref_arrays
 
     all_gears = load_all_gears_list()
     all_minis = load_all_minis_list()
@@ -233,19 +198,6 @@ def run_general_meta(cfg) -> dict:
     minis_by_name = {m["Name"]: m for m in all_minis}
 
     team_buff_tiers = [team_buff_display_label(tier, default="NONE") for tier in DEFAULT_TEAM_BUFF_REPLAY_TIERS]
-
-    def _resolve_team_color(default_color: str) -> str:
-        try:
-            if cfg is not None and cfg.has_section("TeamContributionBuffConstant"):
-                v = cfg.get("TeamContributionBuffConstant", "teamcolor", fallback="").strip()
-                if v:
-                    return v
-                v = cfg.get("TeamContributionBuffConstant", "TeamColor", fallback="").strip()
-                if v:
-                    return v
-        except Exception:
-            pass
-        return str(default_color or "").strip()
 
     def _team_buff_base_stats(team_buff: str, team_color: str) -> dict:
         return team_buff_effect(team_buff, team_color)
@@ -307,12 +259,9 @@ def run_general_meta(cfg) -> dict:
     for combo, songs in songs_by_combo.items():
         print(f"  {combo[0]}/{combo[1]}: {len(songs)} songs")
 
-    baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg, default="T5")
-    baseline_label = team_buff_display_label(baseline_team_buff, default="T5")
+    baseline_label = team_buff_display_label(OPTIMIZER_BASELINE_TEAM_BUFF, default="T5")
     default_team_buff_label = team_buff_display_label("T5", default="T5")
     print(f"\nPreparing TeamBuff tier replay seed rows (baseline TeamBuff={baseline_label})...")
-    replay_cfg_dict: dict | None = None
-    replay_ref_arrays: dict | None = None
     song_tier_rows_cache: dict[str, dict[str, list[dict]]] = {}
 
     results: Dict[str, Any] = {}
@@ -345,7 +294,7 @@ def run_general_meta(cfg) -> dict:
             }
             continue
 
-        team_color = _resolve_team_color(primary)
+        team_color = str(primary or "").strip()
         loadouts_by_tier_by_song: dict[str, dict[str, list[dict]]] = {tier: {} for tier in team_buff_tiers}
         songs_with_data_by_tier: dict[str, set[str]] = {tier: set() for tier in team_buff_tiers}
 
@@ -355,12 +304,7 @@ def run_general_meta(cfg) -> dict:
                 continue
             rows_by_tier = song_tier_rows_cache.get(song_name)
             if rows_by_tier is None:
-                replay_cfg_dict, replay_ref_arrays, rows_by_tier = _build_replayed_loadout_rows_for_song(
-                    song,
-                    team_color=team_color,
-                    cfg_dict=replay_cfg_dict,
-                    ref_arrays=replay_ref_arrays,
-                )
+                rows_by_tier = _build_replayed_loadout_rows_for_song(song)
                 song_tier_rows_cache[song_name] = rows_by_tier
 
             for tier_label in team_buff_tiers:

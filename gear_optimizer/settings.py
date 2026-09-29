@@ -184,11 +184,25 @@ def read_run_settings(path: Path | None = None) -> RunSettings:
             if known is None:
                 raise ValueError(f"{config_file}: [{section}] {key} is not a config.ini setting (removed or misspelled)")
             name, kind = known
+            if kind is str and not raw.strip():
+                continue  # an empty text value means the default (e.g. `Difficulty =` is All)
             values[name] = _parse_value(raw, kind, where=f"{config_file}: [{section}] {key}")
     settings = RunSettings(**values)
     if settings.song_repeats < 1 or settings.song_queue_limit < 0 or settings.search_depth < 1 or settings.multi_start < 1:
         raise ValueError(f"{config_file}: SongRepeats/GA_SearchDepth/GA_MultiStart must be >= 1, SongQueueLimit >= 0")
     return settings
+
+
+# A service request's reasoning level multiplies the default GA search: how deep the GA evolves and how many
+# independent starting populations it runs (~free, they run concurrently on the GPU).
+REASONING_LEVELS = {"default": 1, "strong": 2, "max": 4}
+
+
+def reasoning_search(level: str) -> tuple[int, int]:
+    """(GA search depth, GA multi-start) for a service reasoning level."""
+    multiplier = REASONING_LEVELS[level]
+    defaults = RunSettings()
+    return defaults.search_depth * multiplier, defaults.multi_start * multiplier
 
 
 def ga_seed() -> int | None:

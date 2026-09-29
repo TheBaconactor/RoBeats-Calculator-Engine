@@ -292,7 +292,6 @@ def test_fg_response_scoring_failure_raises_directly(monkeypatch):
 
 
 def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(monkeypatch):
-    import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
@@ -313,13 +312,9 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
         staticmethod(_fake_prepare_plan),
     )
 
-    cfg = configparser.ConfigParser()
-    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
     song = make_native_song(
-        cfg=cfg,
         calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
-        cfg_dict={},
         ga_candidates=[
             {
                 "Score": 100,
@@ -355,7 +350,6 @@ def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatc
     # prep only builds the plan -- it does NOT prefetch any owner BUILD/SCORE round
     # trip (the former prefetch_group_builds + finalize_prefetched_group_builds step is
     # deleted). A passed gpu_client is accepted but unused for scoring.
-    import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
@@ -368,12 +362,8 @@ def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatc
     assert not hasattr(FgResponseScoringService, "prefetch_group_builds")
     assert not hasattr(FgResponseScoringService, "finalize_prefetched_group_builds")
 
-    cfg = configparser.ConfigParser()
-    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
     song = make_native_song(
-        cfg=cfg,
         calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
-        cfg_dict={},
         ga_candidates=[
             {
                 "Score": 100,
@@ -401,7 +391,6 @@ def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatc
 
 
 def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(monkeypatch):
-    import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
@@ -413,8 +402,6 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
         staticmethod(lambda *_args, **_kwargs: "prepared-plan"),
     )
 
-    cfg = configparser.ConfigParser()
-    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
 
     duplicate_prefix = [
         {
@@ -435,9 +422,7 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
     }
 
     song = make_native_song(
-        cfg=cfg,
         calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
-        cfg_dict={},
         ga_candidates=duplicate_prefix + [keeper],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -462,7 +447,6 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
 
 
 def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monkeypatch):
-    import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
@@ -484,8 +468,6 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
         staticmethod(lambda *_args, **_kwargs: "prepared-plan"),
     )
 
-    cfg = configparser.ConfigParser()
-    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
     ga_candidates = [
         {
             "Score": 1000 - i,
@@ -498,9 +480,7 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
     ]
 
     song = make_native_song(
-        cfg=cfg,
         calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
-        cfg_dict={},
         ga_candidates=ga_candidates,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -524,7 +504,6 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
 
 
 def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkeypatch):
-    import configparser
 
     import gear_optimizer.solver.native_inflight_pipeline as stages
     from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
@@ -536,12 +515,8 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
         staticmethod(lambda *_args, **_kwargs: None),
     )
 
-    cfg = configparser.ConfigParser()
-    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
     song = make_native_song(
-        cfg=cfg,
         calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
-        cfg_dict={},
         ga_candidates=[{"BaseScore": 100, "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"}}],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -560,7 +535,6 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
 
 
 def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundle(monkeypatch):
-    import configparser
 
     from types import SimpleNamespace
 
@@ -586,11 +560,8 @@ def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundl
 
     monkeypatch.setattr(response_cache, "session_prune_scoring_bundle", _fake_session_prune)
 
-    cfg = configparser.ConfigParser()
     song = make_native_song(
-        cfg=cfg,
         calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
-        cfg_dict={},
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         db_key="song-db-key",

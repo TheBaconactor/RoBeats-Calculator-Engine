@@ -30,10 +30,9 @@ def _write_song(path):
 def test_native_calc_song_uses_shared_base_song_io_and_clones_before_timing_envelope(tmp_path):
     song_path = tmp_path / "shared_io_song.txt"
     _write_song(song_path)
-    cfg_dict = {"IterationEngine": {"GA_SearchDepth": "125"}}
 
-    base_calc_song = get_base_calc_song(str(song_path), cfg_dict)
-    native_calc_song = build_prepared_calc_song(fp=str(song_path), cfg_dict=cfg_dict).calc_song
+    base_calc_song = get_base_calc_song(str(song_path))
+    native_calc_song = build_prepared_calc_song(fp=str(song_path)).calc_song
 
     assert native_calc_song is not base_calc_song
     assert native_calc_song["metadata"]["Song Name"] == "Shared IO Song"
@@ -102,7 +101,7 @@ def test_non_time_sorted_export_is_canonicalized_to_nondecreasing_time(tmp_path)
     assert bool(np.all(ts[1:] >= ts[:-1]))
 
     # Same canonical order flows through the production calc_song builder.
-    calc_song = get_base_calc_song(str(song_path), {})
+    calc_song = get_base_calc_song(str(song_path))
     cs_ts = np.asarray(calc_song["song_data"]["timestamps"], dtype=np.float32)
     cs_nt = np.asarray(calc_song["song_data"]["note_types"], dtype=np.int16)
     assert np.array_equal(cs_ts, ts)

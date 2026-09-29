@@ -12,7 +12,7 @@ def test_app_runs_startup_cache_prebuild_before_gpu_and_live_execution() -> None
     source = Path("gear_optimizer/app.py").read_text(encoding="utf-8")
 
     cache_idx = source.index("run_startup_cpu_work(")
-    gpu_idx = source.index("self._configure_execution_and_prewarm(cfg)")
+    gpu_idx = source.index("self._configure_execution_and_prewarm(run.multi_start)")
     execute_idx = source.index("self._execute_tasks(")
 
     assert cache_idx < gpu_idx < execute_idx
@@ -50,7 +50,6 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
     monkeypatch.setattr(cpu_work_manager, "run_fg_response_frontier_cache_prebuild", _fg)
 
     cpu_work_manager.run_startup_cpu_work(
-        cfg=object(),
         song_queue=[("Data/Easy/Fake.txt",)],
         ref_arrays={},
         data_root="Data",
@@ -77,7 +76,6 @@ def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(mo
 
     stream = io.StringIO()
     cpu_work_manager.run_startup_cpu_work(
-        cfg=object(),
         song_queue=[("Data/Easy/Fake.txt",)],
         ref_arrays={},
         data_root="Data",
@@ -107,7 +105,6 @@ def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeyp
 
     stream = io.StringIO()
     cpu_work_manager.run_startup_cpu_work(
-        cfg=object(),
         song_queue=[("Data/Easy/Fake.txt",)],
         ref_arrays={},
         data_root="Data",
@@ -438,7 +435,6 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
     monkeypatch.setattr(prebuild, "_dedupe_paths_by_response_bundle_key", _unexpected_parse)
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        cfg=object(),
         song_queue=[(str(song_a),), (str(song_b),)],
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         data_root=tmp_path,
@@ -520,7 +516,6 @@ def test_complete_manifest_skips_maintenance_with_uncompressed_sidecars(
     )
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        cfg=object(),
         song_queue=[(str(song_path),)],
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         data_root=tmp_path,
@@ -588,7 +583,6 @@ def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch
 
     monkeypatch.setattr(prebuild, "_run_missing_fg_prebuild", _unexpected_build)
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        cfg=object(),
         song_queue=[(str(song_path),)],
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         data_root=tmp_path,
@@ -652,7 +646,6 @@ def test_fg_current_manifest_persists_complete_unrecorded_hits_under_lock(monkey
     )
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        cfg=object(),
         song_queue=[(str(song_path),)],
         ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
         data_root=tmp_path,
@@ -694,7 +687,6 @@ def test_timeline_prebuild_manifest_hits_do_not_acquire_build_lock(monkeypatch, 
     )
 
     summary = prebuild.run_timeline_frontier_cache_prebuild(
-        cfg=object(),
         song_queue=[(str(song_path),)],
         ref_arrays={},
         data_root=tmp_path,
@@ -745,7 +737,6 @@ def test_timeline_prebuild_persists_complete_unrecorded_hits_under_lock(monkeypa
     )
 
     summary = prebuild.run_timeline_frontier_cache_prebuild(
-        cfg=object(),
         song_queue=[(str(song_path),)],
         ref_arrays={},
         data_root=tmp_path,
@@ -770,7 +761,7 @@ def test_startup_frontier_cache_prebuild_has_no_scope_or_disable_flags() -> None
         "skip_cached",
         "CpuWorkManager",
     )
-    paths = list(Path("gear_optimizer").rglob("*.py")) + [Path("config.ini"), Path("config.profile.ini")]
+    paths = list(Path("gear_optimizer").rglob("*.py")) + [Path("config.ini")]
     offenders: list[tuple[str, str]] = []
     for path in paths:
         if not path.exists():

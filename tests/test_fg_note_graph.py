@@ -599,7 +599,6 @@ def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
     root = Path(__file__).resolve().parents[1]
     calc_song = build_prepared_calc_song(
         fp=str(root / "Data" / "Easy" / "Mopemope (Easy) by LeaF (7eaF).txt"),
-        cfg_dict={},
     ).calc_song
     song_inputs = extract_fg_song_inputs(calc_song)
     surface = FgResponseSurface(
@@ -659,7 +658,6 @@ def test_alice_same_time_boundary_reconstructs_exact_judgments_and_order():
     root = Path(__file__).resolve().parents[1]
     calc_song = build_prepared_calc_song(
         fp=str(root / "Data" / "Hard" / "Alice in Misanthrope (Hard) by LeaF (7eaF).txt"),
-        cfg_dict={},
     ).calc_song
     song_inputs = extract_fg_song_inputs(calc_song)
     surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 1597, 1, 0)
@@ -715,7 +713,6 @@ def test_light_it_up_late_great_cluster_reconstructs_exact_judgments_and_order()
     root = Path(__file__).resolve().parents[1]
     calc_song = build_prepared_calc_song(
         fp=str(root / "Data" / "Normal" / "Light it up by Camellia.txt"),
-        cfg_dict={},
     ).calc_song
     song_inputs = extract_fg_song_inputs(calc_song)
     surface = FgResponseSurface(0, 0, 4294705152, 15, 0, 0, 4063232, 0, 740, 0, 0)
@@ -1946,8 +1943,7 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     fd = json.loads(row[0])
     calc = clone_calc_song(
         get_base_calc_song(
-            "Data/Normal/Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat].txt", {}
-        )
+            "Data/Normal/Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat].txt")
     )
     apply_timing_envelope(calc)
     si = extract_fg_song_inputs(calc)

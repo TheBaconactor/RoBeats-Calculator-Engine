@@ -86,8 +86,6 @@ class ItemRegistry:
         # Mappings
         self.id_to_item: dict[int, dict] = {0: {}}  # ID 0 = empty
         self.item_to_id: dict[tuple[int, str], int] = {}  # (slot_idx, name) -> id
-        # Fast slot-local lookup tables for hot encoding paths.
-        self._slot_name_to_id: list[dict[str, int]] = [{} for _ in range(9)]
 
         # Per-slot pool boundaries
         self.slot_start = [0] * 9  # First valid ID for each slot
@@ -113,7 +111,6 @@ class ItemRegistry:
                 next_id += 1
                 self.id_to_item[item_id] = item
                 self.item_to_id[(slot_idx, name)] = item_id
-                self._slot_name_to_id[slot_idx][str(name)] = item_id
 
         # Process mini slots (6-8) - they share the same pool
         mini_items = mini_pool
@@ -139,7 +136,6 @@ class ItemRegistry:
             # Register for all mini slots (6, 7, 8)
             for mini_slot in MINI_SLOT_INDICES:
                 self.item_to_id[(mini_slot, name)] = item_id
-                self._slot_name_to_id[mini_slot][str(name)] = item_id
 
         # Set mini slot boundaries (all share same pool)
         for mini_slot in MINI_SLOT_INDICES:
@@ -280,34 +276,3 @@ class ItemRegistry:
         }
         self._gpu_arrays_cache = out
         return out
-
-    def encode_population(self, population: list[list[dict]]) -> np.ndarray:
-        """
-        Encode an entire population of genomes.
-
-        Args:
-            population: List of genomes (each genome is list of 9 item dicts)
-
-        Returns:
-            np.ndarray: (n_genomes, 9) int32 array of item IDs
-        """
-        n_genomes = len(population)
-        ids = np.zeros((n_genomes, 9), dtype=np.int32)
-        slot_name_to_id = self._slot_name_to_id
-
-        for i, genome in enumerate(population):
-            row = ids[i]
-            limit = min(9, len(genome))
-            for slot_idx in range(limit):
-                item = genome[slot_idx]
-                if not item:
-                    continue
-
-                if isinstance(item, dict):
-                    name = item.get("Name", "")
-                    if name:
-                        row[slot_idx] = slot_name_to_id[slot_idx].get(str(name), 0)
-                else:
-                    row[slot_idx] = slot_name_to_id[slot_idx].get(str(item), 0)
-
-        return ids

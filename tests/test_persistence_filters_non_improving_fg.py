@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import configparser
-
 
 def test_build_db_payload_drops_fg_variants_worse_than_base():
     from gear_optimizer.helpers.song_helpers.persistence_payload import build_db_payload, make_build_details_fn
-
-    cfg = configparser.ConfigParser()
-    cfg.add_section("IterationEngine")
 
     build_details = make_build_details_fn("Chill", "Flow", "Hard")
 

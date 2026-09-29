@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import ast
 import re
-import subprocess
-import sys
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -40,7 +38,6 @@ _MAINTAINED_DOCS = (
     "SECURITY.md",
     "SUPPORT.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
-    "configs/README.md",
     "docs/README.md",
     "docs/ARCHITECTURE.md",
     "docs/DATABASE_SCHEMA.md",
@@ -173,31 +170,6 @@ def test_maintained_document_code_paths_resolve() -> None:
     )
 
 
-def test_repository_config_samples_load() -> None:
-    from gear_optimizer.core.config import load_config, read_iteration_engine_settings
-
-    config_paths = [
-        _REPO_ROOT / "config.ini",
-        _REPO_ROOT / "config.profile.ini",
-        *sorted((_REPO_ROOT / "configs").rglob("*.ini")),
-    ]
-    offenders: list[str] = []
-    for path in config_paths:
-        try:
-            cfg = load_config(str(path))
-            read_iteration_engine_settings(cfg)
-            if any(cfg.has_option(section, "_extends") for section in cfg.sections()):
-                offenders.append(f"{path.relative_to(_REPO_ROOT)}: unresolved _extends")
-        except Exception as exc:
-            offenders.append(
-                f"{path.relative_to(_REPO_ROOT)}: {type(exc).__name__}: {exc}"
-            )
-
-    assert not offenders, "Repository config samples do not load:\n" + "\n".join(
-        offenders
-    )
-
-
 def test_retired_force_great_options_stay_out_of_configs_and_tools() -> None:
     retired_config_options = (
         "ForceGreatsMode",
@@ -208,12 +180,7 @@ def test_retired_force_great_options_stay_out_of_configs_and_tools() -> None:
     retired_runtime_state = ("pending_fg_jobs",)
     offenders: list[str] = []
 
-    config_paths = [
-        _REPO_ROOT / "config.ini",
-        _REPO_ROOT / "config.profile.ini",
-        *sorted((_REPO_ROOT / "configs").rglob("*.ini")),
-    ]
-    for path in config_paths:
+    for path in (_REPO_ROOT / "config.ini",):
         text = path.read_text(encoding="utf-8", errors="ignore").lower()
         hits = [token for token in retired_config_options if token.lower() in text]
         if hits:
@@ -230,30 +197,6 @@ def test_retired_force_great_options_stay_out_of_configs_and_tools() -> None:
             offenders.append(f"{path.relative_to(_REPO_ROOT)}: {', '.join(hits)}")
 
     assert not offenders, "Retired Force Great controls were reintroduced:\n" + "\n".join(
-        offenders
-    )
-
-
-def test_maintained_tool_entry_points_support_direct_help() -> None:
-    entry_points = (
-        "tools/bench/bench_fg_depth_quick.py",
-        "tools/db/smoke_run_and_audit.py",
-    )
-    offenders: list[str] = []
-    for relative_path in entry_points:
-        result = subprocess.run(
-            [sys.executable, relative_path, "--help"],
-            cwd=_REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.strip().splitlines()
-            detail = stderr[-1] if stderr else f"exit {result.returncode}"
-            offenders.append(f"{relative_path}: {detail}")
-
-    assert not offenders, "Maintained tool entry points do not launch:\n" + "\n".join(
         offenders
     )
 

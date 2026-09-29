@@ -4,9 +4,7 @@ import logging
 import sqlite3
 import threading
 import time
-from typing import Any, Mapping
 
-from ...core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from ...data.database import (
     get_db_connection_cached,
     get_best_loadouts,
@@ -32,22 +30,6 @@ def build_db_key(found_song_name: str, calc_song: dict | None = None) -> str:
     # Keep signature for call sites that pass calc_song.
     _ = calc_song
     return str(found_song_name or "").strip()
-
-
-def resolve_database_baseline_team_buff(
-    cfg: Any | None = None,
-    *,
-    cfg_dict: Mapping[str, Any] | None = None,
-    default: str = "T5",
-) -> str:
-    """
-    Resolve the TeamBuff tier used for progress/context reads.
-
-    Native optimizer DB context reads the persisted baseline slice. Runtime auto
-    mode stores baseline rows under the fixed optimizer baseline.
-    """
-    _ = cfg, cfg_dict, default
-    return OPTIMIZER_BASELINE_TEAM_BUFF
 
 
 def _maybe_wal_maintenance(conn) -> None:

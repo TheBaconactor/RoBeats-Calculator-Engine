@@ -8,10 +8,9 @@ This is THE one post-processing path; there is no second/alternate route.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import configparser
 from typing import Any, Callable
 
-from gear_optimizer.core.utils import cfg_from_dict, safe_int
+from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.persistence_canon import (
     ReplayContext,
     canonicalize_and_assemble,
@@ -27,7 +26,6 @@ from gear_optimizer.pipeline.post_processor_fg_variants import best_fg_improving
 
 @dataclass(frozen=True)
 class PostPersistContext:
-    cfg: Any
     build_details: Callable[[dict[str, Any]], dict[str, Any]]
     best_data: Any
     best_gear: Any
@@ -40,9 +38,6 @@ class PostPersistContext:
 
 
 def build_post_persist_context(item: dict[str, Any]) -> PostPersistContext:
-    cfg_dict = item.get("cfg_dict") or {}
-    cfg = cfg_from_dict(cfg_dict) if cfg_dict else configparser.ConfigParser()
-
     primary = str(item.get("meta_primary_color") or "")
     secondary = str(item.get("meta_secondary_color") or "")
     difficulty = str(item.get("difficulty") or "Unknown")
@@ -98,7 +93,6 @@ def build_post_persist_context(item: dict[str, Any]) -> PostPersistContext:
     attempts_first = 1 if record_improved else (int(prev_attempts_first or 0) + 1 if prev_attempts_first else 1)
 
     return PostPersistContext(
-        cfg=cfg,
         build_details=build_details,
         best_data=best_data,
         best_gear=best_gear,
@@ -139,7 +133,6 @@ def build_post_persist_entries(
         replay_ctx=ReplayContext(
             calc_song=item.get("calc_song"),
             ref_arrays=item.get("ref_arrays"),
-            cfg_dict=item.get("cfg_dict") or {},
         ),
     )
 
@@ -157,12 +150,6 @@ def build_post_persist_print_payload(
         "best_gear": context.best_gear,
         "best_minis": context.best_minis,
         "prev_record": item.get("prev_record"),
-        "current_gear": item.get("current_gear") or [],
-        "current_minis": item.get("current_minis") or [],
-        "fg_debug": bool(item.get("fg_debug")),
-        "ref_arrays": item.get("ref_arrays"),
-        "calc_song": item.get("calc_song"),
-        "cfg": context.cfg,
         "db_best_fg_score": int(item.get("db_best_fg_score", 0) or 0),
         "_emit": emit,
     }

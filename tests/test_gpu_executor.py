@@ -6,7 +6,6 @@ when multiple workers submit GPU requests.
 """
 
 import pytest
-import multiprocessing
 import time
 
 
@@ -56,29 +55,6 @@ def test_gpu_executor_worker_registration():
     finally:
         executor.stop()
         GpuExecutor._instance = None
-
-
-def test_worker_mode_detection():
-    """Test worker mode detection functions."""
-    from gear_optimizer.solver.gpu_executor import (
-        is_gpu_worker_mode,
-        set_gpu_worker_mode,
-        clear_gpu_worker_mode,
-    )
-
-    # Initially not in worker mode
-    assert not is_gpu_worker_mode()
-
-    # Set worker mode
-    req_q = multiprocessing.Queue()
-    resp_q = multiprocessing.Queue()
-    set_gpu_worker_mode(42, req_q, resp_q)
-
-    assert is_gpu_worker_mode()
-
-    # Clear it
-    clear_gpu_worker_mode()
-    assert not is_gpu_worker_mode()
 
 
 def test_gpu_executor_ipc_request():

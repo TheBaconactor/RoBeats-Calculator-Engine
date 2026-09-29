@@ -3,28 +3,23 @@ from __future__ import annotations
 import sys
 import types
 
+from gear_optimizer.domain.jobs import SharedRunContext, SongJob, task_tuple_from_job_context
 from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimizationRequest
 
 
 def _task() -> tuple:
-    return (
-        "fp",
-        "song",
-        "Hard",
-        {"IterationEngine": {}},
-        {},
-        {},
-        [],
-        [],
-        {},
-        {},
-        True,
-        1,
-        None,
-        0,
-        False,
-        {"repeat_index": 1, "repeat_total": 2, "ga_seed": 123},
+    context = SharedRunContext(
+        multi_start=3,
+        ref_arrays={},
+        all_gears=[],
+        all_minis=[],
+        gears_by_name={},
+        minis_by_name={},
+        ga_depth=1,
+        parallel_workers=1,
     )
+    job = SongJob(file_path="fp", song_name="song", difficulty="Hard")
+    return task_tuple_from_job_context(job, context, {"repeat_index": 1, "repeat_total": 2, "ga_seed": 123})
 
 
 def test_native_optimization_engine_delegates_to_native_inflight(monkeypatch):
@@ -72,6 +67,6 @@ def test_native_optimization_engine_rejects_invalid_task_tuple():
             NativeOptimizationRequest(tasks=[("too", "short")], in_flight_songs=1, completed_songs=set())
         )
     except ValueError as exc:
-        assert "legacy song task" in str(exc)
+        assert "song task must contain the fixed-field production prefix" in str(exc)
     else:
         raise AssertionError("expected invalid native task tuple to fail at engine boundary")

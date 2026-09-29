@@ -24,7 +24,7 @@ from ..core.gem_defs import build_gem_counts, build_gem_details
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
 from .base_stats import (
     COLOR_TO_STAT_INDEX,
-    build_base_fixed_stats_array,
+    build_stats_array,
     build_stats_dict,
 )
 from .force_greats_common import FG_BASE_STATS7_KEY
@@ -83,12 +83,10 @@ def decode_gpu_native_ga_runs_payload(
         best_minis = best_global_genome[6:9]
 
         # Reconstruct Stats exactly like the GPU kernels:
-        # - Start from the "base_fixed" vector with user-fixed gems + static overflow removed
-        #   (see solver/base_stats.py).
+        # - Start from the song's fixed stats.
         # - Add item stats.
         # - Add gem allocation contributions (FT/FF/PP/CM/FM + overflow).
-        base_fixed_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
-        best_stats = build_stats_dict(base_fixed_arr)
+        best_stats = build_stats_dict(build_stats_array(base_stats_fixed))
         for item in best_global_genome or []:
             if not item:
                 continue
@@ -103,7 +101,7 @@ def decode_gpu_native_ga_runs_payload(
         g_fm = int(best_global_res_arr[5])
         g_ov = int(best_global_res_arr[6])
 
-        selected_color = str(sel_color_built or cfg_data.get("selected_color", "") or "")
+        selected_color = str(cfg_data.get("selected_color", "") or "")
         best_stats = apply_gems_to_base_stats(
             best_stats,
             selected_color,
@@ -189,11 +187,9 @@ def decode_gpu_native_ga_runs_payload(
             isinstance(cfg_data, dict)
             and (cfg_data.get("ga_require_full_stats") or cfg_data.get("fg_require_full_stats"))
         )
-        base_stats_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
+        base_stats_arr = build_stats_array(base_stats_fixed)
 
         sel_color = str(cfg_data.get("selected_color", "") or "")
-        if sel_color_built:
-            sel_color = str(sel_color_built)
 
         sel_color_idx = int(COLOR_TO_STAT_INDEX.get(str(sel_color or ""), -1))
 

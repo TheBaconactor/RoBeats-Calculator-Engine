@@ -12,7 +12,7 @@ def _load_case(chart_path: Path):
     )
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    calc_song = clone_calc_song(get_base_calc_song(str(chart_path), {}))
+    calc_song = clone_calc_song(get_base_calc_song(str(chart_path)))
     apply_timing_envelope(calc_song, mode="perfect_window")
     return calc_song, get_exact_replay_ref_arrays_cached()
 

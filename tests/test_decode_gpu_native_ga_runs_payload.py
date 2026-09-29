@@ -21,16 +21,25 @@ def _canon_ids_key(genome_ids: np.ndarray) -> tuple[int, ...]:
     return gear_ids + mini_ids
 
 
+def _genome_ids(registry: ItemRegistry, genome: list) -> np.ndarray:
+    ids = np.zeros(9, dtype=np.int32)
+    for slot_idx, item in enumerate(genome[:9]):
+        name = item.get("Name", "") if isinstance(item, dict) else item
+        if name:
+            ids[slot_idx] = registry.item_to_id.get((slot_idx, str(name)), 0)
+    return ids
+
+
 def _candidate_key(cand: dict, registry: ItemRegistry) -> tuple[int, ...]:
     genome_ids = cand.get("GenomeIDs")
     if genome_ids is not None:
         return _canon_ids_key(np.asarray(genome_ids, dtype=np.int32))
     genome = cand.get("Genome")
     if genome:
-        return _canon_ids_key(registry.encode_population([genome])[0])
+        return _canon_ids_key(_genome_ids(registry, genome))
     gear = cand.get("Gear") or []
     minis = cand.get("Minis") or []
-    return _canon_ids_key(registry.encode_population([list(gear) + list(minis)])[0])
+    return _canon_ids_key(_genome_ids(registry, list(gear) + list(minis)))
 
 
 def test_decode_gpu_native_ga_runs_payload_caps_raw_rows_to_fg_candidate_limit():

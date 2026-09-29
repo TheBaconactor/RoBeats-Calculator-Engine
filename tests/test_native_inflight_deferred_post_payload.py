@@ -82,14 +82,12 @@ def test_native_task_error_payload_defaults_queue_label_and_can_suppress_progres
 
 
 def test_fg_update_payload_uses_shared_result_event_shape():
-    cfg_dict = {"IterationEngine": {}}
     entries = [{"score": 101, "fg_score": 111}]
     song = make_native_song(
         song_name="FG Song",
         task_key="fg-song",
         db_key="fg-db",
         fp="Data/Hard/fg_song.txt",
-        cfg_dict=cfg_dict,
     )
 
     payload = build_fg_update_payload(song, persist_entries=entries)
@@ -100,12 +98,11 @@ def test_fg_update_payload_uses_shared_result_event_shape():
         "db_key": "fg-db",
         "persist_entries": entries,
         "file_path": "Data/Hard/fg_song.txt",
-        "cfg_dict": cfg_dict,
     }
     assert payload["persist_entries"] is not entries
 
 
-def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debug_disabled(monkeypatch):
+def test_native_inflight_deferred_post_payload_keeps_replay_context(monkeypatch):
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
 
     calc_song = {
@@ -142,16 +139,12 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
         db_key="pytest_native_deferred_post",
         fp="Data/Hard/pytest_native_deferred_post.txt",
         effective_difficulty="Hard",
-        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
-        fg_debug=False,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         ga_candidates=ga_candidates,
         best_data={"Score": 111, "BaseScore": 111, "Stats": {"Perfect Points": 1}},
         best_gear=["G1"],
         best_minis=["M1"],
-        current_gear_list=["CurrentGear"],
-        current_mini_list=["CurrentMini"],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         prev_record={"score": 100},
@@ -164,7 +157,6 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context_when_fg_debu
 
     assert payload["_deferred_post"] is True
     assert payload["_pending_fg_job"] is True
-    assert payload["fg_debug"] is False
     assert payload["calc_song"] is calc_song
     assert payload["ref_arrays"] is ref_arrays
     assert payload["best_data"]["BaseScore"] == 111
@@ -253,8 +245,6 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         db_key="pytest_native_deferred_post_inline_fg",
         fp="Data/Hard/pytest_native_deferred_post_inline_fg.txt",
         effective_difficulty="Hard",
-        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
-        fg_debug=False,
         calc_song=inline_calc_song,
         ref_arrays=inline_ref_arrays,
         ga_candidates=[
@@ -433,8 +423,6 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         db_key="pytest_native_deferred_post_exact_authority",
         fp="Data/Hard/pytest_native_deferred_post_exact_authority.txt",
         effective_difficulty="Hard",
-        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
-        fg_debug=False,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
         ga_candidates=[],
@@ -446,8 +434,6 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         },
         best_gear=gear,
         best_minis=minis,
-        current_gear_list=[],
-        current_mini_list=[],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         prev_record=None,
@@ -471,7 +457,6 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         lambda data: dict(data),
         calc_song=payload["calc_song"],
         ref_arrays=payload["ref_arrays"],
-        cfg_dict=payload["cfg_dict"],
     )
 
     assert len(persist_entries) == 1

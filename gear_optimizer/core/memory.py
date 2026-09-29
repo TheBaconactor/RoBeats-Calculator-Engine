@@ -33,8 +33,8 @@ import psutil
 # entitlement and raises AccessDenied).
 _RSS_READ_ERRORS: tuple[type[BaseException], ...] = (OSError, AttributeError, ValueError, psutil.Error)
 
-from .constants import MEMORY_WATCHDOG_INTERVAL_SEC
-from ..settings import ENGINE_ROOT, paths
+from .constants import DEFAULT_MEMORY_GUARD_PERCENT, MEMORY_WATCHDOG_INTERVAL_SEC, STRICT_PLATFORM_MEMORY_GUARD_PERCENT
+from ..settings import ENGINE_ROOT, RunSettings, paths
 
 # Global watchdog state
 MEMORY_WATCHDOG_LIMIT_BYTES = 0
@@ -156,6 +156,31 @@ def ensure_memory_watchdog_thread():
         return
     MEMORY_WATCHDOG_THREAD = threading.Thread(target=_memory_watchdog_loop, name="MemoryWatchdog", daemon=True)
     MEMORY_WATCHDOG_THREAD.start()
+
+
+def compute_memory_guard_limit(run: RunSettings) -> int:
+    """The RSS ceiling in bytes (0: no limit).
+
+    MemorySoftLimitGB > 0 is an absolute cap; MemorySoftLimitPercent reserves a share of physical RAM
+    (unset: the platform default, capped at that default; <= 0 disables it). With both, the smaller wins.
+    """
+    platform_default_percent = (
+        STRICT_PLATFORM_MEMORY_GUARD_PERCENT
+        if sys.platform in ("win32", "cygwin", "darwin")
+        else DEFAULT_MEMORY_GUARD_PERCENT
+    )
+    limit_percent = (
+        platform_default_percent if run.memory_soft_limit_percent is None else run.memory_soft_limit_percent
+    )
+    effective_percent = min(limit_percent, platform_default_percent) if limit_percent > 0 else 0.0
+    candidates = []
+    if run.memory_soft_limit_gb > 0:
+        candidates.append(run.memory_soft_limit_gb * (1024**3))
+    if effective_percent > 0:
+        candidates.append(detect_total_physical_memory() * (effective_percent / 100.0))
+    if not candidates:
+        return 0
+    return int(min(candidates))
 
 
 def set_memory_watchdog_limit(limit_bytes):

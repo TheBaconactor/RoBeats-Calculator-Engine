@@ -87,14 +87,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     song_file = Path(__file__).resolve().parents[1] / str(frozen["song_file_rel"])
     assert song_file.exists(), f"Missing frozen chart fixture: {song_file}"
 
-    cfg_dict = {
-        "IterationEngine": {},
-        "TeamContributionBuffConstant": {
-            "TeamBuff": str(frozen["team_buff"]),
-            "TeamColor": str(frozen["primary_color"]),
-        },
-    }
-    calc_song = get_base_calc_song(str(song_file), cfg_dict)
+    calc_song = get_base_calc_song(str(song_file))
     ref_arrays = _get_team_buff_ref_arrays_cached()
     assert isinstance(ref_arrays, dict) and ref_arrays
     _prebuild_timeline_frontier(calc_song, ref_arrays)
@@ -121,7 +114,6 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
         build_details_fn=build_details_fn,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict=cfg_dict,
     )
 
     rows_by_signature = {_row_signature(row): row for row in persist_entries if isinstance(row, dict)}

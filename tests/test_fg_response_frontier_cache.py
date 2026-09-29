@@ -1520,7 +1520,7 @@ def test_fg_response_frontier_prebuild_has_no_public_flags() -> None:
         "FG_RESPONSE_FRONTIER_DISK_CACHE",
         "include_state_frontiers",
     )
-    paths = list(Path("gear_optimizer").rglob("*.py")) + [Path("config.ini"), Path("config.profile.ini")]
+    paths = list(Path("gear_optimizer").rglob("*.py")) + [Path("config.ini")]
     offenders: list[tuple[str, str]] = []
     for path in paths:
         if not path.exists():

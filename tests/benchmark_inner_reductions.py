@@ -105,7 +105,7 @@ def main():
             "Chill",
         ]
         for filename, values, selected in cases:
-            song = get_base_calc_song(str(Path("Data/Hard") / filename), {})
+            song = get_base_calc_song(str(Path("Data/Hard") / filename))
             apply_timing_envelope(song, mode="perfect_window")
             stats = dict(zip(names, values))
             budget = 9

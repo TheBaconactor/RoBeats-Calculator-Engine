@@ -1,7 +1,7 @@
-import configparser
 import json
 
 from gear_optimizer.app import GearOptimizerApp
+from gear_optimizer.settings import RunSettings
 from gear_optimizer.core.memory import MemoryGuardResumeTracker, build_memory_guard_resume_context
 from gear_optimizer.song_queue import finalize_song_queue, merge_discovered_with_resume, queue_path_key
 from gear_optimizer.data.database import (
@@ -26,18 +26,8 @@ def _write_song_stub(path, song_name: str):
     )
 
 
-def _make_hard_queue_cfg(*, ignore_resume: bool = False, song_queue_limit: int = 0) -> configparser.ConfigParser:
-    cfg = configparser.ConfigParser()
-    cfg.add_section("CalculateSong")
-    cfg.set("CalculateSong", "Difficulty", "Hard")
-    cfg.set("CalculateSong", "Song_Name", "")
-    cfg.set("CalculateSong", "TargetPrimary", "all")
-    cfg.set("CalculateSong", "TargetSecondary", "all")
-    cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "IgnoreResumeQueue", "true" if ignore_resume else "false")
-    if song_queue_limit > 0:
-        cfg.set("IterationEngine", "SongQueueLimit", str(song_queue_limit))
-    return cfg
+def _hard_queue_run(*, ignore_resume: bool = False, song_queue_limit: int = 0) -> RunSettings:
+    return RunSettings(difficulty="Hard", ignore_resume_queue=ignore_resume, song_queue_limit=song_queue_limit)
 
 
 def _install_resume_file(
@@ -153,10 +143,8 @@ def test_build_song_queue_limit_preserves_missing_first(monkeypatch, tmp_path):
     finally:
         conn.close()
 
-    cfg = _make_hard_queue_cfg(ignore_resume=True, song_queue_limit=2)
-
     app = GearOptimizerApp()
-    queue = app._build_song_queue(cfg)
+    queue = app._build_song_queue(_hard_queue_run(ignore_resume=True, song_queue_limit=2))
 
     assert [item[1] for item in queue] == [song_missing_a, song_missing_b]
 
@@ -260,7 +248,7 @@ def test_build_song_queue_resume_prepends_new_path_even_with_loadouts(monkeypatc
     )
 
     app = GearOptimizerApp()
-    queue = app._build_song_queue(_make_hard_queue_cfg())
+    queue = app._build_song_queue(_hard_queue_run())
 
     assert [item[1] for item in queue] == [song_new, song_resume]
 
@@ -299,7 +287,7 @@ def test_build_song_queue_resume_prepends_stub_db_songs_without_loadouts(monkeyp
     )
 
     app = GearOptimizerApp()
-    queue = app._build_song_queue(_make_hard_queue_cfg())
+    queue = app._build_song_queue(_hard_queue_run())
 
     assert [item[1] for item in queue] == [song_stub, song_resume]
 
@@ -338,7 +326,7 @@ def test_build_song_queue_resume_limit_preserves_prepended_paths(monkeypatch, tm
     )
 
     app = GearOptimizerApp()
-    queue = app._build_song_queue(_make_hard_queue_cfg(song_queue_limit=3))
+    queue = app._build_song_queue(_hard_queue_run(song_queue_limit=3))
 
     assert [item[1] for item in queue] == [song_new_a, song_new_b, song_resume_a]
     assert queue_path_key(queue[0]) == queue_path_key((str(new_fp_a.resolve()), song_new_a, "Hard"))
@@ -368,7 +356,7 @@ def test_build_song_queue_legacy_resume_does_not_prepend_completed_paths(monkeyp
     )
 
     app = GearOptimizerApp()
-    queue = app._build_song_queue(_make_hard_queue_cfg())
+    queue = app._build_song_queue(_hard_queue_run())
 
     assert [item[1] for item in queue] == [song_resume]
 
@@ -387,7 +375,7 @@ def test_build_song_queue_completed_journal_crash_window_does_not_requeue_known_
         [(str(completed_path), completed_name, "Hard")],
     )
 
-    queue = GearOptimizerApp()._build_song_queue(_make_hard_queue_cfg())
+    queue = GearOptimizerApp()._build_song_queue(_hard_queue_run())
 
     assert queue == []
 
@@ -409,6 +397,6 @@ def test_build_song_queue_completed_journal_crash_window_admits_new_path(monkeyp
     )
     _write_song_stub(new_path, new_name)
 
-    queue = GearOptimizerApp()._build_song_queue(_make_hard_queue_cfg())
+    queue = GearOptimizerApp()._build_song_queue(_hard_queue_run())
 
     assert [item[1] for item in queue] == [new_name]

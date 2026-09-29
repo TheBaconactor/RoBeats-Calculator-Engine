@@ -191,7 +191,6 @@ def test_missing_stats_details_rebuild_before_canonical_replay_scoring():
         build_details,
         calc_song=calc_song,
         ref_arrays=ref_arrays,
-        cfg_dict={"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
     )
 
     retained = next(e for e in persist_entries if str(e.get("loadout_hash") or "") == str(loadout_hash))

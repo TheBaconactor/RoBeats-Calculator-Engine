@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import configparser
 import contextlib
-import copy
 import json
 import os
 import shutil
@@ -18,22 +16,31 @@ from gear_optimizer.core.macos_background import (
 if __name__ == "__main__":
     make_process_background_only()
 
-from gear_optimizer.core.config import (
-    AppRuntimeSettings,
-    compute_memory_guard_limit,
-    load_config,
-)
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import (
     MEMORY_GUARD_RESUME_FILE,
     MemoryGuardResumeTracker,
     build_memory_guard_resume_context,
+    compute_memory_guard_limit,
     set_memory_watchdog_limit,
 )
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.data.database import get_best_loadouts, init_db
 from gear_optimizer.data.database.connection import close_cached_db_connection
-from gear_optimizer.settings import paths, service_settings
+from gear_optimizer.settings import RunSettings, paths, reasoning_search, service_settings
+
+
+def request_run_settings(*, repeats: int, reasoning: str) -> RunSettings:
+    """The run settings of one service solve: the request's Hard chart once per repeat, no resume queue."""
+    depth, multi_start = reasoning_search(reasoning)
+    return RunSettings(
+        difficulty="Hard",
+        song_repeats=max(1, int(repeats)),
+        song_queue_limit=1,
+        ignore_resume_queue=True,
+        search_depth=depth,
+        multi_start=multi_start,
+    )
 
 
 class PersistentOptimizerSession:
@@ -42,7 +49,6 @@ class PersistentOptimizerSession:
 
         self._app = GearOptimizerApp()
         engine_paths = paths()
-        self._config_path = engine_paths.config_file
         self._chart_path = engine_paths.chart_dir("Hard") / "service_request.txt"
         # Deleted between solves, so it must be this worker's own database (the service sets EVOLUTION_DB_PATH to it).
         self._result_db = engine_paths.bin_path("service_result.db")
@@ -66,16 +72,7 @@ class PersistentOptimizerSession:
                 raise RuntimeError(f"persistent optimizer gear source is unavailable: {source}")
             shutil.copytree(source, gear_dir)
 
-    @staticmethod
-    def _max_reasoning_config(cfg: configparser.ConfigParser) -> configparser.ConfigParser:
-        result = copy.deepcopy(cfg)
-        if not result.has_section("IterationEngine"):
-            result.add_section("IterationEngine")
-        result.set("IterationEngine", "GA_SearchDepth", "500")
-        result.set("IterationEngine", "GA_MultiStart", "12")
-        return result
-
-    def _initialize(self, cfg: configparser.ConfigParser) -> None:
+    def _initialize(self) -> None:
         stats_table = read_table(str(paths().stats_txt))
         self._ref_arrays = self._app._preload_ref_arrays(stats_table)
         self._all_gears = load_all_gears_list()
@@ -83,36 +80,10 @@ class PersistentOptimizerSession:
         self._gears_by_name = {str(item["Name"]): item for item in self._all_gears}
         self._minis_by_name = {str(item["Name"]): item for item in self._all_minis}
 
-        warm_cfg = self._max_reasoning_config(cfg)
-        self._app._runtime_settings = AppRuntimeSettings.from_config(warm_cfg)
-        self._app._configure_execution_and_prewarm(warm_cfg)
+        # Size the GA run buffers for the largest multi-start a request can ask for.
+        self._app._configure_execution_and_prewarm(reasoning_search("max")[1])
         reassert_process_background_only()
         self._initialized = True
-
-    def _write_request_config(self, *, repeats: int, reasoning: str) -> None:
-        cfg = configparser.ConfigParser()
-        cfg.read_dict(
-            {
-                "CalculateSong": {
-                    "LoopForever": "false",
-                    "Difficulty": "Hard",
-                },
-                "IterationEngine": {
-                    "IgnoreResumeQueue": "true",
-                    "SongRepeats": str(max(1, int(repeats))),
-                    "SongQueueLimit": "1",
-                },
-            }
-        )
-        if reasoning == "strong":
-            cfg.set("IterationEngine", "GA_SearchDepth", "250")
-            cfg.set("IterationEngine", "GA_MultiStart", "6")
-        elif reasoning == "max":
-            cfg.set("IterationEngine", "GA_SearchDepth", "500")
-            cfg.set("IterationEngine", "GA_MultiStart", "12")
-        self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._config_path.open("w", encoding="utf-8") as handle:
-            cfg.write(handle)
 
     def _remove_result_db(self) -> None:
         close_cached_db_connection(str(self._result_db))
@@ -134,45 +105,34 @@ class PersistentOptimizerSession:
         repeats: int,
         reasoning: str,
     ) -> list[dict[str, Any]]:
-        self._write_request_config(repeats=repeats, reasoning=reasoning)
+        run = request_run_settings(repeats=repeats, reasoning=reasoning)
         self._chart_path.write_text(chart_text, encoding="utf-8")
         self._remove_result_db()
-        cfg = load_config(str(self._config_path))
         if not self._initialized:
-            self._initialize(cfg)
+            self._initialize()
         assert self._ref_arrays is not None
 
-        self._app._runtime_settings = AppRuntimeSettings.from_config(cfg)
         self._app._stop_cached_result = False
         self._app._stop_requested.clear()
         self._app._force_exit_requested.clear()
-        set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
+        set_memory_watchdog_limit(compute_memory_guard_limit(run))
         init_db()
-        self._app._disable_inputs_to_prevent_taint(cfg)
         task_queue = [(str(self._chart_path), str(song_name), "Hard")]
         tasks = self._app._prepare_tasks(
             task_queue,
-            cfg,
+            run,
             self._ref_arrays,
             self._all_gears,
             self._all_minis,
             self._gears_by_name,
             self._minis_by_name,
-            int(self._app._runtime_settings.ga.search_depth),
-            bool(self._app._runtime_settings.iteration_engine.force_greats_debug),
         )
         if not tasks:
             raise RuntimeError("persistent optimizer produced no task")
         tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
-        tracker.prime(task_queue, build_memory_guard_resume_context(*self._app._get_filter_params(cfg)))
+        tracker.prime(task_queue, build_memory_guard_resume_context(*self._app._get_filter_params(run)))
         try:
-            self._app._execute_tasks(
-                tasks,
-                int(self._app._runtime_settings.eval_cpu_cores),
-                1,
-                tracker,
-                False,
-            )
+            self._app._execute_tasks(tasks, tracker)
             if self._app._memory_guard_restart_needed(tracker):
                 raise RuntimeError("persistent optimizer requested a memory-guard restart")
             entries = get_best_loadouts(

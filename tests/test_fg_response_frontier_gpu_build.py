@@ -1438,7 +1438,6 @@ def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_bou
 
     calc_song = build_prepared_calc_song(
         fp=str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt"),
-        cfg_dict={},
     ).calc_song
     ref_arrays = build_ref_arrays_from_stats(
         read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")),
@@ -2332,7 +2331,7 @@ def test_base_large_fill_uses_shared_input_engine_recurrence() -> None:
     from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
 
     chart_path = ROOT / "Data" / "Normal" / "Sweat Around The World (Intense Mix) by Just Sweat [Just Dance].txt"
-    calc_song = clone_calc_song(get_base_calc_song(str(chart_path), {}))
+    calc_song = clone_calc_song(get_base_calc_song(str(chart_path)))
     apply_timing_envelope(calc_song)
     song_inputs = extract_fg_song_inputs(calc_song)
     fill_count = 112.0
@@ -3471,7 +3470,6 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
 
     calc_song = build_prepared_calc_song(
         fp=str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt"),
-        cfg_dict={},
     ).calc_song
     ref_arrays = build_ref_arrays_from_stats(
         read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")),

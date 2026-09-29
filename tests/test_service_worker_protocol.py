@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import configparser
 import io
 import json
 import queue
@@ -188,23 +187,17 @@ def test_service_worker_reasserts_daemon_policy_after_native_prewarm(monkeypatch
             events.append("preload")
             return object()
 
-        def _configure_execution_and_prewarm(self, _cfg):
-            events.append("native_prewarm")
-
-    class FakeRuntimeSettings:
-        @classmethod
-        def from_config(cls, _cfg):
-            return object()
+        def _configure_execution_and_prewarm(self, multi_start):
+            events.append(f"native_prewarm:{multi_start}")
 
     session = object.__new__(worker.PersistentOptimizerSession)
     session._app = FakeApp()
 
-    monkeypatch.setattr(worker, "AppRuntimeSettings", FakeRuntimeSettings)
     monkeypatch.setattr(worker, "read_table", lambda _path: {})
     monkeypatch.setattr(worker, "load_all_gears_list", lambda: [{"Name": "gear"}])
     monkeypatch.setattr(worker, "load_all_minis_list", lambda: [{"Name": "mini"}])
     monkeypatch.setattr(worker, "reassert_process_background_only", lambda: events.append("reassert"))
 
-    session._initialize(configparser.ConfigParser())
+    session._initialize()
 
-    assert events == ["preload", "native_prewarm", "reassert"]
+    assert events == ["preload", "native_prewarm:12", "reassert"]

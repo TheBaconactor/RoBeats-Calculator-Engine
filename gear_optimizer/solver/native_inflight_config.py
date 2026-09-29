@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
-import configparser
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -17,12 +16,12 @@ from typing import Any, Optional
 import numpy as np
 
 from gear_optimizer import settings
-from gear_optimizer.core.config import GASettings as GARuntimeSettings
-from gear_optimizer.core.utils import cfg_from_dict
-from gear_optimizer.domain.jobs import task_cfg_dict
+from gear_optimizer.domain.jobs import TaskIndex
 
 logger = logging.getLogger(__name__)
 
+# Songs prepared and scheduled concurrently (capped by the queue size and the GPU song slots).
+IN_FLIGHT_SONGS = 12
 CANONICAL_GA_QUEUE_MULT = 2
 CANONICAL_PREP_BUFFER_MULT = 4
 
@@ -80,11 +79,6 @@ def read_db_prefetch_workers(
     return max(1, min(int(fg_prep_workers), 4))
 
 
-def read_ga_multi_start(cfg0: Any) -> int:
-    settings = GARuntimeSettings.from_config(cfg0) if cfg0 is not None else GARuntimeSettings()
-    return max(1, int(settings.multi_start))
-
-
 @dataclass(frozen=True)
 class InflightConfig:
     pool_cache_max: int
@@ -101,16 +95,7 @@ class InflightConfig:
     fg_scheduler_norm: str
 
 
-def first_task_config(tasks: list[tuple]) -> Any | None:
-    try:
-        return cfg_from_dict(task_cfg_dict(tasks[0]))
-    except (IndexError, KeyError, TypeError, ValueError):
-        return None
-
-
 def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> InflightConfig:
-    cfg0 = first_task_config(tasks)
-
     pool_cache_max = 0
     registry_cache_max = 0
     init_heur_cache_max = 0
@@ -184,7 +169,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
     from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
 
-    ga_runs = read_ga_multi_start(cfg0)
+    ga_runs = max(1, int(tasks[0][TaskIndex.MULTI_START]))
     gpu_fields.configure_ga_run_buffers(max_runs=ga_runs, max_genomes=GA_POPULATION_SIZE)
 
     return InflightConfig(
@@ -214,11 +199,7 @@ class NativeSongConfig:
     ga_seed: int | None = None
     db_key: str = ""
     effective_difficulty: str = ""
-    cfg_dict: JsonDict = field(default_factory=dict)
-    cfg: configparser.ConfigParser | None = None
-    paths: dict[str, Any] | None = None
     ga_depth: int = 0
-    fg_debug: bool = False
 
 
 @dataclass
@@ -232,8 +213,6 @@ class NativeSongGPUInputs:
     meta_primary_color: str = ""
     meta_secondary_color: str = ""
     fixed_stats: JsonDict = field(default_factory=dict)
-    current_gear_list: list[Any] = field(default_factory=list)
-    current_mini_list: list[Any] = field(default_factory=list)
     registry: ItemRegistry | None = None
     cfg_data: JsonDict = field(default_factory=dict)
     color_flags: dict[str, Any] = field(default_factory=dict)

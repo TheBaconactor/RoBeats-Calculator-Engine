@@ -56,7 +56,6 @@ def test_deferred_post_finalizer_builds_replay_authoritative_entries():
         "song": "pytest_deferred_post_finalizer",
         "db_key": "pytest_deferred_post_finalizer",
         "difficulty": "Hard",
-        "cfg_dict": {"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
         "calc_song": calc_song,
         "ref_arrays": ref_arrays,
         "best_data": {
@@ -106,20 +105,14 @@ def test_deferred_post_print_payload_preserves_pending_final_shape():
     def emit(_msg):
         return None
 
-    calc_song = {"metadata": {}, "song_data": {}}
-    ref_arrays = {"Perfect Points": [1.0]}
     item = {
         "song": "pytest_deferred_post_print",
-        "cfg_dict": {"TeamContributionBuffConstant": {"TeamBuff": "T5"}},
         "best_data": {"Score": 100, "BaseScore": 100},
         "best_gear": ["G1"],
         "best_minis": ["M1"],
         "prev_record": {"score": 99},
-        "current_gear": ["G0"],
-        "current_minis": ["M0"],
-        "fg_debug": True,
-        "ref_arrays": ref_arrays,
-        "calc_song": calc_song,
+        "ref_arrays": {"Perfect Points": [1.0]},
+        "calc_song": {"metadata": {}, "song_data": {}},
         "db_best_fg_score": "123",
     }
 
@@ -132,12 +125,6 @@ def test_deferred_post_print_payload_preserves_pending_final_shape():
         "best_gear": ["G1"],
         "best_minis": ["M1"],
         "prev_record": {"score": 99},
-        "current_gear": ["G0"],
-        "current_minis": ["M0"],
-        "fg_debug": True,
-        "ref_arrays": ref_arrays,
-        "calc_song": calc_song,
-        "cfg": context.cfg,
         "db_best_fg_score": 123,
         "_emit": emit,
     }

@@ -1,5 +1,3 @@
-import configparser
-
 from gear_optimizer.app import GearOptimizerApp
 
 
@@ -7,14 +5,7 @@ def _mk_app() -> GearOptimizerApp:
     return GearOptimizerApp.__new__(GearOptimizerApp)
 
 
-def test_loop_restart_wait_seconds_defaults_to_zero():
-    app = _mk_app()
-    cfg = configparser.ConfigParser()
-    cfg.read_dict({"CalculateSong": {"LoopForever": "true"}})
-    assert app._loop_restart_wait_seconds(cfg, default_seconds=0.0) == 0.0
-
-
-def test_handle_loop_restart_skips_sleep_when_wait_zero(monkeypatch):
+def test_handle_loop_restart_does_not_sleep(monkeypatch):
     import gear_optimizer.app as app_mod
 
     app = _mk_app()
@@ -23,7 +14,7 @@ def test_handle_loop_restart_skips_sleep_when_wait_zero(monkeypatch):
     monkeypatch.setattr(app_mod.os.path, "exists", lambda _p: False)
     monkeypatch.setattr(app_mod.time, "sleep", lambda seconds: sleep_calls.append(float(seconds)))
 
-    app._handle_loop_restart(wait_time=0)
+    app._handle_loop_restart()
     assert sleep_calls == []
 
 

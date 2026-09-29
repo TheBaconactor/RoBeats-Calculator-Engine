@@ -336,7 +336,7 @@ def _derived_bundle_cache_file(
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import resolve_fg_response_bundle_path
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    base_song = get_base_calc_song(str(song_path), {})
+    base_song = get_base_calc_song(str(song_path))
     if not base_song:
         return None
     calc_song = clone_calc_song(base_song)
@@ -422,7 +422,7 @@ def _dedupe_paths_by_response_bundle_key(
     representative_by_key: dict[tuple, str] = {}
     for path_text in paths:
         path = str(path_text)
-        base_song = get_base_calc_song(path, {})
+        base_song = get_base_calc_song(path)
         calc_song = clone_calc_song(base_song)
         apply_timing_envelope(calc_song, mode=timing_mode)
         key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
@@ -461,7 +461,7 @@ def build_fg_response_frontier_cache_for_path(
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     song_path = Path(song_path_text)
-    base_song = get_base_calc_song(str(song_path), {})
+    base_song = get_base_calc_song(str(song_path))
     calc_song = clone_calc_song(base_song)
     apply_timing_envelope(calc_song, mode=timing_mode)
     cache_info = fg_response_frontier_payload_cache_info(calc_song, ref_arrays, stat_keys=stat_keys)
@@ -784,7 +784,6 @@ def _run_missing_fg_prebuild(
 
 def _run_fg_response_frontier_cache_prebuild_for_mode(
     *,
-    cfg,
     song_queue: Iterable[tuple],
     ref_arrays: dict,
     data_root: str | os.PathLike[str] | None = None,
@@ -792,7 +791,6 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
     build_missing: bool = True,
     timing_mode: str = "perfect_window",
 ) -> FgResponseFrontierCachePrebuildSummary:
-    del cfg
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         _fg_response_disk_cache_dir,
         compress_cache_dir_sidecars,
@@ -893,7 +891,6 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
 
 def run_fg_response_frontier_cache_prebuild(
     *,
-    cfg,
     song_queue: Iterable[tuple],
     ref_arrays: dict,
     data_root: str | os.PathLike[str] | None = None,
@@ -906,7 +903,6 @@ def run_fg_response_frontier_cache_prebuild(
     queue_items = list(song_queue or [])
     summaries = [
         _run_fg_response_frontier_cache_prebuild_for_mode(
-            cfg=cfg,
             song_queue=queue_items,
             ref_arrays=ref_arrays,
             data_root=data_root,

@@ -8,102 +8,6 @@ def _noop_status_emit(_msg: str) -> None:
     return
 
 
-def test_results_printer_fg_debug_uses_wrapper_fg_score_for_cached_entries(capsys):
-    """
-    Regression test:
-    Cached FG reuse entries store the score at wrapper-level `fg_score`, while
-    `data` is a persisted details dict that may not include `Score`.
-    The debug printer must display the real score (not 0).
-    """
-    from gear_optimizer.helpers.song_helpers.results_printer import print_results
-
-    found_song_name = "Test Song"
-    best_data = {"Score": 123, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
-
-    # Cached FG reuse shape: `data` is details-only (no Score),
-    # wrapper carries `fg_score` and `score`.
-    cached_fg_variant = {
-        "data": {
-            "FT": 1,
-            "FF": 2,
-            "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
-            "Stats": {},
-            "SelectedElement": "Rush",
-            "response_surface": _FG_SURFACE,
-            "ForceGreats": {"final_score": 999},
-        },
-        "gear": [{"Name": "G1", "type": "Hat"}],
-        "minis": [{"Name": "M1"}],
-        "score": 123,
-        "fg_score": 999,
-    }
-
-    print_results(
-        found_song_name,
-        best_data=best_data,
-        best_gear=[],
-        best_minis=[],
-        current_gear_list=[],
-        current_mini_list=[],
-        fg_variants=[cached_fg_variant],
-        status_emit_fn=_noop_status_emit,
-        fg_debug=True,
-        ref_arrays={"dummy": 1},
-        calc_song={"dummy": 1},
-        cfg=None,
-    )
-
-    out = capsys.readouterr().out
-    assert "=== FORCE GREATS OPTIMIZATION DEBUG ===" in out
-    assert "\nTotal Score: 999\n" in out
-
-
-def test_results_printer_fg_debug_uses_data_score_when_present(capsys):
-    """
-    Non-cached FG variants carry Score on the inner data dict; printer should
-    still display it correctly.
-    """
-    from gear_optimizer.helpers.song_helpers.results_printer import print_results
-
-    found_song_name = "Test Song"
-    best_data = {"Score": 123, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
-
-    fg_variant = {
-        "data": {
-            "Score": 777,
-            "FT": 1,
-            "FF": 2,
-            "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
-            "Selected Element": "Rush",
-            "response_surface": _FG_SURFACE,
-            "ForceGreats": {"final_score": 777},
-        },
-        "gear": [{"Name": "G1", "type": "Hat"}],
-        "minis": [{"Name": "M1"}],
-        "score": 123,
-        "fg_score": 777,
-    }
-
-    print_results(
-        found_song_name,
-        best_data=best_data,
-        best_gear=[],
-        best_minis=[],
-        current_gear_list=[],
-        current_mini_list=[],
-        fg_variants=[fg_variant],
-        status_emit_fn=_noop_status_emit,
-        fg_debug=True,
-        ref_arrays={"dummy": 1},
-        calc_song={"dummy": 1},
-        cfg=None,
-    )
-
-    out = capsys.readouterr().out
-    assert "=== FORCE GREATS OPTIMIZATION DEBUG ===" in out
-    assert "\nTotal Score: 777\n" in out
-
-
 def test_results_printer_prints_db_best_fg_score_when_no_variants(capsys):
     """Regression test: deferred FG jobs can leave fg_variants empty; output should not show FG=0 if DB best is known."""
     from gear_optimizer.helpers.song_helpers.results_printer import print_results
@@ -113,8 +17,6 @@ def test_results_printer_prints_db_best_fg_score_when_no_variants(capsys):
         best_data={"Score": 123, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"},
         best_gear=[],
         best_minis=[],
-        current_gear_list=[],
-        current_mini_list=[],
         fg_variants=[],
         status_emit_fn=_noop_status_emit,
         db_best_fg_score=456,
@@ -124,52 +26,123 @@ def test_results_printer_prints_db_best_fg_score_when_no_variants(capsys):
     assert "Best FG Score Found: 456" in out
 
 
-def test_results_printer_fg_debug_falls_back_to_force_greats_final_score(capsys):
+def test_results_printer_includes_db_cached_fg_variants_for_loadout_printing(capsys):
     """
     Regression test:
-    Some callers may pass a wrapper-level `fg_score` of 0 while the persisted
-    details dict contains the real FG score under ForceGreats.final_score.
-    The debug printer should still display the real score (not 0).
+    When the best FG variant comes from a DB-cached entry (i.e. `_is_ga` is False),
+    the console output should still print the ForceGreats loadout.
+    """
+    from gear_optimizer.helpers.song_helpers.results_printer import print_results
+
+    best_data = {"Score": 44590483, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
+
+    db_cached_fg_variant = {
+        "data": {
+            "Score": 44612857,
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
+            "Selected Element": "Rush",
+            "response_surface": _FG_SURFACE,
+            "ForceGreats": {"final_score": 44612857},
+        },
+        "gear": ["G1"],
+        "minis": ["M1"],
+        "score": 44590483,
+        "fg_score": 44612857,
+        "_is_ga": False,
+    }
+
+    print_results(
+        "Test Song",
+        best_data=best_data,
+        best_gear=["G1"],
+        best_minis=["M1"],
+        fg_variants=[db_cached_fg_variant],
+        status_emit_fn=_noop_status_emit,
+        db_best_fg_score=44612857,
+        prev_record={"score": 44590483, "gear": ["G1"], "minis": ["M1"], "details": {"Score": 44590483}},
+    )
+
+    out = capsys.readouterr().out
+    assert "Best FG Score Found: 44612857" in out
+    assert "[Best Gear Loadout (ForceGreats)]" in out
+    assert "FG Config:" not in out
+
+
+def test_results_printer_best_base_score_floors_to_db_record_when_higher(capsys):
+    """
+    Regression test:
+    Console output should reflect the persisted winner. When a higher DB base record
+    is provided, the printer must show the DB score/loadout (not the current-run one).
     """
     from gear_optimizer.helpers.song_helpers.results_printer import print_results
 
     found_song_name = "Test Song"
-    best_data = {"Score": 123, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
-
-    fg_variant = {
-        "data": {
-            "FT": 1,
-            "FF": 2,
-            "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
-            "Stats": {},
-            "SelectedElement": "Rush",
-            "response_surface": _FG_SURFACE,
-            "ForceGreats": {"final_score": 999},
-        },
-        "gear": [{"Name": "G1", "type": "Hat"}],
-        "minis": [{"Name": "M1"}],
-        "score": 123,
+    best_data = {"Score": 100, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
+    prev_record = {
+        "score": 200,
         "fg_score": 0,
+        "gear": [{"Name": "DB Gear", "type": "Hat"}],
+        "minis": [{"Name": "DB Mini"}],
+        "details": {"Score": 200, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"},
     }
 
     print_results(
         found_song_name,
         best_data=best_data,
-        best_gear=[],
-        best_minis=[],
-        current_gear_list=[],
-        current_mini_list=[],
-        fg_variants=[fg_variant],
+        best_gear=[{"Name": "G1", "type": "Hat"}],
+        best_minis=[{"Name": "M1"}],
+        fg_variants=[],
         status_emit_fn=_noop_status_emit,
-        fg_debug=True,
-        ref_arrays={"dummy": 1},
-        calc_song={"dummy": 1},
-        cfg=None,
+        prev_record=prev_record,
     )
 
     out = capsys.readouterr().out
-    assert "=== FORCE GREATS OPTIMIZATION DEBUG ===" in out
-    assert "\nTotal Score: 999\n" in out
+    assert "Best Base Score Found: 200" in out
+    assert "Hat: DB Gear" in out
+    assert "Hat: G1" not in out
+
+
+def test_results_printer_best_fg_score_uses_variants_only(capsys):
+    """
+    Regression test:
+    Console output must reflect the FG variants passed for this run.
+    """
+    from gear_optimizer.helpers.song_helpers.results_printer import print_results
+
+    found_song_name = "Test Song"
+    best_data = {"Score": 100, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
+
+    fg_variant = {
+        "data": {
+            "Score": 90,
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
+            "Selected Element": "Rush",
+            "response_surface": _FG_SURFACE,
+            "ForceGreats": {"final_score": 90},
+        },
+        "gear": [{"Name": "G2", "type": "Hat"}],
+        "minis": [{"Name": "M2"}],
+        "_is_ga": True,
+        "score": 100,
+        "fg_score": 90,
+    }
+
+    print_results(
+        found_song_name,
+        best_data=best_data,
+        best_gear=[{"Name": "G1", "type": "Hat"}],
+        best_minis=[{"Name": "M1"}],
+        fg_variants=[fg_variant],
+        status_emit_fn=_noop_status_emit,
+    )
+
+    out = capsys.readouterr().out
+    assert "Best Base Score Found: 100" in out
+    assert "Best FG Score Found: 90" in out
 
 
 def test_results_printer_ignores_legacy_config_only_variant(capsys):
@@ -219,149 +192,11 @@ def test_results_printer_ignores_legacy_config_only_variant(capsys):
         best_data=best_data,
         best_gear=[],
         best_minis=[],
-        current_gear_list=[],
-        current_mini_list=[],
         fg_variants=[zero_cfg_variant, response_surface_variant],
         status_emit_fn=_noop_status_emit,
-        fg_debug=True,
-        ref_arrays={"dummy": 1},
-        calc_song={"dummy": 1},
-        cfg=None,
     )
 
     out = capsys.readouterr().out
-    assert "\nTotal Score: 90\n" in out
-    assert "FG Config:" not in out
-
-
-def test_results_printer_includes_db_cached_fg_variants_for_loadout_printing(capsys):
-    """
-    Regression test:
-    When the best FG variant comes from a DB-cached entry (i.e. `_is_ga` is False),
-    the console output should still print the ForceGreats loadout.
-    """
-    from gear_optimizer.helpers.song_helpers.results_printer import print_results
-
-    best_data = {"Score": 44590483, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
-
-    db_cached_fg_variant = {
-        "data": {
-            "Score": 44612857,
-            "FT": 0,
-            "FF": 0,
-            "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
-            "Selected Element": "Rush",
-            "response_surface": _FG_SURFACE,
-            "ForceGreats": {"final_score": 44612857},
-        },
-        "gear": ["G1"],
-        "minis": ["M1"],
-        "score": 44590483,
-        "fg_score": 44612857,
-        "_is_ga": False,
-    }
-
-    print_results(
-        "Test Song",
-        best_data=best_data,
-        best_gear=["G1"],
-        best_minis=["M1"],
-        current_gear_list=["G1"],
-        current_mini_list=["M1"],
-        fg_variants=[db_cached_fg_variant],
-        status_emit_fn=_noop_status_emit,
-        db_best_fg_score=44612857,
-        prev_record={"score": 44590483, "gear": ["G1"], "minis": ["M1"], "details": {"Score": 44590483}},
-    )
-
-    out = capsys.readouterr().out
-    assert "Best FG Score Found: 44612857" in out
-    assert "[Best Gear Loadout (ForceGreats)]" in out
-    assert "FG Config:" not in out
-
-
-def test_results_printer_best_base_score_floors_to_db_record_when_higher(capsys):
-    """
-    Regression test:
-    Console output should reflect the persisted winner. When a higher DB base record
-    is provided, the printer must show the DB score/loadout (not the current-run one).
-    """
-    from gear_optimizer.helpers.song_helpers.results_printer import print_results
-
-    found_song_name = "Test Song"
-    best_data = {"Score": 100, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
-    prev_record = {
-        "score": 200,
-        "fg_score": 0,
-        "gear": [{"Name": "DB Gear", "type": "Hat"}],
-        "minis": [{"Name": "DB Mini"}],
-        "details": {"Score": 200, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"},
-    }
-
-    print_results(
-        found_song_name,
-        best_data=best_data,
-        best_gear=[{"Name": "G1", "type": "Hat"}],
-        best_minis=[{"Name": "M1"}],
-        current_gear_list=[],
-        current_mini_list=[],
-        fg_variants=[],
-        status_emit_fn=_noop_status_emit,
-        fg_debug=False,
-        ref_arrays=None,
-        calc_song=None,
-        cfg=None,
-        prev_record=prev_record,
-    )
-
-    out = capsys.readouterr().out
-    assert "Best Base Score Found: 200" in out
-    assert "Hat: DB Gear" in out
-    assert "Hat: G1" not in out
-
-
-def test_results_printer_best_fg_score_uses_variants_only(capsys):
-    """
-    Regression test:
-    Console output must reflect the FG variants passed for this run.
-    """
-    from gear_optimizer.helpers.song_helpers.results_printer import print_results
-
-    found_song_name = "Test Song"
-    best_data = {"Score": 100, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
-
-    fg_variant = {
-        "data": {
-            "Score": 90,
-            "FT": 0,
-            "FF": 0,
-            "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
-            "Selected Element": "Rush",
-            "response_surface": _FG_SURFACE,
-            "ForceGreats": {"final_score": 90},
-        },
-        "gear": [{"Name": "G2", "type": "Hat"}],
-        "minis": [{"Name": "M2"}],
-        "_is_ga": True,
-        "score": 100,
-        "fg_score": 90,
-    }
-
-    print_results(
-        found_song_name,
-        best_data=best_data,
-        best_gear=[{"Name": "G1", "type": "Hat"}],
-        best_minis=[{"Name": "M1"}],
-        current_gear_list=[],
-        current_mini_list=[],
-        fg_variants=[fg_variant],
-        status_emit_fn=_noop_status_emit,
-        fg_debug=False,
-        ref_arrays=None,
-        calc_song=None,
-        cfg=None,
-    )
-
-    out = capsys.readouterr().out
-    assert "Best Base Score Found: 100" in out
-    assert "Best FG Score Found: 90" in out
+    assert "Best FG Score Found: 90\n" in out
+    assert "Hat: G2\n" in out
+    assert "G1" not in out

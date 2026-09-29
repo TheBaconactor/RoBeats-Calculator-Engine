@@ -25,10 +25,10 @@ from ..core.color_flags import normalize_color_flags
 from .gpu_tuning_policy import choose_ga_batch_runs
 
 
-def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
-    # cfg-driven only (config.ini GPU_GA_NoveltyRepairAttempts -> ga_novelty_repair_attempts);
-    # the ambient GPU_GA_NOVELTY_REPAIR_ATTEMPTS env override was removed.
-    return max(0, min(4, int((cfg_data or {}).get("ga_novelty_repair_attempts", 2))))
+# GA selection/variation policy (fixed; the config.ini overrides were never set in production).
+GA_TOURNAMENT_K = 3
+GA_IMMIGRANT_RATE = 0.0
+GA_NOVELTY_REPAIR_ATTEMPTS = 2
 
 
 def _compute_global_ftff_combo_caps(
@@ -566,7 +566,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         gem_scale_fever=int(gem_scale_fever),
         n_slots=int(n_slots),
     )
-    novelty_repair_attempts = _resolve_ga_novelty_repair_attempts(cfg_data)
+    novelty_repair_attempts = GA_NOVELTY_REPAIR_ATTEMPTS
 
     fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT)
 

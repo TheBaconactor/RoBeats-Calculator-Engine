@@ -8,7 +8,6 @@ from gear_optimizer.domain.jobs import (
     extract_repeat_context,
     materialize_repeat_task,
     seed_plan_from_song_job,
-    task_cfg_dict,
     task_ga_seed,
     task_queue_label,
     task_song_name,
@@ -24,7 +23,7 @@ def _legacy_task(*extras):
         "Data/Hard/FakeSong.txt",
         "Fake Song (Hard) by Tester",
         "Hard",
-        {"IterationEngine": {"GA_SearchDepth": "125"}},
+        4,
         ("ref",),
         ("gear",),
         ("mini",),
@@ -32,7 +31,6 @@ def _legacy_task(*extras):
         {"mini": object()},
         125,
         6,
-        True,
     )
     assert len(prefix) == TASK_FIXED_FIELD_COUNT
     return prefix + tuple(extras)
@@ -44,6 +42,7 @@ def test_legacy_task_indices_match_production_tuple_prefix():
     assert task[TaskIndex.FILE_PATH] == "Data/Hard/FakeSong.txt"
     assert task[TaskIndex.SONG_NAME] == "Fake Song (Hard) by Tester"
     assert task[TaskIndex.DIFFICULTY] == "Hard"
+    assert task[TaskIndex.MULTI_START] == 4
     assert task[TaskIndex.GA_DEPTH] == 125
     assert task[TaskIndex.PARALLEL_WORKERS] == 6
 
@@ -52,7 +51,6 @@ def test_task_field_helpers_name_the_production_tuple_prefix():
     task = _legacy_task({"extra": True})
 
     assert task_song_name(task) == "Fake Song (Hard) by Tester"
-    assert task_cfg_dict(task) == {"IterationEngine": {"GA_SearchDepth": "125"}}
     assert task[TaskIndex.FILE_PATH] == "Data/Hard/FakeSong.txt"
     assert task[TaskIndex.REF_ARRAYS] == ("ref",)
     assert task[TASK_FIXED_FIELD_COUNT:] == ({"extra": True},)
@@ -95,13 +93,12 @@ def test_seed_plan_from_song_job_defaults_non_repeat_to_base_label():
 def test_task_tuple_to_shared_context_preserves_shared_runtime_fields():
     ctx = task_tuple_to_shared_context(_legacy_task())
 
-    assert ctx.cfg_dict == {"IterationEngine": {"GA_SearchDepth": "125"}}
+    assert ctx.multi_start == 4
     assert ctx.ref_arrays == ("ref",)
     assert ctx.all_gears == ("gear",)
     assert ctx.all_minis == ("mini",)
     assert ctx.ga_depth == 125
     assert ctx.parallel_workers == 6
-    assert ctx.fg_debug is True
 
 
 def test_task_tuple_to_view_keeps_extras_separate_from_shared_context():
@@ -169,5 +166,5 @@ def test_materialize_repeat_task_replaces_bundle_metadata_with_one_repeat_contex
 
 
 def test_short_legacy_tuple_is_rejected_at_the_adapter_boundary():
-    with pytest.raises(ValueError, match="12-field production prefix"):
+    with pytest.raises(ValueError, match="11-field production prefix"):
         task_tuple_to_song_job(("too", "short"))

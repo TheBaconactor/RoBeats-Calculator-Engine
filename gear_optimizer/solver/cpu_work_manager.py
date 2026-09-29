@@ -42,7 +42,6 @@ def _announce_cache_summary(stream: TextIO, *, label: str, summary, elapsed_ms: 
 
 def run_startup_cpu_work(
     *,
-    cfg,
     song_queue,
     ref_arrays: dict,
     data_root,
@@ -63,7 +62,6 @@ def run_startup_cpu_work(
         logger.info(verify_message)
     timeline_t0 = time.perf_counter()
     timeline_summary = run_timeline_frontier_cache_prebuild(
-        cfg=cfg,
         song_queue=queue_items,
         ref_arrays=ref_arrays,
         data_root=data_root,
@@ -74,7 +72,6 @@ def run_startup_cpu_work(
     _announce_cache_summary(stream, label="Timeline frontier cache", summary=timeline_summary, elapsed_ms=timeline_elapsed_ms)
     fg_t0 = time.perf_counter()
     fg_summary = run_fg_response_frontier_cache_prebuild(
-        cfg=cfg,
         song_queue=queue_items,
         ref_arrays=ref_arrays,
         data_root=data_root,

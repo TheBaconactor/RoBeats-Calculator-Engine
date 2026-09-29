@@ -1,7 +1,7 @@
-import configparser
-
 from gear_optimizer.app import GearOptimizerApp
+from gear_optimizer.settings import RunSettings
 from gear_optimizer.domain.jobs import (
+    TASK_FIXED_FIELD_COUNT,
     extract_repeat_bundle,
     extract_repeat_context,
     materialize_repeat_task,
@@ -9,62 +9,55 @@ from gear_optimizer.domain.jobs import (
 )
 
 
-def _build_cfg(song_repeats: int) -> configparser.ConfigParser:
-    cfg = configparser.ConfigParser()
-    cfg.add_section("IterationEngine")
-    cfg.set("IterationEngine", "SongRepeats", str(int(song_repeats)))
-    return cfg
+def _build_run(song_repeats: int) -> RunSettings:
+    return RunSettings(song_repeats=song_repeats, search_depth=1)
 
 
 def test_prepare_tasks_song_repeats_expands_queue():
     app = GearOptimizerApp.__new__(GearOptimizerApp)
-    cfg = _build_cfg(3)
+    run = _build_run(3)
 
     song_queue = [("dummy.txt", "Dummy Song", "Hard")]
     tasks = app._prepare_tasks(
         song_queue=song_queue,
-        cfg=cfg,
+        run=run,
         ref_arrays={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        ga_depth=1,
-        fg_debug=False,
     )
 
     assert len(tasks) == 3
-    assert all(len(t) == 13 for t in tasks)
+    assert all(len(t) == TASK_FIXED_FIELD_COUNT + 1 for t in tasks)
     assert [task_queue_label(t) for t in tasks] == [
         "Dummy Song (Run 1/3)",
         "Dummy Song (Run 2/3)",
         "Dummy Song (Run 3/3)",
     ]
 
-    seeds = [t[12]["ga_seed"] for t in tasks]
+    seeds = [t[TASK_FIXED_FIELD_COUNT]["ga_seed"] for t in tasks]
     assert len(seeds) == 3
     assert len(set(seeds)) == 3
 
 
 def test_prepare_tasks_song_repeats_one_still_seeds_single_run():
     app = GearOptimizerApp.__new__(GearOptimizerApp)
-    cfg = _build_cfg(1)
+    run = _build_run(1)
 
     song_queue = [("dummy.txt", "Dummy Song", "Hard")]
     tasks = app._prepare_tasks(
         song_queue=song_queue,
-        cfg=cfg,
+        run=run,
         ref_arrays={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        ga_depth=1,
-        fg_debug=False,
     )
 
     assert len(tasks) == 1
-    assert len(tasks[0]) == 13
+    assert len(tasks[0]) == TASK_FIXED_FIELD_COUNT + 1
     repeat_ctx = extract_repeat_context(tasks[0])
     assert repeat_ctx is not None
     assert repeat_ctx["repeat_index"] == 1
@@ -81,30 +74,26 @@ def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypat
     monkeypatch.setattr(qtc_module.secrets, "randbits", lambda _bits: next(seeds))
 
     app = GearOptimizerApp.__new__(GearOptimizerApp)
-    cfg = _build_cfg(1)
+    run = _build_run(1)
     song_queue = [("dummy.txt", "Dummy Song", "Hard")]
 
     first = app._prepare_tasks(
         song_queue=song_queue,
-        cfg=cfg,
+        run=run,
         ref_arrays={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        ga_depth=1,
-        fg_debug=False,
     )
     second = app._prepare_tasks(
         song_queue=song_queue,
-        cfg=cfg,
+        run=run,
         ref_arrays={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        ga_depth=1,
-        fg_debug=False,
     )
 
     assert extract_repeat_context(first[0])["ga_seed"] == 101
@@ -118,17 +107,15 @@ def test_prepare_tasks_accepts_zero_as_random_seed(monkeypatch):
     monkeypatch.setattr(qtc_module.secrets, "randbits", lambda _bits: next(seeds))
 
     app = GearOptimizerApp.__new__(GearOptimizerApp)
-    cfg = _build_cfg(1)
+    run = _build_run(1)
     tasks = app._prepare_tasks(
         song_queue=[("dummy.txt", "Dummy Song", "Hard")],
-        cfg=cfg,
+        run=run,
         ref_arrays={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        ga_depth=1,
-        fg_debug=False,
     )
 
     assert extract_repeat_context(tasks[0])["ga_seed"] == 0
@@ -136,19 +123,17 @@ def test_prepare_tasks_accepts_zero_as_random_seed(monkeypatch):
 
 def test_prepare_tasks_does_not_collapse_song_repeats():
     app = GearOptimizerApp.__new__(GearOptimizerApp)
-    cfg = _build_cfg(25)
+    run = _build_run(25)
 
     song_queue = [("dummy.txt", "Dummy Song", "Hard")]
     tasks = app._prepare_tasks(
         song_queue=song_queue,
-        cfg=cfg,
+        run=run,
         ref_arrays={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
         minis_by_name={},
-        ga_depth=1,
-        fg_debug=False,
     )
 
     assert len(tasks) == 25

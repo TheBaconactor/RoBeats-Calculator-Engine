@@ -130,7 +130,7 @@ def _derived_frontier_cache_file(
     from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_payload_cache_info
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    base_song = get_base_calc_song(str(song_path), {})
+    base_song = get_base_calc_song(str(song_path))
     if not base_song:
         return None
     calc_song = clone_calc_song(base_song)
@@ -204,7 +204,7 @@ def build_timeline_frontier_cache_for_path(
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     song_path = Path(song_path_text)
-    base_song = get_base_calc_song(str(song_path), {})
+    base_song = get_base_calc_song(str(song_path))
     calc_song = clone_calc_song(base_song)
     apply_timing_envelope(calc_song, mode=timing_mode)
     cache_info = timeline_frontier_payload_cache_info(calc_song, ref_arrays, timing_mode=timing_mode)
@@ -334,14 +334,12 @@ def _run_missing_timeline_prebuild(
 
 def _run_timeline_frontier_cache_prebuild_for_mode(
     *,
-    cfg,
     song_queue: Iterable[tuple],
     ref_arrays: dict,
     data_root: str | os.PathLike[str] | None = None,
     build_missing: bool = True,
     timing_mode: str = "perfect_window",
 ) -> TimelineFrontierCachePrebuildSummary:
-    del cfg
     from gear_optimizer.solver.taichi_gem.api.timeline import _frontier_disk_cache_dir
 
     started = time.perf_counter()
@@ -424,7 +422,6 @@ def _run_timeline_frontier_cache_prebuild_for_mode(
 
 def run_timeline_frontier_cache_prebuild(
     *,
-    cfg,
     song_queue: Iterable[tuple],
     ref_arrays: dict,
     data_root: str | os.PathLike[str] | None = None,
@@ -436,7 +433,6 @@ def run_timeline_frontier_cache_prebuild(
     queue_items = list(song_queue or [])
     summaries = [
         _run_timeline_frontier_cache_prebuild_for_mode(
-            cfg=cfg,
             song_queue=queue_items,
             ref_arrays=ref_arrays,
             data_root=data_root,

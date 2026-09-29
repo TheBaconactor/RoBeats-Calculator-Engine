@@ -9,17 +9,12 @@ import time
 import numpy as np
 from gear_optimizer.core.constants import GA_POPULATION_SIZE
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
-from gear_optimizer.core.config import (
-    AppRuntimeSettings,
-    compute_memory_guard_limit,
-    load_config,
-    resolve_inflight_songs,
-)
 from gear_optimizer.data.database import (
     init_db,
     get_evolution_db_path,
 )
 from gear_optimizer.core.memory import (
+    compute_memory_guard_limit,
     set_memory_watchdog_limit,
     memory_release_requested,
     build_memory_guard_resume_context,
@@ -47,7 +42,7 @@ from gear_optimizer.ui.progress import (
 )
 from gear_optimizer.pipeline.queue_task_coordinator import QueueTaskCoordinator
 from gear_optimizer import settings
-from gear_optimizer.settings import paths
+from gear_optimizer.settings import RunSettings, paths
 from gear_optimizer.ui.runtime_ui import RuntimeUiMixin
 from gear_optimizer.task_execution import TaskExecutionMixin
 
@@ -90,7 +85,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._runtime_completed_count = 0
         self._runtime_total_count = 0
         self._runtime_failed_count = 0
-        self._runtime_settings: AppRuntimeSettings | None = None
 
     def setup_logging(self) -> None:
         from gear_optimizer.core.logging_config import configure_default_logging
@@ -122,16 +116,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     def _install_signal_handlers(self) -> None:
         return self._stop_control.install_signal_handlers()
-
-    def _current_runtime_settings(self, cfg=None) -> AppRuntimeSettings:
-        settings = getattr(self, "_runtime_settings", None)
-        if isinstance(settings, AppRuntimeSettings):
-            return settings
-        return AppRuntimeSettings.from_config(cfg)
-
-    def _get_inflight_songs_requested(self, cfg) -> int:
-        runtime_settings = self._current_runtime_settings(cfg)
-        return resolve_inflight_songs(int(runtime_settings.inflight.songs))
 
     def _materialize_gpu_runtime_on_main_thread(self) -> None:
         """
@@ -178,12 +162,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         ti.sync()
         logger.info("[Startup][GPU] Taichi/Vulkan runtime materialized on main thread.")
 
-    def _configure_execution_and_prewarm(self, cfg) -> None:
-        runtime_settings = self._current_runtime_settings(cfg)
-        ga_multistart = max(1, int(runtime_settings.ga.multi_start))
+    def _configure_execution_and_prewarm(self, multi_start: int) -> None:
         from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
-        gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
+        gpu_fields.configure_ga_run_buffers(max_runs=max(1, int(multi_start)), max_genomes=int(GA_POPULATION_SIZE))
         # macOS-only required dispatch-safety boundary: on darwin `ti.vulkan` lowers through
         # MoltenVK and Taichi acquires a GLFW/Cocoa context during materialize_runtime, which
         # traps off the OS main thread. Pin that one-time materialization to the main thread
@@ -194,9 +176,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         # (lazy init on the executor thread) and do not introduce an eager startup GPU dependency.
         if sys.platform == "darwin":
             self._materialize_gpu_runtime_on_main_thread()
-        inflight_req = int(runtime_settings.inflight.songs or 0)
-        if inflight_req <= 1:
-            return
         logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
         from gear_optimizer.solver.gpu_executor import get_gpu_executor
 
@@ -242,7 +221,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         memory_guard_restart = False
         memory_resume_tracker = None
         start_time = time.time()
-        loop_forever = False  # Default, updated from config
+        loop_forever = False  # Default, updated from config.ini
         graceful_stop = False
         queued_songs = 0
         queued_tasks = 0
@@ -253,64 +232,47 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 return False
             update_and_restart_client()
             frontier_sync = sync_frontiers_from_server()
-            cfg = load_config()
-            runtime_settings = self._current_runtime_settings(cfg)
-            self._runtime_settings = runtime_settings
-            set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
+            run = settings.read_run_settings()
+            set_memory_watchdog_limit(compute_memory_guard_limit(run))
             db_display_name = os.path.basename(get_evolution_db_path())
             if self._banner_enabled:
                 self._print_banner()
             logger.info(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
             init_db()
-            fg_debug = bool(runtime_settings.iteration_engine.force_greats_debug)
-            fg_status = "ResponseFrontier"
-            logger.info(f" >> [ForceGreats] {fg_status}")
-            ga_depth = int(runtime_settings.ga.search_depth)
-            loop_forever = bool(runtime_settings.loop_forever)
-            eval_cpu_limit = int(runtime_settings.eval_cpu_cores)
+            logger.info(" >> [ForceGreats] ResponseFrontier")
+            loop_forever = run.loop_forever
             sync_exported_game_data()
             stats_table = read_table(str(paths().stats_txt))
-            self._disable_inputs_to_prevent_taint(cfg)
             ref_arrays = self._preload_ref_arrays(stats_table)
             all_gears = load_all_gears_list()
             all_minis = load_all_minis_list()
             gears_by_name = {g["Name"]: g for g in all_gears}
             minis_by_name = {m["Name"]: m for m in all_minis}
-            song_queue = self._build_song_queue(cfg)
+            song_queue = self._build_song_queue(run)
             queued_songs = len(song_queue)
             logger.info(f"[Run] Queued {len(song_queue)} song(s) for processing.")
             run_startup_cpu_work(
-                cfg=cfg,
                 song_queue=song_queue,
                 ref_arrays=ref_arrays,
                 data_root=str(paths().data_dir),
                 announce_stream=self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout,
                 build_missing=not frontier_sync.enabled,
             )
-            self._configure_execution_and_prewarm(cfg)
+            self._configure_execution_and_prewarm(run.multi_start)
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
-            memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(cfg)))
+            memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(run)))
             tasks = self._prepare_tasks(
                 song_queue,
-                cfg,
+                run,
                 ref_arrays,
                 all_gears,
                 all_minis,
                 gears_by_name,
                 minis_by_name,
-                ga_depth,
-                fg_debug,
             )
             queued_tasks = self._effective_total_tasks(tasks)
-            parallel_workers = 1
             self._start_progress(queued_tasks)
-            self._execute_tasks(
-                tasks,
-                eval_cpu_limit,
-                parallel_workers,
-                memory_resume_tracker,
-                loop_forever,
-            )
+            self._execute_tasks(tasks, memory_resume_tracker)
             memory_guard_restart = self._memory_guard_restart_needed(memory_resume_tracker)
         except KeyboardInterrupt:
             graceful_stop = True
@@ -366,25 +328,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             restart_process_for_memory_guard()
             return False  # Process replaced
         elif loop_forever:
-            restart_wait_s = self._loop_restart_wait_seconds(cfg, default_seconds=0.0)
-            self._handle_loop_restart(wait_time=restart_wait_s)
+            self._handle_loop_restart()
             return True
         else:
             logger.info("LoopForever=FALSE; exiting after completing queue.")
             return False
-
-    def _disable_inputs_to_prevent_taint(self, cfg):
-        logger.info(
-            " >> [Auto-Mode] Finders active: Ignoring manual [UserInputStatsGems] & [ElementalGems] to prevent database tainting."
-        )
-        if not cfg.has_section("UserInputStatsGems"):
-            cfg.add_section("UserInputStatsGems")
-        for key in ["perfect_points", "combo_multiplier", "fever_multiplier", "fever_fill", "fever_time"]:
-            cfg.set("UserInputStatsGems", key, "0")
-        if not cfg.has_section("ElementalGems"):
-            cfg.add_section("ElementalGems")
-        for key in ["Chill", "Flow", "Rush", "Beat", "Vibe"]:
-            cfg.set("ElementalGems", key, "0")
 
     def _preload_ref_arrays(self, stats_table):
         from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
@@ -394,16 +342,13 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _queue_task_coordinator(self) -> QueueTaskCoordinator:
         """Queue/task logic lives in QueueTaskCoordinator; app state reaches it
         only through these two callables (unit-testable without GPU/DB/app)."""
-        return QueueTaskCoordinator(
-            runtime_settings_fn=self._current_runtime_settings,
-            stop_requested_fn=self._stop_requested_now,
-        )
+        return QueueTaskCoordinator(stop_requested_fn=self._stop_requested_now)
 
-    def _get_filter_params(self, cfg):
-        return self._queue_task_coordinator().get_filter_params(cfg)
+    def _get_filter_params(self, run: RunSettings):
+        return self._queue_task_coordinator().get_filter_params(run)
 
-    def _build_song_queue(self, cfg):
-        return self._queue_task_coordinator().build_song_queue(cfg)
+    def _build_song_queue(self, run: RunSettings):
+        return self._queue_task_coordinator().build_song_queue(run)
 
     def _normalize_song_label(self, label: str) -> str:
         s = str(label or "").strip()
@@ -417,25 +362,21 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _prepare_tasks(
         self,
         song_queue,
-        cfg,
+        run: RunSettings,
         ref_arrays,
         all_gears,
         all_minis,
         gears_by_name,
         minis_by_name,
-        ga_depth,
-        fg_debug,
     ):
         return self._queue_task_coordinator().prepare_tasks(
             song_queue,
-            cfg,
+            run,
             ref_arrays,
             all_gears,
             all_minis,
             gears_by_name,
             minis_by_name,
-            ga_depth,
-            fg_debug,
         )
 
     @staticmethod
@@ -501,25 +442,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 return True
         return False
 
-    def _loop_restart_wait_seconds(self, cfg=None, *, default_seconds: float = 0.0) -> float:
-        wait_s = float(default_seconds)
-        try:
-            wait_s = float(self._current_runtime_settings(cfg).loop_restart_wait_sec)
-        except (ValueError, TypeError):
-            pass
-        return max(0.0, min(float(wait_s), 60.0))
-
-    def _handle_loop_restart(self, wait_time=0):
-        wait_s = max(0.0, float(wait_time or 0.0))
-        if wait_s > 0.0:
-            logger.info(f"Restarting song scan in {wait_s:.2f} seconds...")
-        else:
-            logger.info("Restarting song scan immediately...")
+    def _handle_loop_restart(self):
+        logger.info("Restarting song scan immediately...")
         try:
             if os.path.exists(MEMORY_GUARD_RESUME_FILE):
                 os.remove(MEMORY_GUARD_RESUME_FILE)
                 logger.info("[LoopForever] Cleared resume file")
         except (OSError, IOError) as e:
             logging.warning(f"Failed to delete resume file: {e}")
-        if wait_s > 0.0:
-            time.sleep(wait_s)

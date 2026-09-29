@@ -27,11 +27,10 @@ def _mock_base_song(*, primary_color: str = "Rush", n_notes: int = 96) -> dict:
     }
 
 
-def test_canonicalize_fg_update_entries_uses_calc_song_ref_arrays_and_cfg(monkeypatch):
+def test_canonicalize_fg_update_entries_uses_calc_song_and_ref_arrays(monkeypatch):
     entries = [{"score": 123, "gear": ["G1"], "minis": ["M1"]}]
     base_calc_song = _mock_base_song()
     ref_arrays = {"Perfect Points": [1.0]}
-    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5"}}
     calls = {}
     canonical_row = {
         "score": 456,
@@ -40,8 +39,8 @@ def test_canonicalize_fg_update_entries_uses_calc_song_ref_arrays_and_cfg(monkey
         "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
     }
 
-    def fake_get_base_calc_song(file_path, cfg=None):
-        calls["song_io"] = (file_path, cfg)
+    def fake_get_base_calc_song(file_path):
+        calls["song_io"] = file_path
         return base_calc_song
 
     def fake_canonicalize(entries_arg, *, calc_song, ref_arrays):
@@ -63,13 +62,12 @@ def test_canonicalize_fg_update_entries_uses_calc_song_ref_arrays_and_cfg(monkey
     result = canonicalize_fg_update_entries(
         entries,
         file_path="Data/Hard/Test Song.txt",
-        cfg_dict=cfg_dict,
         ref_arrays=ref_arrays,
         song_name="Test Song",
     )
 
     assert result == [canonical_row]
-    assert calls["song_io"] == ("Data/Hard/Test Song.txt", cfg_dict)
+    assert calls["song_io"] == "Data/Hard/Test Song.txt"
     passed = calls["canonicalize"]
     assert passed["entries"] == entries
     assert passed["ref_arrays"] is ref_arrays
@@ -111,7 +109,6 @@ def test_canonicalize_fg_update_entries_uses_cached_ref_arrays(monkeypatch):
     result = canonicalize_fg_update_entries(
         entries,
         file_path="Data/Hard/Test Song.txt",
-        cfg_dict={},
         ref_arrays=None,
         song_name="Test Song",
     )
@@ -145,7 +142,6 @@ def test_canonicalize_fg_update_entries_reraises_missing_frontier_cache(monkeypa
         canonicalize_fg_update_entries(
             [{"score": 123, "force": {"ForceGreats": {}}}],
             file_path="Data/Hard/Test Song.txt",
-            cfg_dict={},
             ref_arrays={"Perfect Points": [1.0]},
             song_name="Test Song",
         )
@@ -176,7 +172,7 @@ def test_fg_canonicalization_prep_matches_prebuild_timeline_cache_key(monkeypatc
 
     # Deferred FG canonicalization prep (post-fix): the same canonical helper.
     monkeypatch.setattr("gear_optimizer.solver.song_preparation.get_base_calc_song", lambda _fp, _cfg=None: base)
-    canon_song = build_prepared_calc_song(fp="Data/Hard/Test Song.txt", cfg_dict={}).calc_song
+    canon_song = build_prepared_calc_song(fp="Data/Hard/Test Song.txt").calc_song
     canon_key = _song_timing_cache_key(canon_song)
 
     assert canon_key == prebuild_key
@@ -187,7 +183,6 @@ def test_canonicalize_fg_update_entries_rejects_missing_file_path():
         canonicalize_fg_update_entries(
             [{"score": 123}],
             file_path="",
-            cfg_dict={},
             ref_arrays={"Perfect Points": [1.0]},
             song_name="Test Song",
         )

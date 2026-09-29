@@ -94,7 +94,21 @@ python -m pip install -r requirements-dev.txt
 
 The repository includes chart and gear data under [`Data/`](DATA.md). Set `Song_Name` and `Difficulty` in `config.ini`. Use `TargetPrimary` and `TargetSecondary` to narrow the queue when needed.
 
-`config.ini.example` contains the same minimal defaults if you need to restore the configuration.
+`config.ini` accepts exactly these keys; an unknown or removed key stops the run with an error that names it.
+
+| Section | Key | Default | Meaning |
+| --- | --- | --- | --- |
+| `[CalculateSong]` | `Song_Name` | empty (every chart) | Solve charts whose name contains this text |
+| | `Difficulty` | `All` | `Easy`, `Normal`, `Hard` or `All` |
+| | `TargetPrimary`, `TargetSecondary` | `All` | Colors to include, e.g. `Rush` or `Flow,Beat` |
+| | `LoopForever` | `false` | Rescan and solve the queue again when it finishes |
+| `[IterationEngine]` | `SongRepeats` | `1` | Solves per chart, each with its own search seed |
+| | `SongQueueLimit` | `0` (no limit) | Charts per pass |
+| | `IgnoreResumeQueue` | `false` | Ignore the charts left over from a memory-guard restart |
+| | `GA_SearchDepth` | `125` | Search generations |
+| | `GA_MultiStart` | `3` | Independent search populations |
+| | `MemorySoftLimitGB` | `0` (off) | Restart before the process uses this much memory |
+| | `MemorySoftLimitPercent` | platform default | The same limit as a share of physical memory (`0` disables) |
 
 ### 4. Run the optimizer
 

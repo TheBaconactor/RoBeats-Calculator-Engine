@@ -9,8 +9,6 @@ This ensures only ONE process initializes Taichi/Vulkan, preventing:
 Usage:
     executor = get_gpu_executor()
     executor.start()
-    if is_gpu_worker_mode():
-        result = submit_gpu_work(...)
     executor.stop()
 """
 import multiprocessing
@@ -62,12 +60,8 @@ from gear_optimizer.solver.windows_timer import (
     release_windows_timer_period_1ms as _release_windows_timer_period_1ms,
 )
 from gear_optimizer.solver.gpu_executor_lifecycle import (
-    worker_response_router as _worker_response_router,
-)
-from gear_optimizer.solver.gpu_executor_lifecycle import (
     register_executor_worker as _register_executor_worker,
     unregister_executor_worker as _unregister_executor_worker,
-    worker_mode_state as _worker_state,
 )
 from gear_optimizer.solver.gpu_executor_refs import (
     execute_load_refs as _execute_load_refs,
@@ -116,17 +110,6 @@ def _warmup_fg_response_frontier_runtime() -> None:
     fg_fields.ensure_ready_with_warmup()
 
 
-def is_gpu_worker_mode() -> bool:
-    """Check if running in worker mode (should use IPC for GPU)."""
-    return bool(_worker_state.enabled)
-def clear_gpu_worker_mode():
-    """Clear worker mode (for testing or process reuse)."""
-    _worker_response_router.reset()
-    _worker_state.clear()
-def set_gpu_worker_mode(worker_id: int, request_queue, response_queue):
-    """Configure this process as a GPU worker (called after fork/spawn)."""
-    _worker_response_router.restart()
-    _worker_state.configure(worker_id, request_queue, response_queue)
 class GpuExecutor:
     """
     Single GPU owner process that handles all Taichi kernel execution.

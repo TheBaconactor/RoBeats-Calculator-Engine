@@ -39,14 +39,12 @@ def clone_calc_song(calc_song: dict) -> dict:
     return {"metadata": dict(meta), "song_data": dict(song_data)}
 
 
-def get_base_calc_song(fp: str, cfg_dict: dict | None = None) -> dict:
+def get_base_calc_song(fp: str) -> dict:
     """
     Get the cached base calc_song for a chart file (see gear_optimizer.chart.to_calc_song).
 
     The returned object is shared; callers must clone via clone_calc_song()
     before applying timing-envelope streams or any other per-run mutation.
-    ``cfg_dict`` does not affect the chart; the parameter stays until the website's
-    callers move to gear_optimizer.chart.
     """
     abs_fp = os.path.abspath(fp)
     mtime_ns = os.stat(abs_fp).st_mtime_ns

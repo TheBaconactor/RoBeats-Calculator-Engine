@@ -1,13 +1,11 @@
 """Song-queue discovery and task preparation, extracted from GearOptimizerApp.
 
-Owns the queue/task half of a run iteration: config-driven chart discovery and
-filtering, memory-guard resume merge, queue finalization, and per-song task
+Owns the queue/task half of a run iteration: chart discovery and filtering by the
+run settings, memory-guard resume merge, queue finalization, and per-song task
 tuples (including per-repeat GA seed assignment). App state reaches this class
-only through two injected callables, so the logic is unit-testable without a
-GPU, a DB write path, or a constructed GearOptimizerApp:
-
-- ``runtime_settings_fn(cfg)`` -> the app's current runtime settings view
-- ``stop_requested_fn()``      -> cooperative stop polling during discovery
+only through the injected ``stop_requested_fn()`` (cooperative stop polling during
+discovery), so the logic is unit-testable without a GPU, a DB write path, or a
+constructed GearOptimizerApp.
 """
 
 from __future__ import annotations
@@ -23,7 +21,6 @@ from gear_optimizer.core.memory import (
     build_memory_guard_resume_context,
     load_memory_guard_resume_state,
 )
-from gear_optimizer.core.utils import cfg_to_dict
 from gear_optimizer.data.database import get_song_names_present_in_db
 from gear_optimizer.data.song_io import scan_song_header
 from gear_optimizer.domain.jobs import (
@@ -32,6 +29,7 @@ from gear_optimizer.domain.jobs import (
     task_tuple_from_job_context,
 )
 from gear_optimizer import settings
+from gear_optimizer.settings import RunSettings
 from gear_optimizer.song_queue import (
     SongQueueItem,
     finalize_song_queue,
@@ -43,27 +41,20 @@ logger = logging.getLogger(__name__)
 
 
 class QueueTaskCoordinator:
-    def __init__(self, *, runtime_settings_fn, stop_requested_fn):
-        self._runtime_settings = runtime_settings_fn
+    def __init__(self, *, stop_requested_fn):
         self._stop_requested = stop_requested_fn
 
-    def get_filter_params(self, cfg):
-        song_settings = self._runtime_settings(cfg).calculate_song
-        diff = song_settings.difficulty or "All"
-        diff_lower = diff.strip().lower()
-        filter_search = song_settings.song_name.strip().lower()
+    def get_filter_params(self, run: RunSettings):
+        diff_lower = run.difficulty.strip().lower()
+        filter_search = run.song_name.strip().lower()
 
         def _parse_color_targets(raw_val):
             tokens = [c.strip().lower() for c in re.split(r"[,\|/]", raw_val or "") if c and c.strip()]
             is_all = not tokens or any(c in ("all", "any", "*") for c in tokens)
             return is_all, set() if is_all else set(tokens)
 
-        target_primary_raw = song_settings.target_primary
-        target_secondary_raw = song_settings.target_secondary
-        if not target_secondary_raw:
-            target_secondary_raw = "all"
-        target_primary_all, target_primary_colors = _parse_color_targets(target_primary_raw)
-        target_secondary_all, target_secondary_colors = _parse_color_targets(target_secondary_raw)
+        target_primary_all, target_primary_colors = _parse_color_targets(run.target_primary)
+        target_secondary_all, target_secondary_colors = _parse_color_targets(run.target_secondary)
         return (
             diff_lower,
             filter_search,
@@ -73,11 +64,11 @@ class QueueTaskCoordinator:
             target_secondary_colors,
         )
 
-    def build_song_queue(self, cfg):
-        diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self.get_filter_params(cfg)
+    def build_song_queue(self, run: RunSettings):
+        diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self.get_filter_params(run)
         resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
 
-        song_queue_limit = int(self._runtime_settings(cfg).song_queue_limit)
+        song_queue_limit = int(run.song_queue_limit)
 
         _presence_lookup_cache: dict[tuple[str, ...], set[str]] = {}
 
@@ -95,15 +86,13 @@ class QueueTaskCoordinator:
         resume_seed_queue: list[SongQueueItem] = []
         resume_known_path_keys: set[str] | None = None
         resume_has_known_paths = False
-        ignore_resume = bool(self._runtime_settings(cfg).ignore_resume_queue)
-        if not ignore_resume:
+        if not run.ignore_resume_queue:
             resume_state = load_memory_guard_resume_state(resume_context)
             resume_seed_queue = resume_state.pending
             resume_known_path_keys = resume_state.known_path_keys
             resume_has_known_paths = resume_known_path_keys is not None
             if resume_seed_queue:
                 logger.info(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
-        diff = self._runtime_settings(cfg).calculate_song.difficulty or "All"
         song_queue: list[SongQueueItem] = []
         seen_paths = set()
         if diff_lower not in ("easy", "normal", "hard"):
@@ -150,7 +139,7 @@ class QueueTaskCoordinator:
             return []
         if resume_seed_queue and not resume_has_known_paths:
             resume_known_path_keys = {queue_path_key(item) for item in song_queue}
-        logger.info(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={diff})")
+        logger.info(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={run.difficulty})")
         song_names_present_in_db: set[str] = set()
         try:
             song_names_present_in_db = _lookup_song_presence((item[1] for item in song_queue))
@@ -189,28 +178,23 @@ class QueueTaskCoordinator:
     def prepare_tasks(
         self,
         song_queue,
-        cfg,
+        run: RunSettings,
         ref_arrays,
         all_gears,
         all_minis,
         gears_by_name,
         minis_by_name,
-        ga_depth,
-        fg_debug,
     ):
-        cfg_dict = cfg_to_dict(cfg)
         tasks = []
-        parallel_workers = 1
         run_context = SharedRunContext(
-            cfg_dict=cfg_dict,
+            multi_start=int(run.multi_start),
             ref_arrays=ref_arrays,
             all_gears=all_gears,
             all_minis=all_minis,
             gears_by_name=gears_by_name,
             minis_by_name=minis_by_name,
-            ga_depth=int(ga_depth),
-            parallel_workers=int(parallel_workers),
-            fg_debug=bool(fg_debug),
+            ga_depth=int(run.search_depth),
+            parallel_workers=1,
         )
 
         def _append_song_task(
@@ -248,7 +232,7 @@ class QueueTaskCoordinator:
 
         ga_seed = settings.ga_seed()
         ga_seed_base = None if ga_seed is None else ga_seed & 0xFFFFFFFF
-        song_repeats = max(1, min(int(self._runtime_settings(cfg).song_repeats), 100))
+        song_repeats = max(1, min(int(run.song_repeats), 100))
         used_ga_seeds: set[int] = set()
 
         def _stable_ga_seed_for_song_repeat(song_name: str, repeat_index: int) -> int:

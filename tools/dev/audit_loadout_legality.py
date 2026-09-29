@@ -207,7 +207,7 @@ def main(argv=None) -> int:
             if not fp:
                 calc_cache[name] = None
             else:
-                cs = get_base_calc_song(fp, {}); apply_timing_envelope(cs, mode="perfect_window")
+                cs = get_base_calc_song(fp); apply_timing_envelope(cs, mode="perfect_window")
                 calc_cache[name] = cs
         calc_song = calc_cache[name]
         if calc_song is None:

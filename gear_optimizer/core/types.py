@@ -110,7 +110,6 @@ class SongResultPayload(TypedDict, total=False):
     # Inputs
     file_path: str
     difficulty: str
-    cfg_dict: JsonDict
 
     # Outputs
     db_key: str

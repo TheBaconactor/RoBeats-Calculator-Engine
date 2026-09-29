@@ -2,61 +2,21 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
-import os
 import queue
 import time
 
-from gear_optimizer.core.config import resolve_inflight_songs
 from gear_optimizer.core.memory import memory_release_requested
-from gear_optimizer.core.utils import safe_int
-from gear_optimizer.domain.jobs import task_cfg_dict
 from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimizationRequest
+from gear_optimizer.solver.native_inflight_config import IN_FLIGHT_SONGS
 
 logger = logging.getLogger(__name__)
 
 
 class TaskExecutionMixin:
-    def _execute_tasks(
-            self,
-            tasks,
-            eval_cpu_limit,
-            parallel_workers,
-            memory_resume_tracker,
-            loop_forever,
-        ):
-            """Execute tasks with automatic parallelism."""
+    def _execute_tasks(self, tasks, memory_resume_tracker):
+            """Run the queue through the native in-flight engine, then record completion counts."""
             if self._stop_requested_now():
                 return
-            configured_inflight_songs = 0
-            try:
-                cfg_dict0 = task_cfg_dict(tasks[0]) if tasks else {}
-                ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
-                if isinstance(ie, dict):
-                    configured_inflight_songs = safe_int(ie.get("inflightsongs", 0), 0)
-            except (TypeError, ValueError):
-                configured_inflight_songs = 0
-            inflight_songs = resolve_inflight_songs(configured_inflight_songs, song_count=len(tasks))
-
-            logical_cpus = os.cpu_count() or 1
-            available_cpus = logical_cpus
-            if eval_cpu_limit and eval_cpu_limit > 0:
-                available_cpus = max(1, min(logical_cpus, eval_cpu_limit))
-
-            # GPU-only policy: run songs in a single process and use in-flight scheduling
-            # for parallelism instead of per-song process pools.
-            max_workers = 1
-
-            if available_cpus != logical_cpus:
-                logger.info(f"EvalCPUCores cap applied: using {available_cpus} of {logical_cpus} cores.")
-
-            if inflight_songs > 1 and len(tasks) > 1:
-                logger.debug(f"[InFlight] Requested: InFlightSongs={inflight_songs} (single-process).")
-
-            logger.info(
-                f"Parallel plan -> songs: {len(tasks)}, concurrent workers: {max_workers}, cores per song: {parallel_workers}"
-            )
-            logger.info(f"Using {available_cpus} logical CPU cores")
-
             completed_songs = set()
             self._run_current_song_label = ""
             self._start_hotkeys()
@@ -90,18 +50,8 @@ class TaskExecutionMixin:
             if not tasks:
                 return
 
-            cfg_dict0 = task_cfg_dict(tasks[0]) if tasks else {}
-            song_task_count = max(0, int(len(tasks)))
             total_tasks = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
-            configured_inflight_songs = 0
-            try:
-                ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
-                raw = ie.get("inflightsongs", 0) if isinstance(ie, dict) else 0
-                configured_inflight_songs = safe_int(raw, 0)
-            except (TypeError, ValueError):
-                configured_inflight_songs = 0
-
-            inflight_songs = resolve_inflight_songs(configured_inflight_songs, song_count=song_task_count)
+            inflight_songs = min(IN_FLIGHT_SONGS, len(tasks))
 
             post_queue = None
             post_proc = None

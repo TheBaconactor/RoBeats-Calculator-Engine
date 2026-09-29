@@ -13,53 +13,6 @@ from .constants import (
     SKIP_ITEM_KEYS,
 )
 from .gem_defs import ELEMENT_STAT_KEYS, GemKey, element_gem_count
-from .team_buff import team_buff_effect, resolve_baseline_team_buff_from_cfg_dict, resolve_team_color_from_cfg_dict
-from .config_adapter import UserGemSettings
-
-
-def build_base_stats_from_config(cfg_dict):
-    """
-    Build base stats from config including user input gems, elemental gems, and team buffs.
-
-    Args:
-        cfg_dict: Config dictionary (from cfg_to_dict or similar)
-
-    Returns:
-        dict: Base stats with config contributions applied
-    """
-    gems = UserGemSettings.from_cfg_dict(cfg_dict)
-
-    g_pp = gems.perfect_points
-    g_cm = gems.combo_multiplier
-    g_fm = gems.fever_multiplier
-    g_ff = gems.fever_fill_rate
-    g_ft = gems.fever_time
-
-    base_stats = {
-        "Perfect Points": g_pp * GEM_SCALE_NORMAL,
-        "Combo Multiplier": g_cm * GEM_SCALE_NORMAL,
-        "Fever Multiplier": g_fm * GEM_SCALE_FEVER,
-        "Fever Fill Rate": g_ff * GEM_SCALE_FEVER,
-        "Fever Time": g_ft * GEM_SCALE_FEVER,
-        "Chill": g_pp * GEM_STAT_TO_ELEMENT_SCALE,
-        "Flow": g_cm * GEM_STAT_TO_ELEMENT_SCALE,
-        "Rush": g_fm * GEM_STAT_TO_ELEMENT_SCALE,
-        "Beat": g_ft * GEM_STAT_TO_ELEMENT_SCALE,
-        "Vibe": g_ff * GEM_STAT_TO_ELEMENT_SCALE,
-    }
-
-    if gems.elemental_overflow:
-        for el, val in gems.elemental_overflow.items():
-            if val > 0:
-                base_stats[el] = base_stats.get(el, 0) + val * ELEMENTAL_GEM_SCALE
-
-    team_buff = resolve_baseline_team_buff_from_cfg_dict(cfg_dict, default="T5")
-    team_color = resolve_team_color_from_cfg_dict(cfg_dict)
-
-    for stat_name, delta in team_buff_effect(team_buff, team_color).items():
-        base_stats[stat_name] = base_stats.get(stat_name, 0) + int(delta)
-
-    return base_stats
 
 
 def compute_full_stats(gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats):

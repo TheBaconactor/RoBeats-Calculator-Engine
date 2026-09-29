@@ -53,7 +53,6 @@ def test_cache_build_and_explicit_maintenance_remain_locked(
     )
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        cfg=object(),
         song_queue=[paths],
         ref_arrays={},
         data_root=tmp_path,
@@ -87,7 +86,6 @@ def test_destructive_rotation_never_parses_the_manifest_for_its_version(monkeypa
     monkeypatch.setattr(prebuild, "_maintain_fg_response_frontier_cache_under_lock", lambda **_kwargs: None)
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
-        cfg=object(),
         song_queue=[paths],
         ref_arrays={},
         data_root=tmp_path,
