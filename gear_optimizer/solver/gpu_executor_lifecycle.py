@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, MutableMapping, Sequence
 from dataclasses import dataclass
 import importlib
 import json

@@ -45,9 +45,6 @@ from gear_optimizer.frontier_client import sync_frontiers_from_server
 from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.app_stop_control import StopController
-from gear_optimizer.song_queue import (
-    infer_song_difficulty_from_path,
-)
 from gear_optimizer.ui.progress import (
     ProgressUI as _ProgressUI,
     _banner_enabled_default,
@@ -579,10 +576,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
 
     def _get_filter_params(self, cfg):
         return self._queue_task_coordinator().get_filter_params(cfg)
-
-    @staticmethod
-    def _infer_song_difficulty_from_path(root: str) -> str:
-        return infer_song_difficulty_from_path(root)
 
     def _build_song_queue(self, cfg, paths):
         return self._queue_task_coordinator().build_song_queue(cfg, paths)

@@ -267,16 +267,6 @@ def test_find_official_chart_unknown_raises(data_root):
         service.find_official_chart("Not A Real Song")  # no fuzzy/substring fallback
 
 
-def test_chart_text_custom_takes_precedence(data_root):
-    request = {"chartText": "Song Name\tCustom\nSong Data\n500\t0\t0\t1"}
-    assert service.chart_text_for_request(request).startswith("Song Name\tCustom")
-
-
-def test_chart_text_official_reads_file(data_root):
-    _write_chart(data_root, "Hard", "Feeding [Hard]")
-    assert "Song Name\tFeeding [Hard]" in service.chart_text_for_request({"targetSongId": "Feeding [Hard]"})
-
-
 def test_chart_text_and_result_song_name_preserves_official_identity(data_root):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
 
@@ -301,7 +291,7 @@ def test_chart_text_and_result_song_name_custom_uses_job_key(data_root):
 
 def test_chart_text_requires_a_source(data_root):
     with pytest.raises(service.RequestError):
-        service.chart_text_for_request({"jobId": "x"})
+        service.chart_text_and_result_song_name_for_request({"jobId": "x"}, fallback_name="x")
 
 
 def test_custom_chart_event_limit_rejects_before_solve(data_root, monkeypatch):

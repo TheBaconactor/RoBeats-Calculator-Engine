@@ -16,27 +16,6 @@ MINI_ASCENSION_CACHE_VERSION = "mini-ascension-v4"
 MINI_ASCENSION_DISABLED_CACHE_KEY = ("mini-ascension-disabled",)
 MINI_ASCENSION_BASE_STAT_PREFIX = "Mini Ascension Base "
 
-MINI_ASCENSION_METADATA_KEYS = frozenset(
-    {
-        "Song Target",
-        "Mini Ascension Enabled",
-        "Mini Ascension Level",
-        "Mini Ascension Source Version",
-        "Mini Ascension Song Target Applied",
-        "Mini Ascension Elemental Bonus",
-        "Mini Ascension Match Qualities",
-        "Mini Ascension Materialized",
-        "Mini Ascension Materialized Song",
-        "Mini Ascension Materialized Primary Color",
-        "Mini Ascension Materialized Secondary Color",
-        "Mini Ascension Base Chill",
-        "Mini Ascension Base Flow",
-        "Mini Ascension Base Rush",
-        "Mini Ascension Base Beat",
-        "Mini Ascension Base Vibe",
-    }
-)
-
 _RANKED_COLOR_ORDER: tuple[str, ...] = ("Chill", "Vibe", "Beat", "Flow", "Rush")
 _ELEMENT_STAT_SET = frozenset(ELEMENT_STAT_KEYS)
 

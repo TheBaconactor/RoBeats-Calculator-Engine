@@ -649,14 +649,6 @@ def _normalize_chart(chart_text: str, song_name: str, timing_mode: str) -> str:
     return "\n".join(prefix + out) + "\n"
 
 
-def chart_text_for_request(request: dict[str, Any]) -> str:
-    """The chart to solve: custom `chartText` when present, else the official `targetSongId`."""
-    return chart_text_and_result_song_name_for_request(
-        request,
-        fallback_name=_job_slug(request.get("jobId") or request.get("resultKey")),
-    )[0]
-
-
 def _validate_custom_chart_event_limit(chart_text: str) -> None:
     in_song_data = False
     event_count = 0

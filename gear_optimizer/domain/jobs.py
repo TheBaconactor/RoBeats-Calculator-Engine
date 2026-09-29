@@ -128,12 +128,6 @@ def task_song_name(task: Sequence[Any] | Any) -> str:
     return str(task[int(TaskIndex.SONG_NAME)] or "").strip()
 
 
-def task_difficulty(task: Sequence[Any] | Any) -> str:
-    if not _is_task_sequence(task) or len(task) <= int(TaskIndex.DIFFICULTY):
-        return ""
-    return str(task[int(TaskIndex.DIFFICULTY)] or "")
-
-
 def task_cfg_dict(task: Sequence[Any] | Any) -> dict:
     if not _is_task_sequence(task) or len(task) <= int(TaskIndex.CFG_DICT):
         return {}

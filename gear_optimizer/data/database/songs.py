@@ -4,13 +4,10 @@ presence queries against `songs` and the loadout tables.
 """
 import os
 import sqlite3
-import logging
 from collections.abc import Iterable
 from typing import Optional
 from ...core.utils import require_int
-from .connection import get_db_connection, get_db_connection_cached, get_evolution_db_path
-
-logger = logging.getLogger(__name__)
+from .connection import get_db_connection_cached, get_evolution_db_path
 
 
 def get_song_names_present_in_db(
@@ -103,50 +100,6 @@ def get_song_counters(
         return (attempt_lifetime, attempts_first, best_score, best_fg_score)
     except sqlite3.Error:
         raise
-
-
-def update_song_counters(
-    song_name: str,
-    *,
-    processed_run: bool,
-    record_improved: bool,
-    conn: Optional[sqlite3.Connection] = None,
-    db_path: Optional[str] = None,
-) -> None:
-    """
-    Update per-song attempt counters.
-    Semantics:
-    - If `processed_run=True`: increment `attempt_lifetime` and `attempts_first`
-    - If `record_improved=True`: reset `attempts_first = 1`
-    - If `processed_run=False`: do not increment (used for deferred FG-only updates)
-    """
-    song_name = str(song_name or "").strip()
-    if not song_name:
-        return
-    close_conn = False
-    if conn is None:
-        conn = get_db_connection(db_path or get_evolution_db_path())
-        close_conn = True
-    try:
-        _update_song_counters_in_transaction(
-            conn,
-            song_name,
-            processed_run=processed_run,
-            record_improved=record_improved,
-        )
-        conn.commit()
-    except BaseException:
-        try:
-            conn.rollback()
-        except sqlite3.Error:
-            pass
-        raise
-    finally:
-        if close_conn:
-            try:
-                conn.close()
-            except Exception as e:
-                logger.warning(f"database:update_song_counters: {e}")
 
 
 def _update_song_counters_in_transaction(

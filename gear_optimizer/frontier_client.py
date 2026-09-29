@@ -253,14 +253,6 @@ def _download_manifest(session: requests.Session, base_url: str, credentials) ->
     return _validated_manifest(payload)
 
 
-def fetch_frontier_manifest() -> dict:
-    if not frontier_client_enabled():
-        raise RuntimeError("frontier manifests are not fetched by the MetaFinder server process")
-    credentials = load_client_credentials()
-    with requests.Session() as session:
-        return _download_manifest(session, _server_base_url(), credentials)
-
-
 def _bundle_is_current(bundle: dict, previous: dict, code_root: Path | None = None) -> bool:
     if str(previous.get("sha256") or "") != str(bundle["sha256"]):
         return False

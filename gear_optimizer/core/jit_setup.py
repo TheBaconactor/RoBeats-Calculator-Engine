@@ -27,7 +27,6 @@ if _NUMBA_DISK_CACHE_ENABLED and "NUMBA_CACHE_DIR" not in os.environ:
         os.environ["NUMBA_CACHE_DIR"] = _cache_dir
 from numba import jit as _numba_jit
 import numba as _numba
-HAS_NUMBA = True
 _effective_cache_dir = str(ENV.numba_cache_dir or "").strip()
 if not _effective_cache_dir:
     try:
@@ -72,4 +71,4 @@ def jit(nopython: bool = True, cache: bool = True, nogil: bool = True) -> Callab
             except (AttributeError, OSError, ValueError):
                 pass
     return _numba_jit(nopython=nopython, cache=use_cache, nogil=nogil)
-__all__ = ["jit", "HAS_NUMBA"]
+__all__ = ["jit"]

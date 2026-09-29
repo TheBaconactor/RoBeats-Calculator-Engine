@@ -176,18 +176,6 @@ def test_write_transaction_retries_lock_before_committing(monkeypatch):
     assert operation_calls == 1
 
 
-def test_update_song_counters_propagates_sqlite_errors(tmp_path):
-    conn = db.get_db_connection(str(tmp_path / "closed.db"))
-    conn.close()
-    with pytest.raises(sqlite3.Error):
-        db.update_song_counters(
-            "Required Counter",
-            processed_run=True,
-            record_improved=True,
-            conn=conn,
-        )
-
-
 def test_optimizer_result_preserves_meta_only_and_deferred_fg_semantics(tmp_path):
     db_path = tmp_path / "semantics.db"
     conn = db.get_db_connection(str(db_path))

@@ -9,9 +9,18 @@ from gear_optimizer.data.database import (
     get_song_counters,
     init_db,
     save_loadouts_batch,
-    update_song_counters,
     _unpack_stats_after_load,
 )
+from gear_optimizer.data.database.songs import _update_song_counters_in_transaction
+
+
+def update_song_counters(db_path, song, *, processed_run, record_improved):
+    conn = get_db_connection(db_path)
+    try:
+        _update_song_counters_in_transaction(conn, song, processed_run=processed_run, record_improved=record_improved)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @pytest.fixture
@@ -495,7 +504,7 @@ def test_team_buff_fg_loadouts_does_not_update_song_best_fg_score_for_non_t5_tie
     song = "Tier FG Song"
 
     # Ensure the songs row exists so we can assert it remains unchanged by non-T5 tier writes.
-    update_song_counters(song, processed_run=False, record_improved=False, db_path=db_path)
+    update_song_counters(db_path, song, processed_run=False, record_improved=False)
 
     save_team_buff_loadouts_batch(
         song,
@@ -1253,7 +1262,7 @@ def test_song_attempt_counters_increment_and_reset(db_path):
     assert get_song_counters(song) == (0, 0, 0, 0)
 
     # First processed run that establishes any record.
-    update_song_counters(song, processed_run=True, record_improved=True)
+    update_song_counters(db_path, song, processed_run=True, record_improved=True)
     conn = get_db_connection(db_path)
     try:
         row = conn.execute("SELECT attempt_lifetime, attempts_first FROM songs WHERE name=?", (song,)).fetchone()
@@ -1263,7 +1272,7 @@ def test_song_attempt_counters_increment_and_reset(db_path):
         conn.close()
 
     # Another processed run with no improvement.
-    update_song_counters(song, processed_run=True, record_improved=False)
+    update_song_counters(db_path, song, processed_run=True, record_improved=False)
     conn = get_db_connection(db_path)
     try:
         row = conn.execute("SELECT attempt_lifetime, attempts_first FROM songs WHERE name=?", (song,)).fetchone()
@@ -1273,7 +1282,7 @@ def test_song_attempt_counters_increment_and_reset(db_path):
         conn.close()
 
     # Deferred FG-only update: should not increment lifetime, but resets attempts_first on improvement.
-    update_song_counters(song, processed_run=False, record_improved=True)
+    update_song_counters(db_path, song, processed_run=False, record_improved=True)
     conn = get_db_connection(db_path)
     try:
         row = conn.execute("SELECT attempt_lifetime, attempts_first FROM songs WHERE name=?", (song,)).fetchone()

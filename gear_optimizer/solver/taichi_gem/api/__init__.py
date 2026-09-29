@@ -14,7 +14,6 @@ from .initialization import (
     load_ref_arrays,
     hard_reset_taichi,
     _ensure_ftff_combo_tables,
-    _maybe_sync,
 )
 from .timeline import precompute_timeline_gpu
 from .parallel_solvers import solve_genomes_from_registry
@@ -22,11 +21,7 @@ from .skyline_operations import (
     skyline_upload_population_indices,
     skyline_upload_item_stats,
     skyline_upload_base_fixed_stats,
-    skyline_upload_fg_effective_tables,
     skyline_aggregate_stats,
-    skyline_evaluate_population,
-    skyline_download_scores,
-    skyline_download_results,
 )
 from .ga_operations import (
     ga_upload_initial_populations,
@@ -57,7 +52,6 @@ __all__ = [
     "load_ref_arrays",
     "hard_reset_taichi",
     "_ensure_ftff_combo_tables",
-    "_maybe_sync",
     # Timeline
     "precompute_timeline_gpu",
     # Parallel solvers
@@ -66,11 +60,7 @@ __all__ = [
     "skyline_upload_population_indices",
     "skyline_upload_item_stats",
     "skyline_upload_base_fixed_stats",
-    "skyline_upload_fg_effective_tables",
     "skyline_aggregate_stats",
-    "skyline_evaluate_population",
-    "skyline_download_scores",
-    "skyline_download_results",
     # GA operations
     "ga_upload_initial_populations",
     "ga_upload_init_heuristic_topk",
@@ -91,5 +81,4 @@ __all__ = [
     "ga_init_runs_best",
     "ga_pack_fg_candidates_table_segmented",
     "ga_download_fg_selected_payload",
-    # GPU-side island migration
 ]

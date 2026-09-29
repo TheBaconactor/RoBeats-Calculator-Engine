@@ -9,7 +9,6 @@ from gear_optimizer.domain.jobs import (
     materialize_repeat_task,
     seed_plan_from_song_job,
     task_cfg_dict,
-    task_difficulty,
     task_ga_seed,
     task_queue_label,
     task_song_name,
@@ -54,7 +53,6 @@ def test_task_field_helpers_name_the_production_tuple_prefix():
     task = _legacy_task({"extra": True})
 
     assert task_song_name(task) == "Fake Song (Hard) by Tester"
-    assert task_difficulty(task) == "Hard"
     assert task_cfg_dict(task) == {"IterationEngine": {"GA_SearchDepth": "125"}}
     assert task[TaskIndex.FILE_PATH] == "Data/Hard/FakeSong.txt"
     assert task[TaskIndex.REF_ARRAYS] == ("ref",)
