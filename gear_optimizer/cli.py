@@ -24,16 +24,13 @@ def _read_config_path() -> str:
 def _debug_profile_enabled(cfg_path: str) -> bool:
     if env_flag("DEBUG_PROFILE") or env_flag("METAFINDER_DEBUG_PROFILE"):
         return True
-    try:
-        cfg = load_config(cfg_path)
-        return config_bool(cfg, "Debug", "DebugProfile", default=False) or config_bool(
-            cfg,
-            "IterationEngine",
-            "DebugProfile",
-            default=False,
-        )
-    except Exception:
-        return False
+    cfg = load_config(cfg_path)
+    return config_bool(cfg, "Debug", "DebugProfile", default=False) or config_bool(
+        cfg,
+        "IterationEngine",
+        "DebugProfile",
+        default=False,
+    )
 
 
 def _apply_debug_profile_env(cfg_path: str) -> None:
@@ -76,12 +73,8 @@ def _apply_taichi_shell_env() -> None:
 def _apply_gpu_song_slots_default() -> None:
     if "GPU_SONG_SLOTS" in os.environ:
         return
-    cfg_path = _read_config_path()
-    try:
-        cfg = load_config(cfg_path)
-        cfg_slots = int(str(cfg.get("IterationEngine", "GPU_SongSlots", fallback="0") or "0"))
-    except Exception:
-        cfg_slots = 0
+    cfg = load_config(_read_config_path())
+    cfg_slots = int(str(cfg.get("IterationEngine", "GPU_SongSlots", fallback="0") or "0"))
     if cfg_slots > 0:
         os.environ.setdefault("GPU_SONG_SLOTS", str(cfg_slots))
 
@@ -122,24 +115,17 @@ def run() -> int:
         return 0
     except KeyboardInterrupt:
         return 0
-    except Exception as exc:
-        print(f"Fatal Error: {exc}")
-        return 1
 
 
 def sync_data() -> int:
     common_init()
-    try:
-        from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
+    from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 
-        print("Syncing optimizer gear/mini CSVs from exported_game_data.json ...")
-        result = sync_exported_game_data(force=True)
-        if not result.synced:
-            raise RuntimeError(f"Forced exported-game-data sync did not run: {result.reason}")
-        return 0
-    except Exception as exc:
-        print(f"Fatal Error: {exc}")
-        return 1
+    print("Syncing optimizer gear/mini CSVs from exported_game_data.json ...")
+    result = sync_exported_game_data(force=True)
+    if not result.synced:
+        raise RuntimeError(f"Forced exported-game-data sync did not run: {result.reason}")
+    return 0
 
 
 def meta() -> int:
@@ -167,12 +153,6 @@ def meta() -> int:
     except KeyboardInterrupt:
         print("\nCancelled by user.")
         return 0
-    except Exception as exc:
-        print(f"\nFatal Error: {exc}")
-        import traceback
-
-        traceback.print_exc()
-        return 1
 
 
 def create_parser() -> argparse.ArgumentParser:

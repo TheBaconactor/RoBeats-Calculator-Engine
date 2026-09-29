@@ -111,54 +111,51 @@ def parse_gear_rows(filepath):
     gear_list = []
     if not os.path.exists(filepath):
         return gear_list
-    try:
-        with open(filepath, "r", encoding="utf-8-sig", newline="") as f:
-            rows = list(csv.reader(f))
+    with open(filepath, "r", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
 
-        if not rows:
-            return gear_list
+    if not rows:
+        return gear_list
 
-        header = [h.strip() for h in rows[0]]
-        header_lower = [h.lower() for h in header]
+    header = [h.strip() for h in rows[0]]
+    header_lower = [h.lower() for h in header]
 
-        modern_format = "type" in header_lower and any(name in header_lower for name in ("gear name", "name", "gear"))
-        if not modern_format:
-            WARN_ONCE.warn("gear-csv", f"Unsupported format in {filepath}; expected modern headers.")
-            return gear_list
+    modern_format = "type" in header_lower and any(name in header_lower for name in ("gear name", "name", "gear"))
+    if not modern_format:
+        WARN_ONCE.warn("gear-csv", f"Unsupported format in {filepath}; expected modern headers.")
+        return gear_list
 
-        for row in rows[1:]:
-            if not any((c or "").strip() for c in row):
-                continue
-            row_map = _build_row_map(row, header_lower)
-            name = _first_val(row_map, ("gear name", "name", "gear"))
-            if not name:
-                continue
-            slot = _first_val(row_map, ("type", "slot", "category")) or "Hat"
-            stats = {
-                "Name": name,
-                "type": slot,
-                "Chill": safe_int(_first_val(row_map, ("chill",))),
-                "Flow": safe_int(_first_val(row_map, ("flow",))),
-                "Rush": safe_int(_first_val(row_map, ("rush",))),
-                "Beat": safe_int(_first_val(row_map, ("beat",))),
-                "Vibe": safe_int(_first_val(row_map, ("vibe",))),
-                "Perfect Points": safe_int(_first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))),
-                "Combo Multiplier": safe_int(_first_val(row_map, ("cmult", "cbmlt", "combo multiplier", "combo"))),
-                "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fever multiplier"))),
-            }
-            # IMPORTANT: Perfect Time (often stored as "PTime") is a
-            # completely different mechanic from Fever Time and must
-            # NEVER be treated as Fever Time. Do not fall back to
-            # any "ptime" column here; only true Fever Time fields
-            # ("time" / "fever time" / "ft") are allowed.
-            time_val = _first_val(row_map, ("time", "fever time", "ft"))
-            stats["Fever Time"] = safe_int(time_val)
-            stats["Fever Fill Rate"] = safe_int(
-                _first_val(row_map, ("fill", "fvfil", "fever fill rate", "fever fill"))
-            )
-            gear_list.append(stats)
-    except Exception as exc:
-        WARN_ONCE.warn("gear-csv", f"Failed to parse gear CSV {filepath}: {exc}")
+    for row in rows[1:]:
+        if not any((c or "").strip() for c in row):
+            continue
+        row_map = _build_row_map(row, header_lower)
+        name = _first_val(row_map, ("gear name", "name", "gear"))
+        if not name:
+            continue
+        slot = _first_val(row_map, ("type", "slot", "category")) or "Hat"
+        stats = {
+            "Name": name,
+            "type": slot,
+            "Chill": safe_int(_first_val(row_map, ("chill",))),
+            "Flow": safe_int(_first_val(row_map, ("flow",))),
+            "Rush": safe_int(_first_val(row_map, ("rush",))),
+            "Beat": safe_int(_first_val(row_map, ("beat",))),
+            "Vibe": safe_int(_first_val(row_map, ("vibe",))),
+            "Perfect Points": safe_int(_first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))),
+            "Combo Multiplier": safe_int(_first_val(row_map, ("cmult", "cbmlt", "combo multiplier", "combo"))),
+            "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fever multiplier"))),
+        }
+        # IMPORTANT: Perfect Time (often stored as "PTime") is a
+        # completely different mechanic from Fever Time and must
+        # NEVER be treated as Fever Time. Do not fall back to
+        # any "ptime" column here; only true Fever Time fields
+        # ("time" / "fever time" / "ft") are allowed.
+        time_val = _first_val(row_map, ("time", "fever time", "ft"))
+        stats["Fever Time"] = safe_int(time_val)
+        stats["Fever Fill Rate"] = safe_int(
+            _first_val(row_map, ("fill", "fvfil", "fever fill rate", "fever fill"))
+        )
+        gear_list.append(stats)
     return gear_list
 
 
@@ -175,59 +172,56 @@ def parse_mini_rows(filepath):
     minis_list = []
     if not os.path.exists(filepath):
         return minis_list
-    try:
-        with open(filepath, "r", encoding="utf-8-sig", newline="") as f:
-            rows = list(csv.reader(f))
+    with open(filepath, "r", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
 
-        if not rows:
-            return minis_list
+    if not rows:
+        return minis_list
 
-        header = [h.strip() for h in rows[0]]
-        header_lower = [h.lower() for h in header]
-        has_song_target_column = any(h in {"song target", "song_target", "song-target"} for h in header_lower)
+    header = [h.strip() for h in rows[0]]
+    header_lower = [h.lower() for h in header]
+    has_song_target_column = any(h in {"song target", "song_target", "song-target"} for h in header_lower)
 
-        modern_format = "type" in header_lower and any(name in header_lower for name in ("mini name", "name", "mini"))
-        if not modern_format:
-            WARN_ONCE.warn("mini-csv", f"Unsupported format in {filepath}; expected modern headers.")
-            return minis_list
+    modern_format = "type" in header_lower and any(name in header_lower for name in ("mini name", "name", "mini"))
+    if not modern_format:
+        WARN_ONCE.warn("mini-csv", f"Unsupported format in {filepath}; expected modern headers.")
+        return minis_list
 
-        for row in rows[1:]:
-            if not any((c or "").strip() for c in row):
-                continue
-            row_map = _build_row_map(row, header_lower)
-            name = _first_val(row_map, ("mini name", "name", "mini"))
-            if not name or name == "(Empty)":
-                continue
-            mini_type = _first_val(row_map, ("type",)) or "Mini"
-            stats = {
-                "Name": name,
-                "type": mini_type,
-                "Chill": safe_int(_first_val(row_map, ("chill",))),
-                "Flow": safe_int(_first_val(row_map, ("flow",))),
-                "Rush": safe_int(_first_val(row_map, ("rush",))),
-                "Beat": safe_int(_first_val(row_map, ("beat",))),
-                "Vibe": safe_int(_first_val(row_map, ("vibe",))),
-                "Perfect Points": safe_int(_first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))),
-                "Combo Multiplier": safe_int(_first_val(row_map, ("cbmlt", "cmult", "combo multiplier", "combo"))),
-                "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fvmlt", "fever multiplier"))),
-                "Fever Time": safe_int(_first_val(row_map, ("fvtim", "time", "ft", "fever time"))),
-                "Fever Fill Rate": safe_int(_first_val(row_map, ("fvfil", "fill", "ff", "fever fill"))),
-                "Song Target": _parse_json_string_list(
-                    _first_val(row_map, ("song target", "song_target", "song-target")),
-                    column_name="Song Target",
-                    item_name=name,
-                ),
-                "Mini Ascension Enabled": bool(has_song_target_column),
-                "Mini Ascension Level": MINI_ASCENSION_MAX_LEVEL if has_song_target_column else 0,
-            }
-            if has_song_target_column:
-                for color in ("Chill", "Flow", "Rush", "Beat", "Vibe"):
-                    base_value = _nth_val(row_map, color.lower(), 1)
-                    if base_value:
-                        stats[f"{MINI_ASCENSION_BASE_STAT_PREFIX}{color}"] = safe_int(base_value)
-            minis_list.append(stats)
-    except Exception as exc:
-        WARN_ONCE.warn("mini-csv", f"Failed to parse minis CSV {filepath}: {exc}")
+    for row in rows[1:]:
+        if not any((c or "").strip() for c in row):
+            continue
+        row_map = _build_row_map(row, header_lower)
+        name = _first_val(row_map, ("mini name", "name", "mini"))
+        if not name or name == "(Empty)":
+            continue
+        mini_type = _first_val(row_map, ("type",)) or "Mini"
+        stats = {
+            "Name": name,
+            "type": mini_type,
+            "Chill": safe_int(_first_val(row_map, ("chill",))),
+            "Flow": safe_int(_first_val(row_map, ("flow",))),
+            "Rush": safe_int(_first_val(row_map, ("rush",))),
+            "Beat": safe_int(_first_val(row_map, ("beat",))),
+            "Vibe": safe_int(_first_val(row_map, ("vibe",))),
+            "Perfect Points": safe_int(_first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))),
+            "Combo Multiplier": safe_int(_first_val(row_map, ("cbmlt", "cmult", "combo multiplier", "combo"))),
+            "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fvmlt", "fever multiplier"))),
+            "Fever Time": safe_int(_first_val(row_map, ("fvtim", "time", "ft", "fever time"))),
+            "Fever Fill Rate": safe_int(_first_val(row_map, ("fvfil", "fill", "ff", "fever fill"))),
+            "Song Target": _parse_json_string_list(
+                _first_val(row_map, ("song target", "song_target", "song-target")),
+                column_name="Song Target",
+                item_name=name,
+            ),
+            "Mini Ascension Enabled": bool(has_song_target_column),
+            "Mini Ascension Level": MINI_ASCENSION_MAX_LEVEL if has_song_target_column else 0,
+        }
+        if has_song_target_column:
+            for color in ("Chill", "Flow", "Rush", "Beat", "Vibe"):
+                base_value = _nth_val(row_map, color.lower(), 1)
+                if base_value:
+                    stats[f"{MINI_ASCENSION_BASE_STAT_PREFIX}{color}"] = safe_int(base_value)
+        minis_list.append(stats)
     return minis_list
 
 
@@ -245,18 +239,12 @@ def load_csv_db(filepath, db_type="gear"):
     db = {}
     if not os.path.exists(filepath):
         return db
-    try:
-        if db_type == "gear":
-            gears = parse_gear_rows(filepath)
-            db = {g["Name"]: g for g in gears}
-        elif db_type == "mini":
-            minis = parse_mini_rows(filepath)
-            db = {m["Name"]: m for m in minis}
-    except Exception as exc:
-        WARN_ONCE.warn(
-            "csv-db",
-            f"Failed to build {db_type} CSV db from {filepath}: {exc}",
-        )
+    if db_type == "gear":
+        gears = parse_gear_rows(filepath)
+        db = {g["Name"]: g for g in gears}
+    elif db_type == "mini":
+        minis = parse_mini_rows(filepath)
+        db = {m["Name"]: m for m in minis}
     return db
 
 
@@ -381,25 +369,15 @@ def read_table(fp):
     """
     if not fp or not os.path.exists(fp):
         return []
-    try:
-        # Explicit UTF-8-SIG to match other data files and avoid Windows 'charmap' decode issues
-        with open(fp, "r", encoding="utf-8-sig") as f:
-            lines = f.read().splitlines()
-        if not lines:
-            return []
-        table = []
-        for line in lines[1:]:
-            parts = line.split()
-            if parts:
-                try:
-                    row = [float(x) for x in parts]
-                    table.append(row)
-                except Exception as exc:
-                    WARN_ONCE.warn(
-                        "stats-table-row",
-                        f"Malformed stats row in {fp}: {parts!r} ({exc})",
-                    )
-        return table
-    except Exception as exc:
-        WARN_ONCE.warn("stats-table", f"Failed to read stats table {fp}: {exc}")
+    # Explicit UTF-8-SIG to match other data files and avoid Windows 'charmap' decode issues
+    with open(fp, "r", encoding="utf-8-sig") as f:
+        lines = f.read().splitlines()
+    if not lines:
         return []
+    table = []
+    for line in lines[1:]:
+        parts = line.split()
+        if parts:
+            row = [float(x) for x in parts]
+            table.append(row)
+    return table

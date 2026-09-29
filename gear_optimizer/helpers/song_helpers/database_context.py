@@ -82,9 +82,8 @@ def _maybe_wal_maintenance(conn) -> None:
         # PASSIVE is non-blocking; it won't force truncation, but it helps keep WAL
         # growth in check without taking disruptive locks.
         conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-    except Exception as e:
-        logger.debug(f"database_context:_maybe_wal_maintenance: {e}")
-        logging.debug("[DB] WAL checkpoint(PASSIVE) failed", exc_info=True)
+    except sqlite3.Error:
+        logger.debug("[DB] WAL checkpoint(PASSIVE) failed", exc_info=True)
 
     optimize_enabled = env_flag("DB_OPTIMIZE", "0")
     if not optimize_enabled:
@@ -92,9 +91,8 @@ def _maybe_wal_maintenance(conn) -> None:
 
     try:
         conn.execute("PRAGMA optimize")
-    except Exception as e:
-        logger.debug(f"database_context:_maybe_wal_maintenance: {e}")
-        logging.debug("[DB] PRAGMA optimize failed", exc_info=True)
+    except sqlite3.Error:
+        logger.debug("[DB] PRAGMA optimize failed", exc_info=True)
 
 
 def load_database_context(
@@ -116,24 +114,12 @@ def load_database_context(
         previous record or None
     """
     prev_record = None
-
-    pid = None
-    pid = os.getpid()
+    tag = f"[DB pid={os.getpid()}]"
 
     if _db_context_verbose():
         # Always print DB path + exact lookup key to make seeding issues obvious.
         # (repr shows hidden whitespace / mismatched suffixes that would otherwise be invisible.)
-        try:
-            if pid is not None:
-                print(f"[DB pid={pid}] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
-            else:
-                print(f"[DB] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
-        except Exception as e:
-            logger.debug(f"database_context:load_database_context: {e}")
-            if pid is not None:
-                print(f"[DB pid={pid}] Using DB: (unknown) | lookup key: {found_song_name!r}")
-            else:
-                print(f"[DB] Using DB: (unknown) | lookup key: {found_song_name!r}")
+        print(f"{tag} Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
 
     best_loadouts = get_best_loadouts(
         found_song_name,
@@ -150,7 +136,6 @@ def load_database_context(
         prev_best_fg = max(int(r.get("fg_score", 0) or 0) for r in best_loadouts if isinstance(r, dict))
 
         if _db_context_verbose():
-            tag = f"[DB pid={pid}]" if pid is not None else "[DB]"
             print(f"{tag} Found previous best (Base: {prev_base}, FG: {prev_best_fg})")
     conn = get_db_connection_cached()
     _maybe_wal_maintenance(conn)
@@ -231,18 +216,10 @@ def load_database_progress_baseline(
         db_best_fg_score = int(prev_record.get("fg_score", 0) or 0)
 
     if isinstance(prev_record, dict) and "details" in prev_record:
-        try:
-            if int(attempt_lifetime_prev or 0) <= 0:
-                attempt_lifetime_prev = int(prev_record["details"].get("attempt_lifetime", 0) or 0)
-        except Exception as e:
-            logger.debug(f"database_context:load_database_progress_baseline: {e}")
-            attempt_lifetime_prev = int(attempt_lifetime_prev or 0)
-        try:
-            if int(prev_attempts_first or 0) <= 0:
-                prev_attempts_first = int(prev_record["details"].get("attempts_first", 0) or 0)
-        except Exception as e:
-            logger.debug(f"database_context:load_database_progress_baseline: {e}")
-            prev_attempts_first = int(prev_attempts_first or 0)
+        if int(attempt_lifetime_prev or 0) <= 0:
+            attempt_lifetime_prev = int(prev_record["details"].get("attempt_lifetime", 0) or 0)
+        if int(prev_attempts_first or 0) <= 0:
+            prev_attempts_first = int(prev_record["details"].get("attempts_first", 0) or 0)
 
     attempt_lifetime = int(attempt_lifetime_prev) + 1
     return (

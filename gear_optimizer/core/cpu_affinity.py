@@ -273,17 +273,12 @@ def frontier_prebuild_intra_worker_threads(worker_count: int) -> int:
 
 def _ram_capped_prebuild_worker_count(gb_per_worker: float, *, system_reserve_gb: float = 0.0) -> int:
     """Core-derived worker count, capped so concurrent workers fit in currently-available RAM at
-    ``gb_per_worker`` each. psutil is the only available-RAM source; if it is missing the core-based
-    count stands (the guard is a safety cap, not a hard requirement)."""
-    workers = frontier_prebuild_worker_count()
-    try:
-        import psutil
+    ``gb_per_worker`` each."""
+    import psutil
 
-        available_gb = float(psutil.virtual_memory().available) / 1e9
-        worker_budget_gb = max(0.0, available_gb - max(0.0, float(system_reserve_gb)))
-        workers = min(workers, max(1, int(worker_budget_gb / max(0.1, float(gb_per_worker)))))
-    except Exception:
-        pass
+    available_gb = float(psutil.virtual_memory().available) / 1e9
+    worker_budget_gb = max(0.0, available_gb - max(0.0, float(system_reserve_gb)))
+    workers = min(frontier_prebuild_worker_count(), max(1, int(worker_budget_gb / max(0.1, float(gb_per_worker)))))
     return max(1, workers)
 
 
