@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict
 
-from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS, TOTAL_ROWS
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
 from gear_optimizer.core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     resolve_baseline_team_buff_from_cfg,
@@ -15,6 +15,7 @@ from gear_optimizer.core.team_buff import (
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display, representative_mini_names
+from gear_optimizer.settings import ENGINE_ROOT, paths
 
 from .analysis import (
     _ELEMENT_ORDER,
@@ -191,7 +192,7 @@ def _build_replayed_loadout_rows_for_song(
     return cfg_dict_local, ref_arrays, rows_by_tier
 
 
-def run_general_meta(cfg, paths: dict) -> dict:
+def run_general_meta(cfg) -> dict:
     """
     Main entry point for GeneralMeta optimization.
     """
@@ -203,7 +204,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
 
     sync_exported_game_data()
 
-    stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
+    stats_table = read_table(str(paths().stats_txt))
     stat_names = [
         "Perfect Points",
         "Combo Multiplier",
@@ -226,8 +227,8 @@ def run_general_meta(cfg, paths: dict) -> dict:
     _ = cfg
     _ = ref_arrays
 
-    all_gears = load_all_gears_list(paths)
-    all_minis = load_all_minis_list(paths)
+    all_gears = load_all_gears_list()
+    all_minis = load_all_minis_list()
     gears_by_name = {g["Name"]: g for g in all_gears}
     minis_by_name = {m["Name"]: m for m in all_minis}
 
@@ -301,7 +302,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         }
 
     print("\nScanning songs by elemental combination...")
-    songs_by_combo = get_songs_by_elemental_combo(paths)
+    songs_by_combo = get_songs_by_elemental_combo()
 
     for combo, songs in songs_by_combo.items():
         print(f"  {combo[0]}/{combo[1]}: {len(songs)} songs")
@@ -469,7 +470,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
 
 def export_general_meta_json(results: dict, output_path: str = None) -> str:
     if output_path is None:
-        output_path = os.path.join(PATHS.script_dir, "artifacts", "general_meta_results.json")
+        output_path = str(ENGINE_ROOT / "artifacts" / "general_meta_results.json")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     with open(output_path, "w", encoding="utf-8") as f:

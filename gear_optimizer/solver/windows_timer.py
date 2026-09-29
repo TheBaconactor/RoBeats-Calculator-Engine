@@ -3,22 +3,10 @@ from __future__ import annotations
 import os
 import threading
 
-from gear_optimizer.core.parsing import env_flag
-
 
 _WIN_TIMER_LOCK = threading.Lock()
 _WIN_TIMER_USERS = 0
 _WIN_TIMER_ACTIVE = False
-
-
-def system_timer_override_allowed() -> bool:
-    """
-    Guard system-wide WinMM timer period changes behind an explicit opt-in.
-
-    `timeBeginPeriod(1)` affects the entire OS timer resolution while active in this process.
-    Keep this disabled by default to avoid unexpected system-wide side effects.
-    """
-    return env_flag("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE")
 
 
 def acquire_windows_timer_period_1ms() -> bool:

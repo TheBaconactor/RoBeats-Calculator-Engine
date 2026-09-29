@@ -3,7 +3,6 @@ Configuration management for the gear optimizer.
 Handles config.ini parsing, validation, and status file writing.
 """
 import configparser
-import json
 import logging
 import os
 import sys
@@ -16,23 +15,10 @@ from .constants import (
     GA_MUTATION_RATE,
     GA_MULTI_RUNS_DEFAULT,
     STRICT_PLATFORM_MEMORY_GUARD_PERCENT,
-    SCRIPT_DIR,
-    PATHS,
 )
-from .parsing import env_get, env_str
 from .utils import safe_int
+from ..settings import paths
 _EXTENDS_KEY = "_extends"
-def get_config_path(default: str = "config.ini") -> str:
-    """
-    Resolve the effective config path.
-    Precedence:
-    - `METAFINDER_CONFIG_PATH` when set and non-empty
-    - `default` (typically "config.ini")
-    """
-    env_path = env_str("METAFINDER_CONFIG_PATH", "")
-    if env_path:
-        return env_path
-    return str(default)
 def _resolve_extends_chain(cfg_path: str, seen: set[str] | None = None) -> list[str]:
     """
     Walk the ``_extends`` chain starting from *cfg_path* and return an
@@ -79,7 +65,7 @@ def load_config(path: str | None = None) -> configparser.ConfigParser:
     that historically used `ConfigParser().read(...)` without checking the return value.
     """
     cfg = configparser.ConfigParser()
-    cfg_path = str(path or get_config_path())
+    cfg_path = str(path or paths().config_file)
     chain = _resolve_extends_chain(cfg_path)
     try:
         cfg.read(chain, encoding="utf-8-sig")
@@ -304,9 +290,7 @@ class GASettings:
 DEFAULT_INFLIGHT_SONGS = 12
 def resolve_inflight_songs(configured_songs: int = 0, *, song_count: int | None = None) -> int:
     """Resolve the one canonical in-flight width, optionally capped by queue size."""
-    requested = safe_int(env_get("IN_FLIGHT_SONGS", 0), 0)
-    if requested <= 0:
-        requested = safe_int(configured_songs, 0)
+    requested = safe_int(configured_songs, 0)
     if requested <= 0:
         requested = DEFAULT_INFLIGHT_SONGS
     if song_count is None:
@@ -425,85 +409,3 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     return IterationEngineSettings(
         force_greats_debug=bool(force_greats_debug),
     )
-def find_and_cache_paths():
-    """
-    Automatically discover data file paths and cache them.
-    Searches for:
-    - Easy/Normal/Hard folders (song difficulties)
-    - Gears.csv, Minis.csv, Stats.txt files
-    Returns:
-        dict: Discovered paths configuration
-    """
-    import os
-    from pathlib import Path
-    from collections import deque
-    PROJECT_ROOT = Path(SCRIPT_DIR)
-    # Cache under the (per-request-isolable) bin dir, not SCRIPT_DIR/bin, so a service solve with
-    # ROBEATSMETA_OPTIMIZER_BIN_DIR set never reads or writes the catalog's shared paths cache.
-    cache_file = PATHS.bin_path("paths_cache.json")
-    results = {k: "" for k in ["Easy", "Normal", "Hard", "Gear", "Gears", "Minis", "Stats"]}
-    targets_dirs = set(["Easy", "Normal", "Hard"])
-    targets_files = set(["Gears.csv", "Minis.csv", "Stats.txt"])
-    # Honors ROBEATSMETA_OPTIMIZER_DATA_DIR (via PATHS) so a dedicated instance can point its
-    # song source at an isolated directory.
-    data_dir = Path(PATHS.data_dir)
-    base_dir = data_dir if data_dir.exists() else PROJECT_ROOT
-    queue = deque([base_dir])
-    visited = {str(base_dir.resolve())}
-    while queue and (targets_dirs or targets_files):
-        curr = queue.popleft()
-        try:
-            for entry in os.scandir(curr):
-                try:
-                    p = Path(entry.path)
-                    if entry.is_dir(follow_symlinks=False):
-                        if entry.name in targets_dirs:
-                            results[entry.name] = str(p.resolve())
-                            targets_dirs.remove(entry.name)
-                        if str(p.resolve()) not in visited:
-                            visited.add(str(p.resolve()))
-                            queue.append(p)
-                    elif entry.is_file(follow_symlinks=False):
-                        if entry.name in targets_files:
-                            name = entry.name
-                            if name.lower() == "gears.csv":
-                                results["Gears"] = str(p.resolve())
-                                results["Gear"] = str(p.resolve().parent)
-                            elif name.lower() == "minis.csv":
-                                results["Minis"] = str(p.resolve())
-                            elif name.lower() == "stats.txt":
-                                results["Stats"] = str(p.resolve())
-                            try:
-                                targets_files.remove(entry.name)
-                            except KeyError:
-                                pass
-                    if not targets_dirs and not targets_files:
-                        break
-                except (OSError, PermissionError):
-                    continue
-        except (OSError, PermissionError):
-            continue
-    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-    with open(cache_file, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=4)
-    return results
-def load_paths_cache():
-    """
-    Load paths configuration from cached JSON file.
-    Automatically discovers and caches paths if cache doesn't exist.
-    Returns:
-        dict: Cached paths configuration, or empty dict if not found
-    """
-    # Isolated bin dir (see find_and_cache_paths): a fresh per-request bin has no cache, so the
-    # service always rediscovers from its isolated PATHS.data_dir instead of the catalog's cache.
-    cache_file = PATHS.bin_path("paths_cache.json")
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, "r", encoding="utf-8") as f:
-                cached = json.load(f)
-                if all(cached.get(k) for k in ["Easy", "Normal", "Hard", "Gears", "Stats"]):
-                    return cached
-        except (OSError, json.JSONDecodeError, KeyError) as e:
-            logging.debug(f"[Paths] Failed to load/validate paths_cache.json: {e}", exc_info=True)
-    print("[Paths] Discovering data file paths...")
-    return find_and_cache_paths()

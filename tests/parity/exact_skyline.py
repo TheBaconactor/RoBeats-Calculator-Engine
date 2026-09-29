@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from concurrent.futures import Future, ThreadPoolExecutor
 import heapq
 import time
@@ -16,7 +17,6 @@ from gear_optimizer.core.constants import (
     MAX_STAT_INDEX,
     TOTAL_GEM_BUDGET,
 )
-from gear_optimizer.core.parsing import env_get
 from tests.parity.combined_skyline_sparse import (
     combined_global_skyline_pairs_6d_sparse,
     get_last_combined_skyline_stats,
@@ -67,7 +67,7 @@ SKYLINE_CERTIFICATION_NOTE = (
 
 
 def _read_skyline_fg_candidate_mode() -> str:
-    raw = str(env_get("SKYLINE_FG_CANDIDATES", "topk") or "topk").strip().lower().replace("-", "_")
+    raw = str(os.environ.get("SKYLINE_FG_CANDIDATES", "topk") or "topk").strip().lower().replace("-", "_")
     if raw in {"all", "full", "entire", "skyline"}:
         return "all"
     if raw in {"sample", "stratified", "stratified_sample", "bands"}:
@@ -77,7 +77,7 @@ def _read_skyline_fg_candidate_mode() -> str:
 
 def _read_skyline_fg_sample_limit() -> int:
     try:
-        return max(0, int(env_get("SKYLINE_FG_SAMPLE_RANDOM", "1000") or "1000"))
+        return max(0, int(os.environ.get("SKYLINE_FG_SAMPLE_RANDOM", "1000") or "1000"))
     except (TypeError, ValueError):
         return 1000
 
@@ -127,7 +127,7 @@ def _slowest_phase_label(phase_seconds: dict[str, float], *, limit: int = 5) -> 
 
 
 def _read_combined_dense_max_gib() -> float:
-    raw = str(env_get("SKYLINE_COMBINED_DENSE_MAX_GIB", "3.0") or "3.0").strip()
+    raw = str(os.environ.get("SKYLINE_COMBINED_DENSE_MAX_GIB", "3.0") or "3.0").strip()
     try:
         value = float(raw)
     except (TypeError, ValueError):
@@ -136,7 +136,7 @@ def _read_combined_dense_max_gib() -> float:
 
 
 def _read_combined_dense_mode() -> str:
-    raw = str(env_get("SKYLINE_COMBINED_DENSE", "sparse") or "sparse").strip().lower()
+    raw = str(os.environ.get("SKYLINE_COMBINED_DENSE", "sparse") or "sparse").strip().lower()
     if raw in {"0", "false", "no", "off", "sparse"}:
         return "sparse"
     if raw in {"1", "true", "yes", "on", "dense"}:
@@ -145,7 +145,7 @@ def _read_combined_dense_mode() -> str:
 
 
 def _read_combined_dense_gpu_mode() -> str:
-    raw = str(env_get("SKYLINE_COMBINED_DENSE_GPU", "auto") or "auto").strip().lower()
+    raw = str(os.environ.get("SKYLINE_COMBINED_DENSE_GPU", "auto") or "auto").strip().lower()
     if raw in {"0", "false", "no", "off", "sparse"}:
         return "sparse"
     if raw in {"1", "true", "yes", "on", "gpu", "dense"}:
@@ -819,7 +819,7 @@ def _evaluate_pairs_exact(
 
     max_genomes = int(_max_genomes())
     default_eval_batch = min(max_genomes, 8192)
-    max_batch = max(1, min(max_genomes, int(env_get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
+    max_batch = max(1, min(max_genomes, int(os.environ.get("SKYLINE_BASE_EVAL_BATCH", default_eval_batch))))
     total = int(pair_gear_idx.shape[0])
     g_idx = np.asarray(pair_gear_idx, dtype=np.int32)
     m_idx = np.asarray(pair_mini_idx, dtype=np.int32)
@@ -938,7 +938,7 @@ def _evaluate_pairs_exact(
 
 
 def _env_enabled(name: str, default: str = "1") -> bool:
-    raw = str(env_get(name, default) or default).strip().lower()
+    raw = str(os.environ.get(name, default) or default).strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 

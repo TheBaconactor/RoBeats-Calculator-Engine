@@ -6,10 +6,7 @@ from gear_optimizer.app_async_db import AsyncDbSaver
 
 
 def test_async_db_saver_strict_latches_errors_and_surfaces_them(tmp_path, monkeypatch):
-    # Async DB persistence is strict when GPU_STRICT is on (default); pin it so the
-    # test stays hermetic under a GPU_STRICT=0 dev/CI env. A save failure must latch
-    # and surface rather than continue "successfully".
-    monkeypatch.setenv("GPU_STRICT", "1")
+    # A save failure must latch and surface rather than continue "successfully".
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "strict.db"))
 
     def _boom(*_args, **_kwargs):
@@ -41,7 +38,6 @@ def test_async_db_saver_strict_latches_errors_and_surfaces_them(tmp_path, monkey
 
 
 def test_async_db_saver_strict_rejects_blank_song_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("GPU_STRICT", "1")
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "blank.db"))
     saver = AsyncDbSaver()
     saver.submit(
@@ -62,7 +58,6 @@ def test_async_db_saver_strict_rejects_blank_song_key(tmp_path, monkeypatch):
 
 
 def test_async_db_saver_strict_latches_malformed_score(tmp_path, monkeypatch):
-    monkeypatch.setenv("GPU_STRICT", "1")
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "malformed.db"))
     saver = AsyncDbSaver()
     saver.submit(

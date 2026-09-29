@@ -1,15 +1,15 @@
+import os
 import time
 
 import numpy as np
 
 from gear_optimizer.core.constants import MAX_STAT_INDEX
-from gear_optimizer.core.parsing import env_get
 from tests.parity.skyline_grid_gpu import OWNER_SENTINEL, fill_i32, layer_offsets, suffix_max_cm_fm_gpu
 from gear_optimizer.solver.taichi_gem.runtime import init_taichi, ti
 
 
 def _dense_gpu_max_gib() -> float:
-    raw = str(env_get("SKYLINE_COMBINED_DENSE_GPU_MAX_GIB", "8.0") or "8.0").strip()
+    raw = str(os.environ.get("SKYLINE_COMBINED_DENSE_GPU_MAX_GIB", "8.0") or "8.0").strip()
     try:
         value = float(raw)
     except (TypeError, ValueError):

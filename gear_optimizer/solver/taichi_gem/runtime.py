@@ -26,13 +26,12 @@ from ...core.output import (
     suppress_stderr,
     suppress_stdout,
 )
-from ...core.parsing import env_flag, env_int
+from gear_optimizer import settings
 
 # ============================================================================
 # INITIALIZATION STATE
 # ============================================================================
 
-from gear_optimizer.core.parsing import env_get
 _ti_initialized = False
 # Whether THIS process has ever completed a Taichi materialization. Distinct from
 # `_ti_initialized`, which `reset_taichi()` clears: the GLFW/Cocoa context that the first
@@ -47,11 +46,7 @@ logger = logging.getLogger(__name__)
 
 def _taichi_verbose_enabled() -> bool:
     # Keep Taichi banners in explicit verbose mode only.
-    if env_flag("METAFINDER_OUTPUT"):
-        return True
-    if env_flag("METAFINDER_VERBOSE"):
-        return True
-    return False
+    return settings.output_enabled()
 
 
 # Taichi prints a version banner at import-time via Python's print().
@@ -376,7 +371,7 @@ def _maybe_set_vulkan_visible_device() -> None:
                 return int(d.get("index", 0) or 0)
         return None
 
-    raw = str(env_get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip()
+    raw = settings.vulkan_device()
     auto_discrete = (not raw) or (raw.strip().lower() in {"discrete", "dgpu", "auto"})
 
     target = ""
@@ -424,18 +419,12 @@ def _maybe_print_vulkan_device_hint() -> None:
     if _printed_vulkan_device_hint:
         return
     _printed_vulkan_device_hint = True
-    if str(env_get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip():
+    if settings.vulkan_device():
         return
     logger.debug(
         "[Taichi] Tip: on hybrid/dual-GPU systems, set TAICHI_VULKAN_VISIBLE_DEVICE=discrete "
         "(or a specific index like 1) to force the discrete GPU."
     )
-
-
-# IMPORTANT: These are read when init_taichi() is called, so callers can
-# set env vars before initialization.
-def get_kernel_profiler_enabled() -> bool:
-    return bool(env_int("TAICHI_KERNEL_PROFILER", 0))
 
 
 def get_block_dim() -> int:
@@ -451,15 +440,6 @@ def _get_offline_cache_dir() -> str:
     Keeping this inside the repo `bin/` avoids writing into user profile
     locations and makes cache cleanup straightforward.
     """
-
-    def _sanitize_cache_token(token: str) -> str:
-        cleaned = str(token or "").strip()
-        if not cleaned:
-            return ""
-        # Keep directory names portable and predictable.
-        cleaned = "".join((c if (c.isalnum() or c in "._-") else "_") for c in cleaned)
-        # Defensive cap: avoid accidental extremely long paths.
-        return cleaned[:64]
 
     def _read_taichi_gem_signature_short(repo_root: str) -> str:
         """
@@ -502,8 +482,7 @@ def _get_offline_cache_dir() -> str:
         raw_ver = ".".join(str(x) for x in raw_ver)
     ti_ver = str(raw_ver)
     ti_ver = "".join((c if (c.isalnum() or c in "._-") else "_") for c in ti_ver).replace(".", "_")
-    env_key = _sanitize_cache_token(env_get("TAICHI_OFFLINE_CACHE_KEY", ""))
-    cache_key = env_key or _read_taichi_gem_signature_short(repo_root)
+    cache_key = _read_taichi_gem_signature_short(repo_root)
     cache_dir = os.path.join(repo_root, "bin", "taichi_cache", cache_schema, f"ti_{ti_ver}", cache_key)
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
@@ -539,7 +518,6 @@ def init_taichi():
         if _ti_initialized:
             return
         _assert_darwin_main_thread_materialization()
-        kernel_profiler = get_kernel_profiler_enabled()
         block_dim = get_block_dim()
         arch, backend_name = _detect_backend()
         from . import fields as gpu_fields
@@ -567,7 +545,6 @@ def init_taichi():
             # bit-identical across Metal and Vulkan and the pick is deterministic. Stays on GPU
             # (search remains batched); negligible cost for this add/mul arithmetic.
             fast_math=False,
-            kernel_profiler=kernel_profiler,
             default_gpu_block_dim=block_dim,
             # Huge win for repeated runs: avoid recompiling kernels each process.
             # This does not change algorithm results; it only caches compiled kernels on disk.
@@ -603,15 +580,7 @@ def init_taichi():
                 _init_with_winerror_retry(init_kwargs)
         _ti_initialized = True
         _ti_materialized_once = True
-        logger.debug(
-            "[Taichi] Initialized with %s backend - f32 precision (kernel_profiler=%s, block_dim=%s)",
-            backend_name,
-            "on" if kernel_profiler else "off",
-            block_dim,
-        )
-
-        if kernel_profiler:
-            ti.profiler.clear_kernel_profiler_info()
+        logger.debug("[Taichi] Initialized with %s backend - f32 precision (block_dim=%s)", backend_name, block_dim)
 
 
 def reset_taichi(*, reason: str | None = None) -> None:

@@ -25,7 +25,6 @@ def _legacy_task(*extras):
         "Fake Song (Hard) by Tester",
         "Hard",
         {"IterationEngine": {"GA_SearchDepth": "125"}},
-        {"base": "paths"},
         ("ref",),
         ("gear",),
         ("mini",),
@@ -97,7 +96,6 @@ def test_task_tuple_to_shared_context_preserves_shared_runtime_fields():
     ctx = task_tuple_to_shared_context(_legacy_task())
 
     assert ctx.cfg_dict == {"IterationEngine": {"GA_SearchDepth": "125"}}
-    assert ctx.paths == {"base": "paths"}
     assert ctx.ref_arrays == ("ref",)
     assert ctx.all_gears == ("gear",)
     assert ctx.all_minis == ("mini",)
@@ -171,5 +169,5 @@ def test_materialize_repeat_task_replaces_bundle_metadata_with_one_repeat_contex
 
 
 def test_short_legacy_tuple_is_rejected_at_the_adapter_boundary():
-    with pytest.raises(ValueError, match="13-field production prefix"):
+    with pytest.raises(ValueError, match="12-field production prefix"):
         task_tuple_to_song_job(("too", "short"))

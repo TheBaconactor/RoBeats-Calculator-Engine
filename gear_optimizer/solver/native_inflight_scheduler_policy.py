@@ -115,23 +115,3 @@ def continuous_fg_submit_budget(
     if not bool(no_ga_remaining):
         available_pending = min(int(available_pending), max(0, int(ready_fg_count)))
     return max(0, min(int(fg_workers) - int(fg_inflight_count), int(fg_batch_max), int(available_pending)))
-def closed_loop_bubble_kpi(
-    *,
-    idle_sec: float,
-    ready_ga_count: int,
-    ready_fg_count: int,
-    backlog_count: int,
-    oldest_fg_wait_s: float,
-) -> float:
-    idle = max(0.0, float(idle_sec))
-    if idle <= 0.0:
-        return 0.0
-    ready_depth = max(0, int(ready_ga_count)) + max(0, int(ready_fg_count))
-    backlog_depth = max(0, int(backlog_count))
-    fg_wait = max(0.0, float(oldest_fg_wait_s))
-    if ready_depth <= 0 and backlog_depth <= 0 and fg_wait <= 0.0:
-        return 0.0
-    backlog_term = min(4.0, float(backlog_depth) / 4.0)
-    fg_wait_term = min(5.0, float(fg_wait))
-    pressure = 1.0 + float(ready_depth) + float(backlog_term) + float(fg_wait_term)
-    return float(idle) * float(pressure)

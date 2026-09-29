@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -40,18 +39,6 @@ class FgMaterializationResult:
     variants: tuple[dict[str, Any], ...]
     wall_seconds: float
     cpu_seconds: float
-
-
-def initialize_fg_materialization_worker() -> None:
-    """Keep spawned workers from concurrently writing the parent's JSONL trace."""
-
-    for name in (
-        "METAFINDER_PROFILE_EVENTS",
-        "METAFINDER_PROFILE_EVENTS_PATH",
-        "PROFILE_EVENTS",
-        "PROFILE_EVENTS_PATH",
-    ):
-        os.environ.pop(name, None)
 
 
 def _compact_materialized_variant(variant: dict[str, Any]) -> dict[str, Any]:

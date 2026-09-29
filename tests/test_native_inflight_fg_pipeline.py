@@ -19,7 +19,6 @@ from gear_optimizer.solver.native_inflight_pipeline import (
 )
 from gear_optimizer.solver.fg_materialization_worker import (
     build_fg_materialization_request,
-    initialize_fg_materialization_worker,
 )
 from gear_optimizer.solver.fg_response_scoring.planner import (
     FgResponseFrontierPreparedBatch,
@@ -119,15 +118,13 @@ def test_native_fg_pipeline_queue_pop_and_submit():
             task_key="song-a",
             song_name="Song A",
             fg_prep_future=None,
-            fg_queued_t0=None,
         )
         song.runtime.fg.fg_dynamic_prep_done = True
 
-        pipeline.queue(song, now_s=10.0)
+        pipeline.queue(song)
 
         assert len(pipeline.pending) == 1
         assert pipeline.ready_count() == 1
-        assert abs(pipeline.oldest_wait_s(11.25) - 1.25) < 1e-9
 
         popped = pipeline.pop_next(allow_not_ready=False)
         assert popped is song
@@ -191,29 +188,13 @@ def test_fg_materialization_request_strips_driver_only_object_graphs_and_pickles
     assert pickle.loads(pickle.dumps(request)).song_key == "pickle-plan"
 
 
-def test_fg_worker_initializer_disables_shared_parent_profile_sink(monkeypatch):
-    names = (
-        "METAFINDER_PROFILE_EVENTS",
-        "METAFINDER_PROFILE_EVENTS_PATH",
-        "PROFILE_EVENTS",
-        "PROFILE_EVENTS_PATH",
-    )
-    for name in names:
-        monkeypatch.setenv(name, "parent-profile")
-
-    initialize_fg_materialization_worker()
-
-    for name in names:
-        assert name not in os.environ
-
-
 def test_native_fg_pipeline_does_not_pop_unready_outside_final_drain():
     pipeline = NativeFGPipeline(NativeFGPipelineSettings(workers=1, batch_max=1, prep_workers=1))
     try:
         prep_future = Future()
-        song = make_native_song(task_key="song-b", song_name="Song B", fg_prep_future=prep_future, fg_queued_t0=None)
+        song = make_native_song(task_key="song-b", song_name="Song B", fg_prep_future=prep_future)
 
-        pipeline.queue(song, now_s=20.0)
+        pipeline.queue(song)
 
         assert pipeline.ready_count() == 0
         assert pipeline.pop_next(allow_not_ready=False) is None
@@ -234,7 +215,7 @@ def test_native_fg_pipeline_pop_next_claims_prep_ownership():
         prep_future = Future()
         prep_future.set_result(None)
         song = make_native_song(task_key="claim-prep", song_name="Claim Prep", fg_prep_future=prep_future)
-        pipeline.queue(song, now_s=20.0)
+        pipeline.queue(song)
         pipeline.prep_inflight.append(song)
 
         assert pipeline.pop_next(allow_not_ready=False) is song
@@ -284,14 +265,13 @@ def test_native_fg_pipeline_tops_up_pending_prep_without_fg_worker_waits():
                 task_key=f"song-{idx}",
                 song_name=f"Song {idx}",
                 fg_prep_future=None,
-                fg_queued_t0=None,
             )
             for idx in range(4)
         ]
         for song in songs:
             song.runtime.fg.fg_dynamic_prep_done = False
         for song in songs:
-            pipeline.queue(song, now_s=1.0)
+            pipeline.queue(song)
 
         def _prep(song, gpu_client=None):
             with lock:

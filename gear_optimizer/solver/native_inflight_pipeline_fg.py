@@ -8,11 +8,9 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
-from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.fg_materialization_worker import (
     FgMaterializationResult,
     build_fg_materialization_request,
-    initialize_fg_materialization_worker,
     materialize_fg_request,
 )
 from gear_optimizer.solver.gpu_service import GpuServiceClient
@@ -113,7 +111,6 @@ class NativeFGPipeline:
         self.executor = concurrent.futures.ProcessPoolExecutor(
             max_workers=max(1, int(settings.workers)),
             mp_context=multiprocessing.get_context("spawn"),
-            initializer=initialize_fg_materialization_worker,
         )
         self.prep_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, int(settings.prep_workers)),
@@ -132,10 +129,8 @@ class NativeFGPipeline:
     def prep_workers(self) -> int:
         return int(self.settings.prep_workers)
 
-    def queue(self, song: NativeSong, *, now_s: float | None = None) -> None:
+    def queue(self, song: NativeSong) -> None:
         self.pending.append(song)
-        if song.runtime.fg.fg_queued_t0 is None:
-            song.runtime.fg.fg_queued_t0 = float(time.monotonic() if now_s is None else now_s)
 
 
     def _claim_pending_song(self, song: NativeSong) -> NativeSong:
@@ -290,25 +285,6 @@ class NativeFGPipeline:
                 return self._claim_pending_song(candidate)
         return None
 
-    def oldest_wait_s(self, now_s: float) -> float:
-        if not self.pending:
-            return 0.0
-        oldest_t0 = None
-        for candidate in self.pending:
-            runtime = getattr(candidate, "runtime", candidate)
-            t0 = candidate.runtime.fg.fg_queued_t0
-            if not isinstance(t0, (int, float)) or float(t0) <= 0.0:
-                try:
-                    runtime.fg.fg_queued_t0 = float(now_s)
-                except (KeyError, TypeError, ValueError):
-                    pass
-                t0 = float(now_s)
-            if oldest_t0 is None or float(t0) < float(oldest_t0):
-                oldest_t0 = float(t0)
-        if oldest_t0 is None:
-            return 0.0
-        return max(0.0, float(now_s) - float(oldest_t0))
-
     def ready_count(self) -> int:
         ready = 0
         for candidate in self.pending:
@@ -331,10 +307,6 @@ class NativeFGPipeline:
         register_future: Callable[[concurrent.futures.Future | None], None] | None = None,
         **kwargs: Any,
     ) -> concurrent.futures.Future:
-        try:
-            getattr(song, "runtime", song).fg.fg_queued_t0 = None
-        except (KeyError, TypeError, ValueError):
-            pass
         t_submit = time.perf_counter()
         future = self.executor.submit(run_fn, *args, **kwargs)
         if register_future is not None:
@@ -350,7 +322,6 @@ class NativeFGPipeline:
     ) -> concurrent.futures.Future:
         runtime = getattr(song, "runtime", song)
         prep_future = getattr(runtime.fg, "fg_prep_future", None)
-        had_prep_future = prep_future is not None
         if prep_future is not None:
             try:
                 prep_future.result()
@@ -365,37 +336,7 @@ class NativeFGPipeline:
             finally:
                 runtime.fg.fg_prep_future = None
 
-        song_key = self._song_key(song)
-        ga_candidates = int(len(getattr(runtime.decode, "ga_candidates", None) or []))
-        emit_profile_event(
-            component="inflight_fg_worker",
-            event="start",
-            song_key=song_key,
-            metrics={
-                "had_prep_future": int(had_prep_future),
-                "ga_candidates": ga_candidates,
-                "process_isolated": 1,
-            },
-        )
-        emit_profile_event(
-            component="inflight_fg_worker",
-            event="prep_ready",
-            song_key=song_key,
-            metrics={"ga_candidates": ga_candidates},
-        )
-        emit_profile_event(
-            component="inflight_fg_worker",
-            event="pre_dispatch",
-            song_key=song_key,
-            metrics={"ga_candidates": ga_candidates},
-        )
         request = build_fg_materialization_request(song)
-        emit_profile_event(
-            component="inflight_fg_worker",
-            event="dispatch_start",
-            song_key=song_key,
-            metrics={"process_isolated": 1},
-        )
         return self.submit_job(
             materialize_fg_request,
             song,
@@ -501,18 +442,6 @@ def apply_fg_materialization_result(
     runtime.fg.fg_variants = list(result.variants)
     runtime.fg.fg_run_wall_s = max(0.0, float(result.wall_seconds))
     runtime.fg.cpu_fg_run_s = max(0.0, float(result.cpu_seconds))
-    song_key = str(song.config.task_key or song.config.song_name or "")
-    emit_profile_event(
-        component="inflight_fg_worker",
-        event="dispatch_done",
-        song_key=song_key,
-        metrics={
-            "fg_variants": int(len(runtime.fg.fg_variants or [])),
-            "process_isolated": 1,
-            "worker_wall_ms": float(result.wall_seconds) * 1000.0,
-            "worker_cpu_ms": float(result.cpu_seconds) * 1000.0,
-        },
-    )
 
     fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
     if isinstance(fg_record_info, dict):
@@ -562,18 +491,8 @@ def _run_fg_job_sync_impl(
 
     cpu_t0 = thread_cpu_time_s()
     song_key = str(song.config.task_key or song.config.song_name or "")
-    emit_profile_event(
-        component="inflight_fg_worker",
-        event="start",
-        song_key=song_key,
-        metrics={
-            "had_prep_future": int(song.runtime.fg.fg_prep_future is not None),
-            "ga_candidates": int(len(song.runtime.decode.ga_candidates or [])),
-        },
-    )
     fg_prep_future = song.runtime.fg.fg_prep_future
     if fg_prep_future is not None:
-        prep_wait_t0 = time.perf_counter()
         try:
             fg_prep_future.result()
             if song.runtime.fg.fg_response_frontier_plan is None:
@@ -585,40 +504,10 @@ def _run_fg_job_sync_impl(
         except Exception as exc:
             raise RuntimeError(f"FG dynamic prep failed for {song_key}") from exc
         finally:
-            emit_profile_event(
-                component="inflight_fg_worker",
-                event="prep_wait",
-                song_key=song_key,
-                metrics={
-                    "wait_ms": max(0.0, (time.perf_counter() - float(prep_wait_t0)) * 1000.0),
-                },
-            )
             song.runtime.fg.fg_prep_future = None
     if song.runtime.fg.fg_response_frontier_plan is None:
         prepare_fg_job_sync(song, gpu_client=gpu_client)
         song.runtime.fg.fg_dynamic_prep_done = True
-    emit_profile_event(
-        component="inflight_fg_worker",
-        event="prep_ready",
-        song_key=song_key,
-        metrics={
-            "ga_candidates": int(len(song.runtime.decode.ga_candidates or [])),
-        },
-    )
-    emit_profile_event(
-        component="inflight_fg_worker",
-        event="pre_dispatch",
-        song_key=song_key,
-        metrics={
-            "ga_candidates": int(len(song.runtime.decode.ga_candidates or [])),
-        },
-    )
-    emit_profile_event(
-        component="inflight_fg_worker",
-        event="dispatch_start",
-        song_key=song_key,
-        metrics={},
-    )
     prepared_plan = song.runtime.fg.fg_response_frontier_plan
     if prepared_plan is None:
         raise RuntimeError("FG response frontier run requires a prepared exact scoring plan")
@@ -640,14 +529,6 @@ def _run_fg_job_sync_impl(
     song.runtime.fg.fg_run_wall_s = max(0.0, time.perf_counter() - float(run_wall_t0))
     song.runtime.fg.fg_variants = list(fg_variants or [])
     song.runtime.fg.cpu_fg_run_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
-    emit_profile_event(
-        component="inflight_fg_worker",
-        event="dispatch_done",
-        song_key=song_key,
-        metrics={
-            "fg_variants": int(len(song.runtime.fg.fg_variants or [])),
-        },
-    )
     if progress_cb is not None:
         fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
         if isinstance(fg_record_info, dict):

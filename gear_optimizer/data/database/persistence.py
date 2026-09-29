@@ -7,10 +7,8 @@ Loadout persistence: batch writes into the tiered base/FG leaderboards.
 import os
 import sqlite3
 import time
-import warnings
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 from ...core.gem_defs import fg_score_from_force
-from ...core.parsing import env_flag
 from ...core.team_buff import (
     canonicalize_team_buff,
     normalize_team_buff,
@@ -28,8 +26,6 @@ from ..database_codecs import (
     _pack_id_list,
     _pack_stats_for_storage,
     _strip_computed_details_fields,
-    _unpack_id_groups,
-    _unpack_id_list,
     _unpack_stats_after_load,
 )
 from ..piece_encoding_store import (
@@ -43,11 +39,9 @@ from ..loadout_equivalence import (
     effective_mini_signature_for_name,
     extract_song_colors,
     canonical_minis_groups_from_names,
-    representative_mini_names,
     rotate_mini_groups_for_slot_display,
 )
 from ..mini_ascension import MINI_ASCENSION_CACHE_VERSION, materialize_minis_for_song
-from gear_optimizer.core.parsing import env_get
 from .connection import get_db_connection, get_evolution_db_path, get_db_connection_cached
 from .songs import get_song_counters, _update_song_counters_in_transaction
 from .loadout_io import _compact_gear_for_db, _compact_minis_for_db
@@ -352,17 +346,6 @@ def save_team_buff_loadouts_batch(
     team_buff = canonicalize_team_buff(team_buff)
     if not song_name or not team_buff or not entries:
         return
-    timing = env_flag("DB_TIMING")
-    timing_threshold_ms = 50.0
-    timing_threshold_ms = float(env_get("DB_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
-    def _log_timing(label: str, dt_sec: float) -> None:
-        if not timing:
-            return
-        ms = float(dt_sec) * 1000.0
-        if ms < timing_threshold_ms:
-            return
-        print(f"[DB][TIMING] {song_name} {team_buff} {label}={ms:.1f}ms")
-    _t0 = time.perf_counter()
     minis_by_name = _db.get_minis_by_name_cached()
     gears_by_name = _db.get_gears_by_name_cached()
     # LIFETIME INVARIANT for every id()-keyed memo in this function
@@ -488,7 +471,6 @@ def save_team_buff_loadouts_batch(
             s_color,
             sel_color,
         )
-    _t_dedup0 = time.perf_counter()
     dedup_groups: Dict[tuple[int, str], list[Mapping[str, Any]]] = {}
     effective_cache_by_entry_id: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
     for entry in entries:
@@ -513,7 +495,6 @@ def save_team_buff_loadouts_batch(
             group, key=lambda e: (_get_overflow_from_details(e.get("details", {})), e.get("fg_score", 0))
         )
         deduplicated_entries.append(best_entry)
-    _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
     def _can_recompute_stats_for_persistence(gear_names_local: list[str], mini_names_local: list[str]) -> bool:
         gear_ok = (not gear_names_local) or (
             isinstance(gears_by_name, dict)
@@ -676,7 +657,6 @@ def save_team_buff_loadouts_batch(
     try:
         if not conn.in_transaction:
             conn.execute("PRAGMA synchronous=NORMAL;")
-        _t_params0 = time.perf_counter()
         loadouts_params = []
         deferred_fg_loadouts_params = []
         fg_loadouts_params = []
@@ -853,9 +833,7 @@ def save_team_buff_loadouts_batch(
                         force_json,
                     )
                 )
-        _log_timing("build_params_json", time.perf_counter() - _t_params0)
         if loadouts_params:
-            _t_ins0 = time.perf_counter()
             conn.executemany(
                 """
                 INSERT INTO team_buff_loadouts (
@@ -874,9 +852,7 @@ def save_team_buff_loadouts_batch(
             """,
                 loadouts_params,
             )
-            _log_timing("insert_team_buff_loadouts", time.perf_counter() - _t_ins0)
         if deferred_fg_loadouts_params:
-            _t_ins0 = time.perf_counter()
             conn.executemany(
                 """
                 INSERT INTO team_buff_loadouts (
@@ -895,9 +871,7 @@ def save_team_buff_loadouts_batch(
             """,
                 deferred_fg_loadouts_params,
             )
-            _log_timing("insert_team_buff_loadouts_deferred_fg", time.perf_counter() - _t_ins0)
         if fg_loadouts_params:
-            _t_insfg0 = time.perf_counter()
             conn.executemany(
                 """
                 INSERT INTO team_buff_fg_loadouts (
@@ -937,8 +911,6 @@ def save_team_buff_loadouts_batch(
                 """,
                 fg_loadouts_params,
             )
-            _log_timing("insert_team_buff_fg_loadouts", time.perf_counter() - _t_insfg0)
-        _t_inv0 = time.perf_counter()
         conn.execute(
             """
             DELETE FROM team_buff_fg_loadouts
@@ -965,8 +937,6 @@ def save_team_buff_loadouts_batch(
             """,
             (song_name, team_buff),
         )
-        _log_timing("delete_team_buff_fg_invariant", time.perf_counter() - _t_inv0)
-        _t_clear0 = time.perf_counter()
         conn.execute(
             """
             UPDATE team_buff_loadouts
@@ -977,19 +947,15 @@ def save_team_buff_loadouts_batch(
             """,
             (song_name, team_buff),
         )
-        _log_timing("clear_base_force_details", time.perf_counter() - _t_clear0)
         for table in ["team_buff_loadouts", "team_buff_fg_loadouts"]:
-            _t_cnt0 = time.perf_counter()
             cursor = conn.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE song_name = ? AND team_buff = ?",
                 (song_name, team_buff),
             )
             count = cursor.fetchone()[0]
-            _log_timing(f"count_{table}", time.perf_counter() - _t_cnt0)
             if count <= _db.LOADOUTS_PER_SONG_LIMIT:
                 continue
             if table == "team_buff_loadouts":
-                _t_pr0 = time.perf_counter()
                 conn.execute(
                     """
                     DELETE FROM team_buff_loadouts
@@ -1005,9 +971,7 @@ def save_team_buff_loadouts_batch(
                     """,
                     (song_name, team_buff, song_name, team_buff, _db.LOADOUTS_PER_SONG_LIMIT),
                 )
-                _log_timing("prune_team_buff_loadouts", time.perf_counter() - _t_pr0)
             else:
-                _t_prfg0 = time.perf_counter()
                 conn.execute(
                     """
                     DELETE FROM team_buff_fg_loadouts
@@ -1023,108 +987,9 @@ def save_team_buff_loadouts_batch(
                     """,
                     (song_name, team_buff, song_name, team_buff, _db.LOADOUTS_PER_SONG_LIMIT),
                 )
-                _log_timing("prune_team_buff_fg_loadouts", time.perf_counter() - _t_prfg0)
-        _t_repair0 = time.perf_counter()
         _repair_base_loadout_fg_summaries(conn, song_name=song_name, team_buff=team_buff)
-        _log_timing("repair_base_fg_summaries", time.perf_counter() - _t_repair0)
-        verify_integrity = env_flag("DB_VERIFY_WRITE_INTEGRITY", "0")
-        if verify_integrity:
-            strict = env_flag("DB_STRICT_WRITE_INTEGRITY", "0")
-            def _warn_or_raise(msg: str) -> None:
-                if strict:
-                    raise RuntimeError(msg)
-                warnings.warn(msg, RuntimeWarning, stacklevel=2)
-            def _verify_table_row(
-                *, table: str, loadout_hash: str, expected_score: int, expected_fg_score: int
-            ) -> None:
-                row = conn.execute(
-                    f"SELECT score, fg_score, gear_ids_blob, minis_ids_blob, details_json FROM {table} "
-                    "WHERE song_name = ? AND team_buff = ? AND loadout_hash = ?",
-                    (song_name, team_buff, loadout_hash),
-                ).fetchone()
-                if row is None:
-                    _warn_or_raise(
-                        f"[DB] Missing expected row after persistence: table={table} song={song_name!r} "
-                        f"team_buff={team_buff!r} hash={loadout_hash}"
-                    )
-                    return
-                got_score = int(row["score"] or 0)
-                got_fg_score = int(row["fg_score"] or 0)
-                if table != "team_buff_fg_loadouts" or got_fg_score <= int(expected_fg_score):
-                    if got_score < int(expected_score):
-                        _warn_or_raise(
-                            f"[DB] Score regressed after persistence (possible override/race): table={table} "
-                            f"song={song_name!r} team_buff={team_buff!r} hash={loadout_hash} "
-                            f"expected>={int(expected_score)} got={got_score}"
-                        )
-                if got_fg_score < int(expected_fg_score):
-                    _warn_or_raise(
-                        f"[DB] FG score regressed after persistence (possible override/race): table={table} "
-                        f"song={song_name!r} team_buff={team_buff!r} hash={loadout_hash} "
-                        f"expected>={int(expected_fg_score)} got={got_fg_score}"
-                    )
-                gear_ids_blob_row = row["gear_ids_blob"]
-                minis_ids_blob_row = row["minis_ids_blob"]
-                gear_names_row: list[str] = []
-                ids = _unpack_id_list(gear_ids_blob_row)
-                if ids:
-                    gear_names_row = [
-                        str(encoding_maps.gear_id_to_name.get(int(i), "") or "") for i in ids if int(i) > 0
-                    ]
-                    gear_names_row = [n for n in gear_names_row if n]
-                mini_groups_row: list[list[str]] = []
-                id_groups = _unpack_id_groups(minis_ids_blob_row)
-                if id_groups:
-                    for g in id_groups:
-                        if not g:
-                            continue
-                        names = [str(encoding_maps.mini_id_to_name.get(int(i), "") or "") for i in g if int(i) > 0]
-                        names = [n for n in names if n]
-                        if names:
-                            mini_groups_row.append(names)
-                mini_names_row = representative_mini_names(mini_groups_row)
-                details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
-                p_color, s_color, sel_color = extract_song_colors(details_row)
-                if p_color or s_color:
-                    minis_for_verify = _song_aware_minis_by_name(p_color, s_color)
-                    mini_sigs_row = [
-                        effective_mini_signature_for_name(n, minis_for_verify, p_color, s_color, sel_color)
-                        for n in mini_names_row
-                    ]
-                    expected_hash = effective_loadout_hash_from_names(gear_names_row, mini_sigs_row)
-                else:
-                    expected_hash = _db._loadout_hash_from_names(gear_names_row, mini_names_row)
-                if expected_hash and str(expected_hash) != str(loadout_hash):
-                    _warn_or_raise(
-                        f"[DB] Loadout hash mismatch after persistence (possible override/race): table={table} "
-                        f"song={song_name!r} team_buff={team_buff!r} stored={loadout_hash} expected={expected_hash}"
-                    )
-            try:
-                if loadouts_params:
-                    best = max(loadouts_params, key=lambda t: int(t[3] or 0))
-                    _verify_table_row(
-                        table="team_buff_loadouts",
-                        loadout_hash=str(best[2]),
-                        expected_score=int(best[3] or 0),
-                        expected_fg_score=int(best[4] or 0),
-                    )
-                if fg_loadouts_params:
-                    best_fg = max(fg_loadouts_params, key=lambda t: int(t[4] or 0))
-                    _verify_table_row(
-                        table="team_buff_fg_loadouts",
-                        loadout_hash=str(best_fg[2]),
-                        expected_score=int(best_fg[3] or 0),
-                        expected_fg_score=int(best_fg[4] or 0),
-                    )
-            except Exception as exc:
-                _warn_or_raise(
-                    f"[DB] Write integrity verification failed: song={song_name!r} team_buff={team_buff!r} "
-                    f"error={type(exc).__name__}: {exc}"
-                )
         if commit:
-            _t_commit0 = time.perf_counter()
             conn.commit()
-            _log_timing("commit", time.perf_counter() - _t_commit0)
     except sqlite3.Error as e:
         print(f"[DB] Error saving TeamBuff batch loadouts: {e}")
         try:
@@ -1139,4 +1004,3 @@ def save_team_buff_loadouts_batch(
             except sqlite3.Error:
                 pass
             conn.close()
-        _log_timing("total", time.perf_counter() - _t0)

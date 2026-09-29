@@ -6,7 +6,7 @@ Use it when changing behavior, refactoring APIs, or updating contributor guidanc
 ## Engineering workflow
 
 - `tools/dev` and CI are enforcement harnesses.
-- `tools/bench`, `tools/profile`, and replay scripts are evaluation harnesses.
+- `tools/bench` and replay scripts are evaluation harnesses.
 
 ## Repository knowledge
 

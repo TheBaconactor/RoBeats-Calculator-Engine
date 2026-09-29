@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.macos_background import make_process_background_only
-from gear_optimizer.core.parsing import env_int, env_str
+from gear_optimizer.settings import service_settings
 from gear_optimizer.data.database import (
     get_best_loadouts,
     get_evolution_db_path,
@@ -78,7 +78,7 @@ DIFFICULTIES = ("Easy", "Normal", "Hard")
 # Global solve pool: caps concurrent optimizer subprocesses. The GPU is the bottleneck (one song
 # at a time on the Vulkan device), but the CPU-side frontier build + chart parse + DB write
 # overlaps with the GPU work of the previous song, so a small pool keeps both fed.
-_SOLVE_POOL_SIZE = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_POOL", 10))
+_SOLVE_POOL_SIZE = service_settings().solve_pool
 _SOLVE_SEMAPHORE = threading.Semaphore(_SOLVE_POOL_SIZE)
 
 # Memory-headroom admission (a hardware memory bound, not a perf flag). The semaphore caps how many
@@ -92,7 +92,7 @@ _SOLVE_SEMAPHORE = threading.Semaphore(_SOLVE_POOL_SIZE)
 # waits for a running solve to finish. This makes effective concurrency track the box's memory
 # regardless of the pool size. The gate samples memory at start time, so two solves admitted at the
 # same moment can both pass before either one allocates.
-_MIN_FREE_BYTES = max(0, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_MIN_FREE_MB", 3000)) * 1024 * 1024
+_MIN_FREE_BYTES = service_settings().min_free_mb * 1024 * 1024
 _admission = threading.Condition()
 _active_solves = 0
 _SERVICE_DRAINING_FOR_UPDATE = False
@@ -181,16 +181,16 @@ _AUTHORITATIVE_PUBLICATION_READY = threading.Event()
 # Body-size cap for /optimize: reject anything absurd with 413 so an oversized body can't be read
 # into memory. Sized above the supported custom-chart event limit with JSON-escape margin. Deploy
 # behind loopback/private networking and bearer authentication.
-_MAX_BODY_BYTES = max(1024, env_int("ROBEATSMETA_OPTIMIZER_MAX_BODY_BYTES", 32 * 1024 * 1024))
-_MAX_CUSTOM_CHART_EVENTS = max(1, env_int("ROBEATSMETA_OPTIMIZER_MAX_CUSTOM_EVENTS", 4_000))
+_MAX_BODY_BYTES = service_settings().max_body_bytes
+_MAX_CUSTOM_CHART_EVENTS = service_settings().max_custom_chart_events
 
 # Hard wall-clock cap on a single solve subprocess: on timeout the whole process group is killed
 # (so main.py's GPU/worker children don't linger) and the request fails. Must exceed a real solve.
-_SOLVE_TIMEOUT_S = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_TIMEOUT_S", 30 * 60))
+_SOLVE_TIMEOUT_S = service_settings().solve_timeout_s
 
 # An idle persistent solver still holds its whole Taichi device, prewarmed app and per-song caches
 # (~0.8 GB). Stop it after this long without a request; the next official solve respawns it cold.
-_PERSISTENT_WORKER_IDLE_EXIT_S = max(60, env_int("ROBEATSMETA_OPTIMIZER_PERSISTENT_IDLE_EXIT_S", 15 * 60))
+_PERSISTENT_WORKER_IDLE_EXIT_S = service_settings().persistent_idle_exit_s
 
 # Reasoning effort lets a host request a larger optimizer search budget. The chosen level scales
 # the GA search knobs that most directly raise the odds of reaching the true
@@ -427,7 +427,7 @@ def _official_song_directories() -> tuple[tuple[str, Path], ...]:
     select an external canonical chart library; once that root is explicitly configured, every
     expected difficulty directory is required.
     """
-    configured = env_str("ROBEATSMETA_OPTIMIZER_CATALOG_DATA_DIR", "").strip()
+    configured = service_settings().catalog_data_dir
     if not configured:
         return tuple((difficulty, DATA_ROOT / difficulty) for difficulty in DIFFICULTIES)
 
@@ -874,7 +874,7 @@ def _append_custom_pool_rows(gear_dir: Path, pool: dict[str, list[dict[str, Any]
 
 
 def _service_run_root() -> Path:
-    override = env_str("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", "").strip()
+    override = service_settings().run_dir
     return Path(override) if override else (REPO_ROOT / "bin" / "robeatsmeta_api_runs")
 
 
@@ -1053,8 +1053,7 @@ _PERSISTENT_SOLVE_WORKER: _PersistentSolveWorker | None = None
 
 
 def _persistent_worker_enabled() -> bool:
-    value = env_str("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "1").strip().lower()
-    return value not in {"0", "false", "no", "off"}
+    return service_settings().persistent_solver
 
 
 def _get_persistent_solve_worker() -> _PersistentSolveWorker:
@@ -1211,7 +1210,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
     chart_text, result_song_name = chart_text_and_result_song_name_for_request(request, fallback_name=job)
     if str(request.get("chartText") or "").strip():
         _validate_custom_chart_event_limit(chart_text)
-    repeats = max(1, env_int("ROBEATSMETA_OPTIMIZER_SERVICE_REPEATS", 1))
+    repeats = service_settings().repeats
     reasoning = _normalize_reasoning(request.get("reasoning"))
     timing_mode = _normalize_timing_mode(request.get("timingMode"))
     custom_pool = _custom_pool_for_request(request)
@@ -1340,7 +1339,7 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
     timeout = 60
 
     def _authorized(self) -> bool:
-        token = env_str("ROBEATSMETA_OPTIMIZER_API_TOKEN", "").strip()
+        token = service_settings().api_token
         supplied = self.headers.get("Authorization", "")
         return not token or hmac.compare_digest(supplied, f"Bearer {token}")
 
@@ -1475,14 +1474,15 @@ class RoBeatsMetaServiceHandler(BaseHTTPRequestHandler):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="RoBeatsMeta optimizer service")
-    parser.add_argument("--host", default=env_str("ROBEATSMETA_OPTIMIZER_API_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=env_int("ROBEATSMETA_OPTIMIZER_API_PORT", 8765))
+    settings = service_settings()
+    parser.add_argument("--host", default=settings.host)
+    parser.add_argument("--port", type=int, default=settings.port)
     args = parser.parse_args(argv)
     try:
         loopback_bind = ipaddress.ip_address(str(args.host)).is_loopback
     except ValueError:
         loopback_bind = str(args.host).strip().lower() == "localhost"
-    if not loopback_bind and not env_str("ROBEATSMETA_OPTIMIZER_API_TOKEN", ""):
+    if not loopback_bind and not settings.api_token:
         raise RuntimeError("ROBEATSMETA_OPTIMIZER_API_TOKEN is required for a non-loopback bind")
     # Reclaim workspaces orphaned by a crash/SIGKILL: _solve_isolated cleans up in its finally, but
     # nothing else ever sweeps here. Safe because launchd runs a single service instance.

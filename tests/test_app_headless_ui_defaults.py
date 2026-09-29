@@ -1,4 +1,4 @@
-from gear_optimizer.app import _banner_enabled_default, _progress_ui_enabled_default
+from gear_optimizer.app import _progress_ui_enabled_default
 
 
 def test_progress_ui_defaults_off_when_stream_is_not_tty():
@@ -35,12 +35,3 @@ def test_progress_ui_respects_output_mode_suppression_without_override():
         )
         is False
     )
-
-
-def test_banner_defaults_off_when_stream_is_not_tty():
-    assert _banner_enabled_default(stream_is_tty=False, banner_env=None) is False
-
-
-def test_banner_can_be_explicitly_forced_or_disabled():
-    assert _banner_enabled_default(stream_is_tty=False, banner_env="1") is True
-    assert _banner_enabled_default(stream_is_tty=True, banner_env="0") is False

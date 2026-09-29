@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from gear_optimizer.solver import native_inflight_lifecycle as startup
 
 
@@ -36,10 +34,6 @@ class _GpuClient:
         self.start_calls.append(kwargs)
 
 
-def _icfg(timeout: float = 12.5):
-    return SimpleNamespace(runtime=SimpleNamespace(gpu_executor_init_timeout_sec=timeout))
-
-
 def test_start_native_inflight_gpu_client_starts_executor_and_client(monkeypatch):
     executor = _Executor()
     progress_events = []
@@ -49,14 +43,13 @@ def test_start_native_inflight_gpu_client_starts_executor_and_client(monkeypatch
     monkeypatch.setattr(startup, "GpuServiceClient", _GpuClient)
 
     result_executor, result_client = startup.start_native_inflight_gpu_client(
-        _icfg(),
         progress_cb=lambda **kwargs: progress_events.append(kwargs),
     )
 
     assert result_executor is executor
     assert result_client is _GpuClient.instances[0]
     assert executor.start_calls == [{"in_process": True}]
-    assert executor.wait_calls == [{"timeout": 12.5}]
+    assert executor.wait_calls == [{"timeout": startup.GPU_EXECUTOR_INIT_TIMEOUT_S}]
     assert result_client.executor is executor
     assert result_client.start_calls == [{"start_executor": False}]
     assert progress_events == [
@@ -72,7 +65,7 @@ def test_start_native_inflight_gpu_client_stops_executor_on_init_timeout(monkeyp
     monkeypatch.setattr(startup, "GpuServiceClient", _GpuClient)
 
     try:
-        startup.start_native_inflight_gpu_client(_icfg(timeout=3))
+        startup.start_native_inflight_gpu_client()
     except RuntimeError as exc:
         assert "[InFlight] GPU executor Taichi init failed or timed out" in str(exc)
         assert "driver did not initialize" in str(exc)
@@ -80,5 +73,5 @@ def test_start_native_inflight_gpu_client_stops_executor_on_init_timeout(monkeyp
         raise AssertionError("expected GPU startup timeout to fail")
 
     assert executor.start_calls == [{"in_process": True}]
-    assert executor.wait_calls == [{"timeout": 3.0}]
+    assert executor.wait_calls == [{"timeout": startup.GPU_EXECUTOR_INIT_TIMEOUT_S}]
     assert executor.stop_calls == 1

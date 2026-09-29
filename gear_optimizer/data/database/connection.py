@@ -9,26 +9,15 @@ import sqlite3
 import threading
 from typing import Optional
 from urllib.parse import quote
-from ...core.constants import PATHS
+from ...settings import paths
 from ..migrations import ensure_schema
 from ..piece_encoding_store import _initialize_piece_name_encodings
-from gear_optimizer.core.parsing import env_get
 
 
 
 def get_evolution_db_path() -> str:
-    """
-    Return the configured evolution DB location (env override supported).
-    Returns:
-        str: Path to evolution database file
-    """
-    env_path = str(env_get("EVOLUTION_DB_PATH", "") or "").strip()
-    if env_path:
-        return env_path
-    external_db = os.path.abspath(os.path.join(PATHS.script_dir, os.pardir, "ExternalDatabases", "evolution.db"))
-    if os.path.exists(external_db):
-        return external_db
-    return PATHS.evolution_db_default
+    """The results database: EVOLUTION_DB_PATH, else <engine>/evolution.db (see gear_optimizer.settings)."""
+    return str(paths().database)
 
 
 def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:

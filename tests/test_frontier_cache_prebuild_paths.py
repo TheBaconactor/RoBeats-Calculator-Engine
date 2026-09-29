@@ -4,8 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from gear_optimizer.core.constants import PathConfig
-
 
 def test_frontier_cache_prebuild_uses_queue_scope_when_queue_is_present(tmp_path: Path) -> None:
     from gear_optimizer.solver.timeline_frontier_cache_prebuild import ordered_frontier_cache_song_paths
@@ -63,11 +61,7 @@ def test_frontier_cache_default_follows_runtime_bin_dir(
     module = importlib.import_module(module_name)
     runtime_bin = tmp_path / "instance-bin"
     monkeypatch.delenv(override_name, raising=False)
-    monkeypatch.setattr(
-        module,
-        "PATHS",
-        PathConfig(script_dir=str(tmp_path / "source"), bin_dir=str(runtime_bin), data_dir=str(tmp_path / "data")),
-    )
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_BIN_DIR", str(runtime_bin))
 
     assert getattr(module, resolver_name)() == runtime_bin / cache_leaf
 
@@ -99,14 +93,6 @@ def test_frontier_cache_explicit_override_wins_over_runtime_bin_dir(
     module = importlib.import_module(module_name)
     explicit_cache = tmp_path / "explicit-cache"
     monkeypatch.setenv(override_name, str(explicit_cache))
-    monkeypatch.setattr(
-        module,
-        "PATHS",
-        PathConfig(
-            script_dir=str(tmp_path / "source"),
-            bin_dir=str(tmp_path / "instance-bin"),
-            data_dir=str(tmp_path / "data"),
-        ),
-    )
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_BIN_DIR", str(tmp_path / "instance-bin"))
 
     assert getattr(module, resolver_name)() == explicit_cache

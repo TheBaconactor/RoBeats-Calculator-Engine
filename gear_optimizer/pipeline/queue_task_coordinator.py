@@ -19,13 +19,11 @@ import secrets
 import typing
 import zlib
 
-from gear_optimizer.core.constants import PATHS, SCRIPT_DIR
 from gear_optimizer.core.memory import (
     build_memory_guard_resume_context,
     load_memory_guard_resume_state,
 )
-from gear_optimizer.core.parsing import env_get, truthy
-from gear_optimizer.core.utils import cfg_to_dict, safe_int
+from gear_optimizer.core.utils import cfg_to_dict
 from gear_optimizer.data.database import get_song_names_present_in_db
 from gear_optimizer.data.song_io import scan_song_header
 from gear_optimizer.domain.jobs import (
@@ -33,6 +31,7 @@ from gear_optimizer.domain.jobs import (
     SongJob,
     task_tuple_from_job_context,
 )
+from gear_optimizer import settings
 from gear_optimizer.song_queue import (
     SongQueueItem,
     finalize_song_queue,
@@ -74,26 +73,11 @@ class QueueTaskCoordinator:
             target_secondary_colors,
         )
 
-    def build_song_queue(self, cfg, paths):
+    def build_song_queue(self, cfg):
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self.get_filter_params(cfg)
         resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
 
-        def _read_song_queue_limit() -> int:
-            limit = int(self._runtime_settings(cfg).song_queue_limit)
-            for env_key in ("SONG_QUEUE_LIMIT",):
-                raw = env_get(env_key)
-                if raw is None:
-                    continue
-                try:
-                    env_val = safe_int(raw, 0)
-                except (ValueError, TypeError):
-                    env_val = 0
-                if env_val and env_val > 0:
-                    limit = int(env_val)
-                    break
-            return int(limit)
-
-        song_queue_limit = _read_song_queue_limit()
+        song_queue_limit = int(self._runtime_settings(cfg).song_queue_limit)
 
         _presence_lookup_cache: dict[tuple[str, ...], set[str]] = {}
 
@@ -112,8 +96,6 @@ class QueueTaskCoordinator:
         resume_known_path_keys: set[str] | None = None
         resume_has_known_paths = False
         ignore_resume = bool(self._runtime_settings(cfg).ignore_resume_queue)
-        if truthy(env_get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
-            ignore_resume = True
         if not ignore_resume:
             resume_state = load_memory_guard_resume_state(resume_context)
             resume_seed_queue = resume_state.pending
@@ -122,14 +104,12 @@ class QueueTaskCoordinator:
             if resume_seed_queue:
                 logger.info(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
         diff = self._runtime_settings(cfg).calculate_song.difficulty or "All"
-        search_dir = paths.get(diff, SCRIPT_DIR)
         song_queue: list[SongQueueItem] = []
         seen_paths = set()
         if diff_lower not in ("easy", "normal", "hard"):
-            data_root = PATHS.data_dir
-            dirs_to_search = [data_root] if os.path.exists(data_root) else [SCRIPT_DIR]
+            dirs_to_search = [str(settings.paths().data_dir)]
         else:
-            dirs_to_search = [search_dir]
+            dirs_to_search = [str(settings.paths().chart_dir(diff_lower.capitalize()))]
         for d in dirs_to_search:
             if not os.path.exists(d):
                 continue
@@ -210,7 +190,6 @@ class QueueTaskCoordinator:
         self,
         song_queue,
         cfg,
-        paths,
         ref_arrays,
         all_gears,
         all_minis,
@@ -224,7 +203,6 @@ class QueueTaskCoordinator:
         parallel_workers = 1
         run_context = SharedRunContext(
             cfg_dict=cfg_dict,
-            paths=paths,
             ref_arrays=ref_arrays,
             all_gears=all_gears,
             all_minis=all_minis,
@@ -268,22 +246,9 @@ class QueueTaskCoordinator:
             )
             tasks.append(task_tuple_from_job_context(job, run_context, *extras))
 
-        ga_seed_base: int | None = None
-        raw_ga_seed = env_get("GA_SEED")
-        if raw_ga_seed is not None and str(raw_ga_seed).strip() != "":
-            try:
-                ga_seed_base = int(str(raw_ga_seed).strip()) & 0xFFFFFFFF
-            except (ValueError, TypeError) as exc:
-                raise ValueError("GA_SEED must be an integer debug seed when set") from exc
-        runtime_settings = self._runtime_settings(cfg)
-        song_repeats = int(runtime_settings.song_repeats)
-        try:
-            song_repeats_env = safe_int(env_get("SONG_REPEATS", 0), 0)
-            if song_repeats_env > 0:
-                song_repeats = song_repeats_env
-        except (ValueError, TypeError):
-            pass
-        song_repeats = max(1, min(int(song_repeats), 100))
+        ga_seed = settings.ga_seed()
+        ga_seed_base = None if ga_seed is None else ga_seed & 0xFFFFFFFF
+        song_repeats = max(1, min(int(self._runtime_settings(cfg).song_repeats), 100))
         used_ga_seeds: set[int] = set()
 
         def _stable_ga_seed_for_song_repeat(song_name: str, repeat_index: int) -> int:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Callable, TypeVar
-from .env_config import ENV
 _F = TypeVar("_F", bound=Callable[..., object])
 def _default_numba_cache_dir() -> str | None:
     """
@@ -27,12 +26,7 @@ if _NUMBA_DISK_CACHE_ENABLED and "NUMBA_CACHE_DIR" not in os.environ:
         os.environ["NUMBA_CACHE_DIR"] = _cache_dir
 from numba import jit as _numba_jit
 import numba as _numba
-_effective_cache_dir = str(ENV.numba_cache_dir or "").strip()
-if not _effective_cache_dir:
-    try:
-        _effective_cache_dir = str(os.environ["NUMBA_CACHE_DIR"]).strip()
-    except KeyError:
-        _effective_cache_dir = ""
+_effective_cache_dir = os.environ.get("NUMBA_CACHE_DIR", "").strip()
 if _NUMBA_DISK_CACHE_ENABLED and _effective_cache_dir:
     try:
         _numba.config.CACHE_DIR = _effective_cache_dir
@@ -53,12 +47,7 @@ def jit(nopython: bool = True, cache: bool = True, nogil: bool = True) -> Callab
     disk_cache_enabled = True
     use_cache = bool(cache) and disk_cache_enabled
     if use_cache:
-        cache_dir = str(ENV.numba_cache_dir or "").strip()
-        if not cache_dir:
-            try:
-                cache_dir = str(os.environ["NUMBA_CACHE_DIR"]).strip()
-            except KeyError:
-                cache_dir = ""
+        cache_dir = os.environ.get("NUMBA_CACHE_DIR", "").strip()
         if not cache_dir:
             cache_dir = _default_numba_cache_dir() or ""
             if cache_dir:

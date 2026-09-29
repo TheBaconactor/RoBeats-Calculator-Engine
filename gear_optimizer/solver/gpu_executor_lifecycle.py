@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import deque
 from collections.abc import Callable, MutableMapping, Sequence
 from dataclasses import dataclass
-import importlib
 import json
 import os
 from pathlib import Path
@@ -14,14 +13,9 @@ import traceback
 import time
 from typing import Any
 
-from gear_optimizer.core.env_config import ENV
-from gear_optimizer.core.parsing import env_flag, env_get
 from gear_optimizer.solver.gpu_executor_types import build_shutdown_request
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
-from gear_optimizer.solver.windows_timer import (
-    system_timer_override_allowed as _system_timer_override_allowed_shared,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -29,23 +23,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ExecutorStartSettings:
-    live_enabled: bool
-    live_interval_sec: float
     heartbeat_path: Path
     heartbeat_interval_sec: float
     enable_high_res_timer: bool
-
-
-@dataclass(frozen=True)
-class ExecutorStopProfilerSettings:
-    print_taichi_kernel_profiler: bool
-    # Gated DEBUG instrumentation (OFF by default): when TAICHI_KERNEL_PROFILER_PATH names
-    # a file, executor stop ALSO writes a structured per-kernel GPU-time aggregation there
-    # (name -> launch count, total/avg ms) computed from the live Taichi kernel-profiler
-    # records before runtime teardown. The C++ print_kernel_profiler_info() stdout is lost
-    # at interpreter/atexit teardown; this file dump is the reliable capture for GA
-    # work-density attribution. Requires TAICHI_KERNEL_PROFILER=1 at init.
-    kernel_profiler_dump_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -62,71 +42,18 @@ def default_executor_heartbeat_path() -> Path:
 def load_executor_start_settings(
     *,
     in_process: bool,
-    env_get_fn: Callable[..., Any] = env_get,
-    env_flag_fn: Callable[..., bool] = env_flag,
     os_name: str,
-    env_config: Any = ENV,
-    system_timer_override_allowed_fn: Callable[[], bool] | None = None,
     default_heartbeat_path_fn: Callable[[], Path] = default_executor_heartbeat_path,
 ) -> ExecutorStartSettings:
-    try:
-        live_interval_sec = float(env_get_fn("GPU_EXECUTOR_LIVE_INTERVAL_SEC", "1.0"))
-    except (ValueError, TypeError):
-        live_interval_sec = 1.0
-
-    heartbeat_raw = str(env_get_fn("GPU_EXECUTOR_HEARTBEAT_PATH", "") or "").strip()
-    try:
-        heartbeat_interval_sec = max(
-            0.1,
-            float(env_get_fn("GPU_EXECUTOR_HEARTBEAT_INTERVAL_SEC", "2.0") or "2.0"),
-        )
-    except (ValueError, TypeError):
-        heartbeat_interval_sec = 2.0
-
-    enable_high_res_timer = False
-    if system_timer_override_allowed_fn is None:
-        system_timer_override_allowed_fn = _system_timer_override_allowed_shared
-    if bool(in_process) and str(os_name) == "nt" and bool(system_timer_override_allowed_fn()):
-        # Hardwired (was GPU_EXECUTOR_BATCH_WAIT_MS / GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS):
-        # in-proc base batch wait 10ms clamped to 6, after-first 2ms.
-        batch_wait_ms = min(int(getattr(env_config, "gpu_executor_batch_wait_ms", 10) or 10), 6)
-        after_first_ms = 2
-        enable_high_res_timer = (0 < int(batch_wait_ms) <= 4) or (0 < int(after_first_ms) <= 4)
+    # The in-process owner coalesces with a 2 ms after-first wait (see gpu_executor_batching),
+    # which the default ~15.6 ms Windows timer would stretch; request 1 ms timer granularity there.
+    enable_high_res_timer = bool(in_process) and str(os_name) == "nt"
 
     return ExecutorStartSettings(
-        live_enabled=bool(env_flag_fn("GPU_EXECUTOR_LIVE")),
-        live_interval_sec=float(live_interval_sec),
-        heartbeat_path=Path(heartbeat_raw) if heartbeat_raw else default_heartbeat_path_fn(),
-        heartbeat_interval_sec=float(heartbeat_interval_sec),
+        heartbeat_path=default_heartbeat_path_fn(),
+        heartbeat_interval_sec=2.0,
         enable_high_res_timer=bool(enable_high_res_timer),
     )
-
-
-def load_executor_stop_profiler_settings(
-    *,
-    env_flag_fn: Callable[..., bool] = env_flag,
-    env_config: Any = ENV,
-) -> ExecutorStopProfilerSettings:
-    return ExecutorStopProfilerSettings(
-        print_taichi_kernel_profiler=bool(env_flag_fn("TAICHI_KERNEL_PROFILER_PRINT")),
-        kernel_profiler_dump_path=str(env_get("TAICHI_KERNEL_PROFILER_PATH") or "").strip(),
-    )
-
-
-def executor_auto_stop_enabled(env_flag_fn: Callable[..., bool] = env_flag) -> bool:
-    try:
-        return bool(env_flag_fn("GPU_EXECUTOR_AUTO_STOP"))
-    except (ValueError, TypeError):
-        return False
-
-
-def stop_executor_if_running(executor: Any | None) -> bool:
-    if executor is None:
-        return False
-    if bool(getattr(executor, "is_running", False)):
-        executor.stop()
-        return True
-    return False
 
 
 def send_shutdown_request(
@@ -157,85 +84,6 @@ def build_taichi_init_failure_report(
     if trace_path is not None:
         err = f"{err} (trace: {trace_path})"
     return TaichiInitFailureReport(error=err, trace_path=trace_path)
-
-
-def _dump_kernel_profiler_records(ti: Any, dump_path: str) -> bool:
-    """Write a structured per-kernel GPU-time aggregation to ``dump_path``.
-
-    Gated DEBUG instrumentation (OFF unless TAICHI_KERNEL_PROFILER_PATH is set). Reads the
-    live Taichi kernel-profiler traced records (one per kernel launch, device exec time in
-    ms) and aggregates by kernel name into launch count + total/avg/min/max ms, plus the
-    overall device total. Written as JSON so GA work-density attribution survives the loss
-    of the C++ print_kernel_profiler_info() stdout at teardown.
-    """
-    prog = ti.lang.impl.get_runtime().prog
-    prog.sync_kernel_profiler()
-    records = prog.get_kernel_profiler_records()
-    agg: dict[str, dict[str, float]] = {}
-    for r in records:
-        name = str(r.name)
-        kt = float(r.kernel_time)
-        row = agg.get(name)
-        if row is None:
-            agg[name] = {"count": 1, "total_ms": kt, "min_ms": kt, "max_ms": kt}
-        else:
-            row["count"] += 1
-            row["total_ms"] += kt
-            row["min_ms"] = min(row["min_ms"], kt)
-            row["max_ms"] = max(row["max_ms"], kt)
-    rows = []
-    for name, row in agg.items():
-        count = int(row["count"])
-        total_ms = float(row["total_ms"])
-        rows.append(
-            {
-                "kernel": name,
-                "count": count,
-                "total_ms": round(total_ms, 4),
-                "avg_ms": round(total_ms / count, 5) if count else 0.0,
-                "min_ms": round(float(row["min_ms"]), 5),
-                "max_ms": round(float(row["max_ms"]), 5),
-            }
-        )
-    rows.sort(key=lambda d: d["total_ms"], reverse=True)
-    device_total_s = float(prog.kernel_profiler_total_time())
-    payload = {
-        "device": str(prog.get_kernel_profiler_device_name()) if hasattr(prog, "get_kernel_profiler_device_name") else "",
-        "device_total_ms": round(device_total_s * 1000.0, 3),
-        "n_kernels": len(rows),
-        "n_launches": int(sum(d["count"] for d in rows)),
-        "kernels": rows,
-    }
-    out = Path(dump_path)
-    if out.parent and not out.parent.exists():
-        out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    logger.info(
-        "[KernelProfiler] wrote %s kernels / %s launches / %.1f ms device total -> %s",
-        payload["n_kernels"],
-        payload["n_launches"],
-        payload["device_total_ms"],
-        dump_path,
-    )
-    return True
-
-
-def print_taichi_kernel_profiler(
-    *,
-    enabled: bool,
-    dump_path: str = "",
-    import_module_fn: Callable[[str], Any] = importlib.import_module,
-) -> bool:
-    dump_path = str(dump_path or "").strip()
-    if not bool(enabled) and not dump_path:
-        return False
-    ti = import_module_fn("taichi")
-    ti.sync()
-    if dump_path:
-        _dump_kernel_profiler_records(ti, dump_path)
-    if bool(enabled):
-        ti.profiler.print_kernel_profiler_info()
-    return True
 
 
 class ExecutorAbortState:
@@ -450,64 +298,6 @@ def summarize_request_batch(batch: list[GpuRequest] | None) -> tuple[dict[str, i
     return type_counts, int(request_count)
 
 
-class LiveReporter:
-    def __init__(self, *, now: Callable[[], float] = time.perf_counter) -> None:
-        self._now = now
-        self.enabled = False
-        self.interval_sec = 1.0
-        self.last_report_ts: float | None = None
-        self.wait_sec = 0.0
-        self.exec_sec = 0.0
-        self.type_counts = defaultdict(int)
-
-    def configure(self, *, enabled: bool, interval_sec: float) -> None:
-        self.enabled = bool(enabled)
-        self.interval_sec = max(0.1, float(interval_sec))
-        self.last_report_ts = None
-        self.wait_sec = 0.0
-        self.exec_sec = 0.0
-        self.type_counts = defaultdict(int)
-
-    def record_wait(self, wait_sec: float) -> None:
-        if self.enabled:
-            self.wait_sec += float(wait_sec)
-
-    def record_exec(self, request_type: GpuRequestType, *, exec_sec: float, count: int = 1) -> None:
-        if not self.enabled:
-            return
-        self.exec_sec += float(exec_sec)
-        self.type_counts[request_type] += int(count)
-
-    def maybe_report(self) -> bool:
-        if not self.enabled:
-            return False
-        now = self._now()
-        if self.last_report_ts is None:
-            self.last_report_ts = now
-            return False
-        if (now - float(self.last_report_ts)) < float(self.interval_sec):
-            return False
-        logger.debug(self._format_message())
-        self.last_report_ts = now
-        self.wait_sec = 0.0
-        self.exec_sec = 0.0
-        self.type_counts = defaultdict(int)
-        return True
-
-    def _format_message(self) -> str:
-        total = float(self.wait_sec) + float(self.exec_sec)
-        util = (float(self.exec_sec) / total * 100.0) if total > 0 else 0.0
-        top_types = sorted(self.type_counts.items(), key=lambda kv: kv[1], reverse=True)[:4]
-        types_str = ",".join(f"{_request_type_value(t)}:{int(n)}" for t, n in top_types) if top_types else ""
-        return (
-            f"[GpuExecutor][LIVE] busy={util:.1f}% (executor) wait={self.wait_sec * 1000:.1f}ms "
-            f"exec={self.exec_sec * 1000:.1f}ms types=[{types_str}]"
-        )
-
-
-def _request_type_value(request_type: Any) -> str:
-    return str(getattr(request_type, "value", request_type))
-
 # ---- merged from gpu_executor_queue_wait.py ----
 import time
 from dataclasses import dataclass
@@ -531,7 +321,7 @@ class ShortWaitSpinSettings:
     short_wait_spin_yield_rounds: int
 
 
-def load_short_wait_spin_settings(env_get_fn: Callable[[str, str], Any]) -> ShortWaitSpinSettings:
+def load_short_wait_spin_settings() -> ShortWaitSpinSettings:
     # Hardwired GPU-owner queue short-wait spin tuning
     # (was GPU_EXECUTOR_SHORT_WAIT_SPIN_MS=3.0 / _YIELD_ROUNDS=8).
     return ShortWaitSpinSettings(
@@ -630,7 +420,6 @@ def poll_inprocess_followup_nowait(
 from collections import OrderedDict
 import time
 
-from gear_optimizer.core.env_config import ENV
 
 
 class WorkerResponseRouter:

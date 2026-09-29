@@ -7,15 +7,12 @@ import sys
 import threading
 import time
 import numpy as np
-from gear_optimizer.core.constants import PATHS, BIN_DIR, GA_POPULATION_SIZE
-from gear_optimizer.core.env_config import ENV
-from gear_optimizer.core.parsing import config_bool, env_flag, truthy
+from gear_optimizer.core.constants import GA_POPULATION_SIZE
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
 from gear_optimizer.core.config import (
     AppRuntimeSettings,
     compute_memory_guard_limit,
     load_config,
-    load_paths_cache,
     resolve_inflight_songs,
 )
 from gear_optimizer.data.database import (
@@ -30,7 +27,6 @@ from gear_optimizer.core.memory import (
     restart_process_for_memory_guard,
     MEMORY_GUARD_RESUME_FILE,
 )
-from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.domain.jobs import (
     effective_task_count,
 )
@@ -46,14 +42,14 @@ from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
 from gear_optimizer.app_stop_control import StopController
 from gear_optimizer.ui.progress import (
     ProgressUI as _ProgressUI,
-    _banner_enabled_default,
     _progress_ui_enabled_default,
     _stream_is_tty,
 )
 from gear_optimizer.pipeline.queue_task_coordinator import QueueTaskCoordinator
+from gear_optimizer import settings
+from gear_optimizer.settings import paths
 from gear_optimizer.ui.runtime_ui import RuntimeUiMixin
 from gear_optimizer.task_execution import TaskExecutionMixin
-from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
 
@@ -61,24 +57,22 @@ logger = logging.getLogger(__name__)
 class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def __init__(self):
         self.setup_logging()
-        self._stop_control = StopController(bin_dir=BIN_DIR)
+        self._stop_control = StopController(bin_dir=str(paths().bin_dir))
         self._stop_requested = self._stop_control.stop_requested_event
         self._force_exit_requested = self._stop_control.force_exit_requested_event
-        self._output_enabled = bool(getattr(ENV, "output_enabled", False))
+        self._output_enabled = settings.output_enabled()
         ui_stream = getattr(sys, "__stdout__", None) or sys.stdout
         self._stdout_is_tty = _stream_is_tty(ui_stream)
+        progress = settings.progress()
         self._progress_enabled = _progress_ui_enabled_default(
-            configured_enabled=bool(getattr(ENV, "progress_enabled", True)),
+            configured_enabled=progress is not False,
             output_enabled=bool(self._output_enabled),
-            progress_env_present=env_get("METAFINDER_PROGRESS") is not None,
+            progress_env_present=progress is not None,
             stream_is_tty=bool(self._stdout_is_tty),
         )
-        self._banner_enabled = _banner_enabled_default(
-            stream_is_tty=bool(self._stdout_is_tty),
-            banner_env=ENV.banner_env,
-        )
-        self._progress_interval = float(getattr(ENV, "progress_interval_sec", 0.2))
-        self._progress_bar_width = int(getattr(ENV, "progress_bar_width", 24))
+        self._banner_enabled = bool(self._stdout_is_tty)
+        self._progress_interval = 0.2
+        self._progress_bar_width = 24
         self._progress: _ProgressUI | None = None
         self._orig_stdout = None
         self._orig_stderr = None
@@ -129,10 +123,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _install_signal_handlers(self) -> None:
         return self._stop_control.install_signal_handlers()
 
-    @staticmethod
-    def _cfg_truthy(cfg, section: str, key: str, *, fallback: bool = False) -> bool:
-        return config_bool(cfg, section, key, default=fallback)
-
     def _current_runtime_settings(self, cfg=None) -> AppRuntimeSettings:
         settings = getattr(self, "_runtime_settings", None)
         if isinstance(settings, AppRuntimeSettings):
@@ -142,40 +132,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _get_inflight_songs_requested(self, cfg) -> int:
         runtime_settings = self._current_runtime_settings(cfg)
         return resolve_inflight_songs(int(runtime_settings.inflight.songs))
-
-    def _maybe_autoset_gpu_song_slots(self, cfg) -> None:
-        raw = env_get("GPU_SONG_SLOTS")
-        if raw is not None and str(raw).strip() != "":
-            return
-        runtime_settings = self._current_runtime_settings(cfg)
-        cfg_slots = int(runtime_settings.gpu.gpu_song_slots)
-        if int(cfg_slots) > 0:
-            os.environ["GPU_SONG_SLOTS"] = str(cfg_slots)
-            logger.debug(
-                "[GPU] Set GPU_SONG_SLOTS={} from config (IterationEngine.GPU_SongSlots). Set GPU_SONG_SLOTS env var to override.".format(
-                    int(cfg_slots)
-                )
-            )
-            return
-        inflight_songs = self._get_inflight_songs_requested(cfg)
-        if int(inflight_songs) <= 1:
-            return
-        if "gear_optimizer.solver.taichi_gem.fields" in sys.modules:
-            logger.debug("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
-            return
-        from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT
-
-        ga_queue_mult = int(CANONICAL_GA_QUEUE_MULT)
-        required = int(inflight_songs) * int(ga_queue_mult) + 2
-        slots = min(max(24, int(required)), 256)
-        os.environ["GPU_SONG_SLOTS"] = str(slots)
-        logger.debug(
-            "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, canonical_ga_queue_mult={}). Set GPU_SONG_SLOTS to override.".format(
-                int(slots),
-                int(inflight_songs),
-                int(ga_queue_mult),
-            )
-        )
 
     def _materialize_gpu_runtime_on_main_thread(self) -> None:
         """
@@ -242,56 +198,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         if inflight_req <= 1:
             return
         logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
-        emit_profile_event(
-            component="app",
-            event="taichi_init_start",
-            metrics={"in_process": 1},
-        )
         from gear_optimizer.solver.gpu_executor import get_gpu_executor
 
         get_gpu_executor().start(in_process=True)
         logger.info("[Startup][GPU] Taichi/Vulkan init ready.")
-        emit_profile_event(
-            component="app",
-            event="taichi_init_done",
-            metrics={"in_process": 1},
-        )
-
-    def _profiling_mode_enabled(self, cfg=None) -> bool:
-        if bool(ENV.debug_profile) or bool(ENV.perf_timing_unconditional):
-            return True
-        truthy_keys = (
-            "DEBUG_PROFILE",
-            "METAFINDER_DEBUG_PROFILE",
-            "PERF_TIMING",
-            "GPU_SERVICE_PROFILE",
-            "GPU_SERVICE_PROFILE_PRINT",
-            "GPU_SYNC_FOR_TIMING",
-            "GPU_FORCE_SYNC",
-            "INFLIGHT_STAGE_PROFILE",
-            "TAICHI_KERNEL_PROFILER",
-            "TAICHI_KERNEL_PROFILER_PRINT",
-            "METAFINDER_PROFILE_EVENTS",
-            "PROFILE_EVENTS",
-            "FG_TASK_TRACE",
-        )
-        for key in truthy_keys:
-            if env_flag(key):
-                return True
-        path_keys = (
-            "INFLIGHT_STAGE_PROFILE_PATH",
-            "METAFINDER_PROFILE_EVENTS_PATH",
-            "PROFILE_EVENTS_PATH",
-        )
-        for key in path_keys:
-            if str(env_get(key, "") or "").strip():
-                return True
-        if cfg is not None:
-            if self._cfg_truthy(cfg, "Debug", "DebugProfile", fallback=False):
-                return True
-            if self._cfg_truthy(cfg, "IterationEngine", "DebugProfile", fallback=False):
-                return True
-        return False
 
     def _set_runtime_progress_counts(
         self,
@@ -346,55 +256,34 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             cfg = load_config()
             runtime_settings = self._current_runtime_settings(cfg)
             self._runtime_settings = runtime_settings
-            paths = load_paths_cache()
             set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
             db_display_name = os.path.basename(get_evolution_db_path())
             if self._banner_enabled:
                 self._print_banner()
             logger.info(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
-            emit_profile_event(
-                component="app",
-                event="run_start",
-                metrics={"db_file": str(db_display_name)},
-            )
             init_db()
             fg_debug = bool(runtime_settings.iteration_engine.force_greats_debug)
             fg_status = "ResponseFrontier"
             logger.info(f" >> [ForceGreats] {fg_status}")
             ga_depth = int(runtime_settings.ga.search_depth)
             loop_forever = bool(runtime_settings.loop_forever)
-            if self._profiling_mode_enabled(cfg):
-                if loop_forever:
-                    logger.warning("[Profiling] LoopForever=true ignored; forcing LoopForever=false.")
-                    emit_profile_event(
-                        component="app",
-                        event="profiling_forced_loop_forever_off",
-                        metrics={"requested_loop_forever": 1},
-                    )
-                loop_forever = False
             eval_cpu_limit = int(runtime_settings.eval_cpu_cores)
-            self._maybe_autoset_gpu_song_slots(cfg)
             sync_exported_game_data()
-            stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
+            stats_table = read_table(str(paths().stats_txt))
             self._disable_inputs_to_prevent_taint(cfg)
             ref_arrays = self._preload_ref_arrays(stats_table)
-            all_gears = load_all_gears_list(paths)
-            all_minis = load_all_minis_list(paths)
+            all_gears = load_all_gears_list()
+            all_minis = load_all_minis_list()
             gears_by_name = {g["Name"]: g for g in all_gears}
             minis_by_name = {m["Name"]: m for m in all_minis}
-            song_queue = self._build_song_queue(cfg, paths)
+            song_queue = self._build_song_queue(cfg)
             queued_songs = len(song_queue)
             logger.info(f"[Run] Queued {len(song_queue)} song(s) for processing.")
-            emit_profile_event(
-                component="app",
-                event="queue_built",
-                metrics={"queued_songs": int(queued_songs)},
-            )
             run_startup_cpu_work(
                 cfg=cfg,
                 song_queue=song_queue,
                 ref_arrays=ref_arrays,
-                data_root=PATHS.data_dir,
+                data_root=str(paths().data_dir),
                 announce_stream=self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout,
                 build_missing=not frontier_sync.enabled,
             )
@@ -404,7 +293,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             tasks = self._prepare_tasks(
                 song_queue,
                 cfg,
-                paths,
                 ref_arrays,
                 all_gears,
                 all_minis,
@@ -414,15 +302,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 fg_debug,
             )
             queued_tasks = self._effective_total_tasks(tasks)
-            emit_profile_event(
-                component="app",
-                event="tasks_prepared",
-                metrics={
-                    "queued_songs": int(queued_songs),
-                    "queued_tasks": int(queued_tasks),
-                    "queued_task_bundles": int(len(tasks)),
-                },
-            )
             parallel_workers = 1
             self._start_progress(queued_tasks)
             self._execute_tasks(
@@ -479,16 +358,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                     f"[Throughput] Completed {completed_tasks}/{total_tasks} task(s) "
                     f"(queue={queued_songs} song(s)) -> {songs_per_h:.1f} songs/hour, {tasks_per_h:.1f} tasks/hour"
                 )
-            emit_profile_event(
-                component="app",
-                event="run_end",
-                metrics={
-                    "elapsed_sec": float(elapsed),
-                    "queued_songs": int(queued_songs),
-                    "queued_tasks": int(queued_tasks),
-                    "graceful_stop": int(bool(graceful_stop or self._stop_requested.is_set())),
-                },
-            )
             gc.collect()
         if graceful_stop or self._stop_requested.is_set():
             logger.info("[Shutdown] Exiting by user request.")
@@ -533,8 +402,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _get_filter_params(self, cfg):
         return self._queue_task_coordinator().get_filter_params(cfg)
 
-    def _build_song_queue(self, cfg, paths):
-        return self._queue_task_coordinator().build_song_queue(cfg, paths)
+    def _build_song_queue(self, cfg):
+        return self._queue_task_coordinator().build_song_queue(cfg)
 
     def _normalize_song_label(self, label: str) -> str:
         s = str(label or "").strip()
@@ -549,7 +418,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self,
         song_queue,
         cfg,
-        paths,
         ref_arrays,
         all_gears,
         all_minis,
@@ -561,7 +429,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         return self._queue_task_coordinator().prepare_tasks(
             song_queue,
             cfg,
-            paths,
             ref_arrays,
             all_gears,
             all_minis,
@@ -582,12 +449,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         return effective_task_count(tasks)
 
     def _fatal_gpu_errors_enabled(self) -> bool:
-        raw = str(env_get("METAFINDER_FATAL_GPU_ERRORS", "") or "").strip()
-        if raw:
-            return truthy(raw)
-        if truthy(env_get("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")):
-            return True
-        return False
+        return settings.service_mode()
 
     def _memory_guard_restart_needed(self, memory_resume_tracker) -> bool:
         if not memory_release_requested():
@@ -645,14 +507,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             wait_s = float(self._current_runtime_settings(cfg).loop_restart_wait_sec)
         except (ValueError, TypeError):
             pass
-        for env_key in ("METAFINDER_LOOP_RESTART_WAIT_SEC",):
-            raw = env_get(env_key)
-            if raw is None or str(raw).strip() == "":
-                continue
-            try:
-                wait_s = float(raw)
-            except (ValueError, TypeError):
-                pass
         return max(0.0, min(float(wait_s), 60.0))
 
     def _handle_loop_restart(self, wait_time=0):

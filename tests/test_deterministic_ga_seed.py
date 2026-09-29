@@ -35,7 +35,6 @@ def test_prepare_tasks_uses_deterministic_ga_seed_when_env_set(monkeypatch):
         None,
         None,
         None,
-        None,
         1,
         False,
     )
@@ -44,7 +43,7 @@ def test_prepare_tasks_uses_deterministic_ga_seed_when_env_set(monkeypatch):
     assert len(tasks) == 4
     got = {}
     for t in tasks:
-        repeat_ctx = t[13]
+        repeat_ctx = t[12]
         song_name = t[1]
         idx = int(repeat_ctx["repeat_index"])
         ga_seed = int(repeat_ctx["ga_seed"])
@@ -80,15 +79,14 @@ def test_prepare_tasks_injects_repeat_ctx_when_songrepeats_1_and_env_set(monkeyp
         None,
         None,
         None,
-        None,
         1,
         False,
     )
 
     assert len(tasks) == 1
     t0 = tasks[0]
-    assert len(t0) >= 14
-    repeat_ctx = t0[13]
+    assert len(t0) >= 13
+    repeat_ctx = t0[12]
     assert isinstance(repeat_ctx, dict)
     assert int(repeat_ctx["repeat_total"]) == 1
     assert int(repeat_ctx["repeat_index"]) == 1
@@ -106,11 +104,10 @@ def test_prepare_tasks_rejects_invalid_debug_ga_seed(monkeypatch):
     cfg["IterationEngine"] = {"SongRepeats": "1"}
 
     app = GearOptimizerApp()
-    with pytest.raises(ValueError, match="GA_SEED must be an integer debug seed"):
+    with pytest.raises(ValueError, match="GA_SEED must be an integer"):
         app._prepare_tasks(
             [("Data/Hard/FakeSongA.txt", "Fake Song A (Hard) by Tester", "hard")],
             cfg,
-            None,
             None,
             None,
             None,

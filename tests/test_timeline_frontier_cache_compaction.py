@@ -33,7 +33,6 @@ def _build_small_payload():
         total_notes=6,
         long_notes=0,
         last_note_time=1.8,
-        song_key="unit-test-song",
         timestamps=timestamps,
         perfect_candidate_timestamps=timestamps + np.float32(0.04),
         perfect_floor_timestamps=timestamps - np.float32(0.019),

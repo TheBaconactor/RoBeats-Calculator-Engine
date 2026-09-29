@@ -11,7 +11,6 @@ from typing import Any
 
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver.native_inflight_config import inflight_shutdown_debug_enabled
 from gear_optimizer.solver.native_inflight_lifecycle_prepare import (
     _lru_get,
     _lru_put,
@@ -23,7 +22,6 @@ from gear_optimizer.solver.native_inflight_lifecycle_progress import (
     evaluate_fg_progress_record_update,
 )
 from gear_optimizer.solver.native_inflight_lifecycle_queues import (
-    BubbleTracker,
     InflightBundleTracker,
     PostSender,
     SongPrepCompletion,
@@ -53,13 +51,16 @@ def _emit_startup_status(progress_cb: ProgressCallback | None, status: str) -> N
     progress_cb(completed_delta=0, failed_delta=0, record_info={"status": status})
 
 
-def start_native_inflight_gpu_client(icfg, *, progress_cb: ProgressCallback | None = None):
+# Taichi/Vulkan init plus kernel warmup on a cold offline cache.
+GPU_EXECUTOR_INIT_TIMEOUT_S = 600.0
+
+
+def start_native_inflight_gpu_client(*, progress_cb: ProgressCallback | None = None):
     """Start the native GPU executor and return its service client."""
     gpu_executor = get_gpu_executor()
     _emit_startup_status(progress_cb, "GPU init (Taichi/Vulkan)")
     gpu_executor.start(in_process=True)
-    init_timeout = float(icfg.runtime.gpu_executor_init_timeout_sec)
-    if not gpu_executor.wait_until_ready(timeout=init_timeout):
+    if not gpu_executor.wait_until_ready(timeout=GPU_EXECUTOR_INIT_TIMEOUT_S):
         err = getattr(gpu_executor, "last_init_error", None)
         msg = "[InFlight] GPU executor Taichi init failed or timed out"
         if err:
@@ -134,9 +135,9 @@ def build_abort_queue_snapshot(
 
 
 def native_abort_log_path() -> Path:
-    from gear_optimizer.core.constants import PATHS
+    from gear_optimizer.settings import paths
 
-    return Path(PATHS.bin_path("inflight_native_abort.log"))
+    return paths().bin_path("inflight_native_abort.log")
 
 
 def append_native_abort_log(
@@ -189,9 +190,7 @@ def log_native_abort(
     return append_native_abort_log(exc, snapshot=snapshot, trace=trace, path=path, timestamp=timestamp)
 
 
-def _shutdown_step(label: str, action: Callable[[], None], *, shutdown_debug: bool) -> None:
-    if shutdown_debug:
-        logger.debug("[InFlight][SHUTDOWN] %s", label)
+def _shutdown_step(label: str, action: Callable[[], None]) -> None:
     try:
         action()
     except Exception:
@@ -215,7 +214,6 @@ def shutdown_native_inflight_resources(
     gpu_executor sequentially after the join."""
     import concurrent.futures
 
-    shutdown_debug = inflight_shutdown_debug_enabled()
     parallel_steps: list[tuple[str, Callable[[], None]]] = [
         (
             "fg_executor.shutdown",
@@ -245,23 +243,22 @@ def shutdown_native_inflight_resources(
     # Leaving the pool's context waits for every step.
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(parallel_steps)) as pool:
         for label, action in parallel_steps:
-            pool.submit(_shutdown_step, label, action, shutdown_debug=shutdown_debug)
+            pool.submit(_shutdown_step, label, action)
 
     if post_sender is not None:
-        _shutdown_step("post_sender.close", lambda: post_sender.close(timeout=10.0), shutdown_debug=shutdown_debug)
-    _shutdown_step("gpu_client.close", lambda: gpu_client.close(timeout=2.0), shutdown_debug=shutdown_debug)
+        _shutdown_step("post_sender.close", lambda: post_sender.close(timeout=10.0))
+    _shutdown_step("gpu_client.close", lambda: gpu_client.close(timeout=2.0))
 
     def _stop_gpu_executor_if_running() -> None:
         if gpu_executor.is_running:
             gpu_executor.stop()
 
     if not keep_gpu_executor_running:
-        _shutdown_step("gpu_executor.stop", _stop_gpu_executor_if_running, shutdown_debug=shutdown_debug)
+        _shutdown_step("gpu_executor.stop", _stop_gpu_executor_if_running)
 
 
 __all__ = [
     "ActiveRuntimeProgressReporter",
-    "BubbleTracker",
     "CachedRuntimeSignal",
     "GpuAbortRequester",
     "InflightBundleTracker",

@@ -8,7 +8,6 @@ import time
 
 from gear_optimizer.core.config import resolve_inflight_songs
 from gear_optimizer.core.memory import memory_release_requested
-from gear_optimizer.core.parsing import env_get
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.domain.jobs import task_cfg_dict
 from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimizationRequest
@@ -142,9 +141,7 @@ class TaskExecutionMixin:
     def _start_post_processor(self, total_tasks: int):
             from gear_optimizer.pipeline.post_processor import run_post_processor
 
-            post_queue_size = safe_int(env_get("POST_PIPELINE_QUEUE", 0), 0)
-            post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
-            post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
+            post_queue = multiprocessing.Queue()
             post_proc = multiprocessing.Process(
                 target=run_post_processor,
                 args=(post_queue, int(total_tasks)),

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
 
@@ -51,27 +50,12 @@ class InProcessCoalesceSettings:
     after_first_ms: int
 
 
-def _int_value(value: Any, *, fallback: int) -> int:
-    try:
-        return int(str(value).strip())
-    except (ValueError, TypeError, AttributeError):
-        return int(fallback)
-
-
-def load_loop_batch_settings(
-    *,
-    env_config: Any,
-    env_get: Callable[..., Any],
-) -> LoopBatchSettings:
-    # GPU-owner loop batch base is hardwired (was GPU_EXECUTOR_BATCH_WAIT_MS /
-    # GPU_EXECUTOR_MAX_BATCH overrides). *_overridden stay False so the downstream
-    # effective-owner-batch widening always applies, as in production-no-override.
-    wait_ms = _int_value(getattr(env_config, "gpu_executor_batch_wait_ms", 10) or 10, fallback=10)
-    max_batch = _int_value(getattr(env_config, "gpu_executor_max_batch", 8) or 8, fallback=8)
-
+def load_loop_batch_settings() -> LoopBatchSettings:
+    # GPU-owner loop batch base (10 ms wait, 8 requests). *_overridden stay False so the
+    # downstream effective-owner-batch widening always applies.
     return LoopBatchSettings(
-        wait_ms=int(wait_ms),
-        max_batch=int(max_batch),
+        wait_ms=10,
+        max_batch=8,
         wait_overridden=False,
         max_overridden=False,
     )
@@ -119,12 +103,12 @@ def plan_loop_batch(
     )
 
 
-def ga_recovery_streak_cap(*, env_get: Callable[..., Any]) -> int:
+def ga_recovery_streak_cap() -> int:
     # Hardwired to the most FG-protective value (was GPU_EXECUTOR_GA_RECOVERY_STREAK_MAX=1).
     return 1
 
 
-def ga_recovery_lookahead_limit(*, batch_max_size: int, env_get: Callable[..., Any]) -> int:
+def ga_recovery_lookahead_limit(*, batch_max_size: int) -> int:
     # Hardwired to the batch-size-derived default (was GPU_EXECUTOR_GA_RECOVERY_LOOKAHEAD_MAX_REQS).
     return max(8, min(max(1, int(batch_max_size)) * 4, 64))
 
@@ -133,8 +117,6 @@ def load_inprocess_coalesce_settings(
     *,
     max_wait_ms: int,
     in_process_queues: bool,
-    env_get: Callable[..., Any],
-    env_flag_fn: Callable[[str, str], bool],
 ) -> InProcessCoalesceSettings:
     # Hardwired in-proc coalesce tuning (was GPU_EXECUTOR_INPROC_COALESCE +
     # _IDLE_WAIT_MS=100 / _IDLE_RECENT_WAIT_MS=10 / _IDLE_RECENT_GRACE_MS=250 /
@@ -490,23 +472,7 @@ def execute_gpu_native_ga_run(
         if n_genomes is not None:
             kwargs["n_genomes"] = int(n_genomes)
 
-        # Gated owner-thread phase profiling for the fused GA->FG continuation
-        # (docs/research/GPU_FUSED_FG_OWNER_GAP_REVIEW_REQUEST_20260613.md). OFF
-        # unless METAFINDER_PROFILE_EVENTS_PATH is set; pure measurement, no behavior change.
-        _prof = profile_events_active()
-        _prof_song_key = ""
-        if _prof and isinstance(calc_song, dict):
-            _prof_song_key = f"{calc_song.get('Song_Name', '')}|{calc_song.get('Difficulty', '')}"
-
-        _t_ga = time.perf_counter() if _prof else 0.0
         runs_payload = run_payload_fn(**kwargs)
-        if _prof:
-            emit_profile_event(
-                component="fg_fused",
-                event="fg_owner_phase",
-                song_key=_prof_song_key,
-                metrics={"phase": "ga_run_total", "total_ms": (time.perf_counter() - _t_ga) * 1000.0},
-            )
 
         # FUSED GA->FG owner continuation (Slice 3): immediately after the GA
         # pack/select, on the SAME owner thread, score FG straight from the selected
@@ -519,7 +485,6 @@ def execute_gpu_native_ga_run(
                 score_fused_fg_from_selected_payload as fused_fg_fn,
             )
 
-        _t_fg = time.perf_counter() if _prof else 0.0
         fg_owner_score = fused_fg_fn(
             runs_payload=runs_payload,
             fg_scoring_bundle=fg_scoring_bundle,
@@ -527,13 +492,6 @@ def execute_gpu_native_ga_run(
             ref_arrays=ref_arrays,
             cfg_data=dict(cfg_data),
         )
-        if _prof:
-            emit_profile_event(
-                component="fg_fused",
-                event="fg_owner_phase",
-                song_key=_prof_song_key,
-                metrics={"phase": "fg_block_total", "total_ms": (time.perf_counter() - _t_fg) * 1000.0},
-            )
     except Exception as e:
         return GpuResponse(
             request_id=request.request_id,
@@ -551,7 +509,6 @@ def execute_gpu_native_ga_run(
 # ---- merged from gpu_executor_native_ga_batch.py ----
 from dataclasses import dataclass
 
-from gear_optimizer.core.parsing import env_get
 
 
 @dataclass(frozen=True)
@@ -560,10 +517,7 @@ class NativeGaBatchLimits:
     max_work_units: float
 
 
-def load_native_ga_batch_limits(
-    *,
-    env_get_fn: Callable[[str, Any], Any] = env_get,
-) -> NativeGaBatchLimits:
+def load_native_ga_batch_limits() -> NativeGaBatchLimits:
     # Hardwired (was GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS=2 / _MAX_WORK_UNITS=240000).
     # The per-dispatch work-unit cap is a GPU TDR / oversized-submit safety bound -- baked
     # and always active (the former 0=unbounded override is removed).
@@ -622,7 +576,6 @@ def execute_gpu_native_ga_run_batch(
     aborted_response: Callable[[GpuRequest], GpuResponse],
     execute_single: Callable[[GpuRequest], GpuResponse],
     execute_chunk: Callable[[list[GpuRequest]], list[GpuResponse]],
-    env_get_fn: Callable[[str, Any], Any] = env_get,
     estimate_work_units_fn: Callable[[GpuRequest], float],
 ) -> list[GpuResponse]:
     if not requests:
@@ -633,7 +586,7 @@ def execute_gpu_native_ga_run_batch(
     out: list[GpuResponse] = []
     chunks = plan_native_ga_batch_chunks(
         requests,
-        limits=load_native_ga_batch_limits(env_get_fn=env_get_fn),
+        limits=load_native_ga_batch_limits(),
         estimate_work_units_fn=estimate_work_units_fn,
     )
     for chunk_idx, chunk in enumerate(chunks):

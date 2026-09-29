@@ -7,22 +7,16 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     ga_admission_fg_backlog_limit,
     ga_should_pause_for_fg_backlog,
 )
-from gear_optimizer.solver.native_inflight_lifecycle import BubbleTracker
 from gear_optimizer.solver.native_inflight_scheduler_policy import (
-    closed_loop_bubble_kpi,
     count_active_song_lanes,
     read_fg_scheduler_mode,
 )
 from gear_optimizer.solver.native_inflight_config import (
     default_worker_threads,
     first_task_config,
-    inflight_shutdown_debug_enabled,
-    inflight_stall_debug_enabled,
     read_db_prefetch_workers,
     read_ga_multi_start,
     read_inflight_worker_count,
-    read_inflight_loop_observer_settings,
-    read_inflight_runtime_settings,
 )
 from gear_optimizer.solver.inflight_wait import (
     read_inflight_event_wait_gpu_cap_s,
@@ -190,7 +184,7 @@ def test_read_inflight_worker_count_uses_canonical_cpu_sizing_and_ga_seed():
         read_inflight_worker_count(
             inflight_limit=8,
             kind="prep",
-            ga_seed="fixed",
+            seeded=True,
         )
         == 1
     )
@@ -199,56 +193,6 @@ def test_read_inflight_worker_count_uses_canonical_cpu_sizing_and_ga_seed():
 def test_read_db_prefetch_workers_defaults_from_fg_prep():
     assert read_db_prefetch_workers(fg_prep_workers=2) == 2
     assert read_db_prefetch_workers(fg_prep_workers=9) == 4
-
-
-def test_read_inflight_loop_observer_settings_reads_env_values():
-    values = {
-        "INFLIGHT_HEARTBEAT_SEC": "1.5",
-        "INFLIGHT_THROUGHPUT_SEC": "2.5",
-        "INFLIGHT_PROFILE_MAX_SONGS": "4",
-    }
-
-    settings = read_inflight_loop_observer_settings(env_get_fn=lambda name, default=None: values.get(name, default))
-
-    assert settings.heartbeat_sec == 1.5
-    assert settings.throughput_sec == 2.5
-    assert settings.profile_max_songs == 4
-
-
-def test_read_inflight_runtime_settings_reads_static_runtime_env_values():
-    values = {
-        "GPU_EXECUTOR_INIT_TIMEOUT_SEC": "42.5",
-    }
-
-    settings = read_inflight_runtime_settings(env_get_fn=lambda name, default=None: values.get(name, default))
-
-    assert settings.gpu_executor_init_timeout_sec == 42.5
-
-
-def test_read_inflight_runtime_settings_uses_legacy_init_timeout_failure_default():
-    settings = read_inflight_runtime_settings(env_get_fn=lambda _name, _default=None: "bad")
-
-    assert settings.gpu_executor_init_timeout_sec == 180.0
-
-
-def test_inflight_dynamic_debug_helpers_read_current_env_value():
-    assert inflight_stall_debug_enabled(env_get_fn=lambda _name, _default=None: "1") is True
-    assert inflight_shutdown_debug_enabled(env_get_fn=lambda _name, _default=None: "true") is True
-    assert inflight_stall_debug_enabled(env_get_fn=lambda _name, _default=None: "0") is False
-    assert inflight_shutdown_debug_enabled(env_get_fn=lambda _name, _default=None: "") is False
-
-
-def test_read_inflight_loop_observer_settings_uses_safe_defaults_for_invalid_values():
-    settings = read_inflight_loop_observer_settings(env_get_fn=lambda _name, _default=None: "bad")
-
-    assert settings.heartbeat_sec == 0.0
-    assert settings.throughput_sec == 0.0
-    assert settings.profile_max_songs == 0
-
-    negative = read_inflight_loop_observer_settings(
-        env_get_fn=lambda name, default=None: "-1" if name == "INFLIGHT_PROFILE_MAX_SONGS" else default,
-    )
-    assert negative.profile_max_songs == 0
 
 
 def test_continuous_fg_prep_start_budget_fills_the_prep_worker_runway():
@@ -284,13 +228,7 @@ def test_continuous_fg_prep_start_budget_clamps_to_pending():
     )
 
 
-def test_read_inflight_event_wait_settings_are_hardwired(monkeypatch):
-    # The in-flight event-wait timings are now hardwired constants (no env
-    # override); setting the former env vars must have NO effect.
-    monkeypatch.setenv("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC", "9.0")
-    monkeypatch.setenv("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC", "-1")
-    monkeypatch.setenv("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS", "100")
-
+def test_read_inflight_event_wait_settings_are_hardwired():
     assert abs(read_inflight_event_wait_timeout_s() - 0.05) < 1e-9
     assert abs(read_inflight_event_wait_gpu_cap_s() - 0.01) < 1e-9
     assert abs(read_inflight_event_wait_short_spin_s() - 0.003) < 1e-9
@@ -341,65 +279,3 @@ def test_wait_for_completion_event_long_timeout_uses_direct_wait():
     assert event.waits == [0.02]
 
 
-def test_closed_loop_bubble_kpi_increases_with_ready_work_and_fg_wait():
-    quiet = closed_loop_bubble_kpi(
-        idle_sec=0.5,
-        ready_ga_count=1,
-        ready_fg_count=0,
-        backlog_count=2,
-        oldest_fg_wait_s=0.0,
-    )
-    pressured = closed_loop_bubble_kpi(
-        idle_sec=0.5,
-        ready_ga_count=2,
-        ready_fg_count=1,
-        backlog_count=6,
-        oldest_fg_wait_s=2.0,
-    )
-
-    assert quiet > 0.0
-    assert pressured > quiet
-
-
-def test_bubble_snapshot_reports_zero_idle_while_gpu_work_is_inflight():
-    snapshot = BubbleTracker().snapshot_from_pipeline_counts(
-        now_mono=12.5,
-        prepared_count=3,
-        ready_fg_count=1,
-        active_song_lanes=2,
-        pending_tasks_count=10,
-        prep_inflight_count=0,
-        decode_inflight_count=0,
-        pending_fg_count=2,
-        fg_prep_inflight_count=0,
-        ga_inflight_count=1,
-        fg_futures_count=1,
-        last_progress=10.0,
-        oldest_fg_wait_s=2.0,
-    )
-
-    assert snapshot["gpu_idle"] == 0
-    assert snapshot["idle_sec"] == 0.0
-    assert snapshot["bubble_kpi"] == 0.0
-
-
-def test_bubble_snapshot_reports_idle_during_host_only_fg_materialization():
-    snapshot = BubbleTracker().snapshot_from_pipeline_counts(
-        now_mono=12.5,
-        prepared_count=3,
-        ready_fg_count=1,
-        active_song_lanes=2,
-        pending_tasks_count=10,
-        prep_inflight_count=0,
-        decode_inflight_count=0,
-        pending_fg_count=2,
-        fg_prep_inflight_count=0,
-        ga_inflight_count=0,
-        fg_futures_count=2,
-        last_progress=10.0,
-        oldest_fg_wait_s=2.0,
-    )
-
-    assert snapshot["gpu_idle"] == 1
-    assert snapshot["idle_sec"] == 2.5
-    assert snapshot["bubble_kpi"] > 0.0

@@ -17,7 +17,6 @@ import numpy as np
 from numpy.lib import format as np_format
 
 from gear_optimizer.core.constants import TOTAL_ROWS
-from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.frontier_cache_scope import frontier_cache_is_ephemeral
 
 from .response_cache_keys import (
@@ -1416,7 +1415,6 @@ def load_first_surface_scoring_rows(
     surface_generation: str | None | object = _UNSPECIFIED_SURFACE_GENERATION,
     bundle_path: str | Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    started = time.perf_counter()
     normalized = _normalize_surface_ranges(ranges)
     if surface_generation is _UNSPECIFIED_SURFACE_GENERATION:
         surface_row_count, surface_pattern_count, resolved_generation, resolved_bundle_path = (
@@ -1436,7 +1434,6 @@ def load_first_surface_scoring_rows(
         surface_row_count, surface_pattern_count = _surface_counts_from_sidecars(row_sidecar, pattern_sidecar)
     row_count = sum(int(count) for _start, count in normalized)
     row_refs = np.empty((int(row_count), SURFACE_ROW_COLUMNS), dtype=np.uint32)
-    load_t0 = time.perf_counter()
     row_memmap = _open_surface_sidecar_memmap(
         row_sidecar, columns=SURFACE_ROW_COLUMNS, dtype=np.dtype(np.uint32), row_count=surface_row_count
     )
@@ -1446,25 +1443,10 @@ def load_first_surface_scoring_rows(
         dtype=np.dtype(np.uint32),
         row_count=surface_pattern_count,
     )
-    load_ms = float((time.perf_counter() - load_t0) * 1000.0)
-    copy_t0 = time.perf_counter()
     # Slice-copy out of the read-only memmaps into freshly-owned contiguous arrays so the returned
     # arrays never alias a memmap (which could be evicted/closed across songs).
     _gather_surface_ranges(row_memmap, ranges=normalized, out=row_refs)
     rows, coeffs = expand_surface_rows(row_refs, pattern_memmap)
-    copy_ms = float((time.perf_counter() - copy_t0) * 1000.0)
-    emit_profile_event(
-        component="fg_response_cache",
-        event="surface_chunk_load",
-        metrics={
-            "ranges": int(len(normalized)),
-            "chunks": 0,
-            "rows": int(row_count),
-            "load_ms": float(load_ms),
-            "copy_ms": float(copy_ms),
-            "elapsed_ms": float((time.perf_counter() - started) * 1000.0),
-        },
-    )
     return rows, coeffs
 
 
@@ -1481,7 +1463,6 @@ def load_first_surface_scoring_patterns(
     are remapped densely for this gather, but surface-row order is untouched; therefore exact-score
     ties retain the producer's original first-row priority.
     """
-    started = time.perf_counter()
     normalized = _normalize_surface_ranges(ranges)
     if surface_generation is _UNSPECIFIED_SURFACE_GENERATION:
         surface_row_count, surface_pattern_count, resolved_generation, resolved_bundle_path = (
@@ -1502,7 +1483,6 @@ def load_first_surface_scoring_patterns(
     row_count = sum(int(count) for _start, count in normalized)
     surface_pattern_ids = np.empty((int(row_count),), dtype=np.int32)
     surface_counts = np.empty((int(row_count), 3), dtype=np.int32)
-    load_t0 = time.perf_counter()
     row_memmap = _open_surface_sidecar_memmap(
         row_sidecar,
         columns=SURFACE_ROW_COLUMNS,
@@ -1515,8 +1495,6 @@ def load_first_surface_scoring_patterns(
         dtype=np.dtype(np.uint32),
         row_count=surface_pattern_count,
     )
-    load_ms = float((time.perf_counter() - load_t0) * 1000.0)
-    copy_t0 = time.perf_counter()
     # Split each row-ref block straight into the int32 id/count outputs (no N x 4 staging copy).
     out_cursor = 0
     for start, count in normalized:
@@ -1532,19 +1510,6 @@ def load_first_surface_scoring_patterns(
     unique_ids = _dense_rank_pattern_ids_inplace(surface_pattern_ids, int(surface_pattern_count))
     selected_patterns = np.ascontiguousarray(pattern_memmap[unique_ids], dtype=np.uint32)
     pattern_words, pattern_coeffs = unpack_surface_patterns(selected_patterns)
-    copy_ms = float((time.perf_counter() - copy_t0) * 1000.0)
-    emit_profile_event(
-        component="fg_response_cache",
-        event="surface_pattern_load",
-        metrics={
-            "ranges": int(len(normalized)),
-            "rows": int(row_count),
-            "patterns": int(pattern_words.shape[0]),
-            "load_ms": float(load_ms),
-            "copy_ms": float(copy_ms),
-            "elapsed_ms": float((time.perf_counter() - started) * 1000.0),
-        },
-    )
     return surface_pattern_ids, surface_counts, pattern_words, pattern_coeffs
 
 

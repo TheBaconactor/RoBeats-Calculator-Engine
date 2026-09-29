@@ -18,14 +18,11 @@ import threading
 import queue
 import logging
 import os
-import atexit
 import traceback
 import time
 from collections import deque
 from time import perf_counter
 from typing import Optional, Dict
-from gear_optimizer.core.env_config import ENV
-from gear_optimizer.core.parsing import env_flag
 from gear_optimizer.solver.gpu_executor_batching import (
     COALESCABLE_REQUEST_TYPES,
     is_ga_recovery_request as _is_ga_recovery_request,
@@ -50,7 +47,6 @@ from gear_optimizer.solver.gpu_executor_batching import (
 from gear_optimizer.solver.gpu_executor_lifecycle import (
     ExecutorAbortState,
     ExecutorHeartbeatWriter,
-    LiveReporter,
     pop_staged_request as _pop_staged_request,
     prefetch_ga_recovery_requests as _prefetch_ga_recovery_requests,
     stage_request as _stage_request,
@@ -58,17 +54,12 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     stamp_request_dequeue as _stamp_request_dequeue,
     build_taichi_init_failure_report as _build_taichi_init_failure_report,
     default_executor_heartbeat_path as _default_executor_heartbeat_path,
-    executor_auto_stop_enabled as _executor_auto_stop_enabled,
     load_executor_start_settings as _load_executor_start_settings,
-    load_executor_stop_profiler_settings as _load_executor_stop_profiler_settings,
-    print_taichi_kernel_profiler as _print_taichi_kernel_profiler,
     send_shutdown_request as _send_shutdown_request,
-    stop_executor_if_running as _stop_executor_if_running,
 )
 from gear_optimizer.solver.windows_timer import (
     acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms,
     release_windows_timer_period_1ms as _release_windows_timer_period_1ms,
-    system_timer_override_allowed as _system_timer_override_allowed,
 )
 from gear_optimizer.solver.gpu_executor_lifecycle import (
     worker_response_router as _worker_response_router,
@@ -95,7 +86,6 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     poll_inprocess_followup_nowait as _poll_inprocess_followup_nowait,
     safe_qsize as _safe_qsize,
 )
-from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
 
@@ -173,9 +163,8 @@ class GpuExecutor:
         self._requests_processed = 0
         self._response_delivery = ResponseDeliveryTracker()
         self._last_work_end_ts: Optional[float] = None
-        self._live = LiveReporter()
         self._high_res_timer_enabled = False
-        short_wait_settings = _load_short_wait_spin_settings(env_get_fn=env_get)
+        short_wait_settings = _load_short_wait_spin_settings()
         self._short_wait_spin_sec = short_wait_settings.short_wait_spin_sec
         self._short_wait_spin_yield_rounds = short_wait_settings.short_wait_spin_yield_rounds
         self._dispatch = {
@@ -185,23 +174,10 @@ class GpuExecutor:
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
         """Dispatch a single request to the appropriate executor handler."""
         return _execute_request_from_dispatch(request, dispatch=self._dispatch)
-    def _maybe_dump_kernel_profiler_on_owner_thread(self) -> None:
-        """Gated DEBUG instrumentation: write the kernel-profiler snapshot from the owner thread.
-
-        OFF unless TAICHI_KERNEL_PROFILER_PATH is set (and TAICHI_KERNEL_PROFILER=1 enabled
-        profiling at init). Must run on this (owner) thread because the Taichi/Vulkan runtime
-        is thread-owned; cross-thread profiler reads during shutdown segfault.
-        """
-        settings = _load_executor_stop_profiler_settings(env_flag_fn=env_flag, env_config=ENV)
-        dump_path = str(getattr(settings, "kernel_profiler_dump_path", "") or "").strip()
-        if not dump_path:
-            return
-        _print_taichi_kernel_profiler(enabled=False, dump_path=dump_path)
     def _finalize_taichi_on_owner_thread(self) -> None:
         """Finalize Taichi from the owner thread at shutdown (persists the offline cache).
 
-        Must run on this (owner) thread for the same reason as the profiler dump:
-        the Taichi/Vulkan runtime is thread-owned. hard_reset_taichi also clears
+        Must run on this (owner) thread: the Taichi/Vulkan runtime is thread-owned. hard_reset_taichi also clears
         taichi_gem module state, so a later in-process start() re-initializes cleanly.
         """
         if not self._taichi_ready:
@@ -222,11 +198,7 @@ class GpuExecutor:
         self._response_delivery.reset()
         start_settings = _load_executor_start_settings(
             in_process=bool(in_process),
-            env_get_fn=env_get,
-            env_flag_fn=env_flag,
             os_name=os.name,
-            env_config=ENV,
-            system_timer_override_allowed_fn=_system_timer_override_allowed,
             default_heartbeat_path_fn=_default_executor_heartbeat_path,
         )
         self._last_work_end_ts = None
@@ -239,10 +211,6 @@ class GpuExecutor:
         self._ready_event.clear()
         self.clear_abort()
         self._last_ref_arrays_sig = None
-        self._live.configure(
-            enabled=bool(start_settings.live_enabled),
-            interval_sec=float(start_settings.live_interval_sec),
-        )
         self._in_process_queues = bool(in_process)
         self._high_res_timer_enabled = False
         self._heartbeat = ExecutorHeartbeatWriter(
@@ -275,12 +243,6 @@ class GpuExecutor:
         if self._high_res_timer_enabled:
             _release_windows_timer_period_1ms()
             self._high_res_timer_enabled = False
-        stop_profiler_settings = _load_executor_stop_profiler_settings(env_flag_fn=env_flag, env_config=ENV)
-        # NOTE: the structured FILE dump (kernel_profiler_dump_path) runs on the OWNER thread
-        # at the SHUTDOWN break (_maybe_dump_kernel_profiler_on_owner_thread); doing Taichi
-        # profiler reads here (a different thread) races Vulkan teardown. Only the optional
-        # human stdout table is emitted from stop().
-        _print_taichi_kernel_profiler(enabled=bool(stop_profiler_settings.print_taichi_kernel_profiler))
         logger.debug("[GpuExecutor] Stopped. Processed %s requests.", self._requests_processed)
     def register_worker(self) -> tuple:
         """
@@ -296,8 +258,6 @@ class GpuExecutor:
         )
         self._next_worker_id = int(registered.next_worker_id)
         return registered.as_tuple()
-    def _maybe_live_report(self) -> None:
-        self._live.maybe_report()
     def unregister_worker(self, worker_id: int):
         """Unregister a worker (cleanup)."""
         _unregister_executor_worker(worker_id=worker_id, response_queues=self._response_queues)
@@ -357,15 +317,9 @@ class GpuExecutor:
 
             with ti_runtime.offline_cache_lock(timeout_sec=None):
                 self._write_heartbeat(phase="warmup_fg", force=True)
-                t0 = perf_counter()
                 _warmup_fg_response_frontier_runtime()
-                if ENV.perf_timing:
-                    logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", (perf_counter() - t0) * 1000.0)
                 self._write_heartbeat(phase="warmup_ga", force=True)
-                t0 = perf_counter()
                 ga_ops.warmup_ga_kernels_light()
-                if ENV.perf_timing:
-                    logger.debug("[GpuExecutor] Warmed GA kernels in %.1fms", (perf_counter() - t0) * 1000.0)
         except Exception as e:
             self._taichi_ready = False
             self._last_init_error = f"GPU executor warmup failed: {type(e).__name__}: {e}"
@@ -378,42 +332,25 @@ class GpuExecutor:
         self._write_heartbeat(phase="ready", force=True)
         def _try_put_response(req: GpuRequest, resp: GpuResponse) -> bool:
             return self._response_delivery.try_put(self._response_queues, req, resp)
-        env_refresh_counter = 0
-        cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=env_get)
-        live_enabled = bool(self._live.enabled)
+        batch_settings = _load_loop_batch_settings()
         while self._running:
             batch: list[GpuRequest] = []
             responded_ids: set[int] = set()
             try:
-                if env_refresh_counter == 0:
-                    cached_batch_settings = _load_loop_batch_settings(env_config=ENV, env_get=env_get)
-                env_refresh_counter = (env_refresh_counter + 1) % 64
                 queue_depth_hint = _safe_qsize(self._request_queue)
                 batch_plan = _plan_loop_batch(
-                    cached_batch_settings,
+                    batch_settings,
                     in_process_queues=bool(self._in_process_queues),
                     queue_depth_hint=int(queue_depth_hint),
                 )
                 batch_wait_ms = int(batch_plan.wait_ms)
                 batch_max = int(batch_plan.max_batch)
-                t_wait0 = perf_counter()
                 batch = self._gather_batch(max_wait_ms=batch_wait_ms, max_batch_size=batch_max)
-                dt_wait = perf_counter() - t_wait0
-                if live_enabled:
-                    self._live.record_wait(float(dt_wait))
-                if live_enabled:
-                    self._maybe_live_report()
                 if not batch:
                     self._write_heartbeat(phase="idle")
                     continue
                 if any(r.request_type == GpuRequestType.SHUTDOWN for r in batch):
                     self._write_heartbeat(phase="stopping", batch=batch, force=True)
-                    # Gated DEBUG instrumentation (OFF by default): snapshot the Taichi
-                    # kernel profiler to TAICHI_KERNEL_PROFILER_PATH HERE, on the owner
-                    # thread where the Taichi/Vulkan runtime lives and is still fully alive.
-                    # Doing it from the external stop() (a different thread) races Vulkan
-                    # teardown and segfaults. No-op unless the dump path is set.
-                    self._maybe_dump_kernel_profiler_on_owner_thread()
                     # Finalize the Taichi runtime HERE, on the owner thread, so the
                     # offline kernel cache dumps synchronously while the Vulkan runtime
                     # is fully alive. Leaving finalization to interpreter atexit races
@@ -432,7 +369,6 @@ class GpuExecutor:
                     request_type: GpuRequestType,
                     requests: list[GpuRequest],
                     responses: list[GpuResponse],
-                    dt_exec: float,
                 ) -> None:
                     response_count = int(len(responses))
                     for idx, req in enumerate(requests):
@@ -446,17 +382,12 @@ class GpuExecutor:
                         if _try_put_response(req, resp):
                             responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
-                    if live_enabled:
-                        self._live.record_exec(request_type, exec_sec=float(dt_exec), count=len(requests))
-                        self._maybe_live_report()
                     if request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
                         self._ga_owner_turn_streak = min(1024, int(self._ga_owner_turn_streak) + 1)
                     else:
                         self._ga_owner_turn_streak = 0
                 def _execute_single_request(req: GpuRequest) -> None:
-                    exec_started = perf_counter()
                     response = self._execute_request(req)
-                    dt_exec = perf_counter() - exec_started
                     if response is None:
                         response = GpuResponse(
                             request_id=req.request_id,
@@ -466,9 +397,6 @@ class GpuExecutor:
                     if _try_put_response(req, response):
                         responded_ids.add(int(req.request_id))
                     self._requests_processed += 1
-                    if live_enabled:
-                        self._live.record_exec(req.request_type, exec_sec=float(dt_exec), count=1)
-                        self._maybe_live_report()
                     self._ga_owner_turn_streak = 0
                 def _execute_grouped_requests(
                     request_type: GpuRequestType, requests: list[GpuRequest], handler
@@ -481,13 +409,11 @@ class GpuExecutor:
                         # with the payload. There is no separate FG batch request to
                         # interleave between GA runs anymore.
                         for req in requests:
-                            exec_started = perf_counter()
                             responses = list(handler([req]) or [])
-                            _deliver_group_responses(request_type, [req], responses, perf_counter() - exec_started)
+                            _deliver_group_responses(request_type, [req], responses)
                         return
-                    exec_started = perf_counter()
                     responses = list(handler(requests) or [])
-                    _deliver_group_responses(request_type, requests, responses, perf_counter() - exec_started)
+                    _deliver_group_responses(request_type, requests, responses)
                 execution_units = _plan_execution_units(
                     batch,
                     grouped_request_types=set(grouped_handlers),
@@ -539,8 +465,8 @@ class GpuExecutor:
             staged_requests=self._staged_requests,
             deadline=float(deadline),
             batch_max_size=int(batch_max_size),
-            streak_cap=int(_ga_recovery_streak_cap(env_get=env_get)),
-            lookahead_limit=int(_ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size), env_get=env_get)),
+            streak_cap=int(_ga_recovery_streak_cap()),
+            lookahead_limit=int(_ga_recovery_lookahead_limit(batch_max_size=int(batch_max_size))),
             pop_queue_request=self._pop_queue_request,
             perf_counter_fn=perf_counter,
             is_ga_recovery_request=_is_ga_recovery_request,
@@ -552,7 +478,7 @@ class GpuExecutor:
         self._prefetch_ga_recovery_requests(deadline=deadline, batch_max_size=int(batch_max_size))
         if (
             self._in_process_queues
-            and int(self._ga_owner_turn_streak) >= int(_ga_recovery_streak_cap(env_get=env_get))
+            and int(self._ga_owner_turn_streak) >= int(_ga_recovery_streak_cap())
             and self._staged_requests
             and self._staged_requests[0].request_type == GpuRequestType.GPU_NATIVE_GA_RUN
         ):
@@ -582,8 +508,6 @@ class GpuExecutor:
         inproc_settings = _load_inprocess_coalesce_settings(
             max_wait_ms=int(max_wait_ms),
             in_process_queues=bool(self._in_process_queues),
-            env_get=env_get,
-            env_flag_fn=env_flag,
         )
         inproc_coalesce_enabled = bool(inproc_settings.enabled)
         inproc_yields_left = int(inproc_settings.yields_left)
@@ -663,7 +587,6 @@ class GpuExecutor:
             aborted_response=self._aborted_response,
             execute_single=self._execute_gpu_native_ga_run,
             execute_chunk=self._execute_gpu_native_ga_run_chunk,
-            env_get_fn=env_get,
             estimate_work_units_fn=_request_work_units,
         )
 
@@ -729,9 +652,3 @@ def get_gpu_executor() -> GpuExecutor:
     if _executor is None:
         _executor = GpuExecutor()
     return _executor
-def _auto_stop_gpu_executor_at_exit() -> None:
-    if not _executor_auto_stop_enabled(env_flag_fn=env_flag):
-        return
-    global _executor
-    _stop_executor_if_running(_executor)
-atexit.register(_auto_stop_gpu_executor_at_exit)

@@ -33,7 +33,8 @@ import psutil
 # entitlement and raises AccessDenied).
 _RSS_READ_ERRORS: tuple[type[BaseException], ...] = (OSError, AttributeError, ValueError, psutil.Error)
 
-from .constants import MEMORY_WATCHDOG_INTERVAL_SEC, PATHS
+from .constants import MEMORY_WATCHDOG_INTERVAL_SEC
+from ..settings import ENGINE_ROOT, paths
 
 # Global watchdog state
 MEMORY_WATCHDOG_LIMIT_BYTES = 0
@@ -41,7 +42,7 @@ MEMORY_WATCHDOG_THREAD = None
 MEMORY_WATCHDOG_EVENT = threading.Event()
 MEMORY_WATCHDOG_ANNOUNCED_LIMIT = None
 MEMORY_WATCHDOG_TOTAL_RAM_BYTES = None
-MEMORY_GUARD_RESUME_FILE = PATHS.bin_path("memory_guard_resume.json")
+MEMORY_GUARD_RESUME_FILE = str(paths().bin_path("memory_guard_resume.json"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -701,10 +702,10 @@ def restart_process_for_memory_guard():
             if sys.argv and sys.argv[0] and os.path.exists(sys.argv[0]):
                 cmd = [python] + sys.argv
             else:
-                main_py = os.path.join(PATHS.script_dir, "main.py")
+                main_py = str(ENGINE_ROOT / "main.py")
                 cmd = [python, main_py] + sys.argv[1:]
 
-        subprocess.Popen(cmd, cwd=PATHS.script_dir)
+        subprocess.Popen(cmd, cwd=str(ENGINE_ROOT))
     except Exception as exc:
         fail_msg = f"[MemoryGuard] Failed to relaunch automatically: {exc}"
         print(fail_msg)

@@ -62,7 +62,6 @@ def _install_resume_file(
 def _setup_resume_queue_env(monkeypatch, tmp_path, db_name: str):
     db_path = tmp_path / db_name
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    monkeypatch.setenv("METAFINDER_BIN_DIR", str(tmp_path / "bin"))
     return db_path
 
 
@@ -131,6 +130,7 @@ def test_get_song_names_present_in_db_require_loadouts_ignores_stub_songs_row():
 def test_build_song_queue_limit_preserves_missing_first(monkeypatch, tmp_path):
     hard_dir = tmp_path / "Hard"
     hard_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_DATA_DIR", str(tmp_path))
 
     song_existing = "AAA Existing Song (Hard)"
     song_missing_a = "MMM Missing Song (Hard)"
@@ -156,7 +156,7 @@ def test_build_song_queue_limit_preserves_missing_first(monkeypatch, tmp_path):
     cfg = _make_hard_queue_cfg(ignore_resume=True, song_queue_limit=2)
 
     app = GearOptimizerApp()
-    queue = app._build_song_queue(cfg, {"Hard": str(hard_dir)})
+    queue = app._build_song_queue(cfg)
 
     assert [item[1] for item in queue] == [song_missing_a, song_missing_b]
 
@@ -221,6 +221,7 @@ def test_finalize_song_queue_resume_limit_keeps_prepended_block():
 def test_build_song_queue_resume_prepends_new_path_even_with_loadouts(monkeypatch, tmp_path):
     hard_dir = tmp_path / "Hard"
     hard_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_DATA_DIR", str(tmp_path))
 
     song_resume = "Resume Song (Hard)"
     song_new = "Imported With Loadouts (Hard)"
@@ -259,7 +260,7 @@ def test_build_song_queue_resume_prepends_new_path_even_with_loadouts(monkeypatc
     )
 
     app = GearOptimizerApp()
-    queue = app._build_song_queue(_make_hard_queue_cfg(), {"Hard": str(hard_dir)})
+    queue = app._build_song_queue(_make_hard_queue_cfg())
 
     assert [item[1] for item in queue] == [song_new, song_resume]
 
@@ -267,6 +268,7 @@ def test_build_song_queue_resume_prepends_new_path_even_with_loadouts(monkeypatc
 def test_build_song_queue_resume_prepends_stub_db_songs_without_loadouts(monkeypatch, tmp_path):
     hard_dir = tmp_path / "Hard"
     hard_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_DATA_DIR", str(tmp_path))
 
     song_resume = "Resume Song (Hard)"
     song_stub = "New Stub Song (Hard)"
@@ -297,7 +299,7 @@ def test_build_song_queue_resume_prepends_stub_db_songs_without_loadouts(monkeyp
     )
 
     app = GearOptimizerApp()
-    queue = app._build_song_queue(_make_hard_queue_cfg(), {"Hard": str(hard_dir)})
+    queue = app._build_song_queue(_make_hard_queue_cfg())
 
     assert [item[1] for item in queue] == [song_stub, song_resume]
 
@@ -305,6 +307,7 @@ def test_build_song_queue_resume_prepends_stub_db_songs_without_loadouts(monkeyp
 def test_build_song_queue_resume_limit_preserves_prepended_paths(monkeypatch, tmp_path):
     hard_dir = tmp_path / "Hard"
     hard_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_DATA_DIR", str(tmp_path))
 
     song_resume_a = "Resume A (Hard)"
     song_resume_b = "Resume B (Hard)"
@@ -335,10 +338,7 @@ def test_build_song_queue_resume_limit_preserves_prepended_paths(monkeypatch, tm
     )
 
     app = GearOptimizerApp()
-    queue = app._build_song_queue(
-        _make_hard_queue_cfg(song_queue_limit=3),
-        {"Hard": str(hard_dir)},
-    )
+    queue = app._build_song_queue(_make_hard_queue_cfg(song_queue_limit=3))
 
     assert [item[1] for item in queue] == [song_new_a, song_new_b, song_resume_a]
     assert queue_path_key(queue[0]) == queue_path_key((str(new_fp_a.resolve()), song_new_a, "Hard"))
@@ -347,6 +347,7 @@ def test_build_song_queue_resume_limit_preserves_prepended_paths(monkeypatch, tm
 def test_build_song_queue_legacy_resume_does_not_prepend_completed_paths(monkeypatch, tmp_path):
     hard_dir = tmp_path / "Hard"
     hard_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_DATA_DIR", str(tmp_path))
 
     song_completed = "Completed Before Restart (Hard)"
     song_resume = "Still Pending (Hard)"
@@ -367,7 +368,7 @@ def test_build_song_queue_legacy_resume_does_not_prepend_completed_paths(monkeyp
     )
 
     app = GearOptimizerApp()
-    queue = app._build_song_queue(_make_hard_queue_cfg(), {"Hard": str(hard_dir)})
+    queue = app._build_song_queue(_make_hard_queue_cfg())
 
     assert [item[1] for item in queue] == [song_resume]
 
@@ -375,6 +376,7 @@ def test_build_song_queue_legacy_resume_does_not_prepend_completed_paths(monkeyp
 def test_build_song_queue_completed_journal_crash_window_does_not_requeue_known_paths(monkeypatch, tmp_path):
     hard_dir = tmp_path / "Hard"
     hard_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_DATA_DIR", str(tmp_path))
     completed_name = "Completed Before State Removal (Hard)"
     completed_path = hard_dir / "completed.txt"
     _write_song_stub(completed_path, completed_name)
@@ -385,7 +387,7 @@ def test_build_song_queue_completed_journal_crash_window_does_not_requeue_known_
         [(str(completed_path), completed_name, "Hard")],
     )
 
-    queue = GearOptimizerApp()._build_song_queue(_make_hard_queue_cfg(), {"Hard": str(hard_dir)})
+    queue = GearOptimizerApp()._build_song_queue(_make_hard_queue_cfg())
 
     assert queue == []
 
@@ -393,6 +395,7 @@ def test_build_song_queue_completed_journal_crash_window_does_not_requeue_known_
 def test_build_song_queue_completed_journal_crash_window_admits_new_path(monkeypatch, tmp_path):
     hard_dir = tmp_path / "Hard"
     hard_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_DATA_DIR", str(tmp_path))
     completed_name = "Completed Before Import (Hard)"
     new_name = "Imported After Snapshot (Hard)"
     completed_path = hard_dir / "completed.txt"
@@ -406,6 +409,6 @@ def test_build_song_queue_completed_journal_crash_window_admits_new_path(monkeyp
     )
     _write_song_stub(new_path, new_name)
 
-    queue = GearOptimizerApp()._build_song_queue(_make_hard_queue_cfg(), {"Hard": str(hard_dir)})
+    queue = GearOptimizerApp()._build_song_queue(_make_hard_queue_cfg())
 
     assert [item[1] for item in queue] == [new_name]

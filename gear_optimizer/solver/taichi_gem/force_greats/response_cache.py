@@ -8,7 +8,6 @@ from typing import Any, Iterable
 import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
-from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
@@ -347,8 +346,6 @@ def _build_response_frontier_cache_payload(
         # input -- chart arrays, prefix activation-hit tables, end-index tables for ALL unique
         # fever times, global geometry canonicalization, and right-sized stamp workspaces -- is
         # built exactly once per song.
-        batch_stats: dict[str, Any] = {}
-        build_t0 = time.perf_counter()
         built_frontiers = build_force_greats_response_first_frontiers_gpu_batch(
             timestamps=song_inputs.timestamps,
             perfect_candidate_timestamps=song_inputs.perfect_candidates,
@@ -358,29 +355,13 @@ def _build_response_frontier_cache_payload(
             lanes=song_inputs.lanes,
             geometries=tuple(item[1] for item in missing_items),
             use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
-            stats_sink=batch_stats,
         )
-        batch_entry_invocations = 1
         if len(built_frontiers) != len(missing_items):
             raise ValueError("FG response frontier GPU batch returned the wrong number of frontiers")
         for (geometry_key, _geometry), frontier in zip(missing_items, built_frontiers, strict=True):
             if not _frontier_is_complete(frontier):
                 raise ValueError("FG response frontier cache requires first-frontier surfaces")
             frontier_by_geometry[geometry_key] = frontier
-        frontier_build_ms = float((time.perf_counter() - build_t0) * 1000.0)
-        emit_profile_event(
-            component="fg_response_cache",
-            event="frontier_build",
-            metrics={
-                "requested_stat_keys": int(len(keys)),
-                "missing_geometries": int(len(missing_items)),
-                "batch_entry_invocations": int(batch_entry_invocations),
-                "frontier_build_ms": frontier_build_ms,
-                "total_notes": int(song_inputs.total_notes),
-                "long_notes": int(song_inputs.long_notes),
-                **{str(key): value for key, value in batch_stats.items()},
-            },
-        )
     for ft_stat, ff_stat in keys:
         raw_fill = float(raw_fill_by_ff[ff_stat])
         non_fever_base = int(non_fever_base_by_ff[ff_stat])
@@ -626,12 +607,8 @@ def build_or_load_response_frontier_payload(
     # partial canonical miss must be extended. Both mutations use disk as the authoritative base
     # while one cross-process owner holds the complete read-merge-publish transaction.
     if payload is None or request_payload is not None:
-        slot_wait_t0 = time.perf_counter()
         with _response_bundle_build_slots:
-            bundle_slot_wait_ms = float((time.perf_counter() - slot_wait_t0) * 1000.0)
-            lock_wait_t0 = time.perf_counter()
             with _response_bundle_build_lock(bundle_key):
-                bundle_lock_wait_ms = float((time.perf_counter() - lock_wait_t0) * 1000.0)
                 # Never merge against the process-local payload cache here: another process may
                 # have published a newer generation while this process was waiting for the lock.
                 bundle = _load_payload(bundle_key)
@@ -648,46 +625,25 @@ def build_or_load_response_frontier_payload(
                         bundle = _merge_payloads(bundle, migration)
                         bundle_changed = True
                 payload = _payload_subset(bundle, keys)
-                missing_keys: tuple[tuple[int, int], ...] = ()
-                build_ms = 0.0
                 if payload is None:
                     missing_keys = _payload_missing_or_incomplete_keys(bundle, keys)
-                    build_t0 = time.perf_counter()
                     update, source = _build_response_frontier_cache_payload(
                         calc_song,
                         ref_arrays,
                         stat_keys=missing_keys,
                     )
-                    build_ms = float((time.perf_counter() - build_t0) * 1000.0)
                     bundle = _merge_payloads(bundle, update)
                     bundle_changed = True
                 else:
                     source = "disk"
 
-                save_ms = 0.0
                 if bundle_changed:
-                    save_t0 = time.perf_counter()
                     _save_payload(bundle_key, bundle)
-                    save_ms = float((time.perf_counter() - save_t0) * 1000.0)
                     _invalidate_bundle_array_views(bundle_key)
                 _payload_memory_put(bundle_key, bundle)
                 payload = _payload_subset(bundle, keys)
                 if payload is None:
                     raise ValueError("FG response frontier bundle did not contain requested keys after build")
-                if missing_keys:
-                    emit_profile_event(
-                        component="fg_response_cache",
-                        event="payload_materialize",
-                        metrics={
-                            "requested_stat_keys": int(len(keys)),
-                            "missing_stat_keys": int(len(missing_keys)),
-                            "payload_build_ms": build_ms,
-                            "bundle_save_ms": save_ms,
-                            "bundle_slot_wait_ms": bundle_slot_wait_ms,
-                            "bundle_lock_wait_ms": bundle_lock_wait_ms,
-                            "bundle_stat_keys": int(len(bundle.frontier_by_key)),
-                        },
-                    )
     _payload_memory_put(cache_key, payload)
     return FgResponseFrontierPrewarmResult(
         payload=payload,

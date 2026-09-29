@@ -19,14 +19,13 @@ import pytest
 
 def test_post_processor_child_logs_failure_payload_to_file(tmp_path, monkeypatch):
     # Redirect the durable log target into the test's tmp dir. The spawned child
-    # re-reads this env var when it imports `constants` and resolves BIN_DIR, so the
-    # child writes `bin/error.log` under `tmp_path` instead of the repo tree.
+    # inherits this env var (gear_optimizer.settings reads it), so the child writes
+    # `bin/error.log` under `tmp_path` instead of the repo tree.
     bin_dir = tmp_path / "bin"
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_BIN_DIR", str(bin_dir))
     # Quiet mode is the production default and the case that concealed the incident
     # (stderr suppressed); keep output disabled so we exercise the file handler only.
     monkeypatch.delenv("METAFINDER_OUTPUT", raising=False)
-    monkeypatch.delenv("METAFINDER_VERBOSE", raising=False)
 
     # A spawn context matches the Windows production path (fresh child, unconfigured
     # root logger) rather than inheriting the parent's handlers via fork.

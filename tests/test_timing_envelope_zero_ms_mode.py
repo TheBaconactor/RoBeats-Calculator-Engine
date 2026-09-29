@@ -228,12 +228,10 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_
 
     uploads: list[tuple[int, int]] = []
     monkeypatch.setattr(timeline, "ensure_ready", lambda *_args, **_kwargs: b"")
-    monkeypatch.setattr(timeline, "_maybe_sync", lambda **_kwargs: None)
-    monkeypatch.setattr(timeline, "_emit_timeline_phase", lambda **_kwargs: None)
     monkeypatch.setattr(
         timeline,
         "_upload_timeline_frontier_payload_slot",
-        lambda _payload, song_slot, *, source_slot_i: uploads.append((song_slot, source_slot_i)) or 0,
+        lambda _payload, song_slot, *, source_slot_i: uploads.append((song_slot, source_slot_i)),
     )
 
     timeline.precompute_timeline_gpu(cs, ref, song_slot=0, prebuilt_frontier=loaded)

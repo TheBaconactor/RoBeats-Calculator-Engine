@@ -3,12 +3,10 @@ from __future__ import annotations
 import queue
 import logging
 import traceback
-import time
 import sys
 from typing import Any, cast
 
-from gear_optimizer.core.env_config import ENV
-from gear_optimizer.core.parsing import env_flag
+from gear_optimizer import settings
 from gear_optimizer.core.output import suppress_stdout, suppress_stderr
 from gear_optimizer.data.database import init_db
 from gear_optimizer.app_async_db import AsyncDbSaver
@@ -27,7 +25,6 @@ from gear_optimizer.pipeline.post_processor_fg_updates import (
 from gear_optimizer.persistence.entries import filter_valid_persistence_entries
 from gear_optimizer.solver.frontier_cache_errors import MissingFrontierCacheError
 
-from gear_optimizer.core.parsing import env_get
 logger = logging.getLogger(__name__)
 
 def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
@@ -46,8 +43,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         cast(Any, sys.stdout).reconfigure(line_buffering=True)
     if hasattr(sys.stderr, "reconfigure"):
         cast(Any, sys.stderr).reconfigure(line_buffering=True)
-    output_enabled = bool(getattr(ENV, "output_enabled", False))
-    if not output_enabled:
+    if not settings.output_enabled():
         suppress_stdout(True)
         suppress_stderr(True)
 
@@ -69,18 +65,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     completed = 0
     failed = 0
     total = int(total_tasks or 0)
-    timing = env_flag("POST_TIMING")
     sync_output = True  # FG-coalesced print ordering is an output-coherence invariant (always on)
-    timing_threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", "50"))
-
-    def _log_timing(label: str, dt_sec: float, *, song: str | None = None) -> None:
-        if not timing:
-            return
-        ms = float(dt_sec) * 1000.0
-        if ms < timing_threshold_ms:
-            return
-        prefix = f"[POST][TIMING] {song} " if song else "[POST][TIMING] "
-        print(f"{prefix}{label}={ms:.1f}ms")
 
     # In the native in-flight pipeline, the GA result is posted immediately while ForceGreats (FG)
     # runs later in the main process; printing the final block immediately can make subsequent FG
@@ -107,7 +92,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         if best_fg > db_best_fg_floor:
             db_best_fg_floor = best_fg
 
-        _t_print0 = time.perf_counter()
         print_results(
             payload.get("song", song),
             payload.get("best_data") or {},
@@ -124,7 +108,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             db_best_fg_score=db_best_fg_floor,
             prev_record=payload.get("prev_record"),
         )
-        _log_timing("print_results", time.perf_counter() - _t_print0, song=song)
 
         if saw_fg_update and saved > 0:
             logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song, best_fg)
@@ -168,14 +151,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 )
                 valid_entries = filter_valid_persistence_entries(persisted, require_base_score=True)
                 if valid_entries:
-                    if timing:
-                        logger.debug(
-                            "[POST][FG] Saving %s FG variant(s) for %s...",
-                            len(valid_entries),
-                            song_name,
-                        )
-                    _t_db0 = time.perf_counter()
-
                     # Offload SQLite work + counter updates so the post-process loop
                     # keeps draining `result_queue` (prevents GPU starvation via backpressure).
                     async_db.submit(
@@ -187,7 +162,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             "cfg_dict": item.get("cfg_dict") or {},
                         },
                     )
-                    _log_timing("fg_save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
                 else:
                     if persisted:
                         logger.debug("[DB] Skipped FG update for %s: no valid entries", song_name)
@@ -241,24 +215,17 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         completed += 1
 
         try:
-            _t_item0 = time.perf_counter()
             res = item
             if isinstance(item, dict) and item.get("_deferred_post"):
-                _t_build0 = time.perf_counter()
                 post_context = build_post_persist_context(item)
-                _log_timing("deferred_payload_unpack", time.perf_counter() - _t_build0, song=item.get("song"))
 
-                _t_dbpayload0 = time.perf_counter()
                 db_payload = build_post_persist_db_payload(post_context)
-                _log_timing("build_db_payload", time.perf_counter() - _t_dbpayload0, song=item.get("song"))
 
-                _t_persist0 = time.perf_counter()
                 persist_entries = build_post_persist_entries(
                     item,
                     db_payload=db_payload,
                     context=post_context,
                 )
-                _log_timing("build_persistence_entries", time.perf_counter() - _t_persist0, song=item.get("song"))
 
                 # Print results (including optional FG debug) in post process so GPU can move on.
                 def _emit(_msg: str) -> None:
@@ -275,7 +242,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     if pending_fg_summary.get(song_name_for_print, {}).get("saw_fg_update"):
                         _print_pending_final(song_name_for_print)
                 else:
-                    _t_print0 = time.perf_counter()
                     try:
                         print_results(
                             item.get("song", "Unknown"),
@@ -296,7 +262,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     except Exception:
                         # Display only: a formatting failure must not skip persisting the result below.
                         logger.warning("[POST] Could not print results for %s", item.get("song"), exc_info=True)
-                    _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
 
                 res = build_post_persist_result_payload(
                     item,
@@ -313,7 +278,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 if persisted:
                     valid_entries = filter_valid_persistence_entries(persisted, require_base_score=True)
                     if valid_entries:
-                        _t_db0 = time.perf_counter()
                         # Offload SQLite work + counter updates so this post-process loop
                         # keeps draining `result_queue` (prevents GPU starvation via backpressure).
                         async_db.submit(
@@ -325,7 +289,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                                 "cfg_dict": item.get("cfg_dict") or {},
                             },
                         )
-                        _log_timing("save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
                     else:
                         print(f"[DB] Skipped save for {song_name}: no valid entries")
                         # Still count this as a processed run for per-song attempt counters.
@@ -339,7 +302,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             },
                         )
 
-            _log_timing("post_item_total", time.perf_counter() - _t_item0, song=song_name)
 
         except Exception as exc:
             failed += 1

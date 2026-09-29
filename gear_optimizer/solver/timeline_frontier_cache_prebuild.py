@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from gear_optimizer.core.constants import DIFFICULTIES, PATHS
-from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.settings import DIFFICULTIES, paths
 from gear_optimizer.core.recycling_process_pool import BoundedRecyclingProcessPool
 from gear_optimizer.solver.frontier_cache_manifest import (
     _ref_axes_signature,
@@ -72,13 +71,13 @@ def iter_timeline_frontier_cache_song_paths(
     data_root: str | os.PathLike[str] | None = None,
     difficulties: Iterable[str] = DIFFICULTIES,
 ) -> list[str]:
-    root = Path(data_root or PATHS.data_dir)
-    paths: list[Path] = []
+    root = Path(data_root) if data_root else paths().data_dir
+    charts: list[Path] = []
     for difficulty in difficulties:
         folder = root / str(difficulty)
         if folder.exists():
-            paths.extend(path for path in folder.rglob("*.txt") if path.is_file())
-    return [str(path) for path in sorted(paths, key=lambda item: str(item).lower())]
+            charts.extend(path for path in folder.rglob("*.txt") if path.is_file())
+    return [str(path) for path in sorted(charts, key=lambda item: str(item).lower())]
 
 
 def ordered_frontier_cache_song_paths(
@@ -419,20 +418,6 @@ def _run_timeline_frontier_cache_prebuild_for_mode(
             disk=int(manifest_hits + run_summary.disk),
             memory=int(run_summary.memory),
             elapsed_ms=elapsed_ms,
-        )
-        emit_profile_event(
-            component="timeline_cache",
-            event="prebuild_with_manifest",
-            metrics={
-                "manifest_hits": int(manifest_hits),
-                "completed": int(combined.completed),
-                "total": int(combined.total),
-                "failures": int(combined.failures),
-                "built": int(combined.built),
-                "disk": int(combined.disk),
-                "memory": int(combined.memory),
-                "elapsed_ms": elapsed_ms,
-            },
         )
         return combined
 

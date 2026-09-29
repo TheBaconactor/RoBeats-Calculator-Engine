@@ -26,7 +26,6 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
         assert ref_arrays["Fever Time"] == [1.0]
         return {
             "song_key": ("warmup",),
-            "song_profile_key": "warmup",
             "total_notes": 1,
             "long_notes": 0,
             "last_note_time": 0.0,
@@ -97,8 +96,7 @@ def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypat
         lambda _cs, _ra, ref_sig=None: {"song_key": ("warmup",), "total_notes": 1, "long_notes": 0},
     )
     monkeypatch.setattr(timeline, "load_timeline_frontier_payload", _load_must_not_run)
-    monkeypatch.setattr(timeline, "_upload_timeline_frontier_payload_slot", lambda *_a, **_k: 0)
-    monkeypatch.setattr(timeline, "_emit_timeline_phase", lambda **_k: None)
+    monkeypatch.setattr(timeline, "_upload_timeline_frontier_payload_slot", lambda *_a, **_k: None)
     # Make sure the per-slot short-circuit does not skip the upload path.
     timeline._gpu_timeline_song_id_by_slot = [None] * len(timeline._gpu_timeline_song_id_by_slot)
 

@@ -20,11 +20,10 @@ class _DummyExecutor:
 
 
 def test_gpu_service_times_out_stuck_request(monkeypatch):
-    monkeypatch.setenv("GPU_SERVICE_REQUEST_TIMEOUT_SEC", "0.1")
-    monkeypatch.setenv("GPU_SERVICE_TIMEOUT_FATAL", "0")
-
     executor = _DummyExecutor()
     client = GpuServiceClient(executor=executor)
+    monkeypatch.setattr(client, "_request_timeout_sec_for", lambda _request_type: 0.1)
+    monkeypatch.setattr(client, "_trigger_timeout_abort", lambda _message: None)
     client.start(start_executor=False, in_process_queues=True)
 
     try:
@@ -38,13 +37,13 @@ def test_gpu_service_times_out_stuck_request(monkeypatch):
         client.close(timeout=0.5)
 
 
-def test_gpu_service_enables_default_timeouts_for_service_mode_on_windows(monkeypatch):
-    monkeypatch.delenv("GPU_SERVICE_REQUEST_TIMEOUT_SEC", raising=False)
-    monkeypatch.delenv("GPU_SERVICE_TIMEOUT_FATAL", raising=False)
+def test_gpu_service_request_timeouts_follow_service_mode(monkeypatch):
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
-
     client = GpuServiceClient(executor=_DummyExecutor())
-
-    assert client._request_timeout_default_enabled is True
-    assert client._timeout_fatal is True
+    assert client._request_timeouts_enabled is True
     assert client._request_timeout_sec_for(GpuRequestType.GPU_NATIVE_GA_RUN) == pytest.approx(240.0)
+
+    monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE")
+    standalone = GpuServiceClient(executor=_DummyExecutor())
+    assert standalone._request_timeouts_enabled is False
+    assert standalone._request_timeout_sec_for(GpuRequestType.GPU_NATIVE_GA_RUN) == 0.0

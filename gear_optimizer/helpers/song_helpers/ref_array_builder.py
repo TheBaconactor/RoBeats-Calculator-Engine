@@ -76,15 +76,10 @@ def get_exact_replay_ref_arrays_cached() -> dict[str, np.ndarray] | None:
         if _is_exact_replay_ref_arrays(cached):
             return cached
 
-        from gear_optimizer.core.config import load_paths_cache
-        from gear_optimizer.core.constants import PATHS
         from gear_optimizer.data.csv_parser import read_table
+        from gear_optimizer.settings import paths
 
-        paths = load_paths_cache() or {}
-        stats_path = str((paths.get("Stats") or PATHS.stats_csv) or "").strip()
-        if not stats_path:
-            return None
-        stats_table = read_table(stats_path)
+        stats_table = read_table(str(paths().stats_txt))
         built = build_ref_arrays_from_stats(stats_table, dtype=np.float64)
         if built:
             _EXACT_REPLAY_REF_ARRAYS_CACHE = built

@@ -7,40 +7,14 @@ layer, and documentation checks.
 
 | Setting | Current contract |
 |---|---|
-| Config path | `METAFINDER_CONFIG_PATH`, otherwise `config.ini` |
-| Results database | `EVOLUTION_DB_PATH`, otherwise the resolved default |
-| Graceful stop file | `METAFINDER_STOP_FILE`, otherwise `bin/STOP` |
-| Local path cache | `bin/paths_cache.json` |
+| Config path | `METAFINDER_CONFIG_PATH`, otherwise `<engine>/config.ini` |
+| Results database | `EVOLUTION_DB_PATH`, otherwise `<engine>/evolution.db` |
+| Graceful stop file | `bin/STOP` |
 | Timing frontier cache | `bin/timeline_frontier_cache/` |
 | Force Great frontier cache | `bin/fg_response_frontier_cache/` |
 
-Delete `bin/paths_cache.json` after moving or replacing the `Data/` tree. Do not
-commit generated databases, caches, logs, credentials, or profiler output.
-
-## Debug and profiling
-
-Expensive profiling settings are accepted only when the Debug Profile is
-enabled in configuration or through `DEBUG_PROFILE=1` /
-`METAFINDER_DEBUG_PROFILE=1`.
-
-Useful targeted controls include:
-
-- `GPU_SERVICE_PROFILE=1` for GPU service request timing;
-- `INFLIGHT_STAGE_PROFILE=1` for preparation, decode, and Force Great stage
-  timing;
-- `TAICHI_KERNEL_PROFILER=1` and
-  `TAICHI_KERNEL_PROFILER_PRINT=1` for Taichi kernel timing; and
-- `PERF_TIMING=1` for focused runtime timing.
-
-Profilers perturb the workload. Compare like-for-like runs and disable them for
-throughput measurements.
-
-Current profiling ownership:
-
-- GPU service: `gear_optimizer/solver/gpu_service.py`
-- In-flight stage profiler:
-  `gear_optimizer/solver/native_inflight_pipeline.py`
-- Taichi runtime and kernels: `gear_optimizer/solver/taichi_gem/`
+`gear_optimizer/settings.py` documents every environment variable the engine reads.
+Do not commit generated databases, caches, logs, or credentials.
 
 ## Performance investigations
 
@@ -49,7 +23,6 @@ Start with an explicit hypothesis and a correctness-preserving baseline.
 Maintained harnesses include:
 
 ```bash
-python tools/bench/bench_fg_bundle_real_song.py --help
 python -m tools list
 ```
 

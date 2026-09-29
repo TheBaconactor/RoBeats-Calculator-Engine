@@ -4,7 +4,6 @@ Leaderboard reads: top base + FG loadouts for a song, used to seed the GA.
 import os
 import json
 import sqlite3
-import warnings
 from typing import Any, Dict, List, Optional
 from ...core.constants import LOADOUTS_PER_SONG_LIMIT
 from ...core.team_buff import normalize_team_buff, team_buff_query_values
@@ -17,12 +16,8 @@ from ..database_codecs import (
 )
 from ..piece_encoding_store import _load_piece_name_encoding_maps
 from ..loadout_equivalence import (
-    effective_loadout_hash_from_names,
-    effective_mini_signature_for_name,
-    extract_song_colors,
     representative_mini_names,
 )
-from gear_optimizer.core.parsing import env_get
 from .connection import get_evolution_db_path, get_db_connection_cached
 from .loadout_io import _expand_gear_from_db, _expand_minis_from_db
 
@@ -51,21 +46,12 @@ def get_best_loadouts(
     Returns:
         list: List of loadout dictionaries
     """
-    # Resolve monkeypatchable names through the package facade at call time so
-    # tests that patch `gear_optimizer.data.database.<name>` are honored.
-    from gear_optimizer.data import database as _db
     resolved_db_path = str(db_path or get_evolution_db_path() or "").strip()
     if not resolved_db_path or not os.path.exists(resolved_db_path):
         return []
     song_name = str(song_name or "").strip()
     team_buff = normalize_team_buff(team_buff, default="T5")
     query_team_buffs = team_buff_query_values(team_buff, default=team_buff)
-    strict_seed_hash = str(env_get("DB_STRICT_SEED_HASH", "0") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
     conn = get_db_connection_cached(resolved_db_path)
     try:
         results: list[dict[str, Any]] = []
@@ -94,24 +80,6 @@ def get_best_loadouts(
             details = _json_loads(row["details_json"]) if row["details_json"] else {}
             details = _unpack_stats_after_load(details)
             details = _strip_computed_details_fields(details)
-            if strict_seed_hash:
-                p_color, s_color, sel_color = extract_song_colors(details)
-                if p_color or s_color:
-                    lookup = minis_by_name or _db.get_minis_by_name_cached()
-                    mini_sigs = [
-                        effective_mini_signature_for_name(n, lookup, p_color, s_color, sel_color)
-                        for n in mini_names
-                    ]
-                    expected = effective_loadout_hash_from_names(gear_names, mini_sigs)
-                else:
-                    expected = _db._loadout_hash_from_names(gear_names, mini_names)
-                if expected and str(expected) != str(loadout_hash):
-                    warnings.warn(
-                        f"[DB] Loadout hash mismatch (seed): song={song_name!r} team_buff={team_buff!r} "
-                        f"stored={loadout_hash} expected={expected}",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
             force_block = _json_loads(row["force_details_json"]) if row["force_details_json"] else None
             force_obj = force_block if isinstance(force_block, dict) else None
             if isinstance(force_obj, dict):

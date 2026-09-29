@@ -43,14 +43,13 @@ def assert_fixed_stats_include_baseline_team_buff(
             )
 
 
-def setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name):
+def setup_song_config(cfg, calc_song, gears_by_name, minis_by_name):
     """
     Setup configuration, auto-buff, load current stats.
 
     Args:
         cfg: Configuration object
         calc_song: Song calculation data
-        paths: Path configuration
         gears_by_name: Dictionary of gears by name
         minis_by_name: Dictionary of minis by name
 
@@ -72,8 +71,8 @@ def setup_song_config(cfg, calc_song, paths, gears_by_name, minis_by_name):
     )
 
     # Load Current Config for Seeding / Fallback
-    current_gear_stats, current_gear_list = get_config_gear_stats(cfg, paths, gears_by_name)
-    current_mini_stats, current_mini_list = get_config_mini_stats(cfg, paths, minis_by_name)
+    current_gear_stats, current_gear_list = get_config_gear_stats(cfg, gears_by_name)
+    current_mini_stats, current_mini_list = get_config_mini_stats(cfg, minis_by_name)
 
     return (
         ga_settings,

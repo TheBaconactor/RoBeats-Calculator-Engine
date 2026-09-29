@@ -9,8 +9,6 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from gear_optimizer.core.parsing import env_get
-
 from gear_optimizer.data.database import (
     _load_piece_name_encoding_maps,
     _unpack_id_list,
@@ -21,7 +19,7 @@ from gear_optimizer.data.migrations import _table_exists
 from gear_optimizer.core.utils import safe_int as _safe_int
 
 DEFAULT_SONG_NAME = "Ice Angel (Easy) by Yooh"
-DEFAULT_REFERENCE_TIER = str(env_get("DB_CONSISTENCY_REFERENCE_TIER", "T5") or "T5").strip().upper() or "T5"
+DEFAULT_REFERENCE_TIER = str(os.environ.get("DB_CONSISTENCY_REFERENCE_TIER", "T5") or "T5").strip().upper() or "T5"
 
 
 @dataclass

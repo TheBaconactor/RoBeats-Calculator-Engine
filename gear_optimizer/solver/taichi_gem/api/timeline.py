@@ -16,12 +16,11 @@ import logging
 import numpy as np
 import taichi as ti
 
-from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
+from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.core.array_signature import array_sig16
-from gear_optimizer.core.env_config import ENV as _ENV
 from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
-from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.utils import timing_envelope_timing_context
+from gear_optimizer.settings import paths
 from gear_optimizer.solver.timeline_exact_frontier import (
     TimelineFrontierGridPayload,
     _head_mask_coefficients_py,
@@ -41,9 +40,8 @@ from ..fields import (
 from .. import fields
 from ..kernel_loader import get_kernels
 
-from .initialization import ensure_ready, _maybe_sync, _SYNC_FOR_TIMING, _FORCE_SYNC
+from .initialization import ensure_ready
 
-from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
 
@@ -75,16 +73,6 @@ def _upload_timeline_grid_slot_i32_kernel(
     dst: ti.template(),
     song_slot: ti.i32,
     src: ti.types.ndarray(dtype=ti.i32, ndim=2),
-):
-    for ft, ff in ti.ndrange(fields.GRID_SIZE, fields.GRID_SIZE):
-        dst[song_slot, ft, ff] = src[ft, ff]
-
-
-@ti.kernel
-def _upload_timeline_grid_slot_i16_kernel(
-    dst: ti.template(),
-    song_slot: ti.i32,
-    src: ti.types.ndarray(dtype=ti.i16, ndim=2),
 ):
     for ft, ff in ti.ndrange(fields.GRID_SIZE, fields.GRID_SIZE):
         dst[song_slot, ft, ff] = src[ft, ff]
@@ -149,7 +137,7 @@ def _upload_timeline_frontier_payload_slot(
     song_slot_i: int,
     *,
     source_slot_i: int = 0,
-) -> int:
+) -> None:
     """
     Upload one cached frontier slot without GPU->CPU round-tripping existing fields.
 
@@ -163,32 +151,18 @@ def _upload_timeline_frontier_payload_slot(
     reset_ga_evaluation_cache()
     source_slot_i = int(source_slot_i)
     song_slot_i = int(song_slot_i)
-    upload_bytes = 0
 
     def upload_i32_grid(dst, arr: np.ndarray) -> None:
-        nonlocal upload_bytes
-        src = _slot_payload(arr, source_slot_i, np.int32)
-        upload_bytes += int(src.nbytes)
-        _upload_timeline_grid_slot_i32_kernel(dst, song_slot_i, src)
-
-    def upload_i16_grid(dst, arr: np.ndarray) -> None:
-        nonlocal upload_bytes
-        src = _slot_payload(arr, source_slot_i, np.int16)
-        upload_bytes += int(src.nbytes)
-        _upload_timeline_grid_slot_i16_kernel(dst, song_slot_i, src)
+        _upload_timeline_grid_slot_i32_kernel(dst, song_slot_i, _slot_payload(arr, source_slot_i, np.int32))
 
     def upload_i8_grid(dst, arr: np.ndarray) -> None:
-        nonlocal upload_bytes
-        src = _slot_payload(arr, source_slot_i, np.int8)
-        upload_bytes += int(src.nbytes)
-        _upload_timeline_grid_slot_i8_kernel(dst, song_slot_i, src)
+        _upload_timeline_grid_slot_i8_kernel(dst, song_slot_i, _slot_payload(arr, source_slot_i, np.int8))
 
     upload_i32_grid(fields.grid_count_body_fever, payload.grid_count_body_fever)
     upload_i32_grid(fields.grid_count_body_normal, payload.grid_count_body_normal)
     upload_i8_grid(fields.grid_head_len, payload.grid_head_len)
 
     masks = _slot_payload(payload.grid_fever_masks_bits, source_slot_i, np.uint32)
-    upload_bytes += int(masks.nbytes)
     _upload_timeline_grid_masks_bits_slot_kernel(song_slot_i, masks)
 
     upload_i32_grid(fields.grid_frontier_count, payload.grid_frontier_count)
@@ -207,17 +181,13 @@ def _upload_timeline_frontier_payload_slot(
         mask_pool = np.ascontiguousarray(
             np.asarray(payload.grid_frontier_masks_bits_pool[source_slot_i, :pool_used, :], dtype=np.uint32)
         )
-        upload_bytes += int(fever_pool.nbytes + normal_pool.nbytes + mask_pool.nbytes)
         coeff_pool = np.ascontiguousarray(
             np.asarray(payload.grid_frontier_head_coeffs_pool[source_slot_i, :pool_used, :], dtype=np.int16)
         )
-        upload_bytes += int(coeff_pool.nbytes)
         _upload_timeline_pool_slot_i32_kernel(fields.grid_frontier_body_fever_pool, song_slot_i, pool_used, fever_pool)
         _upload_timeline_pool_slot_i32_kernel(fields.grid_frontier_body_normal_pool, song_slot_i, pool_used, normal_pool)
         _upload_timeline_pool_masks_bits_slot_kernel(song_slot_i, pool_used, mask_pool)
         _upload_timeline_pool_head_coeffs_slot_kernel(song_slot_i, pool_used, coeff_pool)
-
-    return int(upload_bytes)
 
 
 # ============================================================================
@@ -338,7 +308,6 @@ class TimelineFrontierPrewarmResult:
     disk_path: Path
     cache_source: str
     elapsed_ms: float
-    song_profile_key: str | None
     total_notes: int
     long_notes: int
 
@@ -348,7 +317,6 @@ class TimelineFrontierCacheInfo:
     cache_key: tuple
     disk_path: Path
     cache_source: str
-    song_profile_key: str | None
     total_notes: int
     long_notes: int
 
@@ -364,12 +332,7 @@ def _frontier_payload_cache_key(song_key: tuple, ref_ft: np.ndarray, ref_ff: np.
 
 def _frontier_disk_cache_dir() -> Path:
     scoped = scoped_frontier_cache_dir("timeline")
-    if scoped is not None:
-        return scoped
-    override = str(env_get("TIMELINE_FRONTIER_CACHE_DIR", "") or "").strip()
-    if override:
-        return Path(override)
-    return Path(PATHS.bin_path("timeline_frontier_cache"))
+    return scoped if scoped is not None else paths().timeline_cache
 
 
 def _frontier_disk_cache_path(cache_key: tuple) -> Path:
@@ -609,37 +572,6 @@ def _save_frontier_payload_to_disk(
     return raw
 
 
-def _timeline_song_profile_key(calc_song: dict | None) -> str | None:
-    meta = (calc_song or {}).get("metadata", {}) or {}
-    song_name = str(meta.get("Song Name") or meta.get("Song") or "").strip()
-    if not song_name:
-        return None
-    diff = str(meta.get("Difficulty") or "").strip()
-    return f"{song_name} ({diff})" if diff else song_name
-
-
-def _emit_timeline_phase(
-    *,
-    phase: str,
-    start: float,
-    calc_song: dict | None,
-    song_slot: int,
-    **metrics,
-) -> None:
-    payload = {
-        "phase": str(phase),
-        "ms": float((time.perf_counter() - float(start)) * 1000.0),
-        "song_slot": int(song_slot),
-    }
-    payload.update(metrics)
-    emit_profile_event(
-        component="gpu_executor",
-        event="timeline_precompute_phase",
-        song_key=_timeline_song_profile_key(calc_song),
-        metrics=payload,
-    )
-
-
 def _song_timing_cache_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
@@ -694,7 +626,6 @@ def _get_or_build_frontier_payload_with_source(
     total_notes: int,
     long_notes: int,
     last_note_time: float,
-    song_profile_key: str | None = None,
     timestamps: np.ndarray,
     perfect_candidate_timestamps: np.ndarray,
     perfect_floor_timestamps: np.ndarray,
@@ -719,7 +650,6 @@ def _get_or_build_frontier_payload_with_source(
         total_notes=int(total_notes),
         long_notes=int(long_notes),
         last_note_time=float(last_note_time),
-        song_key=song_profile_key,
         timestamps=np.asarray(timestamps, dtype=np.float32),
         perfect_candidate_timestamps=np.asarray(perfect_candidate_timestamps, dtype=np.float32),
         perfect_floor_timestamps=np.asarray(perfect_floor_timestamps, dtype=np.float32),
@@ -782,7 +712,6 @@ def _timeline_payload_lookup_context(calc_song: dict, ref_arrays: dict, *, ref_s
         "total_notes": int(total_notes),
         "long_notes": int(calc_song["metadata"].get("Long Notes", 0)),
         "last_note_time": float(calc_song["metadata"].get("Last Note Time", 0)),
-        "song_profile_key": _timeline_song_profile_key(calc_song),
         "ref_ft": ref_ft,
         "ref_ff": ref_ff,
         "note_types": song_data.get("note_types", None),
@@ -873,7 +802,6 @@ def timeline_frontier_payload_cache_info(
         cache_key=cache_key,
         disk_path=disk_path,
         cache_source=cache_source,
-        song_profile_key=_timeline_song_profile_key(calc_song),
         total_notes=int(len(src)),
         long_notes=int((calc_song.get("metadata", {}) or {}).get("Long Notes", 0) or 0),
     )
@@ -1015,7 +943,6 @@ def _zero_ms_timeline_result(calc_song: dict, ref_arrays: dict) -> TimelineFront
         disk_path=_frontier_disk_cache_path(cache_key),
         cache_source=cache_source,
         elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
-        song_profile_key=lookup["song_profile_key"],
         total_notes=int(lookup["total_notes"]),
         long_notes=int(lookup["long_notes"]),
     )
@@ -1054,7 +981,6 @@ def build_or_load_timeline_frontier_payload(
             total_notes=int(ctx["total_notes"]),
             long_notes=int(ctx["long_notes"]),
             last_note_time=float(ctx["last_note_time"]),
-            song_profile_key=ctx["song_profile_key"],
             timestamps=ctx["timestamps"],
             perfect_candidate_timestamps=ctx["perfect_candidates"],
             perfect_floor_timestamps=ctx["perfect_floor"],
@@ -1068,7 +994,6 @@ def build_or_load_timeline_frontier_payload(
         disk_path=_frontier_disk_cache_path(cache_key),
         cache_source=cache_source,
         elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
-        song_profile_key=lookup["song_profile_key"],
         total_notes=int(lookup["total_notes"]),
         long_notes=int(lookup["long_notes"]),
     )
@@ -1102,7 +1027,6 @@ def load_timeline_frontier_payload(
         disk_path=_frontier_disk_cache_path(cache_key),
         cache_source=cache_source,
         elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
-        song_profile_key=lookup["song_profile_key"],
         total_notes=int(lookup["total_notes"]),
         long_notes=int(lookup["long_notes"]),
     )
@@ -1157,25 +1081,10 @@ def precompute_timeline_gpu(
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
     frontier_result = (
-        prebuilt_frontier
-        if prebuilt_frontier is not None
-        else (
-            build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
-            if _ENV.serving_api
-            else load_timeline_frontier_payload(calc_song, ref_arrays)
-        )
+        prebuilt_frontier if prebuilt_frontier is not None else load_timeline_frontier_payload(calc_song, ref_arrays)
     )
-    total_notes = int(lookup["total_notes"])
-    long_notes = int(lookup["long_notes"])
-
-    # Sync before timing
-    _maybe_sync(for_timing=True)
-    _t0 = time.perf_counter()
-
     song_slot_i = int(song_slot)
-    t_frontier = time.perf_counter()
     frontier_payload = frontier_result.payload
-    frontier_cache_source = frontier_result.cache_source
     if int(frontier_payload.grid_frontier_count.shape[1]) < TOTAL_ROWS + 1 or int(
         frontier_payload.grid_frontier_count.shape[2]
     ) < TOTAL_ROWS + 1:
@@ -1184,46 +1093,13 @@ def precompute_timeline_gpu(
             "candidate-independent all-FT/FF timeline frontier before runtime scoring."
         )
 
-    cache_phase = "frontier_payload_cache_hit"
-    if str(frontier_cache_source) == "memory":
-        cache_phase = "frontier_payload_cache_hit_memory"
-    elif str(frontier_cache_source) == "disk":
-        cache_phase = "frontier_payload_cache_hit_disk"
-    _emit_timeline_phase(
-        phase=cache_phase,
-        start=t_frontier,
-        calc_song=calc_song,
-        song_slot=song_slot_i,
-        cache_source=str(frontier_cache_source),
-        total_notes=int(total_notes),
-        long_notes=int(long_notes),
-        frontier_pool_used=int(frontier_payload.frontier_pool_used),
-    )
-    t_merge = time.perf_counter()
-    payload_slot_i = 0
-    upload_bytes = _upload_timeline_frontier_payload_slot(
+    _upload_timeline_frontier_payload_slot(
         frontier_payload,
         song_slot_i,
-        source_slot_i=payload_slot_i,
+        source_slot_i=0,
     )
-    _emit_timeline_phase(
-        phase="frontier_field_upload",
-        start=t_merge,
-        calc_song=calc_song,
-        song_slot=song_slot_i,
-        upload_bytes=int(upload_bytes),
-        frontier_count=int(
-            np.count_nonzero(np.asarray(frontier_payload.grid_frontier_count[payload_slot_i], dtype=np.int32))
-        ),
-        frontier_variants=int(np.sum(np.asarray(frontier_payload.grid_frontier_count[payload_slot_i], dtype=np.int64))),
-    )
-    _maybe_sync(for_timing=True)
-    _t1 = time.perf_counter()
 
     _gpu_timeline_song_id_by_slot[song_slot] = song_key
-
-    if _SYNC_FOR_TIMING or _FORCE_SYNC:
-        print(f"[GPU Timeline] Computed 161×161 grid in {(_t1 - _t0) * 1000:.1f}ms")
 
 
 def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
@@ -1250,7 +1126,6 @@ def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_s
         total_notes=int(lookup["total_notes"]),
         long_notes=int(lookup["long_notes"]),
         last_note_time=float(lookup["last_note_time"]),
-        song_key=lookup["song_profile_key"],
         timestamps=np.asarray(lookup["timestamps"], dtype=np.float32),
         perfect_candidate_timestamps=np.asarray(lookup["perfect_candidates"], dtype=np.float32),
         perfect_floor_timestamps=np.asarray(lookup["perfect_floor"], dtype=np.float32),
@@ -1264,7 +1139,6 @@ def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_s
         disk_path=_frontier_disk_cache_path(cache_key),
         cache_source="warmup_disposable",
         elapsed_ms=float((time.perf_counter() - started) * 1000.0),
-        song_profile_key=lookup["song_profile_key"],
         total_notes=int(lookup["total_notes"]),
         long_notes=int(lookup["long_notes"]),
     )

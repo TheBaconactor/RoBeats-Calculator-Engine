@@ -159,7 +159,6 @@ def test_service_worker_marks_daemon_before_native_startup(monkeypatch):
     monkeypatch.setattr(cli, "common_init", lambda: events.append("common_init"))
     monkeypatch.setattr(logging_config, "configure_default_logging", lambda: events.append("logging"))
     monkeypatch.setattr(cli, "_apply_taichi_shell_env", lambda: events.append("taichi_env"))
-    monkeypatch.setattr(cli, "_apply_throughput_mode_env", lambda: events.append("throughput_env"))
     monkeypatch.setattr(cli, "_apply_service_mode_frontier_threads", lambda: events.append("frontier_threads"))
 
     class FakeSession:
@@ -175,7 +174,6 @@ def test_service_worker_marks_daemon_before_native_startup(monkeypatch):
         "common_init",
         "logging",
         "taichi_env",
-        "throughput_env",
         "frontier_threads",
         "reassert",
         "session",
@@ -200,13 +198,11 @@ def test_service_worker_reasserts_daemon_policy_after_native_prewarm(monkeypatch
 
     session = object.__new__(worker.PersistentOptimizerSession)
     session._app = FakeApp()
-    session._data_root = tmp_path / "Data"
 
     monkeypatch.setattr(worker, "AppRuntimeSettings", FakeRuntimeSettings)
-    monkeypatch.setattr(worker, "load_paths_cache", lambda: {"Stats": str(tmp_path / "Stats.txt")})
     monkeypatch.setattr(worker, "read_table", lambda _path: {})
-    monkeypatch.setattr(worker, "load_all_gears_list", lambda _paths: [{"Name": "gear"}])
-    monkeypatch.setattr(worker, "load_all_minis_list", lambda _paths: [{"Name": "mini"}])
+    monkeypatch.setattr(worker, "load_all_gears_list", lambda: [{"Name": "gear"}])
+    monkeypatch.setattr(worker, "load_all_minis_list", lambda: [{"Name": "mini"}])
     monkeypatch.setattr(worker, "reassert_process_background_only", lambda: events.append("reassert"))
 
     session._initialize(configparser.ConfigParser())

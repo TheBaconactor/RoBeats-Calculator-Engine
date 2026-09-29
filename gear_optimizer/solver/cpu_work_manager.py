@@ -5,7 +5,6 @@ import sys
 import time
 from typing import TextIO
 
-from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.solver.fg_response_frontier_cache_prebuild import run_fg_response_frontier_cache_prebuild
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import (
     run_timeline_frontier_cache_prebuild,
@@ -15,7 +14,7 @@ from gear_optimizer.solver.timing_envelope import TIMING_MODES
 logger = logging.getLogger(__name__)
 
 
-def _emit_summary(*, phase: str, label: str, summary, elapsed_ms: float) -> None:
+def _emit_summary(*, label: str, summary, elapsed_ms: float) -> None:
     logger.info(
         "[Startup][CPU] %s ready: total=%s built=%s disk=%s memory=%s failures=%s elapsed=%.1fs",
         label,
@@ -25,20 +24,6 @@ def _emit_summary(*, phase: str, label: str, summary, elapsed_ms: float) -> None
         int(summary.memory),
         int(summary.failures),
         elapsed_ms / 1000.0,
-    )
-    emit_profile_event(
-        component="cpu_work_manager",
-        event="startup_cpu_work_done",
-        metrics={
-            "phase": phase,
-            "total": int(summary.total),
-            "completed": int(summary.completed),
-            "failures": int(summary.failures),
-            "built": int(summary.built),
-            "disk": int(summary.disk),
-            "memory": int(summary.memory),
-            "elapsed_ms": elapsed_ms,
-        },
     )
 
 
@@ -67,11 +52,6 @@ def run_startup_cpu_work(
 ) -> None:
     message = "[Startup][Cache] Building and caching exact timeline + FG response frontiers before scoring..."
     stream = announce_stream or sys.stdout
-    emit_profile_event(
-        component="cpu_work_manager",
-        event="startup_cpu_work_start",
-        metrics={"phase": "frontier_caches"},
-    )
     queue_items = list(song_queue or [])
     if queue_items:
         verify_message = (
@@ -117,13 +97,11 @@ def run_startup_cpu_work(
         stream.flush()
         logger.info(message)
     _emit_summary(
-        phase="timeline_frontier_cache",
         label="Timeline frontier cache",
         summary=timeline_summary,
         elapsed_ms=timeline_elapsed_ms,
     )
     _emit_summary(
-        phase="fg_response_frontier_cache",
         label="FG response-frontier cache",
         summary=fg_summary,
         elapsed_ms=fg_elapsed_ms,

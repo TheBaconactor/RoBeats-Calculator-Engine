@@ -56,13 +56,7 @@ def test_safe_qsize_normalizes_missing_invalid_and_negative_sizes():
 
 
 def test_load_short_wait_spin_settings_are_hardwired():
-    # Now hardwired (was GPU_EXECUTOR_SHORT_WAIT_SPIN_MS=3.0 / _YIELD_ROUNDS=8);
-    # any injected env value is inert.
-    values = {
-        "GPU_EXECUTOR_SHORT_WAIT_SPIN_MS": "12.5",
-        "GPU_EXECUTOR_SHORT_WAIT_SPIN_YIELD_ROUNDS": "17",
-    }
-    settings = load_short_wait_spin_settings(env_get_fn=lambda key, default: values.get(key, default))
+    settings = load_short_wait_spin_settings()
 
     assert settings.short_wait_spin_sec == 0.003
     assert settings.short_wait_spin_yield_rounds == 8

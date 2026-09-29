@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from gear_optimizer.core.constants import PATHS
+from gear_optimizer.settings import paths
 from gear_optimizer.core.utils import safe_int as _safe_int
 from gear_optimizer.data.loadout_equivalence import clear_gear_mini_csv_caches
 from gear_optimizer.data.song_io import scan_song_header
@@ -103,12 +103,12 @@ class SyncResult:
 
 
 def default_exported_game_data_paths() -> ExportedGameDataPaths:
-    data_dir = Path(PATHS.data_dir)
+    engine_paths = paths()
     return ExportedGameDataPaths(
-        exported_json=data_dir / "exported_game_data.json",
-        gears_csv=data_dir / "Gear" / "Gears.csv",
-        minis_csv=data_dir / "Gear" / "Minis.csv",
-        sync_state=Path(PATHS.bin_path("exported_game_data_sync_state.json")),
+        exported_json=engine_paths.data_dir / "exported_game_data.json",
+        gears_csv=engine_paths.gears_csv,
+        minis_csv=engine_paths.minis_csv,
+        sync_state=engine_paths.bin_path("exported_game_data_sync_state.json"),
     )
 
 

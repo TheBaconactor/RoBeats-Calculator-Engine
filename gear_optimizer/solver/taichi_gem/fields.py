@@ -8,7 +8,6 @@ This module handles:
 """
 import logging
 import taichi as ti
-from gear_optimizer.core.parsing import env_int
 from .runtime import is_initialized, init_taichi
 # Skyline uses this to select the 32-bit-atomic reduction path on macOS.
 # That includes MoltenVK (`ti.vulkan` on Darwin), whose shaders still compile
@@ -29,15 +28,8 @@ MAX_SONG_NOTES = 32768  # Max chart length for GPU timeline computation. Real-wo
 # (MAX_SONG_NOTES,) arrays scale with it. A chart exceeding this fails loud at
 # timeline.py (`Song has N notes, max is ...`), never silent truncation -- bump it if ever hit.
 MAX_EVALS_PER_DISPATCH = 8_388_608  # Upper bound used for chunking (genomes * FT/FF combos)
-def _clamp_song_slots(n: int) -> int:
-    if n < 2:
-        return 2
-    if n > 256:
-        logger.warning("[GPU] GPU_SONG_SLOTS=%s too large; clamping to 256 to avoid VRAM OOM.", int(n))
-        return 256
-    return n
 MAX_TIMELINE_FRONTIER_SURFACES = 262144  # GPU frontier field-size cap (within [1, 1_048_576] VRAM bound)
-MAX_SONG_SLOTS = _clamp_song_slots(env_int("GPU_SONG_SLOTS", 8))
+MAX_SONG_SLOTS = 8  # concurrent songs resident on the GPU (in-flight songs use all but one)
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
 MAX_TIMING_RESPONSE_COMBOS = 2_000_000  # GPU antichain field-size cap (>> MAX_FTFF_COMBOS, within 8_000_000 VRAM bound)

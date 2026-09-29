@@ -119,46 +119,6 @@ def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeyp
     assert "Building and caching exact timeline + FG response frontiers" in output
 
 
-def test_cpu_work_manager_reports_individual_phase_elapsed(monkeypatch) -> None:
-    from gear_optimizer.solver import cpu_work_manager
-    from gear_optimizer.solver.fg_response_frontier_cache_prebuild import FgResponseFrontierCachePrebuildSummary
-    from gear_optimizer.solver.timeline_frontier_cache_prebuild import TimelineFrontierCachePrebuildSummary
-
-    events: list[tuple[str, dict]] = []
-    perf_values = iter((100.0, 100.25, 200.0, 200.75))
-
-    monkeypatch.setattr(cpu_work_manager.time, "perf_counter", lambda: next(perf_values))
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "emit_profile_event",
-        lambda *, component, event, metrics: events.append((event, dict(metrics))),
-    )
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_timeline_frontier_cache_prebuild",
-        lambda **_kwargs: TimelineFrontierCachePrebuildSummary(total=1, completed=1, built=1),
-    )
-    monkeypatch.setattr(
-        cpu_work_manager,
-        "run_fg_response_frontier_cache_prebuild",
-        lambda **_kwargs: FgResponseFrontierCachePrebuildSummary(total=1, completed=1, built=1),
-    )
-
-    cpu_work_manager.run_startup_cpu_work(
-        cfg=object(),
-        song_queue=[("Data/Easy/Fake.txt",)],
-        ref_arrays={},
-        data_root="Data",
-    )
-
-    done_metrics = [metrics for event, metrics in events if event == "startup_cpu_work_done"]
-    elapsed_by_phase = {str(metrics["phase"]): float(metrics["elapsed_ms"]) for metrics in done_metrics}
-    assert elapsed_by_phase == {
-        "timeline_frontier_cache": 250.0,
-        "fg_response_frontier_cache": 750.0,
-    }
-
-
 def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer.solver import timeline_frontier_cache_prebuild as prebuild
 

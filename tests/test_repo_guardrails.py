@@ -237,8 +237,6 @@ def test_retired_force_great_options_stay_out_of_configs_and_tools() -> None:
 def test_maintained_tool_entry_points_support_direct_help() -> None:
     entry_points = (
         "tools/bench/bench_fg_depth_quick.py",
-        "tools/bench/bench_ga_guardrail.py",
-        "tools/bench/bench_ga_winner_stability.py",
         "tools/db/smoke_run_and_audit.py",
     )
     offenders: list[str] = []

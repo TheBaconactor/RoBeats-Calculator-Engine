@@ -14,8 +14,7 @@ from collections import defaultdict
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable
 
-from gear_optimizer.core.constants import PATHS
-from gear_optimizer.core.parsing import env_int, env_str
+from gear_optimizer.settings import metafinder_settings
 from gear_optimizer.data.exported_game_data_sync import ExportedGameDataPaths, sync_exported_game_data
 
 logger = logging.getLogger(__name__)
@@ -33,13 +32,11 @@ _GIT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}\Z")
 
 
 def publication_root() -> Path:
-    configured = env_str("ROBEATSMETA_FRONTIER_PUBLICATION_DIR", "")
-    return Path(configured).expanduser() if configured else Path(PATHS.bin_path("frontier_publications"))
+    return metafinder_settings().publication_dir
 
 
 def source_snapshot_root() -> Path:
-    configured = env_str("ROBEATSMETA_FRONTIER_SOURCE_DIR", "")
-    return Path(configured).expanduser() if configured else Path(PATHS.bin_path("frontier_server_sources"))
+    return metafinder_settings().source_dir
 
 
 def _sha256_file(path: Path) -> str:
@@ -554,10 +551,11 @@ class FrontierServerMaintainer:
         self.publication_ready = publication_ready
         self.prepare_code_update = prepare_code_update
         self.code_update_aborted = code_update_aborted
-        self.remote = _validated_git_name(env_str("ROBEATSMETA_FRONTIER_GIT_REMOTE", "origin"), label="remote")
-        self.branch = _validated_git_name(env_str("ROBEATSMETA_FRONTIER_GIT_BRANCH", "main"), label="branch")
-        self.poll_seconds = max(60, env_int("ROBEATSMETA_FRONTIER_GIT_POLL_SECONDS", 300))
-        self.fetch_timeout = max(30, env_int("ROBEATSMETA_FRONTIER_GIT_TIMEOUT_SECONDS", 120))
+        settings = metafinder_settings()
+        self.remote = _validated_git_name(settings.git_remote, label="remote")
+        self.branch = _validated_git_name(settings.git_branch, label="branch")
+        self.poll_seconds = settings.git_poll_seconds
+        self.fetch_timeout = settings.git_timeout_seconds
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._runtime_commit = _git(self.repo_root, "rev-parse", "--verify", "HEAD^{commit}")

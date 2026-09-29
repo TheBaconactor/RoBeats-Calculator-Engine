@@ -9,11 +9,10 @@ This module centralizes logic for:
 
 from __future__ import annotations
 
-import os
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
-from ..core.constants import PATHS
+from ..settings import paths
 from ..core.utils import get_selected_element, safe_int
 from .csv_parser import load_csv_db
 
@@ -33,7 +32,7 @@ def get_minis_by_name_cached() -> Dict[str, dict]:
     """
     global _MINIS_BY_NAME_CACHE
     if _MINIS_BY_NAME_CACHE is None:
-        _MINIS_BY_NAME_CACHE = load_csv_db(os.path.join(PATHS.data_dir, "Gear", "Minis.csv"), "mini") or {}
+        _MINIS_BY_NAME_CACHE = load_csv_db(str(paths().minis_csv), "mini") or {}
     return _MINIS_BY_NAME_CACHE
 
 
@@ -47,7 +46,7 @@ def get_gears_by_name_cached() -> Dict[str, dict]:
     """
     global _GEARS_BY_NAME_CACHE
     if _GEARS_BY_NAME_CACHE is None:
-        _GEARS_BY_NAME_CACHE = load_csv_db(os.path.join(PATHS.data_dir, "Gear", "Gears.csv"), "gear") or {}
+        _GEARS_BY_NAME_CACHE = load_csv_db(str(paths().gears_csv), "gear") or {}
     return _GEARS_BY_NAME_CACHE
 
 

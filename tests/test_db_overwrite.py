@@ -273,20 +273,14 @@ def test_team_buff_fg_loadouts_upsert_tie_updates_base_score(db_connection):
     assert json.loads(row["details_json"])["BaseScore"] == 1000
 
 
-def test_db_write_integrity_verifier_does_not_fail_when_db_has_better_fg(db_connection, monkeypatch):
+def test_fg_leaderboard_keeps_better_fg_row_over_higher_base(db_connection):
     """
-    Strict DB write-integrity verification should not fail when the DB already contains a better FG row.
-
     Scenario:
     - Row A persists with higher `fg_score` but lower base `score`.
     - Row B attempts to persist a higher base `score` but lower `fg_score`.
 
-    The FG table should keep Row A (because FG leaderboard is ordered by `fg_score`), and strict verification should
-    not treat the base-score mismatch as an override/race.
+    The FG table should keep Row A (because FG leaderboard is ordered by `fg_score`).
     """
-    monkeypatch.setenv("DB_VERIFY_WRITE_INTEGRITY", "1")
-    monkeypatch.setenv("DB_STRICT_WRITE_INTEGRITY", "1")
-
     song = "Test Song FG Verifier"
     gear = ["G1", "G2"]
     minis = ["M1"]

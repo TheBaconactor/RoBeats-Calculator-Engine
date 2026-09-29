@@ -1,34 +1,25 @@
 """Song Helpers - Database Context - Progress baseline loading."""
 
 import logging
-import os
 import sqlite3
 import threading
 import time
 from typing import Any, Mapping
 
-from ...core.env_config import env_flag
 from ...core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from ...data.database import (
     get_db_connection_cached,
     get_best_loadouts,
-    get_evolution_db_path,
     get_song_counters,
 )
 from ...data.models import WarnOnce
 
 # Global warn-once instance
-from gear_optimizer.core.parsing import env_get
-
 logger = logging.getLogger(__name__)
 WARN_ONCE = WarnOnce()
 
 _WAL_MAINT_LOCK = threading.Lock()
 _LAST_WAL_MAINT_TS = 0.0
-
-
-def _db_context_verbose() -> bool:
-    return env_flag("DB_CONTEXT_VERBOSE", "0")
 
 
 def build_db_key(found_song_name: str, calc_song: dict | None = None) -> str:
@@ -66,11 +57,7 @@ def _maybe_wal_maintenance(conn) -> None:
     This MUST NOT run on every per-song DB read: TRUNCATE checkpoints can take locks
     and stall concurrent writers, which can indirectly starve the GPU pipeline.
     """
-    interval_sec = float(env_get("DB_WAL_MAINT_INTERVAL_SEC", "30") or "30")
-
-    if interval_sec <= 0:
-        return
-
+    interval_sec = 30.0
     global _LAST_WAL_MAINT_TS
     now = time.monotonic()
     with _WAL_MAINT_LOCK:
@@ -84,15 +71,6 @@ def _maybe_wal_maintenance(conn) -> None:
         conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
     except sqlite3.Error:
         logger.debug("[DB] WAL checkpoint(PASSIVE) failed", exc_info=True)
-
-    optimize_enabled = env_flag("DB_OPTIMIZE", "0")
-    if not optimize_enabled:
-        return
-
-    try:
-        conn.execute("PRAGMA optimize")
-    except sqlite3.Error:
-        logger.debug("[DB] PRAGMA optimize failed", exc_info=True)
 
 
 def load_database_context(
@@ -114,13 +92,6 @@ def load_database_context(
         previous record or None
     """
     prev_record = None
-    tag = f"[DB pid={os.getpid()}]"
-
-    if _db_context_verbose():
-        # Always print DB path + exact lookup key to make seeding issues obvious.
-        # (repr shows hidden whitespace / mismatched suffixes that would otherwise be invisible.)
-        print(f"{tag} Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
-
     best_loadouts = get_best_loadouts(
         found_song_name,
         limit=1,
@@ -130,13 +101,6 @@ def load_database_context(
     )
     if best_loadouts:
         prev_record = best_loadouts[0]
-
-    if prev_record:
-        prev_base = int(prev_record.get("score", 0) or 0)
-        prev_best_fg = max(int(r.get("fg_score", 0) or 0) for r in best_loadouts if isinstance(r, dict))
-
-        if _db_context_verbose():
-            print(f"{tag} Found previous best (Base: {prev_base}, FG: {prev_best_fg})")
     conn = get_db_connection_cached()
     _maybe_wal_maintenance(conn)
 

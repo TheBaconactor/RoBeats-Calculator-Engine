@@ -10,7 +10,7 @@ from typing import Any, Mapping, Sequence
 # pipeline (app -> execution -> engine). The code originally named it "legacy"
 # when refactoring toward typed `SongJob`/`SharedRunContext` while keeping the
 # tuple as the durable interchange format.
-TASK_FIXED_FIELD_COUNT = 13
+TASK_FIXED_FIELD_COUNT = 12
 
 
 class TaskIndex(IntEnum):
@@ -18,15 +18,14 @@ class TaskIndex(IntEnum):
     SONG_NAME = 1
     DIFFICULTY = 2
     CFG_DICT = 3
-    PATHS = 4
-    REF_ARRAYS = 5
-    ALL_GEARS = 6
-    ALL_MINIS = 7
-    GEARS_BY_NAME = 8
-    MINIS_BY_NAME = 9
-    GA_DEPTH = 10
-    PARALLEL_WORKERS = 11
-    FG_DEBUG = 12
+    REF_ARRAYS = 4
+    ALL_GEARS = 5
+    ALL_MINIS = 6
+    GEARS_BY_NAME = 7
+    MINIS_BY_NAME = 8
+    GA_DEPTH = 9
+    PARALLEL_WORKERS = 10
+    FG_DEBUG = 11
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +51,6 @@ class PreparedSongSeedPlan:
 @dataclass(frozen=True, slots=True)
 class SharedRunContext:
     cfg_dict: Mapping[str, Any] | None
-    paths: Any
     ref_arrays: Any
     all_gears: Any
     all_minis: Any
@@ -253,7 +251,6 @@ def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
 
     return SharedRunContext(
         cfg_dict=task[int(TaskIndex.CFG_DICT)],
-        paths=task[int(TaskIndex.PATHS)],
         ref_arrays=task[int(TaskIndex.REF_ARRAYS)],
         all_gears=task[int(TaskIndex.ALL_GEARS)],
         all_minis=task[int(TaskIndex.ALL_MINIS)],
@@ -284,7 +281,6 @@ def task_tuple_from_job_context(
         job.song_name,
         job.difficulty,
         context.cfg_dict,
-        context.paths,
         context.ref_arrays,
         context.all_gears,
         context.all_minis,

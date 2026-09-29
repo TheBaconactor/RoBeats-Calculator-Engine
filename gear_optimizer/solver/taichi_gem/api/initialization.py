@@ -9,11 +9,9 @@ This module provides initialization and setup functions:
 
 from __future__ import annotations
 
-import taichi as ti
 import numpy as np
 
 from gear_optimizer.core.array_signature import arrays_sig16
-from gear_optimizer.core.env_config import ENV
 from ..runtime import init_taichi, is_initialized
 from .. import fields
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
@@ -249,28 +247,6 @@ def _upload_timing_response_genome_rows(
     lengths[:n] = lengths_in[:n]
     fields.timing_response_genome_offset.from_numpy(offsets)
     fields.timing_response_genome_length.from_numpy(lengths)
-
-
-# ============================================================================
-# SYNC POLICY
-# ============================================================================
-#
-# Taichi kernels are ordered on the device; explicit ti.sync() is only required
-# when the CPU needs results/timing *right now*. Excess sync points can dominate
-# runtime (CPU stalls waiting for GPU).
-#
-# - GPU_SYNC_FOR_TIMING=1: allow extra syncs to measure kernel wall time
-# - GPU_FORCE_SYNC=1: force all optional sync points on (debug)
-
-_SYNC_FOR_TIMING = ENV.gpu_sync_for_timing
-_FORCE_SYNC = ENV.gpu_force_sync
-
-
-def _maybe_sync(*, for_timing: bool = False) -> None:
-    """Sync only when explicitly requested (timing/debug)."""
-    from .sync_policy import maybe_sync
-
-    maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=for_timing)
 
 
 # ============================================================================

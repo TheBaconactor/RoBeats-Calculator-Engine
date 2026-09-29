@@ -10,7 +10,7 @@ from collections import OrderedDict
 from cachetools import LRUCache
 
 from gear_optimizer.chart import read_chart, to_calc_song
-from gear_optimizer.core.constants import PATHS
+from gear_optimizer.settings import paths
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ _BASE_CALC_SONG_CACHE_MAX = 64
 _BASE_CALC_SONG_CACHE: LRUCache = LRUCache(maxsize=_BASE_CALC_SONG_CACHE_MAX)
 _BASE_CALC_SONG_CACHE_LOCK = threading.Lock()
 
-_SONG_HEADER_CACHE_PATH = PATHS.bin_path("song_header_cache.json")
+_SONG_HEADER_CACHE_PATH = str(paths().bin_path("song_header_cache.json"))
 _SONG_HEADER_CACHE_MAX = 4096
 _SONG_HEADER_CACHE_LOCK = threading.Lock()
 _SONG_HEADER_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()

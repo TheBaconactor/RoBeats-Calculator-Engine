@@ -14,8 +14,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from gear_optimizer.core.constants import PATHS
-from gear_optimizer.core.parsing import env_flag, env_str
+from gear_optimizer.settings import metafinder_settings, paths, service_mode
 from gear_optimizer.frontier_auth import (
     frontier_credentials_configured,
     load_client_credentials,
@@ -46,11 +45,11 @@ class FrontierSyncResult:
 
 
 def frontier_client_enabled() -> bool:
-    return not env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_MODE")
+    return not service_mode()
 
 
 def _server_base_url() -> str:
-    value = env_str("METAFINDER_FRONTIER_SERVER_URL", "").strip().rstrip("/")
+    value = metafinder_settings().server_url
     if not value:
         raise RuntimeError(
             "METAFINDER_FRONTIER_SERVER_URL is required when hosted frontier sync is configured"
@@ -80,7 +79,7 @@ def _server_base_url() -> str:
 
 
 def _state_path(filename: str) -> Path:
-    return Path(PATHS.bin_path(filename))
+    return paths().bin_path(filename)
 
 
 def _load_state(filename: str) -> dict:
@@ -202,13 +201,11 @@ def _scope_root(scope: str, code_root: Path | None = None) -> Path:
             raise ValueError("MetaFinder code destination was not provided")
         return code_root
     if scope == "data":
-        return Path(PATHS.data_dir)
+        return paths().data_dir
     if scope == "timeline":
-        configured = env_str("TIMELINE_FRONTIER_CACHE_DIR", "")
-        return Path(configured) if configured else Path(PATHS.bin_path("timeline_frontier_cache"))
+        return paths().timeline_cache
     if scope == "fg":
-        configured = env_str("FG_RESPONSE_FRONTIER_CACHE_DIR", "")
-        return Path(configured) if configured else Path(PATHS.bin_path("fg_response_frontier_cache"))
+        return paths().fg_cache
     raise ValueError(f"unknown frontier scope: {scope}")
 
 
@@ -278,7 +275,7 @@ def _bundle_is_current(bundle: dict, previous: dict, code_root: Path | None = No
 
 
 def _download_bundle(session: requests.Session, base_url: str, credentials, revision: str, bundle: dict) -> Path:
-    temp_root = Path(PATHS.bin_path("frontier_downloads"))
+    temp_root = paths().bin_path("frontier_downloads")
     temp_root.mkdir(parents=True, exist_ok=True)
     path = f"/metafinder/v1/bundles/{revision}/{bundle['name']}"
     digest = hashlib.sha256()

@@ -2,11 +2,6 @@
 Global constants and configuration values for the gear optimizer.
 """
 
-import os
-from dataclasses import dataclass
-
-from .parsing import env_str
-
 # --- SCORING CONSTANTS ---
 GEM_SCALE_NORMAL = 2
 GEM_SCALE_FEVER = 3
@@ -66,7 +61,6 @@ PP_TIE_LOOKAHEAD_MAX = 8  # Max lookahead iterations for PP tie-breaking in gem 
 GPU_GA_NUM_ISLANDS = 1
 
 # --- DATABASE CONFIGURATION ---
-DB_FILE = "evolution.db"
 LOADOUTS_PER_SONG_LIMIT = 51  # Top 51 by score + Top 51 by FG score (single FG funnel + leaderboard size)
 
 # --- SHARED ENUMS / TOKENS ---
@@ -101,51 +95,3 @@ SKIP_ITEM_KEYS = frozenset(
         "Mini Ascension Base Vibe",
     }
 )
-
-
-@dataclass(frozen=True)
-class PathConfig:
-    """
-    Centralized path configuration for the application.
-    Handles script directory, binary directory, and status file location.
-    """
-
-    script_dir: str
-    bin_dir: str
-    data_dir: str
-
-    @classmethod
-    def build(cls):
-        """Build PathConfig with automatic detection and fallback logic."""
-        # Project root resolution:
-        # This file lives at: <root>/gear_optimizer/core/constants.py
-        # We want <root> as the script_dir so that user-facing files like
-        # config.ini, Data/, bin/, etc resolve correctly.
-        script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        # External-boundary overrides (cache/data dirs) so a dedicated service instance can run
-        # against an isolated state dir + song source
-        # without touching the catalog bin/ or Data/ trees. Empty => default (current behavior).
-        bin_dir = env_str("ROBEATSMETA_OPTIMIZER_BIN_DIR", "").strip() or os.path.join(script_dir, "bin")
-        data_dir = env_str("ROBEATSMETA_OPTIMIZER_DATA_DIR", "").strip() or os.path.join(script_dir, "Data")
-
-        return cls(script_dir, bin_dir, data_dir)
-
-    def bin_path(self, *parts):
-        """Get a path within the bin directory."""
-        return os.path.join(self.bin_dir, *parts)
-
-    @property
-    def stats_csv(self):
-        """Path to Stats.csv file."""
-        return os.path.join(self.script_dir, "Stats.csv")
-
-    @property
-    def evolution_db_default(self):
-        """Default path for evolution database."""
-        return os.path.join(self.script_dir, DB_FILE)
-
-
-# Global path configuration instance
-PATHS = PathConfig.build()
-SCRIPT_DIR = PATHS.script_dir
-BIN_DIR = PATHS.bin_dir

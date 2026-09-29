@@ -22,9 +22,8 @@ from gear_optimizer.core.config import (
     AppRuntimeSettings,
     compute_memory_guard_limit,
     load_config,
-    load_paths_cache,
 )
-from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import (
     MEMORY_GUARD_RESUME_FILE,
     MemoryGuardResumeTracker,
@@ -34,9 +33,7 @@ from gear_optimizer.core.memory import (
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.data.database import get_best_loadouts, init_db
 from gear_optimizer.data.database.connection import close_cached_db_connection
-from gear_optimizer.core.parsing import env_str
-
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+from gear_optimizer.settings import paths, service_settings
 
 
 class PersistentOptimizerSession:
@@ -44,12 +41,13 @@ class PersistentOptimizerSession:
         from gear_optimizer.app import GearOptimizerApp
 
         self._app = GearOptimizerApp()
-        self._data_root = Path(PATHS.data_dir)
-        self._bin_root = Path(PATHS.bin_dir)
-        self._config_path = Path(env_str("METAFINDER_CONFIG_PATH", str(_REPO_ROOT / "config.ini")))
-        self._chart_path = self._data_root / "Hard" / "service_request.txt"
-        self._result_db = self._bin_root / "service_result.db"
-        self._paths: dict[str, str] | None = None
+        engine_paths = paths()
+        self._config_path = engine_paths.config_file
+        self._chart_path = engine_paths.chart_dir("Hard") / "service_request.txt"
+        # Deleted between solves, so it must be this worker's own database (the service sets EVOLUTION_DB_PATH to it).
+        self._result_db = engine_paths.bin_path("service_result.db")
+        if engine_paths.database != self._result_db:
+            raise RuntimeError(f"EVOLUTION_DB_PATH must be {self._result_db} for the persistent worker")
         self._ref_arrays: dict[str, Any] | None = None
         self._all_gears: list[dict[str, Any]] = []
         self._all_minis: list[dict[str, Any]] = []
@@ -61,29 +59,12 @@ class PersistentOptimizerSession:
 
     def _prepare_data_root(self) -> None:
         self._chart_path.parent.mkdir(parents=True, exist_ok=True)
-        gear_dir = self._data_root / "Gear"
+        gear_dir = paths().gear_dir
         if not gear_dir.is_dir():
-            source = Path(env_str("ROBEATSMETA_OPTIMIZER_GEAR_SOURCE_DIR", ""))
+            source = Path(service_settings().gear_source_dir)
             if not source.is_dir():
                 raise RuntimeError(f"persistent optimizer gear source is unavailable: {source}")
             shutil.copytree(source, gear_dir)
-        paths_cache = Path(PATHS.bin_path("paths_cache.json"))
-        paths_cache.parent.mkdir(parents=True, exist_ok=True)
-        paths_cache.write_text(
-            json.dumps(
-                {
-                    "Easy": str(self._data_root / "Easy"),
-                    "Normal": str(self._data_root / "Normal"),
-                    "Hard": str(self._data_root / "Hard"),
-                    "Gear": str(gear_dir),
-                    "Gears": str(gear_dir / "Gears.csv"),
-                    "Minis": str(gear_dir / "Minis.csv"),
-                    "Stats": str(gear_dir / "Stats.txt"),
-                },
-                separators=(",", ":"),
-            ),
-            encoding="utf-8",
-        )
 
     @staticmethod
     def _max_reasoning_config(cfg: configparser.ConfigParser) -> configparser.ConfigParser:
@@ -95,13 +76,10 @@ class PersistentOptimizerSession:
         return result
 
     def _initialize(self, cfg: configparser.ConfigParser) -> None:
-        paths = load_paths_cache()
-        stats_path = paths.get("Stats", "") or str(self._data_root / "Gear" / "Stats.txt")
-        stats_table = read_table(stats_path)
-        self._paths = paths
+        stats_table = read_table(str(paths().stats_txt))
         self._ref_arrays = self._app._preload_ref_arrays(stats_table)
-        self._all_gears = load_all_gears_list(paths)
-        self._all_minis = load_all_minis_list(paths)
+        self._all_gears = load_all_gears_list()
+        self._all_minis = load_all_minis_list()
         self._gears_by_name = {str(item["Name"]): item for item in self._all_gears}
         self._minis_by_name = {str(item["Name"]): item for item in self._all_minis}
 
@@ -158,12 +136,10 @@ class PersistentOptimizerSession:
     ) -> list[dict[str, Any]]:
         self._write_request_config(repeats=repeats, reasoning=reasoning)
         self._chart_path.write_text(chart_text, encoding="utf-8")
-        os.environ["EVOLUTION_DB_PATH"] = str(self._result_db)
         self._remove_result_db()
         cfg = load_config(str(self._config_path))
         if not self._initialized:
             self._initialize(cfg)
-        assert self._paths is not None
         assert self._ref_arrays is not None
 
         self._app._runtime_settings = AppRuntimeSettings.from_config(cfg)
@@ -177,7 +153,6 @@ class PersistentOptimizerSession:
         tasks = self._app._prepare_tasks(
             task_queue,
             cfg,
-            self._paths,
             self._ref_arrays,
             self._all_gears,
             self._all_minis,
@@ -220,7 +195,6 @@ def main() -> int:
     from gear_optimizer.cli import (
         _apply_service_mode_frontier_threads,
         _apply_taichi_shell_env,
-        _apply_throughput_mode_env,
         common_init,
     )
     from gear_optimizer.core.logging_config import configure_default_logging
@@ -233,7 +207,6 @@ def main() -> int:
             common_init()
             configure_default_logging()
             _apply_taichi_shell_env()
-            _apply_throughput_mode_env()
             _apply_service_mode_frontier_threads()
             reassert_process_background_only()
             session = PersistentOptimizerSession()

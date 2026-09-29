@@ -24,7 +24,6 @@ def test_prepare_tasks_song_repeats_expands_queue():
     tasks = app._prepare_tasks(
         song_queue=song_queue,
         cfg=cfg,
-        paths={},
         ref_arrays={},
         all_gears=[],
         all_minis=[],
@@ -35,14 +34,14 @@ def test_prepare_tasks_song_repeats_expands_queue():
     )
 
     assert len(tasks) == 3
-    assert all(len(t) == 14 for t in tasks)
+    assert all(len(t) == 13 for t in tasks)
     assert [task_queue_label(t) for t in tasks] == [
         "Dummy Song (Run 1/3)",
         "Dummy Song (Run 2/3)",
         "Dummy Song (Run 3/3)",
     ]
 
-    seeds = [t[13]["ga_seed"] for t in tasks]
+    seeds = [t[12]["ga_seed"] for t in tasks]
     assert len(seeds) == 3
     assert len(set(seeds)) == 3
 
@@ -55,7 +54,6 @@ def test_prepare_tasks_song_repeats_one_still_seeds_single_run():
     tasks = app._prepare_tasks(
         song_queue=song_queue,
         cfg=cfg,
-        paths={},
         ref_arrays={},
         all_gears=[],
         all_minis=[],
@@ -66,7 +64,7 @@ def test_prepare_tasks_song_repeats_one_still_seeds_single_run():
     )
 
     assert len(tasks) == 1
-    assert len(tasks[0]) == 14
+    assert len(tasks[0]) == 13
     repeat_ctx = extract_repeat_context(tasks[0])
     assert repeat_ctx is not None
     assert repeat_ctx["repeat_index"] == 1
@@ -89,7 +87,6 @@ def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypat
     first = app._prepare_tasks(
         song_queue=song_queue,
         cfg=cfg,
-        paths={},
         ref_arrays={},
         all_gears=[],
         all_minis=[],
@@ -101,7 +98,6 @@ def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypat
     second = app._prepare_tasks(
         song_queue=song_queue,
         cfg=cfg,
-        paths={},
         ref_arrays={},
         all_gears=[],
         all_minis=[],
@@ -126,7 +122,6 @@ def test_prepare_tasks_accepts_zero_as_random_seed(monkeypatch):
     tasks = app._prepare_tasks(
         song_queue=[("dummy.txt", "Dummy Song", "Hard")],
         cfg=cfg,
-        paths={},
         ref_arrays={},
         all_gears=[],
         all_minis=[],
@@ -147,7 +142,6 @@ def test_prepare_tasks_does_not_collapse_song_repeats():
     tasks = app._prepare_tasks(
         song_queue=song_queue,
         cfg=cfg,
-        paths={},
         ref_arrays={},
         all_gears=[],
         all_minis=[],

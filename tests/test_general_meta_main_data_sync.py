@@ -110,7 +110,7 @@ def test_run_general_meta_syncs_before_loading_gears(monkeypatch) -> None:
     )
 
     with pytest.raises(_StopAfterSync):
-        run_general_meta(None, {})
+        run_general_meta(None)
 
     assert sync_calls == [False]
 

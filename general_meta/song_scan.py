@@ -3,11 +3,11 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Tuple
 
-from gear_optimizer.core.constants import SCRIPT_DIR
 from gear_optimizer.data.song_io import scan_song_header
+from gear_optimizer.settings import paths
 
 
-def get_songs_by_elemental_combo(paths: dict) -> Dict[Tuple[str, str], List[dict]]:
+def get_songs_by_elemental_combo() -> Dict[Tuple[str, str], List[dict]]:
     """
     Scan song files and group by (Primary Color, Secondary Color).
 
@@ -17,7 +17,7 @@ def get_songs_by_elemental_combo(paths: dict) -> Dict[Tuple[str, str], List[dict
     songs_by_combo: Dict[Tuple[str, str], List[dict]] = {}
 
     for diff in ["Hard", "Normal", "Easy"]:
-        search_dir = paths.get(diff, SCRIPT_DIR)
+        search_dir = paths().chart_dir(diff)
         if not os.path.exists(search_dir):
             continue
 

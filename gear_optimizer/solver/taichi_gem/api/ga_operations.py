@@ -8,10 +8,8 @@ This module provides GPU-side GA operators (selection, crossover, mutation, eval
 These functions are called from the GPU executor's native in-flight path.
 """
 from __future__ import annotations
-import time
 from types import SimpleNamespace
 import numpy as np
-from gear_optimizer.core.parsing import env_flag
 try:
     from .. import fields
     from ..fields import MAX_EVALS_PER_DISPATCH
@@ -978,8 +976,6 @@ def ga_download_fg_selected_payload(
         limit = 0
     if limit > int(fields.GA_FG_SELECTED_MAX):
         limit = int(fields.GA_FG_SELECTED_MAX)
-    perf = env_flag("PERF_TIMING")
-    t_total = time.perf_counter() if perf else 0.0
     kernels.ga_select_top_base_fg_candidate_coords_kernel(
         int(table_slot),
         int(n_runs),
@@ -1001,15 +997,6 @@ def ga_download_fg_selected_payload(
     if selected_n > max_rows:
         selected_n = max_rows
     view = out[: selected_n + 1, :]
-    total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
-    if perf:
-        view_bytes = int(getattr(view, "nbytes", 0) or 0)
-        out_bytes = int(getattr(out, "nbytes", 0) or 0)
-        print(
-            "[PERF][GADownloadGaFgSelected] "
-            f"slot={table_slot} runs={n_runs} limit={limit} total={total_ms:.1f}ms "
-            f"view_bytes={view_bytes} transfer_bytes={out_bytes}"
-        )
     if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:
         return view
     return np.ascontiguousarray(view, dtype=np.int32)

@@ -71,7 +71,6 @@ def test_build_prepared_song_config_names_setup_tuple_fields(monkeypatch):
     prepared = song_preparation.build_prepared_song_config(
         cfg=object(),
         calc_song={"metadata": {}, "song_data": {}},
-        paths={},
         gears_by_name={},
         minis_by_name={},
     )
@@ -133,7 +132,6 @@ def test_build_prepared_song_core_owns_calc_config_and_db_setup(monkeypatch):
         fp="song.txt",
         found_song_name="Song",
         cfg_dict={"IterationEngine": {}},
-        paths={},
         gears_by_name={},
         minis_by_name={},
         cfg=cfg,

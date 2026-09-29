@@ -21,7 +21,7 @@ def test_force_greats_section_is_rejected(monkeypatch):
     calc_song = {"metadata": {"Primary Color": "Rush"}}
 
     with pytest.raises(ValueError, match="response-frontier is the only supported ForceGreats scorer"):
-        song_config.setup_song_config(cfg, calc_song, paths={}, gears_by_name={}, minis_by_name={})
+        song_config.setup_song_config(cfg, calc_song, gears_by_name={}, minis_by_name={})
 
 
 def test_setup_song_config_applies_t5_to_song_primary(monkeypatch):
@@ -38,7 +38,7 @@ def test_setup_song_config_applies_t5_to_song_primary(monkeypatch):
     calc_song = {"metadata": {"Primary Color": "Vibe"}}
 
     (_ga_settings, fixed_stats, *_rest) = song_config.setup_song_config(
-        cfg, calc_song, paths={}, gears_by_name={}, minis_by_name={}
+        cfg, calc_song, gears_by_name={}, minis_by_name={}
     )
 
     assert cfg.get("TeamContributionBuffConstant", "TeamBuff") == "T5"
@@ -61,4 +61,4 @@ def test_setup_song_config_fails_if_fixed_stats_drop_t5(monkeypatch):
     calc_song = {"metadata": {"Primary Color": "Rush"}}
 
     with pytest.raises(AssertionError, match="missing the canonical TeamBuff"):
-        song_config.setup_song_config(cfg, calc_song, paths={}, gears_by_name={}, minis_by_name={})
+        song_config.setup_song_config(cfg, calc_song, gears_by_name={}, minis_by_name={})

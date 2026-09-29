@@ -10,7 +10,6 @@ kernels + CPU main thread for formatting).
 """
 
 import logging
-import time
 
 import numpy as np
 
@@ -22,7 +21,6 @@ from ..core.constants import (
     SKIP_ITEM_KEYS,
 )
 from ..core.gem_defs import build_gem_counts, build_gem_details
-from ..core.parsing import env_flag
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
 from .base_stats import (
     COLOR_TO_STAT_INDEX,
@@ -33,9 +31,6 @@ from .force_greats_common import FG_BASE_STATS7_KEY
 from .scoring.stats_ops import apply_gems_to_base_stats
 
 logger = logging.getLogger(__name__)
-
-# DEV / DEBUG: PERF_TIMING (local copy; tests setattr module globals directly).
-_PERF_TIMING = env_flag("PERF_TIMING", "0")
 
 
 def decode_gpu_native_ga_runs_payload(
@@ -69,9 +64,6 @@ def decode_gpu_native_ga_runs_payload(
             raise ValueError(f"runs_payload has too few columns: {runs_payload.shape[1]} < {header_cols_min}")
 
         eff_limit = int(fg_candidate_limit)
-
-        perf = _PERF_TIMING
-        t_total = time.perf_counter() if perf else 0.0
 
         selected_n = int(runs_payload[0, 0])
         if selected_n < 0:
@@ -173,7 +165,7 @@ def decode_gpu_native_ga_runs_payload(
         # host BaseStats-dict 7-vector (tests/test_gpu_base_stats7_equivalence.py). It is
         # carried per candidate so the FG funnel does not re-derive it on the host.
         base_stats7_mat = np.asarray(packed[:, 1 + n_slots + 7 : 1 + n_slots + 7 + 7], dtype=np.int32)
-        dedup_indices, dedup_stats = select_exact_unique_row_indices(
+        dedup_indices, _ = select_exact_unique_row_indices(
             genome_ids_mat=genome_ids_mat,
             scores=scores_vec,
             exact=True,
@@ -205,10 +197,8 @@ def decode_gpu_native_ga_runs_payload(
 
         sel_color_idx = int(COLOR_TO_STAT_INDEX.get(str(sel_color or ""), -1))
 
-        t_stats = 0.0
         final_stats_mat = None
         item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
-        t_stats = time.perf_counter() if perf else 0.0
         item_stats_sum = item_stats[genome_ids_mat].sum(axis=1)
 
         if include_full_stats:
@@ -310,16 +300,6 @@ def decode_gpu_native_ga_runs_payload(
             raise RuntimeError(
                 "GPU-selected payload invariant violated: candidate score exceeds header best score "
                 f"({int(max_candidate_score)} > {int(best_global_score)})"
-            )
-
-        if perf:
-            stats_ms = (time.perf_counter() - t_stats) * 1000.0
-            total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
-            logger.info(
-                "[PERF][GADecode] "
-                f"selected={int(selected_n)} unique_rows={int(dedup_stats.unique)} "
-                f"duplicate_hits={int(dedup_stats.duplicate_hits)} replacements={int(dedup_stats.replacements)} "
-                f"stats={stats_ms:.1f}ms total={total_ms:.1f}ms candidates={len(unique_evaluated)}"
             )
 
         return best_data, list(best_gear), list(best_minis), unique_evaluated

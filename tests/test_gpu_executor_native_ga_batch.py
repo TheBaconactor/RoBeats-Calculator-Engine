@@ -18,15 +18,8 @@ def _req(req_id: int) -> GpuRequest:
 
 
 def test_load_native_ga_batch_limits_are_hardwired():
-    # Hardwired now (was GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS / _MAX_WORK_UNITS);
-    # setting them -- including the old 0=unbounded -- is inert, and the per-dispatch
-    # work-unit safety cap is never disabled.
-    values = {
-        "GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS": "999",
-        "GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS": "0",
-    }
-
-    limits = load_native_ga_batch_limits(env_get_fn=lambda key, default: values.get(key, default))
+    # The per-dispatch work-unit safety cap is never disabled.
+    limits = load_native_ga_batch_limits()
 
     assert limits.max_reqs == 2
     assert limits.max_work_units == 240000.0
@@ -101,7 +94,6 @@ def test_execute_gpu_native_ga_run_batch_uses_planned_chunks():
         execute_single=lambda req: GpuResponse(request_id=req.request_id, success=True),
         execute_chunk=lambda chunk: chunks_seen.append([req.request_id for req in chunk])
         or [GpuResponse(request_id=req.request_id, success=True) for req in chunk],
-        env_get_fn=lambda key, default: {"GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS": "2"}.get(key, default),
         estimate_work_units_fn=lambda _req: 1.0,
     )
 

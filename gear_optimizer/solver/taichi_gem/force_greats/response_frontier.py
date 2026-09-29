@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
 from gear_optimizer.core.constants import (
     GEM_SCALE_FEVER,
     GEM_STAT_TO_ELEMENT_SCALE,
@@ -753,24 +752,8 @@ def build_prepared_force_greats_response_frontier_group_arrays_on_owner(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> FgResponseFrontierPackedScoringBatch:
     """Build response group rows on the GPU owner and pack scoring surfaces."""
-    _prof = profile_events_active()
-    _t0 = time.perf_counter() if _prof else 0.0
     built = build_prepared_force_greats_response_frontier_group_rows_on_owner(batch)
-    if _prof:
-        _t_build_done = time.perf_counter()
-        emit_profile_event(
-            component="fg_fused",
-            event="fg_owner_phase",
-            metrics={"phase": "build", "total_ms": (_t_build_done - _t0) * 1000.0},
-        )
-    packed = pack_prepared_force_greats_response_frontier_scoring_surfaces(built)
-    if _prof:
-        emit_profile_event(
-            component="fg_fused",
-            event="fg_owner_phase",
-            metrics={"phase": "pack", "total_ms": (time.perf_counter() - _t_build_done) * 1000.0},
-        )
-    return packed
+    return pack_prepared_force_greats_response_frontier_scoring_surfaces(built)
 
 
 def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
@@ -1103,23 +1086,8 @@ def score_fused_owner_base_components_on_gpu_owner(
         scoring_bundle=scoring_bundle,
     )
     built = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
-    _prof_sc = profile_events_active()
-    _t_score = time.perf_counter() if _prof_sc else 0.0
     owner = score_prepared_force_greats_response_frontier_batch_on_gpu_owner(built)
-    if _prof_sc:
-        _t_score_done = time.perf_counter()
-        emit_profile_event(
-            component="fg_fused",
-            event="fg_owner_phase",
-            metrics={"phase": "score_total", "total_ms": (_t_score_done - _t_score) * 1000.0},
-        )
     score_rows = resolve_fused_owner_score_rows_from_batch(owner.batch, owner.inner_rows)
-    if _prof_sc:
-        emit_profile_event(
-            component="fg_fused",
-            event="fg_owner_phase",
-            metrics={"phase": "resolve", "total_ms": (time.perf_counter() - _t_score_done) * 1000.0},
-        )
     if len(score_rows) != len(unique_rows):
         raise ValueError(
             "fused owner FG score produced a different row count than the deduped "
@@ -1202,39 +1170,11 @@ def score_prepared_force_greats_response_frontier_batch_sync(
 ) -> list[FgResponseFrontierSolveResult]:
     if batch.scoring_surface_pattern_ids is None:
         batch = build_prepared_force_greats_response_frontier_group_arrays_on_owner(batch)
-    scoring_bundle_ms = float(batch.scoring_bundle_ms)
-    owner_t0 = time.perf_counter()
     owner = score_prepared_force_greats_response_frontier_batch_on_gpu_owner(batch)
-    gpu_score_ms = float((time.perf_counter() - owner_t0) * 1000.0)
     batch = owner.batch
-    compact_ms = float(batch.scoring_surface_compact_ms)
-    head_coeff_ms = float(batch.scoring_surface_head_coeff_ms)
-    phase_t0 = time.perf_counter()
     out = materialize_prepared_force_greats_response_frontier_batch_results(
         batch,
         owner.inner_rows,
         include_forced_counts=bool(include_forced_counts),
-    )
-    result_ms = (time.perf_counter() - phase_t0) * 1000.0
-    emit_profile_event(
-        component="fg_response_frontier",
-        event="score_prepared_batch",
-        metrics={
-            "scoring_bundle_ms": float(scoring_bundle_ms),
-            "scoring_bundle_prepare_ms": float(batch.scoring_bundle_ms),
-            "compact_ms": float(compact_ms),
-            "head_coeff_ms": float(head_coeff_ms),
-            "gpu_score_ms": float(gpu_score_ms),
-            "result_ms": float(result_ms),
-            "frontier_materialize_ms": float(result_ms),
-            "candidate_count": int(len(batch.candidate_slices)),
-            "group_count": int(batch.group_meta.shape[0]),
-            "kept_stat_keys": int(len(batch.kept_stat_keys)),
-            "unique_frontiers": int(batch.scoring_unique_frontiers),
-            "surface_rows": int(batch.scoring_surface_pattern_ids.shape[0]),
-            "surface_patterns": int(batch.scoring_surface_pattern_words.shape[0]),
-            "include_forced_counts": int(bool(include_forced_counts)),
-            "cache_source": "bundle",
-        },
     )
     return out

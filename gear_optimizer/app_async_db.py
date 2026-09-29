@@ -7,8 +7,7 @@ import threading
 import time
 from typing import Optional
 
-from gear_optimizer.core.constants import PATHS
-from gear_optimizer.core.parsing import env_flag
+from gear_optimizer.settings import paths
 from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg_dict
 from gear_optimizer.data.database import (
     configure_persistent_writer_connection,
@@ -40,24 +39,11 @@ def _get_team_buff_ref_arrays_cached() -> dict | None:
         if isinstance(_TEAM_BUFF_REF_ARRAYS_CACHE, dict) and _TEAM_BUFF_REF_ARRAYS_CACHE:
             return _TEAM_BUFF_REF_ARRAYS_CACHE
 
-        from gear_optimizer.core.config import load_paths_cache
         from gear_optimizer.data.csv_parser import read_table
 
-        paths = load_paths_cache()
-        stats_path = str((paths or {}).get("Stats", "") or PATHS.stats_csv)
-        stats_table = read_table(stats_path)
+        stats_table = read_table(str(paths().stats_txt))
         _TEAM_BUFF_REF_ARRAYS_CACHE = _build_ref_arrays_from_stats_table(stats_table)
         return _TEAM_BUFF_REF_ARRAYS_CACHE
-
-
-def _async_db_strict() -> bool:
-    """
-    Strict async DB policy.
-
-    When enabled, async DB failures should surface to the caller so the optimizer
-    doesn't continue "successfully" while persistence is broken.
-    """
-    return env_flag("GPU_STRICT", "1")
 
 
 def _resolve_base_team_buff_for_persistence(cfg_dict: dict) -> str:
@@ -146,8 +132,8 @@ class AsyncDbSaver:
             msg = f"[DB] Warning: async DB flush timed out; pending_tasks={pending}"
             print(msg)
             logging.warning(msg)
-            if _async_db_strict():
-                raise RuntimeError(msg)
+            # Fail the run rather than continue "successfully" while persistence is broken.
+            raise RuntimeError(msg)
         self.raise_if_failed()
 
     def shutdown(self, timeout: float = 30.0) -> None:
@@ -200,8 +186,6 @@ class AsyncDbSaver:
             }
 
     def raise_if_failed(self) -> None:
-        if not _async_db_strict():
-            return
         err = self.last_error()
         if not err:
             return

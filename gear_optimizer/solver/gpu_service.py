@@ -18,21 +18,16 @@ import queue
 import signal
 import threading
 import time
-import random
 from concurrent.futures import Future, InvalidStateError
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Optional
 import logging
 
-from gear_optimizer.core.env_config import ENV
-from gear_optimizer.core.parsing import env_flag, truthy
-from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer import settings
 
 from .gpu_executor import GpuExecutor, get_gpu_executor
 from .gpu_executor_types import GpuRequest, GpuRequestType, GpuResponse
 
-from gear_optimizer.core.parsing import env_get
 
 logger = logging.getLogger(__name__)
 
@@ -79,29 +74,9 @@ class GpuServiceClient:
         self._in_process_queues = False
         self._timeout_abort_requested = threading.Event()
 
-        # Optional latency profiling (end-to-end submit -> response).
-        self._profile_enabled = bool(ENV.perf_timing or ENV.gpu_service_profile)
-        self._profile_print = bool(ENV.perf_timing or ENV.gpu_service_profile_print)
-        self._profile_counts: dict[GpuRequestType, int] = defaultdict(int)
-        self._profile_total_sec: dict[GpuRequestType, float] = defaultdict(float)
-        self._profile_max_sec: dict[GpuRequestType, float] = defaultdict(float)
-        self._profile_samples: dict[GpuRequestType, list[float]] = defaultdict(list)
-        # Client-level profiling for Futures that do not correspond 1:1 with executor requests
-        # (e.g., tiled FG solve batch handles).
-        self._client_profile_counts: dict[str, int] = defaultdict(int)
-        self._client_profile_total_sec: dict[str, float] = defaultdict(float)
-        self._client_profile_max_sec: dict[str, float] = defaultdict(float)
-        self._client_profile_samples: dict[str, list[float]] = defaultdict(list)
-        self._profile_sample_cap = 5000
-
-        timeout_default_enabled = env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")
-        timeout_fatal_default = timeout_default_enabled
-        raw_timeout_fatal = str(env_get("GPU_SERVICE_TIMEOUT_FATAL", "") or "").strip().lower()
-        if raw_timeout_fatal:
-            self._timeout_fatal = truthy(raw_timeout_fatal)
-        else:
-            self._timeout_fatal = bool(timeout_fatal_default)
-        self._request_timeout_default_enabled = bool(timeout_default_enabled)
+        # Under the :8765 service a stuck GPU request times out and stops the process (the service
+        # then fails the solve); standalone runs wait indefinitely.
+        self._request_timeouts_enabled = settings.service_mode()
         self._timeout_poll_sec = 0.25
 
     @property
@@ -155,9 +130,6 @@ class GpuServiceClient:
             self._timeout_thread.join(timeout=max(0.0, float(timeout)))
         self._timeout_thread = None
 
-        if self._profile_enabled and self._profile_print:
-            self.report_profile()
-
         if self._worker_id is not None:
             self._executor.unregister_worker(int(self._worker_id))
         self._worker_id = None
@@ -200,48 +172,6 @@ class GpuServiceClient:
         self._request_queue.put(req)
         return GpuJobHandle(request_id=request_id, future=fut)
 
-    def _record_latency_sample(
-        self,
-        *,
-        key: Any,
-        latency_sec: float,
-        counts: dict[Any, int],
-        totals: dict[Any, float],
-        maxes: dict[Any, float],
-        samples: dict[Any, list[float]],
-    ) -> None:
-        latency = float(latency_sec)
-        if latency < 0.0:
-            latency = 0.0
-        counts[key] += 1
-        totals[key] += float(latency)
-        if latency > float(maxes[key]):
-            maxes[key] = float(latency)
-
-        sample_list = samples[key]
-        if len(sample_list) < int(self._profile_sample_cap):
-            sample_list.append(float(latency))
-        else:
-            n = int(counts[key])
-            if n > 0:
-                j = random.randint(0, n - 1)
-                if j < int(self._profile_sample_cap):
-                    sample_list[j] = float(latency)
-        key_label = ""
-        if isinstance(key, GpuRequestType):
-            key_label = str(key.value)
-        else:
-            key_label = str(key)
-        emit_profile_event(
-            component="gpu_service",
-            event="latency_sample",
-            metrics={
-                "key": key_label,
-                "latency_sec": float(latency),
-                "sample_count": int(counts.get(key, 0) or 0),
-            },
-        )
-
     def submit_gpu_native_ga_run(self, payload: dict[str, Any]) -> GpuJobHandle:
         # The GA run carries the fused GA->FG owner continuation (Slice 3): the owner
         # scores FG in the GA turn and returns {runs_payload, fg_owner_score}. There is
@@ -261,19 +191,6 @@ class GpuServiceClient:
             if pending is None:
                 continue
             fut = pending.future
-            req_type = pending.request_type
-            t_submit = pending.submit_ts
-
-            if self._profile_enabled and isinstance(req_type, GpuRequestType) and isinstance(t_submit, (int, float)):
-                latency = max(0.0, time.perf_counter() - float(t_submit))
-                self._record_latency_sample(
-                    key=req_type,
-                    latency_sec=float(latency),
-                    counts=self._profile_counts,
-                    totals=self._profile_total_sec,
-                    maxes=self._profile_max_sec,
-                    samples=self._profile_samples,
-                )
 
             # The pop-under-lock above makes this thread the sole owner of the
             # entry (the timeout loop can never see it), so the only competing
@@ -289,15 +206,7 @@ class GpuServiceClient:
                 logger.debug(f"gpu_service:_rx_loop: future already resolved/cancelled: {e}")
 
     def _request_timeout_sec_for(self, request_type: GpuRequestType) -> float:
-        # Single canonical deployment-boundary timeout knob. The former
-        # dynamically-constructed per-type GPU_SERVICE_REQUEST_TIMEOUT_<TYPE>_SEC
-        # name was registry-invisible (a typo silently no-op'd it) and is removed.
-        raw = str(env_get("GPU_SERVICE_REQUEST_TIMEOUT_SEC", "") or "").strip()
-
-        if raw:
-            return max(0.0, float(raw))
-
-        if not self._request_timeout_default_enabled:
+        if not self._request_timeouts_enabled:
             return 0.0
 
         if request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
@@ -305,7 +214,7 @@ class GpuServiceClient:
         return 120.0
 
     def _trigger_timeout_abort(self, message: str) -> None:
-        if not self._timeout_fatal or self._timeout_abort_requested.is_set():
+        if not self._request_timeouts_enabled or self._timeout_abort_requested.is_set():
             return
         self._timeout_abort_requested.set()
 
@@ -349,96 +258,6 @@ class GpuServiceClient:
                         entry.future.set_exception(GpuServiceTimeoutError(message))
                 except InvalidStateError as e:
                     logger.debug(f"gpu_service:_timeout_loop: future already resolved/cancelled: {e}")
-                emit_profile_event(
-                    component="gpu_service",
-                    event="timeout",
-                    metrics={
-                        "request_id": int(request_id),
-                        "request_type": str(entry.request_type.value),
-                        "elapsed_sec": float(elapsed_sec),
-                        "timeout_sec": float(entry.timeout_sec),
-                        "fatal": int(bool(self._timeout_fatal)),
-                    },
-                )
                 self._trigger_timeout_abort(message)
 
             time.sleep(float(self._timeout_poll_sec))
-
-    def profile_summary(self) -> dict[str, Any]:
-        if not self._profile_enabled:
-            return {"enabled": False}
-
-        out: dict[str, Any] = {"enabled": True, "by_type": {}, "client_jobs": {}}
-        for req_type, count in sorted(self._profile_counts.items(), key=lambda kv: kv[0].value):
-            total = float(self._profile_total_sec.get(req_type, 0.0) or 0.0)
-            mx = float(self._profile_max_sec.get(req_type, 0.0) or 0.0)
-            avg = (total / count) if count else 0.0
-            samples = list(self._profile_samples.get(req_type, ()))
-            p95 = None
-            if samples:
-                samples_sorted = sorted(samples)
-                idx = int(round(0.95 * (len(samples_sorted) - 1)))
-                idx = max(0, min(idx, len(samples_sorted) - 1))
-                p95 = float(samples_sorted[idx])
-            out["by_type"][req_type.value] = {
-                "count": int(count),
-                "avg_sec": float(avg),
-                "p95_sec": p95,
-                "max_sec": float(mx),
-            }
-        for name, count in sorted(self._client_profile_counts.items(), key=lambda kv: kv[0]):
-            total = float(self._client_profile_total_sec.get(name, 0.0) or 0.0)
-            mx = float(self._client_profile_max_sec.get(name, 0.0) or 0.0)
-            avg = (total / count) if count else 0.0
-            samples = list(self._client_profile_samples.get(name, ()))
-            p95 = None
-            if samples:
-                samples_sorted = sorted(samples)
-                idx = int(round(0.95 * (len(samples_sorted) - 1)))
-                idx = max(0, min(idx, len(samples_sorted) - 1))
-                p95 = float(samples_sorted[idx])
-            out["client_jobs"][name] = {
-                "count": int(count),
-                "avg_sec": float(avg),
-                "p95_sec": p95,
-                "max_sec": float(mx),
-            }
-        return out
-
-    def report_profile(self) -> str:
-        summary = self.profile_summary()
-        if not summary.get("enabled"):
-            return ""
-
-        by_type = summary.get("by_type") or {}
-        # Keep output compact: sort by avg latency desc, show top 8.
-        items = []
-        for k, v in by_type.items():
-            items.append((k, float(v.get("avg_sec", 0.0) or 0.0), v))
-        items.sort(key=lambda t: t[1], reverse=True)
-        items = items[:8]
-
-        parts = []
-        for name, _avg, v in items:
-            parts.append(
-                f"{name}:n={int(v.get('count', 0))} avg={float(v.get('avg_sec', 0.0)):.3f}s "
-                f"p95={float(v.get('p95_sec') or 0.0):.3f}s max={float(v.get('max_sec', 0.0)):.3f}s"
-            )
-        line = "[GpuServiceClient][PROFILE] " + "; ".join(parts)
-        print(line)
-        client_jobs = summary.get("client_jobs") or {}
-        if client_jobs:
-            items2 = []
-            for k, v in client_jobs.items():
-                items2.append((str(k), float(v.get("avg_sec", 0.0) or 0.0), v))
-            items2.sort(key=lambda t: t[1], reverse=True)
-            items2 = items2[:8]
-            parts2 = []
-            for name, _avg, v in items2:
-                parts2.append(
-                    f"{name}:n={int(v.get('count', 0))} avg={float(v.get('avg_sec', 0.0)):.3f}s "
-                    f"p95={float(v.get('p95_sec') or 0.0):.3f}s max={float(v.get('max_sec', 0.0)):.3f}s"
-                )
-            line2 = "[GpuServiceClient][CLIENT_PROFILE] " + "; ".join(parts2)
-            print(line2)
-        return line

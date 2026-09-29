@@ -11,10 +11,7 @@ import numpy as np
 
 from ..fields import MAX_GENOMES
 
-from .initialization import (
-    ensure_ready,
-    _maybe_sync,
-)
+from .initialization import ensure_ready
 from .timeline import precompute_timeline_gpu
 from .skyline_operations import (
     skyline_upload_population_indices,
@@ -143,11 +140,9 @@ def solve_genomes_from_registry(
     )
 
     if bool(score_only):
-        _maybe_sync(for_timing=False)
         return skyline_download_scores(int(n_genomes))
 
     # Download only the active result prefix (uses staging field when available).
-    _maybe_sync(for_timing=False)  # Single sync before download (respects sync policy)
     results_np = skyline_download_results(int(n_genomes))
 
     return _results_from_stats(results_np, n_genomes)

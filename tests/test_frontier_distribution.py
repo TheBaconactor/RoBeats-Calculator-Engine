@@ -263,14 +263,8 @@ def test_standalone_sync_installs_once_and_redownloads_locally_changed_files(
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    class ClientPaths:
-        data_dir = str(tmp_path / "client" / "Data")
-        bin_dir = str(tmp_path / "client" / "bin")
-
-        def bin_path(self, *parts: str) -> str:
-            return str(Path(self.bin_dir).joinpath(*parts))
-
-    monkeypatch.setattr(frontier_client, "PATHS", ClientPaths())
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_DATA_DIR", str(tmp_path / "client" / "Data"))
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_BIN_DIR", str(tmp_path / "client" / "bin"))
     monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", raising=False)
     monkeypatch.delenv("TIMELINE_FRONTIER_CACHE_DIR", raising=False)
     monkeypatch.delenv("FG_RESPONSE_FRONTIER_CACHE_DIR", raising=False)
@@ -309,7 +303,7 @@ def test_standalone_sync_installs_once_and_redownloads_locally_changed_files(
         state.install(revision_only_publication)
         revision_only_code = client_update.update_client_checkout(client_root)
         revision_only_frontiers = frontier_client.sync_frontiers_from_server()
-        installed_timeline = Path(ClientPaths().bin_path("timeline_frontier_cache", timeline_file.name))
+        installed_timeline = tmp_path / "client" / "bin" / "timeline_frontier_cache" / timeline_file.name
         installed_timeline.write_bytes(b"changed-locally")
         third = frontier_client.sync_frontiers_from_server()
     finally:

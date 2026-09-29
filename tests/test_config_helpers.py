@@ -107,8 +107,6 @@ def test_resolve_inflight_songs_default_explicit_and_short_queue(
     song_count,
     expected,
 ):
-    monkeypatch.delenv("IN_FLIGHT_SONGS", raising=False)
-
     assert resolve_inflight_songs(configured, song_count=song_count) == expected
 
 

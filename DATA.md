@@ -28,7 +28,7 @@ Data/
 └── exported_game_data.json    # game export; feeds gear CSV regeneration
 ```
 
-After the first successful path discovery, the optimizer writes `bin/paths_cache.json`. Delete that file if you move or replace `Data/`.
+The optimizer reads this fixed layout under `Data/` (or under `ROBEATSMETA_OPTIMIZER_DATA_DIR`).
 
 ## Gear and Mini tables
 
@@ -55,7 +55,6 @@ Host operators typically use an external database path via this variable.
 | `evolution.db` | Base and Force Great leaderboards |
 | `bin/timeline_frontier_cache/` | Exact fever-timing frontier payloads |
 | `bin/fg_response_frontier_cache/` | Exact Force Great response-frontier payloads |
-| `bin/paths_cache.json` | Auto-discovered data paths |
 | `bin/frontier_publications/` | Host-side published revisions (server only) |
 
 On the host, only the authoritative machine builds timeline and FG frontiers for publication. Trusted clients install prebuilt frontier bundles from the host.

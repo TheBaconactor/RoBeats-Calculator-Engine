@@ -6,12 +6,10 @@ import sys
 import threading
 import time
 
-from gear_optimizer.core.parsing import truthy
 
 
 __all__ = [
     "ProgressUI",
-    "_banner_enabled_default",
     "_progress_ui_enabled_default",
     "_stream_is_tty",
 ]
@@ -233,10 +231,3 @@ def _progress_ui_enabled_default(
     if (not bool(progress_env_present)) and (not bool(stream_is_tty)):
         return False
     return True
-
-
-def _banner_enabled_default(*, stream_is_tty: bool, banner_env: str | None) -> bool:
-    raw = str(banner_env or "").strip().lower()
-    if not raw:
-        return bool(stream_is_tty)
-    return truthy(raw)

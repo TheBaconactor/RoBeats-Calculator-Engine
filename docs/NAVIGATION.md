@@ -80,7 +80,6 @@ not directly from kernel internals.
 - Benchmarks: `tools/bench/`
 - Database inspection and repair: `tools/db/`
 - Development checks: `tools/dev/`
-- Profiling: `tools/profile/`
 - Verification: `tools/verify/`
 
 The `scripts/` tree contains narrower analysis and regression utilities. Use the

@@ -5,7 +5,7 @@ CSV parsing functions for loading gear, minis, and stats data.
 import csv
 import json
 import os
-from ..core.constants import SCRIPT_DIR
+from ..settings import paths
 from ..core.stats_calculator import build_base_stats_from_config
 from ..core.utils import cfg_to_dict, safe_int, empty_stats
 from .mini_ascension import MINI_ASCENSION_BASE_STAT_PREFIX, MINI_ASCENSION_MAX_LEVEL
@@ -14,25 +14,6 @@ from .models import WarnOnce
 
 # Global warning instance
 WARN_ONCE = WarnOnce()
-
-
-def resolve_stats_csv(paths, filename):
-    """
-    Resolve Gears/Minis CSV relative to SCRIPT_DIR or Stats.csv folder.
-
-    Args:
-        paths: Path configuration dict
-        filename: Name of CSV file (e.g., "Gears.csv")
-
-    Returns:
-        str: Resolved path to CSV file
-    """
-    csv_path = os.path.join(SCRIPT_DIR, filename)
-    if not os.path.exists(csv_path):
-        stats_loc = paths.get("Stats", "")
-        if stats_loc:
-            csv_path = os.path.join(os.path.dirname(stats_loc), filename)
-    return csv_path
 
 
 def _build_row_map(row, header_lower):
@@ -248,30 +229,14 @@ def load_csv_db(filepath, db_type="gear"):
     return db
 
 
-def load_all_minis_list(paths):
-    """
-    Load all minis from CSV file.
-
-    Args:
-        paths: Path configuration
-
-    Returns:
-        list: List of all mini dictionaries
-    """
-    return parse_mini_rows(resolve_stats_csv(paths, "Minis.csv"))
+def load_all_minis_list():
+    """All minis from <data>/Gear/Minis.csv."""
+    return parse_mini_rows(str(paths().minis_csv))
 
 
-def load_all_gears_list(paths):
-    """
-    Load all gears from CSV file.
-
-    Args:
-        paths: Path configuration
-
-    Returns:
-        list: List of all gear dictionaries
-    """
-    return parse_gear_rows(resolve_stats_csv(paths, "Gears.csv"))
+def load_all_gears_list():
+    """All gear from <data>/Gear/Gears.csv."""
+    return parse_gear_rows(str(paths().gears_csv))
 
 
 def get_fixed_stats(cfg):
@@ -287,20 +252,19 @@ def get_fixed_stats(cfg):
     return build_base_stats_from_config(cfg_to_dict(cfg))
 
 
-def get_config_gear_stats(cfg, paths, gears_db=None):
+def get_config_gear_stats(cfg, gears_db=None):
     """
     Load gear stats from config.ini.
 
     Args:
         cfg: ConfigParser instance
-        paths: Path configuration
         gears_db: Optional preloaded gear database
 
     Returns:
         tuple: (gear_stats_dict, gear_list)
     """
     if gears_db is None:
-        gears_db = load_csv_db(resolve_stats_csv(paths, "Gears.csv"), "gear")
+        gears_db = load_csv_db(str(paths().gears_csv), "gear")
 
     gear_stats = empty_stats()
     gear_list = []
@@ -327,20 +291,19 @@ def get_config_gear_stats(cfg, paths, gears_db=None):
     return gear_stats, gear_list
 
 
-def get_config_mini_stats(cfg, paths, minis_db=None):
+def get_config_mini_stats(cfg, minis_db=None):
     """
     Load mini stats from config.ini.
 
     Args:
         cfg: ConfigParser instance
-        paths: Path configuration
         minis_db: Optional preloaded mini database
 
     Returns:
         tuple: (mini_stats_dict, mini_list)
     """
     if minis_db is None:
-        minis_db = load_csv_db(resolve_stats_csv(paths, "Minis.csv"), "mini")
+        minis_db = load_csv_db(str(paths().minis_csv), "mini")
 
     mini_stats = empty_stats()
     mini_list = []

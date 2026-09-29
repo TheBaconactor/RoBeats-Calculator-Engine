@@ -282,7 +282,6 @@ def test_record_improvement_uses_persisted_fg_pairing_not_entry_score(tmp_path):
 
 
 def test_shutdown_timeout_never_restarts_live_writer(tmp_path, monkeypatch):
-    monkeypatch.setenv("GPU_STRICT", "1")
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "shutdown.db"))
     entered = threading.Event()
     release = threading.Event()

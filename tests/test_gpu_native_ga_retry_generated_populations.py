@@ -150,10 +150,6 @@ def _install_fake_taichi_modules(monkeypatch, gpu_api=None) -> None:
     monkeypatch.setitem(sys.modules, "gear_optimizer.solver.taichi_gem.fields", fake_fields_module)
 
 
-def _install_fake_taichi_sync(monkeypatch) -> None:
-    monkeypatch.setitem(sys.modules, "taichi", types.SimpleNamespace(sync=lambda: None))
-
-
 def test_run_gpu_native_ga_requires_explicit_seed():
     from gear_optimizer.solver import genetic_pipeline as genetic
 
@@ -462,51 +458,3 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
     assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
 
 
-def test_run_gpu_native_ga_hybrid_multirun_emits_phase_events(monkeypatch):
-    from gear_optimizer.solver import genetic_pipeline as genetic
-
-    fake_gpu = _FakeGpuApi(fail_once=False)
-    _install_fake_taichi_modules(monkeypatch, fake_gpu)
-    _install_fake_taichi_sync(monkeypatch)
-
-    events: list[dict] = []
-
-    monkeypatch.setenv("GPU_NATIVE_GA_PHASE_TIMING", "1")
-    monkeypatch.setenv("METAFINDER_PROFILE_EVENTS", "1")
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "emit_profile_event", lambda **kwargs: events.append(dict(kwargs)), raising=True)
-
-    out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
-        calc_song={
-            "metadata": {"Song Name": "steady-phase-smoke", "Difficulty": "Hard"},
-            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-        },
-        ref_arrays=_ref_arrays(),
-        song_slot=0,
-        item_stats=np.zeros((16, 10), dtype=np.int32),
-        slot_start=np.zeros((9,), dtype=np.int32),
-        slot_count=np.zeros((9,), dtype=np.int32),
-        base_fixed_stats_arr=np.zeros((7,), dtype=np.int32),
-        fg_gear_name_rank=np.zeros((512,), dtype=np.int32),
-        fg_mini_sig_id=np.zeros((512,), dtype=np.int32),
-        n_generations=1,
-        initial_populations=None,
-        num_runs=3,
-        n_genomes=8,
-        color_flags={},
-        cfg_data={
-            "TotalBudget": 90,
-            "GemScaleFever": 3,
-            "fg_candidate_limit": 51,
-        },
-        ga_seed=123,
-    )
-
-    phase_events = [event for event in events if event.get("event") == "ga_gpu_phase"]
-    flag_events = [event for event in events if event.get("event") == "ga_gpu_phase_flags"]
-
-    assert isinstance(out, np.ndarray)
-    assert len(flag_events) == 1
-    phases = {event.get("metrics", {}).get("phase") for event in phase_events}
-    assert {"evaluate", "update_runs_best", "pack_fg_candidates"}.issubset(phases)
-    assert all(int(event.get("metrics", {}).get("batch_runs", 0)) == 3 for event in phase_events)

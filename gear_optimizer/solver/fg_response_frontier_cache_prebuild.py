@@ -19,7 +19,6 @@ from gear_optimizer.core.cpu_affinity import (
     init_process_pool_worker_band,
 )
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
-from gear_optimizer.core.profile_events import emit_profile_event, profile_events_active
 from gear_optimizer.core.recycling_process_pool import BoundedRecyclingProcessPool
 from gear_optimizer.solver.frontier_cache_manifest import (
     _ref_axes_signature,
@@ -173,7 +172,6 @@ class _FgPrebuildRamGuard:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="fg-prebuild-ram-guard", daemon=True)
         self._suspended: list = []
-        self._samples = 0
 
     def start(self) -> None:
         self._thread.start()
@@ -230,11 +228,6 @@ class _FgPrebuildRamGuard:
                         len(self._suspended),
                         len(workers),
                     )
-                    emit_profile_event(
-                        component="fg_response_cache",
-                        event="ram_guard_suspend",
-                        metrics={"free_gb": float(free_gb), "suspended": len(self._suspended), "workers": len(workers)},
-                    )
                 polls_since_resume += 1
             elif self._suspended and (free_gb > _FG_PREBUILD_RESUME_FLOOR_GB or force_resume):
                 # One per poll: a thundering resume would re-create the climb that tripped the
@@ -249,32 +242,8 @@ class _FgPrebuildRamGuard:
                     force_resume,
                     len(self._suspended),
                 )
-                emit_profile_event(
-                    component="fg_response_cache",
-                    event="ram_guard_resume",
-                    metrics={"free_gb": float(free_gb), "suspended": len(self._suspended), "forced": bool(force_resume)},
-                )
             else:
                 polls_since_resume += 1
-            self._samples += 1
-            if self._samples % 12 == 0:
-                # Once a minute: the per-worker commit climb curves that end anchor guesswork.
-                commits = []
-                for proc in workers:
-                    try:
-                        memory = proc.memory_info()
-                    except psutil.Error:
-                        continue
-                    commits.append(round(float(getattr(memory, "private", 0) or memory.vms) / 1e9, 2))
-                emit_profile_event(
-                    component="fg_response_cache",
-                    event="ram_guard_sample",
-                    metrics={
-                        "free_gb": float(free_gb),
-                        "worker_commit_gb": commits,
-                        "suspended": len(self._suspended),
-                    },
-                )
 
 
 def _start_fg_prebuild_ram_guard() -> _FgPrebuildRamGuard:
@@ -514,26 +483,6 @@ def build_fg_response_frontier_cache_for_path(
         # driver on EXTENDED CUT charts. Release sweeps every per-song cache tier by key
         # prefix; the bundle just written re-opens from disk wherever it is next needed.
         release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays))
-    if profile_events_active():
-        # Per-song worker memory ground truth: calibrates/validates the admission weight anchors
-        # (peak_wset/private are Windows-only psutil fields; 0.0 elsewhere).
-        import psutil
-
-        memory = psutil.Process().memory_info()
-        timestamps = calc_song.get("song_data", {}).get("timestamps", ())
-        emit_profile_event(
-            component="fg_response_cache",
-            event="prebuild_song_done",
-            song_key=song_path.name,
-            metrics={
-                "build_ms": float(result.elapsed_ms),
-                "source": str(result.cache_source),
-                "note_count": int(len(timestamps) if timestamps is not None else 0),
-                "rss_gb": float(memory.rss) / 1e9,
-                "peak_wset_gb": float(getattr(memory, "peak_wset", 0)) / 1e9,
-                "private_gb": float(getattr(memory, "private", 0)) / 1e9,
-            },
-        )
     return FgResponseFrontierCacheBuildResult(
         path=str(song_path),
         source=str(result.cache_source),
@@ -747,20 +696,6 @@ def _run_missing_fg_prebuild(
                     float(admitted_weight_gb),
                     budget_gb,
                 )
-            emit_profile_event(
-                component="fg_response_cache",
-                event="prebuild_admit",
-                song_key=os.path.basename(path),
-                metrics={
-                    "note_count": int(note_count),
-                    "weight_gb": float(weight_gb),
-                    "reducer_threads": int(reducer_threads),
-                    "in_flight": int(len(in_flight)),
-                    "admitted_weight_gb": float(admitted_weight_gb),
-                    "effective_ledger_gb": float(effective_ledger_gb),
-                    "available_gb": float(live_available_gb),
-                },
-            )
 
     ram_guard = _start_fg_prebuild_ram_guard()
     try:
@@ -843,19 +778,6 @@ def _run_missing_fg_prebuild(
         int(source_counts.get("disk", 0)),
         int(source_counts.get("memory", 0)),
         elapsed_ms / 1000.0,
-    )
-    emit_profile_event(
-        component="fg_response_cache",
-        event="prebuild_stop",
-        metrics={
-            "completed": int(completed),
-            "total": int(len(paths)),
-            "failures": int(failures),
-            "built": int(source_counts.get("built", 0)),
-            "disk": int(source_counts.get("disk", 0)),
-            "memory": int(source_counts.get("memory", 0)),
-            "elapsed_ms": elapsed_ms,
-        },
     )
     return summary, results
 

@@ -12,7 +12,6 @@ import numpy as np
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.config import GASettings as GARuntimeSettings
 from gear_optimizer.core.gem_defs import UserGemsSettings
-from gear_optimizer.core.parsing import env_get, truthy
 from gear_optimizer.core.singleflight import SingleFlight
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.domain.jobs import seed_plan_from_song_job, task_tuple_to_view
@@ -39,16 +38,6 @@ _POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...], tuple], tuple[list, l
 _REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...], tuple], tuple[ItemRegistry, dict]]" = OrderedDict()
 _INIT_HEURISTIC_TOPK_CACHE: "OrderedDict[tuple[tuple[str, str, tuple[str, ...], tuple], int], np.ndarray]" = OrderedDict()
 _PREP_CACHE_SINGLEFLIGHT: SingleFlight[tuple[str, tuple], object] = SingleFlight()
-_CACHE_STATS = {
-    "pools_hit": 0,
-    "pools_miss": 0,
-    "registry_hit": 0,
-    "registry_miss": 0,
-    "heur_hit": 0,
-    "heur_miss": 0,
-}
-_CACHE_STATS_LOCK = threading.Lock()
-_CACHE_STATS_LAST_EMIT = 0.0
 
 
 def _lru_get(cache: OrderedDict, key: tuple):
@@ -76,10 +65,7 @@ def _prep_cache_get_or_build(
     with _PREP_CACHE_LOCK:
         cached = _lru_get(cache, key)
     if cached is not None:
-        _cache_stats_inc(f"{cache_name}_hit")
         return cached
-
-    _cache_stats_inc(f"{cache_name}_miss")
 
     def _build_and_cache():
         # The prior owner may finish between the initial lookup and this caller
@@ -98,49 +84,6 @@ def _prep_cache_get_or_build(
     return _PREP_CACHE_SINGLEFLIGHT.run((str(cache_name), key), _build_and_cache)
 
 
-def _cache_stats_enabled() -> bool:
-    return truthy(env_get("INFLIGHT_CACHE_STATS", "0"))
-
-
-def _cache_stats_emit_interval_s() -> float:
-    return float(env_get("INFLIGHT_CACHE_STATS_EMIT_SEC", "30") or "30")
-
-
-def _cache_stats_inc(key: str) -> None:
-    with _CACHE_STATS_LOCK:
-        _CACHE_STATS[key] = int(_CACHE_STATS.get(key, 0) or 0) + 1
-
-
-def _cache_stats_maybe_emit() -> None:
-    if not _cache_stats_enabled():
-        return
-    interval = float(_cache_stats_emit_interval_s())
-    if interval <= 0:
-        return
-    now = time.monotonic()
-    global _CACHE_STATS_LAST_EMIT
-    with _CACHE_STATS_LOCK:
-        if (now - float(_CACHE_STATS_LAST_EMIT)) < interval:
-            return
-        _CACHE_STATS_LAST_EMIT = now
-        snap = dict(_CACHE_STATS)
-    pools_h = int(snap.get("pools_hit", 0) or 0)
-    pools_m = int(snap.get("pools_miss", 0) or 0)
-    reg_h = int(snap.get("registry_hit", 0) or 0)
-    reg_m = int(snap.get("registry_miss", 0) or 0)
-    heur_h = int(snap.get("heur_hit", 0) or 0)
-    heur_m = int(snap.get("heur_miss", 0) or 0)
-    logger.debug(
-        "[InFlight][CacheStats] pools hit=%s miss=%s | registry hit=%s miss=%s | heur_topk hit=%s miss=%s",
-        pools_h,
-        pools_m,
-        reg_h,
-        reg_m,
-        heur_h,
-        heur_m,
-    )
-
-
 def prepare_native_song(task: tuple) -> NativeSong:
     wall_t0 = time.perf_counter()
     cpu_t0 = thread_cpu_time_s()
@@ -157,7 +100,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     found_song_name = job.song_name
     effective_difficulty = job.difficulty
     cfg_dict = run_context.cfg_dict
-    paths = run_context.paths
     ref_arrays = run_context.ref_arrays
     all_gears = run_context.all_gears
     all_minis = run_context.all_minis
@@ -170,7 +112,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
         fp=fp,
         found_song_name=found_song_name,
         cfg_dict=cfg_dict,
-        paths=paths,
         gears_by_name=gears_by_name,
         minis_by_name=minis_by_name,
         all_minis=all_minis,
@@ -233,7 +174,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
         cache_name="registry",
         maxsize=_REGISTRY_CACHE_MAX,
     )
-    _cache_stats_maybe_emit()
     ga_runtime_settings = GARuntimeSettings.from_config(cfg)
     user_gems = UserGemsSettings.from_config(cfg, selected_color=selected_color)
     cfg_data = {
@@ -312,7 +252,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             effective_difficulty=str(effective_difficulty),
             cfg_dict=cfg_dict,
             cfg=cfg,
-            paths=paths,
             ga_depth=int(ga_depth),
             fg_debug=bool(fg_debug),
         ),

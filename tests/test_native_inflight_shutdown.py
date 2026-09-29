@@ -61,7 +61,6 @@ class _GpuExecutor:
 
 def test_shutdown_native_inflight_resources_uses_dependency_order(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(shutdown, "inflight_shutdown_debug_enabled", lambda: False)
 
     shutdown.shutdown_native_inflight_resources(
         fg_pipeline=_FgPipeline(calls),
@@ -93,7 +92,6 @@ def test_shutdown_native_inflight_resources_uses_dependency_order(monkeypatch):
 
 def test_shutdown_native_inflight_resources_continues_after_shutdown_failure(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(shutdown, "inflight_shutdown_debug_enabled", lambda: False)
 
     shutdown.shutdown_native_inflight_resources(
         fg_pipeline=_FgPipeline(calls),
@@ -119,7 +117,6 @@ def test_shutdown_native_inflight_resources_continues_after_shutdown_failure(mon
 
 def test_persistent_worker_keeps_gpu_executor_alive(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(shutdown, "inflight_shutdown_debug_enabled", lambda: False)
 
     shutdown.shutdown_native_inflight_resources(
         fg_pipeline=_FgPipeline(calls),

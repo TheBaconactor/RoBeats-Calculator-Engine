@@ -104,7 +104,7 @@ python main.py
 
 The first run may take longer while Numba and Taichi compile kernels and the optimizer builds missing frontiers. Later runs reuse compatible caches under `bin/`.
 
-Press `Ctrl+C` once for a graceful shutdown or twice to force an exit. You can also create `bin/STOP`; set `METAFINDER_STOP_FILE` to use another stop-file path.
+Press `Ctrl+C` once for a graceful shutdown or twice to force an exit. You can also create `bin/STOP`.
 
 ## Usage
 
@@ -229,9 +229,9 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for project conventions and pull-reques
 ## Troubleshooting
 
 <details>
-<summary><strong>Data paths are not discovered</strong></summary>
+<summary><strong>Data files are not found</strong></summary>
 
-Delete `bin/paths_cache.json`, confirm that the local tree matches [`DATA.md`](DATA.md), and run the optimizer again.
+Confirm that the local tree matches [`DATA.md`](DATA.md), and run the optimizer again.
 
 </details>
 

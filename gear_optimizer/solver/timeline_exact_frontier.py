@@ -9,12 +9,10 @@ is uploaded or persisted.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import time
 
 import numpy as np
 
 from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE
-from gear_optimizer.core.profile_events import emit_profile_event
 
 from .taichi_gem.fields import GRID_SIZE, MAX_TIMELINE_FRONTIER_SURFACES
 
@@ -89,28 +87,6 @@ def _head_mask_coefficients_py(
     return n_hn, n_hf, sigma_hn, sigma_hf
 
 
-def _emit_frontier_phase(
-    *,
-    phase: str,
-    start: float,
-    song_key: str | None,
-    song_slot: int,
-    **metrics,
-) -> None:
-    payload = {
-        "phase": str(phase),
-        "ms": float((time.perf_counter() - float(start)) * 1000.0),
-        "song_slot": int(song_slot),
-    }
-    payload.update(metrics)
-    emit_profile_event(
-        component="gpu_executor",
-        event="timeline_frontier_phase",
-        song_key=song_key,
-        metrics=payload,
-    )
-
-
 def reconstruct_timeline_physical_trace(
     *,
     head_bits: tuple[int, int, int, int],
@@ -170,7 +146,6 @@ def build_timeline_frontier_grid_payload(
     lanes: np.ndarray,
     ref_ft: np.ndarray,
     ref_ff: np.ndarray,
-    song_key: str | None = None,
 ) -> TimelineFrontierGridPayload:
     """Build every FT/FF Base cell from exact lane-aware all-Perfect producer surfaces."""
     song_slot_i = int(song_slot)
@@ -224,8 +199,6 @@ def build_timeline_frontier_grid_payload(
         for real_time in unique_real_times.tolist()
         for fill_count in unique_fill_counts.tolist()
     )
-    build_stats: dict[str, object] = {}
-    build_start = time.perf_counter()
     physical_frontiers = build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=timestamps,
         perfect_candidate_timestamps=perfect_candidates,
@@ -237,7 +210,6 @@ def build_timeline_frontier_grid_payload(
         lanes=lane_arr,
         geometries=geometries,
         use_forced_great_timing=False,
-        stats_sink=build_stats,
     )
     if len(physical_frontiers) != len(geometries):
         raise ValueError("timeline physical producer returned the wrong number of geometries")
@@ -334,21 +306,6 @@ def build_timeline_frontier_grid_payload(
         ordered = tuple(surfaces)
         pair_cache[(float(geometry[2]), int(geometry[0]))] = (ordered, _store_surfaces(ordered))
 
-    _emit_frontier_phase(
-        phase="physical_pair_builds",
-        start=build_start,
-        song_key=song_key,
-        song_slot=song_slot_i,
-        unique_fill_counts=int(unique_fill_counts.size),
-        unique_real_times=int(unique_real_times.size),
-        pair_count=int(len(pair_cache)),
-        pair_surface_total=int(sum(len(frontier.first_frontier) for frontier in physical_frontiers)),
-        pair_surface_max=int(max(len(frontier.first_frontier) for frontier in physical_frontiers)),
-        unique_pool_packs=int(len(pool_offset_by_pack)),
-        frontier_pool_used=int(pool_cursor),
-        **{f"producer_{key}": value for key, value in build_stats.items()},
-    )
-
     dense_shape = (int(unique_real_times.size), int(unique_fill_counts.size))
     dense_body_fever = np.zeros(dense_shape, dtype=np.int32)
     dense_body_normal = np.zeros(dense_shape, dtype=np.int32)
@@ -378,16 +335,6 @@ def build_timeline_frontier_grid_payload(
     grid_frontier_count[payload_slot] = dense_frontier_count[grid_time_index, grid_fill_index]
     grid_frontier_offset[payload_slot] = dense_frontier_offset[grid_time_index, grid_fill_index]
 
-    _emit_frontier_phase(
-        phase="grid_fill",
-        start=build_start,
-        song_key=song_key,
-        song_slot=song_slot_i,
-        cell_count=int(GRID_SIZE * GRID_SIZE),
-        frontier_cells=int(np.count_nonzero(grid_frontier_count[payload_slot])),
-        frontier_variants=int(np.sum(grid_frontier_count[payload_slot], dtype=np.int64)),
-        frontier_pool_used=int(pool_cursor),
-    )
     return TimelineFrontierGridPayload(
         grid_count_body_fever=grid_count_body_fever,
         grid_count_body_normal=grid_count_body_normal,

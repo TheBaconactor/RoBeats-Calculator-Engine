@@ -14,8 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from gear_optimizer.core.constants import PATHS
-from gear_optimizer.core.parsing import env_str
+from gear_optimizer.settings import metafinder_settings
 
 CLIENT_ID_HEADER = "X-Metafinder-Client"
 TIMESTAMP_HEADER = "X-Metafinder-Timestamp"
@@ -34,8 +33,7 @@ class FrontierClientCredentials:
 
 
 def client_credentials_path() -> Path:
-    configured = env_str("METAFINDER_FRONTIER_CREDENTIALS_FILE", "")
-    return Path(configured).expanduser() if configured else Path(PATHS.bin_path("frontier_client_credentials.json"))
+    return metafinder_settings().credentials_file
 
 
 def frontier_credentials_configured(path: str | Path | None = None) -> bool:
@@ -44,8 +42,7 @@ def frontier_credentials_configured(path: str | Path | None = None) -> bool:
 
 
 def server_clients_path() -> Path:
-    configured = env_str("ROBEATSMETA_FRONTIER_CLIENTS_FILE", "")
-    return Path(configured).expanduser() if configured else Path(PATHS.bin_path("frontier_server_clients.json"))
+    return metafinder_settings().clients_file
 
 
 def _require_private_file(path: Path) -> None:

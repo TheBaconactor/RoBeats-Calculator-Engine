@@ -16,8 +16,8 @@ from typing import Any, Optional
 
 import numpy as np
 
+from gear_optimizer import settings
 from gear_optimizer.core.config import GASettings as GARuntimeSettings
-from gear_optimizer.core.parsing import env_get, truthy
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.domain.jobs import task_cfg_dict
 
@@ -64,9 +64,10 @@ def read_inflight_worker_count(
     *,
     inflight_limit: int,
     kind: str,
-    ga_seed: str = "",
+    seeded: bool = False,
 ) -> int:
-    if str(ga_seed or "").strip() and str(kind or "").strip().lower() == "prep":
+    # A fixed GA seed makes runs reproducible only if songs are prepared in queue order.
+    if seeded and str(kind or "").strip().lower() == "prep":
         return 1
     workers = default_worker_threads(inflight_limit=int(inflight_limit), kind=str(kind))
     return max(1, int(workers))
@@ -98,38 +99,6 @@ class InflightConfig:
     prep_workers: int
     decode_workers: int
     fg_scheduler_norm: str
-    stage_profile_enabled: bool
-    stage_profile_path: str | None
-    runtime: "InflightRuntimeSettings"
-    loop_observer: "InflightLoopObserverSettings"
-    fg_submit_debug: bool
-
-
-@dataclass(frozen=True)
-class InflightRuntimeSettings:
-    gpu_executor_init_timeout_sec: float
-
-
-def read_inflight_runtime_settings(
-    *,
-    env_get_fn=env_get,
-) -> InflightRuntimeSettings:
-    try:
-        gpu_executor_init_timeout_sec = float(env_get_fn("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "600") or "600")
-    except (ValueError, TypeError):
-        gpu_executor_init_timeout_sec = 180.0
-
-    return InflightRuntimeSettings(
-        gpu_executor_init_timeout_sec=float(gpu_executor_init_timeout_sec),
-    )
-
-
-def inflight_stall_debug_enabled(*, env_get_fn=env_get) -> bool:
-    return truthy(env_get_fn("INFLIGHT_STALL_DEBUG", "0"))
-
-
-def inflight_shutdown_debug_enabled(*, env_get_fn=env_get) -> bool:
-    return truthy(env_get_fn("INFLIGHT_SHUTDOWN_DEBUG", "0"))
 
 
 def first_task_config(tasks: list[tuple]) -> Any | None:
@@ -137,37 +106,6 @@ def first_task_config(tasks: list[tuple]) -> Any | None:
         return cfg_from_dict(task_cfg_dict(tasks[0]))
     except (IndexError, KeyError, TypeError, ValueError):
         return None
-
-
-@dataclass(frozen=True)
-class InflightLoopObserverSettings:
-    heartbeat_sec: float
-    throughput_sec: float
-    profile_max_songs: int
-
-
-def read_inflight_loop_observer_settings(
-    *,
-    env_get_fn=env_get,
-) -> InflightLoopObserverSettings:
-    try:
-        heartbeat_sec = float(env_get_fn("INFLIGHT_HEARTBEAT_SEC", "0") or "0")
-    except (ValueError, TypeError):
-        heartbeat_sec = 0.0
-    try:
-        throughput_sec = float(env_get_fn("INFLIGHT_THROUGHPUT_SEC", "0") or "0")
-    except (ValueError, TypeError):
-        throughput_sec = 0.0
-    try:
-        profile_max_songs = int(env_get_fn("INFLIGHT_PROFILE_MAX_SONGS", "0") or "0")
-    except (ValueError, TypeError):
-        profile_max_songs = 0
-
-    return InflightLoopObserverSettings(
-        heartbeat_sec=float(heartbeat_sec),
-        throughput_sec=float(throughput_sec),
-        profile_max_songs=max(0, int(profile_max_songs)),
-    )
 
 
 def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> InflightConfig:
@@ -201,14 +139,14 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
             msg = (
                 f"[InFlight] enabled: requested={int(in_flight_songs)} effective={int(inflight_limit)} "
-                f"(GPU_SONG_SLOTS={int(max_song_slots)}, usable_slots={int(song_slot_limit)})"
+                f"(song_slots={int(max_song_slots)}, usable_slots={int(song_slot_limit)})"
             )
             if int(inflight_limit) < int(in_flight_songs):
                 if cap_reasons:
                     msg += f" [capped by {', '.join(cap_reasons)}"
                 else:
                     msg += " [capped"
-                msg += "; set GPU_SONG_SLOTS >= InFlightSongs + 1 to avoid slot caps]"
+                msg += "]"
             logger.debug(msg)
         except (ValueError, TypeError):
             pass
@@ -224,11 +162,10 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
     prep_buffer_mult = int(CANONICAL_PREP_BUFFER_MULT)
     prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
-    ga_seed = str(env_get("GA_SEED") or "").strip()
     prep_workers = read_inflight_worker_count(
         inflight_limit=int(inflight_limit),
         kind="prep",
-        ga_seed=ga_seed,
+        seeded=settings.ga_seed() is not None,
     )
     decode_workers = read_inflight_worker_count(
         inflight_limit=int(inflight_limit),
@@ -250,28 +187,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
     ga_runs = read_ga_multi_start(cfg0)
     gpu_fields.configure_ga_run_buffers(max_runs=ga_runs, max_genomes=GA_POPULATION_SIZE)
 
-    try:
-        if os.name == "nt" and env_get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE") is None:
-            os.environ["GPU_ALLOW_SYSTEM_TIMER_OVERRIDE"] = "1"
-            if truthy(env_get("PERF_TIMING", "0")):
-                logger.debug(
-                    "[InFlight][Perf] Enabled 1ms Windows timer period for GPU batching "
-                    "(set GPU_ALLOW_SYSTEM_TIMER_OVERRIDE=0 to disable)."
-                )
-    except (ValueError, TypeError):
-        pass
-
-    stage_profile_enabled = truthy(env_get("INFLIGHT_STAGE_PROFILE", "0"))
-    stage_profile_path = env_get("INFLIGHT_STAGE_PROFILE_PATH")
-    if stage_profile_enabled and not stage_profile_path:
-        from gear_optimizer.core.constants import PATHS
-
-        stage_profile_path = PATHS.bin_path("inflight_stage_profile.json")
-
-    fg_submit_debug = truthy(env_get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
-    runtime = read_inflight_runtime_settings()
-    loop_observer = read_inflight_loop_observer_settings()
-
     return InflightConfig(
         pool_cache_max=pool_cache_max,
         registry_cache_max=registry_cache_max,
@@ -285,11 +200,6 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         prep_workers=prep_workers,
         decode_workers=decode_workers,
         fg_scheduler_norm=fg_scheduler_norm,
-        stage_profile_enabled=stage_profile_enabled,
-        stage_profile_path=stage_profile_path,
-        runtime=runtime,
-        loop_observer=loop_observer,
-        fg_submit_debug=fg_submit_debug,
     )
 
 from gear_optimizer.core.types import CalcSong, JsonDict, RefArrays
@@ -377,7 +287,6 @@ class NativeSongFGState:
     fg_variants: Optional[list[JsonDict]] = None
     fg_calc_song: Optional[CalcSong | JsonDict] = None
     fg_prep_future: Optional[concurrent.futures.Future] = None
-    fg_queued_t0: float | None = None
     fg_static_prep_done: bool = False
     fg_dynamic_prep_done: bool = False
     fg_prep_submit_t0: float | None = None

@@ -101,7 +101,6 @@ def test_native_execution_uses_canonical_inflight_resolution(monkeypatch, config
     app = _make_minimal_app()
     tasks = _build_tasks(inflight_songs=configured, count=count)
     calls: list[dict] = []
-    monkeypatch.delenv("IN_FLIGHT_SONGS", raising=False)
 
     def _record_run(*args, **kwargs):
         calls.append({"args": args, "kwargs": kwargs})
@@ -115,19 +114,6 @@ def test_native_execution_uses_canonical_inflight_resolution(monkeypatch, config
     app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
 
     assert calls[0]["kwargs"]["in_flight_songs"] == expected
-
-
-def test_gpu_slot_auto_sizing_uses_canonical_inflight_default(monkeypatch):
-    app = object.__new__(GearOptimizerApp)
-    cfg = configparser.ConfigParser()
-    monkeypatch.delenv("IN_FLIGHT_SONGS", raising=False)
-    monkeypatch.delenv("GPU_SONG_SLOTS", raising=False)
-    monkeypatch.delitem(sys.modules, "gear_optimizer.solver.taichi_gem.fields", raising=False)
-
-    app._maybe_autoset_gpu_song_slots(cfg)
-
-    expected = max(24, DEFAULT_INFLIGHT_SONGS * CANONICAL_GA_QUEUE_MULT + 2)
-    assert int(os.environ["GPU_SONG_SLOTS"]) == expected
 
 
 def test_inflight_failure_raises_instead_of_falling_back(monkeypatch):
