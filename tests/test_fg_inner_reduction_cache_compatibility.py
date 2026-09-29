@@ -9,6 +9,7 @@ from tests.test_fg_response_frontier_cache import _calc_song, _varying_ref_array
 PREVIOUS_VERSION = "fg-response-frontier-visible-first-v31+logic-60e33a1d805f"
 REDUCED_VERSION = "fg-response-frontier-visible-first-v31+logic-d73bd8aab735"
 PARALLEL_CPU_SEARCH_VERSION = "fg-response-frontier-visible-first-v31+logic-260f7b254d34"
+REWRITE_STAGE1_VERSION = "fg-response-frontier-visible-first-v31+logic-529c17599261"
 
 
 @pytest.mark.parametrize(
@@ -17,6 +18,9 @@ PARALLEL_CPU_SEARCH_VERSION = "fg-response-frontier-visible-first-v31+logic-260f
         (PREVIOUS_VERSION, REDUCED_VERSION),
         (PREVIOUS_VERSION, PARALLEL_CPU_SEARCH_VERSION),
         (REDUCED_VERSION, PARALLEL_CPU_SEARCH_VERSION),
+        (PARALLEL_CPU_SEARCH_VERSION, REWRITE_STAGE1_VERSION),
+        (REDUCED_VERSION, REWRITE_STAGE1_VERSION),
+        (PREVIOUS_VERSION, REWRITE_STAGE1_VERSION),
     ],
 )
 def test_inner_reductions_reuse_exact_persisted_frontiers(tmp_path, monkeypatch, persisted_version, current_version):

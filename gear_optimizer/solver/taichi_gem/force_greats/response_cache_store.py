@@ -82,6 +82,16 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Engine rewrite stage 1 (settings module, config.ini plumbing and debug switches removed, game-rule
+    # constants moved verbatim from core/constants.py to rules.py) changes no producer logic: all 20 complete
+    # bundles of the ten capture charts (both timing modes) rebuilt with this code are byte-identical to the
+    # 260f7b254d34 producer's builds, and builds are deterministic. Ratify the deployed version and its
+    # ratified predecessors (non-transitive), so every bundle the deployed service accepts stays readable.
+    "fg-response-frontier-visible-first-v31+logic-529c17599261": (
+        "fg-response-frontier-visible-first-v31+logic-260f7b254d34",
+        "fg-response-frontier-visible-first-v31+logic-d73bd8aab735",
+        "fg-response-frontier-visible-first-v31+logic-60e33a1d805f",
+    ),
     # Scoring CPU gem-search groups in chunks on a thread pool and compiling jit_setup kernels with
     # nogil change runtime scorers only; the frontier producer is unchanged. Sixteen complete bundles
     # rebuilt afterwards are byte-identical to the published 60e33a1d805f bundles (metadata, ordered

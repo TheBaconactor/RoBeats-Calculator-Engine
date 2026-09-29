@@ -105,13 +105,12 @@ def test_issue161_perfect_edge_rotation_rejects_all_predecessors(
 ) -> None:
     payload = _build_small_payload()
     current_version = timeline_api._FRONTIER_DISK_CACHE_VERSION
-    predecessor = "exact-frontier-v12+logic-be26caca62b4"
-    deployed_version = "exact-frontier-v12+logic-920bc4af7ee6"
-    assert current_version == "exact-frontier-v12+logic-e2108556084d"
+    assert current_version == "exact-frontier-v12+logic-ede645c00a02"
     assert timeline_api.timeline_frontier_compatible_cache_versions() == (
         current_version,
-        deployed_version,
-        predecessor,
+        "exact-frontier-v12+logic-e2108556084d",
+        "exact-frontier-v12+logic-920bc4af7ee6",
+        "exact-frontier-v12+logic-be26caca62b4",
     )
     unsafe_predecessors = {
         "exact-frontier-v12+logic-1f182e5b89af",
