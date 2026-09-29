@@ -538,10 +538,7 @@ def test_response_frontier_exact_reoptimizes_gems_against_bruteforce_reference(t
 
 
 def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path, monkeypatch):
-    from gear_optimizer.solver.scoring.exact_rescore import (
-        score_force_greats_response_surface_exact,
-        score_force_greats_surface_base_exact,
-    )
+    from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 
     rows = 161
     ref_arrays = {
@@ -584,10 +581,8 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
         total_budget=3,
     )
     exact_score = score_force_greats_response_surface_exact(result.stats, calc_song, ref_arrays, result.surface)
-    base_score = score_force_greats_surface_base_exact(result.stats, calc_song, ref_arrays, result.surface)
 
     assert int(exact_score) == int(result.best_score)
-    assert int(base_score) >= int(result.best_score)
 
 
 def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path, monkeypatch):

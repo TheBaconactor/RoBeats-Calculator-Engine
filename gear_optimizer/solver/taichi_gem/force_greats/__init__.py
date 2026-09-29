@@ -7,7 +7,6 @@ Production FG uses the response-frontier solver in `response_frontier.py`.
 from .response_frontier import (
     FgResponseFrontierSolveResult,
     FgResponseSurface,
-    materialize_force_greats_response_frontier_owner_result,
     prepare_force_greats_response_frontier_scoring_batch,
     reconstruct_force_greats_response_counts,
     reconstruct_force_greats_response_trace,
@@ -18,7 +17,6 @@ from .response_frontier import (
 __all__ = [
     "FgResponseFrontierSolveResult",
     "FgResponseSurface",
-    "materialize_force_greats_response_frontier_owner_result",
     "prepare_force_greats_response_frontier_scoring_batch",
     "reconstruct_force_greats_response_counts",
     "reconstruct_force_greats_response_trace",

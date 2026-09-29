@@ -7,15 +7,12 @@ import pytest
 
 from gear_optimizer.solver.gpu_executor_lifecycle import (
     build_taichi_init_failure_report,
-    configure_executor_server_state,
     executor_auto_stop_enabled,
     load_executor_start_settings,
     load_executor_stop_profiler_settings,
     print_taichi_kernel_profiler,
     send_shutdown_request,
-    signal_executor_ready,
     stop_executor_if_running,
-    try_send_shutdown_request,
 )
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
@@ -181,124 +178,6 @@ def test_send_shutdown_request_propagates_put_failure():
 
     with pytest.raises(RuntimeError, match="queue failed"):
         send_shutdown_request(_Queue())
-
-
-def test_try_send_shutdown_request_reports_put_failure_as_false():
-    class _Queue:
-        @staticmethod
-        def put(_request):
-            raise RuntimeError("queue failed")
-
-    assert try_send_shutdown_request(_Queue()) is False
-
-
-def test_configure_executor_server_state_wires_server_fields_and_clears_ready():
-    request_queue = queue.Queue()
-    response_queue = object()
-
-    class _ReadyEvent:
-        def __init__(self) -> None:
-            self.cleared = False
-
-        def clear(self) -> None:
-            self.cleared = True
-
-    ready_event = _ReadyEvent()
-    executor = SimpleNamespace(_ready_event=ready_event)
-
-    assert (
-        configure_executor_server_state(
-            executor,
-            request_queue=request_queue,
-            response_queues={7: response_queue},
-        )
-        is True
-    )
-
-    assert executor._request_queue is request_queue
-    assert executor._response_queues == {7: response_queue}
-    assert executor._in_process_queues is True
-    assert executor._running is True
-    assert executor._taichi_ready is False
-    assert executor._last_init_error is None
-    assert ready_event.cleared is True
-
-
-def test_configure_executor_server_state_tolerates_ready_event_clear_failure():
-    class _ReadyEvent:
-        @staticmethod
-        def clear() -> None:
-            raise RuntimeError("clear failed")
-
-    request_queue = object()
-    executor = SimpleNamespace(_ready_event=_ReadyEvent())
-
-    assert (
-        configure_executor_server_state(
-            executor,
-            request_queue=request_queue,
-            response_queues=None,
-        )
-        is False
-    )
-
-    assert executor._request_queue is request_queue
-    assert executor._response_queues == {}
-    assert executor._in_process_queues is False
-    assert executor._running is True
-    assert executor._taichi_ready is False
-    assert executor._last_init_error is None
-
-
-def test_signal_executor_ready_sets_event_and_puts_status():
-    calls: list[str] = []
-    payloads: list[dict] = []
-
-    class _Event:
-        @staticmethod
-        def set():
-            calls.append("set")
-
-    class _Queue:
-        @staticmethod
-        def put(payload):
-            payloads.append(payload)
-
-    signal_executor_ready(
-        ready_event=_Event(),
-        ready_queue=_Queue(),
-        wait_fn=lambda: calls.append("wait"),
-        ready_state_fn=lambda: True,
-        init_error_fn=lambda: None,
-    )
-
-    assert calls == ["wait", "set"]
-    assert payloads == [{"ok": True, "error": None}]
-
-
-def test_signal_executor_ready_still_signals_after_wait_or_queue_failures():
-    calls: list[str] = []
-
-    class _Event:
-        @staticmethod
-        def set():
-            calls.append("set")
-
-    class _Queue:
-        @staticmethod
-        def put(_payload):
-            raise RuntimeError("queue failed")
-
-    with pytest.raises(RuntimeError, match="wait failed"):
-        signal_executor_ready(
-            ready_event=_Event(),
-            ready_queue=_Queue(),
-            wait_fn=lambda: (_ for _ in ()).throw(RuntimeError("wait failed")),
-            ready_state_fn=lambda: False,
-            init_error_fn=lambda: "boom",
-        )
-
-    assert calls == ["set"]
 
 
 def test_build_taichi_init_failure_report_writes_trace_file(tmp_path):

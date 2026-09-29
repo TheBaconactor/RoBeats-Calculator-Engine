@@ -223,8 +223,6 @@ def test_native_fg_pipeline_does_not_pop_unready_outside_final_drain():
         assert popped is song
         assert len(pipeline.pending) == 0
 
-        pipeline.requeue_front(song)
-        assert pipeline.pending[0] is song
     finally:
         pipeline.shutdown_fg(wait=True, cancel_futures=True)
         pipeline.shutdown_prep(wait=True, cancel_futures=True)

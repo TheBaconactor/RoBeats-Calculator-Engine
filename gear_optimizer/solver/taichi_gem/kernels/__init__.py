@@ -1,13 +1,12 @@
 """
 Taichi Kernels Package - Public Kernel Entry Points.
 
-This package splits the monolithic kernels.py (1,757 lines) into 6 focused modules:
+This package splits the monolithic kernels.py (1,757 lines) into focused modules:
 1. kernels_helpers.py - Field placeholders & lookup functions
 2. kernels_ga.py - 8 GA kernels (selection, crossover, mutation, etc.)
 3. kernels_scoring.py - Score calculation & exact-bound gem optimizer
 4. kernels_solvers_batch.py - Result staging kernels
 5. ga_eval/ (kernels_ga_eval.py) - GA evaluation & reduction kernels
-6. kernels_timeline.py - Timeline computation kernel
 
 This module re-exports kernel entry points used by the Taichi gem solver runtime.
 """
@@ -55,12 +54,7 @@ from .kernels_helpers import (
     lookup_ref_pp,
     lookup_ref_cm,
     lookup_ref_fm,
-    lookup_ref_ft,
-    lookup_ref_ff,
     _xorshift32,
-    # Search helpers
-    binary_search_left_from,
-    binary_search_left,
     # Scoring helpers
     _calc_body_score,
     _calc_head_factor,
@@ -108,11 +102,6 @@ from .ga_eval import (
     ga_scatter_dup_results_kernel,
 )
 
-# Import timeline kernel
-from .kernels_timeline import (
-    precompute_fever_end_idx_kernel,
-)
-
 # Public API
 __all__ = [
     # Constants
@@ -155,8 +144,6 @@ __all__ = [
     "lookup_ref_pp",
     "lookup_ref_cm",
     "lookup_ref_fm",
-    "lookup_ref_ft",
-    "lookup_ref_ff",
     "_xorshift32",
     # GA kernels
     "ga_seed_rng_runs_kernel",
@@ -190,10 +177,6 @@ __all__ = [
     "ga_compute_exact_eval_rep_kernel",
     "ga_build_unique_slot_table_kernel",
     "ga_scatter_dup_results_kernel",
-    # Timeline kernels
-    "binary_search_left_from",
-    "binary_search_left",
-    "precompute_fever_end_idx_kernel",
 ]
 
 from .kernels_skyline import (

@@ -53,20 +53,15 @@ __all__ = [
     "score_fused_owner_base_components_on_gpu_owner",
     "build_fused_owner_solve_result_from_score_row",
     "fg_batch_stage",
-    "FG_BATCH_MISSING_GROUP_ROWS_MSG",
-    "batch_needs_async_group_build_prefetch",
-    "assert_batch_has_group_build_prefetch_or_rows",
     "required_response_stat_keys_for_scoring_batch",
     "prepare_force_greats_response_frontier_scoring_batch",
     "build_prepared_force_greats_response_frontier_group_arrays_on_owner",
     "build_prepared_force_greats_response_frontier_group_rows_on_owner",
     "pack_prepared_force_greats_response_frontier_scoring_surfaces",
-    "finalize_prepared_force_greats_response_frontier_batch_for_gpu_score",
     "score_prepared_force_greats_response_frontier_batch_on_gpu_owner",
     "score_prepared_force_greats_response_frontier_batch_on_cpu_owner",
     "score_prepared_force_greats_response_frontier_batch_sync",
     "score_prepared_force_greats_response_frontier_batch_cpu_sync",
-    "materialize_force_greats_response_frontier_owner_result",
     "reconstruct_force_greats_response_counts",
     "reconstruct_force_greats_response_trace",
 ]
@@ -158,21 +153,6 @@ def fg_batch_stage(batch: FgResponseFrontierPackedScoringBatch) -> FgBatchStage:
     if batch.group_meta is not None:
         return FgBatchStage.GROUP_BUILT
     return FgBatchStage.INPUT
-
-
-FG_BATCH_MISSING_GROUP_ROWS_MSG = (
-    "FG response frontier batch is missing group rows; "
-    "async group-build prefetch must run during FG prep"
-)
-
-
-def batch_needs_async_group_build_prefetch(batch: FgResponseFrontierPackedScoringBatch) -> bool:
-    return fg_batch_stage(batch) is FgBatchStage.INPUT and batch.group_build_handle is None
-
-
-def assert_batch_has_group_build_prefetch_or_rows(batch: FgResponseFrontierPackedScoringBatch) -> None:
-    if batch_needs_async_group_build_prefetch(batch):
-        raise RuntimeError(FG_BATCH_MISSING_GROUP_ROWS_MSG)
 
 
 @dataclass(frozen=True, slots=True)
@@ -769,22 +749,6 @@ def pack_prepared_force_greats_response_frontier_scoring_surfaces(
     )
 
 
-def finalize_prepared_force_greats_response_frontier_batch_for_gpu_score(
-    batch: FgResponseFrontierPackedScoringBatch,
-) -> FgResponseFrontierPackedScoringBatch:
-    """
-    Resolve any async group-build handle and pack scoring surfaces on the caller thread.
-
-    Production FG workers call this before submitting the GPU score request so the owner
-    thread only runs Taichi scoring kernels.
-    """
-    batch = _resolve_async_group_build_handle(batch)
-    assert_batch_has_group_build_prefetch_or_rows(batch)
-    if fg_batch_stage(batch) is FgBatchStage.SURFACES_PACKED:
-        return batch
-    return pack_prepared_force_greats_response_frontier_scoring_surfaces(batch)
-
-
 def build_prepared_force_greats_response_frontier_group_arrays_on_owner(
     batch: FgResponseFrontierPackedScoringBatch,
 ) -> FgResponseFrontierPackedScoringBatch:
@@ -940,20 +904,6 @@ def score_prepared_force_greats_response_frontier_batch_cpu_sync(
     return materialize_prepared_force_greats_response_frontier_batch_results(
         owner.batch,
         owner.inner_rows,
-        include_forced_counts=bool(include_forced_counts),
-    )
-
-
-def materialize_force_greats_response_frontier_owner_result(
-    owner_result: FgResponseFrontierOwnerResult,
-    *,
-    include_forced_counts: bool = False,
-) -> list[FgResponseFrontierSolveResult]:
-    if not isinstance(owner_result, FgResponseFrontierOwnerResult):
-        raise RuntimeError("FG response frontier GPU owner returned an invalid owner result")
-    return materialize_prepared_force_greats_response_frontier_batch_results(
-        owner_result.batch,
-        owner_result.inner_rows,
         include_forced_counts=bool(include_forced_counts),
     )
 

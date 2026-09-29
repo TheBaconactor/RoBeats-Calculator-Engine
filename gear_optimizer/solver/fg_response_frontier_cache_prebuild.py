@@ -73,14 +73,6 @@ def _maintain_fg_response_frontier_cache_under_lock(
     compress_cache_dir_sidecars()
 
 
-def maintain_provisioned_fg_response_frontier_cache() -> None:
-    """Maintain a copied FG pool without building any missing cache entries."""
-    from gear_optimizer.solver.taichi_gem.force_greats.response_cache import _fg_response_disk_cache_dir
-
-    with FrontierBuildLock(_fg_response_disk_cache_dir(), label="fg_response"):
-        _maintain_fg_response_frontier_cache_under_lock()
-
-
 _PREBUILD_WORKER_REF_ARRAYS: dict | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
 _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"

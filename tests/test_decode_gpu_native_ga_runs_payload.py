@@ -27,10 +27,10 @@ def _candidate_key(cand: dict, registry: ItemRegistry) -> tuple[int, ...]:
         return _canon_ids_key(np.asarray(genome_ids, dtype=np.int32))
     genome = cand.get("Genome")
     if genome:
-        return _canon_ids_key(registry.encode_genome(genome))
+        return _canon_ids_key(registry.encode_population([genome])[0])
     gear = cand.get("Gear") or []
     minis = cand.get("Minis") or []
-    return _canon_ids_key(registry.encode_genome(list(gear) + list(minis)))
+    return _canon_ids_key(registry.encode_population([list(gear) + list(minis)])[0])
 
 
 def test_decode_gpu_native_ga_runs_payload_caps_raw_rows_to_fg_candidate_limit():

@@ -70,7 +70,7 @@ def _song() -> dict:
 
 def test_zero_offset_matches_plain_zero_ms_surface(tmp_path, monkeypatch):
     """An all-zero baseline offset reproduces the plain zero_ms FG surface bit-for-bit."""
-    from gear_optimizer.solver.fg_response_scoring.fixed_timing import build_fixed_timing_response_surfaces
+    from gear_optimizer.solver.fg_response_scoring.fixed_timing import _solve_fixed_timing_response_results
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
@@ -80,19 +80,19 @@ def test_zero_offset_matches_plain_zero_ms_surface(tmp_path, monkeypatch):
     _reset_fg_cache()
     cs_plain = _song()
     apply_timing_envelope(cs_plain, mode="zero_ms")
-    surf_plain = build_fixed_timing_response_surfaces([stats], cs_plain, ref_arrays, "Chill")[0]
+    surf_plain = _solve_fixed_timing_response_results([stats], cs_plain, ref_arrays, "Chill")[0][0].surface
 
     _reset_fg_cache()
     cs_zero_t = _song()
     apply_timing_envelope(cs_zero_t, mode="zero_ms", baseline_offset=np.zeros(9, dtype=np.float32))
-    surf_zero_t = build_fixed_timing_response_surfaces([stats], cs_zero_t, ref_arrays, "Chill")[0]
+    surf_zero_t = _solve_fixed_timing_response_results([stats], cs_zero_t, ref_arrays, "Chill")[0][0].surface
 
     assert tuple(surf_zero_t) == tuple(surf_plain)
 
 
 def test_nonzero_baseline_offset_reoptimizes_to_valid_surface(tmp_path, monkeypatch):
     """A non-zero per-note baseline T yields a valid surface, scored exactly under chart + T."""
-    from gear_optimizer.solver.fg_response_scoring.fixed_timing import build_fixed_timing_response_surfaces
+    from gear_optimizer.solver.fg_response_scoring.fixed_timing import _solve_fixed_timing_response_results
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
@@ -110,7 +110,7 @@ def test_nonzero_baseline_offset_reoptimizes_to_valid_surface(tmp_path, monkeypa
     np.testing.assert_allclose(
         np.asarray(cs_t["song_data"]["fg_timestamps"]), _TIMESTAMPS + offset, atol=1e-6
     )
-    surf_t = build_fixed_timing_response_surfaces([stats], cs_t, ref_arrays, "Chill")[0]
+    surf_t = _solve_fixed_timing_response_results([stats], cs_t, ref_arrays, "Chill")[0][0].surface
     score_t = score_force_greats_response_surface_exact(stats, cs_t, ref_arrays, surf_t)
     assert int(score_t) > 0
 

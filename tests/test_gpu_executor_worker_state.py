@@ -20,10 +20,8 @@ def test_worker_mode_state_tracks_mode_and_queues():
 
     assert state.enabled is True
     assert state.worker_id == 42
-    assert state.require_request_queue() is request_q
+    assert state.request_queue is request_q
     assert state.response_queue is response_q
-    assert state.next_request_id() == 1
-    assert state.next_request_id() == 2
 
     state.clear()
 
@@ -31,7 +29,6 @@ def test_worker_mode_state_tracks_mode_and_queues():
     assert state.worker_id is None
     assert state.request_queue is None
     assert state.response_queue is None
-    assert state.request_counter == 2
 
 
 def test_gpu_executor_worker_mode_wrappers_delegate_to_state():

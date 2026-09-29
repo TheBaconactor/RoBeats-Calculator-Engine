@@ -137,39 +137,6 @@ def send_shutdown_request(
     request_queue.put(request_factory())
 
 
-def try_send_shutdown_request(
-    request_queue: Any,
-    *,
-    request_factory: Callable[[], Any] = build_shutdown_request,
-) -> bool:
-    try:
-        send_shutdown_request(request_queue, request_factory=request_factory)
-        return True
-    except Exception as e:
-        logger.debug(f"gpu_executor_lifecycle:try_send_shutdown_request: {e}")
-        return False
-
-
-def configure_executor_server_state(
-    executor: Any,
-    *,
-    request_queue: Any,
-    response_queues: Mapping[int, Any] | None,
-) -> bool:
-    executor._request_queue = request_queue
-    executor._response_queues = dict(response_queues or {})
-    executor._in_process_queues = isinstance(request_queue, queue.Queue)
-    executor._running = True
-    executor._taichi_ready = False
-    executor._last_init_error = None
-    try:
-        executor._ready_event.clear()
-        return True
-    except Exception as e:
-        logger.debug(f"gpu_executor_lifecycle:configure_executor_server_state: {e}")
-        return False
-
-
 def build_taichi_init_failure_report(
     exc: BaseException,
     *,
@@ -194,33 +161,6 @@ def build_taichi_init_failure_report(
     if trace_path is not None:
         err = f"{err} (trace: {trace_path})"
     return TaichiInitFailureReport(error=err, trace_path=trace_path)
-
-
-def signal_executor_ready(
-    *,
-    ready_event: Any,
-    ready_queue: Any | None,
-    wait_fn: Callable[[], Any],
-    ready_state_fn: Callable[[], bool],
-    init_error_fn: Callable[[], Any],
-) -> None:
-    try:
-        wait_fn()
-    finally:
-        try:
-            ready_event.set()
-        except Exception as e:
-            logger.debug(f"gpu_executor_lifecycle:signal_executor_ready: {e}")
-        if ready_queue is not None:
-            try:
-                ready_queue.put(
-                    {
-                        "ok": bool(ready_state_fn()),
-                        "error": init_error_fn(),
-                    }
-                )
-            except Exception as e:
-                logger.debug(f"gpu_executor_lifecycle:signal_executor_ready: {e}")
 
 
 def _dump_kernel_profiler_records(ti: Any, dump_path: str) -> bool:
@@ -850,7 +790,6 @@ class WorkerModeState:
     worker_id: int | None = None
     request_queue: Any | None = None
     response_queue: Any | None = None
-    request_counter: int = 0
 
     def configure(self, worker_id: int, request_queue: Any, response_queue: Any) -> None:
         self.enabled = True
@@ -863,15 +802,6 @@ class WorkerModeState:
         self.worker_id = None
         self.request_queue = None
         self.response_queue = None
-
-    def next_request_id(self) -> int:
-        self.request_counter += 1
-        return int(self.request_counter)
-
-    def require_request_queue(self) -> Any:
-        if not self.enabled or self.request_queue is None:
-            raise RuntimeError("GPU worker mode request queue is not configured")
-        return self.request_queue
 
 
 worker_mode_state = WorkerModeState()

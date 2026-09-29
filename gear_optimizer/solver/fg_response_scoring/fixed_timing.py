@@ -101,28 +101,6 @@ def _solve_fixed_timing_response_results(
     return results, calc_song, ref_arrays
 
 
-def build_fixed_timing_response_surfaces(
-    stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
-    calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
-    selected_color: str,
-) -> list[Any]:
-    """Re-optimized fixed-0ms FG response surface per loadout (one per stats row).
-
-    ``calc_song`` MUST carry chart-only timing (prepare it with
-    ``apply_timing_envelope(mode="zero_ms")``): the builder reads its chart timestamps
-    for every FG activation/boundary decision. Returns one ``FgResponseSurface`` per
-    input stats row, in order.
-    """
-    rows = [dict(stats) for stats in (stats_list or [])]
-    if not rows:
-        return []
-    results, _calc_song, _ref_arrays = _solve_fixed_timing_response_results(
-        rows, calc_song, ref_arrays, selected_color
-    )
-    return [result.surface for result in results]
-
-
 def build_fixed_timing_fg_replays(
     *,
     fg_stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],

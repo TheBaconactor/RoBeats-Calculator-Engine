@@ -25,9 +25,8 @@ MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 r
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_SONG_NOTES = 32768  # Max chart length for GPU timeline computation. Real-world max is ~7027
 # notes (M1LLI0N PP (Full Version) [EXTENDED CUT]); 32768 is 4.6x that (~110 min of continuous
-# notes -- beyond any conceivable chart). Sized down from 200000 (28x over) to reclaim ~102 MB on
-# the dominant field fever_end_idx_song = (MAX_SONG_NOTES, GRID_SIZE) i32 (was 122.8 MB, now 21 MB)
-# plus the ~7 per-note (MAX_SONG_NOTES,) arrays. A chart exceeding this fails loud at
+# notes -- beyond any conceivable chart). Sized down from 200000 (28x over); the ~7 per-note
+# (MAX_SONG_NOTES,) arrays scale with it. A chart exceeding this fails loud at
 # timeline.py (`Song has N notes, max is ...`), never silent truncation -- bump it if ever hit.
 MAX_EVALS_PER_DISPATCH = 8_388_608  # Upper bound used for chunking (genomes * FT/FF combos)
 def _clamp_song_slots(n: int) -> int:
@@ -68,7 +67,6 @@ grid_frontier_head_coeffs_pool: ti.Field = None  # (MAX_SONG_SLOTS, MAX_TIMELINE
 grid_gap: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - gap to song end per (FT, FF)
 grid_fever_activations: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32 - fever activations per (FT, FF)
 song_timestamps: ti.Field = None  # (MAX_SONG_NOTES,) f32
-fever_end_idx_song: ti.Field = None  # (MAX_SONG_NOTES, GRID_SIZE) i32
 song_note_group_idx: ti.Field = None  # (MAX_SONG_NOTES,) i32: note_idx -> group_idx
 song_group_starts: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> first note_idx
 song_group_base_t_ms: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> chart time in integer ms
@@ -286,7 +284,7 @@ def reset_fields_state() -> None:
     global grid_frontier_body_fever_pool, grid_frontier_body_normal_pool, grid_frontier_masks_bits_pool
     global grid_frontier_head_coeffs_pool
     global grid_gap, grid_fever_activations
-    global song_timestamps, fever_end_idx_song
+    global song_timestamps
     global song_note_group_idx, song_group_starts, song_group_base_t_ms, song_group_low_ms, song_group_high_ms
     global genome_base_stats
     global population_indices, population_next_indices, ga_initial_populations, ga_init_heuristic_topk
@@ -339,7 +337,6 @@ def reset_fields_state() -> None:
     grid_gap = None
     grid_fever_activations = None
     song_timestamps = None
-    fever_end_idx_song = None
     song_note_group_idx = None
     song_group_starts = None
     song_group_base_t_ms = None
@@ -634,7 +631,7 @@ def allocate_grid_fields():
     global grid_frontier_body_fever_pool, grid_frontier_body_normal_pool, grid_frontier_masks_bits_pool
     global grid_frontier_head_coeffs_pool
     global grid_gap, grid_fever_activations
-    global song_timestamps, fever_end_idx_song
+    global song_timestamps
     global song_note_group_idx, song_group_starts, song_group_base_t_ms, song_group_low_ms, song_group_high_ms
     global _grid_fields_allocated
     if _grid_fields_allocated:
@@ -653,8 +650,6 @@ def allocate_grid_fields():
     grid_fever_activations = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     if song_timestamps is None:
         song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
-    if fever_end_idx_song is None:
-        fever_end_idx_song = ti.field(dtype=ti.i32, shape=(MAX_SONG_NOTES, GRID_SIZE))
     if song_note_group_idx is None:
         song_note_group_idx = ti.field(dtype=ti.i32, shape=MAX_SONG_NOTES)
     if song_group_starts is None:
@@ -706,7 +701,6 @@ def bind_fields(kernels_module):
     target.grid_gap = grid_gap
     target.grid_fever_activations = grid_fever_activations
     target.song_timestamps = song_timestamps
-    target.fever_end_idx_song = fever_end_idx_song
     target.song_note_group_idx = song_note_group_idx
     target.song_group_starts = song_group_starts
     target.song_group_base_t_ms = song_group_base_t_ms

@@ -70,7 +70,7 @@ def test_fixed_timing_fg_surface_matches_bruteforce_and_beats_base(tmp_path, mon
         score_force_greats_response_surface_exact,
         score_stats_fixed_timing_exact,
     )
-    from gear_optimizer.solver.fg_response_scoring.fixed_timing import build_fixed_timing_response_surfaces
+    from gear_optimizer.solver.fg_response_scoring.fixed_timing import _solve_fixed_timing_response_results
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
@@ -106,7 +106,7 @@ def test_fixed_timing_fg_surface_matches_bruteforce_and_beats_base(tmp_path, mon
     # Re-optimized 0ms surface via the canonical builder on a zero_ms calc_song.
     cs_zero = _song()
     apply_timing_envelope(cs_zero, mode="zero_ms")
-    surfaces = build_fixed_timing_response_surfaces([stats], cs_zero, ref_arrays, "Chill")
+    surfaces = [r.surface for r in _solve_fixed_timing_response_results([stats], cs_zero, ref_arrays, "Chill")[0]]
     assert len(surfaces) == 1
     surface_score = score_force_greats_response_surface_exact(stats, cs_zero, ref_arrays, surfaces[0])
 

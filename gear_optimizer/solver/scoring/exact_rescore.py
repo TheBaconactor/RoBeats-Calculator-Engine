@@ -517,47 +517,6 @@ def _score_stat_inputs(
     )
 
 
-def _score_surface_counts_exact(
-    *,
-    total_notes: int,
-    primary_val: int,
-    secondary_val: int,
-    pp_factor: float,
-    combo_mul: float,
-    fever_mul: float,
-    body_fever: int,
-    body_normal: int,
-    fever_words,
-) -> int:
-    head_len = min(max(0, int(total_notes)), 100)
-    body_total = max(0, int(total_notes) - 100)
-    body_fever = safe_int(body_fever, 0)
-    body_normal = safe_int(body_normal, 0)
-    if body_fever < 0 or body_normal < 0 or int(body_fever + body_normal) != int(body_total):
-        raise ValueError("Timing surface body counts do not match song body note count")
-
-    words = tuple(safe_int(value, 0) for value in tuple(fever_words)[:4])
-    if len(words) < 4:
-        words = words + (0,) * (4 - len(words))
-
-    base_value = float((int(primary_val) * 2) + int(secondary_val)) + float(pp_factor)
-    combo_f = float(combo_mul)
-    fever_f = float(fever_mul)
-    combo_val = floor(base_value * combo_f)
-    fever_val = floor(base_value * combo_f * fever_f)
-    score = (int(body_fever) * int(fever_val)) + (int(body_normal) * int(combo_val))
-
-    combo_slope = (combo_f - 1.0) / 100.0
-    for i in range(head_len):
-        word_idx = i // 32
-        bit_idx = i % 32
-        scaling = (combo_slope * float(i + 1)) + 1.0
-        perfect_value = base_value * scaling
-        is_fever = ((int(words[word_idx]) >> int(bit_idx)) & 1) != 0
-        score += floor(perfect_value * fever_f) if is_fever else floor(perfect_value)
-    return int(score)
-
-
 def _score_timeline_frontier_payload_vectorized(
     *,
     payload: Any,
@@ -734,75 +693,6 @@ def _timeline_trace_for_payload_surface(
         "fill_count": int(fill_count),
         "fever_duration_ms": float(real_fever_time) * 1000.0,
     }
-
-
-def score_response_surface_base_exact(
-    surface: Any,
-    *,
-    total_notes: int,
-    primary_val: int,
-    secondary_val: int,
-    pp_factor: float,
-    combo_mul: float,
-    fever_mul: float,
-) -> int:
-    body_total = max(0, int(total_notes) - 100)
-    body_fever = safe_int(getattr(surface, "body_fever", 0), 0)
-    if body_fever < 0 or body_fever > body_total:
-        raise ValueError("FG response surface body fever count exceeds song body note count")
-
-    return _score_surface_counts_exact(
-        total_notes=int(total_notes),
-        primary_val=int(primary_val),
-        secondary_val=int(secondary_val),
-        pp_factor=float(pp_factor),
-        combo_mul=float(combo_mul),
-        fever_mul=float(fever_mul),
-        body_fever=int(body_fever),
-        body_normal=int(body_total - body_fever),
-        fever_words=(
-            safe_int(getattr(surface, "fever0", 0), 0),
-            safe_int(getattr(surface, "fever1", 0), 0),
-            safe_int(getattr(surface, "fever2", 0), 0),
-            safe_int(getattr(surface, "fever3", 0), 0),
-        ),
-    )
-
-
-def score_force_greats_surface_base_exact(
-    stats: Mapping[str, Any],
-    calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
-    surface: Any,
-) -> int | None:
-    """
-    Exact base-score replay for a solved FG response surface.
-
-    The response surface already owns the exact fever timeline, so this path scores
-    that canonical surface directly instead of rebuilding the same timeline from
-    forced counts.
-    """
-    if not stats or not calc_song:
-        return None
-    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
-    song_inputs = extract_fg_song_inputs(calc_song)
-    if song_inputs.total_notes <= 0:
-        return None
-
-    primary_val = safe_int(stats.get(song_inputs.primary_color, 0), 0)
-    secondary_val = safe_int(stats.get(song_inputs.secondary_color, 0), 0)
-    factors = resolve_stat_factors(stats, ref_arrays)
-    return int(
-        score_response_surface_base_exact(
-            surface,
-            total_notes=int(song_inputs.total_notes),
-            primary_val=int(primary_val),
-            secondary_val=int(secondary_val),
-            pp_factor=float(factors.pp_factor),
-            combo_mul=float(factors.combo_mul),
-            fever_mul=float(factors.fever_mul),
-        )
-    )
 
 
 def score_force_greats_response_surface_exact(

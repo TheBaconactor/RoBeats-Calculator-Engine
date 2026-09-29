@@ -148,8 +148,6 @@ class NativeFGPipeline:
         except (KeyError, TypeError, ValueError):
             pass
 
-    def requeue_front(self, song: NativeSong) -> None:
-        self.pending.appendleft(song)
 
     def _claim_pending_song(self, song: NativeSong) -> NativeSong:
         _remove_song_by_identity(self.pending, song)

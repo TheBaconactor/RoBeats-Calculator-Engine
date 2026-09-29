@@ -5,7 +5,7 @@ This module contains:
 - Field placeholders (bound by fields.bind_fields() at runtime)
 - Lookup functions for reference tables with clamping
 - RNG helper (xorshift32)
-- Common math helpers and search functions
+- Common math helpers
 - KERNEL_BLOCK_DIM constant
 
 IMPORTANT: Do NOT import fields directly at module load time.
@@ -52,7 +52,6 @@ grid_fever_activations = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever activatio
 
 # Song data for timeline computation
 song_timestamps = None  # (MAX_SONG_NOTES,) f32
-fever_end_idx_song = None  # (MAX_SONG_NOTES, 161) i32
 song_total_notes = None  # scalar i32
 song_long_notes = None  # scalar i32
 song_last_note_time = None  # scalar f32
@@ -239,34 +238,6 @@ def lookup_ref_fm(value: ti.i32) -> ti.f32:
 
 
 @ti.func
-def lookup_ref_ft(value: ti.i32) -> ti.f32:
-    """
-    O(1) lookup from Fever Time reference table. Clamps to [0, 160].
-
-    Args:
-        value: FT stat value
-
-    Returns:
-        FT multiplier from reference table
-    """
-    return ref_ft_field[_clamp_stat_idx(value)]
-
-
-@ti.func
-def lookup_ref_ff(value: ti.i32) -> ti.f32:
-    """
-    O(1) lookup from Fever Fill reference table. Clamps to [0, 160].
-
-    Args:
-        value: FF stat value
-
-    Returns:
-        FF multiplier from reference table
-    """
-    return ref_ff_field[_clamp_stat_idx(value)]
-
-
-@ti.func
 def _xorshift32(x: ti.u32) -> ti.u32:
     """
     Deterministic per-thread RNG (fast, good enough for GA operators).
@@ -323,55 +294,6 @@ def read_timeline_frontier_variant(song_slot: ti.i32, ft_idx: ti.i32, ff_idx: ti
         sigma_hn=ti.cast(grid_frontier_head_coeffs_pool[song_slot, pool_idx, 2], ti.i32),
         sigma_hf=ti.cast(grid_frontier_head_coeffs_pool[song_slot, pool_idx, 3], ti.i32),
     )
-
-
-# ============================================================================
-# SEARCH HELPERS
-# ============================================================================
-
-
-@ti.func
-def binary_search_left_from(timestamps: ti.template(), n: ti.i32, target: ti.f32, lo: ti.i32) -> ti.i32:
-    """
-    Binary search for leftmost index where timestamps[i] >= target, starting at `lo`.
-
-    Equivalent to np.searchsorted(timestamps, target, side='left') with a lower bound.
-
-    Args:
-        timestamps: Sorted array of timestamps (Taichi field)
-        n: Length of array
-        target: Value to search for
-        lo: Lower bound starting index
-
-    Returns:
-        Leftmost index where timestamps[i] >= target, or n if not found
-    """
-    hi = n
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if timestamps[mid] < target:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
-
-
-@ti.func
-def binary_search_left(timestamps: ti.template(), n: ti.i32, target: ti.f32) -> ti.i32:
-    """
-    Binary search for leftmost index where timestamps[i] >= target.
-
-    Equivalent to np.searchsorted(timestamps, target, side='left').
-
-    Args:
-        timestamps: Sorted array of timestamps (Taichi field)
-        n: Length of array
-        target: Value to search for
-
-    Returns:
-        Leftmost index where timestamps[i] >= target, or n if not found
-    """
-    return binary_search_left_from(timestamps, n, target, 0)
 
 
 # ============================================================================

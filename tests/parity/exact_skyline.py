@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
+import heapq
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 import numpy as np
 
@@ -23,12 +25,11 @@ from tests.parity.fixed_timing_skyline import reduce_fixed_timing_prefix_skyline
 from gear_optimizer.solver.mini_skyline import (
     LaneAwareMiniSkylineStats as _LaneAwareMiniSkylineStats_common,
 )
+from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 from gear_optimizer.solver.solver_common import (
     GEAR_SLOTS,
     BitPack as _BitPack_common,
-    RegistryEvalBatch,
     SolverContext,
-    batched_registry_eval,
     build_candidate_payload as _build_candidate_payload_common,
     build_solver_cfg_data as _build_cfg_data_common,
     build_solver_override_cfg,
@@ -934,6 +935,225 @@ def _evaluate_pairs_exact(
         status_label="exact_skyline combined-skyline",
         status_every=max_batch * 32,
     )
+
+
+def _env_enabled(name: str, default: str = "1") -> bool:
+    raw = str(env_get(name, default) or default).strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def prefetch_one(
+    iterable: Iterable[Any],
+    *,
+    enabled: bool = True,
+    thread_name_prefix: str = "SolverPrefetch",
+) -> Iterator[Any]:
+    iterator = iter(iterable)
+    if not bool(enabled):
+        yield from iterator
+        return
+
+    def _next_or_stop() -> tuple[bool, Any]:
+        try:
+            return True, next(iterator)
+        except StopIteration:
+            return False, None
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix=thread_name_prefix) as executor:
+        future: Future[tuple[bool, Any]] = executor.submit(_next_or_stop)
+        while True:
+            has_value, value = future.result()
+            if not has_value:
+                return
+            future = executor.submit(_next_or_stop)
+            yield value
+
+
+def _coerce_registry_scores(results: Any, *, expected_rows: int) -> np.ndarray:
+    result_arr = np.asarray(results, dtype=np.int64)
+    if result_arr.ndim == 1 and int(result_arr.shape[0]) == int(expected_rows):
+        return result_arr
+    if result_arr.ndim != 2 or result_arr.shape[0] != int(expected_rows) or result_arr.shape[1] < 1:
+        raise ValueError(
+            "registry solver returned an unexpected result shape: "
+            f"expected ({int(expected_rows)}, >=1), got {tuple(result_arr.shape)}"
+        )
+    return result_arr[:, 0]
+
+
+def _push_candidate_heap_streaming(
+    *,
+    heap: list[tuple[int, int, int]],
+    scores: np.ndarray,
+    batch_gear_codes: np.ndarray,
+    batch_mini_codes: np.ndarray,
+    keep_top_k: int,
+) -> None:
+    if int(keep_top_k) <= 0:
+        return
+
+    row_count = int(scores.shape[0])
+    start_idx = 0
+    if len(heap) < int(keep_top_k):
+        fill_count = min(int(keep_top_k) - len(heap), row_count)
+        for idx in range(fill_count):
+            heapq.heappush(
+                heap,
+                (
+                    int(scores[idx]),
+                    int(batch_gear_codes[idx]),
+                    int(batch_mini_codes[idx]),
+                ),
+            )
+        start_idx = fill_count
+
+    if start_idx >= row_count or len(heap) < int(keep_top_k):
+        return
+
+    threshold_score = int(heap[0][0])
+    interesting_offsets = np.flatnonzero(scores[start_idx:] > threshold_score)
+    for offset in interesting_offsets:
+        idx = int(offset) + start_idx
+        score = int(scores[idx])
+        if score > heap[0][0]:
+            heapq.heapreplace(
+                heap,
+                (
+                    score,
+                    int(batch_gear_codes[idx]),
+                    int(batch_mini_codes[idx]),
+                ),
+            )
+
+
+@dataclass(frozen=True)
+class RegistryEvalBatch:
+    batch_ids: np.ndarray
+    batch_gear_codes: np.ndarray
+    batch_mini_codes: np.ndarray
+    max_ft_gems_global: int | None = None
+    max_ff_gems_global: int | None = None
+    timing_response_combo_ft: np.ndarray | None = None
+    timing_response_combo_ff: np.ndarray | None = None
+    timing_response_genome_offsets: np.ndarray | None = None
+    timing_response_genome_lengths: np.ndarray | None = None
+    timing_response_max_combos: int | None = None
+    timing_response_cache_key: object | None = None
+    score_cull_threshold: int | None = None
+
+
+def batched_registry_eval(
+    *,
+    gpu_arrays: dict[str, np.ndarray],
+    base_fixed_stats_arr: np.ndarray,
+    calc_song: dict[str, Any],
+    ref_arrays: dict[str, Any],
+    flags: dict[str, int],
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+    song_slot: int,
+    candidate_total: int,
+    candidate_batches: Iterable[tuple[np.ndarray, np.ndarray, np.ndarray]],
+    keep_top_k: int,
+    gpu_client: Any | None = None,
+    status_cb: Callable[[str], None] | None = None,
+    status_label: str = "solver",
+    status_every: int = 65536,
+) -> tuple[np.ndarray | None, list[tuple[int, int, int]]]:
+    best_ids: np.ndarray | None = None
+    best_score = -1
+    heap: list[tuple[int, int, int]] = []
+    done = 0
+
+    batch_iter = prefetch_one(
+        candidate_batches,
+        enabled=_env_enabled("SKYLINE_BATCH_PREFETCH", "1"),
+        thread_name_prefix="SkylineBatchPrep",
+    )
+    for candidate_batch in batch_iter:
+        max_ft_gems_global = None
+        max_ff_gems_global = None
+        timing_response_combo_ft = None
+        timing_response_combo_ff = None
+        timing_response_genome_offsets = None
+        timing_response_genome_lengths = None
+        timing_response_max_combos = None
+        timing_response_cache_key = None
+        score_cull_threshold = heap[0][0] if len(heap) >= int(keep_top_k) and int(keep_top_k) > 0 else None
+        if isinstance(candidate_batch, RegistryEvalBatch):
+            batch_ids = candidate_batch.batch_ids
+            batch_gear_codes = candidate_batch.batch_gear_codes
+            batch_mini_codes = candidate_batch.batch_mini_codes
+            max_ft_gems_global = candidate_batch.max_ft_gems_global
+            max_ff_gems_global = candidate_batch.max_ff_gems_global
+            timing_response_combo_ft = candidate_batch.timing_response_combo_ft
+            timing_response_combo_ff = candidate_batch.timing_response_combo_ff
+            timing_response_genome_offsets = candidate_batch.timing_response_genome_offsets
+            timing_response_genome_lengths = candidate_batch.timing_response_genome_lengths
+            timing_response_max_combos = candidate_batch.timing_response_max_combos
+            timing_response_cache_key = candidate_batch.timing_response_cache_key
+            if candidate_batch.score_cull_threshold is not None:
+                score_cull_threshold = candidate_batch.score_cull_threshold
+        elif len(candidate_batch) == 5:
+            (
+                batch_ids,
+                batch_gear_codes,
+                batch_mini_codes,
+                max_ft_gems_global,
+                max_ff_gems_global,
+            ) = candidate_batch
+        elif len(candidate_batch) == 3:
+            batch_ids, batch_gear_codes, batch_mini_codes = candidate_batch
+        else:
+            raise ValueError(f"candidate batch must have 3 or 5 fields, got {len(candidate_batch)}")
+        if batch_ids.size == 0:
+            continue
+        req = RegistrySolveRequest(
+            population_indices=batch_ids.copy(),
+            item_stats=gpu_arrays["item_stats"],
+            slot_start=gpu_arrays["slot_start"],
+            slot_count=gpu_arrays["slot_count"],
+            base_fixed_stats=base_fixed_stats_arr,
+            timeline_grid=calc_song,
+            ref_arrays=ref_arrays,
+            flags=flags,
+            total_budget=TOTAL_GEM_BUDGET,
+            gem_scale_fever=GEM_SCALE_FEVER,
+            song_slot=int(song_slot),
+            use_exact_inner_solver=True,
+            max_ft_gems_global=max_ft_gems_global,
+            max_ff_gems_global=max_ff_gems_global,
+            timing_response_combo_ft=timing_response_combo_ft,
+            timing_response_combo_ff=timing_response_combo_ff,
+            timing_response_genome_offsets=timing_response_genome_offsets,
+            timing_response_genome_lengths=timing_response_genome_lengths,
+            timing_response_max_combos=timing_response_max_combos,
+            timing_response_cache_key=timing_response_cache_key,
+            score_cull_threshold=score_cull_threshold,
+            score_only=True,
+        )
+        results = dispatch_registry_solve(req, gpu_client=gpu_client)
+        scores = _coerce_registry_scores(results, expected_rows=int(batch_ids.shape[0]))
+        batch_best_idx = int(np.argmax(scores))
+        batch_best_score = int(scores[batch_best_idx])
+        if batch_best_score > best_score:
+            best_score = batch_best_score
+            best_ids = batch_ids[batch_best_idx].copy()
+        _push_candidate_heap_streaming(
+            heap=heap,
+            scores=scores,
+            batch_gear_codes=batch_gear_codes,
+            batch_mini_codes=batch_mini_codes,
+            keep_top_k=int(keep_top_k),
+        )
+
+        done += int(batch_ids.shape[0])
+        if status_cb is not None and (done == int(candidate_total) or done % int(status_every) == 0):
+            status_cb(f"{status_label}: scored {done}/{int(candidate_total)} candidates")
+
+    heap.sort(reverse=True)
+    return best_ids, heap
 
 
 def _solve_exact_skyline_ctx(ctx: SolverContext) -> tuple[dict | None, list, list, None, list, list, list[dict]]:

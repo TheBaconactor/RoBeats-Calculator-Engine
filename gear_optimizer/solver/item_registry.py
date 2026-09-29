@@ -13,7 +13,6 @@ import json
 import logging
 
 
-
 logger = logging.getLogger(__name__)
 # Stat dimension indices (matching fields.ITEM_STAT_DIM = 10)
 STAT_INDICES = {
@@ -186,31 +185,6 @@ class ItemRegistry:
         self._id_to_item_list = items
         self._id_to_name_list = [d.get("Name", "None") if d else "None" for d in items]
 
-    def encode_genome(self, genome: list[dict]) -> np.ndarray:
-        """
-        Convert a genome (list of item dicts) to an array of item IDs.
-
-        Args:
-            genome: List of 9 item dicts (6 gear + 3 mini)
-
-        Returns:
-            np.ndarray: (9,) int32 array of item IDs
-        """
-        ids = np.zeros(9, dtype=np.int32)
-        slot_name_to_id = self._slot_name_to_id
-
-        for slot_idx, item in enumerate(genome[:9]):
-            if not item:
-                continue
-
-            if isinstance(item, dict):
-                name = item.get("Name", "")
-                if name:
-                    ids[slot_idx] = slot_name_to_id[slot_idx].get(str(name), 0)
-            else:
-                ids[slot_idx] = slot_name_to_id[slot_idx].get(str(item), 0)
-
-        return ids
 
     def decode_genome(self, ids: np.ndarray) -> list[dict]:
         """

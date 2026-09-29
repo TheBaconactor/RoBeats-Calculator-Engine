@@ -272,12 +272,13 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
         lambda *_args, **_kwargs: [SimpleNamespace(surface="exact-surface")],
     )
 
-    surfaces = fixed_timing.build_fixed_timing_response_surfaces(
+    results, _calc_song_used, _ref_arrays_used = fixed_timing._solve_fixed_timing_response_results(
         [_stats()],
         _calc_song(),
         _ref_arrays(),
         "Rush",
     )
+    surfaces = [result.surface for result in results]
 
     assert surfaces == ["exact-surface"]
     assert seen == {
