@@ -1,6 +1,6 @@
 import numpy as np
 
-from gear_optimizer.core.utils import timing_envelope_timing_context
+from gear_optimizer.solver.taichi_gem.api.timeline import timing_envelope_timing_context
 from gear_optimizer.solver.taichi_gem.api.timeline import _song_timing_cache_key
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 

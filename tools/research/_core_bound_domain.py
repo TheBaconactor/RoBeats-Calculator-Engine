@@ -6,7 +6,7 @@ from math import comb, prod
 import numpy as np
 
 from gear_optimizer.rules import GEM_BUDGET
-from gear_optimizer.core.utils import _relevant_row_projection
+from gear_optimizer.helpers.ga_helpers.pool_initialization import _relevant_row_projection
 from gear_optimizer.data.mini_ascension import materialize_minis_for_song
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 from gear_optimizer.solver.solver_common import GEAR_SLOTS

@@ -19,7 +19,6 @@ import taichi as ti
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
-from gear_optimizer.core.utils import timing_envelope_timing_context
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.timeline_exact_frontier import (
     TimelineFrontierGridPayload,
@@ -66,6 +65,25 @@ _TIMELINE_FRONTIER_CACHE_ARRAY_NAMES = frozenset(
         "grid_fever_activations",
     )
 )
+
+
+def timing_envelope_timing_context(calc_song):
+    """
+    Return deterministic timing-envelope settings that affect base timing.
+    """
+    if not isinstance(calc_song, dict):
+        return ("", "", "", 0)
+
+    meta = calc_song.get("metadata", {}) or {}
+    if not isinstance(meta, dict) or not meta.get("TimingEnvelopeApplied"):
+        return ("", "", "", 0)
+
+    return (
+        "TIMING_ENVELOPE",
+        str(meta.get("TimingEnvelopeMode", "") or "").strip().lower(),
+        str(meta.get("TimingEnvelopeBaselineHash", "") or ""),
+        0,
+    )
 
 
 @ti.kernel

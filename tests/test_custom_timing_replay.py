@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.rules import MAX_STAT
-from gear_optimizer.core.utils import timing_envelope_timing_context
+from gear_optimizer.solver.taichi_gem.api.timeline import timing_envelope_timing_context
 from gear_optimizer.solver.scoring.exact_rescore import (
     score_stats_fixed_timing_exact_batch,
     score_stats_timing_exact_batch,
