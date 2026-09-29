@@ -41,77 +41,11 @@ def _ref_arrays(rows: int = 161) -> dict:
     }
 
 
-def _fg_stats() -> dict:
-    return {
-        "Perfect Points": 30,
-        "Combo Multiplier": 40,
-        "Fever Multiplier": 20,
-        "Fever Time": 80,
-        "Fever Fill Rate": 100,
-        "Rush": 20,
-        "Flow": 15,
-        "Chill": 0,
-        "Beat": 0,
-        "Vibe": 0,
-    }
-
-
 def _loadout_items(name: str, **stats: int) -> list[dict]:
     gear = [{"Name": f"{name}-G1", **stats}]
     gear.extend({"Name": f"{name}-G{i}"} for i in range(2, 7))
     minis = [{"Name": f"{name}-M{i}"} for i in range(1, 4)]
     return gear + minis
-
-
-def test_fixed_timing_fg_surface_matches_bruteforce_and_beats_base(tmp_path, monkeypatch):
-    """The re-optimized 0ms surface == brute-force forced-counts optimum, and exceeds base 0ms."""
-    from gear_optimizer.solver.scoring.exact_rescore import (
-        evaluate_force_greats_exact,
-        score_force_greats_response_surface_exact,
-        score_stats_fixed_timing_exact,
-    )
-    from gear_optimizer.solver.fg_response_scoring.fixed_timing import _solve_fixed_timing_response_results
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-
-    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
-    _reset_fg_cache()
-    ref_arrays = _ref_arrays()
-    # Sparse, irregular timing so forcing greats can re-align a fever window with a note cluster.
-    timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
-
-    def _song() -> dict:
-        return {
-            "metadata": {
-                "Song Name": "pytest_zero_ms_fg",
-                "Difficulty": "Hard",
-                "Primary Color": "Rush",
-                "Secondary Color": "Flow",
-                "Long Notes": 0,
-                "Last Note Time": float(timestamps[-1]),
-            },
-            "song_data": {"timestamps": timestamps},
-        }
-
-    stats = _fg_stats()
-    base_0ms = score_stats_fixed_timing_exact(stats, _song(), ref_arrays)
-
-    # Brute-force the 0ms forced-counts optimum on the chart-only song.
-    zero = evaluate_force_greats_exact(stats, _song(), ref_arrays, [0] * 10)
-    sections = int(zero["num_non_fever_sections"])
-    cap = int(zero["non_fever_base"])
-    best = -1
-    for counts in itertools.product(range(cap + 1), repeat=sections):
-        best = max(best, int(evaluate_force_greats_exact(stats, _song(), ref_arrays, counts)["final_score"]))
-
-    # Re-optimized 0ms surface via the canonical builder on a zero_ms calc_song.
-    cs_zero = _song()
-    apply_timing_envelope(cs_zero, mode="zero_ms")
-    surfaces = [r.surface for r in _solve_fixed_timing_response_results([stats], cs_zero, ref_arrays, "Chill")[0]]
-    assert len(surfaces) == 1
-    surface_score = score_force_greats_response_surface_exact(stats, cs_zero, ref_arrays, surfaces[0])
-
-    assert surface_score == best  # builder is exact vs the brute-force forced-counts optimum
-    assert best > base_0ms  # forcing greats genuinely helps at 0ms -> FG 0ms is NOT base 0ms
 
 
 def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeypatch):

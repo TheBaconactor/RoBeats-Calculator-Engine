@@ -1382,42 +1382,6 @@ def test_fg_response_late_great_activation_counts_when_it_beats_optimized_perfec
     assert trace[0]["activation_hit_window_width_ms"] == pytest.approx(108.99972915649414)
 
 
-def test_force_greats_replay_uses_optimized_perfect_activation_edge() -> None:
-    from gear_optimizer.solver.scoring.exact_rescore import _compute_force_greats_timeline
-    from gear_optimizer.solver.timing_envelope import build_perfect_floor_envelope_sec
-
-    timestamps = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
-    perfect_candidates = timestamps.copy()
-    perfect_candidates[2] = np.float32(2.5)
-    great_candidates = timestamps.copy()
-    perfect_floor = build_perfect_floor_envelope_sec(timestamps, None)
-
-    (
-        fever_mask_head,
-        _count_body_fever,
-        _count_body_normal,
-        non_fever_base,
-        _section_details,
-    ) = _compute_force_greats_timeline(
-        timestamps,
-        perfect_candidates,
-        great_candidates,
-        perfect_floor,
-        int(timestamps.shape[0]),
-        1.5,
-        4.0 / 3.0,
-        0,
-        4.0,
-        [],
-        clamp_base_notes_nonnegative=True,
-        clamp_forced_to_section_notes=True,
-        use_forced_great_timing=True,
-    )
-
-    assert non_fever_base == 3
-    assert fever_mask_head.tolist() == [False, False, True, True, False]
-
-
 def test_fg_response_first_frontier_emits_activation_great_body_overlap() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,

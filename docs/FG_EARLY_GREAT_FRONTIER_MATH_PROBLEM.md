@@ -370,8 +370,8 @@ vectors, all distinct, `175` distinct head count-classes. A good method must han
 | play / segment DP, frontier build | `gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu_numba.py::_first_frontier_from_precomputed_end_indices_numba` |
 | §3(e) early-Great extension (the new, blowing-up code) | `_numba_packet_queue_push_activation`, the head loop, and `_numba_pack_edge_eg` in `gear_optimizer/solver/taichi_gem/force_greats/response_build_gpu_numba.py` |
 | feature vector `S` | `gear_optimizer/solver/taichi_gem/force_greats/response_types.py::FgResponseSurface`: `fever0..3`, `great0..3` (head bitmasks, 4×32 bits), `body_fever`, `body_great`, `body_fever_great` |
-| `score(S;θ)` | `gear_optimizer/solver/scoring/exact_rescore.py::score_force_greats_response_surface_exact` |
-| timeline / forced-greats / fill | `gear_optimizer/solver/fever_timeline.py::calculate_force_greats_timeline_indices`; constants `0.333, 0.15, 0.15`, great base `+150` in `gear_optimizer/solver/scoring/fg_policy.py::compute_great_penalty_base` |
+| `score(S;θ)` | `gear_optimizer/score.py::fg_surface_score` |
+| timeline / fill | `gear_optimizer/timing.py` (fixed timeline); constants `0.333, 0.15, 0.15`, great base `+150` (`gear_optimizer/score.py::GREAT_POINTS`) |
 
 **Remark R1 (a separate, secondary correctness item — not part of the math problem).** The
 production Great-upper offset is `+190` ms (`Uᴳ`), whereas the game's decompiled Great window

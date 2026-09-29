@@ -1,6 +1,7 @@
 import numpy as np
 
-from gear_optimizer.data.song_io import get_base_calc_song, read_song_file
+from gear_optimizer.chart import read_chart
+from gear_optimizer.data.song_io import get_base_calc_song
 from gear_optimizer.solver.song_preparation import build_prepared_calc_song
 
 
@@ -89,9 +90,9 @@ def test_non_time_sorted_export_is_canonicalized_to_nondecreasing_time(tmp_path)
     song_path = tmp_path / "array_order_song.txt"
     _write_song_loggerprod_order(song_path)
 
-    raw = read_song_file(str(song_path))
-    ts = np.asarray(raw["timestamps"], dtype=np.float32)
-    nt = np.asarray(raw["note_types"], dtype=np.int16)
+    chart = read_chart(song_path)
+    ts = chart.timestamps
+    nt = chart.note_types
 
     # Stable sort by time: [0.0, 0.3, 0.1, 0.2, 0.2] -> [0.0, 0.1, 0.2, 0.2, 0.3]
     assert np.allclose(ts, np.asarray([0.0, 0.1, 0.2, 0.2, 0.3], dtype=np.float32))

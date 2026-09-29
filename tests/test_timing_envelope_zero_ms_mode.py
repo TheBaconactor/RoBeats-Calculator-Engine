@@ -13,8 +13,8 @@ import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
+from gear_optimizer import score
 from gear_optimizer.solver.scoring.exact_rescore import (
-    calculate_score_exact,
     score_stats_exact_batch,
     score_stats_fixed_timing_exact,
     score_stats_fixed_timing_exact_batch,
@@ -129,10 +129,9 @@ def test_unknown_mode_fails_loudly():
 def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     """The stats->score adapter equals an independent chart-time fixed-timeline replay.
 
-    The reference re-derives the deterministic chart-time fever timeline
-    (``calculate_fever_timeline_indices``) and scores it with the f64 primitive
-    (``calculate_score_exact``) -- the same math the adapter performs, computed here
-    independently from resolved factors.
+    The reference re-derives the deterministic chart-time fever timeline with the numba walk
+    (``calculate_fever_timeline_indices``, not gear_optimizer.timing's) and scores that single
+    surface with gear_optimizer.score from independently resolved factors.
     """
     stats = _stats()
     cs = _calc_song()
@@ -157,14 +156,16 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
         float(cs["metadata"]["Last Note Time"]),
         mask_buffer,
     )
-    reference = calculate_score_exact(
-        base_value,
-        float(combo),
-        float(fever),
-        fever_mask_head,
-        int(count_body_fever),
-        int(count_body_normal),
+    cell = score.single_surface_cell(fever_mask_head, int(count_body_fever), int(count_body_normal))
+    factors = score.Factors(
+        base=base_value,
+        combo=float(combo),
+        fever=float(fever),
+        great_base=0,
+        fever_time_row=int(stats["Fever Time"]),
+        fever_fill_row=int(stats["Fever Fill Rate"]),
     )
+    reference, _ = score.best_timeline_score(factors, cell, total_notes)
 
     got = score_stats_fixed_timing_exact(stats, cs, ref)
     assert got == reference

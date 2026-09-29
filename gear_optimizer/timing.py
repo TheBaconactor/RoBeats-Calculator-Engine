@@ -13,7 +13,7 @@ from math import ceil
 import numpy as np
 
 from .chart import Chart
-from .score import HEAD_NOTES, TimelineCell
+from .score import HEAD_NOTES, TimelineCell, single_surface_cell
 
 FEVER_FILL_PER_NOTE = 0.333
 FEVER_TIME_PER_SECOND = 0.15
@@ -46,16 +46,8 @@ def fixed_timeline_cell(
         in_fever[index:stop] = True
         index = stop + fill
 
-    # Bit k of word w marks head note 32 * w + k.
-    words = np.zeros((1, 4), dtype=np.uint64)
-    for note in np.flatnonzero(in_fever[:HEAD_NOTES]):
-        words[0, note // 32] |= np.uint64(1) << np.uint64(note % 32)
     body_fever = int(in_fever[HEAD_NOTES:].sum())
-    return TimelineCell(
-        head_words=words,
-        body_fever=np.asarray([body_fever], dtype=np.int64),
-        body_normal=np.asarray([max(0, total - HEAD_NOTES) - body_fever], dtype=np.int64),
-    )
+    return single_surface_cell(in_fever[:HEAD_NOTES], body_fever, max(0, total - HEAD_NOTES) - body_fever)
 
 
 def chart_fixed_timeline_cell(

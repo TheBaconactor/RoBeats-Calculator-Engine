@@ -218,6 +218,11 @@ def test_team_buff_replay_keeps_force_origin_when_base_duplicate_follows(monkeyp
         "gear_optimizer.helpers.song_helpers.team_buff_tiers.compute_team_buff_tier_leaderboards",
         fake_compute_team_buff_tier_leaderboards,
     )
+    # The fake song has no notes, so there is no timing frontier to trace; this test is about entry origin.
+    monkeypatch.setattr(
+        "gear_optimizer.solver.scoring.exact_rescore.score_stats_exact_with_timeline_trace",
+        lambda *_args: {"score": 0, "TimelineFrontier": {"frontier_trace": []}},
+    )
 
     rows = build_team_buff_tier_db_batches(
         entries=[force_entry, base_duplicate],

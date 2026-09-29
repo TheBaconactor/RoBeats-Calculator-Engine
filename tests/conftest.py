@@ -99,7 +99,7 @@ def prebuild_timeline_frontier():
     Prebuild the candidate-independent timeline frontier before GPU exact replay.
 
     Isolated GPU unit tests do not run the full-app startup prebuild; tests that call
-    score_stats_exact / evaluate_force_greats_exact must invoke this first or they
+    score_stats_exact must invoke this first or they
     raise MissingFrontierCacheError.
     """
 

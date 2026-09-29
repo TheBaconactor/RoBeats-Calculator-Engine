@@ -20,20 +20,11 @@ def _install_stubs(monkeypatch) -> list[tuple[int, int, int]]:
 
     monkeypatch.setattr(timeline_api, "load_timeline_frontier_payload", lambda *_args, **_kwargs: frontier_result)
     monkeypatch.setattr(exact_rescore, "_frontier_replay_refs", lambda refs: refs)
+    monkeypatch.setattr(exact_rescore, "_curves", lambda refs: None)
     monkeypatch.setattr(
         exact_rescore,
-        "extract_song_meta",
-        lambda _song: SimpleNamespace(primary_color="Rush", secondary_color="Flow"),
-    )
-    monkeypatch.setattr(
-        exact_rescore,
-        "_score_stat_inputs",
-        lambda stats, *_args: (0, 0, 1.0, 1.0, 1.0, int(stats["FT"]), int(stats["FF"])),
-    )
-    monkeypatch.setattr(
-        exact_rescore,
-        "_score_timeline_frontier_payload_vectorized_result",
-        lambda **kwargs: (1_000 + int(kwargs["ft_idx"]), 0),
+        "_best_timeline_score",
+        lambda payload, curves, primary, secondary, stats, total_notes: (1_000 + stats["Fever Time"], 0),
     )
 
     def _trace(*, pool_idx, ft_idx, ff_idx, **_kwargs):
@@ -50,7 +41,8 @@ def _install_stubs(monkeypatch) -> list[tuple[int, int, int]]:
 
 def _score(ft: int, ff: int) -> dict:
     calc_song = {"metadata": {}, "song_data": {"timestamps": np.asarray([0.0, 0.5], dtype=np.float32)}}
-    return exact_rescore.score_stats_exact_with_timeline_trace({"FT": ft, "FF": ff}, calc_song, {})
+    stats = {"Fever Time": ft, "Fever Fill Rate": ff}
+    return exact_rescore.score_stats_exact_with_timeline_trace(stats, calc_song, {})
 
 
 def test_timeline_trace_memo_is_bounded_hits_and_copies(monkeypatch) -> None:

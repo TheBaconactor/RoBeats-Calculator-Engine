@@ -8,12 +8,21 @@ import math
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.scoring.exact_rescore import calculate_score_exact
+from gear_optimizer import score
 from tools.research._core_bound_domain import catalog_domain, project
 from tools.research._core_bound_math import (
     BoundBank, SCALE, certify_bounds, family_terms, fever_coefficients, log_interval,
     lookup_domain, prefix_census,
 )
+
+
+def calculate_score_exact(base, combo, fever, head_in_fever, body_fever, body_normal):
+    """Exact score of one fixed timeline (gear_optimizer.score), with the old primitive's signature."""
+    head = np.asarray(head_in_fever, dtype=np.bool_)
+    factors = score.Factors(base=float(base), combo=float(combo), fever=float(fever), great_base=0,
+                            fever_time_row=0, fever_fill_row=0)
+    cell = score.single_surface_cell(head, int(body_fever), int(body_normal))
+    return score.best_timeline_score(factors, cell, len(head) + int(body_fever) + int(body_normal))[0]
 
 
 @pytest.mark.parametrize("value", [Fraction(1, 10000), Fraction(1, 3), 1, 2, 3, 10**9,

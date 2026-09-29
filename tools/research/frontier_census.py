@@ -392,7 +392,7 @@ def run_dp(gear_projs, mini_proj, pareto=True, verbose=False, minis_first=True):
 
 
 class CellScorer:
-    """Vectorized f64 replica of calculate_score_exact over the chart-time fever
+    """Vectorized f64 replica of gear_optimizer.score.best_timeline_score over the chart-time fever
     timeline, identical op order per lane. Bit-parity asserted vs the oracle."""
 
     def __init__(self, ctx):

@@ -69,6 +69,19 @@ class TimelineCell:
     body_normal: np.ndarray
 
 
+def single_surface_cell(head_in_fever: np.ndarray, body_fever: int, body_normal: int) -> TimelineCell:
+    """A TimelineCell holding one fixed surface: which head notes are in fever, and the body counts."""
+    words = np.zeros((1, 4), dtype=np.uint64)
+    for note in np.flatnonzero(head_in_fever):
+        # Bit k of word w marks head note 32 * w + k.
+        words[0, note // 32] |= np.uint64(1) << np.uint64(note % 32)
+    return TimelineCell(
+        head_words=words,
+        body_fever=np.asarray([body_fever], dtype=np.int64),
+        body_normal=np.asarray([body_normal], dtype=np.int64),
+    )
+
+
 def timeline_cell(payload: Any, fever_time_row: int, fever_fill_row: int, max_row: int) -> tuple[TimelineCell, int]:
     """Read one cell of a timing frontier payload; returns the cell and its first pool index."""
     ft = max(0, min(int(fever_time_row), max_row))
