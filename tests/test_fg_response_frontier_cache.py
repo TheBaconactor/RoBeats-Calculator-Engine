@@ -1591,9 +1591,6 @@ def test_fg_prebuild_reducer_threads_size_to_memory_weight_class(monkeypatch) ->
             frontier_cpus=31,
             workload_count=0,
         )
-    # No psutil (budget unknown): fall back to the core-derived worker cap, still capped.
-    assert prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=None, max_workers=8, frontier_cpus=31) == 3  # min(cap, 31//8)
-    assert prebuild._fg_prebuild_reducer_threads(8.0, budget_gb=None, max_workers=31, frontier_cpus=31) == 1
 
 
 def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -> None:

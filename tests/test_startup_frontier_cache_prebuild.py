@@ -315,7 +315,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     # Hermetic closed-loop inputs: no real pool workers exist under the fake executor, and the
     # RAM guard thread has nothing real to guard.
     monkeypatch.setattr(prebuild, "_fg_prebuild_live_worker_commit_gb", lambda: 0.0)
-    monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: None)
+    monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: SimpleNamespace(stop=lambda: None))
     items = [(f"giant{i}.txt", 7000) for i in range(3)] + [(f"light{i}.txt", 500) for i in range(4)]
     monkeypatch.setattr(
         prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _ref_arrays: (list(items), {})
@@ -380,7 +380,7 @@ def test_fg_prebuild_tail_admission_counts_the_song_being_submitted(monkeypatch)
     monkeypatch.setattr(prebuild, "frontier_prebuild_worker_count", lambda: 1)
     monkeypatch.setattr(prebuild, "frontier_prebuild_cpu_count", lambda: 31)
     monkeypatch.setattr(prebuild, "_fg_prebuild_live_worker_commit_gb", lambda: 0.0)
-    monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: None)
+    monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: SimpleNamespace(stop=lambda: None))
     monkeypatch.setattr(
         prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _refs: (list(items), {})
     )

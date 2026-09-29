@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import logging
 from typing import Any, Sequence
 
 import orjson
 
 from ..core.gem_defs import GEM_KEYS, STAT_KEYS
 
-logger = logging.getLogger(__name__)
 
 
 def _json_dumps_compact(value: Any) -> str:
@@ -145,11 +143,7 @@ def _pack_stats_for_storage(details: Any) -> Any:
     if isinstance(stats, dict) and stats and out.get("st") is None:
         arr: list[int] = []
         for k in STAT_KEYS:
-            try:
-                arr.append(int(stats.get(k, 0) or 0))
-            except Exception as e:
-                logger.warning(f"database:_pack_stats_for_storage: {e}")
-                arr.append(0)
+            arr.append(int(stats.get(k, 0) or 0))
         out.pop("Stats", None)
         out["st"] = arr
 
@@ -160,11 +154,7 @@ def _pack_stats_for_storage(details: Any) -> Any:
         for i, k in enumerate(GEM_KEYS):
             if k in gems:
                 gem_key_mask |= 1 << i
-            try:
-                packed_gems.append(int(gems.get(k, 0) or 0))
-            except Exception as e:
-                logger.warning(f"database:_pack_stats_for_storage: {e}")
-                packed_gems.append(0)
+            packed_gems.append(int(gems.get(k, 0) or 0))
         out.pop("GemCounts", None)
         out["gc"] = packed_gems
         if gem_key_mask != (1 << len(GEM_KEYS)) - 1:
@@ -203,30 +193,18 @@ def _unpack_stats_after_load(details: Any) -> Any:
     if not (isinstance(stats, dict) and stats) and isinstance(st, (list, tuple)) and len(st) >= len(STAT_KEYS):
         out_stats: dict[str, int] = {}
         for i, k in enumerate(STAT_KEYS):
-            try:
-                out_stats[k] = int(st[i] or 0)
-            except Exception as e:
-                logger.warning(f"database:_unpack_stats_after_load: {e}")
-                out_stats[k] = 0
+            out_stats[k] = int(st[i] or 0)
         out["Stats"] = out_stats
 
     gems = details.get("GemCounts")
     gc = details.get("gc")
     if not (isinstance(gems, dict) and gems) and isinstance(gc, (list, tuple)) and len(gc) >= len(GEM_KEYS):
-        try:
-            gem_key_mask = int(details.get("gk", (1 << len(GEM_KEYS)) - 1) or 0)
-        except Exception as e:
-            logger.warning(f"database:_unpack_stats_after_load: {e}")
-            gem_key_mask = (1 << len(GEM_KEYS)) - 1
+        gem_key_mask = int(details.get("gk", (1 << len(GEM_KEYS)) - 1) or 0)
         out_gems: dict[str, int] = {}
         for i, k in enumerate(GEM_KEYS):
             if (gem_key_mask & (1 << i)) == 0:
                 continue
-            try:
-                out_gems[k] = int(gc[i] or 0)
-            except Exception as e:
-                logger.warning(f"database:_unpack_stats_after_load: {e}")
-                out_gems[k] = 0
+            out_gems[k] = int(gc[i] or 0)
         out["GemCounts"] = out_gems
 
     if "SelectedElement" not in out and "Selected Element" not in out and out.get("se"):

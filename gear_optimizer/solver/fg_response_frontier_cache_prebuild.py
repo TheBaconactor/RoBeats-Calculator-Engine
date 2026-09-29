@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+import psutil
 
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.cpu_affinity import (
@@ -127,32 +128,20 @@ def _fg_prebuild_song_weight_gb(note_count: int) -> float:
     return _FG_PREBUILD_FLOOR_COMMIT_GB + max(0, int(note_count)) * slope
 
 
-def _fg_prebuild_available_ram_gb() -> float | None:
-    """Currently-available RAM in GB, or None when psutil is unavailable (optional dependency
-    boundary, mirroring cpu_affinity: without it admission falls back to the core-derived cap)."""
-    try:
-        import psutil
-
-        return float(psutil.virtual_memory().available) / 1e9
-    except Exception:
-        return None
+def _fg_prebuild_available_ram_gb() -> float:
+    """Currently-available RAM in GB."""
+    return float(psutil.virtual_memory().available) / 1e9
 
 
 def _fg_prebuild_pool_worker_processes() -> list:
     """psutil handles for the live pool workers (direct python children of this process)."""
-    try:
-        import psutil
-
-        children = psutil.Process().children(recursive=False)
-    except Exception:
-        return []
     workers = []
-    for child in children:
+    for child in psutil.Process().children(recursive=False):
         try:
             if "python" in (child.name() or "").lower():
                 workers.append(child)
-        except Exception:
-            continue
+        except psutil.Error:
+            continue  # the child exited while we looked
     return workers
 
 
@@ -164,9 +153,9 @@ def _fg_prebuild_live_worker_commit_gb() -> float:
     for proc in _fg_prebuild_pool_worker_processes():
         try:
             memory = proc.memory_info()
-            total += float(getattr(memory, "private", 0) or memory.vms) / 1e9
-        except Exception:
-            continue
+        except psutil.Error:
+            continue  # the worker exited while we looked
+        total += float(getattr(memory, "private", 0) or memory.vms) / 1e9
     return total
 
 
@@ -198,8 +187,8 @@ class _FgPrebuildRamGuard:
     def _resume(self, proc) -> None:
         try:
             proc.resume()
-        except Exception:
-            pass
+        except psutil.Error:
+            pass  # the worker already exited
         if proc in self._suspended:
             self._suspended.remove(proc)
 
@@ -207,8 +196,6 @@ class _FgPrebuildRamGuard:
         polls_since_resume = 0
         while not self._stop.wait(_FG_PREBUILD_GUARD_POLL_SECONDS):
             free_gb = _fg_prebuild_available_ram_gb()
-            if free_gb is None:
-                return
             workers = _fg_prebuild_pool_worker_processes()
             suspended_pids = {proc.pid for proc in self._suspended}
             self._suspended = [proc for proc in self._suspended if proc.is_running()]
@@ -230,8 +217,8 @@ class _FgPrebuildRamGuard:
                 youngest = max(running, key=lambda proc: proc.create_time())
                 try:
                     youngest.suspend()
-                except Exception:
-                    pass
+                except psutil.Error:
+                    pass  # the worker already exited
                 else:
                     self._suspended.append(youngest)
                     logger.warning(
@@ -276,9 +263,9 @@ class _FgPrebuildRamGuard:
                 for proc in workers:
                     try:
                         memory = proc.memory_info()
-                        commits.append(round(float(getattr(memory, "private", 0) or memory.vms) / 1e9, 2))
-                    except Exception:
+                    except psutil.Error:
                         continue
+                    commits.append(round(float(getattr(memory, "private", 0) or memory.vms) / 1e9, 2))
                 emit_profile_event(
                     component="fg_response_cache",
                     event="ram_guard_sample",
@@ -290,9 +277,7 @@ class _FgPrebuildRamGuard:
                 )
 
 
-def _start_fg_prebuild_ram_guard() -> _FgPrebuildRamGuard | None:
-    if _fg_prebuild_available_ram_gb() is None:
-        return None
+def _start_fg_prebuild_ram_guard() -> _FgPrebuildRamGuard:
     guard = _FgPrebuildRamGuard()
     guard.start()
     return guard
@@ -301,7 +286,7 @@ def _start_fg_prebuild_ram_guard() -> _FgPrebuildRamGuard | None:
 def _fg_prebuild_reducer_threads(
     weight_gb: float,
     *,
-    budget_gb: float | None,
+    budget_gb: float,
     max_workers: int,
     frontier_cpus: int,
     workload_count: int | None = None,
@@ -312,10 +297,7 @@ def _fg_prebuild_reducer_threads(
     the measured-safe thread count); a light chart that runs ~20-wide gets 1. Thread count never
     changes results -- the reducer is exact at any width -- so this is placement, not semantics.
     """
-    if budget_gb is None:
-        concurrency = max(1, int(max_workers))
-    else:
-        concurrency = max(1, min(int(max_workers), int(float(budget_gb) / max(float(weight_gb), _FG_PREBUILD_FLOOR_COMMIT_GB))))
+    concurrency = max(1, min(int(max_workers), int(float(budget_gb) / max(float(weight_gb), _FG_PREBUILD_FLOOR_COMMIT_GB))))
     if workload_count is not None:
         if int(workload_count) < 1:
             raise ValueError("FG prebuild reducer workload count must be positive")
@@ -680,22 +662,18 @@ def _run_missing_fg_prebuild(
             int(len(paths)),
         )
     available_gb = _fg_prebuild_available_ram_gb()
-    budget_gb: float | None = None
-    if available_gb is not None:
-        # Never below one giant: paired with the always-admit-one guarantee below, a single
-        # heaviest build alone in the machine is always schedulable.
-        budget_gb = max(_FG_PREBUILD_PEAK_COMMIT_GB, float(available_gb) - _FG_PREBUILD_SYSTEM_RESERVE_GB)
-    max_workers = frontier_prebuild_worker_count()
-    if budget_gb is not None:
-        max_workers = min(max_workers, max(1, int(budget_gb / _FG_PREBUILD_FLOOR_COMMIT_GB)))
+    # Never below one giant: paired with the always-admit-one guarantee below, a single
+    # heaviest build alone in the machine is always schedulable.
+    budget_gb = max(_FG_PREBUILD_PEAK_COMMIT_GB, float(available_gb) - _FG_PREBUILD_SYSTEM_RESERVE_GB)
+    max_workers = min(frontier_prebuild_worker_count(), max(1, int(budget_gb / _FG_PREBUILD_FLOOR_COMMIT_GB)))
     frontier_cpus = frontier_prebuild_cpu_count()
     heaviest_weight = _fg_prebuild_song_weight_gb(int(build_items[0][1]))
     logger.info(
-        "[FGResponseCache] Weighted admission: %s song(s), budget=%s GB (available=%s GB, reserve=%.1f GB), "
+        "[FGResponseCache] Weighted admission: %s song(s), budget=%.1f GB (available=%.1f GB, reserve=%.1f GB), "
         "max_workers=%s, heaviest=%s notes (~%.1f GB).",
         len(build_items),
-        f"{budget_gb:.1f}" if budget_gb is not None else "uncapped",
-        f"{available_gb:.1f}" if available_gb is not None else "unknown",
+        budget_gb,
+        available_gb,
         _FG_PREBUILD_SYSTEM_RESERVE_GB,
         int(max_workers),
         int(build_items[0][1]),
@@ -722,9 +700,9 @@ def _run_missing_fg_prebuild(
                     # Progress guarantee: one build is always admitted, whatever the ledger says.
                     admit_index = index
                     break
-                if budget_gb is not None and effective_ledger_gb + weight_gb > budget_gb:
+                if effective_ledger_gb + weight_gb > budget_gb:
                     continue
-                if live_available_gb is not None and weight_gb > live_available_gb - _FG_PREBUILD_SYSTEM_RESERVE_GB:
+                if weight_gb > live_available_gb - _FG_PREBUILD_SYSTEM_RESERVE_GB:
                     # Live backstop: already-materialized commit (model shortfall, other apps,
                     # allocator ratchet) throttles admission before the OS runs out.
                     continue
@@ -760,14 +738,14 @@ def _run_missing_fg_prebuild(
             if weight_gb >= 4.0:
                 logger.info(
                     "[FGResponseCache] Admitted giant %s (%s notes, ~%.1f GB, %s reducer threads); "
-                    "in-flight=%s (~%.1f/%s GB).",
+                    "in-flight=%s (~%.1f/%.1f GB).",
                     os.path.basename(path),
                     int(note_count),
                     float(weight_gb),
                     int(reducer_threads),
                     len(in_flight),
                     float(admitted_weight_gb),
-                    f"{budget_gb:.1f}" if budget_gb is not None else "uncapped",
+                    budget_gb,
                 )
             emit_profile_event(
                 component="fg_response_cache",
@@ -780,7 +758,7 @@ def _run_missing_fg_prebuild(
                     "in_flight": int(len(in_flight)),
                     "admitted_weight_gb": float(admitted_weight_gb),
                     "effective_ledger_gb": float(effective_ledger_gb),
-                    "available_gb": float(live_available_gb) if live_available_gb is not None else -1.0,
+                    "available_gb": float(live_available_gb),
                 },
             )
 
@@ -845,8 +823,7 @@ def _run_missing_fg_prebuild(
                         )
                 _admit_ready(executor)
     finally:
-        if ram_guard is not None:
-            ram_guard.stop()
+        ram_guard.stop()
     elapsed_ms = float((time.perf_counter() - t0) * 1000.0)
     summary = FgResponseFrontierCachePrebuildSummary(
         total=int(len(paths)),

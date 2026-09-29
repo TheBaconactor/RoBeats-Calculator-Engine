@@ -5,9 +5,11 @@ This module contains the payload generation, decoding, and selection helpers use
 the native in-flight optimizer. The legacy direct CPU GA entrypoint has been removed.
 """
 
-import logging
-import time
 import importlib
+import json
+import logging
+import os
+import time
 
 import numpy as np
 
@@ -31,10 +33,7 @@ from .gpu_tuning_policy import choose_ga_batch_runs
 def _resolve_ga_novelty_repair_attempts(cfg_data: dict | None) -> int:
     # cfg-driven only (config.ini GPU_GA_NoveltyRepairAttempts -> ga_novelty_repair_attempts);
     # the ambient GPU_GA_NOVELTY_REPAIR_ATTEMPTS env override was removed.
-    cfg = dict(cfg_data or {})
-    raw = cfg.get("ga_novelty_repair_attempts", 2)
-    attempts = int(raw)
-    return max(0, min(4, int(attempts)))
+    return max(0, min(4, int((cfg_data or {}).get("ga_novelty_repair_attempts", 2))))
 
 
 def _compute_global_ftff_combo_caps(
@@ -113,9 +112,8 @@ def _raise_if_abort_requested(abort_requested, where: str) -> None:
 
 
 # DEV / DEBUG: PERF_TIMING.
-# Vulkan reset/retry are hardwired constants (tests setattr these module globals directly).
+# The Vulkan retry count is a module constant (tests setattr it directly).
 _PERF_TIMING = env_flag("PERF_TIMING", "0")
-_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS = 0
 _GPU_NATIVE_GA_VULKAN_RETRIES = 1
 _GPU_NATIVE_GA_BATCH_RUNS = 0  # auto: choose_ga_batch_runs decides (was GPU_NATIVE_GA_BATCH_RUNS)
 
@@ -257,10 +255,7 @@ def upload_ga_song_slot_timeline_state(
     setup_phase_emitter=None,
 ) -> None:
     """Precompute timeline state for one GPU song slot."""
-    try:
-        gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
-    except Exception as exc:
-        raise RuntimeError(f"GPU-native GA requires taichi_gem api: {exc}") from exc
+    gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
 
     song_slot = int(song_slot)
     if song_slot < 0:
@@ -283,10 +278,7 @@ def upload_ga_global_static_state(
     setup_phase_emitter=None,
 ) -> None:
     """Upload GA global item/base-stat buffers immediately before a GA run."""
-    try:
-        gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
-    except Exception as exc:
-        raise RuntimeError(f"GPU-native GA requires taichi_gem api: {exc}") from exc
+    gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
 
     t_phase = time.perf_counter()
     gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
@@ -480,11 +472,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         )
 
     # Import on-demand so the app can auto-size GPU_SONG_SLOTS before Taichi fields allocate.
-    try:
-        gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
-        gpu_fields = importlib.import_module("gear_optimizer.solver.taichi_gem.fields")
-    except Exception as exc:
-        raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
+    gpu_api = importlib.import_module("gear_optimizer.solver.taichi_gem.api")
+    gpu_fields = importlib.import_module("gear_optimizer.solver.taichi_gem.fields")
 
     song_slot = int(song_slot)
     if song_slot < 0:
@@ -536,12 +525,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     # allocation (i.e., before ensure_ready/precompute_timeline triggers field allocation).
     gpu_fields.configure_ga_run_buffers(max_runs=num_runs, max_genomes=n_genomes)
 
-    # Optional stability toggles (mirrors the native GPU payload path)
-    reset_every_runs_env = str(_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS)
-    reset_every_runs = int(reset_every_runs_env)
-
-    max_retries_env = str(_GPU_NATIVE_GA_VULKAN_RETRIES)
-    max_retries = int(max_retries_env)
+    max_retries = _GPU_NATIVE_GA_VULKAN_RETRIES
 
     # DEV / DEBUG: phase timing flag (GPU_NATIVE_GA_PHASE_TIMING).
     perf = _PERF_TIMING
@@ -837,27 +821,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             _raise_if_abort_requested(abort_requested, "before GPU-native GA batch")
             global_run_idx = run_start_global + local_run_idx
 
-            if reset_every_runs > 0 and global_run_idx > 0 and (global_run_idx % reset_every_runs) == 0:
-                gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at run {global_run_idx + 1}/{num_runs}")
-                # hard_reset restores GA-buffer defaults; re-size for the rest of the
-                # song (was the GPU_NATIVE_GA_MAX_RUNS/GENOMES env bridge's job).
-                gpu_fields.configure_ga_run_buffers(max_runs=int(num_runs), max_genomes=int(n_genomes))
-                _restore_song_gpu_state()
-                _stage_segment_initial_populations(
-                    run_start=int(run_start_global),
-                    seg_runs=int(seg_len),
-                    segment_pop_arr=segment_pop,
-                )
-                gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
-
             batch_len = min(batch_runs, seg_len - local_run_idx)
-            # Avoid crossing a periodic reset boundary within a batch.
-            if reset_every_runs > 0 and global_run_idx > 0:
-                remaining_until_reset = reset_every_runs - (global_run_idx % reset_every_runs)
-                if remaining_until_reset <= 0:
-                    remaining_until_reset = reset_every_runs
-                if batch_len > remaining_until_reset:
-                    batch_len = remaining_until_reset
             if batch_len <= 0:
                 batch_len = 1
 
@@ -1299,13 +1263,10 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             _lp_rec["pk_fused_gpu_mean_ms"] = 1000.0 * float(_lp_acc["pk_fused_gpu_s"]) / _lp_pk_n
         _lp_path = str(env_get("GA_LOOP_PROFILE_PATH", "") or "").strip()
         if _lp_path:
-            import json as _lp_json
-            import os as _lp_os
-
-            _lp_dir = _lp_os.path.dirname(_lp_os.path.abspath(_lp_path))
+            _lp_dir = os.path.dirname(os.path.abspath(_lp_path))
             if _lp_dir:
-                _lp_os.makedirs(_lp_dir, exist_ok=True)
+                os.makedirs(_lp_dir, exist_ok=True)
             with open(_lp_path, "a", encoding="utf-8") as _lp_fh:
-                _lp_fh.write(_lp_json.dumps(_lp_rec) + "\n")
+                _lp_fh.write(json.dumps(_lp_rec) + "\n")
 
     return payload_segments[0]

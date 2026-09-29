@@ -185,7 +185,6 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
     _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 1, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
@@ -231,7 +230,6 @@ def test_gpu_native_ga_uploads_slot_timeline_and_global_static_in_request(monkey
     _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
@@ -268,7 +266,6 @@ def test_gpu_native_ga_batched_runs_use_indexed_seed_series(monkeypatch):
     _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
@@ -310,7 +307,6 @@ def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
     _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
@@ -347,7 +343,6 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
     _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
 
     with pytest.raises(RuntimeError, match="GpuExecutor aborted:"):
         genetic.run_gpu_native_ga_runs_payload_prebuilt(
@@ -384,7 +379,6 @@ def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypat
     _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
 
     with pytest.raises(RuntimeError, match="GpuExecutor aborted:"):
         genetic.run_gpu_native_ga_runs_payload_prebuilt(
@@ -433,7 +427,6 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
     _install_fake_taichi_modules(monkeypatch, fake_gpu)
 
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
         calc_song={
@@ -481,7 +474,6 @@ def test_run_gpu_native_ga_hybrid_multirun_emits_phase_events(monkeypatch):
     monkeypatch.setenv("GPU_NATIVE_GA_PHASE_TIMING", "1")
     monkeypatch.setenv("METAFINDER_PROFILE_EVENTS", "1")
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
-    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
     monkeypatch.setattr(genetic, "emit_profile_event", lambda **kwargs: events.append(dict(kwargs)), raising=True)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
