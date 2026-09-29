@@ -22,7 +22,6 @@ import atexit
 import traceback
 import time
 from collections import deque
-from contextlib import nullcontext
 from time import perf_counter
 from typing import Optional, Dict
 from gear_optimizer.core.env_config import ENV
@@ -58,7 +57,6 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     staged_ga_recovery_index as _staged_ga_recovery_index,
     stamp_request_dequeue as _stamp_request_dequeue,
     build_taichi_init_failure_report as _build_taichi_init_failure_report,
-    build_warmup_sentinel_payload as _build_warmup_sentinel_payload,
     default_executor_heartbeat_path as _default_executor_heartbeat_path,
     executor_auto_stop_enabled as _executor_auto_stop_enabled,
     load_executor_start_settings as _load_executor_start_settings,
@@ -66,9 +64,6 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     print_taichi_kernel_profiler as _print_taichi_kernel_profiler,
     send_shutdown_request as _send_shutdown_request,
     stop_executor_if_running as _stop_executor_if_running,
-    warmup_sentinel_path as _warmup_sentinel_path,
-    warmup_sentinel_is_fresh as _warmup_sentinel_is_fresh,
-    write_warmup_sentinel_payload as _write_warmup_sentinel_payload,
 )
 from gear_optimizer.solver.windows_timer import (
     acquire_windows_timer_period_1ms as _acquire_windows_timer_period_1ms,
@@ -366,111 +361,29 @@ class GpuExecutor:
             self._ready_event.set()
             self._write_heartbeat(phase="warmup_failed", note=self._last_init_error, force=True)
             return
-        warmup_fg = bool(getattr(ENV, "gpu_executor_warmup_fg", False))
-        warmup_ga = True
-        if warmup_fg or warmup_ga:
-            try:
-                from .taichi_gem import runtime as ti_runtime
-                lock_cm = ti_runtime.offline_cache_lock(timeout_sec=None)
-            except Exception as e:
-                logger.debug(f"gpu_executor:_executor_loop: {e}")
-                lock_cm = nullcontext("")
-            self._write_heartbeat(phase="warmup_wait", force=True)
-            try:
-                with lock_cm as cache_dir:
-                    sentinel_path = _warmup_sentinel_path(cache_dir)
-                    warmup_cached = bool(
-                        sentinel_path is not None
-                        and sentinel_path.exists()
-                        and _warmup_sentinel_is_fresh(
-                            sentinel_path=sentinel_path,
-                            warmup_fg=bool(warmup_fg),
-                            warmup_ga=bool(warmup_ga),
-                        )
-                    )
-                    if warmup_cached:
-                        self._write_heartbeat(phase="warmup_cached", force=True)
-                        try:
-                            if warmup_fg:
-                                self._write_heartbeat(phase="warmup_fg_cached", force=True)
-                                _warmup_fg_response_frontier_runtime()
-                            if warmup_ga:
-                                self._write_heartbeat(phase="warmup_ga_cached", force=True)
-                                from .taichi_gem.api import ga_operations as ga_ops
-                                ga_ops.warmup_ga_kernels_light()
-                        except Exception as e:
-                            self._taichi_ready = False
-                            self._last_init_error = f"GPU executor warmup failed: {type(e).__name__}: {e}"
-                            self._running = False
-                            self._ready_event.set()
-                            self._write_heartbeat(phase="warmup_failed", note=self._last_init_error, force=True)
-                            return
-                    else:
-                        sentinel_error = ""
-                        try:
-                            if warmup_fg:
-                                try:
-                                    self._write_heartbeat(phase="warmup_fg", force=True)
-                                except Exception as e:
-                                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-                                t0 = perf_counter()
-                                _warmup_fg_response_frontier_runtime()
-                                dt_ms = (perf_counter() - t0) * 1000.0
-                                if ENV.perf_timing:
-                                    logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
-                            if warmup_ga:
-                                try:
-                                    self._write_heartbeat(phase="warmup_ga", force=True)
-                                except Exception as e:
-                                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-                                t0 = perf_counter()
-                                from .taichi_gem.api import ga_operations as ga_ops
-                                ga_ops.warmup_ga_kernels_light()
-                                dt_ms = (perf_counter() - t0) * 1000.0
-                                if ENV.perf_timing:
-                                    logger.debug("[GpuExecutor] Warmed GA kernels in %.1fms", dt_ms)
-                        except Exception as e:
-                            sentinel_error = f"{type(e).__name__}: {e}"
-                            try:
-                                logger.debug("[GpuExecutor] Warmup failed: %s", sentinel_error)
-                            except Exception as e:
-                                logger.debug(f"gpu_executor:_executor_loop: {e}")
-                        finally:
-                            if sentinel_path is not None:
-                                payload = _build_warmup_sentinel_payload(
-                                    ok=not bool(sentinel_error),
-                                    error=str(sentinel_error or ""),
-                                    pid=int(os.getpid()),
-                                    warmed_at_ms=int(time.time() * 1000.0),
-                                    warmup_fg=bool(warmup_fg),
-                                    warmup_ga=bool(warmup_ga),
-                                )
-                                _write_warmup_sentinel_payload(sentinel_path=sentinel_path, payload=payload)
-                            if sentinel_error:
-                                self._taichi_ready = False
-                                self._last_init_error = f"GPU executor warmup failed: {sentinel_error}"
-                                self._running = False
-                                self._ready_event.set()
-                                self._write_heartbeat(phase="warmup_failed", note=self._last_init_error, force=True)
-                                return
-            except Exception as e:
-                warmup_error = f"{type(e).__name__}: {e}"
-                logger.debug(f"gpu_executor:_executor_loop: {e}")
-                try:
-                    if warmup_fg:
-                        _warmup_fg_response_frontier_runtime()
-                    if warmup_ga:
-                        from .taichi_gem.api import ga_operations as ga_ops
-                        ga_ops.warmup_ga_kernels_light()
-                except Exception as e:
-                    warmup_error = f"{warmup_error}; fallback warmup failed: {type(e).__name__}: {e}"
-                    logger.debug(f"gpu_executor:_executor_loop: {e}")
-                    self._taichi_ready = False
-                    self._last_init_error = f"GPU executor warmup failed: {warmup_error}"
-                    self._running = False
-                    self._ready_event.set()
-                    self._write_heartbeat(phase="warmup_failed", note=self._last_init_error, force=True)
-                    return
+        self._write_heartbeat(phase="warmup_wait", force=True)
+        try:
+            from .taichi_gem import runtime as ti_runtime
+            from .taichi_gem.api import ga_operations as ga_ops
+
+            with ti_runtime.offline_cache_lock(timeout_sec=None):
+                self._write_heartbeat(phase="warmup_fg", force=True)
+                t0 = perf_counter()
+                _warmup_fg_response_frontier_runtime()
+                if ENV.perf_timing:
+                    logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", (perf_counter() - t0) * 1000.0)
+                self._write_heartbeat(phase="warmup_ga", force=True)
+                t0 = perf_counter()
+                ga_ops.warmup_ga_kernels_light()
+                if ENV.perf_timing:
+                    logger.debug("[GpuExecutor] Warmed GA kernels in %.1fms", (perf_counter() - t0) * 1000.0)
+        except Exception as e:
+            self._taichi_ready = False
+            self._last_init_error = f"GPU executor warmup failed: {type(e).__name__}: {e}"
+            self._running = False
+            self._ready_event.set()
+            self._write_heartbeat(phase="warmup_failed", note=self._last_init_error, force=True)
+            return
         self._taichi_ready = True
         self._ready_event.set()
         self._write_heartbeat(phase="ready", force=True)

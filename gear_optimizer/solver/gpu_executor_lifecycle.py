@@ -25,7 +25,6 @@ from gear_optimizer.solver.windows_timer import (
 
 
 logger = logging.getLogger(__name__)
-WARMUP_SENTINEL_SCHEMA = 4
 
 
 @dataclass(frozen=True)
@@ -222,81 +221,6 @@ def signal_executor_ready(
                 )
             except Exception as e:
                 logger.debug(f"gpu_executor_lifecycle:signal_executor_ready: {e}")
-
-
-def build_warmup_sentinel_payload(
-    *,
-    ok: bool,
-    error: str,
-    pid: int,
-    warmed_at_ms: int,
-    warmup_fg: bool,
-    warmup_ga: bool,
-) -> dict[str, Any]:
-    return {
-        "schema": int(WARMUP_SENTINEL_SCHEMA),
-        "ok": bool(ok),
-        "error": str(error or ""),
-        "pid": int(pid),
-        "warmed_at": int(warmed_at_ms),
-        "warmup_fg": bool(warmup_fg),
-        "warmup_ga": bool(warmup_ga),
-    }
-
-
-def warmup_sentinel_path(cache_dir: Any) -> Path | None:
-    cache_dir_s = str(cache_dir or "").strip()
-    if not cache_dir_s:
-        return None
-    return Path(cache_dir_s) / "metafinder_warmup_done.json"
-
-
-def write_warmup_sentinel_payload(
-    *,
-    sentinel_path: Path,
-    payload: dict[str, Any],
-    replace_fn: Callable[[Any, Any], Any] = os.replace,
-) -> bool:
-    try:
-        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = sentinel_path.with_suffix(".tmp")
-        tmp_path.write_text(
-            json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        replace_fn(tmp_path, sentinel_path)
-        return True
-    except (OSError, ValueError, TypeError):
-        return False
-
-
-def warmup_sentinel_is_fresh(
-    *,
-    sentinel_path: Path,
-    warmup_fg: bool,
-    warmup_ga: bool,
-) -> bool:
-    try:
-        payload = json.loads(sentinel_path.read_text(encoding="utf-8", errors="replace"))
-    except Exception as e:
-        logger.debug(f"gpu_executor_lifecycle:warmup_sentinel_is_fresh: {e}")
-        return False
-    if not isinstance(payload, dict):
-        return False
-    try:
-        schema = int(payload.get("schema", 0) or 0)
-    except Exception as e:
-        logger.debug(f"gpu_executor_lifecycle:warmup_sentinel_is_fresh: {e}")
-        schema = 0
-    if schema < WARMUP_SENTINEL_SCHEMA:
-        return False
-    if not bool(payload.get("ok", False)):
-        return False
-    if bool(payload.get("warmup_fg", False)) != bool(warmup_fg):
-        return False
-    if bool(payload.get("warmup_ga", False)) != bool(warmup_ga):
-        return False
-    return True
 
 
 def _dump_kernel_profiler_records(ti: Any, dump_path: str) -> bool:

@@ -42,7 +42,6 @@ from gear_optimizer.data.csv_parser import (
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.client_update import update_and_restart_client
 from gear_optimizer.frontier_client import sync_frontiers_from_server
-from gear_optimizer.solver.scoring import FG_CACHE
 from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.app_stop_control import StopController
@@ -374,7 +373,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         graceful_stop = False
         queued_songs = 0
         queued_tasks = 0
-        FG_CACHE.clear()
         try:
             if self._stop_requested_now():
                 graceful_stop = True

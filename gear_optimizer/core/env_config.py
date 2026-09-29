@@ -42,7 +42,6 @@ class EnvConfig:
     # GPU Performance & Timing
     gpu_sync_for_timing: bool  # GPU_SYNC_FOR_TIMING: Force GPU sync for accurate timing
     gpu_force_sync: bool  # GPU_FORCE_SYNC: Force GPU synchronization
-    gpu_executor_warmup_fg: bool  # GPU_EXECUTOR_WARMUP_FG: Pre-warm FG Taichi kernels at executor startup
     gpu_service_profile: bool  # GPU_SERVICE_PROFILE: Track GpuServiceClient request latencies
     gpu_service_profile_print: bool  # GPU_SERVICE_PROFILE_PRINT: Print latency summary on close
 
@@ -91,7 +90,6 @@ class EnvConfig:
             # GPU Performance & Timing
             gpu_sync_for_timing=debug_profile and env_flag("GPU_SYNC_FOR_TIMING"),
             gpu_force_sync=debug_profile and env_flag("GPU_FORCE_SYNC"),
-            gpu_executor_warmup_fg=True,  # always pre-warm FG kernels (one-time, matches warmup_ga)
             gpu_service_profile=debug_profile and env_flag("GPU_SERVICE_PROFILE"),
             gpu_service_profile_print=debug_profile and env_flag("GPU_SERVICE_PROFILE_PRINT"),
             # Debug / profiling master gate

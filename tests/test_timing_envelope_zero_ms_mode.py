@@ -1,20 +1,17 @@
 """Fixed-timing (0ms) replay mode: CPU-side mode prep + base scorer (issue #51).
 
 These tests pin the parts that need no GPU: that `apply_timing_envelope(mode="zero_ms")`
-produces a chart-only, mode-stamped calc_song whose cache signatures are disjoint from the
-Perfect-window path, and that `score_stats_fixed_timing_exact[_batch]` is the deterministic
+produces a chart-only, mode-stamped calc_song distinct from the Perfect-window path, and that `score_stats_fixed_timing_exact[_batch]` is the deterministic
 chart-time fever timeline (independent of any timing frontier payload).
 """
 
 from __future__ import annotations
 
-import copy
 from types import SimpleNamespace
 
 import numpy as np
 
 from gear_optimizer.core.constants import TOTAL_ROWS
-from gear_optimizer.solver.scoring.stats_scoring import _song_cache_key_for_fg_timeline
 from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
 from gear_optimizer.solver.scoring.exact_rescore import (
     calculate_score_exact,
@@ -120,17 +117,6 @@ def test_perfect_window_timeline_repairs_incomplete_canonical_envelope():
 
     assert loaded.total_notes == note_count
     assert len(cs["song_data"]["fg_perfect_candidate_timestamps"]) == note_count
-
-
-def test_zero_ms_and_perfect_window_signatures_are_disjoint():
-    cs_zero = _calc_song()
-    cs_pw = _calc_song()
-    apply_timing_envelope(cs_zero, mode="zero_ms")
-    apply_timing_envelope(cs_pw, mode="perfect_window")
-
-    sig_zero = _song_cache_key_for_fg_timeline(cs_zero)
-    sig_pw = _song_cache_key_for_fg_timeline(cs_pw)
-    assert sig_zero != sig_pw
 
 
 def test_unknown_mode_fails_loudly():

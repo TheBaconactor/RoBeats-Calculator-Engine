@@ -8,25 +8,19 @@ on CPU and is NOT ported to GPU.
 
 import numpy as np
 from math import ceil
-from collections import OrderedDict
 import logging
 
 from ..core.jit_setup import jit
 from .score_math import lookup_reference_py
 from ..core.constants import (
     TOTAL_ROWS,
-    FEVER_FILL_BASE_RATE,
     FEVER_TIME_SCALE,
     FEVER_TIME_OFFSET,
 )
 from ..core.utils import parse_float as _safe_float, safe_int as _safe_int, timing_envelope_timing_context
 
 
-# Global cache for SongTimelineGrid instances (one per song).
-# NOTE: Keep bounded to avoid runaway RAM growth on long runs over large song sets.
 logger = logging.getLogger(__name__)
-_SONG_TIMELINE_GRID_CACHE_MAX = 128
-SONG_TIMELINE_GRIDS: "OrderedDict[tuple, SongTimelineGrid]" = OrderedDict()
 
 def _song_first_last_ms(timestamps: object) -> tuple[int, int]:
     try:
@@ -195,108 +189,6 @@ def calculate_fever_timeline_surface_grid(
 
 
 @jit(nopython=True, cache=True)
-def calculate_non_fever_sections(
-    song_timestamps,
-    total_notes,
-    fever_fill_rate,
-    fever_time_stat,
-    long_notes_count,
-    last_note_time,
-):
-    """
-    JIT helper: count non-fever sections and compute non_fever_base.
-
-    Matches the section stepping logic used by fg_baseline_params (scoring.py).
-    """
-    # Game formula constants (see constants.FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET)
-    non_fever_cas = (total_notes - long_notes_count) * 0.333  # FEVER_FILL_BASE_RATE
-    if non_fever_cas < 0.0:
-        non_fever_cas = 0.0
-
-    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-    fever_time_cas = last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
-    real_fever_time = fever_time_cas * fever_time_stat
-
-    current_idx = 0
-    non_fever_section = 0
-
-    while current_idx < total_notes:
-        non_fever_section += 1
-        base_notes = non_fever_base - 1 if non_fever_section == 1 else non_fever_base
-        if base_notes < 0:
-            base_notes = 0
-
-        current_idx = min(current_idx + base_notes, total_notes)
-        if current_idx >= total_notes:
-            break
-
-        start_time = song_timestamps[current_idx]
-        end_time = start_time + real_fever_time
-        fever_end_idx = int(np.searchsorted(song_timestamps, np.float32(end_time), side="left"))
-        if fever_end_idx <= current_idx:
-            fever_end_idx = min(total_notes, current_idx + 1)
-        current_idx = fever_end_idx
-
-    return int(non_fever_section), int(non_fever_base)
-
-
-@jit(nopython=True, cache=True)
-def calculate_fever_activations_grid(
-    song_timestamps,
-    total_notes,
-    fever_time_cas,
-    non_fever_cas,
-    ft_factors,
-    ff_factors,
-    fever_activations_out,
-    last_fever_end_out,
-):
-    """
-    JIT helper: compute fever_activations + last_fever_end_idx for all (FT, FF) indices.
-
-    This avoids building and copying fever masks for every cell, which is expensive
-    when callers only need activations/gap-derived data (e.g., FG pair caps grid).
-    """
-    grid_size = ft_factors.shape[0]
-    for ft_idx in range(grid_size):
-        ft_factor = ft_factors[ft_idx]
-        real_fever_time = fever_time_cas * ft_factor
-        for ff_idx in range(grid_size):
-            ff_factor = ff_factors[ff_idx]
-
-            non_fever_base = ceil(non_fever_cas * ff_factor)
-
-            current_note_idx = 0
-            fever_activations = 0
-            fever_section = 0
-            last_fever_end_idx = 0
-
-            while current_note_idx < total_notes:
-                fever_section += 1
-                # First section: -1, Later sections: use base (wasted note effect)
-                notes_to_fill = non_fever_base - 1 if fever_section == 1 else non_fever_base
-                end_normal_idx = current_note_idx + notes_to_fill
-                if end_normal_idx > total_notes:
-                    end_normal_idx = total_notes
-                current_note_idx = end_normal_idx
-                if current_note_idx >= total_notes:
-                    break
-
-                if current_note_idx > 0:
-                    fever_activations += 1
-                    start_time = song_timestamps[current_note_idx]
-                    end_time = start_time + real_fever_time
-                    fever_end_idx = int(np.searchsorted(song_timestamps, np.float32(end_time), side="left"))
-                    current_note_idx = fever_end_idx
-                    last_fever_end_idx = fever_end_idx
-                else:
-                    break
-
-            fever_activations_out[ft_idx, ff_idx] = fever_activations
-            last_fever_end_out[ft_idx, ff_idx] = last_fever_end_idx
-
-
-@jit(nopython=True, cache=True)
 def calculate_force_greats_timeline_indices(
     song_timestamps,
     perfect_candidate_timestamps,
@@ -457,10 +349,6 @@ class SongTimelineGrid:
 
     Caches all possible timelines based on raw FT/FF stat indices (0-160).
     Provides O(1) lookup for the gem solver and Force Greats.
-
-    Key insight: Force Greats just increases fill requirement per section,
-    so we cache base parameters (non_fever_base, real_fever_time) and
-    compute adjusted timelines dynamically.
     """
 
     GRID_SIZE = TOTAL_ROWS + 1  # 0 to 160 inclusive = 161
@@ -494,19 +382,11 @@ class SongTimelineGrid:
         self.long_notes = int(calc_song["metadata"].get("Long Notes", 0))
         self.last_note_time = float(calc_song["metadata"].get("Last Note Time", 0))
 
-        # Precompute constants that don't change with stats
-        # Game formula constants (see constants.FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET)
-        self.non_fever_cas = (self.total_notes - self.long_notes) * FEVER_FILL_BASE_RATE
-        self.fever_time_cas = self.last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
-
         # Precompute all FT/FF multipliers (161 each)
         ref_ft = ref_arrays["Fever Time"]
         ref_ff = ref_arrays["Fever Fill Rate"]
         self.ft_factors = [lookup_reference_py(i, ref_ft, TOTAL_ROWS) for i in range(self.GRID_SIZE)]
         self.ff_factors = [lookup_reference_py(i, ref_ff, TOTAL_ROWS) for i in range(self.GRID_SIZE)]
-        # Numba-friendly arrays (avoid Python loops/boxing in JIT grid builders)
-        self._ft_factors_np = np.asarray(self.ft_factors, dtype=np.float32)
-        self._ff_factors_np = np.asarray(self.ff_factors, dtype=np.float32)
 
         # Lazy-loaded 2D grid: [ft_idx][ff_idx] -> (mask_head, body_fever, body_normal, activations)
         # Using None to indicate not-yet-computed
@@ -541,10 +421,6 @@ class SongTimelineGrid:
 
         # Flag to track if precompute_all has been called
         self._precomputed = False
-
-        # Cached fast grids (do not require fever_mask_head copies)
-        self._fever_activations_grid = None
-        self._last_fever_end_grid = None
 
     def get_timeline(self, ft_idx, ff_idx):
         """
@@ -646,30 +522,6 @@ class SongTimelineGrid:
         self._timeline_grid[ft_idx][ff_idx] = result
         return result
 
-    def get_fever_params(self, ft_idx, ff_idx):
-        """
-        Get fever parameters for Force Greats calculation.
-
-        Args:
-            ft_idx: Fever Time stat index (0-160)
-            ff_idx: Fever Fill Rate stat index (0-160)
-
-        Returns:
-            tuple: (non_fever_base, real_fever_time, non_fever_great_to_fill, raw_fever_fill)
-        """
-        ft_idx = max(0, min(TOTAL_ROWS, int(ft_idx)))
-        ff_idx = max(0, min(TOTAL_ROWS, int(ff_idx)))
-
-        ft_factor = self.ft_factors[ft_idx]
-        ff_factor = self.ff_factors[ff_idx]
-
-        raw_fever_fill = self.non_fever_cas * ff_factor
-        non_fever_base = ceil(raw_fever_fill)
-        real_fever_time = self.fever_time_cas * ft_factor
-        # Max greats to fill: effectively 2x the base (perfect judgement fills faster)
-        non_fever_great_to_fill = ceil(max(1.0, raw_fever_fill * 2.0))
-
-        return non_fever_base, real_fever_time, non_fever_great_to_fill, raw_fever_fill
 
     def precompute_all(self):
         """
@@ -733,60 +585,4 @@ class SongTimelineGrid:
             "ff_factors": np.array(self.ff_factors, dtype=np.float32),
         }
 
-    def to_gpu_arrays_minimal(self):
-        """
-        Fast path: return only the grids needed by downstream "meta" computations.
 
-        This avoids the expensive per-cell fever_mask_head copies done by `to_gpu_arrays()`.
-        """
-        if self._fever_activations_grid is None or self._last_fever_end_grid is None:
-            acts = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
-            last_end = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
-
-            calculate_fever_activations_grid(
-                self.song_timestamps,
-                int(self.total_notes),
-                float(self.fever_time_cas),
-                float(self.non_fever_cas),
-                self._ft_factors_np,
-                self._ff_factors_np,
-                acts,
-                last_end,
-            )
-            self._fever_activations_grid = acts
-            self._last_fever_end_grid = last_end
-
-        gap = np.empty((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
-        gap[:, :] = int(self.total_notes) - self._last_fever_end_grid
-
-        return {
-            "fever_activations": self._fever_activations_grid,
-            "last_fever_end": self._last_fever_end_grid,
-            "gap": gap,
-        }
-
-
-def get_song_timeline_grid(calc_song, ref_arrays):
-    """
-    Get or create a SongTimelineGrid for the given song.
-
-    Args:
-        calc_song: Song calculation context
-        ref_arrays: Reference lookup arrays
-
-    Returns:
-        SongTimelineGrid: Cached or newly created grid
-    """
-    song_key = _timeline_grid_cache_key(calc_song)
-    if _SONG_TIMELINE_GRID_CACHE_MAX <= 0:
-        return SongTimelineGrid(calc_song, ref_arrays)
-
-    grid = SONG_TIMELINE_GRIDS.get(song_key)
-    if grid is None:
-        grid = SongTimelineGrid(calc_song, ref_arrays)
-        SONG_TIMELINE_GRIDS[song_key] = grid
-    SONG_TIMELINE_GRIDS.move_to_end(song_key)
-    while len(SONG_TIMELINE_GRIDS) > int(_SONG_TIMELINE_GRID_CACHE_MAX):
-        SONG_TIMELINE_GRIDS.popitem(last=False)
-
-    return grid

@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from gear_optimizer.core.constants import TOTAL_ROWS
-from gear_optimizer.core.utils import timing_envelope_full_context, timing_envelope_timing_context
+from gear_optimizer.core.utils import timing_envelope_timing_context
 from gear_optimizer.solver.scoring.exact_rescore import (
     score_stats_fixed_timing_exact_batch,
     score_stats_timing_exact_batch,
@@ -212,9 +212,7 @@ def test_cache_context_is_inert_at_zero_t_lossless():
     cs_zero = _calc_song()
     apply_timing_envelope(cs_zero, mode="zero_ms")
     assert timing_envelope_timing_context(cs_zero) == ("TIMING_ENVELOPE", "zero_ms", "", 0)
-    assert timing_envelope_full_context(cs_zero) == ("TIMING_ENVELOPE", "zero_ms", "none", 0)
 
     cs_pw = _calc_song()
     apply_timing_envelope(cs_pw, mode="perfect_window")
     assert timing_envelope_timing_context(cs_pw) == ("TIMING_ENVELOPE", "perfect_window", "", 0)
-    assert timing_envelope_full_context(cs_pw) == ("TIMING_ENVELOPE", "perfect_window", "late_upper", 0)

@@ -165,25 +165,6 @@ def timing_envelope_timing_context(calc_song):
     )
 
 
-def timing_envelope_full_context(calc_song):
-    """
-    Return deterministic timing-envelope settings that can affect FG carry.
-    """
-    if not isinstance(calc_song, dict):
-        return ("", "", "", 0)
-
-    meta = calc_song.get("metadata", {}) or {}
-    if not isinstance(meta, dict) or not meta.get("TimingEnvelopeApplied"):
-        return ("", "", "", 0)
-
-    return (
-        "TIMING_ENVELOPE",
-        str(meta.get("TimingEnvelopeMode", "") or "").strip().lower(),
-        str(meta.get("TimingEnvelopeFGCarry", "") or "").strip().lower(),
-        meta.get("TimingEnvelopeBaselineHash", "") or 0,
-    )
-
-
 def get_selected_element(data: object, default: str = "") -> str:
     """
     Normalize the "selected element" field across historical key spellings.

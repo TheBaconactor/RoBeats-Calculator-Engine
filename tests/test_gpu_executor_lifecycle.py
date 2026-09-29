@@ -6,9 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from gear_optimizer.solver.gpu_executor_lifecycle import (
-    WARMUP_SENTINEL_SCHEMA,
     build_taichi_init_failure_report,
-    build_warmup_sentinel_payload,
     configure_executor_server_state,
     executor_auto_stop_enabled,
     load_executor_start_settings,
@@ -18,9 +16,6 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
     signal_executor_ready,
     stop_executor_if_running,
     try_send_shutdown_request,
-    warmup_sentinel_is_fresh,
-    warmup_sentinel_path,
-    write_warmup_sentinel_payload,
 )
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
@@ -304,82 +299,6 @@ def test_signal_executor_ready_still_signals_after_wait_or_queue_failures():
         )
 
     assert calls == ["set"]
-
-
-def test_build_warmup_sentinel_payload_uses_lifecycle_schema():
-    payload = build_warmup_sentinel_payload(
-        ok=True,
-        error="",
-        pid=123,
-        warmed_at_ms=456,
-        warmup_fg=True,
-        warmup_ga=True,
-    )
-
-    assert payload == {
-        "schema": WARMUP_SENTINEL_SCHEMA,
-        "ok": True,
-        "error": "",
-        "pid": 123,
-        "warmed_at": 456,
-        "warmup_fg": True,
-        "warmup_ga": True,
-    }
-
-
-def test_warmup_sentinel_path_returns_cache_sentinel_or_none():
-    assert warmup_sentinel_path("") is None
-    assert warmup_sentinel_path(" ") is None
-    assert warmup_sentinel_path("cache") == Path("cache") / "metafinder_warmup_done.json"
-
-
-def test_write_warmup_sentinel_payload_writes_atomic_json(tmp_path):
-    sentinel = tmp_path / "cache" / "metafinder_warmup_done.json"
-    replacements: list[tuple[str, str]] = []
-
-    def _replace(src, dst):
-        replacements.append((Path(src).name, Path(dst).name))
-        Path(src).replace(dst)
-
-    assert write_warmup_sentinel_payload(
-        sentinel_path=sentinel,
-        payload={"b": 2, "a": 1},
-        replace_fn=_replace,
-    )
-
-    assert replacements == [("metafinder_warmup_done.tmp", "metafinder_warmup_done.json")]
-    assert json.loads(sentinel.read_text(encoding="utf-8")) == {"a": 1, "b": 2}
-
-
-def test_write_warmup_sentinel_payload_reports_invalid_payload_as_false(tmp_path):
-    assert not write_warmup_sentinel_payload(
-        sentinel_path=tmp_path / "metafinder_warmup_done.json",
-        payload={"bad": object()},
-    )
-
-
-def test_warmup_sentinel_requires_ga_warmup_match(tmp_path):
-    sentinel = tmp_path / "metafinder_warmup_done.json"
-    sentinel.write_text(
-        json.dumps(
-            {
-                "schema": WARMUP_SENTINEL_SCHEMA,
-                "ok": True,
-                "error": "",
-                "pid": 123,
-                "warmed_at": 456,
-                "warmup_fg": True,
-                "warmup_ga": False,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    assert not warmup_sentinel_is_fresh(
-        sentinel_path=sentinel,
-        warmup_fg=True,
-        warmup_ga=True,
-    )
 
 
 def test_build_taichi_init_failure_report_writes_trace_file(tmp_path):
