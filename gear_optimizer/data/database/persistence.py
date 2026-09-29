@@ -8,7 +8,6 @@ import os
 import sqlite3
 import time
 import warnings
-import logging
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 from ...core.fallback_monitor import warn_fallback
 from ...core.gem_defs import fg_score_from_force
@@ -67,7 +66,6 @@ from .force_normalize import (
 )
 from ...helpers.song_helpers.fg_payload import strip_retired_fg_fields
 
-logger = logging.getLogger(__name__)
 
 
 def _is_lock_error(err: sqlite3.Error) -> bool:
@@ -529,14 +527,10 @@ def save_team_buff_loadouts_batch(
         if len(group) == 1:
             deduplicated_entries.append(group[0])
             continue
-        try:
-            best_entry = max(
-                group, key=lambda e: (_get_overflow_from_details(e.get("details", {})), e.get("fg_score", 0))
-            )
-            deduplicated_entries.append(best_entry)
-        except Exception as e:
-            logger.warning(f"database:_effective_hash_for_entry: {e}")
-            deduplicated_entries.append(group[0])
+        best_entry = max(
+            group, key=lambda e: (_get_overflow_from_details(e.get("details", {})), e.get("fg_score", 0))
+        )
+        deduplicated_entries.append(best_entry)
     _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
     def _can_recompute_stats_for_persistence(gear_names_local: list[str], mini_names_local: list[str]) -> bool:
         gear_ok = (not gear_names_local) or (

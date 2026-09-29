@@ -254,9 +254,6 @@ class GpuServiceClient:
                 resp: GpuResponse = self._response_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-            except Exception as e:
-                logger.debug(f"gpu_service:_rx_loop: {e}")
-                continue
 
             pending = None
             with self._lock:
@@ -365,11 +362,7 @@ class GpuServiceClient:
                 )
                 self._trigger_timeout_abort(message)
 
-            try:
-                time.sleep(float(self._timeout_poll_sec))
-            except Exception as e:
-                logger.debug(f"gpu_service:_timeout_loop: {e}")
-                time.sleep(0.25)
+            time.sleep(float(self._timeout_poll_sec))
 
     def profile_summary(self) -> dict[str, Any]:
         if not self._profile_enabled:

@@ -10,10 +10,8 @@ This module provides the ItemRegistry class which:
 import numpy as np
 from typing import Optional
 import json
-import logging
 
 
-logger = logging.getLogger(__name__)
 # Stat dimension indices (matching fields.ITEM_STAT_DIM = 10)
 STAT_INDICES = {
     "Perfect Points": 0,
@@ -47,15 +45,7 @@ def _stable_item_sort_key(item: object) -> tuple:
 
     name = str(item.get("Name", "") or "")
     # Tie-breaker: stable, content-based signature (handles any rare duplicate names safely).
-    try:
-        sig = json.dumps(item, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-    except Exception as e:
-        logger.debug(f"item_registry:_stable_item_sort_key: {e}")
-        try:
-            sig = str(sorted((str(k), str(v)) for k, v in item.items()))
-        except Exception as e:
-            logger.debug(f"item_registry:_stable_item_sort_key: {e}")
-            sig = repr(item)
+    sig = json.dumps(item, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
     return (0, name, sig)
 
 

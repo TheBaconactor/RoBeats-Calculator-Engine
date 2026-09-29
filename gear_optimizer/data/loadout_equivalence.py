@@ -14,7 +14,6 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from ..core.constants import PATHS
-from ..core.fallback_monitor import warn_fallback
 from ..core.utils import get_selected_element, safe_int
 from .csv_parser import load_csv_db
 
@@ -29,27 +28,13 @@ def get_minis_by_name_cached() -> Dict[str, dict]:
     Lazily load Minis.csv into a name->stats dict (cached for process lifetime).
 
     Notes:
-    - On failure (missing Data/ or parse issues), returns {}.
-    - Callers should treat missing minis as "name-only" (no equivalence merging).
+    - A missing Minis.csv yields {}; callers then treat minis as "name-only" (no equivalence
+      merging). A malformed file raises.
     """
     global _MINIS_BY_NAME_CACHE
-    if _MINIS_BY_NAME_CACHE is not None:
-        return _MINIS_BY_NAME_CACHE
-
-    minis: Dict[str, dict] = {}
-    try:
-        minis_path = os.path.join(PATHS.data_dir, "Gear", "Minis.csv")
-        minis = load_csv_db(minis_path, "mini") or {}
-    except Exception as exc:
-        warn_fallback(
-            "loadout_equivalence.minis_csv",
-            "failed to load Minis.csv; falling back to name-only mini handling",
-            context={"path": minis_path},
-            exc=exc,
-        )
-        minis = {}
-    _MINIS_BY_NAME_CACHE = minis
-    return minis
+    if _MINIS_BY_NAME_CACHE is None:
+        _MINIS_BY_NAME_CACHE = load_csv_db(os.path.join(PATHS.data_dir, "Gear", "Minis.csv"), "mini") or {}
+    return _MINIS_BY_NAME_CACHE
 
 
 def get_gears_by_name_cached() -> Dict[str, dict]:
@@ -57,27 +42,13 @@ def get_gears_by_name_cached() -> Dict[str, dict]:
     Lazily load Gears.csv into a name->stats dict (cached for process lifetime).
 
     Notes:
-    - On failure (missing Data/ or parse issues), returns {}.
-    - Callers should treat missing gears as "name-only" (no stats available).
+    - A missing Gears.csv yields {}; callers then treat gears as "name-only" (no stats
+      available). A malformed file raises.
     """
     global _GEARS_BY_NAME_CACHE
-    if _GEARS_BY_NAME_CACHE is not None:
-        return _GEARS_BY_NAME_CACHE
-
-    gears: Dict[str, dict] = {}
-    try:
-        gears_path = os.path.join(PATHS.data_dir, "Gear", "Gears.csv")
-        gears = load_csv_db(gears_path, "gear") or {}
-    except Exception as exc:
-        warn_fallback(
-            "loadout_equivalence.gears_csv",
-            "failed to load Gears.csv; falling back to name-only gear handling",
-            context={"path": gears_path},
-            exc=exc,
-        )
-        gears = {}
-    _GEARS_BY_NAME_CACHE = gears
-    return gears
+    if _GEARS_BY_NAME_CACHE is None:
+        _GEARS_BY_NAME_CACHE = load_csv_db(os.path.join(PATHS.data_dir, "Gear", "Gears.csv"), "gear") or {}
+    return _GEARS_BY_NAME_CACHE
 
 
 def clear_gear_mini_csv_caches() -> None:

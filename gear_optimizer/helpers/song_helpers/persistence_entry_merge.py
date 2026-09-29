@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 from typing import Callable
-import logging
 
 from .fg_payload import has_valid_fg_payload
 from .item_utils import names_list
 
 
 
-logger = logging.getLogger(__name__)
 def resolve_loadout_hash(gear_items, mini_items) -> str:
     from .loadout_hashing import resolve_loadout_hash as _impl
 
@@ -58,17 +56,9 @@ def merge_persist_entry(
         "force": force_out,
     }
     if fg_base_score_val is not None:
-        try:
-            new_entry["fg_base_score"] = int(fg_base_score_val or 0)
-        except Exception as e:
-            logger.warning(f"persistence_entry_merge:merge_persist_entry: {e}")
-            new_entry["fg_base_score"] = 0
+        new_entry["fg_base_score"] = int(fg_base_score_val or 0)
     elif force_out is not None and fg_score_i > 0:
-        try:
-            new_entry["fg_base_score"] = int(score_val or 0)
-        except Exception as e:
-            logger.warning(f"persistence_entry_merge:merge_persist_entry: {e}")
-            new_entry["fg_base_score"] = 0
+        new_entry["fg_base_score"] = int(score_val or 0)
 
     idx = entry_index_by_hash.get(h)
     if idx is None:

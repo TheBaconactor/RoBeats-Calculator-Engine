@@ -31,11 +31,7 @@ def _stable_cfg_hash(cfg_dict: dict | None) -> str:
         cached = _CFG_HASH_CACHE.get(cfg_id)
         if cached is not None and int(cached[0]) == cfg_len:
             return str(cached[1])
-    try:
-        payload = json.dumps(cfg_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    except Exception as e:
-        logger.warning(f"song_io:_stable_cfg_hash: {e}")
-        payload = repr(sorted(cfg_dict.items(), key=lambda kv: str(kv[0])))
+    payload = json.dumps(cfg_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     h = hashlib.sha1(payload.encode("utf-8", errors="replace")).hexdigest()
     out = h[:16]
     with _CFG_HASH_CACHE_LOCK:
@@ -298,62 +294,58 @@ def read_song_file(fp):
     }
     if not fp:
         return data
-    try:
-        found_song_data = False
-        note_lines = []
-        with open(fp, "r", encoding="utf-8-sig") as f:
-            for raw_line in f:
-                line = raw_line.rstrip("\r\n")
-                stripped = line.strip()
-                if not found_song_data:
-                    if stripped == "Song Data":
-                        found_song_data = True
-                        continue
-                    if not stripped:
-                        continue
-                    parts = line.split("\t", 1)
-                    if len(parts) == 2:
-                        key = parts[0].strip()
-                        if key in data["song_details"]:
-                            data["song_details"][key] = parts[1].strip() or "0"
+    found_song_data = False
+    note_lines = []
+    with open(fp, "r", encoding="utf-8-sig") as f:
+        for raw_line in f:
+            line = raw_line.rstrip("\r\n")
+            stripped = line.strip()
+            if not found_song_data:
+                if stripped == "Song Data":
+                    found_song_data = True
                     continue
-
                 if not stripped:
                     continue
-                c = stripped[0]
-                if ("0" <= c <= "9") or c == ".":
-                    note_lines.append(line)
+                parts = line.split("\t", 1)
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    if key in data["song_details"]:
+                        data["song_details"][key] = parts[1].strip() or "0"
+                continue
 
-        if not found_song_data:
-            return data
+            if not stripped:
+                continue
+            c = stripped[0]
+            if ("0" <= c <= "9") or c == ".":
+                note_lines.append(line)
 
-        if note_lines:
-            nd = np.loadtxt(StringIO("\n".join(note_lines)), delimiter=None)
-            if nd.size:
-                nd = nd.reshape(1, -1) if nd.ndim == 1 else nd
-                if nd.shape[1] >= 4:
-                    timestamps = np.asarray(nd[:, 0], dtype=np.float32)
-                    # Column 4 is the note type: 1=normal, 2=held head, 3=held tail.
-                    note_types = nd[:, 3].astype(np.int16, copy=False)
-                    # Column 3 (0-indexed 2) is the lane/track (1..4). Kept for lane-aware fever
-                    # reachability (same-lane notes are hit in time order).
-                    lanes = nd[:, 2].astype(np.int16, copy=False)
-                    # Canonicalize external chart order at ingest: the game exporter
-                    # (SongLoggerProd) preserves the in-engine HitObjects array order, NOT
-                    # chronological order -- a hold's synthesized tail (type 3) is emitted right
-                    # after its head at head_time + duration, so a later note in array order can
-                    # sit earlier in time. The optimizer's fever model is strictly time-ordered
-                    # (per-note floor/candidate envelopes consumed by searchsorted REQUIRE
-                    # nondecreasing timestamps; the FG builder fails loudly otherwise). Stable sort
-                    # by time: true chords (equal timestamps) keep the export's within-chord order,
-                    # and every note carries its own type/window so a chord-tied held tail keeps
-                    # its widened reach. (The legacy SongLogger pre-sorted by time; SongLoggerProd
-                    # does not, which is faithful to live game data, not a bug.)
-                    order = np.argsort(timestamps, kind="stable")
-                    data["timestamps"] = np.ascontiguousarray(timestamps[order])
-                    data["note_types"] = np.ascontiguousarray(note_types[order])
-                    data["lanes"] = np.ascontiguousarray(lanes[order])
+    if not found_song_data:
         return data
-    except Exception as exc:
-        WARN_ONCE.warn("song-file", f"Failed to read song file {fp}: {exc}")
-        return data
+
+    if note_lines:
+        nd = np.loadtxt(StringIO("\n".join(note_lines)), delimiter=None)
+        if nd.size:
+            nd = nd.reshape(1, -1) if nd.ndim == 1 else nd
+            if nd.shape[1] >= 4:
+                timestamps = np.asarray(nd[:, 0], dtype=np.float32)
+                # Column 4 is the note type: 1=normal, 2=held head, 3=held tail.
+                note_types = nd[:, 3].astype(np.int16, copy=False)
+                # Column 3 (0-indexed 2) is the lane/track (1..4). Kept for lane-aware fever
+                # reachability (same-lane notes are hit in time order).
+                lanes = nd[:, 2].astype(np.int16, copy=False)
+                # Canonicalize external chart order at ingest: the game exporter
+                # (SongLoggerProd) preserves the in-engine HitObjects array order, NOT
+                # chronological order -- a hold's synthesized tail (type 3) is emitted right
+                # after its head at head_time + duration, so a later note in array order can
+                # sit earlier in time. The optimizer's fever model is strictly time-ordered
+                # (per-note floor/candidate envelopes consumed by searchsorted REQUIRE
+                # nondecreasing timestamps; the FG builder fails loudly otherwise). Stable sort
+                # by time: true chords (equal timestamps) keep the export's within-chord order,
+                # and every note carries its own type/window so a chord-tied held tail keeps
+                # its widened reach. (The legacy SongLogger pre-sorted by time; SongLoggerProd
+                # does not, which is faithful to live game data, not a bug.)
+                order = np.argsort(timestamps, kind="stable")
+                data["timestamps"] = np.ascontiguousarray(timestamps[order])
+                data["note_types"] = np.ascontiguousarray(note_types[order])
+                data["lanes"] = np.ascontiguousarray(lanes[order])
+    return data
