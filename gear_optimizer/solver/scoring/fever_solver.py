@@ -10,7 +10,6 @@ This module provides the main gem solver pipeline:
 """
 
 import numpy as np
-import logging
 
 from ...core.constants import (
     TOTAL_GEM_BUDGET,
@@ -26,7 +25,6 @@ from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_sol
 from .stats_ops import apply_gems_to_base_stats
 
 
-logger = logging.getLogger(__name__)
 
 
 def solve_best_fever_combination(
@@ -101,12 +99,7 @@ def solve_best_fever_combination(
 
     need_ref_cast = False
     for _arr in (ref_pp_raw, ref_cm_raw, ref_fm_raw, ref_ft_raw, ref_ff_raw):
-        try:
-            if np.asarray(_arr).dtype != np.float32:
-                need_ref_cast = True
-                break
-        except Exception as e:
-            logger.debug(f"fever_solver:solve_best_fever_combination: {e}")
+        if np.asarray(_arr).dtype != np.float32:
             need_ref_cast = True
             break
 

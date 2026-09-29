@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Optional
-import logging
 
 import numpy as np
 
@@ -14,7 +13,6 @@ from ...solver.scoring.stats_ops import apply_gems_to_base_stats
 
 
 
-logger = logging.getLogger(__name__)
 def _as_genome(candidate: dict) -> list[dict]:
     genome = candidate.get("Genome")
     if isinstance(genome, list) and genome:
@@ -121,11 +119,7 @@ def _resolve_candidate_stats(
         for k, v in item.items():
             if k in SKIP_ITEM_KEYS:
                 continue
-            try:
-                stats[k] = stats.get(k, 0) + v
-            except Exception as e:
-                logger.debug(f"fg_candidate_stats:_resolve_candidate_stats: {e}")
-                continue
+            stats[k] = stats.get(k, 0) + v
 
     data["BaseStats"] = dict(stats)
     stats = apply_gems_to_base_stats(

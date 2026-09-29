@@ -91,11 +91,7 @@ class UserGemsSettings:
         selected = str(selected_color or "")
 
         def _cfg_get(option: str, fallback: int = 0) -> int:
-            try:
-                return safe_int(cfg.get(section, option, fallback=fallback), fallback)
-            except Exception as e:
-                logger.debug(f"gem_defs:_cfg_get: {e}")
-                return int(fallback)
+            return safe_int(cfg.get(section, option, fallback=fallback), fallback)
 
         static_element = safe_int(cfg.get("ElementalGems", selected, fallback=0), 0) if selected else 0
 

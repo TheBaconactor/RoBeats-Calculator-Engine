@@ -192,11 +192,7 @@ class GpuExecutor:
         profiling at init). Must run on this (owner) thread because the Taichi/Vulkan runtime
         is thread-owned; cross-thread profiler reads during shutdown segfault.
         """
-        try:
-            settings = _load_executor_stop_profiler_settings(env_flag_fn=env_flag, env_config=ENV)
-        except Exception as e:
-            logger.debug(f"gpu_executor:_maybe_dump_kernel_profiler_on_owner_thread: {e}")
-            return
+        settings = _load_executor_stop_profiler_settings(env_flag_fn=env_flag, env_config=ENV)
         dump_path = str(getattr(settings, "kernel_profiler_dump_path", "") or "").strip()
         if not dump_path:
             return
@@ -219,11 +215,7 @@ class GpuExecutor:
         """Start the GPU executor thread in the main process."""
         if self._running:
             if (not bool(in_process)) and bool(getattr(self, "_in_process_queues", False)):
-                try:
-                    self.stop()
-                except Exception as e:
-                    logger.debug(f"gpu_executor:start: {e}")
-                    return
+                self.stop()
             else:
                 return
         self._requests_processed = 0

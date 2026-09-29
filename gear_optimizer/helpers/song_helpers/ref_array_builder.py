@@ -76,23 +76,19 @@ def get_exact_replay_ref_arrays_cached() -> dict[str, np.ndarray] | None:
         if _is_exact_replay_ref_arrays(cached):
             return cached
 
-        try:
-            from gear_optimizer.core.config import load_paths_cache
-            from gear_optimizer.core.constants import PATHS
-            from gear_optimizer.data.csv_parser import read_table
+        from gear_optimizer.core.config import load_paths_cache
+        from gear_optimizer.core.constants import PATHS
+        from gear_optimizer.data.csv_parser import read_table
 
-            paths = load_paths_cache() or {}
-            stats_path = str((paths.get("Stats") or PATHS.stats_csv) or "").strip()
-            if not stats_path:
-                return None
-            stats_table = read_table(stats_path)
-            built = build_ref_arrays_from_stats(stats_table, dtype=np.float64)
-            if built:
-                _EXACT_REPLAY_REF_ARRAYS_CACHE = built
-            return _EXACT_REPLAY_REF_ARRAYS_CACHE
-        except Exception as e:
-            logger.debug(f"ref_array_builder:get_exact_replay_ref_arrays_cached: {e}")
-            return cached if _is_exact_replay_ref_arrays(cached) else None
+        paths = load_paths_cache() or {}
+        stats_path = str((paths.get("Stats") or PATHS.stats_csv) or "").strip()
+        if not stats_path:
+            return None
+        stats_table = read_table(stats_path)
+        built = build_ref_arrays_from_stats(stats_table, dtype=np.float64)
+        if built:
+            _EXACT_REPLAY_REF_ARRAYS_CACHE = built
+        return _EXACT_REPLAY_REF_ARRAYS_CACHE
 
 
 def resolve_exact_replay_ref_arrays(ref_arrays: Any) -> Any:

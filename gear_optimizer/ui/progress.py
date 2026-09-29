@@ -5,12 +5,10 @@ import shutil
 import sys
 import threading
 import time
-import logging
 
 from gear_optimizer.core.parsing import truthy
 
 
-logger = logging.getLogger(__name__)
 __all__ = [
     "ProgressUI",
     "_banner_enabled_default",
@@ -215,13 +213,9 @@ class ProgressUI:
 
 
 def _stream_is_tty(stream) -> bool:
-    try:
-        isatty = getattr(stream, "isatty", None)
-        if callable(isatty):
-            return bool(isatty())
-    except Exception as e:
-        logger.debug(f"progress:_stream_is_tty: {e}")
-        return False
+    isatty = getattr(stream, "isatty", None)
+    if callable(isatty):
+        return bool(isatty())
     return False
 
 

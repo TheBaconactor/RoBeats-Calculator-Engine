@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from typing import Any
-import logging
 
 from ....core.utils import get_selected_element
 
 
 
-logger = logging.getLogger(__name__)
 def expected_selected_element(entry: dict[str, Any], meta_primary_color: str) -> str:
     """
     Best-effort "selected element" for cache validation.
@@ -20,12 +18,8 @@ def expected_selected_element(entry: dict[str, Any], meta_primary_color: str) ->
     v = entry.get("selected_element")
     if v:
         return str(v)
-    try:
-        det0 = entry.get("details") or {}
-        return get_selected_element(det0, meta_primary_color)
-    except Exception as e:
-        logger.debug(f"entry_utils:expected_selected_element: {e}")
-        return str(meta_primary_color or "")
+    det0 = entry.get("details") or {}
+    return get_selected_element(det0, meta_primary_color)
 
 def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict[str, Any] | None:
     """
@@ -50,18 +44,14 @@ def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict
         if isinstance(base_stats, dict) and base_stats:
             return eval_data
 
-    try:
-        det = entry.get("details") or {}
-        stats = det.get("Stats") or {}
-        if not isinstance(stats, dict) or not stats:
-            return None
-        return {
-            "Stats": stats,
-            "Selected Element": get_selected_element(det, meta_primary_color),
-            "FT": det.get("FT", 0),
-            "FF": det.get("FF", 0),
-            "GemCounts": det.get("GemCounts", {}),
-        }
-    except Exception as e:
-        logger.debug(f"entry_utils:eval_data_from_entry: {e}")
+    det = entry.get("details") or {}
+    stats = det.get("Stats") or {}
+    if not isinstance(stats, dict) or not stats:
         return None
+    return {
+        "Stats": stats,
+        "Selected Element": get_selected_element(det, meta_primary_color),
+        "FT": det.get("FT", 0),
+        "FF": det.get("FF", 0),
+        "GemCounts": det.get("GemCounts", {}),
+    }

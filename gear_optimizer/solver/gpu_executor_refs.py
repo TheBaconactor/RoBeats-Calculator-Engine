@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any
 
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuResponse
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -39,13 +37,5 @@ def execute_load_refs(
 
 
 def ref_arrays_sig(ref_arrays: Any) -> bytes | None:
-    try:
-        from .taichi_gem.api.initialization import _ref_arrays_sig as _taichi_ref_arrays_sig
-    except Exception as e:
-        logger.debug(f"gpu_executor_refs:ref_arrays_sig: {e}")
-        return None
-    try:
-        return _taichi_ref_arrays_sig(ref_arrays)
-    except Exception as e:
-        logger.debug(f"gpu_executor_refs:ref_arrays_sig: {e}")
-        return None
+    from .taichi_gem.api.initialization import _ref_arrays_sig as _taichi_ref_arrays_sig
+    return _taichi_ref_arrays_sig(ref_arrays)

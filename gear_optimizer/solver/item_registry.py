@@ -175,11 +175,7 @@ class ItemRegistry:
         id_to_item = self.id_to_item
         items: list[dict] = [{}] * n_items
         for item_id, item in id_to_item.items():
-            try:
-                idx = int(item_id)
-            except Exception as e:
-                logger.debug(f"item_registry:_maybe_build_decode_lists: {e}")
-                continue
+            idx = int(item_id)
             if 0 <= idx < n_items:
                 items[idx] = item or {}
         self._id_to_item_list = items

@@ -63,14 +63,10 @@ def _compute_global_ftff_combo_caps(
     if budget_i <= 0 or gem_scale_i <= 0:
         return budget_i, budget_i
 
-    try:
-        stats = np.asarray(item_stats, dtype=np.int32)
-        starts = np.asarray(slot_start, dtype=np.int32).reshape(-1)
-        counts = np.asarray(slot_count, dtype=np.int32).reshape(-1)
-        base = np.asarray(base_fixed_stats_arr, dtype=np.int32).reshape(-1)
-    except Exception as e:
-        logger.debug(f"genetic:_compute_global_ftff_combo_caps: {e}")
-        return budget_i, budget_i
+    stats = np.asarray(item_stats, dtype=np.int32)
+    starts = np.asarray(slot_start, dtype=np.int32).reshape(-1)
+    counts = np.asarray(slot_count, dtype=np.int32).reshape(-1)
+    base = np.asarray(base_fixed_stats_arr, dtype=np.int32).reshape(-1)
 
     if stats.ndim != 2 or int(stats.shape[1]) < 5 or int(base.size) < 5:
         return budget_i, budget_i
@@ -108,11 +104,7 @@ def _compute_global_ftff_combo_caps(
 def _abort_requested_now(abort_requested) -> bool:
     if abort_requested is None or not callable(abort_requested):
         return False
-    try:
-        return bool(abort_requested())
-    except Exception as e:
-        logger.debug(f"genetic:_abort_requested_now: {e}")
-        return False
+    return bool(abort_requested())
 
 
 def _raise_if_abort_requested(abort_requested, where: str) -> None:
@@ -790,15 +782,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             return
         if phase_samples_current is not None:
             phase_samples_current.setdefault(str(phase), []).append(float(ms))
-        try:
-            logger.info(
-                "[PERF][GAGPUPhase] "
-                f"phase={phase} runs={int(runs)} pop={int(pop)} gen={int(gen)} "
-                f"use_hints={int(use_hints)} combos={int(combos)} ms={float(ms):.3f}"
-            )
-        except Exception as e:
-            logger.debug(f"genetic:_log_phase: {e}")
-            return
+        logger.info(
+            "[PERF][GAGPUPhase] "
+            f"phase={phase} runs={int(runs)} pop={int(pop)} gen={int(gen)} "
+            f"use_hints={int(use_hints)} combos={int(combos)} ms={float(ms):.3f}"
+        )
 
     def _stage_segment_initial_populations(*, run_start: int, seg_runs: int, segment_pop_arr) -> None:
         _raise_if_abort_requested(abort_requested, "before staging initial populations")
@@ -1173,21 +1161,17 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     last_exc = e
                     if attempt >= max_retries or not _is_vulkan_semaphore_failure(e):
                         break
-                    try:
-                        gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
-                        # hard_reset restores GA-buffer defaults; re-size for the rest
-                        # of the song (was the env bridge's job before flag elimination).
-                        gpu_fields.configure_ga_run_buffers(max_runs=int(num_runs), max_genomes=int(n_genomes))
-                        _restore_song_gpu_state()
-                        _stage_segment_initial_populations(
-                            run_start=int(run_start_global),
-                            seg_runs=int(seg_len),
-                            segment_pop_arr=segment_pop,
-                        )
-                        gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
-                    except Exception as e:
-                        logger.debug(f"genetic:_stage_segment_initial_populations: {e}")
-                        break
+                    gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
+                    # hard_reset restores GA-buffer defaults; re-size for the rest
+                    # of the song (was the env bridge's job before flag elimination).
+                    gpu_fields.configure_ga_run_buffers(max_runs=int(num_runs), max_genomes=int(n_genomes))
+                    _restore_song_gpu_state()
+                    _stage_segment_initial_populations(
+                        run_start=int(run_start_global),
+                        seg_runs=int(seg_len),
+                        segment_pop_arr=segment_pop,
+                    )
+                    gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
 
             if last_exc is not None:
                 raise last_exc

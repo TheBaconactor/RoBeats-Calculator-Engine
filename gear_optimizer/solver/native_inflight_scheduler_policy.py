@@ -1,19 +1,13 @@
 """Continuous GA/FG scheduler policy and config readers for native in-flight."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from gear_optimizer.solver.native_inflight_config import native_song_label
 
-logger = logging.getLogger(__name__)
 
 def _song_lane_key(song: Any) -> str:
-    try:
-        return native_song_label(song)
-    except Exception as e:
-        logger.debug(f"native_inflight_scheduler_policy:_song_lane_key: {e}")
-        return ""
+    return native_song_label(song)
 def count_active_song_lanes(
     *,
     ga_inflight,

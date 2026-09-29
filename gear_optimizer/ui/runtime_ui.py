@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import sys
 import threading
 import time
@@ -8,7 +7,6 @@ import time
 from gear_optimizer.helpers.song_helpers.persistence_records import RECORD_UPDATE_SCORE_EPSILON
 from gear_optimizer.ui.progress import ProgressUI as _ProgressUI
 
-logger = logging.getLogger(__name__)
 
 
 class RuntimeUiMixin:
@@ -55,12 +53,8 @@ class RuntimeUiMixin:
         song_key = self._record_info_song_key(record_info)
         if not song_key:
             return False, "", 0
-        try:
-            best_overall_score = int(record_info.get("best_overall_score_run", 0) or 0)
-            prev_overall_score = int(record_info.get("prev_overall_score", 0) or 0)
-        except Exception as e:
-            logger.debug(f"runtime_ui:_is_authoritative_new_record: {e}")
-            return False, "", 0
+        best_overall_score = int(record_info.get("best_overall_score_run", 0) or 0)
+        prev_overall_score = int(record_info.get("prev_overall_score", 0) or 0)
         if best_overall_score <= 0:
             return False, "", 0
         if int(best_overall_score - prev_overall_score) <= int(RECORD_UPDATE_SCORE_EPSILON):
@@ -136,24 +130,17 @@ class RuntimeUiMixin:
             return
         try:
             import msvcrt
-        except Exception as e:
-            logger.debug(f"runtime_ui:_start_hotkeys: {e}")
-            return
+        except ImportError:
+            return  # The "q" stop hotkey reads the Windows console; elsewhere Ctrl+C stops the run.
 
         def _runner() -> None:
             while True:
                 if self._stop_requested_now():
                     return
-                try:
-                    if not msvcrt.kbhit():
-                        time.sleep(0.05)
-                        continue
-                    ch = msvcrt.getwch()
-                except Exception as e:
-                    logger.debug(f"runtime_ui:_start_hotkeys_runner: {e}")
+                if not msvcrt.kbhit():
                     time.sleep(0.05)
                     continue
-                if str(ch or "").strip().lower() != "q":
+                if msvcrt.getwch().strip().lower() != "q":
                     continue
                 self.request_stop("hotkey stop")
                 return

@@ -210,35 +210,23 @@ class GpuServiceClient:
         maxes: dict[Any, float],
         samples: dict[Any, list[float]],
     ) -> None:
-        try:
-            latency = float(latency_sec)
-        except Exception as e:
-            logger.debug(f"gpu_service:_record_latency_sample: {e}")
-            return
+        latency = float(latency_sec)
         if latency < 0.0:
             latency = 0.0
-        try:
-            counts[key] += 1
-            totals[key] += float(latency)
-            if latency > float(maxes[key]):
-                maxes[key] = float(latency)
-        except Exception as e:
-            logger.debug(f"gpu_service:_record_latency_sample: {e}")
-            return
+        counts[key] += 1
+        totals[key] += float(latency)
+        if latency > float(maxes[key]):
+            maxes[key] = float(latency)
 
-        try:
-            sample_list = samples[key]
-            if len(sample_list) < int(self._profile_sample_cap):
-                sample_list.append(float(latency))
-            else:
-                n = int(counts[key])
-                if n > 0:
-                    j = random.randint(0, n - 1)
-                    if j < int(self._profile_sample_cap):
-                        sample_list[j] = float(latency)
-        except Exception as e:
-            logger.debug(f"gpu_service:_record_latency_sample: {e}")
-            return
+        sample_list = samples[key]
+        if len(sample_list) < int(self._profile_sample_cap):
+            sample_list.append(float(latency))
+        else:
+            n = int(counts[key])
+            if n > 0:
+                j = random.randint(0, n - 1)
+                if j < int(self._profile_sample_cap):
+                    sample_list[j] = float(latency)
         key_label = ""
         if isinstance(key, GpuRequestType):
             key_label = str(key.value)
@@ -310,11 +298,7 @@ class GpuServiceClient:
         raw = str(env_get("GPU_SERVICE_REQUEST_TIMEOUT_SEC", "") or "").strip()
 
         if raw:
-            try:
-                return max(0.0, float(raw))
-            except Exception as e:
-                logger.debug(f"gpu_service:_request_timeout_sec_for: {e}")
-                return 0.0
+            return max(0.0, float(raw))
 
         if not self._request_timeout_default_enabled:
             return 0.0
@@ -437,47 +421,31 @@ class GpuServiceClient:
         # Keep output compact: sort by avg latency desc, show top 8.
         items = []
         for k, v in by_type.items():
-            try:
-                items.append((k, float(v.get("avg_sec", 0.0) or 0.0), v))
-            except Exception as e:
-                logger.debug(f"gpu_service:report_profile: {e}")
-                continue
+            items.append((k, float(v.get("avg_sec", 0.0) or 0.0), v))
         items.sort(key=lambda t: t[1], reverse=True)
         items = items[:8]
 
         parts = []
         for name, _avg, v in items:
-            try:
-                parts.append(
-                    f"{name}:n={int(v.get('count', 0))} avg={float(v.get('avg_sec', 0.0)):.3f}s "
-                    f"p95={float(v.get('p95_sec') or 0.0):.3f}s max={float(v.get('max_sec', 0.0)):.3f}s"
-                )
-            except Exception as e:
-                logger.debug(f"gpu_service:report_profile: {e}")
-                continue
+            parts.append(
+                f"{name}:n={int(v.get('count', 0))} avg={float(v.get('avg_sec', 0.0)):.3f}s "
+                f"p95={float(v.get('p95_sec') or 0.0):.3f}s max={float(v.get('max_sec', 0.0)):.3f}s"
+            )
         line = "[GpuServiceClient][PROFILE] " + "; ".join(parts)
         print(line)
         client_jobs = summary.get("client_jobs") or {}
         if client_jobs:
             items2 = []
             for k, v in client_jobs.items():
-                try:
-                    items2.append((str(k), float(v.get("avg_sec", 0.0) or 0.0), v))
-                except Exception as e:
-                    logger.debug(f"gpu_service:report_profile: {e}")
-                    continue
+                items2.append((str(k), float(v.get("avg_sec", 0.0) or 0.0), v))
             items2.sort(key=lambda t: t[1], reverse=True)
             items2 = items2[:8]
             parts2 = []
             for name, _avg, v in items2:
-                try:
-                    parts2.append(
-                        f"{name}:n={int(v.get('count', 0))} avg={float(v.get('avg_sec', 0.0)):.3f}s "
-                        f"p95={float(v.get('p95_sec') or 0.0):.3f}s max={float(v.get('max_sec', 0.0)):.3f}s"
-                    )
-                except Exception as e:
-                    logger.debug(f"gpu_service:report_profile: {e}")
-                    continue
+                parts2.append(
+                    f"{name}:n={int(v.get('count', 0))} avg={float(v.get('avg_sec', 0.0)):.3f}s "
+                    f"p95={float(v.get('p95_sec') or 0.0):.3f}s max={float(v.get('max_sec', 0.0)):.3f}s"
+                )
             line2 = "[GpuServiceClient][CLIENT_PROFILE] " + "; ".join(parts2)
             print(line2)
         return line

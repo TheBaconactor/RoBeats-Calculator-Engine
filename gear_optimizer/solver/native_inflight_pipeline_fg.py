@@ -188,11 +188,7 @@ class NativeFGPipeline:
                 continue
             if fut_id:
                 seen.add(fut_id)
-            try:
-                if fut.done():
-                    continue
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:active_prep_count: {e}")
+            if fut.done():
                 continue
             active += 1
         return int(active)
@@ -204,12 +200,8 @@ class NativeFGPipeline:
             fut = getattr(song.runtime.fg, "fg_prep_future", None)
             if fut is None:
                 continue
-            try:
-                if not fut.done():
-                    return True
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:has_active_prep: {e}")
-                continue
+            if not fut.done():
+                return True
         return False
 
     def finish_completed_prep(self) -> list[NativeFGPrepCompletion]:
@@ -308,12 +300,8 @@ class NativeFGPipeline:
                 return self._claim_pending_song(candidate)
             if allow_not_ready:
                 return self._claim_pending_song(candidate)
-            try:
-                if fut.done():
-                    return self._claim_pending_song(candidate)
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:pop_next: {e}")
-                continue
+            if fut.done():
+                return self._claim_pending_song(candidate)
         return None
 
     def oldest_wait_s(self, now_s: float) -> float:
@@ -345,12 +333,8 @@ class NativeFGPipeline:
                     continue
                 ready += 1
                 continue
-            try:
-                if fut.done():
-                    ready += 1
-            except Exception as e:
-                logger.debug(f"native_inflight_pipeline:ready_count: {e}")
-                continue
+            if fut.done():
+                ready += 1
         return int(ready)
 
     def submit_job(

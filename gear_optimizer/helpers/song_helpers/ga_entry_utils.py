@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Any, cast
-import logging
 
 import numpy as np
 
@@ -9,15 +8,10 @@ from .item_utils import names_list
 
 
 
-logger = logging.getLogger(__name__)
 def canonicalize_genome_ids(genome_ids: Any) -> tuple[int, ...] | None:
     if genome_ids is None:
         return None
-    try:
-        ids = [int(x) for x in list(genome_ids)[:9]]
-    except Exception as e:
-        logger.debug(f"ga_entry_utils:canonicalize_genome_ids: {e}")
-        return None
+    ids = [int(x) for x in list(genome_ids)[:9]]
     if len(ids) < 9:
         return None
     gear_ids = ids[:6]
@@ -144,13 +138,9 @@ def candidate_loadout_hash(
         ]
         return _remember(effective_loadout_hash_from_names(list(gear_names), mini_sigs))
 
-    try:
-        from ...data.database import get_loadout_hash
+    from ...data.database import get_loadout_hash
 
-        return _remember(get_loadout_hash(gear_names, mini_names))
-    except Exception as e:
-        logger.debug(f"ga_entry_utils:_remember: {e}")
-        return str((tuple(gear_names or []), tuple(mini_names or [])))
+    return _remember(get_loadout_hash(gear_names, mini_names))
 
 
 def materialize_entry_names(entry: Any, *, mutate: bool = True) -> tuple[list[str], list[str]]:
@@ -196,13 +186,9 @@ def entry_loadout_hash(entry: Any) -> str | None:
     if not gear_names and not mini_names:
         return None
 
-    try:
-        from ...data.database import get_loadout_hash
+    from ...data.database import get_loadout_hash
 
-        loadout_hash = str(get_loadout_hash(gear_names, mini_names))
-    except Exception as e:
-        logger.debug(f"ga_entry_utils:entry_loadout_hash: {e}")
-        return None
+    loadout_hash = str(get_loadout_hash(gear_names, mini_names))
 
     entry["_resolved_loadout_hash"] = str(loadout_hash)
     return str(loadout_hash)

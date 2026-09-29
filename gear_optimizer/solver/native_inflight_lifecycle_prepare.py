@@ -103,20 +103,12 @@ def _cache_stats_enabled() -> bool:
 
 
 def _cache_stats_emit_interval_s() -> float:
-    try:
-        return float(env_get("INFLIGHT_CACHE_STATS_EMIT_SEC", "30") or "30")
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_cache_stats_emit_interval_s: {e}")
-        return 30.0
+    return float(env_get("INFLIGHT_CACHE_STATS_EMIT_SEC", "30") or "30")
 
 
 def _cache_stats_inc(key: str) -> None:
-    try:
-        with _CACHE_STATS_LOCK:
-            _CACHE_STATS[key] = int(_CACHE_STATS.get(key, 0) or 0) + 1
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_cache_stats_inc: {e}")
-        return
+    with _CACHE_STATS_LOCK:
+        _CACHE_STATS[key] = int(_CACHE_STATS.get(key, 0) or 0) + 1
 
 
 def _cache_stats_maybe_emit() -> None:
@@ -127,15 +119,11 @@ def _cache_stats_maybe_emit() -> None:
         return
     now = time.monotonic()
     global _CACHE_STATS_LAST_EMIT
-    try:
-        with _CACHE_STATS_LOCK:
-            if (now - float(_CACHE_STATS_LAST_EMIT)) < interval:
-                return
-            _CACHE_STATS_LAST_EMIT = now
-            snap = dict(_CACHE_STATS)
-    except Exception as e:
-        logger.debug(f"native_inflight_lifecycle:_cache_stats_maybe_emit: {e}")
-        return
+    with _CACHE_STATS_LOCK:
+        if (now - float(_CACHE_STATS_LAST_EMIT)) < interval:
+            return
+        _CACHE_STATS_LAST_EMIT = now
+        snap = dict(_CACHE_STATS)
     pools_h = int(snap.get("pools_hit", 0) or 0)
     pools_m = int(snap.get("pools_miss", 0) or 0)
     reg_h = int(snap.get("registry_hit", 0) or 0)

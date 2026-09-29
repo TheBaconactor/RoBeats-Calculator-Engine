@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
-import logging
 
 
 
-logger = logging.getLogger(__name__)
 def select_retained_hashes(
     items: list[tuple[Any, dict]],
     *,
@@ -23,17 +21,13 @@ def select_retained_hashes(
 
     fg_candidates: list[tuple[Any, dict]] = []
     for h, e in items:
-        try:
-            base_s = int(base_score_fn(e) or 0)
-            fg_s = int(fg_score_fn(e) or 0)
-            if fg_s <= base_s:
-                continue
-            if not fg_valid_fn(e):
-                continue
-            fg_candidates.append((h, e))
-        except Exception as e:
-            logger.debug(f"retention:select_retained_hashes: {e}")
+        base_s = int(base_score_fn(e) or 0)
+        fg_s = int(fg_score_fn(e) or 0)
+        if fg_s <= base_s:
             continue
+        if not fg_valid_fn(e):
+            continue
+        fg_candidates.append((h, e))
 
     top_fg = sorted(fg_candidates, key=lambda kv: int(fg_score_fn(kv[1]) or 0), reverse=True)[:n]
 

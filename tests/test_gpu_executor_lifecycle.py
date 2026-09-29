@@ -193,17 +193,6 @@ def test_build_taichi_init_failure_report_writes_trace_file(tmp_path):
     assert report.error.startswith("RuntimeError: boom")
 
 
-def test_build_taichi_init_failure_report_tolerates_traceback_format_failure(tmp_path):
-    report = build_taichi_init_failure_report(
-        RuntimeError("boom"),
-        heartbeat_path=tmp_path / "gpu_executor_heartbeat.json",
-        traceback_format_fn=lambda: (_ for _ in ()).throw(RuntimeError("format failed")),
-    )
-
-    assert report.trace_path == tmp_path / "gpu_executor_heartbeat_taichi_init_error.log"
-    assert report.trace_path.read_text(encoding="utf-8") == ""
-
-
 def test_print_taichi_kernel_profiler_runs_sync_and_print_when_enabled():
     calls: list[str] = []
 
@@ -223,13 +212,3 @@ def test_print_taichi_kernel_profiler_runs_sync_and_print_when_enabled():
     assert calls == []
     assert print_taichi_kernel_profiler(enabled=True, import_module_fn=lambda _name: _Taichi) is True
     assert calls == ["sync", "print"]
-
-
-def test_print_taichi_kernel_profiler_reports_failure_as_false():
-    assert (
-        print_taichi_kernel_profiler(
-            enabled=True,
-            import_module_fn=lambda _name: (_ for _ in ()).throw(RuntimeError("no taichi")),
-        )
-        is False
-    )

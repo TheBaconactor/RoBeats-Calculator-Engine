@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from collections import OrderedDict
@@ -14,7 +13,6 @@ from gear_optimizer.helpers.song_helpers.database_context import (
 )
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_prev_record
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,21 +52,17 @@ def _db_context_cache_get(
     if not key[0]:
         return None
     ttl_s = float(_db_context_cache_ttl_s())
-    try:
-        with _DB_CONTEXT_CACHE_LOCK:
-            entry = _DB_CONTEXT_CACHE.get(key)
-            if entry is None:
-                return None
-            ts, prev_record, db_best_score, db_best_fg_score, attempt_lifetime, prev_attempts_first = entry
-            if ttl_s > 0.0 and (time.monotonic() - float(ts)) > ttl_s:
-                _DB_CONTEXT_CACHE.pop(key, None)
-                return None
-            _DB_CONTEXT_CACHE.move_to_end(key)
-            rec = compact_prev_record(prev_record, drop_empty_item_names=True) if isinstance(prev_record, dict) else None
-            return rec, int(db_best_score), int(db_best_fg_score), int(attempt_lifetime), int(prev_attempts_first)
-    except Exception as e:
-        logger.debug(f"song_db_context:_db_context_cache_get: {e}")
-        return None
+    with _DB_CONTEXT_CACHE_LOCK:
+        entry = _DB_CONTEXT_CACHE.get(key)
+        if entry is None:
+            return None
+        ts, prev_record, db_best_score, db_best_fg_score, attempt_lifetime, prev_attempts_first = entry
+        if ttl_s > 0.0 and (time.monotonic() - float(ts)) > ttl_s:
+            _DB_CONTEXT_CACHE.pop(key, None)
+            return None
+        _DB_CONTEXT_CACHE.move_to_end(key)
+        rec = compact_prev_record(prev_record, drop_empty_item_names=True) if isinstance(prev_record, dict) else None
+        return rec, int(db_best_score), int(db_best_fg_score), int(attempt_lifetime), int(prev_attempts_first)
 
 
 def _db_context_cache_put(

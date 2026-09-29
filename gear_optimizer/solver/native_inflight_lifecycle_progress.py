@@ -1,7 +1,6 @@
 """Progress tracking and GA queue limit helpers for native in-flight orchestration."""
 from __future__ import annotations
 
-import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -10,7 +9,6 @@ from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.persistence_records import evaluate_progress_record_update
 from gear_optimizer.solver.native_inflight_config import native_song_label
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -140,14 +138,10 @@ class ProgressTracker:
 
     @staticmethod
     def done_record_info_for_song(song: Any) -> dict | None:
-        try:
-            record_info = dict(getattr(song.runtime.db, "record_info", None) or {})
-            record_info.setdefault("song", native_song_label(song))
-            record_info.setdefault("status", "DONE")
-            return record_info
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:done_record_info_for_song: {e}")
-            return None
+        record_info = dict(getattr(song.runtime.db, "record_info", None) or {})
+        record_info.setdefault("song", native_song_label(song))
+        record_info.setdefault("status", "DONE")
+        return record_info
 
     def emit_done_song_progress(
         self,
@@ -172,15 +166,11 @@ class ProgressTracker:
     ) -> None:
         if progress_cb is None:
             return
-        try:
-            progress_cb(
-                completed_delta=completed_delta,
-                failed_delta=failed_delta,
-                record_info=record_info,
-            )
-        except Exception as e:
-            logger.debug(f"native_inflight_lifecycle:emit_progress: {e}")
-            return
+        progress_cb(
+            completed_delta=completed_delta,
+            failed_delta=failed_delta,
+            record_info=record_info,
+        )
 
 
 class ActiveRuntimeProgressReporter:

@@ -229,17 +229,13 @@ def print_taichi_kernel_profiler(
     dump_path = str(dump_path or "").strip()
     if not bool(enabled) and not dump_path:
         return False
-    try:
-        ti = import_module_fn("taichi")
-        ti.sync()
-        if dump_path:
-            _dump_kernel_profiler_records(ti, dump_path)
-        if bool(enabled):
-            ti.profiler.print_kernel_profiler_info()
-        return True
-    except Exception as e:
-        logger.debug(f"gpu_executor_lifecycle:print_taichi_kernel_profiler: {e}")
-        return False
+    ti = import_module_fn("taichi")
+    ti.sync()
+    if dump_path:
+        _dump_kernel_profiler_records(ti, dump_path)
+    if bool(enabled):
+        ti.profiler.print_kernel_profiler_info()
+    return True
 
 
 class ExecutorAbortState:
@@ -248,11 +244,7 @@ class ExecutorAbortState:
         self._reason = ""
 
     def request_abort(self, reason: str = "abort requested") -> None:
-        try:
-            reason_text = str(reason or "").strip()
-        except (ValueError, TypeError):
-            reason_text = ""
-        self._reason = reason_text or "abort requested"
+        self._reason = str(reason or "").strip() or "abort requested"
         self._event.set()
 
     def clear(self) -> None:

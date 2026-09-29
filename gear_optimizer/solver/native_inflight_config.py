@@ -80,12 +80,8 @@ def read_db_prefetch_workers(
 
 
 def read_ga_multi_start(cfg0: Any) -> int:
-    try:
-        settings = GARuntimeSettings.from_config(cfg0) if cfg0 is not None else GARuntimeSettings()
-        return max(1, int(settings.multi_start))
-    except Exception as e:
-        logger.debug(f"native_inflight_config:read_ga_multi_start: {e}")
-        return 1
+    settings = GARuntimeSettings.from_config(cfg0) if cfg0 is not None else GARuntimeSettings()
+    return max(1, int(settings.multi_start))
 
 
 @dataclass(frozen=True)

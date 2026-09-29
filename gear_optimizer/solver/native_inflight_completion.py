@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -13,7 +12,6 @@ from gear_optimizer.solver.inflight_wait import wait_for_completion_event
 from gear_optimizer.solver.native_inflight_config import NativeSong
 from gear_optimizer.solver.native_inflight_fg_payload import build_deferred_post_payload
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,12 +65,8 @@ class CompletionTracker:
 
 def has_waitable_work(*queue_groups: Iterable[Any], pending_fg: Iterable[Any] = ()) -> bool:
     for group in queue_groups:
-        try:
-            if group:
-                return True
-        except Exception as e:
-            logger.debug(f"native_inflight_orchestrator:has_waitable_work: {e}")
-            continue
+        if group:
+            return True
     _ = pending_fg
     return False
 
