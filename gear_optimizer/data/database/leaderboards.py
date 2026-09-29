@@ -5,7 +5,6 @@ import os
 import json
 import sqlite3
 import warnings
-import logging
 from typing import Any, Dict, List, Optional
 from ...core.constants import LOADOUTS_PER_SONG_LIMIT
 from ...core.team_buff import normalize_team_buff, team_buff_query_values
@@ -27,7 +26,6 @@ from gear_optimizer.core.parsing import env_get
 from .connection import get_evolution_db_path, get_db_connection_cached
 from .loadout_io import _expand_gear_from_db, _expand_minis_from_db
 
-logger = logging.getLogger(__name__)
 
 
 def get_best_loadouts(
@@ -97,26 +95,23 @@ def get_best_loadouts(
             details = _unpack_stats_after_load(details)
             details = _strip_computed_details_fields(details)
             if strict_seed_hash:
-                try:
-                    p_color, s_color, sel_color = extract_song_colors(details)
-                    if p_color or s_color:
-                        lookup = minis_by_name or _db.get_minis_by_name_cached()
-                        mini_sigs = [
-                            effective_mini_signature_for_name(n, lookup, p_color, s_color, sel_color)
-                            for n in mini_names
-                        ]
-                        expected = effective_loadout_hash_from_names(gear_names, mini_sigs)
-                    else:
-                        expected = _db._loadout_hash_from_names(gear_names, mini_names)
-                    if expected and str(expected) != str(loadout_hash):
-                        warnings.warn(
-                            f"[DB] Loadout hash mismatch (seed): song={song_name!r} team_buff={team_buff!r} "
-                            f"stored={loadout_hash} expected={expected}",
-                            RuntimeWarning,
-                            stacklevel=2,
-                        )
-                except Exception as e:
-                    logger.warning(f"database:_materialize_common: {e}")
+                p_color, s_color, sel_color = extract_song_colors(details)
+                if p_color or s_color:
+                    lookup = minis_by_name or _db.get_minis_by_name_cached()
+                    mini_sigs = [
+                        effective_mini_signature_for_name(n, lookup, p_color, s_color, sel_color)
+                        for n in mini_names
+                    ]
+                    expected = effective_loadout_hash_from_names(gear_names, mini_sigs)
+                else:
+                    expected = _db._loadout_hash_from_names(gear_names, mini_names)
+                if expected and str(expected) != str(loadout_hash):
+                    warnings.warn(
+                        f"[DB] Loadout hash mismatch (seed): song={song_name!r} team_buff={team_buff!r} "
+                        f"stored={loadout_hash} expected={expected}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
             force_block = _json_loads(row["force_details_json"]) if row["force_details_json"] else None
             force_obj = force_block if isinstance(force_block, dict) else None
             if isinstance(force_obj, dict):
@@ -196,16 +191,8 @@ def get_best_loadouts(
                 by_hash[loadout_hash] = entry
                 results.append(entry)
                 continue
-            try:
-                existing_fg = int(entry.get("fg_score", 0) or 0)
-            except Exception as e:
-                logger.warning(f"database:_expand_items: {e}")
-                existing_fg = 0
-            try:
-                fg_i = int(fg_score or 0)
-            except Exception as e:
-                logger.warning(f"database:_expand_items: {e}")
-                fg_i = 0
+            existing_fg = int(entry.get("fg_score", 0) or 0)
+            fg_i = int(fg_score or 0)
             if fg_i > existing_fg:
                 entry["fg_score"] = fg_score
                 entry["force"] = force_obj

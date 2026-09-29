@@ -82,11 +82,7 @@ def _unpack_id_list(blob: Any) -> list[int]:
         blob = blob.tobytes()
     if not isinstance(blob, (bytes, bytearray)):
         return []
-    try:
-        return [int(v) for v in _decode_uvarints(bytes(blob)) if int(v) > 0]
-    except Exception as e:
-        logger.warning(f"database:_unpack_id_list: {e}")
-        return []
+    return [int(v) for v in _decode_uvarints(bytes(blob)) if int(v) > 0]
 
 
 def _pack_id_groups(groups: Sequence[Sequence[int]]) -> bytes:
@@ -118,11 +114,7 @@ def _unpack_id_groups(blob: Any) -> list[list[int]]:
         blob = blob.tobytes()
     if not isinstance(blob, (bytes, bytearray)):
         return []
-    try:
-        values = _decode_uvarints(bytes(blob))
-    except Exception as e:
-        logger.warning(f"database:_unpack_id_groups: {e}")
-        return []
+    values = _decode_uvarints(bytes(blob))
     out: list[list[int]] = []
     cur: list[int] = []
     for v in values:

@@ -42,13 +42,10 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     # Ensure timely console output from the post-process worker. On Windows,
     # `multiprocessing.Process` stdout can become block-buffered, making the
     # "final configuration" prints appear only at process exit.
-    try:
-        if hasattr(sys.stdout, "reconfigure"):
-            cast(Any, sys.stdout).reconfigure(line_buffering=True)
-        if hasattr(sys.stderr, "reconfigure"):
-            cast(Any, sys.stderr).reconfigure(line_buffering=True)
-    except Exception as e:
-        logger.warning(f"post_processor:run_post_processor: {e}")
+    if hasattr(sys.stdout, "reconfigure"):
+        cast(Any, sys.stdout).reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        cast(Any, sys.stderr).reconfigure(line_buffering=True)
     output_enabled = bool(getattr(ENV, "output_enabled", False))
     if not output_enabled:
         suppress_stdout(True)
@@ -65,10 +62,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
     configure_default_logging()
 
-    try:
-        init_db()
-    except Exception as e:
-        logger.warning(f"post_processor:run_post_processor: {e}")
+    init_db()
 
     async_db = AsyncDbSaver()
 
@@ -77,12 +71,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     total = int(total_tasks or 0)
     timing = env_flag("POST_TIMING")
     sync_output = True  # FG-coalesced print ordering is an output-coherence invariant (always on)
-    timing_threshold_ms = 50.0
-    try:
-        timing_threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
-    except Exception as e:
-        logger.warning(f"post_processor:run_post_processor: {e}")
-        timing_threshold_ms = 50.0
+    timing_threshold_ms = float(env_get("POST_TIMING_THRESHOLD_MS", "50"))
 
     def _log_timing(label: str, dt_sec: float, *, song: str | None = None) -> None:
         if not timing:
@@ -108,50 +97,34 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         fg_state = pending_fg_summary.get(song) or {}
         fg_variants = fg_state.get("fg_variants") or []
         saw_fg_update = bool(fg_state.get("saw_fg_update"))
-        try:
-            saved = int(fg_state.get("saved_count") or 0)
-        except Exception as e:
-            logger.warning(f"post_processor:_print_pending_final: {e}")
-            saved = 0
-        try:
-            best_fg = int(fg_state.get("best_fg") or 0)
-        except Exception as e:
-            logger.warning(f"post_processor:_print_pending_final: {e}")
-            best_fg = 0
+        saved = int(fg_state.get("saved_count") or 0)
+        best_fg = int(fg_state.get("best_fg") or 0)
 
         # If FG work was deferred and no update arrived, `best_fg` will be 0.
         # Still show a meaningful FG number if the DB already has a best FG record.
-        db_best_fg_floor = 0
-        try:
-            db_best_fg_floor = int(payload.get("db_best_fg_score") or 0)
-        except Exception as e:
-            logger.warning(f"post_processor:_print_pending_final: {e}")
-            db_best_fg_floor = 0
+        db_best_fg_floor = int(payload.get("db_best_fg_score") or 0)
 
         if best_fg > db_best_fg_floor:
             db_best_fg_floor = best_fg
 
-        try:
-            _t_print0 = time.perf_counter()
-            print_results(
-                payload.get("song", song),
-                payload.get("best_data") or {},
-                payload.get("best_gear") or [],
-                payload.get("best_minis") or [],
-                payload.get("current_gear") or [],
-                payload.get("current_minis") or [],
-                fg_variants,
-                payload.get("_emit") or (lambda _msg: None),
-                fg_debug=bool(payload.get("fg_debug")),
-                ref_arrays=payload.get("ref_arrays"),
-                calc_song=payload.get("calc_song"),
-                cfg=payload.get("cfg"),
-                db_best_fg_score=db_best_fg_floor,
-                prev_record=payload.get("prev_record"),
-            )
-            _log_timing("print_results", time.perf_counter() - _t_print0, song=song)
-        except Exception as e:
-            logger.warning(f"post_processor:_print_pending_final: {e}")
+        _t_print0 = time.perf_counter()
+        print_results(
+            payload.get("song", song),
+            payload.get("best_data") or {},
+            payload.get("best_gear") or [],
+            payload.get("best_minis") or [],
+            payload.get("current_gear") or [],
+            payload.get("current_minis") or [],
+            fg_variants,
+            payload.get("_emit") or (lambda _msg: None),
+            fg_debug=bool(payload.get("fg_debug")),
+            ref_arrays=payload.get("ref_arrays"),
+            calc_song=payload.get("calc_song"),
+            cfg=payload.get("cfg"),
+            db_best_fg_score=db_best_fg_floor,
+            prev_record=payload.get("prev_record"),
+        )
+        _log_timing("print_results", time.perf_counter() - _t_print0, song=song)
 
         if saw_fg_update and saved > 0:
             logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song, best_fg)
@@ -225,31 +198,15 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 if sync_output and song_name in pending_final_print:
                     _print_pending_final(song_name)
                 elif not sync_output:
-                    try:
-                        saved = int(fg_state.get("saved_count") or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        saved = 0
-                    try:
-                        best_fg = int(fg_state.get("best_fg") or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        best_fg = 0
+                    saved = int(fg_state.get("saved_count") or 0)
+                    best_fg = int(fg_state.get("best_fg") or 0)
                     if saved > 0:
                         logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song_name, best_fg)
                 else:
                     # If there's no pending final output, keep a small status line so users still
                     # see that FG persistence happened.
-                    try:
-                        saved = int(fg_state.get("saved_count") or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        saved = 0
-                    try:
-                        best_fg = int(fg_state.get("best_fg") or 0)
-                    except Exception as e:
-                        logger.warning(f"post_processor:_print_pending_final: {e}")
-                        best_fg = 0
+                    saved = int(fg_state.get("saved_count") or 0)
+                    best_fg = int(fg_state.get("best_fg") or 0)
                     if saved > 0:
                         logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song_name, best_fg)
             except MissingFrontierCacheError as exc:
@@ -262,17 +219,11 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     f"cache missing; FG score not saved: {exc}"
                 )
                 print(msg, file=sys.stderr)
-                try:
-                    logging.error(msg + "\n" + traceback.format_exc())
-                except Exception as e:
-                    logger.warning(f"post_processor:_print_pending_final: {e}")
+                logging.error(msg + "\n" + traceback.format_exc())
             except Exception as exc:
                 msg = f"[POST][FG] Error: {type(exc).__name__}: {exc}"
                 print(msg, file=sys.stderr)
-                try:
-                    logging.error(msg + "\n" + traceback.format_exc())
-                except Exception as e:
-                    logger.warning(f"post_processor:_print_pending_final: {e}")
+                logging.error(msg + "\n" + traceback.format_exc())
             continue
 
         # Propagate compute failures
@@ -282,12 +233,9 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             err_type = item.get("_error_type") or type(item.get("_error")).__name__
             msg = f"[POST] FAILED: {song_name} - {err_type}: {item.get('_error')}"
             print(msg, file=sys.stderr)
-            try:
-                logging.error(msg)
-                if item.get("_trace"):
-                    logging.error(item.get("_trace"))
-            except Exception as e:
-                logger.warning(f"post_processor:_print_pending_final: {e}")
+            logging.error(msg)
+            if item.get("_trace"):
+                logging.error(item.get("_trace"))
             continue
 
         completed += 1
@@ -327,8 +275,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     if pending_fg_summary.get(song_name_for_print, {}).get("saw_fg_update"):
                         _print_pending_final(song_name_for_print)
                 else:
+                    _t_print0 = time.perf_counter()
                     try:
-                        _t_print0 = time.perf_counter()
                         print_results(
                             item.get("song", "Unknown"),
                             post_context.best_data,
@@ -345,9 +293,10 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             db_best_fg_score=post_context.db_best_fg_score,
                             prev_record=post_context.prev_record,
                         )
-                        _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
-                    except Exception as e:
-                        logger.warning(f"post_processor:_emit: {e}")
+                    except Exception:
+                        # Display only: a formatting failure must not skip persisting the result below.
+                        logger.warning("[POST] Could not print results for %s", item.get("song"), exc_info=True)
+                    _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
 
                 res = build_post_persist_result_payload(
                     item,
@@ -380,18 +329,15 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     else:
                         print(f"[DB] Skipped save for {song_name}: no valid entries")
                         # Still count this as a processed run for per-song attempt counters.
-                        try:
-                            async_db.submit(
-                                song_name,
-                                [],
-                                meta={
-                                    "db_key": db_key,
-                                    "_processed_run": True,
-                                    "cfg_dict": item.get("cfg_dict") or {},
-                                },
-                            )
-                        except Exception as e:
-                            logger.warning(f"post_processor:_emit: {e}")
+                        async_db.submit(
+                            song_name,
+                            [],
+                            meta={
+                                "db_key": db_key,
+                                "_processed_run": True,
+                                "cfg_dict": item.get("cfg_dict") or {},
+                            },
+                        )
 
             _log_timing("post_item_total", time.perf_counter() - _t_item0, song=song_name)
 
@@ -399,22 +345,16 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             failed += 1
             msg = f"[POST] Error: {type(exc).__name__}: {exc}"
             print(msg, file=sys.stderr)
-            try:
-                logging.error(msg + "\n" + traceback.format_exc())
-            except Exception as e:
-                logger.warning(f"post_processor:_emit: {e}")
+            logging.error(msg + "\n" + traceback.format_exc())
         async_db.raise_if_failed()
 
     # Flush pending DB work before exiting so we don't leave the main pipeline
     # waiting on in-flight DB tasks.
     async_db.shutdown(timeout=30.0)
 
-    try:
-        if pending_final_print:
-            for song_name in list(pending_final_print.keys()):
-                _print_pending_final(song_name)
+    if pending_final_print:
+        for song_name in list(pending_final_print.keys()):
+            _print_pending_final(song_name)
 
-        if failed > 0:
-            print(f"[POST][SUMMARY] {failed}/{max(1, total)} task(s) failed.")
-    except Exception as e:
-        logger.warning(f"post_processor:_emit: {e}")
+    if failed > 0:
+        print(f"[POST][SUMMARY] {failed}/{max(1, total)} task(s) failed.")

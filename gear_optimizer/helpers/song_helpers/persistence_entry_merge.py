@@ -81,16 +81,8 @@ def merge_persist_entry(
         persist_entries[idx] = new_entry
         return
 
-    try:
-        existing_score = int(existing.get("score", 0) or 0)
-    except Exception as e:
-        logger.warning(f"persistence_entry_merge:merge_persist_entry: {e}")
-        existing_score = 0
-    try:
-        new_score_i = int(new_entry.get("score", 0) or 0)
-    except Exception as e:
-        logger.warning(f"persistence_entry_merge:merge_persist_entry: {e}")
-        new_score_i = 0
+    existing_score = int(existing.get("score", 0) or 0)
+    new_score_i = int(new_entry.get("score", 0) or 0)
 
     if new_score_i > existing_score:
         existing["score"] = new_score_i
@@ -101,16 +93,8 @@ def merge_persist_entry(
         if not existing.get("details") and new_entry.get("details"):
             existing["details"] = new_entry["details"]
 
-    try:
-        existing_fg = int(existing.get("fg_score", 0) or 0)
-    except Exception as e:
-        logger.warning(f"persistence_entry_merge:merge_persist_entry: {e}")
-        existing_fg = 0
-    try:
-        new_fg_i = int(new_entry.get("fg_score", 0) or 0)
-    except Exception as e:
-        logger.warning(f"persistence_entry_merge:merge_persist_entry: {e}")
-        new_fg_i = 0
+    existing_fg = int(existing.get("fg_score", 0) or 0)
+    new_fg_i = int(new_entry.get("fg_score", 0) or 0)
 
     if new_fg_i > existing_fg:
         existing["fg_score"] = new_fg_i

@@ -7,7 +7,6 @@ per-thread cached), the thread-local connection cache, and schema init.
 import os
 import sqlite3
 import threading
-import logging
 from typing import Optional
 from urllib.parse import quote
 from ...core.constants import PATHS
@@ -15,7 +14,6 @@ from ..migrations import ensure_schema
 from ..piece_encoding_store import _initialize_piece_name_encodings
 from gear_optimizer.core.parsing import env_get
 
-logger = logging.getLogger(__name__)
 
 
 def get_evolution_db_path() -> str:
@@ -27,12 +25,9 @@ def get_evolution_db_path() -> str:
     env_path = str(env_get("EVOLUTION_DB_PATH", "") or "").strip()
     if env_path:
         return env_path
-    try:
-        external_db = os.path.abspath(os.path.join(PATHS.script_dir, os.pardir, "ExternalDatabases", "evolution.db"))
-        if os.path.exists(external_db):
-            return external_db
-    except Exception as e:
-        logger.warning(f"database:get_evolution_db_path: {e}")
+    external_db = os.path.abspath(os.path.join(PATHS.script_dir, os.pardir, "ExternalDatabases", "evolution.db"))
+    if os.path.exists(external_db):
+        return external_db
     return PATHS.evolution_db_default
 
 
@@ -54,20 +49,14 @@ def get_db_connection_with_timeout(db_path: Optional[str] = None, *, timeout: fl
     """
     if db_path is None:
         db_path = get_evolution_db_path()
-    try:
-        parent = os.path.dirname(os.path.abspath(db_path))
-        if parent and not os.path.exists(parent):
-            os.makedirs(parent, exist_ok=True)
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_with_timeout: {e}")
+    parent = os.path.dirname(os.path.abspath(db_path))
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
     conn = sqlite3.connect(db_path, timeout=float(timeout))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
-    try:
-        busy_ms = int(max(100.0, min(float(timeout) * 1000.0, 30_000.0)))
-        conn.execute(f"PRAGMA busy_timeout={busy_ms};")
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_with_timeout: {e}")
+    busy_ms = int(max(100.0, min(float(timeout) * 1000.0, 30_000.0)))
+    conn.execute(f"PRAGMA busy_timeout={busy_ms};")
     ensure_schema(conn)
     return conn
 
@@ -93,10 +82,7 @@ def get_db_connection_readonly(db_path: Optional[str] = None, *, timeout: float 
     uri = _db_path_to_uri(db_path)
     conn = sqlite3.connect(uri, timeout=float(timeout), uri=True)
     conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA query_only=1;")
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_readonly: {e}")
+    conn.execute("PRAGMA query_only=1;")
     return conn
 
 
@@ -111,14 +97,10 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
     """
     if db_path is None:
         db_path = get_evolution_db_path()
-    try:
-        conns = getattr(_DB_TLS, "conns", None)
-        if conns is None:
-            conns = {}
-            setattr(_DB_TLS, "conns", conns)
-    except Exception as e:
-        logger.warning(f"database:get_db_connection_cached: {e}")
+    conns = getattr(_DB_TLS, "conns", None)
+    if conns is None:
         conns = {}
+        setattr(_DB_TLS, "conns", conns)
     db_path = str(db_path)
     conn = conns.get(db_path)
     if conn is not None:
@@ -157,10 +139,7 @@ def init_db():
     db_path = get_evolution_db_path()
     conn = get_db_connection(db_path)
     try:
-        try:
-            _initialize_piece_name_encodings(conn, db_path=str(db_path))
-        except Exception as e:
-            logger.warning(f"database:init_db: {e}")
+        _initialize_piece_name_encodings(conn, db_path=str(db_path))
         conn.commit()
     finally:
         conn.close()

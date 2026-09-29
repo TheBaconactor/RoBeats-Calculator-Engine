@@ -123,11 +123,7 @@ def _loadout_score_maxima(entries: Sequence[Mapping[str, Any]]) -> tuple[int | N
         score = _coerce_db_int(entry.get("score", 0))
         fg_score = _coerce_db_int(entry.get("fg_score", 0))
         fg_base_score = score
-        try:
-            raw_fg_base = entry.get("fg_base_score")
-        except Exception as e:
-            logger.warning(f"database:_coerce_db_int: {e}")
-            raw_fg_base = None
+        raw_fg_base = entry.get("fg_base_score")
         if raw_fg_base is not None:
             fg_base_score = _coerce_db_int(raw_fg_base)
             if fg_base_score <= 0:
@@ -361,11 +357,7 @@ def save_team_buff_loadouts_batch(
         return
     timing = env_flag("DB_TIMING")
     timing_threshold_ms = 50.0
-    try:
-        timing_threshold_ms = float(env_get("DB_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
-    except Exception as e:
-        logger.warning(f"database:save_team_buff_loadouts_batch: {e}")
-        timing_threshold_ms = 50.0
+    timing_threshold_ms = float(env_get("DB_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
     def _log_timing(label: str, dt_sec: float) -> None:
         if not timing:
             return
@@ -431,12 +423,8 @@ def save_team_buff_loadouts_batch(
                 (song_name, team_buff),
             ).fetchall()
             for row in rows:
-                try:
-                    details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
-                    details_row = _unpack_stats_after_load(details_row)
-                except Exception as e:
-                    logger.warning(f"database:_extract_entry_colors: {e}")
-                    continue
+                details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
+                details_row = _unpack_stats_after_load(details_row)
                 p_color, s_color, sel_color = extract_song_colors(details_row)
                 if p_color or s_color:
                     song_color_fallback = (p_color, s_color, sel_color)
@@ -580,11 +568,7 @@ def save_team_buff_loadouts_batch(
         """
         if not isinstance(details_obj, dict):
             details_obj = {}
-        try:
-            from gear_optimizer.core.stats_calculator import compute_full_stats
-        except Exception as e:
-            logger.warning(f"database:_recompute_stats_in_details_for_persistence: {e}")
-            return details_obj
+        from gear_optimizer.core.stats_calculator import compute_full_stats
         base_stats = {
             "Perfect Points": 0,
             "Combo Multiplier": 0,
@@ -721,10 +705,7 @@ def save_team_buff_loadouts_batch(
         resolved_db_path = str(db_path or get_evolution_db_path())
     try:
         if not conn.in_transaction:
-            try:
-                conn.execute("PRAGMA synchronous=NORMAL;")
-            except Exception as e:
-                logger.warning(f"database:_recompute_stats_in_details_for_persistence: {e}")
+            conn.execute("PRAGMA synchronous=NORMAL;")
         _t_params0 = time.perf_counter()
         loadouts_params = []
         deferred_fg_loadouts_params = []
@@ -776,11 +757,7 @@ def save_team_buff_loadouts_batch(
             fg_score = _coerce_db_int(entry.get("fg_score", 0))
             fg_base_score = score
             has_explicit_fg_base = False
-            try:
-                raw_fg_base = entry.get("fg_base_score")
-            except Exception as e:
-                logger.warning(f"database:_encode_mini_groups_to_blob: {e}")
-                raw_fg_base = None
+            raw_fg_base = entry.get("fg_base_score")
             if raw_fg_base is not None:
                 has_explicit_fg_base = True
                 fg_base_score = _coerce_db_int(raw_fg_base)
@@ -1116,45 +1093,42 @@ def save_team_buff_loadouts_batch(
                         f"song={song_name!r} team_buff={team_buff!r} hash={loadout_hash} "
                         f"expected>={int(expected_fg_score)} got={got_fg_score}"
                     )
-                try:
-                    gear_ids_blob_row = row["gear_ids_blob"]
-                    minis_ids_blob_row = row["minis_ids_blob"]
-                    gear_names_row: list[str] = []
-                    ids = _unpack_id_list(gear_ids_blob_row)
-                    if ids:
-                        gear_names_row = [
-                            str(encoding_maps.gear_id_to_name.get(int(i), "") or "") for i in ids if int(i) > 0
-                        ]
-                        gear_names_row = [n for n in gear_names_row if n]
-                    mini_groups_row: list[list[str]] = []
-                    id_groups = _unpack_id_groups(minis_ids_blob_row)
-                    if id_groups:
-                        for g in id_groups:
-                            if not g:
-                                continue
-                            names = [str(encoding_maps.mini_id_to_name.get(int(i), "") or "") for i in g if int(i) > 0]
-                            names = [n for n in names if n]
-                            if names:
-                                mini_groups_row.append(names)
-                    mini_names_row = representative_mini_names(mini_groups_row)
-                    details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
-                    p_color, s_color, sel_color = extract_song_colors(details_row)
-                    if p_color or s_color:
-                        minis_for_verify = _song_aware_minis_by_name(p_color, s_color)
-                        mini_sigs_row = [
-                            effective_mini_signature_for_name(n, minis_for_verify, p_color, s_color, sel_color)
-                            for n in mini_names_row
-                        ]
-                        expected_hash = effective_loadout_hash_from_names(gear_names_row, mini_sigs_row)
-                    else:
-                        expected_hash = _db._loadout_hash_from_names(gear_names_row, mini_names_row)
-                    if expected_hash and str(expected_hash) != str(loadout_hash):
-                        _warn_or_raise(
-                            f"[DB] Loadout hash mismatch after persistence (possible override/race): table={table} "
-                            f"song={song_name!r} team_buff={team_buff!r} stored={loadout_hash} expected={expected_hash}"
-                        )
-                except Exception as e:
-                    logger.warning(f"database:_verify_table_row: {e}")
+                gear_ids_blob_row = row["gear_ids_blob"]
+                minis_ids_blob_row = row["minis_ids_blob"]
+                gear_names_row: list[str] = []
+                ids = _unpack_id_list(gear_ids_blob_row)
+                if ids:
+                    gear_names_row = [
+                        str(encoding_maps.gear_id_to_name.get(int(i), "") or "") for i in ids if int(i) > 0
+                    ]
+                    gear_names_row = [n for n in gear_names_row if n]
+                mini_groups_row: list[list[str]] = []
+                id_groups = _unpack_id_groups(minis_ids_blob_row)
+                if id_groups:
+                    for g in id_groups:
+                        if not g:
+                            continue
+                        names = [str(encoding_maps.mini_id_to_name.get(int(i), "") or "") for i in g if int(i) > 0]
+                        names = [n for n in names if n]
+                        if names:
+                            mini_groups_row.append(names)
+                mini_names_row = representative_mini_names(mini_groups_row)
+                details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
+                p_color, s_color, sel_color = extract_song_colors(details_row)
+                if p_color or s_color:
+                    minis_for_verify = _song_aware_minis_by_name(p_color, s_color)
+                    mini_sigs_row = [
+                        effective_mini_signature_for_name(n, minis_for_verify, p_color, s_color, sel_color)
+                        for n in mini_names_row
+                    ]
+                    expected_hash = effective_loadout_hash_from_names(gear_names_row, mini_sigs_row)
+                else:
+                    expected_hash = _db._loadout_hash_from_names(gear_names_row, mini_names_row)
+                if expected_hash and str(expected_hash) != str(loadout_hash):
+                    _warn_or_raise(
+                        f"[DB] Loadout hash mismatch after persistence (possible override/race): table={table} "
+                        f"song={song_name!r} team_buff={team_buff!r} stored={loadout_hash} expected={expected_hash}"
+                    )
             try:
                 if loadouts_params:
                     best = max(loadouts_params, key=lambda t: int(t[3] or 0))

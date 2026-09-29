@@ -2,14 +2,12 @@
 Force-Greats payload normalization, base-score derivation, and pairing asserts,
 plus stats-reconstruction helpers used when persisting details.
 """
-import logging
 from typing import Any, Optional
 from ...core.fallback_monitor import warn_fallback
 from ...core.gem_defs import element_gem_count
 from ...core.utils import safe_int as _safe_int_for_db
 from ...core.team_buff import team_buff_effect
 
-logger = logging.getLogger(__name__)
 
 _CORE_SCORE_STAT_KEYS = (
     "Perfect Points",
@@ -61,62 +59,59 @@ def _ensure_stats_in_details(
         context={"team_buff": team_buff or "", "team_color": team_color or ""},
         fatal=False,
     )
-    try:
-        from gear_optimizer.core.stats_calculator import compute_full_stats
-        from gear_optimizer.data import database as _db
-        gear_names = []
-        for g in gear or []:
-            if isinstance(g, dict):
-                gear_names.append(g.get("Name", ""))
-            elif isinstance(g, str):
-                gear_names.append(g)
-        mini_names = []
-        for m in minis or []:
-            if isinstance(m, dict):
-                mini_names.append(m.get("Name", ""))
-            elif isinstance(m, str):
-                mini_names.append(m)
-            elif isinstance(m, list) and m:
-                first = m[0]
-                if isinstance(first, dict):
-                    mini_names.append(first.get("Name", ""))
-                elif isinstance(first, str):
-                    mini_names.append(first)
-        gears_by_name = _db.get_gears_by_name_cached()
-        base_stats = {
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Fever Fill Rate": 0,
-            "Fever Time": 0,
-            "Chill": 0,
-            "Flow": 0,
-            "Rush": 0,
-            "Beat": 0,
-            "Vibe": 0,
-        }
-        buff_tier = str(team_buff or "").strip().upper()
-        buff_color = str(team_color or "").strip()
-        if not buff_color:
-            buff_color = str(
-                details.get("PrimaryColor")
-                or details.get("Primary Color")
-                or details.get("SelectedElement")
-                or details.get("Selected Element")
-                or ""
-            ).strip()
-        for stat_name, delta in team_buff_effect(buff_tier, buff_color).items():
-            base_stats[stat_name] = int(base_stats.get(stat_name, 0) or 0) + int(delta)
-        gem_counts = dict(details.get("GemCounts", {}) or {})
-        gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
-        gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
-        selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
-        computed = compute_full_stats(
-            gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
-        )
-        details["Stats"] = computed
-    except Exception as e:
-        logger.warning(f"database:_ensure_stats_in_details: {e}")
+    from gear_optimizer.core.stats_calculator import compute_full_stats
+    from gear_optimizer.data import database as _db
+    gear_names = []
+    for g in gear or []:
+        if isinstance(g, dict):
+            gear_names.append(g.get("Name", ""))
+        elif isinstance(g, str):
+            gear_names.append(g)
+    mini_names = []
+    for m in minis or []:
+        if isinstance(m, dict):
+            mini_names.append(m.get("Name", ""))
+        elif isinstance(m, str):
+            mini_names.append(m)
+        elif isinstance(m, list) and m:
+            first = m[0]
+            if isinstance(first, dict):
+                mini_names.append(first.get("Name", ""))
+            elif isinstance(first, str):
+                mini_names.append(first)
+    gears_by_name = _db.get_gears_by_name_cached()
+    base_stats = {
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Chill": 0,
+        "Flow": 0,
+        "Rush": 0,
+        "Beat": 0,
+        "Vibe": 0,
+    }
+    buff_tier = str(team_buff or "").strip().upper()
+    buff_color = str(team_color or "").strip()
+    if not buff_color:
+        buff_color = str(
+            details.get("PrimaryColor")
+            or details.get("Primary Color")
+            or details.get("SelectedElement")
+            or details.get("Selected Element")
+            or ""
+        ).strip()
+    for stat_name, delta in team_buff_effect(buff_tier, buff_color).items():
+        base_stats[stat_name] = int(base_stats.get(stat_name, 0) or 0) + int(delta)
+    gem_counts = dict(details.get("GemCounts", {}) or {})
+    gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
+    gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
+    selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
+    computed = compute_full_stats(
+        gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
+    )
+    details["Stats"] = computed
     return details
 
 
@@ -212,11 +207,8 @@ def _compact_force_details_for_storage(force_data: Any) -> Any:
         out["BaseStats"] = dict(out["Stats"])
         out.pop("Stats", None)
     if "Score" in out and "score" in out:
-        try:
-            if int(out.get("Score") or 0) == int(out.get("score") or 0):
-                out.pop("score", None)
-        except Exception as e:
-            logger.warning(f"database:_compact_force_details_for_storage: {e}")
+        if int(out.get("Score") or 0) == int(out.get("score") or 0):
+            out.pop("score", None)
     return out
 
 
@@ -276,11 +268,7 @@ def _align_force_stats_with_persisted_loadout(force_data: Any, details: Any) -> 
 
 
 def _coerce_db_int(v: Any) -> int:
-    try:
-        return int(v or 0)
-    except Exception as e:
-        logger.warning(f"database:_coerce_db_int: {e}")
-        return 0
+    return int(v or 0)
 
 
 def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:

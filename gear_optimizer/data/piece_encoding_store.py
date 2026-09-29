@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import sqlite3
 import threading
 from typing import Sequence
@@ -8,7 +7,6 @@ from typing import Sequence
 from .encoding_maps import EncodingMaps
 from .loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
 
-logger = logging.getLogger(__name__)
 
 _GEAR_NAME_ENCODING_TABLE = "gear_name_encoding"
 _MINI_NAME_ENCODING_TABLE = "mini_name_encoding"
@@ -51,12 +49,8 @@ def _load_piece_name_encoding_maps(conn: sqlite3.Connection, *, db_path: str) ->
     try:
         rows = conn.execute(f"SELECT id, name FROM {_GEAR_NAME_ENCODING_TABLE}").fetchall()
         for r in rows:
-            try:
-                i = int(r[0] or 0)
-                n = str(r[1] or "")
-            except Exception as e:
-                logger.warning(f"database:_load_piece_name_encoding_maps: {e}")
-                continue
+            i = int(r[0] or 0)
+            n = str(r[1] or "")
             if i > 0 and n:
                 gear_name_to_id[n] = i
                 gear_id_to_name[i] = n
@@ -66,12 +60,8 @@ def _load_piece_name_encoding_maps(conn: sqlite3.Connection, *, db_path: str) ->
     try:
         rows = conn.execute(f"SELECT id, name FROM {_MINI_NAME_ENCODING_TABLE}").fetchall()
         for r in rows:
-            try:
-                i = int(r[0] or 0)
-                n = str(r[1] or "")
-            except Exception as e:
-                logger.warning(f"database:_load_piece_name_encoding_maps: {e}")
-                continue
+            i = int(r[0] or 0)
+            n = str(r[1] or "")
             if i > 0 and n:
                 mini_name_to_id[n] = i
                 mini_id_to_name[i] = n
@@ -134,15 +124,9 @@ def _insert_missing_piece_names(
 def _initialize_piece_name_encodings(conn: sqlite3.Connection, *, db_path: str) -> None:
     """
     Populate encoding tables deterministically (sorted) from the known dataset.
-
-    This is best-effort: failures must not block optimizer startup.
     """
-    try:
-        gears_by_name = get_gears_by_name_cached()
-        minis_by_name = get_minis_by_name_cached()
-    except Exception as e:
-        logger.warning(f"database:_initialize_piece_name_encodings: {e}")
-        return
+    gears_by_name = get_gears_by_name_cached()
+    minis_by_name = get_minis_by_name_cached()
 
     gear_names = sorted([str(k).strip() for k in (gears_by_name or {}).keys() if str(k).strip()])
     mini_names = sorted([str(k).strip() for k in (minis_by_name or {}).keys() if str(k).strip()])

@@ -43,7 +43,6 @@ from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.client_update import update_and_restart_client
 from gear_optimizer.frontier_client import sync_frontiers_from_server
 from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
-from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.app_stop_control import StopController
 from gear_optimizer.ui.progress import (
     ProgressUI as _ProgressUI,
@@ -62,7 +61,6 @@ logger = logging.getLogger(__name__)
 class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def __init__(self):
         self.setup_logging()
-        self._async_db_saver = AsyncDbSaver()
         self._stop_control = StopController(bin_dir=BIN_DIR)
         self._stop_requested = self._stop_control.stop_requested_event
         self._force_exit_requested = self._stop_control.force_exit_requested_event
@@ -101,25 +99,19 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self._runtime_settings: AppRuntimeSettings | None = None
 
     def setup_logging(self) -> None:
-        try:
-            from gear_optimizer.core.logging_config import configure_default_logging
+        from gear_optimizer.core.logging_config import configure_default_logging
 
-            configure_default_logging()
-        except Exception as e:
-            logger.warning(f"app:setup_logging: {e}")
+        configure_default_logging()
 
     def request_stop(self, reason: str, *, force: bool = False) -> None:
         try:
             return self._stop_control.request_stop(reason, force=force)
         finally:
-            try:
-                from gear_optimizer.solver.gpu_executor import get_gpu_executor
+            from gear_optimizer.solver.gpu_executor import get_gpu_executor
 
-                gpu_executor = get_gpu_executor()
-                if gpu_executor.is_running:
-                    gpu_executor.request_abort(f"stop requested ({reason})")
-            except Exception as e:
-                logger.warning(f"app:request_stop: {e}")
+            gpu_executor = get_gpu_executor()
+            if gpu_executor.is_running:
+                gpu_executor.request_abort(f"stop requested ({reason})")
 
     def _stop_requested_now(self) -> bool:
         if self._stop_cached_result:
@@ -145,11 +137,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         settings = getattr(self, "_runtime_settings", None)
         if isinstance(settings, AppRuntimeSettings):
             return settings
-        try:
-            return AppRuntimeSettings.from_config(cfg)
-        except Exception as e:
-            logger.warning(f"app:_current_runtime_settings: {e}")
-            return AppRuntimeSettings.from_config(None)
+        return AppRuntimeSettings.from_config(cfg)
 
     def _get_inflight_songs_requested(self, cfg) -> int:
         runtime_settings = self._current_runtime_settings(cfg)
@@ -237,12 +225,9 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _configure_execution_and_prewarm(self, cfg) -> None:
         runtime_settings = self._current_runtime_settings(cfg)
         ga_multistart = max(1, int(runtime_settings.ga.multi_start))
-        try:
-            from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+        from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
-            gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
-        except Exception as e:
-            logger.warning(f"app:_configure_execution_and_prewarm: {e}")
+        gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
         # macOS-only required dispatch-safety boundary: on darwin `ti.vulkan` lowers through
         # MoltenVK and Taichi acquires a GLFW/Cocoa context during materialize_runtime, which
         # traps off the OS main thread. Pin that one-time materialization to the main thread
@@ -253,31 +238,24 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         # (lazy init on the executor thread) and do not introduce an eager startup GPU dependency.
         if sys.platform == "darwin":
             self._materialize_gpu_runtime_on_main_thread()
-        try:
-            inflight_req = int(runtime_settings.inflight.songs or 0)
-        except Exception as e:
-            logger.warning(f"app:_configure_execution_and_prewarm: {e}")
-            inflight_req = 0
+        inflight_req = int(runtime_settings.inflight.songs or 0)
         if inflight_req <= 1:
             return
-        try:
-            logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
-            emit_profile_event(
-                component="app",
-                event="taichi_init_start",
-                metrics={"in_process": 1},
-            )
-            from gear_optimizer.solver.gpu_executor import get_gpu_executor
+        logger.info("[Startup][GPU] Taichi/Vulkan init starting...")
+        emit_profile_event(
+            component="app",
+            event="taichi_init_start",
+            metrics={"in_process": 1},
+        )
+        from gear_optimizer.solver.gpu_executor import get_gpu_executor
 
-            get_gpu_executor().start(in_process=True)
-            logger.info("[Startup][GPU] Taichi/Vulkan init ready.")
-            emit_profile_event(
-                component="app",
-                event="taichi_init_done",
-                metrics={"in_process": 1},
-            )
-        except Exception as e:
-            logger.warning(f"app:_configure_execution_and_prewarm: {e}")
+        get_gpu_executor().start(in_process=True)
+        logger.info("[Startup][GPU] Taichi/Vulkan init ready.")
+        emit_profile_event(
+            component="app",
+            event="taichi_init_done",
+            metrics={"in_process": 1},
+        )
 
     def _profiling_mode_enabled(self, cfg=None) -> bool:
         if bool(ENV.debug_profile) or bool(ENV.perf_timing_unconditional):
@@ -332,13 +310,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def run(self):
         multiprocessing.freeze_support()
         self._install_signal_handlers()
-        try:
-            if hasattr(sys.stdout, "reconfigure"):
-                sys.stdout.reconfigure(line_buffering=True)
-            if hasattr(sys.stderr, "reconfigure"):
-                sys.stderr.reconfigure(line_buffering=True)
-        except Exception as e:
-            logger.warning(f"app:run: {e}")
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(line_buffering=True)
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(line_buffering=True)
         try:
             if not self._output_enabled:
                 self._orig_stdout = suppress_stdout(True)
@@ -409,10 +384,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             minis_by_name = {m["Name"]: m for m in all_minis}
             song_queue = self._build_song_queue(cfg, paths)
             queued_songs = len(song_queue)
-            try:
-                logger.info(f"[Run] Queued {len(song_queue)} song(s) for processing.")
-            except Exception as e:
-                logger.warning(f"app:_run_single_iteration: {e}")
+            logger.info(f"[Run] Queued {len(song_queue)} song(s) for processing.")
             emit_profile_event(
                 component="app",
                 event="queue_built",
@@ -470,11 +442,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 self.request_stop("KeyboardInterrupt")
             except KeyboardInterrupt:
                 raise
-        except Exception as e:
-            logger.error(f"Error: {e}")
+        except Exception:
+            logger.exception("[Run] Iteration failed")
         finally:
             self._stop_progress()
-            self._cleanup_resources()
             elapsed = time.time() - start_time
             done_msg = f"Run completed in {elapsed:.2f}s"
             logger.info(done_msg)
@@ -483,34 +454,31 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             except (ValueError, TypeError):
                 elapsed_h = 0.0
             if elapsed_h > 0:
+                completed_tasks = getattr(self, "_last_completed_tasks", None)
+                if completed_tasks is None:
+                    completed_tasks = int(queued_tasks)
+                completed_tasks = max(0, int(completed_tasks))
+                total_tasks = getattr(self, "_last_total_tasks", None)
+                if total_tasks is None:
+                    total_tasks = int(queued_tasks)
+                total_tasks = max(0, int(total_tasks))
+                repeats_est = 1
                 try:
-                    completed_tasks = getattr(self, "_last_completed_tasks", None)
-                    if completed_tasks is None:
-                        completed_tasks = int(queued_tasks)
-                    completed_tasks = max(0, int(completed_tasks))
-                    total_tasks = getattr(self, "_last_total_tasks", None)
-                    if total_tasks is None:
-                        total_tasks = int(queued_tasks)
-                    total_tasks = max(0, int(total_tasks))
+                    if int(queued_songs) > 0 and int(queued_tasks) > 0:
+                        repeats_est = max(1, int(round(float(queued_tasks) / float(queued_songs))))
+                except (ValueError, TypeError):
                     repeats_est = 1
-                    try:
-                        if int(queued_songs) > 0 and int(queued_tasks) > 0:
-                            repeats_est = max(1, int(round(float(queued_tasks) / float(queued_songs))))
-                    except (ValueError, TypeError):
-                        repeats_est = 1
-                    try:
-                        completed_songs_est = int(round(float(completed_tasks) / float(repeats_est)))
-                    except (ValueError, TypeError):
-                        completed_songs_est = int(completed_tasks)
-                    completed_songs_est = min(int(queued_songs), max(0, int(completed_songs_est)))
-                    songs_per_h = float(completed_songs_est) / elapsed_h if completed_songs_est > 0 else 0.0
-                    tasks_per_h = float(completed_tasks) / elapsed_h if completed_tasks > 0 else 0.0
-                    logger.info(
-                        f"[Throughput] Completed {completed_tasks}/{total_tasks} task(s) "
-                        f"(queue={queued_songs} song(s)) -> {songs_per_h:.1f} songs/hour, {tasks_per_h:.1f} tasks/hour"
-                    )
-                except Exception as e:
-                    logger.warning(f"app:_run_single_iteration: {e}")
+                try:
+                    completed_songs_est = int(round(float(completed_tasks) / float(repeats_est)))
+                except (ValueError, TypeError):
+                    completed_songs_est = int(completed_tasks)
+                completed_songs_est = min(int(queued_songs), max(0, int(completed_songs_est)))
+                songs_per_h = float(completed_songs_est) / elapsed_h if completed_songs_est > 0 else 0.0
+                tasks_per_h = float(completed_tasks) / elapsed_h if completed_tasks > 0 else 0.0
+                logger.info(
+                    f"[Throughput] Completed {completed_tasks}/{total_tasks} task(s) "
+                    f"(queue={queued_songs} song(s)) -> {songs_per_h:.1f} songs/hour, {tasks_per_h:.1f} tasks/hour"
+                )
             emit_profile_event(
                 component="app",
                 event="run_end",
@@ -523,10 +491,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             )
             gc.collect()
         if graceful_stop or self._stop_requested.is_set():
-            try:
-                logger.info("[Shutdown] Exiting by user request.")
-            except Exception as e:
-                logger.warning(f"app:_run_single_iteration: {e}")
+            logger.info("[Shutdown] Exiting by user request.")
             return False
         if memory_guard_restart:
             restart_process_for_memory_guard()
@@ -627,11 +592,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _memory_guard_restart_needed(self, memory_resume_tracker) -> bool:
         if not memory_release_requested():
             return False
-        try:
-            return memory_resume_tracker is not None and memory_resume_tracker.pending_count() > 0
-        except Exception as e:
-            logger.warning(f"app:_memory_guard_restart_needed: {e}")
-            return True
+        return memory_resume_tracker is not None and memory_resume_tracker.pending_count() > 0
 
     @staticmethod
     def _iter_exception_chain(exc: BaseException | None):
@@ -646,23 +607,13 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 continue
             seen.add(current_id)
             yield current
-            try:
-                pending.append(getattr(current, "__cause__", None))
-            except Exception as e:
-                logger.warning(f"app:_iter_exception_chain: {e}")
-            try:
-                pending.append(getattr(current, "__context__", None))
-            except Exception as e:
-                logger.warning(f"app:_iter_exception_chain: {e}")
+            pending.append(getattr(current, "__cause__", None))
+            pending.append(getattr(current, "__context__", None))
 
     def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
         if not self._fatal_gpu_errors_enabled():
             return False
-        try:
-            from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
-        except Exception as e:
-            logger.warning(f"app:_is_fatal_inflight_exception: {e}")
-            GpuServiceTimeoutError = ()
+        from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
         fatal_markers = (
             "gpu executor timeout after",
             "gpu executor taichi init failed",
@@ -683,25 +634,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         for current in self._iter_exception_chain(exc):
             if GpuServiceTimeoutError and isinstance(current, GpuServiceTimeoutError):
                 return True
-            try:
-                message = f"{type(current).__name__}: {current}".lower()
-            except Exception as e:
-                logger.warning(f"app:_is_fatal_inflight_exception: {e}")
-                message = ""
+            message = f"{type(current).__name__}: {current}".lower()
             if any(marker in message for marker in fatal_markers):
                 return True
         return False
-
-    def _cleanup_resources(self):
-        try:
-            if hasattr(self, "_async_db_saver"):
-                try:
-                    self._async_db_saver.shutdown(timeout=30.0)
-                except Exception as e:
-                    logger.warning(f"app:_cleanup_resources: {e}")
-            gc.collect(generation=0)
-        except Exception as e:
-            logger.warning(f"app:_cleanup_resources: {e}")
 
     def _loop_restart_wait_seconds(self, cfg=None, *, default_seconds: float = 0.0) -> float:
         wait_s = float(default_seconds)

@@ -126,12 +126,8 @@ def get_base_calc_song(fp: str, cfg_dict: dict | None = None) -> dict:
     cfg_h = _stable_cfg_hash(cfg_dict)
     key = (abs_fp, cfg_h)
 
-    try:
-        st = os.stat(abs_fp)
-        mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
-    except Exception as e:
-        logger.warning(f"song_io:get_base_calc_song: {e}")
-        mtime_ns = -1
+    st = os.stat(abs_fp)
+    mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
 
     with _BASE_CALC_SONG_CACHE_LOCK:
         entry = _BASE_CALC_SONG_CACHE.get(key)
@@ -159,20 +155,15 @@ def _load_song_header_cache_locked() -> None:
     try:
         with open(_SONG_HEADER_CACHE_PATH, "r", encoding="utf-8") as f:
             payload = json.load(f)
-    except Exception as e:
-        logger.warning(f"song_io:_load_song_header_cache_locked: {e}")
-        return
+    except (OSError, ValueError):
+        return  # No cache yet, or an unreadable one: headers are rescanned and the cache rewritten.
     if not isinstance(payload, dict):
         return
     for key, entry in payload.items():
         if not isinstance(key, str) or not isinstance(entry, dict):
             continue
-        try:
-            mtime_ns = int(entry.get("mtime_ns", -1))
-            file_size = int(entry.get("size", -1))
-        except Exception as e:
-            logger.warning(f"song_io:_load_song_header_cache_locked: {e}")
-            continue
+        mtime_ns = int(entry.get("mtime_ns", -1))
+        file_size = int(entry.get("size", -1))
         meta = entry.get("meta")
         if meta is not None and not isinstance(meta, dict):
             continue
@@ -200,8 +191,8 @@ def _flush_song_header_cache() -> None:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True, separators=(",", ":"))
         os.replace(tmp_path, _SONG_HEADER_CACHE_PATH)
-    except Exception as e:
-        logger.warning(f"song_io:_flush_song_header_cache: {e}")
+    except OSError:
+        logger.warning("[SongIO] Could not write %s", _SONG_HEADER_CACHE_PATH, exc_info=True)
         with _SONG_HEADER_CACHE_LOCK:
             _SONG_HEADER_CACHE_DIRTY = True
 
@@ -222,27 +213,21 @@ def scan_song_header(fp):
     abs_fp = os.path.abspath(fp)
     try:
         st = os.stat(abs_fp)
-        mtime_ns_raw = getattr(st, "st_mtime_ns", None)
-        mtime_ns = int(mtime_ns_raw) if isinstance(mtime_ns_raw, int) else int(st.st_mtime * 1e9)
-        file_size = int(st.st_size)
-    except Exception as e:
-        logger.warning(f"song_io:scan_song_header: {e}")
-        mtime_ns = -1
-        file_size = -1
+    except OSError:
+        return None
+    mtime_ns = st.st_mtime_ns
+    file_size = st.st_size
 
     with _SONG_HEADER_CACHE_LOCK:
         _load_song_header_cache_locked()
         cached = _SONG_HEADER_CACHE.get(abs_fp)
         if isinstance(cached, dict):
-            try:
-                if int(str(cached.get("mtime_ns", -2) or -2)) == int(mtime_ns) and int(
-                    str(cached.get("size", -2) or -2)
-                ) == int(file_size):
-                    _SONG_HEADER_CACHE.move_to_end(abs_fp)
-                    meta_cached = cached.get("meta")
-                    return dict(meta_cached) if isinstance(meta_cached, dict) else None
-            except Exception as e:
-                logger.warning(f"song_io:scan_song_header: {e}")
+            if int(str(cached.get("mtime_ns", -2) or -2)) == int(mtime_ns) and int(
+                str(cached.get("size", -2) or -2)
+            ) == int(file_size):
+                _SONG_HEADER_CACHE.move_to_end(abs_fp)
+                meta_cached = cached.get("meta")
+                return dict(meta_cached) if isinstance(meta_cached, dict) else None
 
     meta = {"Song Name": "", "Primary Color": "", "Secondary Color": "", "Difficulty": ""}
     try:
@@ -267,17 +252,16 @@ def scan_song_header(fp):
                         key = parts[0].strip()
                         if key in meta:
                             meta[key] = parts[1].strip()
-        result = meta if meta["Song Name"] else None
-        with _SONG_HEADER_CACHE_LOCK:
-            _SONG_HEADER_CACHE[abs_fp] = {"mtime_ns": int(mtime_ns), "size": int(file_size), "meta": result}
-            _SONG_HEADER_CACHE.move_to_end(abs_fp)
-            _prune_song_header_cache_locked()
-            global _SONG_HEADER_CACHE_DIRTY
-            _SONG_HEADER_CACHE_DIRTY = True
-        return dict(result) if isinstance(result, dict) else None
-    except Exception as e:
-        logger.warning(f"song_io:scan_song_header: {e}")
+    except (OSError, UnicodeDecodeError):
         return None
+    result = meta if meta["Song Name"] else None
+    with _SONG_HEADER_CACHE_LOCK:
+        _SONG_HEADER_CACHE[abs_fp] = {"mtime_ns": int(mtime_ns), "size": int(file_size), "meta": result}
+        _SONG_HEADER_CACHE.move_to_end(abs_fp)
+        _prune_song_header_cache_locked()
+        global _SONG_HEADER_CACHE_DIRTY
+        _SONG_HEADER_CACHE_DIRTY = True
+    return dict(result) if isinstance(result, dict) else None
 
 
 def read_song_file(fp):

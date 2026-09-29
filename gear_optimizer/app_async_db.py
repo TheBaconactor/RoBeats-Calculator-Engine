@@ -18,7 +18,6 @@ from gear_optimizer.data.database import (
 )
 
 
-logger = logging.getLogger(__name__)
 _TEAM_BUFF_REF_ARRAYS_LOCK = threading.Lock()
 _TEAM_BUFF_REF_ARRAYS_CACHE: dict | None = None
 
@@ -41,17 +40,13 @@ def _get_team_buff_ref_arrays_cached() -> dict | None:
         if isinstance(_TEAM_BUFF_REF_ARRAYS_CACHE, dict) and _TEAM_BUFF_REF_ARRAYS_CACHE:
             return _TEAM_BUFF_REF_ARRAYS_CACHE
 
-        try:
-            from gear_optimizer.core.config import load_paths_cache
-            from gear_optimizer.data.csv_parser import read_table
+        from gear_optimizer.core.config import load_paths_cache
+        from gear_optimizer.data.csv_parser import read_table
 
-            paths = load_paths_cache()
-            stats_path = str((paths or {}).get("Stats", "") or PATHS.stats_csv)
-            stats_table = read_table(stats_path)
-            _TEAM_BUFF_REF_ARRAYS_CACHE = _build_ref_arrays_from_stats_table(stats_table)
-        except Exception as e:
-            logger.warning(f"app_async_db:_get_team_buff_ref_arrays_cached: {e}")
-            _TEAM_BUFF_REF_ARRAYS_CACHE = None
+        paths = load_paths_cache()
+        stats_path = str((paths or {}).get("Stats", "") or PATHS.stats_csv)
+        stats_table = read_table(stats_path)
+        _TEAM_BUFF_REF_ARRAYS_CACHE = _build_ref_arrays_from_stats_table(stats_table)
         return _TEAM_BUFF_REF_ARRAYS_CACHE
 
 
@@ -147,20 +142,10 @@ class AsyncDbSaver:
             time.sleep(min(0.05, remaining))
 
         if getattr(self._queue, "unfinished_tasks", 0) > 0:
-            try:
-                pending = int(getattr(self._queue, "unfinished_tasks", 0))
-            except Exception as e:
-                logger.warning(f"app_async_db:flush: {e}")
-                pending = -1
+            pending = int(getattr(self._queue, "unfinished_tasks", 0))
             msg = f"[DB] Warning: async DB flush timed out; pending_tasks={pending}"
-            try:
-                print(msg)
-            except Exception as e:
-                logger.warning(f"app_async_db:flush: {e}")
-            try:
-                logging.warning(msg)
-            except Exception as e:
-                logger.warning(f"app_async_db:flush: {e}")
+            print(msg)
+            logging.warning(msg)
             if _async_db_strict():
                 raise RuntimeError(msg)
         self.raise_if_failed()
@@ -227,11 +212,7 @@ class AsyncDbSaver:
 
     def _record_error(self, kind: str, exc: BaseException, *, song_name: str = "") -> None:
         msg = f"{type(exc).__name__}: {exc}"
-        try:
-            now = float(time.monotonic())
-        except Exception as e:
-            logger.warning(f"app_async_db:_record_error: {e}")
-            now = 0.0
+        now = float(time.monotonic())
         with self._error_lock:
             self._last_error = exc
             self._last_error_msg = str(msg)
@@ -274,11 +255,7 @@ class AsyncDbSaver:
                     if item[0] != "save":
                         continue
 
-                    try:
-                        _, song_name, entries, meta = item
-                    except Exception as e:
-                        logger.warning(f"app_async_db:_loop: {e}")
-                        continue
+                    _, song_name, entries, meta = item
                     if not isinstance(meta, dict):
                         meta = {}
 
@@ -299,19 +276,10 @@ class AsyncDbSaver:
                     except Exception as exc:
                         self._record_error("save", exc, song_name=str(song_name))
                         msg = f"[DB] Async save failed for {song_name}: {type(exc).__name__}: {exc}"
-                        try:
-                            print(msg)
-                        except Exception as e:
-                            logger.warning(f"app_async_db:_loop: {e}")
-                        try:
-                            logging.error(msg)
-                        except Exception as e:
-                            logger.warning(f"app_async_db:_loop: {e}")
+                        print(msg)
+                        logging.error(msg)
                 finally:
-                    try:
-                        self._queue.task_done()
-                    except Exception as e:
-                        logger.warning(f"app_async_db:_loop: {e}")
+                    self._queue.task_done()
         finally:
             try:
                 self._close_writer_connection()

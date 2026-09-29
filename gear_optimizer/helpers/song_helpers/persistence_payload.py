@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import logging
 
 from ...core.utils import get_selected_element, safe_int
 from .fg_payload import has_valid_fg_payload
@@ -11,7 +10,6 @@ from .persistence_records import evaluate_record_update
 
 
 
-logger = logging.getLogger(__name__)
 def normalize_force_payload(force_obj: object) -> dict:
     """
     Normalize persisted FG payload shape.
@@ -144,16 +142,8 @@ def build_db_payload(
         base_score = fg_entry.get("base_score")
         if base_score is None:
             base_score = fg_entry.get("score", 0)
-        try:
-            base_score_i = int(base_score or 0)
-        except Exception as e:
-            logger.warning(f"persistence_payload:attach_attempt_meta: {e}")
-            base_score_i = 0
-        try:
-            fg_score_i = int(fg_entry.get("fg_score", 0) or 0)
-        except Exception as e:
-            logger.warning(f"persistence_payload:attach_attempt_meta: {e}")
-            fg_score_i = 0
+        base_score_i = int(base_score or 0)
+        fg_score_i = int(fg_entry.get("fg_score", 0) or 0)
 
         # ForceGreats is only a "useful" variant when it actually improves the score
         # for the same loadout. Persisting worse-than-base configs is confusing to users
