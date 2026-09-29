@@ -341,7 +341,7 @@ def run_native_inflight_song_pipeline(
                     repeat_ctx = extract_repeat_context(logical_task)
                     _bind_bundle_song(prepared_song, task, repeat_ctx)
                     prep_elapsed_s = time.perf_counter() - float(t_submit)
-                    prep_wall_s = float(getattr(prepared_song.runtime.prep, "wall_prep_s", 0.0) or 0.0)
+                    prep_wall_s = float(prepared_song.runtime.prep.wall_prep_s or 0.0)
                     if prep_wall_s <= 0.0 or prep_wall_s > prep_elapsed_s:
                         prep_wall_s = float(prep_elapsed_s)
                     prep_queue_s = max(0.0, float(prep_elapsed_s) - float(prep_wall_s))
@@ -350,15 +350,15 @@ def run_native_inflight_song_pipeline(
                     stage_profiler.record(
                         "prep",
                         prep_wall_s,
-                        cpu_seconds=getattr(prepared_song.runtime.prep, "cpu_prep_s", None),
+                        cpu_seconds=prepared_song.runtime.prep.cpu_prep_s,
                         song=task_key,
                     )
                     prepared.append(prepared_song)
                     progress_tracker.seed_valid_baseline(
                         prepared_song.config.db_key,
-                        best_score=int(getattr(prepared_song.runtime.db, "db_best_score", 0) or 0),
-                        best_fg=int(getattr(prepared_song.runtime.db, "db_best_fg_score", 0) or 0),
-                        baseline_valid=bool(getattr(prepared_song.runtime.db, "db_baseline_valid", True)),
+                        best_score=int(prepared_song.runtime.db.db_best_score or 0),
+                        best_fg=int(prepared_song.runtime.db.db_best_fg_score or 0),
+                        baseline_valid=bool(prepared_song.runtime.db.db_baseline_valid),
                     )
                 except Exception as exc:
                     if stopping and is_stop_abort_exception(exc):
@@ -389,7 +389,7 @@ def run_native_inflight_song_pipeline(
                 did_work = True
                 if prep_completion.submit_t0 is not None:
                     fg_prep_elapsed_s = time.perf_counter() - float(prep_completion.submit_t0)
-                    fg_prep_wall_s = float(getattr(song.runtime.fg, "fg_prep_wall_s", 0.0) or 0.0)
+                    fg_prep_wall_s = float(song.runtime.fg.fg_prep_wall_s or 0.0)
                     if fg_prep_wall_s <= 0.0 or fg_prep_wall_s > fg_prep_elapsed_s:
                         fg_prep_wall_s = float(fg_prep_elapsed_s)
                     fg_prep_queue_s = max(0.0, float(fg_prep_elapsed_s) - float(fg_prep_wall_s))
@@ -407,7 +407,7 @@ def run_native_inflight_song_pipeline(
                 if stopping and is_stop_abort_exception(prep_completion.error):
                     pass
                 else:
-                    bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
+                    bundle_parent = song.runtime.bundle.bundle_parent_task
                     _post(
                         build_native_song_error_payload(
                             song,
@@ -483,7 +483,7 @@ def run_native_inflight_song_pipeline(
                         handle = gpu_client.submit_gpu_native_ga_run(payload)
                     except Exception as exc:
                         ga_pipeline.release_slot(song, slot_pool)
-                        bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
+                        bundle_parent = song.runtime.bundle.bundle_parent_task
                         payload = build_native_song_error_payload(
                             song,
                             exc=exc,
@@ -533,7 +533,7 @@ def run_native_inflight_song_pipeline(
                             "exc": str(exc),
                         },
                     )
-                    bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
+                    bundle_parent = song.runtime.bundle.bundle_parent_task
                     if not (stopping and is_stop_abort_exception(exc)):
                         _post(
                             build_native_song_error_payload(
@@ -556,7 +556,7 @@ def run_native_inflight_song_pipeline(
                             memory_resume_tracker=memory_resume_tracker,
                         )
                     continue
-                t_submit = getattr(song.runtime.ga, "ga_submit_t0", None)
+                t_submit = song.runtime.ga.ga_submit_t0
                 if t_submit is not None:
                     stage_profiler.record("ga_gpu", time.perf_counter() - float(t_submit), song=song.config.task_key)
                     song.runtime.ga.ga_submit_t0 = None
@@ -585,7 +585,7 @@ def run_native_inflight_song_pipeline(
                 try:
                     decode_result = decode_future.result()
                 except Exception as exc:
-                    bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
+                    bundle_parent = song.runtime.bundle.bundle_parent_task
                     if not (stopping and is_stop_abort_exception(exc)):
                         _post(
                             build_native_song_error_payload(
@@ -614,7 +614,7 @@ def run_native_inflight_song_pipeline(
                     stage_profiler.record(
                         "decode",
                         time.perf_counter() - float(t_decode),
-                        cpu_seconds=getattr(song.runtime.decode, "cpu_decode_s", None),
+                        cpu_seconds=song.runtime.decode.cpu_decode_s,
                         song=song.config.task_key,
                     )
                     song.runtime.decode.decode_submit_t0 = None
@@ -661,8 +661,8 @@ def run_native_inflight_song_pipeline(
                             component="inflight_fg_worker",
                             event="dispatch_error",
                             song_key=str(
-                                getattr(fg_song.config, "task_key", "")
-                                or getattr(fg_song.config, "song_name", "")
+                                fg_song.config.task_key
+                                or fg_song.config.song_name
                                 or ""
                             ),
                             metrics={
@@ -674,7 +674,7 @@ def run_native_inflight_song_pipeline(
                         raise RuntimeError(f"FG worker failed for {fg_song.config.task_key}") from exc
                 finally:
                     native_fg_pipeline.release_fg_song_surfaces(fg_song)
-                if bool(getattr(fg_song.runtime.post, "deferred_post_emitted", False)):
+                if fg_song.runtime.post.deferred_post_emitted:
                     raise RuntimeError(
                         "FG completion found an already-emitted deferred payload for "
                         f"{fg_song.config.task_key}; native in-flight persistence must emit "
@@ -686,7 +686,7 @@ def run_native_inflight_song_pipeline(
                         f"{fg_song.config.task_key}"
                     )
                 fg_elapsed_s = time.perf_counter() - float(t_submit)
-                fg_run_wall_s = float(getattr(fg_song.runtime.fg, "fg_run_wall_s", 0.0) or 0.0)
+                fg_run_wall_s = float(fg_song.runtime.fg.fg_run_wall_s or 0.0)
                 if fg_run_wall_s <= 0.0 or fg_run_wall_s > fg_elapsed_s:
                     fg_run_wall_s = float(fg_elapsed_s)
                 fg_worker_queue_s = max(0.0, float(fg_elapsed_s) - float(fg_run_wall_s))
@@ -695,7 +695,7 @@ def run_native_inflight_song_pipeline(
                 stage_profiler.record(
                     "fg_run",
                     fg_run_wall_s,
-                    cpu_seconds=getattr(fg_song.runtime.fg, "cpu_fg_run_s", None),
+                    cpu_seconds=fg_song.runtime.fg.cpu_fg_run_s,
                     song=fg_song.config.task_key,
                 )
                 finish_deferred_fg_completion(
@@ -756,7 +756,7 @@ def run_native_inflight_song_pipeline(
                     heartbeat_bubble = _bubble_snapshot(float(last_heartbeat), oldest_fg_wait_s=float(fg_oldest_wait_s))
                     oldest_ga_s = None
                     now = time.perf_counter()
-                    t0s = [getattr(s.runtime.ga, "ga_submit_t0", None) for s in ga_inflight]
+                    t0s = [s.runtime.ga.ga_submit_t0 for s in ga_inflight]
                     t0s = [t for t in t0s if t is not None]
                     if t0s:
                         oldest_ga_s = max(0.0, now - float(min(t0s)))

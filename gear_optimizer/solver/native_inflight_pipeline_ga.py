@@ -60,7 +60,7 @@ class GADecodeQueue:
                 GADecodeCompletion(
                     song=song,
                     future=future,
-                    submit_t0=getattr(song.runtime.decode, "decode_submit_t0", None),
+                    submit_t0=song.runtime.decode.decode_submit_t0,
                 )
             )
         return completions
@@ -111,7 +111,7 @@ class InflightGAPipeline:
         # the owner handler (required state, no fallback).
         from gear_optimizer.solver.native_inflight_pipeline import resolve_active_fg_calc_song
 
-        fg_scoring_bundle = getattr(song.runtime.fg, "fg_response_scoring_bundle", None)
+        fg_scoring_bundle = song.runtime.fg.fg_response_scoring_bundle
         fg_calc_song = resolve_active_fg_calc_song(song)
         return {
             "calc_song": song.gpu_inputs.calc_song,

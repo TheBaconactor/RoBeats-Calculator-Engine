@@ -231,7 +231,7 @@ def test_fg_completion_emits_one_combined_ga_fg_payload():
     end = src.index("finish_deferred_fg_completion(", start)
     completion_block = src[start:end]
 
-    assert 'if bool(getattr(fg_song.runtime.post, "deferred_post_emitted", False)):' in completion_block
+    assert "if fg_song.runtime.post.deferred_post_emitted:" in completion_block
     assert "native in-flight persistence must emit" in completion_block
     assert completion_block.count("_emit_deferred_post_payload(fg_song)") == 1
     assert "send_fg_update_payload" not in completion_block

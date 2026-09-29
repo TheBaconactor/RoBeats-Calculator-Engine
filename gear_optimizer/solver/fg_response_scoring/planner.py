@@ -298,7 +298,7 @@ class FgPlanner:
             ga_candidates,
             calc_song,
             ref_arrays,
-            getattr(song.gpu_inputs, "meta_primary_color", ""),
-            ga_registry=getattr(song.gpu_inputs, "registry", None),
-            scoring_bundle=getattr(song.runtime.fg, "fg_response_scoring_bundle", None),
+            song.gpu_inputs.meta_primary_color,
+            ga_registry=song.gpu_inputs.registry,
+            scoring_bundle=song.runtime.fg.fg_response_scoring_bundle,
         )

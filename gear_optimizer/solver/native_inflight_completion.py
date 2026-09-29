@@ -99,19 +99,19 @@ def emit_deferred_post_payload(
     progress_tracker=None,
     progress_cb=None,
 ) -> bool:
-    if bool(getattr(song.runtime.post, "deferred_post_emitted", False)):
+    if bool(song.runtime.post.deferred_post_emitted):
         return False
     post(build_deferred_post_payload(song))
     song.runtime.post.deferred_post_emitted = True
-    bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
-    needs_fg_stage = getattr(song.runtime.fg, "fg_variants", None) is None
+    bundle_parent = song.runtime.bundle.bundle_parent_task
+    needs_fg_stage = song.runtime.fg.fg_variants is None
     if bundle_parent is not None and needs_fg_stage:
         song.runtime.bundle.bundle_wait_for_fg = True
     elif bundle_parent is not None:
         advance_bundle(
             bundle_parent,
             song_name=str(song.config.song_name),
-            record_info=getattr(song.runtime.db, "record_info", None),
+            record_info=song.runtime.db.record_info,
             failed=False,
         )
     elif needs_fg_stage:
@@ -140,17 +140,17 @@ def finish_deferred_fg_completion(
     progress_tracker=None,
     progress_cb=None,
 ) -> bool:
-    bundle_parent = getattr(song.runtime.bundle, "bundle_parent_task", None)
-    if bundle_parent is not None and bool(getattr(song.runtime.bundle, "bundle_wait_for_fg", False)):
+    bundle_parent = song.runtime.bundle.bundle_parent_task
+    if bundle_parent is not None and bool(song.runtime.bundle.bundle_wait_for_fg):
         advance_bundle(
             bundle_parent,
             song_name=str(song.config.song_name),
-            record_info=getattr(song.runtime.db, "record_info", None),
+            record_info=song.runtime.db.record_info,
             failed=False,
         )
         song.runtime.bundle.bundle_wait_for_fg = False
         return True
-    if bool(getattr(song.runtime.post, "await_fg_completion_progress", False)):
+    if bool(song.runtime.post.await_fg_completion_progress):
         mark_song_completed(
             completed_songs=completed_songs,
             task_key=song.config.task_key,
@@ -180,7 +180,7 @@ def build_native_song_error_payload(
         exc=exc,
         trace=trace,
     )
-    if bool(suppress_for_bundle) and getattr(song.runtime.bundle, "bundle_parent_task", None) is not None:
+    if bool(suppress_for_bundle) and song.runtime.bundle.bundle_parent_task is not None:
         payload["_suppress_progress"] = True
     return payload
 

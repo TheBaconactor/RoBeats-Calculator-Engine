@@ -26,15 +26,15 @@ def build_fg_update_payload(song: NativeSong, *, persist_entries: list[dict]) ->
 def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
     best_data_for_post = song.runtime.decode.best_data or {}
     best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
-    pending_fg_job = getattr(song.runtime.fg, "fg_variants", None) is None
+    pending_fg_job = song.runtime.fg.fg_variants is None
     fg_variants_post = (
-        compact_fg_variants(list(getattr(song.runtime.fg, "fg_variants", None) or []))
+        compact_fg_variants(list(song.runtime.fg.fg_variants or []))
         if not pending_fg_job
         else []
     )
     selected_candidates = (
-        getattr(song.runtime.decode, "ga_candidates", None)
-        if getattr(song.runtime.decode, "fg_surface_prepared", False)
+        song.runtime.decode.ga_candidates
+        if song.runtime.decode.fg_surface_prepared
         else None
     )
     if not isinstance(selected_candidates, list):
@@ -96,9 +96,9 @@ def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
 def build_fg_persist_entries(song: NativeSong) -> list[dict]:
     entries: list[dict] = []
     build_details = make_build_details_fn(
-        getattr(song.gpu_inputs, "meta_primary_color", ""),
-        getattr(song.gpu_inputs, "meta_secondary_color", ""),
-        getattr(song.config, "effective_difficulty", ""),
+        song.gpu_inputs.meta_primary_color,
+        song.gpu_inputs.meta_secondary_color,
+        song.config.effective_difficulty,
     )
     for v in song.runtime.fg.fg_variants or []:
         if not isinstance(v, dict):

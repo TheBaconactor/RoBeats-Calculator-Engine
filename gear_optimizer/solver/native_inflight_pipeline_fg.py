@@ -166,7 +166,7 @@ class NativeFGPipeline:
         active = 0
         seen: set[int] = set()
         for song in self.prep_inflight:
-            fut = getattr(song.runtime.fg, "fg_prep_future", None)
+            fut = song.runtime.fg.fg_prep_future
             if fut is None:
                 continue
             fut_id = int(id(fut))
@@ -183,7 +183,7 @@ class NativeFGPipeline:
         if self.active_prep_count() > 0:
             return True
         for song in self.pending:
-            fut = getattr(song.runtime.fg, "fg_prep_future", None)
+            fut = song.runtime.fg.fg_prep_future
             if fut is None:
                 continue
             if not fut.done():
@@ -193,7 +193,7 @@ class NativeFGPipeline:
     def finish_completed_prep(self) -> list[NativeFGPrepCompletion]:
         completions: list[NativeFGPrepCompletion] = []
         for song in list(self.prep_inflight):
-            future = getattr(song.runtime.fg, "fg_prep_future", None)
+            future = song.runtime.fg.fg_prep_future
             if future is None:
                 self.prep_inflight.remove(song)
                 completions.append(
@@ -208,8 +208,8 @@ class NativeFGPipeline:
             if not future.done():
                 continue
             self.prep_inflight.remove(song)
-            submit_t0 = getattr(song.runtime.fg, "fg_prep_submit_t0", None)
-            cpu_seconds = getattr(song.runtime.fg, "cpu_fg_prep_s", None)
+            submit_t0 = song.runtime.fg.fg_prep_submit_t0
+            cpu_seconds = song.runtime.fg.cpu_fg_prep_s
             error: Exception | None = None
             trace = ""
             try:
@@ -255,9 +255,9 @@ class NativeFGPipeline:
         for song in list(self.pending):
             if started >= budget:
                 break
-            if bool(getattr(song.runtime.fg, "fg_dynamic_prep_done", False)):
+            if bool(song.runtime.fg.fg_dynamic_prep_done):
                 continue
-            if getattr(song.runtime.fg, "fg_prep_future", None) is not None:
+            if song.runtime.fg.fg_prep_future is not None:
                 continue
             if self.start_prep(
                 song,
@@ -279,7 +279,7 @@ class NativeFGPipeline:
             runtime = getattr(candidate, "runtime", candidate)
             fut = runtime.fg.fg_prep_future
             if fut is None:
-                if not bool(getattr(candidate.runtime.fg, "fg_dynamic_prep_done", False)):
+                if not bool(candidate.runtime.fg.fg_dynamic_prep_done):
                     if not allow_not_ready:
                         continue
                     return self._claim_pending_song(candidate)
@@ -296,7 +296,7 @@ class NativeFGPipeline:
         oldest_t0 = None
         for candidate in self.pending:
             runtime = getattr(candidate, "runtime", candidate)
-            t0 = getattr(candidate.runtime.fg, "fg_queued_t0", None)
+            t0 = candidate.runtime.fg.fg_queued_t0
             if not isinstance(t0, (int, float)) or float(t0) <= 0.0:
                 try:
                     runtime.fg.fg_queued_t0 = float(now_s)
@@ -315,7 +315,7 @@ class NativeFGPipeline:
             runtime = getattr(candidate, "runtime", candidate)
             fut = runtime.fg.fg_prep_future
             if fut is None:
-                if not bool(getattr(candidate.runtime.fg, "fg_dynamic_prep_done", False)):
+                if not bool(candidate.runtime.fg.fg_dynamic_prep_done):
                     continue
                 ready += 1
                 continue
@@ -450,7 +450,7 @@ class NativeFGPipeline:
     @staticmethod
     def _song_key(song: NativeSong) -> str:
         try:
-            return str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "")).strip()
+            return str(song.config.task_key or song.config.song_name).strip()
         except (KeyError, TypeError, ValueError):
             return ""
 
@@ -468,7 +468,7 @@ def release_fg_song_surfaces(song: NativeSong) -> None:
     surfaces to the songs actively scoring. Lossless: any later access rebuilds from the on-disk
     bundle. Best-effort -- a cleanup error must not fail the already-complete FG job.
     """
-    fg = getattr(song.runtime, "fg", None)
+    fg = song.runtime.fg
     if fg is None:
         return
     bundle = getattr(fg, "fg_response_scoring_bundle", None)
@@ -501,7 +501,7 @@ def apply_fg_materialization_result(
     runtime.fg.fg_variants = list(result.variants)
     runtime.fg.fg_run_wall_s = max(0.0, float(result.wall_seconds))
     runtime.fg.cpu_fg_run_s = max(0.0, float(result.cpu_seconds))
-    song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
+    song_key = str(song.config.task_key or song.config.song_name or "")
     emit_profile_event(
         component="inflight_fg_worker",
         event="dispatch_done",
@@ -561,22 +561,22 @@ def _run_fg_job_sync_impl(
     from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_job_sync, thread_cpu_time_s
 
     cpu_t0 = thread_cpu_time_s()
-    song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
+    song_key = str(song.config.task_key or song.config.song_name or "")
     emit_profile_event(
         component="inflight_fg_worker",
         event="start",
         song_key=song_key,
         metrics={
-            "had_prep_future": int(getattr(song.runtime.fg, "fg_prep_future", None) is not None),
-            "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
+            "had_prep_future": int(song.runtime.fg.fg_prep_future is not None),
+            "ga_candidates": int(len(song.runtime.decode.ga_candidates or [])),
         },
     )
-    fg_prep_future = getattr(song.runtime.fg, "fg_prep_future", None)
+    fg_prep_future = song.runtime.fg.fg_prep_future
     if fg_prep_future is not None:
         prep_wait_t0 = time.perf_counter()
         try:
             fg_prep_future.result()
-            if getattr(song.runtime.fg, "fg_response_frontier_plan", None) is None:
+            if song.runtime.fg.fg_response_frontier_plan is None:
                 raise RuntimeError(
                     "FG dynamic prep completed without the exact response frontier plan "
                     f"for {song_key}"
@@ -594,7 +594,7 @@ def _run_fg_job_sync_impl(
                 },
             )
             song.runtime.fg.fg_prep_future = None
-    if getattr(song.runtime.fg, "fg_response_frontier_plan", None) is None:
+    if song.runtime.fg.fg_response_frontier_plan is None:
         prepare_fg_job_sync(song, gpu_client=gpu_client)
         song.runtime.fg.fg_dynamic_prep_done = True
     emit_profile_event(
@@ -602,7 +602,7 @@ def _run_fg_job_sync_impl(
         event="prep_ready",
         song_key=song_key,
         metrics={
-            "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
+            "ga_candidates": int(len(song.runtime.decode.ga_candidates or [])),
         },
     )
     emit_profile_event(
@@ -610,7 +610,7 @@ def _run_fg_job_sync_impl(
         event="pre_dispatch",
         song_key=song_key,
         metrics={
-            "ga_candidates": int(len(getattr(song.runtime.decode, "ga_candidates", None) or [])),
+            "ga_candidates": int(len(song.runtime.decode.ga_candidates or [])),
         },
     )
     emit_profile_event(
@@ -619,10 +619,10 @@ def _run_fg_job_sync_impl(
         song_key=song_key,
         metrics={},
     )
-    prepared_plan = getattr(song.runtime.fg, "fg_response_frontier_plan", None)
+    prepared_plan = song.runtime.fg.fg_response_frontier_plan
     if prepared_plan is None:
         raise RuntimeError("FG response frontier run requires a prepared exact scoring plan")
-    owner_score_map = getattr(song.runtime.fg, "fg_owner_score_map", None)
+    owner_score_map = song.runtime.fg.fg_owner_score_map
     if owner_score_map is None:
         raise RuntimeError(
             "FG response frontier run requires the fused owner FG score map from the GA "
@@ -645,7 +645,7 @@ def _run_fg_job_sync_impl(
         event="dispatch_done",
         song_key=song_key,
         metrics={
-            "fg_variants": int(len(getattr(song.runtime.fg, "fg_variants", None) or [])),
+            "fg_variants": int(len(song.runtime.fg.fg_variants or [])),
         },
     )
     if progress_cb is not None:

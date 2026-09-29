@@ -138,7 +138,7 @@ class ProgressTracker:
 
     @staticmethod
     def done_record_info_for_song(song: Any) -> dict | None:
-        record_info = dict(getattr(song.runtime.db, "record_info", None) or {})
+        record_info = dict(song.runtime.db.record_info or {})
         record_info.setdefault("song", native_song_label(song))
         record_info.setdefault("status", "DONE")
         return record_info
@@ -222,16 +222,16 @@ class ActiveRuntimeProgressReporter:
 
 def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTracker | None) -> dict | None:
     try:
-        key = str(getattr(song.config, "db_key", "") or "").strip()
-        prev_best_score = safe_int(getattr(song.runtime.db, "db_best_score", 0), 0)
-        prev_best_fg = safe_int(getattr(song.runtime.db, "db_best_fg_score", 0), 0)
-        baseline_valid = bool(getattr(song.runtime.db, "db_baseline_valid", True))
+        key = str(song.config.db_key or "").strip()
+        prev_best_score = safe_int(song.runtime.db.db_best_score, 0)
+        prev_best_fg = safe_int(song.runtime.db.db_best_fg_score, 0)
+        baseline_valid = bool(song.runtime.db.db_baseline_valid)
         if progress_tracker is not None and key:
             prev_best_score, prev_best_fg, baseline_valid = progress_tracker.snapshot(key)
         record_info = evaluate_progress_record_update(
-            getattr(song.runtime.decode, "best_data", None) or {},
+            song.runtime.decode.best_data or {},
             {"score": int(prev_best_score)},
-            getattr(song.runtime.fg, "fg_variants", None) or [],
+            song.runtime.fg.fg_variants or [],
             db_best_fg_score=int(prev_best_fg),
             baseline_valid=bool(baseline_valid),
             fg_only=True,
@@ -246,7 +246,7 @@ def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTrac
         best_score_new = safe_int(record_info.get("score", 0), 0) if record_info.get("is_better") else None
         best_fg_new = safe_int(record_info.get("best_fg_score_run", 0), 0) if record_info.get("is_fg_better") else None
         if (best_score_new is not None and best_score_new > 0) or (best_fg_new is not None and best_fg_new > 0):
-            key = str(getattr(song.config, "db_key", "") or "").strip()
+            key = str(song.config.db_key or "").strip()
             if key:
                 progress_tracker.update(
                     key,

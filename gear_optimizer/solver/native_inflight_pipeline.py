@@ -71,7 +71,7 @@ def _sync_fg_runtime_calc_song_keys(source_calc_song: Any, target_calc_song: Any
 
 
 def resolve_active_fg_calc_song(song: NativeSong) -> dict | None:
-    calc_song = getattr(song.gpu_inputs, "calc_song", None)
+    calc_song = song.gpu_inputs.calc_song
     if not isinstance(calc_song, dict):
         return None
     runtime = getattr(song, "runtime", song)
@@ -249,7 +249,7 @@ class InFlightStageProfiler:
 def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list, list, list[dict]]:
     cpu_t0 = thread_cpu_time_s()
     gpu_inputs = getattr(song, "gpu_inputs", song)
-    song_key = str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or "")
+    song_key = str(song.config.task_key or song.config.song_name or "")
     # The fused GA->FG owner continuation (Slice 3) returns
     # {runs_payload, fg_owner_score}: the GA payload plus the owner-scored FG result
     # map. Unpack the map onto the song for the FG worker; decode consumes the payload.
@@ -261,9 +261,9 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
         component="inflight_decode",
         event="future_start",
         song_key=song_key,
-        metrics={"song_slot": int(getattr(song.runtime, "song_slot", 0) or 0)},
+        metrics={"song_slot": int(song.runtime.song_slot or 0)},
     )
-    decode_cfg_data = dict(getattr(song.gpu_inputs, "cfg_data", {}) or {})
+    decode_cfg_data = dict(song.gpu_inputs.cfg_data or {})
     best_data, best_gear, best_minis, ga_candidates = decode_gpu_native_ga_runs_payload(
         runs_payload=runs_payload,
         registry=gpu_inputs.registry,
@@ -282,7 +282,7 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
         event="future_done",
         song_key=song_key,
         metrics={
-            "song_slot": int(getattr(song.runtime, "song_slot", 0) or 0),
+            "song_slot": int(song.runtime.song_slot or 0),
             "ga_candidates": int(len(ga_candidates or [])),
             "cpu_s": float(cpu_s or 0.0),
         },
@@ -333,7 +333,7 @@ def prepare_ga_candidate_surface_for_fg(
             selected_color=str((getattr(gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
             cfg_data=getattr(gpu_inputs, "cfg_data", None),
             calc_song=resolve_active_fg_calc_song(song),
-            ref_arrays=getattr(song.gpu_inputs, "ref_arrays", None),
+            ref_arrays=song.gpu_inputs.ref_arrays,
         )
     runtime.decode.ga_candidates = selected
     runtime.decode.fg_surface_prepared = True
@@ -401,7 +401,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     emit_profile_event(
         component="inflight_fg_prep",
         event="prep_done",
-        song_key=str(getattr(song.config, "task_key", "") or getattr(song.config, "song_name", "") or ""),
+        song_key=str(song.config.task_key or song.config.song_name or ""),
         metrics={
             "queue_wait_ms": float(queue_wait_ms),
             "select_ms": float(select_ms),
