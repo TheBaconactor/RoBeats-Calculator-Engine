@@ -124,16 +124,7 @@ GA_FG_SELECTED_PAYLOAD_COLS = 2 + (1 + MAX_SLOTS + 7 + 7)  # (run,row) + packed 
 GA_FG_SELECTED_MAX = 5000  # GPU GA->FG selection buffer capacity (safety bound; production funnel is LOADOUTS_PER_SONG_LIMIT).
 GA_FG_SELECTED_HASH_SIZE = 65536  # Open-addressing table for dedupe (power of two).
 GA_FG_SELECTED_STUBS_MAX = 20000  # Upper bound on unique stubs we support in GPU selection.
-SKYLINE_FTFF_REDUCE_BLOCK_DIM = GA_FTFF_REDUCE_BLOCK_DIM
-SKYLINE_FG_CANDIDATES_PER_RUN = GA_FG_CANDIDATES_PER_RUN
-SKYLINE_FG_CANDIDATE_COLS = GA_FG_CANDIDATE_COLS
 SKYLINE_INIT_HEURISTIC_K = GA_INIT_HEURISTIC_K
-SKYLINE_EXACT_EVAL_HASH_KEY_COLS = GA_EXACT_EVAL_HASH_KEY_COLS
-SKYLINE_EXACT_EVAL_HASH_SIZE = GA_EXACT_EVAL_HASH_SIZE
-SKYLINE_FG_SELECTED_PAYLOAD_COLS = GA_FG_SELECTED_PAYLOAD_COLS
-SKYLINE_FG_SELECTED_MAX = GA_FG_SELECTED_MAX
-SKYLINE_FG_SELECTED_HASH_SIZE = GA_FG_SELECTED_HASH_SIZE
-SKYLINE_FG_SELECTED_STUBS_MAX = GA_FG_SELECTED_STUBS_MAX
 # GA->FG effective-dedup equivalence tables (Slice 1). Per-item i32 lookups the
 # select kernel uses to fold name/color-equivalent loadouts before the top-N cut:
 #   gear id  -> name rank (same gear Name => same rank)
@@ -174,8 +165,6 @@ timing_response_genome_length: ti.Field = None  # (MAX_GENOMES,) i32 antichain l
 chunk_best_score: ti.Field = None  # (MAX_GENOMES,) i32 best score per genome
 chunk_best_idx: ti.Field = None  # (MAX_GENOMES,) i32 winning combo index
 chunk_best_results: ti.Field = None  # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] from winning combo
-DEFAULT_MAX_SKYLINE_RUNS = DEFAULT_MAX_GA_RUNS
-DEFAULT_MAX_SKYLINE_RUN_GENOMES = DEFAULT_MAX_GA_RUN_GENOMES
 MAX_SKYLINE_RUNS = MAX_GA_RUNS
 MAX_SKYLINE_RUN_GENOMES = MAX_GA_RUN_GENOMES
 

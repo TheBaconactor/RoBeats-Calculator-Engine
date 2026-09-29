@@ -46,7 +46,6 @@ from .ga_operations import (
     ga_next_generation_fused_runs,
     ga_refresh_scores_update_runs_best_and_next_generation_fused_runs,
     ga_init_runs_best,
-    ga_update_runs_best,
     ga_pack_fg_candidates_table_segmented,
     ga_download_fg_selected_payload,
 )
@@ -90,7 +89,6 @@ __all__ = [
     "ga_next_generation_fused_runs",
     "ga_refresh_scores_update_runs_best_and_next_generation_fused_runs",
     "ga_init_runs_best",
-    "ga_update_runs_best",
     "ga_pack_fg_candidates_table_segmented",
     "ga_download_fg_selected_payload",
     # GPU-side island migration

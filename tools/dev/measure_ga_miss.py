@@ -175,7 +175,7 @@ def _ga_seeded_runs(ctx, calc_song, ref_arrays, *, shape: dict, seeds: int, seed
 
     Per-run bests are read from `fields.ga_runs_payload_packed[run, 0, :]`
     ([score, ids(9), results(7)]), the across-generation tracked best written by
-    ga_update_runs_best_kernel. The FG-funnel payload cannot serve this purpose:
+    ga_refresh_scores_and_update_runs_best_kernel. The FG-funnel payload cannot serve this purpose:
     its selection kernel dedups effective-equivalent genomes ACROSS runs, so runs
     converging to the same loadout collapse to one row. The direct read is
     validated against the payload header best (max over runs must match).

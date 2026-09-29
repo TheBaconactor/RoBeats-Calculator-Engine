@@ -100,9 +100,6 @@ class _FakeGpuApi:
             raise RuntimeError("failed to create semaphore")
         return None
 
-    def ga_update_runs_best(self, *_args, **_kwargs):
-        return None
-
     def ga_refresh_scores_and_update_runs_best(self, *_args, **_kwargs):
         self.refresh_scores_and_update_runs_best_calls += 1
         return None

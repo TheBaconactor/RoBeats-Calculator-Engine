@@ -820,27 +820,6 @@ def ga_init_runs_best(*, run_idx_start: int, n_runs: int, n_slots: int = 9) -> N
             f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
         )
     kernels.ga_init_runs_best_kernel(run_idx_start, n_runs, n_slots)
-def ga_update_runs_best(*, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int = 9) -> None:
-    """
-    Update per-run best rows (row 0) for packed multi-run execution.
-    """
-    ensure_ready()
-    run_idx_start = int(run_idx_start)
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_slots = int(n_slots)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
-        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
-    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
-        raise ValueError(
-            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
-        )
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-    kernels.ga_update_runs_best_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
 def ga_download_runs_best(*, n_runs: int) -> np.ndarray:
     """
     Download per-run tracked-best rows (ga_runs_payload_packed row 0) as a compact

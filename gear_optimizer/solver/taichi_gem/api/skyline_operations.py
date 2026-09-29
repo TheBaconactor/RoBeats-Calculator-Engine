@@ -1,29 +1,23 @@
 """
-API skyline Operations - GPU-native Skyline candidate operators.
+API skyline Operations - GPU-native Skyline candidate evaluation.
 
-This module provides GPU-side skyline operators (selection, crossover, mutation, evaluation):
+This module provides the GPU-side skyline evaluation operators:
 - skyline_upload_population_indices: Upload integer-encoded population to GPU
-- skyline_seed_rng: Seed per-genome RNG state
+- skyline_generate_initial_populations / skyline_load_initial_population: Stage populations on GPU
 - skyline_upload_item_stats: Upload item stats and slot pools
 - skyline_upload_base_fixed_stats: Upload fixed base stats
 - skyline_aggregate_stats: Aggregate item stats into genome stats on GPU
 - skyline_evaluate_population: Full GPU-native evaluation pipeline
-- skyline_set_scores: Manually set scores for custom evaluation
-- skyline_next_generation_fused*: Fused tournament selection + crossover + mutation + elitism
 - skyline_download_*: Download results from GPU
 
-These functions are called from gpu_executor.py, parallel_solvers.py, warmup paths,
-and tests.
+These functions are called from parallel_solvers.py and tests.
 """
 
 from __future__ import annotations
 
-import time
 import logging
 
 import numpy as np
-
-from gear_optimizer.core.parsing import env_flag, env_get
 
 from .. import fields
 from ..fields import MAX_EVALS_PER_DISPATCH
@@ -38,105 +32,16 @@ from .initialization import (
     _upload_timing_response_genome_rows,
 )
 
-# Cache environment variables at module load time to avoid per-call overhead.
-
 logger = logging.getLogger(__name__)
 
-_SKYLINE_COMBO_CHUNK_MIN: int = max(64, int(env_get("SKYLINE_GPU_COMBO_CHUNK_MIN", "1024") or 1024))
-_SKYLINE_COMBO_CHUNK_MAX: int = max(
-    _SKYLINE_COMBO_CHUNK_MIN, int(env_get("SKYLINE_GPU_COMBO_CHUNK_MAX", "4096") or 4096)
-)
+_SKYLINE_COMBO_CHUNK_MIN = 1024
+_SKYLINE_COMBO_CHUNK_MAX = 4096
 
 # Merge a tiny remainder into the prior dispatch when it is safe under the max-evals budget.
 # This can reduce dispatch count when chunking would otherwise leave a very small "tail" kernel and the
 # per-dispatch budget still has slack (e.g. when chunking is capped by `chunk_max` rather than the
 # `max_evals` target).
-_SKYLINE_COMBO_TAIL_MERGE_MAX: int = max(0, int(env_get("SKYLINE_GPU_COMBO_TAIL_MERGE_MAX", "256") or 256))
-
-# Evaluation budget for skyline combo-search chunking (<= MAX_EVALS_PER_DISPATCH).
-#
-# Note: this is read lazily (with light caching) instead of at module import time so
-# queued schedulers can apply env defaults before the first skyline dispatch.
-_skyline_eval_BUDGET_RAW: str | None = None
-_skyline_eval_BUDGET: int = int(MAX_EVALS_PER_DISPATCH)
-_SKYLINE_BASE_STATS_REUSE_RAW: str | None = None
-_SKYLINE_BASE_STATS_REUSE_ENABLED: int = 0
-_skyline_exact_EVAL_RESULTS_REUSE_RAW: str | None = None
-_skyline_exact_EVAL_RESULTS_REUSE_ENABLED: int = 0
-_skyline_exact_STATS_REUSE_RAW: str | None = None
-_skyline_exact_STATS_REUSE_ENABLED: int = 0
-
-
-def _skyline_eval_budget() -> int:
-    global _skyline_eval_BUDGET_RAW, _skyline_eval_BUDGET
-    raw = env_get("SKYLINE_GPU_EVAL_BUDGET", None)
-    raw_norm = str(raw or "").strip()
-    if raw_norm == _skyline_eval_BUDGET_RAW:
-        return int(_skyline_eval_BUDGET)
-
-    _skyline_eval_BUDGET_RAW = raw_norm
-    if raw_norm == "":
-        _skyline_eval_BUDGET = int(MAX_EVALS_PER_DISPATCH)
-        return int(_skyline_eval_BUDGET)
-
-    try:
-        val = int(raw_norm)
-    except Exception as e:
-        logger.debug(f"skyline_operations:_skyline_eval_budget: {e}")
-        _skyline_eval_BUDGET = int(MAX_EVALS_PER_DISPATCH)
-        return int(_skyline_eval_BUDGET)
-
-    _skyline_eval_BUDGET = max(64, min(int(MAX_EVALS_PER_DISPATCH), int(val)))
-    return int(_skyline_eval_BUDGET)
-
-
-def _skyline_exact_genome_base_stats_reuse_enabled() -> int:
-    global _SKYLINE_BASE_STATS_REUSE_RAW, _SKYLINE_BASE_STATS_REUSE_ENABLED
-    raw = env_get("SKYLINE_GPU_BASE_STATS_REUSE", None)
-    raw_norm = str(raw or "").strip().lower()
-    if raw_norm == _SKYLINE_BASE_STATS_REUSE_RAW:
-        return int(_SKYLINE_BASE_STATS_REUSE_ENABLED)
-
-    _SKYLINE_BASE_STATS_REUSE_RAW = raw_norm
-    if raw_norm in {"", "0", "false", "no", "off"}:
-        _SKYLINE_BASE_STATS_REUSE_ENABLED = 0
-    else:
-        _SKYLINE_BASE_STATS_REUSE_ENABLED = 1
-    return int(_SKYLINE_BASE_STATS_REUSE_ENABLED)
-
-
-def _skyline_exact_genome_eval_results_reuse_enabled() -> int:
-    global _skyline_exact_EVAL_RESULTS_REUSE_RAW, _skyline_exact_EVAL_RESULTS_REUSE_ENABLED
-    raw = env_get("SKYLINE_GPU_EXACT_EVAL_RESULTS_REUSE", None)
-    if raw is None:
-        raw = env_get("SKYLINE_GPU_EXACT_EVAL_REUSE", None)
-    raw_norm = str(raw or "").strip().lower()
-    if raw_norm == _skyline_exact_EVAL_RESULTS_REUSE_RAW:
-        return int(_skyline_exact_EVAL_RESULTS_REUSE_ENABLED)
-
-    _skyline_exact_EVAL_RESULTS_REUSE_RAW = raw_norm
-    if raw_norm in {"", "0", "false", "no", "off"}:
-        _skyline_exact_EVAL_RESULTS_REUSE_ENABLED = 0
-    else:
-        _skyline_exact_EVAL_RESULTS_REUSE_ENABLED = 1
-    return int(_skyline_exact_EVAL_RESULTS_REUSE_ENABLED)
-
-
-def _skyline_exact_genome_stats_signature_reuse_enabled() -> int:
-    global _skyline_exact_STATS_REUSE_RAW, _skyline_exact_STATS_REUSE_ENABLED
-    raw = env_get("SKYLINE_GPU_EXACT_STATS_REUSE", None)
-    if raw is None:
-        raw = env_get("SKYLINE_GPU_SCORE_SIGNATURE_REUSE", None)
-    raw_norm = str(raw or "").strip().lower()
-    if raw_norm == _skyline_exact_STATS_REUSE_RAW:
-        return int(_skyline_exact_STATS_REUSE_ENABLED)
-
-    _skyline_exact_STATS_REUSE_RAW = raw_norm
-    if raw_norm in {"", "0", "false", "no", "off"}:
-        _skyline_exact_STATS_REUSE_ENABLED = 0
-    else:
-        _skyline_exact_STATS_REUSE_ENABLED = 1
-    return int(_skyline_exact_STATS_REUSE_ENABLED)
+_SKYLINE_COMBO_TAIL_MERGE_MAX = 256
 
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
@@ -144,35 +49,10 @@ kernels = get_kernels()
 
 
 # ============================================================================
-# UPLOAD CACHES (avoid redundant uploads over eGPU/Thunderbolt)
-# ============================================================================
-# Cache state for island boundaries (simple tuple comparison)
-_ISLAND_BOUNDARIES_CACHE: tuple | None = None
-_ISLAND_ELITES_CACHE: tuple | None = None
-_ISLAND_ELITES_UPLOAD_BUFFER: np.ndarray | None = None
-
-
-def reset_skyline_upload_caches() -> None:
-    """Reset upload caches after ti.reset() or when switching songs."""
-    global _ISLAND_BOUNDARIES_CACHE
-    global _ISLAND_ELITES_CACHE, _ISLAND_ELITES_UPLOAD_BUFFER
-    global _SKYLINE_KERNELS_WARMED, _SKYLINE_KERNELS_LIGHT_WARMED, _SKYLINE_LIVE_REQUEST_WARMED
-    from .registry_upload import reset_registry_upload_cache
-    reset_registry_upload_cache()
-    _ISLAND_BOUNDARIES_CACHE = None
-    _ISLAND_ELITES_CACHE = None
-    _ISLAND_ELITES_UPLOAD_BUFFER = None
-    _SKYLINE_KERNELS_WARMED = False
-    _SKYLINE_KERNELS_LIGHT_WARMED = False
-    _SKYLINE_LIVE_REQUEST_WARMED = False
-
-
-# ============================================================================
 # GPU-NATIVE skyline OPERATORS
 # ============================================================================
-# These functions implement GPU-side skyline operators (selection, crossover, mutation,
-# evaluation, download). They are called from gpu_executor.py, parallel_solvers.py,
-# warmup paths, and tests.
+# These functions implement GPU-side skyline evaluation (upload, aggregate, evaluate,
+# download). They are called from parallel_solvers.py and tests.
 # ============================================================================
 
 
@@ -200,36 +80,6 @@ def skyline_upload_population_indices(population_indices_np: np.ndarray, *, n_sl
         fields.population_indices.from_numpy(pop_buf)
     return n_genomes
 
-def skyline_upload_initial_populations(populations_np: np.ndarray, *, n_runs: int, n_genomes: int, n_slots: int = 9) -> None:
-    """
-    Upload a batch of initial populations for multi-start skyline runs.
-
-    `populations_np` is expected to contain encoded item IDs with shape (n_runs, n_genomes, n_slots).
-    Data is padded to the fixed GPU buffer shapes and uploaded in one transfer.
-    """
-    ensure_ready()
-    n_runs = int(n_runs)
-    n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-    if n_runs <= 0 or n_genomes <= 0:
-        return
-    if n_runs > fields.MAX_SKYLINE_RUNS:
-        raise ValueError(f"Too many runs: {n_runs} > {fields.MAX_SKYLINE_RUNS}")
-    if n_genomes > fields.MAX_SKYLINE_RUN_GENOMES:
-        raise ValueError(f"Too many genomes: {n_genomes} > {fields.MAX_SKYLINE_RUN_GENOMES}")
-    if n_slots > fields.MAX_SLOTS:
-        raise ValueError(f"Too many slots: {n_slots} > {fields.MAX_SLOTS}")
-
-    src = np.asarray(populations_np, dtype=np.int32)
-    expected_shape = (fields.MAX_SKYLINE_RUNS, fields.MAX_SKYLINE_RUN_GENOMES, fields.MAX_SLOTS)
-    if src.shape == expected_shape:
-        fields.skyline_initial_populations.from_numpy(np.ascontiguousarray(src))
-        return
-
-    buf = np.zeros((fields.MAX_SKYLINE_RUNS, fields.MAX_SKYLINE_RUN_GENOMES, fields.MAX_SLOTS), dtype=np.int32)
-    buf[:n_runs, :n_genomes, :n_slots] = src[:n_runs, :n_genomes, :n_slots]
-    fields.skyline_initial_populations.from_numpy(buf)
-
 
 def skyline_load_initial_population(*, run_idx: int, n_genomes: int, n_slots: int = 9) -> None:
     """
@@ -244,41 +94,6 @@ def skyline_load_initial_population(*, run_idx: int, n_genomes: int, n_slots: in
     if n_genomes < 0 or n_genomes > fields.MAX_SKYLINE_RUN_GENOMES:
         raise ValueError(f"Too many genomes: {n_genomes} > {fields.MAX_SKYLINE_RUN_GENOMES}")
     kernels.skyline_load_initial_population_kernel(run_idx, n_genomes, n_slots)
-
-
-def skyline_load_initial_populations_batch(
-    *, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int = 9
-) -> int:
-    """
-    Load a batch of staged initial populations into the active skyline `population_indices`.
-
-    Returns:
-        Total genomes loaded (n_runs * n_genomes_per_run).
-    """
-    ensure_ready()
-    run_idx_start = int(run_idx_start)
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_slots = int(n_slots)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return 0
-    if run_idx_start < 0 or run_idx_start >= fields.MAX_SKYLINE_RUNS:
-        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
-    if run_idx_start + n_runs > fields.MAX_SKYLINE_RUNS:
-        raise ValueError(
-            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})"
-        )
-    if n_genomes_per_run < 0 or n_genomes_per_run > fields.MAX_SKYLINE_RUN_GENOMES:
-        raise ValueError(f"Too many genomes: {n_genomes_per_run} > {fields.MAX_SKYLINE_RUN_GENOMES}")
-    if n_slots > fields.MAX_SLOTS:
-        raise ValueError(f"Too many slots: {n_slots} > {fields.MAX_SLOTS}")
-
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-
-    kernels.skyline_load_initial_populations_batch_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
-    return n_total
 
 
 def skyline_generate_initial_populations(
@@ -366,30 +181,6 @@ def skyline_generate_initial_populations(
         int(heuristic_copies),
         seed_ids_arr,
     )
-
-
-def skyline_seed_rng(n_genomes: int, seed: int = 12345) -> None:
-    """Seed per-genome RNG state for GPU skyline operators."""
-    ensure_ready()
-    kernels.skyline_seed_rng_kernel(int(n_genomes), np.uint32(seed))
-    # GPU-only op; no CPU readback needed.
-
-
-def skyline_seed_rng_runs(*, n_runs: int, n_genomes_per_run: int, seed: int = 12345) -> None:
-    """
-    Seed per-genome RNG state for multiple independent runs packed contiguously.
-
-    Each run is seeded as if its genomes were indexed [0..n_genomes_per_run).
-    """
-    ensure_ready()
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-    kernels.skyline_seed_rng_runs_kernel(int(n_total), int(n_genomes_per_run), np.uint32(seed))
 
 
 def skyline_upload_item_stats(
@@ -515,15 +306,14 @@ def skyline_evaluate_population(
     timing_response_cache_key: object | None = None,
     score_cull_threshold: int | None = None,
     materialize_mode: str = "none",
-    update_global_best: bool = False,
 ) -> None:
     """
-    GPU-native population evaluation: aggregate stats + evaluate + copy scores.
+    GPU-native population evaluation: aggregate stats + evaluate + materialize.
 
     This is the main skyline evaluation function for GPU-native mode. It:
-    1. Aggregates item stats → genome_base_stats (skyline_aggregate_genome_stats_kernel)
-    2. Evaluates all (ft, ff) combos → genome_result_stats (solve_genomes_with_ftff_kernel)
-    3. Copies scores to skyline_scores for selection (skyline_copy_scores_kernel)
+    1. Aggregates item stats and initializes each genome's best key (skyline_aggregate_and_init_best_kernel)
+    2. Searches all (ft, ff) combos in chunks (skyline_find_best_combo_warmstart_kernel)
+    3. Writes scores ("scores_only") or full results ("results_only"), or nothing ("none")
 
     PREREQUISITES:
     - Call skyline_upload_population_indices() with encoded population
@@ -545,14 +335,6 @@ def skyline_evaluate_population(
     use_exact_inner_solver_i = int(bool(use_exact_inner_solver))
     if use_exact_inner_solver_i == 0:
         raise ValueError("Skyline evaluation requires exact inner GPU solving.")
-    exact_genome_base_stats_reuse = bool(_skyline_exact_genome_base_stats_reuse_enabled())
-    exact_genome_eval_results_reuse = bool(_skyline_exact_genome_eval_results_reuse_enabled())
-    # Stronger exact reduction: collapse rows that share the same aggregated score-relevant
-    # base stat vector, even when the underlying loadout IDs differ.
-    exact_genome_stats_signature_reuse = bool(_skyline_exact_genome_stats_signature_reuse_enabled())
-
-    if exact_genome_base_stats_reuse or (exact_genome_eval_results_reuse and not exact_genome_stats_signature_reuse):
-        kernels.SKYLINE_build_exact_eval_reuse_map_kernel(int(n_genomes), int(n_slots))
 
     kernels.skyline_aggregate_and_init_best_kernel(
         n_genomes,
@@ -569,14 +351,8 @@ def skyline_evaluate_population(
         int(is_s_fm),
         int(is_p_ov),
         int(is_s_ov),
-        int(exact_genome_base_stats_reuse),
+        0,
     )
-
-    if exact_genome_base_stats_reuse:
-        kernels.SKYLINE_propagate_exact_eval_reuse_base_stats_kernel(int(n_genomes))
-
-    if exact_genome_stats_signature_reuse:
-        kernels.SKYLINE_build_exact_eval_reuse_map_from_base_stats_kernel(int(n_genomes))
 
     # Step 2: Evaluate genomes using existing FT/FF iteration kernel
     total_budget_i = int(total_budget)
@@ -591,13 +367,7 @@ def skyline_evaluate_population(
         and timing_response_genome_lengths is not None
         and timing_response_max_combos is not None
     )
-    materialize_mode_norm = str(materialize_mode or "none").strip().lower()
-    if use_timing_response_antichain and materialize_mode_norm not in {
-        "scores",
-        "scores_only",
-        "score_only",
-        "write_scores",
-    }:
+    if use_timing_response_antichain and materialize_mode != "scores_only":
         raise ValueError("timing response antichain is score-only; materialize retained candidates with the full table")
 
     # Precompute FT/FF combo tables once per budget (tiny upload, reused across generations).
@@ -625,7 +395,7 @@ def skyline_evaluate_population(
             max_ft_gems=max_ft_gems_i,
             max_ff_gems=max_ff_gems_i,
         )
-    eval_budget = int(_skyline_eval_budget())
+    eval_budget = int(MAX_EVALS_PER_DISPATCH)
     max_evals = max(int(eval_budget), int(n_genomes))
     combo_chunk = compute_skyline_combo_chunk(
         n_genomes=n_genomes,
@@ -668,18 +438,14 @@ def skyline_evaluate_population(
             int(is_s_ov),
             song_slot_i,
             use_exact_inner_solver_i,
-            int(exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse),
+            0,
             int(bool(use_timing_response_antichain)),
             int(score_cull_threshold_i),
         )
         offset += int(chunk_len)
 
-    if exact_genome_eval_results_reuse or exact_genome_stats_signature_reuse:
-        kernels.SKYLINE_propagate_exact_eval_reuse_chunk_best_kernel(int(n_genomes))
-
     _skyline_materialize_population_results(
         n_genomes=n_genomes,
-        n_slots=n_slots,
         total_budget=total_budget_i,
         gem_scale_fever=gem_scale_fever_i,
         is_p_ft=int(is_p_ft),
@@ -697,14 +463,12 @@ def skyline_evaluate_population(
         song_slot=song_slot_i,
         use_exact_inner_solver=bool(use_exact_inner_solver_i),
         materialize_mode=materialize_mode,
-        update_global_best=bool(update_global_best),
     )
 
 
 def _skyline_materialize_population_results(
     *,
     n_genomes: int,
-    n_slots: int,
     total_budget: int,
     gem_scale_fever: int,
     is_p_ft: int,
@@ -722,13 +486,11 @@ def _skyline_materialize_population_results(
     song_slot: int,
     use_exact_inner_solver: bool,
     materialize_mode: str,
-    update_global_best: bool = False,
 ) -> None:
-    mode = str(materialize_mode or "none").strip().lower()
-    if mode in {"", "none", "off", "false", "0"}:
+    if materialize_mode == "none":
         return
 
-    if mode in {"scores", "scores_only", "score_only", "write_scores"}:
+    if materialize_mode == "scores_only":
         kernels.skyline_write_scores_from_key_kernel(int(n_genomes))
         return
 
@@ -752,329 +514,11 @@ def _skyline_materialize_population_results(
         int(bool(use_exact_inner_solver)),
     )
 
-    if mode in {"results", "results_only", "write_results"}:
+    if materialize_mode == "results_only":
         kernels.skyline_write_best_results_from_key_kernel(*common_args)
-        if update_global_best:
-            kernels.skyline_update_global_best_kernel(int(n_genomes), int(n_slots))
-        return
-
-    if mode in {"global", "update_global", "write_global", "write_best_and_update_global"}:
-        kernels.skyline_write_best_and_update_global_kernel(
-            int(n_genomes),
-            int(n_slots),
-            int(total_budget),
-            int(gem_scale_fever),
-            int(is_p_ft),
-            int(is_s_ft),
-            int(is_p_ff),
-            int(is_s_ff),
-            int(is_p_pp),
-            int(is_s_pp),
-            int(is_p_cm),
-            int(is_s_cm),
-            int(is_p_fm),
-            int(is_s_fm),
-            int(is_p_ov),
-            int(is_s_ov),
-            int(song_slot),
-            int(bool(use_exact_inner_solver)),
-        )
         return
 
     raise ValueError(f"Unknown skyline materialize_mode: {materialize_mode!r}")
-
-
-def skyline_write_best_and_update_global(
-    n_genomes: int,
-    n_slots: int,
-    total_budget: int,
-    gem_scale_fever: int,
-    *,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
-    song_slot: int = 0,
-    use_exact_inner_solver: bool = True,
-) -> None:
-    """
-    FUSED: Write best results + update global best.
-
-    Call this AFTER evaluation (skyline_evaluate_population) to:
-    1. Finalize best combo from chunk_best_key
-    2. Update GPU-side global best
-
-    Args:
-        n_genomes: Number of genomes
-        n_slots: Number of equipment slots
-        total_budget: Total gem budget
-        gem_scale_fever: Gems per fever stat point
-        is_*: Color contribution flags (0/1)
-        song_slot: Timeline grid slot
-    """
-    ensure_ready()
-    _skyline_materialize_population_results(
-        n_genomes=int(n_genomes),
-        n_slots=int(n_slots),
-        total_budget=int(total_budget),
-        gem_scale_fever=int(gem_scale_fever),
-        is_p_ft=int(is_p_ft),
-        is_s_ft=int(is_s_ft),
-        is_p_ff=int(is_p_ff),
-        is_s_ff=int(is_s_ff),
-        is_p_pp=int(is_p_pp),
-        is_s_pp=int(is_s_pp),
-        is_p_cm=int(is_p_cm),
-        is_s_cm=int(is_s_cm),
-        is_p_fm=int(is_p_fm),
-        is_s_fm=int(is_s_fm),
-        is_p_ov=int(is_p_ov),
-        is_s_ov=int(is_s_ov),
-        song_slot=int(song_slot),
-        use_exact_inner_solver=bool(use_exact_inner_solver),
-        materialize_mode="update_global",
-    )
-
-
-def _validate_skyline_runs_batch(
-    *, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int
-) -> tuple[int, int, int, int]:
-    run_idx_start = int(run_idx_start)
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_slots = int(n_slots)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return run_idx_start, n_runs, n_genomes_per_run, n_slots
-    if run_idx_start < 0 or run_idx_start >= fields.MAX_SKYLINE_RUNS:
-        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
-    if run_idx_start + n_runs > fields.MAX_SKYLINE_RUNS:
-        raise ValueError(
-            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})"
-        )
-    if n_genomes_per_run < 0 or n_genomes_per_run > fields.MAX_SKYLINE_RUN_GENOMES:
-        raise ValueError(
-            f"n_genomes_per_run out of range: {n_genomes_per_run} (MAX_SKYLINE_RUN_GENOMES={fields.MAX_SKYLINE_RUN_GENOMES})"
-        )
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-    return run_idx_start, n_runs, n_genomes_per_run, n_slots
-
-
-def skyline_refresh_scores_and_update_runs_best(
-    *,
-    run_idx_start: int,
-    n_runs: int,
-    n_genomes_per_run: int,
-    n_slots: int,
-    total_budget: int,
-    gem_scale_fever: int,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
-    song_slot: int = 0,
-    use_exact_inner_solver: bool = True,
-) -> None:
-    """
-    Lightweight live-score refresh for packed multi-run skyline execution.
-
-    This keeps `skyline_scores` exact from the reduction state and updates each run's row 0 best
-    with exact materialization only when that run improves. It avoids the full-pop
-    `genome_result_stats` write pass that the final FG packing path no longer needs every
-    generation.
-    """
-    ensure_ready()
-    run_idx_start, n_runs, n_genomes_per_run, n_slots = _validate_skyline_runs_batch(
-        run_idx_start=run_idx_start,
-        n_runs=n_runs,
-        n_genomes_per_run=n_genomes_per_run,
-        n_slots=n_slots,
-    )
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-
-    kernels.skyline_refresh_scores_and_update_runs_best_kernel(
-        int(run_idx_start),
-        int(n_runs),
-        int(n_genomes_per_run),
-        int(n_slots),
-        int(total_budget),
-        int(gem_scale_fever),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
-        int(song_slot),
-        int(bool(use_exact_inner_solver)),
-    )
-
-
-def skyline_set_scores(scores_np: np.ndarray, *, n_genomes: int | None = None) -> int:
-    """Upload fitness scores to GPU (fields.skyline_scores). Returns n_genomes used."""
-    ensure_ready()
-    if n_genomes is None:
-        n_genomes = int(scores_np.shape[0])
-    n_genomes = int(n_genomes)
-    if n_genomes <= 0:
-        return 0
-    if n_genomes > fields.MAX_GENOMES:
-        raise ValueError(f"Too many genomes: {n_genomes} > {fields.MAX_GENOMES}")
-    buf = np.zeros((fields.MAX_GENOMES,), dtype=np.int32)
-    buf[:n_genomes] = np.asarray(scores_np[:n_genomes], dtype=np.int32)
-    fields.skyline_scores.from_numpy(buf)
-    return n_genomes
-
-
-def skyline_next_generation_fused(
-    *,
-    n_genomes: int,
-    n_slots: int = 9,
-    mutation_rate: float = 0.02,
-    immigrant_rate: float = 0.0,
-    tournament_k: int = 3,
-    n_islands: int = 1,
-    elites_per_island: int = 1,
-) -> None:
-    """
-    FULLY FUSED next generation: 2 kernel launches instead of 4.
-
-    This combines:
-    1. skyline_next_generation_full_islands_kernel: select + crossover + mutate + island elites (computed on-the-fly)
-    2. SKYLINE_swap_population_kernel: swap
-
-    Args:
-        n_genomes: Population size
-        n_slots: Slots per genome (default 9)
-        mutation_rate: Probability of mutation per genome (default 0.02)
-        immigrant_rate: Probability of fully re-rolling a genome per generation (default 0.0)
-        tournament_k: Tournament size for selection (default 3)
-        n_islands: Number of islands (must match uploaded island_boundaries)
-        elites_per_island: Elites preserved per island
-    """
-    ensure_ready()
-    n_genomes = int(n_genomes)
-    n_slots = int(n_slots)
-    n_islands = int(n_islands)
-    elites_per_island = int(elites_per_island)
-    tournament_k = int(tournament_k)
-    if n_genomes <= 0:
-        return
-    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
-        raise ValueError(f"Invalid n_slots: {n_slots}")
-    if n_islands < 1:
-        n_islands = 1
-    if elites_per_island < 0:
-        elites_per_island = 0
-    if tournament_k < 1:
-        tournament_k = 1
-
-    # Convert probability to uint32 threshold.
-    mr_fp = probability_to_u32_fp(float(mutation_rate))
-    ir_fp = probability_to_u32_fp(float(immigrant_rate))
-
-    # Precompute island elites once, then run fused next-gen using GPU-resident elite indices.
-    elites_per_island_eff = max(1, int(elites_per_island))
-    n_elites = min(int(n_genomes), int(n_islands) * int(elites_per_island_eff))
-    kernels.skyline_find_island_elites_kernel(
-        int(n_genomes),
-        int(n_islands),
-        int(elites_per_island_eff),
-    )
-    kernels.skyline_next_generation_full_kernel(
-        int(n_genomes),
-        int(n_slots),
-        int(n_elites),
-        int(tournament_k),
-        mr_fp,
-        ir_fp,
-    )
-
-    # FUSED: swap active/next populations (second kernel)
-    kernels.SKYLINE_swap_population_kernel(n_genomes, n_slots)
-
-
-def skyline_next_generation_fused_runs(
-    *,
-    n_runs: int,
-    n_genomes_per_run: int,
-    n_slots: int = 9,
-    mutation_rate: float = 0.02,
-    immigrant_rate: float = 0.0,
-    tournament_k: int = 3,
-    n_islands: int = 1,
-    elites_per_island: int = 1,
-    novelty_repair_attempts: int = 0,
-) -> None:
-    """
-    FULLY FUSED next generation for multiple independent runs packed contiguously.
-
-    Executes:
-    1) skyline_next_generation_full_runs_kernel (select+crossover+mutate+elitism within each run)
-    2) SKYLINE_swap_population_kernel (swap) for the combined population
-    """
-    ensure_ready()
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_slots = int(n_slots)
-    n_islands = int(n_islands)
-    elites_per_island = int(elites_per_island)
-    tournament_k = int(tournament_k)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
-        raise ValueError(f"Invalid n_slots: {n_slots}")
-    if n_islands < 1:
-        n_islands = 1
-    if elites_per_island < 0:
-        elites_per_island = 0
-    if tournament_k < 1:
-        tournament_k = 1
-    novelty_repair_attempts = max(0, min(4, int(novelty_repair_attempts)))
-
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-
-    mr_fp = probability_to_u32_fp(float(mutation_rate))
-    ir_fp = probability_to_u32_fp(float(immigrant_rate))
-
-    kernels.skyline_next_generation_full_runs_kernel(
-        n_runs,
-        n_genomes_per_run,
-        n_slots,
-        n_islands,
-        elites_per_island,
-        tournament_k,
-        mr_fp,
-        ir_fp,
-        int(novelty_repair_attempts),
-    )
-    kernels.SKYLINE_swap_population_kernel(int(n_total), n_slots)
 
 
 def skyline_download_scores(n_genomes: int) -> np.ndarray:
@@ -1141,672 +585,3 @@ def skyline_download_results(n_genomes: int) -> np.ndarray:
         out = fields.genome_result_stats.to_numpy()
         results_np = out[:n_genomes]
     return np.asarray(results_np, dtype=np.int32)
-
-
-def SKYLINE_INIT_runs_best(*, run_idx_start: int, n_runs: int, n_slots: int = 9) -> None:
-    """
-    Initialize per-run best rows (row 0) for multi-run payload packing.
-    """
-    ensure_ready()
-    run_idx_start = int(run_idx_start)
-    n_runs = int(n_runs)
-    n_slots = int(n_slots)
-    if n_runs <= 0:
-        return
-    if run_idx_start < 0 or run_idx_start >= fields.MAX_SKYLINE_RUNS:
-        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
-    if run_idx_start + n_runs > fields.MAX_SKYLINE_RUNS:
-        raise ValueError(
-            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})"
-        )
-    kernels.SKYLINE_INIT_runs_best_kernel(run_idx_start, n_runs, n_slots)
-
-
-def skyline_update_runs_best(*, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int = 9) -> None:
-    """
-    Update per-run best rows (row 0) for packed multi-run execution.
-    """
-    ensure_ready()
-    run_idx_start = int(run_idx_start)
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_slots = int(n_slots)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-    if run_idx_start < 0 or run_idx_start >= fields.MAX_SKYLINE_RUNS:
-        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
-    if run_idx_start + n_runs > fields.MAX_SKYLINE_RUNS:
-        raise ValueError(
-            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})"
-        )
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-    kernels.skyline_update_runs_best_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
-
-
-def skyline_pack_fg_candidates_table_segmented(
-    *,
-    table_slot: int,
-    run_idx_start: int,
-    n_runs: int,
-    n_genomes_per_run: int,
-    n_slots: int = 9,
-    total_budget: int,
-    gem_scale_fever: int,
-    is_p_ft: int = 0,
-    is_s_ft: int = 0,
-    is_p_ff: int = 0,
-    is_s_ff: int = 0,
-    is_p_pp: int = 0,
-    is_s_pp: int = 0,
-    is_p_cm: int = 0,
-    is_s_cm: int = 0,
-    is_p_fm: int = 0,
-    is_s_fm: int = 0,
-    is_p_ov: int = 0,
-    is_s_ov: int = 0,
-    song_slot: int = 0,
-    use_exact_inner_solver: bool = True,
-) -> None:
-    """
-    Pack a compact skyline->FG candidate table for packed multi-run execution.
-    """
-    ensure_ready()
-    table_slot = int(table_slot)
-    run_idx_start = int(run_idx_start)
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_slots = int(n_slots)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-    if table_slot < 0 or table_slot >= int(fields.MAX_SONG_SLOTS):
-        raise ValueError(f"table_slot out of range: {table_slot} (MAX_SONG_SLOTS={fields.MAX_SONG_SLOTS})")
-    if run_idx_start < 0 or run_idx_start >= int(fields.MAX_SKYLINE_RUNS):
-        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
-    if run_idx_start + n_runs > int(fields.MAX_SKYLINE_RUNS):
-        raise ValueError(
-            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})"
-        )
-    if n_slots != 9:
-        raise ValueError(f"GPU-native skyline expects n_slots=9 for FG candidate packing, got {n_slots}")
-
-    kernels.skyline_pack_fg_candidates_table_segmented_kernel(
-        int(table_slot),
-        int(run_idx_start),
-        int(n_runs),
-        int(n_genomes_per_run),
-        int(n_slots),
-        int(total_budget),
-        int(gem_scale_fever),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
-        int(song_slot),
-        int(bool(use_exact_inner_solver)),
-    )
-
-
-def skyline_download_fg_selected_payload(
-    *,
-    table_slot: int,
-    n_runs: int,
-    limit: int,
-) -> np.ndarray:
-    """
-    Download the GPU-selected skyline->FG candidate payload for one song/table slot.
-
-    Returns:
-        np.ndarray[int32] with shape (N+1, 26):
-          - Row 0: header [selected_count, best_score, best_ids(9), best_results(7), best_run_idx, ...]
-          - Rows 1..N: candidates [run_idx, row_idx, packed_row(24)]
-    """
-    ensure_ready()
-    table_slot = int(table_slot)
-    n_runs = int(n_runs)
-    limit = int(limit)
-
-    if n_runs < 0 or n_runs > int(fields.MAX_SKYLINE_RUNS):
-        raise ValueError(f"n_runs out of range: {n_runs} (MAX_SKYLINE_RUNS={fields.MAX_SKYLINE_RUNS})")
-    if table_slot < 0 or table_slot >= int(fields.MAX_SONG_SLOTS):
-        raise ValueError(f"table_slot out of range: {table_slot} (MAX_SONG_SLOTS={fields.MAX_SONG_SLOTS})")
-
-    if limit < 0:
-        limit = 0
-    if limit > int(fields.SKYLINE_FG_SELECTED_MAX):
-        limit = int(fields.SKYLINE_FG_SELECTED_MAX)
-
-    perf = env_flag("PERF_TIMING")
-    t_total = time.perf_counter() if perf else 0.0
-
-    # Select coordinates on GPU, then copy only the selected candidates into a bounded staging field.
-    kernels.skyline_select_top_base_fg_candidate_coords_kernel(
-        int(table_slot),
-        int(n_runs),
-        int(limit),
-    )
-
-    if limit <= 256:
-        out_field = fields.skyline_fg_selected_payload_staging_256
-    elif limit <= 1024:
-        out_field = fields.skyline_fg_selected_payload_staging_1024
-    else:
-        out_field = fields.skyline_fg_selected_payload_staging_5000
-
-    kernels.skyline_copy_fg_selected_payload_to_download_staging_kernel(int(table_slot), int(n_runs), out_field)
-    out = out_field.to_numpy()
-
-    selected_n = 0
-    try:
-        selected_n = int(out[0, 0])
-    except Exception as e:
-        logger.debug(f"skyline_operations:skyline_download_fg_selected_payload: {e}")
-        selected_n = 0
-    if selected_n < 0:
-        selected_n = 0
-    max_rows = int(out.shape[0]) - 1
-    if selected_n > max_rows:
-        selected_n = max_rows
-
-    view = out[: selected_n + 1, :]
-
-    total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
-    if perf:
-        try:
-            view_bytes = int(getattr(view, "nbytes", 0) or 0)
-            out_bytes = int(getattr(out, "nbytes", 0) or 0)
-        except Exception as e:
-            logger.debug(f"skyline_operations:skyline_download_fg_selected_payload: {e}")
-            view_bytes = 0
-            out_bytes = 0
-        print(
-            "[PERF][GADownloadGaFgSelected] "
-            f"slot={table_slot} runs={n_runs} limit={limit} total={total_ms:.1f}ms "
-            f"view_bytes={view_bytes} transfer_bytes={out_bytes}"
-        )
-
-    if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:
-        return view
-    return np.ascontiguousarray(view, dtype=np.int32)
-
-
-# ============================================================================
-# GPU-SIDE GLOBAL BEST TRACKING
-# ============================================================================
-
-
-def SKYLINE_INIT_global_best() -> None:
-    """
-    Initialize global best tracking at the start of a skyline run.
-
-    Resets skyline_global_best_score to -1 (no best yet).
-    Call this once at the start of each skyline run.
-    """
-    ensure_ready()
-    kernels.SKYLINE_INIT_global_best_kernel()
-
-
-def skyline_download_global_best() -> tuple[int, np.ndarray, np.ndarray]:
-    """
-    Download the global best genome and results from GPU.
-
-    Returns:
-        Tuple of (best_score, best_genome_ids, best_results):
-        - best_score: int - the best score found across all generations
-        - best_genome_ids: np.ndarray (n_slots,) int32 - item IDs of best genome
-        - best_results: np.ndarray (7,) int32 - [score, ft, ff, pp, cm, fm, ov]
-    """
-    ensure_ready()
-    # Pack into single field then download once (1 GPU sync instead of 3)
-    # Layout: [score(1), genome_ids(9), results(7)] = 17 values
-    kernels.skyline_pack_global_best_kernel()
-    packed = fields.skyline_global_best_packed.to_numpy()
-    best_score = int(packed[0])
-    best_genome_ids = packed[1:10].copy()
-    best_results = packed[10:17].copy()
-    return best_score, best_genome_ids, best_results
-
-
-def skyline_upload_island_boundaries(island_starts: np.ndarray) -> None:
-    """
-    Upload island boundary indices to GPU for island-based elitism.
-
-    Args:
-        island_starts: (n_islands + 1,) int32 array of island boundaries.
-                      Format: [start0, start1, ..., end_last]
-                      Island i owns indices [start[i], start[i+1])
-    """
-    global _ISLAND_BOUNDARIES_CACHE
-
-    ensure_ready()
-    n = min(len(island_starts), fields.MAX_ISLANDS + 1)
-    key = tuple(int(x) for x in np.asarray(island_starts[:n], dtype=np.int32))
-    if _ISLAND_BOUNDARIES_CACHE == key:
-        return
-
-    buf = np.zeros(fields.MAX_ISLANDS + 1, dtype=np.int32)
-    buf[:n] = np.asarray(island_starts[:n], dtype=np.int32)
-    fields.island_boundaries.from_numpy(buf)
-    _ISLAND_BOUNDARIES_CACHE = key
-
-
-def skyline_find_island_elites(n_genomes: int, n_islands: int, elites_per_island: int) -> None:
-    """
-    GPU-side island elite selection: find top-k genomes per island.
-
-    This replaces the CPU-side score download + argsort previously used.
-    Must call skyline_upload_island_boundaries() first.
-
-    After calling, elite indices are available in island_elite_indices field.
-    Use skyline_download_island_elite_indices() to retrieve them if needed.
-
-    Args:
-        n_genomes: Total population size
-        n_islands: Number of islands
-        elites_per_island: Number of elites to select per island
-    """
-    ensure_ready()
-    kernels.skyline_find_island_elites_kernel(int(n_genomes), int(n_islands), int(elites_per_island))
-
-
-def skyline_download_island_elite_indices(n_elites: int) -> np.ndarray:
-    """
-    Download the elite genome indices computed by skyline_find_island_elites.
-
-    Args:
-        n_elites: Total number of elites (n_islands * elites_per_island)
-
-    Returns:
-        np.ndarray: (n_elites,) int32 array of elite genome indices
-    """
-    ensure_ready()
-    out = fields.island_elite_indices.to_numpy()
-    return np.asarray(out[:n_elites], dtype=np.int32)
-
-
-def skyline_island_migration_runs(
-    *, n_runs: int, n_genomes_per_run: int, n_islands: int, migrate_count: int, n_slots: int = 9
-) -> None:
-    """
-    GPU-side island migration using ring topology for multiple independent runs.
-    """
-    ensure_ready()
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_islands = int(n_islands)
-    migrate_count = int(migrate_count)
-    n_slots = int(n_slots)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
-        raise ValueError(f"Invalid n_slots: {n_slots}")
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-    kernels.skyline_island_migration_runs_kernel(n_runs, n_genomes_per_run, n_islands, migrate_count, n_slots)
-
-
-_SKYLINE_KERNELS_WARMED = False
-_SKYLINE_KERNELS_LIGHT_WARMED = False
-_SKYLINE_LIVE_REQUEST_WARMED = False
-
-
-def _warmup_ref_arrays() -> dict[str, np.ndarray]:
-    x = np.linspace(0.0, 1.0, int(fields.GRID_SIZE), dtype=np.float32)
-    return {
-        "Perfect Points": (1000.0 + (500.0 * x)).astype(np.float32, copy=False),
-        "Combo Multiplier": (1.0 + x).astype(np.float32, copy=False),
-        "Fever Multiplier": (1.0 + (0.5 * x)).astype(np.float32, copy=False),
-        "Fever Time": (5.0 + (30.0 * x)).astype(np.float32, copy=False),
-        "Fever Fill Rate": (1.0 + (4.0 * x)).astype(np.float32, copy=False),
-    }
-
-
-def _warmup_calc_song() -> dict:
-    timestamps = np.linspace(0.0, 18.0, 48, dtype=np.float32)
-    note_types = np.zeros((timestamps.shape[0],), dtype=np.int32)
-    lanes = np.arange(timestamps.shape[0], dtype=np.int32) % 4
-    metadata = {
-        "Song Name": "__SKYLINE_live_request_warmup__",
-        "Difficulty": "Warmup",
-        "Long Notes": 0,
-        "Last Note Time": float(timestamps[-1]) if timestamps.size else 0.0,
-    }
-    return {
-        "metadata": metadata,
-        "song_data": {
-            "timestamps": timestamps,
-            "chart_timestamps": timestamps,
-            "note_types": note_types,
-            "lanes": lanes,
-            "fg_perfect_candidate_timestamps": timestamps,
-            "fg_perfect_floor_timestamps": timestamps,
-        },
-    }
-
-
-def warmup_skyline_live_request_kernels() -> None:
-    """
-    Warm the kernels and upload paths used by the first real GPU-native skyline request.
-
-    The full offline warmup historically covered skyline evaluation, but not the live
-    `ensure_ready(refs) -> precompute_timeline_gpu() -> materialize_mode="none"
-    -> refresh row 0` path. Missing that path lets stale sentinels push timeline
-    and live-request JIT/load costs into the first real song, creating a visible
-    0%-utilization valley before the sustained workload begins.
-    """
-    global _SKYLINE_LIVE_REQUEST_WARMED
-    if _SKYLINE_LIVE_REQUEST_WARMED:
-        return
-
-    ensure_ready()
-
-    import taichi as ti
-
-    from .timeline import precompute_timeline_gpu_for_warmup
-
-    n_slots = 9
-    n_runs = 1
-    n_genomes = min(64, int(getattr(fields, "MAX_SKYLINE_RUN_GENOMES", 250) or 250), int(fields.MAX_GENOMES))
-    n_genomes = max(1, int(n_genomes))
-    total_budget = min(90, int(fields.MAX_TOTAL_BUDGET))
-    gem_scale_fever = 3
-    song_slot = 0
-
-    ref_arrays = _warmup_ref_arrays()
-    ensure_ready(ref_arrays)
-    precompute_timeline_gpu_for_warmup(_warmup_calc_song(), ref_arrays, song_slot=song_slot)
-
-    item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
-    slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)
-    slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
-    skyline_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
-    skyline_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
-    skyline_upload_fg_effective_tables(
-        np.zeros((1,), dtype=np.int32), np.zeros((1,), dtype=np.int32)
-    )
-    skyline_upload_island_boundaries(np.array([0, int(n_genomes)], dtype=np.int32))
-
-    skyline_generate_initial_populations(
-        run_idx_start=0,
-        n_runs=n_runs,
-        n_genomes=int(n_genomes),
-        n_slots=n_slots,
-        seed=12345,
-    )
-    skyline_load_initial_population(run_idx=0, n_genomes=int(n_genomes), n_slots=n_slots)
-    skyline_seed_rng_runs(n_runs=n_runs, n_genomes_per_run=int(n_genomes), seed=12345)
-    SKYLINE_INIT_runs_best(run_idx_start=0, n_runs=n_runs, n_slots=n_slots)
-    SKYLINE_INIT_global_best()
-
-    skyline_evaluate_population(
-        int(n_genomes),
-        n_slots=n_slots,
-        total_budget=total_budget,
-        gem_scale_fever=gem_scale_fever,
-        song_slot=song_slot,
-        materialize_mode="none",
-    )
-    skyline_refresh_scores_and_update_runs_best(
-        run_idx_start=0,
-        n_runs=n_runs,
-        n_genomes_per_run=int(n_genomes),
-        n_slots=n_slots,
-        total_budget=total_budget,
-        gem_scale_fever=gem_scale_fever,
-        song_slot=song_slot,
-    )
-    skyline_next_generation_fused_runs(
-        n_runs=n_runs,
-        n_genomes_per_run=int(n_genomes),
-        n_slots=n_slots,
-        mutation_rate=0.0,
-        immigrant_rate=0.0,
-        tournament_k=1,
-        n_islands=1,
-        elites_per_island=1,
-    )
-    skyline_pack_fg_candidates_table_segmented(
-        table_slot=song_slot,
-        run_idx_start=0,
-        n_runs=n_runs,
-        n_genomes_per_run=int(n_genomes),
-        n_slots=n_slots,
-        total_budget=total_budget,
-        gem_scale_fever=gem_scale_fever,
-        song_slot=song_slot,
-    )
-    _ = skyline_download_fg_selected_payload(
-        table_slot=song_slot,
-        n_runs=n_runs,
-        limit=1,
-    )
-    ti.sync()
-    _SKYLINE_LIVE_REQUEST_WARMED = True
-
-
-def warmup_skyline_kernels() -> None:
-    """
-    Best-effort Taichi JIT warmup for GPU-native skyline kernels.
-
-    Goal: avoid the first real skyline request paying multi-second compilation latency on Vulkan,
-    which shows up as a \"GPU idle\" gap in high-level monitoring and can create bursty
-    utilization graphs.
-
-    Notes:
-    - Uses tiny dummy inputs (correctness is irrelevant; outputs are discarded).
-    - Idempotent: safe to call multiple times.
-    """
-    global _SKYLINE_KERNELS_WARMED
-    if _SKYLINE_KERNELS_WARMED:
-        return
-
-    ensure_ready()
-
-    # Minimal sizes that still exercise the full skyline pipeline (evaluate -> next-gen -> pack -> select).
-    n_slots = 9
-    n_runs = 1
-    n_genomes_per_run = min(64, int(getattr(fields, "MAX_SKYLINE_RUN_GENOMES", 250) or 250))
-    if n_genomes_per_run < 1:
-        n_genomes_per_run = 1
-    n_total = int(n_runs) * int(n_genomes_per_run)
-    if n_total > int(fields.MAX_GENOMES):
-        n_genomes_per_run = max(1, int(fields.MAX_GENOMES))
-        n_total = int(n_runs) * int(n_genomes_per_run)
-
-    # Small but non-zero budget so combo tables are populated and the FT/FF kernels are exercised.
-    total_budget = 1
-    gem_scale_fever = 3
-    song_slot = 0
-
-    # Ensure per-slot item ranges are valid (avoid divide-by-zero in mutation/immigrant ops).
-    item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
-    slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)
-    slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
-    skyline_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
-    skyline_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
-    skyline_upload_fg_effective_tables(
-        np.zeros((1,), dtype=np.int32), np.zeros((1,), dtype=np.int32)
-    )
-
-    # Upload a trivial island boundary table so island-based kernels have valid ranges.
-    n_islands = 2
-    if n_islands > int(getattr(fields, "MAX_ISLANDS", n_islands) or n_islands):
-        n_islands = int(getattr(fields, "MAX_ISLANDS", 1) or 1)
-    if n_islands < 1:
-        n_islands = 1
-    # Boundaries: [0, mid, end] for 2 islands (or [0,end] for 1 island)
-    if n_islands == 1:
-        boundaries = np.array([0, int(n_total)], dtype=np.int32)
-    else:
-        mid = int(n_total // 2)
-        boundaries = np.array([0, mid, int(n_total)], dtype=np.int32)
-    skyline_upload_island_boundaries(boundaries)
-
-    # Stage a single-run initial population and seed RNG.
-    pops = np.zeros((n_runs, n_genomes_per_run, n_slots), dtype=np.int32)
-    skyline_upload_initial_populations(pops, n_runs=n_runs, n_genomes=n_genomes_per_run, n_slots=n_slots)
-    skyline_load_initial_populations_batch(
-        run_idx_start=0, n_runs=n_runs, n_genomes_per_run=n_genomes_per_run, n_slots=n_slots
-    )
-    skyline_seed_rng_runs(n_runs=n_runs, n_genomes_per_run=n_genomes_per_run, seed=12345)
-
-    # Initialize + run a minimal 1-generation evaluation.
-    SKYLINE_INIT_runs_best(run_idx_start=0, n_runs=n_runs, n_slots=n_slots)
-    SKYLINE_INIT_global_best()
-    skyline_evaluate_population(
-        n_total,
-        n_slots=n_slots,
-        total_budget=total_budget,
-        gem_scale_fever=gem_scale_fever,
-        song_slot=song_slot,
-        materialize_mode="update_global",
-    )
-    try:
-        # Best-effort: ensure the global-best pack/download kernels are JIT'd too.
-        _ = skyline_download_global_best()
-    except Exception as e:
-        logger.debug(f"skyline_operations:warmup_skyline_kernels: {e}")
-    skyline_update_runs_best(run_idx_start=0, n_runs=n_runs, n_genomes_per_run=n_genomes_per_run, n_slots=n_slots)
-
-    # Warm migration + fused next-gen kernels (typical path in GPU-native skyline).
-    skyline_island_migration_runs(
-        n_runs=n_runs,
-        n_genomes_per_run=n_genomes_per_run,
-        n_islands=n_islands,
-        migrate_count=1,
-        n_slots=n_slots,
-    )
-    skyline_next_generation_fused_runs(
-        n_runs=n_runs,
-        n_genomes_per_run=n_genomes_per_run,
-        n_slots=n_slots,
-        mutation_rate=0.0,
-        immigrant_rate=0.0,
-        tournament_k=1,
-        n_islands=n_islands,
-        elites_per_island=1,
-    )
-
-    # Warm skyline->FG packing + GPU-side selection/download kernels.
-    skyline_pack_fg_candidates_table_segmented(
-        table_slot=song_slot,
-        run_idx_start=0,
-        n_runs=n_runs,
-        n_genomes_per_run=n_genomes_per_run,
-        n_slots=n_slots,
-        total_budget=total_budget,
-        gem_scale_fever=gem_scale_fever,
-        song_slot=song_slot,
-    )
-    # limit=1 keeps the staging download small while still exercising the kernels.
-    _ = skyline_download_fg_selected_payload(
-        table_slot=song_slot,
-        n_runs=n_runs,
-        limit=1,
-    )
-
-    warmup_skyline_live_request_kernels()
-    _SKYLINE_KERNELS_WARMED = True
-
-
-def warmup_skyline_kernels_light() -> None:
-    """
-    Lightweight per-process warmup for GPU-native skyline kernels.
-
-    This is intentionally smaller than `warmup_skyline_kernels()`:
-    - It targets the per-process first-hit JIT/loading costs for the kernels that dominate skyline runtime
-      (evaluate cold+warm, plus fused next-gen and initial population generation).
-    - It avoids downloads and skyline->FG packing/selection to keep runtime bounded.
-
-    This is useful when offline caches are already built and we just want to avoid the first real GA
-    request paying a multi-second spike (which can skew phase-timing profiles).
-
-    Notes:
-    - Outputs are discarded; correctness is irrelevant.
-    - Idempotent per process.
-    """
-    global _SKYLINE_KERNELS_LIGHT_WARMED
-    if _SKYLINE_KERNELS_LIGHT_WARMED or _SKYLINE_KERNELS_WARMED:
-        return
-
-    ensure_ready()
-
-    import taichi as ti
-
-    n_slots = 9
-    n_genomes = min(64, int(getattr(fields, "MAX_SKYLINE_RUN_GENOMES", 250) or 250))
-    if n_genomes < 1:
-        n_genomes = 1
-    n_genomes = min(int(n_genomes), int(fields.MAX_GENOMES))
-
-    # Small but non-zero budget so combo tables are populated and the FT/FF kernels are exercised.
-    total_budget = 1
-    gem_scale_fever = 3
-    song_slot = 0
-
-    item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
-    slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)
-    slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
-    skyline_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
-    skyline_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
-    skyline_upload_fg_effective_tables(
-        np.zeros((1,), dtype=np.int32), np.zeros((1,), dtype=np.int32)
-    )
-
-    skyline_upload_island_boundaries(np.array([0, int(n_genomes)], dtype=np.int32))
-    pop = np.zeros((int(n_genomes), int(n_slots)), dtype=np.int32)
-    skyline_upload_population_indices(pop, n_slots=int(n_slots))
-
-    SKYLINE_INIT_global_best()
-
-    # Compile/load the exact evaluation path.
-    skyline_evaluate_population(
-        int(n_genomes),
-        n_slots=n_slots,
-        total_budget=total_budget,
-        gem_scale_fever=gem_scale_fever,
-        song_slot=song_slot,
-        materialize_mode="update_global",
-    )
-    ti.sync()
-
-    # Warm the common GPU-generated population path (used when CPU prebuilt pops are absent).
-    try:
-        skyline_generate_initial_populations(
-            run_idx_start=0, n_runs=1, n_genomes=int(n_genomes), n_slots=n_slots, seed=12345
-        )
-        ti.sync()
-    except Exception as e:
-        logger.debug(f"skyline_operations:warmup_skyline_kernels_light: {e}")
-
-    # Warm fused next-gen path (single-run).
-    try:
-        warmup_skyline_live_request_kernels()
-    except Exception as e:
-        logger.debug(f"skyline_operations:warmup_skyline_kernels_light: {e}")
-
-    try:
-        skyline_next_generation_fused(
-            n_genomes=int(n_genomes),
-            n_slots=n_slots,
-            mutation_rate=0.0,
-            immigrant_rate=0.0,
-            tournament_k=1,
-            n_islands=1,
-            elites_per_island=1,
-        )
-        ti.sync()
-    except Exception as e:
-        logger.debug(f"skyline_operations:warmup_skyline_kernels_light: {e}")
-
-    _SKYLINE_KERNELS_LIGHT_WARMED = True

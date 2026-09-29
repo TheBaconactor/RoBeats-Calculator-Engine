@@ -11,33 +11,18 @@ This module contains:
 IMPORTANT: Do NOT import fields directly at module load time.
 The field variables below are placeholders that get populated by bind_fields().
 """
-import logging
-
-
 import taichi as ti
 
 from ..runtime import get_block_dim
 
 # Resolve once at import time so Taichi sees a plain constant in `ti.loop_config`.
 # (Calling Python functions inside kernels triggers Taichi AST warnings.)
-from gear_optimizer.core.parsing import env_get
-
-logger = logging.getLogger(__name__)
 _KERNEL_BLOCK_DIM = get_block_dim()
 
 # FT/FF combo reduction scratch (Vulkan path).
 # Must match constants in `gear_optimizer/solver/taichi_gem/fields.py`.
 GA_FTFF_REDUCE_BLOCK_DIM = 256  # MUST match fields.py GA_FTFF_REDUCE_BLOCK_DIM
-try:
-    _skyline_reduce_block_dim = int(env_get("SKYLINE_FTFF_REDUCE_BLOCK_DIM", str(GA_FTFF_REDUCE_BLOCK_DIM)) or "256")
-except Exception as e:
-    logger.debug(f"kernels_helpers: {e}")
-    _skyline_reduce_block_dim = int(GA_FTFF_REDUCE_BLOCK_DIM)
-SKYLINE_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(_skyline_reduce_block_dim), 256))
-SKYLINE_FTFF_REDUCE_BLOCK_DIM = (SKYLINE_FTFF_REDUCE_BLOCK_DIM // 32) * 32
-if SKYLINE_FTFF_REDUCE_BLOCK_DIM <= 0:
-    SKYLINE_FTFF_REDUCE_BLOCK_DIM = 32
-SKYLINE_FTFF_REDUCE_WAVE_STRIDE = SKYLINE_FTFF_REDUCE_BLOCK_DIM // 32
+SKYLINE_FTFF_REDUCE_BLOCK_DIM = GA_FTFF_REDUCE_BLOCK_DIM
 
 # ============================================================================
 # FIELD PLACEHOLDERS (bound by fields.bind_fields() after allocation)

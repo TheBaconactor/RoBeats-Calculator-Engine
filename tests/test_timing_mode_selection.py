@@ -77,7 +77,6 @@ def test_team_buff_unknown_mode_fails_loud():
 
 
 def test_gpu_warmup_songs_do_not_select_a_request_mode():
-    from gear_optimizer.solver.taichi_gem.api import ga_operations, skyline_operations
+    from gear_optimizer.solver.taichi_gem.api import ga_operations
 
     assert "TimingEnvelopeMode" not in ga_operations._warmup_calc_song()["metadata"]
-    assert "TimingEnvelopeMode" not in skyline_operations._warmup_calc_song()["metadata"]
