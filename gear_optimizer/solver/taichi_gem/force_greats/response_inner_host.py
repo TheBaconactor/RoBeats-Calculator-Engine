@@ -1,4 +1,6 @@
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+import os
 import threading
 import time
 import weakref
@@ -34,6 +36,13 @@ _FG_RESPONSE_INNER_GPU_MAX_DISPATCH_GROUPS = 262_144
 _FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_ROWS = 262_144
 _FG_RESPONSE_INNER_GPU_MAX_SURFACE_DISPATCH_WORK = 16_000_000_000
 _SURFACE_HEAD_COEFF_CACHE_MAX = 4
+# The CPU FG gem search scores each group independently (it writes only that group's output row),
+# so contiguous group chunks scored on separate threads and concatenated in order equal one call.
+_FG_CPU_SEARCH_WORKERS = max(1, min(8, (os.cpu_count() or 1)))
+_FG_CPU_SEARCH_CHUNKS_PER_WORKER = 4
+_FG_CPU_SEARCH_MIN_GROUPS_PER_CHUNK = 4
+_fg_cpu_search_pool: ThreadPoolExecutor | None = None
+_fg_cpu_search_pool_lock = threading.Lock()
 _U16_HEAD_VALUES = np.arange(1 << 16, dtype=np.uint16)
 _U16_HEAD_BITS = np.unpackbits(_U16_HEAD_VALUES.view(np.uint8).reshape(-1, 2), axis=1, bitorder="little").astype(
     np.int32,
@@ -1292,19 +1301,66 @@ def _score_response_group_meta_cpu(
     head_lengths = np.unique(np.ascontiguousarray(group_meta_all[:, 6], dtype=np.int32))
     if int(head_lengths.shape[0]) != 1:
         raise ValueError("response frontier CPU group metadata has inconsistent head length")
-    out_rows = _score_fg_response_groups_native_f64(
+    out_rows = _score_fg_response_groups_on_cpu_cores(
         np.ascontiguousarray(group_offsets, dtype=np.int64),
         np.ascontiguousarray(group_lengths, dtype=np.int64),
         group_meta_all,
-        surface_pattern_ids_all,
-        surface_pattern_words_all,
-        surface_counts_all,
-        surface_pattern_head_coeffs_all,
-        color_flags_all,
-        ref_pp,
-        ref_cm,
-        ref_fm,
-        bool(allow_pp),
-        int(TOTAL_ROWS),
+        (
+            surface_pattern_ids_all,
+            surface_pattern_words_all,
+            surface_counts_all,
+            surface_pattern_head_coeffs_all,
+            color_flags_all,
+            ref_pp,
+            ref_cm,
+            ref_fm,
+            bool(allow_pp),
+            int(TOTAL_ROWS),
+        ),
     )
     return np.asarray(out_rows, dtype=np.int32), int(logical_surface_rows)
+
+
+def _fg_cpu_search_executor() -> ThreadPoolExecutor:
+    global _fg_cpu_search_pool
+    with _fg_cpu_search_pool_lock:
+        if _fg_cpu_search_pool is None:
+            _fg_cpu_search_pool = ThreadPoolExecutor(
+                max_workers=_FG_CPU_SEARCH_WORKERS, thread_name_prefix="fg-cpu-search"
+            )
+        return _fg_cpu_search_pool
+
+
+def _score_fg_response_groups_on_cpu_cores(
+    group_offsets: np.ndarray,
+    group_lengths: np.ndarray,
+    group_meta: np.ndarray,
+    shared_args: tuple[Any, ...],
+) -> np.ndarray:
+    """``_score_fg_response_groups_native_f64`` over contiguous group chunks on several cores.
+
+    Chunks hold roughly equal surface rows (the search cost) and outnumber the workers so uneven
+    groups still balance. Output rows come back in group order, identical to a single call.
+    """
+    group_count = int(group_meta.shape[0])
+    chunk_count = min(
+        _FG_CPU_SEARCH_WORKERS * _FG_CPU_SEARCH_CHUNKS_PER_WORKER,
+        group_count // _FG_CPU_SEARCH_MIN_GROUPS_PER_CHUNK,
+    )
+    if _FG_CPU_SEARCH_WORKERS <= 1 or chunk_count <= 1:
+        return _score_fg_response_groups_native_f64(group_offsets, group_lengths, group_meta, *shared_args)
+    cumulative = np.cumsum(group_lengths, dtype=np.int64)
+    targets = cumulative[-1] * np.arange(1, chunk_count, dtype=np.int64) // chunk_count
+    cuts = np.unique(np.concatenate(([0], np.searchsorted(cumulative, targets, side="right"), [group_count])))
+    futures = [
+        _fg_cpu_search_executor().submit(
+            _score_fg_response_groups_native_f64,
+            group_offsets[start:stop],
+            group_lengths[start:stop],
+            group_meta[start:stop],
+            *shared_args,
+        )
+        for start, stop in zip(cuts[:-1], cuts[1:])
+        if stop > start
+    ]
+    return np.concatenate([future.result() for future in futures], axis=0)
