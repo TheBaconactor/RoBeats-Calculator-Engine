@@ -86,11 +86,8 @@ def resolve_active_fg_calc_song(song: NativeSong) -> dict | None:
     if apply_timing_envelope(fg_calc_song) is None:
         raise ValueError("resolve_active_fg_calc_song: calc_song carries no chart timestamps to envelope")
     _sync_fg_runtime_calc_song_keys(calc_song, fg_calc_song)
-    try:
-        if fg_state is not None:
-            fg_state.fg_calc_song = fg_calc_song
-    except AttributeError:
-        pass
+    if fg_state is not None:
+        fg_state.fg_calc_song = fg_calc_song
     return fg_calc_song
 
 
@@ -259,10 +256,7 @@ def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list
     if not isinstance(ga_result, dict) or "runs_payload" not in ga_result:
         raise RuntimeError(f"GPU-native GA result must be a fused {{runs_payload, fg_owner_score}} dict for {song_key}")
     runs_payload = ga_result["runs_payload"]
-    try:
-        song.runtime.fg.fg_owner_score_map = ga_result.get("fg_owner_score")
-    except AttributeError:
-        pass
+    song.runtime.fg.fg_owner_score_map = ga_result.get("fg_owner_score")
     emit_profile_event(
         component="inflight_decode",
         event="future_start",
@@ -391,10 +385,7 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
             continue
         prepared_bundle_ms += float(getattr(batch, "scoring_bundle_ms", 0.0) or 0.0)
     total_ms = (time.perf_counter() - t0) * 1000.0
-    try:
-        song.runtime.fg.fg_prep_wall_s = max(0.0, float(total_ms) / 1000.0)
-    except AttributeError:
-        pass
+    song.runtime.fg.fg_prep_wall_s = max(0.0, float(total_ms) / 1000.0)
     if perf:
         logger.debug(
             "[PERF][FGPrep] "

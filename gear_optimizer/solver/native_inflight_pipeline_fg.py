@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import logging
 import multiprocessing
 import time
 import traceback
@@ -22,7 +21,6 @@ from gear_optimizer.solver.native_inflight_config import NativeSong, read_db_pre
 if TYPE_CHECKING:
     from gear_optimizer.solver.native_inflight_lifecycle import PostSender, ProgressTracker
 
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -135,18 +133,9 @@ class NativeFGPipeline:
         return int(self.settings.prep_workers)
 
     def queue(self, song: NativeSong, *, now_s: float | None = None) -> None:
-        runtime = getattr(song, "runtime", song)
         self.pending.append(song)
-        try:
-            if not bool(getattr(song.runtime.fg, "fg_dynamic_prep_done", False)):
-                song.runtime.fg.fg_dynamic_prep_done = False
-        except AttributeError:
-            pass
-        try:
-            if not isinstance(getattr(song.runtime.fg, "fg_queued_t0", None), (int, float)):
-                runtime.fg.fg_queued_t0 = float(time.monotonic() if now_s is None else now_s)
-        except (KeyError, TypeError, ValueError):
-            pass
+        if song.runtime.fg.fg_queued_t0 is None:
+            song.runtime.fg.fg_queued_t0 = float(time.monotonic() if now_s is None else now_s)
 
 
     def _claim_pending_song(self, song: NativeSong) -> NativeSong:
@@ -165,10 +154,7 @@ class NativeFGPipeline:
         runtime = getattr(song, "runtime", song)
         if runtime.fg.fg_prep_future is not None:
             return False
-        try:
-            song.runtime.fg.fg_dynamic_prep_done = False
-        except AttributeError:
-            pass
+        song.runtime.fg.fg_dynamic_prep_done = False
         song.runtime.fg.fg_prep_submit_t0 = time.perf_counter()
         runtime.fg.fg_prep_future = self.prep_executor.submit(prep_fn, song, gpu_client=gpu_client)
         if register_future is not None:
@@ -532,10 +518,7 @@ def apply_fg_materialization_result(
     if isinstance(fg_record_info, dict):
         runtime.db.record_info = fg_record_info
         if progress_cb is not None:
-            try:
-                progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
-            except Exception as exc:
-                logger.debug("native_inflight_pipeline:apply_fg_materialization_result: %s", exc)
+            progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
 
 
 def run_fg_job_sync(
@@ -598,10 +581,7 @@ def _run_fg_job_sync_impl(
                     "FG dynamic prep completed without the exact response frontier plan "
                     f"for {song_key}"
                 )
-            try:
-                song.runtime.fg.fg_dynamic_prep_done = True
-            except AttributeError:
-                pass
+            song.runtime.fg.fg_dynamic_prep_done = True
         except Exception as exc:
             raise RuntimeError(f"FG dynamic prep failed for {song_key}") from exc
         finally:
@@ -616,10 +596,7 @@ def _run_fg_job_sync_impl(
             song.runtime.fg.fg_prep_future = None
     if getattr(song.runtime.fg, "fg_response_frontier_plan", None) is None:
         prepare_fg_job_sync(song, gpu_client=gpu_client)
-        try:
-            song.runtime.fg.fg_dynamic_prep_done = True
-        except AttributeError:
-            pass
+        song.runtime.fg.fg_dynamic_prep_done = True
     emit_profile_event(
         component="inflight_fg_worker",
         event="prep_ready",
@@ -660,15 +637,9 @@ def _run_fg_job_sync_impl(
         owner_score_map,
         include_forced_counts=False,
     )
-    try:
-        song.runtime.fg.fg_run_wall_s = max(0.0, time.perf_counter() - float(run_wall_t0))
-    except AttributeError:
-        pass
+    song.runtime.fg.fg_run_wall_s = max(0.0, time.perf_counter() - float(run_wall_t0))
     song.runtime.fg.fg_variants = list(fg_variants or [])
-    try:
-        song.runtime.fg.cpu_fg_run_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
-    except AttributeError:
-        pass
+    song.runtime.fg.cpu_fg_run_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     emit_profile_event(
         component="inflight_fg_worker",
         event="dispatch_done",
