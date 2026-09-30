@@ -82,6 +82,17 @@ _OBSOLETE_SURFACE_SIDECAR_SUFFIXES = (".surf_pool.npy", ".surf_coeffs.npy")
 # persisted V30 sidecars were byte-identical. Keep this ratified pair explicit: a future DP change
 # receives a different current fingerprint and therefore inherits no compatibility automatically.
 _EXACT_COMPATIBLE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Engine rewrite stage 2 (typed stat curves and songs replace the ref-array and calc_song dicts in
+    # timing_envelope, fg_policy and the cache key/serde/inner-host call sites) changes no producer logic: all
+    # 20 complete bundles of the ten capture charts (both timing modes) built by this code are byte-identical,
+    # one to one per chart and timing mode, to the deployed 529c17599261 producer's builds. Ratify the deployed
+    # version and its ratified predecessors (non-transitive).
+    "fg-response-frontier-visible-first-v31+logic-fc7fff0f4398": (
+        "fg-response-frontier-visible-first-v31+logic-529c17599261",
+        "fg-response-frontier-visible-first-v31+logic-260f7b254d34",
+        "fg-response-frontier-visible-first-v31+logic-d73bd8aab735",
+        "fg-response-frontier-visible-first-v31+logic-60e33a1d805f",
+    ),
     # Engine rewrite stage 1 (settings module, config.ini plumbing and debug switches removed, game-rule
     # constants moved verbatim from core/constants.py to rules.py) changes no producer logic: all 20 complete
     # bundles of the ten capture charts (both timing modes) rebuilt with this code are byte-identical to the

@@ -99,9 +99,10 @@ def test_issue161_perfect_edge_rotation_rejects_all_predecessors(
 ) -> None:
     payload = _build_small_payload()
     current_version = timeline_api._FRONTIER_DISK_CACHE_VERSION
-    assert current_version == "exact-frontier-v12+logic-ede645c00a02"
+    assert current_version == "exact-frontier-v12+logic-dac3ca4b6278"
     assert timeline_api.timeline_frontier_compatible_cache_versions() == (
         current_version,
+        "exact-frontier-v12+logic-ede645c00a02",
         "exact-frontier-v12+logic-e2108556084d",
         "exact-frontier-v12+logic-920bc4af7ee6",
         "exact-frontier-v12+logic-be26caca62b4",
