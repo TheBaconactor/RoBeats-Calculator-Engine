@@ -34,19 +34,6 @@ def candidate_genome_ids(candidate: Any) -> tuple[int, ...] | None:
     return canonicalize_genome_ids(candidate.get("GenomeIDs"))
 
 
-def entry_genome_ids(entry: Any) -> tuple[int, ...] | None:
-    if not isinstance(entry, dict):
-        return None
-    ids = entry.get("ga_genome_ids")
-    if ids is None:
-        ids = entry.get("GenomeIDs")
-    if ids is None:
-        eval_data = entry.get("eval_data")
-        if isinstance(eval_data, dict):
-            ids = eval_data.get("GenomeIDs")
-    return canonicalize_genome_ids(ids)
-
-
 def _decode_names_from_registry(registry: Any, genome_ids: tuple[int, ...]) -> list[str]:
     ids_arr = np.asarray(genome_ids, dtype=np.int32)
     decode_names = getattr(registry, "decode_names", None)
@@ -143,54 +130,3 @@ def candidate_loadout_hash(
     from .loadout_hashing import resolve_loadout_hash
 
     return _remember(resolve_loadout_hash(gear_names, mini_names))
-
-
-def materialize_entry_names(entry: Any, *, mutate: bool = True) -> tuple[list[str], list[str]]:
-    if not isinstance(entry, dict):
-        return [], []
-
-    raw_gear = entry.get("gear") or []
-    raw_minis = entry.get("minis") or []
-    if raw_gear or raw_minis:
-        return names_list(raw_gear), names_list(raw_minis)
-
-    genome_ids = entry_genome_ids(entry)
-    if genome_ids is None:
-        return [], []
-
-    registry_obj = entry.get("_ga_registry")
-    if registry_obj is None:
-        return [], []
-
-    names = _decode_names_from_registry(registry_obj, genome_ids)
-    if len(names) < 9:
-        return [], []
-
-    gear_names = list(names[:6])
-    mini_names = list(names[6:9])
-    if mutate:
-        entry["gear"] = list(gear_names)
-        entry["minis"] = list(mini_names)
-    return gear_names, mini_names
-
-
-def entry_loadout_hash(entry: Any) -> str | None:
-    if not isinstance(entry, dict):
-        return None
-    explicit = entry.get("loadout_hash")
-    if explicit:
-        return str(explicit)
-    cached = entry.get("_resolved_loadout_hash")
-    if cached:
-        return str(cached)
-
-    gear_names, mini_names = materialize_entry_names(entry, mutate=True)
-    if not gear_names and not mini_names:
-        return None
-
-    from .loadout_hashing import resolve_loadout_hash
-
-    loadout_hash = resolve_loadout_hash(gear_names, mini_names)
-
-    entry["_resolved_loadout_hash"] = str(loadout_hash)
-    return str(loadout_hash)
