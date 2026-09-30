@@ -762,7 +762,17 @@ def _compress_cache_dir_sidecars_macos(directory: Path) -> None:
                 if not staged.is_file() or int(staged.stat().st_size) != int(source.stat().st_size):
                     logger.warning("FG cache APFS/HFS+ copy validation failed: %s", source)
                     return
-            for source, staged in zip(batch, staged_batch, strict=True):
+            compressed = [
+                (source, staged)
+                for source, staged in zip(batch, staged_batch, strict=True)
+                if not _sidecar_needs_filesystem_compression(staged)
+            ]
+            if not compressed:
+                # ditto wrote plain copies (macOS 27's ditto ignores --hfsCompression): swapping them in would
+                # rewrite every sidecar on each prebuild (20.8 GiB per timing mode on the service) for nothing.
+                logger.warning("FG cache APFS/HFS+ compression had no effect; sidecars stay uncompressed")
+                return
+            for source, staged in compressed:
                 os.replace(staged, source)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("FG cache APFS/HFS+ compression failed: %s", exc)
@@ -774,8 +784,9 @@ def compress_cache_dir_sidecars() -> None:
     """Losslessly compress exact sidecars while preserving the mmap-visible file bytes.
 
     Windows uses one NTFS WOF XPRESS16K pass. macOS copies uncompressed sidecars in bounded batches
-    through ``ditto --hfsCompression`` and atomically replaces each original; APFS/HFS+ then
-    decompresses pages transparently for ``np.load(mmap_mode="r")``. Unsupported platforms are a
+    through ``ditto --hfsCompression`` and atomically replaces each original whose copy came out
+    compressed (a batch with none stops the pass); APFS/HFS+ then decompresses pages transparently for
+    ``np.load(mmap_mode="r")``. Unsupported platforms are a
     no-op because no general filesystem-transparent compressor exists there. This is an external
     filesystem boundary and never changes cache semantics or the logic fingerprint.
     """

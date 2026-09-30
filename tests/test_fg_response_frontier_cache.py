@@ -1004,7 +1004,10 @@ def test_macos_sidecar_compression_copies_in_bounded_batches_and_preserves_bytes
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(store.sys, "platform", "darwin")
-    monkeypatch.setattr(store, "_sidecar_needs_filesystem_compression", lambda _path: True)
+    # The cache's sidecars are uncompressed; the staged ditto copies come out compressed.
+    monkeypatch.setattr(
+        store, "_sidecar_needs_filesystem_compression", lambda path: path.parent == tmp_path
+    )
     row_sidecar = tmp_path / f"deadbeef{store._SURFACE_ROW_SIDECAR_SUFFIX}"
     pattern_sidecar = tmp_path / f"deadbeef{store._SURFACE_PATTERN_SIDECAR_SUFFIX}"
     rows = np.arange(20000, dtype=np.uint32).reshape(5000, 4)
@@ -1012,6 +1015,7 @@ def test_macos_sidecar_compression_copies_in_bounded_batches_and_preserves_bytes
     store._save_surface_sidecar_atomic(row_sidecar, rows)
     store._save_surface_sidecar_atomic(pattern_sidecar, patterns)
     expected = {path.name: path.read_bytes() for path in (row_sidecar, pattern_sidecar)}
+    inodes = {path.name: path.stat().st_ino for path in (row_sidecar, pattern_sidecar)}
     calls: list[list[str]] = []
 
     def _fake_ditto(args, **_kwargs):
@@ -1031,6 +1035,44 @@ def test_macos_sidecar_compression_copies_in_bounded_batches_and_preserves_bytes
     assert len(calls) == 1
     assert row_sidecar.read_bytes() == expected[row_sidecar.name]
     assert pattern_sidecar.read_bytes() == expected[pattern_sidecar.name]
+    # Each original was replaced by its compressed copy.
+    assert all(path.stat().st_ino != inodes[path.name] for path in (row_sidecar, pattern_sidecar))
+    assert not (tmp_path / store._MACOS_COMPRESSION_STAGING_DIR).exists()
+
+
+def test_macos_sidecar_compression_leaves_the_cache_alone_when_ditto_writes_plain_copies(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """macOS 27's ditto ignores --hfsCompression: swapping its plain copies in would rewrite every sidecar on each
+    prebuild (20.8 GiB per timing mode on the service). One batch shows it; the pass stops there."""
+    import shutil
+
+    from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store as store
+
+    monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(store.sys, "platform", "darwin")
+    monkeypatch.setattr(store, "_sidecar_needs_filesystem_compression", lambda _path: True)
+    sidecars = []
+    for index in range(store._MACOS_COMPRESSION_BATCH_FILES + 8):
+        path = tmp_path / f"{index:08x}{store._SURFACE_ROW_SIDECAR_SUFFIX}"
+        store._save_surface_sidecar_atomic(path, np.arange(100, dtype=np.uint32) + index)
+        sidecars.append(path)
+    inodes = {path.name: path.stat().st_ino for path in sidecars}
+    calls: list[list[str]] = []
+
+    def _plain_ditto(args, **_kwargs):
+        command = [str(value) for value in args]
+        for source_text in command[3:-1]:
+            shutil.copy2(source_text, Path(command[-1]) / Path(source_text).name)
+        calls.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(store.subprocess, "run", _plain_ditto)
+
+    store.compress_cache_dir_sidecars()
+
+    assert len(calls) == 1
+    assert all(path.stat().st_ino == inodes[path.name] for path in sidecars)
     assert not (tmp_path / store._MACOS_COMPRESSION_STAGING_DIR).exists()
 
 
