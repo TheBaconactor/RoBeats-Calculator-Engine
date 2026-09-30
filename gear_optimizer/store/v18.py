@@ -5,7 +5,8 @@ team_buff_fg_loadouts: Force Greats board), item names as varint id blobs over t
 details. Every stored key is either carried into the records or listed in DROPPED (nothing reads it:
 copies of other values, GA internals, the six GA item keys, and the Mini Ascension song/color keys). A meta
 row's ForceGreats copy is its loadout's FG result: dropped when the FG row carries that result, kept as the FG
-replay of a loadout whose FG row was pruned (version 18 kept no FG gems for those).
+replay of a loadout whose FG row was pruned (version 18 kept no FG gems for those). Fields of the retired Force
+Greats configuration model (older job databases kept them) are stripped, as the store strips them on every write.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field
 
 from ..gamedata import STATS
+from ..helpers.song_helpers.fg_payload import strip_retired_fg_fields
 from .boards import Row
 from .records import SURFACE_SIZE, FgResult, Loadout, MetaResult, encode_trace
 from .schema import VERSION, create_tables
@@ -64,6 +66,7 @@ _GC_KEYS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Element")
 
 @dataclass
 class Report:
+    lenient: bool = False
     songs: int = 0
     meta_rows: int = 0
     fg_rows: int = 0
@@ -73,6 +76,11 @@ class Report:
     paired_score_conflicts: list[tuple[str, str, int, int]] = field(default_factory=list)
     meta_without_trace: list[tuple[str, str]] = field(default_factory=list)
     fg_replays: int = 0  # FG replays kept without an FG result (their FG row was pruned)
+    retired_fields: int = 0  # retired Force Greats configuration fields stripped
+    # lenient: FG rows whose redundant copies disagreed with the payload (the payload's values are kept), and
+    # songs stored without last_updated (their newest row's timestamp is used).
+    copy_disagreements: list[tuple[str, str, list[str]]] = field(default_factory=list)
+    songs_without_update: list[str] = field(default_factory=list)
 
 
 def read_rows(conn: sqlite3.Connection, song: str, report: Report | None = None) -> list[Row]:
@@ -104,25 +112,43 @@ def read_rows(conn: sqlite3.Connection, song: str, report: Report | None = None)
     return rows
 
 
-def song_list(conn: sqlite3.Connection, table: str = "songs") -> list[tuple[str, float]]:
+def song_list(conn: sqlite3.Connection, table: str = "songs", report: Report | None = None) -> list[tuple[str, float]]:
     """(name, last_updated) of every song, in insertion order."""
     out = conn.execute(f"SELECT name, last_updated FROM {table} ORDER BY rowid").fetchall()
     missing = [name for name, updated in out if updated is None]
-    if missing:
+    if missing and not (report is not None and report.lenient):
         raise ValueError(f"songs without last_updated: {missing[:5]}")
+    if missing:
+        report.songs_without_update.extend(missing)
+        newest = dict(
+            conn.execute(
+                "SELECT song_name, MAX(timestamp) FROM (SELECT song_name, timestamp FROM team_buff_loadouts"
+                " UNION ALL SELECT song_name, timestamp FROM team_buff_fg_loadouts) GROUP BY song_name"
+            )
+        )
+        out = [(name, newest.get(name) or 0.0 if updated is None else updated) for name, updated in out]
     return [(name, float(updated)) for name, updated in out]
 
 
-def migrate(conn: sqlite3.Connection, *, keep_v18_tables: bool, songs: Collection[str] | None = None) -> Report:
+def migrate(
+    conn: sqlite3.Connection,
+    *,
+    keep_v18_tables: bool,
+    songs: Collection[str] | None = None,
+    lenient: bool = False,
+) -> Report:
     """Migrate a version 18 database to version 19 in one transaction.
 
     keep_v18_tables leaves the old leaderboard and name tables in place (frozen) for readers that have not
-    switched yet; drop them later with drop_v18_tables.
+    switched yet; drop them later with drop_v18_tables. lenient (older optimizer job databases) reports instead
+    of stopping on two irregularities: an FG row whose redundant details copies disagree with its payload
+    carries the payload's values (the ones readers served), and a song without last_updated takes its newest
+    row's timestamp.
     """
-    report = Report()
+    report = Report(lenient=lenient)
     conn.execute("BEGIN IMMEDIATE")
     try:
-        song_rows = song_list(conn)
+        song_rows = song_list(conn, report=report)
         orphans = conn.execute(
             "SELECT DISTINCT song_name FROM team_buff_loadouts WHERE song_name NOT IN (SELECT name FROM songs)"
             " UNION SELECT DISTINCT song_name FROM team_buff_fg_loadouts WHERE song_name NOT IN (SELECT name FROM songs)"
@@ -164,7 +190,8 @@ def _loadout(song, meta_row, fg_row, gear_names, mini_names, report: Report) -> 
     meta = meta_trace = fg = fg_trace = None
     ascension = fg_copy = None
     if meta_row is not None:
-        details = json.loads(meta_row[6])
+        details, stripped = strip_retired_fg_fields(json.loads(meta_row[6]))
+        report.retired_fields += stripped
         if meta_row[7] is not None:
             raise ValueError(f"{song} {loadout_hash}: meta row with force_details_json")
         meta, meta_trace_payload, colors, ascension = _meta_part(song, loadout_hash, details, meta_row)
@@ -175,7 +202,7 @@ def _loadout(song, meta_row, fg_row, gear_names, mini_names, report: Report) -> 
         if fg_copy is not None and fg_copy.get("final_score") != int(meta_row[3] or 0):
             raise ValueError(f"{song} {loadout_hash}: the meta row's FG copy scores {fg_copy.get('final_score')}, the row {meta_row[3]}")
     if fg_row is not None:
-        fg, fg_trace_payload, fg_colors = _fg_part(song, loadout_hash, fg_row)
+        fg, fg_trace_payload, fg_colors = _fg_part(song, loadout_hash, fg_row, report)
         fg_trace = encode_trace(fg_trace_payload)
         if meta_row is None:
             colors = fg_colors
@@ -244,10 +271,11 @@ def _meta_part(song: str, loadout_hash: str, details: dict, meta_row):
     return meta, details.get("TimelineFrontier"), colors, ascension
 
 
-def _fg_part(song: str, loadout_hash: str, fg_row):
+def _fg_part(song: str, loadout_hash: str, fg_row, report: Report):
     score, fg_score = int(fg_row[2]), int(fg_row[3])
     details = json.loads(fg_row[6])
-    payload = json.loads(fg_row[7])
+    payload, stripped = strip_retired_fg_fields(json.loads(fg_row[7]))
+    report.retired_fields += stripped
     unexpected = set(payload) - _FG_KEYS - DROPPED["fg"]
     if unexpected or not _FG_KEYS <= set(payload):
         raise ValueError(f"{song} {loadout_hash}: FG payload keys {sorted(payload)}")
@@ -294,7 +322,9 @@ def _fg_part(song: str, loadout_hash: str, fg_row):
     copies["final_score"] = (trace.pop("final_score"), fg_score)
     differing = [name for name, (a, b) in copies.items() if a != b]
     if differing:
-        raise ValueError(f"{song} {loadout_hash}: FG copies differ: {differing}")
+        if not report.lenient:
+            raise ValueError(f"{song} {loadout_hash}: FG copies differ: {differing}")
+        report.copy_disagreements.append((song, loadout_hash, differing))
     if not trace.get("frontier_trace"):
         raise ValueError(f"{song} {loadout_hash}: FG payload without a frontier trace")
     return fg, trace, (details["pc"], details["sc"])

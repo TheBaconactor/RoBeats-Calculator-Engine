@@ -204,6 +204,41 @@ def test_a_meta_rows_fg_copy_must_score_the_rows_fg_score(tmp_path):
         v18.migrate(sqlite3.connect(path), keep_v18_tables=False)
 
 
+def test_retired_fg_configuration_fields_are_stripped(tmp_path):
+    path = tmp_path / "evolution.db"
+    w = V18Writer(path)
+    w.song("Song A")
+    retired = {"final_score": 1200, **FG_TRACE, "config": {"NonFever1": 2}, "forced_counts": [5, 1]}
+    payload = _fg_payload(700, 1200, ForceGreats=retired, forced_counts=[5, 1])
+    w.fg("Song A", "old-job", 700, 1200, GEAR, MINIS, _fg_details(700), payload)
+    w.close()
+    conn = sqlite3.connect(path)
+    report = v18.migrate(conn, keep_v18_tables=False)
+    conn.close()
+    assert report.retired_fields == 3
+    reader = schema.connect(path)
+    assert db.load_traces(reader, "Song A", "T5", ["old-job"])["old-job"].fg == FG_TRACE
+
+
+def test_lenient_migration_keeps_the_payload_and_dates_undated_songs(tmp_path):
+    path = tmp_path / "evolution.db"
+    w = V18Writer(path)
+    w.conn.execute("INSERT INTO songs VALUES ('Song A', 1, 1, NULL, 0, 0)")
+    details = {**_fg_details(700), "st": [1] * 10}  # an older job database's stats copy
+    w.fg("Song A", "old-job", 700, 1200, GEAR, MINIS, details, _fg_payload(700, 1200), timestamp=1_700_000_042)
+    w.close()
+    with pytest.raises(ValueError, match="songs without last_updated"):
+        v18.migrate(sqlite3.connect(path), keep_v18_tables=False)
+    conn = sqlite3.connect(path)
+    report = v18.migrate(conn, keep_v18_tables=False, lenient=True)
+    conn.close()
+    assert report.copy_disagreements == [("Song A", "old-job", ["details st"])]
+    assert report.songs_without_update == ["Song A"]
+    reader = schema.connect(path)
+    (x,) = db.iter_board(reader, "fg", tier="T5")
+    assert x.fg.stats == tuple(ST) and db.last_updated(reader) == {"Song A": 1_700_000_042.0}
+
+
 def test_disagreeing_copies_stop_the_migration(tmp_path):
     path = tmp_path / "evolution.db"
     w = V18Writer(path)
