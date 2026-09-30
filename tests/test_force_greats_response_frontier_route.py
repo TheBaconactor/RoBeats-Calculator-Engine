@@ -97,6 +97,20 @@ def _fake_fg_prepared_batch(base_stats_list, selected_color: str = "Rush"):
     )
 
 
+def _score_ga_candidates(ga_candidates, song, curves, primary):
+    """The pre-fusion reference route: plan the GA candidates, score the batches synchronously, reduce."""
+    from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
+    from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
+
+    return FgResponseScoringService.score_plan(FgPlanner.plan_many(ga_candidates, song, curves, primary))
+
+
+def _all_stats(**stats: int) -> dict[str, int]:
+    from gear_optimizer.gamedata import STATS
+
+    return {**{s: 0 for s in STATS}, **stats}
+
+
 def test_ftff_response_position_prune_matches_pair_prune_with_canonical_frontier_keys():
     from tests.parity.response_ftff_prune import (
         prune_dominated_ftff_response_pairs,
@@ -196,42 +210,6 @@ def test_ftff_response_position_prune_matches_bruteforce_randomized():
                         expected.append(int(idx))
 
             assert got.tolist() == expected
-
-
-def test_fg_response_scoring_failure_raises_directly(monkeypatch):
-    from gear_optimizer.helpers.song_helpers import force_greats
-
-    def _boom(*_args, **_kwargs):
-        raise RuntimeError("response frontier path failed")
-
-    monkeypatch.setattr(force_greats, "run_force_greats_response_frontier_for_ga_candidates", _boom)
-
-    class _Registry:
-        @staticmethod
-        def decode_names(ids):
-            return [f"I{int(x)}" for x in ids[:9]]
-
-    ga_candidates = [
-        {
-            "BaseScore": 321,
-            "GenomeIDs": [1, 2, 3, 4, 5, 6, 9, 8, 7],
-            "Data": {
-                "BaseStats": {"Perfect Points": 5, "Rush": 7},
-                "GemCounts": {"Perfect Points": 1},
-                "FT": 1,
-                "FF": 2,
-                "Selected Element": "Rush",
-            },
-        }
-    ]
-
-    with pytest.raises(RuntimeError, match="response frontier path failed"):
-        force_greats.run_force_greats_response_frontier_for_ga_candidates(
-            ga_candidates=ga_candidates,
-            song=make_song([1.0], mode="zero_ms"),
-            curves={},
-            meta_primary_color="Rush",
-        )
 
 
 def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(monkeypatch):
@@ -516,69 +494,6 @@ def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundl
     assert seen == {"session_prune": 1, "stat_keys": canonical_keys}
 
 
-def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
-    from gear_optimizer.helpers.song_helpers import force_greats
-
-    seen: list[tuple[int, object]] = []
-    registry = object()
-
-    def _fake_response_frontier(
-        ga_candidates,
-        song,
-        curves,
-        meta_primary_color,
-        *,
-        ga_registry=None,
-        scoring_bundle=None,
-        gpu_client=None,
-    ):
-        _ = (
-            song,
-            curves,
-            meta_primary_color,
-            scoring_bundle,
-            gpu_client,
-        )
-        seen.append((len(ga_candidates or []), ga_registry))
-        return [
-            {
-                "data": {
-                    "Score": 100 + len(seen),
-                    "BaseScore": 90,
-                    "ForceGreats": {},
-                    "response_surface": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
-                },
-                "gear": [f"G{len(seen)}"],
-                "minis": [f"M{len(seen)}"],
-                "score": 90,
-                "fg_score": 100 + len(seen),
-            }
-        ]
-
-    monkeypatch.setattr(force_greats, "run_force_greats_response_frontier_for_ga_candidates", _fake_response_frontier)
-
-    ga_candidates = [
-        {
-            "Gear": ["A"],
-            "Minis": ["B"],
-            "BaseScore": 90,
-            "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"},
-        }
-    ]
-
-    out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
-        ga_candidates=ga_candidates,
-        song=make_song([1.0], mode="zero_ms"),
-        curves={},
-        meta_primary_color="Rush",
-        ga_registry=registry,
-    )
-
-    assert seen == [(1, registry)]
-    assert len(out) == 1
-    assert int(out[0]["fg_score"]) == 101
-
-
 def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace_cache(monkeypatch):
     from types import SimpleNamespace
 
@@ -852,7 +767,6 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
 def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.helpers.song_helpers import force_greats
     import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
     import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
     from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
@@ -883,20 +797,6 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
         )
 
     monkeypatch.setattr(reducer_mod, "LOADOUTS_PER_SONG_LIMIT", 1)
-    monkeypatch.setattr(planner_mod, "eval_data_from_entry", lambda entry, primary: dict(entry["eval_data"]))
-    monkeypatch.setattr(
-        planner_mod, "expected_selected_element", lambda entry, primary: str(entry["eval_data"]["Selected Element"])
-    )
-    monkeypatch.setattr(
-        planner_mod.FgPlanner,
-        "base_stats_for_response_frontier",
-        staticmethod(lambda eval_data, selected: {"Perfect Points": int(eval_data["pp"])}),
-    )
-    monkeypatch.setattr(
-        reducer_mod,
-        "materialize_entry_names",
-        lambda entry, mutate=True: (list(entry["gear"]), list(entry["minis"])),
-    )
     monkeypatch.setattr(
         planner_mod,
         "prepare_force_greats_response_frontier_scoring_batch",
@@ -916,49 +816,37 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
             "FT": 0,
             "FF": 0,
             "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Overflow": 0},
+            "Stats": _all_stats(),
             "ForceGreats": {},
             "response_surface": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         }
 
     monkeypatch.setattr(reducer_mod, "materialize_force_payload_from_response_frontier", _fake_force_payload)
-    # The reducer's winner pre-gate rescoring runs before the (faked) payload builder; fake the
-    # same seam the builder fake used to cover so every top-limit candidate survives the gate.
-    monkeypatch.setattr(
-        reducer_mod,
-        "score_force_greats_response_surface_exact",
-        lambda stats, song, curves, surface: 100,
-    )
 
     candidates = [
         {
             "Gear": ["G1"],
             "Minis": ["M1"],
             "BaseScore": 50,
-            "Data": {"Selected Element": "Rush", "pp": 1},
+            "Data": {"Selected Element": "Rush", "BaseStats": {"Perfect Points": 1}},
         },
         {
             "Gear": ["G2"],
             "Minis": ["M2"],
             "BaseScore": 40,
-            "Data": {"Selected Element": "Rush", "pp": 2},
+            "Data": {"Selected Element": "Rush", "BaseStats": {"Perfect Points": 2}},
         },
     ]
 
     monkeypatch.setattr(
         GpuScoreEngine,
         "score_plan",
-        staticmethod(lambda _plan, **kwargs: ([[_result(100, 10, 20), _result(90, 30, 40)]], [])),
+        staticmethod(lambda _plan: [[_result(100, 10, 20), _result(90, 30, 40)]]),
     )
-    out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
-        candidates,
-        song=_minimal_fg_song(),
-        curves=_minimal_fg_ref_arrays(),
-        meta_primary_color="Rush",
-    )
+    out = _score_ga_candidates(candidates, _minimal_fg_song(), _minimal_fg_ref_arrays(), "Rush")
 
     assert seen_payloads == [(100, None)]
-    assert len(out) == 1
-    assert int(out[0]["fg_score"]) == 100
+    assert [(loadout.gear, fg.score) for loadout, fg in out] == [(("G1",), 100)]
 
 
 def test_response_frontier_prunes_duplicate_constant_ftff_frontiers_by_best_residual():
@@ -1148,7 +1036,6 @@ def test_response_frontier_ftff_antichain_matches_naive_dominance():
 def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.helpers.song_helpers import force_greats
     import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
     import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
     from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
@@ -1223,23 +1110,16 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
     monkeypatch.setattr(
         GpuScoreEngine,
         "score_plan",
-        staticmethod(lambda plan, **kwargs: ([_fake_score_batch(plan.prepared_batches[0].batch)], [])),
+        staticmethod(lambda plan: [_fake_score_batch(plan.prepared_batches[0].batch)]),
     )
-    out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
+    out = _score_ga_candidates(
         [
             {
                 "BaseScore": 100,
                 "Gear": ["G1"],
                 "Minis": ["M1"],
                 "Data": {
-                    "BaseStats": {
-                        "Perfect Points": 0,
-                        "Combo Multiplier": 0,
-                        "Fever Multiplier": 0,
-                        "Fever Time": 0,
-                        "Fever Fill Rate": 0,
-                        "Rush": 10,
-                    },
+                    "BaseStats": _all_stats(Rush=10),
                     "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 1},
                     "FT": 0,
                     "FF": 0,
@@ -1255,15 +1135,11 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert len(calls[0][0]) == 1
     assert calls[0][1] == "Rush"
-    assert len(out) == 1
-    assert out[0]["fg_score"] == 150
-    assert out[0]["base_score"] == 100
-    assert out[0]["data"]["BaseScore"] == 100
-    assert out[0]["data"]["FT"] == 6
-    assert out[0]["data"]["FF"] == 7
-    assert out[0]["data"]["GemCounts"]["Element"] == 4
-    assert set(out[0]["data"]["ForceGreats"]) == {
-        "final_score",
+    ((loadout, fg),) = out
+    assert (loadout.gear, loadout.minis) == (("G1",), ("M1",))
+    assert (fg.element, fg.score, fg.paired) == ("Rush", 150, 100)
+    assert fg.gems == (1, 2, 3, 6, 7, 4)  # stats.GEM_KINDS: PP, CM, FM, FT, FF, Element
+    assert set(fg.trace) == {
         # Fever-window params persisted for the legality audit + frontend timing graph (reducer.py).
         "raw_fever_fill",
         "real_fever_time",
@@ -1274,15 +1150,15 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
         "frontier_transitions",
         "non_fever_base",
     }
-    assert out[0]["gear"] == ["G1"]
-    assert out[0]["minis"] == ["M1"]
 
 
 def test_fg_response_scoring_emits_every_result_with_its_authoritative_paired_base(tmp_path, monkeypatch):
     """Every evaluated FG result is emitted (it stays attached to its loadout, owner 09-30) with the paired base
-    it was solved against; only a winner (FG beats that base) updates its GA entry."""
+    it was solved against, whether or not it beats it."""
     from types import SimpleNamespace
 
+    from gear_optimizer.pipeline.results import SolvedLoadout
+    from gear_optimizer.solver.fg_response_scoring.planner import FgJob
     from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
     import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
 
@@ -1297,18 +1173,19 @@ def test_fg_response_scoring_emits_every_result_with_its_authoritative_paired_ba
             "FF": 0,
             "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Overflow": 0},
             "forced_counts": [],
+            "Stats": _all_stats(),
             "response_surface": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             "ForceGreats": {},
         },
     )
-    keep = {"base_score": 100, "gear": ["RawBaseInflated"], "minis": ["M1"], "fg_score": 0, "_source": "ga"}
-    drop = {"base_score": 160, "gear": ["BelowSourcePair"], "minis": ["M2"], "fg_score": 0, "_source": "ga"}
     keep_stats = {"Perfect Points": 0}
     drop_stats = {"Perfect Points": 1}
+    keep = FgJob(SolvedLoadout(("RawBaseInflated",), ("M1",)), "Rush", keep_stats, 100, "keep")
+    drop = FgJob(SolvedLoadout(("BelowSourcePair",), ("M2",)), "Rush", drop_stats, 160, "drop")
     plan = SimpleNamespace(
         song=_minimal_fg_song(),
         curves=_minimal_fg_ref_arrays(),
-        pending_jobs=((keep, {}, "Rush", keep_stats, 100, "keep"), (drop, {}, "Rush", drop_stats, 160, "drop")),
+        jobs=(keep, drop),
         prepared_batches=(
             SimpleNamespace(
                 batch=_fake_fg_prepared_batch([keep_stats, drop_stats], "Rush"),
@@ -1322,19 +1199,15 @@ def test_fg_response_scoring_emits_every_result_with_its_authoritative_paired_ba
     ]
     out = FgResultReducer.materialize(plan, [results])
 
-    assert [(row["gear"], row["base_score"], row["fg_score"]) for row in out] == [
-        (["RawBaseInflated"], 100, 150),
-        (["BelowSourcePair"], 160, 150),
+    assert [(loadout.gear, fg.paired, fg.score) for loadout, fg in out] == [
+        (("RawBaseInflated",), 100, 150),
+        (("BelowSourcePair",), 160, 150),
     ]
-    assert [row["data"]["BaseScore"] for row in out] == [100, 160]
-    assert keep["fg_base_score"] == 100
-    assert "fg_base_score" not in drop
 
 
 def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from gear_optimizer.helpers.song_helpers import force_greats
     import gear_optimizer.solver.fg_response_scoring.planner as planner_mod
     import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
     from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
@@ -1416,21 +1289,21 @@ def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
     monkeypatch.setattr(
         GpuScoreEngine,
         "score_plan",
-        staticmethod(lambda plan, **kwargs: ([_fake_score_batch(plan.prepared_batches[0].batch)], [])),
+        staticmethod(lambda plan: [_fake_score_batch(plan.prepared_batches[0].batch)]),
     )
-    out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
+    out = _score_ga_candidates(
         [
             {
                 "BaseScore": 100,
                 "Gear": ["G1"],
                 "Minis": ["M1"],
-                "Data": {"BaseStats": {"Perfect Points": 0, "Rush": 10}, "Selected Element": "Rush"},
+                "Data": {"BaseStats": _all_stats(Rush=10), "Selected Element": "Rush"},
             },
             {
                 "BaseScore": 101,
                 "Gear": ["G2"],
                 "Minis": ["M2"],
-                "Data": {"BaseStats": {"Perfect Points": 0, "Rush": 11}, "Selected Element": "Rush"},
+                "Data": {"BaseStats": _all_stats(Rush=11), "Selected Element": "Rush"},
             },
         ],
         _stub_song(2),
@@ -1439,4 +1312,4 @@ def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
     )
 
     assert calls == [2]
-    assert [row["fg_score"] for row in out] == [201, 200]
+    assert [fg.score for _loadout, fg in out] == [201, 200]

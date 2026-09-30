@@ -1,7 +1,7 @@
 import pytest
 
 from gear_optimizer.gamedata import STATS
-from gear_optimizer.pipeline.results import SolvedLoadout, song_solve
+from gear_optimizer.pipeline.results import SolvedLoadout, solved_fg, song_solve
 from tests.native_song_factory import make_native_song
 
 GEAR_A = ["Hat A", "Neck A", "Face A", "Shirt A", "Back A", "Pants A"]
@@ -41,9 +41,7 @@ def _song(**kwargs):
         curves="curves",
         fg_surface_prepared=True,
         ga_candidates=[{"Gear": GEAR_A, "Minis": MINIS, "Score": 1000}, {"Gear": GEAR_B, "Minis": MINIS}],
-        fg_variants=[
-            {"gear": GEAR_B, "minis": MINIS, "score": 900, "base_score": 900, "fg_score": 1500, "data": _payload()}
-        ],
+        fg_results=((SolvedLoadout(tuple(GEAR_B), tuple(MINIS)), solved_fg(_payload(), default_element="Flow")),),
     )
     fields.update(kwargs)
     return make_native_song(**fields)
@@ -53,23 +51,29 @@ def test_a_solved_song_is_its_ga_surface_with_the_fg_results_it_published():
     solve = song_solve(_song())
     assert (solve.song, solve.tier, solve.timed, solve.curves) == ("Song A", "T5", "timed", "curves")
     assert solve.loadouts == (SolvedLoadout(tuple(GEAR_A), tuple(MINIS)), SolvedLoadout(tuple(GEAR_B), tuple(MINIS)))
-    ((index, fg),) = solve.fg
-    assert index == 1
+    assert solve.fg == ((1, solved_fg(_payload(), default_element="Flow")),)
+
+
+def test_an_fg_payload_is_read_as_the_result_it_describes():
+    fg = solved_fg(_payload(), default_element="Beat")
     assert (fg.element, fg.score, fg.paired, fg.surface) == ("Flow", 1500, 1000, tuple(range(11)))
     assert fg.gems == (1, 9, 11, 5, 2, 60)  # stats.GEM_KINDS: PP, CM, FM, FT, FF, Element
     assert fg.stats == tuple(FG_STATS[s] for s in STATS)
     # The replay witness without its score and the retired FG configuration fields.
     assert fg.trace == {"frontier_trace": [{"next_state": 2}], "raw_fever_fill": 1.5}
+    # A payload that names no element is the song's primary element.
+    unnamed = {k: v for k, v in _payload().items() if k != "Selected Element"}
+    assert solved_fg(unnamed, default_element="Beat").element == "Beat"
 
 
 def test_results_are_read_only_after_the_fg_stage():
     with pytest.raises(RuntimeError, match="after the FG stage"):
-        song_solve(_song(fg_variants=None))
+        song_solve(_song(fg_results=None))
     with pytest.raises(RuntimeError, match="after the FG stage"):
         song_solve(_song(fg_surface_prepared=False))
 
 
 def test_an_fg_result_must_belong_to_a_surface_loadout():
-    stray = {"gear": ["Other"] * 6, "minis": MINIS, "score": 1, "base_score": 1, "fg_score": 2, "data": _payload()}
+    stray = (SolvedLoadout(("Other",) * 6, tuple(MINIS)), solved_fg(_payload(), default_element="Flow"))
     with pytest.raises(RuntimeError, match="outside the GA surface"):
-        song_solve(_song(fg_variants=[stray]))
+        song_solve(_song(fg_results=(stray,)))

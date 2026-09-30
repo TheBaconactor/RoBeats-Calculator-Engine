@@ -229,11 +229,6 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
     decoded, song, curves = real_ga_run
     assert decoded, "no GA candidates decoded"
 
-    def _entry_key(entry: dict) -> tuple[int, ...]:
-        ids = entry.get("ga_genome_ids") or entry.get("GenomeIDs")
-        assert ids is not None, "FG plan entry is missing genome ids for the parity key"
-        return tuple(int(x) for x in ids)
-
     def _result_signature(result, base_stats) -> tuple:
         exact = score_force_greats_response_surface_exact(result.stats, song, curves, result.surface)
         return (
@@ -259,16 +254,16 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
         # RAW per-batch solve results, map back to each candidate by cache_key. ---
         prefusion_candidates = [copy.deepcopy(c) for c in decoded]
         prefusion_plan = FgPlanner.plan_many(prefusion_candidates, song, curves, _PRIMARY_COLOR)
-        prefusion_results, _timings = GpuScoreEngine.score_plan(prefusion_plan, gpu_client=None)
+        prefusion_results = GpuScoreEngine.score_plan(prefusion_plan)
         prefusion_result_by_cache_key: dict = {}
         for prepared, results in zip(prefusion_plan.prepared_batches, prefusion_results, strict=True):
             for (cache_key, _bs), result in zip(prepared.rows, results, strict=True):
                 prefusion_result_by_cache_key[cache_key] = result
-        prefusion_by_key: dict = {}
-        for entry, _ed, _sel, base_stats, _pbs, cache_key in prefusion_plan.pending_jobs:
-            prefusion_by_key[_entry_key(entry)] = _result_signature(
-                prefusion_result_by_cache_key[cache_key], base_stats
-            )
+        # Both plans come from the same candidates in the same order: jobs pair up by position.
+        prefusion_by_key: dict = {
+            index: _result_signature(prefusion_result_by_cache_key[job.key], job.base_stats)
+            for index, job in enumerate(prefusion_plan.jobs)
+        }
 
         # --- Fused route: derive base_components from device base_stats7, score on
         # the owner, then materialize each plan candidate from the owner map. ---
@@ -284,28 +279,26 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
             selected_color=_SELECTED_COLOR,
             scoring_bundle=scoring_bundle,
         )
+        # As the production materializer: a job's owner row is keyed by its batch row's base_components.
+        base_components_by_cache_key = {
+            cache_key: tuple(int(v) for v in prepared.batch.base_components[row_idx].tolist())
+            for prepared in fused_plan.prepared_batches
+            for row_idx, (cache_key, _bs) in enumerate(prepared.rows)
+        }
         fused_by_key: dict = {}
-        for entry, eval_data, selected, base_stats, _pbs, _cache_key in fused_plan.pending_jobs:
-            bc = tuple(
-                int(v)
-                for v in response_frontier_base_components_row(
-                    base_stats,
-                    eval_data.get(FG_BASE_STATS7_KEY),
-                    primary_color=_PRIMARY_COLOR,
-                    secondary_color=_SECONDARY_COLOR,
-                )
-            )
+        for index, job in enumerate(fused_plan.jobs):
+            bc = base_components_by_cache_key[job.key]
             score_row = owner_map.get(bc)
             assert score_row is not None, f"owner map missing base_components {bc}"
             solve_result = build_fused_owner_solve_result_from_score_row(
                 score_row=score_row,
-                base_stats=base_stats,
-                selected_color=selected,
+                base_stats=job.base_stats,
+                selected_color=job.selected,
                 song=song,
                 curves=curves,
                 scoring_bundle=scoring_bundle,
             )
-            fused_by_key[_entry_key(entry)] = _result_signature(solve_result, base_stats)
+            fused_by_key[index] = _result_signature(solve_result, job.base_stats)
 
     assert prefusion_by_key, "pre-fusion route produced no candidate results to compare"
     assert set(prefusion_by_key) == set(fused_by_key), "fused and pre-fusion routes scored different candidate sets"
@@ -313,7 +306,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
     for entry_key, pre_sig in prefusion_by_key.items():
         fused_sig = fused_by_key.get(entry_key)
         if fused_sig != pre_sig:
-            mismatches.append(f"ids={entry_key}:\n  prefusion={pre_sig}\n  fused    ={fused_sig}")
+            mismatches.append(f"job {entry_key}:\n  prefusion={pre_sig}\n  fused    ={fused_sig}")
     assert not mismatches, (
         "fused owner continuation FG results differ from the pre-fusion route — NOT bit-exact:\n"
         + "\n".join(mismatches[:10])

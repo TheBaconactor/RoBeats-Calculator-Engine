@@ -46,14 +46,15 @@ def _prepared_batch(base_components, rows):
 
 
 def _prepared_plan(base_components, base_stats=None):
+    from gear_optimizer.pipeline.results import SolvedLoadout
+    from gear_optimizer.solver.fg_response_scoring.planner import FgJob
+
     planner_key = ("ck0",)
     stats = dict(base_stats or {"Perfect Points": 1})
-    entry = {"loadout_hash": "ck0"}
-    eval_data = {"BaseStats": dict(stats), "Selected Element": "Rush"}
     return SimpleNamespace(
         song=_song(),
         curves=_curves(),
-        pending_jobs=((entry, eval_data, "Rush", stats, 100, planner_key),),
+        jobs=(FgJob(SolvedLoadout(("Hat",) * 6, ("Mini",) * 3), "Rush", stats, 100, planner_key),),
         prepared_batches=[
             SimpleNamespace(
                 batch=_prepared_batch(base_components, rows=[(planner_key, stats)]),
@@ -95,7 +96,7 @@ def _make_fg_song(plan, owner_score_map, **overrides):
         song_name="Fused FG (Hard) by pytest",
         db_key="fused-fg-hard",
         fp="Data/Hard/Fused FG (Hard) by pytest.txt",
-        fg_variants=[],
+        fg_results=(),
     )
     kwargs.update(overrides)
     song = make_native_song(**kwargs)
@@ -159,6 +160,28 @@ def test_fg_materialization_requires_the_owner_score_map():
         raise AssertionError("expected a missing owner FG score map to fail loudly")
 
 
+def test_fg_materialization_returns_the_reduced_results_with_its_timings(monkeypatch):
+    from gear_optimizer.solver import fg_materialization_worker as worker
+    from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
+
+    reduced = [("loadout", "fg result")]
+    seen = []
+
+    def _materialize(plan, owner_score_map):
+        seen.append((plan, owner_score_map))
+        return reduced
+
+    monkeypatch.setattr(FgResponseScoringService, "materialize_from_owner_score_map", staticmethod(_materialize))
+    plan = SimpleNamespace(prepared_batches=())
+    request = worker.FgMaterializationRequest(song_key="song", plan=plan, owner_score_map={(1,): "row"})
+
+    result = worker.materialize_fg_request(request)
+
+    assert seen == [(plan, {(1,): "row"})]
+    assert result.results == (("loadout", "fg result"),)
+    assert result.wall_seconds >= 0.0 and result.cpu_seconds >= 0.0
+
+
 def test_materialize_from_owner_score_map_fails_on_missing_base_components(tmp_path):
     from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
 
@@ -171,12 +194,6 @@ def test_materialize_from_owner_score_map_fails_on_missing_base_components(tmp_p
         assert "missing base_components" in str(exc).lower()
     else:
         raise AssertionError("expected a missing owner-map base_components row to fail loudly")
-
-
-def test_native_fg_pipeline_does_not_expose_direct_force_greats_route():
-    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
-
-    assert not hasattr(fg_pipeline, "run_force_greats_response_frontier_for_ga_candidates")
 
 
 def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
@@ -207,7 +224,7 @@ def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
         song_name="Prep No RoundTrip (Hard) by pytest",
         db_key="prep-no-roundtrip-hard",
         fp="Data/Hard/Prep No RoundTrip (Hard) by pytest.txt",
-        fg_variants=[],
+        fg_results=(),
     )
 
     # gpu_client is accepted but unused: the fused handoff prefetches NO owner

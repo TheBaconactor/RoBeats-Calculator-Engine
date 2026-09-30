@@ -216,10 +216,7 @@ def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTrac
         prev_best_score, prev_best_fg, baseline_valid = progress_tracker.snapshot(key)
     best_data = song.runtime.decode.best_data or {}
     run_score = safe_int(best_data.get("BaseScore") or best_data.get("Score", 0), 0)
-    run_fg = max(
-        (int(v["fg_score"]) for v in song.runtime.fg.fg_variants or () if int(v["fg_score"]) > int(v["base_score"])),
-        default=0,
-    )
+    run_fg = max((fg.score for _loadout, fg in song.runtime.fg.fg_results or () if fg.score > fg.paired), default=0)
     record_info = run_record_info(run_score, run_fg, prev_best_score, prev_best_fg, baseline_valid=baseline_valid)
     record_info["song"] = native_song_label(song)
     if progress_tracker is not None and key and (record_info["is_better"] or record_info["is_fg_better"]):

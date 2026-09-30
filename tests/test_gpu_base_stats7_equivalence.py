@@ -275,8 +275,7 @@ def _raw_fg_scores(plan) -> list[list[int]]:
     """Per-batch, per-row raw FG best_score (before the winner-emit gate)."""
     from gear_optimizer.solver.fg_response_scoring.gpu_engine import GpuScoreEngine
 
-    prepared_results, _timings = GpuScoreEngine.score_plan(plan, gpu_client=None)
-    return [[int(r.best_score) for r in batch_results] for batch_results in prepared_results]
+    return [[int(r.best_score) for r in batch_results] for batch_results in GpuScoreEngine.score_plan(plan)]
 
 
 def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> None:

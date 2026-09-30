@@ -10,7 +10,7 @@ import numpy as np
 
 from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
-from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
+from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
 from gear_optimizer.solver.fg_response_scoring.planner import (
     FgResponseFrontierPreparedBatch,
     FgResponseFrontierPreparedPlan,
@@ -38,38 +38,9 @@ class FgMaterializationRequest:
 
 @dataclass(frozen=True, slots=True)
 class FgMaterializationResult:
-    variants: tuple[dict[str, Any], ...]
+    results: tuple[tuple[SolvedLoadout, SolvedFg], ...]  # every evaluated FG result, best FG score first
     wall_seconds: float
     cpu_seconds: float
-
-
-def _compact_materialized_variant(variant: dict[str, Any]) -> dict[str, Any]:
-    """Keep the canonical persistence/progress surface and drop reducer internals."""
-
-    return {
-        "data": variant.get("data") or {},
-        "gear": list(variant.get("gear") or []),
-        "minis": list(variant.get("minis") or []),
-        "score": int(variant.get("score", 0) or 0),
-        "base_score": int(variant.get("base_score", variant.get("score", 0)) or 0),
-        "fg_score": int(variant.get("fg_score", 0) or 0),
-        "_is_ga": bool(variant.get("_is_ga")),
-    }
-
-
-def _compact_entry(entry: dict[str, Any], eval_data: dict[str, Any]) -> dict[str, Any]:
-    """Remove driver-only object graphs after resolving the persisted identity."""
-
-    gear_names, mini_names = materialize_entry_names(entry, mutate=False)
-    compact = {
-        key: value
-        for key, value in entry.items()
-        if key not in {"_candidate_ref", "_ga_registry", "eval_data", "gear", "minis"}
-    }
-    compact["gear"] = list(gear_names)
-    compact["minis"] = list(mini_names)
-    compact["eval_data"] = eval_data
-    return compact
 
 
 def build_fg_materialization_request(song: Any) -> FgMaterializationRequest:
@@ -85,22 +56,6 @@ def build_fg_materialization_request(song: Any) -> FgMaterializationRequest:
 
     timed_song = plan.song
     curves = plan.curves
-    pending_jobs = []
-    for entry, eval_data, selected, base_stats, paired_base_score, cache_key in plan.pending_jobs:
-        if not isinstance(entry, dict) or not isinstance(eval_data, dict) or not isinstance(base_stats, dict):
-            raise ValueError("FG process materialization received an invalid prepared job")
-        eval_data_copy = dict(eval_data)
-        pending_jobs.append(
-            (
-                _compact_entry(entry, eval_data_copy),
-                eval_data_copy,
-                str(selected or ""),
-                dict(base_stats),
-                int(paired_base_score),
-                tuple(cache_key),
-            )
-        )
-
     prepared_batches = []
     for prepared in plan.prepared_batches:
         batch = prepared.batch
@@ -123,7 +78,7 @@ def build_fg_materialization_request(song: Any) -> FgMaterializationRequest:
     compact_plan = FgResponseFrontierPreparedPlan(
         song=timed_song,
         curves=curves,
-        pending_jobs=tuple(pending_jobs),
+        jobs=plan.jobs,
         prepared_batches=tuple(prepared_batches),
     )
     song_key = str(
@@ -146,17 +101,9 @@ def materialize_fg_request(request: FgMaterializationRequest) -> FgMaterializati
     wall_t0 = time.perf_counter()
     cpu_t0 = time.process_time()
     try:
-        variants = FgResponseScoringService.materialize_from_owner_score_map(
-            request.plan,
-            request.owner_score_map,
-            include_forced_counts=False,
-        )
+        results = FgResponseScoringService.materialize_from_owner_score_map(request.plan, request.owner_score_map)
         return FgMaterializationResult(
-            variants=tuple(
-                _compact_materialized_variant(variant)
-                for variant in (variants or ())
-                if isinstance(variant, dict)
-            ),
+            results=tuple(results),
             wall_seconds=max(0.0, time.perf_counter() - wall_t0),
             cpu_seconds=max(0.0, time.process_time() - cpu_t0),
         )

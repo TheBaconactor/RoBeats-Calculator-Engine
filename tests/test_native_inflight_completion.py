@@ -91,7 +91,7 @@ class _ProgressTracker:
 
 def test_emit_song_results_posts_the_solve_and_marks_the_song_completed(monkeypatch):
     monkeypatch.setattr(completion, "song_solve", lambda song: ("solve", song.config.task_key))
-    song = make_native_song(song_name="Song C", task_key="song-c", fg_variants=[])
+    song = make_native_song(song_name="Song C", task_key="song-c", fg_results=())
     completed = set()
     memory = _MemoryResumeTracker()
     progress = _ProgressTracker()
@@ -119,7 +119,7 @@ def test_emit_song_results_posts_the_solve_and_marks_the_song_completed(monkeypa
 def test_emit_song_results_advances_a_repeat_bundle_instead(monkeypatch):
     monkeypatch.setattr(completion, "song_solve", lambda song: "solve")
     parent = object()
-    song = make_native_song(song_name="Song Bundle", task_key="song-bundle", fg_variants=[])
+    song = make_native_song(song_name="Song Bundle", task_key="song-bundle", fg_results=())
     song.runtime.bundle.bundle_parent_task = parent
     song.runtime.db.record_info = {"improved": True}
     advanced, completed, posted = [], set(), []

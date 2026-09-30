@@ -1,7 +1,14 @@
 from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.solver.native_inflight_lifecycle import ProgressTracker, evaluate_fg_progress_record_update
 from gear_optimizer.solver.native_inflight_lifecycle_progress import RECORD_UPDATE_SCORE_EPSILON
+from gear_optimizer.gamedata import STATS
+from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
 from tests.native_song_factory import make_native_song
+
+
+def _fg(*, score: int, paired: int) -> SolvedFg:
+    return SolvedFg(element="Rush", gems=(0,) * 6, stats=(0,) * len(STATS), surface=(0,) * 11, trace={},
+                    score=score, paired=paired)
 
 
 def _make_minimal_app() -> GearOptimizerApp:
@@ -87,13 +94,7 @@ def test_new_counter_counts_native_fg_record_event_before_tracker_advances():
         db_key="fg-song",
         task_key="FG Song (Hard)",
         best_data={"BaseScore": 1000},
-        fg_variants=[
-            {
-                "base_score": 1000,
-                "fg_score": 1050,
-                "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
-            }
-        ],
+        fg_results=((SolvedLoadout(("Hat",) * 6, ("Mini",) * 3), _fg(score=1050, paired=1000)),),
         db_best_score=1000,
         db_best_fg_score=900,
     )

@@ -1,6 +1,7 @@
 """Canonical FG response-frontier scoring surface (plan → score → reduce)."""
 
 __all__ = [
+    "FgJob",
     "FgPlanner",
     "FgResponseFrontierPreparedBatch",
     "FgResponseFrontierPreparedPlan",
@@ -12,6 +13,7 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = {
+    "FgJob": "gear_optimizer.solver.fg_response_scoring.planner",
     "FgPlanner": "gear_optimizer.solver.fg_response_scoring.planner",
     "FgResponseFrontierPreparedBatch": "gear_optimizer.solver.fg_response_scoring.planner",
     "FgResponseFrontierPreparedPlan": "gear_optimizer.solver.fg_response_scoring.planner",

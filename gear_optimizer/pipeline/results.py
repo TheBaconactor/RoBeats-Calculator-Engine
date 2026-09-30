@@ -2,8 +2,8 @@
 
 The song as timed for the solve, the stat curves, the GA's selected surface (the best effective loadouts, best
 first) and the Force Greats results the FG stage published for some of them, in the order it published them.
-Built from the pipeline's decode surface and FG variants (song_solve) until the GA and FG stages return typed
-results themselves.
+The FG stage hands typed results; the surface is read from the pipeline's decode state (song_solve) until the
+GA stage returns typed results too.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from ..gamedata import ELEMENTS, STATS, StatCurves
 from ..helpers.song_helpers.fg_payload import require_response_surface, strip_retired_fg_fields
 from ..helpers.song_helpers.force_greats.result_application import read_visible_stats
 from ..helpers.song_helpers.ga_entry_utils import materialize_candidate_names
-from ..helpers.song_helpers.item_utils import names_list
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, gems
 
@@ -56,19 +55,18 @@ class SongSolve:
 def song_solve(song: Any) -> SongSolve:
     """The results of a NativeSong whose FG stage has finished."""
     runtime = song.runtime
-    if not runtime.decode.fg_surface_prepared or runtime.fg.fg_variants is None:
+    if not runtime.decode.fg_surface_prepared or runtime.fg.fg_results is None:
         raise RuntimeError(f"{song.config.task_key}: results are read after the FG stage")
     loadouts = []
     for candidate in runtime.decode.ga_candidates:
         gear, minis = materialize_candidate_names(candidate, registry=song.gpu_inputs.registry, mutate=False)
         loadouts.append(SolvedLoadout(tuple(gear), tuple(minis)))
-    index = {(x.gear, x.minis): i for i, x in enumerate(loadouts)}
+    index = {x: i for i, x in enumerate(loadouts)}
     fg = []
-    for variant in runtime.fg.fg_variants:
-        key = (tuple(names_list(variant["gear"])), tuple(names_list(variant["minis"])))
-        if key not in index:
-            raise RuntimeError(f"{song.config.task_key}: an FG result for a loadout outside the GA surface {key}")
-        fg.append((index[key], solved_fg(variant["data"], default_element=song.gpu_inputs.meta_primary_color)))
+    for loadout, solved in runtime.fg.fg_results:
+        if loadout not in index:
+            raise RuntimeError(f"{song.config.task_key}: an FG result for a loadout outside the GA surface {loadout}")
+        fg.append((index[loadout], solved))
     return SongSolve(
         song=str(song.config.db_key),
         tier=OPTIMIZER_BASELINE_TEAM_BUFF,

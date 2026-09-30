@@ -125,22 +125,20 @@ def test_native_fg_pipeline_queue_pop_and_submit():
         pipeline.shutdown_prep(wait=True, cancel_futures=True)
 
 
-def test_fg_materialization_request_strips_driver_only_object_graphs_and_pickles():
-    unpicklable = lambda: None  # noqa: E731
-    eval_data = {"Stats": {"Vibe": 10}, "BaseScore": 123}
+def test_fg_materialization_request_compacts_the_batches_and_pickles():
+    from gear_optimizer.pipeline.results import SolvedLoadout
+    from gear_optimizer.solver.fg_materialization_worker import FgMaterializationBatch
+    from gear_optimizer.solver.fg_response_scoring.planner import FgJob
+
     base_stats = {"Vibe": 10}
     cache_key = ("Vibe", (("Vibe", 10),))
-    entry = {
-        "gear": [f"gear-{idx}" for idx in range(6)],
-        "minis": [f"mini-{idx}" for idx in range(3)],
-        "score": 123,
-        "base_score": 123,
-        "fg_score": 0,
-        "eval_data": eval_data,
-        "_source": "ga",
-        "_ga_registry": unpicklable,
-        "_candidate_ref": {"unpicklable": unpicklable},
-    }
+    job = FgJob(
+        SolvedLoadout(tuple(f"gear-{idx}" for idx in range(6)), tuple(f"mini-{idx}" for idx in range(3))),
+        "Vibe",
+        base_stats,
+        123,
+        cache_key,
+    )
     batch = SimpleNamespace(
         started=1.0,
         base_components=np.zeros((1, 7), dtype=np.int32),
@@ -148,30 +146,23 @@ def test_fg_materialization_request_strips_driver_only_object_graphs_and_pickles
         song=make_song([0.0, 0.5]),
         curves={"Perfect Points": np.zeros((1,), dtype=np.float32)},
         scoring_bundle=SimpleNamespace(cache_key=("bundle",)),
+        driver_only=lambda: None,  # the owner's batch holds driver-side state the worker never reads
     )
     plan = FgResponseFrontierPreparedPlan(
         song=batch.song,
         curves=batch.curves,
-        pending_jobs=((entry, eval_data, "Vibe", base_stats, 123, cache_key),),
-        prepared_batches=(
-            FgResponseFrontierPreparedBatch(
-                rows=((cache_key, base_stats),),
-                batch=batch,
-            ),
-        ),
+        jobs=(job,),
+        prepared_batches=(FgResponseFrontierPreparedBatch(rows=((cache_key, base_stats),), batch=batch),),
     )
     song = make_native_song(task_key="pickle-plan", song_name="Pickle Plan")
     song.runtime.fg.fg_response_frontier_plan = plan
     song.runtime.fg.fg_owner_score_map = {}
 
     request = build_fg_materialization_request(song)
-    compact_entry = request.plan.pending_jobs[0][0]
 
-    assert "_ga_registry" not in compact_entry
-    assert "_candidate_ref" not in compact_entry
-    assert compact_entry["gear"] == entry["gear"]
-    assert compact_entry["minis"] == entry["minis"]
-    assert pickle.loads(pickle.dumps(request)).song_key == "pickle-plan"
+    assert isinstance(request.plan.prepared_batches[0].batch, FgMaterializationBatch)
+    copy = pickle.loads(pickle.dumps(request))
+    assert (copy.song_key, copy.plan.jobs) == ("pickle-plan", (job,))
 
 
 def test_native_fg_pipeline_does_not_pop_unready_outside_final_drain():

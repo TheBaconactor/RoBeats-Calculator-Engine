@@ -428,7 +428,7 @@ def apply_fg_materialization_result(
     progress_cb=None,
     progress_tracker: ProgressTracker | None = None,
 ) -> None:
-    """Apply a spawned worker's exact variants on the driver/persistence owner."""
+    """Apply a spawned worker's FG results on the driver/persistence owner."""
 
     if not isinstance(result, FgMaterializationResult):
         raise TypeError("FG materialization worker returned an invalid result")
@@ -436,7 +436,7 @@ def apply_fg_materialization_result(
     from gear_optimizer.solver.native_inflight_lifecycle import evaluate_fg_progress_record_update
 
     runtime = getattr(song, "runtime", song)
-    runtime.fg.fg_variants = list(result.variants)
+    runtime.fg.fg_results = result.results
     runtime.fg.fg_run_wall_s = max(0.0, float(result.wall_seconds))
     runtime.fg.cpu_fg_run_s = max(0.0, float(result.cpu_seconds))
 

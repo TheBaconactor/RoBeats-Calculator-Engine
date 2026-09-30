@@ -3,7 +3,14 @@ from gear_optimizer.solver.native_inflight_lifecycle import (
     ProgressTracker,
     evaluate_fg_progress_record_update,
 )
+from gear_optimizer.gamedata import STATS
+from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
 from tests.native_song_factory import make_native_song
+
+
+def _fg(*, score: int, paired: int) -> SolvedFg:
+    return SolvedFg(element="Rush", gems=(0,) * 6, stats=(0,) * len(STATS), surface=(0,) * 11, trace={},
+                    score=score, paired=paired)
 
 
 def test_progress_tracker_emit_progress_forwards_payload():
@@ -125,13 +132,7 @@ def test_evaluate_fg_progress_record_update_uses_tracker_snapshot_and_updates_fg
         db_key="song-a",
         task_key="Song A (Hard)",
         best_data={"BaseScore": 1000},
-        fg_variants=[
-            {
-                "base_score": 1000,
-                "fg_score": 1050,
-                "data": {"ForceGreats": {"config": {"NonFever1": 1}}},
-            }
-        ],
+        fg_results=((SolvedLoadout(("Hat",) * 6, ("Mini",) * 3), _fg(score=1050, paired=1000)),),
         db_best_score=1,
         db_best_fg_score=1,
         db_baseline_valid=False,
@@ -152,7 +153,7 @@ def test_evaluate_fg_progress_record_update_updates_base_session_best():
         db_key="song-a",
         task_key="Song A (Hard)",
         best_data={"BaseScore": 1100},
-        fg_variants=[],
+        fg_results=(),
         db_best_score=1,
         db_best_fg_score=1,
         db_baseline_valid=False,

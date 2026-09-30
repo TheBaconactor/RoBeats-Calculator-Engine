@@ -232,7 +232,7 @@ def decode_gpu_native_ga_runs_payload(
                 "_ga_gpu_run_idx": int(sel_run_idx[i]),
                 "_ga_gpu_row_idx": int(sel_rows[i]),
                 # Device-computed FG base components for this loadout (Slice 2 scoring input
-                # source); consumed by the FG planner via FgPlanner._device_base_stats7_for_entry.
+                # source); consumed by the FG planner (planner._device_base_stats7).
                 FG_BASE_STATS7_KEY: tuple(int(v) for v in base_stats7_mat[i].tolist()),
             }
             data_obj["GenomeIDs"] = list(genome_ids)

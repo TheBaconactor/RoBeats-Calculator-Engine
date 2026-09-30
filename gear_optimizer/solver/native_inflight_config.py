@@ -11,12 +11,15 @@ import concurrent.futures
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 
 from gear_optimizer import settings
 from gear_optimizer.domain.jobs import TaskIndex
+
+if TYPE_CHECKING:
+    from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +259,7 @@ class NativeSongDecodeState:
 
 @dataclass
 class NativeSongFGState:
-    fg_variants: Optional[list[JsonDict]] = None
+    fg_results: Optional[tuple[tuple[SolvedLoadout, SolvedFg], ...]] = None  # best FG score first
     fg_prep_future: Optional[concurrent.futures.Future] = None
     fg_static_prep_done: bool = False
     fg_dynamic_prep_done: bool = False

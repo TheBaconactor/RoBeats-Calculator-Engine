@@ -9,7 +9,7 @@ from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
-from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
+from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout, solved_fg
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
@@ -268,106 +268,39 @@ class FgResultReducer:
     def materialize(
         plan: FgResponseFrontierPreparedPlan,
         prepared_results: list[list[FgResponseFrontierSolveResult]],
-        *,
-        skyline: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> list[tuple[SolvedLoadout, SolvedFg]]:
+        """Every job's FG result with its validated replay, best FG score first (at most LOADOUTS_PER_SONG_LIMIT):
+        the jobs with the best solve scores are materialized, then ranked by their exact surface scores. A result
+        stays whether or not it beats its paired base score (owner 09-30); the store ranks the FG board."""
         song = plan.song
-        curves = plan.curves
-        variants: list[dict[str, Any]] = []
         result_cache = FgResultReducer._result_cache(plan, prepared_results)
-
-        pending_variants: list[dict[str, Any]] = []
-        for entry, eval_data, selected, base_stats, paired_base_score, cache_key in plan.pending_jobs:
-            result = result_cache.get(cache_key)
+        solved_jobs = []
+        for job in plan.jobs:
+            result = result_cache.get(job.key)
             if result is None:
                 raise ValueError("ForceGreats response frontier batch missed a candidate result")
-            gear_names, mini_names = materialize_entry_names(entry, mutate=True)
-            pending_variants.append(
-                {
-                    "entry": entry,
-                    "eval_data": eval_data,
-                    "selected": selected,
-                    "base_stats": base_stats,
-                    "paired_base_score": int(paired_base_score),
-                    "result": result,
-                    "gear": gear_names,
-                    "minis": mini_names,
-                    "fg_score": int(result.best_score),
-                    "_is_ga": str(entry.get("_source") or "") == "ga",
-                }
-            )
+            solved_jobs.append((job, result))
+        solved_jobs.sort(key=lambda pair: int(pair[1].best_score), reverse=True)
 
-        pending_jobs = (
-            pending_variants
-            if skyline
-            else sorted(
-                pending_variants,
-                key=lambda variant: int(variant["fg_score"]),
-                reverse=True,
-            )[: int(LOADOUTS_PER_SONG_LIMIT)]
-        )
-
-        # song is the single owner across every materialized loadout (the trace_cache
-        # enforces it), so its FG song inputs are invariant here -- extract once (lazily, on
-        # the first surviving loadout so an all-skipped plan does no extra work) and thread
-        # them into every payload instead of rebuilding per surviving loadout.
+        # song is the single owner across every materialized loadout (the trace_cache enforces it), so its FG
+        # song inputs are extracted once, on the first materialized loadout.
         song_inputs: Any | None = None
         trace_cache = FgTraceMaterializationCache()
-        # Every evaluated FG result is materialized with its replay, winning or not: a loadout keeps its FG
-        # result attached while it is stored (owner 09-30); the store ranks the FG board (FG beats score).
-        for item in pending_jobs:
-            result = item["result"]
+        results: list[tuple[SolvedLoadout, SolvedFg]] = []
+        for job, result in solved_jobs[: int(LOADOUTS_PER_SONG_LIMIT)]:
             if song_inputs is None:
                 song_inputs = song.fg_inputs
             payload = materialize_force_payload_from_response_frontier(
-                eval_data=item["eval_data"],
-                base_stats=item["base_stats"],
-                paired_base_score=int(item["paired_base_score"]),
-                selected_element=item["selected"],
+                eval_data={},
+                base_stats=job.base_stats,
+                paired_base_score=job.paired,
+                selected_element=job.selected,
                 result=result,
                 song=song,
-                curves=curves,
+                curves=plan.curves,
                 trace_cache=trace_cache,
                 song_inputs=song_inputs,
             )
-
-            entry = item["entry"]
-            exact_fg_score = safe_int(payload.get("Score", 0), 0)
-            exact_base_score = safe_int(payload.get("BaseScore", 0), 0)
-            if skyline:
-                variants.append(
-                    {
-                        "record": entry.get("_candidate_ref"),
-                        "data": payload,
-                        "force": payload,
-                        "base_stats": dict(item["base_stats"]),
-                        "selected": item["selected"],
-                        "base_score": int(exact_base_score),
-                        "fg_score": int(exact_fg_score),
-                        "fg_delta": int(exact_fg_score) - int(exact_base_score),
-                        "_entry_ref": entry,
-                        "_is_skyline": True,
-                    }
-                )
-                continue
-            if exact_base_score < exact_fg_score and exact_fg_score > safe_int(entry.get("fg_score", 0), 0):
-                entry["force"] = payload
-                entry["fg_score"] = exact_fg_score
-                entry["fg_base_score"] = exact_base_score
-            variants.append(
-                {
-                    "data": payload,
-                    "gear": item["gear"],
-                    "minis": item["minis"],
-                    "score": exact_base_score,
-                    "base_score": exact_base_score,
-                    "fg_score": exact_fg_score,
-                    "_entry_ref": entry,
-                    "_is_ga": bool(item["_is_ga"]),
-                }
-            )
-
-        if skyline:
-            return variants
-        variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
-        return variants[: int(LOADOUTS_PER_SONG_LIMIT)]
+            results.append((job.loadout, solved_fg(payload, default_element=job.selected)))
+        results.sort(key=lambda pair: pair[1].score, reverse=True)
+        return results[: int(LOADOUTS_PER_SONG_LIMIT)]
