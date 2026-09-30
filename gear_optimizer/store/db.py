@@ -132,7 +132,9 @@ def store_results(
     try:
         _touch_song(conn, song, now)
         if results:
-            last_meta, last_fg = conn.execute("SELECT MAX(meta_seq), MAX(fg_seq) FROM loadouts").fetchone()
+            # One MAX per query: SQLite reads a lone MIN/MAX from the index; two in one query scan the table.
+            last_meta = conn.execute("SELECT MAX(meta_seq) FROM loadouts").fetchone()[0]
+            last_fg = conn.execute("SELECT MAX(fg_seq) FROM loadouts").fetchone()[0]
             next_seq = ((last_meta or 0) + 1, (last_fg or 0) + 1)
             merged = merge(load_rows(conn, song, tier), results, now=int(now), next_seq=next_seq)
             conn.execute("DELETE FROM loadouts WHERE song_name = ? AND team_buff = ?", (song, tier))

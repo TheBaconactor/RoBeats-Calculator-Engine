@@ -120,3 +120,29 @@ def test_promotion_merges_every_attached_result_in_the_sources_board_order(tmp_p
     assert (rows["c"].fg_score, rows["c"].fg is not None, rows["c"].on_fg) == (80, True, False)
     # New loadouts are numbered in the source's meta board order.
     assert [rows[h].meta.seq for h in ("b", "a", "c")] == [1, 2, 3]
+
+
+def test_writers_add_the_entry_number_indexes_to_an_older_version_19_database(tmp_path):
+    path = tmp_path / "older.db"
+    conn = schema.connect(path, write=True)
+    conn.execute("DROP INDEX loadouts_meta_seq")
+    conn.execute("DROP INDEX loadouts_fg_seq")
+    db.store_results(conn, "Song A", "T5", [result("a", 100, 150)])
+    conn.close()
+
+    def indexes():
+        c = sqlite3.connect(path)
+        names = {row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        c.close()
+        return names
+
+    schema.connect(path).close()  # a reader leaves the file alone
+    assert "loadouts_meta_seq" not in indexes()
+    schema.connect(path, write=True).close()
+    assert {"loadouts_meta_seq", "loadouts_fg_seq"} <= indexes()
+
+
+def test_the_next_entry_numbers_come_from_the_indexes(conn):
+    for column in ("meta_seq", "fg_seq"):
+        plan = " ".join(str(row[3]) for row in conn.execute(f"EXPLAIN QUERY PLAN SELECT MAX({column}) FROM loadouts"))
+        assert f"loadouts_{column}" in plan and "SCAN loadouts" not in plan.replace(f"USING COVERING INDEX loadouts_{column}", "")

@@ -75,7 +75,9 @@ The traces come last so board scans never read them; `store.db.load_traces` load
   stored among equal scores. A loadout off both boards is deleted with its results; one on a board keeps both
   results (an FG result off the FG board stays attached, and returns to the board when a place frees up).
 
-Two partial indexes cover the board orders (`loadouts_meta_board`, `loadouts_fg_board`).
+Two partial indexes cover the board orders (`loadouts_meta_board`, `loadouts_fg_board`); two more hold the
+entry numbers (`loadouts_meta_seq`, `loadouts_fg_seq`) so a write finds the next ones without a table scan (a
+writer adds them to a version 19 database created before them; no data changes).
 
 ## Python API
 

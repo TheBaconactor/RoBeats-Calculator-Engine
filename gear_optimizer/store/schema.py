@@ -54,18 +54,21 @@ CREATE TABLE loadouts (
 ) STRICT
 """
 
-# Covering the board orders (store.boards), so a board read walks one index.
+# Covering the board orders (store.boards), so a board read walks one index; and the entry numbers, so a write
+# finds the next one without scanning the table (writers add these two to databases created without them).
 INDEXES_DDL = (
     """
-    CREATE INDEX loadouts_meta_board ON loadouts
+    CREATE INDEX IF NOT EXISTS loadouts_meta_board ON loadouts
         (song_name, team_buff, score DESC, fg_score DESC, meta_updated DESC, meta_seq)
         WHERE meta_board = 1
     """,
     """
-    CREATE INDEX loadouts_fg_board ON loadouts
+    CREATE INDEX IF NOT EXISTS loadouts_fg_board ON loadouts
         (song_name, team_buff, fg_score DESC, score DESC, fg_updated DESC, fg_seq)
         WHERE fg_board = 1
     """,
+    "CREATE INDEX IF NOT EXISTS loadouts_meta_seq ON loadouts (meta_seq)",
+    "CREATE INDEX IF NOT EXISTS loadouts_fg_seq ON loadouts (fg_seq)",
 )
 
 TABLES = ("songs", "loadouts")
@@ -119,6 +122,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         missing = set(TABLES) - _tables(conn)
         if missing:
             raise StoreVersionError(f"results database version {VERSION} is missing tables {sorted(missing)}")
+        _ensure_indexes(conn)
         return
     if found == 0 and not _tables(conn):
         conn.execute("BEGIN IMMEDIATE")
@@ -132,6 +136,17 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         migrate(conn, keep_v18_tables=False)
         return
     raise StoreVersionError(f"results database version {found} is not supported (this engine uses {VERSION})")
+
+
+def _ensure_indexes(conn: sqlite3.Connection) -> None:
+    """Add the indexes a version 19 database created before the entry-number indexes lacks (data unchanged)."""
+    present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+    if {"loadouts_meta_seq", "loadouts_fg_seq"} <= present:
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    for ddl in INDEXES_DDL:
+        conn.execute(ddl)
+    conn.commit()
 
 
 def _tables(conn: sqlite3.Connection) -> set[str]:
