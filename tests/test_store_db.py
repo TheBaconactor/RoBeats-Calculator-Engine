@@ -4,7 +4,7 @@ import pytest
 
 from gear_optimizer.store import db, schema
 from gear_optimizer.store.boards import boards
-from tests.store_support import candidate, fg_row, meta_row
+from tests.store_support import fg_row, meta_row, result
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def test_a_writer_creates_the_current_schema_and_a_reader_requires_it(tmp_path):
 
 def test_stored_results_read_back_in_board_order_with_their_traces(conn):
     db.store_results(
-        conn, "Song A", "T5", [candidate("a", 100, 150), candidate("b", 120), candidate("c", 100)], now=1000.5
+        conn, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 100)], now=1000.5
     )
     got = db.load_boards(conn, "Song A", "T5")
     assert [x.loadout_hash for x in got.meta] == ["b", "a", "c"]
@@ -46,9 +46,9 @@ def test_stored_results_read_back_in_board_order_with_their_traces(conn):
 
 
 def test_catalog_streams_walk_songs_by_name_in_board_order(conn):
-    db.store_results(conn, "B song", "T5", [candidate("x", 5, song="B song")], now=1)
+    db.store_results(conn, "B song", "T5", [result("x", 5, song="B song")], now=1)
     db.store_results(
-        conn, "A song", "T5", [candidate("y", 7, song="A song"), candidate("z", 9, 12, song="A song")], now=2
+        conn, "A song", "T5", [result("y", 7, song="A song"), result("z", 9, 12, song="A song")], now=2
     )
     assert [(x.song, x.loadout_hash) for x in db.iter_board(conn, "meta", tier="T5")] == [
         ("A song", "z"),
@@ -77,12 +77,12 @@ def test_sql_board_order_matches_the_python_order_on_ties(conn):
 
 
 def test_a_song_digest_changes_exactly_when_its_rows_change(conn):
-    db.store_results(conn, "Song A", "T5", [candidate("a", 100)], now=10)
-    db.store_results(conn, "Song B", "T5", [candidate("b", 100, song="Song B")], now=10)
+    db.store_results(conn, "Song A", "T5", [result("a", 100)], now=10)
+    db.store_results(conn, "Song B", "T5", [result("b", 100, song="Song B")], now=10)
     first = db.song_digest(conn, "Song A")
-    db.store_results(conn, "Song B", "T5", [candidate("c", 200, song="Song B")], now=11)
+    db.store_results(conn, "Song B", "T5", [result("c", 200, song="Song B")], now=11)
     assert db.song_digest(conn, "Song A") == first
-    db.store_results(conn, "Song A", "T5", [candidate("a", 90)], now=12)
+    db.store_results(conn, "Song A", "T5", [result("a", 90)], now=12)
     assert db.song_digest(conn, "Song A") != first
 
 
@@ -93,14 +93,14 @@ def test_a_processed_run_without_results_only_marks_the_song(conn):
 
 def test_results_of_another_song_are_refused(conn):
     with pytest.raises(ValueError, match="cannot be stored"):
-        db.store_results(conn, "Song B", "T5", [candidate("a", 1)], now=1)
+        db.store_results(conn, "Song B", "T5", [result("a", 1)], now=1)
     assert db.song_names(conn) == []
 
 
 def test_entry_numbers_count_across_songs_like_insertion_order(conn):
-    db.store_results(conn, "Song A", "T5", [candidate("a1", 10, 20, song="Song A"), candidate("a2", 5, song="Song A")], now=1)
-    db.store_results(conn, "Song B", "T5", [candidate("b1", 7, 9, song="Song B")], now=2)
-    db.store_results(conn, "Song A", "T5", [candidate("a3", 1, song="Song A")], now=3)
+    db.store_results(conn, "Song A", "T5", [result("a1", 10, 20, song="Song A"), result("a2", 5, song="Song A")], now=1)
+    db.store_results(conn, "Song B", "T5", [result("b1", 7, 9, song="Song B")], now=2)
+    db.store_results(conn, "Song A", "T5", [result("a3", 1, song="Song A")], now=3)
     seqs = {x.loadout_hash: x.meta.seq for song in ("Song A", "Song B") for x in db.load_boards(conn, song, "T5").meta}
     assert seqs == {"a1": 1, "a2": 2, "b1": 3, "a3": 4}
     assert [x.fg.seq for x in db.load_boards(conn, "Song B", "T5").fg] == [2]

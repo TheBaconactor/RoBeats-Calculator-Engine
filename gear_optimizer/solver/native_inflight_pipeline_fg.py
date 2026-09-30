@@ -17,7 +17,7 @@ from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.native_inflight_config import NativeSong, read_db_prefetch_workers
 
 if TYPE_CHECKING:
-    from gear_optimizer.solver.native_inflight_lifecycle import PostSender, ProgressTracker
+    from gear_optimizer.solver.native_inflight_lifecycle import ProgressTracker
 
 
 
@@ -443,100 +443,6 @@ def apply_fg_materialization_result(
     runtime.fg.fg_run_wall_s = max(0.0, float(result.wall_seconds))
     runtime.fg.cpu_fg_run_s = max(0.0, float(result.cpu_seconds))
 
-    fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
-    if isinstance(fg_record_info, dict):
-        runtime.db.record_info = fg_record_info
-        if progress_cb is not None:
-            progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
-
-
-def run_fg_job_sync(
-    song: NativeSong,
-    *,
-    gpu_client: GpuServiceClient,
-    post_sender: PostSender | None = None,
-    progress_cb=None,
-    progress_tracker: ProgressTracker | None = None,
-) -> None:
-    try:
-        _run_fg_job_sync_impl(
-            song,
-            gpu_client=gpu_client,
-            post_sender=post_sender,
-            progress_cb=progress_cb,
-            progress_tracker=progress_tracker,
-        )
-    finally:
-        # FG scoring for this song is over (success OR failure): free its ~0.5-1.5 GB surface
-        # pool now. Releasing only on success leaks one pool per failed song, so a failure storm
-        # (e.g. a dying GPU service) pins gigabytes and trips the memory guard.
-        release_fg_song_surfaces(song)
-
-
-def _run_fg_job_sync_impl(
-    song: NativeSong,
-    *,
-    gpu_client: GpuServiceClient,
-    post_sender: PostSender | None = None,
-    progress_cb=None,
-    progress_tracker: ProgressTracker | None = None,
-) -> None:
-    from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
-    from gear_optimizer.solver.native_inflight_fg_payload import (
-        build_fg_persist_entries,
-        build_fg_update_payload,
-    )
-    from gear_optimizer.solver.native_inflight_lifecycle import evaluate_fg_progress_record_update
-    from gear_optimizer.solver.native_inflight_pipeline import prepare_fg_job_sync, thread_cpu_time_s
-
-    cpu_t0 = thread_cpu_time_s()
-    song_key = str(song.config.task_key or song.config.song_name or "")
-    fg_prep_future = song.runtime.fg.fg_prep_future
-    if fg_prep_future is not None:
-        try:
-            fg_prep_future.result()
-            if song.runtime.fg.fg_response_frontier_plan is None:
-                raise RuntimeError(
-                    "FG dynamic prep completed without the exact response frontier plan "
-                    f"for {song_key}"
-                )
-            song.runtime.fg.fg_dynamic_prep_done = True
-        except Exception as exc:
-            raise RuntimeError(f"FG dynamic prep failed for {song_key}") from exc
-        finally:
-            song.runtime.fg.fg_prep_future = None
-    if song.runtime.fg.fg_response_frontier_plan is None:
-        prepare_fg_job_sync(song, gpu_client=gpu_client)
-        song.runtime.fg.fg_dynamic_prep_done = True
-    prepared_plan = song.runtime.fg.fg_response_frontier_plan
-    if prepared_plan is None:
-        raise RuntimeError("FG response frontier run requires a prepared exact scoring plan")
-    owner_score_map = song.runtime.fg.fg_owner_score_map
-    if owner_score_map is None:
-        raise RuntimeError(
-            "FG response frontier run requires the fused owner FG score map from the GA "
-            f"turn for {song_key} (Slice 3 fused handoff)"
-        )
-    run_wall_t0 = time.perf_counter()
-    # Fused GA->FG handoff (Slice 3): the GPU owner already scored FG in the GA turn.
-    # Here, off the owner's critical path, materialize the plan against the owner score
-    # map (host-only: paired-base + winner gate + exact rescore). No owner round-trip.
-    fg_variants = FgResponseScoringService.materialize_from_owner_score_map(
-        prepared_plan,
-        owner_score_map,
-        include_forced_counts=False,
-    )
-    song.runtime.fg.fg_run_wall_s = max(0.0, time.perf_counter() - float(run_wall_t0))
-    song.runtime.fg.fg_variants = list(fg_variants or [])
-    song.runtime.fg.cpu_fg_run_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
+    runtime.db.record_info = evaluate_fg_progress_record_update(song, progress_tracker)
     if progress_cb is not None:
-        fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
-        if isinstance(fg_record_info, dict):
-            song.runtime.db.record_info = fg_record_info
-            progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
-    else:
-        fg_record_info = evaluate_fg_progress_record_update(song, progress_tracker)
-        if isinstance(fg_record_info, dict):
-            song.runtime.db.record_info = fg_record_info
-    if post_sender is not None:
-        post_sender.send(build_fg_update_payload(song, persist_entries=build_fg_persist_entries(song)))
+        progress_cb(completed_delta=0, failed_delta=0, record_info=runtime.db.record_info)

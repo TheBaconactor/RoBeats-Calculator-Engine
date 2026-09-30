@@ -68,8 +68,7 @@ flowchart LR
     G --> H["Host-only FG process pool"]
     F --> I["Post-processor process"]
     H --> I
-    I --> J["AsyncDbSaver thread"]
-    J --> K[("SQLite")]
+    I --> K[("SQLite")]
 ```
 
 The main execution owners are:
@@ -132,9 +131,12 @@ change a result. A missing or incompatible exact surface is an error.
 
 ## Post-processing and persistence
 
-`gear_optimizer/pipeline/post_processor.py` runs in a separate process. It
-canonicalizes retained Base and Force Great results before passing persistence
-work to `AsyncDbSaver`.
+`gear_optimizer/pipeline/post_processor.py` runs in a separate process. Each
+solved song arrives as a `SongSolve` (`pipeline/results.py`: the GA surface and
+the Force Great results the FG stage published); `pipeline/canonical.py` turns
+it into store rows (the exhaustive meta gem re-solve, exact replays, identity
+and stats, each computed once) and the post-processor merges them with
+`store.db.store_results()` and prints what the database holds.
 
 The database boundary is `gear_optimizer/store` (see DATABASE_SCHEMA.md):
 `schema` for connections, the DDL and migrations; `boards` for board order and

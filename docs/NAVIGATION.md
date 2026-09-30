@@ -28,7 +28,8 @@ Use this page to find the current owner of a behavior. The
 - Force Great materialization:
   `gear_optimizer/solver/native_inflight_pipeline_fg.py`
 - Post-processor process: `gear_optimizer/pipeline/post_processor.py`
-- Asynchronous database writer: `gear_optimizer/app_async_db.py`
+- A solved song's results: `gear_optimizer/pipeline/results.py`
+- Canonicalization (results -> store rows): `gear_optimizer/pipeline/canonical.py`
 
 ## Solver and exact scoring
 

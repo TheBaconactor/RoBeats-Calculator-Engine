@@ -105,7 +105,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
         fp=fp,
         found_song_name=found_song_name,
         minis=run_context.minis,
-        cache_db_context=True,
     )
     timed_song = prepared_core.song
     song_minis = prepared_core.minis
@@ -114,10 +113,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     fixed_stats = prepared_core.fixed_stats
     db_context = prepared_core.db_context
     db_key = db_context.db_key
-    prev_record = db_context.prev_record
-    db_best_score = db_context.db_best_score
-    db_best_fg_score = db_context.db_best_fg_score
-    db_baseline_valid = db_context.db_baseline_valid
     p_color = timed_song.chart.primary
     s_color = timed_song.chart.secondary
     selected_color = p_color
@@ -244,10 +239,9 @@ def prepare_native_song(task: tuple) -> NativeSong:
         ),
         runtime=NativeSongRuntimeState(
             db=NativeSongDBState(
-                prev_record=prev_record,
-                db_best_score=int(db_best_score),
-                db_best_fg_score=int(db_best_fg_score),
-                db_baseline_valid=bool(db_baseline_valid),
+                db_best_score=db_context.best_score,
+                db_best_fg_score=db_context.best_fg_score,
+                db_baseline_valid=db_context.valid,
             ),
         ),
     )

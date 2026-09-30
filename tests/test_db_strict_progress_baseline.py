@@ -1,125 +1,45 @@
 import sqlite3
 
 import gear_optimizer.helpers.song_helpers.database_context as database_context
-from gear_optimizer.helpers.song_helpers.persistence_records import evaluate_progress_record_update
+from gear_optimizer.helpers.song_helpers.database_context import SongDbBaseline
+from gear_optimizer.solver.native_inflight_lifecycle_progress import run_record_info
 from gear_optimizer.store import db, schema
-from tests.store_support import candidate
+from tests.store_support import result
 
 
-def test_load_database_progress_baseline_marks_invalid_when_the_read_fails(monkeypatch):
+def test_the_baseline_is_invalid_when_the_database_cannot_be_read(monkeypatch):
     def _raise_locked(*args, **kwargs):
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(database_context.schema, "connect", _raise_locked)
-    assert database_context.load_database_progress_baseline("Song A") == (None, 0, 0, False)
+    assert database_context.load_song_db_baseline("Song A") == SongDbBaseline("Song A", 0, 0, False)
 
 
-def test_load_database_progress_baseline_reads_the_top_meta_entry_and_best_scores(tmp_path, monkeypatch):
+def test_the_baseline_is_the_songs_stored_best_meta_and_fg_scores(tmp_path, monkeypatch):
     path = tmp_path / "results.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(path))
     conn = schema.connect(path, write=True)
-    db.store_results(conn, "Song A", "T5", [candidate("a", 100, 150), candidate("b", 120), candidate("c", 90, 160)])
+    db.store_results(conn, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 90, 160)])
     conn.close()
-    prev_record, best, best_fg, valid = database_context.load_database_progress_baseline("Song A")
-    assert (prev_record["loadout_hash"], best, best_fg, valid) == ("b", 120, 160, True)
-    assert database_context.load_database_progress_baseline("Song B") == (None, 0, 0, True)
+    assert database_context.load_song_db_baseline(" Song A ") == SongDbBaseline("Song A", 120, 160, True)
+    assert database_context.load_song_db_baseline("Song B") == SongDbBaseline("Song B", 0, 0, True)
 
 
-def test_evaluate_progress_record_update_suppresses_new_when_baseline_invalid():
-    info = evaluate_progress_record_update(
-        {"BaseScore": 123456},
-        {"score": 120000},
-        [{"base_score": 123456, "fg_score": 130000, "data": {"ForceGreats": {"config": {"a": 1}}}}],
-        db_best_fg_score=129000,
-        baseline_valid=False,
-        fg_only=True,
-    )
-
-    assert isinstance(info, dict)
-    assert info["record_update"] is False
-    assert info["baseline_unavailable"] is True
-    assert info["is_better"] is False
-    assert info["is_fg_better"] is False
-    assert info["best_fg_score_run"] == 130000
+def test_no_record_is_reported_without_a_readable_baseline():
+    info = run_record_info(123456, 130000, 120000, 129000, baseline_valid=False)
+    assert (info["record_update"], info["is_better"], info["is_fg_better"]) == (False, False, False)
+    assert (info["score"], info["best_fg_score_run"]) == (123456, 130000)
 
 
-def test_evaluate_progress_record_update_requires_overall_song_improvement():
-    info = evaluate_progress_record_update(
-        {"BaseScore": 1000},
-        {"score": 1000},
-        [{"base_score": 900, "fg_score": 950, "data": {"ForceGreats": {"config": {"a": 1}}}}],
-        db_best_fg_score=900,
-        baseline_valid=True,
-        fg_only=True,
-    )
-
-    assert isinstance(info, dict)
-    assert info["is_fg_better"] is True
-    assert info["is_overall_better"] is False
-    assert info["record_update"] is False
-    assert info["prev_overall_score"] == 1000
-    assert info["best_overall_score_run"] == 1000
+def test_a_record_needs_the_songs_overall_best_to_improve():
+    info = run_record_info(1000, 950, 1000, 900, baseline_valid=True)
+    assert (info["is_fg_better"], info["record_update"], info["prev_overall_score"]) == (True, False, 1000)
+    info = run_record_info(1000, 1100, 1000, 900, baseline_valid=True)
+    assert (info["record_update"], info["best_overall_score_run"]) == (True, 1100)
 
 
-def test_evaluate_progress_record_update_counts_fg_when_it_beats_overall_song_best():
-    info = evaluate_progress_record_update(
-        {"BaseScore": 1000},
-        {"score": 1000},
-        [{"base_score": 900, "fg_score": 1050, "data": {"ForceGreats": {"config": {"a": 1}}}}],
-        db_best_fg_score=900,
-        baseline_valid=True,
-        fg_only=True,
-    )
-
-    assert isinstance(info, dict)
-    assert info["is_fg_better"] is True
-    assert info["is_overall_better"] is True
-    assert info["record_update"] is True
-    assert info["prev_overall_score"] == 1000
-    assert info["best_overall_score_run"] == 1050
-
-
-def test_evaluate_progress_record_update_ignores_two_point_base_drift():
-    info = evaluate_progress_record_update(
-        {"BaseScore": 1002},
-        {"score": 1000},
-        [],
-        db_best_fg_score=0,
-        baseline_valid=True,
-    )
-
-    assert isinstance(info, dict)
-    assert info["is_better"] is False
-    assert info["is_overall_better"] is False
-    assert info["record_update"] is False
-
-
-def test_evaluate_progress_record_update_ignores_two_point_fg_drift():
-    info = evaluate_progress_record_update(
-        {"BaseScore": 1000},
-        {"score": 1000},
-        [{"base_score": 1000, "fg_score": 1002, "data": {"ForceGreats": {"config": {"a": 1}}}}],
-        db_best_fg_score=1000,
-        baseline_valid=True,
-        fg_only=True,
-    )
-
-    assert isinstance(info, dict)
-    assert info["is_fg_better"] is False
-    assert info["is_overall_better"] is False
-    assert info["record_update"] is False
-
-
-def test_evaluate_progress_record_update_counts_three_point_improvement():
-    info = evaluate_progress_record_update(
-        {"BaseScore": 1003},
-        {"score": 1000},
-        [],
-        db_best_fg_score=0,
-        baseline_valid=True,
-    )
-
-    assert isinstance(info, dict)
-    assert info["is_better"] is True
-    assert info["is_overall_better"] is True
-    assert info["record_update"] is True
+def test_improvements_within_two_points_are_scoring_noise():
+    assert run_record_info(1002, 0, 1000, 0, baseline_valid=True)["record_update"] is False
+    assert run_record_info(0, 1002, 0, 1000, baseline_valid=True)["is_fg_better"] is False
+    info = run_record_info(1003, 0, 1000, 0, baseline_valid=True)
+    assert (info["record_update"], info["is_better"]) == (True, True)

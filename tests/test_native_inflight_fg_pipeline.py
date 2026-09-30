@@ -14,7 +14,6 @@ from gear_optimizer.solver.native_inflight_pipeline import (
     InflightGAPipeline,
     NativeFGPipeline,
     NativeFGPipelineSettings,
-    run_fg_job_sync,
     read_native_fg_pipeline_settings,
 )
 from gear_optimizer.solver.fg_materialization_worker import (
@@ -367,41 +366,6 @@ def test_native_fg_pipeline_finish_completed_prep_owns_future_drain_state():
     finally:
         pipeline.shutdown_fg(wait=True, cancel_futures=True)
         pipeline.shutdown_prep(wait=True, cancel_futures=True)
-
-
-def test_run_fg_job_sync_fails_at_prep_future_error_not_missing_plan():
-    prep_future = Future()
-    prep_future.set_exception(RuntimeError("prep exploded"))
-    song = make_native_song(
-        task_key="prep-fail-song",
-        song_name="Prep Fail Song",
-        fg_prep_future=prep_future,
-    )
-
-    with pytest.raises(RuntimeError, match="FG dynamic prep failed for prep-fail-song") as excinfo:
-        run_fg_job_sync(song, gpu_client=object())
-
-    assert isinstance(excinfo.value.__cause__, RuntimeError)
-    assert "prep exploded" in str(excinfo.value.__cause__)
-    assert song.runtime.fg.fg_prep_future is None
-
-
-def test_run_fg_job_sync_requires_dynamic_prep_future_to_materialize_plan():
-    prep_future = Future()
-    prep_future.set_result(None)
-    song = make_native_song(
-        task_key="prep-no-plan",
-        song_name="Prep No Plan",
-        fg_prep_future=prep_future,
-    )
-
-    with pytest.raises(RuntimeError, match="FG dynamic prep failed for prep-no-plan") as excinfo:
-        run_fg_job_sync(song, gpu_client=object())
-
-    assert isinstance(excinfo.value.__cause__, RuntimeError)
-    assert "completed without the exact response frontier plan" in str(excinfo.value.__cause__)
-    assert song.runtime.fg.fg_prep_future is None
-    assert song.runtime.fg.fg_dynamic_prep_done is False
 
 
 def test_claim_pending_song_never_invokes_song_equality_or_repr():

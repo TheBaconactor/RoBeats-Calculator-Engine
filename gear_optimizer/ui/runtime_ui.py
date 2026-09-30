@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 
-from gear_optimizer.helpers.song_helpers.persistence_records import RECORD_UPDATE_SCORE_EPSILON
+from gear_optimizer.solver.native_inflight_lifecycle_progress import RECORD_UPDATE_SCORE_EPSILON
 from gear_optimizer.ui.progress import ProgressUI as _ProgressUI
 
 

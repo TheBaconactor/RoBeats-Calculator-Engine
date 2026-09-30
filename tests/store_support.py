@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Iterable
 
 from gear_optimizer.gamedata import MINI_ASCENSION_VERSION
-from gear_optimizer.store.boards import Candidate, Row
+from gear_optimizer.store.boards import Row
 from gear_optimizer.store.records import FgResult, Loadout, MetaResult, encode_trace
 
 STATS10 = (85, 71, 69, 76, 18, 0, 716, 30, 78, 167)
@@ -74,19 +74,17 @@ def fg_row(loadout_hash: str, score: int, fg_score: int, *, meta: bool = True, u
     )
 
 
-def candidate(
-    loadout_hash: str, score: int, fg_score: int | None = None, *, deferred: bool = False, song: str = "Song A"
-) -> Candidate:
-    """A solve result: a meta result (none when deferred) and an FG result when fg_score is given."""
+def result(loadout_hash: str, score: int, fg_score: int | None = None, *, meta: bool = True, song: str = "Song A") -> Row:
+    """A solve's result row: a meta result (unless meta=False) and an FG result when fg_score is given."""
     value = loadout(
         loadout_hash,
         song=song,
         score=score,
         fg_score=fg_score,
-        meta=None if deferred else meta_result(updated=0, seq=0),
+        meta=meta_result(updated=0, seq=0) if meta else None,
         fg=fg_result(updated=0, seq=0) if fg_score is not None else None,
     )
-    return Candidate(row(value), deferred=deferred)
+    return row(value)
 
 
 # Version 18, as engine 52f84d17..f9abea47 created it (data/migrations LATEST_SCHEMA_VERSION = 18).

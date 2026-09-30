@@ -283,7 +283,6 @@ class NativeSongFGState:
 
 @dataclass
 class NativeSongDBState:
-    prev_record: Optional[JsonDict] = None
     db_best_score: int = 0
     db_best_fg_score: int = 0
     db_baseline_valid: bool = False
@@ -296,13 +295,6 @@ class NativeSongBundleState:
     bundle_task_key: str = ""
     bundle_repeat_index: int = 0
     bundle_repeat_total: int = 0
-    bundle_wait_for_fg: bool = False
-
-
-@dataclass
-class NativeSongPostState:
-    deferred_post_emitted: bool = False
-    await_fg_completion_progress: bool = False
 
 
 @dataclass
@@ -314,7 +306,6 @@ class NativeSongRuntimeState:
     fg: NativeSongFGState = field(default_factory=NativeSongFGState)
     db: NativeSongDBState = field(default_factory=NativeSongDBState)
     bundle: NativeSongBundleState = field(default_factory=NativeSongBundleState)
-    post: NativeSongPostState = field(default_factory=NativeSongPostState)
 
 
 # eq=False (identity equality/hash): conveyor deques remove songs by identity,

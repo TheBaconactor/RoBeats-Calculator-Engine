@@ -465,10 +465,10 @@ def test_promotion_accepts_only_clean_perfect_window_official_results(tmp_path, 
 
 def test_clean_official_promotion_writes_the_canonical_database(tmp_path, monkeypatch):
     from gear_optimizer.store import db, legacy, schema
-    from tests.store_support import candidate
+    from tests.store_support import result as solved
 
     result = schema.connect(tmp_path / "result.db", write=True)
-    db.store_results(result, "Official Song", "T5", [candidate("a", 1234, 1300, song="Official Song")])
+    db.store_results(result, "Official Song", "T5", [solved("a", 1234, 1300, song="Official Song")])
     entries = legacy.best_loadouts(result, "Official Song", "T5")
     result.close()
     db_path = tmp_path / "evolution.db"

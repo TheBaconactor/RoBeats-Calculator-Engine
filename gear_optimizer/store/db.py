@@ -8,7 +8,7 @@ import time
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 
-from .boards import FG_ORDER, META_ORDER, Candidate, Row, merge
+from .boards import FG_ORDER, META_ORDER, Row, merge
 from .records import (
     Loadout,
     Traces,
@@ -119,20 +119,20 @@ def load_rows(conn: sqlite3.Connection, song: str, tier: str) -> list[Row]:
 
 
 def store_results(
-    conn: sqlite3.Connection, song: str, tier: str, candidates: Sequence[Candidate], *, now: float | None = None
+    conn: sqlite3.Connection, song: str, tier: str, results: Sequence[Row], *, now: float | None = None
 ) -> None:
     """Merge one solve's results into a song's boards and mark the song processed (one transaction)."""
-    strays = {(c.row.loadout.song, c.row.loadout.tier) for c in candidates} - {(song, tier)}
+    strays = {(r.loadout.song, r.loadout.tier) for r in results} - {(song, tier)}
     if strays:
         raise ValueError(f"results for {sorted(strays)} cannot be stored under {song!r} {tier}")
     now = time.time() if now is None else now
     conn.execute("BEGIN IMMEDIATE")
     try:
         _touch_song(conn, song, now)
-        if candidates:
+        if results:
             last_meta, last_fg = conn.execute("SELECT MAX(meta_seq), MAX(fg_seq) FROM loadouts").fetchone()
             next_seq = ((last_meta or 0) + 1, (last_fg or 0) + 1)
-            merged = merge(load_rows(conn, song, tier), candidates, now=int(now), next_seq=next_seq)
+            merged = merge(load_rows(conn, song, tier), results, now=int(now), next_seq=next_seq)
             conn.execute("DELETE FROM loadouts WHERE song_name = ? AND team_buff = ?", (song, tier))
             insert_rows(conn, merged)
         conn.commit()

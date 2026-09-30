@@ -91,7 +91,6 @@ def _make_fg_song(plan, owner_score_map, **overrides):
         cfg_data={"selected_color": "Rush"},
         curves={"Perfect Points": []},
         timed_song=_song(),
-        prev_record=None,
         db_best_fg_score=0,
         song_name="Fused FG (Hard) by pytest",
         db_key="fused-fg-hard",
@@ -104,9 +103,9 @@ def _make_fg_song(plan, owner_score_map, **overrides):
     return song
 
 
-def test_run_fg_job_sync_materializes_from_owner_score_map(tmp_path, monkeypatch):
-    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+def test_fg_materialization_reduces_the_owner_score_map(tmp_path, monkeypatch):
     from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
+    from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
 
     base_components = [(10, 11, 12, 13, 14, 15, 16)]
@@ -132,16 +131,15 @@ def test_run_fg_job_sync_materializes_from_owner_score_map(tmp_path, monkeypatch
 
     monkeypatch.setattr(FgResultReducer, "materialize", staticmethod(_fake_materialize))
 
-    song = _make_fg_song(plan, owner_map)
-    fg_pipeline.run_fg_job_sync(song, gpu_client=None)
+    variants = FgResponseScoringService.materialize_from_owner_score_map(plan, owner_map)
 
     assert seen["plan"] is plan
     assert int(seen["results"][0][0].best_score) == 130
-    assert int(song.runtime.fg.fg_variants[0]["fg_score"]) == 130
+    assert int(variants[0]["fg_score"]) == 130
 
 
-def test_run_fg_job_sync_requires_owner_score_map():
-    from gear_optimizer.solver import native_inflight_pipeline as fg_pipeline
+def test_fg_materialization_requires_the_owner_score_map():
+    from gear_optimizer.solver.fg_materialization_worker import build_fg_materialization_request
 
     plan = SimpleNamespace(
         prepared_batches=[
@@ -154,7 +152,7 @@ def test_run_fg_job_sync_requires_owner_score_map():
     song = _make_fg_song(plan, owner_score_map=None)
 
     try:
-        fg_pipeline.run_fg_job_sync(song, gpu_client=None)
+        build_fg_materialization_request(song)
     except RuntimeError as exc:
         assert "owner fg score map" in str(exc).lower()
     else:
@@ -205,7 +203,6 @@ def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
         cfg_data={"selected_color": "Rush"},
         curves={"Perfect Points": []},
         timed_song=make_song([1.0]),
-        prev_record=None,
         db_best_fg_score=0,
         song_name="Prep No RoundTrip (Hard) by pytest",
         db_key="prep-no-roundtrip-hard",

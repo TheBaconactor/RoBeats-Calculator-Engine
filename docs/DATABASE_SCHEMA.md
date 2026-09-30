@@ -89,9 +89,9 @@ for loadout in db.iter_board(conn, "fg", tier="T5"):  # catalog streams, song by
     ...
 ```
 
-Writes merge a solve's results into a song's boards in one transaction (`db.store_results`); the pipeline
-and the service still hand over version 18 shaped entry dicts through `store.legacy` (`store_entries`,
-`promote_entries`, `best_loadouts`) until they build typed candidates themselves.
+Writes merge a solve's results (typed rows) into a song's boards in one transaction (`db.store_results`):
+the pipeline's post-processor builds them (`pipeline/canonical.py`); the service still promotes version 18
+shaped entry dicts through `store.legacy` (`promote_entries`, `best_loadouts`) until it moves records too.
 
 ## Raw SQL
 

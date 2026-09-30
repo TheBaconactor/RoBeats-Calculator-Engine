@@ -12,7 +12,6 @@ from gear_optimizer.solver.native_inflight_config import (
     NativeSongFGState,
     NativeSongGAState,
     NativeSongGPUInputs,
-    NativeSongPostState,
     NativeSongPrepState,
     NativeSongRuntimeState,
 )
@@ -32,7 +31,6 @@ _FIELD_PATH_BY_NAME = {
     **{name: ("runtime", "fg") for name in _field_names(NativeSongFGState)},
     **{name: ("runtime", "db") for name in _field_names(NativeSongDBState)},
     **{name: ("runtime", "bundle") for name in _field_names(NativeSongBundleState)},
-    **{name: ("runtime", "post") for name in _field_names(NativeSongPostState)},
 }
 
 

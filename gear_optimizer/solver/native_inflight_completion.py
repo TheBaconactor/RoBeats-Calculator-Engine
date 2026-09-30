@@ -1,4 +1,4 @@
-"""Completion tracking and deferred post helpers for native in-flight orchestration."""
+"""Completion tracking and result posting for native in-flight orchestration."""
 from __future__ import annotations
 
 import concurrent.futures
@@ -9,8 +9,8 @@ from typing import Any, Callable, Iterable
 
 from gear_optimizer.core.result_payloads import build_error_payload
 from gear_optimizer.solver.inflight_wait import wait_for_completion_event
+from gear_optimizer.pipeline.results import song_solve
 from gear_optimizer.solver.native_inflight_config import NativeSong
-from gear_optimizer.solver.native_inflight_fg_payload import build_deferred_post_payload
 
 
 
@@ -88,82 +88,38 @@ def mark_song_completed(
         bundle_completed_cb(key, completed_songs)
 
 
-def emit_deferred_post_payload(
+def emit_song_results(
     song: NativeSong,
     *,
-    post: Callable[[dict], None],
+    post: Callable[[Any], None],
     completed_songs: set[str],
     memory_resume_tracker=None,
     bundle_completed_cb=None,
     advance_bundle: Callable[..., None],
     progress_tracker=None,
     progress_cb=None,
-) -> bool:
-    if bool(song.runtime.post.deferred_post_emitted):
-        return False
-    post(build_deferred_post_payload(song))
-    song.runtime.post.deferred_post_emitted = True
+) -> None:
+    """Post a song whose FG stage finished to the post-processor, then complete it (or its repeat bundle's run)."""
+    post(song_solve(song))
     bundle_parent = song.runtime.bundle.bundle_parent_task
-    needs_fg_stage = song.runtime.fg.fg_variants is None
-    if bundle_parent is not None and needs_fg_stage:
-        song.runtime.bundle.bundle_wait_for_fg = True
-    elif bundle_parent is not None:
+    if bundle_parent is not None:
         advance_bundle(
             bundle_parent,
             song_name=str(song.config.song_name),
             record_info=song.runtime.db.record_info,
             failed=False,
         )
-    elif needs_fg_stage:
-        song.runtime.post.await_fg_completion_progress = True
-    else:
-        mark_song_completed(
-            completed_songs=completed_songs,
-            task_key=song.config.task_key,
-            song_name=song.config.song_name,
-            song_path=song.config.fp,
-            memory_resume_tracker=memory_resume_tracker,
-            bundle_completed_cb=bundle_completed_cb,
-        )
-        if progress_tracker is not None:
-            progress_tracker.emit_done_song_progress(progress_cb, song)
-    return True
-
-
-def finish_deferred_fg_completion(
-    song: NativeSong,
-    *,
-    completed_songs: set[str],
-    memory_resume_tracker=None,
-    bundle_completed_cb=None,
-    advance_bundle: Callable[..., None],
-    progress_tracker=None,
-    progress_cb=None,
-) -> bool:
-    bundle_parent = song.runtime.bundle.bundle_parent_task
-    if bundle_parent is not None and bool(song.runtime.bundle.bundle_wait_for_fg):
-        advance_bundle(
-            bundle_parent,
-            song_name=str(song.config.song_name),
-            record_info=song.runtime.db.record_info,
-            failed=False,
-        )
-        song.runtime.bundle.bundle_wait_for_fg = False
-        return True
-    if bool(song.runtime.post.await_fg_completion_progress):
-        mark_song_completed(
-            completed_songs=completed_songs,
-            task_key=song.config.task_key,
-            song_name=song.config.song_name,
-            song_path=song.config.fp,
-            memory_resume_tracker=memory_resume_tracker,
-            bundle_completed_cb=bundle_completed_cb,
-        )
-        if progress_tracker is not None:
-            progress_tracker.emit_done_song_progress(progress_cb, song)
-        song.runtime.post.await_fg_completion_progress = False
-        return True
-    return False
+        return
+    mark_song_completed(
+        completed_songs=completed_songs,
+        task_key=song.config.task_key,
+        song_name=song.config.song_name,
+        song_path=song.config.fp,
+        memory_resume_tracker=memory_resume_tracker,
+        bundle_completed_cb=bundle_completed_cb,
+    )
+    if progress_tracker is not None:
+        progress_tracker.emit_done_song_progress(progress_cb, song)
 
 
 def build_native_song_error_payload(

@@ -1,10 +1,10 @@
 from concurrent.futures import Future
 import inspect
 
+from gear_optimizer.solver import native_inflight_completion as completion
 from gear_optimizer.solver.native_inflight_orchestrator import (
     CompletionTracker,
-    emit_deferred_post_payload,
-    finish_deferred_fg_completion,
+    emit_song_results,
     has_waitable_work,
     mark_song_completed,
     run_native_inflight_song_pipeline,
@@ -95,7 +95,8 @@ class _ProgressTracker:
         self.done.append((progress_cb, song.config.task_key))
 
 
-def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_completed():
+def test_emit_song_results_posts_the_solve_and_marks_the_song_completed(monkeypatch):
+    monkeypatch.setattr(completion, "song_solve", lambda song: ("solve", song.config.task_key))
     song = make_native_song(song_name="Song C", task_key="song-c", fg_variants=[])
     completed = set()
     memory = _MemoryResumeTracker()
@@ -103,7 +104,7 @@ def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_complete
     posted = []
     bundle_callbacks = []
 
-    emitted = emit_deferred_post_payload(
+    emit_song_results(
         song,
         post=posted.append,
         completed_songs=completed,
@@ -113,109 +114,31 @@ def test_emit_deferred_post_payload_posts_once_and_marks_fg_scored_song_complete
         progress_tracker=progress,
         progress_cb="progress-cb",
     )
-    emitted_again = emit_deferred_post_payload(
-        song,
-        post=posted.append,
-        completed_songs=completed,
-        memory_resume_tracker=memory,
-        bundle_completed_cb=None,
-        advance_bundle=lambda *_args, **_kwargs: None,
-        progress_tracker=progress,
-        progress_cb="progress-cb",
-    )
 
-    assert emitted is True
-    assert emitted_again is False
-    assert len(posted) == 1
-    assert posted[0]["_deferred_post"] is True
-    assert song.runtime.post.deferred_post_emitted is True
+    assert posted == [("solve", "song-c")]
     assert completed == {"song-c"}
     assert memory.completed == [("", "Song C")]
     assert bundle_callbacks == [("song-c", {"song-c"})]
     assert progress.done == [("progress-cb", "song-c")]
 
 
-def test_emit_deferred_post_payload_defers_completion_when_fg_is_pending():
-    song = make_native_song(song_name="Song FG", task_key="song-fg", fg_variants=None)
-    completed = set()
-    posted = []
+def test_emit_song_results_advances_a_repeat_bundle_instead(monkeypatch):
+    monkeypatch.setattr(completion, "song_solve", lambda song: "solve")
+    parent = object()
+    song = make_native_song(song_name="Song Bundle", task_key="song-bundle", fg_variants=[])
+    song.runtime.bundle.bundle_parent_task = parent
+    song.runtime.db.record_info = {"improved": True}
+    advanced, completed, posted = [], set(), []
 
-    emitted = emit_deferred_post_payload(
+    emit_song_results(
         song,
         post=posted.append,
         completed_songs=completed,
-        advance_bundle=lambda *_args, **_kwargs: None,
-    )
-
-    assert emitted is True
-    assert len(posted) == 1
-    assert posted[0]["_pending_fg_job"] is True
-    assert song.runtime.post.await_fg_completion_progress is True
-    assert completed == set()
-
-
-def test_finish_deferred_fg_completion_advances_waiting_bundle():
-    parent = object()
-    song = make_native_song(song_name="Song Bundle FG", task_key="song-bundle-fg")
-    song.runtime.bundle.bundle_parent_task = parent
-    song.runtime.bundle.bundle_wait_for_fg = True
-    song.runtime.db.record_info = {"improved": True}
-    advanced = []
-
-    finished = finish_deferred_fg_completion(
-        song,
-        completed_songs=set(),
         advance_bundle=lambda *args, **kwargs: advanced.append((args, kwargs)),
     )
 
-    assert finished is True
-    assert song.runtime.bundle.bundle_wait_for_fg is False
-    assert advanced == [
-        (
-            (parent,),
-            {
-                "song_name": "Song Bundle FG",
-                "record_info": {"improved": True},
-                "failed": False,
-            },
-        )
-    ]
-
-
-def test_finish_deferred_fg_completion_marks_drain_at_end_song_done():
-    song = make_native_song(song_name="Song Drain FG", task_key="song-drain-fg")
-    song.runtime.post.await_fg_completion_progress = True
-    completed = set()
-    memory = _MemoryResumeTracker()
-    progress = _ProgressTracker()
-
-    finished = finish_deferred_fg_completion(
-        song,
-        completed_songs=completed,
-        memory_resume_tracker=memory,
-        bundle_completed_cb=None,
-        advance_bundle=lambda *_args, **_kwargs: None,
-        progress_tracker=progress,
-        progress_cb="progress-cb",
-    )
-
-    assert finished is True
-    assert song.runtime.post.await_fg_completion_progress is False
-    assert completed == {"song-drain-fg"}
-    assert memory.completed == [("", "Song Drain FG")]
-    assert progress.done == [("progress-cb", "song-drain-fg")]
-
-
-def test_finish_deferred_fg_completion_noops_when_no_completion_is_pending():
-    song = make_native_song(song_name="Song Idle", task_key="song-idle")
-
-    finished = finish_deferred_fg_completion(
-        song,
-        completed_songs=set(),
-        advance_bundle=lambda *_args, **_kwargs: None,
-    )
-
-    assert finished is False
+    assert posted == ["solve"] and completed == set()
+    assert advanced == [((parent,), {"song_name": "Song Bundle", "record_info": {"improved": True}, "failed": False})]
 
 
 def test_native_inflight_fg_worker_failure_fails_loudly_instead_of_persisting_zero_fg():
@@ -223,18 +146,6 @@ def test_native_inflight_fg_worker_failure_fails_loudly_instead_of_persisting_ze
 
     assert "raise RuntimeError(f\"FG worker failed for {fg_song.config.task_key}\") from exc" in src
     assert "post_sender.send(build_failed_fg_update_payload(fg_song))" not in src
-
-
-def test_fg_completion_emits_one_combined_ga_fg_payload():
-    src = inspect.getsource(run_native_inflight_song_pipeline)
-    start = src.index("for fg_completion in fg_pipeline.pop_completed_jobs():")
-    end = src.index("finish_deferred_fg_completion(", start)
-    completion_block = src[start:end]
-
-    assert "if fg_song.runtime.post.deferred_post_emitted:" in completion_block
-    assert "native in-flight persistence must emit" in completion_block
-    assert completion_block.count("_emit_deferred_post_payload(fg_song)") == 1
-    assert "send_fg_update_payload" not in completion_block
 
 
 def test_decode_handoff_starts_fg_prep_before_fg_worker_submission():
@@ -283,7 +194,7 @@ def test_song_prep_runway_fill_error_posts_task_payload_and_advances():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 
     fill_idx = src.index("def _fill_song_prep_runway()")
-    fill_block = src[fill_idx : src.index("def _emit_deferred_post_payload", fill_idx)]
+    fill_block = src[fill_idx : src.index("def _emit_song_results", fill_idx)]
 
     # A prep submit is attempted for the next queued task...
     assert "prep_queue.submit(" in fill_block
@@ -299,7 +210,7 @@ def test_song_prep_failures_do_not_treat_seed_context_as_repeat_bundle():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 
     fill_idx = src.index("def _fill_song_prep_runway()")
-    fill_block = src[fill_idx : src.index("def _emit_deferred_post_payload", fill_idx)]
+    fill_block = src[fill_idx : src.index("def _emit_song_results", fill_idx)]
     song_prep_idx = src.index("for prep_completion in prep_queue.pop_completed():")
     prep_error_block = src[song_prep_idx : src.index("ready_fg_from_prep = False", song_prep_idx)]
 

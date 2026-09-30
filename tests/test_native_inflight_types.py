@@ -12,7 +12,6 @@ from gear_optimizer.solver.native_inflight_config import (
     NativeSongFGState,
     NativeSongGAState,
     NativeSongPrepState,
-    NativeSongPostState,
     NativeSongRuntimeState,
     native_song_label,
 )
@@ -81,12 +80,11 @@ def test_native_song_field_path_map_matches_runtime_substate_definitions():
 
     assert {field.name for field in fields(NativeSongConfig)} == mapped_fields("config")
     assert {field.name for field in fields(NativeSongGPUInputs)} == mapped_fields("gpu_inputs")
-    assert {field.name for field in fields(NativeSongRuntimeState)} == {"song_slot", "prep", "ga", "decode", "fg", "db", "bundle", "post"}
+    assert {field.name for field in fields(NativeSongRuntimeState)} == {"song_slot", "prep", "ga", "decode", "fg", "db", "bundle"}
     assert {field.name for field in fields(NativeSongPrepState)} == mapped_fields("runtime", "prep")
     assert {field.name for field in fields(NativeSongGAState)} == mapped_fields("runtime", "ga")
     assert {field.name for field in fields(NativeSongDecodeState)} == mapped_fields("runtime", "decode")
     assert {field.name for field in fields(NativeSongFGState)} == mapped_fields("runtime", "fg")
     assert {field.name for field in fields(NativeSongDBState)} == mapped_fields("runtime", "db")
     assert {field.name for field in fields(NativeSongBundleState)} == mapped_fields("runtime", "bundle")
-    assert {field.name for field in fields(NativeSongPostState)} == mapped_fields("runtime", "post")
     assert _FIELD_PATH_BY_NAME["song_slot"] == ("runtime",)

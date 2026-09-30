@@ -32,8 +32,7 @@ from gear_optimizer.solver.native_inflight_completion import (
     CompletionTracker,
     build_native_song_error_payload,
     build_native_task_error_payload,
-    emit_deferred_post_payload,
-    finish_deferred_fg_completion,
+    emit_song_results,
     has_waitable_work,
     mark_song_completed,
 )
@@ -212,8 +211,8 @@ def run_native_inflight_song_pipeline(
             submitted_any = True
         return bool(submitted_any)
 
-    def _emit_deferred_post_payload(song: NativeSong) -> bool:
-        return emit_deferred_post_payload(
+    def _emit_song_results(song: NativeSong) -> None:
+        emit_song_results(
             song,
             post=_post,
             completed_songs=completed_songs,
@@ -486,7 +485,6 @@ def run_native_inflight_song_pipeline(
                 finally:
                     song.runtime.decode.decode_future = None
                 ga_pipeline.store_decode_result(song, decode_result)
-                song.runtime.post.deferred_post_emitted = False
                 fg_pipeline.queue(song)
                 started_fg_prep = fg_pipeline.start_pending_prep(
                     prepare_fg_job_sync,
@@ -513,32 +511,12 @@ def run_native_inflight_song_pipeline(
                     raise
                 except Exception as exc:
                     if stopping and is_stop_abort_exception(exc):
-                        pass
-                    else:
-                        logger.exception("[NativeInflight][FG] worker failed for %s", fg_song.config.task_key)
-                        raise RuntimeError(f"FG worker failed for {fg_song.config.task_key}") from exc
+                        continue  # stopped mid-FG: the song stays pending (like every other stage's stopped songs)
+                    logger.exception("[NativeInflight][FG] worker failed for %s", fg_song.config.task_key)
+                    raise RuntimeError(f"FG worker failed for {fg_song.config.task_key}") from exc
                 finally:
                     native_fg_pipeline.release_fg_song_surfaces(fg_song)
-                if fg_song.runtime.post.deferred_post_emitted:
-                    raise RuntimeError(
-                        "FG completion found an already-emitted deferred payload for "
-                        f"{fg_song.config.task_key}; native in-flight persistence must emit "
-                        "one combined GA+FG payload"
-                    )
-                if not _emit_deferred_post_payload(fg_song):
-                    raise RuntimeError(
-                        "FG completion failed to emit the combined deferred payload for "
-                        f"{fg_song.config.task_key}"
-                    )
-                finish_deferred_fg_completion(
-                    fg_song,
-                    completed_songs=completed_songs,
-                    memory_resume_tracker=memory_resume_tracker,
-                    bundle_completed_cb=bundle_completed_cb,
-                    advance_bundle=_advance_bundle,
-                    progress_tracker=progress_tracker,
-                    progress_cb=progress_cb,
-                )
+                _emit_song_results(fg_song)
             ready_fg_count = fg_pipeline.ready_count()
             no_ga_remaining = (
                 (not pending_tasks)

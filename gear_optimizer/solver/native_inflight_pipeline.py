@@ -16,7 +16,6 @@ from gear_optimizer.solver.native_inflight_pipeline_fg import (
     NativeFGPipelineSettings,
     NativeFGPrepCompletion,
     read_native_fg_pipeline_settings,
-    run_fg_job_sync,
 )
 from gear_optimizer.solver.native_inflight_pipeline_ga import (
     GADecodeCompletion,
@@ -40,7 +39,6 @@ __all__ = [
     "prepare_fg_job_sync",
     "prepare_fg_static_sync",
     "read_native_fg_pipeline_settings",
-    "run_fg_job_sync",
     "thread_cpu_time_s",
 ]
 

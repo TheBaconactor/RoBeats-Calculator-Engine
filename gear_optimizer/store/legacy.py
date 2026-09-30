@@ -3,15 +3,14 @@
 best_loadouts returns what data.database.get_best_loadouts returned: meta board entries by score, then
 FG-only entries by FG score (ties as that reader ordered them), each an entry dict with the unpacked
 version 18 details and FG payload; rows_from_entries is its inverse (promotion of a solve's leaderboard, the
-website's job databases). store_entries saves the pipeline's result entries. Callers: GA seeding and the POST
-/optimize response (removed in stages 4 and 9), the website's tier replays, job databases and readers (stage 8).
+website's job databases). Callers: the POST /optimize response (stage 9), the website's tier replays, job
+databases and readers (stage 8).
 """
 
 from __future__ import annotations
 
 import os
 import sqlite3
-import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -20,9 +19,8 @@ from ..data.loadout_equivalence import representative_mini_names
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini
 from ..stats import GEM_KINDS
-from .boards import Candidate, Row
+from .boards import Row
 from .db import load_boards, load_traces, store_results
-from .entries import candidates_from_entries
 from .records import FgResult, Loadout, MetaResult, encode_trace
 from .schema import connect
 
@@ -83,34 +81,12 @@ def read_best_loadouts(
         conn.close()
 
 
-def store_entries(
-    conn: sqlite3.Connection,
-    song: str,
-    tier: str,
-    entries: Sequence[Mapping[str, Any]],
-    *,
-    gears: Mapping[str, Gear],
-    minis: Mapping[str, Mini],
-    now: float | None = None,
-) -> None:
-    """Merge entry dicts into a song's boards (one transaction); an empty batch only marks the song."""
-    now = time.time() if now is None else now
-    row = conn.execute(
-        "SELECT primary_color, secondary_color FROM loadouts WHERE song_name = ? AND team_buff = ? LIMIT 1",
-        (song, tier),
-    ).fetchone()
-    candidates = candidates_from_entries(
-        song, tier, entries, gears=gears, minis=minis, stored_colors=tuple(row) if row else None, now=int(now)
-    )
-    store_results(conn, song, tier, candidates, now=now)
-
-
 def promote_entries(
     conn: sqlite3.Connection, song: str, tier: str, entries: Sequence[Mapping[str, Any]], *, now: float | None = None
 ) -> None:
     """Merge a solve's leaderboard (best_loadouts entries of its result database) into this database."""
     rows = rows_from_entries(song, tier, entries)
-    store_results(conn, song, tier, [Candidate(row) for row in rows], now=now)
+    store_results(conn, song, tier, rows, now=now)
 
 
 def rows_from_entries(song: str, tier: str, entries: Sequence[Mapping[str, Any]]) -> list[Row]:

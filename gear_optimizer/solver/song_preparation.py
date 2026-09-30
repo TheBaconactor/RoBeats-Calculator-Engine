@@ -8,8 +8,8 @@ from pathlib import Path
 
 from gear_optimizer.chart import load_chart
 from gear_optimizer.gamedata import Mini, SongMini, song_minis
+from gear_optimizer.helpers.song_helpers.database_context import SongDbBaseline, load_song_db_baseline
 from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
-from gear_optimizer.solver.song_db_context import PreparedSongDbContext, load_prepared_song_db_context
 from gear_optimizer.solver.timing_envelope import TimedSong, time_song
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class PreparedSongCore:
     song: TimedSong
     fixed_stats: dict[str, int]
-    db_context: PreparedSongDbContext
+    db_context: SongDbBaseline
     # Every mini as this song sees it, in Minis.csv order.
     minis: list[SongMini]
     setup_sec: float
@@ -36,7 +36,6 @@ def build_prepared_song_core(
     fp: str,
     found_song_name: str,
     minis: Mapping[str, Mini],
-    cache_db_context: bool = False,
 ) -> PreparedSongCore:
     song = prepare_song(fp)
     minis_in_song = song_minis(minis.values(), found_song_name, song.chart.primary, song.chart.secondary)
@@ -46,10 +45,7 @@ def build_prepared_song_core(
     setup_sec = time.perf_counter() - t_setup0
 
     t_db0 = time.perf_counter()
-    db_context = load_prepared_song_db_context(
-        found_song_name=found_song_name,
-        cache_db_context=bool(cache_db_context),
-    )
+    db_context = load_song_db_baseline(found_song_name)
     db_load_sec = time.perf_counter() - t_db0
 
     return PreparedSongCore(

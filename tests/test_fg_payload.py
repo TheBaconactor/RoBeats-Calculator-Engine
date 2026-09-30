@@ -5,8 +5,6 @@ from gear_optimizer.helpers.song_helpers.fg_payload import (
     require_response_surface,
     strip_retired_fg_fields,
 )
-from gear_optimizer.helpers.song_helpers.payload_compaction import compact_item_names, compact_prev_record
-from tests.items_support import make_gear, make_song_mini
 
 
 SURFACE = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
@@ -53,20 +51,3 @@ def test_retired_fields_are_stripped_from_nested_persistence_payloads():
         "ForceGreats": {"frontier_trace": [{}]},
         "config": {"unrelated": "kept"},
     }
-
-
-def test_compact_item_names_and_prev_record_drop_empty_when_requested():
-    record = {
-        "gear": [make_gear("G1"), make_gear(""), "G2", None],
-        "minis": [make_song_mini("M1"), "", "M2"],
-        "loadout": ["A", None, "C"],
-        "force": {"gear": ["", "G"], "minis": [None, "M"]},
-    }
-
-    assert compact_item_names(record["gear"], drop_empty=True) == ["G1", "G2"]
-    compacted = compact_prev_record(record, drop_empty_item_names=True)
-    assert compacted["gear"] == ["G1", "G2"]
-    assert compacted["minis"] == ["M1", "M2"]
-    assert compacted["loadout"] == ["A", "", "C"]
-    assert compacted["force"]["gear"] == ["", "G"]
-    assert compacted["force"]["minis"] == ["", "M"]

@@ -65,7 +65,7 @@ if ($CI) {
     "-m",
     "pytest",
     "tests/test_repo_guardrails.py",
-    "tests/test_native_inflight_fg_persistence_consistency.py",
+    "tests/test_pipeline_canonical.py",
     "tests/test_gpu_ga_eval_incumbent_cull.py",
     "-q",
     "--tb=short"

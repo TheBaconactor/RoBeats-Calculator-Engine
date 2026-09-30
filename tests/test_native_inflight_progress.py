@@ -118,36 +118,6 @@ def test_progress_tracker_seed_valid_baseline_ignores_invalid_baseline():
     assert tracker.snapshot("song-a") == (1000, 900, True)
 
 
-def test_progress_tracker_evaluate_record_update_updates_session_best():
-    tracker = ProgressTracker()
-    tracker.seed_valid_baseline("song-a", best_score=1000, best_fg=900, baseline_valid=True)
-
-    record_info = tracker.evaluate_record_update(
-        "song-a",
-        {"BaseScore": 1003},
-        [],
-    )
-
-    assert isinstance(record_info, dict)
-    assert record_info["is_better"] is True
-    assert tracker.snapshot("song-a") == (1003, 900, True)
-
-
-def test_progress_tracker_evaluate_record_update_updates_fg_session_best():
-    tracker = ProgressTracker()
-    tracker.seed_valid_baseline("song-a", best_score=1000, best_fg=900, baseline_valid=True)
-
-    record_info = tracker.evaluate_record_update(
-        "song-a",
-        {"BaseScore": 1000},
-        [{"base_score": 1000, "fg_score": 1050, "data": {"ForceGreats": {"config": {"a": 1}}}}],
-    )
-
-    assert isinstance(record_info, dict)
-    assert record_info["is_fg_better"] is True
-    assert tracker.snapshot("song-a") == (1000, 1050, True)
-
-
 def test_evaluate_fg_progress_record_update_uses_tracker_snapshot_and_updates_fg_best():
     tracker = ProgressTracker()
     tracker.seed_valid_baseline("song-a", best_score=1000, best_fg=900, baseline_valid=True)

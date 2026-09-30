@@ -5,7 +5,7 @@ from gear_optimizer.settings import RunSettings
 from gear_optimizer.core.memory import MemoryGuardResumeTracker, build_memory_guard_resume_context
 from gear_optimizer.song_queue import finalize_song_queue, merge_discovered_with_resume, queue_path_key
 from gear_optimizer.store import db, schema
-from tests.store_support import candidate
+from tests.store_support import result
 
 
 def _write_song_stub(path, song_name: str):
@@ -336,6 +336,6 @@ def _mark_processed(db_path, song: str, *, with_loadouts: bool = False) -> None:
     """The song as the results database records it after a run (with a stored result, or none)."""
     conn = schema.connect(db_path, write=True)
     try:
-        db.store_results(conn, song, "T5", [candidate("h1", 999, song=song)] if with_loadouts else [])
+        db.store_results(conn, song, "T5", [result("h1", 999, song=song)] if with_loadouts else [])
     finally:
         conn.close()

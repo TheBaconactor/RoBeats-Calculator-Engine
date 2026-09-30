@@ -6,9 +6,27 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from gear_optimizer.core.utils import safe_int
-from gear_optimizer.helpers.song_helpers.persistence_records import evaluate_progress_record_update
 from gear_optimizer.solver.native_inflight_config import native_song_label
 
+# A run is a NEW record for the progress counter when its best score (base or FG) beats the song's stored best by
+# more than this many points.
+RECORD_UPDATE_SCORE_EPSILON = 2
+
+
+def run_record_info(run_score: int, run_fg: int, prev_score: int, prev_fg: int, *, baseline_valid: bool) -> dict:
+    """How a run's best base and FG scores compare with the song's stored bests. `baseline_valid=False` (the
+    stored bests could not be read) never reports a record, so the NEW counter cannot over-count."""
+    run_best, prev_best = max(run_score, run_fg), max(prev_score, prev_fg)
+    valid = bool(baseline_valid)
+    return {
+        "record_update": valid and run_best - prev_best > RECORD_UPDATE_SCORE_EPSILON,
+        "is_better": valid and run_score - prev_score > RECORD_UPDATE_SCORE_EPSILON,
+        "is_fg_better": valid and run_fg - prev_fg > RECORD_UPDATE_SCORE_EPSILON,
+        "score": int(run_score),
+        "best_fg_score_run": int(run_fg),
+        "best_overall_score_run": int(run_best),
+        "prev_overall_score": int(prev_best),
+    }
 
 
 @dataclass
@@ -64,38 +82,6 @@ class ProgressTracker:
             best_fg=int(best_fg),
             mark_valid=True,
         )
-
-    def evaluate_record_update(
-        self,
-        db_key: str,
-        best_data: dict,
-        fg_variants,
-        *,
-        fg_only: bool = False,
-    ) -> dict | None:
-        prev_best_score, prev_best_fg, baseline_valid = self.snapshot(db_key)
-        record_info = evaluate_progress_record_update(
-            best_data or {},
-            {"score": int(prev_best_score)},
-            fg_variants or [],
-            db_best_fg_score=int(prev_best_fg),
-            baseline_valid=bool(baseline_valid),
-            fg_only=bool(fg_only),
-        )
-        if isinstance(record_info, dict) and record_info.get("is_better"):
-            self.update(
-                db_key,
-                best_score=int(record_info.get("score", 0) or 0),
-                best_fg=int(record_info.get("best_fg_score_run", 0) or 0),
-                mark_valid=bool(baseline_valid),
-            )
-        elif isinstance(record_info, dict) and record_info.get("is_fg_better"):
-            self.update(
-                db_key,
-                best_fg=int(record_info.get("best_fg_score_run", 0) or 0),
-                mark_valid=bool(baseline_valid),
-            )
-        return record_info
 
     @staticmethod
     def error_item_song_label(item: dict) -> Any:
@@ -220,38 +206,27 @@ class ActiveRuntimeProgressReporter:
         )
 
 
-def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTracker | None) -> dict | None:
-    try:
-        key = str(song.config.db_key or "").strip()
-        prev_best_score = safe_int(song.runtime.db.db_best_score, 0)
-        prev_best_fg = safe_int(song.runtime.db.db_best_fg_score, 0)
-        baseline_valid = bool(song.runtime.db.db_baseline_valid)
-        if progress_tracker is not None and key:
-            prev_best_score, prev_best_fg, baseline_valid = progress_tracker.snapshot(key)
-        record_info = evaluate_progress_record_update(
-            song.runtime.decode.best_data or {},
-            {"score": int(prev_best_score)},
-            song.runtime.fg.fg_variants or [],
-            db_best_fg_score=int(prev_best_fg),
-            baseline_valid=bool(baseline_valid),
-            fg_only=True,
+def evaluate_fg_progress_record_update(song: Any, progress_tracker: ProgressTracker | None) -> dict:
+    """The record info of a song whose FG stage finished (its run's best base score and best winning FG score)."""
+    key = str(song.config.db_key or "").strip()
+    prev_best_score = safe_int(song.runtime.db.db_best_score, 0)
+    prev_best_fg = safe_int(song.runtime.db.db_best_fg_score, 0)
+    baseline_valid = bool(song.runtime.db.db_baseline_valid)
+    if progress_tracker is not None and key:
+        prev_best_score, prev_best_fg, baseline_valid = progress_tracker.snapshot(key)
+    best_data = song.runtime.decode.best_data or {}
+    run_score = safe_int(best_data.get("BaseScore") or best_data.get("Score", 0), 0)
+    run_fg = max(
+        (int(v["fg_score"]) for v in song.runtime.fg.fg_variants or () if int(v["fg_score"]) > int(v["base_score"])),
+        default=0,
+    )
+    record_info = run_record_info(run_score, run_fg, prev_best_score, prev_best_fg, baseline_valid=baseline_valid)
+    record_info["song"] = native_song_label(song)
+    if progress_tracker is not None and key and (record_info["is_better"] or record_info["is_fg_better"]):
+        progress_tracker.update(
+            key,
+            best_score=run_score if record_info["is_better"] else None,
+            best_fg=run_fg if record_info["is_fg_better"] else None,
+            mark_valid=baseline_valid,
         )
-    except (ValueError, TypeError, KeyError):
-        return None
-    if not isinstance(record_info, dict):
-        return None
-    record_info = dict(record_info)
-    record_info.setdefault("song", native_song_label(song))
-    if progress_tracker is not None:
-        best_score_new = safe_int(record_info.get("score", 0), 0) if record_info.get("is_better") else None
-        best_fg_new = safe_int(record_info.get("best_fg_score_run", 0), 0) if record_info.get("is_fg_better") else None
-        if (best_score_new is not None and best_score_new > 0) or (best_fg_new is not None and best_fg_new > 0):
-            key = str(song.config.db_key or "").strip()
-            if key:
-                progress_tracker.update(
-                    key,
-                    best_score=best_score_new,
-                    best_fg=best_fg_new,
-                    mark_valid=bool(baseline_valid),
-                )
     return record_info

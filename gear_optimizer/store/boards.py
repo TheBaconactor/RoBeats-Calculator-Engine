@@ -40,19 +40,6 @@ class Row:
     fg_trace: bytes | None
 
 
-@dataclass(frozen=True, slots=True)
-class Candidate:
-    """One loadout result of a solve (or of another database) to merge into a song's boards.
-
-    `row.loadout.meta` is its meta result and `row.loadout.fg` its FG result (either may be None; board
-    membership is ignored). A deferred candidate is an FG update posted after its GA result: its score is the
-    base score its FG result was paired with, and it carries no meta result.
-    """
-
-    row: Row
-    deferred: bool = False
-
-
 @dataclass(slots=True)
 class _Work:
     """A loadout while merging: its meta side (score, the best FG score seen with it) and FG side."""
@@ -68,14 +55,12 @@ class _Work:
     fg_trace: bytes | None
 
 
-def merge(
-    rows: Iterable[Row], candidates: Sequence[Candidate], *, now: int, next_seq: tuple[int, int]
-) -> list[Row]:
-    """The song's rows after storing `candidates` (one song and tier).
+def merge(rows: Iterable[Row], results: Sequence[Row], *, now: int, next_seq: tuple[int, int]) -> list[Row]:
+    """The song's rows after storing `results` (one song and tier): a solve's (or another database's) loadouts
+    with their meta and FG results (either may be None; board membership is ignored).
 
-    Meta side: a new loadout takes the candidate's meta result; a higher score replaces a stored one; a
-    deferred candidate (an FG update) only refreshes a stored one. FG side: a candidate's FG result is stored
-    when new, and replaces a stored FG result with an equal or lower FG score. Every touched side is stamped
+    Meta side: a new loadout takes the result's meta result; a higher score replaces a stored one. FG side: an
+    FG result is stored when new, and replaces a stored FG result with an equal or lower FG score. Every touched side is stamped
     `now`; a newly stored result gets the next entry number of the database (`next_seq`: the next (meta, FG)
     numbers, so entries number in insertion order across songs). Then each board takes the
     LOADOUTS_PER_SONG_LIMIT best scores (the earliest entries among equal scores; the FG board only FG results
@@ -83,12 +68,10 @@ def merge(
     """
     work = {row.loadout.loadout_hash: _lift(row) for row in rows}
     seqs = _Seqs(meta=next_seq[0], fg=next_seq[1])
-    # The meta side stores GA results before deferred FG updates; the FG side keeps the given order.
-    ordered = [c for c in candidates if not c.deferred] + [c for c in candidates if c.deferred]
-    for candidate in ordered:
-        _merge_meta(work, candidate, now, seqs)
-    for candidate in candidates:
-        _merge_fg(work, candidate, now, seqs)
+    for result in results:
+        _merge_meta(work, result, now, seqs)
+    for result in results:
+        _merge_fg(work, result, now, seqs)
     loadouts = [_project(w) for w in work.values()]
     return _normalize([row for row in loadouts if row is not None])
 
@@ -116,16 +99,9 @@ def _lift(row: Row) -> _Work:
     )
 
 
-def _merge_meta(work: dict[str, _Work], candidate: Candidate, now: int, seqs: _Seqs) -> None:
-    new = candidate.row.loadout
+def _merge_meta(work: dict[str, _Work], result: Row, now: int, seqs: _Seqs) -> None:
+    new = result.loadout
     current = work.get(new.loadout_hash)
-    if candidate.deferred:
-        # An FG update posted after its GA result touches a stored meta result and never adds one: its
-        # gems are the FG allocation (version 18 stored them as a meta result with a lower base score).
-        if current is not None and current.meta is not None:
-            current.fg_seen = max(current.fg_seen, new.fg_score or 0)
-            current.meta = replace(current.meta, updated=now)
-        return
     if new.meta is None:
         return
     if current is None:
@@ -140,13 +116,13 @@ def _merge_meta(work: dict[str, _Work], candidate: Candidate, now: int, seqs: _S
         current.source = new
         current.score = new.score
         current.meta = replace(new.meta, seq=seq)
-        current.meta_trace = candidate.row.meta_trace
+        current.meta_trace = result.meta_trace
     current.fg_seen = max(current.fg_seen, new.fg_score or 0)
     current.meta = replace(current.meta, updated=now)
 
 
-def _merge_fg(work: dict[str, _Work], candidate: Candidate, now: int, seqs: _Seqs) -> None:
-    new = candidate.row.loadout
+def _merge_fg(work: dict[str, _Work], result: Row, now: int, seqs: _Seqs) -> None:
+    new = result.loadout
     if new.fg is None:
         return
     current = work.get(new.loadout_hash)
@@ -163,7 +139,7 @@ def _merge_fg(work: dict[str, _Work], candidate: Candidate, now: int, seqs: _Seq
             current.source = new
         current.paired = new.score
         current.fg = replace(new.fg, seq=seq)
-        current.fg_trace = candidate.row.fg_trace
+        current.fg_trace = result.fg_trace
         current.fg_score = new.fg_score if current.fg_score is None else max(current.fg_score, new.fg_score)
     current.fg = replace(current.fg, updated=now)
 
