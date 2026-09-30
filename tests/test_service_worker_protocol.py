@@ -197,3 +197,31 @@ def test_service_worker_reasserts_daemon_policy_after_native_prewarm(monkeypatch
     session._initialize()
 
     assert events == ["load curves", "native_prewarm:12", "reassert"]
+
+
+def test_service_worker_passes_the_promotion_target_to_the_solve(monkeypatch):
+    import gear_optimizer.cli as cli
+    import gear_optimizer.core.logging_config as logging_config
+
+    for name in ("common_init", "_apply_taichi_shell_env", "_apply_service_mode_frontier_threads"):
+        monkeypatch.setattr(cli, name, lambda: None)
+    monkeypatch.setattr(logging_config, "configure_default_logging", lambda: None)
+    monkeypatch.setattr(worker, "make_process_background_only", lambda: None)
+    monkeypatch.setattr(worker, "reassert_process_background_only", lambda: None)
+    calls = []
+
+    class FakeSession:
+        def solve(self, **kwargs):
+            calls.append(kwargs)
+            return [{"score": 1}]
+
+    monkeypatch.setattr(worker, "PersistentOptimizerSession", FakeSession)
+    lines = [
+        {"chartText": "c", "songName": "Song", "promoteTo": "/catalog/evolution.db"},
+        {"chartText": "c", "songName": "Song"},
+    ]
+    monkeypatch.setattr(worker.sys, "stdin", io.StringIO("".join(json.dumps(x) + "\n" for x in lines)))
+    monkeypatch.setattr(worker.sys, "stdout", io.StringIO())
+
+    assert worker.main() == 0
+    assert [c["promote_to"] for c in calls] == ["/catalog/evolution.db", None]

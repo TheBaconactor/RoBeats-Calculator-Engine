@@ -31,7 +31,7 @@ from gear_optimizer.chart import read_header
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.macos_background import make_process_background_only
 from gear_optimizer.settings import DIFFICULTIES, REASONING_LEVELS, paths, reasoning_search, service_settings
-from gear_optimizer.store import legacy, schema
+from gear_optimizer.store import db, legacy, schema
 from gear_optimizer.store.db import present_songs
 from gear_optimizer.data.exported_game_data_sync import exported_song_names
 from gear_optimizer.frontier_auth import FrontierRequestAuthenticator
@@ -736,27 +736,13 @@ def _custom_pool_for_request(request: dict[str, Any]) -> dict[str, list[Any]]:
     return pool
 
 
-def _promote_official_result(
-    request: dict[str, Any],
-    *,
-    song_name: str,
-    entries: list[dict[str, Any]],
-    timing_mode: str,
-    custom_pool: dict[str, list[Any]],
-) -> None:
-    """Merge a canonical official solve into the shared evolution database."""
-    if str(request.get("chartText") or "").strip():
-        return
-    if not str(request.get("targetSongId") or "").strip():
-        return
+def _promotion_target(request: dict[str, Any], *, timing_mode: str, custom_pool: dict[str, list[Any]]) -> str | None:
+    """The catalog database a clean official solve merges its results into (None: the results are the caller's)."""
+    if str(request.get("chartText") or "").strip() or not str(request.get("targetSongId") or "").strip():
+        return None
     if timing_mode != "perfect_window" or any(custom_pool.values()):
-        return
-    conn = schema.connect(paths().database, write=True)
-    try:
-        legacy.promote_entries(conn, song_name, "T5", entries)
-    finally:
-        conn.close()
-    logger.info("promoted official optimizer result for %s into evolution.db", song_name)
+        return None
+    return str(paths().database)
 
 
 def _remove_excluded_rows(gear_dir: Path, pool: dict[str, list[Any]]) -> None:
@@ -1042,20 +1028,23 @@ def _solve_persistent(
     repeats: int,
     reasoning: str,
     timing_mode: str,
+    *,
+    promote_to: str | None = None,
 ) -> list[dict[str, Any]]:
     normalized_chart = _normalize_chart(chart_text, result_song_name, timing_mode)
+    payload = {
+        "jobId": job,
+        "chartText": normalized_chart,
+        "songName": result_song_name,
+        "repeats": int(repeats),
+        "reasoning": reasoning,
+    }
+    if promote_to:
+        payload["promoteTo"] = promote_to
     with _SOLVE_SEMAPHORE:
         _acquire_solve_slot()
         try:
-            return _get_persistent_solve_worker().request(
-                {
-                    "jobId": job,
-                    "chartText": normalized_chart,
-                    "songName": result_song_name,
-                    "repeats": int(repeats),
-                    "reasoning": reasoning,
-                }
-            )
+            return _get_persistent_solve_worker().request(payload)
         finally:
             _release_solve_slot()
 
@@ -1069,8 +1058,9 @@ def _solve_isolated(
     timing_mode: str = "perfect_window",
     ephemeral_frontiers: bool = False,
     custom_pool: dict[str, list[dict[str, Any]]] | None = None,
+    promote_to: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Run the canonical optimizer pipeline in an execution-owned workspace."""
+    """Run the canonical optimizer pipeline in an execution-owned workspace (`promote_to`: see _promotion_target)."""
     run_root = _service_run_root()
     run_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f"{job}-", dir=run_root) as workspace:
@@ -1147,6 +1137,8 @@ def _solve_isolated(
                 entries = legacy.read_best_loadouts(db_path, result_song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
                 if not entries:
                     raise RuntimeError("optimizer produced no T5 loadout")
+                if promote_to:
+                    db.promote(db_path, promote_to, result_song_name, "T5")
                 return entries
             finally:
                 _release_solve_slot()
@@ -1183,6 +1175,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
         custom_request = bool(str(request.get("chartText") or "").strip()) or any(
             custom_pool.get(key) for key in ("gear", "minis", "excludeGear", "excludeMinis")
         )
+        promote_to = _promotion_target(request, timing_mode=timing_mode, custom_pool=custom_pool)
         if _persistent_worker_enabled() and not custom_request:
             state.result = _solve_persistent(
                 job,
@@ -1191,6 +1184,7 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
                 repeats,
                 reasoning,
                 timing_mode,
+                promote_to=promote_to,
             )
         else:
             state.result = _solve_isolated(
@@ -1202,14 +1196,10 @@ def solve(request: dict[str, Any]) -> list[dict[str, Any]]:
                 timing_mode,
                 ephemeral_frontiers=custom_request,
                 custom_pool=custom_pool,
+                promote_to=promote_to,
             )
-        _promote_official_result(
-            request,
-            song_name=result_song_name,
-            entries=state.result,
-            timing_mode=timing_mode,
-            custom_pool=custom_pool,
-        )
+        if promote_to:
+            logger.info("promoted official optimizer result for %s into evolution.db", result_song_name)
         return state.result
     except BaseException as exc:
         state.error = exc

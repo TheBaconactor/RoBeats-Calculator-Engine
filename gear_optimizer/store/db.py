@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import time
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 
+from . import schema
 from .boards import FG_ORDER, META_ORDER, Row, merge
 from .records import (
     Loadout,
@@ -139,6 +141,24 @@ def store_results(
     except BaseException:
         conn.rollback()
         raise
+
+
+def promote(source: str | os.PathLike[str], target: str | os.PathLike[str], song: str, tier: str) -> None:
+    """Merge a song's results stored in another database (an isolated solve's) into `target`, every attached
+    result included: the source's meta board first in board order (new loadouts are numbered in it), then its FG
+    board, then any other loadout."""
+    conn = schema.connect(source)
+    try:
+        rows = {row.loadout.loadout_hash: row for row in load_rows(conn, song, tier)}
+        boards = load_boards(conn, song, tier)
+    finally:
+        conn.close()
+    order = dict.fromkeys([x.loadout_hash for x in boards.meta + boards.fg] + sorted(rows))
+    conn = schema.connect(target, write=True)
+    try:
+        store_results(conn, song, tier, [rows[h] for h in order])
+    finally:
+        conn.close()
 
 
 def insert_rows(conn: sqlite3.Connection, rows: Iterable[Row]) -> None:

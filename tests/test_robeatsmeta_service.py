@@ -42,7 +42,7 @@ def data_root(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_SERVICE_DRAINING_FOR_UPDATE", False)
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PERSISTENT_SOLVER", "0")
     monkeypatch.setattr(service, "_PERSISTENT_SOLVE_WORKER", None)
-    monkeypatch.setattr(service, "_promote_official_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service.db, "promote", lambda *_args, **_kwargs: None)
     service._AUTHORITATIVE_PUBLICATION_READY.clear()
     service.clear_official_song_catalog_cache()
     with service._INFLIGHT_SOLVES_LOCK:
@@ -385,7 +385,7 @@ def test_clean_official_solve_promotes_its_result(data_root, monkeypatch):
     gear.mkdir(parents=True, exist_ok=True)
     (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
     entry = {"loadout_hash": "h", "score": 999, "gear": ["A"], "minis": ["B"], "details": {}}
-    promoted: list[tuple[str, list[dict[str, object]], str]] = []
+    promoted: list[tuple[str, str, str, str]] = []
 
     class FakePopen:
         returncode = 0
@@ -399,94 +399,48 @@ def test_clean_official_solve_promotes_its_result(data_root, monkeypatch):
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [entry])
     monkeypatch.setattr(
-        service,
-        "_promote_official_result",
-        lambda _request, *, song_name, entries, timing_mode, custom_pool: promoted.append(
-            (song_name, entries, timing_mode)
-        ),
+        service.db,
+        "promote",
+        lambda source, target, song, tier: promoted.append((Path(source).name, target, song, tier)),
     )
 
     result = service.solve({"jobId": "job_promote", "targetSongId": "Feeding [Hard]"})
 
     assert result == [entry]
-    assert promoted == [("Feeding [Hard]", [entry], "perfect_window")]
+    # Merged from the solve's own result database while the isolated workspace still exists.
+    assert promoted == [("result.db", str(service.paths().database), "Feeding [Hard]", "T5")]
 
 
-def test_promotion_accepts_only_clean_perfect_window_official_results(tmp_path, monkeypatch):
-    saved: list[tuple[str, list[dict[str, object]], str]] = []
+def test_a_persistent_solve_asks_the_worker_to_promote(monkeypatch):
+    payloads = []
+
+    class FakeWorker:
+        def request(self, payload):
+            payloads.append(payload)
+            return [{"score": 1}]
+
+    monkeypatch.setattr(service, "_get_persistent_solve_worker", lambda: FakeWorker())
+    monkeypatch.setattr(service, "_acquire_solve_slot", lambda: None)
+    monkeypatch.setattr(service, "_release_solve_slot", lambda: None)
+    for promote_to in ("/catalog/evolution.db", None):
+        service._solve_persistent("job", "chart", "Song", 1, "default", "perfect_window", promote_to=promote_to)
+    assert payloads[0]["promoteTo"] == "/catalog/evolution.db"
+    assert "promoteTo" not in payloads[1]
+
+
+def test_only_clean_perfect_window_official_solves_are_promoted(tmp_path, monkeypatch):
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "evolution.db"))
+    clean = {"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []}
+    custom = {**clean, "gear": [{"name": "Custom"}]}
 
-    class FakeConnection:
-        def __init__(self, path):
-            self.path = str(path)
+    def target(request, timing_mode="perfect_window", pool=clean):
+        return service._promotion_target(request, timing_mode=timing_mode, custom_pool=pool)
 
-        def close(self):
-            pass
-
-    monkeypatch.setattr(service.schema, "connect", lambda path, *, write: FakeConnection(path))
-    monkeypatch.setattr(
-        service.legacy,
-        "promote_entries",
-        lambda conn, song_name, tier, entries: saved.append((song_name, entries, conn.path)),
-    )
-    entry = {"score": 123}
-
-    service._promote_official_result(
-        {"targetSongId": "Official"},
-        song_name="Official",
-        entries=[entry],
-        timing_mode="perfect_window",
-        custom_pool={"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []},
-    )
-    service._promote_official_result(
-        {"targetSongId": "Official"},
-        song_name="Official",
-        entries=[entry],
-        timing_mode="zero_ms",
-        custom_pool={"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []},
-    )
-    service._promote_official_result(
-        {"targetSongId": "Official"},
-        song_name="Official",
-        entries=[entry],
-        timing_mode="perfect_window",
-        custom_pool={"gear": [{"name": "Custom"}], "minis": [], "excludeGear": [], "excludeMinis": []},
-    )
-    service._promote_official_result(
-        {"chartText": "Song Data\n"},
-        song_name="custom-job",
-        entries=[entry],
-        timing_mode="perfect_window",
-        custom_pool={"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []},
-    )
-
-    assert saved == [("Official", [entry], str(tmp_path / "evolution.db"))]
-
-
-def test_clean_official_promotion_writes_the_canonical_database(tmp_path, monkeypatch):
-    from gear_optimizer.store import db, legacy, schema
-    from tests.store_support import result as solved
-
-    result = schema.connect(tmp_path / "result.db", write=True)
-    db.store_results(result, "Official Song", "T5", [solved("a", 1234, 1300, song="Official Song")])
-    entries = legacy.best_loadouts(result, "Official Song", "T5")
-    result.close()
-    db_path = tmp_path / "evolution.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-
-    service._promote_official_result(
-        {"targetSongId": "Official Song"},
-        song_name="Official Song",
-        entries=entries,
-        timing_mode="perfect_window",
-        custom_pool={"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []},
-    )
-
-    conn = schema.connect(db_path)
-    boards = db.load_boards(conn, "Official Song", "T5")
-    conn.close()
-    assert [(x.loadout_hash, x.score, x.fg_score) for x in boards.meta] == [("a", 1234, 1300)]
-    assert [x.loadout_hash for x in boards.fg] == ["a"]
+    assert target({"targetSongId": "Official"}) == str(tmp_path / "evolution.db")
+    assert target({"targetSongId": "Official"}, timing_mode="zero_ms") is None
+    assert target({"targetSongId": "Official"}, pool=custom) is None
+    assert target({"chartText": "Song Data\n"}) is None
+    assert target({"targetSongId": "Official", "chartText": "Song Data\n"}) is None
 
 
 def test_custom_solve_frontier_caches_are_inside_throwaway_workspace(data_root, monkeypatch):
@@ -507,10 +461,12 @@ def test_custom_solve_frontier_caches_are_inside_throwaway_workspace(data_root, 
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
 
-    service.solve({
-        "jobId": "job_custom",
-        "chartText": "Song Name\tCustom\nSong Data\n0.500\t1\t1\t1\n",
-    })
+    service.solve(
+        {
+            "jobId": "job_custom",
+            "chartText": "Song Name\tCustom\nSong Data\n0.500\t1\t1\t1\n",
+        }
+    )
 
     workspace = Path(captured["EVOLUTION_DB_PATH"]).parent
     run_bin = workspace / "bin"
@@ -540,9 +496,7 @@ def test_solve_stamps_requested_timing_mode_into_isolated_chart(data_root, monke
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
     monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
 
-    service.solve(
-        {"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "zero_ms"}
-    )
+    service.solve({"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "zero_ms"})
 
     assert "Timing Mode\tzero_ms" in captured["chart"]
 
@@ -550,9 +504,7 @@ def test_solve_stamps_requested_timing_mode_into_isolated_chart(data_root, monke
 def test_solve_rejects_unknown_timing_mode(data_root):
     _write_chart(data_root, "Hard", "Feeding [Hard]")
     with pytest.raises(service.RequestError, match="unknown timingMode"):
-        service.solve(
-            {"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "approximate"}
-        )
+        service.solve({"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "approximate"})
 
 
 def _capture_solve_config(data_root, monkeypatch, request: dict) -> str:
@@ -934,14 +886,14 @@ def test_excluding_an_unknown_name_is_a_no_op(tmp_path):
 def test_same_job_different_inputs_own_separate_workspaces(data_root, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
 
-    gear = data_root / 'Data' / 'Gear'
+    gear = data_root / "Data" / "Gear"
     gear.mkdir(parents=True)
-    (gear / 'Gears.csv').write_text('name\n', encoding='utf-8')
-    runs = data_root / 'runs'
-    monkeypatch.setenv('ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR', str(runs))
-    monkeypatch.setattr(service, '_SOLVE_SEMAPHORE', threading.Semaphore(2))
-    monkeypatch.setattr(service, '_acquire_solve_slot', lambda: None)
-    monkeypatch.setattr(service, '_release_solve_slot', lambda: None)
+    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
+    runs = data_root / "runs"
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(runs))
+    monkeypatch.setattr(service, "_SOLVE_SEMAPHORE", threading.Semaphore(2))
+    monkeypatch.setattr(service, "_acquire_solve_slot", lambda: None)
+    monkeypatch.setattr(service, "_release_solve_slot", lambda: None)
     first_started = threading.Event()
     both_started = threading.Barrier(2, timeout=5)
     paths = []
@@ -950,8 +902,8 @@ def test_same_job_different_inputs_own_separate_workspaces(data_root, monkeypatc
         returncode = 0
 
         def __init__(self, _cmd, **kwargs):
-            self.work = Path(kwargs['env']['EVOLUTION_DB_PATH']).parent
-            self.chart = self.work / 'Data' / 'Hard' / 'same.txt'
+            self.work = Path(kwargs["env"]["EVOLUTION_DB_PATH"]).parent
+            self.chart = self.work / "Data" / "Hard" / "same.txt"
             self.original = self.chart.read_text()
             paths.append(self.work)
             first_started.set()
@@ -959,48 +911,51 @@ def test_same_job_different_inputs_own_separate_workspaces(data_root, monkeypatc
         def communicate(self, timeout=None):
             both_started.wait()
             assert self.chart.read_text() == self.original
-            return '', ''
+            return "", ""
 
-    monkeypatch.setattr(service.subprocess, 'Popen', Process)
-    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *a, **kw: [{'score': 1}])
+    monkeypatch.setattr(service.subprocess, "Popen", Process)
+    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *a, **kw: [{"score": 1}])
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(service.solve, {'jobId': 'same', 'chartText': 'Song Data\n500\t0\t0\t1\n'})
+        first = pool.submit(service.solve, {"jobId": "same", "chartText": "Song Data\n500\t0\t0\t1\n"})
         assert first_started.wait(5)
-        second = pool.submit(service.solve, {'jobId': 'same', 'chartText': 'Song Data\n750\t0\t0\t1\n'})
-        assert first.result(timeout=10) == [{'score': 1}]
-        assert second.result(timeout=10) == [{'score': 1}]
+        second = pool.submit(service.solve, {"jobId": "same", "chartText": "Song Data\n750\t0\t0\t1\n"})
+        assert first.result(timeout=10) == [{"score": 1}]
+        assert second.result(timeout=10) == [{"score": 1}]
     assert len(set(paths)) == 2
     assert all(path.parent == runs and not path.exists() for path in paths)
 
 
 def test_isolated_workspace_cleanup_includes_preparation_failure(data_root, monkeypatch):
-    runs = data_root / 'runs'
-    monkeypatch.setenv('ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR', str(runs))
+    runs = data_root / "runs"
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(runs))
 
     def fail_copy(*args, **kwargs):
-        raise OSError('catalog unavailable')
+        raise OSError("catalog unavailable")
 
-    monkeypatch.setattr(service.shutil, 'copytree', fail_copy)
-    with pytest.raises(OSError, match='catalog unavailable'):
-        service._solve_isolated('job', 'Song Data\n500\t0\t0\t1\n', 'song', 1)
+    monkeypatch.setattr(service.shutil, "copytree", fail_copy)
+    with pytest.raises(OSError, match="catalog unavailable"):
+        service._solve_isolated("job", "Song Data\n500\t0\t0\t1\n", "song", 1)
     assert not list(runs.iterdir())
 
 
-@pytest.mark.parametrize('exit_code, entries, message', [
-    (1, [{'score': 1}], 'optimizer exited 1'),
-    (0, [], 'optimizer produced no T5 loadout'),
-])
+@pytest.mark.parametrize(
+    "exit_code, entries, message",
+    [
+        (1, [{"score": 1}], "optimizer exited 1"),
+        (0, [], "optimizer produced no T5 loadout"),
+    ],
+)
 def test_failed_solve_never_publishes_plausible_results(data_root, monkeypatch, exit_code, entries, message):
     from unittest.mock import Mock
 
-    _write_chart(data_root, 'Hard', 'Official')
-    gear = data_root / 'Data' / 'Gear'
+    _write_chart(data_root, "Hard", "Official")
+    gear = data_root / "Data" / "Gear"
     gear.mkdir(parents=True)
-    (gear / 'Gears.csv').write_text('name\n', encoding='utf-8')
-    runs = data_root / 'runs'
-    monkeypatch.setenv('ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR', str(runs))
+    (gear / "Gears.csv").write_text("name\n", encoding="utf-8")
+    runs = data_root / "runs"
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR", str(runs))
     publish = Mock()
-    monkeypatch.setattr(service, '_promote_official_result', publish)
+    monkeypatch.setattr(service.db, "promote", publish)
     monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *a, **kw: entries)
 
     class Process:
@@ -1010,11 +965,11 @@ def test_failed_solve_never_publishes_plausible_results(data_root, monkeypatch, 
             pass
 
         def communicate(self, timeout=None):
-            return '', 'GPU execution failed'
+            return "", "GPU execution failed"
 
-    monkeypatch.setattr(service.subprocess, 'Popen', Process)
+    monkeypatch.setattr(service.subprocess, "Popen", Process)
     with pytest.raises(RuntimeError, match=message):
-        service.solve({'jobId': 'failure', 'targetSongId': 'Official'})
+        service.solve({"jobId": "failure", "targetSongId": "Official"})
     publish.assert_not_called()
     assert not list(runs.iterdir())
 

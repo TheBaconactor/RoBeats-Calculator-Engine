@@ -29,9 +29,7 @@ def test_a_writer_creates_the_current_schema_and_a_reader_requires_it(tmp_path):
 
 
 def test_stored_results_read_back_in_board_order_with_their_traces(conn):
-    db.store_results(
-        conn, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 100)], now=1000.5
-    )
+    db.store_results(conn, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 100)], now=1000.5)
     got = db.load_boards(conn, "Song A", "T5")
     assert [x.loadout_hash for x in got.meta] == ["b", "a", "c"]
     assert [x.loadout_hash for x in got.fg] == ["a"]
@@ -47,9 +45,7 @@ def test_stored_results_read_back_in_board_order_with_their_traces(conn):
 
 def test_catalog_streams_walk_songs_by_name_in_board_order(conn):
     db.store_results(conn, "B song", "T5", [result("x", 5, song="B song")], now=1)
-    db.store_results(
-        conn, "A song", "T5", [result("y", 7, song="A song"), result("z", 9, 12, song="A song")], now=2
-    )
+    db.store_results(conn, "A song", "T5", [result("y", 7, song="A song"), result("z", 9, 12, song="A song")], now=2)
     assert [(x.song, x.loadout_hash) for x in db.iter_board(conn, "meta", tier="T5")] == [
         ("A song", "z"),
         ("A song", "y"),
@@ -104,3 +100,23 @@ def test_entry_numbers_count_across_songs_like_insertion_order(conn):
     seqs = {x.loadout_hash: x.meta.seq for song in ("Song A", "Song B") for x in db.load_boards(conn, song, "T5").meta}
     assert seqs == {"a1": 1, "a2": 2, "b1": 3, "a3": 4}
     assert [x.fg.seq for x in db.load_boards(conn, "Song B", "T5").fg] == [2]
+
+
+def test_promotion_merges_every_attached_result_in_the_sources_board_order(tmp_path):
+    source, target = tmp_path / "result.db", tmp_path / "catalog.db"
+    conn = schema.connect(source, write=True)
+    # c's FG result does not beat its score: attached, off the FG board (a version 18 view would drop it).
+    db.store_results(conn, "Song A", "T5", [result("a", 100, 150), result("b", 120), result("c", 90, 80)])
+    conn.close()
+
+    db.promote(source, target, "Song A", "T5")
+
+    conn = schema.connect(target)
+    boards = db.load_boards(conn, "Song A", "T5")
+    rows = {r.loadout.loadout_hash: r.loadout for r in db.load_rows(conn, "Song A", "T5")}
+    conn.close()
+    assert [x.loadout_hash for x in boards.meta] == ["b", "a", "c"]
+    assert [x.loadout_hash for x in boards.fg] == ["a"]
+    assert (rows["c"].fg_score, rows["c"].fg is not None, rows["c"].on_fg) == (80, True, False)
+    # New loadouts are numbered in the source's meta board order.
+    assert [rows[h].meta.seq for h in ("b", "a", "c")] == [1, 2, 3]

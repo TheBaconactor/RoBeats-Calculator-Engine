@@ -90,8 +90,10 @@ for loadout in db.iter_board(conn, "fg", tier="T5"):  # catalog streams, song by
 ```
 
 Writes merge a solve's results (typed rows) into a song's boards in one transaction (`db.store_results`):
-the pipeline's post-processor builds them (`pipeline/canonical.py`); the service still promotes version 18
-shaped entry dicts through `store.legacy` (`promote_entries`, `best_loadouts`) until it moves records too.
+the pipeline's post-processor builds them (`pipeline/canonical.py`). A clean official solve runs into its own
+result database and is then promoted into the catalog with `db.promote` (every attached result, in the result
+database's board order). `store.legacy` keeps the version 18 shaped views for the POST /optimize response and
+the website (`best_loadouts`, `promote_entries` for job databases).
 
 ## Raw SQL
 

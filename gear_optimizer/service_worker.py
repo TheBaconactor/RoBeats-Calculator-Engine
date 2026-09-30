@@ -26,7 +26,7 @@ from gear_optimizer.core.memory import (
     compute_memory_guard_limit,
     set_memory_watchdog_limit,
 )
-from gear_optimizer.store import legacy, schema
+from gear_optimizer.store import db, legacy, schema
 from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves
 from gear_optimizer.settings import RunSettings, paths, reasoning_search, service_settings
 
@@ -99,7 +99,10 @@ class PersistentOptimizerSession:
         song_name: str,
         repeats: int,
         reasoning: str,
+        promote_to: str | None = None,
     ) -> list[dict[str, Any]]:
+        """Solve one chart and return its T5 leaderboard; `promote_to` (a clean official solve) also merges every
+        result into that catalog database."""
         run = request_run_settings(repeats=repeats, reasoning=reasoning)
         self._chart_path.write_text(chart_text, encoding="utf-8")
         self._remove_result_db()
@@ -131,6 +134,8 @@ class PersistentOptimizerSession:
             entries = legacy.read_best_loadouts(self._result_db, song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
             if not entries:
                 raise RuntimeError("optimizer produced no T5 loadout")
+            if promote_to:
+                db.promote(self._result_db, promote_to, song_name, "T5")
             self._request_count += 1
             return entries
         finally:
@@ -170,6 +175,7 @@ def main() -> int:
                         song_name=str(request.get("songName") or ""),
                         repeats=int(request.get("repeats") or 1),
                         reasoning=str(request.get("reasoning") or "default"),
+                        promote_to=request.get("promoteTo") or None,
                     )
                     response = {"ok": True, "loadouts": result}
                 except BaseException as exc:
