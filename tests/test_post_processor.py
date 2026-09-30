@@ -1,5 +1,7 @@
 import queue
 
+import pytest
+
 from gear_optimizer.pipeline import post_processor
 from gear_optimizer.store import db, schema
 from tests.store_support import result
@@ -42,7 +44,9 @@ def test_the_loop_stores_solves_counts_failures_and_stops_at_the_sentinel(tmp_pa
     items = queue.Queue()
     for item in ({"_error": "boom", "_song_name": "Song X"}, _Solve("Song A"), _Solve("Broken"), None):
         items.put(item)
-    post_processor.run_post_processor(items, total_tasks=3)
+    with pytest.raises(SystemExit) as exited:
+        post_processor.run_post_processor(items, total_tasks=3)
+    assert exited.value.code == 1
     conn = schema.connect(tmp_path / "results.db")
     assert [x.loadout_hash for x in db.load_boards(conn, "Song A", "T5").meta] == ["a"]
     conn.close()

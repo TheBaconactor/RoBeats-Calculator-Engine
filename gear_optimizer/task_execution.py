@@ -20,31 +20,33 @@ class TaskExecutionMixin:
             completed_songs = set()
             self._run_current_song_label = ""
             self._start_hotkeys()
-
-            self._run_sequential(tasks, completed_songs, memory_resume_tracker)
-
-            # Expose completion stats for end-of-iteration throughput reporting.
             try:
-                completed = int(self._runtime_completed_count or 0)
-                total = int(self._runtime_total_count or 0)
-                if total <= 0:
-                    total = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
-                self._last_completed_tasks = max(0, int(completed))
-                self._last_total_tasks = max(0, int(total))
-            except (TypeError, ValueError):
-                self._last_completed_tasks = None
-                self._last_total_tasks = None
+                self._run_sequential(tasks, completed_songs, memory_resume_tracker)
+            finally:
+                # Completion stats for end-of-iteration throughput reporting, and the resume state, also when songs
+                # failed (_run_sequential raises after the run).
+                try:
+                    completed = int(self._runtime_completed_count or 0)
+                    total = int(self._runtime_total_count or 0)
+                    if total <= 0:
+                        total = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
+                    self._last_completed_tasks = max(0, int(completed))
+                    self._last_total_tasks = max(0, int(total))
+                except (TypeError, ValueError):
+                    self._last_completed_tasks = None
+                    self._last_total_tasks = None
 
-            if memory_release_requested():
-                logger.warning("[MemoryGuard] Soft limit reached; pending songs saved for resume.")
-                logger.warning("[MemoryGuard] Scheduling automatic restart if pending songs remain.")
+                if memory_release_requested():
+                    logger.warning("[MemoryGuard] Soft limit reached; pending songs saved for resume.")
+                    logger.warning("[MemoryGuard] Scheduling automatic restart if pending songs remain.")
 
-            if memory_resume_tracker:
-                memory_resume_tracker.finalize(memory_release_requested())
-            self._stop_hotkeys()
+                if memory_resume_tracker:
+                    memory_resume_tracker.finalize(memory_release_requested())
+                self._stop_hotkeys()
 
     def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
-            """Run the current queue through the native in-flight production engine."""
+            """Run the current queue through the native in-flight production engine. Raises when the pipeline
+            fails, or after the run when any song failed (the post-processor counts and logs them)."""
             if self._stop_requested_now():
                 return
             if not tasks:
@@ -55,6 +57,7 @@ class TaskExecutionMixin:
 
             post_queue = None
             post_proc = None
+            songs_failed = False
             try:
                 post_queue, post_proc = self._start_post_processor(total_tasks)
 
@@ -73,20 +76,11 @@ class TaskExecutionMixin:
                         progress_cb=self._progress_event,
                     )
                 )
-                return
-            except Exception as inflight_err:
-                logger.exception("[InFlight] Native in-flight pipeline failed")
-                if self._is_fatal_inflight_exception(inflight_err):
-                    logger.error(
-                        "[InFlight] Fatal GPU runtime failure detected; aborting so the supervisor can restart cleanly.",
-                    )
-                    raise
-                raise RuntimeError(
-                    "Native in-flight pipeline failed; no sequential path remains."
-                ) from inflight_err
             finally:
                 self._progress_counts_driven = False
-                self._stop_post_processor(post_queue, post_proc)
+                songs_failed = not self._stop_post_processor(post_queue, post_proc)
+            if songs_failed:
+                raise RuntimeError("song(s) failed in this run (see the [POST] FAILED lines)")
 
     def _start_post_processor(self, total_tasks: int):
             from gear_optimizer.pipeline.post_processor import run_post_processor
@@ -101,7 +95,8 @@ class TaskExecutionMixin:
             post_proc.start()
             return post_queue, post_proc
 
-    def _stop_post_processor(self, post_queue, post_proc):
+    def _stop_post_processor(self, post_queue, post_proc) -> bool:
+            """Stop the post-processor; True when it finished every song it was given without a failure."""
             sentinel_sent = False
             if post_queue is not None:
                 # Bounded post queues (POST_PIPELINE_QUEUE) can be full at shutdown. A single short
@@ -123,3 +118,4 @@ class TaskExecutionMixin:
             if post_proc is not None and post_proc.is_alive():
                 post_proc.terminate()
                 post_proc.join(timeout=5.0)
+            return post_proc is None or (sentinel_sent and post_proc.exitcode == 0)

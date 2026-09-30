@@ -17,7 +17,7 @@ def _make_minimal_app() -> GearOptimizerApp:
     app._progress_counts_driven = False
     app._stop_requested_now = lambda: False
     app._start_post_processor = lambda _total: (object(), object())
-    app._stop_post_processor = lambda _queue, _proc: None
+    app._stop_post_processor = lambda _queue, _proc: True  # every song stored
     app._set_runtime_progress_counts = lambda **_kwargs: None
     app._progress_event = lambda **_kwargs: None
     app._effective_total_tasks = lambda tasks: len(tasks or [])
@@ -119,8 +119,23 @@ def test_inflight_failure_raises_instead_of_falling_back(monkeypatch):
         types.SimpleNamespace(run_native_inflight_song_pipeline=_raise_runtime),
     )
 
-    with pytest.raises(RuntimeError, match="Native in-flight pipeline failed; no sequential path remains."):
+    with pytest.raises(RuntimeError, match="boom"):
         app._run_sequential(tasks, completed_songs=set(), memory_resume_tracker=None)
+
+
+def test_a_run_whose_songs_failed_raises_after_the_run(monkeypatch):
+    app = _make_minimal_app()
+    app._stop_post_processor = lambda _queue, _proc: False  # the post-processor reported failed songs
+    ran = []
+    monkeypatch.setitem(
+        sys.modules,
+        "gear_optimizer.solver.native_inflight_orchestrator",
+        types.SimpleNamespace(run_native_inflight_song_pipeline=lambda *_a, **_k: ran.append(1)),
+    )
+
+    with pytest.raises(RuntimeError, match="failed in this run"):
+        app._run_sequential(_build_tasks(count=2), completed_songs=set(), memory_resume_tracker=None)
+    assert ran == [1]
 
 
 def test_service_mode_re_raises_gpu_timeout_instead_of_falling_back(monkeypatch):
@@ -210,3 +225,39 @@ def test_request_stop_requests_gpu_abort(monkeypatch):
     assert out == "stop-set"
     assert stop_control.calls == [("hotkey stop", True)]
     assert fake_executor.abort_calls == ["stop requested (hotkey stop)"]
+
+
+def _looping_app(monkeypatch, tmp_path, failure: BaseException):
+    """A real app whose iteration fails right after reading LoopForever run settings."""
+    import gear_optimizer.app as app_module
+    from gear_optimizer.settings import RunSettings
+
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "results.db"))
+    monkeypatch.setattr(app_module, "update_and_restart_client", lambda: None)
+    monkeypatch.setattr(app_module, "sync_frontiers_from_server", lambda: types.SimpleNamespace(enabled=False))
+    monkeypatch.setattr(app_module.settings, "read_run_settings", lambda: RunSettings(loop_forever=True))
+    iterations = []
+
+    def fail():
+        iterations.append(1)
+        if len(iterations) > 3:
+            raise KeyboardInterrupt  # a non-fatal failure loops; end the loop for the test
+        raise failure
+
+    monkeypatch.setattr(app_module, "sync_exported_game_data", fail)
+    monkeypatch.setattr(GearOptimizerApp, "_handle_loop_restart", lambda self: None)
+    return GearOptimizerApp(), iterations
+
+
+def test_a_fatal_gpu_failure_stops_a_looping_run_with_exit_status_1(monkeypatch, tmp_path):
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
+    app, iterations = _looping_app(monkeypatch, tmp_path, GpuServiceTimeoutError("GPU service request timed out"))
+    assert app.run() == 1
+    assert iterations == [1]
+
+
+def test_a_failed_iteration_keeps_a_looping_run_going_and_is_reported(monkeypatch, tmp_path):
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
+    app, iterations = _looping_app(monkeypatch, tmp_path, RuntimeError("song(s) failed in this run"))
+    assert app.run() == 1
+    assert len(iterations) == 4

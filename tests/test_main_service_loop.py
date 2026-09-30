@@ -4,8 +4,9 @@ import types
 import gear_optimizer.cli as optimizer_cli
 
 
-def test_cli_run_inits_app_once_and_ignores_run_return_value(monkeypatch):
+def test_cli_run_inits_app_once_and_returns_its_exit_status(monkeypatch):
     calls: list[str] = []
+    status = []
 
     class FakeApp:
         def __init__(self):
@@ -13,7 +14,7 @@ def test_cli_run_inits_app_once_and_ignores_run_return_value(monkeypatch):
 
         def run(self):
             calls.append("run")
-            return True
+            return status[0]
 
     monkeypatch.setattr(optimizer_cli, "common_init", lambda: None)
     monkeypatch.setattr(optimizer_cli, "_apply_taichi_shell_env", lambda: None)
@@ -24,5 +25,8 @@ def test_cli_run_inits_app_once_and_ignores_run_return_value(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "gear_optimizer.app", types.SimpleNamespace(GearOptimizerApp=FakeApp))
 
+    status.append(0)
     assert optimizer_cli.run() == 0
-    assert calls == ["init", "run"]
+    status[0] = 1
+    assert optimizer_cli.run() == 1
+    assert calls == ["init", "run", "init", "run"]

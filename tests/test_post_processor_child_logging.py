@@ -51,7 +51,8 @@ def test_post_processor_child_logs_failure_payload_to_file(tmp_path, monkeypatch
         proc.join(timeout=5)
         pytest.fail("post-processor child did not exit after processing the shutdown sentinel")
 
-    assert proc.exitcode == 0, f"post-processor child exited with {proc.exitcode}"
+    # A failed song makes the post-processor exit 1 (the run reports it).
+    assert proc.exitcode == 1, f"post-processor child exited with {proc.exitcode}"
 
     log_file = bin_dir / "error.log"
     assert log_file.exists(), "post-processor child did not create bin/error.log"

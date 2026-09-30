@@ -1,7 +1,8 @@
 """The post-processor: canonicalizes each solved song, stores its results and prints what the database holds.
 
 Runs as its own process beside the in-flight pipeline, so the canonical gem re-solve and exact replays stay off
-the pipeline's threads. Messages: a SongSolve, an error payload of a failed song, or None (shutdown).
+the pipeline's threads. Messages: a SongSolve, an error payload of a failed song, or None (shutdown). The process
+exits 1 when any song failed.
 """
 
 from __future__ import annotations
@@ -72,6 +73,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         conn.close()
     if failed:
         print(f"[POST][SUMMARY] {failed}/{max(1, int(total_tasks or 0))} task(s) failed.")
+        raise SystemExit(1)
 
 
 def store_solve(conn, solve: SongSolve, gears: dict[str, Gear], minis: dict[str, Mini]) -> None:

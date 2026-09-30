@@ -45,8 +45,7 @@ def run() -> int:
         _apply_service_mode_frontier_threads()
         from gear_optimizer.app import GearOptimizerApp
 
-        GearOptimizerApp().run()
-        return 0
+        return GearOptimizerApp().run()
     except KeyboardInterrupt:
         return 0
 

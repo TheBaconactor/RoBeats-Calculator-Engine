@@ -188,8 +188,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         if failed is not None:
             self._runtime_failed_count = max(0, int(failed))
 
-    def run(self):
+    def run(self) -> int:
+        """Run iterations until the queue is done (forever with LoopForever). Returns the process exit status:
+        1 when an iteration failed (a song or the pipeline), else 0."""
         multiprocessing.freeze_support()
+        self._run_failed = False
         self._install_signal_handlers()
         if hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(line_buffering=True)
@@ -208,6 +211,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         finally:
             restore_stdout(self._orig_stdout)
             restore_stderr(self._orig_stderr)
+        return 1 if self._run_failed else 0
 
     def _run_single_iteration(self):
         memory_guard_restart = False
@@ -215,6 +219,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         start_time = time.time()
         loop_forever = False  # Default, updated from config.ini
         graceful_stop = False
+        fatal = False
         queued_songs = 0
         queued_tasks = 0
         try:
@@ -270,8 +275,13 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 self.request_stop("KeyboardInterrupt")
             except KeyboardInterrupt:
                 raise
-        except Exception:
+        except Exception as exc:
             logger.exception("[Run] Iteration failed")
+            self._run_failed = True
+            if self._is_fatal_inflight_exception(exc):
+                # A lost or hung GPU does not come back in this process: stop so the supervisor restarts it.
+                logger.error("[Run] Fatal GPU runtime failure; exiting so the supervisor can restart cleanly.")
+                fatal = True
         finally:
             self._stop_progress()
             elapsed = time.time() - start_time
@@ -310,6 +320,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             gc.collect()
         if graceful_stop or self._stop_requested.is_set():
             logger.info("[Shutdown] Exiting by user request.")
+            return False
+        if fatal:
             return False
         if memory_guard_restart:
             restart_process_for_memory_guard()
