@@ -1,3 +1,4 @@
+from tests.curves_support import synthetic_curves
 import numpy as np
 
 from gear_optimizer.rules import STAT_GEM_GAIN_NORMAL
@@ -6,11 +7,11 @@ from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact, score
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
 
 
-def _prebuild_timeline_cache(calc_song, ref_arrays, tmp_path, monkeypatch) -> None:
+def _prebuild_timeline_cache(calc_song, curves, tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     timeline_api.reset_timeline_state()
-    timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    timeline_api.build_or_load_timeline_frontier_payload(calc_song, curves)
     timeline_api.reset_timeline_state()
 
 
@@ -60,13 +61,13 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_g
         },
         "song_data": {"timestamps": [0.0], "note_types": [1]},
     }
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": [1.0] * 161,
         "Combo Multiplier": [1.0] * 161,
         "Fever Multiplier": [1.0] * 161,
         "Fever Fill Rate": [1.0] * 161,
         "Fever Time": [1.0] * 161,
-    }
+    })
     cand = {
         "Score": 999,
         "BaseScore": 999,
@@ -89,14 +90,14 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_g
             "Selected Element": "Rush",
         },
     }
-    _prebuild_timeline_cache(calc_song, ref_arrays, tmp_path, monkeypatch)
+    _prebuild_timeline_cache(calc_song, curves, tmp_path, monkeypatch)
 
     hydrate_fg_candidate_stats(
         [cand],
         base_stats_fixed={},
         selected_color="Rush",
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
     )
 
     assert cand["RawGASearchScore"] == 999
@@ -117,13 +118,13 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload(tmp_pat
         },
         "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
     }
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": [1.0] * 161,
         "Combo Multiplier": [2.0] * 161,
         "Fever Multiplier": [4.0] * 161,
         "Fever Fill Rate": [1.0] * 161,
         "Fever Time": [1.0] * 161,
-    }
+    })
     stats = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -145,14 +146,14 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload(tmp_pat
             "Selected Element": "Rush",
         },
     }
-    _prebuild_timeline_cache(calc_song, ref_arrays, tmp_path, monkeypatch)
+    _prebuild_timeline_cache(calc_song, curves, tmp_path, monkeypatch)
 
     hydrate_fg_candidate_stats(
         [cand],
         base_stats_fixed={},
         selected_color="Rush",
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
     )
 
     assert cand["RawGASearchScore"] == 999
@@ -171,13 +172,13 @@ def test_score_stats_exact_batch_matches_scalar_timeline_frontier_authority(tmp_
         },
         "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
     }
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": [float(1 + (i % 7) / 10.0) for i in range(161)],
         "Combo Multiplier": [float(1 + (i / 500.0)) for i in range(161)],
         "Fever Multiplier": [float(1 + (i / 400.0)) for i in range(161)],
         "Fever Fill Rate": [float(1 + (i / 300.0)) for i in range(161)],
         "Fever Time": [float(1 + (i / 250.0)) for i in range(161)],
-    }
+    })
     stats_rows = [
         {
             "Perfect Points": 10 + i,
@@ -190,8 +191,8 @@ def test_score_stats_exact_batch_matches_scalar_timeline_frontier_authority(tmp_
         }
         for i in range(5)
     ]
-    _prebuild_timeline_cache(calc_song, ref_arrays, tmp_path, monkeypatch)
+    _prebuild_timeline_cache(calc_song, curves, tmp_path, monkeypatch)
 
-    assert score_stats_exact_batch(stats_rows, calc_song, ref_arrays) == [
-        score_stats_exact(stats, calc_song, ref_arrays) for stats in stats_rows
+    assert score_stats_exact_batch(stats_rows, calc_song, curves) == [
+        score_stats_exact(stats, calc_song, curves) for stats in stats_rows
     ]

@@ -17,8 +17,8 @@ from ...data.loadout_equivalence import (
     representative_mini_names,
 )
 from ...data.mini_ascension import materialize_minis_for_song
+from ...gamedata import StatCurves
 from .fg_payload import has_valid_fg_payload, require_response_surface
-from .ref_array_builder import resolve_exact_replay_ref_arrays
 from .song_config import baseline_fixed_stats
 
 
@@ -261,7 +261,7 @@ def resolve_tier_fg_force(
     fixed_song_stats: dict,
     loadout_items: list[dict],
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     selected_color: str,
     timing_mode: str = "zero_ms",
 ) -> dict:
@@ -284,7 +284,7 @@ def resolve_tier_fg_force(
         fg_stats_list=[pre_gem_stats],
         base_stats_list=[pre_gem_stats],
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color=str(selected_color or ""),
         total_budget=int(GEM_BUDGET),
         timing_mode=str(timing_mode),
@@ -299,7 +299,7 @@ def resolve_tier_fg_force_batch(
     fixed_song_stats: dict,
     loadouts: list,
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     selected_color: str,
     timing_mode: str = "zero_ms",
 ) -> list:
@@ -323,7 +323,7 @@ def resolve_tier_fg_force_batch(
         fg_stats_list=pre_gem_rows,
         base_stats_list=pre_gem_rows,
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color=str(selected_color or ""),
         total_budget=int(GEM_BUDGET),
         timing_mode=str(timing_mode),
@@ -334,7 +334,7 @@ def resolve_tier_fg_force_batch(
 
 
 def _exact_base_score_batch_for_mode(
-    stats_rows: list, calc_song: dict, ref_arrays: dict, timing_mode: str
+    stats_rows: list, calc_song: dict, curves: StatCurves, timing_mode: str
 ) -> list[int]:
     """Timing-correct exact base rescore for a batch of resolved stat rows. ``zero_ms`` scores on
     the fixed-0ms chart timeline; ``perfect_window`` scores on the Perfect-window timing frontier.
@@ -347,8 +347,8 @@ def _exact_base_score_batch_for_mode(
     if not rows:
         return []
     if str(timing_mode) == "zero_ms":
-        return [int(s) for s in score_stats_fixed_timing_exact_batch(rows, calc_song, ref_arrays)]
-    return [int(s) for s in score_stats_exact_batch(rows, calc_song, ref_arrays)]
+        return [int(s) for s in score_stats_fixed_timing_exact_batch(rows, calc_song, curves)]
+    return [int(s) for s in score_stats_exact_batch(rows, calc_song, curves)]
 
 
 def resolve_tier_base(
@@ -356,7 +356,7 @@ def resolve_tier_base(
     fixed_song_stats: dict,
     loadout_items: list[dict],
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     primary_color: str,
     selected_color: str,
     timing_mode: str = "zero_ms",
@@ -376,14 +376,14 @@ def resolve_tier_base(
     resolved = build_candidate_payload(
         base_stats_fixed=dict(fixed_song_stats or {}),
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         genome=list(loadout_items or []),
         selected_color=str(selected_color or "") or str(primary_color or ""),
     )
     resolved_stats = dict(resolved.get("Stats") or {})
     if not resolved_stats:
         raise ValueError("tier base re-solve returned no Stats")
-    score = int(_exact_base_score_batch_for_mode([resolved_stats], calc_song, ref_arrays, timing_mode)[0])
+    score = int(_exact_base_score_batch_for_mode([resolved_stats], calc_song, curves, timing_mode)[0])
     return resolved, score
 
 
@@ -392,7 +392,7 @@ def resolve_tier_base_batch(
     fixed_song_stats: dict,
     loadouts: list,
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     primary_color: str,
     selected_color: str,
     timing_mode: str = "zero_ms",
@@ -416,7 +416,7 @@ def resolve_tier_base_batch(
     results = solve_best_fever_combination_batch(
         pre_gem_rows,
         calc_song,
-        ref_arrays,
+        curves,
         selected_color=str(selected_color or "") or str(primary_color or ""),
     )
     if len(results) != len(rows):
@@ -427,7 +427,7 @@ def resolve_tier_base_batch(
         if not rs:
             raise ValueError("batched tier base re-solve returned no Stats")
         resolved_stats_rows.append(rs)
-    scores = _exact_base_score_batch_for_mode(resolved_stats_rows, calc_song, ref_arrays, timing_mode)
+    scores = _exact_base_score_batch_for_mode(resolved_stats_rows, calc_song, curves, timing_mode)
     out = [(resolved, int(score)) for resolved, score in zip(results, scores, strict=True)]
     return out
 
@@ -475,7 +475,7 @@ def compute_team_buff_tier_leaderboards(
     *,
     entries: list[dict],
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     limit: int = 51,
     tiers: tuple[str, ...] = DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     base_team_color_override: object = None,
@@ -539,7 +539,6 @@ def compute_team_buff_tier_leaderboards(
         baseline_hit_timeline(_sd.get("chart_timestamps", _sd.get("timestamps")), baseline_offset)
     replay_meta = "meta" in {str(s).strip().lower() for s in (replay_surfaces or ("meta", "fg"))}
     replay_fg = "fg" in {str(s).strip().lower() for s in (replay_surfaces or ("meta", "fg"))}
-    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
 
     meta0 = calc_song.get("metadata", {}) or {}
     primary_color = _norm_text(meta0.get("Primary Color", ""))
@@ -647,7 +646,7 @@ def compute_team_buff_tier_leaderboards(
                 fixed_song_stats=tier_fixed_stats,
                 loadouts=base_loadouts,
                 calc_song=calc_song,
-                ref_arrays=ref_arrays,
+                curves=curves,
                 primary_color=primary_color,
                 selected_color=primary_color,
                 timing_mode=timing_mode,
@@ -740,7 +739,7 @@ def compute_team_buff_tier_leaderboards(
                 fixed_song_stats=tier_fixed_stats,
                 loadouts=fg_loadouts,
                 calc_song=calc_song,
-                ref_arrays=ref_arrays,
+                curves=curves,
                 selected_color=primary_color,
                 timing_mode=timing_mode,
             )
@@ -838,7 +837,7 @@ def build_team_buff_tier_db_batches(
     *,
     entries: list[dict],
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     limit: int = 51,
     tiers: tuple[str, ...] = DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     base_team_color_override: object = None,
@@ -885,7 +884,7 @@ def build_team_buff_tier_db_batches(
     payload = compute_team_buff_tier_leaderboards(
         entries=entries,
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         limit=limit,
         tiers=tier_list,
         base_team_color_override=base_team_color_override,
@@ -1093,7 +1092,7 @@ def build_team_buff_tier_db_batches(
                 trace_stats = details_out.get("Stats") if isinstance(details_out, dict) else None
                 if not is_zero_ms and isinstance(trace_stats, dict) and trace_stats:
                     timeline_frontier = score_stats_exact_with_timeline_trace(
-                        trace_stats, calc_song, ref_arrays
+                        trace_stats, calc_song, curves
                     ).get("TimelineFrontier")
                     if isinstance(timeline_frontier, dict) and timeline_frontier.get("frontier_trace"):
                         details_out["TimelineFrontier"] = timeline_frontier

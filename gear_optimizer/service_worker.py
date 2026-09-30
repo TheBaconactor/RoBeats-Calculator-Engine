@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.core.macos_background import (
     make_process_background_only,
     reassert_process_background_only,
@@ -24,9 +25,10 @@ from gear_optimizer.core.memory import (
     compute_memory_guard_limit,
     set_memory_watchdog_limit,
 )
-from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
+from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list
 from gear_optimizer.data.database import get_best_loadouts, init_db
 from gear_optimizer.data.database.connection import close_cached_db_connection
+from gear_optimizer.gamedata import load_stat_curves
 from gear_optimizer.settings import RunSettings, paths, reasoning_search, service_settings
 
 
@@ -54,7 +56,7 @@ class PersistentOptimizerSession:
         self._result_db = engine_paths.bin_path("service_result.db")
         if engine_paths.database != self._result_db:
             raise RuntimeError(f"EVOLUTION_DB_PATH must be {self._result_db} for the persistent worker")
-        self._ref_arrays: dict[str, Any] | None = None
+        self._curves: StatCurves | None = None
         self._all_gears: list[dict[str, Any]] = []
         self._all_minis: list[dict[str, Any]] = []
         self._gears_by_name: dict[str, dict[str, Any]] = {}
@@ -73,8 +75,7 @@ class PersistentOptimizerSession:
             shutil.copytree(source, gear_dir)
 
     def _initialize(self) -> None:
-        stats_table = read_table(str(paths().stats_txt))
-        self._ref_arrays = self._app._preload_ref_arrays(stats_table)
+        self._curves = load_stat_curves(paths().stats_txt)
         self._all_gears = load_all_gears_list()
         self._all_minis = load_all_minis_list()
         self._gears_by_name = {str(item["Name"]): item for item in self._all_gears}
@@ -110,7 +111,7 @@ class PersistentOptimizerSession:
         self._remove_result_db()
         if not self._initialized:
             self._initialize()
-        assert self._ref_arrays is not None
+        assert self._curves is not None
 
         self._app._stop_cached_result = False
         self._app._stop_requested.clear()
@@ -121,7 +122,7 @@ class PersistentOptimizerSession:
         tasks = self._app._prepare_tasks(
             task_queue,
             run,
-            self._ref_arrays,
+            self._curves,
             self._all_gears,
             self._all_minis,
             self._gears_by_name,

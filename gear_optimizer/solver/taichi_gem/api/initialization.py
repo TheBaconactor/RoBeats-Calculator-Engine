@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from gear_optimizer.gamedata import CURVE_STATS, StatCurves
 from gear_optimizer.core.array_signature import arrays_sig16
 from ..runtime import init_taichi, is_initialized
 from .. import fields
@@ -31,23 +32,12 @@ from ..fields import (
 # ============================================================================
 
 _ref_loaded = False
-_last_ref_arrays_sig = None
+_last_curves_sig = None
 
 
-def _ref_arrays_sig(ref_arrays: dict) -> bytes:
-    """
-    Stable content signature for ref arrays.
-
-    We avoid caching by `id(ref_arrays)` because in parallel/IPC mode each request
-    arrives as a distinct Python object despite having identical contents.
-    """
-    return arrays_sig16(
-        ref_arrays.get("Perfect Points"),
-        ref_arrays.get("Combo Multiplier"),
-        ref_arrays.get("Fever Multiplier"),
-        ref_arrays.get("Fever Fill Rate"),
-        ref_arrays.get("Fever Time"),
-    )
+def _curves_sig(curves: StatCurves) -> bytes:
+    """Content signature of the float32 curves the kernels read (identical content skips the upload)."""
+    return arrays_sig16(*(curves.f32[stat] for stat in CURVE_STATS))
 
 
 def _build_exact_pp_best_gems_prefix(pp_ref: np.ndarray) -> np.ndarray:
@@ -99,7 +89,7 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     Intended as a recovery path for Vulkan backend failures (e.g. semaphore
     allocation errors) and long-running sessions.
     """
-    global _ref_loaded, _last_ref_arrays_sig, _GENOME_STATS_CACHE, _FTFF_COMBO_CACHE, _TIMING_RESPONSE_COMBO_CACHE
+    global _ref_loaded, _last_curves_sig, _GENOME_STATS_CACHE, _FTFF_COMBO_CACHE, _TIMING_RESPONSE_COMBO_CACHE
 
     # Reset runtime first (frees Vulkan resources)
     _reset_taichi_runtime(reason=reason)
@@ -115,7 +105,7 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
 
     # Clear API-level caches that assume device state exists
     _ref_loaded = False
-    _last_ref_arrays_sig = None
+    _last_curves_sig = None
     _GENOME_STATS_CACHE = None
     _FTFF_COMBO_CACHE = {"key": None, "n_combos": 0}
     _TIMING_RESPONSE_COMBO_CACHE = {"key": None, "n_combos": 0}
@@ -254,7 +244,7 @@ def _upload_timing_response_genome_rows(
 # ============================================================================
 
 
-def ensure_ready(ref_arrays=None, *, timeline_grid=None):
+def ensure_ready(curves=None, *, timeline_grid=None):
     """
     Ensure Taichi and GPU fields are ready for use.
 
@@ -262,7 +252,7 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
     the same order and semantics as the original scattered checks.
 
     Args:
-        ref_arrays: Reference arrays to load (optional)
+        curves: StatCurves to upload (optional)
     timeline_grid: calc_song dict to precompute on GPU (optional)
     """
     # Import here to avoid circular dependency
@@ -279,12 +269,12 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
     # 3. Reference arrays - upload only when needed (or when ref source changes)
     # This preserves the old behavior where callers could load once and reuse.
     sig: bytes = b""
-    global _last_ref_arrays_sig
-    if ref_arrays is not None:
-        sig = _ref_arrays_sig(ref_arrays)
-        if (not _ref_loaded) or (_last_ref_arrays_sig != sig):
-            load_ref_arrays(ref_arrays)
-            _last_ref_arrays_sig = sig
+    global _last_curves_sig
+    if curves is not None:
+        sig = _curves_sig(curves)
+        if (not _ref_loaded) or (_last_curves_sig != sig):
+            load_curves(curves)
+            _last_curves_sig = sig
 
     # 4. Grid fields - ALWAYS allocate because Taichi JIT traces both branches
     #    of _calc_score_selector regardless of runtime `mode` value, so accessing
@@ -293,10 +283,10 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
         ensure_grid_fields_allocated()
 
     if timeline_grid is not None:
-        if ref_arrays is None:
-            raise ValueError("ensure_ready requires ref_arrays when timeline_grid is provided")
+        if curves is None:
+            raise ValueError("ensure_ready requires curves when timeline_grid is provided")
         if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
-            precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=0)
+            precompute_timeline_gpu(timeline_grid, curves, song_slot=0)
         else:
             raise TypeError("ensure_ready timeline_grid must be a calc_song dict with metadata and song_data")
 
@@ -309,62 +299,29 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
 # ============================================================================
 
 
-def load_ref_arrays(ref_arrays: dict):
+def load_curves(curves: StatCurves):
     """
-    Upload reference arrays to GPU fields.
+    Upload the float32 stat curves to the GPU fields.
 
-    Must be called once before using solve_genomes_*() or GA/FG kernels that depend on
-    the lookup tables (unless you call `ensure_ready(ref_arrays=...)`, which will
-    upload them automatically).
-    Typically called when switching songs or on first use.
-
-    Args:
-        ref_arrays: Dict with keys "Perfect Points", "Combo Multiplier", "Fever Multiplier"
-                    Each value is a NumPy array of shape (161,)
-
-    Optional keys:
-        - "Fever Time": Optional FT reference array (161,)
-        - "Fever Fill Rate": Optional FF reference array (161,)
+    Must be called before solve_genomes_*() or the GA/FG kernels that read the curves, unless
+    `ensure_ready(curves)` uploads them.
     """
-    global _ref_loaded, _last_ref_arrays_sig
+    global _ref_loaded, _last_curves_sig
 
     ensure_fields_allocated()
-
-    # Validate required keys and shapes early (clear errors)
-    required = ("Perfect Points", "Combo Multiplier", "Fever Multiplier")
-    for k in required:
-        if k not in ref_arrays:
-            raise KeyError(f"ref_arrays missing required key {k!r}")
-        arr = np.asarray(ref_arrays[k])
-        if arr.ndim != 1 or arr.shape[0] != GRID_SIZE:
-            raise ValueError(f"ref_arrays[{k!r}] must be shape ({GRID_SIZE},), got {arr.shape}")
 
     from .ga_operations import reset_ga_evaluation_cache
 
     reset_ga_evaluation_cache()
-    fields.ref_pp_field.from_numpy(ref_arrays["Perfect Points"].astype(np.float32))
-    fields.ref_cm_field.from_numpy(ref_arrays["Combo Multiplier"].astype(np.float32))
-    fields.ref_fm_field.from_numpy(ref_arrays["Fever Multiplier"].astype(np.float32))
-
-    # Precompute a tiny helper table for the bounded exact inner solver:
-    # PP-vs-OV prefix argmax for a fixed base PP stat and color-flag combination.
-    #
-    # This removes the inner O(B) PP scan from each (CM, FM) pair and turns the
-    # cold exact solver from O(B^3) into O(B^2) per fixed (FT,FF) combo.
-    pp_best_prefix = _build_exact_pp_best_gems_prefix(np.asarray(ref_arrays["Perfect Points"], dtype=np.float32))
-    fields.exact_pp_best_gems_prefix.from_numpy(pp_best_prefix)
-
-    # Optional FT/FF uploads
-    if "Fever Time" in ref_arrays:
-        arr = np.asarray(ref_arrays["Fever Time"])
-        if arr.ndim != 1 or arr.shape[0] != GRID_SIZE:
-            raise ValueError(f"ref_arrays['Fever Time'] must be shape ({GRID_SIZE},), got {arr.shape}")
-        fields.ref_ft_field.from_numpy(ref_arrays["Fever Time"].astype(np.float32))
-    if "Fever Fill Rate" in ref_arrays:
-        arr = np.asarray(ref_arrays["Fever Fill Rate"])
-        if arr.ndim != 1 or arr.shape[0] != GRID_SIZE:
-            raise ValueError(f"ref_arrays['Fever Fill Rate'] must be shape ({GRID_SIZE},), got {arr.shape}")
-        fields.ref_ff_field.from_numpy(ref_arrays["Fever Fill Rate"].astype(np.float32))
+    f32 = curves.f32
+    fields.ref_pp_field.from_numpy(f32["Perfect Points"])
+    fields.ref_cm_field.from_numpy(f32["Combo Multiplier"])
+    fields.ref_fm_field.from_numpy(f32["Fever Multiplier"])
+    # PP-vs-OV prefix argmax for a fixed base PP stat and color-flag combination: removes the inner
+    # O(B) PP scan from each (CM, FM) pair of the bounded exact inner solver (O(B^3) -> O(B^2)).
+    fields.exact_pp_best_gems_prefix.from_numpy(_build_exact_pp_best_gems_prefix(f32["Perfect Points"]))
+    fields.ref_ft_field.from_numpy(f32["Fever Time"])
+    fields.ref_ff_field.from_numpy(f32["Fever Fill Rate"])
 
     _ref_loaded = True
-    _last_ref_arrays_sig = _ref_arrays_sig(ref_arrays)
+    _last_curves_sig = _curves_sig(curves)

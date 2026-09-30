@@ -14,6 +14,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+from gear_optimizer.gamedata import StatCurves
 from ..core.color_flags import normalize_color_flags
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from .gpu_tuning_policy import choose_ga_batch_runs
@@ -171,7 +172,7 @@ def score_fused_fg_from_selected_payload(
     runs_payload: "np.ndarray",
     fg_scoring_bundle: object,
     fg_calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     cfg_data: dict,
 ) -> dict:
     """Fused GA->FG owner step: score FG straight from the selected payload (Slice 3).
@@ -195,8 +196,8 @@ def score_fused_fg_from_selected_payload(
         )
     if not isinstance(fg_calc_song, dict):
         raise ValueError("fused GA->FG handoff requires a resolved FG calc song on the GA request")
-    if not isinstance(ref_arrays, dict):
-        raise ValueError("fused GA->FG handoff requires reference arrays")
+    if curves is None:
+        raise ValueError("fused GA->FG handoff requires stat curves")
 
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
         score_fused_owner_base_components_on_gpu_owner,
@@ -232,7 +233,7 @@ def score_fused_fg_from_selected_payload(
     return score_fused_owner_base_components_on_gpu_owner(
         base_components=base_components,
         calc_song=fg_calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color=selected_color,
         scoring_bundle=fg_scoring_bundle,
         total_budget=int(total_budget),
@@ -242,7 +243,7 @@ def score_fused_fg_from_selected_payload(
 def upload_ga_song_slot_timeline_state(
     *,
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     song_slot: int,
 ) -> None:
     """Precompute timeline state for one GPU song slot."""
@@ -252,7 +253,7 @@ def upload_ga_song_slot_timeline_state(
     if song_slot < 0:
         song_slot = 0
 
-    gpu_api.precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
+    gpu_api.precompute_timeline_gpu(calc_song, curves, song_slot=song_slot)
 
 
 def upload_ga_global_static_state(
@@ -391,7 +392,7 @@ def _polish_runs_best_one_swap(
 def run_gpu_native_ga_runs_payload_prebuilt(
     *,
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     song_slot: int,
     item_stats: "np.ndarray",
     slot_start: "np.ndarray",
@@ -511,7 +512,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     def _restore_song_gpu_state() -> None:
         upload_ga_song_slot_timeline_state(
             calc_song=calc_song,
-            ref_arrays=ref_arrays,
+            curves=curves,
             song_slot=song_slot,
         )
         upload_ga_global_static_state(

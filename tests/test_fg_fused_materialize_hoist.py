@@ -43,7 +43,7 @@ def _patch_builder_primitives(monkeypatch):
     frontier_by_key: dict[tuple[int, int], object] = {}
     captured: list[dict[str, object]] = []
 
-    def _fake_resolver(calc_song, ref_arrays, scoring_bundle, *, ft_stat, ff_stat):
+    def _fake_resolver(calc_song, curves, scoring_bundle, *, ft_stat, ff_stat):
         calls["resolver"] += 1
         # One distinct frontier object per stat key: the resolver is a pure function of
         # the (normalized) stat key over a fixed song, so identity proves the memo returns
@@ -83,7 +83,7 @@ def test_fused_builder_hoists_song_inputs_and_dedups_frontier(monkeypatch):
             base_stats={"Perfect Points": 1},
             selected_color="Rush",
             calc_song={"song_data": {}, "metadata": {}},
-            ref_arrays={},
+            curves={},
             scoring_bundle=bundle,
             started=0.0,
             include_forced_counts=False,
@@ -115,7 +115,7 @@ def test_fused_builder_default_path_is_byte_identical(monkeypatch):
             base_stats={"Perfect Points": 1},
             selected_color="Rush",
             calc_song={"song_data": {}, "metadata": {}},
-            ref_arrays={},
+            curves={},
             scoring_bundle=bundle,
             started=0.0,
             include_forced_counts=False,
@@ -156,7 +156,7 @@ def test_materialize_from_owner_score_map_shares_hoists_per_batch(monkeypatch):
         base_stats,
         selected_color,
         calc_song,
-        ref_arrays,
+        curves,
         scoring_bundle,
         started,
         include_forced_counts,
@@ -187,7 +187,7 @@ def test_materialize_from_owner_score_map_shares_hoists_per_batch(monkeypatch):
             base_components=np.asarray(base_components, dtype=np.int32),
             selected_color="Rush",
             calc_song={"song_data": {}, "metadata": {}},
-            ref_arrays={},
+            curves={},
             scoring_bundle=_scoring_bundle(),
             started=0.0,
         )
@@ -300,7 +300,7 @@ def test_reducer_payload_accepts_hoisted_song_inputs_byte_identical(monkeypatch)
         selected_element="Rush",
         result=result,
         calc_song=calc_song,
-        ref_arrays={},
+        curves={},
     )
 
     payload_default = materialize_force_payload_from_response_frontier(

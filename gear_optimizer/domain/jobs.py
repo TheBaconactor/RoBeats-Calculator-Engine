@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Mapping, Sequence
 
+from gear_optimizer.gamedata import StatCurves
+
 
 # NOTE: This "task tuple" shape is a fixed-field ABI used across the runtime
 # pipeline (app -> execution -> engine). The code originally named it "legacy"
@@ -50,7 +52,7 @@ class PreparedSongSeedPlan:
 @dataclass(frozen=True, slots=True)
 class SharedRunContext:
     multi_start: int
-    ref_arrays: Any
+    curves: StatCurves
     all_gears: Any
     all_minis: Any
     gears_by_name: Mapping[str, Any] | None
@@ -242,7 +244,7 @@ def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
 
     return SharedRunContext(
         multi_start=int(task[int(TaskIndex.MULTI_START)]),
-        ref_arrays=task[int(TaskIndex.REF_ARRAYS)],
+        curves=task[int(TaskIndex.REF_ARRAYS)],
         all_gears=task[int(TaskIndex.ALL_GEARS)],
         all_minis=task[int(TaskIndex.ALL_MINIS)],
         gears_by_name=task[int(TaskIndex.GEARS_BY_NAME)],
@@ -271,7 +273,7 @@ def task_tuple_from_job_context(
         job.song_name,
         job.difficulty,
         context.multi_start,
-        context.ref_arrays,
+        context.curves,
         context.all_gears,
         context.all_minis,
         context.gears_by_name,

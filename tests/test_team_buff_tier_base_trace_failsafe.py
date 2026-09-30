@@ -37,7 +37,7 @@ def _mock_song(name: str = "failsafe", n_notes: int = 12, duration: float = 10.0
     }
 
 
-def _ref_arrays(rows: int = 11) -> dict:
+def _curves(rows: int = 11) -> dict:
     keys = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time")
     return {k: np.ones(rows, dtype=np.float64) for k in keys}
 
@@ -124,7 +124,7 @@ def test_failed_per_tier_recompute_drops_stale_baseline_timeline_frontier() -> N
         batches = tbt.build_team_buff_tier_db_batches(
             entries=[_entry()],
             calc_song=_mock_song(),
-            ref_arrays=_ref_arrays(),
+            curves=_curves(),
             tiers=("T10",),
             limit=1,
         )
@@ -145,7 +145,7 @@ def test_successful_per_tier_recompute_replaces_baseline_trace() -> None:
         batches = tbt.build_team_buff_tier_db_batches(
             entries=[_entry()],
             calc_song=_mock_song(),
-            ref_arrays=_ref_arrays(),
+            curves=_curves(),
             tiers=("T10",),
             limit=1,
         )

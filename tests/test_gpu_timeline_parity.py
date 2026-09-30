@@ -5,6 +5,7 @@ Verifies that GPU-uploaded timeline fields match the exact startup-built
 frontier payload used by runtime scoring.
 """
 
+from tests.curves_support import synthetic_curves
 import os
 import sys
 
@@ -30,13 +31,13 @@ def _taichi_ready():
 def _create_mock_ref_arrays():
     rows = 161
     # Taichi runtime expects these core lookup tables to be present.
-    return {
+    return synthetic_curves({
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64),
         "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64),
-    }
+    })
 
 
 def _create_mock_song(*, n_notes: int = 750):
@@ -74,13 +75,13 @@ def test_gpu_timeline_matches_cpu_gap_and_activations(monkeypatch, tmp_path):
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline_frontier_cache"))
     calc_song = _create_mock_song()
     apply_timing_envelope(calc_song, mode="perfect_window")
-    ref_arrays = _create_mock_ref_arrays()
+    curves = _create_mock_ref_arrays()
 
-    prebuilt_frontier = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    prebuilt_frontier = build_or_load_timeline_frontier_payload(calc_song, curves)
     cpu_gap = np.asarray(prebuilt_frontier.payload.grid_gap[0], dtype=np.int32)
     cpu_fevact = np.asarray(prebuilt_frontier.payload.grid_fever_activations[0], dtype=np.int32)
 
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0, prebuilt_frontier=prebuilt_frontier)
+    precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=prebuilt_frontier)
     gpu_gap = np.asarray(gpu_fields.grid_gap.to_numpy()[0], dtype=np.int32)
     gpu_fevact = np.asarray(gpu_fields.grid_fever_activations.to_numpy()[0], dtype=np.int32)
 

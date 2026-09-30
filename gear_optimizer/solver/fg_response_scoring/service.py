@@ -19,7 +19,7 @@ class FgResponseScoringService:
     def score_candidates(
         ga_candidates,
         calc_song,
-        ref_arrays,
+        curves,
         meta_primary_color,
         *,
         ga_registry=None,
@@ -30,7 +30,7 @@ class FgResponseScoringService:
         return FgResponseScoringService.score_candidates_with_stats(
             ga_candidates,
             calc_song,
-            ref_arrays,
+            curves,
             meta_primary_color,
             ga_registry=ga_registry,
             scoring_bundle=scoring_bundle,
@@ -42,7 +42,7 @@ class FgResponseScoringService:
     def score_candidates_with_stats(
         candidates,
         calc_song,
-        ref_arrays,
+        curves,
         meta_primary_color,
         *,
         ga_registry=None,
@@ -56,7 +56,7 @@ class FgResponseScoringService:
             plan = FgPlanner.plan_skyline_candidate_records(
                 candidates,
                 calc_song,
-                ref_arrays,
+                curves,
                 meta_primary_color,
                 scoring_bundle=scoring_bundle,
             )
@@ -64,7 +64,7 @@ class FgResponseScoringService:
             plan = FgPlanner.plan_many(
                 candidates,
                 calc_song,
-                ref_arrays,
+                curves,
                 meta_primary_color,
                 ga_registry=ga_registry,
                 scoring_bundle=scoring_bundle,
@@ -151,7 +151,7 @@ class FgResponseScoringService:
                         base_stats=base_stats,
                         selected_color=batch.selected_color,
                         calc_song=batch.calc_song,
-                        ref_arrays=batch.ref_arrays,
+                        curves=batch.curves,
                         scoring_bundle=batch.scoring_bundle,
                         started=batch.started,
                         include_forced_counts=bool(include_forced_counts),

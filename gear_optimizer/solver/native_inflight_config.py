@@ -187,7 +187,8 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         fg_scheduler_norm=fg_scheduler_norm,
     )
 
-from gear_optimizer.core.types import CalcSong, JsonDict, RefArrays
+from gear_optimizer.core.types import CalcSong, JsonDict
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.item_registry import ItemRegistry
 
 
@@ -204,7 +205,7 @@ class NativeSongConfig:
 
 @dataclass
 class NativeSongGPUInputs:
-    ref_arrays: RefArrays = field(default_factory=dict)
+    curves: StatCurves | None = None
     all_gears: list[Any] = field(default_factory=list)
     all_minis: list[Any] = field(default_factory=list)
     gears_by_name: dict[str, Any] = field(default_factory=dict)

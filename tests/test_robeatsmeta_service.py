@@ -1123,16 +1123,14 @@ def test_persistent_worker_restarts_when_a_new_catalog_activates(data_root, monk
 
 
 def test_incremental_frontier_prebuild_queues_only_the_changed_charts(data_root, monkeypatch):
-    from gear_optimizer.data import csv_parser
-    from gear_optimizer.helpers.song_helpers import ref_array_builder
+    from gear_optimizer import gamedata
     from gear_optimizer.solver import cpu_work_manager
     from gear_optimizer.solver.timeline_frontier_cache_prebuild import ordered_frontier_cache_song_paths
 
     _write_chart(data_root, "Normal", "Old by Artist", "old.txt")
     _write_chart(data_root, "Normal", "New by Artist", "new.txt")
     changed = data_root / "Data" / "Normal" / "new.txt"
-    monkeypatch.setattr(csv_parser, "read_table", lambda _path: {})
-    monkeypatch.setattr(ref_array_builder, "build_ref_arrays_from_stats", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(gamedata, "load_stat_curves", lambda _path: object())
     queued: list[object] = []
 
     class _Stop(Exception):

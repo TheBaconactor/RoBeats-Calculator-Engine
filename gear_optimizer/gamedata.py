@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -116,14 +117,31 @@ class Mini:
     song_targets: frozenset[str]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class StatCurves:
-    """Stats.txt: the multiplier each curve stat value 0..MAX_STAT maps to (float64)."""
+    """Stats.txt: the multiplier each curve stat value 0..MAX_STAT maps to.
 
-    values: Mapping[str, np.ndarray]
+    f64 holds the values as read; exact scores use it (the game computes in float64). f32 holds the
+    same values rounded to float32, which is what the GPU search, the frontier builders and the
+    frontier cache keys use.
+    """
+
+    f64: Mapping[str, np.ndarray]
+    f32: Mapping[str, np.ndarray]
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> StatCurves:
+        """Curves from one array per curve stat (MAX_STAT + 1 values each)."""
+        f64: dict[str, np.ndarray] = {}
+        for stat in CURVE_STATS:
+            column = np.array(values[stat], dtype=np.float64).reshape(-1)
+            if column.shape != (MAX_STAT + 1,):
+                raise ValueError(f"{stat} curve needs {MAX_STAT + 1} values, got {column.shape[0]}")
+            f64[stat] = column
+        return cls(f64=f64, f32={stat: column.astype(np.float32) for stat, column in f64.items()})
 
     def factor(self, stat: str, value: int) -> float:
-        return float(self.values[stat][max(0, min(MAX_STAT, int(value)))])
+        return float(self.f64[stat][max(0, min(MAX_STAT, int(value)))])
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,7 +237,26 @@ def read_curves(path: Path) -> StatCurves:
     if len(table) != MAX_STAT + 1 or any(len(row) != len(CURVE_STATS) for row in table):
         raise ValueError(f"{path}: expected {MAX_STAT + 1} rows of {len(CURVE_STATS)} values")
     columns = np.asarray(table, dtype=np.float64)[::-1]
-    return StatCurves(values={stat: np.ascontiguousarray(columns[:, i]) for i, stat in enumerate(CURVE_STATS)})
+    return StatCurves.from_mapping({stat: columns[:, i] for i, stat in enumerate(CURVE_STATS)})
+
+
+_CURVES_CACHE: dict[Path, tuple[tuple[int, int], StatCurves]] = {}
+_CURVES_CACHE_LOCK = threading.Lock()
+
+
+def load_stat_curves(path: Path) -> StatCurves:
+    """read_curves, cached per file until the file changes (a new Data revision reloads it)."""
+    resolved = Path(path).resolve()
+    stat = resolved.stat()
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    with _CURVES_CACHE_LOCK:
+        cached = _CURVES_CACHE.get(resolved)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+    curves = read_curves(resolved)
+    with _CURVES_CACHE_LOCK:
+        _CURVES_CACHE[resolved] = (stamp, curves)
+    return curves
 
 
 def load_game_data(gear_dir: Path) -> GameData:

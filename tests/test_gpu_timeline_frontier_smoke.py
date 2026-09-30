@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from tests.curves_support import synthetic_curves
 
 
 pytestmark = pytest.mark.gpu
@@ -63,14 +64,14 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
     apply_timing_envelope(calc_song, mode="perfect_window")
 
     rows = int(MAX_STAT) + 1
-    ref_arrays = {
+    curves = synthetic_curves({
         # Taichi runtime expects these core lookup tables to be present.
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64),
         "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64),
-    }
+    })
 
     ftff_samples = [(10, 10), (80, 80), (160, 40)]
 
@@ -88,10 +89,10 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
             out[(ft_idx, ff_idx)] = int(head_fever + body_fever)
         return out
 
-    prebuilt = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
     assert int(prebuilt.payload.frontier_pool_used) > 0
 
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0, prebuilt_frontier=prebuilt)
+    precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=prebuilt)
     total_fever = _read_total_fever()
     frontier_count_grid = np.asarray(gpu_fields.grid_frontier_count.to_numpy()[0], dtype=np.int32)
 

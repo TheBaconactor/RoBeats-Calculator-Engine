@@ -23,7 +23,7 @@ import pytest
 pytestmark = pytest.mark.gpu
 
 
-def _ref_arrays() -> dict[str, np.ndarray]:
+def _curves() -> dict[str, np.ndarray]:
     idx = np.arange(1025, dtype=np.float64)
     return {
         "Perfect Points": np.ascontiguousarray(1.0 + idx * 0.01),
@@ -62,7 +62,7 @@ def _inputs():
     surface_pattern_head_coeffs = _precompute_surface_head_coeffs(surface_words, head_len=head_len)
     return dict(
         group_meta=group_meta, group_offsets=group_offsets, group_lengths=group_lengths,
-        ref_arrays=_ref_arrays(), surface_pattern_ids=surface_pattern_ids,
+        curves=_curves(), surface_pattern_ids=surface_pattern_ids,
         surface_pattern_words=surface_words, surface_counts=surface_counts,
         surface_pattern_head_coeffs=surface_pattern_head_coeffs,
         primary_color="Chill", secondary_color="Flow", selected_color="Chill",

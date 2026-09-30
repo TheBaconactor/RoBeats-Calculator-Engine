@@ -45,7 +45,7 @@ def _score_single_frontier_domain(
     primary_color: str,
     secondary_color: str,
     selected_color: str,
-    ref_arrays: dict,
+    curves: dict,
 ) -> np.ndarray:
     rows = np.ascontiguousarray(group_meta, dtype=np.int32)
     group_offsets = np.zeros((int(rows.shape[0]),), dtype=np.int32)
@@ -57,7 +57,7 @@ def _score_single_frontier_domain(
         primary_color=str(primary_color or ""),
         secondary_color=str(secondary_color or ""),
         selected_color=str(selected_color or ""),
-        ref_arrays=ref_arrays,
+        curves=curves,
         surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
         surface_pattern_words=np.ascontiguousarray(surface_words, dtype=np.uint32),
         surface_counts=np.ascontiguousarray(surface_counts, dtype=np.int32),
@@ -200,7 +200,7 @@ def _score_atom_for_group(
     primary_color: str,
     secondary_color: str,
     selected_color: str,
-    ref_arrays: dict[str, Any],
+    curves: dict[str, Any],
 ) -> np.ndarray | None:
     allow_pp, deltas = _color_deltas(primary_color, secondary_color, selected_color)
     if not _valid_atom_for_group(atom, row, allow_pp=allow_pp):
@@ -237,9 +237,9 @@ def _score_atom_for_group(
         body_total=int(row[7]),
         primary_val=int(final_primary),
         secondary_val=int(final_secondary),
-        pp_factor=_lookup_ref(np.asarray(ref_arrays["Perfect Points"], dtype=np.float64), int(final_pp)),
-        combo_mul=_lookup_ref(np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float64), int(final_cm)),
-        fever_mul=_lookup_ref(np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float64), int(final_fm)),
+        pp_factor=_lookup_ref(np.asarray(curves["Perfect Points"], dtype=np.float64), int(final_pp)),
+        combo_mul=_lookup_ref(np.asarray(curves["Combo Multiplier"], dtype=np.float64), int(final_cm)),
+        fever_mul=_lookup_ref(np.asarray(curves["Fever Multiplier"], dtype=np.float64), int(final_fm)),
     )
     return np.asarray(
         [
@@ -274,7 +274,7 @@ def _score_champion_atoms(
     primary_color: str,
     secondary_color: str,
     selected_color: str,
-    ref_arrays: dict[str, Any],
+    curves: dict[str, Any],
 ) -> np.ndarray:
     rows = np.ascontiguousarray(group_meta, dtype=np.int32)
     out = np.zeros((int(rows.shape[0]), 11), dtype=np.int32)
@@ -289,7 +289,7 @@ def _score_champion_atoms(
                 primary_color=primary_color,
                 secondary_color=secondary_color,
                 selected_color=selected_color,
-                ref_arrays=ref_arrays,
+                curves=curves,
             )
             if candidate is None:
                 continue
@@ -310,7 +310,7 @@ def prove_single_frontier_champions(
     primary_color: str,
     secondary_color: str,
     selected_color: str,
-    ref_arrays: dict,
+    curves: dict,
 ) -> ChampionProof:
     """Build a non-production champion proof over one declared scorer domain.
 
@@ -327,7 +327,7 @@ def prove_single_frontier_champions(
         primary_color=primary_color,
         secondary_color=secondary_color,
         selected_color=selected_color,
-        ref_arrays=ref_arrays,
+        curves=curves,
     )
     atoms = {
         _atom_from_row(row, surface_index=int(row[1]))
@@ -355,7 +355,7 @@ def prove_single_frontier_champions(
         primary_color=primary_color,
         secondary_color=secondary_color,
         selected_color=selected_color,
-        ref_arrays=ref_arrays,
+        curves=curves,
     )
     restricted_to_full_surface = np.asarray(
         [champion_surfaces[int(row[1])] for row in np.asarray(restricted_rows, dtype=np.int32)],
@@ -369,7 +369,7 @@ def prove_single_frontier_champions(
         primary_color=primary_color,
         secondary_color=secondary_color,
         selected_color=selected_color,
-        ref_arrays=ref_arrays,
+        curves=curves,
     )
     return ChampionProof(
         full_rows=full_rows,

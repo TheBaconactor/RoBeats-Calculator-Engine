@@ -58,7 +58,7 @@ def score_retained_skyline_force_greats(
     candidate_records: list[dict[str, Any]],
     *,
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: dict[str, Any],
     default_selected_color: str,
     use_gpu: bool,
     status_cb: Callable[[str], None] | None = None,
@@ -86,7 +86,7 @@ def score_retained_skyline_force_greats(
     scored_rows, batch_stats = FgResponseScoringService.score_candidates_with_stats(
         candidate_records,
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         meta_primary_color=default_selected_color,
         gpu_client=None,
         mode="skyline",

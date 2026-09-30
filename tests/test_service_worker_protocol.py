@@ -183,21 +183,17 @@ def test_service_worker_reasserts_daemon_policy_after_native_prewarm(monkeypatch
     events: list[str] = []
 
     class FakeApp:
-        def _preload_ref_arrays(self, _stats_table):
-            events.append("preload")
-            return object()
-
         def _configure_execution_and_prewarm(self, multi_start):
             events.append(f"native_prewarm:{multi_start}")
 
     session = object.__new__(worker.PersistentOptimizerSession)
     session._app = FakeApp()
 
-    monkeypatch.setattr(worker, "read_table", lambda _path: {})
+    monkeypatch.setattr(worker, "load_stat_curves", lambda _path: events.append("load curves") or object())
     monkeypatch.setattr(worker, "load_all_gears_list", lambda: [{"Name": "gear"}])
     monkeypatch.setattr(worker, "load_all_minis_list", lambda: [{"Name": "mini"}])
     monkeypatch.setattr(worker, "reassert_process_background_only", lambda: events.append("reassert"))
 
     session._initialize()
 
-    assert events == ["preload", "native_prewarm:12", "reassert"]
+    assert events == ["load curves", "native_prewarm:12", "reassert"]

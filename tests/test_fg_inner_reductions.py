@@ -7,7 +7,8 @@ import pytest
 import taichi as ti
 
 from tests.fg_inner_reduction_oracle import legacy_fg_score_device, legacy_fg_score_native_f64
-from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
+from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.settings import paths
 from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as host
 from gear_optimizer.solver.taichi_gem.force_greats import response_inner_kernels as device
 from gear_optimizer.solver.taichi_gem.force_greats.response_pp_bounds import build_pp_prefix_bounds
@@ -67,7 +68,7 @@ def _score_pairs(
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 def test_pp_bounds_preserve_precision_clamping_and_reference_revision(dtype):
     starts = np.array([-5, -1, 0, 40, 159, 160, 170, 40], dtype=np.int32)
-    refs = get_exact_replay_ref_arrays_cached()["Perfect Points"].astype(dtype)
+    refs = load_stat_curves(paths().stats_txt).f64["Perfect Points"].astype(dtype)
     # Fractional values also exercise rounding; the production PP table is integral.
     refs += dtype(0.1234567)
     for flags in itertools.product((0, 1), repeat=4):
@@ -126,7 +127,7 @@ def _batch(colors):
     words[1] = words[0]  # First-surface tie must survive the reduction.
     words[3, 4:] = np.uint32(0xFFFFFFFF)
     counts = np.tile(np.array([[20, 0, 0], [20, 0, 0], [70, 50, 30], [70, 120, 70]], dtype=np.int32), (len(meta), 1))
-    refs = get_exact_replay_ref_arrays_cached()
+    refs = load_stat_curves(paths().stats_txt).f64
     return dict(
         row_meta=meta,
         color_flags=np.array(host._color_flags(*colors), dtype=np.int32),
@@ -324,7 +325,7 @@ def test_pp_bound_owner_mapping_survives_group_and_surface_chunks(monkeypatch):
         primary_color=colors[0],
         secondary_color=colors[1],
         selected_color=colors[2],
-        ref_arrays={"Perfect Points": b["ref_pp"], "Combo Multiplier": b["ref_cm"], "Fever Multiplier": b["ref_fm"]},
+        curves={"Perfect Points": b["ref_pp"], "Combo Multiplier": b["ref_cm"], "Fever Multiplier": b["ref_fm"]},
     )
     builds = []
 

@@ -72,7 +72,7 @@ def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
         "_ga_seed": song.config.ga_seed,
         "db_key": song.config.db_key,
         "difficulty": song.config.effective_difficulty,
-        "ref_arrays": song.gpu_inputs.ref_arrays,
+        "curves": song.gpu_inputs.curves,
         "calc_song": song.gpu_inputs.calc_song,
         "best_data": best_data_post,
         "best_gear": compact_item_names(song.runtime.decode.best_gear, drop_empty=True),

@@ -1,3 +1,4 @@
+from tests.curves_support import synthetic_curves
 import sys
 import types
 
@@ -119,21 +120,21 @@ class _FakeGpuApi:
         return np.zeros((1, 26), dtype=np.int32)
 
 
-def _ref_arrays() -> dict[str, np.ndarray]:
-    return {
+def _curves() -> dict[str, np.ndarray]:
+    return synthetic_curves({
         "Perfect Points": np.arange(161, dtype=np.float32),
         "Combo Multiplier": np.arange(161, dtype=np.float32),
         "Fever Multiplier": np.arange(161, dtype=np.float32),
         "Fever Time": np.arange(161, dtype=np.float32),
         "Fever Fill Rate": np.arange(161, dtype=np.float32),
-    }
+    })
 
 
 def _install_fake_taichi_modules(monkeypatch, gpu_api=None) -> None:
     fake_api_module = types.ModuleType("gear_optimizer.solver.taichi_gem.api")
-    fake_api_module.load_ref_arrays = lambda _ref_arrays: None
-    fake_api_module.ensure_ready = lambda _ref_arrays=None, **_kwargs: b""
-    fake_api_module.precompute_timeline_gpu = lambda _calc_song, _ref_arrays, song_slot=0: int(song_slot)
+    fake_api_module.load_curves = lambda _curves: None
+    fake_api_module.ensure_ready = lambda _curves=None, **_kwargs: b""
+    fake_api_module.precompute_timeline_gpu = lambda _calc_song, _curves, song_slot=0: int(song_slot)
     if gpu_api is not None:
         for name in dir(gpu_api):
             if not name.startswith("_") or name == "_ensure_ftff_combo_tables":
@@ -156,7 +157,7 @@ def test_run_gpu_native_ga_requires_explicit_seed():
     with pytest.raises(ValueError, match="explicit per-run ga_seed"):
         genetic.run_gpu_native_ga_runs_payload_prebuilt(
             calc_song={"metadata": {"Song Name": "seed-required"}},
-            ref_arrays=_ref_arrays(),
+            curves=_curves(),
             song_slot=0,
             item_stats=np.zeros((1, 10), dtype=np.int32),
             slot_start=np.zeros((9,), dtype=np.int32),
@@ -187,7 +188,7 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
             "metadata": {"Song Name": "retry"},
             "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
         },
-        ref_arrays=_ref_arrays(),
+        curves=_curves(),
         song_slot=0,
         item_stats=np.zeros((1, 10), dtype=np.int32),
         slot_start=np.zeros((9,), dtype=np.int32),
@@ -232,7 +233,7 @@ def test_gpu_native_ga_uploads_slot_timeline_and_global_static_in_request(monkey
             "metadata": {"Song Name": "in-request-upload", "Difficulty": "Hard"},
             "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
         },
-        ref_arrays=_ref_arrays(),
+        curves=_curves(),
         song_slot=3,
         item_stats=np.zeros((16, 10), dtype=np.int32),
         slot_start=np.zeros((9,), dtype=np.int32),
@@ -268,7 +269,7 @@ def test_gpu_native_ga_batched_runs_use_indexed_seed_series(monkeypatch):
             "metadata": {"Song Name": "indexed-seed-batch", "Difficulty": "Hard"},
             "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
         },
-        ref_arrays=_ref_arrays(),
+        curves=_curves(),
         song_slot=1,
         item_stats=np.zeros((16, 10), dtype=np.int32),
         slot_start=np.zeros((9,), dtype=np.int32),
@@ -309,7 +310,7 @@ def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
             "metadata": {"Song Name": "fused-refresh-next", "Difficulty": "Hard"},
             "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
         },
-        ref_arrays=_ref_arrays(),
+        curves=_curves(),
         song_slot=0,
         item_stats=np.zeros((1, 10), dtype=np.int32),
         slot_start=np.zeros((9,), dtype=np.int32),
@@ -346,7 +347,7 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
                 "metadata": {"Song Name": "abort-smoke", "Difficulty": "Hard"},
                 "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
             },
-            ref_arrays=_ref_arrays(),
+            curves=_curves(),
             song_slot=0,
             item_stats=np.zeros((1, 10), dtype=np.int32),
             slot_start=np.zeros((9,), dtype=np.int32),
@@ -382,7 +383,7 @@ def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypat
                 "metadata": {"Song Name": "steady-abort-smoke", "Difficulty": "Hard"},
                 "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
             },
-            ref_arrays=_ref_arrays(),
+            curves=_curves(),
             song_slot=0,
             item_stats=np.zeros((1, 10), dtype=np.int32),
             slot_start=np.zeros((9,), dtype=np.int32),
@@ -429,7 +430,7 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
             "metadata": {"Song Name": "steady-ftff-smoke", "Difficulty": "Hard"},
             "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
         },
-        ref_arrays=_ref_arrays(),
+        curves=_curves(),
         song_slot=0,
         item_stats=np.zeros((16, 10), dtype=np.int32),
         slot_start=np.zeros((9,), dtype=np.int32),

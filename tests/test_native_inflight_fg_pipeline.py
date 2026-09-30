@@ -160,12 +160,12 @@ def test_fg_materialization_request_strips_driver_only_object_graphs_and_pickles
         base_components=np.zeros((1, 7), dtype=np.int32),
         selected_color="Vibe",
         calc_song={"song_data": {}},
-        ref_arrays={"Perfect Points": np.zeros((1,), dtype=np.float32)},
+        curves={"Perfect Points": np.zeros((1,), dtype=np.float32)},
         scoring_bundle=SimpleNamespace(cache_key=("bundle",)),
     )
     plan = FgResponseFrontierPreparedPlan(
         calc_song=batch.calc_song,
-        ref_arrays=batch.ref_arrays,
+        curves=batch.curves,
         pending_jobs=((entry, eval_data, "Vibe", base_stats, 123, cache_key),),
         prepared_batches=(
             FgResponseFrontierPreparedBatch(

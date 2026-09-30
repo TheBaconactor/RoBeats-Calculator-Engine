@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from gear_optimizer.gamedata import StatCurves
 from ..fields import MAX_GENOMES
 
 from .initialization import ensure_ready
@@ -44,7 +45,7 @@ def solve_genomes_from_registry(
     is_s_fm: int,
     is_p_ov: int,
     is_s_ov: int,
-    ref_arrays: dict,
+    curves: StatCurves,
     total_budget: int = 90,
     gem_scale_fever: int = 3,
     song_slot: int = 0,
@@ -79,7 +80,7 @@ def solve_genomes_from_registry(
         population_indices: (n_genomes, 9) int32 - encoded genome IDs from ItemRegistry
     timeline_grid: calc_song dict
         is_*: Color contribution flags (0/1)
-        ref_arrays: Reference lookup arrays
+        curves: Reference lookup arrays
         total_budget: Gem budget (default 90)
         gem_scale_fever: Stats per fever gem (default 3)
         song_slot: Grid slot for batch coalescing (0-7, default 0)
@@ -87,11 +88,11 @@ def solve_genomes_from_registry(
     Returns:
         List of (score, ft, ff, pp, cm, fm, ov) tuples per genome
     """
-    ensure_ready(ref_arrays)
+    ensure_ready(curves)
 
     # Upload timeline grid if needed
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
-        precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=song_slot)
+        precompute_timeline_gpu(timeline_grid, curves, song_slot=song_slot)
     else:
         raise TypeError("solve_genomes_from_registry requires a calc_song dict with metadata and song_data")
 

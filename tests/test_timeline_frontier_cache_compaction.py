@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 import os
 import time
 from pathlib import Path
@@ -43,11 +44,11 @@ def _build_small_payload():
     return payload
 
 
-def _ref_arrays() -> dict[str, np.ndarray]:
-    return {
+def _curves() -> dict[str, np.ndarray]:
+    return synthetic_curves({
         "Fever Time": np.linspace(0.0, 1.6, 161, dtype=np.float32),
         "Fever Fill Rate": np.linspace(0.0, 1.6, 161, dtype=np.float32),
-    }
+    })
 
 
 def _apply_physical_timing(calc_song: dict) -> None:
@@ -168,7 +169,7 @@ def test_frontier_entrypoint_canonicalizes_raw_precise_input_before_cache_lookup
 
     result = timeline_api.build_or_load_timeline_frontier_payload(
         calc_song,
-        _ref_arrays(),
+        _curves(),
         timing_mode="perfect_window",
     )
 
@@ -199,13 +200,13 @@ def test_build_or_load_timeline_frontier_payload_disk_hit_reuses_compact_payload
         },
     }
     _apply_physical_timing(calc_song)
-    ref_arrays = _ref_arrays()
+    curves = _curves()
 
-    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, curves)
     assert first.cache_source == "built"
 
     timeline_api.reset_timeline_state()
-    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, curves)
     assert second.cache_source == "disk"
     assert int(second.total_notes) == 4
 
@@ -263,10 +264,10 @@ def test_frontier_payload_memory_hit_serves_the_built_and_disk_payload(tmp_path:
     timeline_api.reset_timeline_state()
     calc_song = _warm_disk_timeline_song("Memory Tier Timeline")
 
-    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
-    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
+    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
     timeline_api.reset_timeline_state()
-    third = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    third = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
 
     assert (first.cache_source, second.cache_source, third.cache_source) == ("built", "memory", "disk")
     assert int(first.payload.frontier_pool_used) > 0
@@ -280,13 +281,13 @@ def test_frontier_payload_memory_tier_holds_compressed_disk_bytes(tmp_path: Path
     timeline_api.reset_timeline_state()
     calc_song = _warm_disk_timeline_song("Compressed Memory Tier Timeline")
 
-    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
     assert first.cache_source == "built"
     cached = timeline_api._frontier_payload_cache[first.cache_key]
     assert isinstance(cached, bytes)
     assert len(cached) < 200_000
     assert cached == Path(first.disk_path).read_bytes()
-    info = timeline_api.timeline_frontier_payload_cache_info(calc_song, _ref_arrays())
+    info = timeline_api.timeline_frontier_payload_cache_info(calc_song, _curves())
     assert info.cache_source == "memory"
 
     with monkeypatch.context() as no_disk:
@@ -295,11 +296,11 @@ def test_frontier_payload_memory_tier_holds_compressed_disk_bytes(tmp_path: Path
             "_live_frontier_disk_cache_path",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("memory hit must not touch disk")),
         )
-        second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+        second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
     assert second.cache_source == "memory"
 
     timeline_api.reset_timeline_state()
-    third = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    third = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
     assert third.cache_source == "disk"
     assert timeline_api._frontier_payload_cache[third.cache_key] == cached
     # A memory hit decodes exactly the disk form: identical arrays, dtypes and (trimmed) shapes.
@@ -326,11 +327,11 @@ def test_frontier_payload_memory_tier_survives_failed_disk_write(tmp_path: Path,
             raise OSError("simulated replace failure")
 
         failing_replace.setattr(Path, "replace", _raise_replace)
-        first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+        first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
     assert first.cache_source == "built"
     assert not Path(first.disk_path).exists()
 
-    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
     assert second.cache_source == "memory"
     _assert_payload_live_region_equal(first.payload, second.payload)
 
@@ -362,9 +363,9 @@ def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(
         },
     }
     _apply_physical_timing(calc_song)
-    ref_arrays = _ref_arrays()
+    curves = _curves()
 
-    built = timeline_api.build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    built = timeline_api.build_or_load_timeline_frontier_payload(calc_song, curves)
     assert built.cache_source == "built"
     current_path = Path(built.disk_path)
     assert current_path.exists()
@@ -379,7 +380,7 @@ def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(
     current_path.unlink()
 
     timeline_api.reset_timeline_state()
-    info = timeline_api.timeline_frontier_payload_cache_info(calc_song, ref_arrays)
+    info = timeline_api.timeline_frontier_payload_cache_info(calc_song, curves)
     assert info.cache_source == "disk"
     assert Path(info.disk_path) == predecessor_path
     assert Path(info.disk_path).exists()
@@ -404,13 +405,13 @@ def test_build_or_load_timeline_frontier_payload_reuses_old_disk_cache_without_t
     }
     _apply_physical_timing(calc_song)
 
-    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
     assert first.cache_source == "built"
     stale_ts = time.time() - 3700.0
     os.utime(first.disk_path, (stale_ts, stale_ts))
 
     timeline_api.reset_timeline_state()
-    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _ref_arrays())
+    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
     assert second.cache_source == "disk"
     assert second.disk_path.exists()
     assert second.disk_path.stat().st_mtime == stale_ts
@@ -434,11 +435,11 @@ def test_load_timeline_frontier_payload_builds_and_persists_live_cache_miss(tmp_
     }
     _apply_physical_timing(calc_song)
 
-    built = timeline_api.load_timeline_frontier_payload(calc_song, _ref_arrays())
+    built = timeline_api.load_timeline_frontier_payload(calc_song, _curves())
     assert built.cache_source == "built"
     assert built.disk_path.exists()
     timeline_api.reset_timeline_state()
-    loaded = timeline_api.load_timeline_frontier_payload(calc_song, _ref_arrays())
+    loaded = timeline_api.load_timeline_frontier_payload(calc_song, _curves())
     assert loaded.cache_source == "disk"
     assert int(loaded.total_notes) == 4
 
@@ -475,18 +476,18 @@ def test_frontier_cache_key_ignores_unrelated_ref_arrays() -> None:
     _apply_physical_timing(calc_song)
     ref_ft = np.linspace(0.0, 1.6, 161, dtype=np.float32)
     ref_ff = np.linspace(0.0, 1.6, 161, dtype=np.float32)
-    ref_base = {
+    ref_base = synthetic_curves({
         "Fever Time": ref_ft,
         "Fever Fill Rate": ref_ff,
         "Perfect Points": np.arange(161, dtype=np.float32),
         "Combo Multiplier": np.arange(161, dtype=np.float32),
-    }
-    ref_variant = {
+    })
+    ref_variant = synthetic_curves({
         "Fever Time": ref_ft.copy(),
         "Fever Fill Rate": ref_ff.copy(),
         "Perfect Points": np.arange(161, dtype=np.float32) * 7.0,
         "Combo Multiplier": np.arange(161, dtype=np.float32) * 3.0,
-    }
+    })
 
     info_base = timeline_api.timeline_frontier_payload_cache_info(calc_song, ref_base)
     info_variant = timeline_api.timeline_frontier_payload_cache_info(calc_song, ref_variant)

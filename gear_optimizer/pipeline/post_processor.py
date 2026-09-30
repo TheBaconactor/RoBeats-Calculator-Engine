@@ -139,7 +139,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 persisted = _canonicalize_fg_update_entries(
                     persisted,
                     file_path=str(item.get("file_path") or ""),
-                    ref_arrays=item.get("ref_arrays"),
+                    curves=item.get("curves"),
                     song_name=str(song_name),
                 )
                 valid_entries = filter_valid_persistence_entries(persisted, require_base_score=True)

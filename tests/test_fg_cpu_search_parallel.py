@@ -5,7 +5,8 @@ import time
 
 import numpy as np
 
-from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
+from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.settings import paths
 from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as host
 
 
@@ -31,7 +32,7 @@ def _random_batch(group_count: int, seed: int, colors=("Chill", "Flow", "Chill")
     counts = np.column_stack(
         [rng.integers(0, 121, surface_rows), rng.integers(0, 60, surface_rows), rng.integers(0, 40, surface_rows)]
     ).astype(np.int32)
-    refs = get_exact_replay_ref_arrays_cached()
+    refs = load_stat_curves(paths().stats_txt).f64
     shared = (
         rng.integers(0, patterns, surface_rows).astype(np.int32),
         words,

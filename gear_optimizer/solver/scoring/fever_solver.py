@@ -18,17 +18,6 @@ from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_sol
 
 from .stats_ops import apply_gems_to_base_stats
 
-_REF_ARRAY_KEYS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Time", "Fever Fill Rate")
-
-
-def _float32_ref_arrays(ref_arrays: dict) -> dict:
-    """The GPU solve scores against float32 ref arrays whatever dtype the caller holds (tests pass float64)."""
-    out = dict(ref_arrays)
-    for key in _REF_ARRAY_KEYS:
-        out[key] = np.asarray(out[key], dtype=np.float32)
-    return out
-
-
 def _color_flags(calc_song: dict, selected_color: str) -> dict[str, int]:
     metadata = calc_song["metadata"]
     return build_color_flags(metadata.get("Primary Color", ""), metadata.get("Secondary Color", ""), selected_color)
@@ -61,7 +50,7 @@ def _gem_result(stats: dict[str, int], selected_color: str, solved) -> dict:
     }
 
 
-def solve_best_fever_combination(initial_stats, calc_song, ref_arrays, *, selected_color):
+def solve_best_fever_combination(initial_stats, calc_song, curves, *, selected_color):
     """Best gem allocation for one pre-gem stat row.
 
     Returns: dict with Score, FT, FF, GemCounts, Stats, Selected Element
@@ -76,7 +65,7 @@ def solve_best_fever_combination(initial_stats, calc_song, ref_arrays, *, select
         slot_count=np.zeros((9,), dtype=np.int32),
         base_fixed_stats=build_stats_array(stats),
         timeline_grid=calc_song,
-        ref_arrays=_float32_ref_arrays(ref_arrays),
+        curves=curves,
         flags=_color_flags(calc_song, selected_color),
         song_slot=int((calc_song or {}).get("_gpu_song_slot", 0) or 0),
     )
@@ -86,7 +75,7 @@ def solve_best_fever_combination(initial_stats, calc_song, ref_arrays, *, select
     return _gem_result(stats, selected_color, gpu_results[0])
 
 
-def solve_best_fever_combination_batch(stats_list, calc_song, ref_arrays, *, selected_color):
+def solve_best_fever_combination_batch(stats_list, calc_song, curves, *, selected_color):
     """Batched GPU base gem re-solve: N loadouts in ONE skyline dispatch (n_genomes=N).
 
     The whole base solve (timeline reuse + skyline + scoring) then runs once for all loadouts, and
@@ -117,7 +106,7 @@ def solve_best_fever_combination_batch(stats_list, calc_song, ref_arrays, *, sel
         slot_count=np.zeros((9,), dtype=np.int32),
         base_fixed_stats=np.zeros((10,), dtype=np.int32),
         timeline_grid=calc_song,
-        ref_arrays=_float32_ref_arrays(ref_arrays),
+        curves=curves,
         flags=_color_flags(calc_song, selected_color),
         song_slot=int((calc_song or {}).get("_gpu_song_slot", 0) or 0),
     )

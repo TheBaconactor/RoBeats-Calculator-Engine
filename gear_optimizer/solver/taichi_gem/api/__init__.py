@@ -11,7 +11,7 @@ This __init__.py defines the public Taichi gem solver API surface.
 
 from .initialization import (
     ensure_ready,
-    load_ref_arrays,
+    load_curves,
     hard_reset_taichi,
     _ensure_ftff_combo_tables,
 )
@@ -49,7 +49,7 @@ from .ga_operations import (
 __all__ = [
     # Initialization
     "ensure_ready",
-    "load_ref_arrays",
+    "load_curves",
     "hard_reset_taichi",
     "_ensure_ftff_combo_tables",
     # Timeline

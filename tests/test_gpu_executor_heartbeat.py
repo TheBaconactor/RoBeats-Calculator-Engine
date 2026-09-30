@@ -16,14 +16,14 @@ def _request(request_type: GpuRequestType, request_id: int) -> GpuRequest:
 def test_summarize_request_batch_ignores_shutdown_requests():
     type_counts, request_count = summarize_request_batch(
         [
-            _request(GpuRequestType.LOAD_REF_ARRAYS, 1),
-            _request(GpuRequestType.LOAD_REF_ARRAYS, 2),
+            _request(GpuRequestType.LOAD_CURVES, 1),
+            _request(GpuRequestType.LOAD_CURVES, 2),
             _request(GpuRequestType.SHUTDOWN, 3),
         ]
     )
 
     assert request_count == 2
-    assert type_counts == {"load_ref_arrays": 2}
+    assert type_counts == {"load_curves": 2}
 
 
 def test_executor_heartbeat_writer_writes_compact_payload(tmp_path):

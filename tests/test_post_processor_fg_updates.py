@@ -30,7 +30,7 @@ def _mock_base_song(*, primary_color: str = "Rush", n_notes: int = 96) -> dict:
 def test_canonicalize_fg_update_entries_uses_calc_song_and_ref_arrays(monkeypatch):
     entries = [{"score": 123, "gear": ["G1"], "minis": ["M1"]}]
     base_calc_song = _mock_base_song()
-    ref_arrays = {"Perfect Points": [1.0]}
+    curves = {"Perfect Points": [1.0]}
     calls = {}
     canonical_row = {
         "score": 456,
@@ -43,11 +43,11 @@ def test_canonicalize_fg_update_entries_uses_calc_song_and_ref_arrays(monkeypatc
         calls["song_io"] = file_path
         return base_calc_song
 
-    def fake_canonicalize(entries_arg, *, calc_song, ref_arrays):
+    def fake_canonicalize(entries_arg, *, calc_song, curves):
         calls["canonicalize"] = {
             "entries": entries_arg,
             "calc_song": calc_song,
-            "ref_arrays": ref_arrays,
+            "curves": curves,
         }
         return [canonical_row]
 
@@ -62,7 +62,7 @@ def test_canonicalize_fg_update_entries_uses_calc_song_and_ref_arrays(monkeypatc
     result = canonicalize_fg_update_entries(
         entries,
         file_path="Data/Hard/Test Song.txt",
-        ref_arrays=ref_arrays,
+        curves=curves,
         song_name="Test Song",
     )
 
@@ -70,7 +70,7 @@ def test_canonicalize_fg_update_entries_uses_calc_song_and_ref_arrays(monkeypatc
     assert calls["song_io"] == "Data/Hard/Test Song.txt"
     passed = calls["canonicalize"]
     assert passed["entries"] == entries
-    assert passed["ref_arrays"] is ref_arrays
+    assert passed["curves"] is curves
     assert passed["calc_song"]["metadata"].get("Primary Color") == "Rush"
     # The timeline/FG frontier cache key includes the timing-envelope context, so FG
     # persistence must apply the envelope or the cache-keyed replay looks up an artifact
@@ -78,17 +78,17 @@ def test_canonicalize_fg_update_entries_uses_calc_song_and_ref_arrays(monkeypatc
     assert passed["calc_song"]["metadata"].get("TimingEnvelopeApplied") is True
 
 
-def test_canonicalize_fg_update_entries_uses_cached_ref_arrays(monkeypatch):
+def test_canonicalize_fg_update_entries_loads_the_curves_when_none_are_given(monkeypatch):
     entries = [{"score": 123}]
     base_calc_song = _mock_base_song()
-    cached_ref_arrays = {"Perfect Points": [1.0]}
+    loaded_curves = object()
     calls = {}
 
     monkeypatch.setattr(
         "gear_optimizer.solver.song_preparation.get_base_calc_song",
         lambda _fp, _cfg=None: base_calc_song,
     )
-    monkeypatch.setattr("gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached", lambda: cached_ref_arrays)
+    monkeypatch.setattr("gear_optimizer.pipeline.post_processor_fg_updates.load_stat_curves", lambda _path: loaded_curves)
 
     canonical_row = {
         "score": 123,
@@ -97,8 +97,8 @@ def test_canonicalize_fg_update_entries_uses_cached_ref_arrays(monkeypatch):
         "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
     }
 
-    def fake_canonicalize(entries_arg, *, calc_song, ref_arrays):
-        calls["ref_arrays"] = ref_arrays
+    def fake_canonicalize(entries_arg, *, calc_song, curves):
+        calls["curves"] = curves
         return [canonical_row]
 
     monkeypatch.setattr(
@@ -109,12 +109,12 @@ def test_canonicalize_fg_update_entries_uses_cached_ref_arrays(monkeypatch):
     result = canonicalize_fg_update_entries(
         entries,
         file_path="Data/Hard/Test Song.txt",
-        ref_arrays=None,
+        curves=None,
         song_name="Test Song",
     )
 
     assert result == [canonical_row]
-    assert calls["ref_arrays"] is cached_ref_arrays
+    assert calls["curves"] is loaded_curves
 
 
 def test_canonicalize_fg_update_entries_reraises_missing_frontier_cache(monkeypatch):
@@ -127,7 +127,7 @@ def test_canonicalize_fg_update_entries_reraises_missing_frontier_cache(monkeypa
         lambda _fp, _cfg=None: base_calc_song,
     )
 
-    def fake_canonicalize(entries_arg, *, calc_song, ref_arrays):
+    def fake_canonicalize(entries_arg, *, calc_song, curves):
         raise MissingFrontierCacheError(
             "Timeline frontier payload is missing. Startup cache prebuild must build the "
             "candidate-independent all-FT/FF timeline frontier before runtime scoring."
@@ -142,7 +142,7 @@ def test_canonicalize_fg_update_entries_reraises_missing_frontier_cache(monkeypa
         canonicalize_fg_update_entries(
             [{"score": 123, "force": {"ForceGreats": {}}}],
             file_path="Data/Hard/Test Song.txt",
-            ref_arrays={"Perfect Points": [1.0]},
+            curves={"Perfect Points": [1.0]},
             song_name="Test Song",
         )
 
@@ -183,7 +183,7 @@ def test_canonicalize_fg_update_entries_rejects_missing_file_path():
         canonicalize_fg_update_entries(
             [{"score": 123}],
             file_path="",
-            ref_arrays={"Perfect Points": [1.0]},
+            curves={"Perfect Points": [1.0]},
             song_name="Test Song",
         )
         == []

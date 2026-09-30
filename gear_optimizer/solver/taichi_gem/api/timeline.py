@@ -16,6 +16,7 @@ import logging
 import numpy as np
 import taichi as ti
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.logic_fingerprint import module_logic_fingerprint
@@ -690,11 +691,11 @@ def _get_or_build_frontier_payload_with_source(
     return payload, "built"
 
 
-def _timeline_payload_lookup_context(calc_song: dict, ref_arrays: dict, *, ref_sig: bytes | None = None) -> dict:
+def _timeline_payload_lookup_context(calc_song: dict, curves: StatCurves, *, ref_sig: bytes | None = None) -> dict:
     if not isinstance(calc_song, dict):
         raise TypeError("calc_song must be a dict")
-    if not isinstance(ref_arrays, dict):
-        raise TypeError("ref_arrays must be a dict")
+    if not isinstance(curves, StatCurves):
+        raise TypeError("curves must be StatCurves")
 
     base_song_key = _song_timing_cache_key(calc_song)
     # Timeline frontier payload depends on song timing + FT/FF axes only.
@@ -710,8 +711,8 @@ def _timeline_payload_lookup_context(calc_song: dict, ref_arrays: dict, *, ref_s
     if total_notes > fields.MAX_SONG_NOTES:
         raise ValueError(f"Song has {total_notes} notes, max is {fields.MAX_SONG_NOTES}")
 
-    ref_ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
-    ref_ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
+    ref_ft = curves.f32["Fever Time"]
+    ref_ff = curves.f32["Fever Fill Rate"]
     perfect_candidates = song_data.get("fg_perfect_candidate_timestamps")
     perfect_floor = song_data.get("fg_perfect_floor_timestamps")
     lanes = song_data.get("lanes")
@@ -782,7 +783,7 @@ def _prepare_timeline_frontier_calc_song(calc_song: dict, *, timing_mode: str | 
 
 def timeline_frontier_payload_cache_info(
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     timing_mode: str | None = None,
 ) -> TimelineFrontierCacheInfo:
@@ -795,15 +796,15 @@ def timeline_frontier_payload_cache_info(
     """
     if not isinstance(calc_song, dict):
         raise TypeError("calc_song must be a dict")
-    if not isinstance(ref_arrays, dict):
-        raise TypeError("ref_arrays must be a dict")
+    if not isinstance(curves, StatCurves):
+        raise TypeError("curves must be StatCurves")
 
     _prepare_timeline_frontier_calc_song(calc_song, timing_mode=timing_mode)
 
     base_song_key = _song_timing_cache_key(calc_song)
     song_key = base_song_key
-    ref_ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
-    ref_ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
+    ref_ft = curves.f32["Fever Time"]
+    ref_ff = curves.f32["Fever Fill Rate"]
     cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
 
     cache_source = "missing"
@@ -839,7 +840,7 @@ def _timeline_calc_song_is_zero_ms(calc_song: dict) -> bool:
     return str((metadata or {}).get("TimingEnvelopeMode", "") or "").strip().lower() == "zero_ms"
 
 
-def _build_zero_ms_timeline_payload(calc_song: dict, ref_arrays: dict) -> TimelineFrontierGridPayload:
+def _build_zero_ms_timeline_payload(calc_song: dict, curves: StatCurves) -> TimelineFrontierGridPayload:
     """Build the exact singleton chart-time surface for every FT/FF cell.
 
     zero_ms is fixed timing (every hit at its chart timestamp), so each (Fever Time, Fever Fill)
@@ -864,8 +865,8 @@ def _build_zero_ms_timeline_payload(calc_song: dict, ref_arrays: dict) -> Timeli
     if total_notes > 1 and bool(np.any(np.diff(timestamps) < np.float32(0.0))):
         raise ValueError("zero_ms chart timestamps must be non-decreasing")
 
-    ref_ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
-    ref_ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
+    ref_ft = curves.f32["Fever Time"]
+    ref_ff = curves.f32["Fever Fill Rate"]
     grid_size = MAX_STAT + 1
     if ref_ft.shape != (grid_size,) or ref_ff.shape != (grid_size,):
         raise ValueError(f"zero_ms timeline axes must both have shape ({grid_size},)")
@@ -947,10 +948,10 @@ def _build_zero_ms_timeline_payload(calc_song: dict, ref_arrays: dict) -> Timeli
     )
 
 
-def _zero_ms_timeline_result(calc_song: dict, ref_arrays: dict) -> TimelineFrontierPrewarmResult:
+def _zero_ms_timeline_result(calc_song: dict, curves: StatCurves) -> TimelineFrontierPrewarmResult:
     """Load or persist the cheap zero_ms singleton payload."""
     t0 = time.perf_counter()
-    lookup = _timeline_payload_lookup_context(calc_song, ref_arrays)
+    lookup = _timeline_payload_lookup_context(calc_song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload, cache_source = _get_cached_frontier_payload_with_source(
         lookup["song_key"],
@@ -958,7 +959,7 @@ def _zero_ms_timeline_result(calc_song: dict, ref_arrays: dict) -> TimelineFront
         ref_ff=lookup["ref_ff"],
     )
     if payload is None:
-        payload = _build_zero_ms_timeline_payload(calc_song, ref_arrays)
+        payload = _build_zero_ms_timeline_payload(calc_song, curves)
         raw = _save_frontier_payload_to_disk(cache_key, payload)
         cache_source = "built"
         if not frontier_cache_is_ephemeral():
@@ -976,7 +977,7 @@ def _zero_ms_timeline_result(calc_song: dict, ref_arrays: dict) -> TimelineFront
 
 def build_or_load_timeline_frontier_payload(
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     timing_mode: str | None = None,
 ) -> TimelineFrontierPrewarmResult:
@@ -990,9 +991,9 @@ def build_or_load_timeline_frontier_payload(
     if resolved_timing_mode == "zero_ms":
         # zero_ms is fixed timing: serve the cheap chart-time singleton and never touch the
         # perfect_window candidate-frontier build or its disk cache.
-        return _zero_ms_timeline_result(calc_song, ref_arrays)
+        return _zero_ms_timeline_result(calc_song, curves)
     t0 = time.perf_counter()
-    lookup = _timeline_payload_lookup_context(calc_song, ref_arrays)
+    lookup = _timeline_payload_lookup_context(calc_song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload, cache_source = _get_cached_frontier_payload_with_source(
         lookup["song_key"],
@@ -1027,7 +1028,7 @@ def build_or_load_timeline_frontier_payload(
 
 def load_timeline_frontier_payload(
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     timing_mode: str | None = None,
 ) -> TimelineFrontierPrewarmResult:
@@ -1036,9 +1037,9 @@ def load_timeline_frontier_payload(
     if resolved_timing_mode == "zero_ms":
         # zero_ms serves the cheap chart-time singleton on demand -- it is never persisted to the
         # perfect_window disk cache, so probing it here would be a miss anyway; build directly.
-        return _zero_ms_timeline_result(calc_song, ref_arrays)
+        return _zero_ms_timeline_result(calc_song, curves)
     t0 = time.perf_counter()
-    lookup = _timeline_payload_lookup_context(calc_song, ref_arrays)
+    lookup = _timeline_payload_lookup_context(calc_song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload, cache_source = _get_cached_frontier_payload_with_source(
         lookup["song_key"],
@@ -1046,7 +1047,7 @@ def load_timeline_frontier_payload(
         ref_ff=lookup["ref_ff"],
     )
     if payload is None:
-        return build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+        return build_or_load_timeline_frontier_payload(calc_song, curves)
     return TimelineFrontierPrewarmResult(
         payload=payload,
         cache_key=cache_key,
@@ -1060,7 +1061,7 @@ def load_timeline_frontier_payload(
 
 def precompute_timeline_gpu(
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     song_slot: int = 0,
     *,
     prebuilt_frontier: "TimelineFrontierPrewarmResult | None" = None,
@@ -1074,7 +1075,7 @@ def precompute_timeline_gpu(
 
     Args:
         calc_song: Song calculation context with timestamps/metadata
-        ref_arrays: Reference lookup arrays (must include Fever Time/Fill Rate)
+        curves: Reference lookup arrays (must include Fever Time/Fill Rate)
         song_slot: Grid slot to write to (0-7, default 0 for single-song mode)
         prebuilt_frontier: Optional already-resolved frontier payload to upload BY VALUE.
             Production runtime leaves this None so load_timeline_frontier_payload() can reuse or
@@ -1099,15 +1100,15 @@ def precompute_timeline_gpu(
 
     # Ensure GPU is ready with refs and grid fields (even on cache hit).
     # Also reuse the ref signature so callers don't hash refs twice.
-    ref_sig = ensure_ready(ref_arrays) if isinstance(ref_arrays, dict) else ensure_ready(None)
+    ref_sig = ensure_ready(curves)
 
-    lookup = _timeline_payload_lookup_context(calc_song, ref_arrays, ref_sig=ref_sig)
+    lookup = _timeline_payload_lookup_context(calc_song, curves, ref_sig=ref_sig)
     # Check if we already computed for this song+ref set.
     song_key = lookup["song_key"]
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
     frontier_result = (
-        prebuilt_frontier if prebuilt_frontier is not None else load_timeline_frontier_payload(calc_song, ref_arrays)
+        prebuilt_frontier if prebuilt_frontier is not None else load_timeline_frontier_payload(calc_song, curves)
     )
     song_slot_i = int(song_slot)
     frontier_payload = frontier_result.payload
@@ -1128,7 +1129,7 @@ def precompute_timeline_gpu(
     _gpu_timeline_song_id_by_slot[song_slot] = song_key
 
 
-def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
+def precompute_timeline_gpu_for_warmup(calc_song: dict, curves: StatCurves, song_slot: int = 0) -> None:
     """
     Warmup-only entrypoint for synthetic charts.
 
@@ -1143,9 +1144,9 @@ def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_s
     the payload by value means a cache clear/eviction between build and upload can no longer
     lose the cache artifact between build and upload.
     """
-    ensure_ready(ref_arrays)
+    ensure_ready(curves)
     started = time.perf_counter()
-    lookup = _timeline_payload_lookup_context(calc_song, ref_arrays)
+    lookup = _timeline_payload_lookup_context(calc_song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload = build_timeline_frontier_grid_payload(
         song_slot=0,
@@ -1170,7 +1171,7 @@ def precompute_timeline_gpu_for_warmup(calc_song: dict, ref_arrays: dict, song_s
     )
     precompute_timeline_gpu(
         calc_song,
-        ref_arrays,
+        curves,
         song_slot=song_slot,
         prebuilt_frontier=frontier_result,
     )

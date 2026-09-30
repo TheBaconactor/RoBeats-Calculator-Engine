@@ -263,11 +263,11 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
         long_notes=0,
         use_forced_great_timing=True,
     )
-    ref_arrays = {
+    curves = {
         "Combo Multiplier": np.asarray([2.45, 2.72]),
         "Fever Multiplier": np.asarray([4.6, 5.48]),
     }
-    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = response_cache.session_head_dominance_box(ref_arrays)
+    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = response_cache.session_head_dominance_box(curves)
     original_offsets = np.asarray(bundle.frontier_offsets, dtype=np.int32)
     original_lengths = np.asarray(bundle.frontier_lengths, dtype=np.int32)
     expected_keep = np.asarray(
@@ -291,7 +291,7 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
         dtype=bool,
     )
     expected_used_patterns, expected_pattern_ids = np.unique(pattern_ids[expected_keep], return_inverse=True)
-    pruned = response_cache.session_prune_scoring_bundle(bundle, ref_arrays)
+    pruned = response_cache.session_prune_scoring_bundle(bundle, curves)
     assert int(pruned.surface_row_count) == int(pruned.surface_pattern_ids.shape[0])
     assert int(pruned.surface_pattern_ids.shape[0]) <= 55
     assert pruned.surface_counts.shape == (int(pruned.surface_row_count), 3)
@@ -392,12 +392,12 @@ def test_session_prune_matches_retired_unique_remap(monkeypatch, combo_box, feve
         long_notes=0,
         use_forced_great_timing=True,
     )
-    ref_arrays = {
+    curves = {
         "Combo Multiplier": np.asarray(combo_box),
         "Fever Multiplier": np.asarray(fever_box),
     }
     pattern_ids_before = pattern_ids.copy()
-    box = response_cache.session_head_dominance_box(ref_arrays)
+    box = response_cache.session_head_dominance_box(curves)
     keep = np.asarray(
         _numba_session_box_keep_mask(
             pattern_ids, pattern_words, counts, offsets, lengths, 0, head_len, *box
@@ -406,7 +406,7 @@ def test_session_prune_matches_retired_unique_remap(monkeypatch, combo_box, feve
     )
     expected = _retired_session_prune_arrays(pattern_ids, counts, pattern_words, pattern_coeffs, offsets, lengths, keep)
 
-    pruned = response_cache.session_prune_scoring_bundle(bundle, ref_arrays)
+    pruned = response_cache.session_prune_scoring_bundle(bundle, curves)
 
     for name, want in expected.items():
         got = getattr(pruned, name)

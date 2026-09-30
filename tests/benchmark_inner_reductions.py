@@ -76,7 +76,8 @@ def main():
         os.environ["TIMELINE_FRONTIER_CACHE_DIR"] = str(directory / "timeline-cache")
         os.environ["EVOLUTION_DB_PATH"] = str(directory / "evolution.db")
         from gear_optimizer.data.song_io import get_base_calc_song
-        from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
+        from gear_optimizer.gamedata import load_stat_curves
+        from gear_optimizer.settings import paths
         from gear_optimizer.solver.taichi_gem.force_greats import response_frontier as frontier
         from gear_optimizer.solver.taichi_gem.force_greats import response_inner_host as current
         from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
@@ -86,7 +87,7 @@ def main():
         from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
         baseline = _load_baseline(directory, args.baseline_ref)
-        refs = get_exact_replay_ref_arrays_cached()
+        refs = load_stat_curves(paths().stats_txt)
         reports = []
         cases = [
             ("All Right There (Hard) by BSlick feat CG5.txt", [25, 55, 70, 43, 58, 34, 768, 35, 0, 100], "Vibe"),
@@ -118,7 +119,7 @@ def main():
                 return frontier.prepare_force_greats_response_frontier_scoring_batch(
                     base_stats_list=[stats],
                     calc_song=song,
-                    ref_arrays=refs,
+                    curves=refs,
                     selected_color=selected,
                     total_budget=budget,
                     scoring_bundle=bundle,
@@ -153,7 +154,7 @@ def main():
                 primary_color=packed.primary_color,
                 secondary_color=packed.secondary_color,
                 selected_color=selected,
-                ref_arrays=refs,
+                curves=refs,
                 surface_pattern_ids=packed.scoring_surface_pattern_ids,
                 surface_pattern_words=packed.scoring_surface_pattern_words,
                 surface_counts=packed.scoring_surface_counts,

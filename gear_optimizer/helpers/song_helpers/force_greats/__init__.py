@@ -14,7 +14,7 @@ __all__ = [
 def run_force_greats_response_frontier_for_ga_candidates(
     ga_candidates,
     calc_song,
-    ref_arrays,
+    curves,
     meta_primary_color,
     *,
     ga_registry=None,
@@ -27,7 +27,7 @@ def run_force_greats_response_frontier_for_ga_candidates(
     return FgResponseScoringService.score_candidates(
         ga_candidates,
         calc_song,
-        ref_arrays,
+        curves,
         meta_primary_color,
         ga_registry=ga_registry,
         scoring_bundle=scoring_bundle,

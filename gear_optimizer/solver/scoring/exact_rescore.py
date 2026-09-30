@@ -15,8 +15,7 @@ import numpy as np
 
 from ... import score as core_score
 from gear_optimizer.rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND, MAX_STAT
-from ...gamedata import CURVE_STATS, STATS, StatCurves
-from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
+from ...gamedata import STATS, StatCurves
 from ...timing import fixed_timeline_cell
 from .fg_policy import extract_fg_song_inputs
 
@@ -39,24 +38,6 @@ def _copy_timeline_trace_meta(meta: dict[str, Any]) -> dict[str, Any]:
     out["frontier_trace"] = [dict(source) for source in meta["frontier_trace"]]
     out["response_surface"] = list(meta["response_surface"])
     return out
-
-
-def _frontier_replay_refs(ref_arrays: Mapping[str, Any]) -> dict[str, Any]:
-    frontier_refs = dict(resolve_exact_replay_ref_arrays(ref_arrays))
-    for axis in ("Fever Time", "Fever Fill Rate"):
-        axis_values = np.asarray(frontier_refs.get(axis, ())).reshape(-1)
-        if int(axis_values.shape[0]) < MAX_STAT + 1:
-            raise ValueError(f"{axis} axis must include stat rows 0..{MAX_STAT}")
-        frontier_refs[axis] = axis_values[: MAX_STAT + 1]
-    return frontier_refs
-
-
-def _curves(ref_arrays: Mapping[str, Any]) -> StatCurves:
-    return StatCurves(
-        values={
-            stat: np.asarray(ref_arrays[stat], dtype=np.float64).reshape(-1)[: MAX_STAT + 1] for stat in CURVE_STATS
-        }
-    )
 
 
 def _stats_row(stats: Mapping[str, Any]) -> dict[str, int]:
@@ -90,27 +71,26 @@ def _best_timeline_score(payload, curves, primary, secondary, stats, total_notes
 def score_stats_exact(
     stats: Mapping[str, Any],
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
 ) -> int:
-    return int(score_stats_exact_batch([stats], calc_song, ref_arrays)[0])
+    return int(score_stats_exact_batch([stats], calc_song, curves)[0])
 
 
 def score_stats_exact_with_timeline_trace(
     stats: Mapping[str, Any],
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
 ) -> dict[str, Any]:
     from ..taichi_gem.api.timeline import load_timeline_frontier_payload
 
     song_dict = calc_song if isinstance(calc_song, dict) else dict(calc_song)
     total_notes = int(_chart_timestamps(song_dict).shape[0])
-    frontier_refs = _frontier_replay_refs(ref_arrays)
-    frontier_result = load_timeline_frontier_payload(song_dict, frontier_refs)
+    frontier_result = load_timeline_frontier_payload(song_dict, curves)
     payload = frontier_result.payload
     primary, secondary = _song_colors(song_dict)
     row = _stats_row(stats)
     best_score, pool_idx = _best_timeline_score(
-        payload, _curves(frontier_refs), primary, secondary, row, total_notes
+        payload, curves, primary, secondary, row, total_notes
     )
     ft_i = max(0, min(row["Fever Time"], MAX_STAT))
     ff_i = max(0, min(row["Fever Fill Rate"], MAX_STAT))
@@ -124,7 +104,7 @@ def score_stats_exact_with_timeline_trace(
             ft_idx=ft_i,
             ff_idx=ff_i,
             calc_song=song_dict,
-            ref_arrays=frontier_refs,
+            curves=curves,
         )
         while len(_TIMELINE_TRACE_MEMO) >= _TIMELINE_TRACE_MEMO_MAX:
             _TIMELINE_TRACE_MEMO.pop(next(iter(_TIMELINE_TRACE_MEMO)))
@@ -135,7 +115,7 @@ def score_stats_exact_with_timeline_trace(
 def score_stats_exact_batch(
     stats_rows: Sequence[Mapping[str, Any]],
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
 ) -> list[int]:
     """Exact Perfect-window base scores: the best surface of each row's timing frontier cell."""
     if not stats_rows:
@@ -144,9 +124,7 @@ def score_stats_exact_batch(
 
     song_dict = calc_song if isinstance(calc_song, dict) else dict(calc_song)
     total_notes = int(_chart_timestamps(song_dict).shape[0])
-    frontier_refs = _frontier_replay_refs(ref_arrays)
-    payload = load_timeline_frontier_payload(song_dict, frontier_refs).payload
-    curves = _curves(frontier_refs)
+    payload = load_timeline_frontier_payload(song_dict, curves).payload
     primary, secondary = _song_colors(song_dict)
     return [
         _best_timeline_score(payload, curves, primary, secondary, _stats_row(stats), total_notes)[0]
@@ -157,16 +135,16 @@ def score_stats_exact_batch(
 def score_stats_fixed_timing_exact(
     stats: Mapping[str, Any],
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
 ) -> int:
     """Exact f64 base replay under fixed 0ms timing (see ``*_batch``)."""
-    return int(score_stats_fixed_timing_exact_batch([stats], calc_song, ref_arrays)[0])
+    return int(score_stats_fixed_timing_exact_batch([stats], calc_song, curves)[0])
 
 
 def score_stats_fixed_timing_exact_batch(
     stats_rows: Sequence[Mapping[str, Any]],
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
 ) -> list[int]:
     """
     Exact f64 base replay for the PREPARED fixed/explicit-timing calc_song.
@@ -181,13 +159,13 @@ def score_stats_fixed_timing_exact_batch(
     hit_timestamps = song_data.get("fg_timestamps")
     if hit_timestamps is None:
         hit_timestamps = _chart_timestamps(calc_song)
-    return score_stats_timing_exact_batch(stats_rows, calc_song, ref_arrays, hit_timestamps)
+    return score_stats_timing_exact_batch(stats_rows, calc_song, curves, hit_timestamps)
 
 
 def score_stats_timing_exact_batch(
     stats_rows: Sequence[Mapping[str, Any]],
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
     hit_timestamps: Any,
 ) -> list[int]:
     """
@@ -212,7 +190,6 @@ def score_stats_timing_exact_batch(
     metadata = calc_song.get("metadata") or {}
     long_notes = int(metadata["Long Notes"])
     last_note_time = float(metadata["Last Note Time"])
-    curves = _curves(resolve_exact_replay_ref_arrays(ref_arrays))
     primary, secondary = _song_colors(calc_song)
     cells: dict[tuple[int, int], core_score.TimelineCell] = {}
     scores: list[int] = []
@@ -240,7 +217,7 @@ def _timeline_trace_for_payload_surface(
     ft_idx: int,
     ff_idx: int,
     calc_song: dict[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
 ) -> dict[str, Any]:
     from ..fg_response_scoring.physical_replay import validate_base_physical_replay
     from ..timeline_exact_frontier import reconstruct_timeline_physical_trace
@@ -253,8 +230,8 @@ def _timeline_trace_for_payload_surface(
     body_normal = int(payload.grid_frontier_body_normal_pool[0, pool_idx_i])
     words = tuple(int(payload.grid_frontier_masks_bits_pool[0, pool_idx_i, word]) for word in range(4))
     song_inputs = extract_fg_song_inputs(calc_song)
-    ref_ft = np.asarray(ref_arrays["Fever Time"], dtype=np.float32).reshape(-1)
-    ref_ff = np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32).reshape(-1)
+    ref_ft = curves.f32["Fever Time"]
+    ref_ff = curves.f32["Fever Fill Rate"]
 
     total_notes_i = int(song_inputs.total_notes)
     long_notes_i = int(song_inputs.long_notes)
@@ -311,7 +288,7 @@ def _timeline_trace_for_payload_surface(
 def score_force_greats_response_surface_exact(
     stats: Mapping[str, Any],
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
     surface: Any,
 ) -> int:
     """
@@ -324,6 +301,5 @@ def score_force_greats_response_surface_exact(
         raise ValueError("FG response surface replay needs stats")
     total_notes = int(_chart_timestamps(calc_song).shape[0])
     primary, secondary = _song_colors(calc_song)
-    curves = _curves(resolve_exact_replay_ref_arrays(ref_arrays))
     f = core_score.factors(_stats_row(stats), curves, primary, secondary)
     return core_score.fg_surface_score(f, surface, total_notes)

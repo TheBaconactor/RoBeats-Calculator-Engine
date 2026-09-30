@@ -16,20 +16,20 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from ...helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
+from ...gamedata import StatCurves
 
 
 def _solve_fixed_timing_response_results(
     stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
     selected_color: str,
     *,
     total_budget: int = 0,
-) -> tuple[list[Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[list[Any], dict[str, Any], StatCurves]:
     """Solve the fixed-0ms FG response frontier (one result per stats row).
 
-    Returns ``(results, calc_song, ref_arrays)`` where ``calc_song``/``ref_arrays`` are the
+    Returns ``(results, calc_song, curves)`` where ``calc_song``/``curves`` are the
     exact (chart-only, resolved) objects the solve ran against, so downstream exact replay /
     trace reconstruction scores the identical timing model. ``calc_song`` MUST already carry
     chart-only timing (prepare it with ``apply_timing_envelope(mode="zero_ms")``).
@@ -43,7 +43,7 @@ def _solve_fixed_timing_response_results(
     """
     rows = [dict(stats) for stats in (stats_list or [])]
     if not rows:
-        return [], dict(calc_song), resolve_exact_replay_ref_arrays(ref_arrays)
+        return [], dict(calc_song), curves
 
     total_budget = int(total_budget)
     from ..fg_response_frontier_cache_prebuild import ensure_response_frontier_cache_for_calc_song
@@ -55,7 +55,6 @@ def _solve_fixed_timing_response_results(
     )
     from ..taichi_gem.force_greats.response_cache import load_response_frontier_scoring_bundle
 
-    ref_arrays = resolve_exact_replay_ref_arrays(ref_arrays)
     calc_song = dict(calc_song)
     # The chart-only bundle is distinct from perfect_window and is prebuilt for the catalog at
     # optimizer startup. Build only the FT/FF cells this exact batch can address: base FT/FF plus
@@ -68,18 +67,18 @@ def _solve_fixed_timing_response_results(
     )
     ensure_response_frontier_cache_for_calc_song(
         calc_song,
-        ref_arrays,
+        curves,
         stat_keys=required_stat_keys,
     )
     scoring_bundle = load_response_frontier_scoring_bundle(
         calc_song,
-        ref_arrays,
+        curves,
         stat_keys=required_stat_keys,
     )
     batch = prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=rows,
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color=str(selected_color or ""),
         total_budget=total_budget,
         scoring_bundle=scoring_bundle,
@@ -98,7 +97,7 @@ def _solve_fixed_timing_response_results(
             "fixed-timing FG surface build produced a different row count than the stats batch "
             f"({len(results)} != {len(rows)})"
         )
-    return results, calc_song, ref_arrays
+    return results, calc_song, curves
 
 
 def build_fixed_timing_fg_replays(
@@ -106,7 +105,7 @@ def build_fixed_timing_fg_replays(
     fg_stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
     base_stats_list: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
     selected_color: str,
     total_budget: int = 0,
     timing_mode: str = "zero_ms",
@@ -153,12 +152,12 @@ def build_fixed_timing_fg_replays(
     base_score_batch = (
         score_stats_fixed_timing_exact_batch if str(timing_mode) == "zero_ms" else score_stats_exact_batch
     )
-    # Same key inputs as the solve's bundle loads (shallow calc_song copy + resolved refs).
-    bundle_key = fg_response_frontier_bundle_cache_key(dict(calc_song), resolve_exact_replay_ref_arrays(ref_arrays))
+    # Same key inputs as the solve's bundle loads (shallow calc_song copy + the curves).
+    bundle_key = fg_response_frontier_bundle_cache_key(dict(calc_song), curves)
 
     try:
         results, cs, refs = _solve_fixed_timing_response_results(
-            fg_rows, calc_song, ref_arrays, selected_color, total_budget=int(total_budget)
+            fg_rows, calc_song, curves, selected_color, total_budget=int(total_budget)
         )
         # Paired base = each loadout's NON-FG base score under the same timeline; the materializer
         # requires it (>0) as the FG row's source base score. For a gem re-solve (total_budget>0) the
@@ -185,7 +184,7 @@ def build_fixed_timing_fg_replays(
                 selected_element=str(selected_color or ""),
                 result=result,
                 calc_song=cs,
-                ref_arrays=refs,
+                curves=refs,
                 trace_cache=trace_cache,
             )
             replays.append({"surface": result.surface, "force": force})

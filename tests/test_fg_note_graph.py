@@ -1921,8 +1921,9 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     from gear_optimizer.data.database import get_evolution_db_path
     from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
     from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
-    from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
-    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs, resolve_stat_factors
+    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.settings import paths
+    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     song = "Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat]"
@@ -1966,9 +1967,8 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     }.items():
         stats[key] = int(stats.get(key, 0)) + int(val)
 
-    ref = get_exact_replay_ref_arrays_cached()
-    f = resolve_stat_factors(stats, ref)
-    real_ft = (float(si.last_note_time) * 0.15 + 0.15) * float(f.fever_time_stat)
+    fever_time_factor = load_stat_curves(paths().stats_txt).factor("Fever Time", int(stats.get("Fever Time", 0)))
+    real_ft = (float(si.last_note_time) * 0.15 + 0.15) * fever_time_factor
     acts = [int(trace[0]["activation_index"]), int(trace[1]["activation_index"])]
     act_offs = [
         float(trace[0]["activation_hit_offset_ms"]),

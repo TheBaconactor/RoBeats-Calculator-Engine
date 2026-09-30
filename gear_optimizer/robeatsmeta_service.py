@@ -242,15 +242,10 @@ def _prebuild_frontier_caches(
     Returns only the files of the charts it verified; _prebuild_frontier_caches_isolated runs it
     in a child process and adds the active publication's files for an incremental build.
     """
-    import numpy as np
-
-    from gear_optimizer.data.csv_parser import read_table
-    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+    from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
 
-    stats_path = data_root / "Gear" / "Stats.txt"
-    stats_table = read_table(str(stats_path))
-    ref_arrays = build_ref_arrays_from_stats(stats_table, dtype=np.float32)
+    curves = load_stat_curves(data_root / "Gear" / "Stats.txt")
     song_paths = (
         tuple(str(chart) for chart in changed_charts)
         if changed_charts is not None
@@ -266,7 +261,7 @@ def _prebuild_frontier_caches(
         # Queue entries are (chart path, ...) tuples. Bare path strings were silently ignored,
         # which turned every incremental song publish into a full 2272-song re-verification.
         song_queue=tuple((path,) for path in song_paths),
-        ref_arrays=ref_arrays,
+        curves=curves,
         data_root=data_root,
         build_missing=True,
         authorize_destructive_rotation=True,
@@ -298,7 +293,7 @@ def _prebuild_frontier_caches(
             files.add(cache_file.name)
         return files
 
-    timeline_plan = build_timeline_manifest_plan(song_paths, ref_arrays, persist_validated_entries=False)
+    timeline_plan = build_timeline_manifest_plan(song_paths, curves, persist_validated_entries=False)
     timeline_files = recorded_files(
         timeline_plan,
         timeline_manifest_path(),
@@ -306,7 +301,7 @@ def _prebuild_frontier_caches(
     )
     fg_plan = build_fg_manifest_plan(
         song_paths,
-        ref_arrays,
+        curves,
         stat_keys=all_response_stat_keys(),
         persist_validated_entries=False,
     )

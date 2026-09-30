@@ -1,3 +1,4 @@
+from tests.curves_support import synthetic_curves
 from tests.native_song_factory import make_native_song
 
 import pytest
@@ -57,13 +58,13 @@ def _minimal_fg_calc_song(note_count: int = 4) -> dict:
 def _minimal_fg_ref_arrays() -> dict[str, np.ndarray]:
     from gear_optimizer.rules import MAX_STAT
 
-    return {
+    return synthetic_curves({
         "Perfect Points": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
         "Fever Multiplier": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
         "Fever Time": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
         "Fever Fill Rate": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float32),
-    }
+    })
 
 
 def _fake_fg_prepared_batch(base_stats_list, selected_color: str = "Rush"):
@@ -190,71 +191,6 @@ def test_ftff_response_position_prune_matches_bruteforce_randomized():
             assert got.tolist() == expected
 
 
-def test_fixed_stats_score_matches_independent_reference():
-    """`evaluate_stats_score` (njit) matches an independent inline f32 replay.
-
-    The reference re-derives the same fever timeline via the canonical
-    `calculate_fever_timeline_indices` kernel and applies the same f32 ramp/body
-    scoring, computed here independently from the scorer under test.
-    """
-    from gear_optimizer.core.ref_lookup import resolve_stat_factors
-    from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
-    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
-
-    calc_song = {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 1,
-            "Last Note Time": 1.5,
-        },
-        "song_data": {"timestamps": np.asarray([0.0, 0.25, 0.5, 1.0, 1.5], dtype=np.float32)},
-    }
-    ref_arrays = {
-        "Perfect Points": np.linspace(1.0, 2.0, 161, dtype=np.float32),
-        "Combo Multiplier": np.linspace(1.0, 2.0, 161, dtype=np.float32),
-        "Fever Multiplier": np.linspace(1.0, 2.0, 161, dtype=np.float32),
-        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float32),
-        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float32),
-    }
-    stats = {
-        "Perfect Points": 37,
-        "Combo Multiplier": 41,
-        "Fever Multiplier": 59,
-        "Fever Time": 23,
-        "Fever Fill Rate": 29,
-        "Rush": 101,
-        "Flow": 83,
-    }
-
-    timestamps = calc_song["song_data"]["timestamps"]
-    total_notes = int(len(timestamps))
-    mask_buffer = np.zeros(total_notes, dtype=np.bool_)
-    factors = resolve_stat_factors(stats, ref_arrays)
-    fever_mask_head, count_body_fever, count_body_normal, _, _ = calculate_fever_timeline_indices(
-        timestamps,
-        total_notes,
-        float(factors.fever_fill_rate),
-        float(factors.fever_time_stat),
-        int(calc_song["metadata"]["Long Notes"]),
-        float(calc_song["metadata"]["Last Note Time"]),
-        mask_buffer,
-    )
-    total_base = (stats["Rush"] * 2) + stats["Flow"] + float(factors.pp_factor)
-    base_f = np.float32(total_base)
-    combo_f = np.float32(float(factors.combo_mul))
-    fever_f = np.float32(float(factors.fever_mul))
-    combo_val = int(base_f * combo_f)
-    fever_val = int(base_f * combo_f * fever_f)
-    reference = (int(count_body_fever) * fever_val) + (int(count_body_normal) * combo_val)
-    factor = (combo_f - np.float32(1.0)) * base_f / np.float32(100.0)
-    for idx, in_fever in enumerate(fever_mask_head):
-        ramp = base_f + (np.float32(idx + 1) * factor)
-        reference += int(ramp * fever_f) if bool(in_fever) else int(ramp)
-
-    assert evaluate_stats_score(stats, calc_song, ref_arrays) == int(reference)
-
-
 def test_fg_response_scoring_failure_raises_directly(monkeypatch):
     from gear_optimizer.helpers.song_helpers import force_greats
 
@@ -286,7 +222,7 @@ def test_fg_response_scoring_failure_raises_directly(monkeypatch):
         force_greats.run_force_greats_response_frontier_for_ga_candidates(
             ga_candidates=ga_candidates,
             calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
-            ref_arrays={},
+            curves={},
             meta_primary_color="Rush",
         )
 
@@ -332,7 +268,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
         registry=None,
         fixed_stats={},
         cfg_data={},
-        ref_arrays={},
+        curves={},
         song_slot=1,
     )
     song.runtime.fg.fg_response_scoring_bundle = seen_bundle
@@ -381,7 +317,7 @@ def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatc
         registry=None,
         fixed_stats={},
         cfg_data={},
-        ref_arrays={},
+        curves={},
         song_slot=1,
     )
 
@@ -433,7 +369,7 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
         registry=None,
         fixed_stats={},
         cfg_data={"selected_color": "Rush"},
-        ref_arrays={},
+        curves={},
         song_slot=1,
     )
 
@@ -491,7 +427,7 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
         registry=None,
         fixed_stats={},
         cfg_data={"selected_color": "Rush"},
-        ref_arrays={},
+        curves={},
         song_slot=1,
     )
 
@@ -527,7 +463,7 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
         registry=None,
         fixed_stats={},
         cfg_data={},
-        ref_arrays={},
+        curves={},
     )
 
     with pytest.raises(RuntimeError, match="did not materialize the exact response frontier plan"):
@@ -545,16 +481,16 @@ def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundl
     canonical_keys = ((0, 0), (1, 1))
     bundle = SimpleNamespace(cache_key=("bundle-key",))
 
-    def _fake_load_bundle(_calc_song, _ref_arrays, *, stat_keys):
+    def _fake_load_bundle(_calc_song, _curves, *, stat_keys):
         seen["stat_keys"] = tuple(stat_keys)
         return bundle
 
     monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _fake_load_bundle)
     monkeypatch.setattr(response_cache, "all_response_stat_keys", lambda: canonical_keys)
 
-    def _fake_session_prune(loaded_bundle, ref_arrays):
+    def _fake_session_prune(loaded_bundle, curves):
         assert loaded_bundle is bundle
-        assert ref_arrays
+        assert curves
         seen["session_prune"] = 1
         return loaded_bundle
 
@@ -569,7 +505,7 @@ def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundl
         minis_by_name={},
         effective_difficulty="Hard",
         registry=None,
-        ref_arrays={"Fever Time": object(), "Fever Fill Rate": object()},
+        curves=synthetic_curves({}),
     )
 
     stages.prepare_fg_static_sync(song)
@@ -588,7 +524,7 @@ def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
     def _fake_response_frontier(
         ga_candidates,
         calc_song,
-        ref_arrays,
+        curves,
         meta_primary_color,
         *,
         ga_registry=None,
@@ -597,7 +533,7 @@ def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
     ):
         _ = (
             calc_song,
-            ref_arrays,
+            curves,
             meta_primary_color,
             scoring_bundle,
             gpu_client,
@@ -632,7 +568,7 @@ def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
     out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
         ga_candidates=ga_candidates,
         calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
-        ref_arrays={},
+        curves={},
         meta_primary_color="Rush",
         ga_registry=registry,
     )
@@ -720,7 +656,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
         selected_element="Rush",
         result=result,
         calc_song=calc_song,
-        ref_arrays={},
+        curves={},
         reconstruction_frontier=full_frontier,
         trace_cache=trace_cache,
     )
@@ -731,7 +667,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
         selected_element="Rush",
         result=result,
         calc_song=calc_song,
-        ref_arrays={},
+        curves={},
         reconstruction_frontier=full_frontier,
         trace_cache=trace_cache,
     )
@@ -757,7 +693,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
             selected_element="Rush",
             result=result,
             calc_song=dict(calc_song),
-            ref_arrays={},
+            curves={},
             reconstruction_frontier=full_frontier,
             trace_cache=trace_cache,
         )
@@ -777,7 +713,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
             selected_element="Rush",
             result=result,
             calc_song=missing_lanes_song,
-            ref_arrays={},
+            curves={},
             reconstruction_frontier=full_frontier,
             trace_cache=missing_lanes_cache,
         )
@@ -853,7 +789,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
             "metadata": {},
             "song_data": {"timestamps": [1.0], "lanes": [0], "note_types": [1]},
         },
-        ref_arrays={},
+        curves={},
     )
 
     assert payload["BaseScore"] == 1000
@@ -960,7 +896,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         selected_element="Rush",
         result=result,
         calc_song=calc_song,
-        ref_arrays={},
+        curves={},
     )
 
     assert payload["BaseScore"] == 4000
@@ -1054,7 +990,7 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
     monkeypatch.setattr(
         reducer_mod,
         "score_force_greats_response_surface_exact",
-        lambda stats, calc_song, ref_arrays, surface: 100,
+        lambda stats, calc_song, curves, surface: 100,
     )
 
     candidates = [
@@ -1080,7 +1016,7 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
     out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
         candidates,
         calc_song=_minimal_fg_calc_song(),
-        ref_arrays=_minimal_fg_ref_arrays(),
+        curves=_minimal_fg_ref_arrays(),
         meta_primary_color="Rush",
     )
 
@@ -1331,8 +1267,8 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
             real_fever_time=1.0,
         )
 
-    def _fake_prepare_batch(*, base_stats_list, calc_song, ref_arrays, selected_color, **_kwargs):
-        calls.append((list(base_stats_list), selected_color, calc_song, ref_arrays))
+    def _fake_prepare_batch(*, base_stats_list, calc_song, curves, selected_color, **_kwargs):
+        calls.append((list(base_stats_list), selected_color, calc_song, curves))
         return _fake_fg_prepared_batch(base_stats_list, str(selected_color or ""))
 
     def _fake_score_batch(batch, **_kwargs):
@@ -1451,7 +1387,7 @@ def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(tmp_pa
     drop_stats = {"Perfect Points": 1}
     plan = SimpleNamespace(
         calc_song=_minimal_fg_calc_song(),
-        ref_arrays=_minimal_fg_ref_arrays(),
+        curves=_minimal_fg_ref_arrays(),
         pending_jobs=((keep, {}, "Rush", keep_stats, 100, "keep"), (drop, {}, "Rush", drop_stats, 160, "drop")),
         prepared_batches=(
             SimpleNamespace(
@@ -1469,7 +1405,7 @@ def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(tmp_pa
     monkeypatch.setattr(
         reducer_mod,
         "score_force_greats_response_surface_exact",
-        lambda stats, calc_song, ref_arrays, surface: 150,
+        lambda stats, calc_song, curves, surface: 150,
     )
 
     out = FgResultReducer.materialize(plan, [results])
@@ -1495,8 +1431,8 @@ def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
 
     calls: list[int] = []
 
-    def _fake_prepare_batch(*, base_stats_list, calc_song, ref_arrays, selected_color, **_kwargs):
-        _ = (calc_song, ref_arrays, selected_color)
+    def _fake_prepare_batch(*, base_stats_list, calc_song, curves, selected_color, **_kwargs):
+        _ = (calc_song, curves, selected_color)
         calls.append(len(base_stats_list))
         return _fake_fg_prepared_batch(base_stats_list, str(selected_color or ""))
 

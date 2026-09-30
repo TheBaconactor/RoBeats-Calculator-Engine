@@ -1,3 +1,4 @@
+from tests.curves_support import synthetic_curves
 import numpy as np
 import pytest
 
@@ -5,7 +6,7 @@ import pytest
 pytestmark = pytest.mark.gpu
 
 
-def _cpu_frontier_payload(calc_song: dict, ref_arrays: dict):
+def _cpu_frontier_payload(calc_song: dict, curves: dict):
     from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
 
     ts = np.asarray(calc_song["song_data"]["chart_timestamps"], dtype=np.float32).reshape(-1)
@@ -24,8 +25,8 @@ def _cpu_frontier_payload(calc_song: dict, ref_arrays: dict):
             calc_song["song_data"]["fg_perfect_floor_timestamps"], dtype=np.float32
         ),
         lanes=np.asarray(calc_song["song_data"]["lanes"], dtype=np.int32),
-        ref_ft=np.asarray(ref_arrays["Fever Time"], dtype=np.float32),
-        ref_ff=np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32),
+        ref_ft=np.asarray(curves["Fever Time"], dtype=np.float32),
+        ref_ff=np.asarray(curves["Fever Fill Rate"], dtype=np.float32),
     )
 
 
@@ -74,19 +75,19 @@ def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
     apply_timing_envelope(calc_song, mode="perfect_window")
 
     rows = int(MAX_STAT) + 1
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float32),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float32),
         "Fever Fill Rate": np.linspace(0.2, 2.2, rows, dtype=np.float32),
         "Fever Time": np.linspace(0.8, 2.6, rows, dtype=np.float32),
-    }
+    })
 
     cells = [(10, 10), (80, 80), (160, 40), (120, 30)]
 
-    _prebuilt = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0, prebuilt_frontier=_prebuilt)
-    cpu_payload = _cpu_frontier_payload(calc_song, ref_arrays)
+    _prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
+    precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=_prebuilt)
+    cpu_payload = _cpu_frontier_payload(calc_song, curves)
 
     head_len_grid = np.asarray(gpu_fields.grid_head_len.to_numpy()[0], dtype=np.int32)
     bits_grid = np.asarray(gpu_fields.grid_fever_masks_bits.to_numpy()[0], dtype=np.uint32)
@@ -170,18 +171,18 @@ def test_gpu_timeline_frontier_repeated_upload_matches_baseline() -> None:
     apply_timing_envelope(calc_song, mode="perfect_window")
 
     rows = int(MAX_STAT) + 1
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float32),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float32),
         # Force a degenerate FT/FF surface so repeated precompute hits the same frontier shape.
         "Fever Fill Rate": np.full((rows,), 1.0, dtype=np.float32),
         "Fever Time": np.full((rows,), 1.0, dtype=np.float32),
-    }
+    })
 
-    _prebuilt = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0, prebuilt_frontier=_prebuilt)
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=1, prebuilt_frontier=_prebuilt)
+    _prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
+    precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=_prebuilt)
+    precompute_timeline_gpu(calc_song, curves, song_slot=1, prebuilt_frontier=_prebuilt)
 
     def _eq(field) -> bool:
         arr = field.to_numpy()

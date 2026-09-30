@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from tests.native_song_factory import make_native_song
+from tests.curves_support import synthetic_curves
 
 
 def _calc_song():
@@ -34,15 +35,15 @@ def _calc_song():
     }
 
 
-def _ref_arrays():
+def _curves():
     base = np.linspace(1.0, 2.0, 161, dtype=np.float32)
-    return {
+    return synthetic_curves({
         "Perfect Points": base,
         "Combo Multiplier": base + np.float32(0.1),
         "Fever Multiplier": base + np.float32(0.2),
         "Fever Time": base + np.float32(0.3),
         "Fever Fill Rate": base + np.float32(0.4),
-    }
+    })
 
 
 def _prepared_batch(base_components, rows):
@@ -53,7 +54,7 @@ def _prepared_batch(base_components, rows):
         base_components=np.asarray(base_components, dtype=np.int32),
         selected_color="Rush",
         calc_song=_calc_song(),
-        ref_arrays=_ref_arrays(),
+        curves=_curves(),
         scoring_bundle=object(),
         started=0.0,
     )
@@ -66,7 +67,7 @@ def _prepared_plan(base_components, base_stats=None):
     eval_data = {"BaseStats": dict(stats), "Selected Element": "Rush"}
     return SimpleNamespace(
         calc_song=_calc_song(),
-        ref_arrays=_ref_arrays(),
+        curves=_curves(),
         pending_jobs=((entry, eval_data, "Rush", stats, 100, planner_key),),
         prepared_batches=[
             SimpleNamespace(
@@ -103,7 +104,7 @@ def _make_fg_song(plan, owner_score_map, **overrides):
         registry=None,
         fixed_stats={},
         cfg_data={"selected_color": "Rush"},
-        ref_arrays={"Perfect Points": []},
+        curves={"Perfect Points": []},
         calc_song={"metadata": {}, "song_data": {}},
         prev_record=None,
         db_best_fg_score=0,
@@ -217,7 +218,7 @@ def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
         registry=None,
         fixed_stats={},
         cfg_data={"selected_color": "Rush"},
-        ref_arrays={"Perfect Points": []},
+        curves={"Perfect Points": []},
         calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
         prev_record=None,
         db_best_fg_score=0,

@@ -103,10 +103,10 @@ def prebuild_timeline_frontier():
     raise MissingFrontierCacheError.
     """
 
-    def _run(calc_song: dict, ref_arrays: dict) -> None:
+    def _run(calc_song: dict, curves: dict) -> None:
         from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
-        build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+        build_or_load_timeline_frontier_payload(calc_song, curves)
 
     return _run
 

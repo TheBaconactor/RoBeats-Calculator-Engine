@@ -5,6 +5,7 @@ This test verifies that the GPU executor IPC mechanism works correctly
 when multiple workers submit GPU requests.
 """
 
+from tests.curves_support import synthetic_curves
 import pytest
 import time
 
@@ -72,16 +73,16 @@ def test_gpu_executor_ipc_request():
         worker_id, req_q, resp_q = executor.register_worker()
 
         # For this test, we need to ensure refs are loaded first
-        from gear_optimizer.solver.taichi_gem.api import load_ref_arrays
+        from gear_optimizer.solver.taichi_gem.api import load_curves
 
         # Create minimal ref arrays for test
-        ref_arrays = {
+        curves = synthetic_curves({
             "Perfect Points": np.linspace(0, 100, 161, dtype=np.float64),
             "Combo Multiplier": np.linspace(1, 2, 161, dtype=np.float64),
             "Fever Multiplier": np.linspace(1, 2, 161, dtype=np.float64),
             "Fever Fill Rate": np.linspace(0.5, 1.5, 161, dtype=np.float64),
             "Fever Time": np.linspace(0.5, 1.5, 161, dtype=np.float64),
-        }
+        })
 
         # Submit a minimal solve request
         # Note: This requires a real timeline grid, so we skip actual execution
@@ -107,20 +108,20 @@ def test_gpu_executor_dispatcher_routes_known_request(monkeypatch):
         seen.append((req.request_type, req.request_id))
         return GpuResponse(request_id=int(req.request_id), success=True, result="ok")
 
-    monkeypatch.setitem(executor._dispatch, GpuRequestType.LOAD_REF_ARRAYS, _fake_handler)
+    monkeypatch.setitem(executor._dispatch, GpuRequestType.LOAD_CURVES, _fake_handler)
 
     response = executor._execute_request(
         GpuRequest(
-            request_type=GpuRequestType.LOAD_REF_ARRAYS,
+            request_type=GpuRequestType.LOAD_CURVES,
             request_id=77,
             worker_id=0,
-            payload={"ref_arrays": {}},
+            payload={"curves": {}},
         )
     )
 
     assert response.success is True
     assert response.result == "ok"
-    assert seen == [(GpuRequestType.LOAD_REF_ARRAYS, 77)]
+    assert seen == [(GpuRequestType.LOAD_CURVES, 77)]
 
 
 if __name__ == "__main__":

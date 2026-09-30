@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
@@ -111,7 +112,7 @@ def materialize_force_payload_from_response_frontier(
     selected_element: str,
     result: FgResponseFrontierSolveResult,
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     reconstruction_frontier=None,
     trace_cache: FgTraceMaterializationCache | None = None,
     song_inputs: Any | None = None,
@@ -207,7 +208,7 @@ def materialize_force_payload_from_response_frontier(
     paired_base = safe_int(paired_base_score, 0)
     if paired_base <= 0:
         raise ValueError("ForceGreats response frontier is missing paired source base score.")
-    final_score_obj = score_force_greats_response_surface_exact(result.stats, calc_song, ref_arrays, result.surface)
+    final_score_obj = score_force_greats_response_surface_exact(result.stats, calc_song, curves, result.surface)
     if final_score_obj is None:
         raise ValueError("ForceGreats response frontier exact surface replay failed")
     final_score = int(final_score_obj)
@@ -277,7 +278,7 @@ class FgResultReducer:
         skyline: bool = False,
     ) -> list[dict[str, Any]]:
         calc_song = plan.calc_song
-        ref_arrays = plan.ref_arrays
+        curves = plan.curves
         variants: list[dict[str, Any]] = []
         result_cache = FgResultReducer._result_cache(plan, prepared_results)
 
@@ -331,7 +332,7 @@ class FgResultReducer:
                 if paired_base_early <= 0:
                     raise ValueError("ForceGreats response frontier is missing paired source base score.")
                 early_score_obj = score_force_greats_response_surface_exact(
-                    result.stats, calc_song, ref_arrays, result.surface
+                    result.stats, calc_song, curves, result.surface
                 )
                 if early_score_obj is None:
                     raise ValueError("ForceGreats response frontier exact surface replay failed")
@@ -346,7 +347,7 @@ class FgResultReducer:
                 selected_element=item["selected"],
                 result=result,
                 calc_song=calc_song,
-                ref_arrays=ref_arrays,
+                curves=curves,
                 trace_cache=trace_cache,
                 song_inputs=song_inputs,
             )

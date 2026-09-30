@@ -7,6 +7,7 @@ import logging
 
 from ...core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from ...core.utils import safe_int
+from ...gamedata import StatCurves
 from .fg_payload import has_valid_fg_payload
 from .item_utils import names_list
 from .persistence_entry_merge import merge_persist_entry, resolve_loadout_hash
@@ -33,7 +34,7 @@ def stable_loadout_key(entry_obj: Mapping[str, Any]) -> tuple[tuple[str, ...], t
 @dataclass(frozen=True)
 class ReplayContext:
     calc_song: dict
-    ref_arrays: dict
+    curves: StatCurves
 
 
 def _details_have_stats(details_obj: Any) -> bool:
@@ -207,7 +208,7 @@ def _replay_batch(entries: list[dict[str, Any]], *, replay_ctx: ReplayContext) -
     batch = build_team_buff_tier_db_batches(
         entries=entries,
         calc_song=replay_ctx.calc_song,
-        ref_arrays=dict(replay_ctx.ref_arrays),
+        curves=replay_ctx.curves,
         limit=max(1, int(len(entries))),
         tiers=(OPTIMIZER_BASELINE_TEAM_BUFF,),
         timing_mode=timing_mode,
@@ -320,8 +321,8 @@ def canonicalize_and_assemble(
     """
     if not (isinstance(replay_ctx.calc_song, dict) and replay_ctx.calc_song):
         raise ValueError("ReplayContext.calc_song is required for authoritative persistence canonicalization.")
-    if not (isinstance(replay_ctx.ref_arrays, dict) and replay_ctx.ref_arrays):
-        raise ValueError("ReplayContext.ref_arrays is required for authoritative persistence canonicalization.")
+    if not isinstance(replay_ctx.curves, StatCurves):
+        raise ValueError("ReplayContext.curves is required for authoritative persistence canonicalization.")
 
     raw_entries = _collect_raw_entries(
         db_payload=db_payload if isinstance(db_payload, dict) else {},
@@ -334,7 +335,7 @@ def canonicalize_and_assemble(
     authoritative_entries = canonicalize_authoritative_fg_entries(
         canonical_entries,
         calc_song=replay_ctx.calc_song,
-        ref_arrays=replay_ctx.ref_arrays,
+        curves=replay_ctx.curves,
     )
     return _dedupe_entries(authoritative_entries)
 
@@ -346,12 +347,12 @@ def build_persistence_entries(
     build_details_fn,
     *,
     calc_song: dict | None = None,
-    ref_arrays: dict | None = None,
+    curves: StatCurves | None = None,
 ):
-    if not (isinstance(calc_song, dict) and calc_song and isinstance(ref_arrays, dict) and ref_arrays):
-        raise ValueError("build_persistence_entries requires calc_song and ref_arrays for authoritative replay.")
+    if not (isinstance(calc_song, dict) and calc_song and isinstance(curves, StatCurves)):
+        raise ValueError("build_persistence_entries requires calc_song and curves for authoritative replay.")
 
-    replay_ctx = ReplayContext(calc_song=calc_song, ref_arrays=ref_arrays)
+    replay_ctx = ReplayContext(calc_song=calc_song, curves=curves)
     return canonicalize_and_assemble(
         db_payload=db_payload if isinstance(db_payload, dict) else {},
         ga_candidates=ga_candidates,

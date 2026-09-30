@@ -94,7 +94,7 @@ def test_task_tuple_to_shared_context_preserves_shared_runtime_fields():
     ctx = task_tuple_to_shared_context(_legacy_task())
 
     assert ctx.multi_start == 4
-    assert ctx.ref_arrays == ("ref",)
+    assert ctx.curves == ("ref",)
     assert ctx.all_gears == ("gear",)
     assert ctx.all_minis == ("mini",)
     assert ctx.ga_depth == 125

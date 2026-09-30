@@ -1,3 +1,4 @@
+from tests.curves_support import synthetic_curves
 import numpy as np
 
 
@@ -21,14 +22,21 @@ def _mock_song(*, name: str, n_notes: int = 96, duration: float = 120.0) -> dict
     }
 
 
-def _ref_arrays(rows: int, *, dtype) -> dict:
-    return {
+def _curves(rows: int, *, dtype):
+    return synthetic_curves({
         "Perfect Points": np.linspace(1.0, 2.0, rows, dtype=dtype),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=dtype),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=dtype),
         "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=dtype),
         "Fever Time": np.linspace(1.0, 2.5, rows, dtype=dtype),
-    }
+    })
+
+
+def _float32_rounded(curves):
+    """The same curves after a round trip through float32 (their f64 is the widened f32)."""
+    from gear_optimizer.gamedata import StatCurves
+
+    return StatCurves.from_mapping(curves.f32)
 
 
 def _boundary_drift_stats() -> dict[str, int]:
@@ -46,41 +54,36 @@ def _boundary_drift_stats() -> dict[str, int]:
     }
 
 
-def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+def _prebuild_timeline_frontier(calc_song: dict, curves) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     apply_timing_envelope(calc_song, mode="perfect_window")
-    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    build_or_load_timeline_frontier_payload(calc_song, curves)
 
 
-def _prebuild_team_buff_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+def _prebuild_team_buff_timeline_frontier(calc_song: dict, curves) -> None:
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     apply_timing_envelope(calc_song)
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _prebuild_timeline_frontier(calc_song, curves)
 
 
-def test_score_stats_exact_uses_exact_replay_ref_arrays_for_float32_callers(monkeypatch):
+def test_score_stats_exact_scores_with_the_float64_curves():
+    """Exact scores read curves.f64: rounding the curves to float32 changes this boundary score."""
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers import ref_array_builder as rab
     from gear_optimizer.solver.scoring import exact_rescore as er
 
-    authoritative = _ref_arrays(MAX_STAT + 1, dtype=np.float64)
-    caller_refs = _ref_arrays(MAX_STAT + 1, dtype=np.float32)
+    exact_curves = _curves(MAX_STAT + 1, dtype=np.float64)
+    rounded_curves = _float32_rounded(exact_curves)
     stats = _boundary_drift_stats()
-    calc_song = _mock_song(name="pytest_exact_rescore_ref_authority")
+    calc_song = _mock_song(name="pytest_exact_rescore_float64_curves")
 
-    monkeypatch.setattr(er, "resolve_exact_replay_ref_arrays", lambda refs: refs)
-    _prebuild_timeline_frontier(calc_song, caller_refs)
-    raw_float32 = int(er.score_stats_exact(stats, calc_song, caller_refs))
-    _prebuild_timeline_frontier(calc_song, authoritative)
-    expected = int(er.score_stats_exact(stats, calc_song, authoritative))
-    assert raw_float32 != expected
-
-    monkeypatch.setattr(rab, "get_exact_replay_ref_arrays_cached", lambda: authoritative)
-    monkeypatch.setattr(er, "resolve_exact_replay_ref_arrays", rab.resolve_exact_replay_ref_arrays)
-    assert int(er.score_stats_exact(stats, calc_song, caller_refs)) == expected
+    _prebuild_timeline_frontier(calc_song, exact_curves)
+    exact = int(er.score_stats_exact(stats, calc_song, exact_curves))
+    _prebuild_timeline_frontier(calc_song, rounded_curves)
+    rounded = int(er.score_stats_exact(stats, calc_song, rounded_curves))
+    assert exact != rounded
 
 
 def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
@@ -108,13 +111,13 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
             "lanes": np.arange(int(timestamps.shape[0]), dtype=np.int32) % np.int32(4),
         },
     }
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.ones(MAX_STAT + 1, dtype=np.float64),
         "Combo Multiplier": np.ones(MAX_STAT + 1, dtype=np.float64) * 2.0,
         "Fever Multiplier": np.ones(MAX_STAT + 1, dtype=np.float64) * 4.0,
         "Fever Fill Rate": np.ones(MAX_STAT + 1, dtype=np.float64),
         "Fever Time": np.ones(MAX_STAT + 1, dtype=np.float64),
-    }
+    })
     stats = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -125,15 +128,15 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
         "Flow": 50,
     }
 
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _prebuild_timeline_frontier(calc_song, curves)
     # The fixed chart-time replay (deterministic chart timeline) scores strictly below the
     # legal Perfect-window timing frontier. stats -> base_value 251.0 (Rush 100*2 + Flow 50 +
     # PP factor 1.0), combo 2.0, fever 4.0, FT/FF idx 0 -- exactly the fixed-chart inputs.
-    fixed_chart = score_stats_fixed_timing_exact(stats, calc_song, ref_arrays)
+    fixed_chart = score_stats_fixed_timing_exact(stats, calc_song, curves)
     assert int(fixed_chart) == 79312
     # The legal Perfect-window timing frontier scores strictly higher than the fixed chart replay.
-    assert int(fixed_chart) < int(score_stats_exact(stats, calc_song, ref_arrays)) == 80080
-    replay = score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays)
+    assert int(fixed_chart) < int(score_stats_exact(stats, calc_song, curves)) == 80080
+    replay = score_stats_exact_with_timeline_trace(stats, calc_song, curves)
     assert int(replay["score"]) == 80080
     trace = replay["TimelineFrontier"]["frontier_trace"]
     assert trace
@@ -141,15 +144,12 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
     assert any(float(row["activation_hit_offset_ms"]) != 0.0 for row in trace)
 
 
-def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(monkeypatch):
+def test_team_buff_tier_replay_scores_with_the_float64_curves(monkeypatch):
+    """The tier replay's exact base scores read curves.f64 too (same boundary case as above)."""
     from gear_optimizer.rules import MAX_STAT
-    from gear_optimizer.helpers.song_helpers import ref_array_builder as rab
     from gear_optimizer.helpers.song_helpers import team_buff_tiers as tbt
-    from gear_optimizer.solver.scoring import exact_rescore as er
     from tests.test_team_buff_tier_postprocess import _install_synthetic_tier_resolve
 
-    authoritative = _ref_arrays(MAX_STAT + 1, dtype=np.float64)
-    caller_refs = _ref_arrays(MAX_STAT + 1, dtype=np.float32)
     stats = _boundary_drift_stats()
     entry = {
         "score": 1,
@@ -160,45 +160,17 @@ def test_team_buff_tier_replay_uses_exact_replay_ref_arrays_for_float32_callers(
         "force": None,
     }
 
-    # The per-tier base re-solve now requires 6 gear + 3 mini stat-dicts and a GPU gem search;
-    # the synthetic resolve replaces that GPU search with a deterministic CPU-exact witness whose
-    # FINAL scoring step is score_stats_exact_batch -- the exact function under test. It honors the
-    # resolved ref_arrays, so the f32-vs-f64 ref-array authority this test pins flows through it.
-    monkeypatch.setattr(tbt, "resolve_exact_replay_ref_arrays", lambda refs: refs)
-    monkeypatch.setattr(er, "resolve_exact_replay_ref_arrays", lambda refs: refs)
-    raw_song = _mock_song(name="pytest_team_buff_float32_raw")
-    _prebuild_team_buff_timeline_frontier(raw_song, caller_refs)
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=raw_song, ref_arrays=caller_refs)
-    raw = tbt.compute_team_buff_tier_leaderboards(
-        entries=[entry],
-        calc_song=raw_song,
-        ref_arrays=caller_refs,
-        tiers=("NONE",),
-    )
-    raw_score = int(raw["tiers"]["NONE"]["base_top51"][0]["score"])
+    def tier_score(curves, song_name: str) -> int:
+        # The per-tier base re-solve needs 6 gear + 3 mini stat-dicts and a GPU gem search; the
+        # synthetic resolve replaces it with a CPU-exact witness whose final step is
+        # score_stats_exact_batch, the function whose precision this test pins.
+        song = _mock_song(name=song_name)
+        _prebuild_team_buff_timeline_frontier(song, curves)
+        _install_synthetic_tier_resolve(monkeypatch, calc_song=song, curves=curves)
+        result = tbt.compute_team_buff_tier_leaderboards(entries=[entry], calc_song=song, curves=curves, tiers=("NONE",))
+        return int(result["tiers"]["NONE"]["base_top51"][0]["score"])
 
-    expected_song = _mock_song(name="pytest_team_buff_float64_expected")
-    _prebuild_team_buff_timeline_frontier(expected_song, authoritative)
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=expected_song, ref_arrays=authoritative)
-    expected = tbt.compute_team_buff_tier_leaderboards(
-        entries=[entry],
-        calc_song=expected_song,
-        ref_arrays=authoritative,
-        tiers=("NONE",),
+    exact_curves = _curves(MAX_STAT + 1, dtype=np.float64)
+    assert tier_score(exact_curves, "pytest_team_buff_float64") != tier_score(
+        _float32_rounded(exact_curves), "pytest_team_buff_float32_rounded"
     )
-    expected_score = int(expected["tiers"]["NONE"]["base_top51"][0]["score"])
-    assert raw_score != expected_score
-
-    monkeypatch.setattr(rab, "get_exact_replay_ref_arrays_cached", lambda: authoritative)
-    monkeypatch.setattr(tbt, "resolve_exact_replay_ref_arrays", rab.resolve_exact_replay_ref_arrays)
-    monkeypatch.setattr(er, "resolve_exact_replay_ref_arrays", rab.resolve_exact_replay_ref_arrays)
-    resolved_song = _mock_song(name="pytest_team_buff_float32_resolved")
-    _prebuild_team_buff_timeline_frontier(resolved_song, authoritative)
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=resolved_song, ref_arrays=authoritative)
-    resolved = tbt.compute_team_buff_tier_leaderboards(
-        entries=[entry],
-        calc_song=resolved_song,
-        ref_arrays=caller_refs,
-        tiers=("NONE",),
-    )
-    assert int(resolved["tiers"]["NONE"]["base_top51"][0]["score"]) == expected_score

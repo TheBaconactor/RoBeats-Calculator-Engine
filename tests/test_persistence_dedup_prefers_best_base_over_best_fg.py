@@ -225,7 +225,7 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
     )
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.persistence_canon.canonicalize_authoritative_fg_entries",
-        lambda entries, *, calc_song, ref_arrays: list(entries),
+        lambda entries, *, calc_song, curves: list(entries),
     )
 
     out = build_persistence_entries(
@@ -234,7 +234,7 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
         loadout_entries=loadout_entries,
         build_details_fn=lambda data: dict(data or {}),
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},
-        ref_arrays={"Perfect Points": [0]},
+        curves={"Perfect Points": [0]},
     )
 
     entry = next(e for e in out if e.get("gear") == gear and e.get("minis") == minis)
@@ -313,7 +313,7 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
     )
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.persistence_canon.canonicalize_authoritative_fg_entries",
-        lambda entries, *, calc_song, ref_arrays: list(entries),
+        lambda entries, *, calc_song, curves: list(entries),
     )
 
     out = build_persistence_entries(
@@ -322,7 +322,7 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
         loadout_entries=loadout_entries,
         build_details_fn=lambda data: dict(data or {}),
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},
-        ref_arrays={"Perfect Points": [0]},
+        curves={"Perfect Points": [0]},
     )
 
     entry = next(e for e in out if e.get("gear") == gear and e.get("minis") == minis)

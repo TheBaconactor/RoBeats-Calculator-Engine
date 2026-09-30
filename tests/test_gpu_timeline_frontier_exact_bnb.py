@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 import numpy as np
 import pytest
 
@@ -14,16 +15,16 @@ def test_exact_inner_bnb_scores_all_timeline_frontier_variants() -> None:
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.kernels.kernels_scoring import optimize_core_device_exact_bound
 
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.full((161,), 10_000.0, dtype=np.float32),
         "Combo Multiplier": np.full((161,), 2.0, dtype=np.float32),
         "Fever Multiplier": np.full((161,), 5.0, dtype=np.float32),
         "Fever Fill Rate": np.ones((161,), dtype=np.float32),
         "Fever Time": np.ones((161,), dtype=np.float32),
-    }
+    })
 
     with _GPU_LOCK:
-        ensure_ready(ref_arrays)
+        ensure_ready(curves)
         out = ti.field(dtype=ti.i32, shape=())
 
         @ti.kernel

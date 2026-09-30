@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import taichi as ti
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import (
     ELEMENT_GEM_GAIN,
     MAX_STAT,
@@ -16,7 +17,6 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_NORMAL,
 )
 from gear_optimizer.core.jit_setup import jit
-from gear_optimizer.helpers.song_helpers.ref_array_builder import resolve_exact_replay_ref_arrays
 from gear_optimizer.solver.taichi_gem import api as gem_api
 
 from .response_inner_kernels import (
@@ -53,13 +53,6 @@ _U16_HEAD_POS_SUM = np.ascontiguousarray(
 del _U16_HEAD_BITS
 _SURFACE_HEAD_COEFF_CACHE: OrderedDict[tuple[int, int, tuple[int, ...], tuple[int, ...]], np.ndarray] = OrderedDict()
 _SURFACE_HEAD_COEFF_CACHE_LOCK = threading.RLock()
-_EXACT_REPLAY_REF_NAMES = (
-    "Perfect Points",
-    "Combo Multiplier",
-    "Fever Multiplier",
-    "Fever Fill Rate",
-    "Fever Time",
-)
 
 
 def _color_flags(primary_color: str, secondary_color: str, selected_color: str) -> tuple[int, ...]:
@@ -87,12 +80,6 @@ def _validate_surface(surface: FgResponseSurface, *, body_total: int) -> None:
         raise ValueError("FG response surface body Fever-Great count exceeds its parent counts")
     if int(surface.body_fever) + int(surface.body_great) - int(surface.body_fever_great) > int(body_total):
         raise ValueError("FG response surface body categories exceed song body note count")
-
-
-def _response_inner_score_ref_arrays(ref_arrays: dict[str, Any]) -> dict[str, Any]:
-    if not all(name in ref_arrays for name in _EXACT_REPLAY_REF_NAMES):
-        return ref_arrays
-    return resolve_exact_replay_ref_arrays(ref_arrays)
 
 
 @jit(nopython=True, cache=True)
@@ -271,7 +258,7 @@ def optimize_response_frontier_inner_exact_gpu(
     primary_color: str,
     secondary_color: str,
     selected_color: str,
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
 ) -> FgResponseInnerResult:
     result, _rows = _optimize_response_surfaces_gpu(
         [(int(residual_budget), stats_after_ftff, tuple(surfaces or ()))],
@@ -279,7 +266,7 @@ def optimize_response_frontier_inner_exact_gpu(
         primary_color=str(primary_color or ""),
         secondary_color=str(secondary_color or ""),
         selected_color=str(selected_color or ""),
-        ref_arrays=ref_arrays,
+        curves=curves,
     )
     if not result:
         raise ValueError("response frontier GPU inner solve requires at least one surface")
@@ -400,7 +387,7 @@ def _score_response_group_meta_gpu(
     primary_color: str,
     secondary_color: str,
     selected_color: str,
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     surface_pattern_ids: np.ndarray,
     surface_pattern_words: np.ndarray,
     surface_counts: np.ndarray,
@@ -415,10 +402,9 @@ def _score_response_group_meta_gpu(
 
     gem_api.ensure_ready()
     flags = np.ascontiguousarray(np.asarray(_color_flags(primary_color, secondary_color, selected_color), dtype=np.int32))
-    exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
-    ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=SOLVER_NP_FP))
-    ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=SOLVER_NP_FP))
-    ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=SOLVER_NP_FP))
+    ref_pp = np.ascontiguousarray(np.asarray(curves.f64["Perfect Points"], dtype=SOLVER_NP_FP))
+    ref_cm = np.ascontiguousarray(np.asarray(curves.f64["Combo Multiplier"], dtype=SOLVER_NP_FP))
+    ref_fm = np.ascontiguousarray(np.asarray(curves.f64["Fever Multiplier"], dtype=SOLVER_NP_FP))
     pp_prefix_bounds, pp_bound_rows = build_pp_prefix_bounds(group_meta[:, 1], ref_pp, flags)
     surface_pattern_ids_all = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
     surface_pattern_words_all = np.ascontiguousarray(surface_pattern_words, dtype=np.uint32)
@@ -642,7 +628,7 @@ def _optimize_response_surfaces_gpu(
     primary_color: str,
     secondary_color: str,
     selected_color: str,
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
 ) -> tuple[list[tuple[int, int, int, int, int, int, int, int, int, int, int]], int]:
     head_len = min(int(total_notes), 100)
     body_total = max(0, int(total_notes) - 100)
@@ -729,10 +715,9 @@ def _optimize_response_surfaces_gpu(
     flags_tuple = _color_flags(primary_color, secondary_color, selected_color)
     allow_pp = bool(int(flags_tuple[0]) != 0 or int(flags_tuple[1]) != 0)
     flags = np.ascontiguousarray(np.asarray(flags_tuple, dtype=np.int32))
-    exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
-    ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=SOLVER_NP_FP))
-    ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=SOLVER_NP_FP))
-    ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=SOLVER_NP_FP))
+    ref_pp = np.ascontiguousarray(np.asarray(curves.f64["Perfect Points"], dtype=SOLVER_NP_FP))
+    ref_cm = np.ascontiguousarray(np.asarray(curves.f64["Combo Multiplier"], dtype=SOLVER_NP_FP))
+    ref_fm = np.ascontiguousarray(np.asarray(curves.f64["Fever Multiplier"], dtype=SOLVER_NP_FP))
     pp_prefix_bounds, pp_bound_rows = build_pp_prefix_bounds(group_meta[:, 1], ref_pp, flags)
     out_rows = np.zeros((len(groups), 11), dtype=np.int32)
     _fg_response_inner_group_kernel(
@@ -1199,7 +1184,7 @@ def _score_response_group_meta_cpu(
     primary_color: str,
     secondary_color: str,
     selected_color: str,
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     surface_pattern_ids: np.ndarray,
     surface_pattern_words: np.ndarray,
     surface_counts: np.ndarray,
@@ -1228,12 +1213,11 @@ def _score_response_group_meta_cpu(
     # PP gems are the Chill element; the GPU search only enumerates PP gems when the song
     # carries a Chill color (flags[0]/[1]). Mirror that gate exactly.
     allow_pp = bool(int(flags[0]) != 0 or int(flags[1]) != 0)
-    exact_ref_arrays = _response_inner_score_ref_arrays(ref_arrays)
     # CPU exact-rescore path stays float64 (the numba scorer is the f64 authority), independent
     # of the GPU search fp.
-    ref_pp = np.ascontiguousarray(np.asarray(exact_ref_arrays["Perfect Points"], dtype=np.float64))
-    ref_cm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Combo Multiplier"], dtype=np.float64))
-    ref_fm = np.ascontiguousarray(np.asarray(exact_ref_arrays["Fever Multiplier"], dtype=np.float64))
+    ref_pp = np.ascontiguousarray(np.asarray(curves.f64["Perfect Points"], dtype=np.float64))
+    ref_cm = np.ascontiguousarray(np.asarray(curves.f64["Combo Multiplier"], dtype=np.float64))
+    ref_fm = np.ascontiguousarray(np.asarray(curves.f64["Fever Multiplier"], dtype=np.float64))
     surface_pattern_ids_all = np.ascontiguousarray(surface_pattern_ids, dtype=np.int32)
     surface_pattern_words_all = np.ascontiguousarray(surface_pattern_words, dtype=np.uint32)
     surface_counts_all = np.ascontiguousarray(surface_counts, dtype=np.int32)

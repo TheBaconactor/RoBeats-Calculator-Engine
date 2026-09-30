@@ -61,7 +61,7 @@ def build_timing_response_antichain_table(
     *,
     start_cells: np.ndarray,
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: dict[str, Any],
     flags: dict[str, int],
     total_budget: int = GEM_BUDGET,
     gem_scale_fever: int = STAT_GEM_GAIN_FEVER,
@@ -71,11 +71,11 @@ def build_timing_response_antichain_table(
     if cells.size == 0:
         return None, _stats(False, "no_start_cells", 0)
 
-    reason = _reference_blocker(ref_arrays)
+    reason = _reference_blocker(curves)
     if reason:
         return None, _stats(False, reason, int(cells.shape[0]))
 
-    cell_pack, pack_count, payload_key = _exact_frontier_pack_grid(calc_song=calc_song, ref_arrays=ref_arrays)
+    cell_pack, pack_count, payload_key = _exact_frontier_pack_grid(calc_song=calc_song, curves=curves)
     w_ft = _lane_weight(flags, "ft", 3)
     w_ff = _lane_weight(flags, "ff", 3)
     w_ov = _lane_weight(flags, "ov", 6)
@@ -231,11 +231,11 @@ def timing_response_antichain_keep_mask(
 def _exact_frontier_pack_grid(
     *,
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: dict[str, Any],
 ) -> tuple[np.ndarray, int, tuple[Any, ...]]:
     from gear_optimizer.solver.taichi_gem.api.timeline import load_timeline_frontier_payload
 
-    result = load_timeline_frontier_payload(calc_song, ref_arrays)
+    result = load_timeline_frontier_payload(calc_song, curves)
     payload = result.payload
     counts = np.asarray(payload.grid_frontier_count[0], dtype=np.int32)
     offsets = np.asarray(payload.grid_frontier_offset[0], dtype=np.int32)
@@ -285,9 +285,9 @@ def _cells_digest(cells: np.ndarray) -> bytes:
     return h.digest()
 
 
-def _reference_blocker(ref_arrays: dict[str, Any]) -> str:
+def _reference_blocker(curves: dict[str, Any]) -> str:
     for key in ("Perfect Points", "Combo Multiplier", "Fever Multiplier"):
-        arr = np.asarray(ref_arrays.get(key), dtype=np.float64).reshape(-1)
+        arr = np.asarray(curves.get(key), dtype=np.float64).reshape(-1)
         if arr.shape[0] <= int(MAX_STAT):
             return f"missing_ref_array_{key}"
         if np.any(np.diff(arr[: int(MAX_STAT) + 1]) < 0):

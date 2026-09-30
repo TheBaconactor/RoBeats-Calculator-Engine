@@ -27,7 +27,7 @@ def _make_minimal_app() -> GearOptimizerApp:
 def _build_tasks(*, count: int = 2):
     context = SharedRunContext(
         multi_start=3,
-        ref_arrays={},
+        curves={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},

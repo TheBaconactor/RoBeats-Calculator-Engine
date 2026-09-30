@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
 from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
@@ -160,22 +161,13 @@ def _merge_payloads(
     )
 
 
-def _assert_head_dominance_box_covers(ref_arrays: dict[str, Any]) -> None:
+def _assert_head_dominance_box_covers(curves: StatCurves) -> None:
     """Fail loud if a gear rebalance pushes the combo/fever multipliers outside the lossless
     head-dominance box (_HEAD_DOM_C/_HEAD_DOM_F). The 16-corner prune is exact ONLY while the box is
-    a superset of the realizable (c, f) cone, so a stale box must never silently under-cover.
-
-    Axis-only refs (the cache unit tests pass just Fever Time / Fever Fill Rate) carry no gear
-    (c, f) cone to validate -- the prune still uses the _HEAD_DOM_* box constants -- so there is
-    nothing to check and the guard is a no-op."""
-    cm_lut = ref_arrays.get("Combo Multiplier")
-    fm_lut = ref_arrays.get("Fever Multiplier")
-    if cm_lut is None or fm_lut is None:
-        return
-    cm = np.asarray(cm_lut, dtype=np.float64)
-    fm = np.asarray(fm_lut, dtype=np.float64)
-    if cm.size == 0 or fm.size == 0:
-        return
+    a superset of the realizable (c, f) cone, so a stale box must never silently under-cover. Reads
+    the float32 curves the solve uses."""
+    cm = np.asarray(curves.f32["Combo Multiplier"], dtype=np.float64)
+    fm = np.asarray(curves.f32["Fever Multiplier"], dtype=np.float64)
     if not (_HEAD_DOM_C[0] <= float(cm.min()) and float(cm.max()) <= _HEAD_DOM_C[1]
             and _HEAD_DOM_F[0] <= float(fm.min()) and float(fm.max()) <= _HEAD_DOM_F[1]):
         raise ValueError(
@@ -186,20 +178,13 @@ def _assert_head_dominance_box_covers(ref_arrays: dict[str, Any]) -> None:
         )
 
 
-def session_head_dominance_box(ref_arrays: dict[str, Any]) -> tuple[float, float, float, float, float, float, float, float]:
+def session_head_dominance_box(curves: StatCurves) -> tuple[float, float, float, float, float, float, float, float]:
     """The SESSION's 16-corner dominance box: combo/fever corners tightened to the inventory's
     measured LUT ranges (the same arrays `_assert_head_dominance_box_covers` validates), value and
     great corners kept at the global box (v1: their per-note derivation is color-coupled; the
-    global corners stay a sound cover). Fails loud without the LUTs -- the session prune is a
-    GA-solve feature and the solve path always carries full reference arrays."""
-    cm_lut = ref_arrays.get("Combo Multiplier")
-    fm_lut = ref_arrays.get("Fever Multiplier")
-    if cm_lut is None or fm_lut is None:
-        raise ValueError("session dominance box requires Combo Multiplier / Fever Multiplier reference arrays")
-    cm = np.asarray(cm_lut, dtype=np.float64)
-    fm = np.asarray(fm_lut, dtype=np.float64)
-    if cm.size == 0 or fm.size == 0:
-        raise ValueError("session dominance box requires non-empty multiplier reference arrays")
+    global corners stay a sound cover). Reads the float32 curves the solve uses."""
+    cm = np.asarray(curves.f32["Combo Multiplier"], dtype=np.float64)
+    fm = np.asarray(curves.f32["Fever Multiplier"], dtype=np.float64)
     c_lo, c_hi = float(cm.min()), float(cm.max())
     f_lo, f_hi = float(fm.min()), float(fm.max())
     # The payload's envelope was pruned against the GLOBAL box; a session box escaping it means the
@@ -220,7 +205,7 @@ def session_head_dominance_box(ref_arrays: dict[str, Any]) -> tuple[float, float
 
 def session_prune_scoring_bundle(
     bundle: FgResponseFrontierScoringBundle,
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
 ) -> FgResponseFrontierScoringBundle:
     """Session-box cone prune of a scoring bundle for ONE solve run (GA path only; persist/audit
     consumers load the full bundle). Re-runs the 16-corner dominance filter with corners at the
@@ -233,7 +218,7 @@ def session_prune_scoring_bundle(
     row_count = int(bundle.surface_row_count)
     if row_count <= 0:
         return bundle
-    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = session_head_dominance_box(ref_arrays)
+    v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = session_head_dominance_box(curves)
     pattern_ids, counts, pattern_words, pattern_coeffs = load_first_surface_scoring_patterns(
         bundle.cache_key,
         ((0, row_count),),
@@ -309,13 +294,13 @@ def session_prune_scoring_bundle(
 
 def _build_response_frontier_cache_payload(
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> tuple[FgResponseFrontierCachePayload, str]:
-    _assert_head_dominance_box_covers(ref_arrays)
+    _assert_head_dominance_box_covers(curves)
     keys = normalize_fg_response_stat_keys(stat_keys)
-    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, ref_arrays)
+    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, curves)
     frontier_by_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
     frontier_by_geometry: dict[tuple[float, int, float, bool], FgResponseFrontierResult] = {}
     missing_by_geometry: dict[tuple[float, int, float, bool], tuple[float, int, float]] = {}
@@ -385,13 +370,13 @@ def _build_response_frontier_cache_payload(
 
 def fg_response_frontier_payload_cache_info(
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> FgResponseFrontierCacheInfo:
     keys = normalize_fg_response_stat_keys(stat_keys)
-    payload_key = fg_response_frontier_payload_cache_key(calc_song, ref_arrays, keys)
-    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
+    payload_key = fg_response_frontier_payload_cache_key(calc_song, curves, keys)
+    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, curves)
     payload = _payload_memory_get(payload_key)
     if payload is not None:
         return FgResponseFrontierCacheInfo(
@@ -515,12 +500,12 @@ def _materialize_scoring_bundle_from_arrays(
 
 def load_response_frontier_scoring_bundle(
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> FgResponseFrontierScoringBundle:
     keys = normalize_fg_response_stat_keys(stat_keys)
-    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
+    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, curves)
     cached_scoring = _scoring_bundle_memory_get(bundle_key)
     if cached_scoring is not None:
         requested = _stat_key_index_rows(keys)
@@ -570,14 +555,14 @@ def load_response_frontier_scoring_bundle(
 
 def build_or_load_response_frontier_payload(
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> FgResponseFrontierPrewarmResult:
     started = time.perf_counter()
     keys = normalize_fg_response_stat_keys(stat_keys)
-    cache_key = fg_response_frontier_payload_cache_key(calc_song, ref_arrays, keys)
-    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
+    cache_key = fg_response_frontier_payload_cache_key(calc_song, curves, keys)
+    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, curves)
     bundle_path = resolve_fg_response_bundle_path(bundle_key)
     payload = _payload_memory_get(cache_key)
     if payload is not None and _payload_subset(payload, keys) is not None:
@@ -629,7 +614,7 @@ def build_or_load_response_frontier_payload(
                     missing_keys = _payload_missing_or_incomplete_keys(bundle, keys)
                     update, source = _build_response_frontier_cache_payload(
                         calc_song,
-                        ref_arrays,
+                        curves,
                         stat_keys=missing_keys,
                     )
                     bundle = _merge_payloads(bundle, update)

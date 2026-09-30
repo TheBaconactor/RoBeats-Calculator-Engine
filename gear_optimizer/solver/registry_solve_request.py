@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import GEM_BUDGET, STAT_GEM_GAIN_FEVER
 
 
@@ -14,7 +15,7 @@ class RegistrySolveRequest:
     slot_count: Any
     base_fixed_stats: Any
     timeline_grid: Any
-    ref_arrays: Any
+    curves: StatCurves
     flags: dict[str, int]
     total_budget: int = GEM_BUDGET
     gem_scale_fever: int = STAT_GEM_GAIN_FEVER
@@ -62,7 +63,7 @@ def dispatch_registry_solve(request: RegistrySolveRequest) -> list:
             int(request.flags.get("is_s_fm", 0)),
             int(request.flags.get("is_p_ov", 0)),
             int(request.flags.get("is_s_ov", 0)),
-            request.ref_arrays,
+            request.curves,
             total_budget=int(request.total_budget),
             gem_scale_fever=int(request.gem_scale_fever),
             song_slot=int(request.song_slot),

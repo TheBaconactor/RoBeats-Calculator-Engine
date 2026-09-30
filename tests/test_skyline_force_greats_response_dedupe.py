@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 from types import SimpleNamespace
 from typing import Any
 
@@ -31,15 +32,15 @@ def _base_calc_song() -> dict[str, Any]:
     }
 
 
-def _ref_arrays() -> dict[str, np.ndarray]:
+def _curves() -> dict[str, np.ndarray]:
     base = np.linspace(1.0, 2.0, 161, dtype=np.float32)
-    return {
+    return synthetic_curves({
         "Perfect Points": base,
         "Combo Multiplier": base + np.float32(0.1),
         "Fever Multiplier": base + np.float32(0.2),
         "Fever Time": base + np.float32(0.3),
         "Fever Fill Rate": base + np.float32(0.4),
-    }
+    })
 
 
 def _stats(*, pp: int = 100) -> dict[str, int]:
@@ -215,7 +216,7 @@ def test_skyline_scores_retained_candidates_through_shared_service(tmp_path: Any
     summary, best_record = sfg.score_retained_skyline_force_greats(
         records,
         calc_song=_base_calc_song(),
-        ref_arrays=_ref_arrays(),
+        curves=_curves(),
         default_selected_color="Power",
         use_gpu=True,
     )
@@ -274,7 +275,7 @@ def test_skyline_mode_keeps_selected_color_responses_separate(tmp_path: Any, mon
     rows, stats = FgResponseScoringService.score_candidates_with_stats(
         [_record(pp=100, selected="Power"), _record(pp=100, selected="Rush")],
         calc_song=_base_calc_song(),
-        ref_arrays=_ref_arrays(),
+        curves=_curves(),
         meta_primary_color="Power",
         mode="skyline",
     )

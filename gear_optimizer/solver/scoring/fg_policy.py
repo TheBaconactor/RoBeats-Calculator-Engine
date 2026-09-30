@@ -4,16 +4,13 @@ from dataclasses import dataclass
 from math import floor
 from typing import Any, Mapping
 
-from ...core.ref_lookup import StatFactors, resolve_stat_factors
 from ...core.utils import safe_float, safe_int
 from .stats_scoring import _force_greats_counts_to_dict, build_great_penalty_table
 
 __all__ = [
     "FGSongInputs",
     "SongMeta",
-    "StatFactors",
     "extract_song_meta",
-    "resolve_stat_factors",
 ]
 
 

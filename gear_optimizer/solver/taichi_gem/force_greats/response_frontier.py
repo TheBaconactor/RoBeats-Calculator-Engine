@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
 from gear_optimizer.core.gem_defs import build_gem_counts
 from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
@@ -155,7 +156,7 @@ class FgResponseFrontierPackedScoringBatch:
     stats_inputs: tuple[dict[str, Any], ...]
     calc_song: dict[str, Any]
     song_inputs: Any
-    ref_arrays: dict[str, Any]
+    curves: StatCurves
     selected_color: str
     primary_color: str
     secondary_color: str
@@ -528,7 +529,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
     *,
     base_stats_list: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     selected_color: str,
     base_stats7_list: list[Any] | tuple[Any, ...] | None = None,
     total_budget: int = GEM_BUDGET,
@@ -597,7 +598,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
     if scoring_bundle is None:
         scoring_bundle = load_response_frontier_scoring_bundle(
             calc_song,
-            ref_arrays,
+            curves,
             stat_keys=all_response_stat_keys(),
         )
     scoring_bundle_ms = float((time.perf_counter() - bundle_t0) * 1000.0)
@@ -619,7 +620,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
         stats_inputs=stats_inputs,
         calc_song=calc_song,
         song_inputs=song_inputs,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color=str(selected_color or ""),
         primary_color=primary_color,
         secondary_color=secondary_color,
@@ -798,7 +799,7 @@ def score_prepared_force_greats_response_frontier_batch_on_gpu_owner(
         primary_color=batch.primary_color,
         secondary_color=batch.secondary_color,
         selected_color=batch.selected_color,
-        ref_arrays=batch.ref_arrays,
+        curves=batch.curves,
         surface_pattern_ids=surface_pattern_ids,
         surface_pattern_words=surface_pattern_words,
         surface_counts=surface_counts,
@@ -851,7 +852,7 @@ def score_prepared_force_greats_response_frontier_batch_on_cpu_owner(
         primary_color=batch.primary_color,
         secondary_color=batch.secondary_color,
         selected_color=batch.selected_color,
-        ref_arrays=batch.ref_arrays,
+        curves=batch.curves,
         surface_pattern_ids=surface_pattern_ids,
         surface_pattern_words=surface_pattern_words,
         surface_counts=surface_counts,
@@ -916,7 +917,7 @@ def materialize_prepared_force_greats_response_frontier_batch_results(
         if frontier is None:
             frontier = frontier_result_from_scoring_bundle_for_stats(
                 batch.calc_song,
-                batch.ref_arrays,
+                batch.curves,
                 scoring_bundle,
                 ft_stat=int(ft_stat),
                 ff_stat=int(ff_stat),
@@ -1018,7 +1019,7 @@ def score_fused_owner_base_components_on_gpu_owner(
     *,
     base_components: np.ndarray,
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     selected_color: str,
     scoring_bundle: FgResponseFrontierScoringBundle,
     total_budget: int = GEM_BUDGET,
@@ -1075,7 +1076,7 @@ def score_fused_owner_base_components_on_gpu_owner(
         ],
         base_stats7_list=[tuple(int(v) for v in row) for row in unique_rows],
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color=str(selected_color or ""),
         total_budget=int(total_budget),
         scoring_bundle=scoring_bundle,
@@ -1097,7 +1098,7 @@ def build_fused_owner_solve_result_from_score_row(
     base_stats: dict[str, Any],
     selected_color: str,
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     scoring_bundle: FgResponseFrontierScoringBundle,
     started: float | None = None,
     include_forced_counts: bool = False,
@@ -1129,7 +1130,7 @@ def build_fused_owner_solve_result_from_score_row(
     if frontier is None:
         frontier = frontier_result_from_scoring_bundle_for_stats(
             calc_song,
-            ref_arrays,
+            curves,
             scoring_bundle,
             ft_stat=int(score_row.ft_stat),
             ff_stat=int(score_row.ff_stat),

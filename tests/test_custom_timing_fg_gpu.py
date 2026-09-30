@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from tests.curves_support import synthetic_curves
 
 pytestmark = pytest.mark.gpu
 
@@ -25,14 +26,14 @@ def _reset_fg_cache() -> None:
     reset_fg_response_frontier_payload_cache()
 
 
-def _ref_arrays(rows: int = 161) -> dict:
-    return {
+def _curves(rows: int = 161) -> dict:
+    return synthetic_curves({
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.95, 2.72, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(2.95, 5.48, rows, dtype=np.float64),
         "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64),
         "Fever Time": np.full(rows, 0.5, dtype=np.float64),
-    }
+    })
 
 
 def _fg_stats() -> dict:
@@ -74,18 +75,18 @@ def test_zero_offset_matches_plain_zero_ms_surface(tmp_path, monkeypatch):
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
-    ref_arrays = _ref_arrays()
+    curves = _curves()
     stats = _fg_stats()
 
     _reset_fg_cache()
     cs_plain = _song()
     apply_timing_envelope(cs_plain, mode="zero_ms")
-    surf_plain = _solve_fixed_timing_response_results([stats], cs_plain, ref_arrays, "Chill")[0][0].surface
+    surf_plain = _solve_fixed_timing_response_results([stats], cs_plain, curves, "Chill")[0][0].surface
 
     _reset_fg_cache()
     cs_zero_t = _song()
     apply_timing_envelope(cs_zero_t, mode="zero_ms", baseline_offset=np.zeros(9, dtype=np.float32))
-    surf_zero_t = _solve_fixed_timing_response_results([stats], cs_zero_t, ref_arrays, "Chill")[0][0].surface
+    surf_zero_t = _solve_fixed_timing_response_results([stats], cs_zero_t, curves, "Chill")[0][0].surface
 
     assert tuple(surf_zero_t) == tuple(surf_plain)
 
@@ -97,7 +98,7 @@ def test_nonzero_baseline_offset_reoptimizes_to_valid_surface(tmp_path, monkeypa
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
-    ref_arrays = _ref_arrays()
+    curves = _curves()
     stats = _fg_stats()
 
     _reset_fg_cache()
@@ -110,8 +111,8 @@ def test_nonzero_baseline_offset_reoptimizes_to_valid_surface(tmp_path, monkeypa
     np.testing.assert_allclose(
         np.asarray(cs_t["song_data"]["fg_timestamps"]), _TIMESTAMPS + offset, atol=1e-6
     )
-    surf_t = _solve_fixed_timing_response_results([stats], cs_t, ref_arrays, "Chill")[0][0].surface
-    score_t = score_force_greats_response_surface_exact(stats, cs_t, ref_arrays, surf_t)
+    surf_t = _solve_fixed_timing_response_results([stats], cs_t, curves, "Chill")[0][0].surface
+    score_t = score_force_greats_response_surface_exact(stats, cs_t, curves, surf_t)
     assert int(score_t) > 0
 
 
@@ -125,7 +126,7 @@ def test_leaderboard_under_nonzero_baseline_offset_is_valid(tmp_path, monkeypatc
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()
-    ref_arrays = _ref_arrays(MAX_STAT + 1)
+    curves = _curves(MAX_STAT + 1)
     calc_song = _song()
     offset = np.asarray([0.0, 0.03, 0.0, 0.05, 0.0, 0.04, 0.0, 0.02, 0.0], dtype=np.float32)
 
@@ -175,12 +176,12 @@ def test_leaderboard_under_nonzero_baseline_offset_is_valid(tmp_path, monkeypatc
     # song, mirroring the on-demand path (the base gem re-solve needs it).
     _pre = dict(calc_song)
     apply_timing_envelope(_pre, mode="zero_ms", baseline_offset=offset)
-    build_or_load_timeline_frontier_payload(_pre, ref_arrays)
+    build_or_load_timeline_frontier_payload(_pre, curves)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         timing_mode="zero_ms",
         baseline_offset=offset,
     )

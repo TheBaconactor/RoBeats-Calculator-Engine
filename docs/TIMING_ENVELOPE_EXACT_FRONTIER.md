@@ -83,12 +83,6 @@ Startup CPU work verifies or builds both timing-mode chart-pool and Force Great
 frontier caches before scoring. This host-side symbolic construction prepares
 the GPU product path; it is not CPU fallback scoring.
 
-Manual focused prebuild:
-
-```bash
-python tools/dev/prebuild_timeline_frontiers.py --help
-```
-
 ## Exactness boundary
 
 The frontier is exact for the supported timing windows, chart ordering, lane

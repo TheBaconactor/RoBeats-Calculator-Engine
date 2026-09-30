@@ -11,6 +11,7 @@ Pins the two GPU-facing facts:
 
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 import itertools
 
 import numpy as np
@@ -31,14 +32,14 @@ def _reset_fg_cache() -> None:
 
 
 # combo/fever multipliers within the lossless head-dominance prune box (real game ranges).
-def _ref_arrays(rows: int = 161) -> dict:
-    return {
+def _curves(rows: int = 161) -> dict:
+    return synthetic_curves({
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.95, 2.72, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(2.95, 5.48, rows, dtype=np.float64),
         "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64),
         "Fever Time": np.full(rows, 0.5, dtype=np.float64),
-    }
+    })
 
 
 def _loadout_items(name: str, **stats: int) -> list[dict]:
@@ -54,7 +55,7 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()
-    ref_arrays = _ref_arrays(MAX_STAT + 1)
+    curves = _curves(MAX_STAT + 1)
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
     calc_song = {
         "metadata": {
@@ -128,12 +129,12 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
 
     _cs_zero_ms = dict(calc_song)
     apply_timing_envelope(_cs_zero_ms, mode="zero_ms")
-    build_or_load_timeline_frontier_payload(_cs_zero_ms, ref_arrays)
+    build_or_load_timeline_frontier_payload(_cs_zero_ms, curves)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         timing_mode="zero_ms",
     )
 
@@ -162,7 +163,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()
 
-    ref_arrays = _ref_arrays(MAX_STAT + 1)
+    curves = _curves(MAX_STAT + 1)
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
     calc_song = {
         "metadata": {
@@ -176,7 +177,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         "song_data": {"timestamps": timestamps},
     }
     apply_timing_envelope(calc_song, mode="zero_ms")
-    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    build_or_load_timeline_frontier_payload(calc_song, curves)
 
     fixed_song_stats = {
         "Perfect Points": 0,
@@ -222,7 +223,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
             fixed_song_stats=fixed_song_stats,
             loadout_items=loadout,
             calc_song=dict(calc_song),
-            ref_arrays=ref_arrays,
+            curves=curves,
             primary_color="Rush",
             selected_color="Rush",
         )
@@ -232,7 +233,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         fixed_song_stats=fixed_song_stats,
         loadouts=loadouts,
         calc_song=dict(calc_song),
-        ref_arrays=ref_arrays,
+        curves=curves,
         primary_color="Rush",
         selected_color="Rush",
     )
@@ -249,7 +250,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
             fixed_song_stats=fixed_song_stats,
             loadout_items=loadout,
             calc_song=dict(calc_song),
-            ref_arrays=ref_arrays,
+            curves=curves,
             selected_color="Rush",
         )
         for loadout in loadouts
@@ -258,7 +259,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         fixed_song_stats=fixed_song_stats,
         loadouts=loadouts,
         calc_song=dict(calc_song),
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color="Rush",
     )
 
@@ -271,7 +272,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         assert batch_force["BaseScore"] == score_stats_fixed_timing_exact(
             batch_force["BaseStats"],
             calc_song,
-            ref_arrays,
+            curves,
         )
         assert batch_force["ForceGreats"]["config"] == single_force["ForceGreats"]["config"]
         assert isinstance(batch_force["ForceGreats"].get("frontier_trace"), list)
@@ -289,7 +290,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
         calc_song=dict(calc_song),
-        ref_arrays=ref_arrays,
+        curves=curves,
         limit=1,
         tiers=("T5",),
         replay_surface="fg",
@@ -301,5 +302,5 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     assert fg_row["fg_base_score"] == score_stats_fixed_timing_exact(
         fg_row["force"]["BaseStats"],
         calc_song,
-        ref_arrays,
+        curves,
     )

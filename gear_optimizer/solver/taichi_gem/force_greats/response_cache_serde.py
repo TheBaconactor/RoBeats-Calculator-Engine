@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 
+from gear_optimizer.gamedata import StatCurves
 from .response_build_gpu_surfaces import SurfaceRowsFirstFrontier, _surface_rows_from_numba_rows
 from .response_cache_keys import (
     _surface_from_row_cached,
@@ -330,7 +331,7 @@ def frontier_result_from_scoring_bundle(
 
 def frontier_result_from_scoring_bundle_for_stats(
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     scoring_bundle: FgResponseFrontierScoringBundle,
     *,
     ft_stat: int,
@@ -339,7 +340,7 @@ def frontier_result_from_scoring_bundle_for_stats(
     key = _normalize_stat_key((int(ft_stat), int(ff_stat)))
     geometry_cache_key = fg_response_frontier_geometry_cache_key(
         calc_song,
-        ref_arrays,
+        curves,
         ft_stat=int(key[0]),
         ff_stat=int(key[1]),
     )

@@ -6,7 +6,6 @@ import re
 import sys
 import threading
 import time
-import numpy as np
 from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
 from gear_optimizer.data.database import (
@@ -28,9 +27,9 @@ from gear_optimizer.domain.jobs import (
 from gear_optimizer.data.csv_parser import (
     load_all_gears_list,
     load_all_minis_list,
-    read_table,
 )
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
+from gear_optimizer.gamedata import load_stat_curves
 from gear_optimizer.client_update import update_and_restart_client
 from gear_optimizer.frontier_client import sync_frontiers_from_server
 from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
@@ -242,8 +241,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             logger.info(" >> [ForceGreats] ResponseFrontier")
             loop_forever = run.loop_forever
             sync_exported_game_data()
-            stats_table = read_table(str(paths().stats_txt))
-            ref_arrays = self._preload_ref_arrays(stats_table)
+            curves = load_stat_curves(paths().stats_txt)
             all_gears = load_all_gears_list()
             all_minis = load_all_minis_list()
             gears_by_name = {g["Name"]: g for g in all_gears}
@@ -253,7 +251,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             logger.info(f"[Run] Queued {len(song_queue)} song(s) for processing.")
             run_startup_cpu_work(
                 song_queue=song_queue,
-                ref_arrays=ref_arrays,
+                curves=curves,
                 data_root=str(paths().data_dir),
                 announce_stream=self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout,
                 build_missing=not frontier_sync.enabled,
@@ -264,7 +262,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             tasks = self._prepare_tasks(
                 song_queue,
                 run,
-                ref_arrays,
+                curves,
                 all_gears,
                 all_minis,
                 gears_by_name,
@@ -334,11 +332,6 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             logger.info("LoopForever=FALSE; exiting after completing queue.")
             return False
 
-    def _preload_ref_arrays(self, stats_table):
-        from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
-
-        return build_ref_arrays_from_stats(stats_table, dtype=np.float32)
-
     def _queue_task_coordinator(self) -> QueueTaskCoordinator:
         """Queue/task logic lives in QueueTaskCoordinator; app state reaches it
         only through these two callables (unit-testable without GPU/DB/app)."""
@@ -363,7 +356,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         self,
         song_queue,
         run: RunSettings,
-        ref_arrays,
+        curves,
         all_gears,
         all_minis,
         gears_by_name,
@@ -372,7 +365,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         return self._queue_task_coordinator().prepare_tasks(
             song_queue,
             run,
-            ref_arrays,
+            curves,
             all_gears,
             all_minis,
             gears_by_name,

@@ -15,7 +15,7 @@ class GpuRequestType(Enum):
     no separate FG response-frontier batch request type anymore.
     """
 
-    LOAD_REF_ARRAYS = "load_ref_arrays"
+    LOAD_CURVES = "load_curves"
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
     SHUTDOWN = "shutdown"
 

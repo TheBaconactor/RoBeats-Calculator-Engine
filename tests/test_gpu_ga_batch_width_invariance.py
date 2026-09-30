@@ -36,6 +36,7 @@ from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payloa
 from gear_optimizer.solver.gpu_tuning_policy import choose_ga_batch_runs
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
+from tests.curves_support import synthetic_curves
 
 pytestmark = pytest.mark.gpu
 
@@ -102,15 +103,15 @@ def _build_registry() -> ItemRegistry:
     return ItemRegistry(gear_pool, mini_pool, slots)
 
 
-def _ref_arrays() -> dict[str, np.ndarray]:
+def _curves() -> dict[str, np.ndarray]:
     rows = 161
-    return {
+    return synthetic_curves({
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64),
         "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64),
-    }
+    })
 
 
 def _calc_song(*, n_notes: int = 400) -> dict:
@@ -188,17 +189,17 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
     )
 
     calc_song = _calc_song()
-    ref_arrays = _ref_arrays()
+    curves = _curves()
     color_flags = build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR)
 
     with _GPU_LOCK:
         ensure_ready()
-        prebuilt = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
-        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0, prebuilt_frontier=prebuilt)
+        prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
+        precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=prebuilt)
 
         payload = run_gpu_native_ga_runs_payload_prebuilt(
             calc_song=calc_song,
-            ref_arrays=ref_arrays,
+            curves=curves,
             song_slot=0,
             item_stats=item_stats,
             slot_start=slot_start,

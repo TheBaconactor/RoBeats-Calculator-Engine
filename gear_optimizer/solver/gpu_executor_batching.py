@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
 
@@ -408,7 +409,7 @@ def execute_gpu_native_ga_run(
 
     payload = request.payload or {}
     calc_song = payload.get("calc_song")
-    ref_arrays = payload.get("ref_arrays")
+    curves = payload.get("curves")
     item_stats = payload.get("item_stats")
     slot_start = payload.get("slot_start")
     slot_count = payload.get("slot_count")
@@ -433,11 +434,11 @@ def execute_gpu_native_ga_run(
     fg_scoring_bundle = payload.get("fg_scoring_bundle")
     fg_calc_song = payload.get("fg_calc_song")
 
-    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+    if not isinstance(calc_song, dict) or not isinstance(curves, StatCurves):
         return GpuResponse(
             request_id=request.request_id,
             success=False,
-            error="Invalid payload for GPU_NATIVE_GA_RUN (expected calc_song/ref_arrays dicts)",
+            error="Invalid payload for GPU_NATIVE_GA_RUN (expected a calc_song dict and StatCurves)",
         )
 
     try:
@@ -446,7 +447,7 @@ def execute_gpu_native_ga_run(
 
         kwargs = dict(
             calc_song=calc_song,
-            ref_arrays=ref_arrays,
+            curves=curves,
             song_slot=song_slot,
             item_stats=item_stats,
             slot_start=slot_start,
@@ -489,7 +490,7 @@ def execute_gpu_native_ga_run(
             runs_payload=runs_payload,
             fg_scoring_bundle=fg_scoring_bundle,
             fg_calc_song=fg_calc_song,
-            ref_arrays=ref_arrays,
+            curves=curves,
             cfg_data=dict(cfg_data),
         )
     except Exception as e:

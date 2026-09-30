@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from gear_optimizer.gamedata import StatCurves, load_stat_curves
 from gear_optimizer.pipeline.post_processor_fg_variants import (
     best_fg_improving_score_from_persist_entries,
     fg_variants_from_persist_entries,
 )
+from gear_optimizer.settings import paths
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +17,7 @@ def canonicalize_fg_update_entries(
     entries: list[dict[str, Any]],
     *,
     file_path: str,
-    ref_arrays: Any,
+    curves: StatCurves | None,
     song_name: str,
 ) -> list[dict[str, Any]]:
     if not entries:
@@ -37,14 +39,8 @@ def canonicalize_fg_update_entries(
         logger.warning("[POST][FG] Skipping FG deferred save for %s: calc_song unavailable", song_name)
         return []
 
-    resolved_ref_arrays = ref_arrays
-    if not (isinstance(resolved_ref_arrays, dict) and resolved_ref_arrays):
-        from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
-
-        resolved_ref_arrays = _get_team_buff_ref_arrays_cached()
-    if not (isinstance(resolved_ref_arrays, dict) and resolved_ref_arrays):
-        logger.warning("[POST][FG] Skipping FG deferred save for %s: ref_arrays unavailable", song_name)
-        return []
+    if curves is None:
+        curves = load_stat_curves(paths().stats_txt)
 
     from gear_optimizer.helpers.song_helpers.persistence_authority import canonicalize_authoritative_fg_entries
 
@@ -53,7 +49,7 @@ def canonicalize_fg_update_entries(
     canonical = canonicalize_authoritative_fg_entries(
         list(entries),
         calc_song=calc_song,
-        ref_arrays=resolved_ref_arrays,
+        curves=curves,
     )
     valid: list[dict[str, Any]] = []
     for entry in canonical:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuResponse
 
 
@@ -10,21 +10,21 @@ from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuResponse
 @dataclass(frozen=True)
 class LoadRefsOutcome:
     response: GpuResponse
-    last_ref_arrays_sig: bytes | None
+    last_curves_sig: bytes | None
 
 
 def execute_load_refs(
     request: GpuRequest,
     *,
-    last_ref_arrays_sig: bytes | None,
-    load_ref_arrays_fn,
-    ref_arrays_sig_fn,
+    last_curves_sig: bytes | None,
+    load_curves_fn,
+    curves_sig_fn,
 ) -> LoadRefsOutcome:
-    ref_arrays = request.payload["ref_arrays"]
-    sig = ref_arrays_sig_fn(ref_arrays)
-    if sig is None or sig != last_ref_arrays_sig:
-        load_ref_arrays_fn(ref_arrays)
-        last_ref_arrays_sig = sig
+    curves = request.payload["curves"]
+    sig = curves_sig_fn(curves)
+    if sig is None or sig != last_curves_sig:
+        load_curves_fn(curves)
+        last_curves_sig = sig
 
     return LoadRefsOutcome(
         response=GpuResponse(
@@ -32,10 +32,10 @@ def execute_load_refs(
             success=True,
             result=None,
         ),
-        last_ref_arrays_sig=last_ref_arrays_sig,
+        last_curves_sig=last_curves_sig,
     )
 
 
-def ref_arrays_sig(ref_arrays: Any) -> bytes | None:
-    from .taichi_gem.api.initialization import _ref_arrays_sig as _taichi_ref_arrays_sig
-    return _taichi_ref_arrays_sig(ref_arrays)
+def curves_sig(curves: StatCurves) -> bytes | None:
+    from .taichi_gem.api.initialization import _curves_sig as _taichi_curves_sig
+    return _taichi_curves_sig(curves)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 import numpy as np
 import pytest
 
@@ -115,11 +116,11 @@ def test_cpu_scorer_shared_pattern_ids_preserve_complete_winner_row() -> None:
         "primary_color": "Rush",
         "secondary_color": "Flow",
         "selected_color": "Rush",
-        "ref_arrays": {
+        "curves": synthetic_curves({
             "Perfect Points": np.linspace(1.0, 2.0, MAX_STAT + 1, dtype=np.float64),
             "Combo Multiplier": np.linspace(2.0, 2.6, MAX_STAT + 1, dtype=np.float64),
             "Fever Multiplier": np.linspace(3.0, 5.0, MAX_STAT + 1, dtype=np.float64),
-        },
+        }),
         "surface_counts": counts,
     }
     identity, identity_rows = response_inner._score_response_group_meta_cpu(
@@ -244,11 +245,11 @@ def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monk
         ],
         dtype=np.int32,
     )
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.ones(161, dtype=np.float32),
         "Combo Multiplier": np.ones(161, dtype=np.float32),
         "Fever Multiplier": np.ones(161, dtype=np.float32),
-    }
+    })
 
     rows, logical_surface_rows = response_inner._score_response_group_meta_gpu(
         group_meta=group_meta,
@@ -257,7 +258,7 @@ def test_response_inner_group_scoring_chunks_groups_before_surface_fallback(monk
         primary_color="Rush",
         secondary_color="Flow",
         selected_color="Rush",
-        ref_arrays=ref_arrays,
+        curves=curves,
         surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
         surface_pattern_words=surface_words,
         surface_counts=surface_counts,
@@ -337,11 +338,11 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
     group_lengths = np.asarray([4], dtype=np.int32)
     surface_words = np.zeros((4, 8), dtype=np.uint32)
     surface_counts = np.zeros((4, 3), dtype=np.int32)
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.ones(161, dtype=np.float32),
         "Combo Multiplier": np.ones(161, dtype=np.float32),
         "Fever Multiplier": np.ones(161, dtype=np.float32),
-    }
+    })
 
     response_inner._score_response_group_meta_gpu(
         group_meta=group_meta,
@@ -350,7 +351,7 @@ def test_response_inner_groups_above_thread_budget_use_surface_batch_lane(monkey
         primary_color="Rush",
         secondary_color="Flow",
         selected_color="Rush",
-        ref_arrays=ref_arrays,
+        curves=curves,
         surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
         surface_pattern_words=surface_words,
         surface_counts=surface_counts,
@@ -437,11 +438,11 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
     group_lengths = np.asarray([surface_count], dtype=np.int32)
     surface_words = np.zeros((surface_count, 8), dtype=np.uint32)
     surface_counts = np.zeros((surface_count, 3), dtype=np.int32)
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.ones(161, dtype=np.float32),
         "Combo Multiplier": np.ones(161, dtype=np.float32),
         "Fever Multiplier": np.ones(161, dtype=np.float32),
-    }
+    })
 
     response_inner._score_response_group_meta_gpu(
         group_meta=group_meta,
@@ -450,7 +451,7 @@ def test_response_inner_default_surface_work_cap_keeps_safe_large_batch_together
         primary_color="Rush",
         secondary_color="Flow",
         selected_color="Rush",
-        ref_arrays=ref_arrays,
+        curves=curves,
         surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
         surface_pattern_words=surface_words,
         surface_counts=surface_counts,
@@ -506,11 +507,11 @@ def test_response_inner_default_surface_work_cap_keeps_high_work_batch_together(
     group_lengths = np.asarray([surface_count], dtype=np.int32)
     surface_words = np.zeros((surface_count, 8), dtype=np.uint32)
     surface_counts = np.zeros((surface_count, 3), dtype=np.int32)
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.ones(161, dtype=np.float32),
         "Combo Multiplier": np.ones(161, dtype=np.float32),
         "Fever Multiplier": np.ones(161, dtype=np.float32),
-    }
+    })
 
     response_inner._score_response_group_meta_gpu(
         group_meta=group_meta,
@@ -519,7 +520,7 @@ def test_response_inner_default_surface_work_cap_keeps_high_work_batch_together(
         primary_color="Rush",
         secondary_color="Flow",
         selected_color="Rush",
-        ref_arrays=ref_arrays,
+        curves=curves,
         surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
         surface_pattern_words=surface_words,
         surface_counts=surface_counts,
@@ -566,11 +567,11 @@ def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
     group_lengths = np.asarray([1], dtype=np.int32)
     surface_words = np.zeros((1, 8), dtype=np.uint32)
     surface_counts = np.zeros((1, 3), dtype=np.int32)
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.ones(161, dtype=np.float32),
         "Combo Multiplier": np.ones(161, dtype=np.float32),
         "Fever Multiplier": np.ones(161, dtype=np.float32),
-    }
+    })
 
     rows, logical_surface_rows = response_inner._score_response_group_meta_gpu(
         group_meta=group_meta,
@@ -579,7 +580,7 @@ def test_response_inner_chill_colors_route_to_pp_template(monkeypatch):
         primary_color="Chill",
         secondary_color="Flow",
         selected_color="Rush",
-        ref_arrays=ref_arrays,
+        curves=curves,
         surface_pattern_ids=np.arange(surface_words.shape[0], dtype=np.int32),
         surface_pattern_words=surface_words,
         surface_counts=surface_counts,

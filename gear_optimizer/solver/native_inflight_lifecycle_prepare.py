@@ -98,7 +98,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     found_song_name = job.song_name
     effective_difficulty = job.difficulty
     multi_start = run_context.multi_start
-    ref_arrays = run_context.ref_arrays
+    curves = run_context.curves
     all_gears = run_context.all_gears
     all_minis = run_context.all_minis
     gears_by_name = run_context.gears_by_name
@@ -232,7 +232,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
             ga_depth=int(ga_depth),
         ),
         gpu_inputs=NativeSongGPUInputs(
-            ref_arrays=ref_arrays,
+            curves=curves,
             all_gears=all_gears,
             all_minis=all_minis,
             gears_by_name=gears_by_name,
@@ -279,7 +279,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     # fails loud here -- earlier and off the owner -- if the startup cache is missing).
     from gear_optimizer.solver.taichi_gem.api.timeline import load_timeline_frontier_payload
 
-    load_timeline_frontier_payload(song.gpu_inputs.calc_song, song.gpu_inputs.ref_arrays)
+    load_timeline_frontier_payload(song.gpu_inputs.calc_song, song.gpu_inputs.curves)
     song.runtime.prep.wall_prep_s = max(0.0, time.perf_counter() - float(wall_t0))
     song.runtime.prep.cpu_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     return song

@@ -9,7 +9,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgRespo
 from tests.parity.force_greats.fg_atom_champion import prove_single_frontier_champions
 
 
-def _ref_arrays(dtype=np.float32) -> dict[str, np.ndarray]:
+def _curves(dtype=np.float32) -> dict[str, np.ndarray]:
     return {
         "Perfect Points": np.linspace(1.0, 2.0, 161, dtype=dtype),
         "Combo Multiplier": np.linspace(1.0, 2.0, 161, dtype=dtype),
@@ -65,8 +65,8 @@ def test_head_coefficients_are_not_a_semantic_surface_key() -> None:
     coeffs = _precompute_surface_head_coeffs(surface_words, head_len=8)
 
     assert coeffs[0].tolist() == coeffs[1].tolist()
-    assert score_force_greats_response_surface_exact(stats, calc_song, _ref_arrays(np.float64), no_great) != (
-        score_force_greats_response_surface_exact(stats, calc_song, _ref_arrays(np.float64), with_great)
+    assert score_force_greats_response_surface_exact(stats, calc_song, _curves(np.float64), no_great) != (
+        score_force_greats_response_surface_exact(stats, calc_song, _curves(np.float64), with_great)
     )
 
 
@@ -106,7 +106,7 @@ def test_exact_scorer_atom_champion_projection_preserves_declared_domain() -> No
         primary_color="Rush",
         secondary_color="Flow",
         selected_color="Rush",
-        ref_arrays=_ref_arrays(np.float32),
+        curves=_curves(np.float32),
     )
 
     assert len(proof.champion_surfaces) < len(surfaces)

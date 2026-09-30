@@ -115,7 +115,7 @@ class InflightGAPipeline:
         fg_calc_song = resolve_active_fg_calc_song(song)
         return {
             "calc_song": song.gpu_inputs.calc_song,
-            "ref_arrays": song.gpu_inputs.ref_arrays,
+            "curves": song.gpu_inputs.curves,
             "song_slot": int(song.runtime.song_slot),
             "item_stats": song.gpu_inputs.item_stats,
             "slot_start": song.gpu_inputs.slot_start,

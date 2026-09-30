@@ -142,7 +142,7 @@ def hydrate_fg_candidate_stats(
     base_stats_fixed: dict,
     selected_color: str,
     calc_song: Optional[dict] = None,
-    ref_arrays: Optional[dict] = None,
+    curves: Optional[dict] = None,
 ) -> None:
     """
     Ensure FG candidates carry `Data["Stats"]` before finder/exact-DP work.
@@ -164,8 +164,8 @@ def hydrate_fg_candidate_stats(
             base_fixed = build_stats_dict(build_stats_list(base_stats_fixed))
         return base_fixed
 
-    if (calc_song is None) != (ref_arrays is None):
-        raise ValueError("calc_song and ref_arrays must be provided together for canonical FG candidate scores")
+    if (calc_song is None) != (curves is None):
+        raise ValueError("calc_song and curves must be provided together for canonical FG candidate scores")
 
     for cand in candidates:
         if not isinstance(cand, dict):
@@ -226,7 +226,7 @@ def hydrate_fg_candidate_stats(
         stats_rows.append(stats)
         candidates_with_stats.append(cand)
 
-    exact_scores = score_stats_exact_batch(stats_rows, calc_song, ref_arrays)
+    exact_scores = score_stats_exact_batch(stats_rows, calc_song, curves)
     if len(exact_scores) != len(candidates_with_stats):
         raise ValueError("FG candidate exact score batch returned the wrong number of scores")
     for cand, base_score in zip(candidates_with_stats, exact_scores, strict=True):

@@ -179,7 +179,7 @@ class QueueTaskCoordinator:
         self,
         song_queue,
         run: RunSettings,
-        ref_arrays,
+        curves,
         all_gears,
         all_minis,
         gears_by_name,
@@ -188,7 +188,7 @@ class QueueTaskCoordinator:
         tasks = []
         run_context = SharedRunContext(
             multi_start=int(run.multi_start),
-            ref_arrays=ref_arrays,
+            curves=curves,
             all_gears=all_gears,
             all_minis=all_minis,
             gears_by_name=gears_by_name,

@@ -12,6 +12,7 @@ from typing import Iterable
 import numpy as np
 import psutil
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.cpu_affinity import (
     frontier_prebuild_cpu_count,
@@ -73,7 +74,7 @@ def _maintain_fg_response_frontier_cache_under_lock(
     compress_cache_dir_sidecars()
 
 
-_PREBUILD_WORKER_REF_ARRAYS: dict | None = None
+_PREBUILD_WORKER_CURVES: StatCurves | None = None
 _PREBUILD_WORKER_STAT_KEYS: tuple[tuple[int, int], ...] = ()
 _MANIFEST_FILE_NAME = "fg_response_manifest_v1.json"
 _FG_PREBUILD_MAX_TASKS_PER_WORKER = 16
@@ -275,7 +276,7 @@ def _fg_prebuild_reducer_threads(
 
 
 def _init_prebuild_worker(
-    ref_arrays: dict,
+    curves: StatCurves,
     stat_keys: tuple[tuple[int, int], ...],
     reducer_threads: int = 1,
     total_workers: int = 1,
@@ -283,8 +284,8 @@ def _init_prebuild_worker(
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_reducer
 
     init_process_pool_worker_band(int(total_workers))
-    global _PREBUILD_WORKER_REF_ARRAYS, _PREBUILD_WORKER_STAT_KEYS
-    _PREBUILD_WORKER_REF_ARRAYS = dict(ref_arrays or {})
+    global _PREBUILD_WORKER_CURVES, _PREBUILD_WORKER_STAT_KEYS
+    _PREBUILD_WORKER_CURVES = curves
     _PREBUILD_WORKER_STAT_KEYS = tuple(stat_keys or ())
     response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(max(1, int(reducer_threads)))
 
@@ -299,7 +300,9 @@ def _build_fg_response_frontier_cache_for_path_shared(
 
         # Per-task width from the admission scheduler: sized to this song's memory weight class.
         response_build_gpu_reducer.configure_force_greats_response_first_frontier_threads(int(reducer_threads))
-    shared = _PREBUILD_WORKER_REF_ARRAYS if isinstance(_PREBUILD_WORKER_REF_ARRAYS, dict) else {}
+    shared = _PREBUILD_WORKER_CURVES
+    if shared is None:
+        raise RuntimeError("prebuild worker was not initialized with stat curves")
     return build_fg_response_frontier_cache_for_path(
         song_path_text,
         shared,
@@ -326,7 +329,7 @@ def _stat_keys_signature(stat_keys: Iterable[tuple[int, int]]) -> str:
 
 def _derived_bundle_cache_file(
     song_path: str,
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     timing_mode: str = "perfect_window",
 ) -> str | None:
@@ -341,7 +344,7 @@ def _derived_bundle_cache_file(
         return None
     calc_song = clone_calc_song(base_song)
     apply_timing_envelope(calc_song, mode=timing_mode)
-    return str(resolve_fg_response_bundle_path(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)))
+    return str(resolve_fg_response_bundle_path(fg_response_frontier_bundle_cache_key(calc_song, curves)))
 
 
 def _manifest_records_current_cache_version() -> bool:
@@ -356,7 +359,7 @@ def _manifest_records_current_cache_version() -> bool:
 
 def _build_manifest_plan(
     song_paths: Iterable[str],
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
     timing_mode: str = "perfect_window",
@@ -370,7 +373,7 @@ def _build_manifest_plan(
         manifest_path=_manifest_path(),
         cache_version=_cache_version(),
         version_field="cache_version",
-        ref_sig_hex=_ref_axes_signature(ref_arrays),
+        ref_sig_hex=_ref_axes_signature(curves),
         stat_sig_hex=_stat_keys_signature(stat_keys_tuple),
         timing_mode=timing_mode,
         cache_file_validator=lambda cache_file: fg_response_cache_file_is_complete(
@@ -378,7 +381,7 @@ def _build_manifest_plan(
             stat_keys=stat_keys_tuple,
         ),
         derived_cache_file_fn=lambda song_path: _derived_bundle_cache_file(
-            song_path, ref_arrays, timing_mode=timing_mode
+            song_path, curves, timing_mode=timing_mode
         ),
         persist_validated_entries=persist_validated_entries,
     )
@@ -403,7 +406,7 @@ def _apply_manifest_results(*, plan, results: Iterable[object], stat_keys: Itera
 
 def _dedupe_paths_by_response_bundle_key(
     paths: Iterable[str],
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     timing_mode: str = "perfect_window",
 ) -> tuple[list[tuple[str, int]], dict[str, tuple[str, ...]]]:
@@ -425,7 +428,7 @@ def _dedupe_paths_by_response_bundle_key(
         base_song = get_base_calc_song(path)
         calc_song = clone_calc_song(base_song)
         apply_timing_envelope(calc_song, mode=timing_mode)
-        key = fg_response_frontier_bundle_cache_key(calc_song, ref_arrays)
+        key = fg_response_frontier_bundle_cache_key(calc_song, curves)
         representative = representative_by_key.get(key)
         if representative is None:
             timestamps = calc_song.get("song_data", {}).get("timestamps", ())
@@ -444,7 +447,7 @@ def _dedupe_paths_by_response_bundle_key(
 
 def build_fg_response_frontier_cache_for_path(
     song_path_text: str,
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
     timing_mode: str = "perfect_window",
@@ -464,7 +467,7 @@ def build_fg_response_frontier_cache_for_path(
     base_song = get_base_calc_song(str(song_path))
     calc_song = clone_calc_song(base_song)
     apply_timing_envelope(calc_song, mode=timing_mode)
-    cache_info = fg_response_frontier_payload_cache_info(calc_song, ref_arrays, stat_keys=stat_keys)
+    cache_info = fg_response_frontier_payload_cache_info(calc_song, curves, stat_keys=stat_keys)
     if cache_info.cache_source in {"disk", "memory"}:
         return FgResponseFrontierCacheBuildResult(
             path=str(song_path),
@@ -473,7 +476,7 @@ def build_fg_response_frontier_cache_for_path(
             cache_file=str(cache_info.disk_path),
         )
     try:
-        result = build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=stat_keys)
+        result = build_or_load_response_frontier_payload(calc_song, curves, stat_keys=stat_keys)
     finally:
         # The prebuild contract is disk files; build_or_load additionally pins the built
         # bundle+payload (~1 GB of frontier rows on heavy charts) into the process-global
@@ -482,7 +485,7 @@ def build_fg_response_frontier_cache_for_path(
         # worker) on top of the current build's transient peak -- the measured OOM/paging
         # driver on EXTENDED CUT charts. Release sweeps every per-song cache tier by key
         # prefix; the bundle just written re-opens from disk wherever it is next needed.
-        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays))
+        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(calc_song, curves))
     return FgResponseFrontierCacheBuildResult(
         path=str(song_path),
         source=str(result.cache_source),
@@ -493,7 +496,7 @@ def build_fg_response_frontier_cache_for_path(
 
 def ensure_response_frontier_cache_for_calc_song(
     calc_song: dict,
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]] | None = None,
 ) -> None:
@@ -527,21 +530,21 @@ def ensure_response_frontier_cache_for_calc_song(
     # materializes every pool row into Python objects -- seconds on heavy bundles -- and
     # no consumer on this path reads that payload (scoring uses the slim bundle +
     # sidecars). Same fast path as build_fg_response_frontier_cache_for_path above.
-    cache_info = fg_response_frontier_payload_cache_info(calc_song, ref_arrays, stat_keys=keys)
+    cache_info = fg_response_frontier_payload_cache_info(calc_song, curves, stat_keys=keys)
     if cache_info.cache_source in {"disk", "memory"}:
         return
     try:
-        build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=keys)
+        build_or_load_response_frontier_payload(calc_song, curves, stat_keys=keys)
     finally:
         # build_or_load pins the merged bundle + request payload in the process-global payload LRU
         # and no consumer on this path reads them (same rationale as the prebuild wrapper above);
         # the caller's load_response_frontier_scoring_bundle re-opens the slim arrays from disk.
-        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(calc_song, ref_arrays))
+        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(calc_song, curves))
 
 
 def _run_missing_fg_prebuild(
     paths: list[str],
-    ref_arrays: dict,
+    curves: StatCurves,
     stat_keys: tuple[tuple[int, int], ...],
     *,
     timing_mode: str = "perfect_window",
@@ -554,10 +557,10 @@ def _run_missing_fg_prebuild(
     completed = 0
     results: list[FgResponseFrontierCacheBuildResult] = []
     if timing_mode == "perfect_window":
-        build_items, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(paths, ref_arrays)
+        build_items, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(paths, curves)
     else:
         build_items, duplicate_paths_by_representative = _dedupe_paths_by_response_bundle_key(
-            paths, ref_arrays, timing_mode=timing_mode
+            paths, curves, timing_mode=timing_mode
         )
     # Heaviest-first (same makespan ordering as before), note counts from the dedupe parse pass.
     build_items.sort(key=lambda item: (-int(item[1]), str(item[0]).lower()))
@@ -566,10 +569,10 @@ def _run_missing_fg_prebuild(
         duplicate_paths = duplicate_paths_by_representative.get(path, ())
         try:
             if timing_mode == "perfect_window":
-                result = build_fg_response_frontier_cache_for_path(path, ref_arrays, stat_keys=stat_keys)
+                result = build_fg_response_frontier_cache_for_path(path, curves, stat_keys=stat_keys)
             else:
                 result = build_fg_response_frontier_cache_for_path(
-                    path, ref_arrays, stat_keys=stat_keys, timing_mode=timing_mode
+                    path, curves, stat_keys=stat_keys, timing_mode=timing_mode
                 )
         except Exception as exc:
             failures = 1 + int(len(duplicate_paths))
@@ -708,7 +711,7 @@ def _run_missing_fg_prebuild(
         with BoundedRecyclingProcessPool(
             max_workers=max_workers,
             initializer=_init_prebuild_worker,
-            initargs=(dict(ref_arrays or {}), tuple(stat_keys or ()), 1, int(max_workers)),
+            initargs=(curves, tuple(stat_keys or ()), 1, int(max_workers)),
             max_tasks_per_worker=_FG_PREBUILD_MAX_TASKS_PER_WORKER,
         ) as executor:
             _admit_ready(executor)
@@ -785,7 +788,7 @@ def _run_missing_fg_prebuild(
 def _run_fg_response_frontier_cache_prebuild_for_mode(
     *,
     song_queue: Iterable[tuple],
-    ref_arrays: dict,
+    curves: StatCurves,
     data_root: str | os.PathLike[str] | None = None,
     authorize_destructive_rotation: bool = False,
     build_missing: bool = True,
@@ -809,7 +812,7 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
         # lock. Complete derived hits absent from the manifest enter the lock once below.
         optimistic_plan = _build_manifest_plan(
             paths,
-            ref_arrays,
+            curves,
             stat_keys=stat_keys,
             timing_mode=timing_mode,
             persist_validated_entries=False,
@@ -827,7 +830,7 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
     # multi-GB cold build and multiplying peak RAM.
     with FrontierBuildLock(_fg_response_disk_cache_dir(), label="fg_response"):
         manifest_plan = _build_manifest_plan(
-            paths, ref_arrays, stat_keys=stat_keys, timing_mode=timing_mode
+            paths, curves, stat_keys=stat_keys, timing_mode=timing_mode
         )
         manifest_hits = int(manifest_plan.hit_count)
         if manifest_hits > 0:
@@ -870,7 +873,7 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
         # _run_missing_fg_prebuild from the same parse pass that computes admission weights.
         missing_paths = sorted(str(path) for path in manifest_plan.missing_paths)
         run_summary, results = _run_missing_fg_prebuild(
-            list(missing_paths), ref_arrays, stat_keys, timing_mode=timing_mode
+            list(missing_paths), curves, stat_keys, timing_mode=timing_mode
         )
         _apply_manifest_results(plan=manifest_plan, results=results, stat_keys=stat_keys)
         elapsed_ms = float((time.perf_counter() - started) * 1000.0)
@@ -892,7 +895,7 @@ def _run_fg_response_frontier_cache_prebuild_for_mode(
 def run_fg_response_frontier_cache_prebuild(
     *,
     song_queue: Iterable[tuple],
-    ref_arrays: dict,
+    curves: StatCurves,
     data_root: str | os.PathLike[str] | None = None,
     authorize_destructive_rotation: bool = False,
     build_missing: bool = True,
@@ -904,7 +907,7 @@ def run_fg_response_frontier_cache_prebuild(
     summaries = [
         _run_fg_response_frontier_cache_prebuild_for_mode(
             song_queue=queue_items,
-            ref_arrays=ref_arrays,
+            curves=curves,
             data_root=data_root,
             authorize_destructive_rotation=authorize_destructive_rotation,
             build_missing=build_missing,

@@ -6,7 +6,8 @@ from typing import Any
 
 import numpy as np
 
-from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
+from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.settings import paths
 from gear_optimizer.data.song_io import get_base_calc_song
 from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
@@ -48,11 +49,11 @@ def _assert_selected_base_timeline_frontier(details: Any) -> None:
     assert all("activation_index" in row and "activation_hit_offset_ms" in row for row in trace)
 
 
-def _prebuild_timeline_frontier(calc_song: dict[str, Any], ref_arrays: dict[str, Any]) -> None:
+def _prebuild_timeline_frontier(calc_song: dict[str, Any], curves: dict[str, Any]) -> None:
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     apply_timing_envelope(calc_song, mode="perfect_window")
-    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    build_or_load_timeline_frontier_payload(calc_song, curves)
 
 
 def _calc_song_with_truncated_timeline(calc_song: dict[str, Any]) -> dict[str, Any]:
@@ -88,9 +89,8 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     assert song_file.exists(), f"Missing frozen chart fixture: {song_file}"
 
     calc_song = get_base_calc_song(str(song_file))
-    ref_arrays = _get_team_buff_ref_arrays_cached()
-    assert isinstance(ref_arrays, dict) and ref_arrays
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
+    curves = load_stat_curves(paths().stats_txt)
+    _prebuild_timeline_frontier(calc_song, curves)
     build_details_fn = make_build_details_fn(
         str(frozen["primary_color"]),
         str(frozen["secondary_color"]),
@@ -113,7 +113,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
         loadout_entries=None,
         build_details_fn=build_details_fn,
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
     )
 
     rows_by_signature = {_row_signature(row): row for row in persist_entries if isinstance(row, dict)}
@@ -127,7 +127,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     assert details_actual == details_expected
     stats = dict((details_actual.get("Stats") or {}))
     assert stats == dict(details_expected["Stats"])
-    exact = int(score_stats_exact(stats, calc_song, ref_arrays))
+    exact = int(score_stats_exact(stats, calc_song, curves))
     authority_score = 47192170
     assert int(row["score"]) == exact == int(base_entry["expected_score"]) == authority_score
     assert int(row["score"]) != stale_score
@@ -140,6 +140,6 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     assert int(details_actual.get("FF", 0)) == 13
 
     wrong_timeline_calc_song = _calc_song_with_truncated_timeline(calc_song)
-    _prebuild_timeline_frontier(wrong_timeline_calc_song, ref_arrays)
-    wrong_timeline_score = int(score_stats_exact(stats, wrong_timeline_calc_song, ref_arrays))
+    _prebuild_timeline_frontier(wrong_timeline_calc_song, curves)
+    wrong_timeline_score = int(score_stats_exact(stats, wrong_timeline_calc_song, curves))
     assert wrong_timeline_score <= authority_score

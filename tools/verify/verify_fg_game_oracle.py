@@ -44,7 +44,8 @@ from gear_optimizer.rules import (
 )
 from gear_optimizer.core.time_quantize import quantize_to_int_ms
 from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song, scan_song_header
-from gear_optimizer.helpers.song_helpers.ref_array_builder import get_exact_replay_ref_arrays_cached
+from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
@@ -495,9 +496,7 @@ def verify_song(conn: sqlite3.Connection, song_name: str, chart_path: Path) -> d
         note_types=note_types,
     )
 
-    refs = get_exact_replay_ref_arrays_cached()
-    if refs is None:
-        raise ValueError("exact replay ref arrays are unavailable")
+    curves = load_stat_curves(paths().stats_txt)
     source_score = score_from_game_source(
         stats=stats,
         primary_color=str(details.get("pc") or ""),
@@ -505,7 +504,7 @@ def verify_song(conn: sqlite3.Connection, song_name: str, chart_path: Path) -> d
         fever_mask=fever_mask,
         great_mask=great_mask,
     )
-    exact_score = score_force_greats_response_surface_exact(stats, calc_song, refs, surface)
+    exact_score = score_force_greats_response_surface_exact(stats, calc_song, curves, surface)
     optimizer_fg = int(row["fg_score"] or 0)
     if int(exact_score or 0) != optimizer_fg:
         raise ValueError(f"optimizer FG row {optimizer_fg} does not replay to the persisted exact_rescore {exact_score}")

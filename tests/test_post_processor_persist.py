@@ -1,3 +1,4 @@
+from tests.curves_support import synthetic_curves
 from gear_optimizer.pipeline.post_processor_persist import (
     build_post_persist_context,
     build_post_persist_db_payload,
@@ -8,25 +9,25 @@ from gear_optimizer.pipeline.post_processor_persist import (
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
 
-def _ref_arrays() -> dict:
+def _curves() -> dict:
     from gear_optimizer.rules import MAX_STAT
 
     rows = int(MAX_STAT) + 1
-    return {
+    return synthetic_curves({
         "Perfect Points": [1.0] * rows,
         "Combo Multiplier": [1.0] * rows,
         "Fever Multiplier": [1.0] * rows,
         "Fever Fill Rate": [1.0] * rows,
         "Fever Time": [1.0] * rows,
-    }
+    })
 
 
-def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+def _prebuild_timeline_frontier(calc_song: dict, curves: dict) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     apply_timing_envelope(calc_song)
-    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    build_or_load_timeline_frontier_payload(calc_song, curves)
 
 
 def test_deferred_post_finalizer_builds_replay_authoritative_entries():
@@ -39,7 +40,7 @@ def test_deferred_post_finalizer_builds_replay_authoritative_entries():
         },
         "song_data": {"timestamps": [0.0]},
     }
-    ref_arrays = _ref_arrays()
+    curves = _curves()
     stats = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -49,15 +50,15 @@ def test_deferred_post_finalizer_builds_replay_authoritative_entries():
         "Rush": 10,
         "Flow": 5,
     }
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
-    inflated_score = int(score_stats_exact(stats, calc_song, ref_arrays)) + 12345
+    _prebuild_timeline_frontier(calc_song, curves)
+    inflated_score = int(score_stats_exact(stats, calc_song, curves)) + 12345
     item = {
         "_deferred_post": True,
         "song": "pytest_deferred_post_finalizer",
         "db_key": "pytest_deferred_post_finalizer",
         "difficulty": "Hard",
         "calc_song": calc_song,
-        "ref_arrays": ref_arrays,
+        "curves": curves,
         "best_data": {
             "Score": inflated_score,
             "BaseScore": inflated_score,
@@ -91,7 +92,7 @@ def test_deferred_post_finalizer_builds_replay_authoritative_entries():
     assert persisted["gear"] == ["G1"]
     assert persisted["minis"] == ["M1"]
     assert persisted["score"] != inflated_score
-    assert persisted["score"] == int(score_stats_exact(persisted_stats, calc_song, ref_arrays))
+    assert persisted["score"] == int(score_stats_exact(persisted_stats, calc_song, curves))
     assert result_payload == {
         "song": "pytest_deferred_post_finalizer",
         "db_key": "pytest_deferred_post_finalizer",
@@ -111,7 +112,7 @@ def test_deferred_post_print_payload_preserves_pending_final_shape():
         "best_gear": ["G1"],
         "best_minis": ["M1"],
         "prev_record": {"score": 99},
-        "ref_arrays": {"Perfect Points": [1.0]},
+        "curves": {"Perfect Points": [1.0]},
         "calc_song": {"metadata": {}, "song_data": {}},
         "db_best_fg_score": "123",
     }

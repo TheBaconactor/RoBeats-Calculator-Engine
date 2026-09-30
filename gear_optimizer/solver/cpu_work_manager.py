@@ -5,6 +5,7 @@ import sys
 import time
 from typing import TextIO
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.fg_response_frontier_cache_prebuild import run_fg_response_frontier_cache_prebuild
 from gear_optimizer.solver.timeline_frontier_cache_prebuild import (
     run_timeline_frontier_cache_prebuild,
@@ -43,7 +44,7 @@ def _announce_cache_summary(stream: TextIO, *, label: str, summary, elapsed_ms: 
 def run_startup_cpu_work(
     *,
     song_queue,
-    ref_arrays: dict,
+    curves: StatCurves,
     data_root,
     announce_stream: TextIO | None = None,
     build_missing: bool = True,
@@ -63,7 +64,7 @@ def run_startup_cpu_work(
     timeline_t0 = time.perf_counter()
     timeline_summary = run_timeline_frontier_cache_prebuild(
         song_queue=queue_items,
-        ref_arrays=ref_arrays,
+        curves=curves,
         data_root=data_root,
         build_missing=build_missing,
         timing_modes=TIMING_MODES,
@@ -73,7 +74,7 @@ def run_startup_cpu_work(
     fg_t0 = time.perf_counter()
     fg_summary = run_fg_response_frontier_cache_prebuild(
         song_queue=queue_items,
-        ref_arrays=ref_arrays,
+        curves=curves,
         data_root=data_root,
         build_missing=build_missing,
         authorize_destructive_rotation=authorize_destructive_rotation,

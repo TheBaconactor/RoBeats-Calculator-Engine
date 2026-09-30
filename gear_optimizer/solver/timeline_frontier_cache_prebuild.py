@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.settings import DIFFICULTIES, paths
 from gear_optimizer.core.recycling_process_pool import BoundedRecyclingProcessPool
 from gear_optimizer.solver.frontier_cache_manifest import (
@@ -47,23 +48,25 @@ class TimelineFrontierCachePrebuildSummary:
     elapsed_ms: float = 0.0
 
 
-_PREBUILD_WORKER_REF_ARRAYS: dict | None = None
+_PREBUILD_WORKER_CURVES: StatCurves | None = None
 _MANIFEST_FILE_NAME = "manifest_v1.json"
 _TIMELINE_PREBUILD_MAX_TASKS_PER_WORKER = 64
 
 
-def _init_prebuild_worker(ref_arrays: dict, pair_build_threads: int, total_workers: int) -> None:
+def _init_prebuild_worker(curves: StatCurves, pair_build_threads: int, total_workers: int) -> None:
     init_process_pool_worker_band(int(total_workers))
     configure_timeline_pair_build_threads(max(1, int(pair_build_threads)))
-    global _PREBUILD_WORKER_REF_ARRAYS
-    _PREBUILD_WORKER_REF_ARRAYS = dict(ref_arrays or {})
+    global _PREBUILD_WORKER_CURVES
+    _PREBUILD_WORKER_CURVES = curves
 
 
 def _build_timeline_frontier_cache_for_path_shared(
     song_path_text: str,
     timing_mode: str = "perfect_window",
 ) -> TimelineFrontierCacheBuildResult:
-    shared = _PREBUILD_WORKER_REF_ARRAYS if isinstance(_PREBUILD_WORKER_REF_ARRAYS, dict) else {}
+    shared = _PREBUILD_WORKER_CURVES
+    if shared is None:
+        raise RuntimeError("prebuild worker was not initialized with stat curves")
     return build_timeline_frontier_cache_for_path(song_path_text, shared, timing_mode=timing_mode)
 
 
@@ -121,7 +124,7 @@ def _cache_version() -> str:
 
 def _derived_frontier_cache_file(
     song_path: str,
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     timing_mode: str = "perfect_window",
 ) -> str | None:
@@ -136,13 +139,13 @@ def _derived_frontier_cache_file(
     calc_song = clone_calc_song(base_song)
     apply_timing_envelope(calc_song, mode=timing_mode)
     return str(
-        timeline_frontier_payload_cache_info(calc_song, ref_arrays, timing_mode=timing_mode).disk_path
+        timeline_frontier_payload_cache_info(calc_song, curves, timing_mode=timing_mode).disk_path
     )
 
 
 def _build_manifest_plan(
     song_paths: Iterable[str],
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     timing_mode: str = "perfect_window",
     persist_validated_entries: bool = True,
@@ -154,11 +157,11 @@ def _build_manifest_plan(
         manifest_path=_manifest_path(),
         cache_version=_cache_version(),
         version_field="frontier_version",
-        ref_sig_hex=_ref_axes_signature(ref_arrays),
+        ref_sig_hex=_ref_axes_signature(curves),
         timing_mode=timing_mode,
         cache_file_validator=timeline_frontier_cache_file_is_complete,
         derived_cache_file_fn=lambda song_path: _derived_frontier_cache_file(
-            song_path, ref_arrays, timing_mode=timing_mode
+            song_path, curves, timing_mode=timing_mode
         ),
         persist_validated_entries=persist_validated_entries,
     )
@@ -192,7 +195,7 @@ def cleanup_timeline_frontier_cache_temp_files(cache_dir: str | os.PathLike[str]
 
 def build_timeline_frontier_cache_for_path(
     song_path_text: str,
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     timing_mode: str = "perfect_window",
 ) -> TimelineFrontierCacheBuildResult:
@@ -207,7 +210,7 @@ def build_timeline_frontier_cache_for_path(
     base_song = get_base_calc_song(str(song_path))
     calc_song = clone_calc_song(base_song)
     apply_timing_envelope(calc_song, mode=timing_mode)
-    cache_info = timeline_frontier_payload_cache_info(calc_song, ref_arrays, timing_mode=timing_mode)
+    cache_info = timeline_frontier_payload_cache_info(calc_song, curves, timing_mode=timing_mode)
     if cache_info.cache_source in {"disk", "memory"}:
         return TimelineFrontierCacheBuildResult(
             path=str(song_path),
@@ -216,7 +219,7 @@ def build_timeline_frontier_cache_for_path(
             cache_file=str(cache_info.disk_path),
         )
     result = build_or_load_timeline_frontier_payload(
-        calc_song, ref_arrays, timing_mode=timing_mode
+        calc_song, curves, timing_mode=timing_mode
     )
     return TimelineFrontierCacheBuildResult(
         path=str(song_path),
@@ -228,7 +231,7 @@ def build_timeline_frontier_cache_for_path(
 
 def _run_missing_timeline_prebuild(
     paths: list[str],
-    ref_arrays: dict,
+    curves: StatCurves,
     *,
     timing_mode: str = "perfect_window",
 ) -> tuple[TimelineFrontierCachePrebuildSummary, list[TimelineFrontierCacheBuildResult]]:
@@ -243,10 +246,10 @@ def _run_missing_timeline_prebuild(
         path = str(paths[0])
         try:
             if timing_mode == "perfect_window":
-                result = build_timeline_frontier_cache_for_path(path, ref_arrays)
+                result = build_timeline_frontier_cache_for_path(path, curves)
             else:
                 result = build_timeline_frontier_cache_for_path(
-                    path, ref_arrays, timing_mode=timing_mode
+                    path, curves, timing_mode=timing_mode
                 )
         except Exception as exc:
             failures = 1
@@ -273,7 +276,7 @@ def _run_missing_timeline_prebuild(
     with BoundedRecyclingProcessPool(
         max_workers=worker_count,
         initializer=_init_prebuild_worker,
-        initargs=(dict(ref_arrays or {}), int(pair_build_threads), int(worker_count)),
+        initargs=(curves, int(pair_build_threads), int(worker_count)),
         # Release native/NumPy allocator high-water before a full-pool worker reaches the heavy
         # chart tail. Persistent workers exhausted commit after ~2,216 successes and then failed
         # allocations as small as 1 MiB on the production 2,249-song pool.
@@ -335,7 +338,7 @@ def _run_missing_timeline_prebuild(
 def _run_timeline_frontier_cache_prebuild_for_mode(
     *,
     song_queue: Iterable[tuple],
-    ref_arrays: dict,
+    curves: StatCurves,
     data_root: str | os.PathLike[str] | None = None,
     build_missing: bool = True,
     timing_mode: str = "perfect_window",
@@ -353,7 +356,7 @@ def _run_timeline_frontier_cache_prebuild_for_mode(
     # Complete derived hits absent from the manifest enter the lock once below to persist metadata.
     optimistic_plan = _build_manifest_plan(
         paths,
-        ref_arrays,
+        curves,
         timing_mode=timing_mode,
         persist_validated_entries=False,
     )
@@ -368,7 +371,7 @@ def _run_timeline_frontier_cache_prebuild_for_mode(
     # Single-builder lock: a second concurrent process waits here, then re-runs its manifest plan
     # below -- which now fast-hits everything this process wrote -- instead of duplicating the build.
     with FrontierBuildLock(_frontier_disk_cache_dir(), label="timeline"):
-        manifest_plan = _build_manifest_plan(paths, ref_arrays, timing_mode=timing_mode)
+        manifest_plan = _build_manifest_plan(paths, curves, timing_mode=timing_mode)
         manifest_hits = int(manifest_plan.hit_count)
         if manifest_hits > 0:
             logger.info(
@@ -404,7 +407,7 @@ def _run_timeline_frontier_cache_prebuild_for_mode(
             )
 
         run_summary, results = _run_missing_timeline_prebuild(
-            list(manifest_plan.missing_paths), ref_arrays, timing_mode=timing_mode
+            list(manifest_plan.missing_paths), curves, timing_mode=timing_mode
         )
         _apply_manifest_results(plan=manifest_plan, results=results)
         elapsed_ms = float((time.perf_counter() - started) * 1000.0)
@@ -423,7 +426,7 @@ def _run_timeline_frontier_cache_prebuild_for_mode(
 def run_timeline_frontier_cache_prebuild(
     *,
     song_queue: Iterable[tuple],
-    ref_arrays: dict,
+    curves: StatCurves,
     data_root: str | os.PathLike[str] | None = None,
     build_missing: bool = True,
     timing_modes: Iterable[str] = TIMING_MODES,
@@ -434,7 +437,7 @@ def run_timeline_frontier_cache_prebuild(
     summaries = [
         _run_timeline_frontier_cache_prebuild_for_mode(
             song_queue=queue_items,
-            ref_arrays=ref_arrays,
+            curves=curves,
             data_root=data_root,
             build_missing=build_missing,
             timing_mode=str(mode or "").strip().lower(),

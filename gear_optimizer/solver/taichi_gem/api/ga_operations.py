@@ -33,6 +33,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - CPU-only import/test pa
         raise RuntimeError("Taichi is not installed")
     def get_kernels():
         return SimpleNamespace()
+from gear_optimizer.gamedata import StatCurves
 from ..ga_chunking import compute_ga_combo_chunk
 from .common_operations import compute_array_sig, probability_to_u32_fp
 _GA_COMBO_CHUNK_MIN: int = 1024  # exact-combo dispatch chunk floor (TDR-safe)
@@ -41,15 +42,17 @@ _GA_COMBO_TAIL_MERGE_MAX: int = 256  # merge a trailing remainder up to this siz
 _GA_KERNELS_LIGHT_WARMED: bool = False
 
 
-def _warmup_ref_arrays() -> dict[str, np.ndarray]:
+def _warmup_curves() -> StatCurves:
     x = np.linspace(0.0, 1.0, int(fields.GRID_SIZE), dtype=np.float32)
-    return {
-        "Perfect Points": (1000.0 + (500.0 * x)).astype(np.float32, copy=False),
-        "Combo Multiplier": (1.0 + x).astype(np.float32, copy=False),
-        "Fever Multiplier": (1.0 + (0.5 * x)).astype(np.float32, copy=False),
-        "Fever Time": (5.0 + (30.0 * x)).astype(np.float32, copy=False),
-        "Fever Fill Rate": (1.0 + (4.0 * x)).astype(np.float32, copy=False),
-    }
+    return StatCurves.from_mapping(
+        {
+            "Perfect Points": (1000.0 + (500.0 * x)).astype(np.float32, copy=False),
+            "Combo Multiplier": (1.0 + x).astype(np.float32, copy=False),
+            "Fever Multiplier": (1.0 + (0.5 * x)).astype(np.float32, copy=False),
+            "Fever Time": (5.0 + (30.0 * x)).astype(np.float32, copy=False),
+            "Fever Fill Rate": (1.0 + (4.0 * x)).astype(np.float32, copy=False),
+        }
+    )
 
 
 def _warmup_calc_song() -> dict:
@@ -94,9 +97,9 @@ def warmup_ga_kernels_light() -> None:
     gem_scale_fever = 3
     song_slot = 0
 
-    ref_arrays = _warmup_ref_arrays()
-    ensure_ready(ref_arrays)
-    precompute_timeline_gpu_for_warmup(_warmup_calc_song(), ref_arrays, song_slot=song_slot)
+    curves = _warmup_curves()
+    ensure_ready(curves)
+    precompute_timeline_gpu_for_warmup(_warmup_calc_song(), curves, song_slot=song_slot)
 
     item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
     slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)

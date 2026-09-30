@@ -10,7 +10,7 @@ from gear_optimizer.engine.native import NativeOptimizationEngine, NativeOptimiz
 def _task() -> tuple:
     context = SharedRunContext(
         multi_start=3,
-        ref_arrays={},
+        curves={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},

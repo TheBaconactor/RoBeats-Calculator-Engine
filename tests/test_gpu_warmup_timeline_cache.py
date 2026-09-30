@@ -19,11 +19,11 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
     def _ensure(*_args, **_kwargs):
         calls.append("ensure")
 
-    def _lookup(calc_song, ref_arrays, ref_sig=None):
+    def _lookup(calc_song, curves, ref_sig=None):
         del ref_sig
         calls.append("lookup")
         assert calc_song["metadata"]["Song Name"] == "warmup"
-        assert ref_arrays["Fever Time"] == [1.0]
+        assert curves["Fever Time"] == [1.0]
         return {
             "song_key": ("warmup",),
             "total_notes": 1,
@@ -42,7 +42,7 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
         assert kwargs["total_notes"] == 1
         return sentinel
 
-    def _upload(calc_song, ref_arrays, *, song_slot=0, prebuilt_frontier=None):
+    def _upload(calc_song, curves, *, song_slot=0, prebuilt_frontier=None):
         calls.append(f"upload:{song_slot}")
         # The fix: the warmup hands the built payload straight to the upload, so the upload
         # never re-reads the clearable in-memory frontier cache.

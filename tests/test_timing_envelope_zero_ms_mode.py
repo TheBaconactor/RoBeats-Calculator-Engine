@@ -7,6 +7,7 @@ chart-time fever timeline (independent of any timing frontier payload).
 
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 from types import SimpleNamespace
 
 import numpy as np
@@ -23,15 +24,15 @@ from gear_optimizer.solver.score_math import lookup_reference_py
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
 
-def _ref_arrays() -> dict[str, np.ndarray]:
+def _curves() -> dict[str, np.ndarray]:
     rows = MAX_STAT + 1
-    return {
+    return synthetic_curves({
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 4.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.linspace(0.3, 1.0, rows, dtype=np.float64),
         "Fever Time": np.linspace(0.3, 1.0, rows, dtype=np.float64),
-    }
+    })
 
 
 def _calc_song() -> dict:
@@ -113,7 +114,7 @@ def test_perfect_window_timeline_repairs_incomplete_canonical_envelope():
     apply_timing_envelope(cs, mode="perfect_window")
     del cs["song_data"]["fg_perfect_candidate_timestamps"]
 
-    loaded = timeline.load_timeline_frontier_payload(cs, _ref_arrays())
+    loaded = timeline.load_timeline_frontier_payload(cs, _curves())
 
     assert loaded.total_notes == note_count
     assert len(cs["song_data"]["fg_perfect_candidate_timestamps"]) == note_count
@@ -135,7 +136,7 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     """
     stats = _stats()
     cs = _calc_song()
-    ref = _ref_arrays()
+    ref = _curves()
 
     pp = lookup_reference_py(stats["Perfect Points"], ref["Perfect Points"], MAX_STAT)
     combo = lookup_reference_py(stats["Combo Multiplier"], ref["Combo Multiplier"], MAX_STAT)
@@ -175,7 +176,7 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
 def test_fixed_timing_base_scorer_is_mode_prep_invariant():
     """Base 0ms scoring reads chart timestamps only; the mode stamp does not change it."""
     stats = _stats()
-    ref = _ref_arrays()
+    ref = _curves()
     raw = _calc_song()
     enveloped = _calc_song()
     apply_timing_envelope(enveloped, mode="zero_ms")
@@ -188,7 +189,7 @@ def test_fixed_timing_base_scorer_is_mode_prep_invariant():
 def test_fixed_timing_base_scorer_batch_matches_single():
     stats_rows = [_stats(), {**_stats(), "Fever Time": 5, "Fever Fill Rate": 5}]
     cs = _calc_song()
-    ref = _ref_arrays()
+    ref = _curves()
 
     batch = score_stats_fixed_timing_exact_batch(stats_rows, cs, ref)
     singles = [score_stats_fixed_timing_exact(s, cs, ref) for s in stats_rows]
@@ -203,7 +204,7 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_
     timeline.reset_timeline_state()
     cs = _calc_song()
     apply_timing_envelope(cs, mode="zero_ms")
-    ref = _ref_arrays()
+    ref = _curves()
     stats_rows = [
         _stats(),
         {**_stats(), "Fever Time": 0, "Fever Fill Rate": 0},
@@ -247,10 +248,10 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
     seen: dict[str, object] = {}
     bundle = object()
 
-    def _ensure(calc_song, ref_arrays, *, stat_keys):
+    def _ensure(calc_song, curves, *, stat_keys):
         seen["ensure"] = tuple(stat_keys)
 
-    def _load(calc_song, ref_arrays, *, stat_keys):
+    def _load(calc_song, curves, *, stat_keys):
         seen["load"] = tuple(stat_keys)
         return bundle
 
@@ -274,7 +275,7 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
     results, _calc_song_used, _ref_arrays_used = fixed_timing._solve_fixed_timing_response_results(
         [_stats()],
         _calc_song(),
-        _ref_arrays(),
+        _curves(),
         "Rush",
     )
     surfaces = [result.surface for result in results]

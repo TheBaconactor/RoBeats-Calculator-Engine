@@ -30,7 +30,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
+from gear_optimizer.gamedata import StatCurves, load_stat_curves
+from gear_optimizer.settings import paths
 from gear_optimizer.rules import GEM_BUDGET
 from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, normalize_team_buff, team_buff_effect
 from gear_optimizer.core.utils import get_selected_element
@@ -285,7 +286,7 @@ def _find_replay_row(
     *,
     entry: dict[str, Any],
     active_calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     tier: str,
     timing_mode: str,
     base_team_color_override: str | None,
@@ -294,7 +295,7 @@ def _find_replay_row(
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
         calc_song=clone_calc_song(active_calc_song),
-        ref_arrays=dict(ref_arrays),
+        curves=curves,
         limit=1,
         tiers=(str(tier),),
         base_team_color_override=base_team_color_override,
@@ -333,7 +334,7 @@ def _solve_fg_exact(
     fixed_song_stats: dict[str, Any],
     loadout_items: list[dict[str, Any]],
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     selected_element: str,
     timing_mode: str,
 ) -> tuple[int, dict[str, int], dict[str, Any]]:
@@ -344,7 +345,7 @@ def _solve_fg_exact(
         fixed_song_stats=fixed_song_stats,
         loadout_items=loadout_items,
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color=str(selected_element or ""),
         timing_mode=str(timing_mode),
     )
@@ -362,7 +363,7 @@ def _compare_entry_mode(
     entry: dict[str, Any],
     fixed_stats: dict[str, Any],
     active_calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     tier: str,
     timing_mode: str,
     mode: str,
@@ -373,7 +374,7 @@ def _compare_entry_mode(
     replay_row = _find_replay_row(
         entry=entry,
         active_calc_song=active_calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         tier=tier,
         timing_mode=timing_mode,
         base_team_color_override=base_team_color_override,
@@ -401,7 +402,7 @@ def _compare_entry_mode(
             fixed_song_stats=target_fixed_stats,
             loadout_items=loadout_items,
             calc_song=clone_calc_song(active_calc_song),
-            ref_arrays=ref_arrays,
+            curves=curves,
             selected_element=selected_element,
             timing_mode=timing_mode,
         )
@@ -414,7 +415,7 @@ def _compare_entry_mode(
             fixed_song_stats=target_fixed_stats,
             loadout_items=loadout_items,
             calc_song=clone_calc_song(active_calc_song),
-            ref_arrays=ref_arrays,
+            curves=curves,
             primary_color=chart_primary,
             selected_color=selected_element,
             timing_mode=timing_mode,
@@ -514,9 +515,7 @@ def main() -> int:
     # (f32 on MoltenVK / f64 on AMD), so the GPU gem search runs here; the served score is the
     # CPU-f64 exact rescore of the winner (lossless). --mode {meta,fg,both} all run.
 
-    ref_arrays = _get_team_buff_ref_arrays_cached()
-    if not isinstance(ref_arrays, dict) or not ref_arrays:
-        raise SystemExit("ref_arrays unavailable (failed to load Stats lookup tables)")
+    curves = load_stat_curves(paths().stats_txt)
 
     baseline_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
     gears_by_name = get_gears_by_name_cached()
@@ -556,7 +555,7 @@ def main() -> int:
             primary_element_override=str(args.primary_element),
             secondary_element_override=str(args.secondary_element),
         )
-        build_or_load_timeline_frontier_payload(clone_calc_song(active_calc_song), ref_arrays)
+        build_or_load_timeline_frontier_payload(clone_calc_song(active_calc_song), curves)
 
         fixed_stats = baseline_fixed_stats(active_calc_song)
 
@@ -566,7 +565,7 @@ def main() -> int:
                     entry=entry,
                     fixed_stats=fixed_stats,
                     active_calc_song=active_calc_song,
-                    ref_arrays=ref_arrays,
+                    curves=curves,
                     tier=normalize_team_buff(args.tier, default="T5"),
                     timing_mode=str(args.timing_mode),
                     mode=mode,

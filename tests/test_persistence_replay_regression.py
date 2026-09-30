@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 import json
 
 import pytest
@@ -22,10 +23,10 @@ def test_build_persistence_entries_routes_retained_surface_through_shared_canoni
 
     captured: dict[str, object] = {}
 
-    def fake_build_team_buff_tier_db_batches(*, entries, calc_song, ref_arrays, limit, tiers, **_kwargs):
+    def fake_build_team_buff_tier_db_batches(*, entries, calc_song, curves, limit, tiers, **_kwargs):
         captured["entries"] = [dict(entry) for entry in entries]
         captured["calc_song"] = calc_song
-        captured["ref_arrays"] = ref_arrays
+        captured["curves"] = curves
         captured["tiers"] = tiers
         return {
             "T5": [
@@ -55,7 +56,7 @@ def test_build_persistence_entries_routes_retained_surface_through_shared_canoni
     )
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.persistence_canon.canonicalize_authoritative_fg_entries",
-        lambda entries, *, calc_song, ref_arrays: list(entries),
+        lambda entries, *, calc_song, curves: list(entries),
     )
 
     db_payload = {
@@ -72,13 +73,14 @@ def test_build_persistence_entries_routes_retained_surface_through_shared_canoni
         }
     }
 
+    curves = synthetic_curves({})
     out = build_persistence_entries(
         db_payload,
         ga_candidates=[],
         loadout_entries=loadout_entries,
         build_details_fn=lambda _data: {"tag": "top1"},
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
-        ref_arrays={"Perfect Points": [0]},
+        curves=curves,
     )
 
     row = next(e for e in out if e.get("gear") == ["G1"] and e.get("minis") == ["M1"])
@@ -88,7 +90,7 @@ def test_build_persistence_entries_routes_retained_surface_through_shared_canoni
     assert (row.get("details") or {}).get("tag") == "sentinel"
     assert isinstance(row.get("force"), dict)
     assert captured["calc_song"]["metadata"]["Primary Color"] == "Rush"
-    assert captured["ref_arrays"] == {"Perfect Points": [0]}
+    assert captured["curves"] is curves
     assert captured["tiers"] == ("T5",)
     assert any(
         entry.get("gear") == ["G1"] and entry.get("minis") == ["M1"]
@@ -223,7 +225,7 @@ def test_team_buff_replay_keeps_force_origin_when_base_duplicate_follows(monkeyp
     rows = build_team_buff_tier_db_batches(
         entries=[force_entry, base_duplicate],
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Flow"}},
-        ref_arrays={"Perfect Points": [0], "Combo Multiplier": [1], "Fever Multiplier": [1]},
+        curves=synthetic_curves({"Perfect Points": [0.0] * 161, "Combo Multiplier": [1.0] * 161, "Fever Multiplier": [1.0] * 161}),
         tiers=("T5",),
         limit=1,
     )["T5"]
@@ -317,15 +319,15 @@ def _stale_00_hard_fg_entry() -> dict:
     }
 
 
-def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+def _prebuild_timeline_frontier(calc_song: dict, curves: dict) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     apply_timing_envelope(calc_song, mode="perfect_window")
-    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    build_or_load_timeline_frontier_payload(calc_song, curves)
 
 
-def _expected_00_hard_surface_fg_score(calc_song: dict, ref_arrays: dict) -> int:
+def _expected_00_hard_surface_fg_score(calc_song: dict, curves: dict) -> int:
     from gear_optimizer.helpers.song_helpers.fg_payload import require_response_surface
     from gear_optimizer.helpers.song_helpers.persistence_payload import normalize_force_payload
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
@@ -333,31 +335,33 @@ def _expected_00_hard_surface_fg_score(calc_song: dict, ref_arrays: dict) -> int
     force_norm = normalize_force_payload(_stale_00_hard_fg_force_payload())
     return int(
         score_force_greats_response_surface_exact(
-            force_norm["Stats"], calc_song, ref_arrays, require_response_surface(force_norm)
+            force_norm["Stats"], calc_song, curves, require_response_surface(force_norm)
         )
     )
 
 
 def test_authoritative_fg_canonicalization_rejects_legacy_trace_without_schedule():
-    from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
+    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.settings import paths
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.helpers.song_helpers.persistence_authority import canonicalize_authoritative_fg_entries
 
     calc_song = get_base_calc_song("Data/Hard/00 (Hard) by garlagan.txt")
-    ref_arrays = _get_team_buff_ref_arrays_cached()
-    assert ref_arrays
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
+    curves = load_stat_curves(paths().stats_txt)
+    assert curves
+    _prebuild_timeline_frontier(calc_song, curves)
 
     with pytest.raises(ValueError, match="non-empty exact frontier_trace"):
         canonicalize_authoritative_fg_entries(
             [_stale_00_hard_fg_entry()],
             calc_song=calc_song,
-            ref_arrays=ref_arrays,
+            curves=curves,
         )
 
 
 def test_db_stale_fg_row_is_rejected_before_authoritative_upsert(tmp_path, monkeypatch):
-    from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
+    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.settings import paths
     from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
     from gear_optimizer.data.song_io import get_base_calc_song
     from gear_optimizer.helpers.song_helpers.persistence_authority import canonicalize_authoritative_fg_entries
@@ -371,12 +375,12 @@ def test_db_stale_fg_row_is_rejected_before_authoritative_upsert(tmp_path, monke
     save_loadouts_batch(song, [stale])
 
     calc_song = get_base_calc_song("Data/Hard/00 (Hard) by garlagan.txt")
-    ref_arrays = _get_team_buff_ref_arrays_cached()
-    assert ref_arrays
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
+    curves = load_stat_curves(paths().stats_txt)
+    assert curves
+    _prebuild_timeline_frontier(calc_song, curves)
     with pytest.raises(ValueError, match="non-empty exact frontier_trace"):
         canonicalize_authoritative_fg_entries(
-            [stale], calc_song=calc_song, ref_arrays=ref_arrays
+            [stale], calc_song=calc_song, curves=curves
         )
 
     with get_db_connection(str(db_path)) as conn:

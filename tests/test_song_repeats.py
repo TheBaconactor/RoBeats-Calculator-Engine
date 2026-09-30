@@ -21,7 +21,7 @@ def test_prepare_tasks_song_repeats_expands_queue():
     tasks = app._prepare_tasks(
         song_queue=song_queue,
         run=run,
-        ref_arrays={},
+        curves={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
@@ -49,7 +49,7 @@ def test_prepare_tasks_song_repeats_one_still_seeds_single_run():
     tasks = app._prepare_tasks(
         song_queue=song_queue,
         run=run,
-        ref_arrays={},
+        curves={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
@@ -80,7 +80,7 @@ def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypat
     first = app._prepare_tasks(
         song_queue=song_queue,
         run=run,
-        ref_arrays={},
+        curves={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
@@ -89,7 +89,7 @@ def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypat
     second = app._prepare_tasks(
         song_queue=song_queue,
         run=run,
-        ref_arrays={},
+        curves={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
@@ -111,7 +111,7 @@ def test_prepare_tasks_accepts_zero_as_random_seed(monkeypatch):
     tasks = app._prepare_tasks(
         song_queue=[("dummy.txt", "Dummy Song", "Hard")],
         run=run,
-        ref_arrays={},
+        curves={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},
@@ -129,7 +129,7 @@ def test_prepare_tasks_does_not_collapse_song_repeats():
     tasks = app._prepare_tasks(
         song_queue=song_queue,
         run=run,
-        ref_arrays={},
+        curves={},
         all_gears=[],
         all_minis=[],
         gears_by_name={},

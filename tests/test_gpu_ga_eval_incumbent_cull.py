@@ -21,6 +21,7 @@ NOTE: no `from __future__ import annotations` here — this module defines a
 Taichi kernel and stringified annotations break ti.kernel argument parsing.
 """
 
+from tests.curves_support import synthetic_curves
 import numpy as np
 import pytest
 
@@ -94,15 +95,15 @@ def _build_registry() -> ItemRegistry:
     return ItemRegistry(gear_pool, mini_pool, slots)
 
 
-def _ref_arrays() -> dict[str, np.ndarray]:
+def _curves() -> dict[str, np.ndarray]:
     rows = 161
-    return {
+    return synthetic_curves({
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64),
         "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64),
-    }
+    })
 
 
 def _calc_song(*, n_notes: int = 400) -> dict:
@@ -276,13 +277,13 @@ def eval_device_state():
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     apply_timing_envelope(calc_song, mode="perfect_window")
-    ref_arrays = _ref_arrays()
+    curves = _curves()
     flags = normalize_color_flags(build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR)).as_tuple()
 
     with _GPU_LOCK:
         ensure_ready()
-        prebuilt = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
-        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=_SONG_SLOT, prebuilt_frontier=prebuilt)
+        prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
+        precompute_timeline_gpu(calc_song, curves, song_slot=_SONG_SLOT, prebuilt_frontier=prebuilt)
         gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
         gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
         gpu_api.ga_generate_initial_populations(

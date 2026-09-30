@@ -7,7 +7,6 @@ The goal is to make refactors and performance work safer without forcing a full 
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any, TypedDict
 
 import numpy as np
@@ -41,8 +40,6 @@ class CalcSong(TypedDict, total=False):
     metadata: JsonDict
     song_data: CalcSongData | JsonDict
 
-
-RefArrays = Mapping[str, np.ndarray]
 
 
 class DbLoadoutPayload(TypedDict, total=False):

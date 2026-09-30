@@ -54,7 +54,7 @@ def test_cache_build_and_explicit_maintenance_remain_locked(
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
         song_queue=[paths],
-        ref_arrays={},
+        curves={},
         data_root=tmp_path,
         authorize_destructive_rotation=rotate,
         build_missing=build_missing,
@@ -87,7 +87,7 @@ def test_destructive_rotation_never_parses_the_manifest_for_its_version(monkeypa
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
         song_queue=[paths],
-        ref_arrays={},
+        curves={},
         data_root=tmp_path,
         authorize_destructive_rotation=True,
         timing_modes=("perfect_window",),

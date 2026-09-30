@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
     candidate_genome_ids,
@@ -26,7 +27,7 @@ class FgResponseFrontierPreparedBatch:
 @dataclass(frozen=True, slots=True)
 class FgResponseFrontierPreparedPlan:
     calc_song: dict[str, Any]
-    ref_arrays: dict[str, Any]
+    curves: StatCurves
     pending_jobs: tuple[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], int, tuple[Any, ...]], ...]
     prepared_batches: tuple[FgResponseFrontierPreparedBatch, ...]
 
@@ -182,7 +183,7 @@ class FgPlanner:
     def _plan_from_items(
         entry_items,
         calc_song,
-        ref_arrays,
+        curves,
         meta_primary_color,
         *,
         scoring_bundle=None,
@@ -228,7 +229,7 @@ class FgPlanner:
                 base_stats_list=[base_stats for _cache_key, base_stats in rows],
                 base_stats7_list=list(base_stats7_by_selected.get(selected, [])),
                 calc_song=calc_song,
-                ref_arrays=ref_arrays,
+                curves=curves,
                 selected_color=selected,
                 scoring_bundle=scoring_bundle,
             )
@@ -241,7 +242,7 @@ class FgPlanner:
 
         return FgResponseFrontierPreparedPlan(
             calc_song=calc_song,
-            ref_arrays=ref_arrays,
+            curves=curves,
             pending_jobs=tuple(pending_jobs),
             prepared_batches=tuple(prepared_batches),
         )
@@ -250,7 +251,7 @@ class FgPlanner:
     def plan_many(
         ga_candidates,
         calc_song,
-        ref_arrays,
+        curves,
         meta_primary_color,
         *,
         ga_registry=None,
@@ -259,7 +260,7 @@ class FgPlanner:
         return FgPlanner._plan_from_items(
             FgPlanner._entry_items_from_ga_candidates(ga_candidates, ga_registry=ga_registry),
             calc_song,
-            ref_arrays,
+            curves,
             meta_primary_color,
             scoring_bundle=scoring_bundle,
         )
@@ -268,7 +269,7 @@ class FgPlanner:
     def plan_skyline_candidate_records(
         candidate_records,
         calc_song,
-        ref_arrays,
+        curves,
         default_selected_color,
         *,
         scoring_bundle=None,
@@ -279,7 +280,7 @@ class FgPlanner:
                 default_selected_color=str(default_selected_color or ""),
             ),
             calc_song,
-            ref_arrays,
+            curves,
             default_selected_color,
             scoring_bundle=scoring_bundle,
         )
@@ -291,13 +292,13 @@ class FgPlanner:
         calc_song = resolve_active_fg_calc_song(song)
         if not isinstance(calc_song, dict):
             raise RuntimeError("FG dynamic prep requires a resolved calc song")
-        ref_arrays = getattr(getattr(song, "gpu_inputs", None), "ref_arrays", None)
-        if not isinstance(ref_arrays, dict):
-            raise RuntimeError("FG dynamic prep requires reference arrays")
+        curves = getattr(getattr(song, "gpu_inputs", None), "curves", None)
+        if curves is None:
+            raise RuntimeError("FG dynamic prep requires stat curves")
         return FgPlanner.plan_many(
             ga_candidates,
             calc_song,
-            ref_arrays,
+            curves,
             song.gpu_inputs.meta_primary_color,
             ga_registry=song.gpu_inputs.registry,
             scoring_bundle=song.runtime.fg.fg_response_scoring_bundle,

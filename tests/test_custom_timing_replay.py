@@ -13,6 +13,7 @@ hit-time timeline (chart + T). These CPU tests pin:
 
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 import numpy as np
 import pytest
 
@@ -25,15 +26,15 @@ from gear_optimizer.solver.scoring.exact_rescore import (
 from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
 
-def _ref_arrays() -> dict[str, np.ndarray]:
+def _curves() -> dict[str, np.ndarray]:
     rows = MAX_STAT + 1
-    return {
+    return synthetic_curves({
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(1.0, 3.0, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(1.0, 4.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.linspace(0.3, 1.0, rows, dtype=np.float64),
         "Fever Time": np.linspace(0.3, 1.0, rows, dtype=np.float64),
-    }
+    })
 
 
 def _calc_song() -> dict:
@@ -75,7 +76,7 @@ def test_timing_at_zero_offset_matches_fixed_timing_bit_exact():
     """Parity gate: T == 0 (hit_timestamps == chart) == the zero_ms fixed-0ms scorer."""
     rows = [_stats(), {**_stats(), "Fever Time": 5, "Fever Fill Rate": 5}]
     cs = _calc_song()
-    ref = _ref_arrays()
+    ref = _curves()
 
     fixed = score_stats_fixed_timing_exact_batch(rows, cs, ref)
     general = score_stats_timing_exact_batch(rows, cs, ref, _chart(cs))
@@ -87,7 +88,7 @@ def test_uniform_offset_is_score_invariant():
     """A uniform shift of every hit preserves the relative timeline -> identical fever -> same score."""
     rows = [_stats()]
     cs = _calc_song()
-    ref = _ref_arrays()
+    ref = _curves()
 
     base = score_stats_timing_exact_batch(rows, cs, ref, _chart(cs))
     for shift in (np.float32(0.5), np.float32(-0.25)):
@@ -99,7 +100,7 @@ def test_non_uniform_offset_changes_score():
     """A per-note offset that moves a fever boundary changes the exact score."""
     rows = [_stats()]
     cs = _calc_song()
-    ref = _ref_arrays()
+    ref = _curves()
 
     base = score_stats_timing_exact_batch(rows, cs, ref, _chart(cs))
     # A monotone stretch pushes each note progressively later, widening inter-note spacing so the
@@ -113,7 +114,7 @@ def test_non_uniform_offset_changes_score():
 def test_reordering_offset_fails_loud():
     """hit_timestamps that reorder notes (non-monotonic) is invalid external input."""
     cs = _calc_song()
-    ref = _ref_arrays()
+    ref = _curves()
     hits = _chart(cs).copy()
     hits[10] = hits[10] + np.float32(0.5)  # jumps past several later notes
     with pytest.raises(ValueError, match="non-decreasing"):
@@ -122,7 +123,7 @@ def test_reordering_offset_fails_loud():
 
 def test_wrong_length_offset_fails_loud():
     cs = _calc_song()
-    ref = _ref_arrays()
+    ref = _curves()
     with pytest.raises(ValueError, match="length"):
         score_stats_timing_exact_batch([_stats()], cs, ref, _chart(cs)[:-1])
 
@@ -174,7 +175,7 @@ def test_distinct_offsets_give_disjoint_cache_context():
 
 
 def test_prepared_baseline_offset_score_matches_direct_and_differs_from_zero():
-    ref = _ref_arrays()
+    ref = _curves()
     rows = [_stats()]
     cs0 = _calc_song()
     apply_timing_envelope(cs0, mode="zero_ms")

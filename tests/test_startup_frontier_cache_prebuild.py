@@ -6,6 +6,7 @@ import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from tests.curves_support import synthetic_curves
 
 
 def test_app_runs_startup_cache_prebuild_before_gpu_and_live_execution() -> None:
@@ -51,7 +52,7 @@ def test_cpu_work_manager_runs_timeline_and_fg_cache_phases(monkeypatch) -> None
 
     cpu_work_manager.run_startup_cpu_work(
         song_queue=[("Data/Easy/Fake.txt",)],
-        ref_arrays={},
+        curves={},
         data_root="Data",
     )
 
@@ -77,7 +78,7 @@ def test_cpu_work_manager_suppresses_startup_cache_banner_when_all_cache_hits(mo
     stream = io.StringIO()
     cpu_work_manager.run_startup_cpu_work(
         song_queue=[("Data/Easy/Fake.txt",)],
-        ref_arrays={},
+        curves={},
         data_root="Data",
         announce_stream=stream,
     )
@@ -106,7 +107,7 @@ def test_cpu_work_manager_announces_startup_cache_banner_when_builds_run(monkeyp
     stream = io.StringIO()
     cpu_work_manager.run_startup_cpu_work(
         song_queue=[("Data/Easy/Fake.txt",)],
-        ref_arrays={},
+        curves={},
         data_root="Data",
         announce_stream=stream,
     )
@@ -131,7 +132,7 @@ def test_timeline_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path:
     monkeypatch.setattr(
         prebuild,
         "build_timeline_frontier_cache_for_path",
-        lambda path, _ref_arrays: built.append(str(path))
+        lambda path, _curves: built.append(str(path))
         or prebuild.TimelineFrontierCacheBuildResult(
             path=str(path),
             source="disk",
@@ -236,13 +237,13 @@ def test_fg_single_missing_prebuild_runs_in_process(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(
         prebuild,
         "_dedupe_paths_by_response_bundle_key",
-        lambda paths, _ref_arrays: ([(str(path), 0) for path in paths], {}),
+        lambda paths, _curves: ([(str(path), 0) for path in paths], {}),
     )
     monkeypatch.setattr(prebuild, "BoundedRecyclingProcessPool", lambda **_kwargs: _UnexpectedExecutor())
     monkeypatch.setattr(
         prebuild,
         "build_fg_response_frontier_cache_for_path",
-        lambda path, _ref_arrays, *, stat_keys: built.append(str(path))
+        lambda path, _curves, *, stat_keys: built.append(str(path))
         or prebuild.FgResponseFrontierCacheBuildResult(
             path=str(path),
             source="disk",
@@ -275,7 +276,7 @@ def test_fg_prebuild_weighted_admission_bounds_inflight_weight_and_completes_all
     monkeypatch.setattr(prebuild, "_start_fg_prebuild_ram_guard", lambda: SimpleNamespace(stop=lambda: None))
     items = [(f"giant{i}.txt", 7000) for i in range(3)] + [(f"light{i}.txt", 500) for i in range(4)]
     monkeypatch.setattr(
-        prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _ref_arrays: (list(items), {})
+        prebuild, "_dedupe_paths_by_response_bundle_key", lambda _paths, _curves: (list(items), {})
     )
 
     budget_gb = 26.0 - prebuild._FG_PREBUILD_SYSTEM_RESERVE_GB
@@ -429,14 +430,14 @@ def test_fg_response_prebuild_does_not_parse_priority_for_manifest_hits(monkeypa
         _compress,
     )
 
-    def _unexpected_parse(_paths, _ref_arrays):
+    def _unexpected_parse(_paths, _curves):
         raise AssertionError("manifest hits must not reach the dedupe/weight parse pass")
 
     monkeypatch.setattr(prebuild, "_dedupe_paths_by_response_bundle_key", _unexpected_parse)
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
         song_queue=[(str(song_a),), (str(song_b),)],
-        ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        curves=synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
         data_root=tmp_path,
         timing_modes=("perfect_window",),
     )
@@ -517,7 +518,7 @@ def test_complete_manifest_skips_maintenance_with_uncompressed_sidecars(
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
         song_queue=[(str(song_path),)],
-        ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        curves=synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
         data_root=tmp_path,
         timing_modes=("perfect_window",),
     )
@@ -584,7 +585,7 @@ def test_fg_compatible_hits_bootstrap_current_manifest_without_build(monkeypatch
     monkeypatch.setattr(prebuild, "_run_missing_fg_prebuild", _unexpected_build)
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
         song_queue=[(str(song_path),)],
-        ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        curves=synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
         data_root=tmp_path,
         timing_modes=("perfect_window",),
     )
@@ -647,7 +648,7 @@ def test_fg_current_manifest_persists_complete_unrecorded_hits_under_lock(monkey
 
     summary = prebuild.run_fg_response_frontier_cache_prebuild(
         song_queue=[(str(song_path),)],
-        ref_arrays={"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        curves=synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
         data_root=tmp_path,
         timing_modes=("perfect_window",),
     )
@@ -688,7 +689,7 @@ def test_timeline_prebuild_manifest_hits_do_not_acquire_build_lock(monkeypatch, 
 
     summary = prebuild.run_timeline_frontier_cache_prebuild(
         song_queue=[(str(song_path),)],
-        ref_arrays={},
+        curves={},
         data_root=tmp_path,
         timing_modes=("perfect_window",),
     )
@@ -738,7 +739,7 @@ def test_timeline_prebuild_persists_complete_unrecorded_hits_under_lock(monkeypa
 
     summary = prebuild.run_timeline_frontier_cache_prebuild(
         song_queue=[(str(song_path),)],
-        ref_arrays={},
+        curves={},
         data_root=tmp_path,
         timing_modes=("perfect_window",),
     )
@@ -790,7 +791,7 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
         "gear_optimizer.solver.timing_envelope.apply_timing_envelope", lambda _song, *, mode=None: None
     )
 
-    def _cache_info(_calc_song, _ref_arrays, *, stat_keys):
+    def _cache_info(_calc_song, _curves, *, stat_keys):
         return FgResponseFrontierCacheInfo(
             cache_key=("cache",),
             disk_path=cache_path,
@@ -814,7 +815,7 @@ def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path)
 
     result = prebuild.build_fg_response_frontier_cache_for_path(
         str(song_path),
-        {"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
         stat_keys=((0, 0),),
     )
 
@@ -861,7 +862,7 @@ def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> 
 
     result = prebuild.build_fg_response_frontier_cache_for_path(
         str(song_path),
-        {"Fever Time": [0.0], "Fever Fill Rate": [0.0]},
+        synthetic_curves({"Fever Time": [0.0] * 161, "Fever Fill Rate": [0.0] * 161}),
         stat_keys=((0, 0),),
     )
 
@@ -878,17 +879,17 @@ def test_fg_response_manifest_treats_incomplete_cache_file_as_miss(monkeypatch, 
     song_path.write_text("fake", encoding="utf-8")
     cache_path.write_text("not a complete npz", encoding="utf-8")
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(cache_dir))
-    ref_arrays = {"Fever Time": [1.0] * 161, "Fever Fill Rate": [1.0] * 161}
+    curves = synthetic_curves({"Fever Time": [1.0] * 161, "Fever Fill Rate": [1.0] * 161})
     stat_keys = ((0, 0),)
 
-    plan = prebuild._build_manifest_plan([str(song_path)], ref_arrays, stat_keys=stat_keys)
+    plan = prebuild._build_manifest_plan([str(song_path)], curves, stat_keys=stat_keys)
     prebuild._apply_manifest_results(
         plan=plan,
         results=[SimpleNamespace(path=str(song_path), source="disk", cache_file=str(cache_path))],
         stat_keys=stat_keys,
     )
 
-    second_plan = prebuild._build_manifest_plan([str(song_path)], ref_arrays, stat_keys=stat_keys)
+    second_plan = prebuild._build_manifest_plan([str(song_path)], curves, stat_keys=stat_keys)
 
     assert second_plan.hit_paths == ()
     assert second_plan.missing_paths == (str(song_path),)
@@ -903,15 +904,15 @@ def test_timeline_manifest_treats_incomplete_cache_file_as_miss(monkeypatch, tmp
     song_path.write_text("fake", encoding="utf-8")
     cache_path.write_text("not a complete npz", encoding="utf-8")
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(cache_dir))
-    ref_arrays = {"Fever Time": [1.0] * 161, "Fever Fill Rate": [1.0] * 161}
+    curves = synthetic_curves({"Fever Time": [1.0] * 161, "Fever Fill Rate": [1.0] * 161})
 
-    plan = prebuild._build_manifest_plan([str(song_path)], ref_arrays)
+    plan = prebuild._build_manifest_plan([str(song_path)], curves)
     prebuild._apply_manifest_results(
         plan=plan,
         results=[SimpleNamespace(path=str(song_path), source="disk", cache_file=str(cache_path))],
     )
 
-    second_plan = prebuild._build_manifest_plan([str(song_path)], ref_arrays)
+    second_plan = prebuild._build_manifest_plan([str(song_path)], curves)
 
     assert second_plan.hit_paths == ()
     assert second_plan.missing_paths == (str(song_path),)

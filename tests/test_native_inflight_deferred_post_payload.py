@@ -1,3 +1,4 @@
+from tests.curves_support import synthetic_curves
 from concurrent.futures import Future
 import json
 from pathlib import Path
@@ -11,25 +12,25 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
 )
 
 
-def _ref_arrays() -> dict:
+def _curves() -> dict:
     from gear_optimizer.rules import MAX_STAT
 
     rows = int(MAX_STAT) + 1
-    return {
+    return synthetic_curves({
         "Perfect Points": [1.0] * rows,
         "Combo Multiplier": [1.0] * rows,
         "Fever Multiplier": [1.0] * rows,
         "Fever Fill Rate": [1.0] * rows,
         "Fever Time": [1.0] * rows,
-    }
+    })
 
 
-def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+def _prebuild_timeline_frontier(calc_song: dict, curves: dict) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     apply_timing_envelope(calc_song)
-    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    build_or_load_timeline_frontier_payload(calc_song, curves)
 
 
 def test_native_song_error_payload_suppresses_bundle_progress():
@@ -109,8 +110,8 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context(monkeypatch)
         "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
         "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
     }
-    ref_arrays = _ref_arrays()
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
+    curves = _curves()
+    _prebuild_timeline_frontier(calc_song, curves)
     ga_candidates = [
         {
             "Score": 111,
@@ -140,7 +141,7 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context(monkeypatch)
         fp="Data/Hard/pytest_native_deferred_post.txt",
         effective_difficulty="Hard",
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         ga_candidates=ga_candidates,
         best_data={"Score": 111, "BaseScore": 111, "Stats": {"Perfect Points": 1}},
         best_gear=["G1"],
@@ -158,7 +159,7 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context(monkeypatch)
     assert payload["_deferred_post"] is True
     assert payload["_pending_fg_job"] is True
     assert payload["calc_song"] is calc_song
-    assert payload["ref_arrays"] is ref_arrays
+    assert payload["curves"] is curves
     assert payload["best_data"]["BaseScore"] == 111
     assert len(payload["ga_candidates"]) == 1
     candidate = payload["ga_candidates"][0]
@@ -181,13 +182,13 @@ def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
         "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
         "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
     }
-    ref_arrays = _ref_arrays()
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
+    curves = _curves()
+    _prebuild_timeline_frontier(calc_song, curves)
     song = make_native_song(
         song_name="pytest_native_deferred_post_reuse",
         task_key="pytest_native_deferred_post_reuse",
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         ga_candidates=[
             {
                 "Score": 200,
@@ -236,7 +237,7 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
         "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
     }
-    inline_ref_arrays = _ref_arrays()
+    inline_ref_arrays = _curves()
     _prebuild_timeline_frontier(inline_calc_song, inline_ref_arrays)
     song = make_native_song(
         song_name="pytest_native_deferred_post_inline_fg",
@@ -246,7 +247,7 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         fp="Data/Hard/pytest_native_deferred_post_inline_fg.txt",
         effective_difficulty="Hard",
         calc_song=inline_calc_song,
-        ref_arrays=inline_ref_arrays,
+        curves=inline_ref_arrays,
         ga_candidates=[
             {
                 "Score": 111,
@@ -302,7 +303,7 @@ def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
         },
         "song_data": {"timestamps": [0.0], "fg_timestamps": [0.0]},
     }
-    ref_arrays = _ref_arrays()
+    curves = _curves()
     base_components = (5, 6, 7, 8, 9, 10, 11)
     planner_key = ("ck0",)
     base_stats = {"Perfect Points": 1}
@@ -327,7 +328,7 @@ def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
         db_baseline_valid=True,
         fg_response_frontier_plan=SimpleNamespace(
             calc_song=calc_song,
-            ref_arrays=ref_arrays,
+            curves=curves,
             pending_jobs=(({"loadout_hash": "ck0"}, {}, "Rush", base_stats, 111, planner_key),),
             prepared_batches=[
                 SimpleNamespace(
@@ -335,7 +336,7 @@ def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
                         base_components=np.asarray([base_components], dtype=np.int32),
                         selected_color="Rush",
                         calc_song=calc_song,
-                        ref_arrays=ref_arrays,
+                        curves=curves,
                         scoring_bundle=object(),
                         started=0.0,
                     ),
@@ -402,7 +403,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         },
         "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
     }
-    ref_arrays = _ref_arrays()
+    curves = _curves()
     stats = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -412,8 +413,8 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         "Rush": 10,
         "Flow": 5,
     }
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
-    raw_exact_score = int(score_stats_exact(stats, calc_song, ref_arrays))
+    _prebuild_timeline_frontier(calc_song, curves)
+    raw_exact_score = int(score_stats_exact(stats, calc_song, curves))
     inflated_score = raw_exact_score + 12345
 
     song = make_native_song(
@@ -424,7 +425,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         fp="Data/Hard/pytest_native_deferred_post_exact_authority.txt",
         effective_difficulty="Hard",
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         ga_candidates=[],
         best_data={
             "Score": inflated_score,
@@ -456,7 +457,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         None,
         lambda data: dict(data),
         calc_song=payload["calc_song"],
-        ref_arrays=payload["ref_arrays"],
+        curves=payload["curves"],
     )
 
     assert len(persist_entries) == 1
@@ -468,4 +469,4 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
     assert persisted["fg_score"] == 0
     assert persisted["force"] is None
     assert persisted["score"] != inflated_score
-    assert persisted["score"] == int(score_stats_exact(persisted_stats, payload["calc_song"], payload["ref_arrays"]))
+    assert persisted["score"] == int(score_stats_exact(persisted_stats, payload["calc_song"], payload["curves"]))

@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND, MAX_STAT
 from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
@@ -69,37 +70,37 @@ def fg_response_frontier_song_cache_key(calc_song: dict[str, Any]) -> tuple:
     )
 
 
-def _ref_axes_cache_key(ref_arrays: dict[str, Any]) -> tuple[bytes, bytes]:
-    ref_ft = np.asarray(ref_arrays.get("Fever Time", ()), dtype=np.float32).reshape(-1)
-    ref_ff = np.asarray(ref_arrays.get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
+def _ref_axes_cache_key(curves: StatCurves) -> tuple[bytes, bytes]:
+    ref_ft = curves.f32["Fever Time"]
+    ref_ff = curves.f32["Fever Fill Rate"]
     return bytes(array_sig16(ref_ft)), bytes(array_sig16(ref_ff))
 
 
 def fg_response_frontier_payload_cache_key(
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     stat_keys: Iterable[tuple[int, int]] | None,
 ) -> tuple:
     return (
         _fg_response_cache_version(),
         fg_response_frontier_song_cache_key(calc_song),
-        *_ref_axes_cache_key(ref_arrays),
+        *_ref_axes_cache_key(curves),
         normalize_fg_response_stat_keys(stat_keys),
     )
 
 
-def fg_response_frontier_bundle_cache_key(calc_song: dict[str, Any], ref_arrays: dict[str, Any]) -> tuple:
+def fg_response_frontier_bundle_cache_key(calc_song: dict[str, Any], curves: StatCurves) -> tuple:
     return (
         _fg_response_cache_version(),
         fg_response_frontier_song_cache_key(calc_song),
-        *_ref_axes_cache_key(ref_arrays),
+        *_ref_axes_cache_key(curves),
         _BUNDLE_KEY_MARKER,
     )
 
 
 def fg_response_frontier_geometry_cache_key(
     calc_song: dict[str, Any],
-    ref_arrays: dict[str, Any],
+    curves: StatCurves,
     *,
     ft_stat: int,
     ff_stat: int,
@@ -107,7 +108,7 @@ def fg_response_frontier_geometry_cache_key(
     return (
         _fg_response_cache_version(),
         fg_response_frontier_song_cache_key(calc_song),
-        *_ref_axes_cache_key(ref_arrays),
+        *_ref_axes_cache_key(curves),
         _normalize_stat_key((ft_stat, ff_stat)),
     )
 
@@ -122,10 +123,10 @@ def _fg_response_disk_cache_path(cache_key: tuple) -> Path:
     return _fg_response_disk_cache_dir() / f"{digest}.npz"
 
 
-def _response_axes(calc_song: dict[str, Any], ref_arrays: dict[str, Any]) -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
+def _response_axes(calc_song: dict[str, Any], curves: StatCurves) -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
     song_inputs = extract_fg_song_inputs(calc_song)
-    ref_ft = np.asarray(ref_arrays["Fever Time"], dtype=np.float32).reshape(-1)
-    ref_ff = np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32).reshape(-1)
+    ref_ft = curves.f32["Fever Time"]
+    ref_ff = curves.f32["Fever Fill Rate"]
     if int(ref_ft.shape[0]) <= MAX_STAT or int(ref_ff.shape[0]) <= MAX_STAT:
         raise ValueError("FG response cache requires full Fever Time and Fever Fill Rate ref arrays")
     base_fill = max(0.0, float(song_inputs.total_notes - int(song_inputs.long_notes)) * float(FEVER_FILL_PER_NOTE))

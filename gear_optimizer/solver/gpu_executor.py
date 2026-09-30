@@ -65,7 +65,7 @@ from gear_optimizer.solver.gpu_executor_lifecycle import (
 )
 from gear_optimizer.solver.gpu_executor_refs import (
     execute_load_refs as _execute_load_refs,
-    ref_arrays_sig as _ref_arrays_sig,
+    curves_sig as _curves_sig,
 )
 from gear_optimizer.solver.gpu_executor_batching import (
     execute_gpu_native_ga_run_batch as _execute_gpu_native_ga_run_batch,
@@ -142,7 +142,7 @@ class GpuExecutor:
         self._in_process_queues = False
         self._staged_requests: deque[GpuRequest] = deque()
         self._ga_owner_turn_streak = 0
-        self._last_ref_arrays_sig: bytes | None = None
+        self._last_curves_sig: bytes | None = None
         self._requests_processed = 0
         self._response_delivery = ResponseDeliveryTracker()
         self._last_work_end_ts: Optional[float] = None
@@ -151,7 +151,7 @@ class GpuExecutor:
         self._short_wait_spin_sec = short_wait_settings.short_wait_spin_sec
         self._short_wait_spin_yield_rounds = short_wait_settings.short_wait_spin_yield_rounds
         self._dispatch = {
-            GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
+            GpuRequestType.LOAD_CURVES: self._execute_load_refs,
             GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
         }
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
@@ -193,7 +193,7 @@ class GpuExecutor:
         self._ga_owner_turn_streak = 0
         self._ready_event.clear()
         self.clear_abort()
-        self._last_ref_arrays_sig = None
+        self._last_curves_sig = None
         self._in_process_queues = bool(in_process)
         self._high_res_timer_enabled = False
         self._heartbeat = ExecutorHeartbeatWriter(
@@ -592,14 +592,14 @@ class GpuExecutor:
 
     def _execute_load_refs(self, request: GpuRequest) -> GpuResponse:
         """Load reference arrays."""
-        from .taichi_gem.api import load_ref_arrays
+        from .taichi_gem.api import load_curves
         outcome = _execute_load_refs(
             request,
-            last_ref_arrays_sig=self._last_ref_arrays_sig,
-            load_ref_arrays_fn=load_ref_arrays,
-            ref_arrays_sig_fn=_ref_arrays_sig,
+            last_curves_sig=self._last_curves_sig,
+            load_curves_fn=load_curves,
+            curves_sig_fn=_curves_sig,
         )
-        self._last_ref_arrays_sig = outcome.last_ref_arrays_sig
+        self._last_curves_sig = outcome.last_curves_sig
         return outcome.response
     @property
     def is_running(self) -> bool:

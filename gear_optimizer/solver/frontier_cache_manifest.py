@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-import numpy as np
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.core.array_signature import array_sig16
 
 logger = logging.getLogger(__name__)
@@ -36,9 +36,9 @@ def normalize_manifest_path(path_text: str) -> str:
     return os.path.abspath(str(path_text or "")).casefold()
 
 
-def _ref_axes_signature(ref_arrays: dict) -> str:
-    ref_ft = np.asarray((ref_arrays or {}).get("Fever Time", ()), dtype=np.float32).reshape(-1)
-    ref_ff = np.asarray((ref_arrays or {}).get("Fever Fill Rate", ()), dtype=np.float32).reshape(-1)
+def _ref_axes_signature(curves: StatCurves) -> str:
+    ref_ft = curves.f32["Fever Time"]
+    ref_ff = curves.f32["Fever Fill Rate"]
     return bytes(array_sig16(ref_ft) + array_sig16(ref_ff)).hex()
 
 

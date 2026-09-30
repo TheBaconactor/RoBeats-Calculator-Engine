@@ -117,7 +117,7 @@ def test_authoritative_fg_preserves_source_paired_base_score(monkeypatch):
     out = authority.canonicalize_authoritative_fg_entry(
         entry,
         calc_song={"metadata": {"TimingEnvelopeMode": "zero_ms"}},
-        ref_arrays={},
+        curves={},
     )
 
     assert out["score"] == 160

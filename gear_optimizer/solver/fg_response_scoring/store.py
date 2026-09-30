@@ -21,19 +21,19 @@ class ResponseFrontierStore:
         fg_calc_song = pipeline.resolve_active_fg_calc_song(song)
         if not isinstance(fg_calc_song, dict):
             raise RuntimeError("FG static prep requires a resolved calc song")
-        ref_arrays = getattr(getattr(song, "gpu_inputs", None), "ref_arrays", None)
-        if not isinstance(ref_arrays, dict):
-            raise RuntimeError("FG static prep requires reference arrays")
+        curves = getattr(getattr(song, "gpu_inputs", None), "curves", None)
+        if curves is None:
+            raise RuntimeError("FG static prep requires stat curves")
         bundle = load_response_frontier_scoring_bundle(
             fg_calc_song,
-            ref_arrays,
+            curves,
             stat_keys=all_response_stat_keys(),
         )
         # Session-box cone prune (prep thread, once per song): drops rows no cell this
         # inventory can reach could ever win -- identical winners, fewer GPU score-loop rows.
         # Materializing the surviving rows also subsumes the old sidecar page-cache warm
         # (the fused turn reads the in-memory arrays, not the memmap).
-        bundle = session_prune_scoring_bundle(bundle, ref_arrays)
+        bundle = session_prune_scoring_bundle(bundle, curves)
         song.runtime.fg.fg_response_scoring_bundle = bundle
         song.runtime.fg.fg_static_prep_done = True
         return bundle

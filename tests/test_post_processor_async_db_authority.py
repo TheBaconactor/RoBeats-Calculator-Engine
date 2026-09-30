@@ -1,3 +1,4 @@
+from tests.curves_support import synthetic_curves
 import json
 import queue
 import sys
@@ -17,25 +18,25 @@ _REPLAY_GEAR = [
 _REPLAY_MINIS = ["t+pazolite", "Trailblazing Trance Zara", "Halloween Witch Teresa"]
 
 
-def _ref_arrays() -> dict:
+def _curves() -> dict:
     from gear_optimizer.rules import MAX_STAT
 
     rows = int(MAX_STAT) + 1
-    return {
+    return synthetic_curves({
         "Perfect Points": [1.0] * rows,
         "Combo Multiplier": [1.0] * rows,
         "Fever Multiplier": [1.0] * rows,
         "Fever Fill Rate": [1.0] * rows,
         "Fever Time": [1.0] * rows,
-    }
+    })
 
 
-def _prebuild_timeline_frontier(calc_song: dict, ref_arrays: dict) -> None:
+def _prebuild_timeline_frontier(calc_song: dict, curves: dict) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     apply_timing_envelope(calc_song)
-    build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
+    build_or_load_timeline_frontier_payload(calc_song, curves)
 
 
 def _materialize_gpu_runtime_on_main_thread() -> None:
@@ -69,7 +70,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         },
         "song_data": {"timestamps": [0.0], "note_types": [0], "lanes": [0]},
     }
-    ref_arrays = _ref_arrays()
+    curves = _curves()
     stats = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -79,8 +80,8 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         "Rush": 10,
         "Flow": 5,
     }
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
-    raw_exact_score = int(score_stats_exact(stats, calc_song, ref_arrays))
+    _prebuild_timeline_frontier(calc_song, curves)
+    raw_exact_score = int(score_stats_exact(stats, calc_song, curves))
     inflated_score = raw_exact_score + 12345
 
     monkeypatch.setattr(
@@ -101,7 +102,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         fp="Data/Hard/pytest_post_processor_exact_authority.txt",
         effective_difficulty="Hard",
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         ga_candidates=[],
         best_data={
             "Score": inflated_score,
@@ -152,23 +153,24 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
     assert stored_stats
     assert stored_stats != stats
     assert int(row["score"]) != inflated_score
-    assert int(row["score"]) == int(score_stats_exact(stored_stats, calc_song, ref_arrays))
+    assert int(row["score"]) == int(score_stats_exact(stored_stats, calc_song, curves))
 
 
 def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, init_db
     from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
+    from gear_optimizer.gamedata import load_stat_curves
+    from gear_optimizer.settings import paths
     from gear_optimizer.pipeline import post_processor
 
     db_path = tmp_path / "post_processor_fg_update_authority.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     init_db()
 
-    ref_arrays = _get_team_buff_ref_arrays_cached()
-    assert ref_arrays
+    curves = load_stat_curves(paths().stats_txt)
+    assert curves
     calc_song = get_base_calc_song("Data/Hard/00 (Hard) by garlagan.txt")
-    _prebuild_timeline_frontier(calc_song, ref_arrays)
+    _prebuild_timeline_frontier(calc_song, curves)
 
     force_payload = {
         "Score": 32521173,
@@ -239,8 +241,8 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
 
     canonicalize_calls = []
 
-    def _canonicalize(entries, *, calc_song, ref_arrays):
-        canonicalize_calls.append((entries, calc_song, ref_arrays))
+    def _canonicalize(entries, *, calc_song, curves):
+        canonicalize_calls.append((entries, calc_song, curves))
         entry = dict(entries[0])
         details = dict(entry["details"])
         details["GemCounts"] = {}
@@ -283,8 +285,8 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
         _canonicalize,
     )
     monkeypatch.setattr(
-        "gear_optimizer.app_async_db._get_team_buff_ref_arrays_cached",
-        lambda: ref_arrays,
+        "gear_optimizer.pipeline.post_processor_fg_updates.load_stat_curves",
+        lambda _path: curves,
     )
 
     result_queue: queue.Queue = queue.Queue()
@@ -300,7 +302,7 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
             "song": "pytest_post_processor_fg_update_authority",
             "db_key": "pytest_post_processor_fg_update_authority",
             "file_path": "Data/Hard/00 (Hard) by garlagan.txt",
-            "ref_arrays": ref_arrays,
+            "curves": curves,
             "persist_entries": [
                 {
                     "score": 32518595,

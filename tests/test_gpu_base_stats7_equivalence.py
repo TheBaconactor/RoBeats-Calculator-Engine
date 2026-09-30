@@ -21,6 +21,7 @@ If proof 1 fails the design claim is falsified and Slice 2 must not proceed; if 
 
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 import copy
 
 import numpy as np
@@ -103,15 +104,15 @@ def _build_registry() -> ItemRegistry:
     return ItemRegistry(gear_pool, mini_pool, slots)
 
 
-def _ref_arrays() -> dict[str, np.ndarray]:
+def _curves() -> dict[str, np.ndarray]:
     rows = 161
-    return {
+    return synthetic_curves({
         "Perfect Points": np.linspace(100.0, 200.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(3.0, 5.4, rows, dtype=np.float64),
         "Fever Fill Rate": np.linspace(1.0, 2.0, rows, dtype=np.float64),
         "Fever Time": np.linspace(1.0, 2.5, rows, dtype=np.float64),
-    }
+    })
 
 
 def _calc_song(*, n_notes: int = 400) -> dict:
@@ -150,7 +151,7 @@ def _host_base_components_from_dict(base_stats: dict, *, primary: str, secondary
 def real_ga_run():
     """Run the production GPU-native GA once on Vulkan; return decoded artifacts.
 
-    Yields (decoded_candidates, payload_base_stats7, calc_song, ref_arrays).
+    Yields (decoded_candidates, payload_base_stats7, calc_song, curves).
     """
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.api.timeline import (
@@ -184,17 +185,17 @@ def real_ga_run():
     )
 
     calc_song = _calc_song()
-    ref_arrays = _ref_arrays()
+    curves = _curves()
     color_flags = build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR)
 
     with _GPU_LOCK:
         ensure_ready()
-        prebuilt = build_or_load_timeline_frontier_payload(calc_song, ref_arrays)
-        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0, prebuilt_frontier=prebuilt)
+        prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
+        precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=prebuilt)
 
         selected_payload = run_gpu_native_ga_runs_payload_prebuilt(
             calc_song=calc_song,
-            ref_arrays=ref_arrays,
+            curves=curves,
             song_slot=0,
             item_stats=item_stats,
             slot_start=slot_start,
@@ -226,7 +227,7 @@ def real_ga_run():
         base_stats_fixed=base_stats_fixed,
         fg_candidate_limit=51,
     )
-    return decoded, payload_base_stats7, calc_song, ref_arrays
+    return decoded, payload_base_stats7, calc_song, curves
 
 
 def test_payload_base_stats7_matches_host_base_components_on_real_ga(real_ga_run) -> None:
@@ -296,7 +297,7 @@ def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> Non
         reset_fg_response_frontier_payload_cache,
     )
 
-    decoded, _payload_base_stats7, calc_song, ref_arrays = real_ga_run
+    decoded, _payload_base_stats7, calc_song, curves = real_ga_run
 
     device_candidates = [copy.deepcopy(c) for c in decoded]
     assert device_candidates, "no GA candidates decoded"
@@ -318,12 +319,12 @@ def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> Non
         reset_fg_response_frontier_payload_cache()
         build_or_load_response_frontier_payload(
             calc_song,
-            ref_arrays,
+            curves,
             stat_keys=tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1)),
         )
 
-        device_plan = FgPlanner.plan_many(device_candidates, calc_song, ref_arrays, _PRIMARY_COLOR)
-        dict_plan = FgPlanner.plan_many(dict_candidates, calc_song, ref_arrays, _PRIMARY_COLOR)
+        device_plan = FgPlanner.plan_many(device_candidates, calc_song, curves, _PRIMARY_COLOR)
+        dict_plan = FgPlanner.plan_many(dict_candidates, calc_song, curves, _PRIMARY_COLOR)
 
         # Sanity: the device plan must actually be sourced from base_stats7 (differs from
         # the dict-derived array only if they were ever unequal; here they are equal, so

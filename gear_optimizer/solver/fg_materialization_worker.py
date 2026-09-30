@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
 from gear_optimizer.solver.fg_response_scoring.planner import (
     FgResponseFrontierPreparedBatch,
@@ -23,7 +24,7 @@ class FgMaterializationBatch:
     base_components: np.ndarray
     selected_color: str
     calc_song: dict[str, Any]
-    ref_arrays: dict[str, Any]
+    curves: StatCurves
     scoring_bundle: Any
 
 
@@ -82,7 +83,7 @@ def build_fg_materialization_request(song: Any) -> FgMaterializationRequest:
         raise RuntimeError("FG process materialization requires the fused owner FG score map")
 
     calc_song = plan.calc_song
-    ref_arrays = plan.ref_arrays
+    curves = plan.curves
     pending_jobs = []
     for entry, eval_data, selected, base_stats, paired_base_score, cache_key in plan.pending_jobs:
         if not isinstance(entry, dict) or not isinstance(eval_data, dict) or not isinstance(base_stats, dict):
@@ -107,7 +108,7 @@ def build_fg_materialization_request(song: Any) -> FgMaterializationRequest:
             base_components=np.ascontiguousarray(batch.base_components, dtype=np.int32),
             selected_color=str(batch.selected_color or ""),
             calc_song=calc_song,
-            ref_arrays=ref_arrays,
+            curves=curves,
             scoring_bundle=batch.scoring_bundle,
         )
         compact_rows = tuple((tuple(cache_key), dict(base_stats)) for cache_key, base_stats in prepared.rows)
@@ -120,7 +121,7 @@ def build_fg_materialization_request(song: Any) -> FgMaterializationRequest:
 
     compact_plan = FgResponseFrontierPreparedPlan(
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         pending_jobs=tuple(pending_jobs),
         prepared_batches=tuple(prepared_batches),
     )

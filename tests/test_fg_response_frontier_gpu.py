@@ -1,3 +1,4 @@
+from tests.curves_support import synthetic_curves
 from pathlib import Path
 
 import numpy as np
@@ -7,20 +8,20 @@ pytestmark = pytest.mark.gpu
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _ref_arrays():
+def _curves():
     size = 1001
-    return {
+    return synthetic_curves({
         "Perfect Points": np.linspace(0.0, 2.0, size, dtype=np.float32),
         "Combo Multiplier": np.linspace(1.0, 2.0, size, dtype=np.float32),
         "Fever Multiplier": np.linspace(1.0, 2.0, size, dtype=np.float32),
-    }
+    })
 
 
 def _prepare_and_score_sync(
     *,
     base_stats_list,
     calc_song,
-    ref_arrays,
+    curves,
     selected_color,
     total_budget: int,
     include_forced_counts: bool = True,
@@ -30,7 +31,7 @@ def _prepare_and_score_sync(
     batch = rf.prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=base_stats_list,
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color=selected_color,
         total_budget=int(total_budget),
     )
@@ -44,7 +45,7 @@ def _solve_one_batch(
     *,
     base_stats,
     calc_song,
-    ref_arrays,
+    curves,
     selected_color,
     total_budget: int,
     include_forced_counts: bool = True,
@@ -52,7 +53,7 @@ def _solve_one_batch(
     results = _prepare_and_score_sync(
         base_stats_list=[base_stats],
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color=selected_color,
         total_budget=int(total_budget),
         include_forced_counts=bool(include_forced_counts),
@@ -62,7 +63,7 @@ def _solve_one_batch(
     return results[0]
 
 
-def _prebuild_response_bundle(calc_song, ref_arrays, base_stats_list, *, total_budget: int) -> None:
+def _prebuild_response_bundle(calc_song, curves, base_stats_list, *, total_budget: int) -> None:
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
@@ -72,7 +73,7 @@ def _prebuild_response_bundle(calc_song, ref_arrays, base_stats_list, *, total_b
     _ = base_stats_list, total_budget
     reset_fg_response_frontier_payload_cache()
     full_stat_grid = tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1))
-    build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=full_stat_grid)
+    build_or_load_response_frontier_payload(calc_song, curves, stat_keys=full_stat_grid)
 
 
 def _replay_response_result_through_input_engine(*, calc_song, final_stats, selected_color, result):
@@ -192,7 +193,7 @@ def test_response_frontier_gpu_inner_matches_reference_inner_with_overlap():
         "primary_color": "Power",
         "secondary_color": "Rush",
         "selected_color": "Power",
-        "ref_arrays": _ref_arrays(),
+        "curves": _curves(),
     }
 
     gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
@@ -229,7 +230,7 @@ def test_response_frontier_gpu_inner_preserves_same_color_component_floors():
         "primary_color": "Chill",
         "secondary_color": "Chill",
         "selected_color": "Chill",
-        "ref_arrays": _ref_arrays(),
+        "curves": _curves(),
     }
 
     gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
@@ -267,7 +268,7 @@ def test_response_frontier_gpu_batch_pack_matches_reference_groups():
         "primary_color": "Power",
         "secondary_color": "Rush",
         "selected_color": "Power",
-        "ref_arrays": _ref_arrays(),
+        "curves": _curves(),
     }
     stats_a = {
         "Perfect Points": 10,
@@ -331,7 +332,7 @@ def test_response_frontier_gpu_preserves_exact_best_on_high_surface_mixed_colors
         "primary_color": "Vibe",
         "secondary_color": "Chill",
         "selected_color": "Beat",
-        "ref_arrays": _ref_arrays(),
+        "curves": _curves(),
     }
 
     gpu = optimize_response_frontier_inner_exact_gpu(surfaces, **kwargs)
@@ -350,16 +351,12 @@ def test_response_frontier_gpu_preserves_exact_best_on_high_surface_mixed_colors
 def test_response_frontier_gpu_inner_matches_exact_replay_on_combo_floor_boundary():
     from pathlib import Path
 
-    from gear_optimizer.data.csv_parser import read_table
-    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+    from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
     from tests.parity.fg_response_frontier_cpu import optimize_response_frontier_inner_exact_gpu
 
-    refs = build_ref_arrays_from_stats(
-        read_table(str(Path.cwd() / "Data" / "Gear" / "Stats.txt")),
-        dtype=np.float64,
-    )
+    refs = load_stat_curves(Path.cwd() / "Data" / "Gear" / "Stats.txt")
     surface = FgResponseSurface(0, 0, 0, 0, 255, 0, 0, 0, 1255, 2, 2)
     stats = {
         "Perfect Points": 80,
@@ -383,7 +380,7 @@ def test_response_frontier_gpu_inner_matches_exact_replay_on_combo_floor_boundar
         primary_color="Beat",
         secondary_color="Vibe",
         selected_color="Beat",
-        ref_arrays=refs,
+        curves=refs,
     )
     exact = score_force_greats_response_surface_exact(stats, calc_song, refs, surface)
 
@@ -395,13 +392,13 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 
     rows = 161
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(3.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64),
         "Fever Time": np.full(rows, 0.5, dtype=np.float64),
-    }
+    })
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
     calc_song = {
         "metadata": {
@@ -426,24 +423,23 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
     }
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    _prebuild_response_bundle(calc_song, ref_arrays, [base_stats], total_budget=3)
+    _prebuild_response_bundle(calc_song, curves, [base_stats], total_budget=3)
     result = _solve_one_batch(
         base_stats=base_stats,
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color="Rush",
         total_budget=3,
     )
-    exact_score = score_force_greats_response_surface_exact(result.stats, calc_song, ref_arrays, result.surface)
+    exact_score = score_force_greats_response_surface_exact(result.stats, calc_song, curves, result.surface)
 
     assert int(exact_score) == int(result.best_score)
 
 
 def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path, monkeypatch):
     """Pin the current event-time fever duration, not the retired extra-1/60 duration."""
-    from gear_optimizer.data.csv_parser import read_table
     from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+    from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.solver.timing_envelope import apply_timing_envelope
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
@@ -456,7 +452,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
 
     calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"))
     apply_timing_envelope(calc_song, mode="perfect_window")
-    ref_arrays = build_ref_arrays_from_stats(read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")), dtype=np.float64)
+    curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     final_stats = {
         "Perfect Points": 25,
         "Combo Multiplier": 55,
@@ -472,12 +468,12 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     stat_key = (final_stats["Fever Time"], final_stats["Fever Fill Rate"])
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=(stat_key,))
-    scoring_bundle = load_response_frontier_scoring_bundle(calc_song, ref_arrays, stat_keys=(stat_key,))
+    build_or_load_response_frontier_payload(calc_song, curves, stat_keys=(stat_key,))
+    scoring_bundle = load_response_frontier_scoring_bundle(calc_song, curves, stat_keys=(stat_key,))
     batch = prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=[final_stats],
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color="Vibe",
         total_budget=0,
         scoring_bundle=scoring_bundle,
@@ -504,13 +500,13 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
 
 def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkeypatch):
     rows = 161
-    ref_arrays = {
+    curves = synthetic_curves({
         "Perfect Points": np.linspace(0.0, 5.0, rows, dtype=np.float64),
         "Combo Multiplier": np.linspace(2.0, 2.7, rows, dtype=np.float64),
         "Fever Multiplier": np.linspace(3.0, 5.0, rows, dtype=np.float64),
         "Fever Fill Rate": np.full(rows, 0.6, dtype=np.float64),
         "Fever Time": np.full(rows, 0.4, dtype=np.float64),
-    }
+    })
     timestamps = np.asarray([0.0, 0.3, 0.7, 1.4, 2.2, 3.0, 3.2, 3.4, 4.0], dtype=np.float32)
     calc_song = {
         "metadata": {
@@ -536,11 +532,11 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
     base_b = {**base_a, "Rush": 25, "Flow": 10, "Combo Multiplier": 3}
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    _prebuild_response_bundle(calc_song, ref_arrays, [base_a, base_b], total_budget=3)
+    _prebuild_response_bundle(calc_song, curves, [base_a, base_b], total_budget=3)
     many = _prepare_and_score_sync(
         base_stats_list=[base_a, base_b],
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color="Rush",
         total_budget=3,
     )
@@ -548,7 +544,7 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
         _solve_one_batch(
             base_stats=base,
             calc_song=calc_song,
-            ref_arrays=ref_arrays,
+            curves=curves,
             selected_color="Rush",
             total_budget=3,
         )
@@ -576,9 +572,8 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     matching, +200ms despawn, frame-granular fever) -- exact == physical is the definitive gate
     for every surface this producer emits.
     """
-    from gear_optimizer.data.csv_parser import read_table
     from gear_optimizer.data.song_io import get_base_calc_song
-    from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+    from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         load_response_frontier_scoring_bundle,
@@ -591,7 +586,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
 
     calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"))
     apply_timing_envelope(calc_song, mode="perfect_window")
-    ref_arrays = build_ref_arrays_from_stats(read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")), dtype=np.float64)
+    curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     final_stats = {
         "Perfect Points": 29,
         "Combo Multiplier": 57,
@@ -607,12 +602,12 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     stat_key = (final_stats["Fever Time"], final_stats["Fever Fill Rate"])
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    build_or_load_response_frontier_payload(calc_song, ref_arrays, stat_keys=(stat_key,))
-    scoring_bundle = load_response_frontier_scoring_bundle(calc_song, ref_arrays, stat_keys=(stat_key,))
+    build_or_load_response_frontier_payload(calc_song, curves, stat_keys=(stat_key,))
+    scoring_bundle = load_response_frontier_scoring_bundle(calc_song, curves, stat_keys=(stat_key,))
     batch = prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=[final_stats],
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
         selected_color="Chill",
         total_budget=0,
         scoring_bundle=scoring_bundle,

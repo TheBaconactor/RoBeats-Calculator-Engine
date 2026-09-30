@@ -2,9 +2,8 @@ from pathlib import Path
 
 import numpy as np
 
-from gear_optimizer.data.csv_parser import read_table
 from gear_optimizer.data.song_io import get_base_calc_song
-from gear_optimizer.helpers.song_helpers.ref_array_builder import build_ref_arrays_from_stats
+from gear_optimizer.gamedata import load_stat_curves
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.scoring.fg_policy import build_penalty_table_and_body, compute_great_penalty_base
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
@@ -31,10 +30,7 @@ def test_same_color_force_greats_formula_preserves_component_floor_order() -> No
 
 def test_dark_sheep_force_greats_matches_observed_game_score() -> None:
     calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "Dark Sheep [EXTENDED CUT] (Hard) by Chroma.txt"))
-    ref_arrays = build_ref_arrays_from_stats(
-        read_table(str(ROOT / "Data" / "Gear" / "Stats.txt")),
-        dtype=np.float64,
-    )
+    curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     stats = {
         "Perfect Points": 85,
         "Combo Multiplier": 66,
@@ -49,4 +45,4 @@ def test_dark_sheep_force_greats_matches_observed_game_score() -> None:
     }
     surface = FgResponseSurface(0, 0, 0, 0, 131071, 0, 0, 0, 3420, 4, 3)
 
-    assert score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, surface) == 129185709
+    assert score_force_greats_response_surface_exact(stats, calc_song, curves, surface) == 129185709

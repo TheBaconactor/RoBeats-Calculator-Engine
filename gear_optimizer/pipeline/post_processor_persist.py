@@ -132,7 +132,7 @@ def build_post_persist_entries(
         build_details_fn=context.build_details,
         replay_ctx=ReplayContext(
             calc_song=item.get("calc_song"),
-            ref_arrays=item.get("ref_arrays"),
+            curves=item.get("curves"),
         ),
     )
 

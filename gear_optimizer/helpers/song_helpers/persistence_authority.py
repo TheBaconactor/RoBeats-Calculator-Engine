@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ...core.utils import require_int
+from ...gamedata import StatCurves
 
 from ...solver.scoring.exact_rescore import (
     score_force_greats_response_surface_exact,
@@ -42,7 +43,7 @@ def _canonicalize_base_score(
     out: dict[str, Any],
     *,
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
 ) -> None:
     stats = _details_stats(out)
     if not stats:
@@ -53,14 +54,14 @@ def _canonicalize_base_score(
         # zero_ms base = the fixed chart-time exact replay; it carries no Perfect-window
         # TimelineFrontier (the renderer draws delta=0 from Stats). Keyed on the calc_song's own
         # stamp, so an explicit zero_ms request is honored whether or not the deployment is strict.
-        out["score"] = int(score_stats_fixed_timing_exact(stats, calc_song, ref_arrays))
+        out["score"] = int(score_stats_fixed_timing_exact(stats, calc_song, curves))
         details = out.get("details")
         if isinstance(details, dict) and "TimelineFrontier" in details:
             details_out = dict(details)
             details_out.pop("TimelineFrontier", None)
             out["details"] = details_out
         return
-    replay = score_stats_exact_with_timeline_trace(stats, calc_song, ref_arrays)
+    replay = score_stats_exact_with_timeline_trace(stats, calc_song, curves)
     out["score"] = int(replay.get("score", 0) or 0)
     timeline = replay.get("TimelineFrontier")
     if not isinstance(timeline, Mapping):
@@ -124,7 +125,7 @@ def _replay_force_payload(
     *,
     stats: Mapping[str, Any],
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
 ) -> dict[str, Any]:
     surface = require_response_surface(force_obj)
     metadata = calc_song.get("metadata", {}) if isinstance(calc_song, Mapping) else {}
@@ -149,7 +150,7 @@ def _replay_force_payload(
             raw_fever_fill=float(force_meta["raw_fever_fill"]),
             real_fever_time=float(force_meta["real_fever_time"]),
         )
-    final_score = score_force_greats_response_surface_exact(stats, calc_song, ref_arrays, surface)
+    final_score = score_force_greats_response_surface_exact(stats, calc_song, curves, surface)
     if final_score is None:
         raise ValueError("Authoritative FG response surface replay failed.")
     return {"final_score": int(final_score)}
@@ -200,10 +201,10 @@ def canonicalize_authoritative_fg_entry(
     entry: Mapping[str, Any],
     *,
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
 ) -> dict[str, Any]:
     out = dict(entry)
-    _canonicalize_base_score(out, calc_song=calc_song, ref_arrays=ref_arrays)
+    _canonicalize_base_score(out, calc_song=calc_song, curves=curves)
 
     force_obj = out.get("force")
     if not (isinstance(force_obj, dict) and has_valid_fg_payload(force_obj)):
@@ -222,7 +223,7 @@ def canonicalize_authoritative_fg_entry(
         force_normalized,
         stats=stats,
         calc_song=calc_song,
-        ref_arrays=ref_arrays,
+        curves=curves,
     )
     fg_score = int(fg_eval.get("final_score", 0) or 0)
     if fg_score <= fg_base_score:
@@ -248,14 +249,14 @@ def canonicalize_authoritative_fg_entries(
     entries: list[dict[str, Any]],
     *,
     calc_song: Mapping[str, Any],
-    ref_arrays: Mapping[str, Any],
+    curves: StatCurves,
 ) -> list[dict[str, Any]]:
     if not isinstance(calc_song, Mapping) or not calc_song:
         raise ValueError("calc_song is required for authoritative FG persistence canonicalization.")
-    if not isinstance(ref_arrays, Mapping) or not ref_arrays:
-        raise ValueError("ref_arrays are required for authoritative FG persistence canonicalization.")
+    if not isinstance(curves, StatCurves):
+        raise ValueError("curves are required for authoritative FG persistence canonicalization.")
     return [
-        canonicalize_authoritative_fg_entry(entry, calc_song=calc_song, ref_arrays=ref_arrays)
+        canonicalize_authoritative_fg_entry(entry, calc_song=calc_song, curves=curves)
         if isinstance(entry, dict)
         else entry
         for entry in list(entries or [])

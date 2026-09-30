@@ -19,8 +19,6 @@ def _install_stubs(monkeypatch) -> list[tuple[int, int, int]]:
     frontier_result = SimpleNamespace(cache_key=("unit", "trace-memo"), payload=object())
 
     monkeypatch.setattr(timeline_api, "load_timeline_frontier_payload", lambda *_args, **_kwargs: frontier_result)
-    monkeypatch.setattr(exact_rescore, "_frontier_replay_refs", lambda refs: refs)
-    monkeypatch.setattr(exact_rescore, "_curves", lambda refs: None)
     monkeypatch.setattr(
         exact_rescore,
         "_best_timeline_score",
