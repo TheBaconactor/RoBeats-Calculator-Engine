@@ -173,7 +173,7 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_
         {**_stats(), "Fever Time": 17, "Fever Fill Rate": 143, "Combo Multiplier": 160},
     ]
 
-    loaded = timeline.load_timeline_frontier_payload(song, ref)
+    loaded = timeline.build_or_load_timeline_frontier_payload(song, ref)
 
     assert loaded.cache_source == "built"
     assert loaded.payload.frontier_pool_used > 0
@@ -182,7 +182,7 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_
     assert len(cache_files) == 1
 
     timeline.reset_timeline_state()
-    loaded_again = timeline.load_timeline_frontier_payload(song, ref)
+    loaded_again = timeline.build_or_load_timeline_frontier_payload(song, ref)
     assert loaded_again.cache_source == "disk"
     assert score_stats_exact_batch(stats_rows, song, ref) == score_stats_fixed_timing_exact_batch(
         stats_rows, song, ref

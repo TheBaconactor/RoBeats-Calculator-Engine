@@ -601,51 +601,6 @@ def _save_frontier_payload_to_disk(
     return raw
 
 
-def _get_or_build_frontier_payload_with_source(
-    song_key: tuple,
-    *,
-    song_slot: int,
-    total_notes: int,
-    long_notes: int,
-    last_note_time: float,
-    timestamps: np.ndarray,
-    perfect_candidate_timestamps: np.ndarray,
-    perfect_floor_timestamps: np.ndarray,
-    lanes: np.ndarray,
-    ref_ft: np.ndarray,
-    ref_ff: np.ndarray,
-) -> tuple[TimelineFrontierGridPayload, str]:
-    """Build and cache the packed exact frontier grid for a song/ref signature."""
-    global _frontier_payload_cache
-
-    cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
-    cached, cache_source = _get_cached_frontier_payload_with_source(
-        song_key,
-        ref_ft=np.asarray(ref_ft, dtype=np.float32),
-        ref_ff=np.asarray(ref_ff, dtype=np.float32),
-    )
-    if isinstance(cached, TimelineFrontierGridPayload):
-        return cached, cache_source
-
-    payload = build_timeline_frontier_grid_payload(
-        song_slot=0,
-        total_notes=int(total_notes),
-        long_notes=int(long_notes),
-        last_note_time=float(last_note_time),
-        timestamps=np.asarray(timestamps, dtype=np.float32),
-        perfect_candidate_timestamps=np.asarray(perfect_candidate_timestamps, dtype=np.float32),
-        perfect_floor_timestamps=np.asarray(perfect_floor_timestamps, dtype=np.float32),
-        lanes=np.asarray(lanes, dtype=np.int32),
-        ref_ft=np.asarray(ref_ft, dtype=np.float32),
-        ref_ff=np.asarray(ref_ff, dtype=np.float32),
-    )
-
-    raw = _save_frontier_payload_to_disk(cache_key, payload)
-    if not frontier_cache_is_ephemeral():
-        _frontier_payload_memory_put(cache_key, raw)
-    return payload, "built"
-
-
 def _timeline_payload_lookup_context(song: TimedSong, curves: StatCurves) -> dict:
     """The frontier inputs of a timed song: its cache key, the chart and the FT/FF axes.
 
@@ -842,10 +797,10 @@ def _zero_ms_timeline_result(song: TimedSong, curves: StatCurves) -> TimelineFro
 
 def build_or_load_timeline_frontier_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierPrewarmResult:
     """
-    Build or load the reusable exact frontier payload without touching Taichi fields.
+    The song's exact timeline frontier payload: the memory or disk cache's, else built and persisted.
 
-    This is the shared host-side entrypoint for background lookahead and offline
-    disk-cache prebuilding, so cache signatures stay identical to runtime scoring.
+    Host-side (no Taichi fields are touched) and the one entry point of runtime scoring, background
+    lookahead and offline disk-cache prebuilding, so they share the cache signatures.
     """
     if song.mode == "zero_ms":
         # zero_ms is fixed timing: serve the cheap chart-time singleton and never touch the
@@ -860,47 +815,22 @@ def build_or_load_timeline_frontier_payload(song: TimedSong, curves: StatCurves)
         ref_ff=lookup["ref_ff"],
     )
     if payload is None:
-        ctx = lookup
-        payload, cache_source = _get_or_build_frontier_payload_with_source(
-            ctx["song_key"],
+        payload = build_timeline_frontier_grid_payload(
             song_slot=0,
-            total_notes=int(ctx["total_notes"]),
-            long_notes=int(ctx["long_notes"]),
-            last_note_time=float(ctx["last_note_time"]),
-            timestamps=ctx["timestamps"],
-            perfect_candidate_timestamps=ctx["perfect_candidates"],
-            perfect_floor_timestamps=ctx["perfect_floor"],
-            lanes=ctx["lanes"],
-            ref_ft=ctx["ref_ft"],
-            ref_ff=ctx["ref_ff"],
+            total_notes=int(lookup["total_notes"]),
+            long_notes=int(lookup["long_notes"]),
+            last_note_time=float(lookup["last_note_time"]),
+            timestamps=lookup["timestamps"],
+            perfect_candidate_timestamps=lookup["perfect_candidates"],
+            perfect_floor_timestamps=lookup["perfect_floor"],
+            lanes=lookup["lanes"],
+            ref_ft=lookup["ref_ft"],
+            ref_ff=lookup["ref_ff"],
         )
-    return TimelineFrontierPrewarmResult(
-        payload=payload,
-        cache_key=cache_key,
-        disk_path=_frontier_disk_cache_path(cache_key),
-        cache_source=cache_source,
-        elapsed_ms=float((time.perf_counter() - t0) * 1000.0),
-        total_notes=int(lookup["total_notes"]),
-        long_notes=int(lookup["long_notes"]),
-    )
-
-
-def load_timeline_frontier_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierPrewarmResult:
-    """Load the timeline frontier, building and persisting a live cache miss."""
-    if song.mode == "zero_ms":
-        # zero_ms serves the cheap chart-time singleton on demand -- it is never persisted to the
-        # perfect_window disk cache, so probing it here would be a miss anyway; build directly.
-        return _zero_ms_timeline_result(song, curves)
-    t0 = time.perf_counter()
-    lookup = _timeline_payload_lookup_context(song, curves)
-    cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
-    payload, cache_source = _get_cached_frontier_payload_with_source(
-        lookup["song_key"],
-        ref_ft=lookup["ref_ft"],
-        ref_ff=lookup["ref_ff"],
-    )
-    if payload is None:
-        return build_or_load_timeline_frontier_payload(song, curves)
+        raw = _save_frontier_payload_to_disk(cache_key, payload)
+        if not frontier_cache_is_ephemeral():
+            _frontier_payload_memory_put(cache_key, raw)
+        cache_source = "built"
     return TimelineFrontierPrewarmResult(
         payload=payload,
         cache_key=cache_key,
@@ -931,8 +861,8 @@ def precompute_timeline_gpu(
         curves: the stat curves (the FT/FF axes key the frontier)
         song_slot: Grid slot to write to (0-7, default 0 for single-song mode)
         prebuilt_frontier: Optional already-resolved frontier payload to upload BY VALUE.
-            Production runtime leaves this None so load_timeline_frontier_payload() can reuse or
-            build the canonical persistent cache artifact.
+            Production runtime leaves this None so build_or_load_timeline_frontier_payload() can
+            reuse or build the canonical persistent cache artifact.
             The synthetic GPU warmup (which is not part of the song queue and builds its own
             disposable payload) passes it in so the upload never re-reads the clearable
             in-memory frontier cache between build and upload.
@@ -960,7 +890,7 @@ def precompute_timeline_gpu(
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
     frontier_result = (
-        prebuilt_frontier if prebuilt_frontier is not None else load_timeline_frontier_payload(song, curves)
+        prebuilt_frontier if prebuilt_frontier is not None else build_or_load_timeline_frontier_payload(song, curves)
     )
     song_slot_i = int(song_slot)
     frontier_payload = frontier_result.payload

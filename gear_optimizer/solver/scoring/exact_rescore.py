@@ -65,10 +65,10 @@ def score_stats_exact_with_timeline_trace(
     song: TimedSong,
     curves: StatCurves,
 ) -> dict[str, Any]:
-    from ..taichi_gem.api.timeline import load_timeline_frontier_payload
+    from ..taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
     total_notes = song.chart.total_notes
-    frontier_result = load_timeline_frontier_payload(song, curves)
+    frontier_result = build_or_load_timeline_frontier_payload(song, curves)
     payload = frontier_result.payload
     primary, secondary = song.chart.primary, song.chart.secondary
     row = _stats_row(stats)
@@ -103,10 +103,10 @@ def score_stats_exact_batch(
     """Exact Perfect-window base scores: the best surface of each row's timing frontier cell."""
     if not stats_rows:
         return []
-    from ..taichi_gem.api.timeline import load_timeline_frontier_payload
+    from ..taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
     total_notes = song.chart.total_notes
-    payload = load_timeline_frontier_payload(song, curves).payload
+    payload = build_or_load_timeline_frontier_payload(song, curves).payload
     primary, secondary = song.chart.primary, song.chart.secondary
     return [
         _best_timeline_score(payload, curves, primary, secondary, _stats_row(stats), total_notes)[0]

@@ -327,17 +327,19 @@ def test_build_or_load_timeline_frontier_payload_reuses_old_disk_cache_without_t
     assert second.disk_path.stat().st_mtime == stale_ts
 
 
-def test_load_timeline_frontier_payload_builds_and_persists_live_cache_miss(tmp_path: Path, monkeypatch) -> None:
+def test_build_or_load_timeline_frontier_payload_builds_and_persists_live_cache_miss(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     timeline_api.reset_timeline_state()
     song = make_song([0.0, 0.2, 0.4, 0.6], name="Runtime Missing Timeline", difficulty="Easy", last_note_time=0.6)
 
-    built = timeline_api.load_timeline_frontier_payload(song, _curves())
+    built = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert built.cache_source == "built"
     assert built.disk_path.exists()
     timeline_api.reset_timeline_state()
-    loaded = timeline_api.load_timeline_frontier_payload(song, _curves())
+    loaded = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert loaded.cache_source == "disk"
     assert int(loaded.total_notes) == 4
 

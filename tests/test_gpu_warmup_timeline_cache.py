@@ -88,7 +88,7 @@ def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypat
     fake_result = SimpleNamespace(payload=fake_payload, cache_source="prebuilt")
 
     def _load_must_not_run(*_args, **_kwargs):
-        raise AssertionError("load_timeline_frontier_payload must not run when prebuilt_frontier is provided")
+        raise AssertionError("build_or_load_timeline_frontier_payload must not run when prebuilt_frontier is provided")
 
     monkeypatch.setattr(timeline, "ensure_ready", lambda *_a, **_k: b"")
     monkeypatch.setattr(
@@ -96,7 +96,7 @@ def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypat
         "_timeline_payload_lookup_context",
         lambda _cs, _ra, ref_sig=None: {"song_key": ("warmup",), "total_notes": 1, "long_notes": 0},
     )
-    monkeypatch.setattr(timeline, "load_timeline_frontier_payload", _load_must_not_run)
+    monkeypatch.setattr(timeline, "build_or_load_timeline_frontier_payload", _load_must_not_run)
     monkeypatch.setattr(timeline, "_upload_timeline_frontier_payload_slot", lambda *_a, **_k: None)
     # Make sure the per-slot short-circuit does not skip the upload path.
     timeline._gpu_timeline_song_id_by_slot = [None] * len(timeline._gpu_timeline_song_id_by_slot)

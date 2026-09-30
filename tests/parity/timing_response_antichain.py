@@ -233,9 +233,9 @@ def _exact_frontier_pack_grid(
     song: Any,
     curves: dict[str, Any],
 ) -> tuple[np.ndarray, int, tuple[Any, ...]]:
-    from gear_optimizer.solver.taichi_gem.api.timeline import load_timeline_frontier_payload
+    from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
-    result = load_timeline_frontier_payload(song, curves)
+    result = build_or_load_timeline_frontier_payload(song, curves)
     payload = result.payload
     counts = np.asarray(payload.grid_frontier_count[0], dtype=np.int32)
     offsets = np.asarray(payload.grid_frontier_offset[0], dtype=np.int32)
