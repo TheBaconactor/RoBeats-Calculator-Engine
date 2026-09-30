@@ -21,7 +21,6 @@ from .skyline_operations import (
     skyline_upload_population_indices,
     skyline_upload_item_stats,
     skyline_upload_base_fixed_stats,
-    skyline_aggregate_stats,
 )
 from .ga_operations import (
     ga_upload_initial_populations,
@@ -38,7 +37,6 @@ from .ga_operations import (
     ga_prepare_population_base_stats,
     ga_evaluate_prepared_population,
     ga_refresh_scores_and_update_runs_best,
-    ga_next_generation_fused_runs,
     ga_refresh_scores_update_runs_best_and_next_generation_fused_runs,
     ga_init_runs_best,
     ga_pack_fg_candidates_table_segmented,
@@ -60,7 +58,6 @@ __all__ = [
     "skyline_upload_population_indices",
     "skyline_upload_item_stats",
     "skyline_upload_base_fixed_stats",
-    "skyline_aggregate_stats",
     # GA operations
     "ga_upload_initial_populations",
     "ga_upload_init_heuristic_topk",
@@ -76,7 +73,6 @@ __all__ = [
     "ga_prepare_population_base_stats",
     "ga_evaluate_prepared_population",
     "ga_refresh_scores_and_update_runs_best",
-    "ga_next_generation_fused_runs",
     "ga_refresh_scores_update_runs_best_and_next_generation_fused_runs",
     "ga_init_runs_best",
     "ga_pack_fg_candidates_table_segmented",

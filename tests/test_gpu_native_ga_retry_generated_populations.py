@@ -17,7 +17,6 @@ class _FakeGpuApi:
         self.fg_effective_tables_upload_calls = 0
         self.reset_calls = 0
         self.evaluate_calls = 0
-        self.next_generation_calls = 0
         self.fused_refresh_next_generation_calls = 0
         self.refresh_scores_and_update_runs_best_calls = 0
         self.seed_indexed_calls: list[dict] = []
@@ -106,15 +105,20 @@ class _FakeGpuApi:
         self.refresh_scores_and_update_runs_best_calls += 1
         return None
 
-    def ga_next_generation_fused_runs(self, *_args, **_kwargs):
-        self.next_generation_calls += 1
-        return None
-
     def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(self, *_args, **_kwargs):
         self.fused_refresh_next_generation_calls += 1
         return None
 
     def ga_pack_fg_candidates_table_segmented(self, *_args, **_kwargs):
+        return None
+
+    def ga_download_runs_best(self, *, n_runs, **_kwargs):
+        # One tracked best per run with a positive score: the 1-swap polish finds no improvement and stops.
+        best = np.zeros((int(n_runs), 17), dtype=np.int32)
+        best[:, 0] = 1
+        return best
+
+    def ga_refresh_fg_candidates_row0(self, *_args, **_kwargs):
         return None
 
     def ga_download_fg_selected_payload(self, *_args, **_kwargs):
@@ -146,6 +150,7 @@ def _install_fake_taichi_modules(monkeypatch, gpu_api=None) -> None:
     fake_fields_module.MAX_EVALS_PER_DISPATCH = 1_000_000
     fake_fields_module.MAX_GENOMES = 1_000_000
     fake_fields_module.MAX_GA_RUNS = 64
+    fake_fields_module.MAX_GA_RUN_GENOMES = 1_000_000
     fake_fields_module.configure_ga_run_buffers = lambda max_runs, max_genomes: (int(max_runs), int(max_genomes))
 
     monkeypatch.setitem(sys.modules, "gear_optimizer.solver.taichi_gem.api", fake_api_module)
@@ -318,7 +323,6 @@ def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
 
     assert isinstance(out, np.ndarray)
     assert fake_gpu.fused_refresh_next_generation_calls == 2
-    assert fake_gpu.next_generation_calls == 0
     assert fake_gpu.refresh_scores_and_update_runs_best_calls == 1
 
 
@@ -352,7 +356,6 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
     )
 
     assert fake_gpu.evaluate_calls == 1
-    assert fake_gpu.next_generation_calls == 0
 
 
 def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypatch):

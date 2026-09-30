@@ -93,8 +93,8 @@ def test_gpu_ga_run_buffer_config_restores_defaults_after_hard_reset():
 def test_gpu_ga_next_generation_fused_runs_matches_sequential():
     from gear_optimizer.solver.taichi_gem.api import (
         ga_seed_rng_runs,
-        ga_next_generation_fused_runs,
     )
+    from tests.parity.ga_next_generation import ga_next_generation_fused_runs
 
     n_runs = 2
     n_genomes = 32
@@ -166,8 +166,8 @@ def test_gpu_ga_indexed_seed_batched_runs_match_sequential_seed_series():
     from gear_optimizer.solver.taichi_gem.api import (
         ga_seed_rng_runs,
         ga_seed_rng_runs_indexed,
-        ga_next_generation_fused_runs,
     )
+    from tests.parity.ga_next_generation import ga_next_generation_fused_runs
 
     n_runs = 2
     n_genomes = 32
@@ -230,10 +230,10 @@ def test_gpu_ga_indexed_seed_batched_runs_match_sequential_seed_series():
 
 def test_gpu_ga_next_generation_fused_runs_repairs_parent_clones():
     from gear_optimizer.solver.taichi_gem.api import (
-        ga_next_generation_fused_runs,
         ga_seed_rng_runs,
         ga_upload_item_stats,
     )
+    from tests.parity.ga_next_generation import ga_next_generation_fused_runs
 
     n_genomes = 32
     n_slots = 9
@@ -269,11 +269,11 @@ def test_gpu_ga_next_generation_fused_runs_repairs_parent_clones():
 def test_gpu_ga_refresh_next_fused_runs_matches_separate_transition():
     from gear_optimizer.solver.taichi_gem import fields
     from gear_optimizer.solver.taichi_gem.api import (
-        ga_next_generation_fused_runs,
         ga_refresh_scores_and_update_runs_best,
         ga_refresh_scores_update_runs_best_and_next_generation_fused_runs,
         ga_seed_rng_runs,
     )
+    from tests.parity.ga_next_generation import ga_next_generation_fused_runs
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
 
     ensure_ready()

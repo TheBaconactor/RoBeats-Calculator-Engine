@@ -546,46 +546,6 @@ def _ga_next_generation_full_runs_impl(
         kernels_helpers.ga_rng_state[g] = state
         kernels_helpers.ga_parent_a[g] = pa
 @ti.kernel
-def ga_next_generation_full_runs_kernel(
-    n_runs: ti.i32,
-    n_genomes_per_run: ti.i32,
-    n_slots: ti.i32,
-    n_islands: ti.i32,
-    elites_per_island: ti.i32,
-    tournament_k: ti.i32,
-    mutation_rate_fp: ti.u32,
-    immigrant_rate_fp: ti.u32,
-    novelty_repair_attempts: ti.i32,
-):
-    """
-    FUSED next generation for multiple independent runs packed contiguously.
-    This kernel preserves the per-run "multi-start" semantics by ensuring:
-    - Tournament selection samples only within the run segment
-    - Island elitism is computed per-run and elites are written within each run segment
-    - No cross-run migration / mixing occurs
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    _ga_next_generation_full_runs_impl(
-        n_runs,
-        n_genomes_per_run,
-        n_slots,
-        n_islands,
-        elites_per_island,
-        tournament_k,
-        mutation_rate_fp,
-        immigrant_rate_fp,
-        novelty_repair_attempts,
-    )
-    # FUSED population swap (absorbs the former standalone ga_swap_population_kernel launch):
-    # copy the freshly built next generation into the active buffer. Runs as a separate
-    # top-level loop so Taichi's inter-loop barrier guarantees every population_next_indices[g, s]
-    # is written by the next-generation loop above before any thread reads it here. Pure per-(g, s)
-    # copy => bit-identical to the previous separate swap kernel, minus one Vulkan submit.
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for g in range(n_runs * n_genomes_per_run):
-        for s in range(n_slots):
-            kernels_helpers.population_indices[g, s] = kernels_helpers.population_next_indices[g, s]
-@ti.kernel
 def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
     run_idx_start: ti.i32,
     n_runs: ti.i32,
@@ -712,7 +672,7 @@ def ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel(
         novelty_repair_attempts,
     )
     # FUSED population swap (absorbs the former standalone ga_swap_population_kernel launch):
-    # see ga_next_generation_full_runs_kernel above. Pure per-(g, s) copy under Taichi's
+    # the swap loop of the unfused reference (tests/parity/ga_next_generation.py). Pure per-(g, s) copy under Taichi's
     # inter-loop barrier => bit-identical to the previous separate swap kernel, minus one submit.
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_total):

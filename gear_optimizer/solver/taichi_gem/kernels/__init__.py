@@ -70,7 +70,6 @@ from .kernels_ga import (
     ga_generate_initial_populations_kernel,
     ga_aggregate_genome_stats_kernel,
     # FUSED kernels
-    ga_next_generation_full_runs_kernel,  # FUSED: multi-run batching + population swap
     ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel,
 )
 
@@ -152,7 +151,6 @@ __all__ = [
     "ga_generate_initial_populations_kernel",
     "ga_aggregate_genome_stats_kernel",
     # FUSED GA kernels
-    "ga_next_generation_full_runs_kernel",
     "ga_refresh_scores_update_runs_best_and_next_generation_full_runs_kernel",
     # Scoring functions
     "_calc_body_score",
@@ -180,11 +178,8 @@ __all__ = [
 ]
 
 from .kernels_skyline import (
-    skyline_load_initial_population_kernel,
-    skyline_generate_initial_populations_kernel,
     skyline_upload_item_stats_and_slots_kernel,
     skyline_copy_population_indices_from_ndarray_kernel,
-    skyline_aggregate_genome_stats_kernel,
     skyline_aggregate_and_init_best_kernel,
 )
 from .skyline_eval import (
@@ -194,11 +189,8 @@ from .skyline_eval import (
 )
 
 __all__.extend([
-    "skyline_load_initial_population_kernel",
-    "skyline_generate_initial_populations_kernel",
     "skyline_upload_item_stats_and_slots_kernel",
     "skyline_copy_population_indices_from_ndarray_kernel",
-    "skyline_aggregate_genome_stats_kernel",
     "skyline_aggregate_and_init_best_kernel",
     "skyline_find_best_combo_warmstart_kernel",
     "skyline_write_scores_from_key_kernel",

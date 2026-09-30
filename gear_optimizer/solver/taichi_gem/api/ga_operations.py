@@ -667,57 +667,6 @@ def ga_refresh_scores_and_update_runs_best(
         int(song_slot),
         int(bool(use_exact_inner_solver)),
     )
-def ga_next_generation_fused_runs(
-    *,
-    n_runs: int,
-    n_genomes_per_run: int,
-    n_slots: int = 9,
-    mutation_rate: float = 0.02,
-    immigrant_rate: float = 0.0,
-    tournament_k: int = 3,
-    n_islands: int = 1,
-    elites_per_island: int = 1,
-    novelty_repair_attempts: int = 0,
-) -> None:
-    """
-    FULLY FUSED next generation for multiple independent runs packed contiguously.
-    Executes ga_next_generation_full_runs_kernel, which performs select+crossover+mutate+elitism
-    within each run and swaps the new generation into the active buffer in the same dispatch.
-    """
-    ensure_ready()
-    n_runs = int(n_runs)
-    n_genomes_per_run = int(n_genomes_per_run)
-    n_slots = int(n_slots)
-    n_islands = int(n_islands)
-    elites_per_island = int(elites_per_island)
-    tournament_k = int(tournament_k)
-    if n_runs <= 0 or n_genomes_per_run <= 0:
-        return
-    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
-        raise ValueError(f"Invalid n_slots: {n_slots}")
-    if n_islands < 1:
-        n_islands = 1
-    if elites_per_island < 0:
-        elites_per_island = 0
-    if tournament_k < 1:
-        tournament_k = 1
-    novelty_repair_attempts = max(0, min(4, int(novelty_repair_attempts)))
-    n_total = n_runs * n_genomes_per_run
-    if n_total > fields.MAX_GENOMES:
-        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
-    mr_fp = probability_to_u32_fp(float(mutation_rate))
-    ir_fp = probability_to_u32_fp(float(immigrant_rate))
-    kernels.ga_next_generation_full_runs_kernel(
-        n_runs,
-        n_genomes_per_run,
-        n_slots,
-        n_islands,
-        elites_per_island,
-        tournament_k,
-        mr_fp,
-        ir_fp,
-        int(novelty_repair_attempts),
-    )
 def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
     *,
     run_idx_start: int,
@@ -750,7 +699,8 @@ def ga_refresh_scores_update_runs_best_and_next_generation_fused_runs(
     """
     Fused packed multi-run transition.
     This is the non-final, non-migration companion to:
-    `ga_refresh_scores_and_update_runs_best()` followed by `ga_next_generation_fused_runs()`.
+    `ga_refresh_scores_and_update_runs_best()` followed by the unfused next generation (tests/parity/
+    ga_next_generation.py: the reference the GPU tests hold this transition to).
     It preserves row-0 run best before mutating the population, then swaps the next generation in.
     """
     ensure_ready()
