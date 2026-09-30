@@ -133,14 +133,12 @@ def song_list(conn: sqlite3.Connection, table: str = "songs", report: Report | N
 def migrate(
     conn: sqlite3.Connection,
     *,
-    keep_v18_tables: bool,
     songs: Collection[str] | None = None,
     lenient: bool = False,
 ) -> Report:
-    """Migrate a version 18 database to version 19 in one transaction.
+    """Migrate a version 18 database to version 19 in one transaction (the version 18 tables are dropped).
 
-    keep_v18_tables leaves the old leaderboard and name tables in place (frozen) for readers that have not
-    switched yet; drop them later with drop_v18_tables. lenient (older optimizer job databases) reports instead
+    lenient (older optimizer job databases) reports instead
     of stopping on two irregularities: an FG row whose redundant details copies disagree with its payload
     carries the payload's values (the ones readers served), and a song without last_updated takes its newest
     row's timestamp.
@@ -167,8 +165,8 @@ def migrate(
             insert_rows(conn, read_rows(conn, name, report))
             report.songs += 1
         conn.execute("DROP TABLE songs_v18")
-        if not keep_v18_tables:
-            drop_v18_tables(conn)
+        for table in ("team_buff_loadouts", "team_buff_fg_loadouts", "gear_name_encoding", "mini_name_encoding"):
+            conn.execute(f"DROP TABLE {table}")
         conn.execute(f"PRAGMA user_version = {VERSION}")
         conn.commit()
     except BaseException:
@@ -177,11 +175,6 @@ def migrate(
     # The migration rewrote every row; truncate the write-ahead log it grew (readers pay for its size on open).
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # no wait bound: nothing else writes during a migration
     return report
-
-
-def drop_v18_tables(conn: sqlite3.Connection) -> None:
-    for table in ("team_buff_loadouts", "team_buff_fg_loadouts", "gear_name_encoding", "mini_name_encoding"):
-        conn.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 def _loadout(song, meta_row, fg_row, gear_names, mini_names, report: Report) -> Row:

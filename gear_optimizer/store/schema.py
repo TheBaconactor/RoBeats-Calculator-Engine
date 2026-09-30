@@ -136,7 +136,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     if found == 18:
         from .v18 import migrate
 
-        migrate(conn, keep_v18_tables=False)
+        migrate(conn)
         return
     raise StoreVersionError(f"results database version {found} is not supported (this engine uses {VERSION})")
 

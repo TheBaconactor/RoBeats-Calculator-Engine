@@ -123,7 +123,7 @@ def v18_db(tmp_path):
 
 def test_every_loadout_migrates_with_a_single_score_and_both_results(v18_db):
     conn = sqlite3.connect(v18_db)
-    report = v18.migrate(conn, keep_v18_tables=False)
+    report = v18.migrate(conn)
     conn.close()
     assert (report.songs, report.meta_rows, report.fg_rows, report.loadouts, report.twins) == (1, 3, 2, 4, 1)
     assert report.paired_score_conflicts == [("Song A", "twin", 1000, 990)]
@@ -170,23 +170,12 @@ def test_the_migrated_schema_is_the_fresh_schema(v18_db, tmp_path):
     assert ddl(v18_db) == ddl(fresh)
 
 
-def test_kept_v18_tables_stay_readable_until_dropped(v18_db):
-    conn = sqlite3.connect(v18_db)
-    v18.migrate(conn, keep_v18_tables=True)
-    assert conn.execute("SELECT COUNT(*) FROM team_buff_loadouts").fetchone()[0] == 3
-    assert conn.execute("SELECT name, last_updated FROM songs").fetchall() == [("Song A", 1_700_000_000.5)]
-    conn.execute("BEGIN")
-    v18.drop_v18_tables(conn)
-    conn.commit()
-    assert {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")} == {"songs", "loadouts"}
-
-
 def test_the_migration_leaves_no_write_ahead_log_behind(v18_db):
     conn = sqlite3.connect(v18_db)
     conn.execute("PRAGMA journal_mode=WAL")
     reader = sqlite3.connect(v18_db)  # an open reader keeps the log file from being deleted on close
     reader.execute("SELECT COUNT(*) FROM songs").fetchone()
-    v18.migrate(conn, keep_v18_tables=False)
+    v18.migrate(conn)
     assert Path(f"{v18_db}-wal").stat().st_size == 0
     reader.close()
     conn.close()
@@ -206,7 +195,7 @@ def test_an_unknown_stored_key_stops_the_migration_and_changes_nothing(tmp_path)
     w.close()
     conn = sqlite3.connect(path)
     with pytest.raises(ValueError, match="meta details keys"):
-        v18.migrate(conn, keep_v18_tables=False)
+        v18.migrate(conn)
     assert schema.user_version(conn) == 18
     assert conn.execute("SELECT COUNT(*) FROM team_buff_loadouts").fetchone()[0] == 1
     assert "loadouts" not in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -219,7 +208,7 @@ def test_a_meta_rows_fg_copy_must_score_the_rows_fg_score(tmp_path):
     w.meta("Song A", "odd", 900, 950, GEAR, MINIS, _meta_details(ForceGreats={"final_score": 940, **FG_TRACE}))
     w.close()
     with pytest.raises(ValueError, match="FG copy scores 940"):
-        v18.migrate(sqlite3.connect(path), keep_v18_tables=False)
+        v18.migrate(sqlite3.connect(path))
 
 
 def test_retired_fg_configuration_fields_are_stripped(tmp_path):
@@ -231,7 +220,7 @@ def test_retired_fg_configuration_fields_are_stripped(tmp_path):
     w.fg("Song A", "old-job", 700, 1200, GEAR, MINIS, _fg_details(700), payload)
     w.close()
     conn = sqlite3.connect(path)
-    report = v18.migrate(conn, keep_v18_tables=False)
+    report = v18.migrate(conn)
     conn.close()
     assert report.retired_fields == 3
     reader = schema.connect(path)
@@ -246,9 +235,9 @@ def test_lenient_migration_keeps_the_payload_and_dates_undated_songs(tmp_path):
     w.fg("Song A", "old-job", 700, 1200, GEAR, MINIS, details, _fg_payload(700, 1200), timestamp=1_700_000_042)
     w.close()
     with pytest.raises(ValueError, match="songs without last_updated"):
-        v18.migrate(sqlite3.connect(path), keep_v18_tables=False)
+        v18.migrate(sqlite3.connect(path))
     conn = sqlite3.connect(path)
-    report = v18.migrate(conn, keep_v18_tables=False, lenient=True)
+    report = v18.migrate(conn, lenient=True)
     conn.close()
     assert report.copy_disagreements == [("Song A", "old-job", ["details st"])]
     assert report.songs_without_update == ["Song A"]
@@ -264,4 +253,4 @@ def test_disagreeing_copies_stop_the_migration(tmp_path):
     w.fg("Song A", "bad", 700, 1200, GEAR, MINIS, _fg_details(700), _fg_payload(700, 1200, Score=1199))
     w.close()
     with pytest.raises(ValueError, match="FG copies differ"):
-        v18.migrate(sqlite3.connect(path), keep_v18_tables=False)
+        v18.migrate(sqlite3.connect(path))
