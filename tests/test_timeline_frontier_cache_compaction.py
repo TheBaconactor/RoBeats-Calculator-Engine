@@ -10,6 +10,7 @@ import pytest
 
 from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
+from tests.songs_support import make_song
 
 
 def test_timeline_cache_fingerprint_covers_shared_frontier_producer() -> None:
@@ -49,14 +50,6 @@ def _curves() -> dict[str, np.ndarray]:
         "Fever Time": np.linspace(0.0, 1.6, 161, dtype=np.float32),
         "Fever Fill Rate": np.linspace(0.0, 1.6, 161, dtype=np.float32),
     })
-
-
-def _apply_physical_timing(calc_song: dict) -> None:
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-
-    note_count = len(calc_song["song_data"]["timestamps"])
-    calc_song["song_data"]["lanes"] = np.arange(note_count, dtype=np.int32)
-    apply_timing_envelope(calc_song, mode="perfect_window")
 
 
 def test_frontier_payload_build_is_single_slot_compact() -> None:
@@ -144,69 +137,20 @@ def test_issue161_perfect_edge_rotation_rejects_all_predecessors(
     assert timeline_api._load_frontier_payload_from_disk(current_key) is None
 
 
-def test_frontier_entrypoint_canonicalizes_raw_precise_input_before_cache_lookup(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
-    monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
-    timeline_api.reset_timeline_state()
-    stale_key = tuple(["stale"] * 12)
-    calc_song = {
-        "metadata": {
-            "Song Name": "Raw Precise Timeline",
-            "Difficulty": "Hard",
-            "Long Notes": 0,
-            "Last Note Time": 0.6,
-        },
-        "song_data": {
-            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
-            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
-            "lanes": np.array([0, 1, 2, 3], dtype=np.int32),
-        },
-        "_gpu_timing_cache_key_frontier": stale_key,
-    }
-
-    result = timeline_api.build_or_load_timeline_frontier_payload(
-        calc_song,
-        _curves(),
-        timing_mode="perfect_window",
-    )
-
-    song_data = calc_song["song_data"]
-    assert calc_song["metadata"]["TimingEnvelopeMode"] == "perfect_window"
-    assert len(song_data["fg_perfect_candidate_timestamps"]) == 4
-    assert len(song_data["fg_perfect_floor_timestamps"]) == 4
-    assert calc_song["_gpu_timing_cache_key_frontier"] != stale_key
-    assert result.cache_source == "built"
-
-
 def test_build_or_load_timeline_frontier_payload_disk_hit_reuses_compact_payload(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     timeline_api.reset_timeline_state()
-    calc_song = {
-        "metadata": {
-            "Song Name": "Warm Disk Timeline",
-            "Difficulty": "Easy",
-            "Long Notes": 0,
-            "Last Note Time": 0.6,
-        },
-        "song_data": {
-            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
-            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
-        },
-    }
-    _apply_physical_timing(calc_song)
+    song = make_song([0.0, 0.2, 0.4, 0.6], name="Warm Disk Timeline", difficulty="Easy", last_note_time=0.6)
     curves = _curves()
 
-    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, curves)
+    first = timeline_api.build_or_load_timeline_frontier_payload(song, curves)
     assert first.cache_source == "built"
 
     timeline_api.reset_timeline_state()
-    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, curves)
+    second = timeline_api.build_or_load_timeline_frontier_payload(song, curves)
     assert second.cache_source == "disk"
     assert int(second.total_notes) == 4
 
@@ -227,21 +171,9 @@ _PAYLOAD_ARRAY_NAMES = (
 )
 
 
-def _warm_disk_timeline_song(name: str) -> dict:
-    calc_song = {
-        "metadata": {
-            "Song Name": name,
-            "Difficulty": "Easy",
-            "Long Notes": 0,
-            "Last Note Time": 0.6,
-        },
-        "song_data": {
-            "timestamps": np.array([0.0, 0.0, 0.2, 0.4, 0.6], dtype=np.float32),
-            "note_types": np.array([1, 1, 1, 1, 1], dtype=np.int16),
-        },
-    }
-    _apply_physical_timing(calc_song)
-    return calc_song
+def _warm_disk_timeline_song(name: str):
+    song = make_song([0.0, 0.0, 0.2, 0.4, 0.6], name=name, difficulty="Easy", last_note_time=0.6)
+    return song
 
 
 def _assert_payload_live_region_equal(left, right) -> None:
@@ -262,12 +194,12 @@ def test_frontier_payload_memory_hit_serves_the_built_and_disk_payload(tmp_path:
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     timeline_api.reset_timeline_state()
-    calc_song = _warm_disk_timeline_song("Memory Tier Timeline")
+    song = _warm_disk_timeline_song("Memory Tier Timeline")
 
-    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
-    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
+    first = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
+    second = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     timeline_api.reset_timeline_state()
-    third = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
+    third = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
 
     assert (first.cache_source, second.cache_source, third.cache_source) == ("built", "memory", "disk")
     assert int(first.payload.frontier_pool_used) > 0
@@ -279,15 +211,15 @@ def test_frontier_payload_memory_tier_holds_compressed_disk_bytes(tmp_path: Path
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     timeline_api.reset_timeline_state()
-    calc_song = _warm_disk_timeline_song("Compressed Memory Tier Timeline")
+    song = _warm_disk_timeline_song("Compressed Memory Tier Timeline")
 
-    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
+    first = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert first.cache_source == "built"
     cached = timeline_api._frontier_payload_cache[first.cache_key]
     assert isinstance(cached, bytes)
     assert len(cached) < 200_000
     assert cached == Path(first.disk_path).read_bytes()
-    info = timeline_api.timeline_frontier_payload_cache_info(calc_song, _curves())
+    info = timeline_api.timeline_frontier_payload_cache_info(song, _curves())
     assert info.cache_source == "memory"
 
     with monkeypatch.context() as no_disk:
@@ -296,11 +228,11 @@ def test_frontier_payload_memory_tier_holds_compressed_disk_bytes(tmp_path: Path
             "_live_frontier_disk_cache_path",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("memory hit must not touch disk")),
         )
-        second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
+        second = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert second.cache_source == "memory"
 
     timeline_api.reset_timeline_state()
-    third = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
+    third = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert third.cache_source == "disk"
     assert timeline_api._frontier_payload_cache[third.cache_key] == cached
     # A memory hit decodes exactly the disk form: identical arrays, dtypes and (trimmed) shapes.
@@ -319,7 +251,7 @@ def test_frontier_payload_memory_tier_survives_failed_disk_write(tmp_path: Path,
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     timeline_api.reset_timeline_state()
-    calc_song = _warm_disk_timeline_song("Failed Write Timeline")
+    song = _warm_disk_timeline_song("Failed Write Timeline")
 
     with monkeypatch.context() as failing_replace:
 
@@ -327,11 +259,11 @@ def test_frontier_payload_memory_tier_survives_failed_disk_write(tmp_path: Path,
             raise OSError("simulated replace failure")
 
         failing_replace.setattr(Path, "replace", _raise_replace)
-        first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
+        first = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert first.cache_source == "built"
     assert not Path(first.disk_path).exists()
 
-    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
+    second = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert second.cache_source == "memory"
     _assert_payload_live_region_equal(first.payload, second.payload)
 
@@ -350,22 +282,10 @@ def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(
         "exact-frontier-v12+logic-73245c017cbd",
     )
     timeline_api.reset_timeline_state()
-    calc_song = {
-        "metadata": {
-            "Song Name": "Predecessor Info Timeline",
-            "Difficulty": "Easy",
-            "Long Notes": 0,
-            "Last Note Time": 0.6,
-        },
-        "song_data": {
-            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
-            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
-        },
-    }
-    _apply_physical_timing(calc_song)
+    song = make_song([0.0, 0.2, 0.4, 0.6], name="Predecessor Info Timeline", difficulty="Easy", last_note_time=0.6)
     curves = _curves()
 
-    built = timeline_api.build_or_load_timeline_frontier_payload(calc_song, curves)
+    built = timeline_api.build_or_load_timeline_frontier_payload(song, curves)
     assert built.cache_source == "built"
     current_path = Path(built.disk_path)
     assert current_path.exists()
@@ -380,7 +300,7 @@ def test_cache_info_reports_predecessor_disk_path_when_only_predecessor_exists(
     current_path.unlink()
 
     timeline_api.reset_timeline_state()
-    info = timeline_api.timeline_frontier_payload_cache_info(calc_song, curves)
+    info = timeline_api.timeline_frontier_payload_cache_info(song, curves)
     assert info.cache_source == "disk"
     assert Path(info.disk_path) == predecessor_path
     assert Path(info.disk_path).exists()
@@ -391,27 +311,15 @@ def test_build_or_load_timeline_frontier_payload_reuses_old_disk_cache_without_t
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     monkeypatch.setenv("ROBEATSMETA_LIVE_CACHE_IDLE_TTL_SECONDS", "1800")
     timeline_api.reset_timeline_state()
-    calc_song = {
-        "metadata": {
-            "Song Name": "Stale Disk Timeline",
-            "Difficulty": "Easy",
-            "Long Notes": 0,
-            "Last Note Time": 0.6,
-        },
-        "song_data": {
-            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
-            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
-        },
-    }
-    _apply_physical_timing(calc_song)
+    song = make_song([0.0, 0.2, 0.4, 0.6], name="Stale Disk Timeline", difficulty="Easy", last_note_time=0.6)
 
-    first = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
+    first = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert first.cache_source == "built"
     stale_ts = time.time() - 3700.0
     os.utime(first.disk_path, (stale_ts, stale_ts))
 
     timeline_api.reset_timeline_state()
-    second = timeline_api.build_or_load_timeline_frontier_payload(calc_song, _curves())
+    second = timeline_api.build_or_load_timeline_frontier_payload(song, _curves())
     assert second.cache_source == "disk"
     assert second.disk_path.exists()
     assert second.disk_path.stat().st_mtime == stale_ts
@@ -421,25 +329,13 @@ def test_load_timeline_frontier_payload_builds_and_persists_live_cache_miss(tmp_
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     timeline_api.reset_timeline_state()
-    calc_song = {
-        "metadata": {
-            "Song Name": "Runtime Missing Timeline",
-            "Difficulty": "Easy",
-            "Long Notes": 0,
-            "Last Note Time": 0.6,
-        },
-        "song_data": {
-            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
-            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
-        },
-    }
-    _apply_physical_timing(calc_song)
+    song = make_song([0.0, 0.2, 0.4, 0.6], name="Runtime Missing Timeline", difficulty="Easy", last_note_time=0.6)
 
-    built = timeline_api.load_timeline_frontier_payload(calc_song, _curves())
+    built = timeline_api.load_timeline_frontier_payload(song, _curves())
     assert built.cache_source == "built"
     assert built.disk_path.exists()
     timeline_api.reset_timeline_state()
-    loaded = timeline_api.load_timeline_frontier_payload(calc_song, _curves())
+    loaded = timeline_api.load_timeline_frontier_payload(song, _curves())
     assert loaded.cache_source == "disk"
     assert int(loaded.total_notes) == 4
 
@@ -461,19 +357,7 @@ def test_frontier_disk_cache_cleans_tmp_when_replace_fails(tmp_path: Path, monke
 
 
 def test_frontier_cache_key_ignores_unrelated_ref_arrays() -> None:
-    calc_song = {
-        "metadata": {
-            "Song Name": "unit-test-song",
-            "Difficulty": "Hard",
-            "Long Notes": 0,
-            "Last Note Time": 1.8,
-        },
-        "song_data": {
-            "timestamps": np.array([0.0, 0.2, 0.4, 0.6], dtype=np.float32),
-            "note_types": np.array([1, 1, 1, 1], dtype=np.int16),
-        },
-    }
-    _apply_physical_timing(calc_song)
+    song = make_song([0.0, 0.2, 0.4, 0.6], name="unit-test-song", difficulty="Hard", last_note_time=1.8)
     ref_ft = np.linspace(0.0, 1.6, 161, dtype=np.float32)
     ref_ff = np.linspace(0.0, 1.6, 161, dtype=np.float32)
     ref_base = synthetic_curves({
@@ -489,8 +373,8 @@ def test_frontier_cache_key_ignores_unrelated_ref_arrays() -> None:
         "Combo Multiplier": np.arange(161, dtype=np.float32) * 3.0,
     })
 
-    info_base = timeline_api.timeline_frontier_payload_cache_info(calc_song, ref_base)
-    info_variant = timeline_api.timeline_frontier_payload_cache_info(calc_song, ref_variant)
+    info_base = timeline_api.timeline_frontier_payload_cache_info(song, ref_base)
+    info_variant = timeline_api.timeline_frontier_payload_cache_info(song, ref_variant)
 
     assert info_base.cache_key == info_variant.cache_key
     assert info_base.disk_path == info_variant.disk_path

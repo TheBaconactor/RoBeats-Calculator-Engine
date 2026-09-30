@@ -25,6 +25,7 @@ from gear_optimizer.solver.fg_response_scoring.planner import (
     FgResponseFrontierPreparedPlan,
 )
 from tests.native_song_factory import make_native_song
+from tests.songs_support import make_song
 
 
 def _echo_process_value(song_key: str, value: int) -> tuple[str, int]:
@@ -159,12 +160,12 @@ def test_fg_materialization_request_strips_driver_only_object_graphs_and_pickles
         started=1.0,
         base_components=np.zeros((1, 7), dtype=np.int32),
         selected_color="Vibe",
-        calc_song={"song_data": {}},
+        song=make_song([0.0, 0.5]),
         curves={"Perfect Points": np.zeros((1,), dtype=np.float32)},
         scoring_bundle=SimpleNamespace(cache_key=("bundle",)),
     )
     plan = FgResponseFrontierPreparedPlan(
-        calc_song=batch.calc_song,
+        song=batch.song,
         curves=batch.curves,
         pending_jobs=((entry, eval_data, "Vibe", base_stats, 123, cache_key),),
         prepared_batches=(

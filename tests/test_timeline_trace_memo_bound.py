@@ -8,10 +8,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import numpy as np
-
 from gear_optimizer.solver.scoring import exact_rescore
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
+from tests.songs_support import make_song
 
 
 def _install_stubs(monkeypatch) -> list[tuple[int, int, int]]:
@@ -38,9 +37,8 @@ def _install_stubs(monkeypatch) -> list[tuple[int, int, int]]:
 
 
 def _score(ft: int, ff: int) -> dict:
-    calc_song = {"metadata": {}, "song_data": {"timestamps": np.asarray([0.0, 0.5], dtype=np.float32)}}
     stats = {"Fever Time": ft, "Fever Fill Rate": ff}
-    return exact_rescore.score_stats_exact_with_timeline_trace(stats, calc_song, {})
+    return exact_rescore.score_stats_exact_with_timeline_trace(stats, make_song([0.0, 0.5]), {})
 
 
 def test_timeline_trace_memo_is_bounded_hits_and_copies(monkeypatch) -> None:

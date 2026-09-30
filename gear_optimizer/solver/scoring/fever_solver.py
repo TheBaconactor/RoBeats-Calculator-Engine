@@ -17,10 +17,10 @@ from ..base_stats import build_stats_array, build_stats_dict, build_stats_list
 from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 
 from .stats_ops import apply_gems_to_base_stats
+from ..timing_envelope import TimedSong
 
-def _color_flags(calc_song: dict, selected_color: str) -> dict[str, int]:
-    metadata = calc_song["metadata"]
-    return build_color_flags(metadata.get("Primary Color", ""), metadata.get("Secondary Color", ""), selected_color)
+def _color_flags(song: TimedSong, selected_color: str) -> dict[str, int]:
+    return build_color_flags(song.chart.primary, song.chart.secondary, selected_color)
 
 
 def _gem_result(stats: dict[str, int], selected_color: str, solved) -> dict:
@@ -50,7 +50,7 @@ def _gem_result(stats: dict[str, int], selected_color: str, solved) -> dict:
     }
 
 
-def solve_best_fever_combination(initial_stats, calc_song, curves, *, selected_color):
+def solve_best_fever_combination(initial_stats, song: TimedSong, curves, *, selected_color, song_slot: int = 0):
     """Best gem allocation for one pre-gem stat row.
 
     Returns: dict with Score, FT, FF, GemCounts, Stats, Selected Element
@@ -64,10 +64,10 @@ def solve_best_fever_combination(initial_stats, calc_song, curves, *, selected_c
         slot_start=np.zeros((9,), dtype=np.int32),
         slot_count=np.zeros((9,), dtype=np.int32),
         base_fixed_stats=build_stats_array(stats),
-        timeline_grid=calc_song,
+        song=song,
         curves=curves,
-        flags=_color_flags(calc_song, selected_color),
-        song_slot=int((calc_song or {}).get("_gpu_song_slot", 0) or 0),
+        flags=_color_flags(song, selected_color),
+        song_slot=int(song_slot),
     )
     gpu_results = dispatch_registry_solve(request)
     if not gpu_results:
@@ -75,7 +75,7 @@ def solve_best_fever_combination(initial_stats, calc_song, curves, *, selected_c
     return _gem_result(stats, selected_color, gpu_results[0])
 
 
-def solve_best_fever_combination_batch(stats_list, calc_song, curves, *, selected_color):
+def solve_best_fever_combination_batch(stats_list, song: TimedSong, curves, *, selected_color, song_slot: int = 0):
     """Batched GPU base gem re-solve: N loadouts in ONE skyline dispatch (n_genomes=N).
 
     The whole base solve (timeline reuse + skyline + scoring) then runs once for all loadouts, and
@@ -105,10 +105,10 @@ def solve_best_fever_combination_batch(stats_list, calc_song, curves, *, selecte
         slot_start=np.zeros((9,), dtype=np.int32),
         slot_count=np.zeros((9,), dtype=np.int32),
         base_fixed_stats=np.zeros((10,), dtype=np.int32),
-        timeline_grid=calc_song,
+        song=song,
         curves=curves,
-        flags=_color_flags(calc_song, selected_color),
-        song_slot=int((calc_song or {}).get("_gpu_song_slot", 0) or 0),
+        flags=_color_flags(song, selected_color),
+        song_slot=int(song_slot),
     )
     gpu_results = dispatch_registry_solve(request)
     if not gpu_results or len(gpu_results) != n:

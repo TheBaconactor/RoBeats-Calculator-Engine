@@ -4,15 +4,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from gear_optimizer.gamedata import load_stat_curves
 from gear_optimizer.settings import paths
-from gear_optimizer.data.song_io import get_base_calc_song
+from gear_optimizer.solver.song_preparation import prepare_song
+from gear_optimizer.solver.timing_envelope import time_song
 from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
+from tests.songs_support import make_chart
 
 
 def _fixture_payload(filename: str) -> dict[str, Any]:
@@ -49,38 +49,26 @@ def _assert_selected_base_timeline_frontier(details: Any) -> None:
     assert all("activation_index" in row and "activation_hit_offset_ms" in row for row in trace)
 
 
-def _prebuild_timeline_frontier(calc_song: dict[str, Any], curves: dict[str, Any]) -> None:
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-
-    apply_timing_envelope(calc_song, mode="perfect_window")
-    build_or_load_timeline_frontier_payload(calc_song, curves)
-
-
-def _calc_song_with_truncated_timeline(calc_song: dict[str, Any]) -> dict[str, Any]:
-    meta = dict(calc_song.get("metadata") or {})
-    song_data_src = dict(calc_song.get("song_data") or {})
-    song_data = dict(song_data_src)
-
-    ts = np.asarray(song_data_src.get("timestamps"), dtype=np.float32)
+def _song_with_truncated_timeline(song):
+    chart = song.chart
+    ts = chart.timestamps
     if ts.size > 20:
-        ts_bad = np.asarray(ts[::2], dtype=np.float32)
+        keep = slice(None, None, 2)
     elif ts.size > 1:
-        ts_bad = np.asarray(ts[:-1], dtype=np.float32)
+        keep = slice(None, -1)
     else:
-        ts_bad = np.asarray(ts, dtype=np.float32)
-
-    song_data["timestamps"] = ts_bad
-    song_data["chart_timestamps"] = ts_bad
-    note_types = song_data_src.get("note_types")
-    if note_types is not None:
-        song_data["note_types"] = np.asarray(note_types, dtype=np.int16)[: ts_bad.shape[0]]
-    lanes = song_data_src.get("lanes")
-    if lanes is not None:
-        song_data["lanes"] = np.asarray(lanes, dtype=np.int32)[: ts_bad.shape[0]]
-
-    if ts_bad.size:
-        meta["Last Note Time"] = float(ts_bad[-1])
-    return {"metadata": meta, "song_data": song_data}
+        keep = slice(None)
+    truncated = make_chart(
+        ts[keep],
+        note_types=chart.note_types[keep],
+        lanes=chart.lanes[keep],
+        name=chart.name,
+        difficulty=chart.difficulty,
+        primary=chart.primary,
+        secondary=chart.secondary,
+        long_notes=chart.long_notes,
+    )
+    return time_song(truncated, "perfect_window")
 
 
 def test_persistence_authority_contract_real_song_be_right_there_t5_base():
@@ -88,9 +76,9 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     song_file = Path(__file__).resolve().parents[1] / str(frozen["song_file_rel"])
     assert song_file.exists(), f"Missing frozen chart fixture: {song_file}"
 
-    calc_song = get_base_calc_song(str(song_file))
+    song = prepare_song(str(song_file))
     curves = load_stat_curves(paths().stats_txt)
-    _prebuild_timeline_frontier(calc_song, curves)
+    build_or_load_timeline_frontier_payload(song, curves)
     build_details_fn = make_build_details_fn(
         str(frozen["primary_color"]),
         str(frozen["secondary_color"]),
@@ -112,7 +100,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
         ga_candidates=[],
         loadout_entries=None,
         build_details_fn=build_details_fn,
-        calc_song=calc_song,
+        song=song,
         curves=curves,
     )
 
@@ -127,7 +115,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     assert details_actual == details_expected
     stats = dict((details_actual.get("Stats") or {}))
     assert stats == dict(details_expected["Stats"])
-    exact = int(score_stats_exact(stats, calc_song, curves))
+    exact = int(score_stats_exact(stats, song, curves))
     authority_score = 47192170
     assert int(row["score"]) == exact == int(base_entry["expected_score"]) == authority_score
     assert int(row["score"]) != stale_score
@@ -139,7 +127,7 @@ def test_persistence_authority_contract_real_song_be_right_there_t5_base():
     assert int(gem_counts.get("Element", 0)) == 64
     assert int(details_actual.get("FF", 0)) == 13
 
-    wrong_timeline_calc_song = _calc_song_with_truncated_timeline(calc_song)
-    _prebuild_timeline_frontier(wrong_timeline_calc_song, curves)
-    wrong_timeline_score = int(score_stats_exact(stats, wrong_timeline_calc_song, curves))
+    wrong_timeline_song = _song_with_truncated_timeline(song)
+    build_or_load_timeline_frontier_payload(wrong_timeline_song, curves)
+    wrong_timeline_score = int(score_stats_exact(stats, wrong_timeline_song, curves))
     assert wrong_timeline_score <= authority_score

@@ -187,7 +187,8 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
         fg_scheduler_norm=fg_scheduler_norm,
     )
 
-from gear_optimizer.core.types import CalcSong, JsonDict
+from gear_optimizer.core.types import JsonDict
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.solver.item_registry import ItemRegistry
 
@@ -210,7 +211,7 @@ class NativeSongGPUInputs:
     all_minis: list[Any] = field(default_factory=list)
     gears_by_name: dict[str, Any] = field(default_factory=dict)
     minis_by_name: dict[str, Any] = field(default_factory=dict)
-    calc_song: CalcSong | JsonDict = field(default_factory=dict)
+    timed_song: TimedSong | None = None
     meta_primary_color: str = ""
     meta_secondary_color: str = ""
     fixed_stats: JsonDict = field(default_factory=dict)
@@ -265,7 +266,6 @@ class NativeSongDecodeState:
 @dataclass
 class NativeSongFGState:
     fg_variants: Optional[list[JsonDict]] = None
-    fg_calc_song: Optional[CalcSong | JsonDict] = None
     fg_prep_future: Optional[concurrent.futures.Future] = None
     fg_static_prep_done: bool = False
     fg_dynamic_prep_done: bool = False

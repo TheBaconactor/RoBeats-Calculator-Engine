@@ -3,14 +3,14 @@ from __future__ import annotations
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 
 import numpy as np
 
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.frontier_cache_build_lock import FrontierBuildLock
-from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
 from .response_build_gpu_batch import build_force_greats_response_first_frontiers_gpu_batch
 from .response_build_gpu_numba import _HEAD_DOM_C, _HEAD_DOM_F, _HEAD_DOM_G, _HEAD_DOM_V, _numba_session_box_keep_mask
@@ -293,14 +293,14 @@ def session_prune_scoring_bundle(
 
 
 def _build_response_frontier_cache_payload(
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> tuple[FgResponseFrontierCachePayload, str]:
     _assert_head_dominance_box_covers(curves)
     keys = normalize_fg_response_stat_keys(stat_keys)
-    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, curves)
+    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
     frontier_by_key: dict[tuple[int, int], FgResponseFrontierResult] = {}
     frontier_by_geometry: dict[tuple[float, int, float, bool], FgResponseFrontierResult] = {}
     missing_by_geometry: dict[tuple[float, int, float, bool], tuple[float, int, float]] = {}
@@ -369,14 +369,14 @@ def _build_response_frontier_cache_payload(
 
 
 def fg_response_frontier_payload_cache_info(
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> FgResponseFrontierCacheInfo:
     keys = normalize_fg_response_stat_keys(stat_keys)
-    payload_key = fg_response_frontier_payload_cache_key(calc_song, curves, keys)
-    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, curves)
+    payload_key = fg_response_frontier_payload_cache_key(song, curves, keys)
+    bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
     payload = _payload_memory_get(payload_key)
     if payload is not None:
         return FgResponseFrontierCacheInfo(
@@ -421,7 +421,7 @@ def fg_response_frontier_payload_cache_info(
             long_notes=int(long_notes),
             frontier_count=int(frontier_count),
         )
-    song_inputs = extract_fg_song_inputs(calc_song)
+    song_inputs = song.fg_inputs
     return FgResponseFrontierCacheInfo(
         cache_key=payload_key,
         disk_path=resolve_fg_response_bundle_path(payload_key),
@@ -499,13 +499,13 @@ def _materialize_scoring_bundle_from_arrays(
 
 
 def load_response_frontier_scoring_bundle(
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> FgResponseFrontierScoringBundle:
     keys = normalize_fg_response_stat_keys(stat_keys)
-    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, curves)
+    bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
     cached_scoring = _scoring_bundle_memory_get(bundle_key)
     if cached_scoring is not None:
         requested = _stat_key_index_rows(keys)
@@ -554,15 +554,15 @@ def load_response_frontier_scoring_bundle(
     return scoring_bundle
 
 def build_or_load_response_frontier_payload(
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]],
 ) -> FgResponseFrontierPrewarmResult:
     started = time.perf_counter()
     keys = normalize_fg_response_stat_keys(stat_keys)
-    cache_key = fg_response_frontier_payload_cache_key(calc_song, curves, keys)
-    bundle_key = fg_response_frontier_bundle_cache_key(calc_song, curves)
+    cache_key = fg_response_frontier_payload_cache_key(song, curves, keys)
+    bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
     bundle_path = resolve_fg_response_bundle_path(bundle_key)
     payload = _payload_memory_get(cache_key)
     if payload is not None and _payload_subset(payload, keys) is not None:
@@ -613,7 +613,7 @@ def build_or_load_response_frontier_payload(
                 if payload is None:
                     missing_keys = _payload_missing_or_incomplete_keys(bundle, keys)
                     update, source = _build_response_frontier_cache_payload(
-                        calc_song,
+                        song,
                         curves,
                         stat_keys=missing_keys,
                     )

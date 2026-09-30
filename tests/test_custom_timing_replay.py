@@ -18,12 +18,12 @@ import numpy as np
 import pytest
 
 from gear_optimizer.rules import MAX_STAT
-from gear_optimizer.solver.taichi_gem.api.timeline import timing_envelope_timing_context
 from gear_optimizer.solver.scoring.exact_rescore import (
     score_stats_fixed_timing_exact_batch,
     score_stats_timing_exact_batch,
 )
-from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+from gear_optimizer.solver.timing_envelope import time_song
+from tests.songs_support import make_chart
 
 
 def _curves() -> dict[str, np.ndarray]:
@@ -37,20 +37,9 @@ def _curves() -> dict[str, np.ndarray]:
     })
 
 
-def _calc_song() -> dict:
+def _song(baseline_offset=None, mode: str = "zero_ms"):
     timestamps = np.round(np.arange(250, dtype=np.float32) * np.float32(0.1), 3).astype(np.float32)
-    return {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "chart_timestamps": timestamps,
-        },
-    }
+    return time_song(make_chart(timestamps, primary="Rush", secondary="Flow"), mode, baseline_offset)
 
 
 def _stats() -> dict[str, int]:
@@ -68,18 +57,18 @@ def _stats() -> dict[str, int]:
     }
 
 
-def _chart(cs: dict) -> np.ndarray:
-    return np.asarray(cs["song_data"]["chart_timestamps"], dtype=np.float32)
+def _chart(song) -> np.ndarray:
+    return song.chart.timestamps
 
 
 def test_timing_at_zero_offset_matches_fixed_timing_bit_exact():
     """Parity gate: T == 0 (hit_timestamps == chart) == the zero_ms fixed-0ms scorer."""
     rows = [_stats(), {**_stats(), "Fever Time": 5, "Fever Fill Rate": 5}]
-    cs = _calc_song()
+    song = _song()
     ref = _curves()
 
-    fixed = score_stats_fixed_timing_exact_batch(rows, cs, ref)
-    general = score_stats_timing_exact_batch(rows, cs, ref, _chart(cs))
+    fixed = score_stats_fixed_timing_exact_batch(rows, song, ref)
+    general = score_stats_timing_exact_batch(rows, song, ref, _chart(song))
     assert general == fixed
     assert general[0] > 0
 
@@ -87,86 +76,74 @@ def test_timing_at_zero_offset_matches_fixed_timing_bit_exact():
 def test_uniform_offset_is_score_invariant():
     """A uniform shift of every hit preserves the relative timeline -> identical fever -> same score."""
     rows = [_stats()]
-    cs = _calc_song()
+    song = _song()
     ref = _curves()
 
-    base = score_stats_timing_exact_batch(rows, cs, ref, _chart(cs))
+    base = score_stats_timing_exact_batch(rows, song, ref, _chart(song))
     for shift in (np.float32(0.5), np.float32(-0.25)):
-        shifted = (_chart(cs) + shift).astype(np.float32)
-        assert score_stats_timing_exact_batch(rows, cs, ref, shifted) == base
+        shifted = (_chart(song) + shift).astype(np.float32)
+        assert score_stats_timing_exact_batch(rows, song, ref, shifted) == base
 
 
 def test_non_uniform_offset_changes_score():
     """A per-note offset that moves a fever boundary changes the exact score."""
     rows = [_stats()]
-    cs = _calc_song()
+    song = _song()
     ref = _curves()
 
-    base = score_stats_timing_exact_batch(rows, cs, ref, _chart(cs))
+    base = score_stats_timing_exact_batch(rows, song, ref, _chart(song))
     # A monotone stretch pushes each note progressively later, widening inter-note spacing so the
     # fixed-duration fever windows cover fewer notes -> a different exact score. Stays sorted
     # (per-note increment 4ms << 100ms base spacing).
     ramp = (np.arange(250, dtype=np.float32) * np.float32(0.004)).astype(np.float32)
-    hits = (_chart(cs) + ramp).astype(np.float32)
-    assert score_stats_timing_exact_batch(rows, cs, ref, hits) != base
+    hits = (_chart(song) + ramp).astype(np.float32)
+    assert score_stats_timing_exact_batch(rows, song, ref, hits) != base
 
 
 def test_reordering_offset_fails_loud():
     """hit_timestamps that reorder notes (non-monotonic) is invalid external input."""
-    cs = _calc_song()
+    song = _song()
     ref = _curves()
-    hits = _chart(cs).copy()
+    hits = _chart(song).copy()
     hits[10] = hits[10] + np.float32(0.5)  # jumps past several later notes
     with pytest.raises(ValueError, match="non-decreasing"):
-        score_stats_timing_exact_batch([_stats()], cs, ref, hits)
+        score_stats_timing_exact_batch([_stats()], song, ref, hits)
 
 
 def test_wrong_length_offset_fails_loud():
-    cs = _calc_song()
+    song = _song()
     ref = _curves()
     with pytest.raises(ValueError, match="length"):
-        score_stats_timing_exact_batch([_stats()], cs, ref, _chart(cs)[:-1])
+        score_stats_timing_exact_batch([_stats()], song, ref, _chart(song)[:-1])
 
 
-# --- apply_timing_envelope(baseline_offset=T): the prep-time T lever (zero_ms = T==0 preset) ---
+# --- time_song(baseline_offset=T): the prep-time T lever (zero_ms = T==0 preset) ---
 
 
 def test_zero_ms_preset_leaves_chart_and_empty_hash():
-    cs = _calc_song()
-    info = apply_timing_envelope(cs, mode="zero_ms")  # no baseline_offset -> T == 0
-    assert info["timing_mode"] == "zero_ms"
-    assert info["baseline_hash"] == ""
-    assert cs["metadata"]["TimingEnvelopeBaselineHash"] == ""
-    np.testing.assert_array_equal(np.asarray(cs["song_data"]["fg_timestamps"]), _chart(cs))
+    song = _song()  # no baseline_offset -> T == 0
+    assert song.mode == "zero_ms"
+    assert song.baseline_hash == ""
+    np.testing.assert_array_equal(song.hit_timestamps, _chart(song))
 
 
 def test_all_zero_offset_equals_zero_ms_preset():
-    cs = _calc_song()
-    info = apply_timing_envelope(cs, mode="zero_ms", baseline_offset=np.zeros(250, dtype=np.float32))
-    assert info["baseline_hash"] == ""
-    np.testing.assert_array_equal(np.asarray(cs["song_data"]["fg_timestamps"]), _chart(cs))
+    song = _song(np.zeros(250, dtype=np.float32))
+    assert song.baseline_hash == ""
+    np.testing.assert_array_equal(song.hit_timestamps, _chart(song))
 
 
-def test_baseline_offset_shifts_fg_timestamps_and_hashes():
-    cs = _calc_song()
-    chart = _chart(cs)
+def test_baseline_offset_shifts_hit_timestamps_and_hashes():
     offset = np.full(250, 0.03, dtype=np.float32)
-    info = apply_timing_envelope(cs, mode="zero_ms", baseline_offset=offset)
-    assert info["baseline_hash"] != ""
-    np.testing.assert_allclose(np.asarray(cs["song_data"]["fg_timestamps"]), chart + offset, atol=1e-6)
+    song = _song(offset)
+    assert song.baseline_hash != ""
+    np.testing.assert_allclose(song.hit_timestamps, _chart(song) + offset, atol=1e-6)
 
 
 def test_distinct_offsets_give_disjoint_cache_context():
-    cs0 = _calc_song()
-    apply_timing_envelope(cs0, mode="zero_ms")  # T == 0
-    csa = _calc_song()
-    apply_timing_envelope(csa, mode="zero_ms", baseline_offset=np.full(250, 0.02, dtype=np.float32))
-    csb = _calc_song()
-    apply_timing_envelope(csb, mode="zero_ms", baseline_offset=np.full(250, 0.05, dtype=np.float32))
-
-    ctx0 = timing_envelope_timing_context(cs0)
-    ctxa = timing_envelope_timing_context(csa)
-    ctxb = timing_envelope_timing_context(csb)
+    ctx0 = _song().timeline_key[-4:]  # T == 0
+    ctxa = _song(np.full(250, 0.02, dtype=np.float32)).timeline_key[-4:]
+    ctxb = _song(np.full(250, 0.05, dtype=np.float32)).timeline_key[-4:]
     assert ctx0 != ctxa
     assert ctx0 != ctxb
     assert ctxa != ctxb
@@ -177,32 +154,28 @@ def test_distinct_offsets_give_disjoint_cache_context():
 def test_prepared_baseline_offset_score_matches_direct_and_differs_from_zero():
     ref = _curves()
     rows = [_stats()]
-    cs0 = _calc_song()
-    apply_timing_envelope(cs0, mode="zero_ms")
-    csT = _calc_song()
     ramp = (np.arange(250, dtype=np.float32) * np.float32(0.004)).astype(np.float32)
-    apply_timing_envelope(csT, mode="zero_ms", baseline_offset=ramp)
+    song0 = _song()
+    song_t = _song(ramp)
 
-    base0 = score_stats_fixed_timing_exact_batch(rows, cs0, ref)
-    base_t = score_stats_fixed_timing_exact_batch(rows, csT, ref)
-    # The prepared scorer reads fg_timestamps (= chart + T); equals scoring chart+T directly.
-    direct = score_stats_timing_exact_batch(rows, csT, ref, (_chart(csT) + ramp).astype(np.float32))
+    base0 = score_stats_fixed_timing_exact_batch(rows, song0, ref)
+    base_t = score_stats_fixed_timing_exact_batch(rows, song_t, ref)
+    # The prepared scorer reads the hit timeline (= chart + T); equals scoring chart+T directly.
+    direct = score_stats_timing_exact_batch(rows, song_t, ref, (_chart(song_t) + ramp).astype(np.float32))
     assert base_t == direct
     assert base_t != base0
 
 
 def test_baseline_offset_reordering_fails_loud_in_prep():
-    cs = _calc_song()
     bad = np.zeros(250, dtype=np.float32)
     bad[10] = np.float32(0.5)
     with pytest.raises(ValueError, match="reorder"):
-        apply_timing_envelope(cs, mode="zero_ms", baseline_offset=bad)
+        _song(bad)
 
 
 def test_baseline_offset_rejected_for_perfect_window():
-    cs = _calc_song()
     with pytest.raises(ValueError, match="only valid for fixed"):
-        apply_timing_envelope(cs, mode="perfect_window", baseline_offset=np.full(250, 0.02, dtype=np.float32))
+        _song(np.full(250, 0.02, dtype=np.float32), mode="perfect_window")
 
 
 def test_cache_context_is_inert_at_zero_t_lossless():
@@ -210,10 +183,5 @@ def test_cache_context_is_inert_at_zero_t_lossless():
     ``T == 0`` the timing cache keys are byte-identical to their pre-feature values. These frozen
     tuples lock that existing zero_ms / perfect_window cache keys (and therefore cached scores) are
     unchanged -- if a future edit leaks a non-empty hash at ``T == 0``, this fails."""
-    cs_zero = _calc_song()
-    apply_timing_envelope(cs_zero, mode="zero_ms")
-    assert timing_envelope_timing_context(cs_zero) == ("TIMING_ENVELOPE", "zero_ms", "", 0)
-
-    cs_pw = _calc_song()
-    apply_timing_envelope(cs_pw, mode="perfect_window")
-    assert timing_envelope_timing_context(cs_pw) == ("TIMING_ENVELOPE", "perfect_window", "", 0)
+    assert _song().timeline_key[-4:] == ("TIMING_ENVELOPE", "zero_ms", "", 0)
+    assert _song(mode="perfect_window").timeline_key[-4:] == ("TIMING_ENVELOPE", "perfect_window", "", 0)

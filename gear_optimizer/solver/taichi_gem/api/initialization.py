@@ -244,7 +244,7 @@ def _upload_timing_response_genome_rows(
 # ============================================================================
 
 
-def ensure_ready(curves=None, *, timeline_grid=None):
+def ensure_ready(curves=None):
     """
     Ensure Taichi and GPU fields are ready for use.
 
@@ -253,11 +253,7 @@ def ensure_ready(curves=None, *, timeline_grid=None):
 
     Args:
         curves: StatCurves to upload (optional)
-    timeline_grid: calc_song dict to precompute on GPU (optional)
     """
-    # Import here to avoid circular dependency
-    from .timeline import precompute_timeline_gpu
-
     # 1. Taichi initialization
     if not is_initialized():
         init_taichi()
@@ -266,32 +262,15 @@ def ensure_ready(curves=None, *, timeline_grid=None):
     if not is_fields_allocated():
         ensure_fields_allocated()
 
-    # 3. Reference arrays - upload only when needed (or when ref source changes)
-    # This preserves the old behavior where callers could load once and reuse.
-    sig: bytes = b""
-    global _last_curves_sig
-    if curves is not None:
-        sig = _curves_sig(curves)
-        if (not _ref_loaded) or (_last_curves_sig != sig):
-            load_curves(curves)
-            _last_curves_sig = sig
+    # 3. Stat curves - upload only when their content changes.
+    if curves is not None and ((not _ref_loaded) or _last_curves_sig != _curves_sig(curves)):
+        load_curves(curves)
 
     # 4. Grid fields - ALWAYS allocate because Taichi JIT traces both branches
     #    of _calc_score_selector regardless of runtime `mode` value, so accessing
     #    `grid_fever_masks_bits` during compilation fails if the field is None.
     if not is_grid_fields_allocated():
         ensure_grid_fields_allocated()
-
-    if timeline_grid is not None:
-        if curves is None:
-            raise ValueError("ensure_ready requires curves when timeline_grid is provided")
-        if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
-            precompute_timeline_gpu(timeline_grid, curves, song_slot=0)
-        else:
-            raise TypeError("ensure_ready timeline_grid must be a calc_song dict with metadata and song_data")
-
-    # Return the (possibly empty) ref-array signature so hot paths can avoid hashing refs twice.
-    return bytes(sig)
 
 
 # ============================================================================

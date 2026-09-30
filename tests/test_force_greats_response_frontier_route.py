@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 from tests.curves_support import synthetic_curves
 from tests.native_song_factory import make_native_song
+from tests.songs_support import make_chart, make_song
 
 import pytest
 import numpy as np
@@ -37,22 +40,26 @@ def _trace_row(forced_count: int) -> dict[str, object]:
     }
 
 
-def _minimal_fg_calc_song(note_count: int = 4) -> dict:
-    timestamps = np.linspace(0.0, 1.0, int(note_count), dtype=np.float32)
-    return {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]) if int(timestamps.shape[0]) else 0.0,
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "fg_timestamps": timestamps,
-            "lanes": list(range(len(timestamps))),
-            "note_types": np.ones(len(timestamps), dtype=np.int16),
-        },
-    }
+def _minimal_fg_song(note_count: int = 4):
+    return make_song(np.linspace(0.0, 1.0, int(note_count)), mode="zero_ms")
+
+
+def _stub_song(note_count: int):
+    """A song reduced to what the FG planner/reducer read: its FG inputs and chart note types."""
+    ts = [float(i) for i in range(int(note_count))]
+    return SimpleNamespace(
+        fg_inputs=SimpleNamespace(
+            total_notes=int(note_count),
+            timestamps=ts,
+            perfect_candidates=ts,
+            great_candidates=ts,
+            perfect_floor=ts,
+            great_floor=ts,
+            lanes=list(range(int(note_count))),
+            use_forced_great_timing=True,
+        ),
+        chart=SimpleNamespace(note_types=[1] * int(note_count)),
+    )
 
 
 def _minimal_fg_ref_arrays() -> dict[str, np.ndarray]:
@@ -221,7 +228,7 @@ def test_fg_response_scoring_failure_raises_directly(monkeypatch):
     with pytest.raises(RuntimeError, match="response frontier path failed"):
         force_greats.run_force_greats_response_frontier_for_ga_candidates(
             ga_candidates=ga_candidates,
-            calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
+            song=make_song([1.0], mode="zero_ms"),
             curves={},
             meta_primary_color="Rush",
         )
@@ -250,7 +257,7 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_response_frontier_route(mo
 
 
     song = make_native_song(
-        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
+        timed_song=make_song([1.0], mode="zero_ms"),
         ga_candidates=[
             {
                 "Score": 100,
@@ -299,7 +306,7 @@ def test_prepare_fg_job_sync_builds_plan_without_owner_build_prefetch(monkeypatc
     assert not hasattr(FgResponseScoringService, "finalize_prefetched_group_builds")
 
     song = make_native_song(
-        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
+        timed_song=make_song([1.0], mode="zero_ms"),
         ga_candidates=[
             {
                 "Score": 100,
@@ -358,7 +365,7 @@ def test_prepare_fg_job_sync_canonicalizes_gpu_payload_before_response_frontier(
     }
 
     song = make_native_song(
-        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
+        timed_song=make_song([1.0], mode="zero_ms"),
         ga_candidates=duplicate_prefix + [keeper],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -416,7 +423,7 @@ def test_prepare_fg_job_sync_processes_configured_top_base_candidate_limit(monke
     ]
 
     song = make_native_song(
-        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
+        timed_song=make_song([1.0], mode="zero_ms"),
         ga_candidates=ga_candidates,
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -452,7 +459,7 @@ def test_prepare_fg_job_sync_requires_materialized_response_frontier_plan(monkey
     )
 
     song = make_native_song(
-        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
+        timed_song=make_song([1.0], mode="zero_ms"),
         ga_candidates=[{"BaseScore": 100, "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"}}],
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
@@ -481,7 +488,7 @@ def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundl
     canonical_keys = ((0, 0), (1, 1))
     bundle = SimpleNamespace(cache_key=("bundle-key",))
 
-    def _fake_load_bundle(_calc_song, _curves, *, stat_keys):
+    def _fake_load_bundle(_song, _curves, *, stat_keys):
         seen["stat_keys"] = tuple(stat_keys)
         return bundle
 
@@ -497,7 +504,7 @@ def test_prepare_fg_static_sync_loads_and_session_prunes_canonical_scoring_bundl
     monkeypatch.setattr(response_cache, "session_prune_scoring_bundle", _fake_session_prune)
 
     song = make_native_song(
-        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
+        timed_song=make_song([1.0], mode="zero_ms"),
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         db_key="song-db-key",
@@ -523,7 +530,7 @@ def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
 
     def _fake_response_frontier(
         ga_candidates,
-        calc_song,
+        song,
         curves,
         meta_primary_color,
         *,
@@ -532,7 +539,7 @@ def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
         gpu_client=None,
     ):
         _ = (
-            calc_song,
+            song,
             curves,
             meta_primary_color,
             scoring_bundle,
@@ -567,7 +574,7 @@ def test_fg_response_scoring_forwards_direct_ga_candidates(monkeypatch):
 
     out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
         ga_candidates=ga_candidates,
-        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0]}},
+        song=make_song([1.0], mode="zero_ms"),
         curves={},
         meta_primary_color="Rush",
         ga_registry=registry,
@@ -612,20 +619,6 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
     )
     seen = {"reconstruct_calls": 0, "validate_calls": 0}
 
-    monkeypatch.setattr(
-        reducer_mod,
-        "extract_fg_song_inputs",
-        lambda calc_song: SimpleNamespace(
-            timestamps=[0.0],
-            perfect_candidates=[0.0],
-            great_candidates=[0.0],
-            perfect_floor=[0.0],
-            great_floor=[0.0],
-            lanes=[0],
-            use_forced_great_timing=True,
-        ),
-    )
-
     def _fake_reconstruct_trace(**kwargs):
         seen["reconstruct_calls"] += 1
         seen["non_fever_base"] = kwargs["non_fever_base"]
@@ -645,17 +638,14 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 1230)
 
     trace_cache = FgTraceMaterializationCache()
-    calc_song = {
-        "metadata": {},
-        "song_data": {"timestamps": [1.0], "lanes": [0], "note_types": [1]},
-    }
+    song = _stub_song(1)
     payload = materialize_force_payload_from_response_frontier(
         eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
         paired_base_score=1000,
         selected_element="Rush",
         result=result,
-        calc_song=calc_song,
+        song=song,
         curves={},
         reconstruction_frontier=full_frontier,
         trace_cache=trace_cache,
@@ -666,7 +656,7 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
         paired_base_score=1000,
         selected_element="Rush",
         result=result,
-        calc_song=calc_song,
+        song=song,
         curves={},
         reconstruction_frontier=full_frontier,
         trace_cache=trace_cache,
@@ -685,43 +675,18 @@ def test_force_payload_uses_supplied_reconstruction_frontier_and_validated_trace
     assert seen["reconstruct_calls"] == 1
     assert seen["validate_calls"] == 1
     assert seen["physical_calls"] == 1
-    with pytest.raises(ValueError, match="cannot be reused across calc-song owners"):
+    with pytest.raises(ValueError, match="cannot be reused across song owners"):
         materialize_force_payload_from_response_frontier(
             eval_data={"Selected Element": "Rush"},
             base_stats={"Perfect Points": 1},
             paired_base_score=1000,
             selected_element="Rush",
             result=result,
-            calc_song=dict(calc_song),
+            song=_stub_song(1),
             curves={},
             reconstruction_frontier=full_frontier,
             trace_cache=trace_cache,
         )
-
-    # Missing lanes is a supported chart-ingest boundary that materializes a fresh fallback tuple
-    # on every extraction. Cache ownership is the strong calc-song object, not that transient tuple.
-    missing_lanes_song = {
-        "metadata": {},
-        "song_data": {"timestamps": [1.0], "note_types": [1]},
-    }
-    missing_lanes_cache = FgTraceMaterializationCache()
-    missing_lane_payloads = [
-        materialize_force_payload_from_response_frontier(
-            eval_data={"Selected Element": "Rush"},
-            base_stats={"Perfect Points": 1},
-            paired_base_score=1000,
-            selected_element="Rush",
-            result=result,
-            calc_song=missing_lanes_song,
-            curves={},
-            reconstruction_frontier=full_frontier,
-            trace_cache=missing_lanes_cache,
-        )
-        for _ in range(2)
-    ]
-    assert missing_lane_payloads[0]["ForceGreats"]["frontier_trace"] == missing_lane_payloads[1]["ForceGreats"][
-        "frontier_trace"
-    ]
 
 
 def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
@@ -754,20 +719,6 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
 
     monkeypatch.setattr(
         reducer_mod,
-        "extract_fg_song_inputs",
-        lambda calc_song: SimpleNamespace(
-            total_notes=1,
-            timestamps=[0.0],
-            perfect_candidates=[0.0],
-            great_candidates=[0.0],
-            perfect_floor=[0.0],
-            great_floor=[0.0],
-            lanes=[0],
-            use_forced_great_timing=True,
-        ),
-    )
-    monkeypatch.setattr(
-        reducer_mod,
         "reconstruct_force_greats_response_trace",
         lambda **_kwargs: (_trace_row(1), _trace_row(0), _trace_row(1)),
     )
@@ -785,10 +736,7 @@ def test_force_payload_reconstructs_counts_without_state_frontiers(monkeypatch):
         paired_base_score=1000,
         selected_element="Rush",
         result=result,
-        calc_song={
-            "metadata": {},
-            "song_data": {"timestamps": [1.0], "lanes": [0], "note_types": [1]},
-        },
+        song=_stub_song(1),
         curves={},
     )
 
@@ -868,24 +816,19 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
     )
-    calc_song = {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "fg_timestamps": timestamps,
-            "fg_perfect_candidate_timestamps": perfect_candidates,
-            "fg_perfect_floor_timestamps": perfect_floor,
-            "fg_great_floor_timestamps": great_floor,
-            "fg_great_candidate_timestamps": great_candidates,
-            "lanes": np.arange(int(timestamps.shape[0]), dtype=np.int32),
-            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
-        },
-    }
+    from gear_optimizer.solver.timing_envelope import TimedSong
+
+    chart = make_chart(timestamps)
+    song = TimedSong(
+        chart=chart,
+        mode="perfect_window",
+        baseline_hash="",
+        hit_timestamps=chart.timestamps,
+        perfect_candidates=perfect_candidates,
+        perfect_floor=perfect_floor,
+        great_floor=great_floor,
+        great_candidates=great_candidates,
+    )
 
     monkeypatch.setattr(reducer_mod, "score_force_greats_response_surface_exact", lambda *_args, **_kwargs: 4321)
 
@@ -895,7 +838,7 @@ def test_force_payload_emits_compact_trace_from_slim_frontier(monkeypatch):
         paired_base_score=4000,
         selected_element="Rush",
         result=result,
-        calc_song=calc_song,
+        song=song,
         curves={},
     )
 
@@ -960,7 +903,6 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
         "materialize_entry_names",
         lambda entry, mutate=True: (list(entry["gear"]), list(entry["minis"])),
     )
-    monkeypatch.setattr(planner_mod, "extract_fg_song_inputs", lambda calc_song: SimpleNamespace(total_notes=1))
     monkeypatch.setattr(
         planner_mod,
         "prepare_force_greats_response_frontier_scoring_batch",
@@ -990,7 +932,7 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
     monkeypatch.setattr(
         reducer_mod,
         "score_force_greats_response_surface_exact",
-        lambda stats, calc_song, curves, surface: 100,
+        lambda stats, song, curves, surface: 100,
     )
 
     candidates = [
@@ -1015,7 +957,7 @@ def test_response_frontier_route_reconstructs_only_top_limit_candidates(tmp_path
     )
     out = force_greats.run_force_greats_response_frontier_for_ga_candidates(
         candidates,
-        calc_song=_minimal_fg_calc_song(),
+        song=_minimal_fg_song(),
         curves=_minimal_fg_ref_arrays(),
         meta_primary_color="Rush",
     )
@@ -1267,31 +1209,13 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
             real_fever_time=1.0,
         )
 
-    def _fake_prepare_batch(*, base_stats_list, calc_song, curves, selected_color, **_kwargs):
-        calls.append((list(base_stats_list), selected_color, calc_song, curves))
+    def _fake_prepare_batch(*, base_stats_list, song, curves, selected_color, **_kwargs):
+        calls.append((list(base_stats_list), selected_color, song, curves))
         return _fake_fg_prepared_batch(base_stats_list, str(selected_color or ""))
 
     def _fake_score_batch(batch, **_kwargs):
         return [_result(base_stats, str(batch.selected_color)) for base_stats in batch.base_stats_list]
 
-    monkeypatch.setattr(
-        planner_mod,
-        "extract_fg_song_inputs",
-        lambda _song: SimpleNamespace(total_notes=2, lanes=[0, 1]),
-    )
-    monkeypatch.setattr(
-        reducer_mod,
-        "extract_fg_song_inputs",
-        lambda _song: SimpleNamespace(
-            timestamps=[0.0, 1.0],
-            perfect_candidates=[0.0, 1.0],
-            great_candidates=[0.0, 1.0],
-            perfect_floor=[0.0, 1.0],
-            great_floor=[0.0, 1.0],
-            lanes=[0, 1],
-            use_forced_great_timing=True,
-        ),
-    )
     monkeypatch.setattr(planner_mod, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
     monkeypatch.setattr(
         reducer_mod,
@@ -1329,7 +1253,7 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
                 },
             }
         ],
-        _minimal_fg_calc_song(),
+        _stub_song(2),
         _minimal_fg_ref_arrays(),
         "Rush",
     )
@@ -1386,7 +1310,7 @@ def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(tmp_pa
     keep_stats = {"Perfect Points": 0}
     drop_stats = {"Perfect Points": 1}
     plan = SimpleNamespace(
-        calc_song=_minimal_fg_calc_song(),
+        song=_minimal_fg_song(),
         curves=_minimal_fg_ref_arrays(),
         pending_jobs=((keep, {}, "Rush", keep_stats, 100, "keep"), (drop, {}, "Rush", drop_stats, 160, "drop")),
         prepared_batches=(
@@ -1405,7 +1329,7 @@ def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(tmp_pa
     monkeypatch.setattr(
         reducer_mod,
         "score_force_greats_response_surface_exact",
-        lambda stats, calc_song, curves, surface: 150,
+        lambda stats, song, curves, surface: 150,
     )
 
     out = FgResultReducer.materialize(plan, [results])
@@ -1431,8 +1355,8 @@ def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
 
     calls: list[int] = []
 
-    def _fake_prepare_batch(*, base_stats_list, calc_song, curves, selected_color, **_kwargs):
-        _ = (calc_song, curves, selected_color)
+    def _fake_prepare_batch(*, base_stats_list, song, curves, selected_color, **_kwargs):
+        _ = (song, curves, selected_color)
         calls.append(len(base_stats_list))
         return _fake_fg_prepared_batch(base_stats_list, str(selected_color or ""))
 
@@ -1483,24 +1407,6 @@ def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
             )
         return out
 
-    monkeypatch.setattr(
-        planner_mod,
-        "extract_fg_song_inputs",
-        lambda _song: SimpleNamespace(total_notes=2, lanes=[0, 1]),
-    )
-    monkeypatch.setattr(
-        reducer_mod,
-        "extract_fg_song_inputs",
-        lambda _song: SimpleNamespace(
-            timestamps=[0.0, 1.0],
-            perfect_candidates=[0.0, 1.0],
-            great_candidates=[0.0, 1.0],
-            perfect_floor=[0.0, 1.0],
-            great_floor=[0.0, 1.0],
-            lanes=[0, 1],
-            use_forced_great_timing=True,
-        ),
-    )
     monkeypatch.setattr(planner_mod, "prepare_force_greats_response_frontier_scoring_batch", _fake_prepare_batch)
     monkeypatch.setattr(
         reducer_mod,
@@ -1535,7 +1441,7 @@ def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):
                 "Data": {"BaseStats": {"Perfect Points": 0, "Rush": 11}, "Selected Element": "Rush"},
             },
         ],
-        _minimal_fg_calc_song(),
+        _stub_song(2),
         _minimal_fg_ref_arrays(),
         "Rush",
     )

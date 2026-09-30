@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from tests.curves_support import synthetic_curves
+from tests.songs_support import make_song
 
 
 pytestmark = pytest.mark.gpu
@@ -28,7 +29,6 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
         build_or_load_timeline_frontier_payload,
         precompute_timeline_gpu,
     )
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
@@ -44,24 +44,14 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
     note_types = np.ones(n_notes, dtype=np.int16)
     note_types[::11] = np.int16(3)
 
-    calc_song = {
-        "metadata": {
-            "Song Name": "TimelineFrontier Timeline Smoke",
-            "Difficulty": "Hard",
-            "Primary Color": "Beat",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-            "Total Notes": int(n_notes),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "chart_timestamps": timestamps,
-            "note_types": note_types,
-            "lanes": np.arange(n_notes, dtype=np.int32) % np.int32(4),
-        },
-    }
-    apply_timing_envelope(calc_song, mode="perfect_window")
+    song = make_song(
+        timestamps,
+        name="TimelineFrontier Timeline Smoke",
+        primary="Beat",
+        secondary="Flow",
+        note_types=note_types,
+        lanes=np.arange(n_notes, dtype=np.int32) % np.int32(4),
+    )
 
     rows = int(MAX_STAT) + 1
     curves = synthetic_curves({
@@ -89,10 +79,10 @@ def test_gpu_timeline_frontier_upload_populates_retained_surfaces() -> None:
             out[(ft_idx, ff_idx)] = int(head_fever + body_fever)
         return out
 
-    prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
+    prebuilt = build_or_load_timeline_frontier_payload(song, curves)
     assert int(prebuilt.payload.frontier_pool_used) > 0
 
-    precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=prebuilt)
+    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=prebuilt)
     total_fever = _read_total_fever()
     frontier_count_grid = np.asarray(gpu_fields.grid_frontier_count.to_numpy()[0], dtype=np.int32)
 

@@ -116,8 +116,8 @@ def _build_replayed_loadout_rows_for_song(song: dict) -> dict[str, list[dict]]:
       the per-tier numbers are computed on demand when a user opens a tier.
     - Future maintainers: if you want real per-tier gems in the static general_meta snapshot,
       you must (1) prebuild the timeline + FG response frontier caches and (2) call
-      ``build_team_buff_tier_db_batches`` with ``replay_surface``/``timing_mode`` set as
-      needed. Until then, keep this on the T5-only no-replay path.
+      ``build_team_buff_tier_db_batches`` with the song timed in the wanted mode and
+      ``replay_surface`` set as needed. Until then, keep this on the T5-only no-replay path.
     """
     from gear_optimizer.data.database import get_best_loadouts
     from gear_optimizer.data.loadout_equivalence import (

@@ -1,8 +1,8 @@
 """Fixed-timing (0ms) replay mode: CPU-side mode prep + base scorer (issue #51).
 
-These tests pin the parts that need no GPU: that `apply_timing_envelope(mode="zero_ms")`
-produces a chart-only, mode-stamped calc_song distinct from the Perfect-window path, and that `score_stats_fixed_timing_exact[_batch]` is the deterministic
-chart-time fever timeline (independent of any timing frontier payload).
+These tests pin the parts that need no GPU: that `time_song(chart, "zero_ms")` is a chart-only
+song distinct from the Perfect-window one, and that `score_stats_fixed_timing_exact[_batch]` is the
+deterministic chart-time fever timeline (independent of any timing frontier payload).
 """
 
 from __future__ import annotations
@@ -21,7 +21,8 @@ from gear_optimizer.solver.scoring.exact_rescore import (
     score_stats_fixed_timing_exact_batch,
 )
 from gear_optimizer.solver.score_math import lookup_reference_py
-from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+from gear_optimizer.solver.timing_envelope import time_song
+from tests.songs_support import make_chart
 
 
 def _curves() -> dict[str, np.ndarray]:
@@ -35,20 +36,13 @@ def _curves() -> dict[str, np.ndarray]:
     })
 
 
-def _calc_song() -> dict:
+def _chart(header=None):
     timestamps = np.round(np.arange(250, dtype=np.float32) * np.float32(0.1), 3).astype(np.float32)
-    return {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "chart_timestamps": timestamps,
-        },
-    }
+    return make_chart(timestamps, primary="Rush", secondary="Flow", header=header)
+
+
+def _song(mode: str = "zero_ms"):
+    return time_song(_chart(), mode)
 
 
 def _stats() -> dict[str, int]:
@@ -66,65 +60,36 @@ def _stats() -> dict[str, int]:
     }
 
 
-def test_zero_ms_mode_prepares_chart_only_streams_and_stamp():
-    cs = _calc_song()
-    info = apply_timing_envelope(cs, mode="zero_ms")
+def test_zero_ms_song_is_chart_only():
+    song = _song("zero_ms")
 
-    assert info["timing_mode"] == "zero_ms"
-    assert cs["metadata"]["TimingEnvelopeApplied"] is True
-    assert cs["metadata"]["TimingEnvelopeMode"] == "zero_ms"
+    assert song.mode == "zero_ms"
+    assert song.hit_timestamps is song.chart.timestamps
+    assert song.perfect_candidates is None and song.great_floor is None
 
 
 def test_chart_metadata_selects_zero_ms_when_mode_is_omitted():
-    cs = _calc_song()
-    cs["metadata"]["Timing Mode"] = "zero_ms"
+    song = time_song(_chart({"Timing Mode": "zero_ms"}))
 
-    info = apply_timing_envelope(cs)
-
-    assert info["timing_mode"] == "zero_ms"
-    assert cs["metadata"]["TimingEnvelopeMode"] == "zero_ms"
-    # No Perfect-window envelope streams: the FG build uses the chart fallback.
-    for stream in (
-        "fg_perfect_candidate_timestamps",
-        "fg_perfect_floor_timestamps",
-        "fg_great_floor_timestamps",
-        "fg_great_candidate_timestamps",
-    ):
-        assert stream not in cs["song_data"]
-    # Base chart timestamps are preserved for the fixed timeline.
-    assert "chart_timestamps" in cs["song_data"]
+    assert song.mode == "zero_ms"
+    # No Perfect-window envelope streams: the FG build uses the chart timeline.
+    for stream in (song.perfect_candidates, song.perfect_floor, song.great_floor, song.great_candidates):
+        assert stream is None
 
 
 def test_perfect_window_mode_attaches_envelope_streams():
-    cs = _calc_song()
-    apply_timing_envelope(cs, mode="perfect_window")
+    song = _song("perfect_window")
 
-    assert cs["metadata"]["TimingEnvelopeMode"] == "perfect_window"
-    assert "fg_perfect_candidate_timestamps" in cs["song_data"]
-    assert "fg_great_candidate_timestamps" in cs["song_data"]
-
-
-def test_perfect_window_timeline_repairs_incomplete_canonical_envelope():
-    from gear_optimizer.solver.taichi_gem.api import timeline
-
-    cs = _calc_song()
-    note_count = len(cs["song_data"]["timestamps"])
-    cs["song_data"]["note_types"] = np.ones(note_count, dtype=np.int16)
-    cs["song_data"]["lanes"] = np.arange(note_count, dtype=np.int32) % 4
-    apply_timing_envelope(cs, mode="perfect_window")
-    del cs["song_data"]["fg_perfect_candidate_timestamps"]
-
-    loaded = timeline.load_timeline_frontier_payload(cs, _curves())
-
-    assert loaded.total_notes == note_count
-    assert len(cs["song_data"]["fg_perfect_candidate_timestamps"]) == note_count
+    assert song.mode == "perfect_window"
+    assert song.perfect_candidates is not None
+    assert song.great_candidates is not None
 
 
 def test_unknown_mode_fails_loudly():
     import pytest
 
     with pytest.raises(ValueError, match="unknown timing mode"):
-        apply_timing_envelope(_calc_song(), mode="bogus")
+        time_song(_chart(), "bogus")
 
 
 def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
@@ -135,7 +100,7 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     surface with gear_optimizer.score from independently resolved factors.
     """
     stats = _stats()
-    cs = _calc_song()
+    song = _song()
     ref = _curves()
 
     pp = lookup_reference_py(stats["Perfect Points"], ref.f64["Perfect Points"], MAX_STAT)
@@ -145,7 +110,7 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref.f64["Fever Fill Rate"], MAX_STAT)
     base_value = float(stats["Rush"] * 2 + stats["Flow"]) + float(pp)
 
-    timestamps = cs["song_data"]["timestamps"]
+    timestamps = song.chart.timestamps
     total_notes = int(len(timestamps))
     mask_buffer = np.zeros(total_notes, dtype=np.bool_)
     fever_mask_head, count_body_fever, count_body_normal, _non_fever, _acts = calculate_fever_timeline_indices(
@@ -153,8 +118,8 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
         total_notes,
         float(ff_factor),
         float(ft_factor),
-        int(cs["metadata"]["Long Notes"]),
-        float(cs["metadata"]["Last Note Time"]),
+        song.chart.long_notes,
+        song.chart.last_note_time,
         mask_buffer,
     )
     cell = score.single_surface_cell(fever_mask_head, int(count_body_fever), int(count_body_normal))
@@ -168,31 +133,28 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     )
     reference, _ = score.best_timeline_score(factors, cell, total_notes)
 
-    got = score_stats_fixed_timing_exact(stats, cs, ref)
+    got = score_stats_fixed_timing_exact(stats, song, ref)
     assert got == reference
     assert got > 0  # the synthetic song exercises a real fever timeline + body notes
 
 
 def test_fixed_timing_base_scorer_is_mode_prep_invariant():
-    """Base 0ms scoring reads chart timestamps only; the mode stamp does not change it."""
+    """Base 0ms scoring reads the chart-time hit timeline only; the song's timing mode does not change it."""
     stats = _stats()
     ref = _curves()
-    raw = _calc_song()
-    enveloped = _calc_song()
-    apply_timing_envelope(enveloped, mode="zero_ms")
 
-    assert score_stats_fixed_timing_exact(stats, enveloped, ref) == score_stats_fixed_timing_exact(
-        stats, raw, ref
+    assert score_stats_fixed_timing_exact(stats, _song("zero_ms"), ref) == score_stats_fixed_timing_exact(
+        stats, _song("perfect_window"), ref
     )
 
 
 def test_fixed_timing_base_scorer_batch_matches_single():
     stats_rows = [_stats(), {**_stats(), "Fever Time": 5, "Fever Fill Rate": 5}]
-    cs = _calc_song()
+    song = _song()
     ref = _curves()
 
-    batch = score_stats_fixed_timing_exact_batch(stats_rows, cs, ref)
-    singles = [score_stats_fixed_timing_exact(s, cs, ref) for s in stats_rows]
+    batch = score_stats_fixed_timing_exact_batch(stats_rows, song, ref)
+    singles = [score_stats_fixed_timing_exact(s, song, ref) for s in stats_rows]
     assert batch == singles
     assert batch[0] != batch[1]  # different FT/FF -> different fixed timeline
 
@@ -202,8 +164,7 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_
 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     timeline.reset_timeline_state()
-    cs = _calc_song()
-    apply_timing_envelope(cs, mode="zero_ms")
+    song = _song()
     ref = _curves()
     stats_rows = [
         _stats(),
@@ -212,7 +173,7 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_
         {**_stats(), "Fever Time": 17, "Fever Fill Rate": 143, "Combo Multiplier": 160},
     ]
 
-    loaded = timeline.load_timeline_frontier_payload(cs, ref)
+    loaded = timeline.load_timeline_frontier_payload(song, ref)
 
     assert loaded.cache_source == "built"
     assert loaded.payload.frontier_pool_used > 0
@@ -221,10 +182,10 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_
     assert len(cache_files) == 1
 
     timeline.reset_timeline_state()
-    loaded_again = timeline.load_timeline_frontier_payload(cs, ref)
+    loaded_again = timeline.load_timeline_frontier_payload(song, ref)
     assert loaded_again.cache_source == "disk"
-    assert score_stats_exact_batch(stats_rows, cs, ref) == score_stats_fixed_timing_exact_batch(
-        stats_rows, cs, ref
+    assert score_stats_exact_batch(stats_rows, song, ref) == score_stats_fixed_timing_exact_batch(
+        stats_rows, song, ref
     )
 
     uploads: list[tuple[int, int]] = []
@@ -235,7 +196,7 @@ def test_zero_ms_singleton_payload_matches_fixed_timing_scorer_and_persists(tmp_
         lambda _payload, song_slot, *, source_slot_i: uploads.append((song_slot, source_slot_i)),
     )
 
-    timeline.precompute_timeline_gpu(cs, ref, song_slot=0, prebuilt_frontier=loaded)
+    timeline.precompute_timeline_gpu(song, ref, song_slot=0, prebuilt_frontier=loaded)
 
     assert uploads == [(0, 0)]
 
@@ -248,10 +209,10 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
     seen: dict[str, object] = {}
     bundle = object()
 
-    def _ensure(calc_song, curves, *, stat_keys):
+    def _ensure(song, curves, *, stat_keys):
         seen["ensure"] = tuple(stat_keys)
 
-    def _load(calc_song, curves, *, stat_keys):
+    def _load(song, curves, *, stat_keys):
         seen["load"] = tuple(stat_keys)
         return bundle
 
@@ -261,7 +222,7 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
 
     monkeypatch.setattr(
         fg_response_frontier_cache_prebuild,
-        "ensure_response_frontier_cache_for_calc_song",
+        "ensure_response_frontier_cache_for_song",
         _ensure,
     )
     monkeypatch.setattr(response_cache, "load_response_frontier_scoring_bundle", _load)
@@ -272,9 +233,9 @@ def test_fixed_timing_fg_ensures_and_loads_only_exactly_reachable_cells(monkeypa
         lambda *_args, **_kwargs: [SimpleNamespace(surface="exact-surface")],
     )
 
-    results, _calc_song_used, _ref_arrays_used = fixed_timing._solve_fixed_timing_response_results(
+    results = fixed_timing._solve_fixed_timing_response_results(
         [_stats()],
-        _calc_song(),
+        _song(),
         _curves(),
         "Rush",
     )

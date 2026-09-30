@@ -131,7 +131,7 @@ def build_post_persist_entries(
         loadout_entries=item.get("loadout_entries"),
         build_details_fn=context.build_details,
         replay_ctx=ReplayContext(
-            calc_song=item.get("calc_song"),
+            song=item.get("timed_song"),
             curves=item.get("curves"),
         ),
     )

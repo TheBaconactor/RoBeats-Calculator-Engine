@@ -14,6 +14,7 @@ from ..fields import MAX_GENOMES
 
 from .initialization import ensure_ready
 from .timeline import precompute_timeline_gpu
+from gear_optimizer.solver.timing_envelope import TimedSong
 from .skyline_operations import (
     skyline_upload_population_indices,
     skyline_evaluate_population,
@@ -32,7 +33,7 @@ def _results_from_stats(results_np: np.ndarray, n_genomes: int) -> list[tuple[in
 
 def solve_genomes_from_registry(
     population_indices: np.ndarray,
-    timeline_grid,
+    song: TimedSong,
     is_p_ft: int,
     is_s_ft: int,
     is_p_ff: int,
@@ -78,7 +79,7 @@ def solve_genomes_from_registry(
 
     Args:
         population_indices: (n_genomes, 9) int32 - encoded genome IDs from ItemRegistry
-    timeline_grid: calc_song dict
+        song: the timed song whose timeline frontier the scoring reads
         is_*: Color contribution flags (0/1)
         curves: Reference lookup arrays
         total_budget: Gem budget (default 90)
@@ -90,11 +91,7 @@ def solve_genomes_from_registry(
     """
     ensure_ready(curves)
 
-    # Upload timeline grid if needed
-    if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
-        precompute_timeline_gpu(timeline_grid, curves, song_slot=song_slot)
-    else:
-        raise TypeError("solve_genomes_from_registry requires a calc_song dict with metadata and song_data")
+    precompute_timeline_gpu(song, curves, song_slot=song_slot)
 
     n_genomes = population_indices.shape[0]
     if n_genomes == 0:

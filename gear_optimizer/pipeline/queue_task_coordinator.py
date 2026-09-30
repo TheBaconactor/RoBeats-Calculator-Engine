@@ -22,13 +22,13 @@ from gear_optimizer.core.memory import (
     load_memory_guard_resume_state,
 )
 from gear_optimizer.data.database import get_song_names_present_in_db
-from gear_optimizer.data.song_io import scan_song_header
 from gear_optimizer.domain.jobs import (
     SharedRunContext,
     SongJob,
     task_tuple_from_job_context,
 )
 from gear_optimizer import settings
+from gear_optimizer.chart import read_header
 from gear_optimizer.settings import RunSettings
 from gear_optimizer.song_queue import (
     SongQueueItem,
@@ -96,9 +96,10 @@ class QueueTaskCoordinator:
         song_queue: list[SongQueueItem] = []
         seen_paths = set()
         if diff_lower not in ("easy", "normal", "hard"):
-            dirs_to_search = [str(settings.paths().data_dir)]
+            difficulties = settings.DIFFICULTIES
         else:
-            dirs_to_search = [str(settings.paths().chart_dir(diff_lower.capitalize()))]
+            difficulties = (diff_lower.capitalize(),)
+        dirs_to_search = [str(settings.paths().chart_dir(difficulty)) for difficulty in difficulties]
         for d in dirs_to_search:
             if not os.path.exists(d):
                 continue
@@ -116,10 +117,10 @@ class QueueTaskCoordinator:
                     abs_fp = os.path.abspath(fp)
                     if abs_fp in seen_paths:
                         continue
-                    meta = scan_song_header(fp)
-                    if not meta:
-                        continue
-                    name = meta["Song Name"]
+                    meta = read_header(fp)
+                    name = meta.get("Song Name", "")
+                    if not name:
+                        raise ValueError(f"{fp}: chart has no Song Name header")
                     name_lower = name.lower()
                     detected_diff = infer_song_difficulty_from_path(root)
                     if diff_lower in ("easy", "normal", "hard") and detected_diff.lower() != diff_lower:

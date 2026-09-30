@@ -2,25 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import floor
-from typing import Any, Mapping
+from typing import Any
 
-from ...core.utils import safe_float, safe_int
 from .stats_scoring import _force_greats_counts_to_dict, build_great_penalty_table
 
 __all__ = [
     "FGSongInputs",
-    "SongMeta",
-    "extract_song_meta",
 ]
 
 
 GREAT_RESULT_POINTS = 150
-
-
-@dataclass(frozen=True, slots=True)
-class SongMeta:
-    primary_color: str
-    secondary_color: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,91 +30,28 @@ class FGSongInputs:
     secondary_color: str
 
 
-def extract_song_meta(
-    calc_song: Mapping[str, Any],
-    *,
-    default_primary: str = "",
-    default_secondary: str = "",
-) -> SongMeta:
-    metadata = (calc_song.get("metadata", {}) or {}) if isinstance(calc_song, Mapping) else {}
-    return SongMeta(
-        primary_color=str(metadata.get("Primary Color", default_primary) or default_primary),
-        secondary_color=str(metadata.get("Secondary Color", default_secondary) or default_secondary),
-    )
+def fg_song_inputs(song) -> FGSongInputs:
+    """The FG solver's view of a TimedSong.
 
-
-def extract_fg_song_inputs(calc_song: Mapping[str, Any]) -> FGSongInputs:
-    song_data = (calc_song.get("song_data", {}) or {}) if isinstance(calc_song, Mapping) else {}
-    metadata = (calc_song.get("metadata", {}) or {}) if isinstance(calc_song, Mapping) else {}
-    song_meta = extract_song_meta(calc_song)
-
-    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
-    if timestamps is None:
-        timestamps = ()
-    has_perfect_candidates = "fg_perfect_candidate_timestamps" in song_data
-    has_great_candidates = "fg_great_candidate_timestamps" in song_data
-    perfect_candidates = song_data.get("fg_perfect_candidate_timestamps", timestamps)
-    great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
-    # Earliest-Perfect floor envelope: the carry-aware fever-boundary search basis (issue
-    # #42). If an FG timing envelope is present, the floor is REQUIRED; silently searching chart
-    # would under-count endpoint-early fever and produce a plausible but wrong best_fg_score.
-    if "fg_perfect_floor_timestamps" in song_data:
-        perfect_floor = song_data["fg_perfect_floor_timestamps"]
-    elif has_perfect_candidates or has_great_candidates:
-        raise ValueError(
-            "fg_perfect_floor_timestamps is required when FG timing candidate timestamps are present"
-        )
-    else:
-        # Explicit degenerate baseline: no timing envelope applied, so chart is the floor.
-        perfect_floor = timestamps
-    # Earliest-Great floor (issue #44 greats-side endpoint-early fever). REQUIRED whenever an FG
-    # timing envelope is present, same fail-loud rule as perfect_floor: silently searching chart
-    # (or the Perfect floor) would miss the early-Great boundary surfaces -> a wrong best_fg_score.
-    if "fg_great_floor_timestamps" in song_data:
-        great_floor = song_data["fg_great_floor_timestamps"]
-    elif has_perfect_candidates or has_great_candidates:
-        raise ValueError(
-            "fg_great_floor_timestamps is required when FG timing candidate timestamps are present"
-        )
-    else:
-        # Degenerate baseline (no envelope): chart is the floor, so the Great boundary collapses
-        # onto the Perfect one and no early-Great surface is reachable.
-        great_floor = timestamps
-    use_forced_great_timing = bool(has_great_candidates)
-
-    try:
-        total_notes = int(len(timestamps))
-    except (ValueError, TypeError):
-        total_notes = 0
-
-    lanes = song_data.get("lanes")
-    if lanes is None or len(lanes) != total_notes:
-        # Missing lanes are an external chart-ingest boundary. Use all-distinct lanes so reachability
-        # imposes no fabricated same-lane constraint; production call sites that require real lanes
-        # can still fail loudly when overlap makes lane identity load-bearing.
-        lanes = tuple(range(total_notes))
-
-    long_notes = safe_int(metadata.get("Long Notes"), 0)
-
-    base_ts = song_data.get("timestamps", timestamps)
-    if base_ts is None:
-        base_ts = timestamps
-    default_last_note = base_ts[-1] if total_notes > 0 else 0.0
-    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
-
+    perfect_window carries the Perfect/Great candidate and floor envelopes (carry-aware FG); zero_ms
+    scores every activation and boundary at the hit timeline and has no forced-Great carry.
+    """
+    chart = song.chart
+    hits = song.hit_timestamps
+    enveloped = song.mode == "perfect_window"
     return FGSongInputs(
-        timestamps=timestamps,
-        perfect_candidates=perfect_candidates,
-        great_candidates=great_candidates,
-        perfect_floor=perfect_floor,
-        great_floor=great_floor,
-        lanes=lanes,
-        use_forced_great_timing=bool(use_forced_great_timing),
-        total_notes=int(total_notes),
-        long_notes=int(long_notes),
-        last_note_time=float(last_note_time),
-        primary_color=song_meta.primary_color,
-        secondary_color=song_meta.secondary_color,
+        timestamps=hits,
+        perfect_candidates=song.perfect_candidates if enveloped else hits,
+        great_candidates=song.great_candidates if enveloped else hits,
+        perfect_floor=song.perfect_floor if enveloped else hits,
+        great_floor=song.great_floor if enveloped else hits,
+        lanes=chart.lanes,
+        use_forced_great_timing=enveloped,
+        total_notes=chart.total_notes,
+        long_notes=chart.long_notes,
+        last_note_time=chart.last_note_time,
+        primary_color=chart.primary,
+        secondary_color=chart.secondary,
     )
 
 

@@ -112,12 +112,12 @@ def prepare_native_song(task: tuple) -> NativeSong:
         all_minis=all_minis,
         cache_db_context=True,
     )
-    calc_song = prepared_core.calc_song
+    timed_song = prepared_core.song
     all_minis = prepared_core.all_minis
     minis_by_name = prepared_core.minis_by_name
     mini_ascension_context = prepared_core.mini_ascension_context
-    meta_primary_color = prepared_core.meta_primary_color
-    meta_secondary_color = prepared_core.meta_secondary_color
+    meta_primary_color = timed_song.chart.primary
+    meta_secondary_color = timed_song.chart.secondary
     fixed_stats = prepared_core.fixed_stats
     db_context = prepared_core.db_context
     db_key = db_context.db_key
@@ -127,8 +127,8 @@ def prepare_native_song(task: tuple) -> NativeSong:
     attempt_lifetime = db_context.attempt_lifetime
     prev_attempts_first = db_context.prev_attempts_first
     db_baseline_valid = db_context.db_baseline_valid
-    p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
-    s_color = calc_song.get("metadata", {}).get("Secondary Color", "")
+    p_color = timed_song.chart.primary
+    s_color = timed_song.chart.secondary
     selected_color = p_color
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     pool_key = (str(p_color), str(s_color), tuple(slots), tuple(mini_ascension_context.cache_key))
@@ -237,7 +237,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
             all_minis=all_minis,
             gears_by_name=gears_by_name,
             minis_by_name=minis_by_name,
-            calc_song=calc_song,
+            timed_song=timed_song,
             meta_primary_color=meta_primary_color,
             meta_secondary_color=meta_secondary_color,
             fixed_stats=fixed_stats,
@@ -279,7 +279,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
     # fails loud here -- earlier and off the owner -- if the startup cache is missing).
     from gear_optimizer.solver.taichi_gem.api.timeline import load_timeline_frontier_payload
 
-    load_timeline_frontier_payload(song.gpu_inputs.calc_song, song.gpu_inputs.curves)
+    load_timeline_frontier_payload(song.gpu_inputs.timed_song, song.gpu_inputs.curves)
     song.runtime.prep.wall_prep_s = max(0.0, time.perf_counter() - float(wall_t0))
     song.runtime.prep.cpu_prep_s = max(0.0, thread_cpu_time_s() - float(cpu_t0))
     return song

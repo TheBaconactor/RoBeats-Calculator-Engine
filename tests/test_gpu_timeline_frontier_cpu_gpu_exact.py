@@ -1,30 +1,24 @@
 from tests.curves_support import synthetic_curves
 import numpy as np
 import pytest
+from tests.songs_support import make_song
 
 
 pytestmark = pytest.mark.gpu
 
 
-def _cpu_frontier_payload(calc_song: dict, curves: dict):
+def _cpu_frontier_payload(song, curves):
     from gear_optimizer.solver.timeline_exact_frontier import build_timeline_frontier_grid_payload
-
-    ts = np.asarray(calc_song["song_data"]["chart_timestamps"], dtype=np.float32).reshape(-1)
-    n = int(ts.shape[0])
 
     return build_timeline_frontier_grid_payload(
         song_slot=0,
-        total_notes=int(calc_song["metadata"].get("Total Notes", n) or n),
-        long_notes=int(calc_song["metadata"].get("Long Notes", 0) or 0),
-        last_note_time=float(calc_song["metadata"].get("Last Note Time", 0.0) or 0.0),
-        timestamps=ts,
-        perfect_candidate_timestamps=np.asarray(
-            calc_song["song_data"]["fg_perfect_candidate_timestamps"], dtype=np.float32
-        ),
-        perfect_floor_timestamps=np.asarray(
-            calc_song["song_data"]["fg_perfect_floor_timestamps"], dtype=np.float32
-        ),
-        lanes=np.asarray(calc_song["song_data"]["lanes"], dtype=np.int32),
+        total_notes=song.chart.total_notes,
+        long_notes=song.chart.long_notes,
+        last_note_time=song.chart.last_note_time,
+        timestamps=song.chart.timestamps,
+        perfect_candidate_timestamps=song.perfect_candidates,
+        perfect_floor_timestamps=song.perfect_floor,
+        lanes=song.chart.lanes,
         ref_ft=curves.f32["Fever Time"],
         ref_ff=curves.f32["Fever Fill Rate"],
     )
@@ -53,26 +47,7 @@ def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
     note_types = np.ones(n_notes, dtype=np.int16)
     note_types[::13] = np.int16(3)  # held tails widen carry window
 
-    calc_song = {
-        "metadata": {
-            "Song Name": "TimelineFrontier CPU/GPU Exact",
-            "Difficulty": "Hard",
-            "Primary Color": "Beat",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-            "Total Notes": int(n_notes),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "chart_timestamps": timestamps,
-            "note_types": note_types,
-            "lanes": np.arange(n_notes, dtype=np.int32),
-        },
-    }
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-
-    apply_timing_envelope(calc_song, mode="perfect_window")
+    song = make_song(timestamps, name="TimelineFrontier CPU/GPU Exact", primary="Beat", note_types=note_types)
 
     rows = int(MAX_STAT) + 1
     curves = synthetic_curves({
@@ -85,9 +60,9 @@ def test_gpu_timeline_frontier_upload_matches_cpu_payload() -> None:
 
     cells = [(10, 10), (80, 80), (160, 40), (120, 30)]
 
-    _prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
-    precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=_prebuilt)
-    cpu_payload = _cpu_frontier_payload(calc_song, curves)
+    _prebuilt = build_or_load_timeline_frontier_payload(song, curves)
+    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=_prebuilt)
+    cpu_payload = _cpu_frontier_payload(song, curves)
 
     head_len_grid = np.asarray(gpu_fields.grid_head_len.to_numpy()[0], dtype=np.int32)
     bits_grid = np.asarray(gpu_fields.grid_fever_masks_bits.to_numpy()[0], dtype=np.uint32)
@@ -149,26 +124,7 @@ def test_gpu_timeline_frontier_repeated_upload_matches_baseline() -> None:
     note_types = np.ones(n_notes, dtype=np.int16)
     note_types[::13] = np.int16(3)
 
-    calc_song = {
-        "metadata": {
-            "Song Name": "TimelineFrontier Dedup Parity",
-            "Difficulty": "Hard",
-            "Primary Color": "Beat",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-            "Total Notes": int(n_notes),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "chart_timestamps": timestamps,
-            "note_types": note_types,
-            "lanes": np.arange(n_notes, dtype=np.int32),
-        },
-    }
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-
-    apply_timing_envelope(calc_song, mode="perfect_window")
+    song = make_song(timestamps, name="TimelineFrontier Dedup Parity", primary="Beat", note_types=note_types)
 
     rows = int(MAX_STAT) + 1
     curves = synthetic_curves({
@@ -180,9 +136,9 @@ def test_gpu_timeline_frontier_repeated_upload_matches_baseline() -> None:
         "Fever Time": np.full((rows,), 1.0, dtype=np.float32),
     })
 
-    _prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
-    precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=_prebuilt)
-    precompute_timeline_gpu(calc_song, curves, song_slot=1, prebuilt_frontier=_prebuilt)
+    _prebuilt = build_or_load_timeline_frontier_payload(song, curves)
+    precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=_prebuilt)
+    precompute_timeline_gpu(song, curves, song_slot=1, prebuilt_frontier=_prebuilt)
 
     def _eq(field) -> bool:
         arr = field.to_numpy()

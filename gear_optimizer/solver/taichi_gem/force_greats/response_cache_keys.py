@@ -7,12 +7,12 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND, MAX_STAT
 from gear_optimizer.solver.frontier_cache_scope import scoped_frontier_cache_dir
 from gear_optimizer.settings import paths
-from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 
 from .response_cache_types import (
     _BUNDLE_KEY_MARKER,
@@ -44,8 +44,8 @@ def _surface_from_row_cached(row: np.ndarray, cache: dict[tuple[int, ...], FgRes
     return _surface_from_values_cached(tuple(int(v) for v in row[:11]), cache)
 
 
-def fg_response_frontier_song_cache_key(calc_song: dict[str, Any]) -> tuple:
-    song_inputs = extract_fg_song_inputs(calc_song)
+def fg_response_frontier_song_cache_key(song: TimedSong) -> tuple:
+    song_inputs = song.fg_inputs
     timestamps = np.asarray(song_inputs.timestamps, dtype=np.float32).reshape(-1)
     perfect_candidates = np.asarray(song_inputs.perfect_candidates, dtype=np.float32).reshape(-1)
     great_candidates = np.asarray(song_inputs.great_candidates, dtype=np.float32).reshape(-1)
@@ -77,29 +77,29 @@ def _ref_axes_cache_key(curves: StatCurves) -> tuple[bytes, bytes]:
 
 
 def fg_response_frontier_payload_cache_key(
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     stat_keys: Iterable[tuple[int, int]] | None,
 ) -> tuple:
     return (
         _fg_response_cache_version(),
-        fg_response_frontier_song_cache_key(calc_song),
+        fg_response_frontier_song_cache_key(song),
         *_ref_axes_cache_key(curves),
         normalize_fg_response_stat_keys(stat_keys),
     )
 
 
-def fg_response_frontier_bundle_cache_key(calc_song: dict[str, Any], curves: StatCurves) -> tuple:
+def fg_response_frontier_bundle_cache_key(song: TimedSong, curves: StatCurves) -> tuple:
     return (
         _fg_response_cache_version(),
-        fg_response_frontier_song_cache_key(calc_song),
+        fg_response_frontier_song_cache_key(song),
         *_ref_axes_cache_key(curves),
         _BUNDLE_KEY_MARKER,
     )
 
 
 def fg_response_frontier_geometry_cache_key(
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     *,
     ft_stat: int,
@@ -107,7 +107,7 @@ def fg_response_frontier_geometry_cache_key(
 ) -> tuple:
     return (
         _fg_response_cache_version(),
-        fg_response_frontier_song_cache_key(calc_song),
+        fg_response_frontier_song_cache_key(song),
         *_ref_axes_cache_key(curves),
         _normalize_stat_key((ft_stat, ff_stat)),
     )
@@ -123,8 +123,8 @@ def _fg_response_disk_cache_path(cache_key: tuple) -> Path:
     return _fg_response_disk_cache_dir() / f"{digest}.npz"
 
 
-def _response_axes(calc_song: dict[str, Any], curves: StatCurves) -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
-    song_inputs = extract_fg_song_inputs(calc_song)
+def _response_axes(song: TimedSong, curves: StatCurves) -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
+    song_inputs = song.fg_inputs
     ref_ft = curves.f32["Fever Time"]
     ref_ff = curves.f32["Fever Fill Rate"]
     if int(ref_ft.shape[0]) <= MAX_STAT or int(ref_ff.shape[0]) <= MAX_STAT:

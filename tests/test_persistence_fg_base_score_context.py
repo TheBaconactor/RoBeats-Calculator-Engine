@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+from tests.songs_support import make_song
 
 
 def test_save_loadouts_batch_preserves_fg_base_score_context(monkeypatch, tmp_path: Path):
@@ -116,7 +117,7 @@ def test_authoritative_fg_preserves_source_paired_base_score(monkeypatch):
 
     out = authority.canonicalize_authoritative_fg_entry(
         entry,
-        calc_song={"metadata": {"TimingEnvelopeMode": "zero_ms"}},
+        song=make_song([0.0, 0.5], mode="zero_ms"),
         curves={},
     )
 

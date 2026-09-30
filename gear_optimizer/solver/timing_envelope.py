@@ -16,9 +16,15 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
+from dataclasses import dataclass
+from functools import cached_property
 
 import numpy as np
+from cachetools import LRUCache
 
+from ..chart import Chart
+from ..core.array_signature import array_sig16
 from ..core.time_quantize import quantize_to_int_ms
 
 
@@ -476,143 +482,108 @@ def build_great_floor_envelope_sec(
     return _emit_pernote_edge_envelope_sec(ts_sec, great_low_ms, prefix_max=True, quantize_ms=quantize_ms)
 
 
-def apply_timing_envelope(
-    calc_song: dict,
-    *,
-    attach_fg: bool = True,
-    mode: str | None = None,
-    baseline_offset: np.ndarray | None = None,
-) -> dict | None:
-    """
-    Attach deterministic timing-envelope streams to a calc_song.
+@dataclass(frozen=True, eq=False)
+class TimedSong:
+    """A chart prepared for one timing model.
 
-    ``mode`` selects the timing model this calc_song is prepared for. When omitted, the chart's
-    optional ``Timing Mode`` metadata is authoritative, then defaults to ``perfect_window``. It is a
-    semantic input (each mode is one canonical preparation), not a perf flag:
-
-    - ``"perfect_window"`` (default): base scoring keeps chart timestamps; FG
-      receives chart timestamps plus the deterministic Perfect/Great candidate +
-      floor envelopes for carry-aware exact DP.
-    - ``"zero_ms"`` (issue #51 fixed timing): every hit lands at chart time. Base
-      keeps chart timestamps; FG is prepared WITHOUT the Perfect-window envelope
-      streams, so ``extract_fg_song_inputs`` falls back to chart timestamps for
-      every activation/boundary decision and disables forced-great carry -- the
-      canonical chart-only FG path. ``TimingEnvelopeMode="zero_ms"`` is stamped so
-      cache signatures stay disjoint from the envelope path.
+    hit_timestamps is the timeline FG scores against: the chart itself, or the chart plus a custom
+    per-note offset under zero_ms. perfect_window adds the per-note Perfect/Great candidate and floor
+    envelopes that make FG carry-aware; zero_ms has none (every hit lands at its hit time).
     """
 
-    if not isinstance(calc_song, dict):
-        return None
-    metadata = calc_song.get("metadata", {}) or {}
-    timing_mode = str(mode if mode is not None else metadata.get("Timing Mode") or "perfect_window").strip().lower()
-    if timing_mode not in TIMING_MODES:
-        raise ValueError(f"apply_timing_envelope: unknown timing mode {mode!r}")
-    if (
-        baseline_offset is not None
-        and timing_mode != "zero_ms"
-        and bool(np.any(np.asarray(baseline_offset)))
-    ):
-        raise ValueError(
-            "apply_timing_envelope: baseline_offset (custom per-note timing) is only valid for "
-            f"fixed timing (mode='zero_ms'), not {timing_mode!r}"
+    chart: Chart
+    mode: str
+    baseline_hash: str
+    hit_timestamps: np.ndarray
+    perfect_candidates: np.ndarray | None = None
+    perfect_floor: np.ndarray | None = None
+    great_floor: np.ndarray | None = None
+    great_candidates: np.ndarray | None = None
+
+    @cached_property
+    def fg_inputs(self):
+        from .scoring.fg_policy import fg_song_inputs
+
+        return fg_song_inputs(self)
+
+    @cached_property
+    def timeline_key(self) -> tuple:
+        """The timeline frontier cache key: chart identity, note arrays and the timing model.
+
+        The physical input engine consumes chart order and lane-local matcher order, so the aligned
+        arrays are hashed in producer order. zero_ms fever membership depends only on timestamps, long
+        notes and the FT/FF axes, so note types and lanes are not part of its key.
+        """
+        chart = self.chart
+        ts_sig = array_sig16(np.ascontiguousarray(chart.timestamps))
+        if self.mode == "zero_ms":
+            nt_sig = lane_sig = b"zero_ms"
+        else:
+            nt_sig = array_sig16(np.ascontiguousarray(chart.note_types))
+            lane_sig = array_sig16(np.ascontiguousarray(chart.lanes))
+        return (
+            chart.name,
+            chart.difficulty,
+            chart.total_notes,
+            chart.last_note_time,
+            chart.long_notes,
+            bytes(ts_sig),
+            bytes(nt_sig),
+            bytes(lane_sig),
+            "TIMING_ENVELOPE",
+            self.mode,
+            self.baseline_hash,
+            0,
         )
 
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("chart_timestamps", song_data.get("timestamps"))
-    if timestamps is None:
-        return None
 
-    if timing_mode == "perfect_window" and attach_fg:
-        # Idempotent fast path: the four envelope streams are pure functions of
-        # (chart_timestamps, note_types), so re-applying rebuilds identical arrays.
-        # The identity check pins fg_timestamps to the SAME chart array object --
-        # a replaced chart (new object) still rebuilds. note_types is load-fixed song
-        # metadata written once alongside chart_timestamps and never mutated in place,
-        # so the chart-identity check also covers it (no separate note_types signature
-        # is needed on this hot path).
-        meta_existing = calc_song.get("metadata", {}) or {}
-        chart_existing = song_data.get("chart_timestamps")
-        if (
-            meta_existing.get("TimingEnvelopeMode") == "perfect_window"
-            and chart_existing is not None
-            and song_data.get("fg_timestamps") is chart_existing
-            and all(
-                song_data.get(stream) is not None
-                for stream in (
-                    "fg_perfect_candidate_timestamps",
-                    "fg_perfect_floor_timestamps",
-                    "fg_great_floor_timestamps",
-                    "fg_great_candidate_timestamps",
-                )
-            )
-        ):
-            return {"mode": "fg", "notes": int(len(chart_existing)), "great_mode": "late_upper"}
+_TIMED_SONG_CACHE: LRUCache = LRUCache(maxsize=128)
+_TIMED_SONG_CACHE_LOCK = threading.Lock()
 
-    chart_ts = np.asarray(timestamps, dtype=np.float32)
-    song_data["chart_timestamps"] = chart_ts
 
+def time_song(chart: Chart, mode: str | None = None, baseline_offset: np.ndarray | None = None) -> TimedSong:
+    """Prepare a chart for a timing model (default: the chart's Timing Mode header, else perfect_window).
+
+    ``baseline_offset`` (seconds per note) is a custom played timeline and is only valid for zero_ms; an
+    absent or all-zero offset is the canonical chart-time preset.
+    """
+    timing_mode = str(mode if mode is not None else chart.header.get("Timing Mode") or "perfect_window").strip().lower()
+    if timing_mode not in TIMING_MODES:
+        raise ValueError(f"time_song: unknown timing mode {mode!r}")
+    custom = baseline_offset is not None and bool(np.any(np.asarray(baseline_offset)))
+    if custom and timing_mode != "zero_ms":
+        raise ValueError(
+            "time_song: baseline_offset (custom per-note timing) is only valid for fixed timing "
+            f"(mode='zero_ms'), not {timing_mode!r}"
+        )
+    if custom:
+        hit_ts, baseline_hash = baseline_hit_timeline(chart.timestamps, baseline_offset)
+        return TimedSong(chart=chart, mode="zero_ms", baseline_hash=baseline_hash, hit_timestamps=hit_ts)
+
+    cache_key = (id(chart), timing_mode)
+    with _TIMED_SONG_CACHE_LOCK:
+        cached = _TIMED_SONG_CACHE.get(cache_key)
+        if cached is not None and cached.chart is chart:
+            return cached
+    chart_ts = chart.timestamps
     if timing_mode == "zero_ms":
-        # Fixed/explicit timing: no Perfect-window envelope. The played timeline is
-        # ``chart + baseline_offset`` (T); the four FG candidate/floor streams are dropped so
-        # extract_fg_song_inputs uses this single hit timeline for every activation/boundary
-        # decision and disables forced-great carry. ``baseline_offset is None`` (or all-zero) is
-        # the canonical ``zero_ms`` (T == 0) preset, bit-identical to the chart-only build.
-        hit_ts, baseline_hash = baseline_hit_timeline(chart_ts, baseline_offset)
-        for _stream in (
-            "fg_perfect_candidate_timestamps",
-            "fg_perfect_floor_timestamps",
-            "fg_great_floor_timestamps",
-            "fg_great_candidate_timestamps",
-        ):
-            song_data.pop(_stream, None)
-        song_data["fg_timestamps"] = hit_ts
-        meta = dict(calc_song.get("metadata", {}) or {})
-        meta["TimingEnvelopeApplied"] = True
-        meta["TimingEnvelopeMode"] = "zero_ms"
-        meta["TimingEnvelopeBaselineHash"] = baseline_hash
-        meta["TimingEnvelopeFGPerfect"] = "chart"
-        meta["TimingEnvelopeFGCarry"] = "none"
-        calc_song["metadata"] = meta
-        calc_song["song_data"] = song_data
-        return {
-            "mode": "fg" if attach_fg else "base",
-            "notes": int(chart_ts.shape[0]),
-            "timing_mode": "zero_ms",
-            "baseline_hash": baseline_hash,
-        }
-
-    if not attach_fg:
-        calc_song["song_data"] = song_data
-        return {"mode": "base", "notes": int(chart_ts.shape[0])}
-
-    note_types = song_data.get("note_types")
-    if note_types is None or len(note_types) != int(chart_ts.shape[0]):
-        note_types = np.ones(int(chart_ts.shape[0]), dtype=np.int16)
+        song = TimedSong(chart=chart, mode="zero_ms", baseline_hash="", hit_timestamps=chart_ts)
     else:
-        note_types = np.asarray(note_types, dtype=np.int16)
-
-    song_data["fg_timestamps"] = chart_ts
-    # Candidate (latest Perfect) + floor (earliest Perfect, issue #42 fever-boundary basis), both
-    # per-note (not chord-collapsed, so a chord-tied held tail keeps its [-40,+80] reach). Route
-    # through the canonical builders so production scores the exact path the tests validate.
-    song_data["fg_perfect_candidate_timestamps"] = build_perfect_candidate_envelope_sec(chart_ts, note_types)
-    song_data["fg_perfect_floor_timestamps"] = build_perfect_floor_envelope_sec(chart_ts, note_types)
-    # Earliest-Great floor (issue #44): the greats-side fever-boundary basis. A boundary note
-    # 20-95ms past a cutoff is reachable into fever only as a Great; this envelope (chart - 95,
-    # held tail -190 = cumulative perfect_lower + great_lower_extra, prefix-max) is searched for the
-    # extended fever end. Pointwise <= the Perfect floor, so it only ever ADDS surfaces on top of #42.
-    song_data["fg_great_floor_timestamps"] = build_great_floor_envelope_sec(chart_ts, note_types)
-    song_data["fg_great_candidate_timestamps"] = build_great_candidate_envelope_sec(
-        chart_ts,
-        note_types,
-        great_mode="late",
-    )
-
-    meta = dict(calc_song.get("metadata", {}) or {})
-    meta["TimingEnvelopeApplied"] = True
-    meta["TimingEnvelopeMode"] = "perfect_window"
-    meta["TimingEnvelopeFGPerfect"] = "perfect_upper"
-    meta["TimingEnvelopeFGCarry"] = "late_upper"
-    calc_song["metadata"] = meta
-    calc_song["song_data"] = song_data
-    return {"mode": "fg", "notes": int(chart_ts.shape[0]), "great_mode": "late_upper"}
+        note_types = chart.note_types
+        song = TimedSong(
+            chart=chart,
+            mode="perfect_window",
+            baseline_hash="",
+            hit_timestamps=chart_ts,
+            # Candidate (latest Perfect) + floor (earliest Perfect, issue #42 fever-boundary basis), both
+            # per-note (not chord-collapsed, so a chord-tied held tail keeps its [-40,+80] reach).
+            perfect_candidates=build_perfect_candidate_envelope_sec(chart_ts, note_types),
+            perfect_floor=build_perfect_floor_envelope_sec(chart_ts, note_types),
+            # Earliest-Great floor (issue #44): a boundary note 20-95ms past a cutoff is reachable into
+            # fever only as a Great (chart - 95, held tail -190, prefix-max).
+            great_floor=build_great_floor_envelope_sec(chart_ts, note_types),
+            great_candidates=build_great_candidate_envelope_sec(chart_ts, note_types, great_mode="late"),
+        )
+    with _TIMED_SONG_CACHE_LOCK:
+        _TIMED_SONG_CACHE[cache_key] = song
+    return song

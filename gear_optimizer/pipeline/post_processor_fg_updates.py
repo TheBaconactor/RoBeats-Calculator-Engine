@@ -27,17 +27,11 @@ def canonicalize_fg_update_entries(
         logger.warning("[POST][FG] Skipping FG deferred save for %s: missing file_path", song_name)
         return []
 
-    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.song_preparation import prepare_song
 
-    # Canonical scoring-ready calc_song: cloned base with the timing envelope applied.
-    # The timeline/FG frontier cache key includes the timing-envelope context, so FG
-    # persistence must prepare the song exactly like startup prebuild and GA scoring do
-    # (via this same helper). Loading the bare base song here re-derived a different key,
-    # so the cache-keyed base replay looked up an artifact the prebuild never wrote.
-    calc_song = build_prepared_calc_song(fp=fp).calc_song
-    if not isinstance(calc_song, dict) or not calc_song:
-        logger.warning("[POST][FG] Skipping FG deferred save for %s: calc_song unavailable", song_name)
-        return []
+    # The frontier cache keys include the timing model, so FG persistence prepares the song
+    # exactly like startup prebuild and GA scoring do (via this same helper).
+    song = prepare_song(fp)
 
     if curves is None:
         curves = load_stat_curves(paths().stats_txt)
@@ -48,7 +42,7 @@ def canonicalize_fg_update_entries(
     # dropping the FG score while the base score persists would hide the failure.
     canonical = canonicalize_authoritative_fg_entries(
         list(entries),
-        calc_song=calc_song,
+        song=song,
         curves=curves,
     )
     valid: list[dict[str, Any]] = []

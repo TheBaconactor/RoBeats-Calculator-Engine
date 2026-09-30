@@ -36,6 +36,7 @@ from gear_optimizer.solver.genetic_pipeline import (
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
+from tests.songs_support import make_song
 
 pytestmark = pytest.mark.gpu
 
@@ -108,23 +109,14 @@ def _curves() -> dict[str, np.ndarray]:
     })
 
 
-def _calc_song(*, n_notes: int = 400) -> dict:
-    timestamps = np.linspace(0, 90, int(n_notes), dtype=np.float64)
-    return {
-        "metadata": {
-            "Song Name": "Slice3 fused owner continuation song",
-            "Difficulty": "Hard",
-            "Primary Color": _PRIMARY_COLOR,
-            "Secondary Color": _SECONDARY_COLOR,
-            "Total Notes": int(n_notes),
-            "Long Notes": 10,
-            "Last Note Time": float(timestamps[-1]),
-            "TimingEnvelopeApplied": True,
-            "TimingEnvelopeMode": "perfect",
-            "TimingEnvelopeFGCarry": "full",
-        },
-        "song_data": {"timestamps": timestamps},
-    }
+def _song(*, n_notes: int = 400):
+    return make_song(
+        np.linspace(0, 90, int(n_notes)),
+        name="Slice3 fused owner continuation song",
+        primary=_PRIMARY_COLOR,
+        secondary=_SECONDARY_COLOR,
+        long_notes=10,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -160,17 +152,17 @@ def real_ga_run():
         selected_color=_SELECTED_COLOR,
     )
 
-    calc_song = _calc_song()
+    song = _song()
     curves = _curves()
     color_flags = build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR)
 
     with _GPU_LOCK:
         ensure_ready()
-        prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
-        precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=prebuilt)
+        prebuilt = build_or_load_timeline_frontier_payload(song, curves)
+        precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=prebuilt)
 
         selected_payload = run_gpu_native_ga_runs_payload_prebuilt(
-            calc_song=calc_song,
+            song=song,
             curves=curves,
             song_slot=0,
             item_stats=item_stats,
@@ -200,7 +192,7 @@ def real_ga_run():
         base_stats_fixed=base_stats_fixed,
         fg_candidate_limit=51,
     )
-    return decoded, calc_song, curves
+    return decoded, song, curves
 
 
 def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
@@ -230,7 +222,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
         score_fused_owner_base_components_on_gpu_owner,
     )
 
-    decoded, calc_song, curves = real_ga_run
+    decoded, song, curves = real_ga_run
     assert decoded, "no GA candidates decoded"
 
     def _entry_key(entry: dict) -> tuple[int, ...]:
@@ -239,7 +231,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
         return tuple(int(x) for x in ids)
 
     def _result_signature(result, base_stats) -> tuple:
-        exact = score_force_greats_response_surface_exact(result.stats, calc_song, curves, result.surface)
+        exact = score_force_greats_response_surface_exact(result.stats, song, curves, result.surface)
         return (
             int(result.best_score),
             int(result.ft),
@@ -251,18 +243,18 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
     with _GPU_LOCK:
         reset_fg_response_frontier_payload_cache()
         build_or_load_response_frontier_payload(
-            calc_song,
+            song,
             curves,
             stat_keys=tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1)),
         )
         scoring_bundle = load_response_frontier_scoring_bundle(
-            calc_song, curves, stat_keys=all_response_stat_keys()
+            song, curves, stat_keys=all_response_stat_keys()
         )
 
         # --- Pre-fusion route: build plan, score via the sync (owner) SCORE path to
         # RAW per-batch solve results, map back to each candidate by cache_key. ---
         prefusion_candidates = [copy.deepcopy(c) for c in decoded]
-        prefusion_plan = FgPlanner.plan_many(prefusion_candidates, calc_song, curves, _PRIMARY_COLOR)
+        prefusion_plan = FgPlanner.plan_many(prefusion_candidates, song, curves, _PRIMARY_COLOR)
         prefusion_results, _timings = GpuScoreEngine.score_plan(prefusion_plan, gpu_client=None)
         prefusion_result_by_cache_key: dict = {}
         for prepared, results in zip(prefusion_plan.prepared_batches, prefusion_results, strict=True):
@@ -277,13 +269,13 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
         # --- Fused route: derive base_components from device base_stats7, score on
         # the owner, then materialize each plan candidate from the owner map. ---
         fused_candidates = [copy.deepcopy(c) for c in decoded]
-        fused_plan = FgPlanner.plan_many(fused_candidates, calc_song, curves, _PRIMARY_COLOR)
+        fused_plan = FgPlanner.plan_many(fused_candidates, song, curves, _PRIMARY_COLOR)
         base_components = np.concatenate(
             [np.asarray(p.batch.base_components, dtype=np.int32) for p in fused_plan.prepared_batches]
         )
         owner_map = score_fused_owner_base_components_on_gpu_owner(
             base_components=base_components,
-            calc_song=calc_song,
+            song=song,
             curves=curves,
             selected_color=_SELECTED_COLOR,
             scoring_bundle=scoring_bundle,
@@ -305,7 +297,7 @@ def test_fused_owner_continuation_matches_prefusion_route(real_ga_run) -> None:
                 score_row=score_row,
                 base_stats=base_stats,
                 selected_color=selected,
-                calc_song=calc_song,
+                song=song,
                 curves=curves,
                 scoring_bundle=scoring_bundle,
             )

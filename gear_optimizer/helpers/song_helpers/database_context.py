@@ -20,15 +20,8 @@ _WAL_MAINT_LOCK = threading.Lock()
 _LAST_WAL_MAINT_TS = 0.0
 
 
-def build_db_key(found_song_name: str, calc_song: dict | None = None) -> str:
-    """
-    Build a stable DB lookup key for a song.
-
-    Timing-envelope analysis does not affect the DB namespace; all scores accumulate
-    under the same song key.
-    """
-    # Keep signature for call sites that pass calc_song.
-    _ = calc_song
+def build_db_key(found_song_name: str) -> str:
+    """A song's DB key: its name (timing models share one namespace)."""
     return str(found_song_name or "").strip()
 
 

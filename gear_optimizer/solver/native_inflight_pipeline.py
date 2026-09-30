@@ -5,7 +5,6 @@ import time
 from typing import Any, Optional
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.data.song_io import clone_calc_song
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
@@ -28,8 +27,6 @@ from gear_optimizer.solver.native_inflight_pipeline_ga import (
 
 logger = logging.getLogger(__name__)
 
-_FG_RUNTIME_CALC_SONG_KEYS = ("_gpu_song_slot",)
-
 __all__ = [
     "GADecodeCompletion",
     "GADecodeQueue",
@@ -39,12 +36,10 @@ __all__ = [
     "NativeFGPipeline",
     "NativeFGPipelineSettings",
     "NativeFGPrepCompletion",
-    "_sync_fg_runtime_calc_song_keys",
     "decode_ga_payload_sync",
     "prepare_fg_job_sync",
     "prepare_fg_static_sync",
     "read_native_fg_pipeline_settings",
-    "resolve_active_fg_calc_song",
     "run_fg_job_sync",
     "thread_cpu_time_s",
 ]
@@ -53,37 +48,6 @@ __all__ = [
 def thread_cpu_time_s() -> float:
     """Best-effort per-thread CPU timer for CPU-side stage profiling."""
     return float(time.thread_time())
-
-
-def _sync_fg_runtime_calc_song_keys(source_calc_song: Any, target_calc_song: Any) -> None:
-    if not isinstance(source_calc_song, dict) or not isinstance(target_calc_song, dict):
-        return
-    for key in _FG_RUNTIME_CALC_SONG_KEYS:
-        if key in source_calc_song:
-            target_calc_song[key] = source_calc_song.get(key)
-        else:
-            target_calc_song.pop(key, None)
-
-
-def resolve_active_fg_calc_song(song: NativeSong) -> dict | None:
-    calc_song = song.gpu_inputs.calc_song
-    if not isinstance(calc_song, dict):
-        return None
-    runtime = getattr(song, "runtime", song)
-    fg_state = getattr(runtime, "fg", None)
-    fg_calc_song = getattr(fg_state, "fg_calc_song", None)
-    if not isinstance(fg_calc_song, dict):
-        fg_calc_song = clone_calc_song(calc_song)
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-
-    # Fail loud: FG scored without the timing envelope would silently use chart floors --
-    # a plausible-but-wrong best_fg_score, not a recoverable state.
-    if apply_timing_envelope(fg_calc_song) is None:
-        raise ValueError("resolve_active_fg_calc_song: calc_song carries no chart timestamps to envelope")
-    _sync_fg_runtime_calc_song_keys(calc_song, fg_calc_song)
-    if fg_state is not None:
-        fg_state.fg_calc_song = fg_calc_song
-    return fg_calc_song
 
 
 def decode_ga_payload_sync(song: NativeSong, ga_result: Any) -> tuple[dict, list, list, list[dict]]:
@@ -155,7 +119,7 @@ def prepare_ga_candidate_surface_for_fg(
             selected,
             base_stats_fixed=gpu_inputs.fixed_stats,
             selected_color=str((getattr(gpu_inputs, "cfg_data", None) or {}).get("selected_color", "") or ""),
-            calc_song=resolve_active_fg_calc_song(song),
+            song=song.gpu_inputs.timed_song,
             curves=song.gpu_inputs.curves,
         )
     runtime.decode.ga_candidates = selected
@@ -168,7 +132,6 @@ def prepare_fg_job_sync(song: NativeSong, gpu_client: Optional[GpuServiceClient]
     runtime = getattr(song, "runtime", song)
     t0 = time.perf_counter()
     fg_candidate_limit = int(LOADOUTS_PER_SONG_LIMIT)
-    resolve_active_fg_calc_song(song)
     ga_candidates, _preselect_count, _hydrated = prepare_ga_candidate_surface_for_fg(
         song,
         fg_candidate_limit=int(fg_candidate_limit),

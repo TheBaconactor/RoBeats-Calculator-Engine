@@ -5,13 +5,14 @@ from gear_optimizer.rules import STAT_GEM_GAIN_NORMAL
 from gear_optimizer.helpers.song_helpers.fg_candidate_stats import hydrate_fg_candidate_stats
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact, score_stats_exact_batch
 from gear_optimizer.solver.taichi_gem.api import timeline as timeline_api
+from tests.songs_support import make_song
 
 
-def _prebuild_timeline_cache(calc_song, curves, tmp_path, monkeypatch) -> None:
+def _prebuild_timeline_cache(song, curves, tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("TIMELINE_FRONTIER_DISK_CACHE", "1")
     timeline_api.reset_timeline_state()
-    timeline_api.build_or_load_timeline_frontier_payload(calc_song, curves)
+    timeline_api.build_or_load_timeline_frontier_payload(song, curves)
     timeline_api.reset_timeline_state()
 
 
@@ -52,15 +53,7 @@ def test_hydrate_fg_candidate_stats_prefers_base_stats_over_rebuilding_from_geno
 def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_ga_search_score(
     tmp_path, monkeypatch
 ):
-    calc_song = {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": 0.0,
-        },
-        "song_data": {"timestamps": [0.0], "note_types": [1]},
-    }
+    song = make_song([0.0])
     curves = synthetic_curves({
         "Perfect Points": [1.0] * 161,
         "Combo Multiplier": [1.0] * 161,
@@ -90,13 +83,13 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_g
             "Selected Element": "Rush",
         },
     }
-    _prebuild_timeline_cache(calc_song, curves, tmp_path, monkeypatch)
+    _prebuild_timeline_cache(song, curves, tmp_path, monkeypatch)
 
     hydrate_fg_candidate_stats(
         [cand],
         base_stats_fixed={},
         selected_color="Rush",
-        calc_song=calc_song,
+        song=song,
         curves=curves,
     )
 
@@ -109,15 +102,7 @@ def test_hydrate_fg_candidate_stats_canonicalizes_base_score_and_preserves_raw_g
 
 def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload(tmp_path, monkeypatch):
     timestamps = np.linspace(0.0, 2.0, 101, dtype=np.float32)
-    calc_song = {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-        },
-        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
-    }
+    song = make_song(timestamps)
     curves = synthetic_curves({
         "Perfect Points": [1.0] * 161,
         "Combo Multiplier": [2.0] * 161,
@@ -146,13 +131,13 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload(tmp_pat
             "Selected Element": "Rush",
         },
     }
-    _prebuild_timeline_cache(calc_song, curves, tmp_path, monkeypatch)
+    _prebuild_timeline_cache(song, curves, tmp_path, monkeypatch)
 
     hydrate_fg_candidate_stats(
         [cand],
         base_stats_fixed={},
         selected_color="Rush",
-        calc_song=calc_song,
+        song=song,
         curves=curves,
     )
 
@@ -163,15 +148,7 @@ def test_hydrate_fg_candidate_stats_canonicalizes_existing_stats_payload(tmp_pat
 
 def test_score_stats_exact_batch_matches_scalar_timeline_frontier_authority(tmp_path, monkeypatch):
     timestamps = np.linspace(0.0, 12.0, 128, dtype=np.float32)
-    calc_song = {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 4,
-            "Last Note Time": float(timestamps[-1]),
-        },
-        "song_data": {"timestamps": timestamps, "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16)},
-    }
+    song = make_song(timestamps, long_notes=4)
     curves = synthetic_curves({
         "Perfect Points": [float(1 + (i % 7) / 10.0) for i in range(161)],
         "Combo Multiplier": [float(1 + (i / 500.0)) for i in range(161)],
@@ -191,8 +168,8 @@ def test_score_stats_exact_batch_matches_scalar_timeline_frontier_authority(tmp_
         }
         for i in range(5)
     ]
-    _prebuild_timeline_cache(calc_song, curves, tmp_path, monkeypatch)
+    _prebuild_timeline_cache(song, curves, tmp_path, monkeypatch)
 
-    assert score_stats_exact_batch(stats_rows, calc_song, curves) == [
-        score_stats_exact(stats, calc_song, curves) for stats in stats_rows
+    assert score_stats_exact_batch(stats_rows, song, curves) == [
+        score_stats_exact(stats, song, curves) for stats in stats_rows
     ]

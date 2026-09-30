@@ -37,6 +37,7 @@ from gear_optimizer.solver.gpu_tuning_policy import choose_ga_batch_runs
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 from tests.curves_support import synthetic_curves
+from tests.songs_support import make_song
 
 pytestmark = pytest.mark.gpu
 
@@ -114,30 +115,18 @@ def _curves() -> dict[str, np.ndarray]:
     })
 
 
-def _calc_song(*, n_notes: int = 400) -> dict:
-    timestamps = np.linspace(0, 90, int(n_notes), dtype=np.float64)
+def _song(*, n_notes: int = 400):
     note_types = np.zeros(int(n_notes), dtype=np.int32)
     note_types[-10:] = 3
-    lanes = np.arange(int(n_notes), dtype=np.int32) % 4
-    return {
-        "metadata": {
-            "Song Name": "GA batch-width invariance song",
-            "Difficulty": "Hard",
-            "Primary Color": _PRIMARY_COLOR,
-            "Secondary Color": _SECONDARY_COLOR,
-            "Total Notes": int(n_notes),
-            "Long Notes": 10,
-            "Last Note Time": float(timestamps[-1]),
-            "TimingEnvelopeApplied": True,
-            "TimingEnvelopeMode": "perfect_window",
-            "TimingEnvelopeFGCarry": "full",
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "note_types": note_types,
-            "lanes": lanes,
-        },
-    }
+    return make_song(
+        np.linspace(0, 90, int(n_notes)),
+        name="GA batch-width invariance song",
+        primary=_PRIMARY_COLOR,
+        secondary=_SECONDARY_COLOR,
+        long_notes=10,
+        note_types=note_types,
+        lanes=np.arange(int(n_notes), dtype=np.int32) % 4,
+    )
 
 
 def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int) -> np.ndarray:
@@ -188,17 +177,17 @@ def _run_payload_with_forced_batch_width(monkeypatch, *, forced_batch_runs: int)
         selected_color=_SELECTED_COLOR,
     )
 
-    calc_song = _calc_song()
+    song = _song()
     curves = _curves()
     color_flags = build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR)
 
     with _GPU_LOCK:
         ensure_ready()
-        prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
-        precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=prebuilt)
+        prebuilt = build_or_load_timeline_frontier_payload(song, curves)
+        precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=prebuilt)
 
         payload = run_gpu_native_ga_runs_payload_prebuilt(
-            calc_song=calc_song,
+            song=song,
             curves=curves,
             song_slot=0,
             item_stats=item_stats,

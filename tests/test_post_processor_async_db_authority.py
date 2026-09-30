@@ -5,6 +5,7 @@ import sys
 import threading
 
 from tests.native_song_factory import make_native_song
+from tests.songs_support import make_song
 
 
 _REPLAY_GEAR = [
@@ -31,12 +32,10 @@ def _curves() -> dict:
     })
 
 
-def _prebuild_timeline_frontier(calc_song: dict, curves: dict) -> None:
+def _prebuild_timeline_frontier(song, curves) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    apply_timing_envelope(calc_song)
-    build_or_load_timeline_frontier_payload(calc_song, curves)
+    build_or_load_timeline_frontier_payload(song, curves)
 
 
 def _materialize_gpu_runtime_on_main_thread() -> None:
@@ -60,16 +59,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     init_db()
 
-    calc_song = {
-        "metadata": {
-            "Song Name": "pytest_post_processor_exact_authority",
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": 0.0,
-        },
-        "song_data": {"timestamps": [0.0], "note_types": [0], "lanes": [0]},
-    }
+    timed_song = make_song([0.0], note_types=[0], name="pytest_post_processor_exact_authority")
     curves = _curves()
     stats = {
         "Perfect Points": 0,
@@ -80,8 +70,8 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         "Rush": 10,
         "Flow": 5,
     }
-    _prebuild_timeline_frontier(calc_song, curves)
-    raw_exact_score = int(score_stats_exact(stats, calc_song, curves))
+    _prebuild_timeline_frontier(timed_song, curves)
+    raw_exact_score = int(score_stats_exact(stats, timed_song, curves))
     inflated_score = raw_exact_score + 12345
 
     monkeypatch.setattr(
@@ -101,7 +91,7 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         db_key="pytest_post_processor_exact_authority",
         fp="Data/Hard/pytest_post_processor_exact_authority.txt",
         effective_difficulty="Hard",
-        calc_song=calc_song,
+        timed_song=timed_song,
         curves=curves,
         ga_candidates=[],
         best_data={
@@ -153,12 +143,12 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
     assert stored_stats
     assert stored_stats != stats
     assert int(row["score"]) != inflated_score
-    assert int(row["score"]) == int(score_stats_exact(stored_stats, calc_song, curves))
+    assert int(row["score"]) == int(score_stats_exact(stored_stats, timed_song, curves))
 
 
 def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monkeypatch):
     from gear_optimizer.data.database import get_db_connection, init_db
-    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.solver.song_preparation import prepare_song
     from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.settings import paths
     from gear_optimizer.pipeline import post_processor
@@ -169,8 +159,8 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
 
     curves = load_stat_curves(paths().stats_txt)
     assert curves
-    calc_song = get_base_calc_song("Data/Hard/00 (Hard) by garlagan.txt")
-    _prebuild_timeline_frontier(calc_song, curves)
+    timed_song = prepare_song("Data/Hard/00 (Hard) by garlagan.txt")
+    _prebuild_timeline_frontier(timed_song, curves)
 
     force_payload = {
         "Score": 32521173,
@@ -241,8 +231,8 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
 
     canonicalize_calls = []
 
-    def _canonicalize(entries, *, calc_song, curves):
-        canonicalize_calls.append((entries, calc_song, curves))
+    def _canonicalize(entries, *, song, curves):
+        canonicalize_calls.append((entries, song, curves))
         entry = dict(entries[0])
         details = dict(entry["details"])
         details["GemCounts"] = {}

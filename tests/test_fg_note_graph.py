@@ -589,18 +589,15 @@ def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
     from gear_optimizer.solver.fg_response_scoring.physical_replay import (
         validate_force_greats_physical_replay,
     )
-    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
-    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.song_preparation import prepare_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         reconstruct_force_greats_response_trace,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
     root = Path(__file__).resolve().parents[1]
-    calc_song = build_prepared_calc_song(
-        fp=str(root / "Data" / "Easy" / "Mopemope (Easy) by LeaF (7eaF).txt"),
-    ).calc_song
-    song_inputs = extract_fg_song_inputs(calc_song)
+    song = prepare_song(str(root / "Data" / "Easy" / "Mopemope (Easy) by LeaF (7eaF).txt"))
+    song_inputs = song.fg_inputs
     surface = FgResponseSurface(
         4278190080,
         4294967295,
@@ -634,7 +631,7 @@ def test_mopemope_wasted_boundary_reconstructs_exact_cross_lane_body_order():
         frontier_trace=trace,
         surface=surface,
         timestamps=song_inputs.timestamps,
-        note_types=calc_song["song_data"]["note_types"],
+        note_types=song.chart.note_types,
         lanes=song_inputs.lanes,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
@@ -648,18 +645,15 @@ def test_alice_same_time_boundary_reconstructs_exact_judgments_and_order():
     from gear_optimizer.solver.fg_response_scoring.physical_replay import (
         validate_force_greats_physical_replay,
     )
-    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
-    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.song_preparation import prepare_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         reconstruct_force_greats_response_trace,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
     root = Path(__file__).resolve().parents[1]
-    calc_song = build_prepared_calc_song(
-        fp=str(root / "Data" / "Hard" / "Alice in Misanthrope (Hard) by LeaF (7eaF).txt"),
-    ).calc_song
-    song_inputs = extract_fg_song_inputs(calc_song)
+    song = prepare_song(str(root / "Data" / "Hard" / "Alice in Misanthrope (Hard) by LeaF (7eaF).txt"))
+    song_inputs = song.fg_inputs
     surface = FgResponseSurface(0, 0, 0, 0, 0, 0, 0, 0, 1597, 1, 0)
     raw_fever_fill = 195.50747138670087
     real_fever_time = 55.122186673736564
@@ -681,7 +675,7 @@ def test_alice_same_time_boundary_reconstructs_exact_judgments_and_order():
         frontier_trace=trace,
         surface=surface,
         timestamps=song_inputs.timestamps,
-        note_types=calc_song["song_data"]["note_types"],
+        note_types=song.chart.note_types,
         lanes=song_inputs.lanes,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
@@ -703,18 +697,15 @@ def test_light_it_up_late_great_cluster_reconstructs_exact_judgments_and_order()
     from gear_optimizer.solver.fg_response_scoring.physical_replay import (
         validate_force_greats_physical_replay,
     )
-    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
-    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.song_preparation import prepare_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         reconstruct_force_greats_response_trace,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
     root = Path(__file__).resolve().parents[1]
-    calc_song = build_prepared_calc_song(
-        fp=str(root / "Data" / "Normal" / "Light it up by Camellia.txt"),
-    ).calc_song
-    song_inputs = extract_fg_song_inputs(calc_song)
+    song = prepare_song(str(root / "Data" / "Normal" / "Light it up by Camellia.txt"))
+    song_inputs = song.fg_inputs
     surface = FgResponseSurface(0, 0, 4294705152, 15, 0, 0, 4063232, 0, 740, 0, 0)
     raw_fever_fill = 81.71601202940941
     real_fever_time = 59.28149701967239
@@ -736,7 +727,7 @@ def test_light_it_up_late_great_cluster_reconstructs_exact_judgments_and_order()
         frontier_trace=trace,
         surface=surface,
         timestamps=song_inputs.timestamps,
-        note_types=calc_song["song_data"]["note_types"],
+        note_types=song.chart.note_types,
         lanes=song_inputs.lanes,
         raw_fever_fill=raw_fever_fill,
         real_fever_time=real_fever_time,
@@ -1919,12 +1910,10 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
 
     from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, team_buff_effect
     from gear_optimizer.data.database import get_evolution_db_path
-    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
     from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
     from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.settings import paths
-    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.song_preparation import prepare_song
 
     song = "Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat]"
     loadout_hash = "9466514779a185ba64c4198786581230"
@@ -1942,13 +1931,9 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
         pytest.skip("Decoy FG loadout not in local DB")
 
     fd = json.loads(row[0])
-    calc = clone_calc_song(
-        get_base_calc_song(
-            "Data/Normal/Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat].txt")
-    )
-    apply_timing_envelope(calc)
-    si = extract_fg_song_inputs(calc)
-    nt = calc.get("song_data", {}).get("note_types")
+    timed = prepare_song("Data/Normal/Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat].txt")
+    si = timed.fg_inputs
+    nt = timed.chart.note_types
     ts = np.asarray(si.timestamps)
     n = si.total_notes
     trace = fd["ForceGreats"]["frontier_trace"]

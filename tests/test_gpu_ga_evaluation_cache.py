@@ -7,7 +7,7 @@ from tests.curves_support import synthetic_curves
 from tests.test_gpu_ga_eval_incumbent_cull import (
     _GPU_LOCK,
     _N_GENOMES,
-    _calc_song,
+    _song,
     _curves,
     _run_production_eval,
     eval_device_state as eval_device_state,
@@ -53,11 +53,9 @@ def test_replacing_song_slot_or_timing_cannot_reuse_old_scores(eval_device_state
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload, precompute_timeline_gpu,
     )
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     def upload(mode, notes):
-        song = _calc_song(n_notes=notes)
-        apply_timing_envelope(song, mode=mode)
+        song = _song(n_notes=notes, mode=mode)
         refs = _curves()
         payload = build_or_load_timeline_frontier_payload(song, refs)
         precompute_timeline_gpu(song, refs, song_slot=0, prebuilt_frontier=payload)

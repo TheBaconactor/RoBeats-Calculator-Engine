@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from tests.curves_support import synthetic_curves
+from tests.songs_support import make_song
 
 pytestmark = pytest.mark.gpu
 
@@ -14,12 +15,12 @@ def _fg_test_surface() -> list[int]:
     return list(_FG_TEST_SURFACE)
 
 
-def _expected_fg_surface_score(stats: dict, calc_song: dict, curves: dict) -> int:
+def _expected_fg_surface_score(stats: dict, song, curves) -> int:
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
     return int(
-        score_force_greats_response_surface_exact(stats, calc_song, curves, FgResponseSurface(*_FG_TEST_SURFACE))
+        score_force_greats_response_surface_exact(stats, song, curves, FgResponseSurface(*_FG_TEST_SURFACE))
     )
 
 
@@ -34,30 +35,19 @@ def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
 
 # GPU exact-replay tests need the timeline frontier prebuilt (same as production startup).
 # Isolated GPU unit tests do not run the full app prebuild; call this before real scoring.
-def _prebuild_timeline_frontier(calc_song: dict, curves: dict) -> None:
+def _prebuild_timeline_frontier(song, curves) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
 
-    build_or_load_timeline_frontier_payload(calc_song, curves)
+    build_or_load_timeline_frontier_payload(song, curves)
 
 
-def _mock_song(*, name: str, n_notes: int = 16, duration: float = 60.0) -> dict:
-    timestamps = np.linspace(0.0, float(duration), int(n_notes), dtype=np.float32)
-    return {
-        "metadata": {
-            "Song Name": name,
-            "Difficulty": "Hard",
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-            "Total Notes": int(timestamps.shape[0]),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
-            "lanes": np.arange(int(timestamps.shape[0]), dtype=np.int32) % 4,
-        },
-    }
+def _mock_song(*, name: str, n_notes: int = 16, duration: float = 60.0, **chart_fields):
+    return make_song(
+        np.linspace(0.0, float(duration), int(n_notes)),
+        name=name,
+        lanes=np.arange(int(n_notes), dtype=np.int32) % 4,
+        **chart_fields,
+    )
 
 
 def _curves(rows: int) -> dict:
@@ -83,7 +73,7 @@ _SENTINEL_SONG_BASE = "__synthetic_song_base__"
 _CURRENT_BASE_EFFECT: dict[str, dict] = {"effect": {}}
 
 
-def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, curves: dict) -> None:
+def _install_synthetic_tier_resolve(monkeypatch, *, song, curves) -> None:
     """Replace the GPU per-(tier, color) re-solve helpers with deterministic CPU-exact synthetics.
 
     The perfect_window (default) postprocess now RE-SOLVES gems per (tier, color) via the GPU
@@ -107,16 +97,14 @@ def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, curves: dic
     from gear_optimizer.core.team_buff import team_buff_effect
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact_batch
 
-    meta0 = calc_song.get("metadata", {}) or {}
-    primary_color = str(meta0.get("Primary Color", "") or "").strip()
-    secondary_color = str(meta0.get("Secondary Color", "") or "").strip()
+    primary_color = song.chart.primary
 
     real_force_payload_stats = _force_payload_stats
     real_ensure_base = tbt._ensure_stats_include_base_effect
 
     # Captured by the loadout-items hook so the synthetic re-solve can recover the per-loadout
     # base/FG stat rows (the real helper would demand 6 gear + 3 mini stat-dicts).
-    def _fake_entry_loadout_items(entry: dict, calc_song: dict | None = None) -> list[dict]:
+    def _fake_entry_loadout_items(entry: dict, chart=None) -> list[dict]:
         e = entry or {}
         details = e.get("details") if isinstance(e.get("details"), dict) else {}
         stats_base = real_ensure_base(details.get("Stats") or {}, _CURRENT_BASE_EFFECT["effect"])
@@ -128,10 +116,10 @@ def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, curves: dic
             fg_stats = stats_base
         return [{"__base_stats__": dict(stats_base), "__fg_stats__": dict(fg_stats)}]
 
-    def _fake_baseline_fixed_stats(calc_song_arg):
+    def _fake_baseline_fixed_stats(chart):
         # Capture the baseline TeamBuff effect (base buff + base color) so the loadout-items hook can
         # mirror the postprocess's `_ensure_stats_include_base_effect` exactly.
-        base_team_color, _target = tbt._resolve_team_colors_for_tiering(calc_song_arg)
+        base_team_color, _target = tbt._resolve_team_colors_for_tiering(chart)
         _CURRENT_BASE_EFFECT["effect"] = team_buff_effect(tbt.OPTIMIZER_BASELINE_TEAM_BUFF, base_team_color)
         # Non-empty song base carrying only the sentinel, so `_apply_stat_delta` keeps the per-tier
         # delta keys intact and the synthetic re-solve can subtract the sentinel back out.
@@ -140,25 +128,25 @@ def _install_synthetic_tier_resolve(monkeypatch, *, calc_song: dict, curves: dic
     def _delta_from_fixed(fixed_song_stats: dict) -> dict:
         return {k: int(v) for k, v in dict(fixed_song_stats or {}).items() if k != _SENTINEL_SONG_BASE}
 
-    def _fake_resolve_tier_base_batch(*, fixed_song_stats, loadouts, calc_song, curves, **_kw):
+    def _fake_resolve_tier_base_batch(*, fixed_song_stats, loadouts, song, curves, **_kw):
         delta = _delta_from_fixed(fixed_song_stats)
         resolved_stats_rows = [
             tbt._apply_stat_delta(items[0]["__base_stats__"], delta) for items in loadouts
         ]
-        scores = [int(s) for s in score_stats_exact_batch(resolved_stats_rows, calc_song, curves)]
+        scores = [int(s) for s in score_stats_exact_batch(resolved_stats_rows, song, curves)]
         return [
             ({"Stats": dict(stats_row), "GemCounts": {"Perfect Points": 0}}, int(score))
             for stats_row, score in zip(resolved_stats_rows, scores, strict=True)
         ]
 
-    def _fake_resolve_tier_fg_force_batch(*, fixed_song_stats, loadouts, calc_song, curves, selected_color="", **_kw):
+    def _fake_resolve_tier_fg_force_batch(*, fixed_song_stats, loadouts, song, curves, selected_color="", **_kw):
         delta = _delta_from_fixed(fixed_song_stats)
         forces: list[dict] = []
         for items in loadouts:
             fg_stats = tbt._apply_stat_delta(items[0]["__fg_stats__"], delta)
             base_stats = tbt._apply_stat_delta(items[0]["__base_stats__"], delta)
-            fg_score = _expected_fg_surface_score(fg_stats, calc_song, curves)
-            base_score = int(score_stats_exact_batch([base_stats], calc_song, curves)[0])
+            fg_score = _expected_fg_surface_score(fg_stats, song, curves)
+            base_score = int(score_stats_exact_batch([base_stats], song, curves)[0])
             forces.append(
                 {
                     "Score": int(fg_score),
@@ -184,7 +172,7 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers(monkeypatc
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
-    calc_song = _mock_song(name="pytest_team_buff_tiers", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_tiers", n_notes=12)
     curves = _curves(MAX_STAT + 1)
 
     # Stats here are assumed to already include the base TeamBuff=T5.
@@ -236,11 +224,11 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers(monkeypatc
         "force": None,
     }
 
-    _prebuild_timeline_frontier(calc_song, curves)
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
+    _prebuild_timeline_frontier(song, curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
 
     out = compute_team_buff_tier_leaderboards(
-        entries=[entry_a, entry_b], calc_song=calc_song, curves=curves
+        entries=[entry_a, entry_b], song=song, curves=curves
     )
     tiers = out["tiers"]
 
@@ -254,22 +242,7 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
     # Primary/secondary determine scoring contribution; TeamColor should follow Primary in auto mode.
-    calc_song = {
-        "metadata": {
-            "Song Name": "pytest_team_buff_auto_mode",
-            "Difficulty": "Hard",
-            "Primary Color": "Vibe",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": 10.0,
-            "Total Notes": 12,
-        },
-        "song_data": {
-            "timestamps": np.linspace(0.0, 10.0, 12, dtype=np.float32),
-            "note_types": np.ones(12, dtype=np.int16),
-            "lanes": np.arange(12, dtype=np.int32) % 4,
-        },
-    }
+    song = _mock_song(name="pytest_team_buff_auto_mode", n_notes=12, duration=10.0, primary="Vibe")
     curves = _curves(MAX_STAT + 1)
 
     # The baseline is always TeamBuff=T5 on the song's Primary Color.
@@ -294,12 +267,12 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base(monkeypatch):
         "force": None,
     }
 
-    _prebuild_timeline_frontier(calc_song, curves)
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
+    _prebuild_timeline_frontier(song, curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5", "T1"),
     )
@@ -315,7 +288,7 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    calc_song = _mock_song(name="pytest_team_buff_batches", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_batches", n_notes=12)
     curves = _curves(MAX_STAT + 1)
 
     stats = {
@@ -342,12 +315,12 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
         "force": None,
     }
 
-    _prebuild_timeline_frontier(calc_song, curves)
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
+    _prebuild_timeline_frontier(song, curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         limit=1,
         tiers=("T5",),
@@ -369,9 +342,9 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    calc_song = _mock_song(name="pytest_team_buff_row_order", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_row_order", n_notes=12)
     curves = _curves(MAX_STAT + 1)
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(song, curves)
 
     stats = {
         "Perfect Points": 100,
@@ -467,7 +440,7 @@ def test_build_team_buff_tier_db_batches_keeps_stable_row_order_for_mixed_base_a
 
     batches = build_team_buff_tier_db_batches(
         entries=entries,
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         limit=3,
         tiers=("T5",),
@@ -480,9 +453,9 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    calc_song = _mock_song(name="pytest_team_buff_hash_collision", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_hash_collision", n_notes=12)
     curves = _curves(MAX_STAT + 1)
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(song, curves)
 
     shared_stats = {
         "Perfect Points": 120,
@@ -584,7 +557,7 @@ def test_build_team_buff_tier_db_batches_attaches_details_by_loadout_hash_not_ge
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry_a, entry_b],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5",),
         limit=2,
@@ -604,7 +577,7 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    calc_song = _mock_song(name="pytest_team_buff_missing_base_effect", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_missing_base_effect", n_notes=12)
     curves = _curves(MAX_STAT + 1)
 
     # Auto mode => base TeamBuff is T5 + TeamColor follows Primary (Rush).
@@ -639,12 +612,12 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
         },
     }
 
-    _prebuild_timeline_frontier(calc_song, curves)
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
+    _prebuild_timeline_frontier(song, curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         limit=1,
         tiers=("NONE", "T5", "T10", "T20", "T50", "T51"),
@@ -661,7 +634,7 @@ def test_team_buff_tiers_support_target_team_color_overrides(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    calc_song = _mock_song(name="pytest_team_color_modes", n_notes=12)
+    song = _mock_song(name="pytest_team_color_modes", n_notes=12)
     curves = _curves(MAX_STAT + 1)
 
     # Baseline row already includes T5 + Primary(Rush) effect.
@@ -687,25 +660,25 @@ def test_team_buff_tiers_support_target_team_color_overrides(monkeypatch):
         "force": None,
     }
 
-    _prebuild_timeline_frontier(calc_song, curves)
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
+    _prebuild_timeline_frontier(song, curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
 
     primary_batches = build_team_buff_tier_db_batches(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5",),
     )
     secondary_batches = build_team_buff_tier_db_batches(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5",),
         target_team_color_override="Flow",
     )
     none_batches = build_team_buff_tier_db_batches(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5",),
         target_team_color_override="",
@@ -729,7 +702,7 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
-    calc_song = _mock_song(name="pytest_team_buff_fg_tiered", n_notes=24)
+    song = _mock_song(name="pytest_team_buff_fg_tiered", n_notes=24)
     curves = _curves(MAX_STAT + 1)
 
     stats = {
@@ -744,12 +717,12 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
         "Vibe": 0,
         "Chill": 0,
     }
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(song, curves)
 
     # Production invariant: a persisted FG entry carries fg_score == the exact surface
     # score. The baseline (T5) tier CARRIES that value verbatim (identical-context
     # carry); only non-baseline tiers re-solve, which is exactly what this test pins.
-    carried_fg = _expected_fg_surface_score(stats, calc_song, curves)
+    carried_fg = _expected_fg_surface_score(stats, song, curves)
     entry = {
         "score": 0,
         "fg_score": int(carried_fg),
@@ -764,11 +737,11 @@ def test_team_buff_tiers_apply_tier_deltas_to_fg_score(monkeypatch):
         },
     }
 
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5", "T51"),
     )
@@ -786,7 +759,7 @@ def test_team_buff_tier_replay_requires_persisted_response_surface():
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
-    calc_song = _mock_song(name="pytest_team_buff_missing_surface", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_missing_surface", n_notes=12)
     curves = _curves(MAX_STAT + 1)
 
     stats = {"Perfect Points": 100, "Combo Multiplier": 0, "Fever Multiplier": 0,
@@ -805,7 +778,7 @@ def test_team_buff_tier_replay_requires_persisted_response_surface():
     with pytest.raises(ValueError, match="response_surface"):
         compute_team_buff_tier_leaderboards(
             entries=[entry],
-            calc_song=calc_song,
+            song=song,
             curves=curves,
             tiers=("T5",),
             limit=1,
@@ -817,7 +790,7 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
-    calc_song = _mock_song(name="pytest_team_buff_fg_base_context", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_fg_base_context", n_notes=12)
     curves = _curves(MAX_STAT + 1)
 
     stats = {
@@ -832,10 +805,10 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
         "Vibe": 0,
         "Chill": 0,
     }
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(song, curves)
 
-    expected_base = int(score_stats_exact(stats, calc_song, curves))
-    expected_fg = _expected_fg_surface_score(stats, calc_song, curves)
+    expected_base = int(score_stats_exact(stats, song, curves))
+    expected_fg = _expected_fg_surface_score(stats, song, curves)
 
     # Production invariant: the persisted fg_score IS the exact surface score; the
     # baseline (T5) tier carries it verbatim (identical-context carry).
@@ -853,11 +826,11 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
         },
     }
 
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5",),
         limit=1,
@@ -865,7 +838,7 @@ def test_team_buff_tier_postprocess_uses_source_fg_base_score_for_fg_inclusion(m
 
     tier = out["tiers"]["T5"]
     assert tier["base_top51"][0]["score"] == expected_base
-    expected_paired_fg_base = int(score_stats_exact(stats, calc_song, curves))
+    expected_paired_fg_base = int(score_stats_exact(stats, song, curves))
     assert len(tier["fg_top51"]) == 1
     assert tier["fg_top51"][0]["fg_score"] == expected_fg
     assert tier["fg_top51"][0]["fg_base_score"] == expected_paired_fg_base
@@ -883,7 +856,7 @@ def test_baseline_carry_fails_loud_on_valid_force_with_nonpositive_fg_score(monk
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
 
-    calc_song = _mock_song(name="pytest_carry_stale_fg_score", n_notes=12)
+    song = _mock_song(name="pytest_carry_stale_fg_score", n_notes=12)
     curves = _curves(MAX_STAT + 1)
 
     stats = {
@@ -898,7 +871,7 @@ def test_baseline_carry_fails_loud_on_valid_force_with_nonpositive_fg_score(monk
         "Vibe": 0,
         "Chill": 0,
     }
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(song, curves)
 
     # Valid FG force (config + response surface) but a stale, non-positive top-level fg_score.
     entry = {
@@ -915,12 +888,12 @@ def test_baseline_carry_fails_loud_on_valid_force_with_nonpositive_fg_score(monk
         },
     }
 
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
 
     with pytest.raises(ValueError, match="non-positive fg_score"):
         compute_team_buff_tier_leaderboards(
             entries=[entry],
-            calc_song=calc_song,
+            song=song,
             curves=curves,
             tiers=("T5",),
             limit=1,
@@ -939,7 +912,7 @@ def test_fg_paired_base_is_loadout_base_not_gemless_recompute(monkeypatch):
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
-    calc_song = _mock_song(name="pytest_fg_paired_base_gemless_guard", n_notes=12)
+    song = _mock_song(name="pytest_fg_paired_base_gemless_guard", n_notes=12)
     curves = _curves(MAX_STAT + 1)
 
     stats = {
@@ -974,16 +947,16 @@ def test_fg_paired_base_is_loadout_base_not_gemless_recompute(monkeypatch):
         },
     }
 
-    _prebuild_timeline_frontier(calc_song, curves)
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
+    _prebuild_timeline_frontier(song, curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
 
-    expected_base = int(score_stats_exact(stats, calc_song, curves))
-    gemless_score = int(score_stats_exact(gemless_base_stats, calc_song, curves))
+    expected_base = int(score_stats_exact(stats, song, curves))
+    gemless_score = int(score_stats_exact(gemless_base_stats, song, curves))
     assert gemless_score < expected_base  # the discarded recompute would be strictly lower
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5",),
         limit=1,
@@ -1003,7 +976,7 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
-    calc_song = _mock_song(name=f"pytest_team_buff_derived_fg_visibility_{tier_name}", n_notes=12)
+    song = _mock_song(name=f"pytest_team_buff_derived_fg_visibility_{tier_name}", n_notes=12)
     curves = _curves(MAX_STAT + 1)
 
     stats = {
@@ -1037,16 +1010,16 @@ def test_team_buff_tier_postprocess_derived_tier_fg_visibility_uses_replayed_bas
     tier_stats = dict(stats)
     for key in set(base_effect) | set(target_effect):
         tier_stats[key] = int(tier_stats.get(key, 0)) + int(target_effect.get(key, 0)) - int(base_effect.get(key, 0))
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(song, curves)
 
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
 
-    expected_base = int(score_stats_exact(tier_stats, calc_song, curves))
-    expected_fg = _expected_fg_surface_score(tier_stats, calc_song, curves)
+    expected_base = int(score_stats_exact(tier_stats, song, curves))
+    expected_fg = _expected_fg_surface_score(tier_stats, song, curves)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=(tier_name,),
         limit=1,
@@ -1068,9 +1041,9 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    calc_song = _mock_song(name="pytest_team_buff_fg_batch_ctx", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_fg_batch_ctx", n_notes=12)
     curves = _curves(MAX_STAT + 1)
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(song, curves)
 
     stats = {
         "Perfect Points": 100,
@@ -1153,7 +1126,7 @@ def test_build_team_buff_tier_db_batches_preserves_fg_base_score_from_fg_top_row
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5",),
         limit=1,
@@ -1172,7 +1145,7 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    calc_song = _mock_song(name="pytest_team_buff_fg_source_meta", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_fg_source_meta", n_notes=12)
     curves = _curves(MAX_STAT + 1)
 
     entry = {
@@ -1245,7 +1218,7 @@ def test_build_team_buff_tier_db_batches_preserves_source_fg_metadata_from_fg_to
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T10",),
         limit=1,
@@ -1261,7 +1234,7 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    calc_song = _mock_song(name="pytest_team_buff_zero_ms_fg_identity", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_zero_ms_fg_identity", n_notes=12, mode="zero_ms")
     curves = _curves(MAX_STAT + 1)
 
     stats = {
@@ -1365,12 +1338,11 @@ def test_build_team_buff_tier_db_batches_zero_ms_fg_preserves_persisted_loadout_
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5",),
         limit=1,
         replay_surface="fg",
-        timing_mode="zero_ms",
     )
 
     row = batches["T5"][0]
@@ -1398,9 +1370,9 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
     from gear_optimizer.core.team_buff import team_buff_effect
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    calc_song = _mock_song(name="pytest_team_buff_strict_sanity", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_strict_sanity", n_notes=12)
     curves = _curves(MAX_STAT + 1)
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(song, curves)
 
     stats = {
         "Perfect Points": 125,
@@ -1536,7 +1508,7 @@ def test_build_team_buff_tier_db_batches_strict_sanity_preserves_scores_and_targ
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry_a, entry_b],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T20",),
         limit=2,
@@ -1581,9 +1553,9 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
-    calc_song = _mock_song(name="pytest_team_buff_batch_order", n_notes=12)
+    song = _mock_song(name="pytest_team_buff_batch_order", n_notes=12)
     curves = _curves(MAX_STAT + 1)
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(song, curves)
 
     stats = {
         "Perfect Points": 100,
@@ -1679,7 +1651,7 @@ def test_build_team_buff_tier_db_batches_preserves_replayed_base_order_and_appen
 
     batches = build_team_buff_tier_db_batches(
         entries=[entry_a, entry_b, entry_c],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T10",),
         limit=3,
@@ -1730,22 +1702,12 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
         ],
         dtype=np.float32,
     )
-    calc_song = {
-        "metadata": {
-            "Song Name": "pytest_exact_rescore_regression",
-            "Difficulty": "Hard",
-            "Primary Color": "Vibe",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-            "Total Notes": int(timestamps.shape[0]),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
-            "lanes": np.arange(int(timestamps.shape[0]), dtype=np.int32) % 4,
-        },
-    }
+    song = make_song(
+        timestamps,
+        name="pytest_exact_rescore_regression",
+        primary="Vibe",
+        lanes=np.arange(int(timestamps.shape[0]), dtype=np.int32) % 4,
+    )
 
     stats = {
         "Perfect Points": 25,
@@ -1760,12 +1722,9 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
         "Chill": 49,
     }
 
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-
-    apply_timing_envelope(calc_song)
-    _prebuild_timeline_frontier(calc_song, curves)
-    _install_synthetic_tier_resolve(monkeypatch, calc_song=calc_song, curves=curves)
-    exact = int(score_stats_exact(stats, calc_song, curves))
+    _prebuild_timeline_frontier(song, curves)
+    _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
+    exact = int(score_stats_exact(stats, song, curves))
 
     entry = {
         "loadout_hash": "hash-exact-rescore",
@@ -1779,7 +1738,7 @@ def test_team_buff_tier_postprocess_base_scoring_uses_cpu_exact_rescore(monkeypa
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         tiers=("T5",),
         limit=1,

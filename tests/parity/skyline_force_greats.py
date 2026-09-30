@@ -57,7 +57,7 @@ def _genome_names(genome: Any, start: int, stop: int) -> list[str]:
 def score_retained_skyline_force_greats(
     candidate_records: list[dict[str, Any]],
     *,
-    calc_song: dict[str, Any],
+    song: Any,
     curves: dict[str, Any],
     default_selected_color: str,
     use_gpu: bool,
@@ -85,7 +85,7 @@ def score_retained_skyline_force_greats(
     call_t0 = time.perf_counter()
     scored_rows, batch_stats = FgResponseScoringService.score_candidates_with_stats(
         candidate_records,
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         meta_primary_color=default_selected_color,
         gpu_client=None,

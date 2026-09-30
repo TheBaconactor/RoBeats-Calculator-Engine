@@ -8,11 +8,15 @@ put in time order here; notes at the same time keep their file order.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
+from cachetools import LRUCache
+
+from .gamedata import ELEMENTS
 
 NOTE_TYPES = (1, 2, 3)
 _SECTIONS = ("Timing Points", "Song Data")
@@ -24,18 +28,48 @@ class Chart:
     timestamps: np.ndarray  # float32 seconds, non-decreasing
     note_types: np.ndarray  # int16
     lanes: np.ndarray  # int32
+    last_note_time: float  # seconds; fever duration scales with it
+    long_notes: int  # hold notes; they add no fever fill
 
     @property
     def name(self) -> str:
         return self.header["Song Name"]
 
     @property
+    def difficulty(self) -> str:
+        return self.header.get("Difficulty", "")
+
+    @property
     def primary(self) -> str:
-        return self.header.get("Primary Color", "")
+        return self.header["Primary Color"]
 
     @property
     def secondary(self) -> str:
-        return self.header.get("Secondary Color", "")
+        """A one-color song names its primary here too."""
+        return self.header["Secondary Color"]
+
+    @property
+    def total_notes(self) -> int:
+        return int(self.timestamps.shape[0])
+
+    def with_colors(self, primary: str, secondary: str) -> Chart:
+        """This chart scored as if its song had these element colors (an element-override request)."""
+        return replace(self, header={**self.header, "Primary Color": primary, "Secondary Color": secondary})
+
+
+def _header_number(header: Mapping[str, str], key: str, kind: type, source: str):
+    raw = header.get(key, "")
+    try:
+        return kind(raw)
+    except ValueError as exc:
+        raise ValueError(f"{source}: {key} header must be a number, got {raw!r}") from exc
+
+
+def _header_field(raw: str, *, source: str, number: int) -> tuple[str, str]:
+    key, tab, value = raw.partition("\t")
+    if not tab:
+        raise ValueError(f"{source}:{number}: header line is not 'key<TAB>value': {raw!r}")
+    return key.strip(), value.strip()
 
 
 def parse_chart(text: str, *, source: str = "chart") -> Chart:
@@ -50,10 +84,8 @@ def parse_chart(text: str, *, source: str = "chart") -> Chart:
             section = line
             continue
         if not section:
-            key, tab, value = raw.partition("\t")
-            if not tab:
-                raise ValueError(f"{source}:{number}: header line is not 'key<TAB>value': {raw!r}")
-            header[key.strip()] = value.strip()
+            key, value = _header_field(raw, source=source, number=number)
+            header[key] = value
         elif section == "Song Data":
             parts = line.split()
             if len(parts) != 4:
@@ -64,6 +96,9 @@ def parse_chart(text: str, *, source: str = "chart") -> Chart:
                 raise ValueError(f"{source}:{number}: malformed note {raw!r}") from exc
     if not header.get("Song Name"):
         raise ValueError(f"{source}: no Song Name header")
+    for key in ("Primary Color", "Secondary Color"):
+        if header.get(key) not in ELEMENTS:
+            raise ValueError(f"{source}: {key} header must be one of {ELEMENTS}, got {header.get(key)!r}")
     if not rows:
         raise ValueError(f"{source}: no notes (missing 'Song Data' section?)")
 
@@ -78,6 +113,8 @@ def parse_chart(text: str, *, source: str = "chart") -> Chart:
         timestamps=np.ascontiguousarray(timestamps[order]),
         note_types=np.ascontiguousarray(note_types[order]),
         lanes=np.ascontiguousarray(lanes[order]),
+        last_note_time=_header_number(header, "Last Note Time", float, source),
+        long_notes=_header_number(header, "Long Notes", int, source),
     )
 
 
@@ -85,34 +122,34 @@ def read_chart(path: Path) -> Chart:
     return parse_chart(Path(path).read_text(encoding="utf-8-sig"), source=str(path))
 
 
-# The header keys the old calc_song metadata carried.
-_CALC_SONG_KEYS = (
-    "Song Name",
-    "Difficulty",
-    "Primary Color",
-    "Secondary Color",
-    "Last Note Time",
-    "Total Notes",
-    "Fever Fill",
-    "Fever Time",
-    "Long Notes",
-    "Timing Mode",
-)
+def read_header(path: str | Path) -> dict[str, str]:
+    """The header fields of the chart at ``path``, read without its notes."""
+    header: dict[str, str] = {}
+    with open(path, encoding="utf-8-sig") as f:
+        for number, raw in enumerate(f, 1):
+            line = raw.strip()
+            if line in _SECTIONS:
+                break
+            if line:
+                key, value = _header_field(raw.rstrip("\r\n"), source=str(path), number=number)
+                header[key] = value
+    return header
 
 
-def to_calc_song(chart: Chart) -> dict:
-    """The calc_song dict the not-yet-rewritten engine layers consume (frontier builders, GPU search).
+_CHART_CACHE: LRUCache = LRUCache(maxsize=64)
+_CHART_CACHE_LOCK = threading.Lock()
 
-    Reproduces the old loader exactly, including its "0" for a header key present with an empty value,
-    because the frontier cache keys hash these fields.
-    """
-    metadata = {key: (chart.header[key] or "0") if key in chart.header else "" for key in _CALC_SONG_KEYS}
-    return {
-        "metadata": metadata,
-        "song_data": {
-            "timestamps": chart.timestamps,
-            "chart_timestamps": chart.timestamps,
-            "note_types": chart.note_types,
-            "lanes": chart.lanes,
-        },
-    }
+
+def load_chart(path: Path) -> Chart:
+    """read_chart, cached per file until the file changes (charts are shared and immutable)."""
+    resolved = Path(path).resolve()
+    stat = resolved.stat()
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    with _CHART_CACHE_LOCK:
+        cached = _CHART_CACHE.get(resolved)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+    chart = read_chart(resolved)
+    with _CHART_CACHE_LOCK:
+        _CHART_CACHE[resolved] = (stamp, chart)
+    return chart

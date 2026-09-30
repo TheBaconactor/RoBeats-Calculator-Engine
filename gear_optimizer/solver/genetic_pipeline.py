@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 from gear_optimizer.gamedata import StatCurves
+from gear_optimizer.solver.timing_envelope import TimedSong
 from ..core.color_flags import normalize_color_flags
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from .gpu_tuning_policy import choose_ga_batch_runs
@@ -171,7 +172,7 @@ def score_fused_fg_from_selected_payload(
     *,
     runs_payload: "np.ndarray",
     fg_scoring_bundle: object,
-    fg_calc_song: dict,
+    song: TimedSong,
     curves: StatCurves,
     cfg_data: dict,
 ) -> dict:
@@ -185,17 +186,15 @@ def score_fused_fg_from_selected_payload(
     owner's critical path (the driver re-derives the same 7-tuples from the same
     payload, so the lookup is exact; the SCORE is a pure function of base_components).
 
-    Required state (no fallback): the song-level FG scoring bundle + resolved FG calc
-    song are prepared pre-GA (prepare_fg_static_sync / resolve_active_fg_calc_song) and
-    attached to the GA request payload. Their absence fails loudly here.
+    Required state (no fallback): the song-level FG scoring bundle is prepared pre-GA
+    (prepare_fg_static_sync) and attached to the GA request payload with the song. Its
+    absence fails loudly here.
     """
     if fg_scoring_bundle is None:
         raise ValueError(
             "fused GA->FG handoff requires the song-level FG scoring bundle on the GA "
             "request (prepare_fg_static_sync must run pre-GA)"
         )
-    if not isinstance(fg_calc_song, dict):
-        raise ValueError("fused GA->FG handoff requires a resolved FG calc song on the GA request")
     if curves is None:
         raise ValueError("fused GA->FG handoff requires stat curves")
 
@@ -232,7 +231,7 @@ def score_fused_fg_from_selected_payload(
 
     return score_fused_owner_base_components_on_gpu_owner(
         base_components=base_components,
-        calc_song=fg_calc_song,
+        song=song,
         curves=curves,
         selected_color=selected_color,
         scoring_bundle=fg_scoring_bundle,
@@ -242,7 +241,7 @@ def score_fused_fg_from_selected_payload(
 
 def upload_ga_song_slot_timeline_state(
     *,
-    calc_song: dict,
+    song: TimedSong,
     curves: StatCurves,
     song_slot: int,
 ) -> None:
@@ -253,7 +252,7 @@ def upload_ga_song_slot_timeline_state(
     if song_slot < 0:
         song_slot = 0
 
-    gpu_api.precompute_timeline_gpu(calc_song, curves, song_slot=song_slot)
+    gpu_api.precompute_timeline_gpu(song, curves, song_slot=song_slot)
 
 
 def upload_ga_global_static_state(
@@ -391,7 +390,7 @@ def _polish_runs_best_one_swap(
 
 def run_gpu_native_ga_runs_payload_prebuilt(
     *,
-    calc_song: dict,
+    song: TimedSong,
     curves: StatCurves,
     song_slot: int,
     item_stats: "np.ndarray",
@@ -511,7 +510,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     def _restore_song_gpu_state() -> None:
         upload_ga_song_slot_timeline_state(
-            calc_song=calc_song,
+            song=song,
             curves=curves,
             song_slot=song_slot,
         )

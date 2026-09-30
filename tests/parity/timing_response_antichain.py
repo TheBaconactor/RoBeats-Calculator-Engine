@@ -60,7 +60,7 @@ def timing_response_phase_counts(stats: TimingResponseAntichainStats) -> dict[st
 def build_timing_response_antichain_table(
     *,
     start_cells: np.ndarray,
-    calc_song: dict[str, Any],
+    song: Any,
     curves: dict[str, Any],
     flags: dict[str, int],
     total_budget: int = GEM_BUDGET,
@@ -75,7 +75,7 @@ def build_timing_response_antichain_table(
     if reason:
         return None, _stats(False, reason, int(cells.shape[0]))
 
-    cell_pack, pack_count, payload_key = _exact_frontier_pack_grid(calc_song=calc_song, curves=curves)
+    cell_pack, pack_count, payload_key = _exact_frontier_pack_grid(song=song, curves=curves)
     w_ft = _lane_weight(flags, "ft", 3)
     w_ff = _lane_weight(flags, "ff", 3)
     w_ov = _lane_weight(flags, "ov", 6)
@@ -230,12 +230,12 @@ def timing_response_antichain_keep_mask(
 
 def _exact_frontier_pack_grid(
     *,
-    calc_song: dict[str, Any],
+    song: Any,
     curves: dict[str, Any],
 ) -> tuple[np.ndarray, int, tuple[Any, ...]]:
     from gear_optimizer.solver.taichi_gem.api.timeline import load_timeline_frontier_payload
 
-    result = load_timeline_frontier_payload(calc_song, curves)
+    result = load_timeline_frontier_payload(song, curves)
     payload = result.payload
     counts = np.asarray(payload.grid_frontier_count[0], dtype=np.int32)
     offsets = np.asarray(payload.grid_frontier_offset[0], dtype=np.int32)

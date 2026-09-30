@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from gear_optimizer.chart import read_header
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.macos_background import make_process_background_only
 from gear_optimizer.settings import DIFFICULTIES, REASONING_LEVELS, reasoning_search, service_settings
@@ -371,22 +372,14 @@ class RequestTooLarge(RequestError):
 # --- official chart catalog --------------------------------------------------
 
 def _read_full_header(path: Path) -> dict[str, str]:
-    """Read all tab-separated header fields from a chart file (up to 'Song Data')."""
-    header: dict[str, str] = {}
+    """The chart's header fields; empty (the catalog skips the chart) when it cannot be read."""
     try:
-        with open(path, encoding="utf-8-sig") as f:
-            for line in f:
-                line = line.strip()
-                if line == "Song Data":
-                    break
-                if "\t" in line:
-                    key, _, value = line.partition("\t")
-                    header[key.strip()] = value.strip()
-    except OSError:
+        return read_header(path)
+    except (OSError, ValueError):
         # Never swallow silently: an empty header makes the catalog builder skip the chart, so a
-        # permissions/disk hiccup would quietly shrink /songs with no trace.
-        logger.warning("unreadable chart header, chart will be missing from the catalog: %s", path)
-    return header
+        # permissions/disk hiccup or a malformed file would quietly shrink /songs with no trace.
+        logger.warning("unreadable chart header, chart will be missing from the catalog: %s", path, exc_info=True)
+        return {}
 
 
 def _official_song_directories() -> tuple[tuple[str, Path], ...]:

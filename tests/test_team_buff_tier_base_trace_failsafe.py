@@ -16,25 +16,11 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import numpy as np
+from tests.songs_support import make_song
 
 
-def _mock_song(name: str = "failsafe", n_notes: int = 12, duration: float = 10.0) -> dict:
-    timestamps = np.linspace(0.0, float(duration), int(n_notes), dtype=np.float32)
-    return {
-        "metadata": {
-            "Song Name": name,
-            "Difficulty": "Hard",
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-            "Total Notes": int(timestamps.shape[0]),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
-        },
-    }
+def _mock_song(name: str = "failsafe", n_notes: int = 12, duration: float = 10.0):
+    return make_song(np.linspace(0.0, float(duration), int(n_notes)), name=name)
 
 
 def _curves(rows: int = 11) -> dict:
@@ -123,7 +109,7 @@ def test_failed_per_tier_recompute_drops_stale_baseline_timeline_frontier() -> N
     ):
         batches = tbt.build_team_buff_tier_db_batches(
             entries=[_entry()],
-            calc_song=_mock_song(),
+            song=_mock_song(),
             curves=_curves(),
             tiers=("T10",),
             limit=1,
@@ -144,7 +130,7 @@ def test_successful_per_tier_recompute_replaces_baseline_trace() -> None:
     ):
         batches = tbt.build_team_buff_tier_db_batches(
             entries=[_entry()],
-            calc_song=_mock_song(),
+            song=_mock_song(),
             curves=_curves(),
             tiers=("T10",),
             limit=1,

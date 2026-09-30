@@ -42,13 +42,13 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
 )
+from gear_optimizer.chart import load_chart, read_header
 from gear_optimizer.core.time_quantize import quantize_to_int_ms
-from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song, scan_song_header
 from gear_optimizer.gamedata import load_stat_curves
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
-from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+from gear_optimizer.solver.timing_envelope import time_song
 
 
 DIFF_FOLDERS = {"easy": "Easy", "normal": "Normal", "hard": "Hard"}
@@ -99,8 +99,7 @@ def resolve_chart(name_q: str, difficulty: str) -> tuple[str, Path]:
     q = name_q.lower()
     matches: list[tuple[str, Path]] = []
     for fp in sorted(diff_dir.glob("*.txt")):
-        meta = scan_song_header(str(fp))
-        song_name = str((meta or {}).get("Song Name", "") or "")
+        song_name = read_header(fp).get("Song Name", "")
         if song_name and q in song_name.lower():
             matches.append((song_name, fp))
     if not matches:
@@ -138,17 +137,6 @@ def run_solve(song_name: str, difficulty: str, db_path: Path, repeats: int, idx:
         tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-25:])
         _fail(f"solve failed for {song_name!r} (exit {proc.returncode}); log tail:\n{tail}")
     log_path.unlink(missing_ok=True)
-
-
-def build_calc_song(chart_path: Path) -> dict:
-    base = get_base_calc_song(str(chart_path))
-    if not base:
-        _fail(f"could not load base calc_song for {chart_path}")
-    calc_song = clone_calc_song(base)
-    envelope = apply_timing_envelope(calc_song)
-    if not envelope or envelope.get("mode") != "fg":
-        _fail(f"timing envelope did not attach FG streams for {chart_path}: {envelope!r}")
-    return calc_song
 
 
 def response_surface_from_payload(raw: list[int]) -> FgResponseSurface:
@@ -481,9 +469,9 @@ def verify_song(conn: sqlite3.Connection, song_name: str, chart_path: Path) -> d
     if not trace:
         raise ValueError("FG row ForceGreats.frontier_trace is empty")
 
-    calc_song = build_calc_song(chart_path)
-    chart_ms = quantize_to_int_ms(np.asarray(calc_song["song_data"]["timestamps"], dtype=np.float32)).astype(np.int32)
-    note_types = np.asarray(calc_song["song_data"]["note_types"], dtype=np.int16)
+    song = time_song(load_chart(chart_path))
+    chart_ms = quantize_to_int_ms(song.chart.timestamps).astype(np.int32)
+    note_types = song.chart.note_types
     total_notes = int(chart_ms.shape[0])
     surface = response_surface_from_payload(force_details.get("response_surface"))
     fever_mask, great_mask = fever_great_masks_from_trace(trace, total_notes=total_notes, surface=surface)
@@ -504,7 +492,7 @@ def verify_song(conn: sqlite3.Connection, song_name: str, chart_path: Path) -> d
         fever_mask=fever_mask,
         great_mask=great_mask,
     )
-    exact_score = score_force_greats_response_surface_exact(stats, calc_song, curves, surface)
+    exact_score = score_force_greats_response_surface_exact(stats, song, curves, surface)
     optimizer_fg = int(row["fg_score"] or 0)
     if int(exact_score or 0) != optimizer_fg:
         raise ValueError(f"optimizer FG row {optimizer_fg} does not replay to the persisted exact_rescore {exact_score}")

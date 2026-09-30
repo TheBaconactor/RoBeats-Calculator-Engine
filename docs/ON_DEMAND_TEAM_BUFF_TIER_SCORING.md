@@ -23,31 +23,30 @@ outer genetic search into an exhaustive loadout search.
 ## Python API
 
 ```python
-from gear_optimizer.app_async_db import _get_team_buff_ref_arrays_cached
-from gear_optimizer.core.config import load_config
-from gear_optimizer.core.utils import cfg_to_dict
+from pathlib import Path
+
+from gear_optimizer.chart import load_chart
 from gear_optimizer.data.database import get_best_loadouts
-from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+from gear_optimizer.gamedata import load_stat_curves
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
     compute_team_buff_tier_leaderboards,
 )
+from gear_optimizer.settings import paths
+from gear_optimizer.solver.timing_envelope import time_song
 
-config = cfg_to_dict(load_config())
 song_key = "Rainshower (Easy) by Silentroom"
-chart_path = "Data/Easy/Rainshower.txt"
+song = time_song(load_chart(Path("Data/Easy/Rainshower.txt")), "perfect_window")
 
 entries = get_best_loadouts(
     song_key,
     team_buff="T5",
     limit=51,
 )
-base_song = get_base_calc_song(chart_path, config)
 
 result = compute_team_buff_tier_leaderboards(
     entries=entries,
-    calc_song=clone_calc_song(base_song),
-    ref_arrays=_get_team_buff_ref_arrays_cached(),
-    cfg_dict=config,
+    song=song,
+    curves=load_stat_curves(paths().stats_txt),
     tiers=("NONE", "T1", "T5", "T10", "T20", "T50", "T51"),
     limit=51,
 )
@@ -59,15 +58,16 @@ The returned payload contains:
 - `result["tiers"][tier]["fg_top51"]`; and
 - `result["meta"]`, which describes the resolved tier and Team Color context.
 
-The reference-array loader shown above is an application integration helper,
-not a stable external SDK. In a separate application, provide the same Stats
-lookup arrays explicitly.
+`load_stat_curves` reads the Stats.txt curves (cached until the file changes);
+`load_chart` parses the chart (cached the same way) and `time_song` prepares it
+for one timing mode.
 
 ## Timing modes
 
-`timing_mode="perfect_window"` uses the exact timing-envelope model and is the
-default. `timing_mode="zero_ms"` evaluates chart-time hits and recomputes both
-surfaces for that timing model. The optimizer prebuilds both timing frontiers at
+The song's timing mode selects the model: `time_song(chart, "perfect_window")`
+uses the exact timing-envelope model and is the default; `time_song(chart,
+"zero_ms")` evaluates chart-time hits and recomputes both surfaces for that
+timing model. The optimizer prebuilds both timing frontiers at
 startup; tier views remain derived rankings and must not replace the canonical
 persisted leaderboard.
 

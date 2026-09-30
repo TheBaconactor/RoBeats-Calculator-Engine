@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from gear_optimizer.gamedata import StatCurves
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.solver.gpu_executor_types import GpuRequestType
 
 
@@ -408,7 +409,7 @@ def execute_gpu_native_ga_run(
         )
 
     payload = request.payload or {}
-    calc_song = payload.get("calc_song")
+    timed_song = payload.get("timed_song")
     curves = payload.get("curves")
     item_stats = payload.get("item_stats")
     slot_start = payload.get("slot_start")
@@ -432,13 +433,12 @@ def execute_gpu_native_ga_run(
     fg_gear_name_rank = payload.get("fg_gear_name_rank")
     fg_mini_sig_id = payload.get("fg_mini_sig_id")
     fg_scoring_bundle = payload.get("fg_scoring_bundle")
-    fg_calc_song = payload.get("fg_calc_song")
 
-    if not isinstance(calc_song, dict) or not isinstance(curves, StatCurves):
+    if not isinstance(timed_song, TimedSong) or not isinstance(curves, StatCurves):
         return GpuResponse(
             request_id=request.request_id,
             success=False,
-            error="Invalid payload for GPU_NATIVE_GA_RUN (expected a calc_song dict and StatCurves)",
+            error="Invalid payload for GPU_NATIVE_GA_RUN (expected a TimedSong and StatCurves)",
         )
 
     try:
@@ -446,7 +446,7 @@ def execute_gpu_native_ga_run(
             from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payload_prebuilt as run_payload_fn
 
         kwargs = dict(
-            calc_song=calc_song,
+            song=timed_song,
             curves=curves,
             song_slot=song_slot,
             item_stats=item_stats,
@@ -489,7 +489,7 @@ def execute_gpu_native_ga_run(
         fg_owner_score = fused_fg_fn(
             runs_payload=runs_payload,
             fg_scoring_bundle=fg_scoring_bundle,
-            fg_calc_song=fg_calc_song,
+            song=timed_song,
             curves=curves,
             cfg_data=dict(cfg_data),
         )

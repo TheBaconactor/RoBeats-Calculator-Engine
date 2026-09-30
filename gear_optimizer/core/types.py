@@ -9,37 +9,7 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-import numpy as np
-
 JsonDict = dict[str, Any]
-
-
-class CalcSongData(TypedDict, total=False):
-    """
-    Normalized song arrays used by scoring / GPU timeline precompute.
-
-    Notes:
-    - Arrays are typically numpy, but may be lists during early parsing.
-    - Some pipelines add additional analysis keys used by FG timing.
-    """
-
-    timestamps: np.ndarray
-    chart_timestamps: np.ndarray
-    note_types: np.ndarray
-
-
-class CalcSong(TypedDict, total=False):
-    """
-    Canonical per-song payload.
-
-    Shapes:
-    - metadata: dict with song header values (Song Name, Difficulty, Primary Color, Secondary Color, etc.)
-    - song_data: dict of arrays (timestamps/note_types/...)
-    """
-
-    metadata: JsonDict
-    song_data: CalcSongData | JsonDict
-
 
 
 class DbLoadoutPayload(TypedDict, total=False):

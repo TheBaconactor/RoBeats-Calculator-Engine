@@ -11,7 +11,7 @@ from ...solver.scoring.exact_rescore import (
     score_stats_exact_with_timeline_trace,
     score_stats_fixed_timing_exact,
 )
-from ...solver.scoring.fg_policy import extract_fg_song_inputs
+from ...solver.timing_envelope import TimedSong
 from ...solver.fg_response_scoring.physical_replay import (
     validate_base_physical_replay,
     validate_force_greats_physical_replay,
@@ -42,39 +42,34 @@ def _details_stats(entry: Mapping[str, Any]) -> dict[str, Any]:
 def _canonicalize_base_score(
     out: dict[str, Any],
     *,
-    calc_song: Mapping[str, Any],
+    song: TimedSong,
     curves: StatCurves,
 ) -> None:
     stats = _details_stats(out)
     if not stats:
         return
-    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, Mapping) else {}
-    timing_mode = str((metadata or {}).get("TimingEnvelopeMode", "") or "").strip().lower()
-    if timing_mode == "zero_ms":
+    if song.mode == "zero_ms":
         # zero_ms base = the fixed chart-time exact replay; it carries no Perfect-window
-        # TimelineFrontier (the renderer draws delta=0 from Stats). Keyed on the calc_song's own
-        # stamp, so an explicit zero_ms request is honored whether or not the deployment is strict.
-        out["score"] = int(score_stats_fixed_timing_exact(stats, calc_song, curves))
+        # TimelineFrontier (the renderer draws delta=0 from Stats). Keyed on the song's own
+        # timing mode, so an explicit zero_ms request is honored whether or not the deployment is strict.
+        out["score"] = int(score_stats_fixed_timing_exact(stats, song, curves))
         details = out.get("details")
         if isinstance(details, dict) and "TimelineFrontier" in details:
             details_out = dict(details)
             details_out.pop("TimelineFrontier", None)
             out["details"] = details_out
         return
-    replay = score_stats_exact_with_timeline_trace(stats, calc_song, curves)
+    replay = score_stats_exact_with_timeline_trace(stats, song, curves)
     out["score"] = int(replay.get("score", 0) or 0)
     timeline = replay.get("TimelineFrontier")
     if not isinstance(timeline, Mapping):
         raise ValueError("Authoritative Base persistence requires a selected TimelineFrontier")
-    song_data = calc_song.get("song_data")
-    if not isinstance(song_data, Mapping):
-        raise ValueError("Authoritative Base persistence requires complete chart geometry")
     validate_base_physical_replay(
         frontier_trace=timeline.get("frontier_trace") or (),
         response_surface=timeline.get("response_surface") or (),
-        timestamps=song_data.get("timestamps", ()),
-        note_types=song_data.get("note_types", ()),
-        lanes=song_data.get("lanes", ()),
+        timestamps=song.chart.timestamps,
+        note_types=song.chart.note_types,
+        lanes=song.chart.lanes,
         fill_count=int(timeline.get("fill_count", 0) or 0),
         fever_duration_ms=float(timeline.get("fever_duration_ms", 0.0) or 0.0),
     )
@@ -124,33 +119,28 @@ def _replay_force_payload(
     force_obj: Mapping[str, Any],
     *,
     stats: Mapping[str, Any],
-    calc_song: Mapping[str, Any],
+    song: TimedSong,
     curves: StatCurves,
 ) -> dict[str, Any]:
     surface = require_response_surface(force_obj)
-    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, Mapping) else {}
-    timing_mode = str((metadata or {}).get("TimingEnvelopeMode", "") or "").strip().lower()
-    if timing_mode != "zero_ms":
+    if song.mode != "zero_ms":
         force_meta = force_obj.get("ForceGreats")
         if not isinstance(force_meta, Mapping):
             raise ValueError("Authoritative FG persistence requires ForceGreats replay metadata.")
         frontier_trace = force_meta.get("frontier_trace")
         if not isinstance(frontier_trace, (list, tuple)) or not frontier_trace:
             raise ValueError("Authoritative FG persistence requires a non-empty exact frontier_trace.")
-        song_inputs = extract_fg_song_inputs(dict(calc_song))
-        song_data = calc_song.get("song_data")
-        if not isinstance(song_data, Mapping) or song_data.get("note_types") is None:
-            raise ValueError("Authoritative FG persistence requires chart note_types.")
+        song_inputs = song.fg_inputs
         validate_force_greats_physical_replay(
             frontier_trace=frontier_trace,
             surface=surface,
             timestamps=song_inputs.timestamps,
-            note_types=song_data["note_types"],
+            note_types=song.chart.note_types,
             lanes=song_inputs.lanes,
             raw_fever_fill=float(force_meta["raw_fever_fill"]),
             real_fever_time=float(force_meta["real_fever_time"]),
         )
-    final_score = score_force_greats_response_surface_exact(stats, calc_song, curves, surface)
+    final_score = score_force_greats_response_surface_exact(stats, song, curves, surface)
     if final_score is None:
         raise ValueError("Authoritative FG response surface replay failed.")
     return {"final_score": int(final_score)}
@@ -200,11 +190,11 @@ def _assert_canonical_fg_invariants(entry: Mapping[str, Any], *, expected_fg: in
 def canonicalize_authoritative_fg_entry(
     entry: Mapping[str, Any],
     *,
-    calc_song: Mapping[str, Any],
+    song: TimedSong,
     curves: StatCurves,
 ) -> dict[str, Any]:
     out = dict(entry)
-    _canonicalize_base_score(out, calc_song=calc_song, curves=curves)
+    _canonicalize_base_score(out, song=song, curves=curves)
 
     force_obj = out.get("force")
     if not (isinstance(force_obj, dict) and has_valid_fg_payload(force_obj)):
@@ -222,7 +212,7 @@ def canonicalize_authoritative_fg_entry(
     fg_eval = _replay_force_payload(
         force_normalized,
         stats=stats,
-        calc_song=calc_song,
+        song=song,
         curves=curves,
     )
     fg_score = int(fg_eval.get("final_score", 0) or 0)
@@ -248,15 +238,15 @@ def canonicalize_authoritative_fg_entry(
 def canonicalize_authoritative_fg_entries(
     entries: list[dict[str, Any]],
     *,
-    calc_song: Mapping[str, Any],
+    song: TimedSong,
     curves: StatCurves,
 ) -> list[dict[str, Any]]:
-    if not isinstance(calc_song, Mapping) or not calc_song:
-        raise ValueError("calc_song is required for authoritative FG persistence canonicalization.")
+    if not isinstance(song, TimedSong):
+        raise ValueError("A timed song is required for authoritative FG persistence canonicalization.")
     if not isinstance(curves, StatCurves):
         raise ValueError("curves are required for authoritative FG persistence canonicalization.")
     return [
-        canonicalize_authoritative_fg_entry(entry, calc_song=calc_song, curves=curves)
+        canonicalize_authoritative_fg_entry(entry, song=song, curves=curves)
         if isinstance(entry, dict)
         else entry
         for entry in list(entries or [])

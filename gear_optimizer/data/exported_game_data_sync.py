@@ -15,7 +15,7 @@ from typing import Any
 from gear_optimizer.settings import paths
 from gear_optimizer.core.utils import safe_int as _safe_int
 from gear_optimizer.data.loadout_equivalence import clear_gear_mini_csv_caches
-from gear_optimizer.data.song_io import scan_song_header
+from gear_optimizer.chart import read_header
 
 logger = logging.getLogger(__name__)
 
@@ -223,10 +223,7 @@ def _local_chart_song_names(data_dir: Path) -> set[str] | None:
     for song_dir in song_dirs:
         for song_path in sorted(song_dir.glob("*.txt")):
             scanned_files += 1
-            metadata = scan_song_header(str(song_path))
-            if not isinstance(metadata, dict):
-                raise ValueError(f"Song data file is missing a valid Song Name header: {song_path}")
-            song_name = str(metadata.get("Song Name") or "").strip()
+            song_name = read_header(song_path).get("Song Name", "")
             if not song_name:
                 raise ValueError(f"Song data file is missing a non-empty Song Name header: {song_path}")
             previous_path = names_by_header.get(song_name)

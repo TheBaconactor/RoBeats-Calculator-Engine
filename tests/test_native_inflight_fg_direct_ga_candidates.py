@@ -13,26 +13,11 @@ import numpy as np
 
 from tests.native_song_factory import make_native_song
 from tests.curves_support import synthetic_curves
+from tests.songs_support import make_song
 
 
-def _calc_song():
-    timestamps = np.asarray([0.0, 1.0], dtype=np.float32)
-    return {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": 1.0,
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "fg_timestamps": timestamps,
-            "fg_perfect_candidate_timestamps": timestamps,
-            "fg_great_candidate_timestamps": timestamps,
-            "fg_perfect_floor_timestamps": timestamps,
-            "fg_great_floor_timestamps": timestamps,
-        },
-    }
+def _song():
+    return make_song([0.0, 1.0], primary="Rush", secondary="Flow")
 
 
 def _curves():
@@ -53,7 +38,7 @@ def _prepared_batch(base_components, rows):
     return SimpleNamespace(
         base_components=np.asarray(base_components, dtype=np.int32),
         selected_color="Rush",
-        calc_song=_calc_song(),
+        song=_song(),
         curves=_curves(),
         scoring_bundle=object(),
         started=0.0,
@@ -66,7 +51,7 @@ def _prepared_plan(base_components, base_stats=None):
     entry = {"loadout_hash": "ck0"}
     eval_data = {"BaseStats": dict(stats), "Selected Element": "Rush"}
     return SimpleNamespace(
-        calc_song=_calc_song(),
+        song=_song(),
         curves=_curves(),
         pending_jobs=((entry, eval_data, "Rush", stats, 100, planner_key),),
         prepared_batches=[
@@ -105,7 +90,7 @@ def _make_fg_song(plan, owner_score_map, **overrides):
         fixed_stats={},
         cfg_data={"selected_color": "Rush"},
         curves={"Perfect Points": []},
-        calc_song={"metadata": {}, "song_data": {}},
+        timed_song=_song(),
         prev_record=None,
         db_best_fg_score=0,
         song_name="Fused FG (Hard) by pytest",
@@ -219,7 +204,7 @@ def test_prepare_fg_job_builds_plan_without_owner_round_trip(monkeypatch):
         fixed_stats={},
         cfg_data={"selected_color": "Rush"},
         curves={"Perfect Points": []},
-        calc_song={"metadata": {}, "song_data": {"timestamps": [1.0]}},
+        timed_song=make_song([1.0]),
         prev_record=None,
         db_best_fg_score=0,
         song_name="Prep No RoundTrip (Hard) by pytest",

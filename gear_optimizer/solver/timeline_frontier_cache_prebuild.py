@@ -129,17 +129,13 @@ def _derived_frontier_cache_file(
     timing_mode: str = "perfect_window",
 ) -> str | None:
     """Parse one chart and return the cache file its CURRENT frontier key derives (drift probe)."""
-    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+    from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.taichi_gem.api.timeline import timeline_frontier_payload_cache_info
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_envelope import time_song
 
-    base_song = get_base_calc_song(str(song_path))
-    if not base_song:
-        return None
-    calc_song = clone_calc_song(base_song)
-    apply_timing_envelope(calc_song, mode=timing_mode)
+    song = time_song(load_chart(Path(song_path)), timing_mode)
     return str(
-        timeline_frontier_payload_cache_info(calc_song, curves, timing_mode=timing_mode).disk_path
+        timeline_frontier_payload_cache_info(song, curves).disk_path
     )
 
 
@@ -199,18 +195,16 @@ def build_timeline_frontier_cache_for_path(
     *,
     timing_mode: str = "perfect_window",
 ) -> TimelineFrontierCacheBuildResult:
-    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+    from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.taichi_gem.api.timeline import (
         build_or_load_timeline_frontier_payload,
         timeline_frontier_payload_cache_info,
     )
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_envelope import time_song
 
     song_path = Path(song_path_text)
-    base_song = get_base_calc_song(str(song_path))
-    calc_song = clone_calc_song(base_song)
-    apply_timing_envelope(calc_song, mode=timing_mode)
-    cache_info = timeline_frontier_payload_cache_info(calc_song, curves, timing_mode=timing_mode)
+    song = time_song(load_chart(Path(song_path)), timing_mode)
+    cache_info = timeline_frontier_payload_cache_info(song, curves)
     if cache_info.cache_source in {"disk", "memory"}:
         return TimelineFrontierCacheBuildResult(
             path=str(song_path),
@@ -218,9 +212,7 @@ def build_timeline_frontier_cache_for_path(
             build_ms=0.0,
             cache_file=str(cache_info.disk_path),
         )
-    result = build_or_load_timeline_frontier_payload(
-        calc_song, curves, timing_mode=timing_mode
-    )
+    result = build_or_load_timeline_frontier_payload(song, curves)
     return TimelineFrontierCacheBuildResult(
         path=str(song_path),
         source=str(result.cache_source),

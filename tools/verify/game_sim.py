@@ -830,10 +830,9 @@ def _build_aurora_intended():
 
     from gear_optimizer.core.gem_defs import element_gem_count
     from gear_optimizer.data.database_codecs import _unpack_stats_after_load
-    from gear_optimizer.data.song_io import get_base_calc_song, scan_song_header
+    from gear_optimizer.chart import load_chart, read_header
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
     from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     db = str(ROOT / ".calc" / "aurora_fix.db")
     con = sqlite3.connect(db)
@@ -851,17 +850,14 @@ def _build_aurora_intended():
     fp = None
     for diff in ("Easy", "Normal", "Hard"):
         for f in glob.glob(str(ROOT / "Data" / diff / "*.txt")):
-            if (scan_song_header(f) or {}).get("Song Name", "") == row["song_name"]:
+            if read_header(f).get("Song Name", "") == row["song_name"]:
                 fp = f
     if fp is None:
         raise SystemExit(f"chart not found for {row['song_name']!r}")
-    cs = get_base_calc_song(fp)
-    apply_timing_envelope(cs, mode="perfect_window")
-    sd = cs["song_data"]
-    meta = cs["metadata"]
-    ts = np.asarray(sd["timestamps"])
-    nt = np.asarray(sd["note_types"])
-    lanes = np.asarray(sd["lanes"])
+    song_chart = load_chart(Path(fp))
+    ts = song_chart.timestamps
+    nt = song_chart.note_types
+    lanes = song_chart.lanes
     n = int(len(ts))
 
     chart = NoteChart(
@@ -917,9 +913,7 @@ def _build_aurora_intended():
 
     taps = int((nt == 1).sum())
     heads = int((nt == 2).sum())
-    last_note_time_ms = float(meta.get("Last Note Time", ts[-1] * 1000.0))
-    if last_note_time_ms < 1000.0:
-        last_note_time_ms = float(meta["Last Note Time"]) * 1000.0
+    last_note_time_ms = song_chart.last_note_time * 1000.0
     config = {
         "hitCount": n,
         "hitObjectsCount": taps + heads,

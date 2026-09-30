@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from tests.songs_support import make_song
 
 pytestmark = pytest.mark.gpu
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,7 +22,7 @@ def _curves():
 def _prepare_and_score_sync(
     *,
     base_stats_list,
-    calc_song,
+    song,
     curves,
     selected_color,
     total_budget: int,
@@ -31,7 +32,7 @@ def _prepare_and_score_sync(
 
     batch = rf.prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=base_stats_list,
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         selected_color=selected_color,
         total_budget=int(total_budget),
@@ -45,7 +46,7 @@ def _prepare_and_score_sync(
 def _solve_one_batch(
     *,
     base_stats,
-    calc_song,
+    song,
     curves,
     selected_color,
     total_budget: int,
@@ -53,7 +54,7 @@ def _solve_one_batch(
 ):
     results = _prepare_and_score_sync(
         base_stats_list=[base_stats],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         selected_color=selected_color,
         total_budget=int(total_budget),
@@ -64,7 +65,7 @@ def _solve_one_batch(
     return results[0]
 
 
-def _prebuild_response_bundle(calc_song, curves, base_stats_list, *, total_budget: int) -> None:
+def _prebuild_response_bundle(song, curves, base_stats_list, *, total_budget: int) -> None:
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
@@ -74,19 +75,18 @@ def _prebuild_response_bundle(calc_song, curves, base_stats_list, *, total_budge
     _ = base_stats_list, total_budget
     reset_fg_response_frontier_payload_cache()
     full_stat_grid = tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1))
-    build_or_load_response_frontier_payload(calc_song, curves, stat_keys=full_stat_grid)
+    build_or_load_response_frontier_payload(song, curves, stat_keys=full_stat_grid)
 
 
-def _replay_response_result_through_input_engine(*, calc_song, final_stats, selected_color, result):
+def _replay_response_result_through_input_engine(*, song, final_stats, selected_color, result):
     from gear_optimizer.solver.fg_response_scoring.note_graph import (
         force_greats_note_graph,
         reconcile_force_greats_note_graph,
     )
-    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
     from gear_optimizer.solver.taichi_gem.force_greats import reconstruct_force_greats_response_trace
     from tools.verify.game_sim import IntendedNote, NoteChart, presses_from_intended, simulate
 
-    song_inputs = extract_fg_song_inputs(calc_song)
+    song_inputs = song.fg_inputs
     trace = reconstruct_force_greats_response_trace(
         non_fever_base=int(result.frontier.non_fever_base),
         target_surface=result.surface,
@@ -101,11 +101,9 @@ def _replay_response_result_through_input_engine(*, calc_song, final_stats, sele
         use_forced_great_timing=bool(song_inputs.use_forced_great_timing),
     )
 
-    song_data = calc_song["song_data"]
-    meta = calc_song["metadata"]
-    ts = np.asarray(song_data["timestamps"])
-    note_types = np.asarray(song_data["note_types"])
-    lanes = np.asarray(song_data["lanes"])
+    ts = song.chart.timestamps
+    note_types = song.chart.note_types
+    lanes = song.chart.lanes
     total_notes = int(len(ts))
     graph = force_greats_note_graph(
         frontier_trace=trace,
@@ -152,9 +150,7 @@ def _replay_response_result_through_input_engine(*, calc_song, final_stats, sele
     }
     taps = int((note_types == 1).sum())
     heads = int((note_types == 2).sum())
-    last_note_time_ms = float(meta.get("Last Note Time", ts[-1] * 1000.0))
-    if last_note_time_ms < 1000.0:
-        last_note_time_ms = float(meta["Last Note Time"]) * 1000.0
+    last_note_time_ms = song.chart.last_note_time * 1000.0
     config = {
         "hitCount": total_notes,
         "hitObjectsCount": taps + heads,
@@ -368,10 +364,7 @@ def test_response_frontier_gpu_inner_matches_exact_replay_on_combo_floor_boundar
         "Beat": 80,
         "Vibe": 80,
     }
-    calc_song = {
-        "metadata": {"Primary Color": "Beat", "Secondary Color": "Vibe", "Long Notes": 0, "Last Note Time": 1585.0},
-        "song_data": {"timestamps": tuple(range(1586)), "fg_timestamps": tuple(range(1586))},
-    }
+    song = make_song(np.arange(1586), mode="zero_ms", primary="Beat", secondary="Vibe")
 
     gpu = optimize_response_frontier_inner_exact_gpu(
         (surface,),
@@ -383,7 +376,7 @@ def test_response_frontier_gpu_inner_matches_exact_replay_on_combo_floor_boundar
         selected_color="Beat",
         curves=refs,
     )
-    exact = score_force_greats_response_surface_exact(stats, calc_song, refs, surface)
+    exact = score_force_greats_response_surface_exact(stats, song, refs, surface)
 
     assert gpu.best_score == exact == 12345033
     assert (gpu.surface_index, gpu.g_pp, gpu.g_cm, gpu.g_fm, gpu.g_ov) == (0, 0, 0, 0, 0)
@@ -401,15 +394,7 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
         "Fever Time": np.full(rows, 0.5, dtype=np.float64),
     })
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
-    calc_song = {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-        },
-        "song_data": {"timestamps": timestamps},
-    }
+    song = make_song(timestamps, mode="zero_ms")
     base_stats = {
         "Perfect Points": 1,
         "Combo Multiplier": 2,
@@ -424,24 +409,24 @@ def test_response_frontier_best_score_matches_exact_replay_final_score(tmp_path,
     }
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    _prebuild_response_bundle(calc_song, curves, [base_stats], total_budget=3)
+    _prebuild_response_bundle(song, curves, [base_stats], total_budget=3)
     result = _solve_one_batch(
         base_stats=base_stats,
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         selected_color="Rush",
         total_budget=3,
     )
-    exact_score = score_force_greats_response_surface_exact(result.stats, calc_song, curves, result.surface)
+    exact_score = score_force_greats_response_surface_exact(result.stats, song, curves, result.surface)
 
     assert int(exact_score) == int(result.best_score)
 
 
 def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path, monkeypatch):
     """Pin the current event-time fever duration, not the retired extra-1/60 duration."""
-    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.chart import load_chart
     from gear_optimizer.gamedata import load_stat_curves
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_envelope import time_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         load_response_frontier_scoring_bundle,
@@ -451,8 +436,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
         score_prepared_force_greats_response_frontier_batch_cpu_sync,
     )
 
-    calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"))
-    apply_timing_envelope(calc_song, mode="perfect_window")
+    song = time_song(load_chart(ROOT / "Data" / "Hard" / "All Right There (Hard) by BSlick feat CG5.txt"), "perfect_window")
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     final_stats = {
         "Perfect Points": 25,
@@ -469,11 +453,11 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     stat_key = (final_stats["Fever Time"], final_stats["Fever Fill Rate"])
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    build_or_load_response_frontier_payload(calc_song, curves, stat_keys=(stat_key,))
-    scoring_bundle = load_response_frontier_scoring_bundle(calc_song, curves, stat_keys=(stat_key,))
+    build_or_load_response_frontier_payload(song, curves, stat_keys=(stat_key,))
+    scoring_bundle = load_response_frontier_scoring_bundle(song, curves, stat_keys=(stat_key,))
     batch = prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=[final_stats],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         selected_color="Vibe",
         total_budget=0,
@@ -489,7 +473,7 @@ def test_all_right_there_current_duration_fixed_cell_replays_bit_exact(tmp_path,
     assert tuple(map(int, result.surface)) == (0, 0, 0, 0, 0, 0, 0, 0, 835, 6, 6)
     assert tuple(result.forced_counts) == (0, 3)
     replay = _replay_response_result_through_input_engine(
-        calc_song=calc_song,
+        song=song,
         final_stats=final_stats,
         selected_color="Vibe",
         result=result,
@@ -509,15 +493,7 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
         "Fever Time": np.full(rows, 0.4, dtype=np.float64),
     })
     timestamps = np.asarray([0.0, 0.3, 0.7, 1.4, 2.2, 3.0, 3.2, 3.4, 4.0], dtype=np.float32)
-    calc_song = {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-        },
-        "song_data": {"timestamps": timestamps},
-    }
+    song = make_song(timestamps, mode="zero_ms")
     base_a = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
@@ -533,10 +509,10 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
     base_b = {**base_a, "Rush": 25, "Flow": 10, "Combo Multiplier": 3}
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    _prebuild_response_bundle(calc_song, curves, [base_a, base_b], total_budget=3)
+    _prebuild_response_bundle(song, curves, [base_a, base_b], total_budget=3)
     many = _prepare_and_score_sync(
         base_stats_list=[base_a, base_b],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         selected_color="Rush",
         total_budget=3,
@@ -544,7 +520,7 @@ def test_response_frontier_many_matches_individual_exact_solves(tmp_path, monkey
     singles = [
         _solve_one_batch(
             base_stats=base,
-            calc_song=calc_song,
+            song=song,
             curves=curves,
             selected_color="Rush",
             total_budget=3,
@@ -573,7 +549,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     matching, +200ms despawn, frame-granular fever) -- exact == physical is the definitive gate
     for every surface this producer emits.
     """
-    from gear_optimizer.data.song_io import get_base_calc_song
+    from gear_optimizer.chart import load_chart
     from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
@@ -583,10 +559,9 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
         prepare_force_greats_response_frontier_scoring_batch,
         score_prepared_force_greats_response_frontier_batch_cpu_sync,
     )
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_envelope import time_song
 
-    calc_song = get_base_calc_song(str(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"))
-    apply_timing_envelope(calc_song, mode="perfect_window")
+    song = time_song(load_chart(ROOT / "Data" / "Hard" / "Aurora (Hard) by Creo.txt"), "perfect_window")
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
     final_stats = {
         "Perfect Points": 29,
@@ -603,11 +578,11 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     stat_key = (final_stats["Fever Time"], final_stats["Fever Fill Rate"])
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_response_cache"))
-    build_or_load_response_frontier_payload(calc_song, curves, stat_keys=(stat_key,))
-    scoring_bundle = load_response_frontier_scoring_bundle(calc_song, curves, stat_keys=(stat_key,))
+    build_or_load_response_frontier_payload(song, curves, stat_keys=(stat_key,))
+    scoring_bundle = load_response_frontier_scoring_bundle(song, curves, stat_keys=(stat_key,))
     batch = prepare_force_greats_response_frontier_scoring_batch(
         base_stats_list=[final_stats],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         selected_color="Chill",
         total_budget=0,
@@ -623,7 +598,7 @@ def test_aurora_served_fixed_cell_beats_phantom_and_replays_bit_exact(tmp_path, 
     assert tuple(result.forced_counts) == (13, 2)
 
     replay = _replay_response_result_through_input_engine(
-        calc_song=calc_song,
+        song=song,
         final_stats=final_stats,
         selected_color="Chill",
         result=result,

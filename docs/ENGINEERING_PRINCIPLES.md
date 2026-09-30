@@ -6,7 +6,7 @@ Use it when changing behavior, refactoring APIs, or updating contributor guidanc
 ## Engineering workflow
 
 - `tools/dev` and CI are enforcement harnesses.
-- `tools/bench` and replay scripts are evaluation harnesses.
+- Benchmarks (`tests/benchmark_*.py`) and replay scripts are evaluation harnesses.
 
 ## Repository knowledge
 
@@ -19,7 +19,7 @@ Use it when changing behavior, refactoring APIs, or updating contributor guidanc
 
 ## Repository automation
 
-- Repeated engineering workflows should live in maintained docs or ordinary repo tools under `tools/dev`, `tools/bench`,
+- Repeated engineering workflows should live in maintained docs or ordinary repo tools under `tools/dev`, `tools/db`,
   or `tools/verify`.
 - Keep repository automation easy to run from a shell, CI, or pull-request review.
 

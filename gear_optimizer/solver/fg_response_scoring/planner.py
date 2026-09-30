@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
@@ -12,7 +13,6 @@ from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
 )
 from gear_optimizer.helpers.song_helpers.force_greats.entry_utils import eval_data_from_entry, expected_selected_element
 from gear_optimizer.solver.force_greats_common import FG_BASE_STATS7_KEY, extract_base_stats
-from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
     FgResponseFrontierPackedScoringBatch,
     prepare_force_greats_response_frontier_scoring_batch,
@@ -26,7 +26,7 @@ class FgResponseFrontierPreparedBatch:
 
 @dataclass(frozen=True, slots=True)
 class FgResponseFrontierPreparedPlan:
-    calc_song: dict[str, Any]
+    song: TimedSong
     curves: StatCurves
     pending_jobs: tuple[tuple[dict[str, Any], dict[str, Any], str, dict[str, Any], int, tuple[Any, ...]], ...]
     prepared_batches: tuple[FgResponseFrontierPreparedBatch, ...]
@@ -182,13 +182,13 @@ class FgPlanner:
     @staticmethod
     def _plan_from_items(
         entry_items,
-        calc_song,
+        timed_song,
         curves,
         meta_primary_color,
         *,
         scoring_bundle=None,
     ) -> FgResponseFrontierPreparedPlan:
-        song_inputs = extract_fg_song_inputs(calc_song)
+        song_inputs = timed_song.fg_inputs
         if int(song_inputs.total_notes) <= 0:
             raise ValueError("ForceGreats response frontier requires a song with at least one note")
 
@@ -228,7 +228,7 @@ class FgPlanner:
             batch = prepare_force_greats_response_frontier_scoring_batch(
                 base_stats_list=[base_stats for _cache_key, base_stats in rows],
                 base_stats7_list=list(base_stats7_by_selected.get(selected, [])),
-                calc_song=calc_song,
+                song=timed_song,
                 curves=curves,
                 selected_color=selected,
                 scoring_bundle=scoring_bundle,
@@ -241,7 +241,7 @@ class FgPlanner:
             )
 
         return FgResponseFrontierPreparedPlan(
-            calc_song=calc_song,
+            song=timed_song,
             curves=curves,
             pending_jobs=tuple(pending_jobs),
             prepared_batches=tuple(prepared_batches),
@@ -250,7 +250,7 @@ class FgPlanner:
     @staticmethod
     def plan_many(
         ga_candidates,
-        calc_song,
+        timed_song,
         curves,
         meta_primary_color,
         *,
@@ -259,7 +259,7 @@ class FgPlanner:
     ) -> FgResponseFrontierPreparedPlan:
         return FgPlanner._plan_from_items(
             FgPlanner._entry_items_from_ga_candidates(ga_candidates, ga_registry=ga_registry),
-            calc_song,
+            timed_song,
             curves,
             meta_primary_color,
             scoring_bundle=scoring_bundle,
@@ -268,7 +268,7 @@ class FgPlanner:
     @staticmethod
     def plan_skyline_candidate_records(
         candidate_records,
-        calc_song,
+        timed_song,
         curves,
         default_selected_color,
         *,
@@ -279,7 +279,7 @@ class FgPlanner:
                 candidate_records,
                 default_selected_color=str(default_selected_color or ""),
             ),
-            calc_song,
+            timed_song,
             curves,
             default_selected_color,
             scoring_bundle=scoring_bundle,
@@ -287,17 +287,15 @@ class FgPlanner:
 
     @staticmethod
     def plan_prepared_ga_candidates(song, ga_candidates) -> FgResponseFrontierPreparedPlan:
-        from gear_optimizer.solver.native_inflight_pipeline import resolve_active_fg_calc_song
-
-        calc_song = resolve_active_fg_calc_song(song)
-        if not isinstance(calc_song, dict):
-            raise RuntimeError("FG dynamic prep requires a resolved calc song")
+        timed_song = song.gpu_inputs.timed_song
+        if timed_song is None:
+            raise RuntimeError("FG dynamic prep requires the song's timing")
         curves = getattr(getattr(song, "gpu_inputs", None), "curves", None)
         if curves is None:
             raise RuntimeError("FG dynamic prep requires stat curves")
         return FgPlanner.plan_many(
             ga_candidates,
-            calc_song,
+            timed_song,
             curves,
             song.gpu_inputs.meta_primary_color,
             ga_registry=song.gpu_inputs.registry,

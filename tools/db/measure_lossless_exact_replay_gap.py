@@ -30,6 +30,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from gear_optimizer.chart import Chart, load_chart
 from gear_optimizer.gamedata import StatCurves, load_stat_curves
 from gear_optimizer.settings import paths
 from gear_optimizer.rules import GEM_BUDGET
@@ -37,7 +38,6 @@ from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, normaliz
 from gear_optimizer.core.utils import get_selected_element
 from gear_optimizer.data.database import get_best_loadouts, get_evolution_db_path
 from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
-from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
 from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
     build_team_buff_tier_db_batches,
@@ -45,7 +45,7 @@ from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
     resolve_tier_fg_force,
 )
 from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+from gear_optimizer.solver.timing_envelope import TimedSong, time_song
 
 
 ELEMENT_SET = ("Chill", "Flow", "Rush", "Beat", "Vibe")
@@ -71,9 +71,9 @@ class ReplayGapRow:
     resolved_gem_counts: dict[str, int]
 
 
-def _song_palette(metadata: dict[str, Any]) -> tuple[str, str]:
-    primary = str(metadata.get("Primary Color") or "").strip()
-    secondary = str(metadata.get("Secondary Color") or "").strip()
+def _song_palette(chart: Chart) -> tuple[str, str]:
+    primary = chart.primary
+    secondary = chart.secondary
     primary = primary if primary in ELEMENT_SET else ""
     secondary = secondary if secondary in ELEMENT_SET and secondary != primary else ""
     return primary, secondary
@@ -115,12 +115,12 @@ def _resolve_team_buff_color_override(raw: str, *, default_value: str) -> str:
 
 def _resolve_color_overrides(
     *,
-    metadata: dict[str, Any],
+    chart: Chart,
     team_buff_color_override: str,
     primary_element_override: str,
     secondary_element_override: str,
 ) -> tuple[str | None, str | None, str, str]:
-    song_primary, song_secondary = _song_palette(metadata)
+    song_primary, song_secondary = _song_palette(chart)
     has_overrides = bool(
         str(team_buff_color_override or "").strip()
         or str(primary_element_override or "").strip()
@@ -147,28 +147,25 @@ def _resolve_color_overrides(
     return song_primary or None, resolved_team_buff_color, resolved_primary, resolved_secondary
 
 
-def _prepare_active_calc_song(
-    base_calc_song: dict[str, Any],
+def _prepare_active_song(
+    chart: Chart,
     *,
     timing_mode: str,
     team_buff_color_override: str,
     primary_element_override: str,
     secondary_element_override: str,
-) -> tuple[dict[str, Any], str | None, str | None]:
-    calc_song = clone_calc_song(base_calc_song)
-    metadata = calc_song.get("metadata")
-    metadata = dict(metadata) if isinstance(metadata, dict) else {}
+) -> tuple[TimedSong, str | None, str | None]:
     base_color_override, target_color_override, resolved_primary, resolved_secondary = _resolve_color_overrides(
-        metadata=metadata,
+        chart=chart,
         team_buff_color_override=team_buff_color_override,
         primary_element_override=primary_element_override,
         secondary_element_override=secondary_element_override,
     )
-    metadata["Primary Color"] = resolved_primary
-    metadata["Secondary Color"] = resolved_secondary
-    calc_song["metadata"] = metadata
-    apply_timing_envelope(calc_song, mode=str(timing_mode or "perfect_window"))
-    return calc_song, base_color_override, target_color_override
+    # Like the website's on-demand replay: only an element override re-colors the song (the palette
+    # dedupes a one-color song's secondary to "", which would otherwise score it as two-color).
+    if primary_element_override or secondary_element_override:
+        chart = chart.with_colors(resolved_primary, resolved_secondary)
+    return time_song(chart, timing_mode), base_color_override, target_color_override
 
 
 def _team_buff_delta_map(
@@ -199,13 +196,12 @@ def _apply_stat_delta(stats: dict[str, Any], delta: dict[str, int]) -> dict[str,
 def _resolve_target_fixed_stats(
     *,
     fixed_stats: dict[str, Any],
-    calc_song: dict[str, Any],
+    song: TimedSong,
     tier: str,
     base_team_color_override: str | None,
     target_team_color_override: str | None,
 ) -> tuple[dict[str, Any], str, str, str]:
-    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
-    song_primary = str(metadata.get("Primary Color") or "").strip()
+    song_primary = song.chart.primary
     base_team_color = str(base_team_color_override if base_team_color_override is not None else song_primary)
     target_team_color = str(
         target_team_color_override if target_team_color_override is not None else base_team_color or ""
@@ -285,23 +281,21 @@ def _entry_loadout_items(entry: dict[str, Any]) -> list[dict[str, Any]]:
 def _find_replay_row(
     *,
     entry: dict[str, Any],
-    active_calc_song: dict[str, Any],
+    active_song: TimedSong,
     curves: StatCurves,
     tier: str,
-    timing_mode: str,
     base_team_color_override: str | None,
     target_team_color_override: str | None,
 ) -> dict[str, Any]:
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
-        calc_song=clone_calc_song(active_calc_song),
+        song=active_song,
         curves=curves,
         limit=1,
         tiers=(str(tier),),
         base_team_color_override=base_team_color_override,
         target_team_color_override=target_team_color_override,
         replay_surface="both",
-        timing_mode=str(timing_mode),
     )
     rows = list(batches.get(str(tier), []) or [])
     wanted_hash = _entry_hash(entry)
@@ -333,10 +327,9 @@ def _solve_fg_exact(
     *,
     fixed_song_stats: dict[str, Any],
     loadout_items: list[dict[str, Any]],
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     selected_element: str,
-    timing_mode: str,
 ) -> tuple[int, dict[str, int], dict[str, Any]]:
     # Single canonical recipe, shared with serving: song fixed stats + loadout item stats
     # + budget=90 -> GPU FG search (fp-gated kernel) -> CPU-f64 exact rescore (force["Score"]) at the
@@ -344,10 +337,9 @@ def _solve_fg_exact(
     force = resolve_tier_fg_force(
         fixed_song_stats=fixed_song_stats,
         loadout_items=loadout_items,
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         selected_color=str(selected_element or ""),
-        timing_mode=str(timing_mode),
     )
     resolved_stats = dict(force.get("Stats") or {})
     resolved_score = int(force.get("Score") or 0)
@@ -362,10 +354,9 @@ def _compare_entry_mode(
     *,
     entry: dict[str, Any],
     fixed_stats: dict[str, Any],
-    active_calc_song: dict[str, Any],
+    active_song: TimedSong,
     curves: StatCurves,
     tier: str,
-    timing_mode: str,
     mode: str,
     use_gpu_solver: bool,
     base_team_color_override: str | None,
@@ -373,10 +364,9 @@ def _compare_entry_mode(
 ) -> ReplayGapRow | None:
     replay_row = _find_replay_row(
         entry=entry,
-        active_calc_song=active_calc_song,
+        active_song=active_song,
         curves=curves,
         tier=tier,
-        timing_mode=timing_mode,
         base_team_color_override=base_team_color_override,
         target_team_color_override=target_team_color_override,
     )
@@ -384,14 +374,13 @@ def _compare_entry_mode(
     if replay_payload is None:
         return None
 
-    metadata = active_calc_song.get("metadata", {}) if isinstance(active_calc_song, dict) else {}
-    chart_primary = str(metadata.get("Primary Color") or "").strip()
-    chart_secondary = str(metadata.get("Secondary Color") or "").strip()
+    chart_primary = active_song.chart.primary
+    chart_secondary = active_song.chart.secondary
     selected_element = _selected_element_for_mode(replay_payload=replay_payload, fallback_primary=chart_primary)
 
     target_fixed_stats, _base_team_buff, _base_team_color, target_team_color = _resolve_target_fixed_stats(
         fixed_stats=fixed_stats,
-        calc_song=active_calc_song,
+        song=active_song,
         tier=tier,
         base_team_color_override=base_team_color_override,
         target_team_color_override=target_team_color_override,
@@ -401,24 +390,22 @@ def _compare_entry_mode(
         resolved_score, resolved_gem_counts, resolved_stats = _solve_fg_exact(
             fixed_song_stats=target_fixed_stats,
             loadout_items=loadout_items,
-            calc_song=clone_calc_song(active_calc_song),
+            song=active_song,
             curves=curves,
             selected_element=selected_element,
-            timing_mode=timing_mode,
         )
     else:
         # Single canonical recipe shared with serving for BOTH timing modes: the GPU base exhaustive
-        # search (MoltenVK-correct after the warmstart fix) reads timing from calc_song; the final
-        # exact rescore follows timing_mode. Using the SAME production helper here is what makes
+        # search (MoltenVK-correct after the warmstart fix) reads timing from the song; the final
+        # exact rescore follows its timing mode. Using the SAME production helper here is what makes
         # served base == native (delta=0) for zero_ms AND perfect_window.
         resolved, resolved_score = resolve_tier_base(
             fixed_song_stats=target_fixed_stats,
             loadout_items=loadout_items,
-            calc_song=clone_calc_song(active_calc_song),
+            song=active_song,
             curves=curves,
             primary_color=chart_primary,
             selected_color=selected_element,
-            timing_mode=timing_mode,
         )
         resolved_stats = dict(resolved.get("Stats") or {})
         if not resolved_stats:
@@ -428,11 +415,11 @@ def _compare_entry_mode(
     replay_score = _replay_score_for_mode(replay_row, mode)
     replay_gem_counts = _normalize_gem_counts(replay_payload)
     return ReplayGapRow(
-        song_name=str(metadata.get("Song Name") or ""),
+        song_name=active_song.chart.name,
         loadout_hash=_entry_hash(entry),
         mode=str(mode),
         tier=str(tier),
-        timing_mode=str(timing_mode),
+        timing_mode=active_song.mode,
         team_buff_color=str(target_team_color or ""),
         chart_primary=chart_primary,
         chart_secondary=chart_secondary,
@@ -547,27 +534,25 @@ def main() -> int:
         if song_file is None or not song_file.exists():
             continue
 
-        base_calc_song = get_base_calc_song(str(song_file))
-        active_calc_song, base_team_color_override, target_team_color_override = _prepare_active_calc_song(
-            base_calc_song,
+        active_song, base_team_color_override, target_team_color_override = _prepare_active_song(
+            load_chart(song_file),
             timing_mode=str(args.timing_mode),
             team_buff_color_override=str(args.team_buff_color),
             primary_element_override=str(args.primary_element),
             secondary_element_override=str(args.secondary_element),
         )
-        build_or_load_timeline_frontier_payload(clone_calc_song(active_calc_song), curves)
+        build_or_load_timeline_frontier_payload(active_song, curves)
 
-        fixed_stats = baseline_fixed_stats(active_calc_song)
+        fixed_stats = baseline_fixed_stats(active_song.chart)
 
         for entry in entries[: max(1, int(args.per_song_limit))]:
             for mode in mode_list:
                 row = _compare_entry_mode(
                     entry=entry,
                     fixed_stats=fixed_stats,
-                    active_calc_song=active_calc_song,
+                    active_song=active_song,
                     curves=curves,
                     tier=normalize_team_buff(args.tier, default="T5"),
-                    timing_mode=str(args.timing_mode),
                     mode=mode,
                     use_gpu_solver=str(args.solver) == "gpu",
                     base_team_color_override=base_team_color_override,

@@ -1,12 +1,13 @@
 import pytest
 
 from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
+from tests.songs_support import make_chart
 
 _ELEMENTS = ("Chill", "Flow", "Rush", "Beat", "Vibe")
 
 
-def _song(primary: str) -> dict:
-    return {"metadata": {"Primary Color": primary}}
+def _song(primary: str):
+    return make_chart([0.0], primary=primary)
 
 
 def test_baseline_fixed_stats_are_the_t5_team_buff_on_the_song_primary():

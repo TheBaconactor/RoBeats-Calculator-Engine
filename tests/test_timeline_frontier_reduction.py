@@ -6,14 +6,12 @@ import numpy as np
 
 
 def _load_case(chart_path: Path):
-    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+    from gear_optimizer.chart import load_chart
     from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.settings import paths
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_envelope import time_song
 
-    calc_song = clone_calc_song(get_base_calc_song(str(chart_path)))
-    apply_timing_envelope(calc_song, mode="perfect_window")
-    return calc_song, load_stat_curves(paths().stats_txt)
+    return time_song(load_chart(chart_path), "perfect_window"), load_stat_curves(paths().stats_txt)
 
 
 def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) -> None:
@@ -29,7 +27,7 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
     monkeypatch.setenv("TIMELINE_FRONTIER_CACHE_DIR", str(tmp_path / "timeline"))
     reset_timeline_state()
     chart_path = Path(__file__).resolve().parents[1] / "Data" / "Hard" / "Epilogue (Hard) by Creo.txt"
-    calc_song, curves = _load_case(chart_path)
+    song, curves = _load_case(chart_path)
     replay = score_stats_exact_with_timeline_trace(
         {
             "Perfect Points": 85,
@@ -43,7 +41,7 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
             "Beat": 37,
             "Vibe": 772,
         },
-        calc_song,
+        song,
         curves,
     )
     timeline = replay["TimelineFrontier"]
@@ -59,11 +57,9 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
         for section in timeline["frontier_trace"]
     )
 
-    song_data = calc_song["song_data"]
-    metadata = calc_song["metadata"]
-    timestamps = np.asarray(song_data["timestamps"], dtype=np.float64)
-    note_types = np.asarray(song_data["note_types"], dtype=np.int32)
-    lanes = np.asarray(song_data["lanes"], dtype=np.int32)
+    timestamps = np.asarray(song.chart.timestamps, dtype=np.float64)
+    note_types = np.asarray(song.chart.note_types, dtype=np.int32)
+    lanes = np.asarray(song.chart.lanes, dtype=np.int32)
     physical = validate_base_physical_replay(
         frontier_trace=timeline["frontier_trace"],
         response_surface=timeline["response_surface"],
@@ -99,7 +95,7 @@ def test_epilogue_base_producer_emits_exact_game_surface(monkeypatch, tmp_path) 
         )
         for index, note in enumerate(graph)
     ]
-    last_note_time = float(metadata["Last Note Time"])
+    last_note_time = song.chart.last_note_time
     last_note_time_ms = last_note_time if last_note_time >= 1000.0 else last_note_time * 1000.0
     result = simulate(
         chart,
@@ -142,7 +138,7 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
         / "Easy"
         / "Alive (Easy) by Rutra X KepoWorld.txt"
     )
-    calc_song, curves = _load_case(chart_path)
+    song, curves = _load_case(chart_path)
     replay = score_stats_exact_with_timeline_trace(
         {
             "Perfect Points": 85,
@@ -156,7 +152,7 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
             "Beat": 26,
             "Vibe": 12,
         },
-        calc_song,
+        song,
         curves,
     )
     timeline = replay["TimelineFrontier"]
@@ -167,13 +163,12 @@ def test_alive_base_producer_preserves_score_sensitive_head_positions(monkeypatc
         for section in timeline["frontier_trace"]
     ] == [(19, 79), (99, 159), (179, 246)]
 
-    song_data = calc_song["song_data"]
     validate_base_physical_replay(
         frontier_trace=timeline["frontier_trace"],
         response_surface=timeline["response_surface"],
-        timestamps=song_data["timestamps"],
-        note_types=song_data["note_types"],
-        lanes=song_data["lanes"],
+        timestamps=song.chart.timestamps,
+        note_types=song.chart.note_types,
+        lanes=song.chart.lanes,
         fill_count=int(timeline["fill_count"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
     )
@@ -198,7 +193,7 @@ def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
         / "Hard"
         / "cheatreal (Hard) by t+pazolite.txt"
     )
-    calc_song, curves = _load_case(chart_path)
+    song, curves = _load_case(chart_path)
     replay = score_stats_exact_with_timeline_trace(
         {
             "Perfect Points": 85,
@@ -212,7 +207,7 @@ def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
             "Beat": 667,
             "Vibe": 60,
         },
-        calc_song,
+        song,
         curves,
     )
     timeline = replay["TimelineFrontier"]
@@ -222,13 +217,12 @@ def test_base_physical_replay_orders_tied_same_lane_tail_head_by_input_order(
         for section in timeline["frontier_trace"]
     ] == [(586, 910), (1497, 2047)]
 
-    song_data = calc_song["song_data"]
     physical = validate_base_physical_replay(
         frontier_trace=timeline["frontier_trace"],
         response_surface=timeline["response_surface"],
-        timestamps=song_data["timestamps"],
-        note_types=song_data["note_types"],
-        lanes=song_data["lanes"],
+        timestamps=song.chart.timestamps,
+        note_types=song.chart.note_types,
+        lanes=song.chart.lanes,
         fill_count=int(timeline["fill_count"]),
         fever_duration_ms=float(timeline["fever_duration_ms"]),
     )

@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_ELEMENT_GAIN, STAT_GEM_GAIN_FEVER
 from gear_optimizer.core.gem_defs import build_gem_counts
 from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 
 from .response_builder import reconstruct_force_greats_response_counts, reconstruct_force_greats_response_trace
@@ -154,7 +154,7 @@ def fg_batch_stage(batch: FgResponseFrontierPackedScoringBatch) -> FgBatchStage:
 class FgResponseFrontierPackedScoringBatch:
     started: float
     stats_inputs: tuple[dict[str, Any], ...]
-    calc_song: dict[str, Any]
+    song: TimedSong
     song_inputs: Any
     curves: StatCurves
     selected_color: str
@@ -528,7 +528,7 @@ def _solve_result_from_row(
 def prepare_force_greats_response_frontier_scoring_batch(
     *,
     base_stats_list: list[dict[str, Any]] | tuple[dict[str, Any], ...],
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     selected_color: str,
     base_stats7_list: list[Any] | tuple[Any, ...] | None = None,
@@ -567,7 +567,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
         raise ValueError("response frontier exact solve found no FT/FF pairs")
 
     residual_values = np.asarray(remaining, dtype=np.int32)
-    song_inputs = extract_fg_song_inputs(calc_song)
+    song_inputs = song.fg_inputs
     primary_color = str(song_inputs.primary_color or "")
     secondary_color = str(song_inputs.secondary_color or "")
     primary_ft_delta = STAT_GEM_ELEMENT_GAIN if primary_color == "Beat" else 0
@@ -597,7 +597,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
     bundle_t0 = time.perf_counter()
     if scoring_bundle is None:
         scoring_bundle = load_response_frontier_scoring_bundle(
-            calc_song,
+            song,
             curves,
             stat_keys=all_response_stat_keys(),
         )
@@ -618,7 +618,7 @@ def prepare_force_greats_response_frontier_scoring_batch(
     return FgResponseFrontierPackedScoringBatch(
         started=float(time.perf_counter() if started is None else started),
         stats_inputs=stats_inputs,
-        calc_song=calc_song,
+        song=song,
         song_inputs=song_inputs,
         curves=curves,
         selected_color=str(selected_color or ""),
@@ -916,7 +916,7 @@ def materialize_prepared_force_greats_response_frontier_batch_results(
         frontier = frontier_by_stat_key.get(stat_key)
         if frontier is None:
             frontier = frontier_result_from_scoring_bundle_for_stats(
-                batch.calc_song,
+                batch.song,
                 batch.curves,
                 scoring_bundle,
                 ft_stat=int(ft_stat),
@@ -1018,7 +1018,7 @@ def resolve_fused_owner_score_rows_from_batch(
 def score_fused_owner_base_components_on_gpu_owner(
     *,
     base_components: np.ndarray,
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     selected_color: str,
     scoring_bundle: FgResponseFrontierScoringBundle,
@@ -1075,7 +1075,7 @@ def score_fused_owner_base_components_on_gpu_owner(
             for row in unique_rows
         ],
         base_stats7_list=[tuple(int(v) for v in row) for row in unique_rows],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
         selected_color=str(selected_color or ""),
         total_budget=int(total_budget),
@@ -1097,7 +1097,7 @@ def build_fused_owner_solve_result_from_score_row(
     score_row: FgFusedOwnerScoreRow,
     base_stats: dict[str, Any],
     selected_color: str,
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     scoring_bundle: FgResponseFrontierScoringBundle,
     started: float | None = None,
@@ -1119,7 +1119,7 @@ def build_fused_owner_solve_result_from_score_row(
 
     ``song_inputs`` and ``frontier_by_stat_key`` are the song-invariant hoists a
     caller materializing a whole batch shares across candidates (mirroring the batch
-    materialize sibling): ``song_inputs`` is a pure function of ``calc_song`` and the
+    materialize sibling): ``song_inputs`` is a pure function of ``song`` and the
     frontier is a pure function of ``(ft_stat, ff_stat)`` over the same song/ref/
     scoring bundle, so passing them makes the per-candidate fingerprint + extract a
     once-per-batch cost. Both default to the standalone per-call computation, keeping
@@ -1129,7 +1129,7 @@ def build_fused_owner_solve_result_from_score_row(
     frontier = None if frontier_by_stat_key is None else frontier_by_stat_key.get(stat_key)
     if frontier is None:
         frontier = frontier_result_from_scoring_bundle_for_stats(
-            calc_song,
+            song,
             curves,
             scoring_bundle,
             ft_stat=int(score_row.ft_stat),
@@ -1139,7 +1139,7 @@ def build_fused_owner_solve_result_from_score_row(
             frontier_by_stat_key[stat_key] = frontier
     surface = FgResponseSurface(*(int(v) for v in score_row.surface))
     if song_inputs is None:
-        song_inputs = extract_fg_song_inputs(calc_song)
+        song_inputs = song.fg_inputs
     pair: _ResponsePair = (
         int(score_row.ft),
         int(score_row.ff),

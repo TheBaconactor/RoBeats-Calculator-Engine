@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
 from gear_optimizer.solver.fg_response_scoring.planner import (
@@ -23,7 +24,7 @@ class FgMaterializationBatch:
     started: float
     base_components: np.ndarray
     selected_color: str
-    calc_song: dict[str, Any]
+    song: TimedSong
     curves: StatCurves
     scoring_bundle: Any
 
@@ -82,7 +83,7 @@ def build_fg_materialization_request(song: Any) -> FgMaterializationRequest:
     if owner_score_map is None:
         raise RuntimeError("FG process materialization requires the fused owner FG score map")
 
-    calc_song = plan.calc_song
+    timed_song = plan.song
     curves = plan.curves
     pending_jobs = []
     for entry, eval_data, selected, base_stats, paired_base_score, cache_key in plan.pending_jobs:
@@ -107,7 +108,7 @@ def build_fg_materialization_request(song: Any) -> FgMaterializationRequest:
             started=float(batch.started),
             base_components=np.ascontiguousarray(batch.base_components, dtype=np.int32),
             selected_color=str(batch.selected_color or ""),
-            calc_song=calc_song,
+            song=timed_song,
             curves=curves,
             scoring_bundle=batch.scoring_bundle,
         )
@@ -120,7 +121,7 @@ def build_fg_materialization_request(song: Any) -> FgMaterializationRequest:
         )
 
     compact_plan = FgResponseFrontierPreparedPlan(
-        calc_song=calc_song,
+        song=timed_song,
         curves=curves,
         pending_jobs=tuple(pending_jobs),
         prepared_batches=tuple(prepared_batches),

@@ -8,6 +8,7 @@ import logging
 from ...core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
 from ...core.utils import safe_int
 from ...gamedata import StatCurves
+from ...solver.timing_envelope import TimedSong
 from .fg_payload import has_valid_fg_payload
 from .item_utils import names_list
 from .persistence_entry_merge import merge_persist_entry, resolve_loadout_hash
@@ -33,7 +34,7 @@ def stable_loadout_key(entry_obj: Mapping[str, Any]) -> tuple[tuple[str, ...], t
 
 @dataclass(frozen=True)
 class ReplayContext:
-    calc_song: dict
+    song: TimedSong
     curves: StatCurves
 
 
@@ -198,20 +199,12 @@ def _canonicalize_entry_from_row(entry: dict[str, Any], row: Mapping[str, Any]) 
 
 
 def _replay_batch(entries: list[dict[str, Any]], *, replay_ctx: ReplayContext) -> list[dict]:
-    # Thread the calc_song's prepared timing model into the re-solve so a zero_ms-prepared song
-    # canonicalizes at fixed chart time. Absent/unknown stamp -> perfect_window, which is
-    # build_team_buff_tier_db_batches' own default, so the perfect_window path is unchanged.
-    metadata = replay_ctx.calc_song.get("metadata", {}) or {}
-    timing_mode = str(metadata.get("TimingEnvelopeMode", "") or "").strip().lower()
-    if timing_mode not in {"perfect_window", "zero_ms"}:
-        timing_mode = "perfect_window"
     batch = build_team_buff_tier_db_batches(
         entries=entries,
-        calc_song=replay_ctx.calc_song,
+        song=replay_ctx.song,
         curves=replay_ctx.curves,
         limit=max(1, int(len(entries))),
         tiers=(OPTIMIZER_BASELINE_TEAM_BUFF,),
-        timing_mode=timing_mode,
     )
     return list(batch.get(OPTIMIZER_BASELINE_TEAM_BUFF) or [])
 
@@ -319,8 +312,8 @@ def canonicalize_and_assemble(
     - `score`/`fg_score` were replay-canonicalized from those Stats
     - rows are deduplicated by loadout hash after replay canonicalization
     """
-    if not (isinstance(replay_ctx.calc_song, dict) and replay_ctx.calc_song):
-        raise ValueError("ReplayContext.calc_song is required for authoritative persistence canonicalization.")
+    if not isinstance(replay_ctx.song, TimedSong):
+        raise ValueError("ReplayContext.song is required for authoritative persistence canonicalization.")
     if not isinstance(replay_ctx.curves, StatCurves):
         raise ValueError("ReplayContext.curves is required for authoritative persistence canonicalization.")
 
@@ -334,7 +327,7 @@ def canonicalize_and_assemble(
     canonical_entries = _canonicalize_entries(ensured_entries, replay_ctx=replay_ctx)
     authoritative_entries = canonicalize_authoritative_fg_entries(
         canonical_entries,
-        calc_song=replay_ctx.calc_song,
+        song=replay_ctx.song,
         curves=replay_ctx.curves,
     )
     return _dedupe_entries(authoritative_entries)
@@ -346,13 +339,13 @@ def build_persistence_entries(
     loadout_entries,
     build_details_fn,
     *,
-    calc_song: dict | None = None,
+    song: TimedSong | None = None,
     curves: StatCurves | None = None,
 ):
-    if not (isinstance(calc_song, dict) and calc_song and isinstance(curves, StatCurves)):
-        raise ValueError("build_persistence_entries requires calc_song and curves for authoritative replay.")
+    if not (isinstance(song, TimedSong) and isinstance(curves, StatCurves)):
+        raise ValueError("build_persistence_entries requires a timed song and curves for authoritative replay.")
 
-    replay_ctx = ReplayContext(calc_song=calc_song, curves=curves)
+    replay_ctx = ReplayContext(song=song, curves=curves)
     return canonicalize_and_assemble(
         db_payload=db_payload if isinstance(db_payload, dict) else {},
         ga_candidates=ga_candidates,

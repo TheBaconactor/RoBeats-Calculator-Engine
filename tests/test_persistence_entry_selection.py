@@ -4,6 +4,7 @@ from gear_optimizer.helpers.song_helpers.persistence_canon import build_persiste
 from gear_optimizer.helpers.song_helpers.persistence_entry_selection import build_retained_loadout_entries
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
 from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
+from tests.songs_support import make_song
 
 
 _REPLAY_GEAR = [
@@ -30,12 +31,10 @@ def _curves() -> dict:
     })
 
 
-def _prebuild_timeline_frontier(calc_song: dict, curves: dict) -> None:
+def _prebuild_timeline_frontier(song, curves) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    apply_timing_envelope(calc_song)
-    build_or_load_timeline_frontier_payload(calc_song, curves)
+    build_or_load_timeline_frontier_payload(song, curves)
 
 
 def _stats(pp: int) -> dict:
@@ -124,16 +123,7 @@ def test_retained_entries_keep_existing_details_when_stats_present():
 
 
 def test_missing_stats_details_rebuild_before_canonical_replay_scoring():
-    calc_song = {
-        "metadata": {
-            "Song Name": "pytest_missing_stats_replay_authority",
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": 0.0,
-        },
-        "song_data": {"timestamps": [0.0], "note_types": [0], "lanes": [0]},
-    }
+    song = make_song([0.0], note_types=[0], name="pytest_missing_stats_replay_authority")
     curves = _curves()
     eval_stats = {
         "Perfect Points": 0,
@@ -144,8 +134,8 @@ def test_missing_stats_details_rebuild_before_canonical_replay_scoring():
         "Rush": 10,
         "Flow": 5,
     }
-    _prebuild_timeline_frontier(calc_song, curves)
-    exact_score = int(score_stats_exact(eval_stats, calc_song, curves))
+    _prebuild_timeline_frontier(song, curves)
+    exact_score = int(score_stats_exact(eval_stats, song, curves))
     inflated_score = exact_score + 4321
 
     gear = list(_REPLAY_GEAR)
@@ -190,14 +180,14 @@ def test_missing_stats_details_rebuild_before_canonical_replay_scoring():
         [],
         loadout_entries,
         build_details,
-        calc_song=calc_song,
+        song=song,
         curves=curves,
     )
 
     retained = next(e for e in persist_entries if str(e.get("loadout_hash") or "") == str(loadout_hash))
     retained_stats = dict((retained.get("details") or {}).get("Stats") or {})
     assert retained_stats
-    assert int(retained["score"]) == int(score_stats_exact(retained_stats, calc_song, curves))
+    assert int(retained["score"]) == int(score_stats_exact(retained_stats, song, curves))
     assert int(retained["score"]) != int(inflated_score)
 
 

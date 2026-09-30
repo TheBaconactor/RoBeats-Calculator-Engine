@@ -40,7 +40,7 @@ release must follow its press, and a lane's key is DOWN through its release edge
 press may land inside that closed span.
 
 Production envelopes come from the canonical per-note builders (`timing_envelope.py`), exactly
-as `apply_timing_envelope` feeds the real FG build -- held tails keep their widened per-note
+as `time_song` feeds the real FG build -- held tails keep their widened per-note
 windows (+80 Perfect, +200 despawn-capped late Great, -39/-189 floors).
 
 Usage:
@@ -452,7 +452,7 @@ def production_surfaces(
     n = int(ts.shape[0])
     nt = np.ones(n, dtype=np.int16) if note_types is None else np.asarray(note_types, dtype=np.int16)
     # The exact production envelopes (per-note, held-tail-aware, despawn-capped) -- the same
-    # builders apply_timing_envelope attaches for the real FG build.
+    # builders time_song uses for the real FG build.
     frontier = build_force_greats_response_first_frontiers_gpu_batch(
         timestamps=ts,
         perfect_candidate_timestamps=build_perfect_candidate_envelope_sec(ts, nt),

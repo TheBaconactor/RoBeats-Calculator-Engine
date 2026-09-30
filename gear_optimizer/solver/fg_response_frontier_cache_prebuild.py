@@ -12,6 +12,7 @@ from typing import Iterable
 import numpy as np
 import psutil
 
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.cpu_affinity import (
@@ -334,17 +335,13 @@ def _derived_bundle_cache_file(
     timing_mode: str = "perfect_window",
 ) -> str | None:
     """Parse one chart and return the cache file its CURRENT bundle key derives (drift probe)."""
-    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+    from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import resolve_fg_response_bundle_path
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_envelope import time_song
 
-    base_song = get_base_calc_song(str(song_path))
-    if not base_song:
-        return None
-    calc_song = clone_calc_song(base_song)
-    apply_timing_envelope(calc_song, mode=timing_mode)
-    return str(resolve_fg_response_bundle_path(fg_response_frontier_bundle_cache_key(calc_song, curves)))
+    song = time_song(load_chart(Path(song_path)), timing_mode)
+    return str(resolve_fg_response_bundle_path(fg_response_frontier_bundle_cache_key(song, curves)))
 
 
 def _manifest_records_current_cache_version() -> bool:
@@ -416,23 +413,20 @@ def _dedupe_paths_by_response_bundle_key(
     the admission memory weights, so no second per-song parse happens on the coordinating process.
     Duplicates share the bundle key (same chart timing content), hence the same note count.
     """
-    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+    from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_envelope import time_song
 
     representatives: list[tuple[str, int]] = []
     duplicates: dict[str, list[str]] = {}
     representative_by_key: dict[tuple, str] = {}
     for path_text in paths:
         path = str(path_text)
-        base_song = get_base_calc_song(path)
-        calc_song = clone_calc_song(base_song)
-        apply_timing_envelope(calc_song, mode=timing_mode)
-        key = fg_response_frontier_bundle_cache_key(calc_song, curves)
+        song = time_song(load_chart(Path(path)), timing_mode)
+        key = fg_response_frontier_bundle_cache_key(song, curves)
         representative = representative_by_key.get(key)
         if representative is None:
-            timestamps = calc_song.get("song_data", {}).get("timestamps", ())
-            note_count = int(len(timestamps) if timestamps is not None else 0)
+            note_count = song.chart.total_notes
             representative_by_key[key] = path
             representatives.append((path, note_count))
             duplicates[path] = []
@@ -452,7 +446,7 @@ def build_fg_response_frontier_cache_for_path(
     stat_keys: Iterable[tuple[int, int]],
     timing_mode: str = "perfect_window",
 ) -> FgResponseFrontierCacheBuildResult:
-    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
+    from gear_optimizer.chart import load_chart
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import (
         build_or_load_response_frontier_payload,
         fg_response_frontier_payload_cache_info,
@@ -461,13 +455,11 @@ def build_fg_response_frontier_cache_for_path(
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import (
         fg_response_frontier_bundle_cache_key,
     )
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.timing_envelope import time_song
 
     song_path = Path(song_path_text)
-    base_song = get_base_calc_song(str(song_path))
-    calc_song = clone_calc_song(base_song)
-    apply_timing_envelope(calc_song, mode=timing_mode)
-    cache_info = fg_response_frontier_payload_cache_info(calc_song, curves, stat_keys=stat_keys)
+    song = time_song(load_chart(Path(song_path)), timing_mode)
+    cache_info = fg_response_frontier_payload_cache_info(song, curves, stat_keys=stat_keys)
     if cache_info.cache_source in {"disk", "memory"}:
         return FgResponseFrontierCacheBuildResult(
             path=str(song_path),
@@ -476,7 +468,7 @@ def build_fg_response_frontier_cache_for_path(
             cache_file=str(cache_info.disk_path),
         )
     try:
-        result = build_or_load_response_frontier_payload(calc_song, curves, stat_keys=stat_keys)
+        result = build_or_load_response_frontier_payload(song, curves, stat_keys=stat_keys)
     finally:
         # The prebuild contract is disk files; build_or_load additionally pins the built
         # bundle+payload (~1 GB of frontier rows on heavy charts) into the process-global
@@ -485,7 +477,7 @@ def build_fg_response_frontier_cache_for_path(
         # worker) on top of the current build's transient peak -- the measured OOM/paging
         # driver on EXTENDED CUT charts. Release sweeps every per-song cache tier by key
         # prefix; the bundle just written re-opens from disk wherever it is next needed.
-        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(calc_song, curves))
+        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(song, curves))
     return FgResponseFrontierCacheBuildResult(
         path=str(song_path),
         source=str(result.cache_source),
@@ -494,17 +486,17 @@ def build_fg_response_frontier_cache_for_path(
     )
 
 
-def ensure_response_frontier_cache_for_calc_song(
-    calc_song: dict,
+def ensure_response_frontier_cache_for_song(
+    song: TimedSong,
     curves: StatCurves,
     *,
     stat_keys: Iterable[tuple[int, int]] | None = None,
 ) -> None:
     """Ensure the response-frontier CACHE (npz bundle + sidecars) exists on disk.
 
-    In-memory owner entry for callers that hold a prepared calc_song (e.g. fixed-0ms
+    In-memory owner entry for callers that hold a prepared song (e.g. fixed-0ms
     tier replay) rather than a song path. The candidate-independent all-FT/FF bundle is
-    keyed by the song's timing context, so a chart-only (zero_ms) calc_song builds its
+    keyed by the song's timing context, so a chart-only (zero_ms) song builds its
     own bundle distinct from the perfect_window one. Idempotent; keeps the single
     production owner of ``build_or_load_response_frontier_payload`` intact.
 
@@ -530,16 +522,16 @@ def ensure_response_frontier_cache_for_calc_song(
     # materializes every pool row into Python objects -- seconds on heavy bundles -- and
     # no consumer on this path reads that payload (scoring uses the slim bundle +
     # sidecars). Same fast path as build_fg_response_frontier_cache_for_path above.
-    cache_info = fg_response_frontier_payload_cache_info(calc_song, curves, stat_keys=keys)
+    cache_info = fg_response_frontier_payload_cache_info(song, curves, stat_keys=keys)
     if cache_info.cache_source in {"disk", "memory"}:
         return
     try:
-        build_or_load_response_frontier_payload(calc_song, curves, stat_keys=keys)
+        build_or_load_response_frontier_payload(song, curves, stat_keys=keys)
     finally:
         # build_or_load pins the merged bundle + request payload in the process-global payload LRU
         # and no consumer on this path reads them (same rationale as the prebuild wrapper above);
         # the caller's load_response_frontier_scoring_bundle re-opens the slim arrays from disk.
-        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(calc_song, curves))
+        release_fg_response_song_memory(fg_response_frontier_bundle_cache_key(song, curves))
 
 
 def _run_missing_fg_prebuild(

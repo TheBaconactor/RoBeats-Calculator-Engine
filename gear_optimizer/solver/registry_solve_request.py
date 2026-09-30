@@ -5,6 +5,7 @@ from typing import Any
 
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.rules import GEM_BUDGET, STAT_GEM_GAIN_FEVER
+from gear_optimizer.solver.timing_envelope import TimedSong
 
 
 @dataclass(frozen=True)
@@ -14,7 +15,7 @@ class RegistrySolveRequest:
     slot_start: Any
     slot_count: Any
     base_fixed_stats: Any
-    timeline_grid: Any
+    song: TimedSong
     curves: StatCurves
     flags: dict[str, int]
     total_budget: int = GEM_BUDGET
@@ -50,7 +51,7 @@ def dispatch_registry_solve(request: RegistrySolveRequest) -> list:
         skyline_upload_base_fixed_stats(request.base_fixed_stats)
         return solve_genomes_from_registry(
             request.population_indices,
-            request.timeline_grid,
+            request.song,
             int(request.flags.get("is_p_ft", 0)),
             int(request.flags.get("is_s_ft", 0)),
             int(request.flags.get("is_p_ff", 0)),

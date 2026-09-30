@@ -1,6 +1,7 @@
 from tests.curves_support import synthetic_curves
 from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
 from tests.persistence_test_support import assemble_without_replay
+from tests.songs_support import make_song
 
 
 def test_build_persistence_entries_dedup_prefers_best_base_score_and_preserves_best_fg_payload():
@@ -226,7 +227,7 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
     )
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.persistence_canon.canonicalize_authoritative_fg_entries",
-        lambda entries, *, calc_song, curves: list(entries),
+        lambda entries, *, song, curves: list(entries),
     )
 
     out = build_persistence_entries(
@@ -234,7 +235,7 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
         ga_candidates=[],
         loadout_entries=loadout_entries,
         build_details_fn=lambda data: dict(data or {}),
-        calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},
+        song=make_song([0.0], primary="Rush", secondary="Vibe"),
         curves=synthetic_curves({}),
     )
 
@@ -314,7 +315,7 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
     )
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.persistence_canon.canonicalize_authoritative_fg_entries",
-        lambda entries, *, calc_song, curves: list(entries),
+        lambda entries, *, song, curves: list(entries),
     )
 
     out = build_persistence_entries(
@@ -322,7 +323,7 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
         ga_candidates=[],
         loadout_entries=loadout_entries,
         build_details_fn=lambda data: dict(data or {}),
-        calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},
+        song=make_song([0.0], primary="Rush", secondary="Vibe"),
         curves=synthetic_curves({}),
     )
 

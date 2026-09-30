@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from gear_optimizer.data.database_codecs import _unpack_stats_after_load  # noqa: E402
-from gear_optimizer.data.song_io import get_base_calc_song, scan_song_header  # noqa: E402
+from gear_optimizer.chart import load_chart, read_header  # noqa: E402
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats  # noqa: E402
 from gear_optimizer.solver.fg_response_scoring.note_graph import (  # noqa: E402
     force_greats_note_graph,
@@ -48,7 +48,7 @@ from gear_optimizer.solver.fg_response_scoring.note_graph import (  # noqa: E402
 from gear_optimizer.solver.fg_response_scoring.physical_replay import (  # noqa: E402
     validate_force_greats_physical_replay,
 )
-from gear_optimizer.solver.timing_envelope import apply_timing_envelope  # noqa: E402
+from gear_optimizer.solver.timing_envelope import time_song  # noqa: E402
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (  # noqa: E402
     reconstruct_force_greats_response_trace,
 )
@@ -84,7 +84,7 @@ def _chart_path(song_name_or_prefix: str) -> tuple[str, str]:
     matches: list[tuple[str, str]] = []
     for diff in _DIFF_DIRS:
         for fp in glob.glob(str(ROOT / "Data" / diff / "*.txt")):
-            name = (scan_song_header(fp) or {}).get("Song Name", "")
+            name = read_header(fp).get("Song Name", "")
             if name == song_name_or_prefix or name.lower().startswith(song_name_or_prefix.lower()):
                 matches.append((fp, name))
     if not matches:
@@ -229,13 +229,10 @@ def main(argv=None) -> int:
         args.db, args.song, args.rank)
     chart_fp, chart_name = _chart_path(song_name)
 
-    cs = get_base_calc_song(chart_fp)
-    apply_timing_envelope(cs, mode="perfect_window")
-    sd = cs["song_data"]
-    meta = cs["metadata"]
-    ts = np.asarray(sd["timestamps"])
-    nt = np.asarray(sd["note_types"])
-    lanes = np.asarray(sd["lanes"])
+    song = time_song(load_chart(Path(chart_fp)), "perfect_window")
+    ts = song.chart.timestamps
+    nt = song.chart.note_types
+    lanes = song.chart.lanes
     n = int(len(ts))
 
     if args.reconstruct_current_trace:
@@ -247,19 +244,11 @@ def main(argv=None) -> int:
             reconstruct_force_greats_response_trace(
                 non_fever_base=int(force["non_fever_base"]),
                 target_surface=FgResponseSurface(*surface_values),
-                timestamps=np.asarray(sd["fg_timestamps"], dtype=np.float32),
-                perfect_candidate_timestamps=np.asarray(
-                    sd["fg_perfect_candidate_timestamps"], dtype=np.float32
-                ),
-                great_candidate_timestamps=np.asarray(
-                    sd["fg_great_candidate_timestamps"], dtype=np.float32
-                ),
-                perfect_floor_timestamps=np.asarray(
-                    sd["fg_perfect_floor_timestamps"], dtype=np.float32
-                ),
-                great_floor_timestamps=np.asarray(
-                    sd["fg_great_floor_timestamps"], dtype=np.float32
-                ),
+                timestamps=song.fg_inputs.timestamps,
+                perfect_candidate_timestamps=song.fg_inputs.perfect_candidates,
+                great_candidate_timestamps=song.fg_inputs.great_candidates,
+                perfect_floor_timestamps=song.fg_inputs.perfect_floor,
+                great_floor_timestamps=song.fg_inputs.great_floor,
                 raw_fever_fill=float(force["raw_fever_fill"]),
                 real_fever_time=float(force["real_fever_time"]),
                 lanes=lanes,
@@ -292,9 +281,7 @@ def main(argv=None) -> int:
     taps = int((nt == 1).sum())
     heads = int((nt == 2).sum())
     hit_objects_count = taps + heads  # taps + holds (fever-fill normaliser)
-    last_note_time_ms = float(meta.get("Last Note Time", ts[-1] * 1000.0))
-    if last_note_time_ms < 1000.0:  # metadata stores seconds in this repo's charts
-        last_note_time_ms = float(meta["Last Note Time"]) * 1000.0
+    last_note_time_ms = song.chart.last_note_time * 1000.0
     last_note_time_sec = (last_note_time_ms + 1000.0) / 1000.0
 
     config = {

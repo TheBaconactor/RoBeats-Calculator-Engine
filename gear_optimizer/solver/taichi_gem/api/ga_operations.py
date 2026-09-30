@@ -33,7 +33,9 @@ except ModuleNotFoundError as exc:  # pragma: no cover - CPU-only import/test pa
         raise RuntimeError("Taichi is not installed")
     def get_kernels():
         return SimpleNamespace()
+from gear_optimizer.chart import Chart
 from gear_optimizer.gamedata import StatCurves
+from gear_optimizer.solver.timing_envelope import TimedSong
 from ..ga_chunking import compute_ga_combo_chunk
 from .common_operations import compute_array_sig, probability_to_u32_fp
 _GA_COMBO_CHUNK_MIN: int = 1024  # exact-combo dispatch chunk floor (TDR-safe)
@@ -55,27 +57,25 @@ def _warmup_curves() -> StatCurves:
     )
 
 
-def _warmup_calc_song() -> dict:
+def _warmup_song() -> TimedSong:
+    """A synthetic 48-note song whose Perfect envelopes are the chart itself (a disposable payload)."""
     timestamps = np.linspace(0.0, 18.0, 48, dtype=np.float32)
-    note_types = np.zeros((timestamps.shape[0],), dtype=np.int32)
-    lanes = np.arange(timestamps.shape[0], dtype=np.int32) % 4
-    metadata = {
-        "Song Name": "__ga_live_request_warmup__",
-        "Difficulty": "Warmup",
-        "Long Notes": 0,
-        "Last Note Time": float(timestamps[-1]) if timestamps.size else 0.0,
-    }
-    return {
-        "metadata": metadata,
-        "song_data": {
-            "timestamps": timestamps,
-            "chart_timestamps": timestamps,
-            "note_types": note_types,
-            "lanes": lanes,
-            "fg_perfect_candidate_timestamps": timestamps,
-            "fg_perfect_floor_timestamps": timestamps,
-        },
-    }
+    chart = Chart(
+        header={"Song Name": "__ga_live_request_warmup__", "Difficulty": "Warmup"},
+        timestamps=timestamps,
+        note_types=np.zeros((timestamps.shape[0],), dtype=np.int16),
+        lanes=np.arange(timestamps.shape[0], dtype=np.int32) % 4,
+        last_note_time=float(timestamps[-1]),
+        long_notes=0,
+    )
+    return TimedSong(
+        chart=chart,
+        mode="perfect_window",
+        baseline_hash="",
+        hit_timestamps=timestamps,
+        perfect_candidates=timestamps,
+        perfect_floor=timestamps,
+    )
 
 
 def warmup_ga_kernels_light() -> None:
@@ -99,7 +99,7 @@ def warmup_ga_kernels_light() -> None:
 
     curves = _warmup_curves()
     ensure_ready(curves)
-    precompute_timeline_gpu_for_warmup(_warmup_calc_song(), curves, song_slot=song_slot)
+    precompute_timeline_gpu_for_warmup(_warmup_song(), curves, song_slot=song_slot)
 
     item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
     slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.curves_support import synthetic_curves
+from tests.songs_support import make_song
 from gear_optimizer.solver.gpu_executor_batching import execute_gpu_native_ga_run
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
@@ -30,7 +31,7 @@ def test_execute_gpu_native_ga_run_requires_in_process_queues():
 
 def test_execute_gpu_native_ga_run_validates_required_payload_dicts():
     response = execute_gpu_native_ga_run(
-        _request({"calc_song": [], "curves": {}}),
+        _request({"timed_song": [], "curves": {}}),
         in_process_queues=True,
         abort_requested=lambda: False,
         raise_if_abort_requested=lambda: None,
@@ -38,13 +39,14 @@ def test_execute_gpu_native_ga_run_validates_required_payload_dicts():
     )
 
     assert response.success is False
-    assert response.error == "Invalid payload for GPU_NATIVE_GA_RUN (expected a calc_song dict and StatCurves)"
+    assert response.error == "Invalid payload for GPU_NATIVE_GA_RUN (expected a TimedSong and StatCurves)"
 
 
 def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
     calls = []
     fused_calls = []
     curves = synthetic_curves({})
+    song = make_song([0.0, 0.5])
 
     def _run_payload(**kwargs):
         calls.append(kwargs)
@@ -59,7 +61,7 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
     response = execute_gpu_native_ga_run(
         _request(
             {
-                "calc_song": {"notes": []},
+                "timed_song": song,
                 "curves": curves,
                 "song_slot": "2",
                 "n_generations": "4",
@@ -75,7 +77,6 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
                 "cfg_data": {"selected_color": "rush"},
                 "ga_seed": "123",
                 "fg_scoring_bundle": object(),
-                "fg_calc_song": {"notes": []},
             }
         ),
         in_process_queues=True,
@@ -90,7 +91,8 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
     assert response.result == {"runs_payload": {"ok": True}, "fg_owner_score": {"owner_map": True}}
     assert fused_calls[0]["runs_payload"] == {"ok": True}
     assert fused_calls[0]["cfg_data"] == {"selected_color": "rush"}
-    assert calls[0]["calc_song"] == {"notes": []}
+    assert fused_calls[0]["song"] is song
+    assert calls[0]["song"] is song
     assert calls[0]["curves"] is curves
     assert calls[0]["song_slot"] == 2
     assert calls[0]["n_generations"] == 4
@@ -110,7 +112,7 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
 
 def test_execute_gpu_native_ga_run_surfaces_runner_exception():
     response = execute_gpu_native_ga_run(
-        _request({"calc_song": {}, "curves": synthetic_curves({})}),
+        _request({"timed_song": make_song([0.0, 0.5]), "curves": synthetic_curves({})}),
         in_process_queues=True,
         abort_requested=lambda: False,
         raise_if_abort_requested=lambda: None,

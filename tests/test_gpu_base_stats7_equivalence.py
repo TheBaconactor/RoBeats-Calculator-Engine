@@ -37,6 +37,7 @@ from gear_optimizer.solver.genetic_pipeline import (
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
+from tests.songs_support import make_song
 
 pytestmark = pytest.mark.gpu
 
@@ -115,23 +116,14 @@ def _curves() -> dict[str, np.ndarray]:
     })
 
 
-def _calc_song(*, n_notes: int = 400) -> dict:
-    timestamps = np.linspace(0, 90, int(n_notes), dtype=np.float64)
-    return {
-        "metadata": {
-            "Song Name": "Slice2 base_stats7 equivalence song",
-            "Difficulty": "Hard",
-            "Primary Color": _PRIMARY_COLOR,
-            "Secondary Color": _SECONDARY_COLOR,
-            "Total Notes": int(n_notes),
-            "Long Notes": 10,
-            "Last Note Time": float(timestamps[-1]),
-            "TimingEnvelopeApplied": True,
-            "TimingEnvelopeMode": "perfect",
-            "TimingEnvelopeFGCarry": "full",
-        },
-        "song_data": {"timestamps": timestamps},
-    }
+def _song(*, n_notes: int = 400):
+    return make_song(
+        np.linspace(0, 90, int(n_notes)),
+        name="Slice2 base_stats7 equivalence song",
+        primary=_PRIMARY_COLOR,
+        secondary=_SECONDARY_COLOR,
+        long_notes=10,
+    )
 
 
 def _host_base_components_from_dict(base_stats: dict, *, primary: str, secondary: str) -> tuple[int, ...]:
@@ -151,7 +143,7 @@ def _host_base_components_from_dict(base_stats: dict, *, primary: str, secondary
 def real_ga_run():
     """Run the production GPU-native GA once on Vulkan; return decoded artifacts.
 
-    Yields (decoded_candidates, payload_base_stats7, calc_song, curves).
+    Yields (decoded_candidates, payload_base_stats7, song, curves).
     """
     from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
     from gear_optimizer.solver.taichi_gem.api.timeline import (
@@ -184,17 +176,17 @@ def real_ga_run():
         selected_color=_SELECTED_COLOR,
     )
 
-    calc_song = _calc_song()
+    song = _song()
     curves = _curves()
     color_flags = build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR)
 
     with _GPU_LOCK:
         ensure_ready()
-        prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
-        precompute_timeline_gpu(calc_song, curves, song_slot=0, prebuilt_frontier=prebuilt)
+        prebuilt = build_or_load_timeline_frontier_payload(song, curves)
+        precompute_timeline_gpu(song, curves, song_slot=0, prebuilt_frontier=prebuilt)
 
         selected_payload = run_gpu_native_ga_runs_payload_prebuilt(
-            calc_song=calc_song,
+            song=song,
             curves=curves,
             song_slot=0,
             item_stats=item_stats,
@@ -227,11 +219,11 @@ def real_ga_run():
         base_stats_fixed=base_stats_fixed,
         fg_candidate_limit=51,
     )
-    return decoded, payload_base_stats7, calc_song, curves
+    return decoded, payload_base_stats7, song, curves
 
 
 def test_payload_base_stats7_matches_host_base_components_on_real_ga(real_ga_run) -> None:
-    decoded, payload_base_stats7, _calc_song_d, _ref_arrays_d = real_ga_run
+    decoded, payload_base_stats7, _song_d, _ref_arrays_d = real_ga_run
     selected_n = int(payload_base_stats7.shape[0])
 
     # At least one candidate row must carry a nonzero base_stats7 (otherwise the proof
@@ -297,7 +289,7 @@ def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> Non
         reset_fg_response_frontier_payload_cache,
     )
 
-    decoded, _payload_base_stats7, calc_song, curves = real_ga_run
+    decoded, _payload_base_stats7, song, curves = real_ga_run
 
     device_candidates = [copy.deepcopy(c) for c in decoded]
     assert device_candidates, "no GA candidates decoded"
@@ -318,13 +310,13 @@ def test_fg_scores_identical_device_base_stats7_vs_host_dict(real_ga_run) -> Non
         # (the startup prebuild's job in production) so the sync scoring path has it.
         reset_fg_response_frontier_payload_cache()
         build_or_load_response_frontier_payload(
-            calc_song,
+            song,
             curves,
             stat_keys=tuple((ft, ff) for ft in range(MAX_STAT + 1) for ff in range(MAX_STAT + 1)),
         )
 
-        device_plan = FgPlanner.plan_many(device_candidates, calc_song, curves, _PRIMARY_COLOR)
-        dict_plan = FgPlanner.plan_many(dict_candidates, calc_song, curves, _PRIMARY_COLOR)
+        device_plan = FgPlanner.plan_many(device_candidates, song, curves, _PRIMARY_COLOR)
+        dict_plan = FgPlanner.plan_many(dict_candidates, song, curves, _PRIMARY_COLOR)
 
         # Sanity: the device plan must actually be sourced from base_stats7 (differs from
         # the dict-derived array only if they were ever unequal; here they are equal, so

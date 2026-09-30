@@ -1430,16 +1430,14 @@ def test_fg_response_edge_end_does_not_let_prefix_great_carry_perfect_activation
 
 def test_fg_response_precomputed_end_indices_match_exact_edge_end_at_float32_boundaries() -> None:
     from gear_optimizer.gamedata import load_stat_curves
-    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.song_preparation import prepare_song
     from tests.fg_response_frontier_oracles import edge_end_oracle
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_precompute import _precompute_end_indices
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import _response_axes
 
-    calc_song = build_prepared_calc_song(
-        fp=str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt"),
-    ).calc_song
+    song = prepare_song(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt"))
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
-    song_inputs, _raw_fill_by_ff, _non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, curves)
+    song_inputs, _raw_fill_by_ff, _non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
     real_fever_time = float(real_time_by_ft[51])
     from gear_optimizer.solver.taichi_gem.force_greats import response_build_gpu_numba as rb
 
@@ -2318,18 +2316,14 @@ def test_base_response_frontier_preserves_bruteforce_all_perfect_optima(
 
 def test_base_large_fill_uses_shared_input_engine_recurrence() -> None:
     """A body-only Base chart must not bypass capped activation ownership."""
-    from gear_optimizer.data.song_io import clone_calc_song, get_base_calc_song
-    from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.solver.song_preparation import prepare_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
     from tests.fg_response_frontier_oracles import input_engine_rebuild_first_frontier
 
     chart_path = ROOT / "Data" / "Normal" / "Sweat Around The World (Intense Mix) by Just Sweat [Just Dance].txt"
-    calc_song = clone_calc_song(get_base_calc_song(str(chart_path)))
-    apply_timing_envelope(calc_song)
-    song_inputs = extract_fg_song_inputs(calc_song)
+    song_inputs = prepare_song(str(chart_path)).fg_inputs
     fill_count = 112.0
     real_fever_time = 33.10281210926771
 
@@ -3453,7 +3447,7 @@ def test_fg_response_branch_a_prefix_skyline_is_already_reduced() -> None:
 
 def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     from gear_optimizer.gamedata import load_stat_curves
-    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+    from gear_optimizer.solver.song_preparation import prepare_song
     from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_batch import (
         build_force_greats_response_first_frontiers_gpu_batch,
     )
@@ -3463,11 +3457,9 @@ def test_fg_response_retaliation_first_frontier_surfaces_reconstruct() -> None:
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_keys import _response_axes
     from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 
-    calc_song = build_prepared_calc_song(
-        fp=str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt"),
-    ).calc_song
+    song = prepare_song(str(ROOT / "Data" / "Normal" / "Retaliation by Juggernaut.txt"))
     curves = load_stat_curves(ROOT / "Data" / "Gear" / "Stats.txt")
-    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(calc_song, curves)
+    song_inputs, raw_fill_by_ff, non_fever_base_by_ff, real_time_by_ft = _response_axes(song, curves)
     raw_fever_fill = float(raw_fill_by_ff[67])
     non_fever_base = int(non_fever_base_by_ff[67])
     real_fever_time = float(real_time_by_ft[51])

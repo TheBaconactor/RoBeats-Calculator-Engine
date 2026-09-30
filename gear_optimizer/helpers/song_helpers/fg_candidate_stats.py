@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
-from gear_optimizer.gamedata import SKIP_ITEM_KEYS
+from gear_optimizer.gamedata import SKIP_ITEM_KEYS, StatCurves
 from ...core.gem_defs import element_gem_count
 from ...core.utils import get_selected_element, safe_int
 from ...solver.base_stats import build_stats_dict, build_stats_list
 from ...solver.scoring.exact_rescore import score_stats_exact_batch
 from ...solver.scoring.stats_ops import apply_gems_to_base_stats
+from ...solver.timing_envelope import TimedSong
 
 
 
@@ -141,8 +140,8 @@ def hydrate_fg_candidate_stats(
     *,
     base_stats_fixed: dict,
     selected_color: str,
-    calc_song: Optional[dict] = None,
-    curves: Optional[dict] = None,
+    song: TimedSong | None = None,
+    curves: StatCurves | None = None,
 ) -> None:
     """
     Ensure FG candidates carry `Data["Stats"]` before finder/exact-DP work.
@@ -164,8 +163,8 @@ def hydrate_fg_candidate_stats(
             base_fixed = build_stats_dict(build_stats_list(base_stats_fixed))
         return base_fixed
 
-    if (calc_song is None) != (curves is None):
-        raise ValueError("calc_song and curves must be provided together for canonical FG candidate scores")
+    if (song is None) != (curves is None):
+        raise ValueError("song and curves must be provided together for canonical FG candidate scores")
 
     for cand in candidates:
         if not isinstance(cand, dict):
@@ -209,7 +208,7 @@ def hydrate_fg_candidate_stats(
         data["Stats"] = stats
         cand["Data"] = data
 
-    if calc_song is None:
+    if song is None:
         return
 
     stats_rows = []
@@ -226,7 +225,7 @@ def hydrate_fg_candidate_stats(
         stats_rows.append(stats)
         candidates_with_stats.append(cand)
 
-    exact_scores = score_stats_exact_batch(stats_rows, calc_song, curves)
+    exact_scores = score_stats_exact_batch(stats_rows, song, curves)
     if len(exact_scores) != len(candidates_with_stats):
         raise ValueError("FG candidate exact score batch returned the wrong number of scores")
     for cand, base_score in zip(candidates_with_stats, exact_scores, strict=True):

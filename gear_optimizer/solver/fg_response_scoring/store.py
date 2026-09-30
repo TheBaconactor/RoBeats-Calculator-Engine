@@ -16,16 +16,14 @@ class ResponseFrontierStore:
             session_prune_scoring_bundle,
         )
 
-        from gear_optimizer.solver import native_inflight_pipeline as pipeline
-
-        fg_calc_song = pipeline.resolve_active_fg_calc_song(song)
-        if not isinstance(fg_calc_song, dict):
-            raise RuntimeError("FG static prep requires a resolved calc song")
+        timed_song = song.gpu_inputs.timed_song
+        if timed_song is None:
+            raise RuntimeError("FG static prep requires the song's timing")
         curves = getattr(getattr(song, "gpu_inputs", None), "curves", None)
         if curves is None:
             raise RuntimeError("FG static prep requires stat curves")
         bundle = load_response_frontier_scoring_bundle(
-            fg_calc_song,
+            timed_song,
             curves,
             stat_keys=all_response_stat_keys(),
         )

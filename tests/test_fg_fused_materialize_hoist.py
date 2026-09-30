@@ -1,7 +1,7 @@
 """Song-invariant hoist for the fused per-candidate FG materialization loop.
 
 The fused GA->FG handoff materializes one solve result per candidate, but the FG
-song fingerprint (``extract_fg_song_inputs`` + the frontier geometry it keys) is
+song fingerprint (the song's FG inputs + the frontier geometry it keys) is
 invariant across every candidate in a batch -- only the ``(ft_stat, ff_stat)``
 suffix varies. These tests lock that:
 
@@ -26,6 +26,20 @@ import gear_optimizer.solver.taichi_gem.force_greats.response_frontier as rf
 _SONG_INPUTS = object()
 
 
+class _CountingSong:
+    """A song whose FG-input reads are counted (each read returns ``make_inputs()``)."""
+
+    def __init__(self, calls, make_inputs, *, note_types=(1,)):
+        self._calls = calls
+        self._make_inputs = make_inputs
+        self.chart = SimpleNamespace(note_types=list(note_types))
+
+    @property
+    def fg_inputs(self):
+        self._calls["extract"] += 1
+        return self._make_inputs()
+
+
 def _score_row(ft_stat: int, ff_stat: int) -> rf.FgFusedOwnerScoreRow:
     return rf.FgFusedOwnerScoreRow(
         ft=1,
@@ -43,23 +57,18 @@ def _patch_builder_primitives(monkeypatch):
     frontier_by_key: dict[tuple[int, int], object] = {}
     captured: list[dict[str, object]] = []
 
-    def _fake_resolver(calc_song, curves, scoring_bundle, *, ft_stat, ff_stat):
+    def _fake_resolver(song, curves, scoring_bundle, *, ft_stat, ff_stat):
         calls["resolver"] += 1
         # One distinct frontier object per stat key: the resolver is a pure function of
         # the (normalized) stat key over a fixed song, so identity proves the memo returns
         # the object the resolver would have recomputed.
         return frontier_by_key.setdefault((int(ft_stat), int(ff_stat)), object())
 
-    def _fake_extract(calc_song):
-        calls["extract"] += 1
-        return _SONG_INPUTS
-
     def _fake_solve_row(*, started, base_stats, selected_color, song_inputs, pair, row, surface, include_forced_counts):
         captured.append({"song_inputs": song_inputs, "frontier": pair[2], "surface": surface})
         return ("solve", id(song_inputs), id(pair[2]))
 
     monkeypatch.setattr(rf, "frontier_result_from_scoring_bundle_for_stats", _fake_resolver)
-    monkeypatch.setattr(rf, "extract_fg_song_inputs", _fake_extract)
     monkeypatch.setattr(rf, "_solve_result_from_row", _fake_solve_row)
     return calls, captured
 
@@ -74,6 +83,7 @@ def _scoring_bundle():
 def test_fused_builder_hoists_song_inputs_and_dedups_frontier(monkeypatch):
     calls, captured = _patch_builder_primitives(monkeypatch)
     bundle = _scoring_bundle()
+    song = _CountingSong(calls, lambda: _SONG_INPUTS)
 
     memo: dict[tuple[int, int], object] = {}
     # Two candidates share stat key (3, 4); one candidate uses a different key (5, 6).
@@ -82,7 +92,7 @@ def test_fused_builder_hoists_song_inputs_and_dedups_frontier(monkeypatch):
             score_row=row,
             base_stats={"Perfect Points": 1},
             selected_color="Rush",
-            calc_song={"song_data": {}, "metadata": {}},
+            song=song,
             curves={},
             scoring_bundle=bundle,
             started=0.0,
@@ -105,6 +115,7 @@ def test_fused_builder_hoists_song_inputs_and_dedups_frontier(monkeypatch):
 def test_fused_builder_default_path_is_byte_identical(monkeypatch):
     calls, captured = _patch_builder_primitives(monkeypatch)
     bundle = _scoring_bundle()
+    song = _CountingSong(calls, lambda: _SONG_INPUTS)
 
     rows = (_score_row(3, 4), _score_row(3, 4), _score_row(5, 6))
 
@@ -114,7 +125,7 @@ def test_fused_builder_default_path_is_byte_identical(monkeypatch):
             score_row=row,
             base_stats={"Perfect Points": 1},
             selected_color="Rush",
-            calc_song={"song_data": {}, "metadata": {}},
+            song=song,
             curves={},
             scoring_bundle=bundle,
             started=0.0,
@@ -137,16 +148,8 @@ def test_fused_builder_default_path_is_byte_identical(monkeypatch):
 def test_materialize_from_owner_score_map_shares_hoists_per_batch(monkeypatch):
     from gear_optimizer.solver.fg_response_scoring.service import FgResponseScoringService
     import gear_optimizer.solver.fg_response_scoring.reducer as reducer_mod
-    import gear_optimizer.solver.scoring.fg_policy as fg_policy
 
-    extract_calls = {"n": 0}
-
-    def _fake_extract(calc_song):
-        extract_calls["n"] += 1
-        # Fresh object per batch so per-batch scoping is observable by identity.
-        return SimpleNamespace(tag=f"song-{extract_calls['n']}")
-
-    monkeypatch.setattr(fg_policy, "extract_fg_song_inputs", _fake_extract)
+    extract_calls = {"extract": 0}
 
     seen: list[dict[str, object]] = []
 
@@ -155,7 +158,7 @@ def test_materialize_from_owner_score_map_shares_hoists_per_batch(monkeypatch):
         score_row,
         base_stats,
         selected_color,
-        calc_song,
+        song,
         curves,
         scoring_bundle,
         started,
@@ -186,7 +189,8 @@ def test_materialize_from_owner_score_map_shares_hoists_per_batch(monkeypatch):
         return SimpleNamespace(
             base_components=np.asarray(base_components, dtype=np.int32),
             selected_color="Rush",
-            calc_song={"song_data": {}, "metadata": {}},
+            # A fresh FG-inputs object per read, so per-batch scoping is observable by identity.
+            song=_CountingSong(extract_calls, SimpleNamespace),
             curves={},
             scoring_bundle=_scoring_bundle(),
             started=0.0,
@@ -215,7 +219,7 @@ def test_materialize_from_owner_score_map_shares_hoists_per_batch(monkeypatch):
     out = FgResponseScoringService.materialize_from_owner_score_map(plan, owner_score_map)
 
     # One extract per batch (not per candidate).
-    assert extract_calls["n"] == 2
+    assert extract_calls["extract"] == 2
     assert len(seen) == 3
 
     # Batch A's two candidates share one song_inputs object and one frontier memo dict.
@@ -284,34 +288,27 @@ def test_reducer_payload_accepts_hoisted_song_inputs_byte_identical(monkeypatch)
         lanes=[0],
         use_forced_great_timing=True,
     )
-    extract_calls = {"n": 0}
-
-    def _fake_extract(calc_song):
-        extract_calls["n"] += 1
-        return song_inputs
-
-    monkeypatch.setattr(reducer_mod, "extract_fg_song_inputs", _fake_extract)
-
-    calc_song = {"metadata": {}, "song_data": {"timestamps": [1.0], "lanes": [0], "note_types": [1]}}
+    extract_calls = {"extract": 0}
+    song = _CountingSong(extract_calls, lambda: song_inputs)
     common = dict(
         eval_data={"Selected Element": "Rush"},
         base_stats={"Perfect Points": 1},
         paired_base_score=1000,
         selected_element="Rush",
         result=result,
-        calc_song=calc_song,
+        song=song,
         curves={},
     )
 
     payload_default = materialize_force_payload_from_response_frontier(
         **common, trace_cache=FgTraceMaterializationCache()
     )
-    assert extract_calls["n"] == 1  # self-extracted once
+    assert extract_calls["extract"] == 1  # self-extracted once
 
     payload_hoisted = materialize_force_payload_from_response_frontier(
         **common, trace_cache=FgTraceMaterializationCache(), song_inputs=song_inputs
     )
-    assert extract_calls["n"] == 1  # supplied song_inputs -> no re-extraction
+    assert extract_calls["extract"] == 1  # supplied song_inputs -> no re-extraction
 
     assert payload_hoisted == payload_default
 

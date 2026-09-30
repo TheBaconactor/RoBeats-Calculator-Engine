@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from .response_build_gpu_surfaces import SurfaceRowsFirstFrontier, _surface_rows_from_numba_rows
 from .response_cache_keys import (
@@ -330,7 +330,7 @@ def frontier_result_from_scoring_bundle(
 
 
 def frontier_result_from_scoring_bundle_for_stats(
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     scoring_bundle: FgResponseFrontierScoringBundle,
     *,
@@ -339,7 +339,7 @@ def frontier_result_from_scoring_bundle_for_stats(
 ) -> FgResponseFrontierResult:
     key = _normalize_stat_key((int(ft_stat), int(ff_stat)))
     geometry_cache_key = fg_response_frontier_geometry_cache_key(
-        calc_song,
+        song,
         curves,
         ft_stat=int(key[0]),
         ff_stat=int(key[1]),

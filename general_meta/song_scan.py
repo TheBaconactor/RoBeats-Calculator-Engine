@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Dict, List, Tuple
 
-from gear_optimizer.data.song_io import scan_song_header
+from gear_optimizer.chart import read_header
 from gear_optimizer.settings import paths
 
 
@@ -27,10 +27,7 @@ def get_songs_by_elemental_combo() -> Dict[Tuple[str, str], List[dict]]:
                     continue
 
                 fp = os.path.join(root, fname)
-                meta = scan_song_header(fp)
-                if not meta:
-                    continue
-
+                meta = read_header(fp)
                 song_name = meta.get("Song Name", "")
                 primary = (meta.get("Primary Color") or "").strip()
                 secondary = (meta.get("Secondary Color") or "").strip()

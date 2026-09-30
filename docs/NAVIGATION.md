@@ -61,7 +61,8 @@ not directly from kernel internals.
 
 ## Data and persistence
 
-- Chart parsing and cached headers: `gear_optimizer/data/song_io.py`
+- Charts (parsing, header reads, cached loads): `gear_optimizer/chart.py`
+- Timing models (a chart timed for perfect_window or zero_ms): `gear_optimizer/solver/timing_envelope.py`
 - Exported-data synchronization:
   `gear_optimizer/data/exported_game_data_sync.py`
 - Database package facade: `gear_optimizer/data/database/`
@@ -77,7 +78,7 @@ not directly from kernel internals.
 - List maintained tools: `python -m tools list`
 - Audit the tool inventory: `python -m tools audit`
 - Run a tool by identifier: `python -m tools run <id> -- <args>`
-- Benchmarks: `tools/bench/`
+- Benchmarks: `tests/benchmark_*.py` (run as modules, e.g. `python -m tests.benchmark_inner_reductions`)
 - Database inspection and repair: `tools/db/`
 - Development checks: `tools/dev/`
 - Verification: `tools/verify/`

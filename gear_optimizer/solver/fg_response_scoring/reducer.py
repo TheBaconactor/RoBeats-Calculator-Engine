@@ -5,12 +5,12 @@ from typing import Any
 
 import numpy as np
 
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.ga_entry_utils import materialize_entry_names
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
 from gear_optimizer.solver.taichi_gem.force_greats import (
     FgResponseFrontierSolveResult,
     reconstruct_force_greats_response_trace,
@@ -27,17 +27,17 @@ from .physical_replay import validate_force_greats_physical_replay
 
 @dataclass(slots=True)
 class FgTraceMaterializationCache:
-    """Validated trace/edge cache bound to one exact calc-song owner."""
+    """Validated trace/edge cache bound to one exact song owner."""
 
     traces: dict[Any, tuple[dict[str, Any], ...]] = field(default_factory=dict)
     edge_options: FgTraceEdgeOptionsCache = field(default_factory=FgTraceEdgeOptionsCache)
-    _calc_song_owner: dict[str, Any] | None = None
+    _song_owner: TimedSong | None = None
 
-    def bind(self, calc_song: dict[str, Any]) -> None:
-        if self._calc_song_owner is None:
-            self._calc_song_owner = calc_song
-        elif self._calc_song_owner is not calc_song:
-            raise ValueError("FG trace materialization cache cannot be reused across calc-song owners")
+    def bind(self, song: TimedSong) -> None:
+        if self._song_owner is None:
+            self._song_owner = song
+        elif self._song_owner is not song:
+            raise ValueError("FG trace materialization cache cannot be reused across song owners")
 
 
 def _assert_trace_hit_time_reachable(frontier_trace, song_inputs, *, raw_fever_fill: float) -> None:
@@ -111,22 +111,22 @@ def materialize_force_payload_from_response_frontier(
     paired_base_score: int,
     selected_element: str,
     result: FgResponseFrontierSolveResult,
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     reconstruction_frontier=None,
     trace_cache: FgTraceMaterializationCache | None = None,
     song_inputs: Any | None = None,
 ) -> dict[str, Any]:
     if trace_cache is not None:
-        trace_cache.bind(calc_song)
+        trace_cache.bind(song)
     frontier = reconstruction_frontier or result.frontier
-    # ``song_inputs`` is a pure function of ``calc_song``; a batch materializer sharing one
-    # calc-song owner hoists it once and threads it in (mirrors the trace_cache lifetime).
+    # ``song_inputs`` is a pure function of ``song``; a batch materializer sharing one
+    # song owner hoists it once and threads it in (mirrors the trace_cache lifetime).
     # Defaults to the standalone per-call extraction for single-payload callers.
     if song_inputs is None:
-        song_inputs = extract_fg_song_inputs(calc_song)
+        song_inputs = song.fg_inputs
     if trace_cache is not None:
-        trace_cache.edge_options.bind_owner(calc_song, note_count=len(song_inputs.timestamps))
+        trace_cache.edge_options.bind_owner(song, note_count=len(song_inputs.timestamps))
     song_lanes = getattr(song_inputs, "lanes", None)
     if song_lanes is None:
         raise ValueError("FG response materialization requires song input lanes")
@@ -177,17 +177,11 @@ def materialize_force_payload_from_response_frontier(
     # chart-wide guard for every loadout with the same semantic trace adds no independent check.
     if not trace_is_validated:
         _assert_trace_hit_time_reachable(base_trace, song_inputs, raw_fever_fill=float(result.raw_fever_fill))
-        song_data = calc_song.get("song_data")
-        if not isinstance(song_data, dict):
-            raise ValueError("FG response materialization requires canonical song_data")
-        note_types = song_data.get("note_types")
-        if note_types is None:
-            raise ValueError("FG response materialization requires chart note_types")
         validate_force_greats_physical_replay(
             frontier_trace=base_trace,
             surface=surface,
             timestamps=song_inputs.timestamps,
-            note_types=note_types,
+            note_types=song.chart.note_types,
             lanes=song_lanes,
             raw_fever_fill=float(result.raw_fever_fill),
             real_fever_time=float(result.real_fever_time),
@@ -208,7 +202,7 @@ def materialize_force_payload_from_response_frontier(
     paired_base = safe_int(paired_base_score, 0)
     if paired_base <= 0:
         raise ValueError("ForceGreats response frontier is missing paired source base score.")
-    final_score_obj = score_force_greats_response_surface_exact(result.stats, calc_song, curves, result.surface)
+    final_score_obj = score_force_greats_response_surface_exact(result.stats, song, curves, result.surface)
     if final_score_obj is None:
         raise ValueError("ForceGreats response frontier exact surface replay failed")
     final_score = int(final_score_obj)
@@ -277,7 +271,7 @@ class FgResultReducer:
         *,
         skyline: bool = False,
     ) -> list[dict[str, Any]]:
-        calc_song = plan.calc_song
+        song = plan.song
         curves = plan.curves
         variants: list[dict[str, Any]] = []
         result_cache = FgResultReducer._result_cache(plan, prepared_results)
@@ -313,7 +307,7 @@ class FgResultReducer:
             )[: int(LOADOUTS_PER_SONG_LIMIT)]
         )
 
-        # calc_song is the single owner across every materialized loadout (the trace_cache
+        # song is the single owner across every materialized loadout (the trace_cache
         # enforces it), so its FG song inputs are invariant here -- extract once (lazily, on
         # the first surviving loadout so an all-skipped plan does no extra work) and thread
         # them into every payload instead of rebuilding per surviving loadout.
@@ -332,21 +326,21 @@ class FgResultReducer:
                 if paired_base_early <= 0:
                     raise ValueError("ForceGreats response frontier is missing paired source base score.")
                 early_score_obj = score_force_greats_response_surface_exact(
-                    result.stats, calc_song, curves, result.surface
+                    result.stats, song, curves, result.surface
                 )
                 if early_score_obj is None:
                     raise ValueError("ForceGreats response frontier exact surface replay failed")
                 if int(early_score_obj) <= int(paired_base_early):
                     continue
             if song_inputs is None:
-                song_inputs = extract_fg_song_inputs(calc_song)
+                song_inputs = song.fg_inputs
             payload = materialize_force_payload_from_response_frontier(
                 eval_data=item["eval_data"],
                 base_stats=item["base_stats"],
                 paired_base_score=int(item["paired_base_score"]),
                 selected_element=item["selected"],
                 result=result,
-                calc_song=calc_song,
+                song=song,
                 curves=curves,
                 trace_cache=trace_cache,
                 song_inputs=song_inputs,

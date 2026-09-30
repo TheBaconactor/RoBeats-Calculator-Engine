@@ -99,13 +99,12 @@ def _db_context_cache_put(
 def load_prepared_song_db_context(
     *,
     found_song_name: str,
-    calc_song: dict | None,
     gears_by_name: dict,
     minis_by_name: dict,
     cache_db_context: bool = False,
 ) -> PreparedSongDbContext:
     baseline_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
-    db_key = build_db_key(found_song_name, calc_song)
+    db_key = build_db_key(found_song_name)
 
     cached = None
     if cache_db_context:

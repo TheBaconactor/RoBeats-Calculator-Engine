@@ -203,5 +203,5 @@ requests cannot share mutable optimizer state.
 - GPU-marked tests cover Taichi/Vulkan parity, ownership, and execution.
 - `tests/test_repo_guardrails.py` checks removed surfaces, sensitive exports,
   documentation links and code paths, config examples, and GitHub math syntax.
-- Maintained benchmarks under `tools/bench/` measure performance; they do not
+- Maintained benchmarks (`tests/benchmark_*.py`) measure performance; they do not
   redefine correctness.

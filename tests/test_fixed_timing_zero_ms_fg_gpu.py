@@ -1,12 +1,12 @@
 """Fixed-timing (0ms) FG re-optimization + tier replay (issue #51). GPU.
 
 Pins the two GPU-facing facts:
-- the re-optimized 0ms FG surface (canonical builder on a chart-only calc_song) equals the
+- the re-optimized 0ms FG surface (canonical builder on a chart-only song) equals the
   brute-force forced-counts optimum (EXACT), and that optimum can EXCEED base 0ms -- forcing
   greats still helps at 0ms because it changes the fill length and shifts where fever activates
   (a count effect independent of hit-offset), so FG 0ms is NOT base 0ms and the surface must be
   rebuilt (guards against a wrong "FG 0ms == base 0ms" short-circuit); and
-- a tier replay run produces per-tier top-N meta + FG leaderboards under timing_mode="zero_ms".
+- a tier replay run produces per-tier top-N meta + FG leaderboards for a zero_ms song.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import itertools
 
 import numpy as np
 import pytest
+from tests.songs_support import make_song
 
 pytestmark = pytest.mark.gpu
 
@@ -65,23 +66,12 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
     _reset_fg_cache()
     curves = _curves(MAX_STAT + 1)
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
-    calc_song = {
-        "metadata": {
-            "Song Name": "pytest_zero_ms_tier",
-            "Difficulty": "Hard",
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            # The production physical-replay contract owns chart note types and lanes even
-            # though fixed chart-time timeline scoring itself does not consume either array.
-            "note_types": np.ones(timestamps.shape[0], dtype=np.int16),
-            "lanes": np.arange(timestamps.shape[0], dtype=np.int32) % 4,
-        },
-    }
+    song = make_song(
+        timestamps,
+        mode="zero_ms",
+        name="pytest_zero_ms_tier",
+        lanes=np.arange(timestamps.shape[0], dtype=np.int32) % 4,
+    )
     # Persisted surface is head-only valid for a <100-note song; under zero_ms it is REBUILT,
     # so its exact value is irrelevant -- it only has to pass the require_response_surface guard.
     surface_fixture = [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
@@ -133,17 +123,13 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
     # zero_ms now re-solves the BASE gems too (GPU exhaustive search), which needs the
     # candidate-independent timeline-frontier cache built first -- mirror the on-demand path.
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    _cs_zero_ms = dict(calc_song)
-    apply_timing_envelope(_cs_zero_ms, mode="zero_ms")
-    build_or_load_timeline_frontier_payload(_cs_zero_ms, curves)
+    build_or_load_timeline_frontier_payload(song, curves)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
-        timing_mode="zero_ms",
     )
 
     tiers = out["tiers"]
@@ -166,26 +152,14 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     )
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_fixed_timing_exact
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()
 
     curves = _curves(MAX_STAT + 1)
     timestamps = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
-    calc_song = {
-        "metadata": {
-            "Song Name": "pytest_zero_ms_batch_parity",
-            "Difficulty": "Hard",
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-        },
-        "song_data": {"timestamps": timestamps},
-    }
-    apply_timing_envelope(calc_song, mode="zero_ms")
-    build_or_load_timeline_frontier_payload(calc_song, curves)
+    song = make_song(timestamps, mode="zero_ms", name="pytest_zero_ms_batch_parity")
+    build_or_load_timeline_frontier_payload(song, curves)
 
     fixed_song_stats = {
         "Perfect Points": 0,
@@ -230,7 +204,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         resolve_tier_base(
             fixed_song_stats=fixed_song_stats,
             loadout_items=loadout,
-            calc_song=dict(calc_song),
+            song=song,
             curves=curves,
             primary_color="Rush",
             selected_color="Rush",
@@ -240,7 +214,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     base_batch = resolve_tier_base_batch(
         fixed_song_stats=fixed_song_stats,
         loadouts=loadouts,
-        calc_song=dict(calc_song),
+        song=song,
         curves=curves,
         primary_color="Rush",
         selected_color="Rush",
@@ -257,7 +231,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         resolve_tier_fg_force(
             fixed_song_stats=fixed_song_stats,
             loadout_items=loadout,
-            calc_song=dict(calc_song),
+            song=song,
             curves=curves,
             selected_color="Rush",
         )
@@ -266,7 +240,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     fg_batch = resolve_tier_fg_force_batch(
         fixed_song_stats=fixed_song_stats,
         loadouts=loadouts,
-        calc_song=dict(calc_song),
+        song=song,
         curves=curves,
         selected_color="Rush",
     )
@@ -279,7 +253,7 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         assert batch_force["BaseStats"] == batch_force["Stats"]
         assert batch_force["BaseScore"] == score_stats_fixed_timing_exact(
             batch_force["BaseStats"],
-            calc_song,
+            song,
             curves,
         )
         assert batch_force["ForceGreats"]["config"] == single_force["ForceGreats"]["config"]
@@ -297,18 +271,17 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
     }
     batches = build_team_buff_tier_db_batches(
         entries=[entry],
-        calc_song=dict(calc_song),
+        song=song,
         curves=curves,
         limit=1,
         tiers=("T5",),
         replay_surface="fg",
-        timing_mode="zero_ms",
     )
     fg_row = batches["T5"][0]
     assert fg_row["fg_base_score"] == fg_row["force"]["BaseScore"]
     assert fg_row["force"]["BaseStats"] == fg_row["force"]["Stats"]
     assert fg_row["fg_base_score"] == score_stats_fixed_timing_exact(
         fg_row["force"]["BaseStats"],
-        calc_song,
+        song,
         curves,
     )

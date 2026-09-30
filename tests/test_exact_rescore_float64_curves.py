@@ -1,25 +1,14 @@
 from tests.curves_support import synthetic_curves
+from tests.songs_support import make_song
 import numpy as np
 
 
-def _mock_song(*, name: str, n_notes: int = 96, duration: float = 120.0) -> dict:
-    timestamps = np.linspace(0.0, float(duration), int(n_notes), dtype=np.float32)
-    return {
-        "metadata": {
-            "Song Name": name,
-            "Difficulty": "Hard",
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-            "Total Notes": int(timestamps.shape[0]),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "note_types": np.ones(int(n_notes), dtype=np.int16),
-            "lanes": np.arange(int(n_notes), dtype=np.int32) % np.int32(4),
-        },
-    }
+def _mock_song(*, name: str, n_notes: int = 96, duration: float = 120.0):
+    return make_song(
+        np.linspace(0.0, float(duration), int(n_notes)),
+        name=name,
+        lanes=np.arange(int(n_notes), dtype=np.int32) % np.int32(4),
+    )
 
 
 def _curves(rows: int, *, dtype):
@@ -54,19 +43,10 @@ def _boundary_drift_stats() -> dict[str, int]:
     }
 
 
-def _prebuild_timeline_frontier(calc_song: dict, curves) -> None:
+def _prebuild_timeline_frontier(song, curves) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    apply_timing_envelope(calc_song, mode="perfect_window")
-    build_or_load_timeline_frontier_payload(calc_song, curves)
-
-
-def _prebuild_team_buff_timeline_frontier(calc_song: dict, curves) -> None:
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-
-    apply_timing_envelope(calc_song)
-    _prebuild_timeline_frontier(calc_song, curves)
+    build_or_load_timeline_frontier_payload(song, curves)
 
 
 def test_score_stats_exact_scores_with_the_float64_curves():
@@ -77,12 +57,12 @@ def test_score_stats_exact_scores_with_the_float64_curves():
     exact_curves = _curves(MAX_STAT + 1, dtype=np.float64)
     rounded_curves = _float32_rounded(exact_curves)
     stats = _boundary_drift_stats()
-    calc_song = _mock_song(name="pytest_exact_rescore_float64_curves")
+    song = _mock_song(name="pytest_exact_rescore_float64_curves")
 
-    _prebuild_timeline_frontier(calc_song, exact_curves)
-    exact = int(er.score_stats_exact(stats, calc_song, exact_curves))
-    _prebuild_timeline_frontier(calc_song, rounded_curves)
-    rounded = int(er.score_stats_exact(stats, calc_song, rounded_curves))
+    _prebuild_timeline_frontier(song, exact_curves)
+    exact = int(er.score_stats_exact(stats, song, exact_curves))
+    _prebuild_timeline_frontier(song, rounded_curves)
+    rounded = int(er.score_stats_exact(stats, song, rounded_curves))
     assert exact != rounded
 
 
@@ -94,23 +74,7 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
         score_stats_fixed_timing_exact,
     )
 
-    timestamps = np.linspace(0.0, 2.0, 101, dtype=np.float32)
-    calc_song = {
-        "metadata": {
-            "Song Name": "pytest_timing_frontier_authority",
-            "Difficulty": "Hard",
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-            "Total Notes": int(timestamps.shape[0]),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "note_types": np.ones(int(timestamps.shape[0]), dtype=np.int16),
-            "lanes": np.arange(int(timestamps.shape[0]), dtype=np.int32) % np.int32(4),
-        },
-    }
+    song = _mock_song(name="pytest_timing_frontier_authority", n_notes=101, duration=2.0)
     curves = synthetic_curves({
         "Perfect Points": np.ones(MAX_STAT + 1, dtype=np.float64),
         "Combo Multiplier": np.ones(MAX_STAT + 1, dtype=np.float64) * 2.0,
@@ -128,15 +92,15 @@ def test_score_stats_exact_uses_legal_timing_frontier_not_fixed_chart_replay():
         "Flow": 50,
     }
 
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(song, curves)
     # The fixed chart-time replay (deterministic chart timeline) scores strictly below the
     # legal Perfect-window timing frontier. stats -> base_value 251.0 (Rush 100*2 + Flow 50 +
     # PP factor 1.0), combo 2.0, fever 4.0, FT/FF idx 0 -- exactly the fixed-chart inputs.
-    fixed_chart = score_stats_fixed_timing_exact(stats, calc_song, curves)
+    fixed_chart = score_stats_fixed_timing_exact(stats, song, curves)
     assert int(fixed_chart) == 79312
     # The legal Perfect-window timing frontier scores strictly higher than the fixed chart replay.
-    assert int(fixed_chart) < int(score_stats_exact(stats, calc_song, curves)) == 80080
-    replay = score_stats_exact_with_timeline_trace(stats, calc_song, curves)
+    assert int(fixed_chart) < int(score_stats_exact(stats, song, curves)) == 80080
+    replay = score_stats_exact_with_timeline_trace(stats, song, curves)
     assert int(replay["score"]) == 80080
     trace = replay["TimelineFrontier"]["frontier_trace"]
     assert trace
@@ -165,9 +129,9 @@ def test_team_buff_tier_replay_scores_with_the_float64_curves(monkeypatch):
         # synthetic resolve replaces it with a CPU-exact witness whose final step is
         # score_stats_exact_batch, the function whose precision this test pins.
         song = _mock_song(name=song_name)
-        _prebuild_team_buff_timeline_frontier(song, curves)
-        _install_synthetic_tier_resolve(monkeypatch, calc_song=song, curves=curves)
-        result = tbt.compute_team_buff_tier_leaderboards(entries=[entry], calc_song=song, curves=curves, tiers=("NONE",))
+        _prebuild_timeline_frontier(song, curves)
+        _install_synthetic_tier_resolve(monkeypatch, song=song, curves=curves)
+        result = tbt.compute_team_buff_tier_leaderboards(entries=[entry], song=song, curves=curves, tiers=("NONE",))
         return int(result["tiers"]["NONE"]["base_top51"][0]["score"])
 
     exact_curves = _curves(MAX_STAT + 1, dtype=np.float64)

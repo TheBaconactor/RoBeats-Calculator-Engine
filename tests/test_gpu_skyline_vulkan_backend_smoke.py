@@ -11,7 +11,7 @@ def test_skyline_warmup_compiles_on_macos_vulkan() -> None:
     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
     from gear_optimizer.solver.taichi_gem.api import hard_reset_taichi
     from gear_optimizer.solver.taichi_gem.api.ga_operations import (
-        _warmup_calc_song,
+        _warmup_song,
         _warmup_curves,
         reset_ga_upload_caches,
     )
@@ -38,7 +38,7 @@ def test_skyline_warmup_compiles_on_macos_vulkan() -> None:
 
     curves = _warmup_curves()
     ensure_ready(curves)
-    precompute_timeline_gpu_for_warmup(_warmup_calc_song(), curves, song_slot=0)
+    precompute_timeline_gpu_for_warmup(_warmup_song(), curves, song_slot=0)
 
     item_stats_np = np.zeros((1, gpu_fields.ITEM_STAT_DIM), dtype=np.int32)
     slot_start_np = np.zeros((gpu_fields.MAX_SLOTS,), dtype=np.int32)

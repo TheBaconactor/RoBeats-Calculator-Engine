@@ -18,7 +18,7 @@ class FgResponseScoringService:
     @staticmethod
     def score_candidates(
         ga_candidates,
-        calc_song,
+        song,
         curves,
         meta_primary_color,
         *,
@@ -29,7 +29,7 @@ class FgResponseScoringService:
     ) -> list[dict[str, Any]]:
         return FgResponseScoringService.score_candidates_with_stats(
             ga_candidates,
-            calc_song,
+            song,
             curves,
             meta_primary_color,
             ga_registry=ga_registry,
@@ -41,7 +41,7 @@ class FgResponseScoringService:
     @staticmethod
     def score_candidates_with_stats(
         candidates,
-        calc_song,
+        song,
         curves,
         meta_primary_color,
         *,
@@ -55,7 +55,7 @@ class FgResponseScoringService:
         if mode == "skyline":
             plan = FgPlanner.plan_skyline_candidate_records(
                 candidates,
-                calc_song,
+                song,
                 curves,
                 meta_primary_color,
                 scoring_bundle=scoring_bundle,
@@ -63,7 +63,7 @@ class FgResponseScoringService:
         else:
             plan = FgPlanner.plan_many(
                 candidates,
-                calc_song,
+                song,
                 curves,
                 meta_primary_color,
                 ga_registry=ga_registry,
@@ -113,7 +113,6 @@ class FgResponseScoringService:
         identical payload), then the shared reducer applies paired-base authority +
         the winner gate + exact surface rescore. No GPU work.
         """
-        from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
         from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import (
             build_fused_owner_solve_result_from_score_row,
         )
@@ -130,11 +129,11 @@ class FgResponseScoringService:
                 raise RuntimeError("FG fused materialization: prepared batch base_components/rows length mismatch")
             # Song-invariant hoists shared across the batch's candidates (mirrors the batch
             # materialize sibling in response_frontier.py): song_inputs is a pure function of
-            # batch.calc_song and each frontier is a pure function of its (ft_stat, ff_stat)
+            # batch.song and each frontier is a pure function of its (ft_stat, ff_stat)
             # over the same song/ref/scoring bundle, so only the stat-key suffix varies per
             # candidate. Rebuilding the full song fingerprint + extract per candidate was pure
             # waste on the shared LRU; carry them once per batch instead.
-            song_inputs = extract_fg_song_inputs(batch.calc_song)
+            song_inputs = batch.song.fg_inputs
             frontier_by_stat_key: dict[tuple[int, int], Any] = {}
             batch_results = []
             for row_idx, (_cache_key, base_stats) in enumerate(rows):
@@ -150,7 +149,7 @@ class FgResponseScoringService:
                         score_row=score_row,
                         base_stats=base_stats,
                         selected_color=batch.selected_color,
-                        calc_song=batch.calc_song,
+                        song=batch.song,
                         curves=batch.curves,
                         scoring_bundle=batch.scoring_bundle,
                         started=batch.started,

@@ -1,57 +1,29 @@
 import numpy as np
-import pytest
 
-from gear_optimizer.solver.scoring.fg_policy import extract_fg_song_inputs
-
-
-def test_extract_fg_song_inputs_requires_floor_with_timing_candidates() -> None:
-    timestamps = np.asarray([0.0, 1.0], dtype=np.float32)
-    calc_song = {
-        "metadata": {"Long Notes": 0, "Last Note Time": 1.0},
-        "song_data": {
-            "timestamps": timestamps,
-            "fg_timestamps": timestamps,
-            "fg_perfect_candidate_timestamps": timestamps + np.float32(0.04),
-        },
-    }
-
-    with pytest.raises(ValueError, match="fg_perfect_floor_timestamps"):
-        extract_fg_song_inputs(calc_song)
+from tests.songs_support import make_song
 
 
-def test_extract_fg_song_inputs_requires_great_floor_with_timing_candidates() -> None:
-    # Issue #44: the early-Great floor is required (fail-loud) whenever an FG timing envelope is
-    # present, the same rule as the Perfect floor -- a missing one would silently drop early-Great
-    # endpoint fever and under-count best_fg_score.
-    timestamps = np.asarray([0.0, 1.0], dtype=np.float32)
-    calc_song = {
-        "metadata": {"Long Notes": 0, "Last Note Time": 1.0},
-        "song_data": {
-            "timestamps": timestamps,
-            "fg_timestamps": timestamps,
-            "fg_perfect_candidate_timestamps": timestamps + np.float32(0.04),
-            "fg_perfect_floor_timestamps": timestamps,
-        },
-    }
+def test_perfect_window_fg_inputs_carry_the_timing_envelopes() -> None:
+    song = make_song([0.0, 0.5, 1.0], note_types=[1, 2, 3], lanes=[0, 1, 1], long_notes=1, last_note_time=1.2)
 
-    with pytest.raises(ValueError, match="fg_great_floor_timestamps"):
-        extract_fg_song_inputs(calc_song)
+    inputs = song.fg_inputs
+
+    assert inputs.timestamps is song.hit_timestamps
+    assert inputs.perfect_candidates is song.perfect_candidates
+    assert inputs.great_candidates is song.great_candidates
+    assert inputs.perfect_floor is song.perfect_floor
+    assert inputs.great_floor is song.great_floor
+    assert inputs.use_forced_great_timing is True
+    assert np.array_equal(inputs.lanes, [0, 1, 1])
+    assert (inputs.total_notes, inputs.long_notes, inputs.last_note_time) == (3, 1, 1.2)
+    assert (inputs.primary_color, inputs.secondary_color) == ("Rush", "Flow")
 
 
-def test_extract_fg_song_inputs_accepts_explicit_degenerate_floor() -> None:
-    timestamps = np.asarray([0.0, 1.0], dtype=np.float32)
-    calc_song = {
-        "metadata": {"Long Notes": 0, "Last Note Time": 1.0},
-        "song_data": {
-            "timestamps": timestamps,
-            "fg_timestamps": timestamps,
-            "fg_perfect_candidate_timestamps": timestamps,
-            "fg_perfect_floor_timestamps": timestamps,
-            "fg_great_floor_timestamps": timestamps,
-        },
-    }
+def test_zero_ms_fg_inputs_use_the_hit_timeline_without_carry() -> None:
+    song = make_song([0.0, 0.5, 1.0], mode="zero_ms")
 
-    song_inputs = extract_fg_song_inputs(calc_song)
+    inputs = song.fg_inputs
 
-    assert np.array_equal(np.asarray(song_inputs.perfect_floor, dtype=np.float32), timestamps)
-    assert np.array_equal(np.asarray(song_inputs.great_floor, dtype=np.float32), timestamps)
+    for stream in (inputs.perfect_candidates, inputs.great_candidates, inputs.perfect_floor, inputs.great_floor):
+        assert stream is song.hit_timestamps
+    assert inputs.use_forced_great_timing is False

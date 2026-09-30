@@ -16,20 +16,16 @@ def test_service_request_gate_preserves_each_supported_mode():
         robeatsmeta_service._normalize_timing_mode("bogus")
 
 
-def test_song_preparation_uses_chart_timing_metadata(monkeypatch):
-    captured: dict = {}
+def test_song_preparation_uses_chart_timing_metadata(tmp_path):
+    from gear_optimizer.solver.song_preparation import prepare_song
 
-    def fake_envelope(calc_song, *, mode=None, **_kwargs):
-        captured["mode"] = mode
-        return calc_song
-
-    monkeypatch.setattr("gear_optimizer.solver.timing_envelope.apply_timing_envelope", fake_envelope)
-    from gear_optimizer.solver import song_preparation
-
-    song_preparation._apply_timing_envelope(
-        {"song_data": {}, "metadata": {"Timing Mode": "zero_ms"}}
+    chart = tmp_path / "zero_ms_chart.txt"
+    chart.write_text(
+        "Song Name\tZero Chart\nDifficulty\tHard\nPrimary Color\tRush\nSecondary Color\tFlow\n"
+        "Last Note Time\t0.4\nLong Notes\t0\nTiming Mode\tzero_ms\nSong Data\n0.0 1 0 1\n0.4 2 1 1\n",
+        encoding="utf-8",
     )
-    assert captured["mode"] is None
+    assert prepare_song(str(chart)).mode == "zero_ms"
 
 
 def test_startup_prepares_both_frontier_cache_families(monkeypatch):
@@ -62,20 +58,7 @@ def test_startup_prepares_both_frontier_cache_families(monkeypatch):
     }
 
 
-def test_team_buff_unknown_mode_fails_loud():
-    from gear_optimizer.helpers.song_helpers import team_buff_tiers as tbt
-
-    with pytest.raises(ValueError):
-        tbt.build_team_buff_tier_db_batches(
-            entries=[{}], calc_song={}, curves={}, timing_mode="bogus_mode"
-        )
-    with pytest.raises(ValueError):
-        tbt.compute_team_buff_tier_leaderboards(
-            entries=[{}], calc_song={}, curves={}, timing_mode="bogus_mode"
-        )
-
-
 def test_gpu_warmup_songs_do_not_select_a_request_mode():
     from gear_optimizer.solver.taichi_gem.api import ga_operations
 
-    assert "TimingEnvelopeMode" not in ga_operations._warmup_calc_song()["metadata"]
+    assert "Timing Mode" not in ga_operations._warmup_song().chart.header

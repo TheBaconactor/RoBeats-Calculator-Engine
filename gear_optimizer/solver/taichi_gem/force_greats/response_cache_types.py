@@ -46,7 +46,7 @@ from .response_types import FgResponseFrontierResult
 #             startup banner said the cache was ready. v17 bundles for affected songs schedule
 #             non-deliverable +200..+380ms late-Great activations, so they are semantically stale
 #             and must rebuild. Invariant: ANY change that alters fg_response_frontier_song_cache_key
-#             inputs (extract_fg_song_inputs / timing envelopes) MUST bump this version -- the
+#             inputs (the song's FG inputs / timing envelopes) MUST bump this version -- the
 #             version string is the only key-derivation fingerprint the manifest fast-path sees.
 #             v18->v19: canonical late-Great gate (late_great_prefix_is_legal) added to the search
 #             (_compact_first_frontier_action_arrays) + reconstruct mirror -- illegal (phantom)

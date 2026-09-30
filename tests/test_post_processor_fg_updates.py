@@ -2,34 +2,24 @@ import numpy as np
 import pytest
 
 from gear_optimizer.pipeline.post_processor_fg_updates import build_fg_update_state, canonicalize_fg_update_entries
+from tests.songs_support import make_song
 
 
 _FG_SURFACE = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
 
 
-def _mock_base_song(*, primary_color: str = "Rush", n_notes: int = 96) -> dict:
-    timestamps = np.linspace(0.0, 30.0, int(n_notes), dtype=np.float32)
-    return {
-        "metadata": {
-            "Primary Color": primary_color,
-            "Secondary Color": "Flow",
-            "Song Name": "Test Song",
-            "Difficulty": "Hard",
-            "Long Notes": 0,
-            "Last Note Time": float(timestamps[-1]),
-            "Total Notes": int(timestamps.shape[0]),
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "note_types": np.ones(int(n_notes), dtype=np.int16),
-            "lanes": np.arange(int(n_notes), dtype=np.int16) % 4,
-        },
-    }
+def _mock_song(*, primary_color: str = "Rush", n_notes: int = 96):
+    return make_song(
+        np.linspace(0.0, 30.0, int(n_notes)),
+        name="Test Song",
+        primary=primary_color,
+        lanes=np.arange(int(n_notes), dtype=np.int32) % 4,
+    )
 
 
-def test_canonicalize_fg_update_entries_uses_calc_song_and_ref_arrays(monkeypatch):
+def test_canonicalize_fg_update_entries_uses_the_prepared_song_and_curves(monkeypatch):
     entries = [{"score": 123, "gear": ["G1"], "minis": ["M1"]}]
-    base_calc_song = _mock_base_song()
+    song = _mock_song()
     curves = {"Perfect Points": [1.0]}
     calls = {}
     canonical_row = {
@@ -39,21 +29,20 @@ def test_canonicalize_fg_update_entries_uses_calc_song_and_ref_arrays(monkeypatc
         "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
     }
 
-    def fake_get_base_calc_song(file_path):
-        calls["song_io"] = file_path
-        return base_calc_song
+    def fake_prepare_song(file_path):
+        calls["prepare"] = file_path
+        return song
 
-    def fake_canonicalize(entries_arg, *, calc_song, curves):
+    def fake_canonicalize(entries_arg, *, song, curves):
         calls["canonicalize"] = {
             "entries": entries_arg,
-            "calc_song": calc_song,
+            "song": song,
             "curves": curves,
         }
         return [canonical_row]
 
-    # FG persistence prepares the scoring-ready song through the canonical helper, which
-    # resolves the base song via song_preparation's binding and applies the timing envelope.
-    monkeypatch.setattr("gear_optimizer.solver.song_preparation.get_base_calc_song", fake_get_base_calc_song)
+    # FG persistence prepares the scoring-ready song through the canonical helper.
+    monkeypatch.setattr("gear_optimizer.solver.song_preparation.prepare_song", fake_prepare_song)
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.persistence_authority.canonicalize_authoritative_fg_entries",
         fake_canonicalize,
@@ -67,27 +56,20 @@ def test_canonicalize_fg_update_entries_uses_calc_song_and_ref_arrays(monkeypatc
     )
 
     assert result == [canonical_row]
-    assert calls["song_io"] == "Data/Hard/Test Song.txt"
+    assert calls["prepare"] == "Data/Hard/Test Song.txt"
     passed = calls["canonicalize"]
     assert passed["entries"] == entries
     assert passed["curves"] is curves
-    assert passed["calc_song"]["metadata"].get("Primary Color") == "Rush"
-    # The timeline/FG frontier cache key includes the timing-envelope context, so FG
-    # persistence must apply the envelope or the cache-keyed replay looks up an artifact
-    # the startup prebuild never wrote (-> "Timeline frontier payload is missing").
-    assert passed["calc_song"]["metadata"].get("TimingEnvelopeApplied") is True
+    assert passed["song"] is song
 
 
 def test_canonicalize_fg_update_entries_loads_the_curves_when_none_are_given(monkeypatch):
     entries = [{"score": 123}]
-    base_calc_song = _mock_base_song()
+    song = _mock_song()
     loaded_curves = object()
     calls = {}
 
-    monkeypatch.setattr(
-        "gear_optimizer.solver.song_preparation.get_base_calc_song",
-        lambda _fp, _cfg=None: base_calc_song,
-    )
+    monkeypatch.setattr("gear_optimizer.solver.song_preparation.prepare_song", lambda _fp: song)
     monkeypatch.setattr("gear_optimizer.pipeline.post_processor_fg_updates.load_stat_curves", lambda _path: loaded_curves)
 
     canonical_row = {
@@ -97,7 +79,7 @@ def test_canonicalize_fg_update_entries_loads_the_curves_when_none_are_given(mon
         "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
     }
 
-    def fake_canonicalize(entries_arg, *, calc_song, curves):
+    def fake_canonicalize(entries_arg, *, song, curves):
         calls["curves"] = curves
         return [canonical_row]
 
@@ -121,13 +103,10 @@ def test_canonicalize_fg_update_entries_reraises_missing_frontier_cache(monkeypa
     """A missing required frontier cache must fail loudly, not be swallowed into base-only."""
     from gear_optimizer.solver.frontier_cache_errors import MissingFrontierCacheError
 
-    base_calc_song = _mock_base_song()
-    monkeypatch.setattr(
-        "gear_optimizer.solver.song_preparation.get_base_calc_song",
-        lambda _fp, _cfg=None: base_calc_song,
-    )
+    song = _mock_song()
+    monkeypatch.setattr("gear_optimizer.solver.song_preparation.prepare_song", lambda _fp: song)
 
-    def fake_canonicalize(entries_arg, *, calc_song, curves):
+    def fake_canonicalize(entries_arg, *, song, curves):
         raise MissingFrontierCacheError(
             "Timeline frontier payload is missing. Startup cache prebuild must build the "
             "candidate-independent all-FT/FF timeline frontier before runtime scoring."
@@ -154,28 +133,25 @@ def test_missing_frontier_cache_error_is_valueerror_subclass():
     assert issubclass(MissingFrontierCacheError, ValueError)
 
 
-def test_fg_canonicalization_prep_matches_prebuild_timeline_cache_key(monkeypatch):
+def test_fg_canonicalization_prep_matches_prebuild_timeline_cache_key(tmp_path):
     """The deferred FG canonicalization must derive the SAME timeline frontier cache key
     as the startup prebuild, so the cache-keyed base replay hits the prebuilt artifact
     instead of raising "Timeline frontier payload is missing" and dropping the FG score."""
-    from gear_optimizer.data.song_io import clone_calc_song
-    from gear_optimizer.solver.song_preparation import build_prepared_calc_song
-    from gear_optimizer.solver.taichi_gem.api.timeline import _song_timing_cache_key
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+    from gear_optimizer.chart import load_chart
+    from gear_optimizer.solver.song_preparation import prepare_song
+    from gear_optimizer.solver.timing_envelope import time_song
 
-    base = _mock_base_song()
+    chart_path = tmp_path / "Test Song.txt"
+    chart_path.write_text(
+        "Song Name\tTest Song\nDifficulty\tHard\nPrimary Color\tRush\nSecondary Color\tFlow\n"
+        "Last Note Time\t0.4\nLong Notes\t0\nSong Data\n0.0 1 0 1\n0.2 2 1 1\n0.4 3 2 1\n",
+        encoding="utf-8",
+    )
 
-    # Startup prebuild prep: base song + timing envelope (timeline_frontier_cache_prebuild).
-    prebuild_song = clone_calc_song(base)
-    apply_timing_envelope(prebuild_song)
-    prebuild_key = _song_timing_cache_key(prebuild_song)
+    # Startup prebuild prep (timeline_frontier_cache_prebuild) for the default timing mode.
+    prebuild_key = time_song(load_chart(chart_path), "perfect_window").timeline_key
 
-    # Deferred FG canonicalization prep (post-fix): the same canonical helper.
-    monkeypatch.setattr("gear_optimizer.solver.song_preparation.get_base_calc_song", lambda _fp, _cfg=None: base)
-    canon_song = build_prepared_calc_song(fp="Data/Hard/Test Song.txt").calc_song
-    canon_key = _song_timing_cache_key(canon_song)
-
-    assert canon_key == prebuild_key
+    assert prepare_song(str(chart_path)).timeline_key == prebuild_key
 
 
 def test_canonicalize_fg_update_entries_rejects_missing_file_path():

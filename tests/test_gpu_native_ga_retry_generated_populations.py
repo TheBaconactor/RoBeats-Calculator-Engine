@@ -4,6 +4,7 @@ import types
 
 import numpy as np
 import pytest
+from tests.songs_support import make_song
 
 
 class _FakeGpuApi:
@@ -134,7 +135,7 @@ def _install_fake_taichi_modules(monkeypatch, gpu_api=None) -> None:
     fake_api_module = types.ModuleType("gear_optimizer.solver.taichi_gem.api")
     fake_api_module.load_curves = lambda _curves: None
     fake_api_module.ensure_ready = lambda _curves=None, **_kwargs: b""
-    fake_api_module.precompute_timeline_gpu = lambda _calc_song, _curves, song_slot=0: int(song_slot)
+    fake_api_module.precompute_timeline_gpu = lambda _song, _curves, song_slot=0: int(song_slot)
     if gpu_api is not None:
         for name in dir(gpu_api):
             if not name.startswith("_") or name == "_ensure_ftff_combo_tables":
@@ -156,7 +157,7 @@ def test_run_gpu_native_ga_requires_explicit_seed():
 
     with pytest.raises(ValueError, match="explicit per-run ga_seed"):
         genetic.run_gpu_native_ga_runs_payload_prebuilt(
-            calc_song={"metadata": {"Song Name": "seed-required"}},
+            song=make_song([0.0], name="seed-required"),
             curves=_curves(),
             song_slot=0,
             item_stats=np.zeros((1, 10), dtype=np.int32),
@@ -184,10 +185,7 @@ def test_run_gpu_native_ga_retry_with_generated_initial_populations(monkeypatch)
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 1, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
-        calc_song={
-            "metadata": {"Song Name": "retry"},
-            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-        },
+        song=make_song([0.0], name="retry"),
         curves=_curves(),
         song_slot=0,
         item_stats=np.zeros((1, 10), dtype=np.int32),
@@ -229,10 +227,7 @@ def test_gpu_native_ga_uploads_slot_timeline_and_global_static_in_request(monkey
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
-        calc_song={
-            "metadata": {"Song Name": "in-request-upload", "Difficulty": "Hard"},
-            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-        },
+        song=make_song([0.0], name="in-request-upload"),
         curves=_curves(),
         song_slot=3,
         item_stats=np.zeros((16, 10), dtype=np.int32),
@@ -265,10 +260,7 @@ def test_gpu_native_ga_batched_runs_use_indexed_seed_series(monkeypatch):
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
-        calc_song={
-            "metadata": {"Song Name": "indexed-seed-batch", "Difficulty": "Hard"},
-            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-        },
+        song=make_song([0.0], name="indexed-seed-batch"),
         curves=_curves(),
         song_slot=1,
         item_stats=np.zeros((16, 10), dtype=np.int32),
@@ -306,10 +298,7 @@ def test_run_gpu_native_ga_fuses_refresh_with_next_generation(monkeypatch):
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
-        calc_song={
-            "metadata": {"Song Name": "fused-refresh-next", "Difficulty": "Hard"},
-            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-        },
+        song=make_song([0.0], name="fused-refresh-next"),
         curves=_curves(),
         song_slot=0,
         item_stats=np.zeros((1, 10), dtype=np.int32),
@@ -343,10 +332,7 @@ def test_run_gpu_native_ga_raises_when_abort_requested(monkeypatch):
 
     with pytest.raises(RuntimeError, match="GpuExecutor aborted:"):
         genetic.run_gpu_native_ga_runs_payload_prebuilt(
-            calc_song={
-                "metadata": {"Song Name": "abort-smoke", "Difficulty": "Hard"},
-                "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-            },
+            song=make_song([0.0], name="abort-smoke"),
             curves=_curves(),
             song_slot=0,
             item_stats=np.zeros((1, 10), dtype=np.int32),
@@ -379,10 +365,7 @@ def test_run_gpu_native_ga_hybrid_multirun_raises_when_abort_requested(monkeypat
 
     with pytest.raises(RuntimeError, match="GpuExecutor aborted:"):
         genetic.run_gpu_native_ga_runs_payload_prebuilt(
-            calc_song={
-                "metadata": {"Song Name": "steady-abort-smoke", "Difficulty": "Hard"},
-                "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-            },
+            song=make_song([0.0], name="steady-abort-smoke"),
             curves=_curves(),
             song_slot=0,
             item_stats=np.zeros((1, 10), dtype=np.int32),
@@ -426,10 +409,7 @@ def test_run_gpu_native_ga_hybrid_multirun_forwards_global_ftff_caps(monkeypatch
     monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
 
     out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
-        calc_song={
-            "metadata": {"Song Name": "steady-ftff-smoke", "Difficulty": "Hard"},
-            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
-        },
+        song=make_song([0.0], name="steady-ftff-smoke"),
         curves=_curves(),
         song_slot=0,
         item_stats=np.zeros((16, 10), dtype=np.int32),

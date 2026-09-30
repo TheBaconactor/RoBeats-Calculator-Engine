@@ -1,8 +1,8 @@
 import numpy as np
+import pytest
 
-from gear_optimizer.chart import read_chart
-from gear_optimizer.data.song_io import get_base_calc_song
-from gear_optimizer.solver.song_preparation import build_prepared_calc_song
+from gear_optimizer.chart import load_chart, read_chart, read_header
+from gear_optimizer.solver.song_preparation import prepare_song
 
 
 def _write_song(path):
@@ -27,31 +27,36 @@ def _write_song(path):
     )
 
 
-def test_native_calc_song_uses_shared_base_song_io_and_clones_before_timing_envelope(tmp_path):
+def test_prepared_song_is_the_shared_chart_timed_in_its_default_mode(tmp_path):
     song_path = tmp_path / "shared_io_song.txt"
     _write_song(song_path)
 
-    base_calc_song = get_base_calc_song(str(song_path))
-    native_calc_song = build_prepared_calc_song(fp=str(song_path)).calc_song
+    song = prepare_song(str(song_path))
 
-    assert native_calc_song is not base_calc_song
-    assert native_calc_song["metadata"]["Song Name"] == "Shared IO Song"
-    assert native_calc_song["metadata"]["TimingEnvelopeApplied"] is True
-    assert "TimingEnvelopeApplied" not in base_calc_song["metadata"]
+    assert song.chart is load_chart(song_path)
+    assert song.chart.name == "Shared IO Song"
+    assert song.mode == "perfect_window"
+    assert np.array_equal(song.chart.note_types, np.asarray([1, 3, 1], dtype=np.int16))
+    assert np.array_equal(song.hit_timestamps, song.chart.timestamps)
+    assert song.perfect_candidates is not None and song.great_floor is not None
 
-    assert np.array_equal(
-        native_calc_song["song_data"]["timestamps"],
-        base_calc_song["song_data"]["timestamps"],
-    )
-    assert np.array_equal(
-        native_calc_song["song_data"]["note_types"],
-        np.asarray([1, 3, 1], dtype=np.int16),
-    )
-    assert np.array_equal(
-        native_calc_song["song_data"]["fg_timestamps"],
-        native_calc_song["song_data"]["chart_timestamps"],
-    )
-    assert "fg_timestamps" not in base_calc_song["song_data"]
+
+def test_read_header_reads_the_fields_without_the_notes(tmp_path):
+    song_path = tmp_path / "shared_io_song.txt"
+    _write_song(song_path)
+
+    header = read_header(song_path)
+
+    assert header == dict(read_chart(song_path).header)
+    assert header["Song Name"] == "Shared IO Song"
+
+
+def test_read_header_rejects_a_line_without_a_tab(tmp_path):
+    song_path = tmp_path / "bad_header.txt"
+    song_path.write_text("Song Name\tBad\nPrimary Color: Rush\nSong Data\n0.0 0 0 1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="key<TAB>value"):
+        read_header(song_path)
 
 
 def _write_song_loggerprod_order(path):
@@ -100,9 +105,7 @@ def test_non_time_sorted_export_is_canonicalized_to_nondecreasing_time(tmp_path)
     # The invariant the FG builder validates: nondecreasing timestamps.
     assert bool(np.all(ts[1:] >= ts[:-1]))
 
-    # Same canonical order flows through the production calc_song builder.
-    calc_song = get_base_calc_song(str(song_path))
-    cs_ts = np.asarray(calc_song["song_data"]["timestamps"], dtype=np.float32)
-    cs_nt = np.asarray(calc_song["song_data"]["note_types"], dtype=np.int16)
-    assert np.array_equal(cs_ts, ts)
-    assert np.array_equal(cs_nt, nt)
+    # Same canonical order flows through the production song preparation.
+    song = prepare_song(str(song_path))
+    assert np.array_equal(song.chart.timestamps, ts)
+    assert np.array_equal(song.chart.note_types, nt)

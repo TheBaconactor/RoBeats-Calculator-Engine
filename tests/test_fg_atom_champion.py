@@ -8,6 +8,7 @@ from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_respo
 from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _precompute_surface_head_coeffs
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 from tests.parity.force_greats.fg_atom_champion import prove_single_frontier_champions
+from tests.songs_support import make_song
 
 
 def _curves(dtype=np.float32):
@@ -19,15 +20,7 @@ def _curves(dtype=np.float32):
 
 
 def test_head_coefficients_are_not_a_semantic_surface_key() -> None:
-    calc_song = {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": 1.0,
-        },
-        "song_data": {"timestamps": np.linspace(0.0, 1.0, 8, dtype=np.float32)},
-    }
+    song = make_song(np.linspace(0.0, 1.0, 8), mode="zero_ms", primary="Rush", secondary="Flow")
     stats = {
         "Perfect Points": 80,
         "Combo Multiplier": 80,
@@ -68,8 +61,8 @@ def test_head_coefficients_are_not_a_semantic_surface_key() -> None:
     assert coeffs[0].tolist() == coeffs[1].tolist()
     # Real curves: with the synthetic linear tables both surfaces happen to score the same.
     real_curves = synthetic_curves({})
-    assert score_force_greats_response_surface_exact(stats, calc_song, real_curves, no_great) != (
-        score_force_greats_response_surface_exact(stats, calc_song, real_curves, with_great)
+    assert score_force_greats_response_surface_exact(stats, song, real_curves, no_great) != (
+        score_force_greats_response_surface_exact(stats, song, real_curves, with_great)
     )
 
 

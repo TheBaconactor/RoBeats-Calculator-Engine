@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+from tests.songs_support import make_song
 
 
 def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypatch) -> None:
@@ -19,10 +20,10 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
     def _ensure(*_args, **_kwargs):
         calls.append("ensure")
 
-    def _lookup(calc_song, curves, ref_sig=None):
+    def _lookup(song, curves, ref_sig=None):
         del ref_sig
         calls.append("lookup")
-        assert calc_song["metadata"]["Song Name"] == "warmup"
+        assert song.chart.name == "warmup"
         assert curves["Fever Time"] == [1.0]
         return {
             "song_key": ("warmup",),
@@ -42,7 +43,7 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
         assert kwargs["total_notes"] == 1
         return sentinel
 
-    def _upload(calc_song, curves, *, song_slot=0, prebuilt_frontier=None):
+    def _upload(song, curves, *, song_slot=0, prebuilt_frontier=None):
         calls.append(f"upload:{song_slot}")
         # The fix: the warmup hands the built payload straight to the upload, so the upload
         # never re-reads the clearable in-memory frontier cache.
@@ -60,7 +61,7 @@ def test_timeline_warmup_wrapper_hands_built_payload_to_upload_by_value(monkeypa
     monkeypatch.setattr(timeline, "precompute_timeline_gpu", _upload)
 
     timeline.precompute_timeline_gpu_for_warmup(
-        {"metadata": {"Song Name": "warmup"}, "song_data": {}},
+        make_song([0.0], name="warmup"),
         {"Fever Time": [1.0]},
         song_slot=3,
     )
@@ -102,7 +103,7 @@ def test_precompute_timeline_gpu_uses_prebuilt_frontier_without_reload(monkeypat
 
     # Must not raise (would raise MissingFrontierCacheError via the load on the un-fixed path).
     timeline.precompute_timeline_gpu(
-        {"metadata": {}, "song_data": {}},
+        make_song([0.0]),
         {"Fever Time": [1.0]},
         song_slot=0,
         prebuilt_frontier=fake_result,
@@ -114,17 +115,16 @@ def test_synthetic_gpu_warmups_use_warmup_timeline_wrapper() -> None:
     ga_source = (root / "gear_optimizer/solver/taichi_gem/api/ga_operations.py").read_text(encoding="utf-8")
 
     assert "precompute_timeline_gpu_for_warmup" in ga_source
-    assert "precompute_timeline_gpu(_warmup_calc_song()" not in ga_source
+    assert "precompute_timeline_gpu(_warmup_song()" not in ga_source
 
 
 def test_synthetic_gpu_warmup_charts_own_canonical_timeline_inputs() -> None:
-    from gear_optimizer.solver.taichi_gem.api import ga_operations, timeline
+    from gear_optimizer.solver.taichi_gem.api import ga_operations
 
-    calc_song = ga_operations._warmup_calc_song()
-    song_data = calc_song["song_data"]
-    timestamps = np.asarray(song_data["chart_timestamps"], dtype=np.float32)
-    assert np.asarray(song_data["note_types"]).shape == timestamps.shape
-    assert np.asarray(song_data["lanes"]).shape == timestamps.shape
-    np.testing.assert_array_equal(song_data["fg_perfect_candidate_timestamps"], timestamps)
-    np.testing.assert_array_equal(song_data["fg_perfect_floor_timestamps"], timestamps)
-    timeline._song_timing_cache_key(calc_song)
+    song = ga_operations._warmup_song()
+    timestamps = song.chart.timestamps
+    assert song.chart.note_types.shape == timestamps.shape
+    assert song.chart.lanes.shape == timestamps.shape
+    np.testing.assert_array_equal(song.perfect_candidates, timestamps)
+    np.testing.assert_array_equal(song.perfect_floor, timestamps)
+    assert song.timeline_key

@@ -13,7 +13,7 @@ __all__ = [
 
 def run_force_greats_response_frontier_for_ga_candidates(
     ga_candidates,
-    calc_song,
+    song,
     curves,
     meta_primary_color,
     *,
@@ -26,7 +26,7 @@ def run_force_greats_response_frontier_for_ga_candidates(
     mode = "sync" if gpu_client is None else "production"
     return FgResponseScoringService.score_candidates(
         ga_candidates,
-        calc_song,
+        song,
         curves,
         meta_primary_color,
         ga_registry=ga_registry,

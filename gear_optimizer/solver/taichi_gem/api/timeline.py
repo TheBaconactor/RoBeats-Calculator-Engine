@@ -30,7 +30,7 @@ from gear_optimizer.solver.frontier_cache_scope import (
     frontier_cache_is_ephemeral,
     scoped_frontier_cache_dir,
 )
-from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+from gear_optimizer.solver.timing_envelope import TimedSong
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import (
     _FG_SHARED_FRONTIER_PRODUCER_SOURCES,
 )
@@ -66,25 +66,6 @@ _TIMELINE_FRONTIER_CACHE_ARRAY_NAMES = frozenset(
         "grid_fever_activations",
     )
 )
-
-
-def timing_envelope_timing_context(calc_song):
-    """
-    Return deterministic timing-envelope settings that affect base timing.
-    """
-    if not isinstance(calc_song, dict):
-        return ("", "", "", 0)
-
-    meta = calc_song.get("metadata", {}) or {}
-    if not isinstance(meta, dict) or not meta.get("TimingEnvelopeApplied"):
-        return ("", "", "", 0)
-
-    return (
-        "TIMING_ENVELOPE",
-        str(meta.get("TimingEnvelopeMode", "") or "").strip().lower(),
-        str(meta.get("TimingEnvelopeBaselineHash", "") or ""),
-        0,
-    )
 
 
 @ti.kernel
@@ -599,53 +580,6 @@ def _save_frontier_payload_to_disk(
     return raw
 
 
-def _song_timing_cache_key(calc_song: dict) -> tuple:
-    meta = calc_song.get("metadata", {}) or {}
-    song_data = calc_song.get("song_data", {}) or {}
-    cached = calc_song.get("_gpu_timing_cache_key_frontier", None)
-    if isinstance(cached, tuple) and len(cached) == 12:
-        return cached
-    chart_ts = song_data.get("chart_timestamps", None)
-    timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
-    # The physical input engine consumes chart order and lane-local matcher order. Hash the exact
-    # aligned arrays in producer order; sorting or omitting lanes can alias charts whose abstract
-    # timestamp/type sets match but whose legal fever surfaces differ.
-    ts_arr = np.asarray(timestamps, dtype=np.float32).reshape(-1)
-    n_notes = int(ts_arr.shape[0])
-    ts_sig = array_sig16(np.ascontiguousarray(ts_arr))
-    if _timeline_calc_song_is_zero_ms(calc_song):
-        # Fixed chart-time fever membership depends on timestamps, long-note count, and the
-        # FT/FF axes only. Note type, lane, and Perfect-window geometry are not inputs to the
-        # zero_ms singleton and must not become accidental requirements of that cheaper model.
-        nt_sig = b"zero_ms"
-        lane_sig = b"zero_ms"
-    else:
-        nt_raw = song_data.get("note_types")
-        if nt_raw is None or len(nt_raw) != n_notes:
-            raise ValueError("timeline frontier requires one chart note type per note")
-        nt_arr = np.asarray(nt_raw, dtype=np.int16).reshape(-1)
-        lanes_raw = song_data.get("lanes")
-        if lanes_raw is None or len(lanes_raw) != n_notes:
-            raise ValueError("timeline frontier requires one chart lane per note")
-        lane_arr = np.asarray(lanes_raw, dtype=np.int32).reshape(-1)
-        nt_sig = array_sig16(np.ascontiguousarray(nt_arr))
-        lane_sig = array_sig16(np.ascontiguousarray(lane_arr))
-    key = (
-        str(meta.get("Song Name", "")),
-        str(meta.get("Difficulty", "")),
-        int(len(timestamps)),
-        float(meta.get("Last Note Time", 0) or 0),
-        int(meta.get("Long Notes", 0) or 0),
-        bytes(ts_sig),
-        bytes(nt_sig),
-        bytes(lane_sig),
-    ) + timing_envelope_timing_context(calc_song)
-    # Cache on the calc_song dict to avoid repeated full-array hashing when the
-    # same song is revisited and precompute_timeline_gpu() hits the slot cache.
-    calc_song["_gpu_timing_cache_key_frontier"] = key
-    return key
-
-
 def _get_or_build_frontier_payload_with_source(
     song_key: tuple,
     *,
@@ -691,121 +625,47 @@ def _get_or_build_frontier_payload_with_source(
     return payload, "built"
 
 
-def _timeline_payload_lookup_context(calc_song: dict, curves: StatCurves, *, ref_sig: bytes | None = None) -> dict:
-    if not isinstance(calc_song, dict):
-        raise TypeError("calc_song must be a dict")
-    if not isinstance(curves, StatCurves):
-        raise TypeError("curves must be StatCurves")
+def _timeline_payload_lookup_context(song: TimedSong, curves: StatCurves) -> dict:
+    """The frontier inputs of a timed song: its cache key, the chart and the FT/FF axes.
 
-    base_song_key = _song_timing_cache_key(calc_song)
-    # Timeline frontier payload depends on song timing + FT/FF axes only.
-    # Keep key independent of unrelated ref tables (PP/CM/FM/etc.) so startup
-    # prebuild and runtime scoring reuse the same disk artifact.
-    _ = ref_sig
-    song_key = base_song_key
-    song_data = calc_song.get("song_data", {}) or {}
-    chart_ts = song_data.get("chart_timestamps", None)
-    src = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
-    timestamps = np.asarray(src, dtype=np.float32)
-    total_notes = int(len(timestamps))
+    The payload depends on song timing and the FT/FF axes only, so the key leaves the other curves out
+    and startup prebuild and runtime scoring share one disk artifact.
+    """
+    chart = song.chart
+    total_notes = chart.total_notes
     if total_notes > fields.MAX_SONG_NOTES:
         raise ValueError(f"Song has {total_notes} notes, max is {fields.MAX_SONG_NOTES}")
-
-    ref_ft = curves.f32["Fever Time"]
-    ref_ff = curves.f32["Fever Fill Rate"]
-    perfect_candidates = song_data.get("fg_perfect_candidate_timestamps")
-    perfect_floor = song_data.get("fg_perfect_floor_timestamps")
-    lanes = song_data.get("lanes")
-    if _timeline_calc_song_is_zero_ms(calc_song):
-        # The zero_ms payload is a deterministic singleton built from fixed hit timestamps.
-        # These physical Perfect-window inputs are intentionally absent and never consumed.
-        perfect_candidates_arr = np.empty(0, dtype=np.float32)
-        perfect_floor_arr = np.empty(0, dtype=np.float32)
-        lanes_arr = np.empty(0, dtype=np.int32)
+    if song.mode == "zero_ms":
+        # The zero_ms payload is a deterministic singleton built from fixed hit timestamps; the
+        # physical Perfect-window inputs are absent and never consumed.
+        perfect_candidates = np.empty(0, dtype=np.float32)
+        perfect_floor = np.empty(0, dtype=np.float32)
+        lanes = np.empty(0, dtype=np.int32)
     else:
-        if perfect_candidates is None or len(perfect_candidates) != total_notes:
-            raise ValueError("timeline frontier requires the canonical Perfect candidate envelope")
-        if perfect_floor is None or len(perfect_floor) != total_notes:
-            raise ValueError("timeline frontier requires the canonical Perfect floor envelope")
-        if lanes is None or len(lanes) != total_notes:
-            raise ValueError("timeline frontier requires one chart lane per note")
-        perfect_candidates_arr = np.asarray(perfect_candidates, dtype=np.float32)
-        perfect_floor_arr = np.asarray(perfect_floor, dtype=np.float32)
-        lanes_arr = np.asarray(lanes, dtype=np.int32)
+        perfect_candidates, perfect_floor, lanes = song.perfect_candidates, song.perfect_floor, chart.lanes
     return {
-        "base_song_key": base_song_key,
-        "song_key": song_key,
-        "timestamps": timestamps,
-        "total_notes": int(total_notes),
-        "long_notes": int(calc_song["metadata"].get("Long Notes", 0)),
-        "last_note_time": float(calc_song["metadata"].get("Last Note Time", 0)),
-        "ref_ft": ref_ft,
-        "ref_ff": ref_ff,
-        "note_types": song_data.get("note_types", None),
-        "perfect_candidates": perfect_candidates_arr,
-        "perfect_floor": perfect_floor_arr,
-        "lanes": lanes_arr,
+        "song_key": song.timeline_key,
+        "timestamps": chart.timestamps,
+        "total_notes": total_notes,
+        "long_notes": chart.long_notes,
+        "last_note_time": chart.last_note_time,
+        "ref_ft": curves.f32["Fever Time"],
+        "ref_ff": curves.f32["Fever Fill Rate"],
+        "note_types": chart.note_types,
+        "perfect_candidates": perfect_candidates,
+        "perfect_floor": perfect_floor,
+        "lanes": lanes,
     }
 
 
-def _prepare_timeline_frontier_calc_song(calc_song: dict, *, timing_mode: str | None = None) -> str:
-    """Make the frontier input canonical before any key, cache, or scorer can consume it."""
-
-    if not isinstance(calc_song, dict):
-        raise TypeError("calc_song must be a dict")
-    metadata = calc_song.get("metadata") if isinstance(calc_song.get("metadata"), dict) else {}
-    normalized = str(
-        timing_mode
-        if timing_mode is not None
-        else metadata.get("TimingEnvelopeMode") or metadata.get("Timing Mode") or "perfect_window"
-    ).strip().lower()
-    if normalized not in {"perfect_window", "zero_ms"}:
-        raise ValueError(f"unknown timeline frontier timing mode {timing_mode!r}")
-
-    existing_mode = str(metadata.get("TimingEnvelopeMode") or "").strip().lower()
-
-    # A custom fixed-timing input may carry a nonzero baseline that cannot be reconstructed from
-    # its hash. Preserve an already-canonical zero-ms object; raw zero-ms inputs are materialized.
-    if (
-        normalized == "zero_ms"
-        and metadata.get("TimingEnvelopeApplied") is True
-        and existing_mode == "zero_ms"
-    ):
-        return normalized
-
-    if existing_mode != normalized:
-        calc_song.pop("_gpu_timing_cache_key_frontier", None)
-    prepared = apply_timing_envelope(calc_song, mode=normalized)
-    if prepared is None:
-        raise ValueError("timeline frontier requires chart timestamps")
-    return normalized
-
-
-def timeline_frontier_payload_cache_info(
-    calc_song: dict,
-    curves: StatCurves,
-    *,
-    timing_mode: str | None = None,
-) -> TimelineFrontierCacheInfo:
+def timeline_frontier_payload_cache_info(song: TimedSong, curves: StatCurves) -> TimelineFrontierCacheInfo:
     """
     Return exact-frontier cache status without building group payloads or loading `.npz`.
 
-    Startup prebuild uses this to skip already-built songs cheaply. It still
-    parses/hash-checks the chart timing data so the decision uses the exact same
-    key that runtime upload will use.
+    Startup prebuild uses this to skip already-built songs cheaply, with the exact key runtime upload
+    uses.
     """
-    if not isinstance(calc_song, dict):
-        raise TypeError("calc_song must be a dict")
-    if not isinstance(curves, StatCurves):
-        raise TypeError("curves must be StatCurves")
-
-    _prepare_timeline_frontier_calc_song(calc_song, timing_mode=timing_mode)
-
-    base_song_key = _song_timing_cache_key(calc_song)
-    song_key = base_song_key
-    ref_ft = curves.f32["Fever Time"]
-    ref_ff = curves.f32["Fever Fill Rate"]
-    cache_key = _frontier_payload_cache_key(song_key, ref_ft, ref_ff)
+    cache_key = _frontier_payload_cache_key(song.timeline_key, curves.f32["Fever Time"], curves.f32["Fever Fill Rate"])
 
     cache_source = "missing"
     if not frontier_cache_is_ephemeral():
@@ -821,26 +681,16 @@ def timeline_frontier_payload_cache_info(
     disk_path = live_path if live_path is not None else _frontier_disk_cache_path(cache_key)
     if cache_source == "missing" and live_path is not None:
         cache_source = "disk"
-
-    song_data = calc_song.get("song_data", {}) or {}
-    chart_ts = song_data.get("chart_timestamps", None)
-    src = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
     return TimelineFrontierCacheInfo(
         cache_key=cache_key,
         disk_path=disk_path,
         cache_source=cache_source,
-        total_notes=int(len(src)),
-        long_notes=int((calc_song.get("metadata", {}) or {}).get("Long Notes", 0) or 0),
+        total_notes=song.chart.total_notes,
+        long_notes=song.chart.long_notes,
     )
 
 
-def _timeline_calc_song_is_zero_ms(calc_song: dict) -> bool:
-    """True when a calc_song was prepared for the fixed chart-time (zero_ms) timing model."""
-    metadata = calc_song.get("metadata", {}) if isinstance(calc_song, dict) else {}
-    return str((metadata or {}).get("TimingEnvelopeMode", "") or "").strip().lower() == "zero_ms"
-
-
-def _build_zero_ms_timeline_payload(calc_song: dict, curves: StatCurves) -> TimelineFrontierGridPayload:
+def _build_zero_ms_timeline_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierGridPayload:
     """Build the exact singleton chart-time surface for every FT/FF cell.
 
     zero_ms is fixed timing (every hit at its chart timestamp), so each (Fever Time, Fever Fill)
@@ -852,15 +702,9 @@ def _build_zero_ms_timeline_payload(calc_song: dict, curves: StatCurves) -> Time
     the subset of the shared representation the user's thin gate promotes to a full frontier only
     when perfect_window is actually requested.
     """
-    metadata = calc_song.get("metadata", {}) or {}
-    if str(metadata.get("TimingEnvelopeMode", "") or "").strip().lower() != "zero_ms":
-        raise ValueError("fixed chart-time timeline payload requires TimingEnvelopeMode='zero_ms'")
-
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = np.asarray(
-        song_data.get("fg_timestamps", song_data.get("chart_timestamps", song_data.get("timestamps", ()))),
-        dtype=np.float32,
-    ).reshape(-1)
+    if song.mode != "zero_ms":
+        raise ValueError("fixed chart-time timeline payload requires a zero_ms song")
+    timestamps = song.hit_timestamps
     total_notes = int(timestamps.shape[0])
     if total_notes > 1 and bool(np.any(np.diff(timestamps) < np.float32(0.0))):
         raise ValueError("zero_ms chart timestamps must be non-decreasing")
@@ -886,8 +730,8 @@ def _build_zero_ms_timeline_payload(calc_song: dict, curves: StatCurves) -> Time
     body_normal_pool = np.zeros((1, pool_cap), dtype=np.int32)
     masks_pool = np.zeros((1, pool_cap, 4), dtype=np.uint32)
     head_coeffs_pool = np.zeros((1, pool_cap, 4), dtype=np.int16)
-    long_notes = int(metadata.get("Long Notes", 0) or 0)
-    last_note_time = float(metadata.get("Last Note Time", float(timestamps[-1]) if total_notes else 0.0) or 0.0)
+    long_notes = song.chart.long_notes
+    last_note_time = song.chart.last_note_time
     pool_by_surface: dict[tuple[int, int, tuple[int, int, int, int], int, int], int] = {}
 
     from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_surface_grid
@@ -948,10 +792,10 @@ def _build_zero_ms_timeline_payload(calc_song: dict, curves: StatCurves) -> Time
     )
 
 
-def _zero_ms_timeline_result(calc_song: dict, curves: StatCurves) -> TimelineFrontierPrewarmResult:
+def _zero_ms_timeline_result(song: TimedSong, curves: StatCurves) -> TimelineFrontierPrewarmResult:
     """Load or persist the cheap zero_ms singleton payload."""
     t0 = time.perf_counter()
-    lookup = _timeline_payload_lookup_context(calc_song, curves)
+    lookup = _timeline_payload_lookup_context(song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload, cache_source = _get_cached_frontier_payload_with_source(
         lookup["song_key"],
@@ -959,7 +803,7 @@ def _zero_ms_timeline_result(calc_song: dict, curves: StatCurves) -> TimelineFro
         ref_ff=lookup["ref_ff"],
     )
     if payload is None:
-        payload = _build_zero_ms_timeline_payload(calc_song, curves)
+        payload = _build_zero_ms_timeline_payload(song, curves)
         raw = _save_frontier_payload_to_disk(cache_key, payload)
         cache_source = "built"
         if not frontier_cache_is_ephemeral():
@@ -975,25 +819,19 @@ def _zero_ms_timeline_result(calc_song: dict, curves: StatCurves) -> TimelineFro
     )
 
 
-def build_or_load_timeline_frontier_payload(
-    calc_song: dict,
-    curves: StatCurves,
-    *,
-    timing_mode: str | None = None,
-) -> TimelineFrontierPrewarmResult:
+def build_or_load_timeline_frontier_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierPrewarmResult:
     """
     Build or load the reusable exact frontier payload without touching Taichi fields.
 
     This is the shared host-side entrypoint for background lookahead and offline
     disk-cache prebuilding, so cache signatures stay identical to runtime scoring.
     """
-    resolved_timing_mode = _prepare_timeline_frontier_calc_song(calc_song, timing_mode=timing_mode)
-    if resolved_timing_mode == "zero_ms":
+    if song.mode == "zero_ms":
         # zero_ms is fixed timing: serve the cheap chart-time singleton and never touch the
         # perfect_window candidate-frontier build or its disk cache.
-        return _zero_ms_timeline_result(calc_song, curves)
+        return _zero_ms_timeline_result(song, curves)
     t0 = time.perf_counter()
-    lookup = _timeline_payload_lookup_context(calc_song, curves)
+    lookup = _timeline_payload_lookup_context(song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload, cache_source = _get_cached_frontier_payload_with_source(
         lookup["song_key"],
@@ -1026,20 +864,14 @@ def build_or_load_timeline_frontier_payload(
     )
 
 
-def load_timeline_frontier_payload(
-    calc_song: dict,
-    curves: StatCurves,
-    *,
-    timing_mode: str | None = None,
-) -> TimelineFrontierPrewarmResult:
+def load_timeline_frontier_payload(song: TimedSong, curves: StatCurves) -> TimelineFrontierPrewarmResult:
     """Load the timeline frontier, building and persisting a live cache miss."""
-    resolved_timing_mode = _prepare_timeline_frontier_calc_song(calc_song, timing_mode=timing_mode)
-    if resolved_timing_mode == "zero_ms":
+    if song.mode == "zero_ms":
         # zero_ms serves the cheap chart-time singleton on demand -- it is never persisted to the
         # perfect_window disk cache, so probing it here would be a miss anyway; build directly.
-        return _zero_ms_timeline_result(calc_song, curves)
+        return _zero_ms_timeline_result(song, curves)
     t0 = time.perf_counter()
-    lookup = _timeline_payload_lookup_context(calc_song, curves)
+    lookup = _timeline_payload_lookup_context(song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload, cache_source = _get_cached_frontier_payload_with_source(
         lookup["song_key"],
@@ -1047,7 +879,7 @@ def load_timeline_frontier_payload(
         ref_ff=lookup["ref_ff"],
     )
     if payload is None:
-        return build_or_load_timeline_frontier_payload(calc_song, curves)
+        return build_or_load_timeline_frontier_payload(song, curves)
     return TimelineFrontierPrewarmResult(
         payload=payload,
         cache_key=cache_key,
@@ -1060,7 +892,7 @@ def load_timeline_frontier_payload(
 
 
 def precompute_timeline_gpu(
-    calc_song: dict,
+    song: TimedSong,
     curves: StatCurves,
     song_slot: int = 0,
     *,
@@ -1074,8 +906,8 @@ def precompute_timeline_gpu(
     only the per-slot fields read by GA scoring kernels.
 
     Args:
-        calc_song: Song calculation context with timestamps/metadata
-        curves: Reference lookup arrays (must include Fever Time/Fill Rate)
+        song: the timed song
+        curves: the stat curves (the FT/FF axes key the frontier)
         song_slot: Grid slot to write to (0-7, default 0 for single-song mode)
         prebuilt_frontier: Optional already-resolved frontier payload to upload BY VALUE.
             Production runtime leaves this None so load_timeline_frontier_payload() can reuse or
@@ -1100,15 +932,14 @@ def precompute_timeline_gpu(
 
     # Ensure GPU is ready with refs and grid fields (even on cache hit).
     # Also reuse the ref signature so callers don't hash refs twice.
-    ref_sig = ensure_ready(curves)
+    ensure_ready(curves)
 
-    lookup = _timeline_payload_lookup_context(calc_song, curves, ref_sig=ref_sig)
     # Check if we already computed for this song+ref set.
-    song_key = lookup["song_key"]
+    song_key = song.timeline_key
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
     frontier_result = (
-        prebuilt_frontier if prebuilt_frontier is not None else load_timeline_frontier_payload(calc_song, curves)
+        prebuilt_frontier if prebuilt_frontier is not None else load_timeline_frontier_payload(song, curves)
     )
     song_slot_i = int(song_slot)
     frontier_payload = frontier_result.payload
@@ -1129,7 +960,7 @@ def precompute_timeline_gpu(
     _gpu_timeline_song_id_by_slot[song_slot] = song_key
 
 
-def precompute_timeline_gpu_for_warmup(calc_song: dict, curves: StatCurves, song_slot: int = 0) -> None:
+def precompute_timeline_gpu_for_warmup(song: TimedSong, curves: StatCurves, song_slot: int = 0) -> None:
     """
     Warmup-only entrypoint for synthetic charts.
 
@@ -1146,7 +977,7 @@ def precompute_timeline_gpu_for_warmup(calc_song: dict, curves: StatCurves, song
     """
     ensure_ready(curves)
     started = time.perf_counter()
-    lookup = _timeline_payload_lookup_context(calc_song, curves)
+    lookup = _timeline_payload_lookup_context(song, curves)
     cache_key = _frontier_payload_cache_key(lookup["song_key"], lookup["ref_ft"], lookup["ref_ff"])
     payload = build_timeline_frontier_grid_payload(
         song_slot=0,
@@ -1170,7 +1001,7 @@ def precompute_timeline_gpu_for_warmup(calc_song: dict, curves: StatCurves, song
         long_notes=int(lookup["long_notes"]),
     )
     precompute_timeline_gpu(
-        calc_song,
+        song,
         curves,
         song_slot=song_slot,
         prebuilt_frontier=frontier_result,

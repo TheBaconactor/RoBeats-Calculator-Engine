@@ -84,7 +84,6 @@ class InflightGAPipeline:
     def reserve_slot(song: NativeSong, slot_pool: Any) -> int:
         if int(song.runtime.song_slot or 0) <= 0:
             song.runtime.song_slot = int(slot_pool.acquire())
-        song.gpu_inputs.calc_song["_gpu_song_slot"] = int(song.runtime.song_slot)
         return int(song.runtime.song_slot)
 
     @staticmethod
@@ -93,8 +92,6 @@ class InflightGAPipeline:
         if song_slot > 0:
             slot_pool.release(song_slot)
         song.runtime.song_slot = 0
-        if isinstance(song.gpu_inputs.calc_song, dict):
-            song.gpu_inputs.calc_song.pop("_gpu_song_slot", None)
 
     @staticmethod
     def prepare_submit(song: NativeSong) -> None:
@@ -103,18 +100,13 @@ class InflightGAPipeline:
     @staticmethod
     def build_payload(song: NativeSong) -> dict[str, Any]:
         # Song-level FG response-frontier inputs for the FUSED GA->FG handoff
-        # (Slice 3). All candidate-independent and prepared pre-GA by
-        # prepare_fg_static_sync (the scoring bundle) + resolve_active_fg_calc_song
-        # (the FG calc song). The owner scores FG straight from the GA pack/select
-        # device base_stats7 in the same owner turn, so these MUST be attached to the
-        # GA request. The fused score requires the bundle; its absence fails loudly in
-        # the owner handler (required state, no fallback).
-        from gear_optimizer.solver.native_inflight_pipeline import resolve_active_fg_calc_song
-
+        # (Slice 3), prepared pre-GA by prepare_fg_static_sync (the scoring bundle). The
+        # owner scores FG straight from the GA pack/select device base_stats7 in the same
+        # owner turn, so the bundle MUST be attached to the GA request; its absence fails
+        # loudly in the owner handler (required state, no fallback).
         fg_scoring_bundle = song.runtime.fg.fg_response_scoring_bundle
-        fg_calc_song = resolve_active_fg_calc_song(song)
         return {
-            "calc_song": song.gpu_inputs.calc_song,
+            "timed_song": song.gpu_inputs.timed_song,
             "curves": song.gpu_inputs.curves,
             "song_slot": int(song.runtime.song_slot),
             "item_stats": song.gpu_inputs.item_stats,
@@ -138,7 +130,6 @@ class InflightGAPipeline:
             "fg_gear_name_rank": song.gpu_inputs.fg_gear_name_rank,
             "fg_mini_sig_id": song.gpu_inputs.fg_mini_sig_id,
             "fg_scoring_bundle": fg_scoring_bundle,
-            "fg_calc_song": fg_calc_song,
         }
 
     @staticmethod

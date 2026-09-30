@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 import math
 
+from gear_optimizer.chart import Chart
 from gear_optimizer.core.gem_defs import ELEMENT_STAT_KEYS, GemKey
 from gear_optimizer.core.utils import safe_int
 
@@ -283,7 +284,7 @@ def materialize_minis_for_song(
     all_minis: Sequence[Mapping[str, Any]] | None = None,
     *,
     minis_by_name: Mapping[str, Mapping[str, Any]] | None = None,
-    calc_song: Mapping[str, Any] | None = None,
+    chart: Chart | None = None,
     song_name: str | None = None,
     primary_color: str | None = None,
     secondary_color: str | None = None,
@@ -292,14 +293,9 @@ def materialize_minis_for_song(
     if not source_minis and minis_by_name:
         source_minis = list(minis_by_name.values())
 
-    metadata = (calc_song or {}).get("metadata", {}) if isinstance(calc_song, Mapping) else {}
-    if not isinstance(metadata, Mapping):
-        metadata = {}
-    song = str(song_name or metadata.get("Song Name") or metadata.get("Song") or "").strip()
-    primary = str(primary_color if primary_color is not None else metadata.get("Primary Color", "") or "").strip()
-    secondary = str(
-        secondary_color if secondary_color is not None else metadata.get("Secondary Color", "") or ""
-    ).strip()
+    song = str(song_name or (chart.name if chart is not None else "") or "").strip()
+    primary = str(primary_color if primary_color is not None else (chart.primary if chart is not None else "")).strip()
+    secondary = str(secondary_color if secondary_color is not None else (chart.secondary if chart is not None else "")).strip()
     normalized_secondary = normalize_song_secondary(primary, secondary)
 
     enabled = any(mini_ascension_enabled(mini) for mini in source_minis if isinstance(mini, Mapping))

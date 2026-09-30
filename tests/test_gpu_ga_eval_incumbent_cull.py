@@ -22,6 +22,7 @@ Taichi kernel and stringified annotations break ti.kernel argument parsing.
 """
 
 from tests.curves_support import synthetic_curves
+from tests.songs_support import make_song
 import numpy as np
 import pytest
 
@@ -106,27 +107,16 @@ def _curves() -> dict[str, np.ndarray]:
     })
 
 
-def _calc_song(*, n_notes: int = 400) -> dict:
-    timestamps = np.linspace(0, 90, int(n_notes), dtype=np.float64)
-    return {
-        "metadata": {
-            "Song Name": "GA eval incumbent cull parity song",
-            "Difficulty": "Hard",
-            "Primary Color": _PRIMARY_COLOR,
-            "Secondary Color": _SECONDARY_COLOR,
-            "Total Notes": int(n_notes),
-            "Long Notes": 10,
-            "Last Note Time": float(timestamps[-1]),
-            "TimingEnvelopeApplied": True,
-            "TimingEnvelopeMode": "perfect",
-            "TimingEnvelopeFGCarry": "full",
-        },
-        "song_data": {
-            "timestamps": timestamps,
-            "note_types": np.ones(int(n_notes), dtype=np.int16),
-            "lanes": np.arange(int(n_notes), dtype=np.int32) % np.int32(4),
-        },
-    }
+def _song(*, n_notes: int = 400, mode: str = "perfect_window"):
+    return make_song(
+        np.linspace(0, 90, int(n_notes)),
+        mode=mode,
+        name="GA eval incumbent cull parity song",
+        primary=_PRIMARY_COLOR,
+        secondary=_SECONDARY_COLOR,
+        long_notes=10,
+        lanes=np.arange(int(n_notes), dtype=np.int32) % np.int32(4),
+    )
 
 
 def _make_exhaustive_reference_kernel():
@@ -273,17 +263,14 @@ def eval_device_state():
     base_fixed_stats_arr = build_stats_array({})
     base_fixed_stats_arr = np.asarray(base_fixed_stats_arr, dtype=np.int32)
 
-    calc_song = _calc_song()
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
-
-    apply_timing_envelope(calc_song, mode="perfect_window")
+    song = _song()
     curves = _curves()
     flags = normalize_color_flags(build_color_flags(_PRIMARY_COLOR, _SECONDARY_COLOR, _SELECTED_COLOR)).as_tuple()
 
     with _GPU_LOCK:
         ensure_ready()
-        prebuilt = build_or_load_timeline_frontier_payload(calc_song, curves)
-        precompute_timeline_gpu(calc_song, curves, song_slot=_SONG_SLOT, prebuilt_frontier=prebuilt)
+        prebuilt = build_or_load_timeline_frontier_payload(song, curves)
+        precompute_timeline_gpu(song, curves, song_slot=_SONG_SLOT, prebuilt_frontier=prebuilt)
         gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
         gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
         gpu_api.ga_generate_initial_populations(

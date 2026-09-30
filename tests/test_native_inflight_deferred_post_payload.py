@@ -10,6 +10,7 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     build_native_song_error_payload,
     build_native_task_error_payload,
 )
+from tests.songs_support import make_song
 
 
 def _curves() -> dict:
@@ -25,12 +26,10 @@ def _curves() -> dict:
     })
 
 
-def _prebuild_timeline_frontier(calc_song: dict, curves: dict) -> None:
+def _prebuild_timeline_frontier(song, curves) -> None:
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
-    apply_timing_envelope(calc_song)
-    build_or_load_timeline_frontier_payload(calc_song, curves)
+    build_or_load_timeline_frontier_payload(song, curves)
 
 
 def test_native_song_error_payload_suppresses_bundle_progress():
@@ -106,12 +105,9 @@ def test_fg_update_payload_uses_shared_result_event_shape():
 def test_native_inflight_deferred_post_payload_keeps_replay_context(monkeypatch):
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
 
-    calc_song = {
-        "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
-        "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
-    }
+    timed_song = make_song([0.0])
     curves = _curves()
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(timed_song, curves)
     ga_candidates = [
         {
             "Score": 111,
@@ -140,7 +136,7 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context(monkeypatch)
         db_key="pytest_native_deferred_post",
         fp="Data/Hard/pytest_native_deferred_post.txt",
         effective_difficulty="Hard",
-        calc_song=calc_song,
+        timed_song=timed_song,
         curves=curves,
         ga_candidates=ga_candidates,
         best_data={"Score": 111, "BaseScore": 111, "Stats": {"Perfect Points": 1}},
@@ -158,7 +154,7 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context(monkeypatch)
 
     assert payload["_deferred_post"] is True
     assert payload["_pending_fg_job"] is True
-    assert payload["calc_song"] is calc_song
+    assert payload["timed_song"] is timed_song
     assert payload["curves"] is curves
     assert payload["best_data"]["BaseScore"] == 111
     assert len(payload["ga_candidates"]) == 1
@@ -178,16 +174,13 @@ def test_deferred_post_reuses_prepared_ga_candidate_surface(monkeypatch):
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
     from gear_optimizer.solver import native_inflight_pipeline as stages
 
-    calc_song = {
-        "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
-        "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
-    }
+    timed_song = make_song([0.0])
     curves = _curves()
-    _prebuild_timeline_frontier(calc_song, curves)
+    _prebuild_timeline_frontier(timed_song, curves)
     song = make_native_song(
         song_name="pytest_native_deferred_post_reuse",
         task_key="pytest_native_deferred_post_reuse",
-        calc_song=calc_song,
+        timed_song=timed_song,
         curves=curves,
         ga_candidates=[
             {
@@ -233,12 +226,9 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         ),
     )
 
-    inline_calc_song = {
-        "metadata": {"Primary Color": "Rush", "Secondary Color": "Flow", "Long Notes": 0, "Last Note Time": 0.0},
-        "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
-    }
+    inline_song = make_song([0.0])
     inline_ref_arrays = _curves()
-    _prebuild_timeline_frontier(inline_calc_song, inline_ref_arrays)
+    _prebuild_timeline_frontier(inline_song, inline_ref_arrays)
     song = make_native_song(
         song_name="pytest_native_deferred_post_inline_fg",
         task_key="pytest_native_deferred_post_inline_fg",
@@ -246,7 +236,7 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         db_key="pytest_native_deferred_post_inline_fg",
         fp="Data/Hard/pytest_native_deferred_post_inline_fg.txt",
         effective_difficulty="Hard",
-        calc_song=inline_calc_song,
+        timed_song=inline_song,
         curves=inline_ref_arrays,
         ga_candidates=[
             {
@@ -294,15 +284,7 @@ def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgFusedOwnerScoreRow
 
-    calc_song = {
-        "metadata": {
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": 0.0,
-        },
-        "song_data": {"timestamps": [0.0], "fg_timestamps": [0.0]},
-    }
+    timed_song = make_song([0.0], mode="zero_ms")
     curves = _curves()
     base_components = (5, 6, 7, 8, 9, 10, 11)
     planner_key = ("ck0",)
@@ -327,7 +309,7 @@ def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
         db_best_fg_score=100,
         db_baseline_valid=True,
         fg_response_frontier_plan=SimpleNamespace(
-            calc_song=calc_song,
+            song=timed_song,
             curves=curves,
             pending_jobs=(({"loadout_hash": "ck0"}, {}, "Rush", base_stats, 111, planner_key),),
             prepared_batches=[
@@ -335,7 +317,7 @@ def test_native_inflight_fg_worker_records_progress_info(tmp_path, monkeypatch):
                     batch=SimpleNamespace(
                         base_components=np.asarray([base_components], dtype=np.int32),
                         selected_color="Rush",
-                        calc_song=calc_song,
+                        song=timed_song,
                         curves=curves,
                         scoring_bundle=object(),
                         started=0.0,
@@ -392,17 +374,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
     )
     gear = fixture["base_entry"]["gear"]
     minis = fixture["base_entry"]["minis"]
-    calc_song = {
-        "metadata": {
-            "Song Name": "pytest_native_deferred_post_exact_authority",
-            "Difficulty": "Hard",
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": 0.0,
-        },
-        "song_data": {"timestamps": [0.0], "note_types": [1], "lanes": [0]},
-    }
+    timed_song = make_song([0.0], name="pytest_native_deferred_post_exact_authority")
     curves = _curves()
     stats = {
         "Perfect Points": 0,
@@ -413,8 +385,8 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         "Rush": 10,
         "Flow": 5,
     }
-    _prebuild_timeline_frontier(calc_song, curves)
-    raw_exact_score = int(score_stats_exact(stats, calc_song, curves))
+    _prebuild_timeline_frontier(timed_song, curves)
+    raw_exact_score = int(score_stats_exact(stats, timed_song, curves))
     inflated_score = raw_exact_score + 12345
 
     song = make_native_song(
@@ -424,7 +396,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         db_key="pytest_native_deferred_post_exact_authority",
         fp="Data/Hard/pytest_native_deferred_post_exact_authority.txt",
         effective_difficulty="Hard",
-        calc_song=calc_song,
+        timed_song=timed_song,
         curves=curves,
         ga_candidates=[],
         best_data={
@@ -456,7 +428,7 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         payload["ga_candidates"],
         None,
         lambda data: dict(data),
-        calc_song=payload["calc_song"],
+        song=payload["timed_song"],
         curves=payload["curves"],
     )
 
@@ -469,4 +441,4 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
     assert persisted["fg_score"] == 0
     assert persisted["force"] is None
     assert persisted["score"] != inflated_score
-    assert persisted["score"] == int(score_stats_exact(persisted_stats, payload["calc_song"], payload["curves"]))
+    assert persisted["score"] == int(score_stats_exact(persisted_stats, payload["timed_song"], payload["curves"]))

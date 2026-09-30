@@ -775,23 +775,24 @@ def test_startup_frontier_cache_prebuild_has_no_scope_or_disable_flags() -> None
     assert offenders == []
 
 
+def _chart_text(name: str, timestamps: list[float]) -> str:
+    notes = "".join(f"{time} {index} {index % 4} 1\n" for index, time in enumerate(timestamps, 1))
+    return (
+        f"Song Name\t{name}\nDifficulty\tHard\nPrimary Color\tRush\nSecondary Color\tFlow\n"
+        f"Last Note Time\t{timestamps[-1]}\nLong Notes\t0\nSong Data\n{notes}"
+    )
+
+
 def test_fg_response_prebuild_skips_valid_cache_hit(monkeypatch, tmp_path: Path) -> None:
     from gear_optimizer.solver import fg_response_frontier_cache_prebuild as prebuild
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCacheInfo
 
     song_path = tmp_path / "Song.txt"
-    song_path.write_text("fake", encoding="utf-8")
+    song_path.write_text(_chart_text("Cached Song", [1.0, 2.0]), encoding="utf-8")
     cache_path = tmp_path / "cache.npz"
     cache_path.write_text("cache", encoding="utf-8")
 
-    calc_song = {"metadata": {"Song Name": "Cached Song"}, "song_data": {"timestamps": [1.0, 2.0]}}
-
-    monkeypatch.setattr("gear_optimizer.data.song_io.get_base_calc_song", lambda *_args, **_kwargs: calc_song)
-    monkeypatch.setattr(
-        "gear_optimizer.solver.timing_envelope.apply_timing_envelope", lambda _song, *, mode=None: None
-    )
-
-    def _cache_info(_calc_song, _curves, *, stat_keys):
+    def _cache_info(_song, _curves, *, stat_keys):
         return FgResponseFrontierCacheInfo(
             cache_key=("cache",),
             disk_path=cache_path,
@@ -829,14 +830,8 @@ def test_fg_response_prebuild_builds_cache_miss(monkeypatch, tmp_path: Path) -> 
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCacheInfo
 
     song_path = tmp_path / "Song.txt"
-    song_path.write_text("fake", encoding="utf-8")
+    song_path.write_text(_chart_text("Missing Song", [1.0, 2.0, 3.0]), encoding="utf-8")
     cache_path = tmp_path / "cache.npz"
-    calc_song = {"metadata": {"Song Name": "Missing Song"}, "song_data": {"timestamps": [1.0, 2.0, 3.0]}}
-
-    monkeypatch.setattr("gear_optimizer.data.song_io.get_base_calc_song", lambda *_args, **_kwargs: calc_song)
-    monkeypatch.setattr(
-        "gear_optimizer.solver.timing_envelope.apply_timing_envelope", lambda _song, *, mode=None: None
-    )
     monkeypatch.setattr(
         "gear_optimizer.solver.taichi_gem.force_greats.response_cache.fg_response_frontier_payload_cache_info",
         lambda *_args, **_kwargs: FgResponseFrontierCacheInfo(

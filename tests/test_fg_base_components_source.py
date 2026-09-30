@@ -20,7 +20,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.fg_response_scoring import planner as planner_mod
 from gear_optimizer.solver.fg_response_scoring.planner import FgPlanner
 from gear_optimizer.solver.force_greats_common import (
     FG_BASE_STATS7_KEY,
@@ -47,17 +46,17 @@ def _song_inputs() -> SimpleNamespace:
     )
 
 
-def _patch_lightweight_prepare(monkeypatch) -> None:
-    """Make the real planner reachable with a trivial calc_song.
+def _song() -> SimpleNamespace:
+    # The planner reads only the song's FG inputs.
+    return SimpleNamespace(fg_inputs=_song_inputs())
 
-    extract_fg_song_inputs is patched in BOTH the planner module and the
-    response_frontier module (the latter builds base_components); the scoring
+
+def _patch_lightweight_prepare(monkeypatch) -> None:
+    """Make the real planner reachable with a trivial song (see _SONG); the scoring
     bundle load is bypassed by passing one through.
     """
     from gear_optimizer.solver.taichi_gem.force_greats import response_frontier as rf
 
-    monkeypatch.setattr(planner_mod, "extract_fg_song_inputs", lambda _song: _song_inputs())
-    monkeypatch.setattr(rf, "extract_fg_song_inputs", lambda _song: _song_inputs())
     # base_components is built before the scoring bundle is consumed; supply a minimal
     # bundle so the batch can be constructed without GPU/cache state.
     bundle = SimpleNamespace(frontier_idx_by_stat=np.zeros((1, 1), dtype=np.int32))
@@ -101,7 +100,7 @@ def test_ga_candidate_base_components_come_from_device_base_stats7(monkeypatch) 
 
     plan = FgPlanner.plan_many(
         [candidate],
-        {"song_data": {}},
+        _song(),
         {"ref": object()},
         _PRIMARY,
     )
@@ -136,7 +135,7 @@ def test_db_only_candidate_base_components_derive_from_dict(monkeypatch) -> None
 
     plan = FgPlanner.plan_many(
         [candidate],
-        {"song_data": {}},
+        _song(),
         {"ref": object()},
         _PRIMARY,
     )
@@ -164,4 +163,4 @@ def test_malformed_device_base_stats7_fails_loudly(monkeypatch) -> None:
     }
 
     with pytest.raises(ValueError, match="7 components"):
-        FgPlanner.plan_many([candidate], {"song_data": {}}, {"ref": object()}, _PRIMARY)
+        FgPlanner.plan_many([candidate], _song(), {"ref": object()}, _PRIMARY)

@@ -6,6 +6,7 @@ from gear_optimizer.gamedata import StatCurves
 from gear_optimizer.gamedata import SKIP_ITEM_KEYS
 from gear_optimizer.solver.force_greats_common import extract_base_stats
 from gear_optimizer.solver.scoring.fever_solver import solve_best_fever_combination
+from gear_optimizer.solver.timing_envelope import TimedSong
 
 GEAR_SLOTS: tuple[str, ...] = ("Hat", "Neck", "Face", "Shirt", "Back", "Pants")
 
@@ -25,13 +26,13 @@ def _add_genome_item_stats(base_stats: dict[str, Any], genome: list[dict]) -> di
 def build_candidate_payload(
     *,
     base_stats_fixed: dict[str, Any],
-    calc_song: dict[str, Any],
+    song: TimedSong,
     curves: StatCurves,
     genome: list[dict],
     selected_color: str,
 ) -> dict[str, Any]:
     merged = _add_genome_item_stats(base_stats_fixed, genome)
-    out = dict(solve_best_fever_combination(merged, calc_song, curves, selected_color=selected_color))
+    out = dict(solve_best_fever_combination(merged, song, curves, selected_color=selected_color))
     out["Genome"] = list(genome)
     out["Gear"] = list(genome[:6])
     out["Minis"] = list(genome[6:9])

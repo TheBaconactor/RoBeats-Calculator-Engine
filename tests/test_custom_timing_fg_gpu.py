@@ -1,7 +1,7 @@
 """Custom per-note baseline timing on the FG (force-greats) path (generalizes zero_ms). GPU.
 
-The FG response-frontier search consumes its hit timeline from ``fg_timestamps``, which
-``apply_timing_envelope(mode="zero_ms", baseline_offset=T)`` sets to ``chart + T``. These GPU
+The FG response-frontier search consumes the song's hit timeline, which
+``time_song(chart, "zero_ms", baseline_offset=T)`` sets to ``chart + T``. These GPU
 tests pin:
 - an all-zero ``T`` reproduces the plain ``zero_ms`` surface bit-for-bit (the FG-path T==0 gate
   through the new param); and
@@ -14,6 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from tests.curves_support import synthetic_curves
+from tests.songs_support import make_chart
 
 pytestmark = pytest.mark.gpu
 
@@ -63,38 +64,26 @@ def _fg_stats() -> dict:
 _TIMESTAMPS = np.asarray([0.0, 0.2, 0.5, 1.0, 1.2, 2.0, 3.4, 3.5, 3.6], dtype=np.float32)
 
 
-def _song() -> dict:
-    return {
-        "metadata": {
-            "Song Name": "pytest_custom_timing_fg",
-            "Difficulty": "Hard",
-            "Primary Color": "Rush",
-            "Secondary Color": "Flow",
-            "Long Notes": 0,
-            "Last Note Time": float(_TIMESTAMPS[-1]),
-        },
-        "song_data": {"timestamps": _TIMESTAMPS},
-    }
+def _song(baseline_offset=None):
+    from gear_optimizer.solver.timing_envelope import time_song
+
+    return time_song(make_chart(_TIMESTAMPS, name="pytest_custom_timing_fg"), "zero_ms", baseline_offset)
 
 
 def test_zero_offset_matches_plain_zero_ms_surface(tmp_path, monkeypatch):
     """An all-zero baseline offset reproduces the plain zero_ms FG surface bit-for-bit."""
     from gear_optimizer.solver.fg_response_scoring.fixed_timing import _solve_fixed_timing_response_results
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     curves = _curves()
     stats = _fg_stats()
 
     _reset_fg_cache()
-    cs_plain = _song()
-    apply_timing_envelope(cs_plain, mode="zero_ms")
-    surf_plain = _solve_fixed_timing_response_results([stats], cs_plain, curves, "Chill")[0][0].surface
+    surf_plain = _solve_fixed_timing_response_results([stats], _song(), curves, "Chill")[0].surface
 
     _reset_fg_cache()
-    cs_zero_t = _song()
-    apply_timing_envelope(cs_zero_t, mode="zero_ms", baseline_offset=np.zeros(9, dtype=np.float32))
-    surf_zero_t = _solve_fixed_timing_response_results([stats], cs_zero_t, curves, "Chill")[0][0].surface
+    song_zero_t = _song(np.zeros(9, dtype=np.float32))
+    surf_zero_t = _solve_fixed_timing_response_results([stats], song_zero_t, curves, "Chill")[0].surface
 
     assert tuple(surf_zero_t) == tuple(surf_plain)
 
@@ -103,24 +92,20 @@ def test_nonzero_baseline_offset_reoptimizes_to_valid_surface(tmp_path, monkeypa
     """A non-zero per-note baseline T yields a valid surface, scored exactly under chart + T."""
     from gear_optimizer.solver.fg_response_scoring.fixed_timing import _solve_fixed_timing_response_results
     from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     curves = _curves()
     stats = _fg_stats()
 
     _reset_fg_cache()
-    cs_t = _song()
     # Per-note offsets that keep the hit timeline sorted (large gaps in this sparse song).
     offset = np.asarray([0.0, 0.03, 0.0, 0.05, 0.0, 0.04, 0.0, 0.02, 0.0], dtype=np.float32)
-    apply_timing_envelope(cs_t, mode="zero_ms", baseline_offset=offset)
+    song_t = _song(offset)
 
-    # The FG search read the shifted hit timeline.
-    np.testing.assert_allclose(
-        np.asarray(cs_t["song_data"]["fg_timestamps"]), _TIMESTAMPS + offset, atol=1e-6
-    )
-    surf_t = _solve_fixed_timing_response_results([stats], cs_t, curves, "Chill")[0][0].surface
-    score_t = score_force_greats_response_surface_exact(stats, cs_t, curves, surf_t)
+    # The FG search reads the shifted hit timeline.
+    np.testing.assert_allclose(song_t.fg_inputs.timestamps, _TIMESTAMPS + offset, atol=1e-6)
+    surf_t = _solve_fixed_timing_response_results([stats], song_t, curves, "Chill")[0].surface
+    score_t = score_force_greats_response_surface_exact(stats, song_t, curves, surf_t)
     assert int(score_t) > 0
 
 
@@ -130,13 +115,12 @@ def test_leaderboard_under_nonzero_baseline_offset_is_valid(tmp_path, monkeypatc
     from gear_optimizer.rules import MAX_STAT
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
     from gear_optimizer.solver.taichi_gem.api.timeline import build_or_load_timeline_frontier_payload
-    from gear_optimizer.solver.timing_envelope import apply_timing_envelope
 
     monkeypatch.setenv("FG_RESPONSE_FRONTIER_CACHE_DIR", str(tmp_path / "fg_cache"))
     _reset_fg_cache()
     curves = _curves(MAX_STAT + 1)
-    calc_song = _song()
     offset = np.asarray([0.0, 0.03, 0.0, 0.05, 0.0, 0.04, 0.0, 0.02, 0.0], dtype=np.float32)
+    song = _song(offset)
 
     stats = {
         "Perfect Points": 120,
@@ -182,16 +166,12 @@ def test_leaderboard_under_nonzero_baseline_offset_is_valid(tmp_path, monkeypatc
 
     # Prebuild the candidate-independent timeline-frontier cache for this prepared (chart + T)
     # song, mirroring the on-demand path (the base gem re-solve needs it).
-    _pre = dict(calc_song)
-    apply_timing_envelope(_pre, mode="zero_ms", baseline_offset=offset)
-    build_or_load_timeline_frontier_payload(_pre, curves)
+    build_or_load_timeline_frontier_payload(song, curves)
 
     out = compute_team_buff_tier_leaderboards(
         entries=[entry],
-        calc_song=calc_song,
+        song=song,
         curves=curves,
-        timing_mode="zero_ms",
-        baseline_offset=offset,
     )
 
     tiers = out["tiers"]

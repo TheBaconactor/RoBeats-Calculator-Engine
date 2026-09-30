@@ -20,16 +20,21 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_types import (
 )
 
 
-def _base_calc_song() -> dict[str, Any]:
-    return {
-        "metadata": {
-            "Primary Color": "Power",
-            "Secondary Color": "Rush",
-            "Long Notes": 0,
-            "Last Note Time": 1.0,
-        },
-        "song_data": {"timestamps": [0.0, 1.0], "note_types": [0, 0], "lanes": [0, 1]},
-    }
+def _base_song() -> SimpleNamespace:
+    """A deliberately synthetic two-note song reduced to what the FG service reads."""
+    return SimpleNamespace(
+        fg_inputs=SimpleNamespace(
+            total_notes=2,
+            timestamps=[0.0, 1.0],
+            perfect_candidates=[0.0, 1.0],
+            great_candidates=[0.0, 1.0],
+            perfect_floor=[0.0, 1.0],
+            great_floor=[0.0, 1.0],
+            lanes=[0, 1],
+            use_forced_great_timing=True,
+        ),
+        chart=SimpleNamespace(primary="Power", secondary="Rush", note_types=[0, 0]),
+    )
 
 
 def _curves() -> dict[str, np.ndarray]:
@@ -117,24 +122,6 @@ def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[st
     prepare_calls: list[tuple[str, list[dict[str, Any]]]] = []
 
     monkeypatch.setattr(
-        planner_mod,
-        "extract_fg_song_inputs",
-        lambda _song: SimpleNamespace(total_notes=2, lanes=[0, 1]),
-    )
-    monkeypatch.setattr(
-        reducer_mod,
-        "extract_fg_song_inputs",
-        lambda _song: SimpleNamespace(
-            timestamps=[0.0, 1.0],
-            perfect_candidates=[0.0, 1.0],
-            great_candidates=[0.0, 1.0],
-            perfect_floor=[0.0, 1.0],
-            great_floor=[0.0, 1.0],
-            lanes=[0, 1],
-            use_forced_great_timing=True,
-        ),
-    )
-    monkeypatch.setattr(
         reducer_mod,
         "reconstruct_force_greats_response_trace",
         lambda **_kwargs: (
@@ -156,15 +143,14 @@ def _install_shared_path_fakes(monkeypatch: Any) -> list[tuple[str, list[dict[st
     def _fake_prepare(*, base_stats_list, selected_color, **kwargs):
         rows = [dict(base_stats) for base_stats in base_stats_list]
         prepare_calls.append((str(selected_color or ""), rows))
-        calc_song = kwargs.get("calc_song") or _base_calc_song()
-        metadata = dict((calc_song.get("metadata") if isinstance(calc_song, dict) else {}) or {})
+        chart = (kwargs.get("song") or _base_song()).chart
         base_components = np.asarray(
             [
                 response_frontier_base_components_row(
                     base_stats,
                     None,
-                    primary_color=str(metadata.get("Primary Color", "") or ""),
-                    secondary_color=str(metadata.get("Secondary Color", "") or ""),
+                    primary_color=chart.primary,
+                    secondary_color=chart.secondary,
                 )
                 for base_stats in rows
             ],
@@ -215,7 +201,7 @@ def test_skyline_scores_retained_candidates_through_shared_service(tmp_path: Any
 
     summary, best_record = sfg.score_retained_skyline_force_greats(
         records,
-        calc_song=_base_calc_song(),
+        song=_base_song(),
         curves=_curves(),
         default_selected_color="Power",
         use_gpu=True,
@@ -274,7 +260,7 @@ def test_skyline_mode_keeps_selected_color_responses_separate(tmp_path: Any, mon
 
     rows, stats = FgResponseScoringService.score_candidates_with_stats(
         [_record(pp=100, selected="Power"), _record(pp=100, selected="Rush")],
-        calc_song=_base_calc_song(),
+        song=_base_song(),
         curves=_curves(),
         meta_primary_color="Power",
         mode="skyline",

@@ -75,7 +75,7 @@ def main():
         os.environ["FG_RESPONSE_FRONTIER_CACHE_DIR"] = str(directory / "fg-cache")
         os.environ["TIMELINE_FRONTIER_CACHE_DIR"] = str(directory / "timeline-cache")
         os.environ["EVOLUTION_DB_PATH"] = str(directory / "evolution.db")
-        from gear_optimizer.data.song_io import get_base_calc_song
+        from gear_optimizer.chart import load_chart
         from gear_optimizer.gamedata import load_stat_curves
         from gear_optimizer.settings import paths
         from gear_optimizer.solver.taichi_gem.force_greats import response_frontier as frontier
@@ -84,7 +84,7 @@ def main():
             build_or_load_response_frontier_payload,
             load_response_frontier_scoring_bundle,
         )
-        from gear_optimizer.solver.timing_envelope import apply_timing_envelope
+        from gear_optimizer.solver.timing_envelope import time_song
 
         baseline = _load_baseline(directory, args.baseline_ref)
         refs = load_stat_curves(paths().stats_txt)
@@ -106,8 +106,7 @@ def main():
             "Chill",
         ]
         for filename, values, selected in cases:
-            song = get_base_calc_song(str(Path("Data/Hard") / filename))
-            apply_timing_envelope(song, mode="perfect_window")
+            song = time_song(load_chart(Path("Data/Hard") / filename), "perfect_window")
             stats = dict(zip(names, values))
             budget = 9
             keys = frontier.required_response_stat_keys_for_scoring_batch(base_stats_list=[stats], total_budget=budget)
@@ -118,7 +117,7 @@ def main():
             def prepare():
                 return frontier.prepare_force_greats_response_frontier_scoring_batch(
                     base_stats_list=[stats],
-                    calc_song=song,
+                    song=song,
                     curves=refs,
                     selected_color=selected,
                     total_budget=budget,
