@@ -69,6 +69,7 @@ INDEXES_DDL = (
 )
 
 TABLES = ("songs", "loadouts")
+JOURNAL_SIZE_LIMIT = 64 * 1024 * 1024
 
 
 class StoreVersionError(RuntimeError):
@@ -83,6 +84,8 @@ def connect(path: str | os.PathLike[str], *, write: bool = False, timeout: float
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        # A large transaction leaves a WAL that never shrinks on its own, and every reader pays for it on open.
+        conn.execute(f"PRAGMA journal_size_limit = {JOURNAL_SIZE_LIMIT}")
         ensure_schema(conn)
         return conn
     conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=timeout)

@@ -1,4 +1,5 @@
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -178,6 +179,23 @@ def test_kept_v18_tables_stay_readable_until_dropped(v18_db):
     v18.drop_v18_tables(conn)
     conn.commit()
     assert {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")} == {"songs", "loadouts"}
+
+
+def test_the_migration_leaves_no_write_ahead_log_behind(v18_db):
+    conn = sqlite3.connect(v18_db)
+    conn.execute("PRAGMA journal_mode=WAL")
+    reader = sqlite3.connect(v18_db)  # an open reader keeps the log file from being deleted on close
+    reader.execute("SELECT COUNT(*) FROM songs").fetchone()
+    v18.migrate(conn, keep_v18_tables=False)
+    assert Path(f"{v18_db}-wal").stat().st_size == 0
+    reader.close()
+    conn.close()
+
+
+def test_writers_cap_the_write_ahead_log(tmp_path):
+    conn = schema.connect(tmp_path / "evolution.db", write=True)
+    assert conn.execute("PRAGMA journal_size_limit").fetchone()[0] == schema.JOURNAL_SIZE_LIMIT
+    conn.close()
 
 
 def test_an_unknown_stored_key_stops_the_migration_and_changes_nothing(tmp_path):

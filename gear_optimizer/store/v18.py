@@ -174,6 +174,8 @@ def migrate(
     except BaseException:
         conn.rollback()
         raise
+    # The migration rewrote every row; truncate the write-ahead log it grew (readers pay for its size on open).
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return report
 
 
