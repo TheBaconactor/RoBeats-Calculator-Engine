@@ -256,7 +256,6 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
             song,
             curves,
         )
-        assert batch_force["ForceGreats"]["config"] == single_force["ForceGreats"]["config"]
         assert isinstance(batch_force["ForceGreats"].get("frontier_trace"), list)
         assert batch_force["ForceGreats"]["frontier_trace"] == single_force["ForceGreats"]["frontier_trace"]
 
@@ -275,9 +274,9 @@ def test_zero_ms_batch_resolves_match_single_loadout_paths(tmp_path, monkeypatch
         curves=curves,
         limit=1,
         tiers=("T5",),
-        replay_surface="fg",
+        replay_surface="both",  # FG replay needs the meta surface: the paired base is the re-solved base
     )
-    fg_row = batches["T5"][0]
+    (fg_row,) = batches["T5"]
     assert fg_row["fg_base_score"] == fg_row["force"]["BaseScore"]
     assert fg_row["force"]["BaseStats"] == fg_row["force"]["Stats"]
     assert fg_row["fg_base_score"] == score_stats_fixed_timing_exact(

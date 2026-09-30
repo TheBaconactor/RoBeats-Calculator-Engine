@@ -1,7 +1,6 @@
 """
 Fever Solver - best gem allocation for fixed loadouts, on the canonical GPU registry solve.
 
-- solve_best_fever_combination: one pre-gem stat row
 - solve_best_fever_combination_batch: N pre-gem stat rows in one GPU dispatch
 
 A pre-gem stat row is the song's fixed stats plus the loadout's gear/mini item stats. The solve
@@ -55,8 +54,7 @@ def solve_best_fever_combination_batch(stats_list, song: TimedSong, curves, *, s
     the batch warmstart keeps each loadout's combo sweep independent. ``stats_list`` is N pre-gem
     stat rows (song fixed stats + tier delta + gear/mini item stats). Returns one result dict
     per input, in order: ``{Score, FT, FF, GemCounts, Stats, Selected Element, config}``. Each
-    loadout's gem search is independent, so the per-loadout result is identical to the single-loadout
-    ``solve_best_fever_combination`` -- served-batched == native-per-loadout (delta=0)."""
+    loadout's gem search is independent, so a loadout's result does not depend on the batch."""
     rows = [build_stats_dict(build_stats_list(s)) for s in (stats_list or [])]
     if not rows:
         return []

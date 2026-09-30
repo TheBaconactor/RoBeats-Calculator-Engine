@@ -323,29 +323,20 @@ def resolve_tier_base(
     primary_color: str,
     selected_color: str,
 ) -> tuple[dict, int]:
-    """Lossless BASE (meta) re-solve for ONE loadout at one (tier·color·timing) config.
+    """Lossless BASE (meta) re-solve for ONE loadout at one (tier·color·timing) config: the batch of one.
 
-    Re-allocates the gem budget via the canonical GPU base exhaustive search (MoltenVK-correct after
-    the skyline warmstart race fix), then CPU-f64 exact-rescores the resolved Stats at the mode's
-    timing (``zero_ms`` -> fixed-0ms chart timeline; ``perfect_window`` -> the Perfect-window timing
-    frontier). The gem search reads timing from ``song``, so one re-solve serves both modes. ``fixed_song_stats`` is the tier-adjusted song fixed-stats row;
-    ``loadout_items`` is the loadout's 6 gear + 3 mini stat dicts before gems. Returns
-    ``(resolved_payload, score)``. Shared by serving and the lossless gate so served == native
-    (delta=0)."""
-    from ...solver.solver_common import build_candidate_payload
-
-    resolved = build_candidate_payload(
-        base_stats_fixed=dict(fixed_song_stats or {}),
+    ``fixed_song_stats`` is the tier-adjusted song fixed-stats row; ``loadout_items`` is the loadout's 6 gear + 3
+    mini stat dicts before gems. Returns ``(resolved_payload, score)``. The lossless gate's per-loadout path, so
+    gate == served (delta=0)."""
+    (out,) = resolve_tier_base_batch(
+        fixed_song_stats=fixed_song_stats,
+        loadouts=[loadout_items],
         song=song,
         curves=curves,
-        genome=list(loadout_items or []),
-        selected_color=str(selected_color or "") or str(primary_color or ""),
+        primary_color=primary_color,
+        selected_color=selected_color,
     )
-    resolved_stats = dict(resolved.get("Stats") or {})
-    if not resolved_stats:
-        raise ValueError("tier base re-solve returned no Stats")
-    score = int(_exact_base_score_batch_for_mode([resolved_stats], song, curves)[0])
-    return resolved, score
+    return out
 
 
 def resolve_tier_base_batch(
@@ -364,8 +355,7 @@ def resolve_tier_base_batch(
     tier-adjusted song fixed-stats row; ``loadouts`` is the list of N loadout item-stat rows. The
     final exact rescore follows ``song.mode`` (zero_ms -> fixed-0ms; perfect_window -> the timing
     frontier). Returns N ``(resolved_payload, score)`` in order. Each loadout's gem search is
-    independent, so the per-loadout result equals ``resolve_tier_base`` (the gate's per-loadout
-    path) -> served == native (delta=0)."""
+    independent, so a loadout's result does not depend on the batch it is solved in."""
     from ...solver.scoring.fever_solver import solve_best_fever_combination_batch
 
     rows = list(loadouts or [])
