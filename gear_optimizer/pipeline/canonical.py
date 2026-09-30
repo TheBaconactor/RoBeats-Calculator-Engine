@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..core.team_buff import team_buff_effect
 from ..data.loadout_equivalence import (
@@ -38,7 +38,10 @@ from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, named_loadout_stats, total
 from ..store.boards import Row
 from ..store.records import FgResult, Loadout, MetaResult, encode_trace
-from .results import SolvedFg, SolvedLoadout, SongSolve, gem_allocation, solved_fg
+from .results import SolvedFg, SolvedLoadout, SongSolve, solved_fg
+
+if TYPE_CHECKING:
+    from ..solver.scoring.fever_solver import GemSolve
 
 # The stats a score reads, besides the song's and the selected element.
 _SCORE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time")
@@ -65,7 +68,7 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
         raise ValueError(f"{solve.song}: two FG results for one loadout")
     items = [[gears[n] for n in x.gear] + [song_view[n] for n in x.minis] for x in solve.loadouts]
     fixed = baseline_fixed_stats(song.chart)
-    witnesses = _meta_resolve(fixed, items, song, curves, primary)
+    solves = _meta_resolve(fixed, items, song, curves, primary)
     if song.mode == "zero_ms":
         # The FG stage's surfaces are chart-timing results too, but zero_ms stores the re-solve (as served).
         fg_by_index = _fg_resolve(fixed, items, sorted(fg_by_index), song, curves, primary)
@@ -82,9 +85,8 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
         def stats_of(element: str, allocation: tuple[int, ...], solved: Mapping[str, int]) -> tuple[int, ...]:
             return stored_stats(fixed_tier, ident, gears, song_view, element, allocation, solved, (primary, secondary))
 
-        meta_stats = {k: int(v) for k, v in witnesses[i]["Stats"].items()}
+        meta_gems, meta_stats = solves[i].gems, {k: int(v) for k, v in solves[i].stats.items()}
         score, meta_trace = _meta_score(meta_stats, song, curves)
-        meta_gems = gem_allocation(witnesses[i], primary)
         meta = MetaResult(
             element=primary, gems=meta_gems, stats=stats_of(primary, meta_gems, meta_stats), updated=0, seq=0
         )
@@ -166,15 +168,12 @@ def stored_stats(
 
 def _meta_resolve(
     fixed: Mapping[str, int], items: list[list[Any]], song: TimedSong, curves: StatCurves, primary: str
-) -> list[dict]:
+) -> list[GemSolve]:
     """Each loadout's exhaustive base gem allocation (one GPU dispatch for all)."""
     from ..solver.scoring.fever_solver import solve_best_fever_combination_batch  # loads Taichi
 
     rows = [total(fixed, *(item.stats for item in row)) for row in items]
-    witnesses = solve_best_fever_combination_batch(rows, song, curves, selected_color=primary)
-    if len(witnesses) != len(rows):
-        raise RuntimeError(f"base gem re-solve returned {len(witnesses)} results for {len(rows)} loadouts")
-    return witnesses
+    return solve_best_fever_combination_batch(rows, song, curves, selected_color=primary)
 
 
 def _fg_resolve(

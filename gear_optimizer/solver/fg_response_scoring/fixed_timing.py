@@ -130,21 +130,11 @@ def build_fixed_timing_fg_replays(
             f"({len(base_rows)} != {len(fg_rows)})"
         )
 
-    from ...solver.scoring.exact_rescore import (
-        score_stats_exact_batch,
-        score_stats_fixed_timing_exact_batch,
-    )
+    from ...solver.scoring.exact_rescore import score_base_exact_batch
     from ..taichi_gem.force_greats.response_cache import release_fg_response_song_memory
     from ..taichi_gem.force_greats.response_cache_keys import fg_response_frontier_bundle_cache_key
     from .reducer import FgTraceMaterializationCache, materialize_force_payload_from_response_frontier
 
-    # Paired-base scorer follows the timing mode: zero_ms -> fixed-0ms chart timeline;
-    # perfect_window -> the Perfect-window timing frontier. The FG surface solve + score above are
-    # already timing-correct (the response-frontier bundle is keyed by the song timing context),
-    # so this paired NON-FG base score is the only timing-dependent step here.
-    base_score_batch = (
-        score_stats_fixed_timing_exact_batch if song.mode == "zero_ms" else score_stats_exact_batch
-    )
     # Same key inputs as the solve's bundle loads.
     bundle_key = fg_response_frontier_bundle_cache_key(song, curves)
 
@@ -158,10 +148,10 @@ def build_fixed_timing_fg_replays(
         # the pre-gem search input.
         if int(total_budget) > 0:
             paired_base_rows = [dict(getattr(result, "stats", None) or {}) for result in results]
-            paired_base_scores = base_score_batch(paired_base_rows, song, curves)
+            paired_base_scores = score_base_exact_batch(paired_base_rows, song, curves)
         else:
             paired_base_rows = base_rows
-            paired_base_scores = base_score_batch(base_rows, song, curves)
+            paired_base_scores = score_base_exact_batch(base_rows, song, curves)
 
         replays: list[dict[str, Any]] = []
         # Batch-shared trace memo: loadouts in one replay batch commonly share the FG surface +

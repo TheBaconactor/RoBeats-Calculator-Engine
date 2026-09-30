@@ -10,6 +10,7 @@ from gear_optimizer.pipeline import canonical
 from gear_optimizer.pipeline.canonical import canonical_rows, loadout_identity, row_order, stored_stats
 from gear_optimizer.pipeline.results import SolvedFg, SolvedLoadout, SongSolve
 from gear_optimizer.settings import paths
+from gear_optimizer.solver.scoring.fever_solver import GemSolve
 from gear_optimizer.stats import GEM_KINDS, gems, named_loadout_stats
 from gear_optimizer.store.records import decode_trace
 from tests.items_support import make_gear, make_mini
@@ -101,12 +102,7 @@ def scored(monkeypatch):
 
     def meta_resolve(fixed, items, song, curves, primary):
         return [
-            {
-                "Stats": _stats([g.name for g in row[:2]], [m.name for m in row[2:]], META_GEMS),
-                "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 10, "Fever Multiplier": 10, "Element": 63},
-                "FT": 6,
-                "FF": 1,
-            }
+            GemSolve(_gems(META_GEMS), _stats([g.name for g in row[:2]], [m.name for m in row[2:]], META_GEMS), 0)
             for row in items
         ]
 

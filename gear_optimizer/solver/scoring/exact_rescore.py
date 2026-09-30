@@ -114,6 +114,18 @@ def score_stats_exact_batch(
     ]
 
 
+def score_base_exact_batch(
+    stats_rows: Sequence[Mapping[str, Any]],
+    song: TimedSong,
+    curves: StatCurves,
+) -> list[int]:
+    """Exact base scores at the song's timing: zero_ms on its hit timeline, perfect_window on the Perfect-window
+    timing frontier."""
+    if song.mode == "zero_ms":
+        return score_stats_fixed_timing_exact_batch(stats_rows, song, curves)
+    return score_stats_exact_batch(stats_rows, song, curves)
+
+
 def score_stats_fixed_timing_exact(
     stats: Mapping[str, Any],
     song: TimedSong,

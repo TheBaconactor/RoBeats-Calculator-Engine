@@ -9,6 +9,7 @@ from ...core.team_buff import (
     normalize_team_buff_sequence,
     team_buff_effect,
 )
+from ...core.gem_defs import build_gem_counts
 from ...core.utils import get_selected_element, safe_int as _safe_int
 from ...data.loadout_equivalence import representative_mini_names
 from ...chart import Chart
@@ -338,23 +339,27 @@ def resolve_tier_base_batch(
     (``n_genomes=N``) instead of N sequential solves. ``fixed_song_stats`` is the shared
     tier-adjusted song fixed-stats row; ``loadouts`` is the list of N loadout item-stat rows. The
     score is the gem search's exact score at ``song``'s timing (zero_ms -> fixed-0ms; perfect_window
-    -> the timing frontier). Returns N ``(resolved_payload, score)`` in order. Each loadout's gem
-    search is independent, so a loadout's result does not depend on the batch it is solved in."""
+    -> the timing frontier). Returns N ``(resolved_payload, score)`` in order, the payload holding the
+    served base fields (Stats, GemCounts, FT, FF). Each loadout's gem search is independent, so a
+    loadout's result does not depend on the batch it is solved in."""
     from ...solver.scoring.fever_solver import solve_best_fever_combination_batch
 
     rows = list(loadouts or [])
     if not rows:
         return []
     pre_gem_rows = [_pre_gem_loadout_stats(fixed_song_stats, items) for items in rows]
-    results = solve_best_fever_combination_batch(
+    solves = solve_best_fever_combination_batch(
         pre_gem_rows,
         song,
         curves,
         selected_color=str(selected_color or "") or str(primary_color or ""),
     )
-    if len(results) != len(rows):
-        raise ValueError(f"batched tier base re-solve returned {len(results)} != {len(rows)} results")
-    return [(resolved, int(resolved["Score"])) for resolved in results]
+    out = []
+    for solve in solves:
+        pp, cm, fm, ft, ff, element = solve.gems
+        resolved = {"Stats": dict(solve.stats), "GemCounts": build_gem_counts(pp, cm, fm, element), "FT": ft, "FF": ff}
+        out.append((resolved, solve.score))
+    return out
 
 
 def _ensure_stats_include_base_effect(stats: dict, base_effect: dict[str, int]) -> dict:

@@ -2,7 +2,6 @@ from pathlib import Path
 
 from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves, song_minis
 from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
-from gear_optimizer.pipeline.results import gem_allocation
 from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.fever_solver import exact_climb, solve_best_fever_combination_batch
 from gear_optimizer.stats import GEM_KINDS, apply_gems, gems, total
@@ -56,5 +55,4 @@ def test_real_song_gem_search_climbs_past_a_float32_near_tie():
     pre_gem = total(baseline_fixed_stats(song.chart), *(gears[n].stats for n in gear), *(view[n].stats for n in minis))
     (result,) = solve_best_fever_combination_batch([pre_gem], song, curves, selected_color="Vibe")
     best = gems(fm=7, ff=20, element=63)
-    assert (gem_allocation(result, "Vibe"), result["Score"]) == (_gems(best), 66024847)
-    assert result["Stats"] == apply_gems(pre_gem, best, "Vibe")
+    assert (result.gems, result.score, result.stats) == (_gems(best), 66024847, apply_gems(pre_gem, best, "Vibe"))
