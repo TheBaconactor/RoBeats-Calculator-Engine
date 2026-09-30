@@ -1,4 +1,4 @@
-from gear_optimizer.core.team_buff import team_buff_effect, team_buff_query_values
+from gear_optimizer.core.team_buff import team_buff_effect
 
 
 def test_team_buff_effect_matches_rank_cutoff_table():
@@ -14,8 +14,3 @@ def test_team_buff_effect_matches_rank_cutoff_table():
 def test_team_buff_effect_does_not_double_count_pp_for_invalid_team_color():
     assert team_buff_effect("T5", "NotARealColor") == {"Perfect Points": 25}
     assert team_buff_effect("T51", "???") == {"Perfect Points": 5}
-
-
-def test_team_buff_queries_use_canonical_keys_only():
-    assert team_buff_query_values("T20") == ("T20",)
-    assert team_buff_query_values("T51") == ("T51",)

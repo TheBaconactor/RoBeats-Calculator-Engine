@@ -1,4 +1,5 @@
-"""Store records for tests, and a version 18 database writer for the migration tests."""
+"""Store records for tests, the boards in Python (the SQL board order), and a version 18 database writer for the
+migration tests."""
 
 from __future__ import annotations
 
@@ -169,3 +170,24 @@ def _uvarint(value: int) -> bytes:
         out.append(byte | (0x80 if value else 0))
         if not value:
             return bytes(out)
+
+
+def meta_key(loadout: Loadout) -> tuple:
+    return (-loadout.score, -_fg_or_lowest(loadout), -loadout.meta.updated, loadout.meta.seq)
+
+
+def fg_key(loadout: Loadout) -> tuple:
+    return (-loadout.fg_score, -loadout.score, -loadout.fg.updated, loadout.fg.seq)
+
+
+def _fg_or_lowest(loadout: Loadout) -> int:
+    # SQLite sorts NULL below every value; stored FG scores are positive.
+    return -1 if loadout.fg_score is None else loadout.fg_score
+
+
+def boards(rows: Iterable[Row]) -> tuple[list[Loadout], list[Loadout]]:
+    """(meta board, FG board) of a song's rows, in board order."""
+    loadouts = [row.loadout for row in rows]
+    meta = sorted((x for x in loadouts if x.on_meta), key=meta_key)
+    fg = sorted((x for x in loadouts if x.on_fg), key=fg_key)
+    return meta, fg

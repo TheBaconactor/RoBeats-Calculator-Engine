@@ -1,18 +1,10 @@
-"""
-Core scoring computation layer.
-
-This module contains the "Compute Layer" - pure math functions that can be
-ported to GPU (Taichi). These functions perform:
-- Reference array lookups
-- Score calculations
-- Greedy gem optimization
-
-GPU port only needs to reimplement these functions in Taichi.
-"""
+"""The pre-frontier head/body score model (a reference lookup and one score formula) that the FG decomposition
+experiment tests and the zero_ms timing test compare against. Production scores through
+gear_optimizer.solver.scoring.exact_rescore and the GPU kernels; nothing in the engine imports this."""
 
 import numpy as np
 
-from ..core.jit_setup import jit
+from gear_optimizer.core.jit_setup import jit
 from gear_optimizer.rules import MAX_STAT
 
 

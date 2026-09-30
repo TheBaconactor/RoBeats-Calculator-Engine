@@ -17,7 +17,7 @@ from typing import Any
 
 from ..data.loadout_equivalence import representative_mini_names
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
-from ..gamedata import MINI_ASCENSION_VERSION, STATS, Gear, Mini
+from ..gamedata import STATS, Gear, Mini
 from ..stats import GEM_KINDS
 from .boards import Row
 from .db import load_boards, load_traces, store_results
@@ -181,10 +181,6 @@ def fg_payload(loadout: Loadout, trace: dict[str, Any]) -> dict[str, Any]:
         "ForceGreats": {"final_score": loadout.fg_score, **trace},
         "SelectedElement": result.element,
     }
-
-
-def is_current_mini_ascension(loadout: Loadout) -> bool:
-    return loadout.mini_ascension == MINI_ASCENSION_VERSION
 
 
 def _result_details(loadout: Loadout, result: MetaResult | FgResult) -> dict[str, Any]:

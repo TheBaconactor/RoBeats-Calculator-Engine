@@ -240,26 +240,6 @@ def build_mini_sig_id(
 # ---------------------------------------------------------------------------
 
 
-def _effective_key(
-    gear_ids: np.ndarray,
-    mini_ids: np.ndarray,
-    gear_name_rank: np.ndarray,
-    mini_sig_id: np.ndarray,
-) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Effective dedup key for one candidate.
-
-    Mirrors ``effective_loadout_hash_from_names`` (loadout_hashing.py:23):
-    gear tokens sorted; mini tokens sorted. Here tokens are dense ranks/sig ids,
-    which preserve the host's equivalence partition exactly, so the grouping is
-    identical to the host's MD5-of-names key. We key on the (sorted-gear,
-    sorted-mini) rank tuple instead of an MD5 string: same partition, no hash
-    collisions, GPU-portable.
-    """
-    gear_ranks = tuple(sorted(int(gear_name_rank[int(g)]) for g in gear_ids))
-    mini_sigs = tuple(sorted(int(mini_sig_id[int(m)]) for m in mini_ids))
-    return (gear_ranks, mini_sigs)
-
-
 # ---------------------------------------------------------------------------
 # Cached production effective-equivalence tables
 # ---------------------------------------------------------------------------

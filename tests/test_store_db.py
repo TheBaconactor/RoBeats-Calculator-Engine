@@ -3,8 +3,7 @@ import sqlite3
 import pytest
 
 from gear_optimizer.store import db, schema
-from gear_optimizer.store.boards import boards
-from tests.store_support import fg_row, meta_row, result
+from tests.store_support import boards, fg_row, meta_row, result
 
 
 @pytest.fixture

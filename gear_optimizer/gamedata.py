@@ -133,13 +133,6 @@ class StatCurves:
         return float(self.f64[stat][max(0, min(MAX_STAT, int(value)))])
 
 
-@dataclass(frozen=True, slots=True)
-class GameData:
-    gears: Mapping[str, Gear]
-    minis: Mapping[str, Mini]
-    curves: StatCurves
-
-
 def _int_cell(value: str, *, column: str, item: str) -> int:
     text = value.strip()
     if not text:
@@ -266,24 +259,6 @@ def load_gears(path: Path) -> dict[str, Gear]:
 def load_minis(path: Path) -> dict[str, Mini]:
     """Minis.csv by name, in file order."""
     return _load_cached(path, read_minis)
-
-
-def load_game_data(gear_dir: Path) -> GameData:
-    return GameData(
-        gears=read_gears(gear_dir / "Gears.csv"),
-        minis=read_minis(gear_dir / "Minis.csv"),
-        curves=read_curves(gear_dir / "Stats.txt"),
-    )
-
-
-def team_buff_stats(tier: str, team_color: str) -> Stats:
-    """The fixed stats a TeamBuff tier adds for a team color."""
-    perfect_points, element_bonus = TEAM_BUFFS[tier]
-    stats = empty_stats()
-    stats["Perfect Points"] = perfect_points
-    if team_color in ELEMENTS:
-        stats[team_color] = element_bonus
-    return stats
 
 
 def song_secondary(primary: str, secondary: str | None) -> str:

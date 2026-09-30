@@ -13,31 +13,12 @@ from collections import Counter
 from collections.abc import Mapping
 from typing import Any, List
 
-from ..core.utils import get_selected_element, safe_int
+from ..core.utils import safe_int
 from ..gamedata import Mini, SongMini
 
 # (primary, secondary, selected) -> (the song-mini map it was built from, signature -> names). The entry keeps
 # that map alive, so the identity check can never match a different, later map.
 _MINI_SIG_TO_NAMES_CACHE: dict[tuple[str, str, str], tuple[Mapping[str, Mini | SongMini], dict[tuple[Any, ...], list[str]]]] = {}
-
-
-def extract_song_colors(details: Any) -> tuple[str, str, str]:
-    """
-    Extract (primary_color, secondary_color, selected_color) from a details dict.
-
-    Returns empty strings when missing.
-    """
-    if not isinstance(details, dict):
-        return ("", "", "")
-
-    # Backward/interop: some payloads use space-separated keys ("Primary Color"),
-    # while persistence prefers camel-case ("PrimaryColor").
-    primary = str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip()
-    secondary = str(details.get("SecondaryColor") or details.get("Secondary Color") or "").strip()
-    selected = str(get_selected_element(details, "") or "").strip()
-    if not selected:
-        selected = primary or secondary
-    return (primary, secondary, selected)
 
 
 def representative_mini_names(groups: list[list[str]]) -> list[str]:
@@ -112,59 +93,6 @@ def rotate_mini_groups_for_slot_display(groups: list[list[str]]) -> list[list[st
 
     return rotated
 
-
-def normalize_minis_groups_for_display(groups: list[list[str]]) -> list[list[str]]:
-    """Normalize minis groups for frontend display.
-
-    The DB can legitimately store repeated *variant groups* when multiple equipped
-    minis are song-context equivalent. Example (two slots share the same signature):
-
-        [["A", "B"], ["A", "B"], ["C"]]
-
-    Semantically this means: two distinct slots, each of which could be A or B
-    across equivalent loadouts. For display, showing "A / B" twice is confusing;
-    it's clearer to show one concrete name per slot when duplicates occur:
-
-        [["A"], ["B"], ["C"]]
-
-    Rules:
-    - If a variant group appears only once, keep it as-is (so true duo-name minis
-      like "BlackY / Heavy Metal Starlet" remain a single displayed slot).
-    - If a variant group appears multiple times and has multiple candidate names,
-      expand each occurrence into a singleton using `representative_mini_names`.
-
-    This is a display-layer transformation only; it does not change the underlying
-    equivalence model.
-    """
-
-    if not groups:
-        return []
-
-    # Ensure consistent shape: drop empties, strip strings, and keep per-group sorted unique names.
-    normalized: list[list[str]] = []
-    for g0 in groups:
-        if not g0:
-            continue
-        g = [str(x).strip() for x in g0 if x is not None]
-        g = [n for n in g if n]
-        if not g:
-            continue
-        normalized.append(sorted(set(g)))
-
-    if not normalized:
-        return []
-
-    counts: Counter[tuple[str, ...]] = Counter(tuple(g) for g in normalized)
-    reps = representative_mini_names(normalized)
-
-    out: list[list[str]] = []
-    for g, rep in zip(normalized, reps):
-        key = tuple(g)
-        if counts.get(key, 0) > 1 and len(g) > 1 and rep:
-            out.append([rep])
-        else:
-            out.append(g)
-    return out
 
 def effective_mini_signature(
     mini_stats: Mapping[str, int],
@@ -314,5 +242,3 @@ def effective_loadout_hash_from_names(
     )
 
     return _impl(gear_names, mini_sigs)
-
-

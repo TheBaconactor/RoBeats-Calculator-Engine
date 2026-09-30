@@ -48,31 +48,6 @@ def _gem_result(stats: dict[str, int], selected_color: str, solved) -> dict:
     }
 
 
-def solve_best_fever_combination(initial_stats, song: TimedSong, curves, *, selected_color, song_slot: int = 0):
-    """Best gem allocation for one pre-gem stat row.
-
-    Returns: dict with Score, FT, FF, GemCounts, Stats, Selected Element
-    """
-    stats = build_stats_dict(build_stats_list(initial_stats))
-
-    # Single-genome registry payload: empty per-slot item pools, all stats in base_fixed_stats.
-    request = RegistrySolveRequest(
-        population_indices=np.zeros((1, 9), dtype=np.int32),
-        item_stats=np.zeros((1, 10), dtype=np.int32),
-        slot_start=np.zeros((9,), dtype=np.int32),
-        slot_count=np.zeros((9,), dtype=np.int32),
-        base_fixed_stats=build_stats_array(stats),
-        song=song,
-        curves=curves,
-        flags=_color_flags(song, selected_color),
-        song_slot=int(song_slot),
-    )
-    gpu_results = dispatch_registry_solve(request)
-    if not gpu_results:
-        raise RuntimeError("GPU solver returned no results.")
-    return _gem_result(stats, selected_color, gpu_results[0])
-
-
 def solve_best_fever_combination_batch(stats_list, song: TimedSong, curves, *, selected_color, song_slot: int = 0):
     """Batched GPU base gem re-solve: N loadouts in ONE skyline dispatch (n_genomes=N).
 

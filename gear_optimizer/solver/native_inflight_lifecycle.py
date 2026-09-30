@@ -33,18 +33,6 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[..., Any]
 
 
-def build_native_task_error_payload(*args, **kwargs):
-    from gear_optimizer.solver.native_inflight_completion import build_native_task_error_payload as _impl
-
-    return _impl(*args, **kwargs)
-
-
-def mark_song_completed(*args, **kwargs):
-    from gear_optimizer.solver.native_inflight_completion import mark_song_completed as _impl
-
-    return _impl(*args, **kwargs)
-
-
 def _emit_startup_status(progress_cb: ProgressCallback | None, status: str) -> None:
     if progress_cb is None:
         return
@@ -262,11 +250,9 @@ __all__ = [
     "_lru_put",
     "append_native_abort_log",
     "build_abort_queue_snapshot",
-    "build_native_task_error_payload",
     "evaluate_fg_progress_record_update",
     "is_stop_abort_exception",
     "log_native_abort",
-    "mark_song_completed",
     "native_abort_log_path",
     "prepare_native_song",
     "shutdown_native_inflight_resources",

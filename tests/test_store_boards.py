@@ -2,9 +2,9 @@ from dataclasses import replace
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.store import boards as store_boards
-from gear_optimizer.store.boards import Row, boards
+from gear_optimizer.store.boards import Row
 from gear_optimizer.store.records import encode_trace
-from tests.store_support import fg_row, meta_row, result
+from tests.store_support import boards, fg_row, meta_row, result
 
 NOW = 500
 

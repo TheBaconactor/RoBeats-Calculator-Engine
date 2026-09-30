@@ -12,7 +12,6 @@ from math import ceil
 
 import numpy as np
 
-from .chart import Chart
 from .rules import FEVER_FILL_PER_NOTE, FEVER_TIME_OFFSET, FEVER_TIME_PER_SECOND
 from .score import HEAD_NOTES, TimelineCell, single_surface_cell
 
@@ -45,19 +44,3 @@ def fixed_timeline_cell(
 
     body_fever = int(in_fever[HEAD_NOTES:].sum())
     return single_surface_cell(in_fever[:HEAD_NOTES], body_fever, max(0, total - HEAD_NOTES) - body_fever)
-
-
-def chart_fixed_timeline_cell(
-    chart: Chart, fill_factor: float, time_factor: float, hit_times: np.ndarray | None = None
-) -> TimelineCell:
-    """fixed_timeline_cell for a chart, at its own note times unless `hit_times` is given."""
-    hits = chart.timestamps if hit_times is None else hit_times
-    if hits.shape != chart.timestamps.shape or (hits.size > 1 and np.any(np.diff(hits) < 0)):
-        raise ValueError("hit times must give every note a time, in note order")
-    return fixed_timeline_cell(
-        hits,
-        long_notes=int(chart.header["Long Notes"]),
-        last_note_time=float(chart.header["Last Note Time"]),
-        fill_factor=fill_factor,
-        time_factor=time_factor,
-    )

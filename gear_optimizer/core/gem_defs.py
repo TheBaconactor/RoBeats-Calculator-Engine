@@ -1,15 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
-import logging
-
-from .utils import safe_int
-
-
-
-logger = logging.getLogger(__name__)
 
 
 class GemKey(str, Enum):
@@ -59,49 +51,6 @@ GEM_KEYS: tuple[str, ...] = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class GemTotals:
-    pp: int = 0
-    cm: int = 0
-    fm: int = 0
-    ft: int = 0
-    ff: int = 0
-    element: int = 0
-
-    def as_tuple(self) -> tuple[int, int, int, int, int, int]:
-        return (self.pp, self.cm, self.fm, self.ft, self.ff, self.element)
-
-
-def _read_first_int(mapping: Mapping[str, Any], *keys: str) -> int:
-    for key in keys:
-        if key not in mapping:
-            continue
-        try:
-            return int(mapping.get(key) or 0)
-        except (TypeError, ValueError) as e:
-            logger.debug(f"gem_defs:_read_first_int: {e}")
-            return 0
-    return 0
-
-
-def extract_gem_totals(details: Mapping[str, Any] | None) -> GemTotals:
-    src = details if isinstance(details, Mapping) else {}
-    gem_counts = src.get("GemCounts")
-    if not isinstance(gem_counts, Mapping):
-        gem_counts = {}
-
-    return GemTotals(
-        pp=_read_first_int(gem_counts, GemKey.PP.value, "PP"),
-        cm=_read_first_int(gem_counts, GemKey.CM.value, "CM"),
-        fm=_read_first_int(gem_counts, GemKey.FM.value, "FM"),
-        ft=_read_first_int(src, "FT", GemKey.FT.value, "FeverGems")
-        or _read_first_int(gem_counts, GemKey.FT.value, "FT", "FeverGems"),
-        ff=_read_first_int(src, "FF", GemKey.FF.value, "FeverFillGems")
-        or _read_first_int(gem_counts, GemKey.FF.value, "FF", "FeverFillGems"),
-        element=_read_first_int(gem_counts, GemKey.ELEMENT.value, "OV", "Overflow"),
-    )
-
-
 def build_gem_counts(g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict[str, int]:
     return {
         GemKey.PP.value: int(g_pp),
@@ -124,25 +73,3 @@ def element_gem_count(gem_counts: Mapping[str, Any] | None) -> int:
     if not isinstance(gem_counts, Mapping):
         return 0
     return int(gem_counts.get(GemKey.ELEMENT.value, 0) or 0)
-
-
-def fg_score_from_force(force_data: Any) -> int:
-    if not isinstance(force_data, dict):
-        return 0
-    score = safe_int(force_data.get("score", 0), 0)
-    if score <= 0:
-        score = safe_int(force_data.get("Score", 0), 0)
-    if score > 0:
-        return int(score)
-
-    details = force_data.get("details")
-    if not isinstance(details, dict):
-        details = force_data
-    fg = details.get("ForceGreats") if isinstance(details, dict) else None
-    if not isinstance(fg, dict):
-        return 0
-
-    nested = safe_int(fg.get("final_score", 0), 0)
-    if nested > 0:
-        return int(nested)
-    return int(max(safe_int(fg.get("finalScore", 0), 0), safe_int(fg.get("score", 0), 0)))

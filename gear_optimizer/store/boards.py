@@ -8,7 +8,7 @@ LOADOUTS_PER_SONG_LIMIT loadouts; a loadout keeps both of its results while it i
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 
 from ..domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
@@ -16,19 +16,6 @@ from .records import FgResult, Loadout, MetaResult
 
 META_ORDER = "score DESC, fg_score DESC, meta_updated DESC, meta_seq"
 FG_ORDER = "fg_score DESC, score DESC, fg_updated DESC, fg_seq"
-
-
-def meta_key(loadout: Loadout) -> tuple:
-    return (-loadout.score, -_fg_or_lowest(loadout), -loadout.meta.updated, loadout.meta.seq)
-
-
-def fg_key(loadout: Loadout) -> tuple:
-    return (-loadout.fg_score, -loadout.score, -loadout.fg.updated, loadout.fg.seq)
-
-
-def _fg_or_lowest(loadout: Loadout) -> int:
-    # SQLite sorts NULL below every value; stored FG scores are positive.
-    return -1 if loadout.fg_score is None else loadout.fg_score
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,15 +159,3 @@ def _normalize(rows: list[Row]) -> list[Row]:
             loadout = replace(row.loadout, on_meta=key in on_meta, on_fg=key in on_fg)
             out.append(Row(loadout, row.meta_trace, row.fg_trace))
     return out
-
-
-def boards(rows: Iterable[Row]) -> tuple[list[Loadout], list[Loadout]]:
-    """(meta board, FG board) of a song's rows, in board order."""
-    loadouts = [row.loadout for row in rows]
-    meta = sorted((x for x in loadouts if x.on_meta), key=meta_key)
-    fg = sorted((x for x in loadouts if x.on_fg), key=fg_key)
-    return meta, fg
-
-
-def by_hash(rows: Iterable[Row]) -> Mapping[str, Row]:
-    return {row.loadout.loadout_hash: row for row in rows}
