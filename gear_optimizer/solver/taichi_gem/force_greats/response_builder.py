@@ -483,7 +483,8 @@ def _latest_activation_hit_for_labels(
 ) -> float | None:
     great_start_i = max(0, min(int(great_start), int(n)))
     great_count_i = max(0, int(great_count))
-    # Numba twin of latest_activation_hit_for_contiguous_great_run for the lanes=None,
+    # Numba twin of the reference latest_activation_hit_for_contiguous_great_run
+    # (tests/fg_response_frontier_oracles.py) for the lanes=None,
     # epsilon=INPUT_ORDER_EPS_SEC(=1e-6) form this DFS always uses: same walk, same
     # per-note cap arithmetic, minus ~150k Python/numpy dispatches per heavy song.
     n_eff = min(

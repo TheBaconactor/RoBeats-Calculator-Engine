@@ -249,7 +249,7 @@ def test_response_frontier_gpu_inner_preserves_same_color_component_floors():
 
 def test_response_frontier_gpu_batch_pack_matches_reference_groups():
     from gear_optimizer.solver.taichi_gem.force_greats.response_frontier import FgResponseSurface
-    from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _optimize_response_surfaces_gpu
+    from tests.parity.fg_response_frontier_cpu import _optimize_response_surfaces_gpu
 
     surfaces_a = (
         FgResponseSurface(0b1111, 0, 0, 0, 0b0010, 0, 0, 0, 4, 1),

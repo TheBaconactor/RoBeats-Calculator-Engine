@@ -258,7 +258,7 @@ def test_fg_edge_end_models_endpoint_early_inclusion():
 # The game registers every note's hit INDEPENDENTLY per lane (confirmed against the decompiled
 # server), so a held tail (Perfect window [-40,+80]) that shares a timestamp with a narrower note
 # may legally use its OWN wider reach. The old envelopes collapsed each chord to the intersection
-# (group_low = max(lows), group_high = min(highs)) via `prepare_grouped_timing_windows`, capping
+# (group_low = max(lows), group_high = min(highs)), capping
 # the held tail and UNDER-counting fever when a chord-tied held tail was the activation (its +80
 # latest hit capped to the chord's +40) or a boundary note (its -40 earliest capped to -20).
 # The fix gives the FG fever-extent envelopes per-note windows. Held tails: note_type==3.

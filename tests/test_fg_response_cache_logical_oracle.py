@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import intern_surface_rows
+from tests.fg_response_frontier_oracles import intern_surface_rows
 from tools.verify import compare_fg_response_cache_logical_bundles as oracle
 
 

@@ -14,6 +14,7 @@ import dataclasses
 
 import numpy as np
 import pytest
+from numba import njit
 
 from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba import (
     _HEAD_DOM_C,
@@ -22,8 +23,34 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_build_gpu_numba impo
     _HEAD_DOM_V,
     _numba_head_basis_corner_score,
     _numba_session_box_keep_mask,
-    _numba_session_surface_basis,
+    _numba_session_pattern_basis,
 )
+
+
+@njit(cache=True, nogil=True)
+def _numba_session_surface_basis(
+    fl, fh, gl, gh, bf, bg, bfg, lo_pos: int, hi_pos: int, c_lo: float, c_hi: float
+):
+    """Session-box twin of `_numba_head_surface_basis` (combo ramp slopes from the SESSION box corners
+    instead of the global _HEAD_DOM_C); with a degenerate combo box it scores one cell exactly."""
+    pattern_basis = _numba_session_pattern_basis(
+        fl, fh, gl, gh, int(lo_pos), int(hi_pos), float(c_lo), float(c_hi)
+    )
+    return (
+        pattern_basis[0],
+        pattern_basis[1],
+        pattern_basis[2],
+        pattern_basis[3],
+        np.int64(bf),
+        np.int64(bg) - np.int64(bfg),
+        np.int64(bfg),
+        pattern_basis[4],
+        pattern_basis[5],
+        pattern_basis[6],
+        pattern_basis[7],
+        pattern_basis[8],
+        pattern_basis[9],
+    )
 
 
 def _cell_score(words_row: np.ndarray, counts_row: np.ndarray, head_len: int, v: float, c: float, f: float, g: float) -> float:

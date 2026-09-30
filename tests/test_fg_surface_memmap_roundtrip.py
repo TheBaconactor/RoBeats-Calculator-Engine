@@ -23,10 +23,7 @@ import pytest
 
 from gear_optimizer.rules import MAX_STAT
 from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
-from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import (
-    expand_surface_rows,
-    intern_surface_rows,
-)
+from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import expand_surface_rows
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
     _fg_response_disk_cache_path,
     _save_payload,
@@ -37,6 +34,7 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_cache_store import (
 from gear_optimizer.solver.taichi_gem.force_greats.response_cache_types import FgResponseFrontierCachePayload
 from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _precompute_surface_head_coeffs
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseFrontierResult, FgResponseSurface
+from tests.fg_response_frontier_oracles import intern_surface_rows
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 

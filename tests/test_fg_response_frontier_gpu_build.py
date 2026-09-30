@@ -45,7 +45,6 @@ def _bruteforce_pg_contiguous_run_first_frontier(
     non_fever_base: int,
     real_fever_time: float,
 ):
-    from gear_optimizer.solver.input_engine_breakpoints import latest_activation_hit_for_contiguous_great_run
     from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
         activation_hit_is_reachable_weighted_lane_aware,
         server_fill_crossing_run,
@@ -53,6 +52,7 @@ def _bruteforce_pg_contiguous_run_first_frontier(
     from tests.fg_response_frontier_oracles import (
         _combine_surfaces,
         _reduce_surfaces,
+        latest_activation_hit_for_contiguous_great_run,
     )
     from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
         _edge_end_at_hit,

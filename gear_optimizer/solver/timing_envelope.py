@@ -148,77 +148,6 @@ def build_per_note_great_window_ms(
     return great_low_abs_ms, great_high_abs_ms
 
 
-def prepare_grouped_timing_windows(
-    timestamps_sec: np.ndarray,
-    *,
-    note_low_ms: np.ndarray,
-    note_high_ms: np.ndarray,
-    quantize_ms: bool,
-) -> dict:
-    ts_sec = np.asarray(timestamps_sec, dtype=np.float32)
-    n = int(ts_sec.shape[0])
-    if n <= 0:
-        return {
-            "n": 0,
-            "ts_ms": np.zeros((0,), dtype=np.int32),
-            "group_starts": np.zeros((0,), dtype=np.int32),
-            "group_ends": np.zeros((0,), dtype=np.int32),
-            "group_base_t": np.zeros((0,), dtype=np.int32),
-            "group_low": np.zeros((0,), dtype=np.int32),
-            "group_high": np.zeros((0,), dtype=np.int32),
-        }
-
-    if quantize_ms:
-        ts_ms = floor_to_int_ms(ts_sec)
-    else:
-        ts_ms = (ts_sec * np.float32(1000.0)).astype(np.int32)
-
-    note_low_ms = np.asarray(note_low_ms, dtype=np.int32)
-    note_high_ms = np.asarray(note_high_ms, dtype=np.int32)
-
-    if n == 1:
-        group_starts = np.asarray([0], dtype=np.int32)
-        group_ends = np.asarray([1], dtype=np.int32)
-    else:
-        # Group consecutive notes that share BOTH a quantized timestamp AND a Perfect window.
-        # A held tail (wider [-40,+80] window) chorded with a narrower note thus lands in its
-        # OWN group, keeping its full reach instead of being capped to the chord intersection
-        # (the game registers each lane's hit independently). For chords whose members share one
-        # window (the common case) this is identical to grouping by timestamp alone, so non-
-        # held-tail charts are bit-unchanged.
-        boundaries = np.nonzero(
-            (ts_ms[1:] != ts_ms[:-1])
-            | (note_low_ms[1:] != note_low_ms[:-1])
-            | (note_high_ms[1:] != note_high_ms[:-1])
-        )[0].astype(np.int32) + 1
-        group_count = int(boundaries.shape[0]) + 1
-        group_starts = np.empty(group_count, dtype=np.int32)
-        group_ends = np.empty(group_count, dtype=np.int32)
-        group_starts[0] = 0
-        if group_count > 1:
-            group_starts[1:group_count] = boundaries
-            group_ends[: group_count - 1] = boundaries
-        group_ends[group_count - 1] = int(n)
-
-    group_base_t = ts_ms[group_starts].astype(np.int32, copy=False)
-    raw_low = np.maximum.reduceat(note_low_ms, group_starts)
-    raw_high = np.minimum.reduceat(note_high_ms, group_starts)
-    group_low = np.minimum(raw_low, raw_high).astype(np.int32, copy=False)
-    group_high = np.maximum(raw_low, raw_high).astype(np.int32, copy=False)
-
-    return {
-        "n": int(n),
-        "ts_ms": ts_ms.astype(np.int32, copy=False),
-        "group_starts": group_starts,
-        "group_ends": group_ends,
-        "group_base_t": group_base_t,
-        "group_low": group_low,
-        "group_high": group_high,
-    }
-
-
-
-
 def _perfect_window_edges_ms(
     ts_sec: np.ndarray,
     note_types: np.ndarray | None,
@@ -258,7 +187,7 @@ def _emit_pernote_edge_envelope_sec(
     The game registers every note's hit independently (per lane/track, confirmed against the
     decompiled server), so a held tail (Perfect window [-40,+80]) that shares a timestamp with a
     narrower note keeps its individual reach. The previous chord-intersection collapse
-    (`prepare_grouped_timing_windows`: group_low=max(lows), group_high=min(highs)) lost the held
+    (group_low=max(lows), group_high=min(highs)) lost the held
     tail's wider early/late reach and UNDER-counted fever when a chord-tied held tail was the
     activation (its +80 latest hit capped to the chord's +40) or a boundary note (its -40
     earliest capped to -20). For solo notes and chords WITHOUT a held tail this is bit-identical

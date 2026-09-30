@@ -3566,33 +3566,6 @@ def _numba_session_pattern_basis(
 
 
 @njit(cache=True, nogil=True)
-def _numba_session_surface_basis(
-    fl, fh, gl, gh, bf, bg, bfg, lo_pos: int, hi_pos: int, c_lo: float, c_hi: float
-):
-    """Session-box twin of `_numba_head_surface_basis`: identical construction with the combo
-    ramp slopes taken from the SESSION box corners instead of the global _HEAD_DOM_C. Serve-side
-    only (the packed uint32 pool format); the build path is untouched."""
-    pattern_basis = _numba_session_pattern_basis(
-        fl, fh, gl, gh, int(lo_pos), int(hi_pos), float(c_lo), float(c_hi)
-    )
-    return (
-        pattern_basis[0],
-        pattern_basis[1],
-        pattern_basis[2],
-        pattern_basis[3],
-        np.int64(bf),
-        np.int64(bg) - np.int64(bfg),
-        np.int64(bfg),
-        pattern_basis[4],
-        pattern_basis[5],
-        pattern_basis[6],
-        pattern_basis[7],
-        pattern_basis[8],
-        pattern_basis[9],
-    )
-
-
-@njit(cache=True, nogil=True)
 def _numba_session_corner_scores_row(
     basis, row, v_lo: float, v_hi: float, c_lo: float, c_hi: float,
     f_lo: float, f_hi: float, g_lo: float, g_hi: float

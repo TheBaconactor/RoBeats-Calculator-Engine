@@ -21,17 +21,18 @@ import numpy as np
 import pytest
 
 from gear_optimizer.solver.taichi_gem.force_greats.fill_crossing import (
-    canonical_fever_sections,
-    fg_canonical_fever_sections,
-    fill_prefix_perfect_units,
-    late_great_activation_is_legal,
     late_great_activation_prefix,
     late_great_prefix_is_legal,
     perfect_fill_crossing_offset,
+    server_fill_crossing_run,
+)
+from tests.parity.force_greats.fill_crossing_walk import (
+    canonical_fever_sections,
+    fill_prefix_perfect_units,
+    late_great_activation_is_legal,
     server_fever_end,
     server_fill_crossing,
     server_fill_crossing_fast,
-    server_fill_crossing_run,
 )
 
 P = False  # Perfect (full fill)
@@ -136,7 +137,7 @@ def test_canonical_stepping_multi_section():
     # activation. Stepping: crossing 2 -> end 5 -> next start 6 -> crossing 8 -> end 11 -> start 12 ->
     # crossing 14 -> end 17 -> start 18 -> from 18 the bar can't reach 3 before note 20 -> stop.
     prefix = fill_prefix_perfect_units([P] * 20)
-    secs = fg_canonical_fever_sections(prefix, 3.0, drain_end=lambda a: min(a + 3, 20))
+    secs = canonical_fever_sections(prefix, 3.0, drain_end=lambda a: min(a + 3, 20))
     assert secs == [(2, 5), (8, 11), (14, 17)]
 
 
@@ -150,7 +151,7 @@ def test_canonical_stepping_reproduces_scoreengine_sections():
     def run(n, denom, great_idxs, ends):
         is_great = [i in set(great_idxs) for i in range(n)]
         prefix = fill_prefix_perfect_units(is_great)
-        return fg_canonical_fever_sections(prefix, denom, drain_end=lambda a: ends[a], n=n)
+        return canonical_fever_sections(prefix, denom, drain_end=lambda a: ends[a], n=n)
 
     # Get Hyped: 7 body-Greats at 1129..1135 (they shift sec-2's crossing onto the Perfect at 1371).
     gh = run(2429, 239.96320551245213, range(1129, 1136), {239: 1127, 1371: 2422})
@@ -200,12 +201,6 @@ def test_base_all_perfect_stepping_matches_the_count():
     secs = canonical_fever_sections(prefix, 3.0, drain_end=lambda a: min(a + 3, 20))
     assert secs == [(2, 5), (8, 11), (14, 17)]
     assert secs[0][0] == 2  # first activation == ceil(denom) - 1 (first section has no wasted note)
-
-
-def test_canonical_fever_sections_is_the_unified_alias():
-    # The FG call sites + the older tests use ``fg_canonical_fever_sections``; base and FG now share
-    # this ONE stepping. The names must be the same object (no divergent second implementation).
-    assert fg_canonical_fever_sections is canonical_fever_sections
 
 
 # --------------------------------------------------------------------------------------------------

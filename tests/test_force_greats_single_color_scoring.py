@@ -5,7 +5,6 @@ import numpy as np
 from gear_optimizer.chart import load_chart
 from gear_optimizer.gamedata import load_stat_curves
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
-from gear_optimizer.solver.scoring.fg_policy import build_penalty_table_and_body, compute_great_penalty_base
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 from gear_optimizer.solver.timing_envelope import time_song
 
@@ -14,19 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_same_color_force_greats_formula_preserves_component_floor_order() -> None:
+    from tests.parity.force_greats.fg_atom_champion import compute_great_penalty_base
+
     assert compute_great_penalty_base(812, 812) == 1773
-
-    penalty_table, body_penalty, combo_value = build_penalty_table_and_body(
-        base_value=2436.0,
-        combo_mul=1.0,
-        primary_val=812,
-        secondary_val=812,
-        head_limit=4,
-    )
-
-    assert combo_value == 2436
-    assert body_penalty == 663
-    assert penalty_table == [663, 663, 663, 663]
 
 
 def test_dark_sheep_force_greats_matches_observed_game_score() -> None:

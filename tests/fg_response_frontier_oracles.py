@@ -6,9 +6,16 @@ geometry-at-a-time orchestration. They are differential oracles, never runtime r
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
+
+from gear_optimizer.solver.input_engine_breakpoints import INPUT_ORDER_EPS_SEC
+from gear_optimizer.solver.taichi_gem.force_greats.response_cache_patterns import (
+    EXPANDED_COEFF_COLUMNS,
+    _intern_surface_row_words,
+    pack_surface_patterns,
+)
 
 from gear_optimizer.solver.taichi_gem.force_greats.response_builder import (
     _action_table,
@@ -346,3 +353,80 @@ def input_engine_rebuild_first_frontier(
         non_fever_base=int(non_fever_base),
         seconds=0.0,
     )
+
+
+def latest_activation_hit_for_contiguous_great_run(
+    *,
+    activation_index: int,
+    hit_lo: float,
+    hit_hi: float,
+    chart_timestamps: Sequence[float] | np.ndarray,
+    perfect_high_timestamps: Sequence[float] | np.ndarray,
+    great_high_timestamps: Sequence[float] | np.ndarray,
+    great_start: int,
+    great_count: int,
+    section_end: int,
+    lanes: Sequence[int] | np.ndarray | None = None,
+    epsilon: float = INPUT_ORDER_EPS_SEC,
+) -> float | None:
+    """Latest activation hit when scored Greats form one contiguous run (the reference of response_builder's
+    numba twin for the lanes=None, epsilon=INPUT_ORDER_EPS_SEC form its DFS uses)."""
+    a = int(activation_index)
+    ts = np.asarray(chart_timestamps).reshape(-1)
+    perfect_hi = np.asarray(perfect_high_timestamps).reshape(-1)
+    great_hi = np.asarray(great_high_timestamps).reshape(-1)
+    lane_arr = None if lanes is None else np.asarray(lanes, dtype=np.int32).reshape(-1)
+    n = min(int(section_end), int(ts.shape[0]), int(perfect_hi.shape[0]), int(great_hi.shape[0]))
+    if lane_arr is not None:
+        n = min(n, int(lane_arr.shape[0]))
+    if not (0 <= a < n):
+        raise ValueError("activation_index must be inside the section")
+
+    lo = float(hit_lo)
+    cap = float(hit_hi)
+    if lo > cap:
+        return None
+
+    activation_lane = None if lane_arr is None else int(lane_arr[a])
+    great_lo = max(0, min(int(great_start), n))
+    great_end = min(n, great_lo + max(0, int(great_count)))
+    eps = max(0.0, float(epsilon))
+    for j in range(a + 1, n):
+        if float(ts[j]) >= cap:
+            break
+        if activation_lane is not None and int(lane_arr[j]) != activation_lane:
+            continue
+        label_hi = float(great_hi[j]) if great_lo <= j < great_end else float(perfect_hi[j])
+        cap = min(float(cap), label_hi - eps)
+        if cap < lo:
+            return None
+    return float(cap)
+
+
+def intern_surface_rows(
+    surface_rows: np.ndarray,
+    surface_coeffs: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Intern exact head behavior without changing logical surface order.
+
+    The cache tests' differential oracle: the production writer derives coefficients from the exact unique
+    words (``intern_surface_row_words`` + ``pack_surface_patterns``) so equal masks cannot compute inconsistent
+    coefficients; this row-coefficient entry checks that. Both share the V30 ``np.unique`` pattern order.
+    """
+    row_refs, unique_words, first_indices = _intern_surface_row_words(surface_rows)
+    coeffs = np.ascontiguousarray(np.asarray(surface_coeffs))
+    if coeffs.ndim != 2 or coeffs.shape != (row_refs.shape[0], EXPANDED_COEFF_COLUMNS):
+        raise ValueError("FG response surface coefficients must have shape (n, 4)")
+    if coeffs.size:
+        coeff_min = int(np.min(coeffs))
+        coeff_max = int(np.max(coeffs))
+        if coeff_min < 0 or coeff_max > int(np.iinfo(np.uint16).max):
+            raise ValueError(
+                f"FG response surface head coefficients exceed uint16 bounds: {coeff_min}..{coeff_max}"
+            )
+    coeffs_u16 = np.ascontiguousarray(coeffs, dtype=np.uint16)
+    pattern_coeffs = np.ascontiguousarray(coeffs_u16[first_indices], dtype=np.uint16)
+    pattern_ids = np.asarray(row_refs[:, 0], dtype=np.intp)
+    if not np.array_equal(coeffs_u16, pattern_coeffs[pattern_ids]):
+        raise ValueError("FG response equal head masks produced inconsistent scoring coefficients")
+    return row_refs, pack_surface_patterns(unique_words, pattern_coeffs)

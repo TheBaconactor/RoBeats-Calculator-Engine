@@ -13,8 +13,15 @@ from gear_optimizer.rules import (
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
 )
-from gear_optimizer.solver.scoring.fg_policy import compute_great_penalty_base
 from gear_optimizer.solver.taichi_gem.force_greats.response_inner_host import _score_response_group_meta_gpu
+
+GREAT_RESULT_POINTS = 150
+
+
+def compute_great_penalty_base(primary_val: int, secondary_val: int) -> int:
+    """A head Great's element value: floor(4/3 primary) + floor(2/3 secondary) + the Great's result points."""
+    primary, secondary = float(int(primary_val)), float(int(secondary_val))
+    return int(floor(primary * (4.0 / 3.0)) + floor(secondary * (2.0 / 3.0)) + GREAT_RESULT_POINTS)
 
 
 @dataclass(frozen=True, slots=True)
