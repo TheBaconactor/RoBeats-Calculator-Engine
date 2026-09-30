@@ -34,6 +34,7 @@ class SolvedFg:
     surface: tuple[int, ...]  # the response surface the score replays from
     trace: dict[str, Any]  # the replay witness (ForceGreats without its score)
     score: int
+    paired: int  # the base score it was solved against (the FG stage's own gate: a winner beats it)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +50,7 @@ class SongSolve:
     timed: TimedSong
     curves: StatCurves
     loadouts: tuple[SolvedLoadout, ...]  # the selected GA surface, best first
-    fg: tuple[tuple[int, SolvedFg], ...]  # (index into loadouts, its FG result) in the FG stage's order
+    fg: tuple[tuple[int, SolvedFg], ...]  # (index into loadouts, its FG result) in the FG stage's order (FG score)
 
 
 def song_solve(song: Any) -> SongSolve:
@@ -89,6 +90,7 @@ def solved_fg(payload: Mapping[str, Any], *, default_element: str) -> SolvedFg:
         surface=tuple(require_response_surface(payload)),
         trace=strip_retired_fg_fields(trace, parent_key="ForceGreats")[0],
         score=int(payload["Score"]),
+        paired=int(payload["BaseScore"]),
     )
 
 

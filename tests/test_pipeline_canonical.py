@@ -80,8 +80,8 @@ def _solve(loadouts, fg=(), mode="perfect_window"):
     return SongSolve(SONG, "T5", song, object(), tuple(loadouts), tuple(fg))
 
 
-def _fg(score, trace=None, gear=("Helmet", "Vest")) -> SolvedFg:
-    stats = _stats(list(gear), ["Chroma", "Marie"], FG_GEMS)
+def _fg(score, trace=None, gear=("Helmet", "Vest"), paired=1000, minis=("Chroma", "Marie")) -> SolvedFg:
+    stats = _stats(list(gear), list(minis), FG_GEMS)
     return SolvedFg(
         element="Flow",
         gems=_gems(FG_GEMS),
@@ -89,6 +89,7 @@ def _fg(score, trace=None, gear=("Helmet", "Vest")) -> SolvedFg:
         surface=tuple(range(11)),
         trace=trace if trace is not None else {"frontier_trace": [{"next_state": 2}]},
         score=score,
+        paired=paired,
     )
 
 
@@ -115,33 +116,35 @@ def scored(monkeypatch):
     return meta_scores
 
 
-def test_an_fg_result_is_kept_only_while_it_beats_the_meta_score(scored):
-    scored.append(1000)
+def test_an_fg_result_stays_attached_whether_or_not_it_beats_the_meta_score(scored):
     helmet = SolvedLoadout(("Helmet", "Vest"), ("Chroma", "Marie"))
-    (row,) = canonical_rows(_solve([helmet], [(0, _fg(1500))]), GEARS, MINIS)
-    x = row.loadout
-    assert (x.score, x.fg_score, x.mini_ascension, x.primary, x.secondary) == (
-        1000,
-        1500,
-        MINI_ASCENSION_VERSION,
-        "Flow",
-        "Vibe",
-    )
-    assert x.meta.gems == _gems(META_GEMS) and x.fg.gems == _gems(FG_GEMS) and x.fg.surface == tuple(range(11))
-    assert decode_trace(row.meta_trace) == {"trace": 1}
-    assert decode_trace(row.fg_trace) == {"frontier_trace": [{"next_state": 2}]}
-
-    scored.append(1500)
-    (row,) = canonical_rows(_solve([helmet], [(0, _fg(1500))]), GEARS, MINIS)
-    assert (row.loadout.fg, row.loadout.fg_score, row.fg_trace) == (None, None, None)
+    for meta_score, fg_score in ((1000, 1500), (1500, 1500), (1600, 1500)):
+        scored.append(meta_score)
+        (row,) = canonical_rows(_solve([helmet], [(0, _fg(fg_score))]), GEARS, MINIS)
+        x = row.loadout
+        assert (x.score, x.fg_score, x.mini_ascension, x.primary, x.secondary) == (
+            meta_score,
+            fg_score,
+            MINI_ASCENSION_VERSION,
+            "Flow",
+            "Vibe",
+        )
+        assert x.meta.gems == _gems(META_GEMS) and x.fg.gems == _gems(FG_GEMS) and x.fg.surface == tuple(range(11))
+        assert decode_trace(row.meta_trace) == {"trace": 1}
+        assert decode_trace(row.fg_trace) == {"frontier_trace": [{"next_state": 2}]}
 
 
 def test_rows_follow_the_store_order_and_a_repeated_loadout_fails_loudly(scored):
     a = SolvedLoadout(("Helmet", "Vest"), ("Chroma", "Marie"))
     b = SolvedLoadout(("Cap", "Vest"), ("Chroma", "Marie"))
-    scored.extend([900, 800])
-    rows = canonical_rows(_solve([a, b], [(1, _fg(1000, gear=b.gear))]), GEARS, MINIS)
-    assert [r.loadout.gear[0] for r in rows] == ["Helmet", "Cap"]
+    c = SolvedLoadout(("Helmet", "Vest"), ("Marie", "Marie"))
+    scored.extend([900, 800, 700])
+    # c's FG result does not beat the base it was solved against: c keeps its surface place.
+    fg = [(1, _fg(1100, gear=c.gear, paired=1200, minis=c.minis)), (2, _fg(1000, gear=b.gear, paired=800))]
+    rows = canonical_rows(_solve([a, c, b], fg), GEARS, MINIS)
+    assert [r.loadout.loadout_hash for r in rows] == [
+        loadout_identity(x, VIEW, "Flow", "Vibe").loadout_hash for x in (a, b, c)
+    ]
     scored.extend([900, 800])
     twin = SolvedLoadout(("Helmet", "Vest"), ("Chroma Twin", "Marie"))
     with pytest.raises(ValueError, match="holds loadout"):

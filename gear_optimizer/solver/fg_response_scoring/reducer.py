@@ -313,25 +313,10 @@ class FgResultReducer:
         # them into every payload instead of rebuilding per surviving loadout.
         song_inputs: Any | None = None
         trace_cache = FgTraceMaterializationCache()
+        # Every evaluated FG result is materialized with its replay, winning or not: a loadout keeps its FG
+        # result attached while it is stored (owner 09-30); the store ranks the FG board (FG beats score).
         for item in pending_jobs:
             result = item["result"]
-            if not skyline:
-                # Winner pre-gate: survival is fully determined by the exact surface rescore vs
-                # the paired source base, neither of which needs the trace. The trace DFS, the
-                # persist reachability guard, and the physical replay below exist to build and
-                # validate the PERSISTED payload, so run them only for loadouts that can publish.
-                # Same predicate and same fail-loud checks as the payload path; the payload gate
-                # below stays the publish authority on the survivors' materialized values.
-                paired_base_early = safe_int(item["paired_base_score"], 0)
-                if paired_base_early <= 0:
-                    raise ValueError("ForceGreats response frontier is missing paired source base score.")
-                early_score_obj = score_force_greats_response_surface_exact(
-                    result.stats, song, curves, result.surface
-                )
-                if early_score_obj is None:
-                    raise ValueError("ForceGreats response frontier exact surface replay failed")
-                if int(early_score_obj) <= int(paired_base_early):
-                    continue
             if song_inputs is None:
                 song_inputs = song.fg_inputs
             payload = materialize_force_payload_from_response_frontier(
@@ -365,9 +350,7 @@ class FgResultReducer:
                     }
                 )
                 continue
-            if exact_fg_score <= exact_base_score:
-                continue
-            if exact_fg_score > safe_int(entry.get("fg_score", 0), 0):
+            if exact_base_score < exact_fg_score and exact_fg_score > safe_int(entry.get("fg_score", 0), 0):
                 entry["force"] = payload
                 entry["fg_score"] = exact_fg_score
                 entry["fg_base_score"] = exact_base_score

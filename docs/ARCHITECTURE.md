@@ -136,7 +136,10 @@ solved song arrives as a `SongSolve` (`pipeline/results.py`: the GA surface and
 the Force Great results the FG stage published); `pipeline/canonical.py` turns
 it into store rows (the exhaustive meta gem re-solve, exact replays, identity
 and stats, each computed once) and the post-processor merges them with
-`store.db.store_results()` and prints what the database holds.
+`store.db.store_results()` and prints what the database holds. Every Force
+Great result the FG stage evaluated stays attached to its loadout with its
+replay, whether or not it beats the meta score; the store's FG board lists
+only those that do.
 
 The database boundary is `gear_optimizer/store` (see DATABASE_SCHEMA.md):
 `schema` for connections, the DDL and migrations; `boards` for board order and

@@ -55,7 +55,7 @@ def test_a_solved_song_is_its_ga_surface_with_the_fg_results_it_published():
     assert solve.loadouts == (SolvedLoadout(tuple(GEAR_A), tuple(MINIS)), SolvedLoadout(tuple(GEAR_B), tuple(MINIS)))
     ((index, fg),) = solve.fg
     assert index == 1
-    assert (fg.element, fg.score, fg.surface) == ("Flow", 1500, tuple(range(11)))
+    assert (fg.element, fg.score, fg.paired, fg.surface) == ("Flow", 1500, 1000, tuple(range(11)))
     assert fg.gems == (1, 9, 11, 5, 2, 60)  # stats.GEM_KINDS: PP, CM, FM, FT, FF, Element
     assert fg.stats == tuple(FG_STATS[s] for s in STATS)
     # The replay witness without its score and the retired FG configuration fields.

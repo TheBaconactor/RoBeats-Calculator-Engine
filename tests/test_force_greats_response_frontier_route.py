@@ -1278,7 +1278,9 @@ def test_fg_response_scoring_uses_shared_solver(tmp_path, monkeypatch):
     assert out[0]["minis"] == ["M1"]
 
 
-def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(tmp_path, monkeypatch):
+def test_fg_response_scoring_emits_every_result_with_its_authoritative_paired_base(tmp_path, monkeypatch):
+    """Every evaluated FG result is emitted (it stays attached to its loadout, owner 09-30) with the paired base
+    it was solved against; only a winner (FG beats that base) updates its GA entry."""
     from types import SimpleNamespace
 
     from gear_optimizer.solver.fg_response_scoring.reducer import FgResultReducer
@@ -1318,19 +1320,15 @@ def test_fg_response_scoring_uses_authoritative_paired_base_for_emit_gate(tmp_pa
         SimpleNamespace(best_score=150, raw_base=200, exact_base=100, exact_fg=150, stats={}, surface=None),
         SimpleNamespace(best_score=150, raw_base=90, exact_base=160, exact_fg=150, stats={}, surface=None),
     ]
-    # The winner pre-gate rescoring runs before the (faked) payload builder; fake the same exact
-    # rescore seam so the gate still decides purely on the authoritative paired base (100 vs 160).
-    monkeypatch.setattr(
-        reducer_mod,
-        "score_force_greats_response_surface_exact",
-        lambda stats, song, curves, surface: 150,
-    )
-
     out = FgResultReducer.materialize(plan, [results])
 
-    assert [(row["gear"], row["base_score"], row["fg_score"]) for row in out] == [(["RawBaseInflated"], 100, 150)]
+    assert [(row["gear"], row["base_score"], row["fg_score"]) for row in out] == [
+        (["RawBaseInflated"], 100, 150),
+        (["BelowSourcePair"], 160, 150),
+    ]
+    assert [row["data"]["BaseScore"] for row in out] == [100, 160]
     assert keep["fg_base_score"] == 100
-    assert out[0]["data"]["BaseScore"] == 100
+    assert "fg_base_score" not in drop
 
 
 def test_fg_response_scoring_batches_candidates(tmp_path, monkeypatch):

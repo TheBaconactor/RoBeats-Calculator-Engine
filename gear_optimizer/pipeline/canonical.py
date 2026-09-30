@@ -6,12 +6,12 @@ Per loadout of the GA surface:
 - meta result: the gem allocation re-solved exhaustively for the loadout's items (song fixed stats: the baseline
   TeamBuff), scored by exact replay (perfect_window: score + TimelineFrontier witness, physically validated;
   zero_ms: fixed chart timing, no witness);
-- Force Greats result, for the loadouts the FG stage solved: perfect_window keeps the solved result, zero_ms
-  re-solves it at chart timing; either is scored by an exact surface replay and kept only while it beats the
-  meta score;
+- Force Greats result, for every loadout the FG stage solved: perfect_window keeps the solved result, zero_ms
+  re-solves it at chart timing; either is scored by an exact surface replay and stays attached whether or not it
+  beats the meta score (the store ranks the FG board);
 - stored stats: recomputed from the item names and gems, and they must give the scores' stats back.
 The rows come in the order the store numbers new loadouts (exact score ties rank by it): the run's best, the
-loadouts with an FG result in the FG stage's order, then the rest of the surface.
+loadouts whose FG result beat the base score it was solved against (FG stage order), then the rest of the surface.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
     fixed_tier = team_buff_effect(solve.tier, primary)
     out: list[Row] = []
     seen: set[str] = set()
-    for i in row_order(len(solve.loadouts), [i for i, _fg in solve.fg]):
+    for i in row_order(len(solve.loadouts), [i for i, fg in solve.fg if fg.score > fg.paired]):
         ident = loadout_identity(solve.loadouts[i], song_view, primary, secondary)
         if ident.loadout_hash in seen:
             raise ValueError(f"{solve.song}: the GA surface holds loadout {ident.loadout_hash} twice")
@@ -99,17 +99,15 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
         solved = fg_by_index.get(i)
         if solved is not None:
             fg_stats = dict(zip(STATS, solved.stats))
-            exact = _fg_score(solved, fg_stats, song, curves)
-            if exact > score:
-                fg_score, fg_trace = exact, solved.trace
-                fg = FgResult(
-                    element=solved.element,
-                    gems=solved.gems,
-                    stats=stats_of(solved.element, solved.gems, fg_stats),
-                    surface=solved.surface,
-                    updated=0,
-                    seq=0,
-                )
+            fg_score, fg_trace = _fg_score(solved, fg_stats, song, curves), solved.trace
+            fg = FgResult(
+                element=solved.element,
+                gems=solved.gems,
+                stats=stats_of(solved.element, solved.gems, fg_stats),
+                surface=solved.surface,
+                updated=0,
+                seq=0,
+            )
         record = Loadout(
             song=solve.song,
             tier=solve.tier,
@@ -129,7 +127,7 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
 
 
 def row_order(count: int, fg_indices: Sequence[int]) -> list[int]:
-    """Surface indices in store order: the best, the loadouts with an FG result (FG stage order), the rest."""
+    """Surface indices in store order: the best, the loadouts with a winning FG result (FG stage order), the rest."""
     order = list(dict.fromkeys([0, *fg_indices])) if count else []
     return order + [i for i in range(count) if i not in set(order)]
 
