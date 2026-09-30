@@ -5,7 +5,6 @@ from gear_optimizer.solver import native_inflight_completion as completion
 from gear_optimizer.solver.native_inflight_orchestrator import (
     CompletionTracker,
     emit_song_results,
-    has_waitable_work,
     mark_song_completed,
     run_native_inflight_song_pipeline,
 )
@@ -38,11 +37,6 @@ def test_completion_tracker_unregister_discards_future_id():
     tracker.unregister(id(fut))
 
     assert id(fut) not in tracker.ids
-
-
-def test_has_waitable_work_detects_active_runtime_queues():
-    assert has_waitable_work([], (), pending_fg=[]) is False
-    assert has_waitable_work(["ga-song"], (), pending_fg=[]) is True
 
 
 class _MemoryResumeTracker:
@@ -165,10 +159,9 @@ def test_fg_prep_failure_uses_bundle_aware_error_and_resolves_owner():
     prep_error_idx = src.index("if prep_completion.error is None:")
     prep_error_block = src[prep_error_idx : src.index("if ready_fg_from_prep", prep_error_idx)]
 
-    assert "build_native_song_error_payload(" in prep_error_block
-    assert "build_native_task_error_payload(" not in prep_error_block
-    assert "_advance_bundle(bundle_parent" in prep_error_block
-    assert "mark_song_completed(" in prep_error_block
+    # A song-stage failure: the song's error path (bundle-aware completion), not the task path.
+    assert "_fail_song(song, prep_completion.error, prep_completion.trace)" in prep_error_block
+    assert "_fail_task(" not in prep_error_block
     # The slot was already released at GA completion; FG-stage errors must not
     # touch the slot pool.
     assert "release_slot" not in prep_error_block
@@ -200,31 +193,27 @@ def test_song_prep_runway_fill_error_posts_task_payload_and_advances():
     assert "prep_queue.submit(" in fill_block
     # ...and a raised submit fails loud into the shared error/advance machinery (no swallow).
     assert "except Exception as exc:" in fill_block
-    assert "build_native_task_error_payload(" in fill_block
-    assert "_post(payload)" in fill_block
-    assert "_advance_bundle(" in fill_block
-    assert "mark_song_completed(" in fill_block
+    assert "_fail_task(nxt, logical_nxt, exc, traceback.format_exc())" in fill_block
+    fail_idx = src.index("def _fail_task(")
+    fail_block = src[fail_idx : src.index("def _fail_song(", fail_idx)]
+    assert "build_native_task_error_payload(" in fail_block
+    assert "_advance_bundle(" in fail_block
+    assert "mark_song_completed(" in fail_block
 
 
 def test_song_prep_failures_do_not_treat_seed_context_as_repeat_bundle():
     src = inspect.getsource(run_native_inflight_song_pipeline)
 
-    fill_idx = src.index("def _fill_song_prep_runway()")
-    fill_block = src[fill_idx : src.index("def _emit_song_results", fill_idx)]
+    # Both task failure points (prep submit, prep completion) go through _fail_task, which decides a repeat
+    # bundle by the bundle tracker, not by the seed context every task carries.
     song_prep_idx = src.index("for prep_completion in prep_queue.pop_completed():")
     prep_error_block = src[song_prep_idx : src.index("ready_fg_from_prep = False", song_prep_idx)]
-
-    assert "is_repeat_bundle = bool(bundle_tracker.bundle_runs(nxt))" in fill_block
-    assert "suppress_progress=is_repeat_bundle" in fill_block
-    assert "advanced = False" in fill_block
-    assert "if not advanced:" in fill_block
-
-    assert "is_repeat_bundle = bool(bundle_tracker.bundle_runs(task))" in prep_error_block
-    assert "suppress_progress=is_repeat_bundle" in prep_error_block
-    assert "advanced = False" in prep_error_block
-    assert "if not advanced:" in prep_error_block
-    assert "suppress_progress=repeat_ctx is not None" not in prep_error_block
-    assert "if repeat_ctx is not None:" not in prep_error_block
+    assert "_fail_task(task, logical_task, exc, traceback.format_exc())" in prep_error_block
+    fail_idx = src.index("def _fail_task(")
+    fail_block = src[fail_idx : src.index("def _fail_song(", fail_idx)]
+    assert "is_repeat_bundle = bool(bundle_tracker.bundle_runs(task))" in fail_block
+    assert "suppress_progress=is_repeat_bundle" in fail_block
+    assert "repeat_ctx" not in fail_block
 
 
 def test_ga_admission_reserves_slot_fail_loud_before_payload_submit():

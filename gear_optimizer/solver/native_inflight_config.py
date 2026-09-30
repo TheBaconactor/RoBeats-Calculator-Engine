@@ -72,13 +72,6 @@ def read_inflight_worker_count(
     return max(1, int(workers))
 
 
-def read_db_prefetch_workers(
-    *,
-    fg_prep_workers: int,
-) -> int:
-    return max(1, min(int(fg_prep_workers), 4))
-
-
 @dataclass(frozen=True)
 class InflightConfig:
     pool_cache_max: int

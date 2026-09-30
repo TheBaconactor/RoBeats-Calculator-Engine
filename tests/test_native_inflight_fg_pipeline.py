@@ -46,7 +46,6 @@ def test_read_native_fg_pipeline_settings_uses_canonical_sizing():
     assert single_song_settings.workers == 1
     assert single_song_settings.batch_max == 1
     assert single_song_settings.prep_workers == 1
-    assert single_song_settings.db_prefetch_workers == 1
 
     settings = read_native_fg_pipeline_settings(
         inflight_limit=8,
@@ -56,7 +55,6 @@ def test_read_native_fg_pipeline_settings_uses_canonical_sizing():
     assert settings.workers == 2
     assert settings.batch_max == 2
     assert settings.prep_workers == 6
-    assert settings.db_prefetch_workers == 4
     assert sizing_calls[-1] == {"inflight_limit": 8, "kind": "fg_prep"}
 
     settings = read_native_fg_pipeline_settings(
@@ -67,7 +65,6 @@ def test_read_native_fg_pipeline_settings_uses_canonical_sizing():
     assert settings.workers == 2
     assert settings.batch_max == 2
     assert settings.prep_workers == 5
-    assert settings.db_prefetch_workers == 4
 
     settings = read_native_fg_pipeline_settings(
         inflight_limit=16,
@@ -77,17 +74,6 @@ def test_read_native_fg_pipeline_settings_uses_canonical_sizing():
     assert settings.workers == 2
     assert settings.batch_max == 2
     assert settings.prep_workers == 6
-    assert settings.db_prefetch_workers == 4
-
-
-def test_read_native_fg_pipeline_settings_uses_canonical_db_prefetch():
-    settings = read_native_fg_pipeline_settings(
-        inflight_limit=8,
-        default_worker_threads=lambda **_kwargs: 3,
-    )
-
-    assert settings.prep_workers == 3
-    assert settings.db_prefetch_workers == 3
 
 
 def test_inflight_ga_pipeline_inflight_counts_done_unprocessed_futures():

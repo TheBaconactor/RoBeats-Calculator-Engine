@@ -26,14 +26,6 @@ class _ShutdownQueue:
             raise RuntimeError(f"{self.name} failed")
 
 
-class _DbPersistence:
-    def __init__(self, calls: list[str]) -> None:
-        self.calls = calls
-
-    def shutdown_prefetch(self, **kwargs) -> None:
-        self.calls.append(f"db:{kwargs}")
-
-
 class _PostSender:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
@@ -65,7 +57,6 @@ def test_shutdown_native_inflight_resources_uses_dependency_order(monkeypatch):
     shutdown.shutdown_native_inflight_resources(
         fg_pipeline=_FgPipeline(calls),
         decode_queue=_ShutdownQueue(calls, "decode"),
-        db_persistence=_DbPersistence(calls),
         prep_queue=_ShutdownQueue(calls, "prep"),
         post_sender=_PostSender(calls),
         gpu_client=_GpuClient(calls),
@@ -74,16 +65,15 @@ def test_shutdown_native_inflight_resources_uses_dependency_order(monkeypatch):
 
     # The executor group shuts down in parallel (intra-group order is not
     # deterministic); all of it must complete before the ordered GPU tail.
-    assert sorted(calls[:5]) == sorted(
+    assert sorted(calls[:4]) == sorted(
         [
             "fg:{'wait': True, 'cancel_futures': True}",
             "decode:{'wait': True, 'cancel_futures': True}",
-            "db:{'wait': True, 'cancel_futures': True}",
             "fg_prep:{'wait': True, 'cancel_futures': True}",
             "prep:{'wait': True, 'cancel_futures': True}",
         ]
     )
-    assert calls[5:] == [
+    assert calls[4:] == [
         "post:{'timeout': 10.0}",
         "gpu_client:{'timeout': 2.0}",
         "gpu_executor.stop",
@@ -96,23 +86,21 @@ def test_shutdown_native_inflight_resources_continues_after_shutdown_failure(mon
     shutdown.shutdown_native_inflight_resources(
         fg_pipeline=_FgPipeline(calls),
         decode_queue=_ShutdownQueue(calls, "decode", fail=True),
-        db_persistence=_DbPersistence(calls),
         prep_queue=_ShutdownQueue(calls, "prep"),
         post_sender=None,
         gpu_client=_GpuClient(calls),
         gpu_executor=_GpuExecutor(calls, running=False),
     )
 
-    assert sorted(calls[:5]) == sorted(
+    assert sorted(calls[:4]) == sorted(
         [
             "fg:{'wait': True, 'cancel_futures': True}",
             "decode:{'wait': True, 'cancel_futures': True}",
-            "db:{'wait': True, 'cancel_futures': True}",
             "fg_prep:{'wait': True, 'cancel_futures': True}",
             "prep:{'wait': True, 'cancel_futures': True}",
         ]
     )
-    assert calls[5:] == ["gpu_client:{'timeout': 2.0}"]
+    assert calls[4:] == ["gpu_client:{'timeout': 2.0}"]
 
 
 def test_persistent_worker_keeps_gpu_executor_alive(monkeypatch):

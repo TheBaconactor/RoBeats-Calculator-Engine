@@ -11,7 +11,6 @@ from gear_optimizer.solver.native_inflight_scheduler_policy import (
 )
 from gear_optimizer.solver.native_inflight_config import (
     default_worker_threads,
-    read_db_prefetch_workers,
     read_inflight_worker_count,
 )
 from gear_optimizer.solver.inflight_wait import (
@@ -163,11 +162,6 @@ def test_read_inflight_worker_count_uses_canonical_cpu_sizing_and_ga_seed():
         )
         == 1
     )
-
-
-def test_read_db_prefetch_workers_defaults_from_fg_prep():
-    assert read_db_prefetch_workers(fg_prep_workers=2) == 2
-    assert read_db_prefetch_workers(fg_prep_workers=9) == 4
 
 
 def test_continuous_fg_prep_start_budget_fills_the_prep_worker_runway():

@@ -5,7 +5,7 @@ import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 from gear_optimizer.core.result_payloads import build_error_payload
 from gear_optimizer.solver.inflight_wait import wait_for_completion_event
@@ -61,14 +61,6 @@ class CompletionTracker:
 
     def clear(self) -> None:
         self.event.clear()
-
-
-def has_waitable_work(*queue_groups: Iterable[Any], pending_fg: Iterable[Any] = ()) -> bool:
-    for group in queue_groups:
-        if group:
-            return True
-    _ = pending_fg
-    return False
 
 
 def mark_song_completed(

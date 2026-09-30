@@ -14,7 +14,7 @@ from gear_optimizer.solver.fg_materialization_worker import (
     materialize_fg_request,
 )
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver.native_inflight_config import NativeSong, read_db_prefetch_workers
+from gear_optimizer.solver.native_inflight_config import NativeSong
 
 if TYPE_CHECKING:
     from gear_optimizer.solver.native_inflight_lifecycle import ProgressTracker
@@ -26,7 +26,6 @@ class NativeFGPipelineSettings:
     workers: int
     batch_max: int
     prep_workers: int
-    db_prefetch_workers: int = 1
 
 
 @dataclass(frozen=True)
@@ -68,12 +67,10 @@ def read_native_fg_pipeline_settings(
         )
     )
     fg_prep_workers = max(1, min(int(fg_prep_workers), int(inflight_limit_i), 8))
-    db_prefetch_workers = read_db_prefetch_workers(fg_prep_workers=int(fg_prep_workers))
     return NativeFGPipelineSettings(
         workers=int(fg_workers),
         batch_max=int(fg_batch_max),
         prep_workers=int(fg_prep_workers),
-        db_prefetch_workers=int(db_prefetch_workers),
     )
 
 

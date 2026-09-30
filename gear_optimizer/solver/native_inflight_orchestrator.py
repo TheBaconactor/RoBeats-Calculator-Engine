@@ -33,7 +33,6 @@ from gear_optimizer.solver.native_inflight_completion import (
     build_native_song_error_payload,
     build_native_task_error_payload,
     emit_song_results,
-    has_waitable_work,
     mark_song_completed,
 )
 from gear_optimizer.solver.native_inflight_lifecycle import prepare_native_song
@@ -162,6 +161,50 @@ def run_native_inflight_song_pipeline(
             submitted += 1
             submit_budget -= 1
         return int(submitted)
+    def _fail_task(task: tuple, logical_task: tuple, exc: BaseException, trace: str) -> None:
+        """A task that failed before it became a song (its preparation): post its error, then complete it or
+        advance its repeat bundle. A task stopped by a stop request stays pending."""
+        if stopping and is_stop_abort_exception(exc):
+            return
+        song_name = task_song_name(task)
+        task_key = task_queue_label(logical_task)
+        is_repeat_bundle = bool(bundle_tracker.bundle_runs(task))
+        _post(
+            build_native_task_error_payload(
+                song_name=song_name,
+                queue_key=task_key,
+                exc=exc,
+                trace=trace,
+                suppress_progress=is_repeat_bundle,
+            )
+        )
+        if not (is_repeat_bundle and _advance_bundle(task, song_name=song_name, failed=True)):
+            mark_song_completed(
+                completed_songs=completed_songs,
+                task_key=task_key,
+                song_name=song_name,
+                song_path=task_file_path(task),
+                memory_resume_tracker=memory_resume_tracker,
+            )
+
+    def _fail_song(song: NativeSong, exc: BaseException, trace: str) -> None:
+        """A song that failed in a stage: post its error, then complete it or advance its repeat bundle. A song
+        stopped by a stop request stays pending."""
+        if stopping and is_stop_abort_exception(exc):
+            return
+        _post(build_native_song_error_payload(song, exc=exc, trace=trace))
+        bundle_parent = song.runtime.bundle.bundle_parent_task
+        if bundle_parent is not None:
+            _advance_bundle(bundle_parent, song_name=str(song.config.song_name), failed=True)
+        else:
+            mark_song_completed(
+                completed_songs=completed_songs,
+                task_key=song.config.task_key,
+                song_name=song.config.song_name,
+                song_path=song.config.fp,
+                memory_resume_tracker=memory_resume_tracker,
+            )
+
     # First-wave prep goes through the same prep-worker runway as steady state (the
     # first loop iteration fills it): the old synchronous prime loop prepared 8-12
     # songs serially on this thread while the already-warm GPU idled.
@@ -178,7 +221,6 @@ def run_native_inflight_song_pipeline(
                 submitted_any = True
                 continue
             logical_nxt, _repeat_ctx = _next_logical_task(nxt)
-            nxt_key = task_queue_label(logical_nxt)
             try:
                 prep_queue.submit(
                     nxt,
@@ -186,28 +228,7 @@ def run_native_inflight_song_pipeline(
                     register_future=completion_tracker.register,
                 )
             except Exception as exc:
-                is_repeat_bundle = bool(bundle_tracker.bundle_runs(nxt))
-                payload = build_native_task_error_payload(
-                    song_name=task_song_name(nxt),
-                    queue_key=str(nxt_key),
-                    exc=exc,
-                    trace=traceback.format_exc(),
-                    suppress_progress=is_repeat_bundle,
-                )
-                _post(payload)
-                advanced = False
-                if is_repeat_bundle:
-                    advanced = _advance_bundle(nxt, song_name=task_song_name(nxt), failed=True)
-                if not advanced:
-                    mark_song_completed(
-                        completed_songs=completed_songs,
-                        task_key=nxt_key,
-                        song_name=task_song_name(nxt),
-                        song_path=task_file_path(nxt),
-                        memory_resume_tracker=memory_resume_tracker,
-                    )
-                submitted_any = True
-                continue
+                _fail_task(nxt, logical_nxt, exc, traceback.format_exc())
             submitted_any = True
         return bool(submitted_any)
 
@@ -255,10 +276,7 @@ def run_native_inflight_song_pipeline(
                 logical_task = prep_completion.logical_task
                 fut = prep_completion.future
                 did_work = True
-                song_name = task_song_name(task)
-                bundle_key = task_queue_label(task)
-                task_key = task_queue_label(logical_task)
-                if bundle_key in completed_songs:
+                if task_queue_label(task) in completed_songs:
                     continue
                 try:
                     prepared_song = fut.result()
@@ -272,28 +290,7 @@ def run_native_inflight_song_pipeline(
                         baseline_valid=bool(prepared_song.runtime.db.db_baseline_valid),
                     )
                 except Exception as exc:
-                    if stopping and is_stop_abort_exception(exc):
-                        continue
-                    is_repeat_bundle = bool(bundle_tracker.bundle_runs(task))
-                    payload = build_native_task_error_payload(
-                        song_name=str(song_name),
-                        queue_key=str(task_key),
-                        exc=exc,
-                        trace=traceback.format_exc(),
-                        suppress_progress=is_repeat_bundle,
-                    )
-                    _post(payload)
-                    advanced = False
-                    if is_repeat_bundle:
-                        advanced = _advance_bundle(task, song_name=str(song_name), failed=True)
-                    if not advanced:
-                        mark_song_completed(
-                            completed_songs=completed_songs,
-                            task_key=task_key,
-                            song_name=song_name,
-                            song_path=task_file_path(task),
-                            memory_resume_tracker=memory_resume_tracker,
-                        )
+                    _fail_task(task, logical_task, exc, traceback.format_exc())
             ready_fg_from_prep = False
             for prep_completion in fg_pipeline.finish_completed_prep():
                 song = prep_completion.song
@@ -301,27 +298,7 @@ def run_native_inflight_song_pipeline(
                 if prep_completion.error is None:
                     ready_fg_from_prep = True
                     continue
-                if stopping and is_stop_abort_exception(prep_completion.error):
-                    pass
-                else:
-                    bundle_parent = song.runtime.bundle.bundle_parent_task
-                    _post(
-                        build_native_song_error_payload(
-                            song,
-                            exc=prep_completion.error,
-                            trace=prep_completion.trace,
-                        )
-                    )
-                    if bundle_parent is not None:
-                        _advance_bundle(bundle_parent, song_name=str(song.config.song_name), failed=True)
-                    else:
-                        mark_song_completed(
-                            completed_songs=completed_songs,
-                            task_key=song.config.task_key,
-                            song_name=song.config.song_name,
-                            song_path=song.config.fp,
-                            memory_resume_tracker=memory_resume_tracker,
-                        )
+                _fail_song(song, prep_completion.error, prep_completion.trace)
             if ready_fg_from_prep and pending_fg:
                 ready_budget = continuous_fg_submit_budget(
                     pending_fg_count=len(pending_fg),
@@ -377,23 +354,7 @@ def run_native_inflight_song_pipeline(
                         handle = gpu_client.submit_gpu_native_ga_run(payload)
                     except Exception as exc:
                         ga_pipeline.release_slot(song, slot_pool)
-                        bundle_parent = song.runtime.bundle.bundle_parent_task
-                        payload = build_native_song_error_payload(
-                            song,
-                            exc=exc,
-                            trace=traceback.format_exc(),
-                        )
-                        _post(payload)
-                        if bundle_parent is not None:
-                            _advance_bundle(bundle_parent, song_name=str(song.config.song_name), failed=True)
-                        else:
-                            mark_song_completed(
-                                completed_songs=completed_songs,
-                                task_key=song.config.task_key,
-                                song_name=song.config.song_name,
-                                song_path=song.config.fp,
-                                memory_resume_tracker=memory_resume_tracker,
-                            )
+                        _fail_song(song, exc, traceback.format_exc())
                         did_work = True
                         continue
                     ga_pipeline.track_submitted(
@@ -418,28 +379,8 @@ def run_native_inflight_song_pipeline(
                 except GpuServiceTimeoutError:
                     raise
                 except Exception as exc:
-                    bundle_parent = song.runtime.bundle.bundle_parent_task
-                    if not (stopping and is_stop_abort_exception(exc)):
-                        _post(
-                            build_native_song_error_payload(
-                                song,
-                                exc=exc,
-                                trace=traceback.format_exc(),
-                            )
-                        )
                     ga_pipeline.release_slot(song, slot_pool)
-                    if stopping and is_stop_abort_exception(exc):
-                        continue
-                    if bundle_parent is not None:
-                        _advance_bundle(bundle_parent, song_name=str(song.config.song_name), failed=True)
-                    else:
-                        mark_song_completed(
-                            completed_songs=completed_songs,
-                            task_key=song.config.task_key,
-                            song_name=song.config.song_name,
-                            song_path=song.config.fp,
-                            memory_resume_tracker=memory_resume_tracker,
-                        )
+                    _fail_song(song, exc, traceback.format_exc())
                     continue
                 song.runtime.ga.ga_future = None
                 # The GA request (GA loop + fused FG owner score + payload download)
@@ -460,27 +401,7 @@ def run_native_inflight_song_pipeline(
                 try:
                     decode_result = decode_future.result()
                 except Exception as exc:
-                    bundle_parent = song.runtime.bundle.bundle_parent_task
-                    if not (stopping and is_stop_abort_exception(exc)):
-                        _post(
-                            build_native_song_error_payload(
-                                song,
-                                exc=exc,
-                                trace=traceback.format_exc(),
-                            )
-                        )
-                    if stopping and is_stop_abort_exception(exc):
-                        continue
-                    if bundle_parent is not None:
-                        _advance_bundle(bundle_parent, song_name=str(song.config.song_name), failed=True)
-                    else:
-                        mark_song_completed(
-                            completed_songs=completed_songs,
-                            task_key=song.config.task_key,
-                            song_name=song.config.song_name,
-                            song_path=song.config.fp,
-                            memory_resume_tracker=memory_resume_tracker,
-                        )
+                    _fail_song(song, exc, traceback.format_exc())
                     continue
                 finally:
                     song.runtime.decode.decode_future = None
@@ -550,14 +471,7 @@ def run_native_inflight_song_pipeline(
                 fg_futures=fg_futures,
             )
             if not did_work:
-                if has_waitable_work(
-                    ga_inflight,
-                    prep_inflight,
-                    decode_inflight,
-                    fg_prep_inflight,
-                    fg_futures,
-                    pending_fg=pending_fg,
-                ):
+                if ga_inflight or prep_inflight or decode_inflight or fg_prep_inflight or fg_futures:
                     has_gpu = bool(ga_inflight)
                     signaled = bool(completion_tracker.is_set())
                     if signaled:

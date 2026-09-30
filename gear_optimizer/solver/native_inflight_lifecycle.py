@@ -202,7 +202,6 @@ def shutdown_native_inflight_resources(
     *,
     fg_pipeline,
     decode_queue,
-    db_persistence=None,
     prep_queue,
     post_sender,
     gpu_client,
@@ -232,13 +231,6 @@ def shutdown_native_inflight_resources(
             lambda: prep_queue.shutdown(wait=True, cancel_futures=True),
         ),
     ]
-    if db_persistence is not None:
-        parallel_steps.append(
-            (
-                "db_prefetch.shutdown",
-                lambda: db_persistence.shutdown_prefetch(wait=True, cancel_futures=True),
-            )
-        )
 
     # Leaving the pool's context waits for every step.
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(parallel_steps)) as pool:
