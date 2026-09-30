@@ -400,13 +400,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
     def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
         if not self._fatal_gpu_errors_enabled():
             return False
-        from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
+        from gear_optimizer.solver.gpu_service import GpuFatalError
+
+        # The engine's own unrecoverable GPU states raise GpuFatalError; the GPU drivers' (through Taichi) only
+        # have their messages.
         fatal_markers = (
-            "gpu executor timeout after",
-            "gpu executor taichi init failed",
-            "taichi init failed",
-            "gpu service request",
-            "timed out after",
             "device lost",
             "device removed",
             "device hung",
@@ -419,7 +417,7 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             "metaldevice::wait_idle",
         )
         for current in self._iter_exception_chain(exc):
-            if GpuServiceTimeoutError and isinstance(current, GpuServiceTimeoutError):
+            if isinstance(current, GpuFatalError):
                 return True
             message = f"{type(current).__name__}: {current}".lower()
             if any(marker in message for marker in fatal_markers):

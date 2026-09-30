@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
-from gear_optimizer.solver.gpu_service import GpuServiceClient
+from gear_optimizer.solver.gpu_service import GpuFatalError, GpuServiceClient
 from gear_optimizer.solver.native_inflight_lifecycle_prepare import (
     _lru_get,
     _lru_put,
@@ -54,7 +54,7 @@ def start_native_inflight_gpu_client(*, progress_cb: ProgressCallback | None = N
         if err:
             msg = f"{msg} ({err})"
         gpu_executor.stop()
-        raise RuntimeError(msg)
+        raise GpuFatalError(msg)
     _emit_startup_status(progress_cb, "GPU warmup (Taichi JIT)")
     gpu_client = GpuServiceClient(gpu_executor)
     gpu_client.start(start_executor=False)

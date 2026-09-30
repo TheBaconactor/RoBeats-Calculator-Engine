@@ -40,7 +40,11 @@ class GpuJobHandle:
     future: Future
 
 
-class GpuServiceTimeoutError(RuntimeError):
+class GpuFatalError(RuntimeError):
+    """The GPU can no longer serve this process (a hung request, a failed Taichi init); a service-mode run stops."""
+
+
+class GpuServiceTimeoutError(GpuFatalError):
     """Raised when an in-process GPU service request exceeds its watchdog timeout."""
 
 

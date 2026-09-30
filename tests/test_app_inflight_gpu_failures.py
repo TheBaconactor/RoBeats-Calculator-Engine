@@ -8,7 +8,7 @@ from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.domain.jobs import SharedRunContext, SongJob, task_tuple_from_job_context
 from gear_optimizer.engine.native import NativeOptimizationEngine
 from gear_optimizer.solver.native_inflight_config import CANONICAL_GA_QUEUE_MULT, IN_FLIGHT_SONGS
-from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
+from gear_optimizer.solver.gpu_service import GpuFatalError, GpuServiceTimeoutError
 
 
 def _make_minimal_app() -> GearOptimizerApp:
@@ -261,3 +261,20 @@ def test_a_failed_iteration_keeps_a_looping_run_going_and_is_reported(monkeypatc
     app, iterations = _looping_app(monkeypatch, tmp_path, RuntimeError("song(s) failed in this run"))
     assert app.run() == 1
     assert len(iterations) == 4
+
+
+@pytest.mark.parametrize(
+    ("failure", "fatal"),
+    [
+        (GpuFatalError("[InFlight] GPU executor Taichi init failed or timed out"), True),
+        (RuntimeError("song failed"), False),
+        (RuntimeError("Vulkan: VK_ERROR_DEVICE_LOST (device lost)"), True),
+        # Only the engine's own GPU states are typed; any other timeout text is an ordinary failure.
+        (RuntimeError("database lock timed out after 30s"), False),
+    ],
+)
+def test_fatal_gpu_failures_are_the_typed_ones_and_the_drivers_device_losses(monkeypatch, failure, fatal):
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
+    wrapped = RuntimeError("song failed")
+    wrapped.__cause__ = failure
+    assert GearOptimizerApp()._is_fatal_inflight_exception(wrapped) is fatal
