@@ -7,8 +7,8 @@ Per loadout of the GA surface:
   TeamBuff), scored by exact replay (perfect_window: score + TimelineFrontier witness, physically validated;
   zero_ms: fixed chart timing, no witness);
 - Force Greats result, for every loadout the FG stage solved: perfect_window keeps the solved result, zero_ms
-  re-solves it at chart timing; either is scored by an exact surface replay and stays attached whether or not it
-  beats the meta score (the store ranks the FG board);
+  re-solves it at chart timing; either comes scored by an exact surface replay of a physically validated trace
+  (the FG materializer's) and stays attached whether or not it beats the meta score (the store ranks the FG board);
 - stored stats: recomputed from the item names and gems, and they must give the scores' stats back.
 The rows come in the order the store numbers new loadouts (exact score ties rank by it): the run's best, the
 loadouts whose FG result beat the base score it was solved against (FG stage order), then the rest of the surface.
@@ -32,15 +32,8 @@ from ..helpers.song_helpers.fg_payload import strip_retired_fg_fields
 from ..helpers.song_helpers.loadout_hashing import compact_gear_names, compact_mini_names
 from ..helpers.song_helpers.song_config import baseline_fixed_stats
 from ..helpers.song_helpers.team_buff_tiers import resolve_tier_fg_force_batch
-from ..solver.fg_response_scoring.physical_replay import (
-    validate_base_physical_replay,
-    validate_force_greats_physical_replay,
-)
-from ..solver.scoring.exact_rescore import (
-    score_force_greats_response_surface_exact,
-    score_stats_exact_with_timeline_trace,
-    score_stats_fixed_timing_exact,
-)
+from ..solver.fg_response_scoring.physical_replay import validate_base_physical_replay
+from ..solver.scoring.exact_rescore import score_stats_exact_with_timeline_trace, score_stats_fixed_timing_exact
 from ..solver.timing_envelope import TimedSong
 from ..stats import GEM_KINDS, named_loadout_stats, total
 from ..store.boards import Row
@@ -99,7 +92,7 @@ def canonical_rows(solve: SongSolve, gears: Mapping[str, Gear], minis: Mapping[s
         solved = fg_by_index.get(i)
         if solved is not None:
             fg_stats = dict(zip(STATS, solved.stats))
-            fg_score, fg_trace = _fg_score(solved, fg_stats, song, curves), solved.trace
+            fg_score, fg_trace = solved.score, _fg_trace(solved, song)
             fg = FgResult(
                 element=solved.element,
                 gems=solved.gems,
@@ -222,24 +215,8 @@ def _meta_score(stats: Mapping[str, int], song: TimedSong, curves: StatCurves) -
     return int(replay["score"]), strip_retired_fg_fields(dict(timeline))[0]
 
 
-def _fg_score(solved: SolvedFg, stats: Mapping[str, int], song: TimedSong, curves: StatCurves) -> int:
-    from ..solver.taichi_gem.force_greats.response_types import FgResponseSurface  # loads Taichi
-
-    surface = FgResponseSurface(*solved.surface)
-    if song.mode != "zero_ms":
-        trace = solved.trace
-        if not trace.get("frontier_trace"):
-            raise ValueError(f"{song.chart.name}: an FG result without a frontier trace")
-        validate_force_greats_physical_replay(
-            frontier_trace=trace["frontier_trace"],
-            surface=surface,
-            timestamps=song.fg_inputs.timestamps,
-            note_types=song.chart.note_types,
-            lanes=song.fg_inputs.lanes,
-            raw_fever_fill=float(trace["raw_fever_fill"]),
-            real_fever_time=float(trace["real_fever_time"]),
-        )
-    score = score_force_greats_response_surface_exact(stats, song, curves, surface)
-    if score is None:
-        raise ValueError(f"{song.chart.name}: the FG surface replay failed")
-    return int(score)
+def _fg_trace(solved: SolvedFg, song: TimedSong) -> dict[str, Any]:
+    """An FG result's replay witness (validated by the FG materializer); perfect_window results must carry one."""
+    if song.mode != "zero_ms" and not solved.trace.get("frontier_trace"):
+        raise ValueError(f"{song.chart.name}: an FG result without a frontier trace")
+    return solved.trace

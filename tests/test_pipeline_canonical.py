@@ -112,7 +112,6 @@ def scored(monkeypatch):
 
     monkeypatch.setattr(canonical, "_meta_resolve", meta_resolve)
     monkeypatch.setattr(canonical, "_meta_score", lambda stats, song, curves: (meta_scores.pop(0), {"trace": 1}))
-    monkeypatch.setattr(canonical, "_fg_score", lambda solved, stats, song, curves: solved.score)
     return meta_scores
 
 
@@ -154,7 +153,7 @@ def test_rows_follow_the_store_order_and_a_repeated_loadout_fails_loudly(scored)
 def test_an_fg_result_without_a_replay_trace_is_rejected():
     solve = _solve([SolvedLoadout(("Helmet", "Vest"), ("Chroma", "Marie"))])
     with pytest.raises(ValueError, match="without a frontier trace"):
-        canonical._fg_score(_fg(1500, trace={"raw_fever_fill": 1.0}), {}, solve.timed, None)
+        canonical._fg_trace(_fg(1500, trace={"raw_fever_fill": 1.0}), solve.timed)
 
 
 def test_real_song_base_result_is_the_exhaustive_gem_optimum_scored_by_exact_replay():
