@@ -4,8 +4,9 @@ import sqlite3
 import threading
 from typing import Sequence
 
+from ..gamedata import load_gears, load_minis
+from ..settings import paths
 from .encoding_maps import EncodingMaps
-from .loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
 
 
 _GEAR_NAME_ENCODING_TABLE = "gear_name_encoding"
@@ -123,13 +124,12 @@ def _insert_missing_piece_names(
 
 def _initialize_piece_name_encodings(conn: sqlite3.Connection, *, db_path: str) -> None:
     """
-    Populate encoding tables deterministically (sorted) from the known dataset.
+    Populate encoding tables deterministically (sorted) from the known dataset. Without a catalog
+    file the table starts empty and fills with the names rows store.
     """
-    gears_by_name = get_gears_by_name_cached()
-    minis_by_name = get_minis_by_name_cached()
-
-    gear_names = sorted([str(k).strip() for k in (gears_by_name or {}).keys() if str(k).strip()])
-    mini_names = sorted([str(k).strip() for k in (minis_by_name or {}).keys() if str(k).strip()])
+    gear_path, mini_path = paths().gears_csv, paths().minis_csv
+    gear_names = sorted(load_gears(gear_path)) if gear_path.is_file() else []
+    mini_names = sorted(load_minis(mini_path)) if mini_path.is_file() else []
 
     if gear_names:
         _insert_missing_piece_names(conn, table=_GEAR_NAME_ENCODING_TABLE, names=gear_names)

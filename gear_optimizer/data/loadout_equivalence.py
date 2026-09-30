@@ -10,51 +10,15 @@ This module centralizes logic for:
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any, Dict, List, Optional
+from collections.abc import Mapping
+from typing import Any, List
 
-from ..settings import paths
 from ..core.utils import get_selected_element, safe_int
-from .csv_parser import load_csv_db
+from ..gamedata import Mini, SongMini
 
-
-_MINIS_BY_NAME_CACHE: Optional[Dict[str, dict]] = None
-_GEARS_BY_NAME_CACHE: Optional[Dict[str, dict]] = None
-_MINI_SIG_TO_NAMES_CACHE: dict[tuple[int, str, str, str], dict[tuple[Any, ...], list[str]]] = {}
-
-
-def get_minis_by_name_cached() -> Dict[str, dict]:
-    """
-    Lazily load Minis.csv into a name->stats dict (cached for process lifetime).
-
-    Notes:
-    - A missing Minis.csv yields {}; callers then treat minis as "name-only" (no equivalence
-      merging). A malformed file raises.
-    """
-    global _MINIS_BY_NAME_CACHE
-    if _MINIS_BY_NAME_CACHE is None:
-        _MINIS_BY_NAME_CACHE = load_csv_db(str(paths().minis_csv), "mini") or {}
-    return _MINIS_BY_NAME_CACHE
-
-
-def get_gears_by_name_cached() -> Dict[str, dict]:
-    """
-    Lazily load Gears.csv into a name->stats dict (cached for process lifetime).
-
-    Notes:
-    - A missing Gears.csv yields {}; callers then treat gears as "name-only" (no stats
-      available). A malformed file raises.
-    """
-    global _GEARS_BY_NAME_CACHE
-    if _GEARS_BY_NAME_CACHE is None:
-        _GEARS_BY_NAME_CACHE = load_csv_db(str(paths().gears_csv), "gear") or {}
-    return _GEARS_BY_NAME_CACHE
-
-
-def clear_gear_mini_csv_caches() -> None:
-    global _MINIS_BY_NAME_CACHE, _GEARS_BY_NAME_CACHE, _MINI_SIG_TO_NAMES_CACHE
-    _MINIS_BY_NAME_CACHE = None
-    _GEARS_BY_NAME_CACHE = None
-    _MINI_SIG_TO_NAMES_CACHE = {}
+# (primary, secondary, selected) -> (the song-mini map it was built from, signature -> names). The entry keeps
+# that map alive, so the identity check can never match a different, later map.
+_MINI_SIG_TO_NAMES_CACHE: dict[tuple[str, str, str], tuple[Mapping[str, Mini | SongMini], dict[tuple[Any, ...], list[str]]]] = {}
 
 
 def extract_song_colors(details: Any) -> tuple[str, str, str]:
@@ -203,7 +167,7 @@ def normalize_minis_groups_for_display(groups: list[list[str]]) -> list[list[str
     return out
 
 def effective_mini_signature(
-    mini_stats: dict,
+    mini_stats: Mapping[str, int],
     primary_color: str,
     secondary_color: str,
     selected_color: str,
@@ -231,22 +195,22 @@ def effective_mini_signature(
 
 def effective_mini_signature_for_name(
     mini_name: str,
-    minis_by_name: Dict[str, dict],
+    minis_by_name: Mapping[str, Mini | SongMini],
     primary_color: str,
     secondary_color: str,
     selected_color: str,
 ) -> tuple[Any, ...]:
     if not mini_name:
         return ("name", "")
-    stats = minis_by_name.get(mini_name)
-    if not isinstance(stats, dict):
+    mini = minis_by_name.get(mini_name)
+    if mini is None:
         # Unknown mini: do not over-merge.
         return ("name", mini_name)
-    return effective_mini_signature(stats, primary_color, secondary_color, selected_color)
+    return effective_mini_signature(mini.stats, primary_color, secondary_color, selected_color)
 
 
 def minis_signature_to_names_map(
-    minis_by_name: Dict[str, dict],
+    minis_by_name: Mapping[str, Mini | SongMini],
     primary_color: str,
     secondary_color: str,
     selected_color: str,
@@ -257,33 +221,28 @@ def minis_signature_to_names_map(
     This lets persistence populate mini variant groups deterministically from Minis.csv
     (instead of relying on the GA to have explored both names).
     """
-    key = (int(id(minis_by_name)), str(primary_color), str(secondary_color), str(selected_color))
+    key = (str(primary_color), str(secondary_color), str(selected_color))
     cached = _MINI_SIG_TO_NAMES_CACHE.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] is minis_by_name:
+        return cached[1]
 
     sig_to_names: dict[tuple[Any, ...], list[str]] = {}
-    if not minis_by_name:
-        _MINI_SIG_TO_NAMES_CACHE[key] = sig_to_names
-        return sig_to_names
-
-    for name, stats in minis_by_name.items():
-        n = str(name).strip()
-        if not n or not isinstance(stats, dict):
-            continue
-        sig = effective_mini_signature(stats, primary_color, secondary_color, selected_color)
-        sig_to_names.setdefault(sig, []).append(n)
+    for name, mini in minis_by_name.items():
+        sig = effective_mini_signature(mini.stats, primary_color, secondary_color, selected_color)
+        sig_to_names.setdefault(sig, []).append(name)
 
     for sig, names in list(sig_to_names.items()):
         sig_to_names[sig] = sorted(set(names))
 
-    _MINI_SIG_TO_NAMES_CACHE[key] = sig_to_names
+    if len(_MINI_SIG_TO_NAMES_CACHE) >= 8:
+        _MINI_SIG_TO_NAMES_CACHE.clear()
+    _MINI_SIG_TO_NAMES_CACHE[key] = (minis_by_name, sig_to_names)
     return sig_to_names
 
 
 def canonical_minis_groups_from_names(
     mini_names: List[str],
-    minis_by_name: Dict[str, dict],
+    minis_by_name: Mapping[str, Mini | SongMini],
     primary_color: str,
     secondary_color: str,
     selected_color: str,

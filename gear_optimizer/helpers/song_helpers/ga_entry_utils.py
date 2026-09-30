@@ -4,6 +4,8 @@ from typing import Any, cast
 
 import numpy as np
 
+from gear_optimizer.gamedata import SongMini
+
 from .item_utils import names_list
 
 
@@ -95,7 +97,7 @@ def candidate_loadout_hash(
     candidate: Any,
     *,
     registry: Any = None,
-    minis_by_name: dict[str, dict] | None = None,
+    minis_by_name: dict[str, SongMini] | None = None,
     primary_color: str = "",
     secondary_color: str = "",
     selected_color: str = "",

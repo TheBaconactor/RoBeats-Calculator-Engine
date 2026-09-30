@@ -22,10 +22,8 @@ def test_prepare_tasks_song_repeats_expands_queue():
         song_queue=song_queue,
         run=run,
         curves={},
-        all_gears=[],
-        all_minis=[],
-        gears_by_name={},
-        minis_by_name={},
+        gears={},
+        minis={},
     )
 
     assert len(tasks) == 3
@@ -50,10 +48,8 @@ def test_prepare_tasks_song_repeats_one_still_seeds_single_run():
         song_queue=song_queue,
         run=run,
         curves={},
-        all_gears=[],
-        all_minis=[],
-        gears_by_name={},
-        minis_by_name={},
+        gears={},
+        minis={},
     )
 
     assert len(tasks) == 1
@@ -81,19 +77,15 @@ def test_prepare_tasks_song_repeats_one_randomizes_across_preparations(monkeypat
         song_queue=song_queue,
         run=run,
         curves={},
-        all_gears=[],
-        all_minis=[],
-        gears_by_name={},
-        minis_by_name={},
+        gears={},
+        minis={},
     )
     second = app._prepare_tasks(
         song_queue=song_queue,
         run=run,
         curves={},
-        all_gears=[],
-        all_minis=[],
-        gears_by_name={},
-        minis_by_name={},
+        gears={},
+        minis={},
     )
 
     assert extract_repeat_context(first[0])["ga_seed"] == 101
@@ -112,10 +104,8 @@ def test_prepare_tasks_accepts_zero_as_random_seed(monkeypatch):
         song_queue=[("dummy.txt", "Dummy Song", "Hard")],
         run=run,
         curves={},
-        all_gears=[],
-        all_minis=[],
-        gears_by_name={},
-        minis_by_name={},
+        gears={},
+        minis={},
     )
 
     assert extract_repeat_context(tasks[0])["ga_seed"] == 0
@@ -130,10 +120,8 @@ def test_prepare_tasks_does_not_collapse_song_repeats():
         song_queue=song_queue,
         run=run,
         curves={},
-        all_gears=[],
-        all_minis=[],
-        gears_by_name={},
-        minis_by_name={},
+        gears={},
+        minis={},
     )
 
     assert len(tasks) == 25

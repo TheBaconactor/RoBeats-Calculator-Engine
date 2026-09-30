@@ -5,34 +5,29 @@ Production runs are GPU-native; this module keeps the small CPU helpers that rem
 useful for pool construction and reference-only tuning logic.
 """
 
-from ...core.utils import safe_int
-from ...data.mini_ascension import normalize_song_secondary
+from __future__ import annotations
 
-def _row_stat_value(row, key):
-    """Return a row stat as an int, tolerating missing/invalid values."""
-    if not key:
-        return 0
-    try:
-        return int(row.get(key, 0) or 0)
-    except (AttributeError, TypeError, ValueError):
-        return safe_int(row.get(key, 0), 0)
+from collections.abc import Mapping, Sequence
+
+from gear_optimizer.gamedata import Gear, SongMini, song_secondary
 
 
-def _relevant_row_projection(row, primary_color, secondary_color=""):
+def _relevant_row_projection(row: Gear | SongMini, primary_color, secondary_color=""):
     """
     Project a row onto the exact score-relevant axes for the current single-song GA pool build.
 
     The current runtime fixes `selected_color = primary_color` before `initialize_pools(...)`
     is used, so only the song's primary/secondary elemental lanes remain score-relevant here.
     """
+    stats = row.stats
     return (
-        _row_stat_value(row, "Perfect Points"),
-        _row_stat_value(row, "Combo Multiplier"),
-        _row_stat_value(row, "Fever Multiplier"),
-        _row_stat_value(row, "Fever Time"),
-        _row_stat_value(row, "Fever Fill Rate"),
-        _row_stat_value(row, str(primary_color or "")),
-        _row_stat_value(row, str(secondary_color or "")),
+        stats["Perfect Points"],
+        stats["Combo Multiplier"],
+        stats["Fever Multiplier"],
+        stats["Fever Time"],
+        stats["Fever Fill Rate"],
+        stats.get(primary_color, 0) if primary_color else 0,
+        stats.get(secondary_color, 0) if secondary_color else 0,
     )
 
 
@@ -140,116 +135,78 @@ def prune_mini_pool_lossless_for_song(mini_list, primary_color, secondary_color=
     return survivors
 
 
-_PRUNED_GEAR_POOL_CACHE: dict[tuple[int, int, str, str, tuple[str, ...]], tuple[dict[str, list[dict]], int, int]] = {}
+# (primary, secondary, slots) -> (the gear catalog the pools were built from, pools). The entry keeps
+# that catalog alive, so the identity check can never match a different, later catalog.
+_PRUNED_GEAR_POOL_CACHE: dict[tuple[str, str, tuple[str, ...]], tuple[Mapping[str, Gear], dict[str, list[Gear]]]] = {}
 
 
-def _get_pruned_gear_pool(all_gears, slots, p_color, s_color=None):
+def _get_pruned_gear_pool(gears: Mapping[str, Gear], slots, p_color, s_color=None) -> dict[str, list[Gear]]:
     slots_key = tuple(str(s) for s in slots)
-    cache_key = (
-        int(id(all_gears)),
-        int(len(all_gears or [])),
-        str(p_color or ""),
-        str(s_color or ""),
-        slots_key,
-    )
+    cache_key = (str(p_color or ""), str(s_color or ""), slots_key)
     cached = _PRUNED_GEAR_POOL_CACHE.get(cache_key)
-    if cached is not None:
-        gear_pool_cached, total_before, total_after = cached
-        return gear_pool_cached, int(total_before), int(total_after)
+    if cached is not None and cached[0] is gears:
+        return cached[1]
 
-    gear_pool = {s: [] for s in slots_key}
-    for g in all_gears:
-        slot_name = g.get("type")
-        if slot_name in gear_pool:
-            gear_pool[slot_name].append(g)
-
-    total_before = sum(len(gear_pool[s]) for s in slots_key)
+    gear_pool: dict[str, list[Gear]] = {s: [] for s in slots_key}
+    for gear in gears.values():
+        if gear.slot in gear_pool:
+            gear_pool[gear.slot].append(gear)
     for s in slots_key:
         gear_pool[s] = prune_gear_pool_lossless_for_song(gear_pool[s], p_color, s_color)
-    total_after = sum(len(gear_pool[s]) for s in slots_key)
 
-    _PRUNED_GEAR_POOL_CACHE[cache_key] = (gear_pool, total_before, total_after)
-    if len(_PRUNED_GEAR_POOL_CACHE) > 8:
+    if len(_PRUNED_GEAR_POOL_CACHE) >= 8:
         _PRUNED_GEAR_POOL_CACHE.clear()
-        _PRUNED_GEAR_POOL_CACHE[cache_key] = (gear_pool, total_before, total_after)
-    return gear_pool, int(total_before), int(total_after)
+    _PRUNED_GEAR_POOL_CACHE[cache_key] = (gears, gear_pool)
+    return gear_pool
 
 
-def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
+_MINI_COLOR_ORDER = ("Rush", "Flow", "Chill", "Beat", "Vibe")
+
+
+def _mini_colors(mini: SongMini) -> tuple[str | None, str | None]:
+    """A mini's two highest colors (ties keep _MINI_COLOR_ORDER; a zero color counts as none)."""
+    ranked = sorted(((c, mini.stats[c]) for c in _MINI_COLOR_ORDER), key=lambda x: x[1], reverse=True)
+    primary = ranked[0][0] if ranked[0][1] > 0 else None
+    secondary = ranked[1][0] if ranked[1][1] > 0 else None
+    return primary, secondary
+
+
+def _mini_matches_song(mini: SongMini, song_primary: str, song_secondary: str) -> bool:
     """
-    Initialize and prune gear and mini pools.
+    A mini joins the pool when its primary color is one of the song's colors, its secondary color is
+    the song's primary, or it targets the song and has a song color.
+    """
+    if mini.targets_song:
+        if song_primary and mini.stats.get(song_primary, 0) > 0:
+            return True
+        if song_secondary and mini.stats.get(song_secondary, 0) > 0:
+            return True
+    mini_primary, mini_secondary = _mini_colors(mini)
+    if mini_primary == song_primary:
+        return True
+    if song_secondary and mini_primary == song_secondary:
+        return True
+    return mini_secondary == song_primary
 
-    Creates per-slot gear pools and filters minis based on color matching.
-    A mini is included if:
-    - Mini primary matches song primary OR secondary, OR
-    - Mini secondary matches song primary
-    Applies exact-safe song-aware pruning for the current single-song GA runtime:
+
+def initialize_pools(
+    gears: Mapping[str, Gear],
+    minis: Sequence[SongMini],
+    p_color: str,
+    slots,
+    s_color: str | None = None,
+) -> tuple[dict[str, list[Gear]], list[SongMini]]:
+    """
+    The song's gear pool per slot (from the gear catalog, by name) and its mini pool, pruned exactly (no
+    loadout that can win is lost):
     - gear: relevant-signature quotient + timing-neutral dominance
-    - minis: relevant-signature cap-to-3 + timing-neutral singleton support-set prune
+    - minis: the song-color filter, then relevant-signature cap-to-3 + timing-neutral support-set prune
 
-    Args:
-        all_gears: List of all gear items
-        all_minis: List of all mini items
-        p_color: Song's primary color
-        slots: List of gear slot names
-        s_color: Song's secondary color (optional)
-
-    Returns:
-        tuple: (gear_pool, mini_pool, total_before, total_after, [])
-            - gear_pool: Dict mapping slot names to lists of gear
-            - mini_pool: List of valid minis (matching song colors)
-            - total_before: Total gear count before pruning
-            - total_after: Total gear count after pruning
-            - Empty list (whitelisting removed)
+    Both prunes keep first witnesses, so the input order (the CSV order) matters.
     """
-    # Color stats to check for mini primary/secondary determination
-    color_stats = ["Rush", "Flow", "Chill", "Beat", "Vibe"]
-
-    def get_mini_colors(mini):
-        """Get a mini's primary and secondary colors (top 2 highest stat colors)."""
-        color_values = [(c, mini.get(c, 0)) for c in color_stats]
-        # Sort by value descending
-        sorted_colors = sorted(color_values, key=lambda x: x[1], reverse=True)
-        primary = sorted_colors[0][0] if sorted_colors[0][1] > 0 else None
-        secondary = sorted_colors[1][0] if len(sorted_colors) > 1 and sorted_colors[1][1] > 0 else None
-        return primary, secondary
-
-    def mini_matches_song(mini, song_primary, song_secondary):
-        """
-        Check if mini matches song colors for pool inclusion.
-        - Mini primary matches song primary OR secondary, OR
-        - Mini secondary matches song primary
-        """
-        normalized_secondary = normalize_song_secondary(song_primary, song_secondary)
-        if bool((mini or {}).get("Mini Ascension Song Target Applied")):
-            if song_primary and int((mini or {}).get(song_primary, 0) or 0) > 0:
-                return True
-            if normalized_secondary and int((mini or {}).get(normalized_secondary, 0) or 0) > 0:
-                return True
-
-        mini_primary, mini_secondary = get_mini_colors(mini)
-
-        # Mini primary color matches song's primary OR secondary
-        if mini_primary == song_primary:
-            return True
-        if normalized_secondary and mini_primary == normalized_secondary:
-            return True
-
-        # Mini secondary matches song primary
-        if mini_secondary == song_primary:
-            return True
-
-        return False
-
-    # Filter minis first, then run the exact-safe shared-pool mini prune for this song pair.
-    mini_pool = [m for m in all_minis if mini_matches_song(m, p_color, s_color)]
+    secondary = song_secondary(p_color, s_color)
+    mini_pool = [m for m in minis if _mini_matches_song(m, p_color, secondary)]
     mini_pool = prune_mini_pool_lossless_for_song(mini_pool, p_color, s_color)
-
     if not mini_pool:
-        print("No valid minis found (Primary Color check).")
-        return None, [], 0, 0, []
-
-    # Initialize/prune gear pools once per gear dataset + song color pair.
-    gear_pool, total_before, total_after = _get_pruned_gear_pool(all_gears, slots, p_color, s_color)
-
-    return gear_pool, mini_pool, total_before, total_after, []  # No more whitelisted minis
+        raise ValueError(f"no mini matches the song colors {p_color!r}/{s_color!r}")
+    return _get_pruned_gear_pool(gears, slots, p_color, s_color), mini_pool

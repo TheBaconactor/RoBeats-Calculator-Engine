@@ -83,10 +83,10 @@ def test_native_inflight_fg_persist_entries_treat_base_stats_as_post_gem_visible
     # verbatim and must NOT re-apply gems on top (the 2026-07-11 Canon-in-D
     # double-count regression, where Vibe 1018 wrongly became 1432).
     from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
-    from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
+    from gear_optimizer.stats import apply_gems, gems
 
     visible = _stats(100)
-    doubled = apply_gems_to_base_stats(visible, "Rush", 9, 18, 1, 0, 0, 0)
+    doubled = apply_gems(visible, gems(pp=1, ft=9, ff=18), "Rush")
     assert doubled != visible  # sanity: re-applying gems WOULD change the row
     fake_song = _song_with_variants(
         [
@@ -161,13 +161,12 @@ def test_native_inflight_fg_persist_entries_drop_non_force_variants():
 
 
 def test_native_inflight_fg_persist_entries_save_direct_fg_row(tmp_path, monkeypatch):
-    from gear_optimizer.core.stats_calculator import compute_full_stats
     from gear_optimizer.core.team_buff import team_buff_effect
-    from gear_optimizer.data.database import (
-        get_db_connection, get_gears_by_name_cached, get_minis_by_name_cached, init_db, save_loadouts_batch,
-    )
-    from gear_optimizer.data.mini_ascension import materialize_minis_for_song
+    from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
+    from gear_optimizer.gamedata import load_gears, load_minis, song_minis
+    from gear_optimizer.settings import paths
     from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
+    from gear_optimizer.stats import gems, named_loadout_stats
 
     db_path = tmp_path / "native_fg_direct.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
@@ -179,13 +178,10 @@ def test_native_inflight_fg_persist_entries_save_direct_fg_row(tmp_path, monkeyp
     gear = fixture["base_entry"]["gear"]
     minis = fixture["base_entry"]["minis"]
     song_name = "pytest_native_inflight_fg_direct"
-    _, minis_by_name, _ = materialize_minis_for_song(
-        minis_by_name=get_minis_by_name_cached(), song_name=song_name,
-        primary_color="Rush", secondary_color="Flow",
-    )
-    visible = compute_full_stats(
-        gear, minis, {"Perfect Points": 1, "Fever Time": 9, "Fever Fill Rate": 18}, "Rush",
-        get_gears_by_name_cached(), minis_by_name, team_buff_effect("T5", "Rush"),
+    minis_by_name = {m.name: m for m in song_minis(load_minis(paths().minis_csv).values(), song_name, "Rush", "Flow")}
+    visible = named_loadout_stats(
+        team_buff_effect("T5", "Rush"), gear, minis, load_gears(paths().gears_csv), minis_by_name,
+        gems(pp=1, ft=9, ff=18), "Rush",
     )
     entries = build_fg_persist_entries(
         _song_with_variants(

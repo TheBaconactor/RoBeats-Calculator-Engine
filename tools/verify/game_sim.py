@@ -832,7 +832,7 @@ def _build_aurora_intended():
     from gear_optimizer.data.database_codecs import _unpack_stats_after_load
     from gear_optimizer.chart import load_chart, read_header
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
-    from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
+    from gear_optimizer.stats import apply_gems, gems
 
     db = str(ROOT / ".calc" / "aurora_fix.db")
     con = sqlite3.connect(db)
@@ -890,10 +890,17 @@ def _build_aurora_intended():
     base = fd.get("BaseStats")
     gc = fd.get("GemCounts") or {}
     sel = str(fd.get("Selected Element") or "")
-    final = apply_gems_to_base_stats(
-        dict(base), sel, int(fd.get("FT", 0) or 0), int(fd.get("FF", 0) or 0),
-        int(gc.get("Perfect Points", 0) or 0), int(gc.get("Combo Multiplier", 0) or 0),
-        int(gc.get("Fever Multiplier", 0) or 0), element_gem_count(gc),
+    final = apply_gems(
+        dict(base),
+        gems(
+            pp=gc.get("Perfect Points", 0) or 0,
+            cm=gc.get("Combo Multiplier", 0) or 0,
+            fm=gc.get("Fever Multiplier", 0) or 0,
+            ft=fd.get("FT", 0) or 0,
+            ff=fd.get("FF", 0) or 0,
+            element=element_gem_count(gc),
+        ),
+        sel,
     )
     stat_to_wp = {
         "Perfect Points": "PerfectPoints", "Combo Multiplier": "ComboMultiplier",

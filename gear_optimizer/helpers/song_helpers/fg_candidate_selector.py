@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ...core.utils import safe_int
+from ...gamedata import SongMini
 from .ga_entry_utils import candidate_loadout_hash
 
 
@@ -16,7 +17,7 @@ def select_top_base_ga_candidates(
     *,
     limit: int,
     registry: object = None,
-    minis_by_name: dict[str, dict] | None = None,
+    minis_by_name: dict[str, SongMini] | None = None,
     primary_color: str = "",
     secondary_color: str = "",
     selected_color: str = "",

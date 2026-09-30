@@ -2,15 +2,18 @@
 Loadout (gear + minis) compaction, expansion, and hashing helpers.
 """
 import re
+from collections.abc import Mapping
 from typing import Any, List
+
+from ...gamedata import Gear, Mini, SongMini
 
 
 def _compact_gear_for_db(gear_list):
     """
     Convert gear list to compact storage format (names only).
-    Handles both dicts and strings.
+    Handles both items and name strings.
     Args:
-        gear_list: List of gear items (dicts or strings)
+        gear_list: List of gear items (Gear or strings)
     Returns:
         list: List of gear names
     """
@@ -18,8 +21,8 @@ def _compact_gear_for_db(gear_list):
         return []
     result = []
     for g in gear_list:
-        if isinstance(g, dict):
-            name = g.get("Name", "")
+        if isinstance(g, Gear):
+            name = g.name
         else:
             name = str(g) if g else ""
         if name:
@@ -31,11 +34,11 @@ def _compact_minis_for_db(mini_list):
     """
     Convert mini list to compact storage format (names only).
     Handles:
-    - dicts: {"Name": ...}
+    - items: Mini / SongMini
     - strings: "Electroman"
     - nested variant groups: [["A","B"], ["C"], ...] (takes a representative per slot)
     Args:
-        mini_list: List of mini items (dicts or strings)
+        mini_list: List of mini items (Mini/SongMini or strings)
     Returns:
         list: List of mini names
     """
@@ -45,8 +48,8 @@ def _compact_minis_for_db(mini_list):
     def _first_name(v: Any) -> str:
         if v is None:
             return ""
-        if isinstance(v, dict):
-            return str(v.get("Name", "") or "").strip()
+        if isinstance(v, (Mini, SongMini)):
+            return v.name
         if isinstance(v, (list, tuple)):
             for it in v:
                 name = _first_name(it)
@@ -70,32 +73,18 @@ def _compact_minis_for_db(mini_list):
     return result
 
 
-def _expand_gear_from_db(gear_names, gears_by_name):
-    """
-    Expand gear names back to full stat dictionaries.
-    Args:
-        gear_names: List of gear names
-        gears_by_name: Lookup dict mapping names to full gear dicts
-    Returns:
-        list: List of full gear dictionaries
-    """
-    if not gear_names or not gears_by_name:
+def _expand_gear_from_db(gear_names, gears: Mapping[str, Gear]) -> list[Gear | str]:
+    """Gear names back to items; a name the catalog does not know stays a name."""
+    if not gear_names or not gears:
         return []
-    return [gears_by_name.get(name, {"Name": name}) for name in gear_names]
+    return [gears.get(name, name) for name in gear_names]
 
 
-def _expand_minis_from_db(mini_names, minis_by_name):
-    """
-    Expand mini names back to full stat dictionaries.
-    Args:
-        mini_names: List of mini names
-        minis_by_name: Lookup dict mapping names to full mini dicts
-    Returns:
-        list: List of full mini dictionaries
-    """
-    if not mini_names or not minis_by_name:
+def _expand_minis_from_db(mini_names, minis: Mapping[str, Mini]) -> list[Mini | str]:
+    """Mini names back to items; a name the catalog does not know stays a name."""
+    if not mini_names or not minis:
         return []
-    return [minis_by_name.get(name, {"Name": name}) for name in mini_names]
+    return [minis.get(name, name) for name in mini_names]
 
 
 def _loadout_hash_from_names(gear_names: list[str], mini_names: list[str]) -> str:
@@ -107,10 +96,10 @@ def get_loadout_hash(gear_list: List[Any], mini_list: List[Any]) -> str:
     """
     Generate a unique hash for a loadout (gear + minis).
     Sorts items by name to ensure consistent hashing regardless of order.
-    Handles both dicts (with 'Name' key) and plain strings.
+    Handles both items and plain strings.
     Args:
-        gear_list: List of gear items (dicts or strings)
-        mini_list: List of mini items (dicts or strings)
+        gear_list: List of gear items (Gear or strings)
+        mini_list: List of mini items (Mini/SongMini or strings)
     Returns:
         str: MD5 hash of the loadout
     """

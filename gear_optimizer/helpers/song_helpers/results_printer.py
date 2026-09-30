@@ -1,6 +1,9 @@
 from ...core.gem_defs import element_gem_count
 from ...core.utils import get_selected_element, safe_int
+from gear_optimizer.gamedata import Gear
+
 from .fg_payload import has_valid_fg_payload
+from .item_utils import item_name
 
 
 def print_results(
@@ -130,11 +133,6 @@ def _is_same_variant(v1, v2):
 
     d1, d2 = v1.get("data", {}), v2.get("data", {})
 
-    def _name(item):
-        if isinstance(item, dict):
-            return str(item.get("Name", "") or "")
-        return str(item) if item is not None else ""
-
     # Compare Score (FG score vs Base score)
     # Note: d2 usually has "fg_score" if it's an FG-processed entry
     s1 = int(round(d1.get("Score", 0)))
@@ -148,14 +146,14 @@ def _is_same_variant(v1, v2):
         return False
 
     # Compare Gear
-    g1 = sorted([_name(g) for g in (v1.get("gear", []) or []) if g])
-    g2 = sorted([_name(g) for g in (v2.get("gear", []) or []) if g])
+    g1 = sorted([item_name(g) for g in (v1.get("gear", []) or []) if g])
+    g2 = sorted([item_name(g) for g in (v2.get("gear", []) or []) if g])
     if g1 != g2:
         return False
 
     # Compare Minis
-    m1 = sorted([_name(m) for m in (v1.get("minis", []) or []) if m])
-    m2 = sorted([_name(m) for m in (v2.get("minis", []) or []) if m])
+    m1 = sorted([item_name(m) for m in (v1.get("minis", []) or []) if m])
+    m2 = sorted([item_name(m) for m in (v2.get("minis", []) or []) if m])
     if m1 != m2:
         return False
 
@@ -182,17 +180,11 @@ def _print_loadout_section(title, variant):
 
     print(f"\n[{title}]")
     for g in gear:
-        if isinstance(g, dict):
-            print(f"{g.get('type', 'Item')}: {g.get('Name')}")
-        else:
-            print(f"Item: {str(g)}")
+        print(f"{g.slot}: {g.name}" if isinstance(g, Gear) else f"Item: {item_name(g)}")
 
     print(f"\n[{title} - Mini Team]")
     for m in minis:
-        if isinstance(m, dict):
-            print(f"{m.get('Name', 'Unknown')}")
-        else:
-            print(f"{str(m)}")
+        print(item_name(m))
 
     _print_gem_allocation(data)
 

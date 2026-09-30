@@ -6,6 +6,7 @@ from gear_optimizer.helpers.song_helpers.fg_payload import (
     strip_retired_fg_fields,
 )
 from gear_optimizer.helpers.song_helpers.payload_compaction import compact_item_names, compact_prev_record
+from tests.items_support import make_gear, make_song_mini
 
 
 SURFACE = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
@@ -56,8 +57,8 @@ def test_retired_fields_are_stripped_from_nested_persistence_payloads():
 
 def test_compact_item_names_and_prev_record_drop_empty_when_requested():
     record = {
-        "gear": [{"Name": "G1"}, {"Name": ""}, "G2", None],
-        "minis": [{"Name": "M1"}, "", "M2"],
+        "gear": [make_gear("G1"), make_gear(""), "G2", None],
+        "minis": [make_song_mini("M1"), "", "M2"],
         "loadout": ["A", None, "C"],
         "force": {"gear": ["", "G"], "minis": [None, "M"]},
     }

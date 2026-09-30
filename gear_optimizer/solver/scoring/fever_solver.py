@@ -16,8 +16,8 @@ from ...core.gem_defs import build_gem_counts
 from ..base_stats import build_stats_array, build_stats_dict, build_stats_list
 from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 
-from .stats_ops import apply_gems_to_base_stats
 from ..timing_envelope import TimedSong
+from ...stats import apply_gems, gems
 
 def _color_flags(song: TimedSong, selected_color: str) -> dict[str, int]:
     return build_color_flags(song.chart.primary, song.chart.secondary, selected_color)
@@ -25,9 +25,7 @@ def _color_flags(song: TimedSong, selected_color: str) -> dict[str, int]:
 
 def _gem_result(stats: dict[str, int], selected_color: str, solved) -> dict:
     score, ft, ff, g_pp, g_cm, g_fm, g_ov = (int(v) for v in solved)
-    final_stats = apply_gems_to_base_stats(
-        stats, selected_color, ft, ff, g_pp, g_cm, g_fm, g_ov, add_missing_element_key=False
-    )
+    final_stats = apply_gems(stats, gems(pp=g_pp, cm=g_cm, fm=g_fm, ft=ft, ff=ff, element=g_ov), selected_color)
     gem_counts = build_gem_counts(g_pp, g_cm, g_fm, g_ov)
     return {
         "Score": score,

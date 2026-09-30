@@ -1,4 +1,5 @@
 from general_meta.analysis import find_most_common_loadout
+from tests.items_support import minis_from_dicts
 
 
 def test_general_meta_merges_mini_variants_when_irrelevant_to_category():
@@ -52,7 +53,7 @@ def test_general_meta_merges_mini_variants_when_irrelevant_to_category():
         },
     ]
 
-    results = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=1)
+    results = find_most_common_loadout(songs, all_loadouts, minis_from_dicts(minis_by_name), top_n=1)
     assert len(results) == 1
     result = results[0]
 
@@ -115,7 +116,7 @@ def test_general_meta_does_not_merge_mini_variants_when_secondary_varies():
         },
     ]
 
-    results = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=None)
+    results = find_most_common_loadout(songs, all_loadouts, minis_from_dicts(minis_by_name), top_n=None)
     assert len(results) == 2
     assert [r["win_frequency"] for r in results] == [1, 1]
     assert sorted([r["peak_in_songs"] for r in results]) == [["Song1"], ["Song2"]]
@@ -166,7 +167,7 @@ def test_general_meta_does_not_merge_minis_with_different_ascension_target_cover
         },
     ]
 
-    results = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=None)
+    results = find_most_common_loadout(songs, all_loadouts, minis_from_dicts(minis_by_name), top_n=None)
 
     assert len(results) == 2
     assert [result["win_frequency"] for result in results] == [1, 1]

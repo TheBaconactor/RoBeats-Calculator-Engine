@@ -55,11 +55,7 @@ def test_load_database_progress_baseline_marks_invalid_when_strict_read_fails(mo
 
     monkeypatch.setattr(database_context, "get_song_counters", _raise_locked)
 
-    result = database_context.load_database_progress_baseline(
-        "Song A",
-        {},
-        {},
-    )
+    result = database_context.load_database_progress_baseline("Song A")
 
     assert result == (None, {}, 0, 0, 0, 0, False)
 

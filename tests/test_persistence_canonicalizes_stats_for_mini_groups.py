@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from pathlib import Path
+from tests.items_support import minis_from_dicts
 
 
 def test_persistence_canonicalizes_stats_for_mini_equivalence_groups(monkeypatch, tmp_path: Path):
@@ -48,8 +49,8 @@ def test_persistence_canonicalizes_stats_for_mini_equivalence_groups(monkeypatch
         "Solo B": {"Name": "Solo B", "type": "mini", "Beat": 2, "Chill": 3, "Flow": 0},
     }
 
-    monkeypatch.setattr(db, "get_minis_by_name_cached", lambda: fake_minis)
-    monkeypatch.setattr(db, "get_gears_by_name_cached", lambda: {})
+    monkeypatch.setattr(db.persistence, "load_minis", lambda _path: minis_from_dicts(fake_minis))
+    monkeypatch.setattr(db.persistence, "load_gears", lambda _path: {})
 
     db.init_db()
 
@@ -133,8 +134,8 @@ def test_persistence_rotates_representatives_for_duplicate_variant_groups(monkey
         "Halloween Witch Teresa": {"Name": "Halloween Witch Teresa", "type": "mini", "Beat": 0, "Chill": 0},
     }
 
-    monkeypatch.setattr(db, "get_minis_by_name_cached", lambda: fake_minis)
-    monkeypatch.setattr(db, "get_gears_by_name_cached", lambda: {})
+    monkeypatch.setattr(db.persistence, "load_minis", lambda _path: minis_from_dicts(fake_minis))
+    monkeypatch.setattr(db.persistence, "load_gears", lambda _path: {})
 
     db.init_db()
 
@@ -213,12 +214,12 @@ def test_fg_payload_stats_match_the_persisted_mini_representative(monkeypatch, t
             "Flow": 999,
         },
     }
-    monkeypatch.setattr(db, "get_minis_by_name_cached", lambda: fake_minis)
-    monkeypatch.setattr(db, "get_gears_by_name_cached", lambda: {})
+    monkeypatch.setattr(db.persistence, "load_minis", lambda _path: minis_from_dicts(fake_minis))
+    monkeypatch.setattr(db.persistence, "load_gears", lambda _path: {})
     db.init_db()
 
     solved_stats = {
-        "Perfect Points": 25,
+        "Perfect Points": 45,  # T5 25 + the mini's 20 ascension PP
         "Combo Multiplier": 0,
         "Fever Multiplier": 0,
         "Fever Fill Rate": 0,
@@ -317,12 +318,12 @@ def test_fg_representative_stats_use_fg_gems_not_paired_base_gems(monkeypatch, t
             "Flow": 999,
         },
     }
-    monkeypatch.setattr(db, "get_minis_by_name_cached", lambda: fake_minis)
-    monkeypatch.setattr(db, "get_gears_by_name_cached", lambda: {})
+    monkeypatch.setattr(db.persistence, "load_minis", lambda _path: minis_from_dicts(fake_minis))
+    monkeypatch.setattr(db.persistence, "load_gears", lambda _path: {})
     db.init_db()
 
     base_stats = {
-        "Perfect Points": 25,
+        "Perfect Points": 45,  # T5 25 + the mini's 20 ascension PP
         "Combo Multiplier": 0,
         "Fever Multiplier": 0,
         "Fever Fill Rate": 0,

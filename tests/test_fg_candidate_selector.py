@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
+from tests.items_support import make_gear, make_song_mini
 
 
 def _candidate(name: str, score: int, *, ft: int = 0, ff: int = 0) -> dict:
     return {
         "Score": score,
         "BaseScore": score,
-        "Gear": [{"Name": f"{name}-g{i}"} for i in range(6)],
-        "Minis": [{"Name": f"{name}-m{i}"} for i in range(3)],
+        "Gear": [make_gear(f"{name}-g{i}") for i in range(6)],
+        "Minis": [make_song_mini(f"{name}-m{i}") for i in range(3)],
         "Data": {"FT": ft, "FF": ff},
     }
 

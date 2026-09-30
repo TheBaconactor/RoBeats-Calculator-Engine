@@ -24,12 +24,8 @@ from gear_optimizer.core.memory import (
 from gear_optimizer.domain.jobs import (
     effective_task_count,
 )
-from gear_optimizer.data.csv_parser import (
-    load_all_gears_list,
-    load_all_minis_list,
-)
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
-from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves
 from gear_optimizer.client_update import update_and_restart_client
 from gear_optimizer.frontier_client import sync_frontiers_from_server
 from gear_optimizer.solver.cpu_work_manager import run_startup_cpu_work
@@ -242,10 +238,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             loop_forever = run.loop_forever
             sync_exported_game_data()
             curves = load_stat_curves(paths().stats_txt)
-            all_gears = load_all_gears_list()
-            all_minis = load_all_minis_list()
-            gears_by_name = {g["Name"]: g for g in all_gears}
-            minis_by_name = {m["Name"]: m for m in all_minis}
+            gears = load_gears(paths().gears_csv)
+            minis = load_minis(paths().minis_csv)
             song_queue = self._build_song_queue(run)
             queued_songs = len(song_queue)
             logger.info(f"[Run] Queued {len(song_queue)} song(s) for processing.")
@@ -263,10 +257,8 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
                 song_queue,
                 run,
                 curves,
-                all_gears,
-                all_minis,
-                gears_by_name,
-                minis_by_name,
+                gears,
+                minis,
             )
             queued_tasks = self._effective_total_tasks(tasks)
             self._start_progress(queued_tasks)
@@ -357,20 +349,10 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
         song_queue,
         run: RunSettings,
         curves,
-        all_gears,
-        all_minis,
-        gears_by_name,
-        minis_by_name,
+        gears,
+        minis,
     ):
-        return self._queue_task_coordinator().prepare_tasks(
-            song_queue,
-            run,
-            curves,
-            all_gears,
-            all_minis,
-            gears_by_name,
-            minis_by_name,
-        )
+        return self._queue_task_coordinator().prepare_tasks(song_queue, run, curves, gears, minis)
 
     @staticmethod
     def _effective_total_tasks(tasks: list) -> int:

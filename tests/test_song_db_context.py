@@ -12,8 +12,6 @@ def test_cached_db_context_uses_baseline_team_buff_key(monkeypatch):
 
     def _fake_load_database_progress_baseline(
         found_song_name,
-        gears_by_name,
-        minis_by_name,
         *,
         team_buff="T5",
     ):
@@ -25,14 +23,10 @@ def test_cached_db_context_uses_baseline_team_buff_key(monkeypatch):
 
     first = song_db_context.load_prepared_song_db_context(
         found_song_name="song",
-        gears_by_name={},
-        minis_by_name={},
         cache_db_context=True,
     )
     cached = song_db_context.load_prepared_song_db_context(
         found_song_name="song",
-        gears_by_name={},
-        minis_by_name={},
         cache_db_context=True,
     )
 
@@ -59,8 +53,6 @@ def test_prepared_db_context_preserves_attempts(monkeypatch):
 
     ctx = song_db_context.load_prepared_song_db_context(
         found_song_name="song",
-        gears_by_name={},
-        minis_by_name={},
     )
 
     assert ctx.db_key == "song"

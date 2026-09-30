@@ -1,4 +1,5 @@
 import pytest
+from tests.items_support import make_gear, make_song_mini
 
 
 _FG_SURFACE = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
@@ -83,16 +84,16 @@ def test_results_printer_best_base_score_floors_to_db_record_when_higher(capsys)
     prev_record = {
         "score": 200,
         "fg_score": 0,
-        "gear": [{"Name": "DB Gear", "type": "Hat"}],
-        "minis": [{"Name": "DB Mini"}],
+        "gear": [make_gear("DB Gear", "Hat")],
+        "minis": [make_song_mini("DB Mini")],
         "details": {"Score": 200, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"},
     }
 
     print_results(
         found_song_name,
         best_data=best_data,
-        best_gear=[{"Name": "G1", "type": "Hat"}],
-        best_minis=[{"Name": "M1"}],
+        best_gear=[make_gear("G1", "Hat")],
+        best_minis=[make_song_mini("M1")],
         fg_variants=[],
         status_emit_fn=_noop_status_emit,
         prev_record=prev_record,
@@ -124,8 +125,8 @@ def test_results_printer_best_fg_score_uses_variants_only(capsys):
             "response_surface": _FG_SURFACE,
             "ForceGreats": {"final_score": 90},
         },
-        "gear": [{"Name": "G2", "type": "Hat"}],
-        "minis": [{"Name": "M2"}],
+        "gear": [make_gear("G2", "Hat")],
+        "minis": [make_song_mini("M2")],
         "_is_ga": True,
         "score": 100,
         "fg_score": 90,
@@ -134,8 +135,8 @@ def test_results_printer_best_fg_score_uses_variants_only(capsys):
     print_results(
         found_song_name,
         best_data=best_data,
-        best_gear=[{"Name": "G1", "type": "Hat"}],
-        best_minis=[{"Name": "M1"}],
+        best_gear=[make_gear("G1", "Hat")],
+        best_minis=[make_song_mini("M1")],
         fg_variants=[fg_variant],
         status_emit_fn=_noop_status_emit,
     )
@@ -165,8 +166,8 @@ def test_results_printer_ignores_legacy_config_only_variant(capsys):
             "Selected Element": "Rush",
             "ForceGreats": {"config": {"NonFever1": 0, "NonFever2": 0}, "final_score": 100},
         },
-        "gear": [{"Name": "G1", "type": "Hat"}],
-        "minis": [{"Name": "M1"}],
+        "gear": [make_gear("G1", "Hat")],
+        "minis": [make_song_mini("M1")],
         "score": 100,
         "fg_score": 100,
     }
@@ -181,8 +182,8 @@ def test_results_printer_ignores_legacy_config_only_variant(capsys):
             "response_surface": _FG_SURFACE,
             "ForceGreats": {"final_score": 90},
         },
-        "gear": [{"Name": "G2", "type": "Hat"}],
-        "minis": [{"Name": "M2"}],
+        "gear": [make_gear("G2", "Hat")],
+        "minis": [make_song_mini("M2")],
         "score": 100,
         "fg_score": 90,
     }

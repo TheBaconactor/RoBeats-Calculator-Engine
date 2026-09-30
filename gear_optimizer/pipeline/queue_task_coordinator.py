@@ -181,19 +181,15 @@ class QueueTaskCoordinator:
         song_queue,
         run: RunSettings,
         curves,
-        all_gears,
-        all_minis,
-        gears_by_name,
-        minis_by_name,
+        gears,
+        minis,
     ):
         tasks = []
         run_context = SharedRunContext(
             multi_start=int(run.multi_start),
             curves=curves,
-            all_gears=all_gears,
-            all_minis=all_minis,
-            gears_by_name=gears_by_name,
-            minis_by_name=minis_by_name,
+            gears=gears,
+            minis=minis,
             ga_depth=int(run.search_depth),
             parallel_workers=1,
         )

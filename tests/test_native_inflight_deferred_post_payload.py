@@ -11,6 +11,7 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     build_native_task_error_payload,
 )
 from tests.songs_support import make_song
+from gear_optimizer.gamedata import empty_stats
 
 
 def _curves() -> dict:
@@ -244,7 +245,7 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
                 "BaseScore": 111,
                 "Gear": ["G1"],
                 "Minis": ["M1"],
-                "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"},
+                "Data": {"BaseStats": {**empty_stats(), "Perfect Points": 1}, "Selected Element": "Rush"},
             }
         ],
         best_data={"Score": 111, "BaseScore": 111, "Stats": {"Perfect Points": 1}},

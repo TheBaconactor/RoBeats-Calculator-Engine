@@ -191,10 +191,10 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
     }
 
     from gear_optimizer.helpers.song_helpers.persistence_payload import normalize_force_payload
-    from gear_optimizer.core.stats_calculator import compute_full_stats
     from gear_optimizer.core.team_buff import team_buff_effect
-    from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
-    from gear_optimizer.data.mini_ascension import materialize_minis_for_song
+    from gear_optimizer.gamedata import load_gears, load_minis, song_minis
+    from gear_optimizer.settings import paths
+    from gear_optimizer.stats import named_loadout_stats
 
     force_norm = normalize_force_payload(dict(force_payload))
     base_stats = {
@@ -211,20 +211,12 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
     }
     for stat_name, delta in team_buff_effect("T5", "Rush").items():
         base_stats[stat_name] = int(base_stats.get(stat_name, 0)) + int(delta)
-    _materialized_minis, minis_by_name, _context = materialize_minis_for_song(
-        minis_by_name=get_minis_by_name_cached(),
-        song_name="pytest_post_processor_fg_update_authority",
-        primary_color="Rush",
-        secondary_color="Rush",
-    )
-    canonical_stats = compute_full_stats(
-        _REPLAY_GEAR,
-        _REPLAY_MINIS,
-        {},
-        "Rush",
-        get_gears_by_name_cached(),
-        minis_by_name,
-        base_stats,
+    minis_by_name = {
+        m.name: m
+        for m in song_minis(load_minis(paths().minis_csv).values(), "pytest_post_processor_fg_update_authority", "Rush", "Rush")
+    }
+    canonical_stats = named_loadout_stats(
+        base_stats, _REPLAY_GEAR, _REPLAY_MINIS, load_gears(paths().gears_csv), minis_by_name, {}, "Rush"
     )
     expected_base = 19_000_000
     expected_fg = 20_000_000

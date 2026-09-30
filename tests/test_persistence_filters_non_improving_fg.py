@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.items_support import make_gear, make_song_mini
 
 
 def test_build_db_payload_drops_fg_variants_worse_than_base():
@@ -15,8 +16,8 @@ def test_build_db_payload_drops_fg_variants_worse_than_base():
         "Stats": {},
         "Selected Element": "Chill",
     }
-    best_gear = [{"Name": "A"}] * 6
-    best_minis = [{"Name": "M"}] * 3
+    best_gear = [make_gear("A")] * 6
+    best_minis = [make_song_mini("M")] * 3
 
     # FG variant has a valid config but is worse than base => should be ignored for persistence.
     fg_variants = [
@@ -66,8 +67,8 @@ def test_build_db_payload_drops_fg_variants_with_empty_normalized_force_payload(
         "Stats": {},
         "Selected Element": "Chill",
     }
-    best_gear = [{"Name": "A"}] * 6
-    best_minis = [{"Name": "M"}] * 3
+    best_gear = [make_gear("A")] * 6
+    best_minis = [make_song_mini("M")] * 3
 
     fg_variants = [
         {

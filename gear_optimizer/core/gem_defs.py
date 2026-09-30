@@ -126,17 +126,6 @@ def element_gem_count(gem_counts: Mapping[str, Any] | None) -> int:
     return int(gem_counts.get(GemKey.ELEMENT.value, 0) or 0)
 
 
-def build_gem_details(g_ft: int, g_ff: int, g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict[str, int]:
-    return {
-        "FeverGems": int(g_ft),
-        "FeverFillGems": int(g_ff),
-        "PP": int(g_pp),
-        "CM": int(g_cm),
-        "FM": int(g_fm),
-        "OV": int(g_ov),
-    }
-
-
 def fg_score_from_force(force_data: Any) -> int:
     if not isinstance(force_data, dict):
         return 0

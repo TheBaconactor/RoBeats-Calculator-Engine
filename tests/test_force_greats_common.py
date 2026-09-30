@@ -1,7 +1,7 @@
 import pytest
 
 from gear_optimizer.solver.force_greats_common import STAT_KEYS, extract_base_stats
-from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
+from gear_optimizer.stats import apply_gems, gems
 
 
 def test_extract_base_stats_round_trips_when_overflow_overlaps_stat_gem_element():
@@ -23,16 +23,7 @@ def test_extract_base_stats_round_trips_when_overflow_overlaps_stat_gem_element(
         "Fever Multiplier": 13,
         "Element": 57,
     }
-    stats = apply_gems_to_base_stats(
-        base_stats,
-        "Rush",
-        1,
-        19,
-        0,
-        0,
-        13,
-        57,
-    )
+    stats = apply_gems(base_stats, gems(ft=1, ff=19, fm=13, element=57), "Rush")
 
     recovered = extract_base_stats(stats, gem_counts, "Rush", ft_gems=1, ff_gems=19)
 

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from gear_optimizer.data.mini_ascension import MINI_ASCENSION_CACHE_VERSION
+from gear_optimizer.gamedata import MINI_ASCENSION_VERSION
 from gear_optimizer.data.database import (
     get_db_connection,
     get_song_counters,
@@ -12,6 +12,7 @@ from gear_optimizer.data.database import (
     _unpack_stats_after_load,
 )
 from gear_optimizer.data.database.songs import _update_song_counters_in_transaction
+from tests.items_support import make_mini
 
 
 def update_song_counters(db_path, song, *, processed_run, record_improved):
@@ -76,36 +77,12 @@ def _force_payload(
 
 def test_save_loadouts_batch_unions_equivalent_mini_variants(db_path, monkeypatch):
     minis_by_name = {
-        "MiniA": {
-            "Name": "MiniA",
-            "Chill": 0,
-            "Flow": 0,
-            "Rush": 0,
-            "Beat": 0,
-            "Vibe": 55,
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Fever Time": 0,
-            "Fever Fill Rate": 0,
-        },
-        "MiniB": {
-            "Name": "MiniB",
-            "Chill": 0,
-            "Flow": 30,  # irrelevant for Vibe/Vibe context
-            "Rush": 0,
-            "Beat": 0,
-            "Vibe": 55,
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Fever Time": 0,
-            "Fever Fill Rate": 0,
-        },
+        "MiniA": make_mini("MiniA", "Vibe", Vibe=55),
+        "MiniB": make_mini("MiniB", "Vibe", Flow=30, Vibe=55),  # Flow is irrelevant for Vibe/Vibe context
     }
 
     # Avoid depending on real Data/Minis.csv in this unit test.
-    monkeypatch.setattr("gear_optimizer.data.database.get_minis_by_name_cached", lambda: minis_by_name)
+    monkeypatch.setattr("gear_optimizer.data.database.persistence.load_minis", lambda _path: minis_by_name)
 
     song = "Mini Variant Union Song"
     details = {"PrimaryColor": "Vibe", "SecondaryColor": "Vibe", "SelectedElement": "Vibe"}
@@ -139,26 +116,8 @@ def test_save_loadouts_batch_unions_equivalent_mini_variants(db_path, monkeypatc
 
 def test_save_loadouts_batch_persists_song_aware_mini_ascension_stats(db_path, monkeypatch):
     song = "Ascension Target by Artist"
-    minis_by_name = {
-        "Target Mini": {
-            "Name": "Target Mini",
-            "type": "Mini",
-            "Rush": 50,
-            "Flow": 0,
-            "Chill": 0,
-            "Beat": 0,
-            "Vibe": 0,
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Fever Time": 0,
-            "Fever Fill Rate": 0,
-            "Song Target": [song],
-            "Mini Ascension Enabled": True,
-            "Mini Ascension Level": 10,
-        }
-    }
-    monkeypatch.setattr("gear_optimizer.data.database.get_minis_by_name_cached", lambda: minis_by_name)
+    minis_by_name = {"Target Mini": make_mini("Target Mini", "Rush", level1={"Rush": 50}, song_targets=[song], Rush=50)}
+    monkeypatch.setattr("gear_optimizer.data.database.persistence.load_minis", lambda _path: minis_by_name)
 
     details = {
         "PrimaryColor": "Rush",
@@ -194,7 +153,7 @@ def test_save_loadouts_batch_persists_song_aware_mini_ascension_stats(db_path, m
         assert stats["Rush"] == 466
         assert stats["Flow"] == 83
         assert unpacked["Mini Ascension Materialized"] is True
-        assert unpacked["Mini Ascension Source Version"] == MINI_ASCENSION_CACHE_VERSION
+        assert unpacked["Mini Ascension Source Version"] == MINI_ASCENSION_VERSION
         assert unpacked["Mini Ascension Materialized Song"] == song
         assert unpacked["Mini Ascension Materialized Primary Color"] == "Rush"
         assert unpacked["Mini Ascension Materialized Secondary Color"] == "Flow"
@@ -204,35 +163,11 @@ def test_save_loadouts_batch_persists_song_aware_mini_ascension_stats(db_path, m
 
 def test_save_loadouts_batch_unions_equivalent_mini_variants_with_missing_colors(db_path, monkeypatch):
     minis_by_name = {
-        "MiniA": {
-            "Name": "MiniA",
-            "Chill": 0,
-            "Flow": 0,
-            "Rush": 0,
-            "Beat": 0,
-            "Vibe": 55,
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Fever Time": 0,
-            "Fever Fill Rate": 0,
-        },
-        "MiniB": {
-            "Name": "MiniB",
-            "Chill": 0,
-            "Flow": 30,  # irrelevant for Vibe/Vibe context
-            "Rush": 0,
-            "Beat": 0,
-            "Vibe": 55,
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Fever Time": 0,
-            "Fever Fill Rate": 0,
-        },
+        "MiniA": make_mini("MiniA", "Vibe", Vibe=55),
+        "MiniB": make_mini("MiniB", "Vibe", Flow=30, Vibe=55),  # Flow is irrelevant for Vibe/Vibe context
     }
 
-    monkeypatch.setattr("gear_optimizer.data.database.get_minis_by_name_cached", lambda: minis_by_name)
+    monkeypatch.setattr("gear_optimizer.data.database.persistence.load_minis", lambda _path: minis_by_name)
 
     song = "Mini Variant Union Song (Missing Colors)"
     details = {"PrimaryColor": "Vibe", "SecondaryColor": "Vibe", "SelectedElement": "Vibe"}
@@ -906,7 +841,7 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_is_better(db_
 
 
 def test_team_buff_fg_loadouts_force_gems_stay_in_force_payload(db_path, monkeypatch):
-    monkeypatch.setattr("gear_optimizer.data.database.get_minis_by_name_cached", lambda: {})
+    monkeypatch.setattr("gear_optimizer.data.database.persistence.load_minis", lambda _path: {})
 
     song = "FG Gem Sync Song"
 

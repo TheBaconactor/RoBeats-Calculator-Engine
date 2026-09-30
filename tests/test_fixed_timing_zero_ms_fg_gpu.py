@@ -17,6 +17,7 @@ import itertools
 import numpy as np
 import pytest
 from tests.songs_support import make_song
+from tests.items_support import make_gear, make_song_mini
 
 pytestmark = pytest.mark.gpu
 
@@ -51,10 +52,10 @@ def _curves(rows: int = 161) -> dict:
     })
 
 
-def _loadout_items(name: str, **stats: int) -> list[dict]:
-    gear = [{"Name": f"{name}-G1", **stats}]
-    gear.extend({"Name": f"{name}-G{i}"} for i in range(2, 7))
-    minis = [{"Name": f"{name}-M{i}"} for i in range(1, 4)]
+def _loadout_items(name: str, **stats: int) -> list:
+    gear = [make_gear(f"{name}-G1", **stats)]
+    gear.extend(make_gear(f"{name}-G{i}") for i in range(2, 7))
+    minis = [make_song_mini(f"{name}-M{i}") for i in range(1, 4)]
     return gear + minis
 
 
@@ -95,23 +96,22 @@ def test_zero_ms_tier_replay_produces_meta_and_fg_leaderboards(tmp_path, monkeyp
         "score": 1,
         "fg_score": 1,
         "gear": [
-            {
-                "Name": "G1",
-                "Perfect Points": 120,
-                "Combo Multiplier": 80,
-                "Fever Multiplier": 60,
-                "Fever Time": 80,
-                "Fever Fill Rate": 100,
-                "Rush": 200,
-                "Flow": 150,
-            },
-            {"Name": "G2"},
-            {"Name": "G3"},
-            {"Name": "G4"},
-            {"Name": "G5"},
-            {"Name": "G6"},
+            make_gear(
+                "G1",
+                **{
+                    "Perfect Points": 120,
+                    "Combo Multiplier": 80,
+                    "Fever Multiplier": 60,
+                    "Fever Time": 80,
+                    "Fever Fill Rate": 100,
+                    "Rush": 200,
+                    "Flow": 150,
+                },
+            ),
+            *(make_gear(f"G{i}") for i in range(2, 7)),
         ],
-        "minis": [{"Name": "M1"}, {"Name": "M2"}, {"Name": "M3"}],
+        # Minis already as the song sees them (zero stats), so the pre-gem row is just the gear sum.
+        "minis": [make_song_mini(f"M{i}") for i in range(1, 4)],
         "details": {"Stats": stats},
         "force": {
             "Stats": stats,

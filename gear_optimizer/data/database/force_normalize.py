@@ -2,10 +2,15 @@
 Force-Greats payload normalization, base-score derivation, and pairing asserts,
 plus stats-reconstruction helpers used when persisting details.
 """
+from collections.abc import Mapping
 from typing import Any, Optional
 from ...core.gem_defs import element_gem_count
 from ...core.utils import safe_int as _safe_int_for_db
 from ...core.team_buff import team_buff_effect
+from ...gamedata import ELEMENTS, Gear, Mini, SongMini, load_gears
+from ...helpers.song_helpers.item_utils import item_name
+from ...settings import paths
+from ...stats import gems, named_loadout_stats
 
 
 _CORE_SCORE_STAT_KEYS = (
@@ -33,11 +38,30 @@ def _get_overflow_from_details(details):
     return element_gem_count(gem_counts)
 
 
+def _details_gem_allocation(details: dict, selected_element: str) -> dict[str, int]:
+    """The gem allocation stored in row details (GemCounts plus FT/FF).
+
+    Element gems need a selected element; a legacy row without a valid one keeps them unapplied, as
+    the old stats rebuild did.
+    """
+    gem_counts = details.get("GemCounts")
+    if not isinstance(gem_counts, dict):
+        gem_counts = {}
+    return gems(
+        pp=gem_counts.get("Perfect Points", 0) or 0,
+        cm=gem_counts.get("Combo Multiplier", 0) or 0,
+        fm=gem_counts.get("Fever Multiplier", 0) or 0,
+        ft=int(details.get("FT", 0) or 0),
+        ff=int(details.get("FF", 0) or 0),
+        element=element_gem_count(gem_counts) if selected_element in ELEMENTS else 0,
+    )
+
+
 def _ensure_stats_in_details(
     details: dict,
     gear: list,
     minis: list,
-    minis_by_name: dict,
+    minis_by_name: Mapping[str, Mini | SongMini],
     *,
     team_buff: "Optional[str]" = None,
     team_color: "Optional[str]" = None,
@@ -52,39 +76,12 @@ def _ensure_stats_in_details(
     stats_obj = details.get("Stats")
     if isinstance(stats_obj, dict) and stats_obj:
         return details
-    from gear_optimizer.core.stats_calculator import compute_full_stats
-    from gear_optimizer.data import database as _db
-    gear_names = []
-    for g in gear or []:
-        if isinstance(g, dict):
-            gear_names.append(g.get("Name", ""))
-        elif isinstance(g, str):
-            gear_names.append(g)
+    gear_names = [item_name(g) for g in gear or [] if isinstance(g, (Gear, str))]
     mini_names = []
     for m in minis or []:
-        if isinstance(m, dict):
-            mini_names.append(m.get("Name", ""))
-        elif isinstance(m, str):
-            mini_names.append(m)
-        elif isinstance(m, list) and m:
-            first = m[0]
-            if isinstance(first, dict):
-                mini_names.append(first.get("Name", ""))
-            elif isinstance(first, str):
-                mini_names.append(first)
-    gears_by_name = _db.get_gears_by_name_cached()
-    base_stats = {
-        "Perfect Points": 0,
-        "Combo Multiplier": 0,
-        "Fever Multiplier": 0,
-        "Fever Fill Rate": 0,
-        "Fever Time": 0,
-        "Chill": 0,
-        "Flow": 0,
-        "Rush": 0,
-        "Beat": 0,
-        "Vibe": 0,
-    }
+        first = m[0] if isinstance(m, list) and m else m
+        if isinstance(first, (Mini, SongMini, str)):
+            mini_names.append(item_name(first))
     buff_tier = str(team_buff or "").strip().upper()
     buff_color = str(team_color or "").strip()
     if not buff_color:
@@ -95,16 +92,16 @@ def _ensure_stats_in_details(
             or details.get("Selected Element")
             or ""
         ).strip()
-    for stat_name, delta in team_buff_effect(buff_tier, buff_color).items():
-        base_stats[stat_name] = int(base_stats.get(stat_name, 0) or 0) + int(delta)
-    gem_counts = dict(details.get("GemCounts", {}) or {})
-    gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
-    gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
     selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
-    computed = compute_full_stats(
-        gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
+    details["Stats"] = named_loadout_stats(
+        team_buff_effect(buff_tier, buff_color),
+        gear_names,
+        mini_names,
+        load_gears(paths().gears_csv),
+        minis_by_name,
+        _details_gem_allocation(details, selected_element),
+        selected_element,
     )
-    details["Stats"] = computed
     return details
 
 

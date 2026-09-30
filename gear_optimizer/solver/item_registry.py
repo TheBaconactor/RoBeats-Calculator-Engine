@@ -3,14 +3,15 @@ Item Registry - GPU-optimized item encoding for GPU-native GA.
 
 This module provides the ItemRegistry class which:
 1. Assigns contiguous integer IDs to items per slot
-2. Encodes/decodes genomes between dict-based and ID-based representations
+2. Encodes/decodes genomes between item-based and ID-based representations
 3. Provides GPU-friendly arrays for item stats and slot pools
 """
 
-import numpy as np
-from typing import Optional
-import json
+from __future__ import annotations
 
+import numpy as np
+
+from gear_optimizer.gamedata import Gear, SongMini
 
 # Stat dimension indices (matching fields.ITEM_STAT_DIM = 10)
 STAT_INDICES = {
@@ -28,25 +29,11 @@ STAT_INDICES = {
 
 MINI_SLOT_INDICES = [6, 7, 8]  # Minis occupy slots 6, 7, 8
 
-def _stable_item_sort_key(item: object) -> tuple:
-    """
-    Deterministic ordering for gear/mini pools.
 
-    GPU-native GA is deterministic in *ID-space* (it mutates/samples integer IDs from per-slot pools).
-    That determinism only holds end-to-end if the (slot, item) -> item_id mapping is stable across
-    processes. Upstream pool construction may iterate dicts/sets; if so, item order can vary with
-    PYTHONHASHSEED and make GA results look "lucky" even when GA_SEED is fixed.
-
-    Canonicalizing the pool order fixes that: same pool contents => same IDs => same GA trajectory.
-    """
-
-    if not isinstance(item, dict):
-        return (1, str(item))
-
-    name = str(item.get("Name", "") or "")
-    # Tie-breaker: stable, content-based signature (handles any rare duplicate names safely).
-    sig = json.dumps(item, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-    return (0, name, sig)
+def _by_name(item: Gear | SongMini) -> str:
+    # GPU-native GA is deterministic in ID-space (it samples integer IDs from per-slot pools), so the
+    # (slot, item) -> id mapping must not depend on pool construction order. Names are unique.
+    return item.name
 
 
 class ItemRegistry:
@@ -62,183 +49,65 @@ class ItemRegistry:
     modular arithmetic: new_id = slot_start[slot] + (rand % slot_count[slot])
     """
 
-    def __init__(
-        self,
-        gear_pool: dict[str, list[dict]],
-        mini_pool: list[dict],
-        slots: list[str],
-        fixed_gear: Optional[list[dict]] = None,
-        fixed_minis: Optional[list[dict]] = None,
-    ):
+    def __init__(self, gear_pool: dict[str, list[Gear]], mini_pool: list[SongMini], slots: list[str]):
         """
         Build item registry from gear and mini pools.
 
         Args:
-            gear_pool: Dict mapping slot name -> list of gear items
-            mini_pool: List of mini items (shared across slots 6-8)
-            slots: List of gear slot names (e.g., ["Arms", "BackBling", ...])
-            fixed_gear: If provided, only these gear items are valid (for fixed slots)
-            fixed_minis: If provided, only these minis are valid (for fixed slots)
+            gear_pool: Dict mapping slot name -> list of gear
+            mini_pool: The song's minis (shared across slots 6-8)
+            slots: The six gear slot names, in genome order
         """
         self.slots = list(slots)
         self.n_slots = len(slots) + 3  # 6 gear + 3 mini = 9 total
 
-        # Mappings
-        self.id_to_item: dict[int, dict] = {0: {}}  # ID 0 = empty
+        self.id_to_item: dict[int, Gear | SongMini] = {}
         self.item_to_id: dict[tuple[int, str], int] = {}  # (slot_idx, name) -> id
 
         # Per-slot pool boundaries
         self.slot_start = [0] * 9  # First valid ID for each slot
         self.slot_count = [0] * 9  # Number of items in each slot
 
-        # Construct IDs from this pool's contents. Object identity and slot
-        # counts cannot identify a registry after pool or fixed-item changes.
         next_id = 1
         for slot_idx, slot_name in enumerate(slots):
-            items = gear_pool.get(slot_name, [])
-            if fixed_gear is not None and slot_idx < len(fixed_gear):
-                fixed_item = fixed_gear[slot_idx]
-                if fixed_item and fixed_item.get("Name"):
-                    items = [fixed_item]
-            items = sorted(list(items or []), key=_stable_item_sort_key)
+            items = sorted(gear_pool.get(slot_name, []), key=_by_name)
             self.slot_start[slot_idx] = next_id
             self.slot_count[slot_idx] = len(items)
             for item in items:
-                name = item.get("Name", "")
-                if not name:
-                    continue
-                item_id = next_id
+                self.id_to_item[next_id] = item
+                self.item_to_id[(slot_idx, item.name)] = next_id
                 next_id += 1
-                self.id_to_item[item_id] = item
-                self.item_to_id[(slot_idx, name)] = item_id
 
-        # Process mini slots (6-8) - they share the same pool
-        mini_items = mini_pool
-        if fixed_minis is not None:
-            # Only use fixed minis
-            mini_items = [m for m in fixed_minis if m and m.get("Name")]
-
-        # Same determinism requirement as gear pools: keep ordering stable across processes.
-        mini_items = sorted(list(mini_items or []), key=_stable_item_sort_key)
-
+        mini_items = sorted(mini_pool, key=_by_name)
         mini_start = next_id
-        mini_count = len(mini_items)
-
         for item in mini_items:
-            name = item.get("Name", "")
-            if not name:
-                continue
-
-            item_id = next_id
-            next_id += 1
-
-            self.id_to_item[item_id] = item
-            # Register for all mini slots (6, 7, 8)
+            self.id_to_item[next_id] = item
             for mini_slot in MINI_SLOT_INDICES:
-                self.item_to_id[(mini_slot, name)] = item_id
-
-        # Set mini slot boundaries (all share same pool)
+                self.item_to_id[(mini_slot, item.name)] = next_id
+            next_id += 1
         for mini_slot in MINI_SLOT_INDICES:
             self.slot_start[mini_slot] = mini_start
-            self.slot_count[mini_slot] = mini_count
+            self.slot_count[mini_slot] = len(mini_items)
 
         self.n_items = next_id  # Total items including reserved ID 0
-        # Lazy caches for GPU upload and fast numpy decoding.
-        self._gpu_arrays_cache: Optional[dict[str, np.ndarray]] = None
-        # Optional fast decode helpers. These are built lazily and only for small registries
-        # to avoid adding O(n_items) work to every song.
-        self._id_to_item_list: Optional[list[dict]] = None
-        self._id_to_name_list: Optional[list] = None
+        self._gpu_arrays_cache: dict[str, np.ndarray] | None = None
 
-    def _maybe_build_decode_lists(self) -> None:
-        if self._id_to_item_list is not None and self._id_to_name_list is not None:
-            return
-        n_items = int(self.n_items)
-        # Building O(n_items) Python lists can be more expensive than a few dict.get()
-        # calls when registries are large. Keep this conservative.
-        if n_items > 12000:
-            return
-        id_to_item = self.id_to_item
-        items: list[dict] = [{}] * n_items
-        for item_id, item in id_to_item.items():
-            idx = int(item_id)
-            if 0 <= idx < n_items:
-                items[idx] = item or {}
-        self._id_to_item_list = items
-        self._id_to_name_list = [d.get("Name", "None") if d else "None" for d in items]
+    def _item(self, item_id) -> Gear | SongMini | None:
+        idx = int(item_id)
+        if idx == 0:
+            return None
+        item = self.id_to_item.get(idx)
+        if item is None:
+            raise ValueError(f"genome references unknown item id {idx} (registry has {self.n_items} ids)")
+        return item
 
-
-    def decode_genome(self, ids: np.ndarray) -> list[dict]:
-        """
-        Convert an array of item IDs back to a genome (list of item dicts).
-
-        Args:
-            ids: (9,) array of item IDs
-
-        Returns:
-            list[dict]: List of 9 item dicts
-        """
-        self._maybe_build_decode_lists()
-        id_list = self._id_to_item_list
-        if id_list is not None:
-            n = len(id_list)
-            out: list[dict] = []
-            out_append = out.append
-            for item_id in ids[:9]:
-                idx = int(item_id)
-                if idx == 0:
-                    out_append({})
-                    continue
-                if idx < 0 or idx >= n:
-                    raise ValueError(f"genome references unknown item id {idx} (registry has {n} ids)")
-                out_append(id_list[idx])
-            return out
-        id_to_item = self.id_to_item
-        out_dicts: list[dict] = []
-        for item_id in ids[:9]:
-            idx = int(item_id)
-            if idx == 0:
-                out_dicts.append({})
-                continue
-            item = id_to_item.get(idx)
-            if item is None:
-                raise ValueError(f"genome references unknown item id {idx}")
-            out_dicts.append(item)
-        return out_dicts
+    def decode_genome(self, ids: np.ndarray) -> list[Gear | SongMini | None]:
+        """The 9 items of a genome (None for the reserved empty id 0)."""
+        return [self._item(item_id) for item_id in ids[:9]]
 
     def decode_names(self, ids: np.ndarray) -> list[str]:
-        """
-        Decode item IDs to "Name" strings with the same semantics used elsewhere:
-        missing/empty -> "None".
-        """
-        self._maybe_build_decode_lists()
-        name_list = self._id_to_name_list
-        if name_list is not None:
-            n = len(name_list)
-            out: list[str] = []
-            out_append = out.append
-            for item_id in ids[:9]:
-                idx = int(item_id)
-                if idx == 0:
-                    out_append("None")
-                    continue
-                if idx < 0 or idx >= n:
-                    raise ValueError(f"genome references unknown item id {idx} (registry has {n} ids)")
-                out_append(name_list[idx])
-            return out
-        # Dict-lookup route preserves the same semantics when decode lists are absent.
-        id_to_item = self.id_to_item
-        out2: list[str] = []
-        for item_id in ids[:9]:
-            idx = int(item_id)
-            if idx == 0:
-                out2.append("None")
-                continue
-            item = id_to_item.get(idx)
-            if item is None:
-                raise ValueError(f"genome references unknown item id {idx}")
-            out2.append(item.get("Name", "None") if item else "None")
-        return out2
+        """The 9 item names of a genome ("None" for the reserved empty id 0)."""
+        return [item.name if item is not None else "None" for item in self.decode_genome(ids)]
 
     def to_gpu_arrays(self) -> dict[str, np.ndarray]:
         """
@@ -251,23 +120,13 @@ class ItemRegistry:
                 - "slot_count": (9,) int32 - count per slot
         """
         cached = self._gpu_arrays_cache
-        if isinstance(cached, dict):
+        if cached is not None:
             return cached
 
-        # Build item_stats array once; reuse across GPU uploads and CPU decode paths.
         item_stats = np.zeros((self.n_items, 10), dtype=np.int32)
-        name_to_idx = STAT_INDICES
-
         for item_id, item in self.id_to_item.items():
-            if item_id == 0 or not item:
-                continue
-            # Prefer iterating actual keys to avoid scanning all STAT_INDICES for every item.
-            for k, v in item.items():
-                stat_idx = name_to_idx.get(k)
-                if stat_idx is None:
-                    continue
-                if v:
-                    item_stats[item_id, stat_idx] = int(v)
+            for stat, stat_idx in STAT_INDICES.items():
+                item_stats[item_id, stat_idx] = item.stats[stat]
 
         out = {
             "item_stats": item_stats,

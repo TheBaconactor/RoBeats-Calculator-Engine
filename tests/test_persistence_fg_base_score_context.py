@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
 from tests.songs_support import make_song
+from tests.items_support import minis_from_dicts
 
 
 def test_save_loadouts_batch_preserves_fg_base_score_context(monkeypatch, tmp_path: Path):
@@ -19,8 +20,8 @@ def test_save_loadouts_batch_preserves_fg_base_score_context(monkeypatch, tmp_pa
     import gear_optimizer.data.database as db
 
     # Keep Stats recompute lightweight/deterministic (empty item pools are fine for this test).
-    monkeypatch.setattr(db, "get_minis_by_name_cached", lambda: {})
-    monkeypatch.setattr(db, "get_gears_by_name_cached", lambda: {})
+    monkeypatch.setattr(db.persistence, "load_minis", lambda _path: minis_from_dicts({}))
+    monkeypatch.setattr(db.persistence, "load_gears", lambda _path: {})
 
     db.init_db()
 

@@ -1,4 +1,5 @@
 from general_meta.analysis import find_most_common_loadout
+from tests.items_support import minis_from_dicts
 
 
 def test_general_meta_counts_top1_by_effective_fg_score():
@@ -50,7 +51,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
         },
     ]
 
-    minis_by_name = {name: {"Name": name} for name in target_minis}
+    minis_by_name = minis_from_dicts({name: {"Name": name} for name in target_minis})
 
     results = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=None)
 

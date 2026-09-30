@@ -14,7 +14,6 @@ from typing import Any
 
 from gear_optimizer.settings import paths
 from gear_optimizer.core.utils import safe_int as _safe_int
-from gear_optimizer.data.loadout_equivalence import clear_gear_mini_csv_caches
 from gear_optimizer.chart import read_header
 
 logger = logging.getLogger(__name__)
@@ -554,7 +553,6 @@ def sync_exported_game_data(
         resolved.gears_csv.write_text(gears_text, encoding="utf-8")
         resolved.minis_csv.write_text(minis_text, encoding="utf-8")
         wrote_files = True
-        clear_gear_mini_csv_caches()
 
     _write_sync_state(
         resolved.sync_state,

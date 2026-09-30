@@ -104,7 +104,7 @@ def test_run_general_meta_syncs_before_loading_gears(monkeypatch) -> None:
 
     monkeypatch.setattr("general_meta.app.sync_exported_game_data", _fake_sync)
     monkeypatch.setattr(
-        "general_meta.app.load_all_gears_list",
+        "general_meta.app.load_gears",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(_StopAfterSync()),
     )
 

@@ -833,14 +833,15 @@ def test_custom_pool_rows_land_in_the_request_copy_and_never_the_catalog(tmp_pat
     pool = service._custom_pool_for_request({"customGear": [_CUSTOM_GEAR], "customMinis": [_CUSTOM_MINI]})
     service._append_custom_pool_rows(work, pool)
 
-    from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
+    from gear_optimizer.gamedata import read_gears, read_minis
 
-    gear = next(g for g in parse_gear_rows(str(work / "Gears.csv")) if g["Name"] == "Test Hat")
-    mini = next(m for m in parse_mini_rows(str(work / "Minis.csv")) if m["Name"] == "Test Mini")
-    assert (gear["type"], gear["Chill"], gear["Perfect Points"]) == ("Hat", 30, 20)
-    assert (mini["type"], mini["Chill"], mini["Combo Multiplier"]) == ("Chill", 90, 30)
+    # The strict typed readers accept the service's rows (custom minis leave the level-1 block blank).
+    gear = read_gears(work / "Gears.csv")["Test Hat"]
+    mini = read_minis(work / "Minis.csv")["Test Mini"]
+    assert (gear.slot, gear.stats["Chill"], gear.stats["Perfect Points"]) == ("Hat", 30, 20)
+    assert (mini.element, mini.stats["Chill"], mini.stats["Combo Multiplier"]) == ("Chill", 90, 30)
     # The repeated L1 ascension columns in Minis.csv must stay empty for a custom mini.
-    assert "Mini Ascension Base Chill" not in mini
+    assert mini.level1_elements == {} and mini.song_targets == frozenset()
     assert ((catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()) == before
 
 
@@ -889,14 +890,14 @@ def test_excluded_names_accept_real_catalog_names_with_punctuation():
 
 
 def test_excluded_rows_leave_the_request_copy_without_them_and_never_the_catalog(tmp_path):
-    from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
+    from gear_optimizer.gamedata import read_gears, read_minis
 
     catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
     before = (catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()
-    gears_before = parse_gear_rows(str(catalog / "Gears.csv"))
-    minis_before = parse_mini_rows(str(catalog / "Minis.csv"))
-    drop_gear = [g["Name"] for g in gears_before[:3]]
-    drop_mini = [m["Name"] for m in minis_before[:2]]
+    gears_before = read_gears(catalog / "Gears.csv")
+    minis_before = read_minis(catalog / "Minis.csv")
+    drop_gear = list(gears_before)[:3]
+    drop_mini = list(minis_before)[:2]
 
     work = tmp_path / "Gear"
     shutil.copytree(catalog, work)
@@ -906,19 +907,19 @@ def test_excluded_rows_leave_the_request_copy_without_them_and_never_the_catalog
     service._remove_excluded_rows(work, pool)
     service._append_custom_pool_rows(work, pool)
 
-    gears_after = parse_gear_rows(str(work / "Gears.csv"))
-    minis_after = parse_mini_rows(str(work / "Minis.csv"))
-    assert {g["Name"] for g in gears_after}.isdisjoint(drop_gear)
-    assert {m["Name"] for m in minis_after}.isdisjoint(drop_mini)
+    gears_after = read_gears(work / "Gears.csv")
+    minis_after = read_minis(work / "Minis.csv")
+    assert set(gears_after).isdisjoint(drop_gear)
+    assert set(minis_after).isdisjoint(drop_mini)
     # exactly the excluded rows left, and the custom one arrived
     assert len(gears_after) == len(gears_before) - len(drop_gear) + 1
     assert len(minis_after) == len(minis_before) - len(drop_mini)
-    assert _CUSTOM_GEAR["name"] in {g["Name"] for g in gears_after}
+    assert _CUSTOM_GEAR["name"] in gears_after
     assert ((catalog / "Gears.csv").read_bytes(), (catalog / "Minis.csv").read_bytes()) == before
 
 
 def test_excluding_an_unknown_name_is_a_no_op(tmp_path):
-    from gear_optimizer.data.csv_parser import parse_gear_rows
+    from gear_optimizer.gamedata import read_gears
 
     catalog = Path(service.__file__).resolve().parents[1] / "Data" / "Gear"
     work = tmp_path / "Gear"
@@ -926,7 +927,7 @@ def test_excluding_an_unknown_name_is_a_no_op(tmp_path):
     pool = service._custom_pool_for_request({"excludeGear": ["No Such Gear At All"]})
     service._remove_excluded_rows(work, pool)
     # A stale exclusion (catalog moved on) must not fail the solve or drop anything.
-    assert len(parse_gear_rows(str(work / "Gears.csv"))) == len(parse_gear_rows(str(catalog / "Gears.csv")))
+    assert len(read_gears(work / "Gears.csv")) == len(read_gears(catalog / "Gears.csv"))
 
 
 def test_same_job_different_inputs_own_separate_workspaces(data_root, monkeypatch):

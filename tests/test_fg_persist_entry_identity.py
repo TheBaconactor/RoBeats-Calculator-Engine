@@ -13,11 +13,12 @@ import pytest
 
 def _registry():
     from gear_optimizer.solver.item_registry import ItemRegistry
+    from tests.items_support import make_gear, make_song_mini
 
     stats = {"Perfect Points": 1}
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
-    gear_pool = {slot: [{"Name": f"{slot}0", "Stats": dict(stats)}] for slot in slots}
-    mini_pool = [{"Name": f"M{i}", "Stats": dict(stats)} for i in range(3)]
+    gear_pool = {slot: [make_gear(f"{slot}0", slot, **stats)] for slot in slots}
+    mini_pool = [make_song_mini(f"M{i}", **stats) for i in range(3)]
     return ItemRegistry(gear_pool, mini_pool, slots)
 
 

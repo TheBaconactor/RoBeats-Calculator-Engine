@@ -6,13 +6,17 @@ import pytest
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_top_base_ga_candidates
 from gear_optimizer.solver.genetic_pipeline_decode import decode_gpu_native_ga_runs_payload
+from gear_optimizer.gamedata import Gear, SongMini
 from gear_optimizer.solver.item_registry import ItemRegistry
+from tests.items_support import make_gear, make_song_mini
 
 
-def _item(name: str, **stats: int) -> dict:
-    out = {"Name": name}
-    out.update(stats)
-    return out
+def _item(name: str, **stats: int) -> Gear:
+    return make_gear(name, **stats)
+
+
+def _mini_item(name: str, **stats: int) -> SongMini:
+    return make_song_mini(name, **stats)
 
 
 def _canon_ids_key(genome_ids: np.ndarray) -> tuple[int, ...]:
@@ -24,7 +28,7 @@ def _canon_ids_key(genome_ids: np.ndarray) -> tuple[int, ...]:
 def _genome_ids(registry: ItemRegistry, genome: list) -> np.ndarray:
     ids = np.zeros(9, dtype=np.int32)
     for slot_idx, item in enumerate(genome[:9]):
-        name = item.get("Name", "") if isinstance(item, dict) else item
+        name = item.name if isinstance(item, (Gear, SongMini)) else item
         if name:
             ids[slot_idx] = registry.item_to_id.get((slot_idx, str(name)), 0)
     return ids
@@ -59,7 +63,7 @@ def test_decode_gpu_native_ga_runs_payload_caps_raw_rows_to_fg_candidate_limit()
         "Flow": 1,
     }
     gear_pool = {slot: [_item(f"{slot}0", **base_stats)] for slot in slots}
-    mini_pool = [_item(f"M{i}", **base_stats) for i in range(14)]
+    mini_pool = [_mini_item(f"M{i}", **base_stats) for i in range(14)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
     fg_limit = int(LOADOUTS_PER_SONG_LIMIT)
@@ -126,7 +130,7 @@ def test_decode_gpu_native_ga_runs_payload_caps_raw_rows_to_fg_candidate_limit()
 def test_decode_gpu_native_ga_runs_payload_includes_header_best_candidate():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     gear_pool = {slot: [_item(f"{slot}{i}") for i in range(3)] for slot in slots}
-    mini_pool = [_item(f"M{i}") for i in range(5)]
+    mini_pool = [_mini_item(f"M{i}") for i in range(5)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
     n_slots = 9
@@ -175,7 +179,7 @@ def test_decode_gpu_native_ga_runs_payload_includes_header_best_candidate():
 def test_decode_gpu_native_ga_runs_payload_prefers_header_best_shape_on_tie():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     gear_pool = {slot: [_item(f"{slot}{i}") for i in range(3)] for slot in slots}
-    mini_pool = [_item(f"M{i}") for i in range(5)]
+    mini_pool = [_mini_item(f"M{i}") for i in range(5)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
     n_slots = 9
@@ -216,7 +220,7 @@ def test_decode_gpu_native_ga_runs_payload_prefers_header_best_shape_on_tie():
 
 def test_decode_gpu_native_ga_runs_payload_rejects_legacy_raw_runs_payload():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
-    registry = ItemRegistry({slot: [_item(f"{slot}0")] for slot in slots}, [_item(f"M{i}") for i in range(3)], slots)
+    registry = ItemRegistry({slot: [_item(f"{slot}0")] for slot in slots}, [_mini_item(f"M{i}") for i in range(3)], slots)
     legacy_payload = np.zeros((1, 2, 24), dtype=np.int32)
 
     with pytest.raises(ValueError, match="2D selected payload"):
@@ -254,7 +258,7 @@ def test_decode_raw_pool_then_fg_prep_select_matches_canonical_selector():
 
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     gear_pool = {slot: [_item(f"{slot}{i}", **rand_stats()) for i in range(8)] for slot in slots}
-    mini_pool = [_item(f"M{i}", **rand_stats()) for i in range(10)]
+    mini_pool = [_mini_item(f"M{i}", **rand_stats()) for i in range(10)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
     n_runs = 3
@@ -422,7 +426,7 @@ def test_decode_raw_pool_then_fg_prep_select_matches_canonical_selector():
 def test_decode_gpu_native_ga_runs_payload_rejects_candidate_score_above_header_best():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     gear_pool = {slot: [_item(f"{slot}{i}") for i in range(4)] for slot in slots}
-    mini_pool = [_item(f"M{i}") for i in range(6)]
+    mini_pool = [_mini_item(f"M{i}") for i in range(6)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
     cfg_data = {
@@ -473,7 +477,7 @@ def test_decode_gpu_native_ga_runs_payload_rejects_candidate_score_above_header_
 def test_decode_gpu_native_selected_payload_dedups_duplicate_exact_rows():
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     gear_pool = {slot: [_item(f"{slot}{i}") for i in range(2 if slot == "Hat" else 1)] for slot in slots}
-    mini_pool = [_item(f"M{i}") for i in range(4)]
+    mini_pool = [_mini_item(f"M{i}") for i in range(4)]
     registry = ItemRegistry(gear_pool, mini_pool, slots)
 
     cfg_data = {
@@ -588,7 +592,7 @@ def test_decode_gpu_native_selected_payload_emits_base_stats_without_full_stats(
         for slot in slots
     }
     mini_pool = [
-        _item(
+        _mini_item(
             f"M{i}",
             **{
                 "Perfect Points": 5 + i,
@@ -691,7 +695,7 @@ def test_decode_gpu_native_selected_payload_emits_full_stats_when_ga_requires_it
         for slot in slots
     }
     mini_pool = [
-        _item(
+        _mini_item(
             f"M{i}",
             **{
                 "Perfect Points": 5 + i,

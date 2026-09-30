@@ -37,9 +37,9 @@ from gear_optimizer.rules import GEM_BUDGET
 from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, normalize_team_buff, team_buff_effect
 from gear_optimizer.core.utils import get_selected_element
 from gear_optimizer.data.database import get_best_loadouts, get_evolution_db_path
-from gear_optimizer.data.loadout_equivalence import get_gears_by_name_cached, get_minis_by_name_cached
 from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
+    _entry_loadout_items,
     build_team_buff_tier_db_batches,
     resolve_tier_base,
     resolve_tier_fg_force,
@@ -270,14 +270,6 @@ def _song_file_from_name(song_name: str, details: dict[str, Any] | None = None) 
     return None
 
 
-def _entry_loadout_items(entry: dict[str, Any]) -> list[dict[str, Any]]:
-    gear = [dict(item) for item in list(entry.get("gear") or [])[:6]]
-    minis = [dict(item) for item in list(entry.get("minis") or [])[:3]]
-    if len(gear) != 6 or len(minis) != 3:
-        raise ValueError(f"Loadout {_entry_hash(entry)!r} does not have 6 gear + 3 minis")
-    return gear + minis
-
-
 def _find_replay_row(
     *,
     entry: dict[str, Any],
@@ -385,7 +377,8 @@ def _compare_entry_mode(
         base_team_color_override=base_team_color_override,
         target_team_color_override=target_team_color_override,
     )
-    loadout_items = _entry_loadout_items(entry)
+    # The serving contract: names resolve through the catalog, minis ascend for this song.
+    loadout_items = _entry_loadout_items(entry, active_song.chart)
     if str(mode) == "fg":
         resolved_score, resolved_gem_counts, resolved_stats = _solve_fg_exact(
             fixed_song_stats=target_fixed_stats,
@@ -505,8 +498,6 @@ def main() -> int:
     curves = load_stat_curves(paths().stats_txt)
 
     baseline_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
-    gears_by_name = get_gears_by_name_cached()
-    minis_by_name = get_minis_by_name_cached()
 
     requested_songs = [str(song).strip() for song in list(args.song or []) if str(song).strip()]
     if requested_songs:
@@ -522,8 +513,6 @@ def main() -> int:
         entries = get_best_loadouts(
             song_name,
             limit=max(1, int(args.per_song_limit)),
-            gears_by_name=gears_by_name,
-            minis_by_name=minis_by_name,
             team_buff=str(baseline_team_buff),
             db_path=str(db_path),
         )

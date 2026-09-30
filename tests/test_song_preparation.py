@@ -33,8 +33,7 @@ def test_build_prepared_song_core_owns_song_stats_and_db_setup(monkeypatch):
     prepared = song_preparation.build_prepared_song_core(
         fp="song.txt",
         found_song_name="Song",
-        gears_by_name={},
-        minis_by_name={},
+        minis={},
         cache_db_context=True,
     )
 

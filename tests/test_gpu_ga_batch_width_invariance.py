@@ -35,6 +35,8 @@ from gear_optimizer.solver.fg_effective_dedup import effective_tables_for_contex
 from gear_optimizer.solver.genetic_pipeline import run_gpu_native_ga_runs_payload_prebuilt
 from gear_optimizer.solver.gpu_tuning_policy import choose_ga_batch_runs
 from gear_optimizer.solver.item_registry import ItemRegistry
+from gear_optimizer.gamedata import Gear, SongMini
+from tests.items_support import make_gear, make_song_mini
 from gear_optimizer.solver.scoring.runtime_state import _GPU_LOCK
 from tests.curves_support import synthetic_curves
 from tests.songs_support import make_song
@@ -51,10 +53,12 @@ _N_GENERATIONS = 6
 _GA_SEED = 20260612
 
 
-def _item(name: str, **stats: int) -> dict:
-    out = {"Name": name}
-    out.update(stats)
-    return out
+def _item(name: str, **stats: int) -> Gear:
+    return make_gear(name, **stats)
+
+
+def _mini_item(name: str, **stats: int) -> SongMini:
+    return make_song_mini(name, **stats)
 
 
 def _build_registry() -> ItemRegistry:
@@ -85,7 +89,7 @@ def _build_registry() -> ItemRegistry:
     mini_pool = []
     for i in range(12):
         mini_pool.append(
-            _item(
+            _mini_item(
                 f"M{i}",
                 **{
                     "Perfect Points": 2 + (i % 5),

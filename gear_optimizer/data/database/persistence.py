@@ -41,11 +41,14 @@ from ..loadout_equivalence import (
     canonical_minis_groups_from_names,
     rotate_mini_groups_for_slot_display,
 )
-from ..mini_ascension import MINI_ASCENSION_CACHE_VERSION, materialize_minis_for_song
+from ...gamedata import MINI_ASCENSION_VERSION, Mini, SongMini, load_gears, load_minis, song_minis
+from ...settings import paths
+from ...stats import named_loadout_stats
 from .connection import get_db_connection, get_evolution_db_path, get_db_connection_cached
 from .songs import get_song_counters, _update_song_counters_in_transaction
 from .loadout_io import _compact_gear_for_db, _compact_minis_for_db
 from .force_normalize import (
+    _details_gem_allocation,
     _get_overflow_from_details,
     _ensure_stats_in_details,
     _force_payload_base_score,
@@ -346,8 +349,8 @@ def save_team_buff_loadouts_batch(
     team_buff = canonicalize_team_buff(team_buff)
     if not song_name or not team_buff or not entries:
         return
-    minis_by_name = _db.get_minis_by_name_cached()
-    gears_by_name = _db.get_gears_by_name_cached()
+    minis_by_name = load_minis(paths().minis_csv)
+    gears_by_name = load_gears(paths().gears_csv)
     # LIFETIME INVARIANT for every id()-keyed memo in this function
     # (entry_color_cache, entry_names_cache, effective_cache_by_entry_id):
     # they are call-local and `entries` holds strong references to every entry
@@ -411,25 +414,18 @@ def save_team_buff_loadouts_batch(
                     break
         except sqlite3.Error:
             pass
-    song_aware_minis_cache: Dict[tuple[str, str], Dict[str, dict]] = {}
-    def _song_aware_minis_by_name(p_color: str, s_color: str) -> Dict[str, dict]:
-        source = minis_by_name if isinstance(minis_by_name, dict) else {}
-        if not source:
-            return {}
+    song_aware_minis_cache: Dict[tuple[str, str], Mapping[str, SongMini]] = {}
+    def _song_aware_minis_by_name(p_color: str, s_color: str) -> Mapping[str, Mini | SongMini]:
         primary = str(p_color or "").strip()
         secondary = str(s_color or "").strip()
         if not primary and not secondary:
-            return source
+            # No song colors to ascend for: the minis' base stats.
+            return minis_by_name
         key = (primary, secondary)
         cached = song_aware_minis_cache.get(key)
         if cached is not None:
             return cached
-        _minis, by_name, _context = materialize_minis_for_song(
-            minis_by_name=source,
-            song_name=song_name,
-            primary_color=primary,
-            secondary_color=secondary,
-        )
+        by_name = {mini.name: mini for mini in song_minis(minis_by_name.values(), song_name, primary, secondary)}
         song_aware_minis_cache[key] = by_name
         return by_name
     mini_sig_cache: Dict[tuple[str, str, str, str], tuple[Any, ...]] = {}
@@ -496,16 +492,8 @@ def save_team_buff_loadouts_batch(
         )
         deduplicated_entries.append(best_entry)
     def _can_recompute_stats_for_persistence(gear_names_local: list[str], mini_names_local: list[str]) -> bool:
-        gear_ok = (not gear_names_local) or (
-            isinstance(gears_by_name, dict)
-            and bool(gears_by_name)
-            and all((not n or n in gears_by_name) for n in gear_names_local)
-        )
-        mini_ok = (not mini_names_local) or (
-            isinstance(minis_by_name, dict)
-            and bool(minis_by_name)
-            and all((not n or n in minis_by_name) for n in mini_names_local)
-        )
+        gear_ok = all((not n or n in gears_by_name) for n in gear_names_local)
+        mini_ok = all((not n or n in minis_by_name) for n in mini_names_local)
         return bool(gear_ok and mini_ok)
     def _details_with_representative_stats(
         details_obj: Any,
@@ -525,19 +513,6 @@ def save_team_buff_loadouts_batch(
         """
         if not isinstance(details_obj, dict):
             details_obj = {}
-        from gear_optimizer.core.stats_calculator import compute_full_stats
-        base_stats = {
-            "Perfect Points": 0,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Fever Fill Rate": 0,
-            "Fever Time": 0,
-            "Chill": 0,
-            "Flow": 0,
-            "Rush": 0,
-            "Beat": 0,
-            "Vibe": 0,
-        }
         buff_tier = str(team_buff or "").strip().upper()
         buff_color = str(team_color or "").strip()
         if not buff_color:
@@ -548,41 +523,26 @@ def save_team_buff_loadouts_batch(
                 or details_obj.get("Selected Element")
                 or ""
             ).strip()
-        for stat_name, delta in team_buff_effect(buff_tier, buff_color).items():
-            base_stats[stat_name] = int(base_stats.get(stat_name, 0) or 0) + int(delta)
-        gem_counts = details_obj.get("GemCounts")
-        if isinstance(gem_counts, dict):
-            gem_counts = dict(gem_counts)
-        else:
-            gem_counts = {}
-        gem_counts["Fever Time"] = int(details_obj.get("FT", 0) or 0)
-        gem_counts["Fever Fill Rate"] = int(details_obj.get("FF", 0) or 0)
         selected_element = details_obj.get("SelectedElement") or details_obj.get("Selected Element") or ""
         selected_element = str(selected_element or "").strip()
         stats_primary, stats_secondary, _stats_selected = extract_song_colors(details_obj)
         if not stats_primary:
             stats_primary = buff_color
         minis_for_stats = _song_aware_minis_by_name(stats_primary, stats_secondary)
-        computed = compute_full_stats(
-            gear_names_local,
-            mini_names_local,
-            gem_counts,
-            selected_element,
-            gears_by_name if isinstance(gears_by_name, dict) else {},
-            minis_for_stats,
-            base_stats,
-        )
-        if not isinstance(computed, dict) or not computed:
-            return details_obj
         out = dict(details_obj)
         out.pop("st", None)  # Always repack from Stats at persistence time.
-        out["Stats"] = computed
-        if any(
-            bool((minis_for_stats.get(name) or {}).get("Mini Ascension Materialized"))
-            for name in mini_names_local
-        ):
+        out["Stats"] = named_loadout_stats(
+            team_buff_effect(buff_tier, buff_color),
+            gear_names_local,
+            mini_names_local,
+            gears_by_name,
+            minis_for_stats,
+            _details_gem_allocation(details_obj, selected_element),
+            selected_element,
+        )
+        if any(isinstance(minis_for_stats.get(name), SongMini) for name in mini_names_local):
             out["Mini Ascension Materialized"] = True
-            out["Mini Ascension Source Version"] = MINI_ASCENSION_CACHE_VERSION
+            out["Mini Ascension Source Version"] = MINI_ASCENSION_VERSION
             out["Mini Ascension Materialized Song"] = song_name
             out["Mini Ascension Materialized Primary Color"] = stats_primary
             out["Mini Ascension Materialized Secondary Color"] = stats_secondary

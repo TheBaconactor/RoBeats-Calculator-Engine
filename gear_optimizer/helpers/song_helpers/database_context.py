@@ -50,18 +50,11 @@ def _maybe_wal_maintenance(conn) -> None:
 
 def load_database_context(
     found_song_name,
-    gears_by_name,
-    minis_by_name,
     *,
     team_buff: str = "T5",
 ):
     """
-    Load the previous best DB record used for progress and result display.
-
-    Args:
-        found_song_name: Name of the song
-        gears_by_name: Dictionary of gears by name
-        minis_by_name: Dictionary of minis by name
+    Load the previous best DB record used for progress and result display (items as names).
 
     Returns:
         previous record or None
@@ -70,8 +63,6 @@ def load_database_context(
     best_loadouts = get_best_loadouts(
         found_song_name,
         limit=1,
-        gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
         team_buff=str(team_buff or "T5"),
     )
     if best_loadouts:
@@ -84,8 +75,6 @@ def load_database_context(
 
 def load_database_progress_baseline(
     found_song_name,
-    gears_by_name,
-    minis_by_name,
     *,
     team_buff: str = "T5",
 ):
@@ -118,8 +107,6 @@ def load_database_progress_baseline(
     try:
         prev_record = load_database_context(
             found_song_name,
-            gears_by_name,
-            minis_by_name,
             team_buff=str(team_buff or "T5"),
         )
     except sqlite3.Error:

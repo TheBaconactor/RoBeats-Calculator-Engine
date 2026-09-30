@@ -16,9 +16,8 @@ imports and monkeypatches keep working:
 
 Monkeypatch contract: tests patch names on THIS namespace
 (`gear_optimizer.data.database.<name>`). Submodules resolve the patchable names
-(`get_minis_by_name_cached`, `get_gears_by_name_cached`, `_loadout_hash_from_names`,
-`LOADOUTS_PER_SONG_LIMIT`) through this facade at call time, so a patch here is
-honored by both persistence and leaderboards.
+(`_loadout_hash_from_names`, `LOADOUTS_PER_SONG_LIMIT`) through this facade at call
+time, so a patch here is honored by both persistence and leaderboards.
 """
 import logging
 
@@ -42,10 +41,6 @@ from ..database_codecs import (
 )
 from ..piece_encoding_store import (
     _load_piece_name_encoding_maps,
-)
-from ..loadout_equivalence import (
-    get_gears_by_name_cached,
-    get_minis_by_name_cached,
 )
 
 # --- Connection layer ---
@@ -108,9 +103,6 @@ __all__ = [
     "_unpack_stats_after_load",
     # piece encoding
     "_load_piece_name_encoding_maps",
-    # loadout equivalence
-    "get_gears_by_name_cached",
-    "get_minis_by_name_cached",
     # connection
     "get_evolution_db_path",
     "get_db_connection",

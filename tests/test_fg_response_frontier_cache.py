@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from gear_optimizer.gamedata import empty_stats
 
 
 def _song(name: str = "FG Cache Unit", timestamps=(0.0, 0.2, 0.4)):
@@ -1650,7 +1651,7 @@ def test_packed_scoring_does_not_require_state_frontiers(monkeypatch) -> None:
     )
     batch = response_frontier.FgResponseFrontierPackedScoringBatch(
         started=0.0,
-        stats_inputs=({"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Rush": 0, "Flow": 0},),
+        stats_inputs=(empty_stats(),),
         song=make_song([0.0], mode="zero_ms"),
         song_inputs=SimpleNamespace(
             timestamps=np.asarray([0.0], dtype=np.float32),

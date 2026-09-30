@@ -28,10 +28,8 @@ def _build_tasks(*, count: int = 2):
     context = SharedRunContext(
         multi_start=3,
         curves={},
-        all_gears=[],
-        all_minis=[],
-        gears_by_name={},
-        minis_by_name={},
+        gears={},
+        minis={},
         ga_depth=1,
         parallel_workers=1,
     )

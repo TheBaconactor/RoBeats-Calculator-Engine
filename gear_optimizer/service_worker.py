@@ -6,9 +6,10 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
-from gear_optimizer.gamedata import StatCurves
+from gear_optimizer.gamedata import Gear, Mini, StatCurves
 from gear_optimizer.core.macos_background import (
     make_process_background_only,
     reassert_process_background_only,
@@ -25,10 +26,9 @@ from gear_optimizer.core.memory import (
     compute_memory_guard_limit,
     set_memory_watchdog_limit,
 )
-from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list
 from gear_optimizer.data.database import get_best_loadouts, init_db
 from gear_optimizer.data.database.connection import close_cached_db_connection
-from gear_optimizer.gamedata import load_stat_curves
+from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves
 from gear_optimizer.settings import RunSettings, paths, reasoning_search, service_settings
 
 
@@ -57,10 +57,8 @@ class PersistentOptimizerSession:
         if engine_paths.database != self._result_db:
             raise RuntimeError(f"EVOLUTION_DB_PATH must be {self._result_db} for the persistent worker")
         self._curves: StatCurves | None = None
-        self._all_gears: list[dict[str, Any]] = []
-        self._all_minis: list[dict[str, Any]] = []
-        self._gears_by_name: dict[str, dict[str, Any]] = {}
-        self._minis_by_name: dict[str, dict[str, Any]] = {}
+        self._gears: Mapping[str, Gear] = {}
+        self._minis: Mapping[str, Mini] = {}
         self._initialized = False
         self._request_count = 0
         self._prepare_data_root()
@@ -76,10 +74,8 @@ class PersistentOptimizerSession:
 
     def _initialize(self) -> None:
         self._curves = load_stat_curves(paths().stats_txt)
-        self._all_gears = load_all_gears_list()
-        self._all_minis = load_all_minis_list()
-        self._gears_by_name = {str(item["Name"]): item for item in self._all_gears}
-        self._minis_by_name = {str(item["Name"]): item for item in self._all_minis}
+        self._gears = load_gears(paths().gears_csv)
+        self._minis = load_minis(paths().minis_csv)
 
         # Size the GA run buffers for the largest multi-start a request can ask for.
         self._app._configure_execution_and_prewarm(reasoning_search("max")[1])
@@ -123,10 +119,8 @@ class PersistentOptimizerSession:
             task_queue,
             run,
             self._curves,
-            self._all_gears,
-            self._all_minis,
-            self._gears_by_name,
-            self._minis_by_name,
+            self._gears,
+            self._minis,
         )
         if not tasks:
             raise RuntimeError("persistent optimizer produced no task")

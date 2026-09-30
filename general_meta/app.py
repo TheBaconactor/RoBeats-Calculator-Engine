@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Any, Dict
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
@@ -12,10 +13,10 @@ from gear_optimizer.core.team_buff import (
     team_buff_display_label,
     team_buff_effect,
 )
-from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list
 from gear_optimizer.data.exported_game_data_sync import sync_exported_game_data
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display, representative_mini_names
-from gear_optimizer.settings import ENGINE_ROOT
+from gear_optimizer.gamedata import Mini, load_gears, load_minis
+from gear_optimizer.settings import ENGINE_ROOT, paths
 
 from .analysis import (
     _ELEMENT_ORDER,
@@ -76,7 +77,7 @@ def _assert_no_stats_only_duplicate_loadouts(loadouts: list[dict], *, context: s
 
 def _assert_known_mini_names(
     mini_names: list[str],
-    minis_by_name: Dict[str, dict],
+    minis_by_name: Mapping[str, Mini],
     *,
     context: str,
 ) -> None:
@@ -120,11 +121,7 @@ def _build_replayed_loadout_rows_for_song(song: dict) -> dict[str, list[dict]]:
       ``replay_surface`` set as needed. Until then, keep this on the T5-only no-replay path.
     """
     from gear_optimizer.data.database import get_best_loadouts
-    from gear_optimizer.data.loadout_equivalence import (
-        get_gears_by_name_cached,
-        get_minis_by_name_cached,
-        normalize_minis_groups_for_display,
-    )
+    from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display
 
     song_name = str((song or {}).get("song_name") or "").strip()
     if not song_name:
@@ -132,21 +129,17 @@ def _build_replayed_loadout_rows_for_song(song: dict) -> dict[str, list[dict]]:
 
     baseline_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
 
-    # Read T5 seed entries directly from the DB. Pass the cached name->stats maps so entries
-    # carry full gear/mini stat dicts (required by downstream persistence canonicalization
-    # and the host application's on-demand re-solve path).
+    # Read T5 seed entries directly from the DB (items as names).
     entries = get_best_loadouts(
         str(song_name),
         limit=int(LOADOUTS_PER_SONG_LIMIT),
-        gears_by_name=get_gears_by_name_cached(),
-        minis_by_name=get_minis_by_name_cached(),
         team_buff=str(baseline_team_buff),
     )
 
     # Project the same T5 seed rows under every tier label (cosmetic tiers). The per-tier
     # gem re-solve happens live in the host application; the static snapshot only carries T5 data.
-    # Flatten gear/mini stat dicts to name strings — downstream aggregation (find_most_common_loadout,
-    # _build_loadout_entry) keys loadout identity by gear name tuples and expects string gear lists.
+    # Downstream aggregation (find_most_common_loadout, _build_loadout_entry) keys loadout identity by
+    # gear name tuples and expects string gear lists.
     from gear_optimizer.helpers.song_helpers.team_buff_tiers import _flat_item_names
 
     tier_rows: list[dict] = []
@@ -192,10 +185,8 @@ def run_general_meta() -> dict:
 
     sync_exported_game_data()
 
-    all_gears = load_all_gears_list()
-    all_minis = load_all_minis_list()
-    gears_by_name = {g["Name"]: g for g in all_gears}
-    minis_by_name = {m["Name"]: m for m in all_minis}
+    gears_by_name = load_gears(paths().gears_csv)
+    minis_by_name = load_minis(paths().minis_csv)
 
     team_buff_tiers = [team_buff_display_label(tier, default="NONE") for tier in DEFAULT_TEAM_BUFF_REPLAY_TIERS]
 

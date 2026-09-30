@@ -2,33 +2,27 @@ from __future__ import annotations
 
 import numpy as np
 
-from gear_optimizer.gamedata import SKIP_ITEM_KEYS, StatCurves
+from gear_optimizer.gamedata import Gear, SongMini, StatCurves
 from ...core.gem_defs import element_gem_count
 from ...core.utils import get_selected_element, safe_int
 from ...solver.base_stats import build_stats_dict, build_stats_list
 from ...solver.scoring.exact_rescore import score_stats_exact_batch
-from ...solver.scoring.stats_ops import apply_gems_to_base_stats
 from ...solver.timing_envelope import TimedSong
+from ...stats import apply_gems, gems, total
 
 
 
-def _as_genome(candidate: dict) -> list[dict]:
+def _as_genome(candidate: dict) -> list[Gear | SongMini | None]:
     genome = candidate.get("Genome")
     if isinstance(genome, list) and genome:
         out = list(genome[:9])
-        while len(out) < 9:
-            out.append({})
-        return out
+        return out + [None] * (9 - len(out))
     gear = list(candidate.get("Gear") or [])[:6]
     minis = list(candidate.get("Minis") or [])[:3]
-    while len(gear) < 6:
-        gear.append({})
-    while len(minis) < 3:
-        minis.append({})
-    return gear + minis
+    return gear + [None] * (6 - len(gear)) + minis + [None] * (3 - len(minis))
 
 
-def _candidate_genome(candidate: dict) -> list[dict]:
+def _candidate_genome(candidate: dict) -> list[Gear | SongMini | None]:
     genome = candidate.get("Genome")
     if isinstance(genome, list) and genome:
         return _as_genome(candidate)
@@ -93,46 +87,17 @@ def _resolve_candidate_stats(
     if not (isinstance(base_stats, dict) and base_stats):
         base_stats = cand.get("BaseStats")
 
+    allocation = gems(pp=g_pp, cm=g_cm, fm=g_fm, ft=ft, ff=ff, element=g_ov)
     if isinstance(base_stats, dict) and base_stats:
         data["BaseStats"] = dict(base_stats)
-        stats = apply_gems_to_base_stats(
-            base_stats,
-            str(sel),
-            int(ft),
-            int(ff),
-            int(g_pp),
-            int(g_cm),
-            int(g_fm),
-            int(g_ov),
-            add_missing_element_key=False,
-        )
-        return stats, sel
+        return apply_gems(base_stats, allocation, str(sel)), sel
 
     genome = _candidate_genome(cand)
-    stats = dict(base_fixed_stats())
     if not sel:
         sel = selected_color
-    for item in genome[:9]:
-        if not isinstance(item, dict) or not item:
-            continue
-        for k, v in item.items():
-            if k in SKIP_ITEM_KEYS:
-                continue
-            stats[k] = stats.get(k, 0) + v
-
+    stats = total(base_fixed_stats(), *(item.stats for item in genome[:9] if item is not None))
     data["BaseStats"] = dict(stats)
-    stats = apply_gems_to_base_stats(
-        stats,
-        str(sel),
-        int(ft),
-        int(ff),
-        int(g_pp),
-        int(g_cm),
-        int(g_fm),
-        int(g_ov),
-        add_missing_element_key=False,
-    )
-    return stats, sel
+    return apply_gems(stats, allocation, str(sel)), sel
 
 
 def hydrate_fg_candidate_stats(

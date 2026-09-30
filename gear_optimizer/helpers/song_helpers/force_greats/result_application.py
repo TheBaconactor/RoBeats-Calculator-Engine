@@ -17,14 +17,14 @@ def read_visible_stats(
         * ``Stats`` present  -> it IS the authoritative post-gem visible row; return it.
         * only ``BaseStats`` -> in these payloads ``BaseStats`` is itself the post-gem
           visible row (the search bakes the GemCounts / FT / FF allocation in exactly
-          once via ``apply_gems_to_base_stats`` — see ``response_frontier.py``:
+          once via ``stats.apply_gems`` — see ``response_frontier.py``:
           "post-gem stats span all 10 keys"). Return it verbatim.
 
       Gems must NOT be re-applied here. Re-applying them counts every gem twice — the
       2026-07-11 Canon-in-D FG regression (Vibe 1018 -> 1432, FF 96 -> 192, ...) where
       the score stayed correct but the persisted stat row was doubled. Genuine gem
       *application* (a pre-gem base -> post-gem stats) is the separate
-      ``apply_gems_to_base_stats`` helper, used only inside the search — where, unlike
+      ``stats.apply_gems``, used only inside the search — where, unlike
       here, ``BaseStats`` in the candidate ``eval_data`` really is the pre-gem base.
 
     This is the single canonical reader for pipeline, inflight orchestration, and DB

@@ -14,7 +14,7 @@ from gear_optimizer.rules import GEM_BUDGET, MAX_STAT, STAT_GEM_ELEMENT_GAIN, ST
 from gear_optimizer.core.gem_defs import build_gem_counts
 from gear_optimizer.solver.force_greats_common import response_frontier_base_components_row
 from gear_optimizer.solver.ftff_combos import ftff_combo_arrays
-from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
+from gear_optimizer.stats import apply_gems, gems
 
 from .response_builder import reconstruct_force_greats_response_counts, reconstruct_force_greats_response_trace
 from .response_cache import (
@@ -208,7 +208,7 @@ class FgFusedOwnerScoreRow:
     The fused GA->FG handoff (Slice 3) scores on the GPU owner straight from the
     device ``base_stats7`` (== base_components), but cannot materialize the final
     ``FgResponseFrontierSolveResult``: materialization needs the full 10-key
-    BaseStats dict (``apply_gems_to_base_stats`` over all stats) which lives only
+    BaseStats dict (``stats.apply_gems`` over all stats) which lives only
     on the host decode side. This record carries exactly the owner-resolved,
     full-dict-INDEPENDENT pieces the driver materializer needs to finish the
     result without any further GPU work:
@@ -499,15 +499,10 @@ def _solve_result_from_row(
         )
     else:
         forced_counts = ()
-    final_stats = apply_gems_to_base_stats(
+    final_stats = apply_gems(
         base_stats,
+        gems(pp=inner.g_pp, cm=inner.g_cm, fm=inner.g_fm, ft=ft, ff=ff, element=inner.g_ov),
         selected_color,
-        int(ft),
-        int(ff),
-        int(inner.g_pp),
-        int(inner.g_cm),
-        int(inner.g_fm),
-        int(inner.g_ov),
     )
     return FgResponseFrontierSolveResult(
         best_score=int(inner.best_score),

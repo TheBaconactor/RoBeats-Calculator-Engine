@@ -13,7 +13,9 @@ from gear_optimizer.solver.fg_effective_dedup import (
     build_gear_name_rank,
     build_mini_sig_id,
 )
+from gear_optimizer.gamedata import Gear, SongMini
 from gear_optimizer.solver.item_registry import ItemRegistry
+from tests.items_support import make_gear, make_song_mini
 
 # Six gear slot names matching the production 6-gear layout.
 SLOTS = ["Arms", "Back", "Body", "Face", "Feet", "Head"]
@@ -24,18 +26,18 @@ SLOTS = ["Arms", "Back", "Body", "Face", "Feet", "Head"]
 # ---------------------------------------------------------------------------
 
 
-def _gear(name: str, **stats: int) -> dict:
-    return {"Name": name, **stats}
+def _gear(name: str, **stats: int) -> Gear:
+    return make_gear(name, **stats)
 
 
-def _mini(name: str, **stats: int) -> dict:
-    return {"Name": name, **stats}
+def _mini(name: str, **stats: int) -> SongMini:
+    return make_song_mini(name, **stats)
 
 
 def _build_registry(
     *,
-    gear_pool: dict[str, list[dict]],
-    mini_pool: list[dict],
+    gear_pool: dict[str, list[Gear]],
+    mini_pool: list[SongMini],
 ) -> ItemRegistry:
     return ItemRegistry(gear_pool=gear_pool, mini_pool=mini_pool, slots=list(SLOTS))
 
@@ -124,7 +126,7 @@ def test_table_builders_fail_loudly_on_malformed_entry() -> None:
     registry = _build_registry(gear_pool=gear_pool, mini_pool=[_mini("M")])
     # Corrupt a gear id's item to have an empty name.
     some_gear_id = _name_to_id(registry, 0, "ArmsG")
-    registry.id_to_item[some_gear_id] = {"Name": ""}
+    registry.id_to_item[some_gear_id] = make_gear("")
     with pytest.raises(ValueError):
         build_gear_name_rank(registry)
 

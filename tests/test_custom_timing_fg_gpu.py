@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from tests.curves_support import synthetic_curves
 from tests.songs_support import make_chart
+from tests.items_support import make_gear, make_song_mini
 
 pytestmark = pytest.mark.gpu
 
@@ -139,23 +140,22 @@ def test_leaderboard_under_nonzero_baseline_offset_is_valid(tmp_path, monkeypatc
         "score": 1,
         "fg_score": 1,
         "gear": [
-            {
-                "Name": "G1",
-                "Perfect Points": 120,
-                "Combo Multiplier": 80,
-                "Fever Multiplier": 60,
-                "Fever Time": 80,
-                "Fever Fill Rate": 100,
-                "Rush": 200,
-                "Flow": 150,
-            },
-            {"Name": "G2"},
-            {"Name": "G3"},
-            {"Name": "G4"},
-            {"Name": "G5"},
-            {"Name": "G6"},
+            make_gear(
+                "G1",
+                **{
+                    "Perfect Points": 120,
+                    "Combo Multiplier": 80,
+                    "Fever Multiplier": 60,
+                    "Fever Time": 80,
+                    "Fever Fill Rate": 100,
+                    "Rush": 200,
+                    "Flow": 150,
+                },
+            ),
+            *(make_gear(f"G{i}") for i in range(2, 7)),
         ],
-        "minis": [{"Name": "M1"}, {"Name": "M2"}, {"Name": "M3"}],
+        # Minis already as the song sees them (zero stats), so the pre-gem row is just the gear sum.
+        "minis": [make_song_mini(f"M{i}") for i in range(1, 4)],
         "details": {"Stats": stats},
         "force": {
             "Stats": stats,

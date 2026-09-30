@@ -190,8 +190,8 @@ def test_service_worker_reasserts_daemon_policy_after_native_prewarm(monkeypatch
     session._app = FakeApp()
 
     monkeypatch.setattr(worker, "load_stat_curves", lambda _path: events.append("load curves") or object())
-    monkeypatch.setattr(worker, "load_all_gears_list", lambda: [{"Name": "gear"}])
-    monkeypatch.setattr(worker, "load_all_minis_list", lambda: [{"Name": "mini"}])
+    monkeypatch.setattr(worker, "load_gears", lambda _path: {})
+    monkeypatch.setattr(worker, "load_minis", lambda _path: {})
     monkeypatch.setattr(worker, "reassert_process_background_only", lambda: events.append("reassert"))
 
     session._initialize()

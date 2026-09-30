@@ -99,23 +99,16 @@ def prepare_native_song(task: tuple) -> NativeSong:
     effective_difficulty = job.difficulty
     multi_start = run_context.multi_start
     curves = run_context.curves
-    all_gears = run_context.all_gears
-    all_minis = run_context.all_minis
-    gears_by_name = run_context.gears_by_name
-    minis_by_name = run_context.minis_by_name
+    gears = run_context.gears
     ga_depth = run_context.ga_depth
     prepared_core = build_prepared_song_core(
         fp=fp,
         found_song_name=found_song_name,
-        gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
-        all_minis=all_minis,
+        minis=run_context.minis,
         cache_db_context=True,
     )
     timed_song = prepared_core.song
-    all_minis = prepared_core.all_minis
-    minis_by_name = prepared_core.minis_by_name
-    mini_ascension_context = prepared_core.mini_ascension_context
+    song_minis = prepared_core.minis
     meta_primary_color = timed_song.chart.primary
     meta_secondary_color = timed_song.chart.secondary
     fixed_stats = prepared_core.fixed_stats
@@ -131,18 +124,11 @@ def prepare_native_song(task: tuple) -> NativeSong:
     s_color = timed_song.chart.secondary
     selected_color = p_color
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
-    pool_key = (str(p_color), str(s_color), tuple(slots), tuple(mini_ascension_context.cache_key))
+    # The minis a song targets are the only per-song difference in its pools (Mini Ascension).
+    targeting_minis = tuple(sorted(mini.name for mini in song_minis if mini.targets_song))
+    pool_key = (str(p_color), str(s_color), tuple(slots), targeting_minis)
     def _build_pools():
-        pools = initialize_pools(all_gears, all_minis, p_color, slots, s_color=s_color)
-        if pools is None:
-            raise RuntimeError("initialize_pools returned None")
-        if len(pools) == 4:
-            gear_pool, mini_pool, _total_before, _total_after = pools
-        else:
-            gear_pool, mini_pool, _total_before, _total_after, _whitelisted_minis = pools
-        if gear_pool is None:
-            raise RuntimeError("initialize_pools failed (gear_pool is None)")
-        return gear_pool, mini_pool
+        return initialize_pools(gears, song_minis, p_color, slots, s_color=s_color)
 
     gear_pool, mini_pool = _prep_cache_get_or_build(
         _POOL_CACHE,
@@ -233,10 +219,7 @@ def prepare_native_song(task: tuple) -> NativeSong:
         ),
         gpu_inputs=NativeSongGPUInputs(
             curves=curves,
-            all_gears=all_gears,
-            all_minis=all_minis,
-            gears_by_name=gears_by_name,
-            minis_by_name=minis_by_name,
+            minis_by_name={mini.name: mini for mini in song_minis},
             timed_song=timed_song,
             meta_primary_color=meta_primary_color,
             meta_secondary_color=meta_secondary_color,

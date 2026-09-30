@@ -34,8 +34,6 @@ def test_prepare_tasks_uses_deterministic_ga_seed_when_env_set(monkeypatch):
         None,
         None,
         None,
-        None,
-        None,
     )
 
     # With SongRepeats=2 and 2 songs, expect 4 tasks, all with repeat_ctx.
@@ -75,8 +73,6 @@ def test_prepare_tasks_injects_repeat_ctx_when_songrepeats_1_and_env_set(monkeyp
         None,
         None,
         None,
-        None,
-        None,
     )
 
     assert len(tasks) == 1
@@ -103,8 +99,6 @@ def test_prepare_tasks_rejects_invalid_debug_ga_seed(monkeypatch):
         app._prepare_tasks(
             [("Data/Hard/FakeSongA.txt", "Fake Song A (Hard) by Tester", "hard")],
             run,
-            None,
-            None,
             None,
             None,
             None,

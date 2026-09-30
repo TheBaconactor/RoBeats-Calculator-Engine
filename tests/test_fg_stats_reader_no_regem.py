@@ -13,7 +13,7 @@ from gear_optimizer.data.database.force_normalize import _compact_force_details_
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
     read_visible_stats,
 )
-from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
+from gear_optimizer.stats import apply_gems, gems
 
 # A realistic post-gem visible row + its solved allocation (Canon In D T5 Vibe shape).
 _POST_GEM = {
@@ -34,7 +34,7 @@ _FT, _FF, _G_PP, _G_CM, _G_FM, _G_OV = 2, 32, 0, 0, 3, 53
 
 def _doubled(row: dict) -> dict:
     """What a wrongful re-application of the gems on top of `row` would produce."""
-    return apply_gems_to_base_stats(row, _SEL, _FT, _FF, _G_PP, _G_CM, _G_FM, _G_OV)
+    return apply_gems(row, gems(pp=_G_PP, cm=_G_CM, fm=_G_FM, ft=_FT, ff=_FF, element=_G_OV), _SEL)
 
 
 def test_reader_returns_base_stats_verbatim_and_never_re_gems():

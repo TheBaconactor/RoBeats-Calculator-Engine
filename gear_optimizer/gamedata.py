@@ -26,30 +26,6 @@ STATS = (*CURVE_STATS, *ELEMENTS)
 
 Stats = dict[str, int]
 
-# Keys of the old item dicts (csv_parser, Mini Ascension) that are metadata, not stats.
-SKIP_ITEM_KEYS = frozenset(
-    {
-        "Name",
-        "type",
-        "Song Target",
-        "Mini Ascension Enabled",
-        "Mini Ascension Level",
-        "Mini Ascension Source Version",
-        "Mini Ascension Song Target Applied",
-        "Mini Ascension Elemental Bonus",
-        "Mini Ascension Match Qualities",
-        "Mini Ascension Materialized",
-        "Mini Ascension Materialized Song",
-        "Mini Ascension Materialized Primary Color",
-        "Mini Ascension Materialized Secondary Color",
-        "Mini Ascension Base Chill",
-        "Mini Ascension Base Flow",
-        "Mini Ascension Base Rush",
-        "Mini Ascension Base Beat",
-        "Mini Ascension Base Vibe",
-    }
-)
-
 _GEAR_COLUMNS = {
     "Chill": "Chill",
     "Flow": "Flow",
@@ -89,7 +65,10 @@ TEAM_BUFFS: dict[str, tuple[int, int]] = {
 BASELINE_TEAM_BUFF = "T5"
 
 ASCENSION_LEVEL = 10
-_ASCENSION_PP_PER_LEVEL = 2
+# Every mini gains 2 Perfect Points per ascension level, whatever the song.
+ASCENSION_PERFECT_POINTS = 2 * ASCENSION_LEVEL
+# Stored in row details ("Mini Ascension Source Version") when a row's minis were ascended.
+MINI_ASCENSION_VERSION = "mini-ascension-v4"
 # Ranking tie-break for a mini's colors (the game's order).
 _ASCENSION_COLOR_ORDER = ("Chill", "Vibe", "Beat", "Flow", "Rush")
 
@@ -115,6 +94,16 @@ class Mini:
     level1_elements: Mapping[str, int]
     # Songs whose Mini Ascension elemental bonus this mini receives.
     song_targets: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class SongMini:
+    """A mini as one song sees it: its stats with Mini Ascension applied (see song_minis)."""
+
+    name: str
+    stats: Mapping[str, int]
+    # The song is one of the mini's Song Targets, so its stats include the elemental bonus.
+    targets_song: bool
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -214,12 +203,14 @@ def read_minis(path: Path) -> dict[str, Mini]:
             for index, column in enumerate(level1)
             if column in ELEMENTS and row[split + 1 + index].strip()
         }
-        missing_level1 = [color for color in ELEMENTS if stats[color] > 0 and color not in level1_elements]
-        if missing_level1:
-            raise ValueError(f"{path}: {name!r} has no level-1 value for {missing_level1}")
         targets = json.loads(row[-1]) if row[-1].strip() else []
         if not isinstance(targets, list) or not all(isinstance(song, str) for song in targets):
             raise ValueError(f"{path}: Song Target for {name!r} must be a JSON list of song names")
+        # Level-1 values only rank colors for the elemental bonus, which only a targeted song gets.
+        # The service's custom minis target no song and leave the level-1 block blank.
+        missing_level1 = [color for color in ELEMENTS if stats[color] > 0 and color not in level1_elements]
+        if missing_level1 and targets:
+            raise ValueError(f"{path}: {name!r} has no level-1 value for {missing_level1}")
         minis[name] = Mini(
             name=name,
             element=row[header.index("Type")].strip(),
@@ -240,23 +231,41 @@ def read_curves(path: Path) -> StatCurves:
     return StatCurves.from_mapping({stat: columns[:, i] for i, stat in enumerate(CURVE_STATS)})
 
 
-_CURVES_CACHE: dict[Path, tuple[tuple[int, int], StatCurves]] = {}
-_CURVES_CACHE_LOCK = threading.Lock()
+_FILE_CACHE: dict[tuple[str, Path], tuple[tuple[int, int], object]] = {}
+_FILE_CACHE_LOCK = threading.Lock()
 
 
-def load_stat_curves(path: Path) -> StatCurves:
-    """read_curves, cached per file until the file changes (a new Data revision reloads it)."""
+def _load_cached(path: Path, read):
+    """read(path), cached per file until the file changes (a new Data revision reloads it).
+
+    Callers share the cached value and must not mutate it.
+    """
     resolved = Path(path).resolve()
     stat = resolved.stat()
     stamp = (stat.st_mtime_ns, stat.st_size)
-    with _CURVES_CACHE_LOCK:
-        cached = _CURVES_CACHE.get(resolved)
+    key = (read.__name__, resolved)
+    with _FILE_CACHE_LOCK:
+        cached = _FILE_CACHE.get(key)
         if cached is not None and cached[0] == stamp:
             return cached[1]
-    curves = read_curves(resolved)
-    with _CURVES_CACHE_LOCK:
-        _CURVES_CACHE[resolved] = (stamp, curves)
-    return curves
+    value = read(resolved)
+    with _FILE_CACHE_LOCK:
+        _FILE_CACHE[key] = (stamp, value)
+    return value
+
+
+def load_stat_curves(path: Path) -> StatCurves:
+    return _load_cached(path, read_curves)
+
+
+def load_gears(path: Path) -> dict[str, Gear]:
+    """Gears.csv by name, in file order."""
+    return _load_cached(path, read_gears)
+
+
+def load_minis(path: Path) -> dict[str, Mini]:
+    """Minis.csv by name, in file order."""
+    return _load_cached(path, read_minis)
 
 
 def load_game_data(gear_dir: Path) -> GameData:
@@ -277,9 +286,9 @@ def team_buff_stats(tier: str, team_color: str) -> Stats:
     return stats
 
 
-def _song_secondary(primary: str, secondary: str) -> str:
-    """A one-color song repeats its primary as the secondary; treat that as no secondary."""
-    return "" if secondary == primary else secondary
+def song_secondary(primary: str, secondary: str | None) -> str:
+    """A song's second element, or "" for a one-color song (whose header repeats its primary)."""
+    return "" if not secondary or secondary == primary else secondary
 
 
 def ascension_element_bonus(mini: Mini, primary: str, secondary: str) -> dict[str, int]:
@@ -295,7 +304,7 @@ def ascension_element_bonus(mini: Mini, primary: str, secondary: str) -> dict[st
     """
     if primary not in ELEMENTS:
         raise ValueError(f"Mini Ascension needs a song primary element, got {primary!r}")
-    secondary = _song_secondary(primary, secondary)
+    secondary = song_secondary(primary, secondary)
     ranked = sorted(
         ((color, mini.level1_elements.get(color, 0)) for color in _ASCENSION_COLOR_ORDER),
         key=lambda item: -item[1],
@@ -324,12 +333,23 @@ def ascension_element_bonus(mini: Mini, primary: str, secondary: str) -> dict[st
 def ascended_mini_stats(mini: Mini, song_name: str, primary: str, secondary: str) -> Stats:
     """A mini's stats in one song: every mini gains Perfect Points; song targets also gain elements."""
     stats = dict(mini.stats)
-    stats["Perfect Points"] += _ASCENSION_PP_PER_LEVEL * ASCENSION_LEVEL
+    stats["Perfect Points"] += ASCENSION_PERFECT_POINTS
     if song_name in mini.song_targets:
         for color, amount in ascension_element_bonus(mini, primary, secondary).items():
             stats[color] += amount
     return stats
 
 
-def ascended_minis(minis: Iterable[Mini], song_name: str, primary: str, secondary: str) -> dict[str, Stats]:
-    return {mini.name: ascended_mini_stats(mini, song_name, primary, secondary) for mini in minis}
+def song_minis(minis: Iterable[Mini], song_name: str, primary: str, secondary: str) -> list[SongMini]:
+    """Every mini as the song sees it, in the given order."""
+    song = song_name.strip()
+    if not song:
+        raise ValueError("Mini Ascension needs a song name")
+    return [
+        SongMini(
+            name=mini.name,
+            stats=ascended_mini_stats(mini, song, primary, secondary),
+            targets_song=song in mini.song_targets,
+        )
+        for mini in minis
+    ]

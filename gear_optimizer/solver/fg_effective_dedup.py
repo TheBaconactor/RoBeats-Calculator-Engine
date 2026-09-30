@@ -61,11 +61,12 @@ import numpy as np
 
 from ..core.singleflight import SingleFlight
 from ..data.loadout_equivalence import effective_mini_signature
+from ..gamedata import Gear, SongMini
 from .item_registry import MINI_SLOT_INDICES, ItemRegistry
 
 
-def _registry_id_to_item(registry: Any) -> dict[int, dict]:
-    """Return the registry's ``id -> item dict`` map, failing loudly if absent."""
+def _registry_id_to_item(registry: Any) -> dict[int, Gear | SongMini]:
+    """Return the registry's ``id -> item`` map, failing loudly if absent."""
     id_to_item = getattr(registry, "id_to_item", None)
     if not isinstance(id_to_item, dict):
         raise TypeError(
@@ -119,16 +120,15 @@ def build_gear_name_rank(registry: ItemRegistry) -> np.ndarray:
     name_by_id: dict[int, str] = {}
     for item_id in gear_ids:
         item = id_to_item.get(item_id)
-        if not isinstance(item, dict):
+        if item is None:
             raise ValueError(
                 f"fg_effective_dedup: gear id {item_id} missing from registry"
             )
-        name = item.get("Name")
-        if not name or not str(name).strip():
+        if not item.name.strip():
             raise ValueError(
                 f"fg_effective_dedup: gear id {item_id} has empty/malformed Name"
             )
-        name_by_id[item_id] = str(name)
+        name_by_id[item_id] = item.name
 
     # Dense ranks assigned in ascending name order (deterministic, stable).
     unique_names = sorted(set(name_by_id.values()))
@@ -204,21 +204,18 @@ def build_mini_sig_id(
     sig_by_id: dict[int, tuple[Any, ...]] = {}
     for item_id in mini_ids:
         item = id_to_item.get(item_id)
-        if not isinstance(item, dict):
+        if item is None:
             raise ValueError(
                 f"fg_effective_dedup: mini id {item_id} missing from registry"
             )
-        name = item.get("Name")
-        if not name or not str(name).strip():
+        if not item.name.strip():
             raise ValueError(
                 f"fg_effective_dedup: mini id {item_id} has empty/malformed Name"
             )
-        # The registry item dict carries the mini's stat columns directly, which
-        # is exactly what effective_mini_signature consumes (it reads stat keys
-        # via safe_int). This matches the host's known-mini path; the host's
-        # unknown-name fallback ("name", name) cannot occur here because every
-        # registry id resolves to a concrete item.
-        sig_by_id[item_id] = effective_mini_signature(item, primary, secondary, selected)
+        # This matches the host's known-mini path; the host's unknown-name fallback
+        # ("name", name) cannot occur here because every registry id resolves to a
+        # concrete item.
+        sig_by_id[item_id] = effective_mini_signature(item.stats, primary, secondary, selected)
 
     def _sig_sort_key(sig: tuple[Any, ...]) -> str:
         return "|".join(str(x) for x in sig)

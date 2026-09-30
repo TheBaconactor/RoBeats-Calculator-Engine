@@ -13,14 +13,13 @@ import logging
 
 import numpy as np
 
-from gear_optimizer.gamedata import SKIP_ITEM_KEYS
 from gear_optimizer.rules import (
     ELEMENT_GEM_GAIN,
     STAT_GEM_ELEMENT_GAIN,
     STAT_GEM_GAIN_FEVER,
     STAT_GEM_GAIN_NORMAL,
 )
-from ..core.gem_defs import build_gem_counts, build_gem_details
+from ..core.gem_defs import build_gem_counts
 from ..helpers.ga_helpers.unique_eval import select_exact_unique_row_indices
 from .base_stats import (
     COLOR_TO_STAT_INDEX,
@@ -28,7 +27,7 @@ from .base_stats import (
     build_stats_dict,
 )
 from .force_greats_common import FG_BASE_STATS7_KEY
-from .scoring.stats_ops import apply_gems_to_base_stats
+from ..stats import apply_gems, gems, total
 
 logger = logging.getLogger(__name__)
 
@@ -82,18 +81,6 @@ def decode_gpu_native_ga_runs_payload(
         best_gear = best_global_genome[:6]
         best_minis = best_global_genome[6:9]
 
-        # Reconstruct Stats exactly like the GPU kernels:
-        # - Start from the song's fixed stats.
-        # - Add item stats.
-        # - Add gem allocation contributions (FT/FF/PP/CM/FM + overflow).
-        best_stats = build_stats_dict(build_stats_array(base_stats_fixed))
-        for item in best_global_genome or []:
-            if not item:
-                continue
-            for key, value in item.items():
-                if key not in SKIP_ITEM_KEYS:
-                    best_stats[key] = best_stats.get(key, 0) + value
-
         g_ft = int(best_global_res_arr[1])
         g_ff = int(best_global_res_arr[2])
         g_pp = int(best_global_res_arr[3])
@@ -102,33 +89,23 @@ def decode_gpu_native_ga_runs_payload(
         g_ov = int(best_global_res_arr[6])
 
         selected_color = str(cfg_data.get("selected_color", "") or "")
-        best_stats = apply_gems_to_base_stats(
-            best_stats,
+        # Reconstruct Stats exactly like the GPU kernels: the song's fixed stats, plus the items, plus gems.
+        best_stats = apply_gems(
+            total(base_stats_fixed, *(item.stats for item in best_global_genome if item is not None)),
+            gems(pp=g_pp, cm=g_cm, fm=g_fm, ft=g_ft, ff=g_ff, element=g_ov),
             selected_color,
-            g_ft,
-            g_ff,
-            g_pp,
-            g_cm,
-            g_fm,
-            g_ov,
         )
 
-        gear = list(best_gear or [])
-        minis = list(best_minis or [])
+        # The best loadout's items travel beside best_data (best_gear/best_minis), never inside it:
+        # candidate Data becomes the persisted FG payload, and stored rows keep item ids and names.
         best_data = {
             "Score": int(best_global_score),
             "BaseScore": int(best_global_score),
-            "Genome": list(best_global_genome or []),
-            "Gear": gear,
-            "Minis": minis,
-            "GearNames": [g.get("Name", "None") for g in gear],
-            "MiniNames": [m.get("Name", "None") for m in minis],
             "FT": int(g_ft),
             "FF": int(g_ff),
             "GemCounts": build_gem_counts(g_pp, g_cm, g_fm, g_ov),
             "Stats": dict(best_stats or {}),
             "Selected Element": str(selected_color or ""),
-            "Details": build_gem_details(g_ft, g_ff, g_pp, g_cm, g_fm, g_ov),
         }
         best_genome_ids = [int(x) for x in np.asarray(best_ids, dtype=np.int32).tolist()]
         best_candidate = {

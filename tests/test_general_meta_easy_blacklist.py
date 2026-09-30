@@ -1,6 +1,7 @@
 import json
 
 from general_meta.analysis import find_most_common_loadout
+from tests.items_support import minis_from_dicts
 
 
 def _row(song_name, gear, score, *, gems, mini="Mini", difficulty=None):
@@ -48,7 +49,7 @@ def test_general_meta_ranks_by_non_easy_peaks_but_keeps_easy_gems_in_average():
     results = find_most_common_loadout(
         songs,
         [],
-        {"Mini": {"Name": "Mini"}, "Easy Mini": {"Name": "Easy Mini"}},
+        minis_from_dicts({"Mini": {"Name": "Mini"}, "Easy Mini": {"Name": "Easy Mini"}}),
         top_n=None,
         loadouts_by_song=loadouts_by_song,
     )

@@ -5,14 +5,14 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Mapping, Sequence
 
-from gear_optimizer.gamedata import StatCurves
+from gear_optimizer.gamedata import Gear, Mini, StatCurves
 
 
 # NOTE: This "task tuple" shape is a fixed-field ABI used across the runtime
 # pipeline (app -> execution -> engine). The code originally named it "legacy"
 # when refactoring toward typed `SongJob`/`SharedRunContext` while keeping the
 # tuple as the durable interchange format.
-TASK_FIXED_FIELD_COUNT = 11
+TASK_FIXED_FIELD_COUNT = 9
 
 
 class TaskIndex(IntEnum):
@@ -20,13 +20,11 @@ class TaskIndex(IntEnum):
     SONG_NAME = 1
     DIFFICULTY = 2
     MULTI_START = 3
-    REF_ARRAYS = 4
-    ALL_GEARS = 5
-    ALL_MINIS = 6
-    GEARS_BY_NAME = 7
-    MINIS_BY_NAME = 8
-    GA_DEPTH = 9
-    PARALLEL_WORKERS = 10
+    CURVES = 4
+    GEARS = 5
+    MINIS = 6
+    GA_DEPTH = 7
+    PARALLEL_WORKERS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,10 +51,9 @@ class PreparedSongSeedPlan:
 class SharedRunContext:
     multi_start: int
     curves: StatCurves
-    all_gears: Any
-    all_minis: Any
-    gears_by_name: Mapping[str, Any] | None
-    minis_by_name: Mapping[str, Any] | None
+    # Gears.csv / Minis.csv by name, in file order.
+    gears: Mapping[str, Gear]
+    minis: Mapping[str, Mini]
     ga_depth: int
     parallel_workers: int
 
@@ -244,11 +241,9 @@ def task_tuple_to_shared_context(task: Sequence[Any]) -> SharedRunContext:
 
     return SharedRunContext(
         multi_start=int(task[int(TaskIndex.MULTI_START)]),
-        curves=task[int(TaskIndex.REF_ARRAYS)],
-        all_gears=task[int(TaskIndex.ALL_GEARS)],
-        all_minis=task[int(TaskIndex.ALL_MINIS)],
-        gears_by_name=task[int(TaskIndex.GEARS_BY_NAME)],
-        minis_by_name=task[int(TaskIndex.MINIS_BY_NAME)],
+        curves=task[int(TaskIndex.CURVES)],
+        gears=task[int(TaskIndex.GEARS)],
+        minis=task[int(TaskIndex.MINIS)],
         ga_depth=ga_depth,
         parallel_workers=parallel_workers,
     )
@@ -274,10 +269,8 @@ def task_tuple_from_job_context(
         job.difficulty,
         context.multi_start,
         context.curves,
-        context.all_gears,
-        context.all_minis,
-        context.gears_by_name,
-        context.minis_by_name,
+        context.gears,
+        context.minis,
         context.ga_depth,
         context.parallel_workers,
         *extras,

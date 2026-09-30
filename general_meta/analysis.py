@@ -6,9 +6,11 @@ import math
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
+from collections.abc import Mapping
+
 from gear_optimizer.core.gem_defs import extract_gem_totals
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
-from gear_optimizer.data.mini_ascension import materialize_mini_for_song
+from gear_optimizer.gamedata import Gear, Mini, ascended_mini_stats
 from gear_optimizer.core.utils import safe_int as _safe_int
 
 _ELEMENT_ORDER: Tuple[str, ...] = ("Chill", "Flow", "Rush", "Beat", "Vibe")
@@ -72,7 +74,7 @@ def _relevant_elements_for_category(songs: List[dict]) -> Tuple[str, ...]:
 
 def _mini_set_effect_signature(
     mini_names: Tuple[str, ...],
-    minis_by_name: Dict[str, dict],
+    minis_by_name: Mapping[str, Mini],
     relevant_elements: Tuple[str, ...],
     songs: Tuple[dict, ...],
 ) -> Tuple[Any, ...]:
@@ -98,19 +100,14 @@ def _mini_set_effect_signature(
         pp = cm = fm = ft = ff = 0
         elem_totals = [0] * len(relevant_elements)
         for name in mini_names:
-            mini = materialize_mini_for_song(
-                minis_by_name[name],
-                song_name=song_name,
-                primary_color=primary,
-                secondary_color=secondary,
-            )
-            pp += int(mini.get("Perfect Points", 0) or 0)
-            cm += int(mini.get("Combo Multiplier", 0) or 0)
-            fm += int(mini.get("Fever Multiplier", 0) or 0)
-            ft += int(mini.get("Fever Time", 0) or 0)
-            ff += int(mini.get("Fever Fill Rate", 0) or 0)
+            stats = ascended_mini_stats(minis_by_name[name], song_name, primary, secondary)
+            pp += stats["Perfect Points"]
+            cm += stats["Combo Multiplier"]
+            fm += stats["Fever Multiplier"]
+            ft += stats["Fever Time"]
+            ff += stats["Fever Fill Rate"]
             for idx, element in enumerate(relevant_elements):
-                elem_totals[idx] += int(mini.get(element, 0) or 0)
+                elem_totals[idx] += stats.get(element, 0)
         per_song_stats.append((song_name, pp, cm, fm, ft, ff, *elem_totals))
 
     return ("song-aware-stats", *per_song_stats)
@@ -213,11 +210,11 @@ def _groups_from_variant_key(variant_key: tuple[tuple[str, ...], ...]) -> list[l
 def find_most_common_loadout(
     songs: List[dict],
     all_loadouts: List[dict],
-    minis_by_name: Dict[str, dict],
+    minis_by_name: Mapping[str, Mini],
     top_n: Optional[int] = 1,
     *,
     loadouts_by_song: Optional[Dict[str, list]] = None,
-    gears_by_name: Optional[Dict[str, dict]] = None,
+    gears_by_name: Optional[Mapping[str, Gear]] = None,
 ) -> List[dict]:
     """
     Find the most frequently appearing gear+mini SETs for songs in this category.
@@ -364,7 +361,7 @@ def find_most_common_loadout(
     return results
 
 
-def sort_gears_by_slot(gear_names: List[str], gears_by_name: Dict[str, dict]) -> List[str]:
+def sort_gears_by_slot(gear_names: List[str], gears_by_name: Mapping[str, Gear]) -> List[str]:
     slot_order = {
         "Hat": 0,
         "Neck": 1,
@@ -376,8 +373,8 @@ def sort_gears_by_slot(gear_names: List[str], gears_by_name: Dict[str, dict]) ->
     }
 
     def get_slot_index(gear_name: str) -> int:
-        gear = gears_by_name.get(gear_name) or {}
-        slot = str(gear.get("Slot") or "")
+        gear = gears_by_name.get(gear_name)
+        slot = gear.slot if gear is not None else ""
         for prefix, idx in slot_order.items():
             if slot.startswith(prefix):
                 return idx

@@ -189,7 +189,7 @@ def parse_inflight_config(tasks: list[tuple], *, in_flight_songs: int) -> Inflig
 
 from gear_optimizer.core.types import JsonDict
 from gear_optimizer.solver.timing_envelope import TimedSong
-from gear_optimizer.gamedata import StatCurves
+from gear_optimizer.gamedata import SongMini, StatCurves
 from gear_optimizer.solver.item_registry import ItemRegistry
 
 
@@ -207,10 +207,8 @@ class NativeSongConfig:
 @dataclass
 class NativeSongGPUInputs:
     curves: StatCurves | None = None
-    all_gears: list[Any] = field(default_factory=list)
-    all_minis: list[Any] = field(default_factory=list)
-    gears_by_name: dict[str, Any] = field(default_factory=dict)
-    minis_by_name: dict[str, Any] = field(default_factory=dict)
+    # The song's minis by name (Mini Ascension applied).
+    minis_by_name: dict[str, SongMini] = field(default_factory=dict)
     timed_song: TimedSong | None = None
     meta_primary_color: str = ""
     meta_secondary_color: str = ""

@@ -3,7 +3,6 @@ from __future__ import annotations
 from heapq import nsmallest
 import re
 
-from gear_optimizer.gamedata import SKIP_ITEM_KEYS
 from ...core.team_buff import (
     DEFAULT_TEAM_BUFF_REPLAY_TIERS,
     OPTIMIZER_BASELINE_TEAM_BUFF,
@@ -11,14 +10,11 @@ from ...core.team_buff import (
     team_buff_effect,
 )
 from ...core.utils import get_selected_element, safe_int as _safe_int
-from ...data.loadout_equivalence import (
-    get_gears_by_name_cached,
-    get_minis_by_name_cached,
-    representative_mini_names,
-)
-from ...data.mini_ascension import materialize_minis_for_song
+from ...data.loadout_equivalence import representative_mini_names
 from ...chart import Chart
-from ...gamedata import StatCurves
+from ...gamedata import Gear, Mini, SongMini, StatCurves, load_gears, load_minis, song_minis
+from ...settings import paths
+from ...stats import total
 from ...solver.timing_envelope import TimedSong
 from .fg_payload import has_valid_fg_payload, require_response_surface
 from .song_config import baseline_fixed_stats
@@ -60,10 +56,8 @@ def _flat_item_names(items: object) -> list[str]:
     for it in items if isinstance(items, (list, tuple)) else [items]:
         if isinstance(it, (list, tuple)):
             out.extend(_flat_item_names(it))
-        elif isinstance(it, dict):
-            name = _norm_text(it.get("Name", it.get("name", "")))
-            if name:
-                out.append(name)
+        elif isinstance(it, (Gear, Mini, SongMini)):
+            out.append(it.name)
         else:
             name = _norm_text(it)
             if name:
@@ -83,10 +77,8 @@ def _mini_groups_from_any(minis: object) -> list[list[str]]:
         if isinstance(slot, (list, tuple)):
             names: list[str] = []
             for raw in slot:
-                if isinstance(raw, dict):
-                    s = _norm_text(raw.get("Name", raw.get("name", "")))
-                    if s:
-                        names.append(s)
+                if isinstance(raw, (Mini, SongMini)):
+                    names.append(raw.name)
                     continue
                 if isinstance(raw, str):
                     for name in _mini_names_from_text(raw):
@@ -102,11 +94,8 @@ def _mini_groups_from_any(minis: object) -> list[list[str]]:
                 groups.append(names)
             continue
 
-        if isinstance(slot, dict):
-            s = _norm_text(slot.get("Name", slot.get("name", "")))
-            names = _mini_names_from_text(s)
-            if names:
-                groups.append(sorted(set(n for n in names if n)))
+        if isinstance(slot, (Mini, SongMini)):
+            groups.append([slot.name])
             continue
 
         if isinstance(slot, str):
@@ -197,65 +186,44 @@ def _apply_stat_delta(stats: dict, delta: dict[str, int]) -> dict:
     return out
 
 
-def _entry_loadout_items(entry: dict, chart: Chart | None = None) -> list[dict]:
-    """The 6 gear + 3 mini stat dicts before any gem allocation is applied.
+def _entry_loadout_items(entry: dict, chart: Chart) -> list[Gear | SongMini]:
+    """The loadout's 6 gear + 3 minis, the minis as ``chart``'s song sees them (Mini Ascension).
 
-    Two callers feed entries here. The on-demand serving path passes entries
-    whose ``gear``/``minis`` are already expanded stat-dicts; the persistence
-    canonicalizer keeps ``gear``/``minis`` as item NAME STRINGS (the loadout
-    hash is derived from names, so they cannot be replaced in-place). Resolve
-    BOTH shapes to the canonical pre-gem stat-dicts here, via the same
-    Gears.csv/Minis.csv name->stats maps the seed-loading path
-    (``_expand_*_from_db``) uses, so the per-tier gem re-solve has ONE entry
-    contract regardless of caller. Fail loud if the loadout does not resolve to
-    exactly 6 gear + 3 mini stat-dicts.
+    Two callers feed entries here. The serving paths pass entries whose ``gear``/``minis`` are
+    already items (catalog items, or a job's custom-pool items, which only the job knows); the
+    persistence canonicalizer keeps them as item NAME STRINGS (the loadout hash is derived from
+    names). Names resolve through Gears.csv/Minis.csv, minis as the per-entry "minis" field does,
+    so the per-tier gem re-solve has ONE entry contract regardless of caller. Fail loud if the
+    loadout does not resolve to exactly 6 gear + 3 minis.
     """
     entry = entry or {}
     raw_gear = list(entry.get("gear") or [])
     raw_minis = list(entry.get("minis") or [])
-    gear = [dict(item) for item in raw_gear[:6] if isinstance(item, dict)]
-    minis = [dict(item) for item in raw_minis[:3] if isinstance(item, dict)]
+    gear = [item for item in raw_gear[:6] if isinstance(item, Gear)]
+    minis = [item for item in raw_minis[:3] if isinstance(item, (Mini, SongMini))]
     if len(gear) != 6 or len(minis) != 3:
-        # Persistence entries carry item NAME STRINGS -> expand to the canonical
-        # pre-gem stat-dicts. Minis are variant-grouped, so resolve their
-        # representative names exactly as the per-entry "minis" field does above.
-        gears_by_name = get_gears_by_name_cached()
-        minis_by_name = get_minis_by_name_cached()
-        if chart is not None:
-            _all_minis, minis_by_name, _mini_ascension_context = materialize_minis_for_song(
-                minis_by_name=minis_by_name,
-                chart=chart,
-            )
-        gear = [dict(gears_by_name[name]) for name in _flat_item_names(raw_gear) if name in gears_by_name]
+        gears = load_gears(paths().gears_csv)
+        catalog_minis = load_minis(paths().minis_csv)
+        gear = [gears[name] for name in _flat_item_names(raw_gear) if name in gears]
         minis = [
-            dict(minis_by_name[name])
+            catalog_minis[name]
             for name in _representative_mini_names_from_any(raw_minis)
-            if name in minis_by_name
+            if name in catalog_minis
         ]
-    elif chart is not None:
-        minis, _minis_by_name, _mini_ascension_context = materialize_minis_for_song(
-            minis,
-            chart=chart,
-        )
     if len(gear) != 6 or len(minis) != 3:
         raise ValueError(
-            f"tier re-solve needs 6 gear + 3 mini stat-dicts, got {len(gear)} gear + {len(minis)} minis "
+            f"tier re-solve needs 6 gear + 3 minis, got {len(gear)} gear + {len(minis)} minis "
             f"(loadout {entry.get('loadout_hash')!r})"
         )
-    return gear + minis
+    return gear + [
+        song_minis([mini], chart.name, chart.primary, chart.secondary)[0] if isinstance(mini, Mini) else mini
+        for mini in minis
+    ]
 
 
-def _pre_gem_loadout_stats(fixed_song_stats: dict, loadout_items: list[dict]) -> dict[str, int]:
+def _pre_gem_loadout_stats(fixed_song_stats: dict, loadout_items: list[Gear | SongMini]) -> dict[str, int]:
     """Stats row the gem solver starts from: song/tier fixed stats + loadout item stats."""
-    out = {str(key): int(value or 0) for key, value in dict(fixed_song_stats or {}).items()}
-    for item in list(loadout_items or []):
-        if not isinstance(item, dict):
-            continue
-        for key, value in item.items():
-            if key in SKIP_ITEM_KEYS:
-                continue
-            out[str(key)] = int(out.get(key, 0) or 0) + int(value or 0)
-    return out
+    return total(fixed_song_stats, *(item.stats for item in loadout_items))
 
 
 def resolve_tier_fg_force(
@@ -399,12 +367,11 @@ def resolve_tier_base_batch(
     independent, so the per-loadout result equals ``resolve_tier_base`` (the gate's per-loadout
     path) -> served == native (delta=0)."""
     from ...solver.scoring.fever_solver import solve_best_fever_combination_batch
-    from ...solver.solver_common import _add_genome_item_stats
 
     rows = list(loadouts or [])
     if not rows:
         return []
-    pre_gem_rows = [_add_genome_item_stats(dict(fixed_song_stats or {}), list(items or [])) for items in rows]
+    pre_gem_rows = [_pre_gem_loadout_stats(fixed_song_stats, items) for items in rows]
     results = solve_best_fever_combination_batch(
         pre_gem_rows,
         song,
