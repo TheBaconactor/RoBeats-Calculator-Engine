@@ -264,6 +264,17 @@ _FRONTIER_DISK_CACHE_VERSION = (
 # only after a byte gate proves its persisted payload identical to the current producer. Issue #161
 # proved the 1f182e5b89af, 4c69b48f08bb, and 9dfe907e66fb lineages diverge; they must rebuild.
 _EXACT_COMPATIBLE_TIMELINE_PREDECESSOR_VERSIONS: dict[str, tuple[str, ...]] = {
+    # Engine rewrite stage 5D (test-only oracles out of the shared producer sources) changes no producer logic:
+    # the capture charts' timeline payloads (both timing modes) built by this code are byte-identical, one to one,
+    # to the production producer's builds (and to the 52f84d17 snapshot). Keep everything the deployed service
+    # accepts readable (non-transitive).
+    "exact-frontier-v12+logic-e0f26c1952cc": (
+        "exact-frontier-v12+logic-dac3ca4b6278",
+        "exact-frontier-v12+logic-ede645c00a02",
+        "exact-frontier-v12+logic-e2108556084d",
+        "exact-frontier-v12+logic-920bc4af7ee6",
+        "exact-frontier-v12+logic-be26caca62b4",
+    ),
     # Engine rewrite stage 2 (typed stat curves and songs; timing_envelope builds from a Chart) changes no
     # producer logic: the capture charts' timeline payloads (both timing modes) built by this code are
     # byte-identical, one to one, to the deployed ede645c00a02 producer's builds. Keep everything the deployed
