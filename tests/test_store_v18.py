@@ -95,12 +95,17 @@ def v18_db(tmp_path):
         1500,
         GEAR,
         MINIS,
-        _meta_details(GemCounts={"Perfect Points": 0, "Combo Multiplier": 10, "Fever Multiplier": 10, "Element": 63}),
+        _meta_details(
+            GemCounts={"Perfect Points": 0, "Combo Multiplier": 10, "Fever Multiplier": 10, "Element": 63},
+            # A twin's copy of its FG result (the FG row carries it; witness timings rounded differently).
+            ForceGreats={"final_score": 1500, "frontier_trace": [{"fg": 1.0001}]},
+        ),
         timestamp=1_700_000_010,
     )
     w.fg("Song A", "twin", 990, 1500, GEAR, MINIS, _fg_details(990), _fg_payload(990, 1500), timestamp=1_700_000_020)
-    w.meta("Song A", "never-fg", 900, 0, GEAR[:1], MINIS, _meta_details(ForceGreats={"final_score": 950}))
-    w.meta("Song A", "stale-fg", 800, 950, GEAR[1:], MINIS, _meta_details())
+    w.meta("Song A", "never-fg", 900, 0, GEAR[:1], MINIS, _meta_details())
+    # Its FG row was pruned; the meta row's copy is the only record of its FG result.
+    w.meta("Song A", "stale-fg", 800, 950, GEAR[1:], MINIS, _meta_details(ForceGreats={"final_score": 950, **FG_TRACE}))
     w.fg(
         "Song A",
         "fg-only",
@@ -121,6 +126,7 @@ def test_every_loadout_migrates_with_a_single_score_and_both_results(v18_db):
     conn.close()
     assert (report.songs, report.meta_rows, report.fg_rows, report.loadouts, report.twins) == (1, 3, 2, 4, 1)
     assert report.paired_score_conflicts == [("Song A", "twin", 1000, 990)]
+    assert report.fg_replays == 1
     reader = schema.connect(v18_db)
     got = {x.loadout_hash: x for x in db.iter_board(reader, "meta", tier="T5")}
     got.update({x.loadout_hash: x for x in db.iter_board(reader, "fg", tier="T5")})
@@ -140,10 +146,15 @@ def test_every_loadout_migrates_with_a_single_score_and_both_results(v18_db):
     )
     assert (twin.fg.gems, twin.fg.surface, twin.fg.updated) == ((1, 9, 11, 5, 2, 60), tuple(range(11)), 1_700_000_020)
     assert (got["never-fg"].fg_score, got["stale-fg"].fg_score) == (None, 950)
+    assert (got["stale-fg"].fg, got["stale-fg"].on_meta, got["stale-fg"].on_fg) == (None, True, False)
+    assert (twin.on_meta, twin.on_fg) == (True, True)
     fg_only = got["fg-only"]
     assert (fg_only.meta, fg_only.score, fg_only.fg_score, fg_only.mini_ascension) == (None, 700, 1200, None)
-    traces = db.load_traces(reader, "Song A", "T5", ["twin", "fg-only"])
+    assert (fg_only.on_meta, fg_only.on_fg) == (False, True)
+    traces = db.load_traces(reader, "Song A", "T5", ["twin", "fg-only", "stale-fg", "never-fg"])
     assert traces["twin"].meta == TRACE and traces["twin"].fg == FG_TRACE and traces["fg-only"].meta is None
+    # The pruned loadout keeps its FG replay; a loadout never evaluated for FG has none.
+    assert (traces["stale-fg"].fg, traces["never-fg"].fg) == (FG_TRACE, None)
     assert db.last_updated(reader) == {"Song A": 1_700_000_000.5}
     tables = {r[0] for r in reader.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert tables == {"songs", "loadouts"}
@@ -181,6 +192,16 @@ def test_an_unknown_stored_key_stops_the_migration_and_changes_nothing(tmp_path)
     assert schema.user_version(conn) == 18
     assert conn.execute("SELECT COUNT(*) FROM team_buff_loadouts").fetchone()[0] == 1
     assert "loadouts" not in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+
+def test_a_meta_rows_fg_copy_must_score_the_rows_fg_score(tmp_path):
+    path = tmp_path / "evolution.db"
+    w = V18Writer(path)
+    w.song("Song A")
+    w.meta("Song A", "odd", 900, 950, GEAR, MINIS, _meta_details(ForceGreats={"final_score": 940, **FG_TRACE}))
+    w.close()
+    with pytest.raises(ValueError, match="FG copy scores 940"):
+        v18.migrate(sqlite3.connect(path), keep_v18_tables=False)
 
 
 def test_disagreeing_copies_stop_the_migration(tmp_path):

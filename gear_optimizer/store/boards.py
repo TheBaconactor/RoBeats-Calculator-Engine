@@ -1,9 +1,9 @@
 """Board orders and the merge of new results into a song's boards.
 
 Meta board: loadouts with a meta result, by score, then FG score (a loadout without one last), then the
-newest write, then the earliest to enter the board. Force Greats board: loadouts with an FG result, by FG
-score, then score, then the newest write, then the earliest entry. Each board keeps LOADOUTS_PER_SONG_LIMIT
-loadouts.
+newest write, then the earliest stored result. Force Greats board: loadouts with an FG result that beats their
+score, by FG score, then score, then the newest write, then the earliest stored result. Each board lists
+LOADOUTS_PER_SONG_LIMIT loadouts; a loadout keeps both of its results while it is on at least one board.
 """
 
 from __future__ import annotations
@@ -44,9 +44,9 @@ class Row:
 class Candidate:
     """One loadout result of a solve (or of another database) to merge into a song's boards.
 
-    `row.loadout.meta` is its meta result and `row.loadout.fg` its FG result (either may be None). A
-    deferred candidate is an FG update posted after its GA result: its score is the base score its FG
-    result was paired with, and it carries no meta result.
+    `row.loadout.meta` is its meta result and `row.loadout.fg` its FG result (either may be None; board
+    membership is ignored). A deferred candidate is an FG update posted after its GA result: its score is the
+    base score its FG result was paired with, and it carries no meta result.
     """
 
     row: Row
@@ -74,13 +74,12 @@ def merge(
     """The song's rows after storing `candidates` (one song and tier).
 
     Meta side: a new loadout takes the candidate's meta result; a higher score replaces a stored one; a
-    deferred candidate (an FG update) only refreshes a stored one. FG side: a candidate whose FG score beats its paired base
-    score is stored when new, and replaces a stored FG result with an equal or lower FG score. Every
-    touched side is stamped `now`; a result entering a board gets the next entry number of the database
-    (`next_seq`: the next (meta, FG) numbers, so entries number in insertion order across songs). Then an FG
-    result is kept only while its FG score beats the loadout's score, each board keeps the
-    LOADOUTS_PER_SONG_LIMIT best scores (the earliest entries among equal scores), a loadout without an
-    FG result keeps an FG score no higher than its score, and a loadout on neither board is dropped.
+    deferred candidate (an FG update) only refreshes a stored one. FG side: a candidate's FG result is stored
+    when new, and replaces a stored FG result with an equal or lower FG score. Every touched side is stamped
+    `now`; a newly stored result gets the next entry number of the database (`next_seq`: the next (meta, FG)
+    numbers, so entries number in insertion order across songs). Then each board takes the
+    LOADOUTS_PER_SONG_LIMIT best scores (the earliest entries among equal scores; the FG board only FG results
+    that beat their loadout's score), and a loadout on neither board is dropped with its results.
     """
     work = {row.loadout.loadout_hash: _lift(row) for row in rows}
     seqs = _Seqs(meta=next_seq[0], fg=next_seq[1])
@@ -148,7 +147,7 @@ def _merge_meta(work: dict[str, _Work], candidate: Candidate, now: int, seqs: _S
 
 def _merge_fg(work: dict[str, _Work], candidate: Candidate, now: int, seqs: _Seqs) -> None:
     new = candidate.row.loadout
-    if new.fg is None or new.fg_score <= new.score:
+    if new.fg is None:
         return
     current = work.get(new.loadout_hash)
     if current is None:
@@ -170,57 +169,40 @@ def _merge_fg(work: dict[str, _Work], candidate: Candidate, now: int, seqs: _Seq
 
 
 def _project(work: _Work) -> Row | None:
-    """One loadout row: the meta side's score is the loadout's score (else the FG side's paired base)."""
-    score = work.score if work.meta is not None else work.paired
-    fg = work.fg if work.fg is not None and work.fg_score > score else None
-    if work.meta is None and fg is None:
+    """One loadout row: the meta side's score is the loadout's score (else the FG side's paired base); the FG
+    score is its FG result's, else the best one seen with its meta result. The FG trace is its FG result's, or
+    a replay kept without a result (version 18 stored some)."""
+    if work.meta is None and work.fg is None:
         return None
-    if fg is not None:
-        fg_score = work.fg_score
-    elif work.meta is not None and work.fg_seen:
-        fg_score = work.fg_seen
-    else:
-        fg_score = None
-    loadout = replace(work.source, score=score, fg_score=fg_score, meta=work.meta, fg=fg)
-    return Row(loadout, work.meta_trace if work.meta is not None else None, work.fg_trace if fg is not None else None)
+    score = work.score if work.meta is not None else work.paired
+    fg_score = work.fg_score if work.fg is not None else (work.fg_seen or None)
+    loadout = replace(work.source, score=score, fg_score=fg_score, meta=work.meta, fg=work.fg, on_meta=False, on_fg=False)
+    return Row(loadout, work.meta_trace if work.meta is not None else None, work.fg_trace)
 
 
 def _normalize(rows: list[Row]) -> list[Row]:
-    """Prune both boards to the limit, then settle FG scores of loadouts that left the FG board."""
-    on_meta = sorted((r.loadout for r in rows if r.loadout.meta is not None), key=lambda x: (-x.score, x.meta.seq))
-    on_fg = sorted((r.loadout for r in rows if r.loadout.fg is not None), key=lambda x: (-x.fg_score, x.fg.seq))
-    off_meta = {x.loadout_hash for x in on_meta[LOADOUTS_PER_SONG_LIMIT:]}
-    off_fg = {x.loadout_hash for x in on_fg[LOADOUTS_PER_SONG_LIMIT:]}
+    """Rank both boards to the limit; a loadout on neither board is dropped."""
+    meta = sorted((r.loadout for r in rows if r.loadout.meta is not None), key=lambda x: (-x.score, x.meta.seq))
+    fg = sorted(
+        (r.loadout for r in rows if r.loadout.fg is not None and r.loadout.fg_score > r.loadout.score),
+        key=lambda x: (-x.fg_score, x.fg.seq),
+    )
+    on_meta = {x.loadout_hash for x in meta[:LOADOUTS_PER_SONG_LIMIT]}
+    on_fg = {x.loadout_hash for x in fg[:LOADOUTS_PER_SONG_LIMIT]}
     out: list[Row] = []
     for row in rows:
-        loadout = row.loadout
-        keep_meta = loadout.meta is not None and loadout.loadout_hash not in off_meta
-        keep_fg = loadout.fg is not None and loadout.loadout_hash not in off_fg
-        if not keep_meta and not keep_fg:
-            continue
-        fg_score = loadout.fg_score
-        if not keep_fg and fg_score is not None and fg_score > loadout.score:
-            fg_score = loadout.score
-        out.append(
-            Row(
-                replace(
-                    loadout,
-                    meta=loadout.meta if keep_meta else None,
-                    fg=loadout.fg if keep_fg else None,
-                    fg_score=fg_score,
-                ),
-                row.meta_trace if keep_meta else None,
-                row.fg_trace if keep_fg else None,
-            )
-        )
+        key = row.loadout.loadout_hash
+        if key in on_meta or key in on_fg:
+            loadout = replace(row.loadout, on_meta=key in on_meta, on_fg=key in on_fg)
+            out.append(Row(loadout, row.meta_trace, row.fg_trace))
     return out
 
 
 def boards(rows: Iterable[Row]) -> tuple[list[Loadout], list[Loadout]]:
     """(meta board, FG board) of a song's rows, in board order."""
     loadouts = [row.loadout for row in rows]
-    meta = sorted((x for x in loadouts if x.meta is not None), key=meta_key)
-    fg = sorted((x for x in loadouts if x.fg is not None), key=fg_key)
+    meta = sorted((x for x in loadouts if x.on_meta), key=meta_key)
+    fg = sorted((x for x in loadouts if x.on_fg), key=fg_key)
     return meta, fg
 
 

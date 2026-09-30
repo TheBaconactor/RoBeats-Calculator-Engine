@@ -29,8 +29,9 @@ CREATE TABLE songs (
 
 ### `loadouts`
 
-One row per loadout of a song and TeamBuff tier. A loadout can be on two boards: the meta board (its best
-gem allocation without Force Greats, ranked by `score`) and the Force Greats board (ranked by `fg_score`).
+One row per loadout of a song and TeamBuff tier. A loadout keeps its results while it is stored: its meta
+result (the best gem allocation without Force Greats, scored `score`) and its Force Greats result (scored
+`fg_score`). Two boards list loadouts by those results; a loadout is stored while it is on at least one.
 
 ```sql
 CREATE TABLE loadouts (
@@ -44,32 +45,35 @@ CREATE TABLE loadouts (
     mini_ascension TEXT,           -- Mini Ascension version of the row's minis (NULL: an older row)
     score INTEGER NOT NULL,        -- the loadout's base score (single source)
     fg_score INTEGER,              -- its best known Force Greats score (NULL: never evaluated)
-    meta_updated INTEGER,          -- meta board result: NULL columns = not on the meta board
+    meta_board INTEGER NOT NULL,   -- 1: on the meta board
+    fg_board INTEGER NOT NULL,     -- 1: on the Force Greats board
+    meta_updated INTEGER,          -- meta result: NULL columns = none
     meta_seq INTEGER,
     meta_result TEXT,              -- JSON {element, gems[6], stats[10]}
-    fg_updated INTEGER,            -- Force Greats board result: NULL columns = not on the FG board
+    fg_updated INTEGER,            -- Force Greats result: NULL columns = none
     fg_seq INTEGER,
     fg_result TEXT,                -- JSON {element, gems[6], stats[10], surface[11]}
     meta_trace BLOB,               -- zlib JSON: the timeline frontier replay witness
-    fg_trace BLOB,                 -- zlib JSON: the Force Greats replay witness
+    fg_trace BLOB,                 -- zlib JSON: the Force Greats replay witness (also kept without an FG
+                                   -- result for loadouts whose FG row version 18 had pruned)
     PRIMARY KEY (song_name, team_buff, loadout_hash),
     ...
 ) STRICT;
 ```
 
 Gems follow `stats.GEM_KINDS` and stats `gamedata.STATS`. `*_updated` is the unix second of the last write
-of that result; `*_seq` numbers results in the order they entered their board, across the whole database.
+of that result; `*_seq` numbers results in the order they were stored, across the whole database.
 The traces come last so board scans never read them; `store.db.load_traces` loads them on request.
 
 ## Boards
 
-- Meta board: rows with a `meta_result`, by `score DESC, fg_score DESC (NULL last), meta_updated DESC,
-  meta_seq`.
-- Force Greats board: rows with an `fg_result`, by `fg_score DESC, score DESC, fg_updated DESC, fg_seq`.
-- Each board keeps `LOADOUTS_PER_SONG_LIMIT` (51) loadouts per song and tier: the best scores, the earliest
-  entries among equal scores.
-- An FG result is kept only while its FG score beats the loadout's score. A loadout that leaves the FG
-  board keeps an FG score no higher than its score.
+- Meta board (`meta_board = 1`): the loadouts with a meta result, by `score DESC, fg_score DESC (NULL last),
+  meta_updated DESC, meta_seq`.
+- Force Greats board (`fg_board = 1`): the loadouts whose FG result beats their score, by `fg_score DESC,
+  score DESC, fg_updated DESC, fg_seq`.
+- Each board lists `LOADOUTS_PER_SONG_LIMIT` (51) loadouts per song and tier: the best scores, the earliest
+  stored among equal scores. A loadout off both boards is deleted with its results; one on a board keeps both
+  results (an FG result off the FG board stays attached, and returns to the board when a place frees up).
 
 Two partial indexes cover the board orders (`loadouts_meta_board`, `loadouts_fg_board`).
 

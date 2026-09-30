@@ -28,7 +28,7 @@ from ..helpers.song_helpers.force_greats.result_application import read_visible_
 from ..helpers.song_helpers.loadout_hashing import compact_gear_names, compact_mini_names, loadout_hash_from_names
 from ..stats import GEM_KINDS, gems, named_loadout_stats
 from .boards import Candidate, Row
-from .records import FgResult, Loadout, MetaResult, encode_trace
+from .records import SURFACE_SIZE, FgResult, Loadout, MetaResult, encode_trace
 
 # Stats the FG score reads, plus the song's and the selected element (checked when minis are canonicalized).
 _SCORE_STATS = ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time")
@@ -178,7 +178,8 @@ def _candidate(song, tier, entry, ident: _Identity, gears, minis_for, now: int, 
         if deferred:
             # A deferred update's details describe its FG allocation; its loadout's base score is the paired one.
             score = paired
-        if fg_score > paired:
+        # One that does not beat the paired score stays attached to its loadout (off the FG board) when complete.
+        if fg_score > paired or (fg_score > 0 and _complete_fg_payload(force)):
             fg, fg_trace = _fg_result(song, force, fg_score, ident, result_stats, now)
     if meta is None and fg is None:
         return None
@@ -221,6 +222,12 @@ def _fg_result(song, force: Mapping[str, Any], fg_score: int, ident: _Identity, 
         seq=0,
     )
     return result, trace
+
+
+def _complete_fg_payload(force: Mapping[str, Any]) -> bool:
+    trace = force.get("ForceGreats")
+    surface = force.get("response_surface")
+    return isinstance(trace, dict) and bool(trace.get("frontier_trace")) and len(surface or ()) == SURFACE_SIZE
 
 
 def _without_retired_fields(payload: dict[str, Any] | None, parent: str = "") -> dict[str, Any] | None:

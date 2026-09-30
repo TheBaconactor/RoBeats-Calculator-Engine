@@ -1,6 +1,7 @@
 """The results database schema (version 19) and its connections.
 
-One `loadouts` row per loadout of a song and TeamBuff tier holds both boards' results (see records.py).
+One `loadouts` row per loadout of a song and TeamBuff tier holds its results and its board membership (see
+records.py); an FG replay can be stored without an FG result (version 18 kept only the replay of some).
 Version 18 (two leaderboard tables + name-id tables) is migrated by store.v18.
 """
 
@@ -31,6 +32,8 @@ CREATE TABLE loadouts (
     mini_ascension TEXT,
     score INTEGER NOT NULL,
     fg_score INTEGER,
+    meta_board INTEGER NOT NULL,
+    fg_board INTEGER NOT NULL,
     meta_updated INTEGER,
     meta_seq INTEGER,
     meta_result TEXT,
@@ -40,12 +43,14 @@ CREATE TABLE loadouts (
     meta_trace BLOB,
     fg_trace BLOB,
     PRIMARY KEY (song_name, team_buff, loadout_hash),
+    CHECK (meta_board IN (0, 1) AND fg_board IN (0, 1) AND meta_board + fg_board > 0),
     CHECK ((meta_result IS NULL) = (meta_updated IS NULL) AND (meta_result IS NULL) = (meta_seq IS NULL)),
+    CHECK (meta_board = 0 OR meta_result IS NOT NULL),
     CHECK (meta_trace IS NULL OR meta_result IS NOT NULL),
     CHECK ((fg_result IS NULL) = (fg_updated IS NULL) AND (fg_result IS NULL) = (fg_seq IS NULL)),
-    CHECK ((fg_result IS NULL) = (fg_trace IS NULL)),
-    CHECK (fg_result IS NULL OR fg_score IS NOT NULL),
-    CHECK (meta_result IS NOT NULL OR fg_result IS NOT NULL)
+    CHECK (fg_board = 0 OR (fg_result IS NOT NULL AND fg_score > score)),
+    CHECK (fg_result IS NULL OR fg_trace IS NOT NULL),
+    CHECK (fg_trace IS NULL OR fg_score IS NOT NULL)
 ) STRICT
 """
 
@@ -54,12 +59,12 @@ INDEXES_DDL = (
     """
     CREATE INDEX loadouts_meta_board ON loadouts
         (song_name, team_buff, score DESC, fg_score DESC, meta_updated DESC, meta_seq)
-        WHERE meta_result IS NOT NULL
+        WHERE meta_board = 1
     """,
     """
     CREATE INDEX loadouts_fg_board ON loadouts
         (song_name, team_buff, fg_score DESC, score DESC, fg_updated DESC, fg_seq)
-        WHERE fg_result IS NOT NULL
+        WHERE fg_board = 1
     """,
 )
 

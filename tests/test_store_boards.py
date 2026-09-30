@@ -2,7 +2,8 @@ from dataclasses import replace
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.store import boards as store_boards
-from gear_optimizer.store.boards import boards
+from gear_optimizer.store.boards import Row, boards
+from gear_optimizer.store.records import encode_trace
 from tests.store_support import candidate, fg_row, meta_row
 
 NOW = 500
@@ -17,6 +18,10 @@ def merge(rows, candidates, *, now):
 
 def _by_hash(rows):
     return {r.loadout.loadout_hash: r.loadout for r in rows}
+
+
+def _by_row(rows) -> dict[str, Row]:
+    return {r.loadout.loadout_hash: r for r in rows}
 
 
 def test_new_loadouts_enter_the_boards_in_candidate_order():
@@ -62,9 +67,11 @@ def test_a_deferred_fg_update_never_adds_a_meta_result():
 
 
 def test_fg_results_compare_with_the_loadouts_single_base_score():
-    # The FG result beats the base score it was paired with (95) but not the loadout's best base score (120).
+    # The FG result beats the base score it was paired with (95) but not the loadout's best base score (120):
+    # it stays attached to the loadout, off the FG board.
     (got,) = merge([meta_row("a", 120)], [candidate("a", 95, 110)], now=NOW)
-    assert got.loadout.fg is None and got.loadout.score == 120
+    assert (got.loadout.score, got.loadout.fg_score, got.loadout.on_meta, got.loadout.on_fg) == (120, 110, True, False)
+    assert got.loadout.fg is not None and got.fg_trace is not None
     # An FG board entry shows the loadout's base score, not its paired one.
     (got,) = merge([fg_row("a", 100, 150, meta=False)], [candidate("a", 90)], now=NOW)
     assert (got.loadout.score, got.loadout.fg_score, got.loadout.meta.seq) == (90, 150, 1)
@@ -80,12 +87,39 @@ def test_boards_keep_the_best_scores_and_the_earliest_entries_among_equal_scores
     assert "tie-early" in names and "tie-late" not in names and "low" not in names
 
 
-def test_a_loadout_leaving_the_fg_board_keeps_an_fg_score_no_higher_than_its_score():
+def test_a_loadout_leaving_the_fg_board_keeps_its_fg_result_while_it_is_stored():
     stored = [fg_row(f"f{i:02}", 100, 200 + i, seq=i + 1) for i in range(LOADOUTS_PER_SONG_LIMIT)]
     rows = merge(stored, [candidate("new", 100, 1000)], now=NOW)
     got = _by_hash(rows)
-    assert got["f00"].fg is None and got["f00"].fg_score == 100 and got["f00"].meta is not None
+    assert (got["f00"].on_fg, got["f00"].on_meta, got["f00"].fg_score) == (False, True, 200)
+    assert got["f00"].fg == stored[0].loadout.fg and _by_row(rows)["f00"].fg_trace == stored[0].fg_trace
     assert got["new"].fg.seq == LOADOUTS_PER_SONG_LIMIT + 1
+
+
+def test_an_fg_result_that_does_not_beat_its_score_stays_attached():
+    (got,) = merge([], [candidate("a", 100, 90)], now=NOW)
+    assert (got.loadout.on_meta, got.loadout.on_fg, got.loadout.fg_score) == (True, False, 90)
+    assert got.loadout.fg is not None
+
+
+def test_an_attached_fg_result_returns_to_the_board_when_a_place_frees_up():
+    stored = [fg_row(f"f{i:02}", 100, 200 + i, seq=i + 1) for i in range(LOADOUTS_PER_SONG_LIMIT)]
+    stored.append(fg_row("waiting", 110, 150, seq=99))  # 52nd best FG result, kept by its meta board place
+    rows = merge(stored, [candidate("x", 50)], now=NOW)
+    assert _by_hash(rows)["waiting"].on_fg is False
+    # f50's base score rises above its FG score: it leaves the FG board and "waiting" takes the place.
+    rows = merge(rows, [candidate("f50", 300)], now=NOW)
+    got = _by_hash(rows)
+    assert (got["f50"].on_fg, got["waiting"].on_fg) == (False, True)
+
+
+def test_an_fg_replay_without_a_result_is_kept_until_a_result_replaces_it():
+    replay = encode_trace({"frontier_trace": [{"fg": "version 18"}]})
+    stored = replace(meta_row("a", 100, fg_score=150), fg_trace=replay)
+    got = _by_row(merge([stored], [candidate("x", 50)], now=NOW))["a"]
+    assert (got.loadout.fg, got.loadout.fg_score, got.fg_trace) == (None, 150, replay)
+    got = _by_row(merge([stored], [candidate("a", 100, 160)], now=NOW))["a"]
+    assert got.loadout.on_fg and got.fg_trace == candidate("a", 100, 160).row.fg_trace
 
 
 def test_a_loadout_on_neither_board_is_dropped():
@@ -94,10 +128,10 @@ def test_a_loadout_on_neither_board_is_dropped():
     assert "f00" not in _by_hash(rows) and len(rows) == LOADOUTS_PER_SONG_LIMIT
 
 
-def test_stale_fg_scores_settle_on_the_next_write_and_missing_ones_stay_missing():
-    rows = merge([meta_row("stale", 100, fg_score=150), meta_row("none", 90)], [candidate("x", 50)], now=NOW)
+def test_fg_scores_stay_attached_on_the_next_write_and_missing_ones_stay_missing():
+    rows = merge([meta_row("kept", 100, fg_score=150), meta_row("none", 90)], [candidate("x", 50)], now=NOW)
     got = _by_hash(rows)
-    assert (got["stale"].fg_score, got["none"].fg_score, got["x"].fg_score) == (100, None, None)
+    assert (got["kept"].fg_score, got["none"].fg_score, got["x"].fg_score) == (150, None, None)
 
 
 def test_meta_board_order_breaks_ties_by_fg_score_then_newest_then_earliest():

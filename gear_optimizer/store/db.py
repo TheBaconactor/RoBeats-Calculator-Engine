@@ -25,10 +25,10 @@ from .records import (
 
 _COLUMNS = (
     "song_name, team_buff, loadout_hash, gear, minis, primary_color, secondary_color, mini_ascension, score,"
-    " fg_score, meta_updated, meta_seq, meta_result, fg_updated, fg_seq, fg_result"
+    " fg_score, meta_board, fg_board, meta_updated, meta_seq, meta_result, fg_updated, fg_seq, fg_result"
 )
 _ROW_COLUMNS = _COLUMNS + ", meta_trace, fg_trace"
-_BOARDS = {"meta": ("meta_result", META_ORDER), "fg": ("fg_result", FG_ORDER)}
+_BOARDS = {"meta": ("meta_board", META_ORDER), "fg": ("fg_board", FG_ORDER)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +96,7 @@ def last_updated(conn: sqlite3.Connection, songs: Collection[str] | None = None)
 def board_sizes(conn: sqlite3.Connection) -> dict[tuple[str, str], tuple[int, int]]:
     """(song, tier) -> (meta board size, FG board size)."""
     rows = conn.execute(
-        "SELECT song_name, team_buff, COUNT(meta_result), COUNT(fg_result) FROM loadouts GROUP BY song_name, team_buff"
+        "SELECT song_name, team_buff, SUM(meta_board), SUM(fg_board) FROM loadouts GROUP BY song_name, team_buff"
     )
     return {(song, tier): (meta, fg) for song, tier, meta, fg in rows}
 
@@ -143,7 +143,7 @@ def store_results(
 
 def insert_rows(conn: sqlite3.Connection, rows: Iterable[Row]) -> None:
     conn.executemany(
-        f"INSERT INTO loadouts ({_ROW_COLUMNS}) VALUES ({_marks(range(18))})", (_values(row) for row in rows)
+        f"INSERT INTO loadouts ({_ROW_COLUMNS}) VALUES ({_marks(range(20))})", (_values(row) for row in rows)
     )
 
 
@@ -163,7 +163,7 @@ def _board_rows(
     conn: sqlite3.Connection, board: str, songs: Collection[str] | None, tier: str
 ) -> Iterator[sqlite3.Row]:
     column, order = _BOARDS[board]
-    base = f"SELECT {_COLUMNS} FROM loadouts WHERE team_buff = ? AND {column} IS NOT NULL"
+    base = f"SELECT {_COLUMNS} FROM loadouts WHERE team_buff = ? AND {column} = 1"
     if songs is None:
         yield from conn.execute(f"{base} ORDER BY song_name, {order}", (tier,))
         return
@@ -189,6 +189,8 @@ def _loadout(row: sqlite3.Row) -> Loadout:
         if row["meta_result"] is None
         else decode_meta(row["meta_result"], row["meta_updated"], row["meta_seq"]),
         fg=None if row["fg_result"] is None else decode_fg(row["fg_result"], row["fg_updated"], row["fg_seq"]),
+        on_meta=bool(row["meta_board"]),
+        on_fg=bool(row["fg_board"]),
     )
 
 
@@ -205,6 +207,8 @@ def _values(row: Row) -> tuple:
         x.mini_ascension,
         x.score,
         x.fg_score,
+        int(x.on_meta),
+        int(x.on_fg),
         None if x.meta is None else x.meta.updated,
         None if x.meta is None else x.meta.seq,
         None if x.meta is None else encode_meta(x.meta),

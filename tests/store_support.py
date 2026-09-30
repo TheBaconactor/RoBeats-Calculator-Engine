@@ -33,6 +33,7 @@ def loadout(
     tier: str = "T5",
     ascension: str | None = MINI_ASCENSION_VERSION,
 ) -> Loadout:
+    """A stored loadout on the boards of its results (merges rank the boards again)."""
     return Loadout(
         song=song,
         tier=tier,
@@ -46,6 +47,8 @@ def loadout(
         fg_score=fg_score,
         meta=meta,
         fg=fg,
+        on_meta=meta is not None,
+        on_fg=fg is not None and fg_score > score,
     )
 
 

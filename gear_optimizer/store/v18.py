@@ -3,7 +3,9 @@
 Version 18 kept two leaderboard tables per song and TeamBuff tier (team_buff_loadouts: meta board;
 team_buff_fg_loadouts: Force Greats board), item names as varint id blobs over two name tables, and JSON
 details. Every stored key is either carried into the records or listed in DROPPED (nothing reads it:
-copies of other values, GA internals, the six GA item keys, and the Mini Ascension song/color keys).
+copies of other values, GA internals, the six GA item keys, and the Mini Ascension song/color keys). A meta
+row's ForceGreats copy is its loadout's FG result: dropped when the FG row carries that result, kept as the FG
+replay of a loadout whose FG row was pruned (version 18 kept no FG gems for those).
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from .records import SURFACE_SIZE, FgResult, Loadout, MetaResult, encode_trace
 from .schema import VERSION, create_tables
 
 # details_json of the meta board.
-_META_KEYS = {"FT", "FF", "st", "gc", "se", "pc", "sc", "TimelineFrontier"}
+_META_KEYS = {"FT", "FF", "st", "gc", "se", "pc", "sc", "TimelineFrontier", "ForceGreats"}
 _MARKER = "Mini Ascension Materialized"
 _MARKER_VERSION = "Mini Ascension Source Version"
 _MARKER_COLORS = ("Mini Ascension Materialized Primary Color", "Mini Ascension Materialized Secondary Color")
@@ -39,7 +41,7 @@ _FG_KEYS = {
 }
 
 DROPPED = {
-    "meta": {"ForceGreats", "GemCounts", "BaseScore", "Mini Ascension Materialized Song", *_MARKER_COLORS},
+    "meta": {"GemCounts", "BaseScore", "Mini Ascension Materialized Song", *_MARKER_COLORS},
     "fg_details": {"GemCounts"},
     "fg": {
         "Selected Element",
@@ -70,6 +72,7 @@ class Report:
     # Twins whose FG row paired a different base score than the meta row (the meta row's score is kept).
     paired_score_conflicts: list[tuple[str, str, int, int]] = field(default_factory=list)
     meta_without_trace: list[tuple[str, str]] = field(default_factory=list)
+    fg_replays: int = 0  # FG replays kept without an FG result (their FG row was pruned)
 
 
 def read_rows(conn: sqlite3.Connection, song: str, report: Report | None = None) -> list[Row]:
@@ -159,7 +162,7 @@ def _loadout(song, meta_row, fg_row, gear_names, mini_names, report: Report) -> 
     gear = _names(any_row[4], gear_names)
     minis = _groups(any_row[5], mini_names)
     meta = meta_trace = fg = fg_trace = None
-    ascension = None
+    ascension = fg_copy = None
     if meta_row is not None:
         details = json.loads(meta_row[6])
         if meta_row[7] is not None:
@@ -168,6 +171,9 @@ def _loadout(song, meta_row, fg_row, gear_names, mini_names, report: Report) -> 
         meta_trace = encode_trace(meta_trace_payload)
         if meta_trace_payload is None:
             report.meta_without_trace.append((song, loadout_hash))
+        fg_copy = details.get("ForceGreats")
+        if fg_copy is not None and fg_copy.get("final_score") != int(meta_row[3] or 0):
+            raise ValueError(f"{song} {loadout_hash}: the meta row's FG copy scores {fg_copy.get('final_score')}, the row {meta_row[3]}")
     if fg_row is not None:
         fg, fg_trace_payload, fg_colors = _fg_part(song, loadout_hash, fg_row)
         fg_trace = encode_trace(fg_trace_payload)
@@ -183,6 +189,9 @@ def _loadout(song, meta_row, fg_row, gear_names, mini_names, report: Report) -> 
                 raise ValueError(f"{song} {loadout_hash}: meta row FG score {meta_row[3]} != FG row {fg_row[3]}")
             if int(fg_row[2]) != int(meta_row[2]):
                 report.paired_score_conflicts.append((song, loadout_hash, int(meta_row[2]), int(fg_row[2])))
+    if fg_row is None and fg_copy is not None and fg_copy.get("frontier_trace"):
+        fg_trace = encode_trace({k: v for k, v in fg_copy.items() if k != "final_score"})
+        report.fg_replays += 1
     if meta_row is not None:
         score = int(meta_row[2])
         fg_score = int(meta_row[3] or 0) or None
@@ -202,6 +211,8 @@ def _loadout(song, meta_row, fg_row, gear_names, mini_names, report: Report) -> 
         fg_score=fg_score,
         meta=meta,
         fg=fg,
+        on_meta=meta_row is not None,
+        on_fg=fg_row is not None,
     )
     return Row(loadout, meta_trace, fg_trace)
 

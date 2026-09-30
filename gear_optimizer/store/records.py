@@ -1,8 +1,10 @@
 """Leaderboard records: one Loadout per loadout of a song and TeamBuff tier.
 
-A loadout can sit on two boards: the meta board (its best gem allocation without Force Greats, ranked by
-`score`) and the Force Greats board (ranked by `fg_score`). Each board keeps its own result; the replay
-witnesses (frontier traces) are stored beside them and loaded only on request (see store.db.load_traces).
+A loadout keeps its results for as long as it is stored: its meta result (the best gem allocation without Force
+Greats, scored `score`) and its Force Greats result (scored `fg_score`). Two boards list loadouts by those
+results: the meta board by score, the Force Greats board by FG score among FG results that beat the loadout's
+score; a loadout is stored while it is on at least one board. The replay witnesses (frontier traces) are stored
+beside the results and loaded only on request (see store.db.load_traces).
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ class MetaResult:
     gems: tuple[int, ...]  # counts per stats.GEM_KINDS
     stats: tuple[int, ...]  # per gamedata.STATS, gems applied
     updated: int  # unix seconds of the last write
-    seq: int  # the database's entry number: when the result entered its board (earlier first among exact ties)
+    seq: int  # the database's entry number: when the result was stored (earlier first among exact ties)
 
     def __post_init__(self) -> None:
         _check_result(self.element, self.gems, self.stats)
@@ -62,9 +64,11 @@ class Loadout:
     secondary: str
     mini_ascension: str | None  # Mini Ascension version the minis were resolved with; None: an older row
     score: int  # the base (meta) score
-    fg_score: int | None  # the best known Force Greats score; None: never evaluated
-    meta: MetaResult | None  # set while the loadout is on the meta board
-    fg: FgResult | None  # set while the loadout is on the Force Greats board
+    fg_score: int | None  # the best known Force Greats score (its FG result's, when it has one); None: never evaluated
+    meta: MetaResult | None
+    fg: FgResult | None
+    on_meta: bool = False  # on the meta board (set by the store when it ranks the boards)
+    on_fg: bool = False  # on the Force Greats board
 
     def __post_init__(self) -> None:
         if self.tier not in CANONICAL_TEAM_BUFF_TIERS:
@@ -72,9 +76,13 @@ class Loadout:
         if self.primary not in ELEMENTS or self.secondary not in ELEMENTS:
             raise ValueError(f"song colors must be elements, got {self.primary!r}/{self.secondary!r}")
         if self.meta is None and self.fg is None:
-            raise ValueError(f"loadout {self.loadout_hash} is on neither board")
+            raise ValueError(f"loadout {self.loadout_hash} has no result")
         if self.fg is not None and self.fg_score is None:
             raise ValueError(f"loadout {self.loadout_hash} has an FG result without an FG score")
+        if self.on_meta and self.meta is None:
+            raise ValueError(f"loadout {self.loadout_hash} is on the meta board without a meta result")
+        if self.on_fg and (self.fg is None or self.fg_score <= self.score):
+            raise ValueError(f"loadout {self.loadout_hash} is on the FG board without an FG result that beats its score")
 
 
 @dataclass(frozen=True, slots=True)

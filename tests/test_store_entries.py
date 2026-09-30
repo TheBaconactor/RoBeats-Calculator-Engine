@@ -129,6 +129,15 @@ def test_a_deferred_fg_update_carries_only_its_fg_result_at_the_paired_base_scor
     assert (c.row.loadout.score, c.row.loadout.fg_score) == (1000, 1500)
 
 
+def test_an_fg_result_that_does_not_beat_its_paired_score_is_kept_when_complete():
+    (c,) = _candidates([_entry(score=1000, fg_score=990)])
+    assert (c.row.loadout.fg_score, c.row.loadout.fg.gems) == (990, (1, 9, 11, 5, 2, 60))
+    incomplete = _entry(score=1000, fg_score=990)
+    del incomplete["force"]["response_surface"]
+    (c,) = _candidates([incomplete])
+    assert (c.row.loadout.fg, c.row.fg_trace, c.row.loadout.fg_score) == (None, None, 990)
+
+
 def test_entries_without_colors_use_the_songs_stored_colors():
     entry = _entry()
     for key in ("PrimaryColor", "SecondaryColor"):
