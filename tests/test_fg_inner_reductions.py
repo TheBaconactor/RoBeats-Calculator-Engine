@@ -1,5 +1,6 @@
 """Score and complete-witness parity against two-pass, exhaustive FG evaluation."""
 
+from tests.curves_support import synthetic_curves
 import itertools
 
 import numpy as np
@@ -325,7 +326,7 @@ def test_pp_bound_owner_mapping_survives_group_and_surface_chunks(monkeypatch):
         primary_color=colors[0],
         secondary_color=colors[1],
         selected_color=colors[2],
-        curves={"Perfect Points": b["ref_pp"], "Combo Multiplier": b["ref_cm"], "Fever Multiplier": b["ref_fm"]},
+        curves=synthetic_curves({"Perfect Points": b["ref_pp"], "Combo Multiplier": b["ref_cm"], "Fever Multiplier": b["ref_fm"]}),
     )
     builds = []
 

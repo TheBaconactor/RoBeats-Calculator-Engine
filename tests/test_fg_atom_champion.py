@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 import numpy as np
 import pytest
 
@@ -9,12 +10,12 @@ from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgRespo
 from tests.parity.force_greats.fg_atom_champion import prove_single_frontier_champions
 
 
-def _curves(dtype=np.float32) -> dict[str, np.ndarray]:
-    return {
+def _curves(dtype=np.float32):
+    return synthetic_curves({
         "Perfect Points": np.linspace(1.0, 2.0, 161, dtype=dtype),
         "Combo Multiplier": np.linspace(1.0, 2.0, 161, dtype=dtype),
         "Fever Multiplier": np.linspace(1.0, 2.0, 161, dtype=dtype),
-    }
+    })
 
 
 def test_head_coefficients_are_not_a_semantic_surface_key() -> None:
@@ -65,8 +66,10 @@ def test_head_coefficients_are_not_a_semantic_surface_key() -> None:
     coeffs = _precompute_surface_head_coeffs(surface_words, head_len=8)
 
     assert coeffs[0].tolist() == coeffs[1].tolist()
-    assert score_force_greats_response_surface_exact(stats, calc_song, _curves(np.float64), no_great) != (
-        score_force_greats_response_surface_exact(stats, calc_song, _curves(np.float64), with_great)
+    # Real curves: with the synthetic linear tables both surfaces happen to score the same.
+    real_curves = synthetic_curves({})
+    assert score_force_greats_response_surface_exact(stats, calc_song, real_curves, no_great) != (
+        score_force_greats_response_surface_exact(stats, calc_song, real_curves, with_great)
     )
 
 

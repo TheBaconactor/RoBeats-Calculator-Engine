@@ -9,11 +9,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _curves():
+    # The first 161 entries (stat values 0..160) of 1001-point ramps.
     size = 1001
     return synthetic_curves({
-        "Perfect Points": np.linspace(0.0, 2.0, size, dtype=np.float32),
-        "Combo Multiplier": np.linspace(1.0, 2.0, size, dtype=np.float32),
-        "Fever Multiplier": np.linspace(1.0, 2.0, size, dtype=np.float32),
+        "Perfect Points": np.linspace(0.0, 2.0, size, dtype=np.float32)[:161],
+        "Combo Multiplier": np.linspace(1.0, 2.0, size, dtype=np.float32)[:161],
+        "Fever Multiplier": np.linspace(1.0, 2.0, size, dtype=np.float32)[:161],
     })
 
 

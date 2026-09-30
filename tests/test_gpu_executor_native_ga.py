@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 from gear_optimizer.solver.gpu_executor_batching import execute_gpu_native_ga_run
 from gear_optimizer.solver.gpu_executor_types import GpuRequest, GpuRequestType
 
@@ -37,12 +38,13 @@ def test_execute_gpu_native_ga_run_validates_required_payload_dicts():
     )
 
     assert response.success is False
-    assert response.error == "Invalid payload for GPU_NATIVE_GA_RUN (expected calc_song/curves dicts)"
+    assert response.error == "Invalid payload for GPU_NATIVE_GA_RUN (expected a calc_song dict and StatCurves)"
 
 
 def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
     calls = []
     fused_calls = []
+    curves = synthetic_curves({})
 
     def _run_payload(**kwargs):
         calls.append(kwargs)
@@ -58,7 +60,7 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
         _request(
             {
                 "calc_song": {"notes": []},
-                "curves": {"x": 1},
+                "curves": curves,
                 "song_slot": "2",
                 "n_generations": "4",
                 "elite_count": "3",
@@ -89,7 +91,7 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
     assert fused_calls[0]["runs_payload"] == {"ok": True}
     assert fused_calls[0]["cfg_data"] == {"selected_color": "rush"}
     assert calls[0]["calc_song"] == {"notes": []}
-    assert calls[0]["curves"] == {"x": 1}
+    assert calls[0]["curves"] is curves
     assert calls[0]["song_slot"] == 2
     assert calls[0]["n_generations"] == 4
     assert calls[0]["elite_count"] == 3
@@ -108,7 +110,7 @@ def test_execute_gpu_native_ga_run_forwards_typed_payload_to_runner():
 
 def test_execute_gpu_native_ga_run_surfaces_runner_exception():
     response = execute_gpu_native_ga_run(
-        _request({"calc_song": {}, "curves": {}}),
+        _request({"calc_song": {}, "curves": synthetic_curves({})}),
         in_process_queues=True,
         abort_requested=lambda: False,
         raise_if_abort_requested=lambda: None,

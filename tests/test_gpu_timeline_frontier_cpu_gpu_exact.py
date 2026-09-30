@@ -25,8 +25,8 @@ def _cpu_frontier_payload(calc_song: dict, curves: dict):
             calc_song["song_data"]["fg_perfect_floor_timestamps"], dtype=np.float32
         ),
         lanes=np.asarray(calc_song["song_data"]["lanes"], dtype=np.int32),
-        ref_ft=np.asarray(curves["Fever Time"], dtype=np.float32),
-        ref_ff=np.asarray(curves["Fever Fill Rate"], dtype=np.float32),
+        ref_ft=curves.f32["Fever Time"],
+        ref_ff=curves.f32["Fever Fill Rate"],
     )
 
 

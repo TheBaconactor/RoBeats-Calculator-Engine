@@ -1,3 +1,6 @@
+from tests.curves_support import synthetic_curves
+
+
 def test_timeline_slot_cache_key_is_tuple_and_stable():
     from gear_optimizer.solver.taichi_gem.api.initialization import _curves_sig
     from gear_optimizer.solver.taichi_gem.api.timeline import _song_timing_cache_key
@@ -5,7 +8,7 @@ def test_timeline_slot_cache_key_is_tuple_and_stable():
     def _timeline_slot_key(calc_song: dict, curves: dict) -> tuple:
         return _song_timing_cache_key(calc_song) + (bytes(_curves_sig(curves)),)
 
-    curves = {}
+    curves = synthetic_curves({})
     calc_song = {
         "metadata": {
             "Song Name": "SongA",

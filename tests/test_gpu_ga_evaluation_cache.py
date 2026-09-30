@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from tests.curves_support import synthetic_curves
 from tests.test_gpu_ga_eval_incumbent_cull import (
     _GPU_LOCK,
     _N_GENOMES,
@@ -32,8 +33,7 @@ def test_reference_reload_cannot_reuse_old_scores(eval_device_state):
 
     with _GPU_LOCK:
         original = _run_production_eval(eval_device_state)
-        changed = _curves()
-        changed["Perfect Points"] *= 1.5
+        changed = synthetic_curves({"Perfect Points": _curves().f64["Perfect Points"] * 1.5})
         try:
             load_curves(changed)
             actual = _run_production_eval(eval_device_state)

@@ -26,11 +26,19 @@ def _reset_fg_cache() -> None:
     reset_fg_response_frontier_payload_cache()
 
 
+def _inside_float32(values, box_max: float):
+    """Clip the top value so its float32 rounding (what the dominance box reads) stays inside the box."""
+    top = np.float32(box_max)
+    if float(top) > box_max:
+        top = np.nextafter(top, np.float32(0.0))
+    return np.minimum(values, float(top))
+
+
 def _curves(rows: int = 161) -> dict:
     return synthetic_curves({
         "Perfect Points": np.linspace(0.0, 10.0, rows, dtype=np.float64),
-        "Combo Multiplier": np.linspace(1.95, 2.72, rows, dtype=np.float64),
-        "Fever Multiplier": np.linspace(2.95, 5.48, rows, dtype=np.float64),
+        "Combo Multiplier": _inside_float32(np.linspace(1.95, 2.72, rows, dtype=np.float64), 2.72),
+        "Fever Multiplier": _inside_float32(np.linspace(2.95, 5.48, rows, dtype=np.float64), 5.48),
         "Fever Fill Rate": np.full(rows, 0.5, dtype=np.float64),
         "Fever Time": np.full(rows, 0.5, dtype=np.float64),
     })

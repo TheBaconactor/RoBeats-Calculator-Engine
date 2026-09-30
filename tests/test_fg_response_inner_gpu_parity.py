@@ -17,19 +17,20 @@ Lives in its own file (no autouse `ti.ndarray` stub) so the device path is genui
 """
 from __future__ import annotations
 
+from tests.curves_support import synthetic_curves
 import numpy as np
 import pytest
 
 pytestmark = pytest.mark.gpu
 
 
-def _curves() -> dict[str, np.ndarray]:
-    idx = np.arange(1025, dtype=np.float64)
-    return {
-        "Perfect Points": np.ascontiguousarray(1.0 + idx * 0.01),
-        "Combo Multiplier": np.ascontiguousarray(1.0 + idx * 0.02),
-        "Fever Multiplier": np.ascontiguousarray(2.0 + idx * 0.03),
-    }
+def _curves():
+    idx = np.arange(161, dtype=np.float64)
+    return synthetic_curves({
+        "Perfect Points": 1.0 + idx * 0.01,
+        "Combo Multiplier": 1.0 + idx * 0.02,
+        "Fever Multiplier": 2.0 + idx * 0.03,
+    })
 
 
 def _inputs():

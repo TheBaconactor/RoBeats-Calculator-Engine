@@ -1602,7 +1602,7 @@ def test_native_static_fg_prep_attaches_canonical_response_bundle(monkeypatch) -
     from gear_optimizer.solver.taichi_gem.force_greats import response_cache_store
 
     calc_song = {"song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)}}
-    curves = synthetic_curves({"Fever Time": np.asarray([0.0]), "Fever Fill Rate": np.asarray([0.0])})
+    curves = synthetic_curves({"Fever Time": np.zeros(161), "Fever Fill Rate": np.zeros(161)})
     canonical_keys = ((0, 0), (1, 1))
     # surface_row_count=0 -> the session-box prune early-returns the bundle unchanged, keeping
     # this a pure wiring test (the prune itself is covered by test_fg_session_box_prune).
@@ -2434,7 +2434,7 @@ def test_fixed_timing_fg_replays_release_song_memory_on_failure(monkeypatch) -> 
                 fg_stats_list=[{"Perfect Points": 1}],
                 base_stats_list=[{"Perfect Points": 1}],
                 calc_song=song,
-                curves=_curves(),
+                curves=refs,
                 selected_color="Rush",
             )
         assert len(seeded) == 4
@@ -2475,7 +2475,7 @@ def test_fixed_timing_fg_replays_release_song_memory_on_success(monkeypatch) -> 
             fg_stats_list=[{"Perfect Points": 1}],
             base_stats_list=[{"Perfect Points": 1}],
             calc_song=song,
-            curves=_curves(),
+            curves=refs,
             selected_color="Rush",
         )
         assert replays == [{"surface": "surface-0", "force": {"paired_base": 100}}]

@@ -138,11 +138,11 @@ def test_fixed_timing_base_scorer_matches_fixed_value_primitive():
     cs = _calc_song()
     ref = _curves()
 
-    pp = lookup_reference_py(stats["Perfect Points"], ref["Perfect Points"], MAX_STAT)
-    combo = lookup_reference_py(stats["Combo Multiplier"], ref["Combo Multiplier"], MAX_STAT)
-    fever = lookup_reference_py(stats["Fever Multiplier"], ref["Fever Multiplier"], MAX_STAT)
-    ft_factor = lookup_reference_py(stats["Fever Time"], ref["Fever Time"], MAX_STAT)
-    ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref["Fever Fill Rate"], MAX_STAT)
+    pp = lookup_reference_py(stats["Perfect Points"], ref.f64["Perfect Points"], MAX_STAT)
+    combo = lookup_reference_py(stats["Combo Multiplier"], ref.f64["Combo Multiplier"], MAX_STAT)
+    fever = lookup_reference_py(stats["Fever Multiplier"], ref.f64["Fever Multiplier"], MAX_STAT)
+    ft_factor = lookup_reference_py(stats["Fever Time"], ref.f64["Fever Time"], MAX_STAT)
+    ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref.f64["Fever Fill Rate"], MAX_STAT)
     base_value = float(stats["Rush"] * 2 + stats["Flow"]) + float(pp)
 
     timestamps = cs["song_data"]["timestamps"]

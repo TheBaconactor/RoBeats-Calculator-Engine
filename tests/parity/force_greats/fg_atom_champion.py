@@ -237,9 +237,9 @@ def _score_atom_for_group(
         body_total=int(row[7]),
         primary_val=int(final_primary),
         secondary_val=int(final_secondary),
-        pp_factor=_lookup_ref(np.asarray(curves["Perfect Points"], dtype=np.float64), int(final_pp)),
-        combo_mul=_lookup_ref(np.asarray(curves["Combo Multiplier"], dtype=np.float64), int(final_cm)),
-        fever_mul=_lookup_ref(np.asarray(curves["Fever Multiplier"], dtype=np.float64), int(final_fm)),
+        pp_factor=_lookup_ref(curves.f64["Perfect Points"], int(final_pp)),
+        combo_mul=_lookup_ref(curves.f64["Combo Multiplier"], int(final_cm)),
+        fever_mul=_lookup_ref(curves.f64["Fever Multiplier"], int(final_fm)),
     )
     return np.asarray(
         [

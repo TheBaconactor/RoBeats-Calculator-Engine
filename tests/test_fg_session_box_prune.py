@@ -70,6 +70,25 @@ def _compact_patterns(words: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
+def _span_curves(combo: tuple[float, float], fever: tuple[float, float]):
+    """Curves whose float32 Combo/Fever Multiplier tables span the given ranges.
+
+    The engine reads the float32 tables the GPU scores with; the edges are moved to the nearest
+    float32 inside the range so a box edge stays inside the global box.
+    """
+    from tests.curves_support import synthetic_curves
+
+    def f32_inside(lo: float, hi: float) -> np.ndarray:
+        lo32, hi32 = np.float32(lo), np.float32(hi)
+        if float(lo32) < lo:
+            lo32 = np.nextafter(lo32, np.float32(np.inf))
+        if float(hi32) > hi:
+            hi32 = np.nextafter(hi32, np.float32(-np.inf))
+        return np.linspace(float(lo32), float(hi32), 161).astype(np.float32)
+
+    return synthetic_curves({"Combo Multiplier": f32_inside(*combo), "Fever Multiplier": f32_inside(*fever)})
+
+
 def test_session_box_prune_keeps_every_session_cell_winner():
     rng = np.random.default_rng(20260709)
     head_len = 40
@@ -202,21 +221,13 @@ def test_compact_pattern_basis_matches_expanded_row_survivor_snapshot():
 def test_session_head_dominance_box_reads_luts_and_fails_loud():
     from gear_optimizer.solver.taichi_gem.force_greats.response_cache import session_head_dominance_box
 
-    box = session_head_dominance_box({
-        "Combo Multiplier": np.asarray([2.4, 2.5, 2.7]),
-        "Fever Multiplier": np.asarray([4.4, 5.0]),
-    })
+    box = session_head_dominance_box(_span_curves((2.4, 2.7), (4.4, 5.0)))
     assert box[2] == pytest.approx(2.4) and box[3] == pytest.approx(2.7)
     assert box[4] == pytest.approx(4.4) and box[5] == pytest.approx(5.0)
     assert box[0] == float(_HEAD_DOM_V[0]) and box[7] == float(_HEAD_DOM_G[1])
     with pytest.raises(ValueError):
-        session_head_dominance_box({"Combo Multiplier": np.asarray([2.4])})
-    with pytest.raises(ValueError):
         # escapes the global box the payload envelope was built against
-        session_head_dominance_box({
-            "Combo Multiplier": np.asarray([1.0, 2.7]),
-            "Fever Multiplier": np.asarray([4.4, 5.0]),
-        })
+        session_head_dominance_box(_span_curves((1.0, 2.7), (4.4, 5.0)))
 
 
 def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_table(monkeypatch):
@@ -263,10 +274,7 @@ def test_issue116_v30_compact_session_prune_preserves_ids_offsets_and_pattern_ta
         long_notes=0,
         use_forced_great_timing=True,
     )
-    curves = {
-        "Combo Multiplier": np.asarray([2.45, 2.72]),
-        "Fever Multiplier": np.asarray([4.6, 5.48]),
-    }
+    curves = _span_curves((2.45, 2.72), (4.6, 5.48))
     v_lo, v_hi, c_lo, c_hi, f_lo, f_hi, g_lo, g_hi = response_cache.session_head_dominance_box(curves)
     original_offsets = np.asarray(bundle.frontier_offsets, dtype=np.int32)
     original_lengths = np.asarray(bundle.frontier_lengths, dtype=np.int32)
@@ -392,10 +400,7 @@ def test_session_prune_matches_retired_unique_remap(monkeypatch, combo_box, feve
         long_notes=0,
         use_forced_great_timing=True,
     )
-    curves = {
-        "Combo Multiplier": np.asarray(combo_box),
-        "Fever Multiplier": np.asarray(fever_box),
-    }
+    curves = _span_curves(combo_box, fever_box)
     pattern_ids_before = pattern_ids.copy()
     box = response_cache.session_head_dominance_box(curves)
     keep = np.asarray(

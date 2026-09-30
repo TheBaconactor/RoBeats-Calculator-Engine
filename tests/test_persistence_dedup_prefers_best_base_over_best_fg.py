@@ -1,3 +1,4 @@
+from tests.curves_support import synthetic_curves
 from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
 from tests.persistence_test_support import assemble_without_replay
 
@@ -234,7 +235,7 @@ def test_build_persistence_entries_canonicalizes_baseline_scores_for_replay(monk
         loadout_entries=loadout_entries,
         build_details_fn=lambda data: dict(data or {}),
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},
-        curves={"Perfect Points": [0]},
+        curves=synthetic_curves({}),
     )
 
     entry = next(e for e in out if e.get("gear") == gear and e.get("minis") == minis)
@@ -322,7 +323,7 @@ def test_build_persistence_entries_precanonicalizes_retained_loadout_entries(mon
         loadout_entries=loadout_entries,
         build_details_fn=lambda data: dict(data or {}),
         calc_song={"metadata": {"Primary Color": "Rush", "Secondary Color": "Vibe"}, "song_data": {}},
-        curves={"Perfect Points": [0]},
+        curves=synthetic_curves({}),
     )
 
     entry = next(e for e in out if e.get("gear") == gear and e.get("minis") == minis)
