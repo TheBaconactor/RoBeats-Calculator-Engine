@@ -143,6 +143,7 @@ def store_results(
     except BaseException:
         conn.rollback()
         raise
+    schema.truncate_wal(conn)
 
 
 def promote(source: str | os.PathLike[str], target: str | os.PathLike[str], song: str, tier: str) -> None:

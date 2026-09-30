@@ -73,6 +73,9 @@ INDEXES_DDL = (
 
 TABLES = ("songs", "loadouts")
 JOURNAL_SIZE_LIMIT = 64 * 1024 * 1024
+# A read-only connection cannot rebuild the WAL index, so every open rescans a leftover WAL (4 ms at 16 MiB, 15 ms
+# at 64 MiB, 90 ms at 388 MiB; measured 09-30): a write session truncates it, waiting this long at most for readers.
+TRUNCATE_WAIT_MS = 1000
 
 
 class StoreVersionError(RuntimeError):
@@ -138,6 +141,17 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     raise StoreVersionError(f"results database version {found} is not supported (this engine uses {VERSION})")
 
 
+def truncate_wal(conn: sqlite3.Connection) -> None:
+    """End a write session: checkpoint the write-ahead log and truncate it to zero bytes. A reader still on the log
+    makes it give up after TRUNCATE_WAIT_MS (the committed write stands; the next write session truncates)."""
+    timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute(f"PRAGMA busy_timeout = {TRUNCATE_WAIT_MS}")
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    finally:
+        conn.execute(f"PRAGMA busy_timeout = {timeout}")
+
+
 def _ensure_indexes(conn: sqlite3.Connection) -> None:
     """Add the indexes a version 19 database created before the entry-number indexes lacks (data unchanged)."""
     present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
@@ -147,6 +161,7 @@ def _ensure_indexes(conn: sqlite3.Connection) -> None:
     for ddl in INDEXES_DDL:
         conn.execute(ddl)
     conn.commit()
+    truncate_wal(conn)
 
 
 def _tables(conn: sqlite3.Connection) -> set[str]:

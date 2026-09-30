@@ -146,3 +146,32 @@ def test_the_next_entry_numbers_come_from_the_indexes(conn):
     for column in ("meta_seq", "fg_seq"):
         plan = " ".join(str(row[3]) for row in conn.execute(f"EXPLAIN QUERY PLAN SELECT MAX({column}) FROM loadouts"))
         assert f"loadouts_{column}" in plan and "SCAN loadouts" not in plan.replace(f"USING COVERING INDEX loadouts_{column}", "")
+
+
+def test_a_write_session_leaves_an_empty_write_ahead_log(tmp_path):
+    path = tmp_path / "results.db"
+    conn = schema.connect(path, write=True)
+    db.store_results(conn, "Song A", "T5", [result("a", 100, 150), result("b", 120)])
+    assert (tmp_path / "results.db-wal").stat().st_size == 0
+    conn.close()
+
+
+def test_a_reader_on_the_log_delays_the_truncation_only_briefly(tmp_path):
+    import time
+
+    path = tmp_path / "results.db"
+    conn = schema.connect(path, write=True)
+    db.store_results(conn, "Song A", "T5", [result("a", 100)])
+    reader = sqlite3.connect(path)
+    reader.execute("BEGIN")
+    reader.execute("SELECT COUNT(*) FROM loadouts").fetchone()  # holds a read snapshot
+    t0 = time.monotonic()
+    db.store_results(conn, "Song A", "T5", [result("b", 120)])
+    assert time.monotonic() - t0 < schema.TRUNCATE_WAIT_MS / 1000 + 1.0
+    assert (tmp_path / "results.db-wal").stat().st_size > 0  # the reader kept the log
+    reader.rollback()
+    reader.close()
+    db.store_results(conn, "Song A", "T5", [result("c", 90)])
+    assert (tmp_path / "results.db-wal").stat().st_size == 0
+    assert {x.loadout_hash for x in db.load_boards(conn, "Song A", "T5").meta} == {"a", "b", "c"}
+    conn.close()

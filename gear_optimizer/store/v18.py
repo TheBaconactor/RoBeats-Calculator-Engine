@@ -175,7 +175,7 @@ def migrate(
         conn.rollback()
         raise
     # The migration rewrote every row; truncate the write-ahead log it grew (readers pay for its size on open).
-    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # no wait bound: nothing else writes during a migration
     return report
 
 
