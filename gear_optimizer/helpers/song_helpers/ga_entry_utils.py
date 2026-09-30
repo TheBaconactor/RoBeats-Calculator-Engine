@@ -140,9 +140,9 @@ def candidate_loadout_hash(
         ]
         return _remember(effective_loadout_hash_from_names(list(gear_names), mini_sigs))
 
-    from ...data.database import get_loadout_hash
+    from .loadout_hashing import resolve_loadout_hash
 
-    return _remember(get_loadout_hash(gear_names, mini_names))
+    return _remember(resolve_loadout_hash(gear_names, mini_names))
 
 
 def materialize_entry_names(entry: Any, *, mutate: bool = True) -> tuple[list[str], list[str]]:
@@ -188,9 +188,9 @@ def entry_loadout_hash(entry: Any) -> str | None:
     if not gear_names and not mini_names:
         return None
 
-    from ...data.database import get_loadout_hash
+    from .loadout_hashing import resolve_loadout_hash
 
-    loadout_hash = str(get_loadout_hash(gear_names, mini_names))
+    loadout_hash = resolve_loadout_hash(gear_names, mini_names)
 
     entry["_resolved_loadout_hash"] = str(loadout_hash)
     return str(loadout_hash)

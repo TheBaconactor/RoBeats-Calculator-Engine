@@ -65,12 +65,9 @@ not directly from kernel internals.
 - Timing models (a chart timed for perfect_window or zero_ms): `gear_optimizer/solver/timing_envelope.py`
 - Exported-data synchronization:
   `gear_optimizer/data/exported_game_data_sync.py`
-- Database package facade: `gear_optimizer/data/database/`
-- Connection and path resolution:
-  `gear_optimizer/data/database/connection.py`
-- Transactional writes: `gear_optimizer/data/database/persistence.py`
-- Leaderboard reads: `gear_optimizer/data/database/leaderboards.py`
-- Schema definition and validation: `gear_optimizer/data/migrations/`
+- Results store: `gear_optimizer/store/` (typed rows in `records.py`, schema and
+  connections in `schema.py`, board rules in `boards.py`, reads and writes in
+  `db.py`, the version 18 migration in `v18.py`)
 - Service request isolation: `gear_optimizer/robeatsmeta_service.py`
 
 ## Tools

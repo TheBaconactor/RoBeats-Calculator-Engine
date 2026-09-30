@@ -358,20 +358,21 @@ def test_authoritative_fg_canonicalization_rejects_legacy_trace_without_schedule
         )
 
 
-def test_db_stale_fg_row_is_rejected_before_authoritative_upsert(tmp_path, monkeypatch):
-    from gear_optimizer.gamedata import load_stat_curves
+def test_a_stale_fg_row_is_rejected_by_the_store_and_the_authoritative_canonicalizer(tmp_path):
+    from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves
     from gear_optimizer.settings import paths
-    from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
     from gear_optimizer.solver.song_preparation import prepare_song
     from gear_optimizer.helpers.song_helpers.persistence_authority import canonicalize_authoritative_fg_entries
+    from gear_optimizer.store import db, schema
+    from gear_optimizer.store.legacy import store_entries
 
-    db_path = tmp_path / "authoritative_fg_repair.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    init_db()
-
+    conn = schema.connect(tmp_path / "authoritative_fg_repair.db", write=True)
     song = "pytest 00 hard authoritative fg"
     stale = _stale_00_hard_fg_entry()
-    save_loadouts_batch(song, [stale])
+    with pytest.raises(ValueError, match="without a frontier trace"):
+        store_entries(conn, song, "T5", [stale], gears=load_gears(paths().gears_csv), minis=load_minis(paths().minis_csv))
+    assert db.song_names(conn) == []
+    conn.close()
 
     timed_song = prepare_song("Data/Hard/00 (Hard) by garlagan.txt")
     curves = load_stat_curves(paths().stats_txt)
@@ -381,12 +382,3 @@ def test_db_stale_fg_row_is_rejected_before_authoritative_upsert(tmp_path, monke
         canonicalize_authoritative_fg_entries(
             [stale], song=timed_song, curves=curves
         )
-
-    with get_db_connection(str(db_path)) as conn:
-        row = conn.execute(
-            "SELECT score, fg_score FROM team_buff_fg_loadouts "
-            "WHERE song_name=? AND team_buff='T5'",
-            (song,),
-        ).fetchone()
-    assert row is not None
-    assert int(row["fg_score"]) == int(stale["fg_score"])

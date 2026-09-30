@@ -26,7 +26,7 @@ outer genetic search into an exhaustive loadout search.
 from pathlib import Path
 
 from gear_optimizer.chart import load_chart
-from gear_optimizer.data.database import get_best_loadouts
+from gear_optimizer.store.legacy import read_best_loadouts
 from gear_optimizer.gamedata import load_stat_curves
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
     compute_team_buff_tier_leaderboards,
@@ -37,11 +37,7 @@ from gear_optimizer.solver.timing_envelope import time_song
 song_key = "Rainshower (Easy) by Silentroom"
 song = time_song(load_chart(Path("Data/Easy/Rainshower.txt")), "perfect_window")
 
-entries = get_best_loadouts(
-    song_key,
-    team_buff="T5",
-    limit=51,
-)
+entries = read_best_loadouts(paths().database, song_key, "T5", limit=51)
 
 result = compute_team_buff_tier_leaderboards(
     entries=entries,

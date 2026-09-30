@@ -30,8 +30,6 @@ def _details_runtime_agnostic_view(details: Any) -> dict[str, Any]:
     if not isinstance(details, dict):
         return {}
     out = dict(details)
-    out.pop("attempt_lifetime", None)
-    out.pop("attempts_first", None)
     out.pop("TimelineFrontier", None)
     out.pop("st", None)
     out.pop("gc", None)

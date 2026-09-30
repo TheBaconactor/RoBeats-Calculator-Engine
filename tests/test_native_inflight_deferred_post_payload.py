@@ -146,8 +146,6 @@ def test_native_inflight_deferred_post_payload_keeps_replay_context(monkeypatch)
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         prev_record={"score": 100},
-        attempt_lifetime=9,
-        prev_attempts_first=2,
         db_best_fg_score=105,
     )
 
@@ -264,8 +262,6 @@ def test_native_inflight_deferred_post_payload_uses_inline_fg_as_authority(monke
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         prev_record={"score": 100},
-        attempt_lifetime=3,
-        prev_attempts_first=2,
         db_best_fg_score=105,
     )
 
@@ -411,8 +407,6 @@ def test_native_inflight_deferred_post_payload_keeps_persistence_on_exact_replay
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         prev_record=None,
-        attempt_lifetime=0,
-        prev_attempts_first=0,
         db_best_fg_score=0,
     )
 

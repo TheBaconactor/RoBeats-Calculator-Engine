@@ -12,9 +12,6 @@ def test_build_prepared_song_core_owns_song_stats_and_db_setup(monkeypatch):
         prev_record=None,
         db_best_score=0,
         db_best_fg_score=0,
-        attempt_lifetime=0,
-        attempts_first=0,
-        prev_attempts_first=0,
         db_baseline_valid=False,
     )
     calls = {}

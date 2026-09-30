@@ -89,6 +89,11 @@ def connect(path: str | os.PathLike[str], *, write: bool = False, timeout: float
     return conn
 
 
+def ensure(path: str | os.PathLike[str]) -> None:
+    """Create the database, or migrate it to this version, if needed."""
+    connect(path, write=True).close()
+
+
 def user_version(conn: sqlite3.Connection) -> int:
     return int(conn.execute("PRAGMA user_version").fetchone()[0])
 

@@ -12,6 +12,7 @@ import zlib
 from dataclasses import dataclass
 from typing import Any
 
+from ..core.team_buff import CANONICAL_TEAM_BUFF_TIERS
 from ..gamedata import ELEMENTS, STATS
 from ..stats import GEM_KINDS
 
@@ -27,7 +28,7 @@ class MetaResult:
     gems: tuple[int, ...]  # counts per stats.GEM_KINDS
     stats: tuple[int, ...]  # per gamedata.STATS, gems applied
     updated: int  # unix seconds of the last write
-    seq: int  # when it entered the board, relative to the song's other entries (earlier first among exact ties)
+    seq: int  # the database's entry number: when the result entered its board (earlier first among exact ties)
 
     def __post_init__(self) -> None:
         _check_result(self.element, self.gems, self.stats)
@@ -66,6 +67,8 @@ class Loadout:
     fg: FgResult | None  # set while the loadout is on the Force Greats board
 
     def __post_init__(self) -> None:
+        if self.tier not in CANONICAL_TEAM_BUFF_TIERS:
+            raise ValueError(f"TeamBuff tier must be one of {sorted(CANONICAL_TEAM_BUFF_TIERS)}, got {self.tier!r}")
         if self.primary not in ELEMENTS or self.secondary not in ELEMENTS:
             raise ValueError(f"song colors must be elements, got {self.primary!r}/{self.secondary!r}")
         if self.meta is None and self.fg is None:

@@ -33,8 +33,8 @@ leaderboard frontier changes unexpectedly.
 
 ## Database maintenance
 
-The database facade is `gear_optimizer.data.database`; schema ownership is in
-`gear_optimizer/data/migrations/`.
+The results store is `gear_optimizer/store`; `store/schema.py` owns the schema
+and `store/v18.py` the migration from the previous format.
 
 - Current schema version is validated through `PRAGMA user_version`.
 - Incompatible or unversioned existing databases fail loudly.

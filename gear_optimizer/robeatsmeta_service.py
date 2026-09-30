@@ -30,13 +30,9 @@ from urllib.parse import urlsplit
 from gear_optimizer.chart import read_header
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.macos_background import make_process_background_only
-from gear_optimizer.settings import DIFFICULTIES, REASONING_LEVELS, reasoning_search, service_settings
-from gear_optimizer.data.database import (
-    get_best_loadouts,
-    get_evolution_db_path,
-    get_song_names_present_in_db,
-    save_loadouts_batch,
-)
+from gear_optimizer.settings import DIFFICULTIES, REASONING_LEVELS, paths, reasoning_search, service_settings
+from gear_optimizer.store import legacy, schema
+from gear_optimizer.store.db import present_songs
 from gear_optimizer.data.exported_game_data_sync import exported_song_names
 from gear_optimizer.frontier_auth import FrontierRequestAuthenticator
 from gear_optimizer.frontier_server import (
@@ -755,12 +751,11 @@ def _promote_official_result(
         return
     if timing_mode != "perfect_window" or any(custom_pool.values()):
         return
-    save_loadouts_batch(
-        song_name,
-        entries,
-        db_path=get_evolution_db_path(),
-        team_buff="T5",
-    )
+    conn = schema.connect(paths().database, write=True)
+    try:
+        legacy.promote_entries(conn, song_name, "T5", entries)
+    finally:
+        conn.close()
     logger.info("promoted official optimizer result for %s into evolution.db", song_name)
 
 
@@ -1149,9 +1144,7 @@ def _solve_isolated(
                 if proc.returncode != 0:
                     tail = " | ".join((err or out or "").strip().splitlines()[-20:])
                     raise RuntimeError(f"optimizer exited {proc.returncode}: {tail}")
-                entries = get_best_loadouts(
-                    result_song_name, limit=LOADOUTS_PER_SONG_LIMIT, team_buff="T5", db_path=str(db_path)
-                )
+                entries = legacy.read_best_loadouts(db_path, result_song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
                 if not entries:
                     raise RuntimeError("optimizer produced no T5 loadout")
                 return entries
@@ -1239,7 +1232,14 @@ def unbuilt_catalog_song_ids() -> list[str]:
     """Official charts the active game data describes that evolution.db has no build for."""
     payload = json.loads((DATA_ROOT / "exported_game_data.json").read_text(encoding="utf-8"))
     candidates = exported_song_names(payload).intersection(_official_song_catalog().paths_by_song_id)
-    return sorted(candidates - get_song_names_present_in_db(candidates))
+    catalog = paths().database
+    if not catalog.exists():
+        return sorted(candidates)
+    conn = schema.connect(catalog)
+    try:
+        return sorted(candidates - present_songs(conn, candidates))
+    finally:
+        conn.close()
 
 
 def build_missing_catalog_songs() -> None:

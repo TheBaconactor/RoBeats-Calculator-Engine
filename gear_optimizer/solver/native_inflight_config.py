@@ -287,8 +287,6 @@ class NativeSongDBState:
     db_best_score: int = 0
     db_best_fg_score: int = 0
     db_baseline_valid: bool = False
-    attempt_lifetime: int = 0
-    prev_attempts_first: int = 0
     record_info: Optional[JsonDict] = None
 
 

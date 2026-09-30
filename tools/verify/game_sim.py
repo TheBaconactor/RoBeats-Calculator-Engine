@@ -42,9 +42,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import glob
-import json
 import math
-import sqlite3
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -829,31 +827,23 @@ def _build_aurora_intended():
     import numpy as np
 
     from gear_optimizer.core.gem_defs import element_gem_count
-    from gear_optimizer.data.database_codecs import _unpack_stats_after_load
     from gear_optimizer.chart import load_chart, read_header
     from gear_optimizer.solver.fg_response_scoring.note_graph import force_greats_note_graph
     from gear_optimizer.stats import apply_gems, gems
 
+    from tools.verify.loadout_oracle_replay import _load_loadout
+
     db = str(ROOT / ".calc" / "aurora_fix.db")
-    con = sqlite3.connect(db)
-    con.row_factory = sqlite3.Row
-    row = con.execute(
-        "SELECT song_name, score, fg_score, force_details_json, details_json FROM team_buff_fg_loadouts "
-        "WHERE force_details_json IS NOT NULL AND song_name LIKE 'Aurora%' ORDER BY fg_score DESC"
-    ).fetchone()
-    fd = _unpack_stats_after_load(json.loads(row["force_details_json"]))
-    det = json.loads(row["details_json"]) if row["details_json"] else {}
-    primary = str(det.get("pc") or fd.get("Selected Element") or "")
-    secondary = str(det.get("sc") or primary)
+    fd, song_name, surface_fg, surface_base, primary, secondary = _load_loadout(db, "Aurora", 0)
 
     # chart
     fp = None
     for diff in ("Easy", "Normal", "Hard"):
         for f in glob.glob(str(ROOT / "Data" / diff / "*.txt")):
-            if read_header(f).get("Song Name", "") == row["song_name"]:
+            if read_header(f).get("Song Name", "") == song_name:
                 fp = f
     if fp is None:
-        raise SystemExit(f"chart not found for {row['song_name']!r}")
+        raise SystemExit(f"chart not found for {song_name!r}")
     song_chart = load_chart(Path(fp))
     ts = song_chart.timestamps
     nt = song_chart.note_types
@@ -926,7 +916,7 @@ def _build_aurora_intended():
         "hitObjectsCount": taps + heads,
         "lastNoteTimeSec": (last_note_time_ms + 1000.0) / 1000.0,
     }
-    return chart, statsdict, colors, intended, config, int(row["fg_score"]), int(row["score"])
+    return chart, statsdict, colors, intended, config, int(surface_fg), int(surface_base)
 
 
 def _validate(frame_dt_ms: float) -> int:

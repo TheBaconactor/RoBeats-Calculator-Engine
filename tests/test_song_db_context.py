@@ -17,7 +17,7 @@ def test_cached_db_context_uses_baseline_team_buff_key(monkeypatch):
     ):
         calls.append(str(team_buff))
         score = {"T5": 0}[str(team_buff)]
-        return {"score": score, "gear": ["G"], "minis": ["M"]}, score, score + 1, score + 2, score + 3, True
+        return {"score": score, "gear": ["G"], "minis": ["M"]}, score, score + 1, True
 
     monkeypatch.setattr(song_db_context, "load_database_progress_baseline", _fake_load_database_progress_baseline)
 
@@ -36,18 +36,11 @@ def test_cached_db_context_uses_baseline_team_buff_key(monkeypatch):
     assert cached.baseline_team_buff == "T5"
 
 
-def test_prepared_db_context_preserves_attempts(monkeypatch):
+def test_prepared_db_context_carries_the_baseline(monkeypatch):
     _clear_cache()
 
     def _fake_load_database_progress_baseline(*_args, **_kwargs):
-        return (
-            {"score": 100},
-            100,
-            105,
-            7,
-            3,
-            True,
-        )
+        return ({"score": 100}, 100, 105, True)
 
     monkeypatch.setattr(song_db_context, "load_database_progress_baseline", _fake_load_database_progress_baseline)
 
@@ -59,7 +52,4 @@ def test_prepared_db_context_preserves_attempts(monkeypatch):
     assert ctx.prev_record == {"score": 100}
     assert ctx.db_best_score == 100
     assert ctx.db_best_fg_score == 105
-    assert ctx.attempt_lifetime == 7
-    assert ctx.prev_attempts_first == 3
-    assert ctx.attempts_first == 4
     assert ctx.db_baseline_valid is True

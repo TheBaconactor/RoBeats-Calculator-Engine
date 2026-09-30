@@ -136,19 +136,12 @@ change a result. A missing or incompatible exact surface is an error.
 canonicalizes retained Base and Force Great results before passing persistence
 work to `AsyncDbSaver`.
 
-The database boundary is:
-
-- `gear_optimizer/data/database/connection.py` for path resolution and schema
-  initialization;
-- `gear_optimizer/data/database/leaderboards.py` for seed and leaderboard
-  reads;
-- `gear_optimizer/data/database/persistence.py` for transactional writes; and
-- `gear_optimizer/data/migrations/` for schema definition and validation.
-
-The package facade is `gear_optimizer.data.database`. Base and Force Great
-leaderboards have separate ranking authority and separate tables.
-`save_optimizer_song_result()` commits a processed song's retained entries and
-attempt counters atomically.
+The database boundary is `gear_optimizer/store` (see DATABASE_SCHEMA.md):
+`schema` for connections, the DDL and migrations; `boards` for board order and
+the merge of new results; `db` for reads and writes; `records` for the typed
+rows. One row per loadout holds its meta and Force Great results; each board
+has its own ranking. `store.db.store_results()` merges a processed song's
+results into its boards in one transaction.
 
 ## HTTP service
 

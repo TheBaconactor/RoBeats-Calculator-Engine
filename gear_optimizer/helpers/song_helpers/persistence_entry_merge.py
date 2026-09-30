@@ -29,12 +29,7 @@ def merge_persist_entry(
 ) -> None:
     h = str(loadout_hash_val or "").strip() or resolve_loadout_hash(gear_items, mini_items)
 
-    attempt_lifetime = details_obj.get("attempt_lifetime", 0) if details_obj else 0
-    attempts_first = details_obj.get("attempts_first", 0) if details_obj else 0
-
     details_with_meta = dict(details_obj or {})
-    details_with_meta["attempt_lifetime"] = attempt_lifetime
-    details_with_meta["attempts_first"] = attempts_first
 
     force_out = force_obj
     if callable(normalize_force_payload_fn) and isinstance(force_obj, dict):

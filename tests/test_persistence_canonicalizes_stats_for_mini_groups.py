@@ -1,10 +1,29 @@
 import json
-import sqlite3
 from pathlib import Path
+
+from gear_optimizer.gamedata import STATS
+from gear_optimizer.store import db, schema
+from gear_optimizer.store.legacy import store_entries
 from tests.items_support import minis_from_dicts
 
 
-def test_persistence_canonicalizes_stats_for_mini_equivalence_groups(monkeypatch, tmp_path: Path):
+def _store(tmp_path: Path, song: str, entries: list[dict], fake_minis: dict):
+    """Store entries against a fake minis catalog; return the song's (meta board, FG board)."""
+    conn = schema.connect(tmp_path / "results.db", write=True)
+    try:
+        store_entries(conn, song, "T5", entries, gears={}, minis=minis_from_dicts(fake_minis))
+        boards = db.load_boards(conn, song, "T5")
+        traces = db.load_traces(conn, song, "T5", [x.loadout_hash for x in boards.meta + boards.fg])
+    finally:
+        conn.close()
+    return boards, traces
+
+
+def _stats(result) -> dict[str, int]:
+    return dict(zip(STATS, result.stats))
+
+
+def test_persistence_canonicalizes_stats_for_mini_equivalence_groups(tmp_path: Path):
     """
     Regression: When minis are grouped by song-context equivalence, persisted Stats must be
     canonicalized to the representative mini names (legacy DB behavior), not whichever
@@ -12,11 +31,6 @@ def test_persistence_canonicalizes_stats_for_mini_equivalence_groups(monkeypatch
 
     This also catches "score correct but stats wrong" drift where off-element stats differ.
     """
-    db_path = tmp_path / "evolution.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-
-    import gear_optimizer.data.database as db
-
     # Two equivalent minis under (Primary=Beat, Secondary=Chill, Selected=Beat):
     # - identical PP/CM/FM/FT/FF + identical Beat/Chill
     # - differ only in Flow (off-element) so score can tie but Stats should be canonical.
@@ -49,11 +63,6 @@ def test_persistence_canonicalizes_stats_for_mini_equivalence_groups(monkeypatch
         "Solo B": {"Name": "Solo B", "type": "mini", "Beat": 2, "Chill": 3, "Flow": 0},
     }
 
-    monkeypatch.setattr(db.persistence, "load_minis", lambda _path: minis_from_dicts(fake_minis))
-    monkeypatch.setattr(db.persistence, "load_gears", lambda _path: {})
-
-    db.init_db()
-
     entry = {
         "score": 123,
         "fg_score": 0,
@@ -73,20 +82,8 @@ def test_persistence_canonicalizes_stats_for_mini_equivalence_groups(monkeypatch
         "force": None,
     }
 
-    db.save_loadouts_batch("pytest_song", [entry])
-
-    con = sqlite3.connect(db_path)
-    try:
-        row = con.execute(
-            "SELECT details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' LIMIT 1",
-            ("pytest_song",),
-        ).fetchone()
-        assert row is not None
-        details = json.loads(row[0])
-        details = db._unpack_stats_after_load(details) or {}
-        stats = (details.get("Stats") or {}) if isinstance(details, dict) else {}
-    finally:
-        con.close()
+    boards, _traces = _store(tmp_path, "pytest_song", [entry], fake_minis)
+    stats = _stats(boards.meta[0].meta)
 
     # Canonical rep for the equivalence group is lexicographically first ("BlackY"), so Flow must be 111.
     assert int(stats.get("Flow", 0) or 0) == 111
@@ -94,16 +91,11 @@ def test_persistence_canonicalizes_stats_for_mini_equivalence_groups(monkeypatch
     assert int(stats.get("Vibe", 0) or 0) == 0
 
 
-def test_persistence_rotates_representatives_for_duplicate_variant_groups(monkeypatch, tmp_path: Path):
+def test_persistence_rotates_representatives_for_duplicate_variant_groups(tmp_path: Path):
     """
     Legacy minis grouping behavior: when two equipped minis share the same variant group,
     rotate representatives so the two slots use distinct first-elements when possible.
     """
-    db_path = tmp_path / "evolution.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-
-    import gear_optimizer.data.database as db
-
     fake_minis = {
         "BlackY": {
             "Name": "BlackY",
@@ -134,11 +126,6 @@ def test_persistence_rotates_representatives_for_duplicate_variant_groups(monkey
         "Halloween Witch Teresa": {"Name": "Halloween Witch Teresa", "type": "mini", "Beat": 0, "Chill": 0},
     }
 
-    monkeypatch.setattr(db.persistence, "load_minis", lambda _path: minis_from_dicts(fake_minis))
-    monkeypatch.setattr(db.persistence, "load_gears", lambda _path: {})
-
-    db.init_db()
-
     entry = {
         "score": 123,
         "fg_score": 0,
@@ -157,27 +144,9 @@ def test_persistence_rotates_representatives_for_duplicate_variant_groups(monkey
         "force": None,
     }
 
-    db.save_loadouts_batch("pytest_song", [entry])
-
-    con = sqlite3.connect(db_path)
-    try:
-        row = con.execute(
-            "SELECT details_json, minis_ids_blob FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' LIMIT 1",
-            ("pytest_song",),
-        ).fetchone()
-        assert row is not None
-        details = json.loads(row[0])
-        details = db._unpack_stats_after_load(details) or {}
-        stats = (details.get("Stats") or {}) if isinstance(details, dict) else {}
-
-        mini_id_groups = db._unpack_id_groups(row[1])
-        maps = db._load_piece_name_encoding_maps(con, db_path=str(db_path))
-        mini_groups = [
-            [str(maps.mini_id_to_name.get(int(i), "") or "") for i in (g or []) if int(i) > 0] for g in mini_id_groups
-        ]
-        mini_groups = [[n for n in g if n] for g in mini_groups if g]
-    finally:
-        con.close()
+    boards, _traces = _store(tmp_path, "pytest_song", [entry], fake_minis)
+    stats = _stats(boards.meta[0].meta)
+    mini_groups = [list(group) for group in boards.meta[0].minis]
 
     # Expect the combination (BlackY + Heavy Metal Starlet), not (BlackY + BlackY).
     assert int(stats.get("Flow", 0) or 0) == 20
@@ -192,12 +161,7 @@ def test_persistence_rotates_representatives_for_duplicate_variant_groups(monkey
     assert {dupe_groups[0][0], dupe_groups[1][0]} == {"BlackY", "Heavy Metal Starlet"}
 
 
-def test_fg_payload_stats_match_the_persisted_mini_representative(monkeypatch, tmp_path: Path):
-    db_path = tmp_path / "evolution.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-
-    import gear_optimizer.data.database as db
-
+def test_fg_payload_stats_match_the_persisted_mini_representative(tmp_path: Path):
     fake_minis = {
         "BlackY": {
             "Name": "BlackY",
@@ -214,9 +178,6 @@ def test_fg_payload_stats_match_the_persisted_mini_representative(monkeypatch, t
             "Flow": 999,
         },
     }
-    monkeypatch.setattr(db.persistence, "load_minis", lambda _path: minis_from_dicts(fake_minis))
-    monkeypatch.setattr(db.persistence, "load_gears", lambda _path: {})
-    db.init_db()
 
     solved_stats = {
         "Perfect Points": 45,  # T5 25 + the mini's 20 ascension PP
@@ -231,7 +192,8 @@ def test_fg_payload_stats_match_the_persisted_mini_representative(monkeypatch, t
         "Vibe": 0,
     }
     gems = {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0}
-    db.save_loadouts_batch(
+    boards, traces = _store(
+        tmp_path,
         "pytest_fg_song",
         [
             {
@@ -269,32 +231,14 @@ def test_fg_payload_stats_match_the_persisted_mini_representative(monkeypatch, t
                 },
             }
         ],
+        fake_minis,
     )
-
-    con = sqlite3.connect(db_path)
-    try:
-        row = con.execute(
-            "SELECT details_json, force_details_json, minis_ids_blob "
-            "FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
-            ("pytest_fg_song",),
-        ).fetchone()
-        assert row is not None
-        details = db._unpack_stats_after_load(json.loads(row[0]))
-        force = json.loads(row[1])
-        groups = db._unpack_id_groups(row[2])
-        maps = db._load_piece_name_encoding_maps(con, db_path=str(db_path))
-        displayed_minis = [[maps.mini_id_to_name[i] for i in group] for group in groups]
-        base_details_json = con.execute(
-            "SELECT details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
-            ("pytest_fg_song",),
-        ).fetchone()[0]
-    finally:
-        con.close()
-
-    assert displayed_minis[0][0] == "BlackY"
-    assert details["Stats"]["Flow"] == 111
-    assert force["BaseStats"] == details["Stats"]
-    persisted_json = f"{base_details_json}\n{row[0]}\n{row[1]}"
+    (row,) = boards.fg
+    assert row.minis[0][0] == "BlackY"
+    assert _stats(row.fg)["Flow"] == 111
+    assert row.fg.stats == row.meta.stats  # same gems here
+    persisted_json = json.dumps([traces[row.loadout_hash].meta, traces[row.loadout_hash].fg])
+    assert '"frontier_trace"' in persisted_json
     assert '"forced_counts"' not in persisted_json
     assert '"forced_prefix_count"' not in persisted_json
     assert '"config"' not in persisted_json
@@ -302,12 +246,7 @@ def test_fg_payload_stats_match_the_persisted_mini_representative(monkeypatch, t
     assert '"variant_applied"' not in persisted_json
 
 
-def test_fg_representative_stats_use_fg_gems_not_paired_base_gems(monkeypatch, tmp_path: Path):
-    db_path = tmp_path / "evolution.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-
-    import gear_optimizer.data.database as db
-
+def test_fg_representative_stats_use_fg_gems_not_paired_base_gems(tmp_path: Path):
     fake_minis = {
         "BlackY": {"Name": "BlackY", "type": "mini", "Beat": 10, "Chill": 20, "Flow": 111},
         "Heavy Metal Starlet": {
@@ -318,9 +257,6 @@ def test_fg_representative_stats_use_fg_gems_not_paired_base_gems(monkeypatch, t
             "Flow": 999,
         },
     }
-    monkeypatch.setattr(db.persistence, "load_minis", lambda _path: minis_from_dicts(fake_minis))
-    monkeypatch.setattr(db.persistence, "load_gears", lambda _path: {})
-    db.init_db()
 
     base_stats = {
         "Perfect Points": 45,  # T5 25 + the mini's 20 ascension PP
@@ -337,7 +273,8 @@ def test_fg_representative_stats_use_fg_gems_not_paired_base_gems(monkeypatch, t
     fg_stats = {**base_stats, "Fever Fill Rate": 3, "Beat": 100}
     base_gems = {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0}
     fg_gems = {**base_gems, "Element": 10}
-    db.save_loadouts_batch(
+    boards, _traces = _store(
+        tmp_path,
         "pytest_fg_gem_surface",
         [
             {
@@ -365,23 +302,13 @@ def test_fg_representative_stats_use_fg_gems_not_paired_base_gems(monkeypatch, t
                     "FF": 1,
                     "SelectedElement": "Beat",
                     "response_surface": [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
-                    "ForceGreats": {"final_score": 130},
+                    "ForceGreats": {"final_score": 130, "frontier_trace": [{"next_state": 1}]},
                 },
             }
         ],
+        fake_minis,
     )
-
-    con = sqlite3.connect(db_path)
-    try:
-        force = json.loads(
-            con.execute(
-                "SELECT force_details_json FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
-                ("pytest_fg_gem_surface",),
-            ).fetchone()[0]
-        )
-    finally:
-        con.close()
-
-    assert force["BaseStats"]["Fever Fill Rate"] == 3
-    assert force["BaseStats"]["Beat"] == 100
-    assert force["BaseStats"]["Flow"] == 111
+    fg_stats_stored = _stats(boards.fg[0].fg)
+    assert fg_stats_stored["Fever Fill Rate"] == 3
+    assert fg_stats_stored["Beat"] == 100
+    assert fg_stats_stored["Flow"] == 111

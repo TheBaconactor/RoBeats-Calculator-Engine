@@ -1,18 +1,16 @@
 # Database Schema
 
-RoBeats Calculator Engine stores retained results in SQLite. The canonical
-Python surface is `gear_optimizer.data.database`; schema definition and
-validation live in `gear_optimizer/data/migrations/`.
+RoBeats Calculator Engine stores retained results in SQLite. `gear_optimizer/store` owns the format:
+`records` (typed rows), `schema` (the DDL, connections, migrations), `boards` (board order and the merge of
+new results), `db` (reads and writes), `v18` (the previous format's reader and the migration from it).
 
 ## Path and lifecycle
 
-- `EVOLUTION_DB_PATH` overrides the database location for the current process.
-- Without an override, the connection layer uses the resolved default
-  `evolution.db` location.
-- Write connections enable WAL mode and validate schema version 18.
-- A new empty database receives the current schema.
-- An unversioned, legacy-version, or newer-than-supported existing database
-  fails loudly. Rebuild or migrate it explicitly; startup does not guess.
+- `EVOLUTION_DB_PATH` overrides the database location for the current process; the default is
+  `<engine>/evolution.db`.
+- `schema.connect(path, write=True)` enables WAL, creates schema version 19 on an empty database and
+  migrates a version 18 database (`store.v18.migrate`, one transaction). Any other version fails loudly.
+- `schema.connect(path)` opens a read-only connection and requires version 19.
 
 Runtime databases are generated state and must not be committed.
 
@@ -20,154 +18,78 @@ Runtime databases are generated state and must not be committed.
 
 ### `songs`
 
-Stores per-chart maxima and attempt counters.
+One row per song the optimizer has processed (a run that stored nothing still marks the song).
 
 ```sql
 CREATE TABLE songs (
     name TEXT PRIMARY KEY,
-    best_score INTEGER DEFAULT 0,
-    best_fg_score INTEGER DEFAULT 0,
-    last_updated REAL,
-    attempt_lifetime INTEGER DEFAULT 0,
-    attempts_first INTEGER DEFAULT 0
-);
+    last_updated REAL NOT NULL
+) STRICT;
 ```
 
-### `team_buff_loadouts`
+### `loadouts`
 
-Retains the Base leaderboard. `score` is the ranking authority; `fg_score` is
-context only.
+One row per loadout of a song and TeamBuff tier. A loadout can be on two boards: the meta board (its best
+gem allocation without Force Greats, ranked by `score`) and the Force Greats board (ranked by `fg_score`).
 
 ```sql
-CREATE TABLE team_buff_loadouts (
-    song_name TEXT,
-    team_buff TEXT,
-    loadout_hash TEXT,
-    score INTEGER,
-    fg_score INTEGER DEFAULT 0,
-    gear_ids_blob BLOB,
-    minis_ids_blob BLOB,
-    details_json TEXT,
-    force_details_json TEXT,
-    timestamp REAL,
+CREATE TABLE loadouts (
+    song_name TEXT NOT NULL REFERENCES songs (name),
+    team_buff TEXT NOT NULL,
+    loadout_hash TEXT NOT NULL,
+    gear TEXT NOT NULL,            -- JSON list of gear names, slot order
+    minis TEXT NOT NULL,           -- JSON list: per equipped mini, its equivalent names (display order)
+    primary_color TEXT NOT NULL,
+    secondary_color TEXT NOT NULL,
+    mini_ascension TEXT,           -- Mini Ascension version of the row's minis (NULL: an older row)
+    score INTEGER NOT NULL,        -- the loadout's base score (single source)
+    fg_score INTEGER,              -- its best known Force Greats score (NULL: never evaluated)
+    meta_updated INTEGER,          -- meta board result: NULL columns = not on the meta board
+    meta_seq INTEGER,
+    meta_result TEXT,              -- JSON {element, gems[6], stats[10]}
+    fg_updated INTEGER,            -- Force Greats board result: NULL columns = not on the FG board
+    fg_seq INTEGER,
+    fg_result TEXT,                -- JSON {element, gems[6], stats[10], surface[11]}
+    meta_trace BLOB,               -- zlib JSON: the timeline frontier replay witness
+    fg_trace BLOB,                 -- zlib JSON: the Force Greats replay witness
     PRIMARY KEY (song_name, team_buff, loadout_hash),
-    FOREIGN KEY (song_name) REFERENCES songs(name)
-);
+    ...
+) STRICT;
 ```
 
-### `team_buff_fg_loadouts`
+Gems follow `stats.GEM_KINDS` and stats `gamedata.STATS`. `*_updated` is the unix second of the last write
+of that result; `*_seq` numbers results in the order they entered their board, across the whole database.
+The traces come last so board scans never read them; `store.db.load_traces` loads them on request.
 
-Retains the Force Great leaderboard. `fg_score` is the ranking authority and
-the row carries the replayable Force Great payload.
+## Boards
 
-```sql
-CREATE TABLE team_buff_fg_loadouts (
-    song_name TEXT,
-    team_buff TEXT,
-    loadout_hash TEXT,
-    score INTEGER,
-    fg_score INTEGER,
-    gear_ids_blob BLOB,
-    minis_ids_blob BLOB,
-    details_json TEXT,
-    force_details_json TEXT,
-    timestamp REAL,
-    PRIMARY KEY (song_name, team_buff, loadout_hash),
-    FOREIGN KEY (song_name) REFERENCES songs(name)
-);
-```
+- Meta board: rows with a `meta_result`, by `score DESC, fg_score DESC (NULL last), meta_updated DESC,
+  meta_seq`.
+- Force Greats board: rows with an `fg_result`, by `fg_score DESC, score DESC, fg_updated DESC, fg_seq`.
+- Each board keeps `LOADOUTS_PER_SONG_LIMIT` (51) loadouts per song and tier: the best scores, the earliest
+  entries among equal scores.
+- An FG result is kept only while its FG score beats the loadout's score. A loadout that leaves the FG
+  board keeps an FG score no higher than its score.
 
-The two leaderboard tables are intentionally separate. A high Base result may
-not be the best Force Great result, and pruning one table by the other
-objective would lose valid candidates.
-
-### Name-encoding tables
-
-Gear and Mini names are deduplicated and referenced by compact integer IDs:
-
-```sql
-CREATE TABLE gear_name_encoding (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE
-);
-
-CREATE TABLE mini_name_encoding (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE
-);
-```
-
-`gear_ids_blob` stores a packed ID list. `minis_ids_blob` stores packed Mini
-variant groups. Use the Python database package to decode them.
-
-## Indexes
-
-```sql
-CREATE INDEX idx_team_buff_loadouts_score
-    ON team_buff_loadouts (song_name, team_buff, score DESC);
-
-CREATE INDEX idx_team_buff_loadouts_fg_score
-    ON team_buff_loadouts (song_name, team_buff, fg_score DESC);
-
-CREATE INDEX idx_team_buff_fg_loadouts_score
-    ON team_buff_fg_loadouts (song_name, team_buff, fg_score DESC);
-```
-
-## Payload contracts
-
-- `details_json` describes and replays `score`.
-- `force_details_json` on a Force Great row describes and replays `fg_score`.
-- Gear and Mini names are represented by the encoding BLOBs, not repeated JSON
-  lists.
-- Stats and common color/gem fields are compacted for storage and expanded by
-  `get_best_loadouts`.
-- A Force Great gem allocation must not overwrite the Base details payload.
-
-Default optimizer writes retain the configured baseline Team Buff, normally
-`T5`. Other tiers can be recomputed from retained candidates through the
-[on-demand tier scoring API](ON_DEMAND_TEAM_BUFF_TIER_SCORING.md).
+Two partial indexes cover the board orders (`loadouts_meta_board`, `loadouts_fg_board`).
 
 ## Python API
 
-Initialize a database:
-
 ```python
-from gear_optimizer.data.database import init_db
+from gear_optimizer.store import db, schema
 
-init_db()
+conn = schema.connect(path)                       # read-only, version 19
+boards = db.load_boards(conn, song, "T5")         # typed Loadout lists in board order
+traces = db.load_traces(conn, song, "T5", [x.loadout_hash for x in boards.meta])
+for loadout in db.iter_board(conn, "fg", tier="T5"):  # catalog streams, song by song
+    ...
 ```
 
-Read retained candidates:
-
-```python
-from gear_optimizer.data.database import get_best_loadouts
-
-entries = get_best_loadouts(
-    "Rainshower (Easy) by Silentroom",
-    team_buff="T5",
-    limit=51,
-)
-```
-
-Persist a complete optimizer result atomically:
-
-```python
-from gear_optimizer.data.database import save_optimizer_song_result
-
-save_optimizer_song_result(
-    song_name,
-    entries,
-    processed_run=True,
-    team_buff="T5",
-)
-```
-
-`save_optimizer_song_result` commits retained entries and the processed-run
-counters in one transaction. Lower-level functions such as
-`save_loadouts_batch` exist for scoped maintenance and integration work.
+Writes merge a solve's results into a song's boards in one transaction (`db.store_results`); the pipeline
+and the service still hand over version 18 shaped entry dicts through `store.legacy` (`store_entries`,
+`promote_entries`, `best_loadouts`) until they build typed candidates themselves.
 
 ## Raw SQL
 
-Direct SQL is appropriate for scalar inspection. Do not reimplement BLOB or
-payload decoding in a separate consumer; use the package facade so schema and
-normalization changes remain centralized.
+Direct SQL is appropriate for scalar inspection. Do not reimplement row decoding in a separate consumer; use
+the store so format changes stay in one place.

@@ -49,15 +49,15 @@ def _materialize_gpu_runtime_on_main_thread() -> None:
 
 
 def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp_path, monkeypatch):
-    from gear_optimizer.data.database import get_db_connection, init_db
-    from gear_optimizer.data.database import _unpack_stats_after_load
+    from gear_optimizer.gamedata import STATS
     from gear_optimizer.pipeline import post_processor
+    from gear_optimizer.store import db, schema
     from gear_optimizer.solver import native_inflight_fg_payload as result_events
     from gear_optimizer.solver.scoring.exact_rescore import score_stats_exact
 
     db_path = tmp_path / "post_processor_exact_authority.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    init_db()
+    schema.ensure(db_path)
 
     timed_song = make_song([0.0], note_types=[0], name="pytest_post_processor_exact_authority")
     curves = _curves()
@@ -105,8 +105,6 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
         meta_primary_color="Rush",
         meta_secondary_color="Flow",
         prev_record=None,
-        attempt_lifetime=0,
-        prev_attempts_first=0,
         db_best_fg_score=0,
     )
 
@@ -128,34 +126,26 @@ def test_post_processor_deferred_native_save_persists_exact_replay_authority(tmp
 
     assert not worker.is_alive()
 
-    with get_db_connection(str(db_path)) as conn:
-        row = conn.execute(
-            "SELECT score, details_json "
-            "FROM team_buff_loadouts "
-            "WHERE song_name = ? AND team_buff = 'T5'",
-            ("pytest_post_processor_exact_authority",),
-        ).fetchone()
+    conn = schema.connect(db_path)
+    (row,) = db.load_boards(conn, "pytest_post_processor_exact_authority", "T5").meta
+    conn.close()
+    stored_stats = dict(zip(STATS, row.meta.stats))
 
-    assert row is not None
-    stored_details = _unpack_stats_after_load(json.loads(str(row["details_json"] or "{}"))) or {}
-    stored_stats = dict(stored_details.get("Stats") or {})
-
-    assert stored_stats
     assert stored_stats != stats
-    assert int(row["score"]) != inflated_score
-    assert int(row["score"]) == int(score_stats_exact(stored_stats, timed_song, curves))
+    assert row.score != inflated_score
+    assert row.score == int(score_stats_exact(stored_stats, timed_song, curves))
 
 
 def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monkeypatch):
-    from gear_optimizer.data.database import get_db_connection, init_db
     from gear_optimizer.solver.song_preparation import prepare_song
+    from gear_optimizer.store import db, schema
     from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.settings import paths
     from gear_optimizer.pipeline import post_processor
 
     db_path = tmp_path / "post_processor_fg_update_authority.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    init_db()
+    schema.ensure(db_path)
 
     curves = load_stat_curves(paths().stats_txt)
     assert curves
@@ -321,19 +311,8 @@ def test_post_processor_fg_update_path_canonicalizes_before_save(tmp_path, monke
     assert not worker.is_alive()
     assert len(canonicalize_calls) == 1
 
-    with get_db_connection(str(db_path)) as conn:
-        row = conn.execute(
-            "SELECT score, fg_score, details_json, force_details_json "
-            "FROM team_buff_fg_loadouts "
-            "WHERE song_name = ? AND team_buff = 'T5'",
-            ("pytest_post_processor_fg_update_authority",),
-        ).fetchone()
-
-    assert row is not None
-    stored_details = json.loads(str(row["details_json"] or "{}"))
-    stored_force = json.loads(str(row["force_details_json"] or "{}"))
-    assert int(row["score"]) == expected_base
-    assert int(row["fg_score"]) == expected_fg
-    assert int(stored_details["BaseScore"]) == expected_base
-    assert int(stored_force["BaseScore"]) == expected_base
-    assert int(stored_force["Score"]) == expected_fg
+    conn = schema.connect(db_path)
+    (row,) = db.load_boards(conn, "pytest_post_processor_fg_update_authority", "T5").fg
+    conn.close()
+    assert row.score == expected_base
+    assert row.fg_score == expected_fg

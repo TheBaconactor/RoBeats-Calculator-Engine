@@ -67,8 +67,21 @@ def load_traces(conn: sqlite3.Connection, song: str, tier: str, hashes: Iterable
     return out
 
 
+def present_songs(conn: sqlite3.Connection, names: Iterable[str]) -> set[str]:
+    """The given songs the database has processed (a songs row: a build, or a run that stored nothing)."""
+    out: set[str] = set()
+    for chunk in _chunks(sorted(set(names))):
+        out.update(row[0] for row in conn.execute(f"SELECT name FROM songs WHERE name IN ({_marks(chunk)})", chunk))
+    return out
+
+
 def song_names(conn: sqlite3.Connection) -> list[str]:
     return [row[0] for row in conn.execute("SELECT name FROM songs ORDER BY rowid")]
+
+
+def latest_update(conn: sqlite3.Connection) -> float | None:
+    """When the database last stored a result (None when empty)."""
+    return conn.execute("SELECT MAX(last_updated) FROM songs").fetchone()[0]
 
 
 def last_updated(conn: sqlite3.Connection, songs: Collection[str] | None = None) -> dict[str, float]:
@@ -117,7 +130,9 @@ def store_results(
     try:
         _touch_song(conn, song, now)
         if candidates:
-            merged = merge(load_rows(conn, song, tier), candidates, now=int(now))
+            last_meta, last_fg = conn.execute("SELECT MAX(meta_seq), MAX(fg_seq) FROM loadouts").fetchone()
+            next_seq = ((last_meta or 0) + 1, (last_fg or 0) + 1)
+            merged = merge(load_rows(conn, song, tier), candidates, now=int(now), next_seq=next_seq)
             conn.execute("DELETE FROM loadouts WHERE song_name = ? AND team_buff = ?", (song, tier))
             insert_rows(conn, merged)
         conn.commit()

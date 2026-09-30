@@ -80,8 +80,6 @@ def build_deferred_post_payload(song: NativeSong) -> dict[str, Any]:
         "fg_variants": fg_variants_post,
         "ga_candidates": ga_candidates_post,
         "prev_record": compact_prev_record(song.runtime.db.prev_record, drop_empty_item_names=True),
-        "attempt_lifetime": int(song.runtime.db.attempt_lifetime or 0),
-        "prev_attempts_first": int(song.runtime.db.prev_attempts_first or 0),
         "db_best_fg_score": int(song.runtime.db.db_best_fg_score or 0),
         "meta_primary_color": song.gpu_inputs.meta_primary_color,
         "meta_secondary_color": song.gpu_inputs.meta_secondary_color,

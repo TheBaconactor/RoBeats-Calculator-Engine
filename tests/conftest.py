@@ -12,7 +12,7 @@ repo_root = Path(__file__).resolve().parents[1]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from gear_optimizer.data.database import init_db
+from gear_optimizer.store import schema
 
 
 def _configure_test_db_path() -> None:
@@ -49,14 +49,14 @@ def _configure_test_db_path() -> None:
             pass
 
     try:
-        init_db()
+        schema.ensure(tmp_db)
     except sqlite3.DatabaseError:
         # Retry once with a clean DB.
         try:
             tmp_db.unlink(missing_ok=True)
         except Exception:
             pass
-        init_db()
+        schema.ensure(tmp_db)
 
 
 def _isolate_frontier_cache_dirs() -> None:

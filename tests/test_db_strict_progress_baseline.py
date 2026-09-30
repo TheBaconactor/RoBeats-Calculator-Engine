@@ -1,63 +1,28 @@
 import sqlite3
 
-import pytest
-
-import gear_optimizer.data.database as db
 import gear_optimizer.helpers.song_helpers.database_context as database_context
 from gear_optimizer.helpers.song_helpers.persistence_records import evaluate_progress_record_update
+from gear_optimizer.store import db, schema
+from tests.store_support import candidate
 
 
-def _clear_db_tls() -> None:
-    try:
-        db._DB_TLS.__dict__.clear()
-    except Exception:
-        pass
-
-
-def test_get_db_connection_cached_strict_does_not_create_fallback(tmp_path, monkeypatch):
-    db_path = tmp_path / "strict.db"
-    db_path.write_text("", encoding="utf-8")
-    _clear_db_tls()
-
+def test_load_database_progress_baseline_marks_invalid_when_the_read_fails(monkeypatch):
     def _raise_locked(*args, **kwargs):
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(db, "get_db_connection_readonly", _raise_locked)
-
-    with pytest.raises(sqlite3.OperationalError, match="locked"):
-        db.get_db_connection_cached(str(db_path))
-
-    assert getattr(db._DB_TLS, "fallback_conn", None) is None
+    monkeypatch.setattr(database_context.schema, "connect", _raise_locked)
+    assert database_context.load_database_progress_baseline("Song A") == (None, 0, 0, False)
 
 
-def test_cached_db_connection_does_not_use_cross_thread_registry(tmp_path, caplog):
-    db_path = tmp_path / "registry.db"
-    db_path.write_text("", encoding="utf-8")
-    _clear_db_tls()
-    try:
-        with caplog.at_level("WARNING"):
-            conn = db.get_db_connection_cached(str(db_path))
-
-        assert "database:_register_db_conn" not in caplog.text
-        assert "database:_close_all_registered_db_conns" not in caplog.text
-    finally:
-        conn = getattr(db._DB_TLS, "conns", {}).pop(str(db_path), None)
-        if conn is not None:
-            conn.close()
-        _clear_db_tls()
-
-
-def test_load_database_progress_baseline_marks_invalid_when_strict_read_fails(monkeypatch):
-    monkeypatch.setattr(database_context, "load_database_context", lambda *args, **kwargs: (None, {}))
-
-    def _raise_locked(*args, **kwargs):
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(database_context, "get_song_counters", _raise_locked)
-
-    result = database_context.load_database_progress_baseline("Song A")
-
-    assert result == (None, {}, 0, 0, 0, 0, False)
+def test_load_database_progress_baseline_reads_the_top_meta_entry_and_best_scores(tmp_path, monkeypatch):
+    path = tmp_path / "results.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(path))
+    conn = schema.connect(path, write=True)
+    db.store_results(conn, "Song A", "T5", [candidate("a", 100, 150), candidate("b", 120), candidate("c", 90, 160)])
+    conn.close()
+    prev_record, best, best_fg, valid = database_context.load_database_progress_baseline("Song A")
+    assert (prev_record["loadout_hash"], best, best_fg, valid) == ("b", 120, 160, True)
+    assert database_context.load_database_progress_baseline("Song B") == (None, 0, 0, True)
 
 
 def test_evaluate_progress_record_update_suppresses_new_when_baseline_invalid():

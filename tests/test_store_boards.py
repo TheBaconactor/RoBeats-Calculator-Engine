@@ -1,10 +1,18 @@
 from dataclasses import replace
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.store.boards import boards, merge
+from gear_optimizer.store import boards as store_boards
+from gear_optimizer.store.boards import boards
 from tests.store_support import candidate, fg_row, meta_row
 
 NOW = 500
+
+
+def merge(rows, candidates, *, now):
+    """The merge with entry numbers continuing after the given rows' (as one song's database would)."""
+    next_meta = 1 + max((r.loadout.meta.seq for r in rows if r.loadout.meta), default=0)
+    next_fg = 1 + max((r.loadout.fg.seq for r in rows if r.loadout.fg), default=0)
+    return store_boards.merge(rows, candidates, now=now, next_seq=(next_meta, next_fg))
 
 
 def _by_hash(rows):

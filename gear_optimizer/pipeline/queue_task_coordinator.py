@@ -21,7 +21,8 @@ from gear_optimizer.core.memory import (
     build_memory_guard_resume_context,
     load_memory_guard_resume_state,
 )
-from gear_optimizer.data.database import get_song_names_present_in_db
+from gear_optimizer.store import schema
+from gear_optimizer.store.db import present_songs
 from gear_optimizer.domain.jobs import (
     SharedRunContext,
     SongJob,
@@ -79,7 +80,7 @@ class QueueTaskCoordinator:
             cached = _presence_lookup_cache.get(names)
             if cached is not None:
                 return cached
-            present = get_song_names_present_in_db(names)
+            present = _songs_in_database(names)
             _presence_lookup_cache[names] = present
             return present
 
@@ -270,3 +271,15 @@ class QueueTaskCoordinator:
                 logger.info(f"[QUEUE] {found_song_name} (Run {repeat_index}/{song_repeats})")
                 _append_song_task(fp, found_song_name, task_diff, repeat_ctx=repeat_ctx)
         return tasks
+
+
+def _songs_in_database(names: typing.Iterable[str]) -> set[str]:
+    """The given songs the results database has processed; none when it does not exist yet."""
+    path = settings.paths().database
+    if not path.exists():
+        return set()
+    conn = schema.connect(path)
+    try:
+        return present_songs(conn, names)
+    finally:
+        conn.close()

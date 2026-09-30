@@ -117,8 +117,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
     prev_record = db_context.prev_record
     db_best_score = db_context.db_best_score
     db_best_fg_score = db_context.db_best_fg_score
-    attempt_lifetime = db_context.attempt_lifetime
-    prev_attempts_first = db_context.prev_attempts_first
     db_baseline_valid = db_context.db_baseline_valid
     p_color = timed_song.chart.primary
     s_color = timed_song.chart.secondary
@@ -248,8 +246,6 @@ def prepare_native_song(task: tuple) -> NativeSong:
             db=NativeSongDBState(
                 prev_record=prev_record,
                 db_best_score=int(db_best_score),
-                attempt_lifetime=int(attempt_lifetime),
-                prev_attempts_first=int(prev_attempts_first),
                 db_best_fg_score=int(db_best_fg_score),
                 db_baseline_valid=bool(db_baseline_valid),
             ),

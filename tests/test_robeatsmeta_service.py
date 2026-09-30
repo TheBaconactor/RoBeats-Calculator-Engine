@@ -325,14 +325,14 @@ def test_solve_runs_isolated_and_returns_loadout_entry(data_root, monkeypatch):
         def communicate(self, timeout=None):
             return ("", "")
 
-    def fake_loadouts(song_name, **kwargs):
+    def fake_loadouts(path, song_name, tier, *, limit):
         assert song_name == "Feeding [Hard]"
-        assert kwargs["team_buff"] == "T5"
-        assert kwargs["limit"] == 51  # full leaderboard, not a single rank #1
+        assert tier == "T5"
+        assert limit == 51  # full leaderboard, not a single rank #1
         return [entry]
 
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service, "get_best_loadouts", fake_loadouts)
+    monkeypatch.setattr(service.legacy, "read_best_loadouts", fake_loadouts)
 
     result = service.solve(
         {"jobId": "job_abc", "targetSongId": "Feeding [Hard]", "timingMode": "zero_ms"}
@@ -397,7 +397,7 @@ def test_clean_official_solve_promotes_its_result(data_root, monkeypatch):
             return "", ""
 
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service, "get_best_loadouts", lambda *args, **kwargs: [entry])
+    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [entry])
     monkeypatch.setattr(
         service,
         "_promote_official_result",
@@ -412,13 +412,22 @@ def test_clean_official_solve_promotes_its_result(data_root, monkeypatch):
     assert promoted == [("Feeding [Hard]", [entry], "perfect_window")]
 
 
-def test_promotion_accepts_only_clean_perfect_window_official_results(monkeypatch):
+def test_promotion_accepts_only_clean_perfect_window_official_results(tmp_path, monkeypatch):
     saved: list[tuple[str, list[dict[str, object]], str]] = []
-    monkeypatch.setattr(service, "get_evolution_db_path", lambda: "/tmp/evolution.db")
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "evolution.db"))
+
+    class FakeConnection:
+        def __init__(self, path):
+            self.path = str(path)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(service.schema, "connect", lambda path, *, write: FakeConnection(path))
     monkeypatch.setattr(
-        service,
-        "save_loadouts_batch",
-        lambda song_name, entries, *, db_path, **_kwargs: saved.append((song_name, entries, db_path)),
+        service.legacy,
+        "promote_entries",
+        lambda conn, song_name, tier, entries: saved.append((song_name, entries, conn.path)),
     )
     entry = {"score": 123}
 
@@ -451,41 +460,33 @@ def test_promotion_accepts_only_clean_perfect_window_official_results(monkeypatc
         custom_pool={"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []},
     )
 
-    assert saved == [("Official", [entry], "/tmp/evolution.db")]
+    assert saved == [("Official", [entry], str(tmp_path / "evolution.db"))]
 
 
 def test_clean_official_promotion_writes_the_canonical_database(tmp_path, monkeypatch):
-    from gear_optimizer.data.database import init_db
+    from gear_optimizer.store import db, legacy, schema
+    from tests.store_support import candidate
 
+    result = schema.connect(tmp_path / "result.db", write=True)
+    db.store_results(result, "Official Song", "T5", [candidate("a", 1234, 1300, song="Official Song")])
+    entries = legacy.best_loadouts(result, "Official Song", "T5")
+    result.close()
     db_path = tmp_path / "evolution.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    monkeypatch.setattr(service, "get_evolution_db_path", lambda: str(db_path))
-    init_db()
 
     service._promote_official_result(
         {"targetSongId": "Official Song"},
         song_name="Official Song",
-        entries=[
-            {
-                "score": 1234,
-                "fg_score": 0,
-                "gear": ["Gear A"],
-                "minis": ["Mini A"],
-                "details": {"attempt_lifetime": 1, "attempts_first": 1},
-                "force": None,
-            }
-        ],
+        entries=entries,
         timing_mode="perfect_window",
         custom_pool={"gear": [], "minis": [], "excludeGear": [], "excludeMinis": []},
     )
 
-    with sqlite3.connect(db_path) as conn:
-        score, details_json = conn.execute(
-            "SELECT score, details_json FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5'",
-            ("Official Song",),
-        ).fetchone()
-    assert score == 1234
-    assert "attempt_lifetime" not in (details_json or "")
+    conn = schema.connect(db_path)
+    boards = db.load_boards(conn, "Official Song", "T5")
+    conn.close()
+    assert [(x.loadout_hash, x.score, x.fg_score) for x in boards.meta] == [("a", 1234, 1300)]
+    assert [x.loadout_hash for x in boards.fg] == ["a"]
 
 
 def test_custom_solve_frontier_caches_are_inside_throwaway_workspace(data_root, monkeypatch):
@@ -504,7 +505,7 @@ def test_custom_solve_frontier_caches_are_inside_throwaway_workspace(data_root, 
             return "", ""
 
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service, "get_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
+    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
 
     service.solve({
         "jobId": "job_custom",
@@ -537,7 +538,7 @@ def test_solve_stamps_requested_timing_mode_into_isolated_chart(data_root, monke
             return ("", "")
 
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service, "get_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
+    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [{"loadout_hash": "h"}])
 
     service.solve(
         {"jobId": "job_timing", "targetSongId": "Feeding [Hard]", "timingMode": "zero_ms"}
@@ -575,7 +576,7 @@ def _capture_solve_config(data_root, monkeypatch, request: dict) -> str:
             return ("", "")
 
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service, "get_best_loadouts", lambda *a, **k: [entry])
+    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *a, **k: [entry])
     service.solve(request)
     return captured["config"]
 
@@ -639,7 +640,7 @@ def test_solve_joins_duplicate_live_job_instead_of_spawning_again(data_root, mon
             return ("", "")
 
     monkeypatch.setattr(service.subprocess, "Popen", FakePopen)
-    monkeypatch.setattr(service, "get_best_loadouts", lambda *args, **kwargs: [entry])
+    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *args, **kwargs: [entry])
 
     results: list[list[dict[str, object]]] = []
     errors: list[BaseException] = []
@@ -961,7 +962,7 @@ def test_same_job_different_inputs_own_separate_workspaces(data_root, monkeypatc
             return '', ''
 
     monkeypatch.setattr(service.subprocess, 'Popen', Process)
-    monkeypatch.setattr(service, 'get_best_loadouts', lambda *a, **kw: [{'score': 1}])
+    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *a, **kw: [{'score': 1}])
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(service.solve, {'jobId': 'same', 'chartText': 'Song Data\n500\t0\t0\t1\n'})
         assert first_started.wait(5)
@@ -1000,7 +1001,7 @@ def test_failed_solve_never_publishes_plausible_results(data_root, monkeypatch, 
     monkeypatch.setenv('ROBEATSMETA_OPTIMIZER_SERVICE_RUN_DIR', str(runs))
     publish = Mock()
     monkeypatch.setattr(service, '_promote_official_result', publish)
-    monkeypatch.setattr(service, 'get_best_loadouts', lambda *a, **kw: entries)
+    monkeypatch.setattr(service.legacy, "read_best_loadouts", lambda *a, **kw: entries)
 
     class Process:
         returncode = exit_code
@@ -1033,7 +1034,7 @@ def _write_export(data_root: Path, *songs: tuple[int, str, str]) -> None:
 
 
 def test_catalog_build_solves_described_official_charts_missing_from_the_catalog(data_root, monkeypatch):
-    from gear_optimizer.data.database import init_db
+    from gear_optimizer.store import db, schema
 
     _write_chart(data_root, "Normal", "Built by Artist", "built.txt")
     _write_chart(data_root, "Hard", "New (Hard) by Artist", "new.txt")
@@ -1041,9 +1042,9 @@ def test_catalog_build_solves_described_official_charts_missing_from_the_catalog
     _write_export(data_root, (1, "Built", "Artist"), (2, "New (Hard)", "Artist"))
     db_path = data_root / "evolution.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    init_db()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("INSERT INTO songs (name, best_score, last_updated) VALUES ('Built by Artist', 1, 0)")
+    conn = schema.connect(db_path, write=True)
+    db.store_results(conn, "Built by Artist", "T5", [])  # a processed song
+    conn.close()
     solved: list[dict[str, object]] = []
     monkeypatch.setattr(service, "solve", lambda request: solved.append(request) or [])
     service._AUTHORITATIVE_PUBLICATION_READY.set()
@@ -1059,7 +1060,7 @@ def test_catalog_build_continues_past_a_failed_chart_and_yields_to_a_code_update
     for name in ("A by Artist", "B by Artist", "C by Artist"):
         _write_chart(data_root, "Normal", name, f"{name}.txt")
     _write_export(data_root, (1, "A", "Artist"), (2, "B", "Artist"), (3, "C", "Artist"))
-    monkeypatch.setattr(service, "get_song_names_present_in_db", lambda _names: set())
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(data_root / "missing.db"))
     attempted: list[str] = []
 
     def solve(request):

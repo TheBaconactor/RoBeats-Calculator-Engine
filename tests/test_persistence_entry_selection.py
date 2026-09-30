@@ -1,5 +1,5 @@
 from tests.curves_support import synthetic_curves
-from gear_optimizer.data.database import get_loadout_hash
+from gear_optimizer.helpers.song_helpers.loadout_hashing import resolve_loadout_hash as get_loadout_hash
 from gear_optimizer.helpers.song_helpers.persistence_canon import build_persistence_entries
 from gear_optimizer.helpers.song_helpers.persistence_entry_selection import build_retained_loadout_entries
 from gear_optimizer.helpers.song_helpers.persistence_payload import make_build_details_fn
@@ -247,8 +247,6 @@ def test_build_persistence_entries_keeps_all_improving_fg_variants_from_payload(
         best_gear,
         best_minis,
         prev_record=None,
-        attempt_lifetime=1,
-        attempts_first=1,
         fg_variants=fg_variants,
         build_details_fn=build_details,
         db_best_fg_score=0,

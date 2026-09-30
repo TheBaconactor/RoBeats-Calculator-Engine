@@ -12,7 +12,7 @@ def test_async_db_saver_strict_latches_errors_and_surfaces_them(tmp_path, monkey
     def _boom(*_args, **_kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("gear_optimizer.app_async_db.save_optimizer_song_result", _boom)
+    monkeypatch.setattr("gear_optimizer.app_async_db.store_entries", _boom)
 
     saver = AsyncDbSaver()
     saver.submit(

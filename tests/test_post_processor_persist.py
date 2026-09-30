@@ -62,8 +62,6 @@ def test_deferred_post_finalizer_builds_replay_authoritative_entries():
         "loadout_entries": None,
         "fg_variants": [],
         "prev_record": None,
-        "attempt_lifetime": 0,
-        "prev_attempts_first": 0,
         "db_best_fg_score": 0,
         "meta_primary_color": "Rush",
         "meta_secondary_color": "Flow",
@@ -74,8 +72,6 @@ def test_deferred_post_finalizer_builds_replay_authoritative_entries():
     persist_entries = build_post_persist_entries(item, db_payload=db_payload, context=context)
     result_payload = build_post_persist_result_payload(item, db_payload=db_payload, persist_entries=persist_entries)
 
-    assert context.attempt_lifetime == 1
-    assert context.attempts_first == 1
     assert len(persist_entries) == 1
     persisted = persist_entries[0]
     persisted_stats = dict((persisted.get("details") or {}).get("Stats") or {})

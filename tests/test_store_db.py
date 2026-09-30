@@ -95,3 +95,12 @@ def test_results_of_another_song_are_refused(conn):
     with pytest.raises(ValueError, match="cannot be stored"):
         db.store_results(conn, "Song B", "T5", [candidate("a", 1)], now=1)
     assert db.song_names(conn) == []
+
+
+def test_entry_numbers_count_across_songs_like_insertion_order(conn):
+    db.store_results(conn, "Song A", "T5", [candidate("a1", 10, 20, song="Song A"), candidate("a2", 5, song="Song A")], now=1)
+    db.store_results(conn, "Song B", "T5", [candidate("b1", 7, 9, song="Song B")], now=2)
+    db.store_results(conn, "Song A", "T5", [candidate("a3", 1, song="Song A")], now=3)
+    seqs = {x.loadout_hash: x.meta.seq for song in ("Song A", "Song B") for x in db.load_boards(conn, song, "T5").meta}
+    assert seqs == {"a1": 1, "a2": 2, "b1": 3, "a3": 4}
+    assert [x.fg.seq for x in db.load_boards(conn, "Song B", "T5").fg] == [2]

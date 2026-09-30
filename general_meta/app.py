@@ -120,8 +120,8 @@ def _build_replayed_loadout_rows_for_song(song: dict) -> dict[str, list[dict]]:
       ``build_team_buff_tier_db_batches`` with the song timed in the wanted mode and
       ``replay_surface`` set as needed. Until then, keep this on the T5-only no-replay path.
     """
-    from gear_optimizer.data.database import get_best_loadouts
     from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display
+    from gear_optimizer.store.legacy import read_best_loadouts
 
     song_name = str((song or {}).get("song_name") or "").strip()
     if not song_name:
@@ -130,11 +130,7 @@ def _build_replayed_loadout_rows_for_song(song: dict) -> dict[str, list[dict]]:
     baseline_team_buff = OPTIMIZER_BASELINE_TEAM_BUFF
 
     # Read T5 seed entries directly from the DB (items as names).
-    entries = get_best_loadouts(
-        str(song_name),
-        limit=int(LOADOUTS_PER_SONG_LIMIT),
-        team_buff=str(baseline_team_buff),
-    )
+    entries = read_best_loadouts(paths().database, str(song_name), str(baseline_team_buff), limit=int(LOADOUTS_PER_SONG_LIMIT))
 
     # Project the same T5 seed rows under every tier label (cosmetic tiers). The per-tier
     # gem re-solve happens live in the host application; the static snapshot only carries T5 data.

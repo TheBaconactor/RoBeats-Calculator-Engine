@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sqlite3
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -36,7 +35,9 @@ from gear_optimizer.settings import paths
 from gear_optimizer.rules import GEM_BUDGET
 from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, normalize_team_buff, team_buff_effect
 from gear_optimizer.core.utils import get_selected_element
-from gear_optimizer.data.database import get_best_loadouts, get_evolution_db_path
+from gear_optimizer.store import schema
+from gear_optimizer.store.db import board_sizes
+from gear_optimizer.store.legacy import read_best_loadouts
 from gear_optimizer.helpers.song_helpers.song_config import baseline_fixed_stats
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
     _entry_loadout_items,
@@ -428,20 +429,13 @@ def _compare_entry_mode(
 
 
 def _distinct_song_names(*, db_path: str, team_buff: str) -> list[str]:
-    conn = sqlite3.connect(str(db_path))
+    """Songs with a meta board at the tier, by name."""
+    conn = schema.connect(db_path)
     try:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT song_name
-            FROM team_buff_loadouts
-            WHERE UPPER(COALESCE(team_buff, '')) = UPPER(?)
-            ORDER BY song_name
-            """,
-            (str(team_buff),),
-        ).fetchall()
+        sizes = board_sizes(conn)
     finally:
         conn.close()
-    return [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip()]
+    return sorted(song for (song, tier), (meta, _fg) in sizes.items() if tier == str(team_buff).upper() and meta)
 
 
 def _render_table(rows: list[ReplayGapRow]) -> str:
@@ -463,7 +457,7 @@ def _render_table(rows: list[ReplayGapRow]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", type=str, default=str(get_evolution_db_path()))
+    parser.add_argument("--db", type=str, default=str(paths().database))
     parser.add_argument("--song", action="append", default=[])
     parser.add_argument("--samples", type=int, default=10)
     parser.add_argument("--per-song-limit", type=int, default=2)
@@ -510,12 +504,7 @@ def main() -> int:
     rows: list[ReplayGapRow] = []
     mode_list = ["meta", "fg"] if str(args.mode) == "both" else [str(args.mode)]
     for song_name in song_names:
-        entries = get_best_loadouts(
-            song_name,
-            limit=max(1, int(args.per_song_limit)),
-            team_buff=str(baseline_team_buff),
-            db_path=str(db_path),
-        )
+        entries = read_best_loadouts(db_path, song_name, str(baseline_team_buff), limit=max(1, int(args.per_song_limit)))
         if not entries:
             continue
 

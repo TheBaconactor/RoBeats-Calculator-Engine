@@ -26,8 +26,7 @@ from gear_optimizer.core.memory import (
     compute_memory_guard_limit,
     set_memory_watchdog_limit,
 )
-from gear_optimizer.data.database import get_best_loadouts, init_db
-from gear_optimizer.data.database.connection import close_cached_db_connection
+from gear_optimizer.store import legacy, schema
 from gear_optimizer.gamedata import load_gears, load_minis, load_stat_curves
 from gear_optimizer.settings import RunSettings, paths, reasoning_search, service_settings
 
@@ -83,7 +82,6 @@ class PersistentOptimizerSession:
         self._initialized = True
 
     def _remove_result_db(self) -> None:
-        close_cached_db_connection(str(self._result_db))
         for path in (
             self._result_db,
             Path(f"{self._result_db}-wal"),
@@ -113,7 +111,7 @@ class PersistentOptimizerSession:
         self._app._stop_requested.clear()
         self._app._force_exit_requested.clear()
         set_memory_watchdog_limit(compute_memory_guard_limit(run))
-        init_db()
+        schema.ensure(self._result_db)
         task_queue = [(str(self._chart_path), str(song_name), "Hard")]
         tasks = self._app._prepare_tasks(
             task_queue,
@@ -130,18 +128,12 @@ class PersistentOptimizerSession:
             self._app._execute_tasks(tasks, tracker)
             if self._app._memory_guard_restart_needed(tracker):
                 raise RuntimeError("persistent optimizer requested a memory-guard restart")
-            entries = get_best_loadouts(
-                song_name,
-                limit=LOADOUTS_PER_SONG_LIMIT,
-                team_buff="T5",
-                db_path=str(self._result_db),
-            )
+            entries = legacy.read_best_loadouts(self._result_db, song_name, "T5", limit=LOADOUTS_PER_SONG_LIMIT)
             if not entries:
                 raise RuntimeError("optimizer produced no T5 loadout")
             self._request_count += 1
             return entries
         finally:
-            close_cached_db_connection(str(self._result_db))
             self._remove_result_db()
 
 

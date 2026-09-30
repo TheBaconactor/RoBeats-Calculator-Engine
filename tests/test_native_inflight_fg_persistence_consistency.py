@@ -160,17 +160,14 @@ def test_native_inflight_fg_persist_entries_drop_non_force_variants():
     assert build_fg_persist_entries(fake_song) == []
 
 
-def test_native_inflight_fg_persist_entries_save_direct_fg_row(tmp_path, monkeypatch):
+def test_native_inflight_fg_persist_entries_save_direct_fg_row(tmp_path):
     from gear_optimizer.core.team_buff import team_buff_effect
-    from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
     from gear_optimizer.gamedata import load_gears, load_minis, song_minis
     from gear_optimizer.settings import paths
     from gear_optimizer.solver.native_inflight_fg_payload import build_fg_persist_entries
     from gear_optimizer.stats import gems, named_loadout_stats
-
-    db_path = tmp_path / "native_fg_direct.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    init_db()
+    from gear_optimizer.store import db, schema
+    from gear_optimizer.store.legacy import fg_payload, store_entries
 
     fixture = json.loads(
         (Path(__file__).parent / "fixtures" / "persistence_authority_be_right_there_t5.json").read_text()
@@ -193,24 +190,22 @@ def test_native_inflight_fg_persist_entries_save_direct_fg_row(tmp_path, monkeyp
                     "fg_score": 1200,
                     "gear": gear,
                     "minis": minis,
-                    "data": _force_payload(base_stats=visible),
+                    "data": {**_force_payload(base_stats=visible), "ForceGreats": {"frontier_trace": [{"next_state": 1}]}},
                 }
             ]
         )
     )
 
-    save_loadouts_batch(song_name, entries)
+    conn = schema.connect(tmp_path / "native_fg_direct.db", write=True)
+    store_entries(conn, song_name, "T5", entries, gears=load_gears(paths().gears_csv), minis=load_minis(paths().minis_csv))
+    boards = db.load_boards(conn, song_name, "T5")
+    traces = db.load_traces(conn, song_name, "T5", [x.loadout_hash for x in boards.fg])
+    conn.close()
 
-    with get_db_connection(str(db_path)) as conn:
-        row = conn.execute(
-            "SELECT score, fg_score, force_details_json FROM team_buff_fg_loadouts "
-            "WHERE song_name=? AND team_buff='T5'",
-            (song_name,),
-        ).fetchone()
-
-    assert row is not None
-    assert int(row["score"]) == 1000
-    assert int(row["fg_score"]) == 1200
-    force = json.loads(row["force_details_json"])
+    # A deferred FG update stores its FG result only (it never adds a meta result).
+    assert boards.meta == [] and len(boards.fg) == 1
+    (row,) = boards.fg
+    assert (row.score, row.fg_score) == (1000, 1200)
+    force = fg_payload(row, traces[row.loadout_hash].fg)
     assert force["response_surface"] == [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
     assert "config" not in (force.get("ForceGreats") or {})

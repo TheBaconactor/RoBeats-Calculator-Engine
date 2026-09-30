@@ -22,7 +22,6 @@ The score oracle comes from the game source, not the optimizer scorer:
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import sqlite3
@@ -49,6 +48,10 @@ from gear_optimizer.settings import paths
 from gear_optimizer.solver.scoring.exact_rescore import score_force_greats_response_surface_exact
 from gear_optimizer.solver.taichi_gem.force_greats.response_types import FgResponseSurface
 from gear_optimizer.solver.timing_envelope import time_song
+from gear_optimizer.store import schema
+from gear_optimizer.store.db import load_boards, load_traces
+from gear_optimizer.store.legacy import fg_details, fg_payload
+from gear_optimizer.store.records import Loadout
 
 
 DIFF_FOLDERS = {"easy": "Easy", "normal": "Normal", "hard": "Hard"}
@@ -448,20 +451,18 @@ def measured_legality_checks(
     }
 
 
-def fetch_best_fg_row(conn: sqlite3.Connection, song_name: str) -> sqlite3.Row:
-    row = conn.execute(
-        "SELECT * FROM team_buff_fg_loadouts WHERE song_name=? AND force_details_json IS NOT NULL ORDER BY fg_score DESC LIMIT 1",
-        (song_name,),
-    ).fetchone()
-    if row is None:
+def fetch_best_fg(conn: sqlite3.Connection, song_name: str) -> tuple[Loadout, dict, dict]:
+    """The song's top FG board loadout (T5) with its FG details and FG payload (version 18 shaped)."""
+    board = load_boards(conn, song_name, "T5").fg
+    if not board:
         raise ValueError(f"no persisted FG row found for {song_name}")
-    return row
+    best = board[0]
+    trace = load_traces(conn, song_name, "T5", [best.loadout_hash])[best.loadout_hash].fg
+    return best, fg_details(best), fg_payload(best, trace)
 
 
 def verify_song(conn: sqlite3.Connection, song_name: str, chart_path: Path) -> dict[str, object]:
-    row = fetch_best_fg_row(conn, song_name)
-    details = json.loads(row["details_json"]) if row["details_json"] else {}
-    force_details = json.loads(row["force_details_json"]) if row["force_details_json"] else {}
+    best, details, force_details = fetch_best_fg(conn, song_name)
     fg_meta = force_details.get("ForceGreats")
     if not isinstance(fg_meta, dict):
         raise ValueError("FG row force_details_json requires a ForceGreats payload")
@@ -493,7 +494,7 @@ def verify_song(conn: sqlite3.Connection, song_name: str, chart_path: Path) -> d
         great_mask=great_mask,
     )
     exact_score = score_force_greats_response_surface_exact(stats, song, curves, surface)
-    optimizer_fg = int(row["fg_score"] or 0)
+    optimizer_fg = int(best.fg_score)
     if int(exact_score or 0) != optimizer_fg:
         raise ValueError(f"optimizer FG row {optimizer_fg} does not replay to the persisted exact_rescore {exact_score}")
 
@@ -503,7 +504,7 @@ def verify_song(conn: sqlite3.Connection, song_name: str, chart_path: Path) -> d
         "oracle_fg": int(source_score),
         "delta": int(optimizer_fg - int(source_score)),
         "status": "LEGAL" if int(optimizer_fg) == int(source_score) else "OVER-SCORED",
-        "team_buff": str(row["team_buff"] or ""),
+        "team_buff": best.tier,
         "forced_counts": [int(section["forced_count"]) for section in trace],
         "great95_used": bool(int(measured["early_tail_notes"]) > 0),
         "trace_sections": len(trace),
@@ -543,8 +544,7 @@ def main(argv: list[str] | None = None) -> int:
     if not db_path.exists():
         _fail(f"DB not found: {db_path} (run without --no-run first)")
 
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = schema.connect(db_path)
     try:
         had_mismatch = False
         for song_name, chart_path, _difficulty in resolved:

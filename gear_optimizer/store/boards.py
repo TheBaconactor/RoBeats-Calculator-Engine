@@ -68,23 +68,22 @@ class _Work:
     fg_trace: bytes | None
 
 
-def merge(rows: Iterable[Row], candidates: Sequence[Candidate], *, now: int) -> list[Row]:
+def merge(
+    rows: Iterable[Row], candidates: Sequence[Candidate], *, now: int, next_seq: tuple[int, int]
+) -> list[Row]:
     """The song's rows after storing `candidates` (one song and tier).
 
     Meta side: a new loadout takes the candidate's meta result; a higher score replaces a stored one; a
     deferred candidate (an FG update) only refreshes a stored one. FG side: a candidate whose FG score beats its paired base
     score is stored when new, and replaces a stored FG result with an equal or lower FG score. Every
-    touched side is stamped `now`; a result entering a board gets the next entry number. Then an FG
+    touched side is stamped `now`; a result entering a board gets the next entry number of the database
+    (`next_seq`: the next (meta, FG) numbers, so entries number in insertion order across songs). Then an FG
     result is kept only while its FG score beats the loadout's score, each board keeps the
     LOADOUTS_PER_SONG_LIMIT best scores (the earliest entries among equal scores), a loadout without an
     FG result keeps an FG score no higher than its score, and a loadout on neither board is dropped.
     """
-    rows = list(rows)
     work = {row.loadout.loadout_hash: _lift(row) for row in rows}
-    seqs = _Seqs(
-        meta=1 + max((r.loadout.meta.seq for r in rows if r.loadout.meta is not None), default=0),
-        fg=1 + max((r.loadout.fg.seq for r in rows if r.loadout.fg is not None), default=0),
-    )
+    seqs = _Seqs(meta=next_seq[0], fg=next_seq[1])
     # The meta side stores GA results before deferred FG updates; the FG side keeps the given order.
     ordered = [c for c in candidates if not c.deferred] + [c for c in candidates if c.deferred]
     for candidate in ordered:

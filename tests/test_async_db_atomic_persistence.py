@@ -1,283 +1,103 @@
-import json
-import os
-import sqlite3
 import threading
 
 import pytest
 
 from gear_optimizer.app_async_db import AsyncDbSaver
-from gear_optimizer.data import database as db
-from gear_optimizer.data.database import persistence
+from gear_optimizer.store import db, schema
+from tests.store_support import candidate
+
+STATS = {
+    "Perfect Points": 25, "Combo Multiplier": 0, "Fever Multiplier": 0, "Fever Fill Rate": 0, "Fever Time": 0,
+    "Chill": 0, "Flow": 0, "Rush": 130, "Beat": 0, "Vibe": 0,
+}
 
 
-def _entry(*, score: int, fg_score: int = 0, force: dict | None = None, deferred: bool = False) -> dict:
-    out = {
+def _entry(*, score: int) -> dict:
+    """A GA result for items the catalog does not know (its stats are stored as given)."""
+    return {
         "score": score,
-        "fg_score": fg_score,
+        "fg_score": 0,
         "gear": ["G1", "G2"],
         "minis": ["M1"],
-        "details": {"test": "base" if force is None else "fg_variant"},
-        "force": force,
-    }
-    if deferred:
-        out["_deferred_fg_update"] = True
-    return out
-
-
-def _force_payload(fg_score: int, *, base_score: int) -> dict:
-    return {
-        "Score": fg_score,
-        "BaseScore": base_score,
-        "FT": 0,
-        "FF": 0,
-        "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0},
-        "BaseStats": {
-            "Perfect Points": 25,
-            "Combo Multiplier": 0,
-            "Fever Multiplier": 0,
-            "Fever Fill Rate": 0,
-            "Fever Time": 0,
-            "Chill": 0,
-            "Flow": 0,
-            "Rush": 100,
-            "Beat": 0,
-            "Vibe": 0,
+        "details": {
+            "PrimaryColor": "Rush", "SecondaryColor": "Flow", "SelectedElement": "Rush", "FT": 0, "FF": 0,
+            "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0},
+            "Stats": dict(STATS),
         },
-        "Selected Element": "Rush",
-        "ForceGreats": {"config": {"NonFever1": 1}, "final_score": fg_score},
+        "force": None,
     }
 
 
-def test_async_saver_reuses_one_writer_connection_for_multiple_saves(tmp_path, monkeypatch):
-    db_path = tmp_path / "persistent.db"
-    second_db_path = tmp_path / "second.db"
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
-    real_get_connection = db.get_db_connection
-    opened_paths: list[str] = []
+def _songs(path) -> list[str]:
+    conn = schema.connect(path)
+    try:
+        return db.song_names(conn)
+    finally:
+        conn.close()
 
-    def _counted_get_connection(path):
-        opened_paths.append(str(path))
-        return real_get_connection(path)
 
-    monkeypatch.setattr("gear_optimizer.app_async_db.get_db_connection", _counted_get_connection)
+def test_async_saver_reuses_one_writer_connection_per_database(tmp_path, monkeypatch):
+    first, second = tmp_path / "first.db", tmp_path / "second.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(first))
+    opened: list[str] = []
+    real_connect = schema.connect
+
+    def counted(path, *, write=False, timeout=30.0):
+        opened.append(str(path))
+        return real_connect(path, write=write, timeout=timeout)
+
+    monkeypatch.setattr("gear_optimizer.app_async_db.schema.connect", counted)
     saver = AsyncDbSaver()
     try:
         saver.submit("Song A", [_entry(score=100)], meta={"_processed_run": True})
         saver.submit("Song B", [_entry(score=200)], meta={"_processed_run": True})
         saver.flush(timeout=10.0)
-        monkeypatch.setenv("EVOLUTION_DB_PATH", str(second_db_path))
+        monkeypatch.setenv("EVOLUTION_DB_PATH", str(second))
         saver.submit("Song C", [_entry(score=300)], meta={"_processed_run": True})
         saver.flush(timeout=10.0)
     finally:
         saver.shutdown(timeout=10.0)
-
-    assert opened_paths == [
-        os.path.normcase(os.path.realpath(os.path.abspath(str(db_path)))),
-        os.path.normcase(os.path.realpath(os.path.abspath(str(second_db_path)))),
-    ]
-    with real_get_connection(str(db_path)) as conn:
-        rows = conn.execute("SELECT name, attempt_lifetime FROM songs ORDER BY name").fetchall()
-    assert [(row["name"], row["attempt_lifetime"]) for row in rows] == [("Song A", 1), ("Song B", 1)]
-    with real_get_connection(str(second_db_path)) as conn:
-        row = conn.execute("SELECT name, attempt_lifetime FROM songs").fetchone()
-    assert (row["name"], row["attempt_lifetime"]) == ("Song C", 1)
+    assert [p.rsplit("/", 1)[-1] for p in opened] == ["first.db", "second.db"]
+    assert _songs(first) == ["Song A", "Song B"] and _songs(second) == ["Song C"]
 
 
-def test_optimizer_result_rollback_removes_loadouts_and_counters(tmp_path, monkeypatch):
-    db_path = tmp_path / "atomic.db"
-    conn = db.get_db_connection(str(db_path))
-    db.configure_persistent_writer_connection(conn)
+def test_a_processed_run_without_results_marks_the_song(tmp_path, monkeypatch):
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(tmp_path / "results.db"))
+    saver = AsyncDbSaver()
+    try:
+        saver.submit("Empty Song", [], meta={"_processed_run": True})
+        saver.submit("Ignored Song", [], meta={"_processed_run": False})
+        saver.flush(timeout=10.0)
+    finally:
+        saver.shutdown(timeout=10.0)
+    assert _songs(tmp_path / "results.db") == ["Empty Song"]
 
-    def _fail_counter_update(*_args, **_kwargs):
-        raise RuntimeError("injected counter failure")
 
-    monkeypatch.setattr(persistence, "_update_song_counters_in_transaction", _fail_counter_update)
-    with pytest.raises(RuntimeError, match="injected counter failure"):
-        db.save_optimizer_song_result(
-            "Atomic Song",
-            [_entry(score=100)],
-            processed_run=True,
-            conn=conn,
-            db_path=str(db_path),
-        )
+def test_a_failed_store_leaves_the_database_unchanged(tmp_path, monkeypatch):
+    path = tmp_path / "atomic.db"
+    conn = schema.connect(path, write=True)
 
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("injected insert failure")
+
+    monkeypatch.setattr(db, "insert_rows", fail)
+
+    with pytest.raises(RuntimeError, match="injected insert failure"):
+        db.store_results(conn, "Song A", "T5", [candidate("a", 100)])
     assert not conn.in_transaction
-    assert conn.execute("SELECT COUNT(*) FROM team_buff_loadouts").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM songs").fetchone()[0] == 0
     conn.close()
 
 
 @pytest.mark.parametrize("field", ["score", "fg_score", "fg_base_score"])
-def test_optimizer_result_rejects_malformed_internal_score_fields(field):
+def test_malformed_score_fields_are_rejected_by_name(tmp_path, field):
+    from gear_optimizer.store.legacy import store_entries
+
     entry = _entry(score=100)
     entry[field] = "not-an-integer"
+    conn = schema.connect(tmp_path / "malformed.db", write=True)
     with pytest.raises(ValueError, match=field):
-        db.save_optimizer_song_result("Malformed Song", [entry], processed_run=True)
-
-
-def test_optimizer_result_rejects_connection_path_mismatch_and_derives_when_omitted(tmp_path):
-    db_path = tmp_path / "connection.db"
-    other_path = tmp_path / "other.db"
-    conn = db.get_db_connection(str(db_path))
-    db.configure_persistent_writer_connection(conn)
-
-    with pytest.raises(ValueError, match="does not match"):
-        db.save_optimizer_song_result(
-            "Wrong Path",
-            [_entry(score=100)],
-            processed_run=True,
-            conn=conn,
-            db_path=str(other_path),
-        )
-    db.save_optimizer_song_result(
-        "Derived Path",
-        [_entry(score=100)],
-        processed_run=True,
-        conn=conn,
-    )
-
-    assert conn.execute("SELECT COUNT(*) FROM songs WHERE name = 'Wrong Path'").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM songs WHERE name = 'Derived Path'").fetchone()[0] == 1
-    conn.close()
-
-
-def test_write_transaction_retries_lock_before_committing(monkeypatch):
-    class _LockOnceConnection:
-        def __init__(self):
-            self.begin_calls = 0
-            self.rollback_calls = 0
-            self.commit_calls = 0
-
-        def execute(self, sql):
-            assert sql == "BEGIN IMMEDIATE"
-            self.begin_calls += 1
-            if self.begin_calls == 1:
-                raise sqlite3.OperationalError("database is locked")
-
-        def rollback(self):
-            self.rollback_calls += 1
-
-        def commit(self):
-            self.commit_calls += 1
-
-    conn = _LockOnceConnection()
-    operation_calls = 0
-
-    def _operation():
-        nonlocal operation_calls
-        operation_calls += 1
-
-    monkeypatch.setattr(persistence.time, "sleep", lambda _seconds: None)
-    persistence._run_write_transaction(conn, _operation)
-
-    assert conn.begin_calls == 2
-    assert conn.rollback_calls == 1
-    assert conn.commit_calls == 1
-    assert operation_calls == 1
-
-
-def test_optimizer_result_preserves_meta_only_and_deferred_fg_semantics(tmp_path):
-    db_path = tmp_path / "semantics.db"
-    conn = db.get_db_connection(str(db_path))
-    db.configure_persistent_writer_connection(conn)
-
-    db.save_optimizer_song_result(
-        "Meta Only",
-        [],
-        processed_run=True,
-        conn=conn,
-        db_path=str(db_path),
-    )
-    assert db.get_song_counters("Meta Only", conn=conn) == (1, 1, 0, 0)
-
-    base_entry = _entry(score=100)
-    db.save_optimizer_song_result(
-        "Deferred Song",
-        [base_entry],
-        processed_run=True,
-        conn=conn,
-        db_path=str(db_path),
-    )
-    assert base_entry["details"]["attempt_lifetime"] == 1
-    assert base_entry["details"]["attempts_first"] == 1
-
-    second_entry = _entry(score=100)
-    db.save_optimizer_song_result(
-        "Deferred Song",
-        [second_entry],
-        processed_run=True,
-        conn=conn,
-        db_path=str(db_path),
-    )
-    assert second_entry["details"]["attempt_lifetime"] == 2
-    assert second_entry["details"]["attempts_first"] == 2
-
-    deferred_entry = _entry(
-        score=100,
-        fg_score=150,
-        force=_force_payload(150, base_score=100),
-        deferred=True,
-    )
-    db.save_optimizer_song_result(
-        "Deferred Song",
-        [deferred_entry],
-        processed_run=False,
-        conn=conn,
-        db_path=str(db_path),
-    )
-    assert db.get_song_counters("Deferred Song", conn=conn) == (2, 1, 100, 150)
-
-    base_row = conn.execute(
-        "SELECT score, details_json FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5'",
-        ("Deferred Song",),
-    ).fetchone()
-    fg_row = conn.execute(
-        "SELECT score, fg_score FROM team_buff_fg_loadouts WHERE song_name = ? AND team_buff = 'T5'",
-        ("Deferred Song",),
-    ).fetchone()
-    assert base_row["score"] == 100
-    assert json.loads(base_row["details_json"])["test"] == "base"
-    assert (fg_row["score"], fg_row["fg_score"]) == (100, 150)
-    conn.close()
-
-
-def test_record_improvement_uses_persisted_fg_pairing_not_entry_score(tmp_path):
-    db_path = tmp_path / "fg_pairing.db"
-    conn = db.get_db_connection(str(db_path))
-    db.configure_persistent_writer_connection(conn)
-
-    db.save_optimizer_song_result(
-        "FG Pairing",
-        [_entry(score=100)],
-        processed_run=True,
-        conn=conn,
-        db_path=str(db_path),
-    )
-    db.save_optimizer_song_result(
-        "FG Pairing",
-        [_entry(score=100)],
-        processed_run=True,
-        conn=conn,
-        db_path=str(db_path),
-    )
-    assert db.get_song_counters("FG Pairing", conn=conn) == (2, 2, 100, 0)
-
-    deferred_entry = _entry(
-        score=100,
-        fg_score=95,
-        force=_force_payload(95, base_score=90),
-        deferred=True,
-    )
-    deferred_entry["fg_base_score"] = 90
-    db.save_optimizer_song_result(
-        "FG Pairing",
-        [deferred_entry],
-        processed_run=False,
-        conn=conn,
-        db_path=str(db_path),
-    )
-
-    assert db.get_song_counters("FG Pairing", conn=conn) == (2, 1, 100, 95)
+        store_entries(conn, "Malformed Song", "T5", [entry], gears={}, minis={})
     conn.close()
 
 
@@ -290,7 +110,7 @@ def test_shutdown_timeout_never_restarts_live_writer(tmp_path, monkeypatch):
         entered.set()
         assert release.wait(timeout=30.0)
 
-    monkeypatch.setattr("gear_optimizer.app_async_db.save_optimizer_song_result", _blocked_save)
+    monkeypatch.setattr("gear_optimizer.app_async_db.store_entries", _blocked_save)
     saver = AsyncDbSaver()
     saver.submit("Blocked Song", [_entry(score=100)], meta={"_processed_run": True})
     assert entered.wait(timeout=5.0)

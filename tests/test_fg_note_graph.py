@@ -1905,12 +1905,10 @@ def test_fever_end_cluster_fail_loud_on_tight_non_perfect_same_time():
 
 
 def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
-    import json
-    import sqlite3
-
     from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF, team_buff_effect
-    from gear_optimizer.data.database import get_evolution_db_path
     from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats
+    from gear_optimizer.store import db, schema
+    from gear_optimizer.store.legacy import fg_payload
     from gear_optimizer.gamedata import load_stat_curves
     from gear_optimizer.settings import paths
     from gear_optimizer.solver.song_preparation import prepare_song
@@ -1919,18 +1917,18 @@ def test_fever_end_decoy_replay_at_cluster_delta_keeps_sequential_fever():
     loadout_hash = "9466514779a185ba64c4198786581230"
     t1_opt = 7_845_087
 
-    db_path = get_evolution_db_path()
     try:
-        row = sqlite3.connect(db_path).execute(
-            "SELECT force_details_json FROM team_buff_fg_loadouts WHERE loadout_hash=? AND song_name=?",
-            (loadout_hash, song),
-        ).fetchone()
+        conn = schema.connect(paths().database)
     except Exception:
         pytest.skip("evolution DB unavailable")
-    if row is None:
-        pytest.skip("Decoy FG loadout not in local DB")
-
-    fd = json.loads(row[0])
+    try:
+        board = {x.loadout_hash: x for x in db.load_boards(conn, song, "T5").fg}
+        if loadout_hash not in board:
+            pytest.skip("Decoy FG loadout not in local DB")
+        trace = db.load_traces(conn, song, "T5", [loadout_hash])[loadout_hash].fg
+    finally:
+        conn.close()
+    fd = fg_payload(board[loadout_hash], trace)
     timed = prepare_song("Data/Normal/Decoy World VIP by INTERCOM feat. Park Avenue [Monstercat].txt")
     si = timed.fg_inputs
     nt = timed.chart.note_types

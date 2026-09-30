@@ -9,7 +9,6 @@ guarantees the reader's "BaseStats is post-gem" contract holds on disk.
 
 from __future__ import annotations
 
-from gear_optimizer.data.database.force_normalize import _compact_force_details_for_storage
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
     read_visible_stats,
 )
@@ -83,28 +82,3 @@ def test_reader_mutate_payload_writes_post_gem_row_not_doubled():
     assert out == _POST_GEM
     assert payload["Stats"] == _POST_GEM
     assert payload["Stats"] != _doubled(_POST_GEM)
-
-
-def test_storage_promotes_post_gem_stats_to_base_stats_then_reader_is_correct():
-    # The GA/reducer producer emits a PRE-gem BaseStats + post-gem Stats. Compaction
-    # must promote the post-gem row to BaseStats before dropping Stats, so the stored,
-    # Stats-less block reads back to the post-gem row (not the halved pre-gem one).
-    pre_gem = {k: (v // 2 if v else v) for k, v in _POST_GEM.items()}
-    producer_payload = {
-        "BaseStats": dict(pre_gem),   # pre-gem base (reducer)
-        "Stats": dict(_POST_GEM),     # authoritative post-gem visible row
-        "GemCounts": {"Fever Multiplier": _G_FM, "Element": _G_OV},
-        "FT": _FT,
-        "FF": _FF,
-        "Selected Element": _SEL,
-    }
-    stored = _compact_force_details_for_storage(producer_payload)
-    assert "Stats" not in stored                 # Stats dropped (compacted)
-    assert stored["BaseStats"] == _POST_GEM       # but BaseStats promoted to post-gem row
-    assert stored["BaseStats"] != pre_gem
-    # Read-back through the canonical reader yields the post-gem row, never the pre-gem
-    # (undercount) nor a re-gem (double-count).
-    read_back = read_visible_stats(stored)
-    assert read_back == _POST_GEM
-    assert read_back != pre_gem
-    assert read_back != _doubled(_POST_GEM)

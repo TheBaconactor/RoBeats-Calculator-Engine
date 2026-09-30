@@ -30,7 +30,6 @@ import argparse
 import glob
 import json
 import subprocess
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -39,7 +38,6 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from gear_optimizer.data.database_codecs import _unpack_stats_after_load  # noqa: E402
 from gear_optimizer.chart import load_chart, read_header  # noqa: E402
 from gear_optimizer.helpers.song_helpers.force_greats.result_application import read_visible_stats  # noqa: E402
 from gear_optimizer.solver.fg_response_scoring.note_graph import (  # noqa: E402
@@ -103,29 +101,26 @@ def _load_loadout(db: str, song_name_or_prefix: str, rank: int) -> tuple[dict, s
     primary_color, secondary_color) at rank N. The color pair (`details_json` `pc`/`sc`) is
     needed so the oracle gets BOTH chart colors -- feeding only the Selected Element manufactures a
     single-color colorPointBonus and a spurious delta on two-color loadouts."""
-    con = sqlite3.connect(db)
-    con.row_factory = sqlite3.Row
-    # Resolve the exact stored song_name (the DB stores the full "Name (Diff) by Artist").
-    like = f"{song_name_or_prefix}%"
-    rows = con.execute(
-        "SELECT song_name, score, fg_score, force_details_json, details_json FROM team_buff_fg_loadouts "
-        "WHERE force_details_json IS NOT NULL AND (song_name = ? OR song_name LIKE ?) "
-        "ORDER BY fg_score DESC",
-        (song_name_or_prefix, like),
-    ).fetchall()
-    if not rows:
-        raise SystemExit(f"no FG loadout in {db} for song {song_name_or_prefix!r}")
-    names = sorted({r["song_name"] for r in rows})
-    if len(names) > 1:
-        raise SystemExit(f"song {song_name_or_prefix!r} matches multiple stored songs: {names}")
-    if rank < 0 or rank >= len(rows):
-        raise SystemExit(f"rank {rank} out of range (only {len(rows)} loadouts for {names[0]!r})")
-    row = rows[rank]
-    fd = _unpack_stats_after_load(json.loads(row["force_details_json"]))
-    det = json.loads(row["details_json"]) if row["details_json"] else {}
-    primary = str(det.get("pc") or fd.get("Selected Element") or fd.get("SelectedElement") or "")
-    secondary = str(det.get("sc") or primary)
-    return fd, row["song_name"], int(row["fg_score"]), int(row["score"]), primary, secondary
+    from gear_optimizer.store import schema
+    from gear_optimizer.store.db import load_boards, load_traces, song_names
+    from gear_optimizer.store.legacy import fg_payload
+
+    conn = schema.connect(db)
+    try:
+        # Resolve the exact stored song name (the DB stores the full "Name (Diff) by Artist").
+        names = [n for n in song_names(conn) if n == song_name_or_prefix or n.startswith(song_name_or_prefix)]
+        board = load_boards(conn, names[0], "T5").fg if len(names) == 1 else []
+        if len(names) > 1:
+            raise SystemExit(f"song {song_name_or_prefix!r} matches multiple stored songs: {sorted(names)}")
+        if not board:
+            raise SystemExit(f"no FG loadout in {db} for song {song_name_or_prefix!r}")
+        if rank < 0 or rank >= len(board):
+            raise SystemExit(f"rank {rank} out of range (only {len(board)} loadouts for {names[0]!r})")
+        best = board[rank]
+        trace = load_traces(conn, best.song, "T5", [best.loadout_hash])[best.loadout_hash].fg
+    finally:
+        conn.close()
+    return fg_payload(best, trace), best.song, int(best.fg_score), int(best.score), best.primary, best.secondary
 
 
 def _visible_stats(fd: dict) -> tuple[dict, str]:

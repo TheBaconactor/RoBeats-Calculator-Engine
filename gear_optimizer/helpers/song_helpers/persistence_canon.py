@@ -58,8 +58,6 @@ def _normalize_entry_shape(
     eval_data_obj: Any = None,
 ) -> dict[str, Any]:
     details_dict = dict(details_obj) if isinstance(details_obj, dict) else {}
-    details_dict["attempt_lifetime"] = safe_int(details_dict.get("attempt_lifetime", 0), 0)
-    details_dict["attempts_first"] = safe_int(details_dict.get("attempts_first", 0), 0)
 
     score_i = safe_int(score_val, 0)
     force_out = dict(force_obj) if isinstance(force_obj, dict) else None

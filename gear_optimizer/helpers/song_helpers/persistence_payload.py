@@ -75,8 +75,6 @@ def build_db_payload(
     best_gear,
     best_minis,
     prev_record,
-    attempt_lifetime,
-    attempts_first,
     fg_variants,
     build_details_fn,
     db_best_fg_score=None,
@@ -89,8 +87,6 @@ def build_db_payload(
         best_gear: Best gear loadout
         best_minis: Best mini loadout
         prev_record: Previous database record
-        attempt_lifetime: Lifetime attempt counter
-        attempts_first: Current attempts_first counter (already computed per-song)
         fg_variants: Force greats variants
         build_details_fn: Function to build details dict from data dict
         db_best_fg_score: Best FG score from DB (across all loadouts)
@@ -116,13 +112,6 @@ def build_db_payload(
     best_gear_names = names_list(best_gear)
     best_mini_names = names_list(best_minis)
     best_details = build_details_fn(best_data)
-
-    def attach_attempt_meta(details):
-        """Copy details dict and tag attempt counters for DB persistence."""
-        merged = dict(details or {})
-        merged["attempt_lifetime"] = attempt_lifetime
-        merged["attempts_first"] = attempts_first
-        return merged
 
     # Build FG candidates from current run.
     # Always track best FG from this run independently.
@@ -211,7 +200,7 @@ def build_db_payload(
                 "score": prev_score,
                 "gear": prev_gear_names,
                 "minis": prev_mini_names,
-                "details": attach_attempt_meta(prev_record.get("details", {})),
+                "details": dict(prev_record.get("details") or {}),
             }
         )
 
@@ -220,7 +209,7 @@ def build_db_payload(
             "score": score,
             "gear": best_gear_names,
             "minis": best_mini_names,
-            "details": attach_attempt_meta(best_details),
+            "details": dict(best_details or {}),
         }
     )
 
@@ -229,9 +218,6 @@ def build_db_payload(
     top1 = candidates[0] if candidates else None
 
     updated_payload = {}
-    updated_payload["attempt_lifetime"] = attempt_lifetime
-    updated_payload["attempts_first"] = attempts_first
-    # Expose the current run's metrics for downstream per-song counter updates.
     updated_payload["run_score"] = score or 0
     updated_payload["_record"] = record_info
     if top1:
@@ -240,7 +226,7 @@ def build_db_payload(
                 "score": top1["score"],
                 "gear": top1.get("gear", []),
                 "minis": top1.get("minis", []),
-                "details": attach_attempt_meta(top1.get("details", {})),
+                "details": dict(top1.get("details") or {}),
             }
         )
 

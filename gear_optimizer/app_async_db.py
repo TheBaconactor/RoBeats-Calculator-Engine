@@ -8,21 +8,18 @@ import time
 from typing import Optional
 
 from gear_optimizer.core.team_buff import OPTIMIZER_BASELINE_TEAM_BUFF
-from gear_optimizer.data.database import (
-    configure_persistent_writer_connection,
-    get_db_connection,
-    get_evolution_db_path,
-    save_optimizer_song_result,
-)
+from gear_optimizer.gamedata import load_gears, load_minis
+from gear_optimizer.settings import paths
+from gear_optimizer.store import schema
+from gear_optimizer.store.legacy import store_entries
 
 
 class AsyncDbSaver:
     """
     Background DB writer to avoid blocking the main loop between songs.
 
-    This keeps `save_loadouts_batch()` off the critical path so the next song can
-    start immediately (GPU stays busier) while DB inserts/dedup/prune run in a
-    background thread.
+    This keeps the results store's merge off the critical path so the next song can
+    start immediately (GPU stays busier) while it runs in a background thread.
     """
 
     def __init__(self):
@@ -64,8 +61,7 @@ class AsyncDbSaver:
     def submit(self, song_name: str, entries: list[dict], *, meta: dict | None = None) -> None:
         self.raise_if_failed()
         meta = meta or {}
-        # Allow "meta-only" submissions (no entries) so per-song attempt counters can
-        # advance even when we intentionally skip persistence (e.g., score=0).
+        # A processed run with nothing to store still marks the song processed (the queue skips it).
         if not entries and not meta.get("_processed_run"):
             return
         with self._lock:
@@ -169,12 +165,7 @@ class AsyncDbSaver:
         if self._writer_connection is not None and resolved_path == self._writer_db_path:
             return self._writer_connection
         self._close_writer_connection()
-        conn = get_db_connection(resolved_path)
-        try:
-            configure_persistent_writer_connection(conn)
-        except BaseException:
-            conn.close()
-            raise
+        conn = schema.connect(resolved_path, write=True)
         self._writer_connection = conn
         self._writer_db_path = resolved_path
         return conn
@@ -203,17 +194,17 @@ class AsyncDbSaver:
                         meta = {}
 
                     try:
-                        db_key = meta.get("db_key") or song_name
-                        processed_run = bool(meta.get("_processed_run", True))
-                        canonical_db_path = str(get_evolution_db_path() or "").strip()
-                        conn = self._get_writer_connection(canonical_db_path)
-                        save_optimizer_song_result(
+                        db_key = str(meta.get("db_key") or song_name or "").strip()
+                        if not db_key:
+                            raise ValueError("a result needs a non-empty song key")
+                        conn = self._get_writer_connection(str(paths().database))
+                        store_entries(
+                            conn,
                             db_key,
+                            OPTIMIZER_BASELINE_TEAM_BUFF,
                             entries,
-                            processed_run=processed_run,
-                            conn=conn,
-                            db_path=canonical_db_path,
-                            team_buff=OPTIMIZER_BASELINE_TEAM_BUFF,
+                            gears=load_gears(paths().gears_csv),
+                            minis=load_minis(paths().minis_csv),
                         )
                     except Exception as exc:
                         self._record_error("save", exc, song_name=str(song_name))

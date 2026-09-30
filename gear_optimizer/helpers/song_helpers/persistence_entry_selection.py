@@ -5,7 +5,7 @@ from typing import Any
 
 from gear_optimizer.domain.leaderboard import LOADOUTS_PER_SONG_LIMIT
 from ...core.utils import safe_int
-from ...data.database import get_loadout_hash
+from .loadout_hashing import resolve_loadout_hash
 from .fg_payload import has_valid_fg_payload
 from .ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
 from .persistence_records import entry_base_score
@@ -152,7 +152,7 @@ def _best_fg_already_in_loadout_entries(best_fg: dict, loadout_entries: dict | N
     if not isinstance(loadout_entries, dict):
         return False
 
-    best_fg_hash = get_loadout_hash(best_fg.get("gear", []), best_fg.get("minis", []))
+    best_fg_hash = resolve_loadout_hash(best_fg.get("gear", []), best_fg.get("minis", []))
     return any(str(entry_loadout_hash(entry) or "") == str(best_fg_hash) for entry in loadout_entries.values())
 
 
@@ -167,7 +167,7 @@ def _resolve_best_fg_base_score(best_fg: dict, loadout_entries: dict | None):
     if base_score or not isinstance(loadout_entries, dict):
         return base_score or 0
 
-    h = get_loadout_hash(best_fg.get("gear", []), best_fg.get("minis", []))
+    h = resolve_loadout_hash(best_fg.get("gear", []), best_fg.get("minis", []))
     entry = loadout_entries.get(h) or {}
     return entry_base_score(entry)
 

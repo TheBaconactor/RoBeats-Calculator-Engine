@@ -16,7 +16,6 @@ from typing import Any
 from ..core.gem_defs import element_gem_count
 from ..core.team_buff import team_buff_effect
 from ..core.utils import get_selected_element
-from ..data.database.loadout_io import _compact_gear_for_db, _compact_minis_for_db
 from ..data.loadout_equivalence import (
     canonical_minis_groups_from_names,
     effective_loadout_hash_from_names,
@@ -24,8 +23,9 @@ from ..data.loadout_equivalence import (
     rotate_mini_groups_for_slot_display,
 )
 from ..gamedata import ELEMENTS, MINI_ASCENSION_VERSION, STATS, Gear, Mini, SongMini, song_minis
+from ..helpers.song_helpers.fg_payload import strip_retired_fg_fields
 from ..helpers.song_helpers.force_greats.result_application import read_visible_stats
-from ..helpers.song_helpers.loadout_hashing import loadout_hash_from_names
+from ..helpers.song_helpers.loadout_hashing import compact_gear_names, compact_mini_names, loadout_hash_from_names
 from ..stats import GEM_KINDS, gems, named_loadout_stats
 from .boards import Candidate, Row
 from .records import FgResult, Loadout, MetaResult, encode_trace
@@ -47,6 +47,12 @@ def candidates_from_entries(
 ) -> list[Candidate]:
     """Candidates for one song and tier. `stored_colors` are the song's colors in the database (a fallback
     for entries that carry none); `deferred` overrides the entries' _deferred_fg_update flag."""
+    for index, entry in enumerate(entries):
+        for field in ("score", "fg_score", "fg_base_score"):
+            try:
+                int(entry.get(field) or 0)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"result entry {index} has an invalid {field}: {entry.get(field)!r}") from exc
     fallback = next((_colors(e) for e in entries if any(_colors(e)[:2])), None)
     if fallback is None and stored_colors is not None:
         fallback = (*stored_colors, stored_colors[0])
@@ -87,8 +93,8 @@ class _Identity:
 
 
 def _identify(entry: Mapping[str, Any], fallback, minis_for) -> _Identity:
-    gear = _compact_gear_for_db(entry.get("gear", []))
-    names = _compact_minis_for_db(entry.get("minis", []))
+    gear = compact_gear_names(entry.get("gear", []))
+    names = compact_mini_names(entry.get("minis", []))
     primary, secondary, selected = _colors(entry)
     if not primary and not secondary and fallback is not None:
         primary, secondary, fallback_selected = fallback
@@ -161,7 +167,7 @@ def _candidate(song, tier, entry, ident: _Identity, gears, minis_for, now: int, 
             updated=now,
             seq=0,
         )
-        meta_trace = details.get("TimelineFrontier") or None
+        meta_trace = _without_retired_fields(details.get("TimelineFrontier") or None)
 
     fg = fg_trace = None
     fg_score = int(entry.get("fg_score", 0) or 0)
@@ -205,7 +211,7 @@ def _fg_result(song, force: Mapping[str, Any], fg_score: int, ident: _Identity, 
     meta = force.get("ForceGreats")
     if not isinstance(meta, dict) or not meta.get("frontier_trace"):
         raise ValueError(f"{song}: FG payload without a frontier trace")
-    trace = {k: v for k, v in meta.items() if k != "final_score"}
+    trace = _without_retired_fields({k: v for k, v in meta.items() if k != "final_score"}, parent="ForceGreats")
     result = FgResult(
         element=element,
         gems=tuple(allocation[k] for k in GEM_KINDS),
@@ -215,6 +221,11 @@ def _fg_result(song, force: Mapping[str, Any], fg_score: int, ident: _Identity, 
         seq=0,
     )
     return result, trace
+
+
+def _without_retired_fields(payload: dict[str, Any] | None, parent: str = "") -> dict[str, Any] | None:
+    """A trace without the fields of the retired Force Greats configuration model (as version 18 stored it)."""
+    return None if payload is None else strip_retired_fg_fields(payload, parent_key=parent)[0]
 
 
 def _allocation(gem_counts: Mapping[str, Any], container: Mapping[str, Any], element: str) -> dict[str, int]:

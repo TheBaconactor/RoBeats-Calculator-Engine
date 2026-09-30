@@ -8,7 +8,8 @@ from typing import Any, cast
 
 from gear_optimizer import settings
 from gear_optimizer.core.output import suppress_stdout, suppress_stderr
-from gear_optimizer.data.database import init_db
+from gear_optimizer.settings import paths
+from gear_optimizer.store import schema
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.helpers.song_helpers.results_printer import print_results
 from gear_optimizer.pipeline.post_processor_persist import (
@@ -58,7 +59,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
     configure_default_logging()
 
-    init_db()
+    schema.ensure(paths().database)
 
     async_db = AsyncDbSaver()
 

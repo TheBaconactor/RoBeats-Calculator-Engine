@@ -4,10 +4,8 @@ from gear_optimizer.app import GearOptimizerApp
 from gear_optimizer.settings import RunSettings
 from gear_optimizer.core.memory import MemoryGuardResumeTracker, build_memory_guard_resume_context
 from gear_optimizer.song_queue import finalize_song_queue, merge_discovered_with_resume, queue_path_key
-from gear_optimizer.data.database import (
-    get_db_connection,
-    get_song_names_present_in_db,
-)
+from gear_optimizer.store import db, schema
+from tests.store_support import candidate
 
 
 def _write_song_stub(path, song_name: str):
@@ -69,52 +67,16 @@ def _install_completed_resume_crash_window(monkeypatch, tmp_path, queue):
     return resume_file
 
 
-def test_get_song_names_present_in_db_returns_only_existing_rows():
+def test_present_songs_are_the_processed_ones(tmp_path):
     song_in_db = "Already In DB (Hard)"
-    song_missing = "Not In DB Yet (Hard)"
-
-    conn = get_db_connection()
+    song_empty_run = "Processed Without Results (Hard)"
+    _mark_processed(tmp_path / "presence.db", song_in_db, with_loadouts=True)
+    _mark_processed(tmp_path / "presence.db", song_empty_run)
+    conn = schema.connect(tmp_path / "presence.db")
     try:
-        conn.execute(
-            "INSERT OR REPLACE INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, ?, ?, ?)",
-            (song_in_db, 123, 0, 0.0),
-        )
-        conn.commit()
+        assert db.present_songs(conn, [song_in_db, song_empty_run, "Not In DB Yet (Hard)"]) == {song_in_db, song_empty_run}
     finally:
         conn.close()
-
-    present = get_song_names_present_in_db([song_in_db, song_missing])
-    assert present == {song_in_db}
-
-
-def test_get_song_names_present_in_db_require_loadouts_ignores_stub_songs_row():
-    song_stub = "Stub Songs Row Only (Hard)"
-    song_with_loadouts = "Has Loadouts (Hard)"
-
-    conn = get_db_connection()
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, ?, ?, ?)",
-            (song_stub, 0, 0, 0.0),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, ?, ?, ?)",
-            (song_with_loadouts, 456, 0, 0.0),
-        )
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO team_buff_loadouts
-            (song_name, team_buff, loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, timestamp)
-            VALUES (?, 'T5', 'hash1', 456, 0, X'', X'', '{}', 0.0)
-            """,
-            (song_with_loadouts,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    present = get_song_names_present_in_db([song_stub, song_with_loadouts], require_loadouts=True)
-    assert present == {song_with_loadouts}
 
 
 def test_build_song_queue_limit_preserves_missing_first(monkeypatch, tmp_path):
@@ -133,15 +95,7 @@ def test_build_song_queue_limit_preserves_missing_first(monkeypatch, tmp_path):
     db_path = tmp_path / "priority_limit.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
 
-    conn = get_db_connection(str(db_path))
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, ?, ?, ?)",
-            (song_existing, 321, 0, 0.0),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    _mark_processed(db_path, song_existing)
 
     app = GearOptimizerApp()
     queue = app._build_song_queue(_hard_queue_run(ignore_resume=True, song_queue_limit=2))
@@ -220,23 +174,7 @@ def test_build_song_queue_resume_prepends_new_path_even_with_loadouts(monkeypatc
     _write_song_stub(new_fp, song_new)
 
     _setup_resume_queue_env(monkeypatch, tmp_path, "resume_loadout.db")
-    conn = get_db_connection(str(tmp_path / "resume_loadout.db"))
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, ?, ?, ?)",
-            (song_new, 999, 0, 0.0),
-        )
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO team_buff_loadouts
-            (song_name, team_buff, loadout_hash, score, fg_score, gear_ids_blob, minis_ids_blob, details_json, timestamp)
-            VALUES (?, 'T5', 'hash1', 999, 0, X'', X'', '{}', 0.0)
-            """,
-            (song_new,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    _mark_processed(tmp_path / "resume_loadout.db", song_new, with_loadouts=True)
 
     _install_resume_file(
         monkeypatch,
@@ -267,15 +205,7 @@ def test_build_song_queue_resume_prepends_stub_db_songs_without_loadouts(monkeyp
     _write_song_stub(stub_fp, song_stub)
 
     _setup_resume_queue_env(monkeypatch, tmp_path, "resume_stub.db")
-    conn = get_db_connection(str(tmp_path / "resume_stub.db"))
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, ?, ?, ?)",
-            (song_stub, 0, 0, 0.0),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    _mark_processed(tmp_path / "resume_stub.db", song_stub)
 
     _install_resume_file(
         monkeypatch,
@@ -400,3 +330,12 @@ def test_build_song_queue_completed_journal_crash_window_admits_new_path(monkeyp
     queue = GearOptimizerApp()._build_song_queue(_hard_queue_run())
 
     assert [item[1] for item in queue] == [new_name]
+
+
+def _mark_processed(db_path, song: str, *, with_loadouts: bool = False) -> None:
+    """The song as the results database records it after a run (with a stored result, or none)."""
+    conn = schema.connect(db_path, write=True)
+    try:
+        db.store_results(conn, song, "T5", [candidate("h1", 999, song=song)] if with_loadouts else [])
+    finally:
+        conn.close()

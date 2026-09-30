@@ -20,7 +20,6 @@ from gear_optimizer.helpers.song_helpers.persistence_payload import (
     make_build_details_fn,
 )
 from gear_optimizer.domain.results import PersistenceBatch
-from gear_optimizer.pipeline.post_processor_fg_variants import best_fg_improving_score_from_variants
 
 
 
@@ -32,8 +31,6 @@ class PostPersistContext:
     best_minis: Any
     prev_record: Any
     fg_variants: Any
-    attempt_lifetime: int
-    attempts_first: int
     db_best_fg_score: int
 
 
@@ -49,48 +46,11 @@ def build_post_persist_context(item: dict[str, Any]) -> PostPersistContext:
     prev_record = item.get("prev_record")
     fg_variants = item.get("fg_variants") or []
 
-    if isinstance(best_data, dict):
-        run_score_value = best_data.get("BaseScore") or best_data.get("Score", 0) or 0
-    else:
-        run_score_value = 0
-    run_score = safe_int(run_score_value)
-    run_best_fg = best_fg_improving_score_from_variants(fg_variants)
-
-    prev_best_score = safe_int(
-        (prev_record or {}).get("score", 0) if isinstance(prev_record, dict) else 0,
-    )
     prev_best_fg = safe_int(item.get("db_best_fg_score", 0))
     if prev_best_fg <= 0:
         prev_best_fg = safe_int(
             (prev_record or {}).get("fg_score", 0) if isinstance(prev_record, dict) else 0,
         )
-
-    record_improved = (run_score > prev_best_score) or (run_best_fg > prev_best_fg)
-
-    attempt_lifetime = safe_int(item.get("attempt_lifetime", 0))
-    if attempt_lifetime <= 0 and isinstance(prev_record, dict):
-        attempt_lifetime = (
-            safe_int(
-                (prev_record.get("details") or {}).get("attempt_lifetime", 0)
-                if isinstance(prev_record.get("details"), dict)
-                else 0,
-            )
-            + 1
-        )
-    if attempt_lifetime <= 0:
-        attempt_lifetime = 1
-
-    prev_attempts_first = safe_int(
-        item.get("prev_attempts_first", 0),
-    )
-    if prev_attempts_first <= 0 and isinstance(prev_record, dict):
-        prev_attempts_first = safe_int(
-            (prev_record.get("details") or {}).get("attempts_first", 0)
-            if isinstance(prev_record.get("details"), dict)
-            else 0,
-        )
-
-    attempts_first = 1 if record_improved else (int(prev_attempts_first or 0) + 1 if prev_attempts_first else 1)
 
     return PostPersistContext(
         build_details=build_details,
@@ -99,8 +59,6 @@ def build_post_persist_context(item: dict[str, Any]) -> PostPersistContext:
         best_minis=best_minis,
         prev_record=prev_record,
         fg_variants=fg_variants,
-        attempt_lifetime=int(attempt_lifetime),
-        attempts_first=int(attempts_first),
         db_best_fg_score=int(prev_best_fg),
     )
 
@@ -111,8 +69,6 @@ def build_post_persist_db_payload(context: PostPersistContext) -> dict[str, Any]
         context.best_gear,
         context.best_minis,
         context.prev_record,
-        context.attempt_lifetime,
-        context.attempts_first,
         context.fg_variants,
         context.build_details,
         db_best_fg_score=context.db_best_fg_score,

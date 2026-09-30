@@ -69,10 +69,11 @@ def meta() -> int:
     print("=" * 60)
     print()
     try:
-        from gear_optimizer.data.database import init_db
+        from gear_optimizer.settings import paths
+        from gear_optimizer.store import schema
         from general_meta import export_general_meta_json, run_general_meta
 
-        init_db()
+        schema.ensure(paths().database)
         results = run_general_meta()
         output_path = export_general_meta_json(results)
         print("\n" + "=" * 60)

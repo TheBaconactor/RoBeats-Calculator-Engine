@@ -8,10 +8,7 @@ import threading
 import time
 from gear_optimizer.solver.genetic_pipeline import GA_POPULATION_SIZE
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
-from gear_optimizer.data.database import (
-    init_db,
-    get_evolution_db_path,
-)
+from gear_optimizer.store import schema
 from gear_optimizer.core.memory import (
     compute_memory_guard_limit,
     set_memory_watchdog_limit,
@@ -229,11 +226,11 @@ class GearOptimizerApp(RuntimeUiMixin, TaskExecutionMixin):
             frontier_sync = sync_frontiers_from_server()
             run = settings.read_run_settings()
             set_memory_watchdog_limit(compute_memory_guard_limit(run))
-            db_display_name = os.path.basename(get_evolution_db_path())
+            db_display_name = paths().database.name
             if self._banner_enabled:
                 self._print_banner()
             logger.info(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
-            init_db()
+            schema.ensure(paths().database)
             logger.info(" >> [ForceGreats] ResponseFrontier")
             loop_forever = run.loop_forever
             sync_exported_game_data()
