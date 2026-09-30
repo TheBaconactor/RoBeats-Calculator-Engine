@@ -83,6 +83,11 @@ def normalize_team_buff_sequence(
     return tuple(fallback) or (OPTIMIZER_BASELINE_TEAM_BUFF,)
 
 
+def team_buff_display_label(team_buff: Any, *, default: str = "T5") -> str:
+    tier = normalize_team_buff(team_buff, default=default)
+    return "None" if tier == "NONE" else tier
+
+
 def team_buff_effect(team_buff: Any, team_color: Any) -> dict[str, int]:
     """
     Return the raw stat delta applied by TeamBuff for the provided team color.
